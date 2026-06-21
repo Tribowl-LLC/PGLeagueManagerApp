@@ -80,7 +80,7 @@ jobs:
 
     steps:
       - name: Check out the PR
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       # Detect whether this PR (or push) actually touched any of the
       # files the race suite covers. Done inside the job (rather than
