@@ -99,7 +99,8 @@ export function OrganizationConfirmDialogs({
                   <li>All payment records</li>
                   <li>All game and score history</li>
                   <li>All payment schedules</li>
-                  <li>All user accounts belonging to this organization</li>
+                  <li>All non-system-administrator user accounts belonging to this organization</li>
+                  <li>System administrators will be detached from this organization, not deleted</li>
                   <li>Organization-specific administrative audit history</li>
                 </ul>
                 <p className="text-sm">Consider archiving instead if you may need this data in the future.</p>

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from '../../server/db';
 import { organizations, users } from '@shared/schema';
 import {
@@ -91,7 +91,7 @@ describe('Organizations API', () => {
       expect(orgs.length).toBeGreaterThanOrEqual(1);
     });
 
-    it('permanently deletes an organization and its administrator account', async () => {
+    it('deletes tenant administrators but preserves and detaches system administrators', async () => {
       const [organization] = await db
         .select({ id: organizations.id })
         .from(organizations)
@@ -102,9 +102,17 @@ describe('Organizations API', () => {
       const [organizationUser] = await db
         .select({ id: users.id })
         .from(users)
-        .where(eq(users.organizationId, organization.id));
+        .where(and(
+          eq(users.organizationId, organization.id),
+          eq(users.role, 'org_admin'),
+        ));
       expect(organizationUser).toBeDefined();
       if (!organizationUser) throw new Error('Expected test organization admin to exist');
+
+      await db
+        .update(users)
+        .set({ organizationId: organization.id })
+        .where(eq(users.id, adminSession.user.id));
 
       const { status, data } = await apiDelete(`/api/organizations/${organization.id}`, adminSession);
       expect(status).toBe(200);
@@ -118,8 +126,21 @@ describe('Organizations API', () => {
         .select({ id: users.id })
         .from(users)
         .where(eq(users.id, organizationUser.id));
+      const [preservedSystemAdmin] = await db
+        .select({
+          id: users.id,
+          role: users.role,
+          organizationId: users.organizationId,
+        })
+        .from(users)
+        .where(eq(users.id, adminSession.user.id));
       expect(deletedOrganization).toBeUndefined();
       expect(deletedUser).toBeUndefined();
+      expect(preservedSystemAdmin).toEqual({
+        id: adminSession.user.id,
+        role: 'system_admin',
+        organizationId: null,
+      });
     });
   });
 

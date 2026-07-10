@@ -70,7 +70,7 @@ export async function restoreOrganization(id: number): Promise<Organization> {
 }
 
 export async function deleteOrganization(id: number): Promise<void> {
-  let deletedUserIds: number[] = [];
+  let affectedUserIds: number[] = [];
   await db.transaction(async (tx) => {
     await tx.execute(sql`SELECT id FROM ${organizations} WHERE id = ${id} FOR UPDATE`);
 
@@ -80,11 +80,16 @@ export async function deleteOrganization(id: number): Promise<void> {
     // dependency order. Every write shares this transaction, so a foreign-key
     // conflict leaves the organization entirely intact.
     const orgUsers = await tx
-      .select({ id: users.id })
+      .select({ id: users.id, role: users.role })
       .from(users)
       .where(eq(users.organizationId, id));
-    const userIds = orgUsers.map((user) => user.id);
-    deletedUserIds = userIds;
+    const userIds = orgUsers
+      .filter((user) => user.role !== 'system_admin')
+      .map((user) => user.id);
+    const systemAdminIds = orgUsers
+      .filter((user) => user.role === 'system_admin')
+      .map((user) => user.id);
+    affectedUserIds = orgUsers.map((user) => user.id);
     const orgBowlers = await tx
       .select({ id: bowlers.id })
       .from(bowlers)
@@ -156,6 +161,16 @@ export async function deleteOrganization(id: number): Promise<void> {
         .set({ locationId: null })
         .where(inArray(users.locationId, locationIds));
     }
+    if (systemAdminIds.length > 0) {
+      // System administrators are platform accounts, not tenant-owned
+      // accounts. Preserve them while detaching the organization that is
+      // about to be deleted. Their bowler/location links were cleared above
+      // only when those linked rows belong to this teardown.
+      await tx
+        .update(users)
+        .set({ organizationId: null })
+        .where(inArray(users.id, systemAdminIds));
+    }
 
     await tx.delete(leagues).where(eq(leagues.organizationId, id));
     await tx.delete(bowlers).where(eq(bowlers.organizationId, id));
@@ -163,7 +178,7 @@ export async function deleteOrganization(id: number): Promise<void> {
     await tx.delete(locations).where(eq(locations.organizationId, id));
     await tx.delete(organizations).where(eq(organizations.id, id));
   });
-  for (const userId of deletedUserIds) {
+  for (const userId of affectedUserIds) {
     cacheInvalidate(`user:${userId}`);
   }
   cacheInvalidate('organizations');
