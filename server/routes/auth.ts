@@ -589,6 +589,9 @@ export function registerAuthRoutes(app: Express): void {
         const sent = await sendTemplatedEmail('password_reset', email, {
           bowler_name: firstName,
           reset_link: resetUrl,
+          // Existing password_reset templates may use the legacy invite
+          // variable shared with onboarding emails.
+          invite_link: resetUrl,
           organization_name: org?.name || 'LeagueVault',
         });
 

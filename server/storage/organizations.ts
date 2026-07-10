@@ -5,6 +5,7 @@ import {
   adminPasswordResetAudits,
   adminProfileEditAudits,
   adminRoleChangeAudits,
+  alerterState,
   applePayJobItems,
   applePayJobs,
   bowlerGuardians,
@@ -95,11 +96,21 @@ export async function deleteOrganization(id: number): Promise<void> {
       .from(bowlers)
       .where(eq(bowlers.organizationId, id));
     const bowlerIds = orgBowlers.map((bowler) => bowler.id);
+    const orgLeagues = await tx
+      .select({ id: leagues.id })
+      .from(leagues)
+      .where(eq(leagues.organizationId, id));
+    const leagueIds = orgLeagues.map((league) => league.id);
     const orgLocations = await tx
       .select({ id: locations.id })
       .from(locations)
       .where(eq(locations.organizationId, id));
     const locationIds = orgLocations.map((location) => location.id);
+
+    const organizationAlertKinds = [
+      ...leagueIds.map((leagueId) => `league_square_missing:${leagueId}`),
+      ...locationIds.map((locationId) => `square_catalog_cap:loc:${locationId}`),
+    ];
 
     await tx.delete(leagueSecretaryAudits).where(eq(leagueSecretaryAudits.organizationId, id));
     await tx.delete(leagueSecretaries).where(eq(leagueSecretaries.organizationId, id));
@@ -116,7 +127,23 @@ export async function deleteOrganization(id: number): Promise<void> {
         eq(orphanCleanupAudits.previousOrganizationId, id),
       ));
 
+    if (organizationAlertKinds.length > 0) {
+      await tx
+        .delete(alerterState)
+        .where(inArray(alerterState.kind, organizationAlertKinds));
+    }
+
     if (userIds.length > 0) {
+      // The session table stores passport's user id inside JSON and has no
+      // foreign key to users, so remove sessions for tenant users explicitly
+      // before deleting their accounts.
+      for (const userId of userIds) {
+        await tx.execute(sql`
+          DELETE FROM "session"
+          WHERE sess->'passport'->>'user' = ${String(userId)}
+        `);
+      }
+
       await tx.delete(adminEmailChangeAudits).where(or(
         inArray(adminEmailChangeAudits.actorUserId, userIds),
         inArray(adminEmailChangeAudits.targetUserId, userIds),
