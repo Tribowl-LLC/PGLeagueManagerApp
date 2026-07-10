@@ -112,7 +112,14 @@ export async function deleteOrganization(id: number): Promise<void> {
       ...locationIds.map((locationId) => `square_catalog_cap:loc:${locationId}`),
     ];
 
-    await tx.delete(leagueSecretaryAudits).where(eq(leagueSecretaryAudits.organizationId, id));
+    if (leagueIds.length > 0) {
+      await tx.delete(leagueSecretaryAudits).where(or(
+        eq(leagueSecretaryAudits.organizationId, id),
+        inArray(leagueSecretaryAudits.leagueId, leagueIds),
+      ));
+    } else {
+      await tx.delete(leagueSecretaryAudits).where(eq(leagueSecretaryAudits.organizationId, id));
+    }
     await tx.delete(leagueSecretaries).where(eq(leagueSecretaries.organizationId, id));
     await tx.delete(leagueRegistrations).where(eq(leagueRegistrations.organizationId, id));
     await tx.delete(bowlerGuardians).where(eq(bowlerGuardians.organizationId, id));
