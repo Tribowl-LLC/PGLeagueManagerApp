@@ -1,7 +1,6 @@
 {
   "ignore": {
     "files": [
-      "artifacts/mockup-sandbox/**",
       "ios/**",
       "android/**",
       "client/public/sw.js",

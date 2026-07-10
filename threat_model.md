@@ -30,7 +30,7 @@ Production scope for this threat model excludes the mockup sandbox, local-only s
 - **Highest-risk code areas:** `server/routes/auth.ts`, `server/utils/access-control.ts`, `server/routes/bowlers.ts`, `server/routes/user-bowlers.ts`, `server/routes/payments-provider/`, `server/routes/payment-schedules.ts`, `server/routes/public-embed-registration.ts`, `server/routes/league-secretaries.ts`
 - **Public surfaces:** `/api/auth/*`, `/api/public/embed/*`, `/api/bowler-link-respond/*`, `/api/setup/*`, `/api/payments-provider/webhooks/*`, `/api/organizations/public-*`, `/api/health`
 - **Authenticated/admin surfaces:** `requireAuth` and `requireOrgAdmin` middleware, org-scoped CRUD routes, payment-provider admin/verification routes, guardian-management routes
-- **Usually dev-only / out of scope:** `artifacts/mockup-sandbox/`, test setup under `tests/`, local scripts under `scripts/` unless they are invoked by production runtime
+- **Usually dev-only / out of scope:** test setup under `tests/`, local scripts under `scripts/` unless they are invoked by production runtime
 
 ## Threat Categories
 

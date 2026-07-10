@@ -1,24 +1,4 @@
 {
-  "artifacts/mockup-sandbox/src/App.tsx": {
-    "@typescript-eslint/no-non-null-assertion": {
-      "count": 1
-    }
-  },
-  "artifacts/mockup-sandbox/src/components/mockups/bowler-nav/CleanTabBar.tsx": {
-    "@typescript-eslint/no-non-null-assertion": {
-      "count": 1
-    }
-  },
-  "artifacts/mockup-sandbox/src/components/ui/chart.tsx": {
-    "@typescript-eslint/no-unnecessary-type-assertion": {
-      "count": 4
-    }
-  },
-  "artifacts/mockup-sandbox/src/main.tsx": {
-    "@typescript-eslint/no-non-null-assertion": {
-      "count": 1
-    }
-  },
   "client/public/sw.js": {
     "no-undef": {
       "count": 22
