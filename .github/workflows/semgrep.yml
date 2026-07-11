@@ -1,0 +1,39 @@
+name: Semgrep
+
+# Diff-aware scans run for pull requests. Pushes and the weekly schedule
+# run full scans against the current main branch. workflow_dispatch makes
+# it possible to run a full scan immediately after a security change.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  semgrep:
+    name: Semgrep
+    runs-on: ubuntu-latest
+
+    # GitHub does not expose repository secrets to Dependabot PRs. The
+    # normal CI and scheduled scans still run; this avoids a misleading
+    # token-authentication failure on a Dependabot-generated PR.
+    if: github.actor != 'dependabot[bot]'
+
+    container:
+      # Linux/amd64 digest for the Semgrep image used by this workflow.
+      image: semgrep/semgrep@sha256:525beaba156b9bd3f9847d6ec0eb8f308e11f407e0c0b2da641e7c8dd99c97d6
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Run Semgrep CI
+        env:
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+        run: semgrep ci
