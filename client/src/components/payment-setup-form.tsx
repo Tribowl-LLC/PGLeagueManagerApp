@@ -8,7 +8,7 @@ import { PaymentSetupRecipientPicker } from "@/components/payment-setup-recipien
 import { PaymentSetupSummaryCard } from "@/components/payment-setup-summary-card";
 import { PaymentSetupCombinedPay } from "@/components/payment-setup-combined-pay";
 
-type RefDiv = React.RefObject<HTMLDivElement>;
+type RefDiv = React.RefObject<HTMLDivElement | null>;
 
 type PaymentSchedule = "weekly" | "custom";
 
@@ -33,7 +33,7 @@ interface PaymentSetupFormProps {
   savedCards: SavedCard[];
   cardMode: 'new' | 'saved';
   selectedSavedCardId: string;
-  cardContainerRef: RefObject<HTMLDivElement>;
+  cardContainerRef: RefObject<HTMLDivElement | null>;
   isInitialized: boolean;
   squareError: string | null;
   storeCard: boolean;

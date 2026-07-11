@@ -71,8 +71,8 @@ interface UseWalletPaymentsReturn {
   googlePayAvailable: boolean;
   applePayTokenizeOnly: boolean;
   googlePayTokenizeOnly: boolean;
-  applePayRef: React.RefObject<HTMLDivElement>;
-  googlePayRef: React.RefObject<HTMLDivElement>;
+  applePayRef: React.RefObject<HTMLDivElement | null>;
+  googlePayRef: React.RefObject<HTMLDivElement | null>;
   handleApplePayClick: () => Promise<void>;
   handleGooglePayClick: () => Promise<void>;
   isProcessing: boolean;

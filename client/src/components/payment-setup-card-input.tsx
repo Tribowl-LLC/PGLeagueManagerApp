@@ -19,7 +19,7 @@ interface PaymentSetupCardInputProps {
   setCardMode: (mode: 'new' | 'saved') => void;
   selectedSavedCardId: string;
   setSelectedSavedCardId: (id: string) => void;
-  cardContainerRef: RefObject<HTMLDivElement>;
+  cardContainerRef: RefObject<HTMLDivElement | null>;
   isInitialized: boolean;
   squareError: string | null;
   storeCard: boolean;
@@ -28,8 +28,8 @@ interface PaymentSetupCardInputProps {
   cleanupCard: () => void;
   applePayAvailable: boolean;
   googlePayAvailable: boolean;
-  applePayRef: RefObject<HTMLDivElement>;
-  googlePayRef: RefObject<HTMLDivElement>;
+  applePayRef: RefObject<HTMLDivElement | null>;
+  googlePayRef: RefObject<HTMLDivElement | null>;
   onApplePayClick: () => void;
   onGooglePayClick: () => void;
   isWalletProcessing: boolean;

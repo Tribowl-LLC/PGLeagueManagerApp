@@ -32,7 +32,7 @@ interface PaymentStatusViewProps {
   savedCards: SavedCard[];
   cardMode: 'new' | 'saved';
   selectedSavedCardId: string;
-  cardContainerRef: RefObject<HTMLDivElement>;
+  cardContainerRef: RefObject<HTMLDivElement | null>;
   isInitialized: boolean;
   squareError: string | null;
   storeCard: boolean;
@@ -48,8 +48,8 @@ interface PaymentStatusViewProps {
   onCancel: () => void;
   applePayAvailable: boolean;
   googlePayAvailable: boolean;
-  applePayRef: RefObject<HTMLDivElement>;
-  googlePayRef: RefObject<HTMLDivElement>;
+  applePayRef: RefObject<HTMLDivElement | null>;
+  googlePayRef: RefObject<HTMLDivElement | null>;
   onApplePayClick: () => void;
   onGooglePayClick: () => void;
   isWalletProcessing: boolean;
