@@ -9,14 +9,14 @@ import {
   makeApiError,
 } from "@/lib/provider-not-configured";
 import { sanitizePaymentErrorMessage } from "@/lib/payment-user-error";
-import type { InsertPayment } from "@shared/schema";
+import type { InsertPaymentInput, InsertPayment } from "@shared/schema";
 import type { SquareCard } from "@/hooks/use-square-payment";
 import type { CloverCard } from "@/hooks/use-clover-payment";
 
 type PaymentCard = SquareCard | CloverCard | null;
 
 interface UsePaymentFormSubmitOptions {
-  form: UseFormReturn<InsertPayment>;
+  form: UseFormReturn<InsertPaymentInput, unknown, InsertPayment>;
   card: PaymentCard;
   cardMode: 'new' | 'saved';
   selectedSavedCardId: string;

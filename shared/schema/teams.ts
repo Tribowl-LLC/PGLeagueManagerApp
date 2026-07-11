@@ -43,5 +43,6 @@ export const reorderTeamsSchema = z.object({
 });
 
 export type Team = typeof teams.$inferSelect;
-export type InsertTeam = z.infer<typeof insertTeamSchema>;
+export type InsertTeamInput = z.input<typeof insertTeamSchema>;
+export type InsertTeam = z.output<typeof insertTeamSchema>;
 export type UpdateTeam = z.infer<typeof updateTeamSchema>;

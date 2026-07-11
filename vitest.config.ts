@@ -62,8 +62,8 @@ const PARALLEL_ISOLATED_WITH_APP = [
 ];
 
 /**
- * Pure in-process unit tests that `vi.mock('pg')` (and `fetch`) and need
- * NO real database or spawned app. They verify the Neon test-infra
+ * Pure in-process unit tests that need NO real database or spawned app.
+ * Some `vi.mock('pg')` (and `fetch`) to verify the Neon test-infra
  * helpers (`tests/setup/neon-branches.ts` reveal-password probing and the
  * connection-aware cleanup sweep) by mocking the `pg` driver outright.
  *
@@ -82,6 +82,7 @@ const PARALLEL_ISOLATED_WITH_APP = [
 const UNIT_NO_DB = [
   'tests/unit/neon-branches-reveal-password.test.ts',
   'tests/unit/cleanup-connection-aware-sweep.test.ts',
+  'tests/unit/zod-v4-migration-contracts.test.ts',
 ];
 
 const PARALLEL_ISOLATED = [

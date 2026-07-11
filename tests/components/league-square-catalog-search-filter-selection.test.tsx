@@ -75,7 +75,7 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
 });
 vi.stubGlobal('fetch', fetchMock);
 
-import type { InsertLeague } from '@shared/schema';
+import type { InsertLeagueInput, InsertLeague } from '@shared/schema';
 import { Form } from '@/components/ui/form';
 import { LeagueSquareCatalog } from '@/components/league-square-catalog';
 
@@ -83,7 +83,7 @@ function Harness() {
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(
     null,
   );
-  const form = useForm<InsertLeague>({
+  const form = useForm<InsertLeagueInput, unknown, InsertLeague>({
     defaultValues: {
       name: '',
       description: '',

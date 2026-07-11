@@ -14,7 +14,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { InsertLeague } from "@shared/schema";
+import type { InsertLeagueInput, InsertLeague } from "@shared/schema";
 
 const weekDayOptions = [
   { value: "Monday", label: "Monday" },
@@ -27,7 +27,7 @@ const weekDayOptions = [
 ];
 
 interface LeagueScheduleSectionProps {
-  form: UseFormReturn<InsertLeague>;
+  form: UseFormReturn<InsertLeagueInput, unknown, InsertLeague>;
   bowlingWeeks: number;
   computedSeasonEnd: Date | null;
   onSeasonStartChange: (isoString: string) => void;

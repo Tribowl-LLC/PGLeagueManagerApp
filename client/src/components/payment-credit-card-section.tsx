@@ -16,7 +16,7 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Loader2, CreditCard, AlertTriangle, Wallet } from "lucide-react";
 import type { UseFormReturn } from "react-hook-form";
-import type { InsertPayment } from "@shared/schema";
+import type { InsertPaymentInput, InsertPayment } from "@shared/schema";
 import { WalletPaymentButtons } from "@/components/wallet-payment-buttons";
 
 interface SavedCard {
@@ -28,7 +28,7 @@ interface SavedCard {
 }
 
 interface PaymentCreditCardSectionProps {
-  form: UseFormReturn<InsertPayment>;
+  form: UseFormReturn<InsertPaymentInput, unknown, InsertPayment>;
   savedCards: SavedCard[];
   cardMode: 'new' | 'saved';
   setCardMode: (mode: 'new' | 'saved') => void;
