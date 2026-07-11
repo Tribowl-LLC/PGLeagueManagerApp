@@ -27,7 +27,7 @@ import { EmbedAdminPanel } from "./league-view-page/embed-admin-panel";
 import { InviteResultCard } from "./league-view-page/invite-result-card";
 import { LeagueActionCards } from "./league-view-page/league-action-cards";
 import { SeasonHistoryCard } from "./league-view-page/season-history-card";
-import { NewSeasonDialog } from "./league-view-page/new-season-dialog";
+import { NewSeasonDialog, type NewSeasonFormValues } from "./league-view-page/new-season-dialog";
 
 export default function LeagueViewPage() {
   const params = useParams();
@@ -36,8 +36,6 @@ export default function LeagueViewPage() {
   const leagueId = parseInt(params.leagueId!);
   const [inviteResult, setInviteResult] = useState<{ sent: number; alreadyRegistered: number; noEmail: number } | null>(null);
   const [showNewSeason, setShowNewSeason] = useState(false);
-  const [newSeasonStart, setNewSeasonStart] = useState("");
-  const [newSeasonEnd, setNewSeasonEnd] = useState("");
 
   const { data: leagueResponse, isLoading, error, refetch } = useQuery<{ success: true; data: League }>({
     queryKey: [`/api/leagues/${leagueId}`],
@@ -77,8 +75,8 @@ export default function LeagueViewPage() {
   const seasonHistory = seasonHistoryResponse?.data || [];
 
   const newSeasonMutation = useMutation({
-    mutationFn: async ({ seasonStart, seasonEnd }: { seasonStart: string; seasonEnd: string }) => {
-      return await apiRequest<League>(`/api/leagues/${leagueId}/new-season`, "POST", { seasonStart, seasonEnd });
+    mutationFn: async (values: NewSeasonFormValues) => {
+      return await apiRequest<League>(`/api/leagues/${leagueId}/new-season`, "POST", values);
     },
     onSuccess: (data) => {
       const newLeague = data.data;
@@ -88,8 +86,6 @@ export default function LeagueViewPage() {
         description: `${league?.name} new season has been created. The previous season has been archived.`,
       });
       setShowNewSeason(false);
-      setNewSeasonStart("");
-      setNewSeasonEnd("");
       setLocation(`/leagues/${newLeague.id}`);
     },
     onError: (error: Error) => {
@@ -227,11 +223,7 @@ export default function LeagueViewPage() {
           league={league}
           showNewSeason={showNewSeason}
           setShowNewSeason={setShowNewSeason}
-          newSeasonStart={newSeasonStart}
-          setNewSeasonStart={setNewSeasonStart}
-          newSeasonEnd={newSeasonEnd}
-          setNewSeasonEnd={setNewSeasonEnd}
-          onCreate={() => newSeasonMutation.mutate({ seasonStart: newSeasonStart, seasonEnd: newSeasonEnd })}
+          onCreate={(values) => newSeasonMutation.mutate(values)}
           isPending={newSeasonMutation.isPending}
         />
         </ErrorBoundary>
