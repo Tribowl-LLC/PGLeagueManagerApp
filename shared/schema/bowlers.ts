@@ -65,12 +65,6 @@ export const bowlers = pgTable("bowlers", {
   bnSyncPendingAt: timestamp("bn_sync_pending_at", { mode: "string" }),
   bnSyncAttempts: integer("bn_sync_attempts").notNull().default(0),
   bnSyncLastAttemptAt: timestamp("bn_sync_last_attempt_at", { mode: "string" }),
-  // Task #679: when true the bowler is a minor (youth bowler). Minors
-  // may have NULL email/phone — the contact details live on the
-  // primary-contact guardian (see `bowler_guardians`). The application
-  // layer also blocks the user-claim flow for minors and refuses to
-  // place them onto a youth-league team without at least one guardian.
-  isMinor: boolean("is_minor").notNull().default(false),
 });
 
 // Mirror of `PAYMENT_SYNC_MAX_ATTEMPTS` in
@@ -166,7 +160,6 @@ export const insertBowlerSchema = baseBowlerSchema.extend({
   bnSyncPendingAt: z.string().nullable().optional(),
   bnSyncAttempts: z.number().int().min(0).optional(),
   bnSyncLastAttemptAt: z.string().nullable().optional(),
-  isMinor: z.boolean().default(false).optional(),
 }).omit({ id: true });
 
 export const insertBowlerLeagueSchema = baseBowlerLeagueSchema.extend({
@@ -193,7 +186,6 @@ export const updateBowlerSchema = z.object({
   bnSyncPendingAt: z.string().nullable(),
   bnSyncAttempts: z.number().int().min(0),
   bnSyncLastAttemptAt: z.string().nullable(),
-  isMinor: z.boolean(),
 }).partial();
 
 export const updateBowlerLeagueSchema = z.object({

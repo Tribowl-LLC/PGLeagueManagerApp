@@ -106,6 +106,9 @@ export const leagues = pgTable("leagues", {
   organizationId: integer("organization_id").references(() => organizations.id),
   locationId: integer("location_id").references(() => locations.id),
   totalBowlingWeeks: integer("total_bowling_weeks"),
+  // Retained for compatibility with existing production rows. The
+  // application no longer reads or writes this legacy field.
+  finalTwoWeeksDueWeek: integer("final_two_weeks_due_week"),
   skipDates: text("skip_dates").array().notNull().default(sql`'{}'`),
   cancelledDates: text("cancelled_dates").array().notNull().default(sql`'{}'`),
   // Up to 2 ISO `YYYY-MM-DD` bowling dates that should be charged at
@@ -113,10 +116,7 @@ export const leagues = pgTable("leagues", {
   // the legacy `finalTwoWeeksDueWeek` lump-charge mechanism that was
   // dropped in Task #760.
   doublePayDates: text("double_pay_dates").array().notNull().default(sql`'{}'`),
-  // Task #679: when true the league is treated as a youth league; minor
   // bowlers placed on a team in this league require at least one
-  // guardian (see `bowler_guardians`). Adult leagues are unaffected.
-  isYouth: boolean("is_youth").notNull().default(false),
   // Task #681: optional cap on total registered bowlers for the
   // embed registration flow. NULL means unlimited. Public embed
   // submissions are rejected once the count of `bowler_leagues`
@@ -164,7 +164,6 @@ export const insertLeagueSchema = baseLeagueSchema.extend({
   skipDates: z.array(z.string()).default([]),
   cancelledDates: z.array(z.string()).default([]),
   doublePayDates: z.array(z.string()).max(2, "At most 2 double-pay weeks allowed").default([]),
-  isYouth: z.boolean().default(false),
   rosterCap: z.number().int().positive().nullable().optional(),
   embedRegistrationFee: z.number().int().min(0).nullable().optional(),
 }).omit({ id: true })
@@ -225,7 +224,6 @@ export const updateLeagueSchema = z.object({
   skipDates: z.array(z.string()),
   cancelledDates: z.array(z.string()),
   doublePayDates: z.array(z.string()).max(2, "At most 2 double-pay weeks allowed"),
-  isYouth: z.boolean(),
   rosterCap: z.number().int().positive().nullable(),
   embedRegistrationFee: z.number().int().min(0).nullable(),
   organizationId: z.number().int().positive(),

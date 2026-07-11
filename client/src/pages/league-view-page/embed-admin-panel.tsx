@@ -12,9 +12,9 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 
 /**
- * Task #681 — admin panel for the embeddable youth registration
+ * Task #681 — admin panel for the embeddable adult registration
  * form. Shows the share URL + iframe snippet, surfaces the gate
- * status (`allowPublicSignup` + `isYouth`) so admins know why an
+ * status (`allowPublicSignup`) so admins know why an
  * embed might 404, lets admins edit the per-org `allowedEmbedDomains`
  * iframe-ancestors allowlist, and lists the public submissions
  * collected so far. Question authoring is intentionally a JSON
@@ -83,7 +83,7 @@ export function EmbedAdminPanel({ league }: { league: League }) {
 
   const embedUrl = `${window.location.origin}/embed/register/${league.id}`;
   const iframeSnippet = `<iframe src="${embedUrl}" width="100%" height="900" style="border:0" title="Register for ${league.name}"></iframe>`;
-  const enabled = league.allowPublicSignup && league.isYouth;
+  const enabled = league.allowPublicSignup;
   const org = orgQuery.data?.data;
   const currentDomains = org?.allowedEmbedDomains ?? [];
   const questions = questionsQuery.data?.data ?? [];
@@ -129,7 +129,7 @@ export function EmbedAdminPanel({ league }: { league: League }) {
           <CardContent className="space-y-6">
         {!enabled && (
           <div className="text-sm text-muted-foreground border rounded-md p-3 bg-muted/40">
-            The public embed currently requires both <strong>Allow public signup</strong> and <strong>Youth league</strong> to be enabled on this league.
+            The public embed requires <strong>Allow public signup</strong> to be enabled on this league.
             Open the league settings to toggle them.
           </div>
         )}

@@ -632,12 +632,6 @@ export function registerAuthRoutes(app: Express): void {
         return sendError(res, "Bowler not found", 404, "NOT_FOUND");
       }
 
-      // Task #679: minors are managed exclusively via the guardian
-      // model; they may never be claimed as a personal login.
-      if (bowler.isMinor) {
-        return sendError(res, "This bowler is a minor and cannot be claimed", 403, "MINOR_BOWLER");
-      }
-
       // Org membership gate.
       if (!user.organizationId || bowler.organizationId !== user.organizationId) {
         return sendError(res, "You don't have access to this bowler", 403, "FORBIDDEN");

@@ -57,16 +57,5 @@ export async function canUserPayForBowler(
     return { allowed: true, payerBowlerId: user.bowlerId };
   }
 
-  // Task #679: a logged-in guardian may pay for any of their children
-  // (the target bowler) without having a payer-bowler row themselves.
-  // The payerBowlerId stays as the user's own bowlerId so saved cards
-  // resolve from the guardian's vault, mirroring partner-pay.
-  if (target.isMinor) {
-    const isGuardian = await storage.isUserGuardianOfBowler(user.id, targetBowlerId);
-    if (isGuardian) {
-      return { allowed: true, payerBowlerId: user.bowlerId };
-    }
-  }
-
   return { allowed: false, reason: "not_linked" };
 }

@@ -61,7 +61,7 @@ export const organizations = pgTable("organizations", {
   active: boolean("active").notNull().default(true),
   createdAt: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
   integrations: jsonb("integrations").$type<OrgIntegrations>(),
-  // Task #681: parent-page domains allowed to embed this org's
+  // Task #681: domains allowed to embed this org's
   // registration iframe. The /embed/register/:leagueId middleware
   // sets `Content-Security-Policy: frame-ancestors 'self' <domains>`
   // from this list so each org owns its own embed allowlist.

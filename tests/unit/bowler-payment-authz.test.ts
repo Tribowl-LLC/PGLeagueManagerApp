@@ -22,7 +22,7 @@ import type { Request } from 'express';
 import type { Bowler } from '@shared/schema';
 
 vi.mock('../../server/storage', () => ({
-  storage: { getBowler: vi.fn(), isUserGuardianOfBowler: vi.fn() },
+  storage: { getBowler: vi.fn() },
 }));
 vi.mock('../../server/storage/bowler-payment-links', () => ({
   getAcceptedPartnerBowlerIds: vi.fn(),
@@ -34,7 +34,6 @@ import * as links from '../../server/storage/bowler-payment-links';
 
 const getBowlerMock = vi.mocked(storage.getBowler);
 const getPartnersMock = vi.mocked(links.getAcceptedPartnerBowlerIds);
-const isGuardianMock = vi.mocked(storage.isUserGuardianOfBowler);
 
 interface FakeUser {
   id: number;
@@ -85,14 +84,12 @@ function makeBowler(
     bnSyncPendingAt: overrides.bnSyncPendingAt ?? null,
     bnSyncAttempts: overrides.bnSyncAttempts ?? 0,
     bnSyncLastAttemptAt: overrides.bnSyncLastAttemptAt ?? null,
-    isMinor: overrides.isMinor ?? false,
   } satisfies Bowler;
 }
 
 beforeEach(() => {
   getBowlerMock.mockReset();
   getPartnersMock.mockReset();
-  isGuardianMock.mockReset();
 });
 afterEach(() => {
   vi.clearAllMocks();
@@ -190,45 +187,4 @@ describe('canUserPayForBowler', () => {
     expect(res.reason).toBe('not_linked');
   });
 
-  // Task #679: guardian-of-minor pay-for-child path.
-  it('allows a guardian to pay for their minor child even with no partner link', async () => {
-    getBowlerMock.mockResolvedValueOnce(
-      makeBowler({ id: 7, organizationId: 1, isMinor: true }),
-    );
-    getPartnersMock.mockResolvedValueOnce([]);
-    isGuardianMock.mockResolvedValueOnce(true);
-    const res = await canUserPayForBowler(
-      makeReq({ id: 42, bowlerId: 10, organizationId: 1, role: 'user' }),
-      7,
-    );
-    expect(res).toEqual({ allowed: true, payerBowlerId: 10 });
-    expect(isGuardianMock).toHaveBeenCalledWith(42, 7);
-  });
-
-  it('denies a non-guardian user who tries to pay for a minor', async () => {
-    getBowlerMock.mockResolvedValueOnce(
-      makeBowler({ id: 7, organizationId: 1, isMinor: true }),
-    );
-    getPartnersMock.mockResolvedValueOnce([]);
-    isGuardianMock.mockResolvedValueOnce(false);
-    const res = await canUserPayForBowler(
-      makeReq({ id: 42, bowlerId: 10, organizationId: 1, role: 'user' }),
-      7,
-    );
-    expect(res.allowed).toBe(false);
-    expect(res.reason).toBe('not_linked');
-  });
-
-  it('does not consult guardian storage for non-minor targets', async () => {
-    getBowlerMock.mockResolvedValueOnce(
-      makeBowler({ id: 7, organizationId: 1, isMinor: false }),
-    );
-    getPartnersMock.mockResolvedValueOnce([]);
-    const res = await canUserPayForBowler(
-      makeReq({ id: 42, bowlerId: 10, organizationId: 1, role: 'user' }),
-      7,
-    );
-    expect(res.allowed).toBe(false);
-    expect(isGuardianMock).not.toHaveBeenCalled();
-  });
 });

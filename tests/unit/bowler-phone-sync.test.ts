@@ -189,7 +189,6 @@ function fakeBowler(overrides: Partial<BowlerArg>): BowlerArg {
     bnSyncPendingAt: null,
     bnSyncAttempts: 0,
     bnSyncLastAttemptAt: null,
-    isMinor: false,
     ...overrides,
   });
   return Object.assign({ id: 42 }, parsed, overrides) as BowlerArg;

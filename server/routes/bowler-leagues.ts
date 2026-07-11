@@ -108,26 +108,6 @@ router.post("/", async (req, res) => {
       return sendError(res, "You don't have access to this team", 403, 'FORBIDDEN');
     }
 
-    // Task #679: youth-league minor invariant — a minor cannot be
-    // rostered onto a team in a youth league unless they have at
-    // least one guardian. We enforce this BEFORE the bootstrap-vs-
-    // normal split because the rule applies to every roster path.
-    {
-      const targetLeague = await storage.getLeague(data.leagueId);
-      const targetBowler = await storage.getBowler(data.bowlerId);
-      if (targetLeague?.isYouth && targetBowler?.isMinor) {
-        const guardianCount = await storage.countGuardiansForChild(data.bowlerId);
-        if (guardianCount === 0) {
-          return sendError(
-            res,
-            "This minor needs at least one guardian before joining a youth-league team",
-            400,
-            "MINOR_NEEDS_GUARDIAN",
-          );
-        }
-      }
-    }
-
     let bootstrapPath = false;
     if (!(await hasAccessToBowler(req, data.bowlerId))) {
       // Bootstrap exception (org-stamp gate).

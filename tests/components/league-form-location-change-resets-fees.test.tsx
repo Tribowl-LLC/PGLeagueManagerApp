@@ -82,10 +82,10 @@ const seededLeague: League = {
   organizationId: null,
   locationId: 1,
   totalBowlingWeeks: 30,
+  finalTwoWeeksDueWeek: null,
   skipDates: [],
   cancelledDates: [],
   doublePayDates: [],
-    isYouth: false,
     rosterCap: null,
     embedRegistrationFee: null,
 };
