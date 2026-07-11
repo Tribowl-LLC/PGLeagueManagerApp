@@ -70,6 +70,16 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Keep the runtime and development dependency audits separate.
+      # The production gate catches high/critical vulnerabilities in the
+      # dependency tree that ships with the server; the full audit also
+      # covers build and test tooling at moderate severity.
+      - name: Audit production dependencies
+        run: npm run security:audit:prod
+
+      - name: Audit all dependencies
+        run: npm run security:audit:all
+
       # `npm run check` = `tsc`. Catches the `noImplicitAny` /
       # `strict` half of the escape-hatch contract enforced by the
       # lint step below — together they pin both compile-time and

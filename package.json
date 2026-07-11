@@ -15,6 +15,8 @@
     "test:race": "bash scripts/test-race.sh",
     "seed": "tsx scripts/seed.ts",
     "lint": "eslint .",
+    "security:audit:prod": "npm audit --omit=dev --audit-level=high",
+    "security:audit:all": "npm audit --audit-level=moderate",
     "check:csrf": "tsx scripts/check-csrf-coverage.ts",
     "check:org-isolation": "tsx scripts/check-org-isolation-coverage.ts --strict",
     "snapshot:failures": "bash scripts/snapshot-failures.sh"

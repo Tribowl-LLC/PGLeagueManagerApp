@@ -9,7 +9,7 @@ suite never gates the fast static checks (and vice versa).
 
 | Workflow file | Job name | Triggers | What it runs |
 |---|---|---|---|
-| `ci.yml` | `Type check & lint` | Every PR to `main`, every push to `main` | `tsc`, `eslint .`, `check:csrf`, `check:org-isolation`, `check-wire-sanitization`, `npm run build` |
+| `ci.yml` | `Type check & lint` | Every PR to `main`, every push to `main` | Dependency audits, `tsc`, `eslint .`, `check:csrf`, `check:org-isolation`, `check-wire-sanitization`, `npm run build` |
 | `ci.yml` | `Tests` | Every PR to `main`, every push to `main` | `npm test` (vitest: parallel + serial-fk-bypass + client-components projects) |
 | `race-suite.yml` | `Race suite` | PRs that touch the sweep / bootstrap files (and every push to `main`) | `npm run test:race` — alias for `bash scripts/test-race.sh` (the two `RUN_BOOTSTRAP_RACE_TESTS=1` race files, serially) |
 | `post-deploy-trust-proxy.yml` | `Probe trust-proxy on live deploy` | Every 30 minutes (cron) and on `workflow_dispatch` | `scripts/verify-trust-proxy-deploy.ts` against the live deploy (task #379) — see [Post-deploy trust-proxy probe](#post-deploy-trust-proxy-probe) below |
@@ -25,6 +25,25 @@ sections are touched.
 > values branch-protection rules will match against. **Don't rename
 > them** without updating branch protection — append a step to an
 > existing job instead.
+
+## Dependency security
+
+The repository uses GitHub Dependabot at no additional service cost:
+
+- `.github/dependabot.yml` checks npm dependencies and GitHub Actions
+  weekly. Dependabot security updates are enabled in the repository's
+  **Settings → Advanced Security** page; the configuration file controls
+  version-update pull requests.
+- CI installs from the lockfile with `npm ci` and runs both audit scopes
+  in the `Type check & lint` job:
+  - `npm run security:audit:prod` runs
+    `npm audit --omit=dev --audit-level=high`.
+  - `npm run security:audit:all` runs
+    `npm audit --audit-level=moderate`.
+- Run those same scripts locally before opening a dependency pull request.
+  Review the lockfile diff and the package's actual runtime/build role;
+  do not use `npm audit fix --force` without reviewing its breaking-change
+  impact.
 
 ## What runs in `Tests`
 
