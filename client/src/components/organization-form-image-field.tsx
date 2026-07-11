@@ -14,7 +14,7 @@ interface OrganizationImageFieldProps {
   helpText: string;
   tooLargeDescription: string;
   preview: string | null;
-  inputRef: RefObject<HTMLInputElement>;
+  inputRef: RefObject<HTMLInputElement | null>;
   containerClassName: string;
   previewWrapperClassName: string;
   toast: ToastFn;

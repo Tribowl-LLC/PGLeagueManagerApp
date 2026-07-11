@@ -62,8 +62,8 @@ export interface WalletPaymentButtonsProps {
   variant: "admin" | "bowler";
   applePayAvailable: boolean;
   googlePayAvailable: boolean;
-  applePayRef: RefObject<HTMLDivElement>;
-  googlePayRef: RefObject<HTMLDivElement>;
+  applePayRef: RefObject<HTMLDivElement | null>;
+  googlePayRef: RefObject<HTMLDivElement | null>;
   onApplePayClick: () => void;
   onGooglePayClick: () => void;
   isWalletProcessing: boolean;

@@ -37,14 +37,14 @@ interface PaymentCreditCardSectionProps {
   isSquareReady: boolean;
   squareError: string | null;
   squareLoadFailed: boolean;
-  cardContainerRef: React.RefObject<HTMLDivElement>;
+  cardContainerRef: React.RefObject<HTMLDivElement | null>;
   onCleanupCard: () => void;
   initializationAttempted: MutableRefObject<boolean>;
   setIsSquareReady: (ready: boolean) => void;
   applePayAvailable: boolean;
   googlePayAvailable: boolean;
-  applePayRef: React.RefObject<HTMLDivElement>;
-  googlePayRef: React.RefObject<HTMLDivElement>;
+  applePayRef: React.RefObject<HTMLDivElement | null>;
+  googlePayRef: React.RefObject<HTMLDivElement | null>;
   onApplePayClick: () => Promise<void>;
   onGooglePayClick: () => Promise<void>;
   isWalletProcessing: boolean;

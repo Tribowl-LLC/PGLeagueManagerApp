@@ -49,8 +49,8 @@ interface PaymentHistoryContentProps {
   googlePayAvailable: boolean;
   applePayTokenizeOnly: boolean;
   googlePayTokenizeOnly: boolean;
-  applePayRef: RefObject<HTMLDivElement>;
-  googlePayRef: RefObject<HTMLDivElement>;
+  applePayRef: RefObject<HTMLDivElement | null>;
+  googlePayRef: RefObject<HTMLDivElement | null>;
   onApplePayClick: () => Promise<void>;
   onGooglePayClick: () => Promise<void>;
   isWalletProcessing: boolean;
