@@ -9,10 +9,10 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { CreditCard, Info, AlertTriangle } from "lucide-react";
-import type { InsertPayment } from "@shared/schema";
+import type { InsertPaymentInput, InsertPayment } from "@shared/schema";
 
 interface PaymentMethodTabsProps {
-  form: UseFormReturn<InsertPayment>;
+  form: UseFormReturn<InsertPaymentInput, unknown, InsertPayment>;
   paymentType: string;
   squareLoadFailed: boolean;
 }

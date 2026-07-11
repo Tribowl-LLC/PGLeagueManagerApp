@@ -47,10 +47,8 @@ export const envSchema = z.object({
 
   LOG_LEVEL: z
     .enum(["debug", "info", "warn", "error"], {
-      errorMap: () => ({
-        message:
-          "LOG_LEVEL must be one of: debug, info, warn, error. Leave it unset to use the safe per-environment default (info in production, debug in dev).",
-      }),
+      error: () =>
+        "LOG_LEVEL must be one of: debug, info, warn, error. Leave it unset to use the safe per-environment default (info in production, debug in dev).",
     })
     .optional(),
 
@@ -66,9 +64,8 @@ export const envSchema = z.object({
   // `docs/BETA_ENVIRONMENT_SETUP.md` for the runbook.
   APP_ENV: z
     .enum(APP_ENV_VALUES, {
-      errorMap: () => ({
-        message: `APP_ENV must be one of: ${APP_ENV_VALUES.join(', ')}. Leave it unset to use the safe per-runtime default (prod on a Replit deploy, dev locally). The beta Repl MUST set APP_ENV=beta in Secrets — see docs/BETA_ENVIRONMENT_SETUP.md.`,
-      }),
+      error: () =>
+        `APP_ENV must be one of: ${APP_ENV_VALUES.join(', ')}. Leave it unset to use the safe per-runtime default (prod on a Replit deploy, dev locally). The beta Repl MUST set APP_ENV=beta in Secrets — see docs/BETA_ENVIRONMENT_SETUP.md.`,
     })
     .optional(),
 

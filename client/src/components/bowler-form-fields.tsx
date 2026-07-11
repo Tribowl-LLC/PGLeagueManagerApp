@@ -7,10 +7,10 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import type { InsertBowler } from "@shared/schema";
+import type { InsertBowler, InsertBowlerInput } from "@shared/schema";
 
 interface BowlerFormFieldsProps {
-  control: Control<InsertBowler>;
+  control: Control<InsertBowlerInput, unknown, InsertBowler>;
 }
 
 export function BowlerFormFields({ control }: BowlerFormFieldsProps) {

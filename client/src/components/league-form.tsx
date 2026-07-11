@@ -20,7 +20,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Form } from "@/components/ui/form";
 import { useToast } from "@/hooks/use-toast";
-import { insertLeagueSchema, type InsertLeague, type League, type Location, DEFAULT_WEEKLY_FEE_CENTS, DEFAULT_TIMEZONE } from "@shared/schema";
+import { insertLeagueSchema, type InsertLeagueInput, type InsertLeague, type League, type Location, DEFAULT_WEEKLY_FEE_CENTS, DEFAULT_TIMEZONE } from "@shared/schema";
 import type { ScheduleWeekType } from "@shared/schedule-utils";
 import { calculateSeasonEnd, getAllBowlingDates, getEffectiveBowlingWeeks } from "@shared/schedule-utils";
 import { LeagueSchedulePreview } from "@/components/league-schedule-preview";
@@ -60,7 +60,7 @@ export function LeagueForm({ open, onClose, league }: LeagueFormProps) {
   nextYear.setFullYear(today.getFullYear() + 1);
   nextYear.setHours(12, 0, 0, 0);
 
-  const form = useForm<InsertLeague>({
+  const form = useForm<InsertLeagueInput, unknown, InsertLeague>({
     resolver: zodResolver(insertLeagueSchema),
     defaultValues: {
       name: "",
@@ -256,7 +256,7 @@ export function LeagueForm({ open, onClose, league }: LeagueFormProps) {
                   effectiveBowlingWeeks={effectiveBowlingWeeks}
                   activeLocations={activeLocations}
                   watchedLocationId={watchedLocationId}
-                  watchedWeeklyFee={watchedWeeklyFee}
+                  watchedWeeklyFee={watchedWeeklyFee ?? DEFAULT_WEEKLY_FEE_CENTS}
                   selectedCategoryId={selectedCategoryId}
                   onCategoryChange={setSelectedCategoryId}
                 />

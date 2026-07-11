@@ -5,12 +5,12 @@ import { differenceInWeeks } from "date-fns";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { DEFAULT_WEEKLY_FEE_CENTS, DEFAULT_TIMEZONE } from "@shared/schema";
-import type { InsertLeague, League, PaymentMode } from "@shared/schema";
+import type { InsertLeagueInput, InsertLeague, League, PaymentMode } from "@shared/schema";
 
 interface UseLeagueFormDataOptions {
   open: boolean;
   league?: League;
-  form: UseFormReturn<InsertLeague>;
+  form: UseFormReturn<InsertLeagueInput, unknown, InsertLeague>;
   bowlingWeeks: number;
   setBowlingWeeks: (w: number) => void;
   skipDates: string[];

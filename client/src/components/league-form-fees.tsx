@@ -15,11 +15,17 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { InsertLeague, Location, PaymentMode } from "@shared/schema";
+import {
+  DEFAULT_WEEKLY_FEE_CENTS,
+  type InsertLeagueInput,
+  type InsertLeague,
+  type Location,
+  type PaymentMode,
+} from "@shared/schema";
 import { LeagueSquareCatalog } from "@/components/league-square-catalog";
 
 interface LeagueFeeSectionProps {
-  form: UseFormReturn<InsertLeague>;
+  form: UseFormReturn<InsertLeagueInput, unknown, InsertLeague>;
   isUpfront: boolean;
   effectiveBowlingWeeks: number;
   activeLocations: Location[];
@@ -87,7 +93,7 @@ export function LeagueFeeSection({
                 min="0"
                 step="0.01"
                 {...field}
-                value={field.value / 100}
+                value={(field.value ?? DEFAULT_WEEKLY_FEE_CENTS) / 100}
                 onChange={(e) =>
                   field.onChange(Math.round(parseFloat(e.target.value) * 100))
                 }
@@ -149,7 +155,7 @@ export function LeagueFeeSection({
       {(() => {
         const lf = form.watch('lineageFee');
         const pf = form.watch('prizeFundFee');
-        const wf = form.watch('weeklyFee');
+        const wf = form.watch('weeklyFee') ?? DEFAULT_WEEKLY_FEE_CENTS;
         if ((lf != null || pf != null) && wf > 0) {
           const total = (lf ?? 0) + (pf ?? 0);
           const matches = total === wf;

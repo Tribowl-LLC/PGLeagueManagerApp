@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/form";
 import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
-import { insertBowlerSchema, type InsertBowler, type Team, type League, type Bowler } from "@shared/schema";
+import { insertBowlerSchema, type InsertBowlerInput, type InsertBowler, type Team, type League, type Bowler } from "@shared/schema";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Loader2 } from "lucide-react";
@@ -80,7 +80,7 @@ function BowlerFormInner({ open, onClose, defaultTeamId, bowler, firstLeagueId, 
   const [duplicateBowler, setDuplicateBowler] = useState<{ id: number; name: string; email: string } | null>(null);
 
   // Move form initialization before any conditional logic
-  const form = useForm<InsertBowler>({
+  const form = useForm<InsertBowlerInput, unknown, InsertBowler>({
     resolver: zodResolver(insertBowlerSchema),
     defaultValues: {
       name: bowler?.name ?? "",

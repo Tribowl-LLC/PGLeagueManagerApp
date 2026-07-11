@@ -15,7 +15,7 @@ import { useWalletPayments } from "@/hooks/use-wallet-payments";
 import { useSavedCardDefault } from "@/hooks/use-saved-card-default";
 import { Form } from "@/components/ui/form";
 import { insertPaymentSchema, DEFAULT_WEEKLY_FEE_CENTS } from "@shared/schema";
-import type { InsertPayment, Bowler, League, User, ApiResponse } from "@shared/schema";
+import type { InsertPaymentInput, InsertPayment, Bowler, League, User, ApiResponse } from "@shared/schema";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -82,7 +82,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
   const isAdmin =
     currentUser?.role === 'system_admin' || currentUser?.role === 'org_admin';
 
-  const form = useForm<InsertPayment>({
+  const form = useForm<InsertPaymentInput, unknown, InsertPayment>({
     resolver: zodResolver(insertPaymentSchema),
     defaultValues: {
       amount: DEFAULT_WEEKLY_FEE_CENTS,

@@ -60,7 +60,7 @@ export function providerNameToPaymentType(providerName: string): PaymentTypeValu
   return PROVIDER_TO_PAYMENT_TYPE[providerName] ?? PaymentType.CREDIT_CARD;
 }
 
-export const dateSchema = z.coerce.date()
+export const dateSchema = z.coerce.date<string | Date>()
   .transform((date) => date.toISOString());
 
 const timeFormatRegex = /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/;

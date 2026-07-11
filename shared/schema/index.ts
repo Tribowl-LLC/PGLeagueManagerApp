@@ -8,16 +8,16 @@ export { locations, locationSquareCredentialsSchema, locationCloverCredentialsSc
 export type { LocationSquareCredentials, LocationCloverCredentials, Location, InsertLocation, UpdateLocation, PaymentProviderType, CloverEnvironment, RequiredCloverField, RequiredSquareField } from "./locations";
 
 export { leagues, insertLeagueSchema, updateLeagueSchema } from "./leagues";
-export type { League, InsertLeague, UpdateLeague } from "./leagues";
+export type { League, InsertLeagueInput, InsertLeague, UpdateLeague } from "./leagues";
 
 export { teams, insertTeamSchema, updateTeamSchema, reorderTeamsSchema } from "./teams";
-export type { Team, InsertTeam, UpdateTeam } from "./teams";
+export type { Team, InsertTeamInput, InsertTeam, UpdateTeam } from "./teams";
 
 export { bowlers, bowlerLeagues, insertBowlerSchema, insertBowlerLeagueSchema, updateBowlerSchema, updateBowlerLeagueSchema, PAYMENT_SYNC_MAX_ATTEMPTS, BN_SYNC_MAX_ATTEMPTS, PAYMENT_SYNC_STATUSES, parsePaymentSyncStatus } from "./bowlers";
-export type { Bowler, InsertBowler, UpdateBowler, BowlerLeague, InsertBowlerLeague, UpdateBowlerLeague, PaymentSyncStatus } from "./bowlers";
+export type { Bowler, InsertBowlerInput, InsertBowler, UpdateBowler, BowlerLeague, InsertBowlerLeague, UpdateBowlerLeague, PaymentSyncStatus } from "./bowlers";
 
 export { payments, paymentSchedules, insertPaymentSchema, insertPaymentScheduleSchema, updatePaymentSchema, updatePaymentScheduleSchema } from "./payments";
-export type { Payment, InsertPayment, UpdatePayment, PaymentSchedule, InsertPaymentSchedule, UpdatePaymentSchedule } from "./payments";
+export type { Payment, InsertPaymentInput, InsertPayment, UpdatePayment, PaymentSchedule, InsertPaymentSchedule, UpdatePaymentSchedule } from "./payments";
 
 export { users, insertUserSchema, updateUserSchema, updateUserSchemaBase } from "./users";
 export type { User, InsertUser, UpdateUser } from "./users";
