@@ -1,8 +1,8 @@
 # Square API Version Audit
 
-**Status:** Investigation only — no production behavior changes in this commit.
+**Status:** Updated for the `square@44.2.0` SDK bump and its `2026-05-20` wire version.
 **Filed under:** Task #611
-**Date:** 2026-04-29
+**Date:** 2026-07-11
 **Scope:** All Square API surface area in this repo, plus a recommendation
 on whether it is safe to bump the **Square Developer Dashboard** API
 version pin from `2025-01-23` to a current version.
@@ -11,8 +11,8 @@ version pin from `2025-01-23` to a current version.
 
 ## TL;DR
 
-- Installed SDK: **`square@44.0.1`** (per `package.json`).
-- The SDK already sends **`Square-Version: 2026-01-22`** on every
+- Installed SDK: **`square@44.2.0`** (per `package.json`).
+- The SDK sends **`Square-Version: 2026-05-20`** on every
   outbound request — independently of the dashboard pin.
 - We make **zero raw HTTP** calls to Square. 100% of our wire goes
   through the SDK client.
@@ -26,13 +26,13 @@ version pin from `2025-01-23` to a current version.
   shape (no `.result.errors[]` wrapper, structured errors directly on
   `SquareError`). All response field reads in our code are on fields
   Square has shipped since well before 2025.
-- §5 walks **every one** of the 10 official Square API releases
-  between `2025-01-23` and `2026-01-22` and shows zero changes that
+- §5 walks **every one** of the 11 official Square API releases
+between `2025-01-23` and `2026-05-20` and shows zero changes that
   affect the endpoints or fields our code uses. The two
   deprecations in the window (Catalog Modifier fields,
   `Payment.offline_payment_details`) touch code paths we don't
   exercise.
-- **Recommendation: GO — bump the dashboard pin to `2026-01-22`** to
+- **Recommendation: GO — bump the dashboard pin to `2026-05-20`** to
   match the SDK. Bumping closes the ~12-month gap between
   dashboard and SDK; today's gap is itself a source of risk if
   Square ever applies the dashboard version to a call we missed.
@@ -49,14 +49,14 @@ shows up on the wire today.
 
 | Where | What |
 | --- | --- |
-| `package.json` (root) | `"square": "^44.0.1"` |
-| `node_modules/square/package.json` | `"version": "44.0.1"` |
-| `node_modules/square/BaseClient.d.ts:9` | `version?: "2026-01-22";` |
-| `node_modules/square/BaseClient.js:51` | `"Square-Version": (... options.version) ?? "2026-01-22"` |
-| Per-resource clients (e.g. `api/resources/disputes/client/Client.js:104`, `customers/.../client/Client.js`, every other generated client) | Same fallback literal: `"Square-Version": ... ?? "2026-01-22"` |
+| `package.json` (root) | `"square": "^44.2.0"` |
+| `node_modules/square/package.json` | `"version": "44.2.0"` |
+| `node_modules/square/BaseClient.d.ts:9` | `version?: "2026-05-20";` |
+| `node_modules/square/BaseClient.js:51` | `"Square-Version": (... options.version) ?? "2026-05-20"` |
+| Per-resource clients (e.g. `api/resources/disputes/client/Client.js:104`, `customers/.../client/Client.js`, every other generated client) | Same fallback literal: `"Square-Version": ... ?? "2026-05-20"` |
 
 In other words, **every method call from the SDK explicitly sets the
-header to `2026-01-22`** unless the caller passes a per-call
+header to `2026-05-20`** unless the caller passes a per-call
 `requestOptions.version` override (we never do).
 
 ### Implication for the dashboard pin
@@ -70,7 +70,7 @@ controls two things:
 
 Neither of those applies to us today: we have no raw HTTP calls (§3)
 and no Square webhook handler (§4). So the header value already on
-the wire is `2026-01-22`. The dashboard pin is, in practice, dead
+the wire is `2026-05-20`. The dashboard pin is, in practice, dead
 weight — but a stale pin is still a footgun the day someone adds a
 raw call or registers a webhook subscription.
 
@@ -178,7 +178,7 @@ backfill script's rate-limit branch at
 - `error.errors[].code` (used by `isAlreadyExistsError` / `isDefinitionMissingError`)
 
 These are SDK-level fields, not wire fields, so they are tied to the
-SDK version (44.0.1), not the dashboard pin.
+SDK version (44.2.0), not the dashboard pin.
 
 ---
 
@@ -222,7 +222,7 @@ All hits in the source tree are non-runtime (no `fetch`, `axios`,
   of the request shape and so should be re-verified if Square
   republishes the schema CDN under a new URL.
 
-**All Square wire traffic goes through `square@44.0.1`'s flat
+**All Square wire traffic goes through `square@44.2.0`'s flat
 client. No raw HTTP.**
 
 ---
@@ -263,7 +263,7 @@ events to whatever URL was registered, and:
    substitute for a real handler — money-relevant events
    (refunds, disputes, chargebacks) would still go unprocessed.
 2. The dashboard version pin would dictate the payload schema. Today
-   that schema is `2025-01-23`; bumping to `2026-01-22` could change
+   that schema is `2025-01-23`; bumping to `2026-05-20` could change
    the event shape without us noticing because no handler reads it.
 
 **Pre-bump check (operator):** in the Square Developer Dashboard,
@@ -282,13 +282,13 @@ verified handler before bumping the pin.
 - Per-release pages: `https://developer.squareup.com/docs/changelog/connect-logs/<YYYY-MM-DD>`
 - Versioning policy: <https://developer.squareup.com/docs/build-basics/api-lifecycle>
 
-Releases between `2025-01-23` (exclusive) and `2026-01-22`
+Releases between `2025-01-23` (exclusive) and `2026-05-20`
 (inclusive), as listed on the index page above (Square skipped
 Nov & Dec 2025):
 
 `2025-02-20`, `2025-03-19`, `2025-04-16`, `2025-05-21`,
 `2025-06-18`, `2025-07-16`, `2025-08-20`, `2025-09-24`,
-`2025-10-16`, `2026-01-22` — **10 releases**.
+`2025-10-16`, `2026-01-22`, `2026-05-20` — **11 releases**.
 
 ### Per-release filter (what's in scope)
 
@@ -348,6 +348,8 @@ reviewer can see we read each release in full.
 | `2025-10-16` (out of scope) | New Channels API release, new Transfer Orders API (Beta) release. Both are net-new APIs we don't use. | — |
 | `2026-01-22` | **Catalog API:** new additive `kitchen_name` on `CatalogItem` / `CatalogItemVariation` / `CatalogModifier`; new `buyer_facing` on `CatalogItem`; new `CatalogModifierToggleOverrideType` enum. All read-only/additive — we read `itemData.name` + variation pricing, not these fields. **Orders API:** new additive `blocked_service_charges` on `OrderLineItem`, `auto_applied` on `OrderLineItemAppliedTax`, `type` on `OrderReturnServiceCharge`, new `OrderCardSurchargeTreatmentType` enum. We read `order.id` only. **Payments API:** new additive `errors` on `BuyNowPayLaterDetails` and `DigitalWalletDetails`, new `created_at`/`disabled_at` on `Payment.CardPaymentDetails.Card`, plus new card-surcharge reporting. We read `cardDetails.card.{cardBrand,last4}` only. **Common entities:** `ErrorCode` enum gains `PARTIAL_PAYMENT_DELAY_CAPTURE_NOT_SUPPORTED` and `PAYMENT_SOURCE_NOT_ENABLED_FOR_TARGET` — additive, our error handling reads `statusCode`/`code`/`detail` and the new codes flow through the generic catch path with no behavior change. | **No-op** |
 | `2026-01-22` (out of scope) | Bank Accounts API new endpoints, Mobile Authorization API + Reader SDK retired, OAuth `use_jwt`, Terminal API US surcharge support. | — |
+| `2026-05-20` | **Payments API:** new additive `app_fee_allocations` on `Payment`, `wallet_type` on `CardPaymentDetails`, and `ElectronicMoneyDetails` for Japan. **Refunds API:** new additive `app_fee_allocations` on `PaymentRefund`. We do not send or read any of these fields; our existing payment, refund, and Apple Pay fields are unchanged. | **No-op** |
+| `2026-05-20` (out of scope) | No additional changes to the Orders, Cards, Customers, Custom Attributes, Catalog, or Apple Pay endpoints used by this app. | — |
 
 ### Roll-up
 
@@ -363,7 +365,7 @@ reviewer can see we read each release in full.
   Modifier deprecations are on fields we don't touch)
 - **Webhook schema changes affecting us:** **0** (no subscription)
 
-Every single change in the 10-release window is either additive or
+Every single change in the 11-release window is either additive or
 touches code paths we don't exercise. The bump is safe.
 
 ---
@@ -402,7 +404,7 @@ A drifted deploy emits exactly one structured `error`-level log line
 of the form:
 
 ```
-[ERROR] [SquareService] [PAGE] Square SDK Square-Version header drift detected at runtime — refusing to initialize Square provider {"expected":"2026-01-22","actual":"<wire-version>","runbook":"docs/square-api-version-audit.md §6","remediation":"…"}
+[ERROR] [SquareService] [PAGE] Square SDK Square-Version header drift detected at runtime — refusing to initialize Square provider {"expected":"2026-05-20","actual":"<wire-version>","runbook":"docs/square-api-version-audit.md §6","remediation":"…"}
 ```
 
 Every Square-credentialed location additionally emits one
@@ -410,7 +412,7 @@ Every Square-credentialed location additionally emits one
 provider:
 
 ```
-[ERROR] [SquareService] Refusing Square client for location <id>: Square-Version header drift (expected 2026-01-22, got <wire-version>). See docs/square-api-version-audit.md §6.
+[ERROR] [SquareService] Refusing Square client for location <id>: Square-Version header drift (expected 2026-05-20, got <wire-version>). See docs/square-api-version-audit.md §6.
 ```
 
 Admins downstream see Square pages render the
@@ -454,7 +456,7 @@ written for the dashboard-pin flip, not for SDK upgrades.
 1. Re-skim §5's diff table — if the operator wants independent
    verification, the per-release URLs are
    `https://developer.squareup.com/docs/changelog/connect-logs/<YYYY-MM-DD>`
-   for each of the 10 versions listed.
+   for each of the 11 versions listed.
 2. (Optional, only matters if it has changed since the audit was
    written) Re-confirm "no Square webhook subscription" by opening
    **Square Developer Dashboard → application → Webhooks →
@@ -464,7 +466,7 @@ written for the dashboard-pin flip, not for SDK upgrades.
    build a handler **before** bumping (see follow-up #612).
 3. Do a sandbox smoke test against the new pin **before** flipping
    production:
-   - Sandbox app → Settings → API Version → set to `2026-01-22`.
+   - Sandbox app → Settings → API Version → set to `2026-05-20`.
    - Run an end-to-end charge through a sandbox-credentialed
      LeagueVault location: save a card, charge it, refund it,
      fetch the receipt. All four hit the high-risk endpoints.
@@ -472,10 +474,10 @@ written for the dashboard-pin flip, not for SDK upgrades.
      custom-attribute write still succeeds (visible in Square
      dashboard → Customers → custom field).
 4. Flip production: Square Dashboard → Production app → Settings →
-   API Version → `2026-01-22`.
+   API Version → `2026-05-20`.
 5. **Rollback steps if anything goes wrong:** Square Dashboard →
    same page → set the version back to `2025-01-23`. The SDK header
-   continues to send `2026-01-22` regardless, so this rollback only
+   continues to send `2026-05-20` regardless, so this rollback only
    restores the *default* applied to non-SDK callers (i.e. nothing
    we own) and the webhook payload shape (we receive none). If a
    true regression is observed against our SDK calls, the rollback
@@ -505,7 +507,7 @@ project tasks so the bump itself (Task #600) can ship independently.
 3. **Task #614 — Catch Square SDK header drift in CI.** A single
    test that asserts the outgoing `Square-Version` header equals
    an expected literal. This catches silent SDK upgrades that
-   change the pinned version (the type `version?: "2026-01-22"`
+   change the pinned version (the type `version?: "2026-05-20"`
    in `BaseClient.d.ts` would surface a compile error, but only
    if a caller passes the literal — which we never do today).
 4. **Task #627 — Catch Square SDK header drift in the deployed app
@@ -533,13 +535,13 @@ When you bump the `square` package or want to re-pin the dashboard:
 
 ## 9. Final recommendation
 
-**GO — bump the dashboard pin from `2025-01-23` to `2026-01-22`.**
+**GO — bump the dashboard pin from `2025-01-23` to `2026-05-20`.**
 The bump is safe based on the changelog evidence in §5 and the SDK
 inventory in §2.
 
 Rationale:
 
-- The SDK already sends `2026-01-22` on every request (proven in
+- The SDK sends `2026-05-20` on every request (proven in
   §1). The dashboard pin is functionally inert today — but a stale
   pin is a footgun for the next person who adds a non-SDK call or a
   webhook subscription.
