@@ -1,7 +1,7 @@
 import { Router, Request } from 'express';
 import { randomBytes } from 'crypto';
 import { storage } from '../storage';
-import { insertLeagueSchema, updateLeagueSchema, DEFAULT_TIMEZONE } from "@shared/schema";
+import { insertLeagueSchema, updateLeagueSchema, DEFAULT_TIMEZONE, WEEKDAYS, dateSchema } from "@shared/schema";
 import { validateDoublePayDates } from "@shared/schema/leagues";
 import { z } from "zod";
 import { sendSuccess, sendError, handleZodError, parseOptionalIntParam } from '../utils/api';
@@ -27,6 +27,17 @@ import {
 const log = createLogger("Leagues");
 
 const router = Router();
+
+const newSeasonRequestSchema = z.object({
+  seasonStart: dateSchema,
+  // Retained for older clients that still submit an explicit end date.
+  seasonEnd: dateSchema.optional(),
+  totalBowlingWeeks: z.number().int().positive().max(52).optional(),
+  weekDay: z.enum(WEEKDAYS).optional(),
+  skipDates: z.array(z.string()).default([]),
+  cancelledDates: z.array(z.string()).default([]),
+  doublePayDates: z.array(z.string()).max(2, "At most 2 double-pay weeks allowed").default([]),
+});
 
 // Apply organization filtering to all league routes
 router.use(filterByOrganization);
@@ -703,15 +714,46 @@ router.post("/:id/new-season", async (req: Request, res) => {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
 
-    const { seasonStart, seasonEnd } = req.body;
-    if (!seasonStart || !seasonEnd) {
-      return sendError(res, "Season start and end dates are required", 400, "VALIDATION_ERROR");
+    const parsedRequest = newSeasonRequestSchema.safeParse(req.body);
+    if (!parsedRequest.success) {
+      return handleZodError(res, parsedRequest.error);
     }
 
+    const {
+      seasonStart,
+      seasonEnd,
+      totalBowlingWeeks,
+      weekDay,
+      skipDates,
+      cancelledDates,
+      doublePayDates,
+    } = parsedRequest.data;
+    const newSeasonWeekDay = weekDay ?? sourceLeague.weekDay;
+    const newSeasonWeeks = totalBowlingWeeks ?? sourceLeague.totalBowlingWeeks;
     const newSeasonStart = new Date(seasonStart);
-    const newSeasonEnd = new Date(seasonEnd);
-    if (newSeasonEnd <= newSeasonStart) {
+    let newSeasonEnd: Date | null;
+    if (totalBowlingWeeks != null || !seasonEnd) {
+      newSeasonEnd = newSeasonWeeks != null
+        ? calculateSeasonEnd(seasonStart, newSeasonWeekDay, newSeasonWeeks, skipDates, cancelledDates)
+        : null;
+    } else {
+      newSeasonEnd = new Date(seasonEnd);
+    }
+
+    if (!newSeasonEnd || newSeasonEnd <= newSeasonStart) {
       return sendError(res, "Season end date must be after start date", 400, "VALIDATION_ERROR");
+    }
+
+    const doublePayValidation = validateDoublePayDates({
+      doublePayDates,
+      skipDates,
+      cancelledDates,
+      weekDay: newSeasonWeekDay,
+      seasonStart,
+      seasonEnd: newSeasonEnd.toISOString(),
+    });
+    if (!doublePayValidation.ok) {
+      return sendError(res, doublePayValidation.message, 400, "VALIDATION_ERROR");
     }
 
     const newLeague = await storage.createLeague({
@@ -721,7 +763,7 @@ router.post("/:id/new-season", async (req: Request, res) => {
       allowPublicSignup: sourceLeague.allowPublicSignup ?? false,
       seasonStart: newSeasonStart.toISOString(),
       seasonEnd: newSeasonEnd.toISOString(),
-      weekDay: sourceLeague.weekDay,
+      weekDay: newSeasonWeekDay,
       weeklyFee: sourceLeague.weeklyFee,
       lineageFee: sourceLeague.lineageFee ?? undefined,
       prizeFundFee: sourceLeague.prizeFundFee ?? undefined,
@@ -740,12 +782,12 @@ router.post("/:id/new-season", async (req: Request, res) => {
       locationId: sourceLeague.locationId,
       seasonNumber: (sourceLeague.seasonNumber || 1) + 1,
       previousSeasonId: sourceLeague.id,
-      totalBowlingWeeks: sourceLeague.totalBowlingWeeks,
-      skipDates: [],
-      cancelledDates: [],
-      // Double-pay weeks are season-specific (admin must re-pick them
-      // for the new season), so don't carry them over.
-      doublePayDates: [],
+      totalBowlingWeeks: newSeasonWeeks,
+      skipDates,
+      cancelledDates,
+      // Double-pay weeks are season-specific. The form sends the new
+      // season's explicit selections; they are never copied implicitly.
+      doublePayDates,
     });
 
     const sourceTeams = await storage.getTeams(sourceLeague.id);

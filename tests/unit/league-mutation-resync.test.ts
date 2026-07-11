@@ -734,9 +734,23 @@ describe('POST /api/leagues/:id/new-season → fires resync for every bowler clo
 
     const res = await post(`/api/leagues/${sourceLeague.id}/new-season`, {
       seasonStart: newLeague.seasonStart,
-      seasonEnd: newLeague.seasonEnd,
+      totalBowlingWeeks: 12,
+      weekDay: 'Tuesday',
+      skipDates: ['2026-09-08'],
+      cancelledDates: [],
+      doublePayDates: ['2026-09-15'],
     });
     expect(res.status, await res.text().catch(() => '')).toBe(201);
+
+    expect(mockStorage.createLeague).toHaveBeenCalledWith(
+      expect.objectContaining({
+        totalBowlingWeeks: 12,
+        weekDay: 'Tuesday',
+        skipDates: ['2026-09-08'],
+        cancelledDates: [],
+        doublePayDates: ['2026-09-15'],
+      }),
+    );
 
     await waitForUpserts(2);
     expect(mockSyncCustomerLeagueAttributes).toHaveBeenCalledTimes(2);
