@@ -103,7 +103,7 @@ export function buildSquareIdempotencyKey(prefix: string, ...parts: string[]): s
 }
 
 /**
- * The `Square-Version` header that `square@44.0.1`'s baked-in default
+ * The `Square-Version` header that `square@44.2.0`'s baked-in default
  * sends on every outbound request. Audited and pinned in
  * `docs/square-api-version-audit.md` §1, with the operator pre-flight
  * checklist for bumping it in §6.
@@ -124,7 +124,7 @@ export function buildSquareIdempotencyKey(prefix: string, ...parts: string[]): s
  *   3. Walk the operator pre-flight checklist in §6 before the bump
  *      lands in production.
  */
-export const SQUARE_EXPECTED_VERSION = '2026-01-22' as const;
+export const SQUARE_EXPECTED_VERSION = '2026-05-20' as const;
 
 /**
  * Build a `SquareClient` from raw credentials, picking

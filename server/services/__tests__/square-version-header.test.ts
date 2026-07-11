@@ -6,8 +6,8 @@ import { SQUARE_EXPECTED_VERSION, buildSquareClient } from '../square-provider.j
  * Task #614 — Catch Square SDK header drift in CI.
  *
  * Background: `docs/square-api-version-audit.md` §1 confirmed that
- * the SDK's *baked-in* `Square-Version` header (`2026-01-22` in
- * `square@44.0.1`) is what actually goes on the wire — the dashboard
+ * the SDK's *baked-in* `Square-Version` header (`2026-05-20` in
+ * `square@44.2.0`) is what actually goes on the wire — the dashboard
  * pin is functionally inert today. That fact is only documented in
  * the audit doc; nothing in CI would catch it if a future SDK
  * upgrade silently changed the header (e.g. Square ships
@@ -17,7 +17,7 @@ import { SQUARE_EXPECTED_VERSION, buildSquareClient } from '../square-provider.j
  * This test asserts that:
  *   1. The SDK still sends a `Square-Version` header.
  *   2. The header value still equals `SQUARE_EXPECTED_VERSION`
- *      (currently `2026-01-22`), which is the constant the audit
+ *      (currently `2026-05-20`), which is the constant the audit
  *      doc was written against.
  *
  * It uses the *same* `buildSquareClient` factory that
