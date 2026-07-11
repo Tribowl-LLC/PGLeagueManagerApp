@@ -7,12 +7,57 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 5
-    # Keep routine runtime and tooling updates reviewable independently.
-    # Major updates intentionally remain ungrouped so framework migrations
-    # arrive as individual PRs instead of being bundled into a broken batch.
+    open-pull-requests-limit: 10
+    # Keep runtime updates grouped by ownership and blast radius. Major
+    # updates intentionally remain ungrouped so framework migrations arrive
+    # as individual PRs instead of being bundled into a broken batch.
     groups:
-      npm-production-minor-patch:
+      npm-production-capacitor:
+        patterns:
+          - "@capacitor/*"
+        dependency-type: "production"
+        update-types:
+          - "minor"
+          - "patch"
+      npm-production-observability:
+        patterns:
+          - "@sentry/*"
+        dependency-type: "production"
+        update-types:
+          - "minor"
+          - "patch"
+      npm-production-ui:
+        patterns:
+          - "@radix-ui/*"
+          - "class-variance-authority"
+          - "react-icons"
+          - "wouter"
+        dependency-type: "production"
+        update-types:
+          - "minor"
+          - "patch"
+      npm-production-forms-query:
+        patterns:
+          - "@tanstack/react-query"
+          - "react-hook-form"
+        dependency-type: "production"
+        update-types:
+          - "minor"
+          - "patch"
+      npm-production-schema:
+        patterns:
+          - "drizzle-zod"
+        dependency-type: "production"
+        update-types:
+          - "minor"
+          - "patch"
+      npm-production-runtime:
+        patterns:
+          - "express-rate-limit"
+          - "helmet"
+          - "nanoid"
+          - "sanitize-html"
+          - "square"
         dependency-type: "production"
         update-types:
           - "minor"
