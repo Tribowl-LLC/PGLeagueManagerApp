@@ -160,7 +160,7 @@ export function registerAuthRoutes(app: Express): void {
       const result = insertUserSchema.safeParse(registrationData);
 
       if (!result.success) {
-        const validationErrors = result.error.errors.map(error => ({
+        const validationErrors = result.error.issues.map(error => ({
           field: error.path.join('.'),
           message: error.message,
         }));
@@ -256,7 +256,7 @@ export function registerAuthRoutes(app: Express): void {
     } catch (error) {
       log.error('Registration error:', error);
       if (error instanceof z.ZodError) {
-        return sendError(res, "Validation failed", 400, "VALIDATION_ERROR", error.errors.map(err => ({
+        return sendError(res, "Validation failed", 400, "VALIDATION_ERROR", error.issues.map(err => ({
           field: err.path.join('.'),
           message: err.message,
         })));
@@ -377,7 +377,12 @@ export function registerAuthRoutes(app: Express): void {
 
       const passwordResult = passwordSchema.safeParse(password);
       if (!passwordResult.success) {
-        return sendError(res, passwordResult.error.errors[0].message, 400, "VALIDATION_ERROR");
+        return sendError(
+          res,
+          passwordResult.error.issues[0]?.message ?? "Password validation failed",
+          400,
+          "VALIDATION_ERROR",
+        );
       }
 
       // Task #420: invited bowlers can pick their preferred language

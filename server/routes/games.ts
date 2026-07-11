@@ -12,8 +12,9 @@ const router = Router();
 // Input validation schema - make leagueId required and ensure it's properly transformed
 const getGamesQuerySchema = z.object({
   leagueId: z.coerce.number({
-    required_error: "League ID is required",
-    invalid_type_error: "League ID must be a number"
+    error: (issue) => issue.input === undefined
+      ? "League ID is required"
+      : "League ID must be a number",
   }),
   weekNumber: z.coerce.number().optional()
 });

@@ -7,10 +7,10 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import type { InsertPayment } from "@shared/schema";
+import type { InsertPaymentInput, InsertPayment } from "@shared/schema";
 
 interface PaymentCheckNumberFieldProps {
-  form: UseFormReturn<InsertPayment>;
+  form: UseFormReturn<InsertPaymentInput, unknown, InsertPayment>;
 }
 
 export function PaymentCheckNumberField({ form }: PaymentCheckNumberFieldProps) {

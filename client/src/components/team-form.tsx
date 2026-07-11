@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { insertTeamSchema, type InsertTeam } from "@shared/schema";
+import { insertTeamSchema, type InsertTeamInput, type InsertTeam } from "@shared/schema";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Loader2 } from "lucide-react";
@@ -40,7 +40,7 @@ export function TeamForm({ open, onClose, leagueId }: TeamFormProps) {
     enabled: open // Only fetch when dialog is open
   });
 
-  const form = useForm<InsertTeam>({
+  const form = useForm<InsertTeamInput, unknown, InsertTeam>({
     resolver: zodResolver(insertTeamSchema),
     defaultValues: {
       name: "",

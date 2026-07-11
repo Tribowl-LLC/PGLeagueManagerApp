@@ -263,5 +263,6 @@ export const updateLeagueSchema = z.object({
 });
 
 export type League = typeof leagues.$inferSelect;
-export type InsertLeague = z.infer<typeof insertLeagueSchema>;
+export type InsertLeagueInput = z.input<typeof insertLeagueSchema>;
+export type InsertLeague = z.output<typeof insertLeagueSchema>;
 export type UpdateLeague = z.infer<typeof updateLeagueSchema>;

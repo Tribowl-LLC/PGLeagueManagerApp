@@ -15,10 +15,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { InsertLeague, Location } from "@shared/schema";
+import type { InsertLeagueInput, InsertLeague, Location } from "@shared/schema";
 
 interface LeagueBasicInfoProps {
-  form: UseFormReturn<InsertLeague>;
+  form: UseFormReturn<InsertLeagueInput, unknown, InsertLeague>;
   activeLocations: Location[];
   onLocationChange: (value: string) => void;
 }

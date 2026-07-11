@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import type { UseFormReturn } from "react-hook-form";
-import type { InsertLeague } from "@shared/schema";
+import type { InsertLeagueInput, InsertLeague } from "@shared/schema";
 import {
   searchStorageKey,
   categoryStorageKey,
@@ -51,7 +51,7 @@ interface CatalogCategory {
 }
 
 interface LeagueSquareCatalogProps {
-  form: UseFormReturn<InsertLeague>;
+  form: UseFormReturn<InsertLeagueInput, unknown, InsertLeague>;
   locationId: number | null;
   selectedCategoryId: string | null;
   onCategoryChange: (categoryId: string | null) => void;
@@ -65,7 +65,7 @@ interface OriginalSelection {
 }
 
 function readOriginal(
-  defaults: Partial<InsertLeague> | undefined,
+  defaults: Partial<InsertLeagueInput> | undefined,
   variationKey: 'lineageItemVariationId' | 'prizeFundItemVariationId',
   itemKey: 'squareLineageItemId' | 'squarePrizeFundItemId',
   nameKey: 'squareLineageItemName' | 'squarePrizeFundItemName',
@@ -96,7 +96,7 @@ const readTruncated = (payload: CategoriesPayload | ItemsPayload | undefined) =>
   !!(payload && !Array.isArray(payload) && payload.truncated);
 
 function restoreLineageOriginal(
-  form: UseFormReturn<InsertLeague>,
+  form: UseFormReturn<InsertLeagueInput, unknown, InsertLeague>,
   originalLineage: OriginalSelection,
   getPriceForVariation: (variationId: string | null | undefined) => number | null,
 ) {
@@ -114,7 +114,7 @@ function restoreLineageOriginal(
 }
 
 function restorePrizeFundOriginal(
-  form: UseFormReturn<InsertLeague>,
+  form: UseFormReturn<InsertLeagueInput, unknown, InsertLeague>,
   originalPrizeFund: OriginalSelection,
   getPriceForVariation: (variationId: string | null | undefined) => number | null,
 ) {
@@ -132,7 +132,7 @@ function restorePrizeFundOriginal(
 }
 
 interface LineageHandlerDeps {
-  form: UseFormReturn<InsertLeague>;
+  form: UseFormReturn<InsertLeagueInput, unknown, InsertLeague>;
   catalogVariationIndex: Map<string, { item: CatalogItem; variation: CatalogItemVariation }>;
   getPriceForVariation: (variationId: string | null | undefined) => number | null;
   originalLineage: OriginalSelection;
@@ -182,7 +182,7 @@ function makeLineageOnValueChange({
 }
 
 interface PrizeFundHandlerDeps {
-  form: UseFormReturn<InsertLeague>;
+  form: UseFormReturn<InsertLeagueInput, unknown, InsertLeague>;
   catalogVariationIndex: Map<string, { item: CatalogItem; variation: CatalogItemVariation }>;
   getPriceForVariation: (variationId: string | null | undefined) => number | null;
   originalPrizeFund: OriginalSelection;
@@ -404,7 +404,7 @@ export function LeagueSquareCatalog({
   // re-selecting the fallback after picking a different visible item atomically
   // restores the originally-saved item id, name, and fee instead of silently
   // leaving the form in a half-updated state.
-  const defaults = form.formState.defaultValues as Partial<InsertLeague> | undefined;
+  const defaults = form.formState.defaultValues as Partial<InsertLeagueInput> | undefined;
   const originalLineage = readOriginal(
     defaults,
     'lineageItemVariationId',

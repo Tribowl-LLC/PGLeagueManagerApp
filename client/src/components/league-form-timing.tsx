@@ -15,10 +15,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { DEFAULT_TIMEZONE } from "@shared/schema";
-import type { InsertLeague } from "@shared/schema";
+import type { InsertLeagueInput, InsertLeague } from "@shared/schema";
 
 interface LeagueTimingSectionProps {
-  form: UseFormReturn<InsertLeague>;
+  form: UseFormReturn<InsertLeagueInput, unknown, InsertLeague>;
 }
 
 export function LeagueTimingSection({ form }: LeagueTimingSectionProps) {

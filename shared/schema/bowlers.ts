@@ -197,7 +197,8 @@ export const updateBowlerLeagueSchema = z.object({
 }).partial();
 
 export type Bowler = typeof bowlers.$inferSelect;
-export type InsertBowler = z.infer<typeof insertBowlerSchema>;
+export type InsertBowlerInput = z.input<typeof insertBowlerSchema>;
+export type InsertBowler = z.output<typeof insertBowlerSchema>;
 export type UpdateBowler = z.infer<typeof updateBowlerSchema>;
 
 export type BowlerLeague = typeof bowlerLeagues.$inferSelect;
