@@ -210,7 +210,7 @@ jobs:
       STRIKE_THRESHOLD: '2'
     steps:
       - name: Check out the repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
@@ -270,7 +270,7 @@ jobs:
       # absent and the next step treats the prior streak as 0.
       - name: Restore strike counter
         if: github.event_name == 'schedule'
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: .probe-state
           key: probe-strike-${{ github.run_id }}
@@ -344,7 +344,7 @@ jobs:
       # transient infra hiccup in the cache step doesn't lose state).
       - name: Save strike counter
         if: github.event_name == 'schedule' && always()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: .probe-state
           key: probe-strike-${{ github.run_id }}
