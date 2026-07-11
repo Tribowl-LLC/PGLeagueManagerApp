@@ -30,7 +30,6 @@ const bowlerColumns = {
   bnSyncPendingAt: bowlers.bnSyncPendingAt,
   bnSyncAttempts: bowlers.bnSyncAttempts,
   bnSyncLastAttemptAt: bowlers.bnSyncLastAttemptAt,
-  isMinor: bowlers.isMinor,
 };
 
 export async function getBowlers(filters: { teamId?: number; organizationId: number }): Promise<Bowler[]> {

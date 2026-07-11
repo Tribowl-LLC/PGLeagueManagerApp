@@ -184,7 +184,6 @@ const BOWLERS: Bowler[] = [
     bnSyncPendingAt: null,
     bnSyncAttempts: 0,
     bnSyncLastAttemptAt: null,
-    isMinor: false,
   },
 ];
 

@@ -29,7 +29,6 @@ import bulkImportRouter from './bulk-import.js';
 import searchRouter from './search.js';
 import bowlerLinksRouter from './bowler-links.js';
 import bowlerLinkRespondRouter from './bowler-link-respond.js';
-import { bowlerGuardiansChildRouter, bowlerGuardiansRowRouter, bowlerGuardiansMyChildrenRouter } from './bowler-guardians.js';
 import leagueRegistrationQuestionsRouter from './league-registration-questions.js';
 import publicEmbedRegistrationRouter from './public-embed-registration.js';
 import leagueSecretariesRouter, { myLeagueSecretaryRouter } from './league-secretaries.js';
@@ -106,7 +105,7 @@ export function registerRoutes(app: Express): void {
   app.use('/api/organizations', organizationsPublicRouter);
   // Task #681: public, no-auth embed registration endpoints. Mounted
   // BEFORE the requirePasswordRotated/requireAuth middleware below so
-  // anonymous parent-page traffic can read the form schema and post a
+  // anonymous traffic from an embedding site can read the form schema and post a
   // registration without a session.
   app.use('/api/public/embed', publicEmbedRegistrationRouter);
   // Task #704: one-click accept/decline for bowler-payment-link invites.
@@ -156,12 +155,6 @@ export function registerRoutes(app: Express): void {
   app.use('/api/account', accountRouter);
   app.use('/api/search', requireAuth, searchRouter);
   app.use('/api/bowler-links', requireAuth, bowlerLinksRouter);
-  // Task #679: bowler guardian management. The child-scoped router
-  // is mounted under /api/bowlers/:childId/guardians; per-row
-  // updates/deletes live under /api/bowler-guardians/:id.
-  app.use('/api/bowlers/:childId/guardians', requireAuth, bowlerGuardiansChildRouter);
-  app.use('/api/bowler-guardians', requireAuth, bowlerGuardiansRowRouter);
-  app.use('/api/my-children', requireAuth, bowlerGuardiansMyChildrenRouter);
   // Task #681: admin endpoints for managing a league's embed
   // registration questions. Auth is enforced inside the router via
   // hasAccessToLeague + isOrgOrHigher.

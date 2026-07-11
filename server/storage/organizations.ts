@@ -8,7 +8,6 @@ import {
   alerterState,
   applePayJobItems,
   applePayJobs,
-  bowlerGuardians,
   bowlerPaymentLinks,
   bowlers,
   deletionRequests,
@@ -122,7 +121,6 @@ export async function deleteOrganization(id: number): Promise<void> {
     }
     await tx.delete(leagueSecretaries).where(eq(leagueSecretaries.organizationId, id));
     await tx.delete(leagueRegistrations).where(eq(leagueRegistrations.organizationId, id));
-    await tx.delete(bowlerGuardians).where(eq(bowlerGuardians.organizationId, id));
     await tx.delete(bowlerPaymentLinks).where(eq(bowlerPaymentLinks.organizationId, id));
     await tx.delete(applePayJobItems).where(eq(applePayJobItems.organizationId, id));
     await tx.delete(adminRoleChangeAudits).where(eq(adminRoleChangeAudits.organizationId, id));

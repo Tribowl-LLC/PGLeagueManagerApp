@@ -5,7 +5,6 @@ import { z } from "zod";
 import { leagues } from "./leagues";
 import { organizations } from "./organizations";
 import { bowlers } from "./bowlers";
-import { users } from "./users";
 import { payments } from "./payments";
 
 export const REGISTRATION_QUESTION_TYPES = [
@@ -57,9 +56,6 @@ export const leagueRegistrations = pgTable(
     bowlerId: integer("bowler_id")
       .notNull()
       .references(() => bowlers.id, { onDelete: "cascade" }),
-    guardianUserId: integer("guardian_user_id").references(() => users.id, {
-      onDelete: "set null",
-    }),
     paymentId: integer("payment_id").references(() => payments.id, { onDelete: "set null" }),
     status: text("status", { enum: REGISTRATION_STATUSES }).notNull().default("pending"),
     source: text("source").notNull().default("embed"),
@@ -99,7 +95,6 @@ export const insertLeagueRegistrationSchema = createInsertSchema(leagueRegistrat
     leagueId: z.number().int().positive(),
     organizationId: z.number().int().positive(),
     bowlerId: z.number().int().positive(),
-    guardianUserId: z.number().int().positive().nullable().optional(),
     paymentId: z.number().int().positive().nullable().optional(),
     status: z.enum(REGISTRATION_STATUSES).default("pending"),
     source: z.string().default("embed"),

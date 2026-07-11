@@ -176,7 +176,6 @@ function makeLeague(id: number): League {
     skipDates: [],
     cancelledDates: [],
     doublePayDates: [],
-    isYouth: false,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 }
@@ -200,7 +199,6 @@ function makeBowler(id: number, name: string) {
     bnSyncPendingAt: null,
     bnSyncAttempts: 0,
     bnSyncLastAttemptAt: null,
-    isMinor: false,
   };
 }
 

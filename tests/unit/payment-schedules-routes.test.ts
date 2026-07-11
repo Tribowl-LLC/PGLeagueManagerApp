@@ -30,7 +30,6 @@ const mockStorage = {
   getPaymentSchedule: vi.fn(),
   getLeague: vi.fn(),
   getBowler: vi.fn(),
-  isUserGuardianOfBowler: vi.fn(),
   createPaymentSchedule: vi.fn(),
 };
 

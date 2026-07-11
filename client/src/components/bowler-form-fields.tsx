@@ -7,15 +7,13 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
 import type { InsertBowler } from "@shared/schema";
 
 interface BowlerFormFieldsProps {
   control: Control<InsertBowler>;
-  watchedIsMinor: boolean;
 }
 
-export function BowlerFormFields({ control, watchedIsMinor }: BowlerFormFieldsProps) {
+export function BowlerFormFields({ control }: BowlerFormFieldsProps) {
   return (
     <>
       <FormField
@@ -34,32 +32,10 @@ export function BowlerFormFields({ control, watchedIsMinor }: BowlerFormFieldsPr
 
       <FormField
         control={control}
-        name="isMinor"
-        render={({ field }) => (
-          <FormItem className="flex flex-row items-center justify-between rounded-lg border p-3" data-testid="field-isMinor">
-            <div className="space-y-0.5">
-              <FormLabel>Minor (Youth Bowler)</FormLabel>
-              <p className="text-sm text-muted-foreground">
-                Email is optional for minors. Notifications and payments are routed through a guardian.
-              </p>
-            </div>
-            <FormControl>
-              <Switch
-                checked={field.value === true}
-                onCheckedChange={field.onChange}
-                data-testid="switch-isMinor"
-              />
-            </FormControl>
-          </FormItem>
-        )}
-      />
-
-      <FormField
-        control={control}
         name="email"
         render={({ field }) => (
           <FormItem>
-            <FormLabel>{watchedIsMinor ? "Email (optional)" : "Email"}</FormLabel>
+            <FormLabel>Email</FormLabel>
             <FormControl>
               <Input
                 type="email"

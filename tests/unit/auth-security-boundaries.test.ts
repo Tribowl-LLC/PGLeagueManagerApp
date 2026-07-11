@@ -286,7 +286,7 @@ describe('POST /api/auth/claim-bowler — authorization boundaries', () => {
   it('rejects claim of bowler from a different org', async () => {
     mockGetBowler.mockResolvedValueOnce({
       id: 20, name: 'Victim', email: 'victim@example.com',
-      organizationId: 999, isMinor: false,
+      organizationId: 999,
     });
     const res = await fetch(CLAIM_URL(), {
       method: 'POST',
@@ -301,7 +301,7 @@ describe('POST /api/auth/claim-bowler — authorization boundaries', () => {
   it('rejects claim of blank-email bowler in the same org', async () => {
     mockGetBowler.mockResolvedValueOnce({
       id: 21, name: 'NoEmail Bowler', email: '',
-      organizationId: 5, isMinor: false,
+      organizationId: 5,
     });
     const res = await fetch(CLAIM_URL(), {
       method: 'POST',
@@ -316,7 +316,7 @@ describe('POST /api/auth/claim-bowler — authorization boundaries', () => {
   it('rejects claim of null-email bowler in the same org', async () => {
     mockGetBowler.mockResolvedValueOnce({
       id: 22, name: 'NullEmail Bowler', email: null,
-      organizationId: 5, isMinor: false,
+      organizationId: 5,
     });
     const res = await fetch(CLAIM_URL(), {
       method: 'POST',
@@ -331,7 +331,7 @@ describe('POST /api/auth/claim-bowler — authorization boundaries', () => {
   it('rejects claim of same-org bowler whose email mismatches', async () => {
     mockGetBowler.mockResolvedValueOnce({
       id: 23, name: 'Other Person', email: 'otherperson@example.com',
-      organizationId: 5, isMinor: false,
+      organizationId: 5,
     });
     const res = await fetch(CLAIM_URL(), {
       method: 'POST',
@@ -354,7 +354,7 @@ describe('POST /api/user-bowlers/link-bowler — authorization boundaries', () =
   it('rejects link to bowler from a different org', async () => {
     mockGetBowler.mockResolvedValueOnce({
       id: 30, name: 'Victim', email: 'victim@example.com',
-      organizationId: 999, isMinor: false,
+      organizationId: 999,
     });
     const res = await fetch(LINK_URL(), {
       method: 'POST',
@@ -369,7 +369,7 @@ describe('POST /api/user-bowlers/link-bowler — authorization boundaries', () =
   it('rejects link to blank-email bowler in the same org', async () => {
     mockGetBowler.mockResolvedValueOnce({
       id: 31, name: 'NoEmail Bowler', email: '',
-      organizationId: 5, isMinor: false,
+      organizationId: 5,
     });
     const res = await fetch(LINK_URL(), {
       method: 'POST',
@@ -384,7 +384,7 @@ describe('POST /api/user-bowlers/link-bowler — authorization boundaries', () =
   it('rejects link to same-org bowler whose email mismatches', async () => {
     mockGetBowler.mockResolvedValueOnce({
       id: 32, name: 'Other Person', email: 'otherperson@example.com',
-      organizationId: 5, isMinor: false,
+      organizationId: 5,
     });
     const res = await fetch(LINK_URL(), {
       method: 'POST',
@@ -399,7 +399,7 @@ describe('POST /api/user-bowlers/link-bowler — authorization boundaries', () =
   it('rejects link to already-linked same-email bowler', async () => {
     mockGetBowler.mockResolvedValueOnce({
       id: 33, name: 'Linked Bowler', email: 'attacker@example.com',
-      organizationId: 5, isMinor: false,
+      organizationId: 5,
     });
     mockIsBowlerLinked.mockResolvedValueOnce(true);
     const res = await fetch(LINK_URL(), {

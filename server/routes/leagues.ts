@@ -746,7 +746,6 @@ router.post("/:id/new-season", async (req: Request, res) => {
       // Double-pay weeks are season-specific (admin must re-pick them
       // for the new season), so don't carry them over.
       doublePayDates: [],
-      isYouth: sourceLeague.isYouth ?? false,
     });
 
     const sourceTeams = await storage.getTeams(sourceLeague.id);
