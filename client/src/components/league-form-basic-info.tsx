@@ -109,27 +109,6 @@ export function LeagueBasicInfo({ form, activeLocations, onLocationChange }: Lea
         )}
       />
 
-      <FormField
-        control={form.control}
-        name="isYouth"
-        render={({ field }) => (
-          <FormItem className="flex flex-row items-center justify-between rounded-lg border p-3" data-testid="field-isYouth">
-            <div className="space-y-0.5">
-              <FormLabel>Youth League</FormLabel>
-              <p className="text-sm text-muted-foreground">
-                Minors on this league must have at least one guardian. Notifications and payments are routed through the guardian.
-              </p>
-            </div>
-            <FormControl>
-              <Switch
-                checked={field.value ?? false}
-                onCheckedChange={field.onChange}
-                data-testid="switch-isYouth"
-              />
-            </FormControl>
-          </FormItem>
-        )}
-      />
     </>
   );
 }

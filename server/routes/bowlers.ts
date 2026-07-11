@@ -335,8 +335,8 @@ router.get("/:id/details", async (req, res) => {
     const includePayments = req.query.includePayments === 'true';
     if (includePayments) {
       // Payment data is sensitive: require self-access, admin role, OR
-      // partner-pay authorization (accepted bowler-payment-link or
-      // guardian-of-minor in the same org). Partner-pay surfaces in the
+      // partner-pay authorization through an accepted bowler-payment-link
+      // in the same org. Partner-pay surfaces in the
       // bowler dashboard need each linked partner's payment history to
       // compute eligibility and combined past-due totals — task #732
       // tightened this to self-or-admin only and accidentally broke

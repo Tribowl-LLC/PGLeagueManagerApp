@@ -89,7 +89,6 @@ export function LeagueForm({ open, onClose, league }: LeagueFormProps) {
       skipDates: [],
       cancelledDates: [],
       doublePayDates: [],
-      isYouth: false,
     },
   });
 

@@ -37,10 +37,10 @@ function makeLeague(overrides: Partial<League>): League {
     organizationId: 100,
     locationId: 200,
     totalBowlingWeeks: null,
+    finalTwoWeeksDueWeek: null,
     skipDates: [],
     cancelledDates: [],
     doublePayDates: [],
-    isYouth: false,
     rosterCap: null,
     embedRegistrationFee: null,
   };

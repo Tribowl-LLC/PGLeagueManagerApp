@@ -14,7 +14,7 @@
  * Behaviour:
  *   - Pre-counts every dependent / cascaded child table so the
  *     completion notes can record per-table counts (sessions, scores,
- *     payments, registrations, saved cards, guardians, payment links,
+ *     payments, registrations, saved cards, payment links,
  *     teams, games, email_change_requests, etc.) before the deletes
  *     run and the rows disappear.
  *   - Deletes leaf-first inside one transaction.
@@ -46,7 +46,6 @@ import {
   payments,
   paymentSchedules,
   bowlerLeagues,
-  bowlerGuardians,
   bowlerPaymentLinks,
   leagueRegistrations,
   leagueRegistrationQuestions,
@@ -187,9 +186,6 @@ async function main(): Promise<void> {
     bowlers: orgFilter ? await countWhere(bowlers, inArray(bowlers.organizationId, doomedIds)) : 0,
     leagues: orgFilter ? await countWhere(leagues, inArray(leagues.organizationId, doomedIds)) : 0,
     locations: orgFilter ? await countWhere(locations, inArray(locations.organizationId, doomedIds)) : 0,
-    bowlerGuardians: orgFilter
-      ? await countWhere(bowlerGuardians, inArray(bowlerGuardians.organizationId, doomedIds))
-      : 0,
     bowlerPaymentLinks: orgFilter
       ? await countWhere(bowlerPaymentLinks, inArray(bowlerPaymentLinks.organizationId, doomedIds))
       : 0,
@@ -388,10 +384,6 @@ async function main(): Promise<void> {
     [
       'locations.organization_id',
       await countWhere(locations, inArray(locations.organizationId, doomedIds)),
-    ],
-    [
-      'bowler_guardians.organization_id',
-      await countWhere(bowlerGuardians, inArray(bowlerGuardians.organizationId, doomedIds)),
     ],
     [
       'bowler_payment_links.organization_id',

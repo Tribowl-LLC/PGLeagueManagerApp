@@ -127,7 +127,6 @@ function makeLeague(overrides: Partial<League> = {}): League {
     skipDates: [],
     cancelledDates: [],
     doublePayDates: [],
-    isYouth: false,
     rosterCap: null,
     embedRegistrationFee: null,
   });

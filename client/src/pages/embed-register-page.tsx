@@ -1,4 +1,4 @@
-import { useState, useMemo, FormEvent } from "react";
+import { useState, FormEvent } from "react";
 import { useParams } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -24,7 +24,6 @@ type EmbedInfo = {
   league: {
     id: number;
     name: string;
-    isYouth: boolean;
     embedRegistrationFee: number | null;
     rosterCap: number | null;
     registeredCount: number;
@@ -34,10 +33,10 @@ type EmbedInfo = {
   questions: Question[];
 };
 
-type Child = { id: string; name: string; email: string; phone: string; isMinor: boolean };
+type Bowler = { id: string; name: string; email: string; phone: string };
 
-function emptyChild(): Child {
-  return { id: crypto.randomUUID(), name: "", email: "", phone: "", isMinor: true };
+function emptyBowler(): Bowler {
+  return { id: crypto.randomUUID(), name: "", email: "", phone: "" };
 }
 
 export default function EmbedRegisterPage() {
@@ -57,48 +56,30 @@ export default function EmbedRegisterPage() {
 
   const info = data?.data;
 
-  const [children, setChildren] = useState<Child[]>([emptyChild()]);
-  const [guardianName, setGuardianName] = useState("");
-  const [guardianEmail, setGuardianEmail] = useState("");
-  const [guardianPhone, setGuardianPhone] = useState("");
-  const [relationship, setRelationship] = useState<"parent" | "guardian" | "grandparent" | "other">("parent");
+  const [bowlers, setBowlers] = useState<Bowler[]>([emptyBowler()]);
   const [answers, setAnswers] = useState<Record<string, unknown>>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
 
-  const guardianRequired = useMemo(
-    () => Boolean(info?.league.isYouth && children.some((c) => c.isMinor)),
-    [info, children],
-  );
-
-  function updateChild(i: number, patch: Partial<Child>) {
-    setChildren((prev) => prev.map((c, idx) => (idx === i ? { ...c, ...patch } : c)));
+  function updateBowler(i: number, patch: Partial<Bowler>) {
+    setBowlers((prev) => prev.map((bowler, idx) => (idx === i ? { ...bowler, ...patch } : bowler)));
   }
-  function addChild() {
-    if (children.length >= 10) return;
-    setChildren((prev) => [...prev, emptyChild()]);
+  function addBowler() {
+    if (bowlers.length >= 10) return;
+    setBowlers((prev) => [...prev, emptyBowler()]);
   }
-  function removeChild(i: number) {
-    setChildren((prev) => (prev.length === 1 ? prev : prev.filter((_, idx) => idx !== i)));
+  function removeBowler(i: number) {
+    setBowlers((prev) => (prev.length === 1 ? prev : prev.filter((_, idx) => idx !== i)));
   }
 
   const submit = useMutation({
     mutationFn: async () => {
       const body = {
         leagueId,
-        children: children.map((c) => ({
-          name: c.name.trim(),
-          email: c.email.trim() || null,
-          phone: c.phone.trim() || null,
-          isMinor: c.isMinor,
+        bowlers: bowlers.map((bowler) => ({
+          name: bowler.name.trim(),
+          email: bowler.email.trim() || null,
+          phone: bowler.phone.trim() || null,
         })),
-        guardian: guardianRequired
-          ? {
-              name: guardianName.trim(),
-              email: guardianEmail.trim(),
-              phone: guardianPhone.trim() || null,
-              relationship,
-            }
-          : null,
         answers,
       };
       const r = await fetch("/api/public/embed/registrations", {
@@ -175,12 +156,8 @@ export default function EmbedRegisterPage() {
   function onSubmit(e: FormEvent) {
     e.preventDefault();
     setSubmitError(null);
-    if (children.some((c) => !c.name.trim())) {
-      setSubmitError("Each child must have a name");
-      return;
-    }
-    if (guardianRequired && (!guardianName.trim() || !guardianEmail.trim())) {
-      setSubmitError("Guardian name and email are required");
+    if (bowlers.some((bowler) => !bowler.name.trim())) {
+      setSubmitError("Each bowler must have a name");
       return;
     }
     submit.mutate();
@@ -210,12 +187,12 @@ export default function EmbedRegisterPage() {
           </CardHeader>
           <CardContent>
             <form onSubmit={onSubmit} className="space-y-6">
-              {children.map((child, i) => (
-                <section key={child.id} className="space-y-3 border rounded-md p-4">
+              {bowlers.map((bowler, i) => (
+                <section key={bowler.id} className="space-y-3 border rounded-md p-4">
                   <div className="flex items-center justify-between">
-                    <h3 className="font-semibold">Bowler {children.length > 1 ? `#${i + 1}` : "info"}</h3>
-                    {children.length > 1 && (
-                      <Button type="button" variant="ghost" size="sm" onClick={() => removeChild(i)}>
+                    <h3 className="font-semibold">Bowler {bowlers.length > 1 ? `#${i + 1}` : "info"}</h3>
+                    {bowlers.length > 1 && (
+                      <Button type="button" variant="ghost" size="sm" onClick={() => removeBowler(i)}>
                         <Trash2 className="size-4" />
                       </Button>
                     )}
@@ -224,79 +201,36 @@ export default function EmbedRegisterPage() {
                     <Label htmlFor={`bn-${i}`}>Bowler name *</Label>
                     <Input
                       id={`bn-${i}`}
-                      value={child.name}
-                      onChange={(e) => updateChild(i, { name: e.target.value })}
+                      value={bowler.name}
+                      onChange={(e) => updateBowler(i, { name: e.target.value })}
                       required
                     />
                   </div>
-                  {info.league.isYouth && (
-                    <div className="flex items-center gap-2">
-                      <Checkbox
-                        id={`minor-${i}`}
-                        checked={child.isMinor}
-                        onCheckedChange={(v) => updateChild(i, { isMinor: Boolean(v) })}
-                      />
-                      <Label htmlFor={`minor-${i}`} className="cursor-pointer">This bowler is a minor</Label>
-                    </div>
-                  )}
-                  {!child.isMinor && (
-                    <>
-                      <div>
-                        <Label htmlFor={`be-${i}`}>Email</Label>
-                        <Input
-                          id={`be-${i}`}
-                          type="email"
-                          value={child.email}
-                          onChange={(e) => updateChild(i, { email: e.target.value })}
-                        />
-                      </div>
-                      <div>
-                        <Label htmlFor={`bp-${i}`}>Phone</Label>
-                        <Input
-                          id={`bp-${i}`}
-                          value={child.phone}
-                          onChange={(e) => updateChild(i, { phone: e.target.value })}
-                        />
-                      </div>
-                    </>
-                  )}
+                  <div>
+                    <Label htmlFor={`be-${i}`}>Email</Label>
+                    <Input
+                      id={`be-${i}`}
+                      type="email"
+                      value={bowler.email}
+                      onChange={(e) => updateBowler(i, { email: e.target.value })}
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor={`bp-${i}`}>Phone</Label>
+                    <Input
+                      id={`bp-${i}`}
+                      value={bowler.phone}
+                      onChange={(e) => updateBowler(i, { phone: e.target.value })}
+                    />
+                  </div>
                 </section>
               ))}
 
-              {children.length < 10 && (
-                <Button type="button" variant="outline" onClick={addChild} className="w-full">
+              {bowlers.length < 10 && (
+                <Button type="button" variant="outline" onClick={addBowler} className="w-full">
                   <Plus className="size-4 mr-2" />
-                  Add another child
+                  Add another bowler
                 </Button>
-              )}
-
-              {guardianRequired && (
-                <section className="space-y-3">
-                  <h3 className="font-semibold">Parent / guardian info *</h3>
-                  <div>
-                    <Label htmlFor="gn">Full name *</Label>
-                    <Input id="gn" value={guardianName} onChange={(e) => setGuardianName(e.target.value)} required />
-                  </div>
-                  <div>
-                    <Label htmlFor="ge">Email *</Label>
-                    <Input id="ge" type="email" value={guardianEmail} onChange={(e) => setGuardianEmail(e.target.value)} required />
-                  </div>
-                  <div>
-                    <Label htmlFor="gp">Phone</Label>
-                    <Input id="gp" value={guardianPhone} onChange={(e) => setGuardianPhone(e.target.value)} />
-                  </div>
-                  <div>
-                    <Label>Relationship</Label>
-                    <RadioGroup value={relationship} onValueChange={(v) => setRelationship(v as typeof relationship)}>
-                      {(["parent", "guardian", "grandparent", "other"] as const).map((r) => (
-                        <div key={r} className="flex items-center gap-2">
-                          <RadioGroupItem value={r} id={`r-${r}`} />
-                          <Label htmlFor={`r-${r}`} className="capitalize cursor-pointer">{r}</Label>
-                        </div>
-                      ))}
-                    </RadioGroup>
-                  </div>
-                </section>
               )}
 
               {info.questions.length > 0 && (

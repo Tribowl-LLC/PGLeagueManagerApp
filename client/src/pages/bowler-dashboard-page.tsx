@@ -12,7 +12,6 @@ import { ErrorBoundary } from "@/components/error-boundary";
 import { useSelectedLeague } from "@/hooks/use-selected-league";
 import { SecretaryToggleButton } from "./bowler-dashboard-page/secretary-toggle-button";
 import { ErrorCard } from "./bowler-dashboard-page/error-card";
-import { MyChildrenSection } from "./bowler-dashboard-page/my-children-section";
 import { AuthRequiredCard } from "./bowler-dashboard-page/auth-required-card";
 import { LeagueUnavailableCard } from "./bowler-dashboard-page/league-unavailable-card";
 import { DashboardHero } from "./bowler-dashboard-page/dashboard-hero";
@@ -272,7 +271,6 @@ const BowlerDashboardPage: FC = () => {
           payments={paymentsResponse?.data || []}
         />
 
-        <MyChildrenSection />
 
       </div>
       </ErrorBoundary>

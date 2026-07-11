@@ -87,11 +87,8 @@ function BowlerFormInner({ open, onClose, defaultTeamId, bowler, firstLeagueId, 
       email: bowler?.email ?? "",
       phone: bowler?.phone ?? "",
       active: bowler?.active ?? true,
-      isMinor: bowler?.isMinor ?? false,
     },
   });
-
-  const watchedIsMinor = form.watch("isMinor") === true;
 
   // Query for leagues with proper caching
   const { data: leaguesResponse, isLoading: loadingLeagues } = useQuery<{ success: true, data: League[] }>({
@@ -253,7 +250,7 @@ function BowlerFormInner({ open, onClose, defaultTeamId, bowler, firstLeagueId, 
               onSubmit={form.handleSubmit((data) => mutation.mutate(data))}
               className="space-y-4"
             >
-              <BowlerFormFields control={form.control} watchedIsMinor={watchedIsMinor} />
+              <BowlerFormFields control={form.control} />
 
               {!bowler && (
                 <BowlerFormLeagueTeamSelect

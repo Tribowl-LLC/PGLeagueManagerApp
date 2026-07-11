@@ -32,7 +32,6 @@ function makeFullyPopulatedBowler(): Bowler {
     bnSyncPendingAt: '2024-01-01T00:00:00.000Z',
     bnSyncAttempts: 1,
     bnSyncLastAttemptAt: '2024-01-01T00:00:00.000Z',
-    isMinor: false,
   });
   // `id` is omitted from the insert schema, so we re-add it to satisfy
   // the SELECT type. `Object.assign` (instead of an object literal) keeps

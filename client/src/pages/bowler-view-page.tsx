@@ -23,7 +23,6 @@ import { BowlerFinancialSummary } from "@/components/bowler-financial-summary";
 import { BowlerPaymentHistoryTable } from "@/components/bowler-payment-history-table";
 import { PaymentSyncRetryStatus } from "@/components/payment-sync-retry-status";
 import { AdminBowlerLinkPanel } from "@/components/admin-bowler-link-panel";
-import { BowlerGuardiansPanel } from "@/components/bowler-guardians-panel";
 
 export default function BowlerViewPage() {
   const params = useParams();
@@ -246,12 +245,6 @@ export default function BowlerViewPage() {
       {canEditBowler && bowler && (
         <ErrorBoundary level="section">
           <AdminBowlerLinkPanel bowlerId={bowler.id} organizationId={bowler.organizationId ?? null} />
-        </ErrorBoundary>
-      )}
-
-      {canEditBowler && bowler && (
-        <ErrorBoundary level="section">
-          <BowlerGuardiansPanel bowlerId={bowler.id} bowlerIsMinor={!!bowler.isMinor} />
         </ErrorBoundary>
       )}
 

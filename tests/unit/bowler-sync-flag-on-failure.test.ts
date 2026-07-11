@@ -72,7 +72,6 @@ type BowlerArg = Parameters<typeof runBowlerPostCreateSync>[0];
 
 // Routed through `insertBowlerSchema.parse(...)` (task #693). The whole
 // reason this test exists — task #682 — is the same kind of silent
-// rot: a new `isMinor` column showed up on `bowlers`, the factory
 // didn't include it, and TypeScript shrugged because the column was
 // `.notNull().default(false)`. Running the defaults+overrides through
 // the Zod schema makes a future required column blow up here loudly
@@ -92,7 +91,6 @@ function fakeBowler(overrides: Partial<BowlerArg> = {}): BowlerArg {
     paymentSyncPendingAt: null,
     paymentSyncAttempts: 0,
     paymentSyncLastAttemptAt: null,
-    isMinor: false,
     bnSyncPendingAt: null,
     bnSyncAttempts: 0,
     bnSyncLastAttemptAt: null,
