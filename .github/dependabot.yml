@@ -1,10 +1,25 @@
-# See docs/ci.md → "Pinning third-party actions" for context.
-# Only github-actions is registered; package.json is locked in this
-# environment so npm bumps would not be applicable.
+# See docs/ci.md for the dependency-security and action-pinning workflow.
 
 version: 2
 
 updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      npm-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+      npm-major:
+        update-types:
+          - "major"
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+
   - package-ecosystem: "github-actions"
     # `/` covers everything under .github/workflows/.
     directory: "/"
