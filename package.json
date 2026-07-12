@@ -126,7 +126,7 @@
     "vitest": "^4.1.10"
   },
   "optionalDependencies": {
-    "bufferutil": "^4.0.8"
+    "bufferutil": "^4.1.0"
   },
   "overrides": {
     "axios": "^1.14.0",
