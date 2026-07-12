@@ -141,7 +141,7 @@ function scanFile(filePath: string, violations: Violation[]): void {
         statusArg.text === '404'
       ) {
         const codeArg = args[3];
-        const relFile = relative(ROOT, filePath);
+        const relFile = relative(ROOT, filePath).replaceAll('\\', '/');
         const { line, character } = sf.getLineAndCharacterOfPosition(
           node.getStart(sf),
         );

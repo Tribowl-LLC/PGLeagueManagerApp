@@ -57,6 +57,11 @@ const SHARED_TABLE_WRITERS = [
  */
 const PARALLEL_ISOLATED_WITH_APP = [
   'tests/api/change-password.test.ts',
+  // This suite mutates the shared baseline org's roster and depends on
+  // its baseline league. Keep it on a private DB/app so another parallel
+  // suite cannot remove or alter that baseline between beforeAll and the
+  // lifecycle assertions.
+  'tests/api/bowler-links.test.ts',
   'tests/unit/account-deletion.test.ts',
   'tests/e2e/integrations-deep-link.test.ts',
 ];

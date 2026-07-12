@@ -134,7 +134,7 @@ function scanFile(filePath: string, violations: Violation[]): void {
 
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node) && calleeMatchesHelper(node)) {
-      const relFile = relative(ROOT, filePath);
+      const relFile = relative(ROOT, filePath).replaceAll('\\', '/');
       const { line, character } = sf.getLineAndCharacterOfPosition(
         node.getStart(sf),
       );

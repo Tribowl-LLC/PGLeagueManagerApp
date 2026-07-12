@@ -22,6 +22,7 @@
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { TSX_CLI } from '../helpers/tsx-command';
 
 const SCRIPT = join(process.cwd(), 'server/scripts/create-square-customers.ts');
 
@@ -48,8 +49,7 @@ function runScript(env: Record<string, string | undefined>, args: string[] = [])
       childEnv[k] = v;
     }
   }
-  // eslint-disable-next-line leaguevault/no-spawn-tsx-in-test -- script-as-subprocess pattern; converting to in-process invocation tracked under task #684.
-  const r = spawnSync('npx', ['tsx', SCRIPT, ...args], {
+  const r = spawnSync(process.execPath, [TSX_CLI, SCRIPT, ...args], {
     env: childEnv,
     encoding: 'utf-8',
     timeout: 30_000,

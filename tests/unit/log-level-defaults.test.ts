@@ -33,8 +33,8 @@ beforeEach(() => {
 
 afterEach(() => {
   for (const [k, v] of Object.entries(SAVED)) {
-    if (v === undefined) delete (process.env as Record<string, string | undefined>)[k];
-    else (process.env as Record<string, string>)[k] = v as string;
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
   }
 });
 

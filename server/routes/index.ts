@@ -88,19 +88,24 @@ function trustProxyProbeAuth(req: Request, res: Response, next: NextFunction): v
 export function registerRoutes(app: Express): void {
   log.info('Registering API routes...');
 
-  // Auth endpoints (/api/auth/*) are mounted first so they take precedence
-  // over the broader /api/* middleware below.
-  registerAuthRoutes(app);
-
-  app.get('/api/user', (req, res) => {
+  // The SPA still calls these two auth endpoints without the `/auth` segment.
+  // Register the aliases before the canonical auth mount so `next()` continues
+  // into `/api/auth/*` after rewriting the URL. This keeps the dispatch on
+  // Express's normal middleware chain and avoids relying on private router
+  // internals that changed in Express 5.
+  app.get('/api/user', (req, res, next) => {
     req.url = '/api/auth/user';
-    app._router.handle(req, res);
+    next();
   });
 
-  app.post('/api/logout', (req, res) => {
+  app.post('/api/logout', (req, res, next) => {
     req.url = '/api/auth/logout';
-    app._router.handle(req, res);
+    next();
   });
+
+  // Auth endpoints (/api/auth/*) are mounted before the broader /api/*
+  // middleware below.
+  registerAuthRoutes(app);
 
   app.use('/api/organizations', organizationsPublicRouter);
   // Task #681: public, no-auth embed registration endpoints. Mounted

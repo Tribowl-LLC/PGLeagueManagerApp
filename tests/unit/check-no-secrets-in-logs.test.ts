@@ -30,6 +30,7 @@ import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 import { scanSource, SERVER_SURFACE } from '../../scripts/check-no-secrets-in-logs';
+import { TSX_CLI } from '../helpers/tsx-command';
 
 const SCRIPT = join(process.cwd(), 'scripts/check-no-secrets-in-logs.ts');
 // Use the locally-installed tsx binary directly instead of going
@@ -38,8 +39,6 @@ const SCRIPT = join(process.cwd(), 'scripts/check-no-secrets-in-logs.ts');
 // install path races and intermittently exits non-zero (status 1
 // or 254). Pointing at `node_modules/.bin/tsx` skips that resolver
 // entirely and keeps the spawn deterministic under file-parallelism.
-const TSX_BIN = join(process.cwd(), 'node_modules/.bin/tsx');
-
 function reasonsFor(src: string): string[] {
   return scanSource('server/fixture.ts', src, SERVER_SURFACE).flatMap(
     (h) => h.reasons,
@@ -1092,7 +1091,7 @@ describe('check-no-secrets-in-logs CI guard', () => {
       file,
       `import { log } from './logger.js';\nlog.info(\`pw=\${req.body.password}\`);\n`,
     );
-    const r = spawnSync(TSX_BIN, [SCRIPT], {
+    const r = spawnSync(process.execPath, [TSX_CLI, SCRIPT], {
       cwd: dir,
       encoding: 'utf8',
       env: { ...process.env, NODE_ENV: 'test' },

@@ -21,6 +21,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
+import { TSX_CLI } from '../helpers/tsx-command';
 
 const SCRIPT = join(process.cwd(), 'scripts/check-no-nested-link-button.ts');
 
@@ -31,8 +32,7 @@ function runIn(
   // Resolve `tsx` against the real project's node_modules so
   // the synthetic fixtures (which have no node_modules of their
   // own) can still spawn the script.
-  const tsxBin = join(process.cwd(), 'node_modules', '.bin', 'tsx');
-  const r = spawnSync(tsxBin, [SCRIPT, ...args], {
+  const r = spawnSync(process.execPath, [TSX_CLI, SCRIPT, ...args], {
     cwd,
     encoding: 'utf8',
     env: { ...process.env, NODE_ENV: 'test' },

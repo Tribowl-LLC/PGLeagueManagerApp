@@ -85,7 +85,10 @@ vi.mock('@/hooks/use-payment-provider', () => ({
 // remote scripts, and would explode in a unit environment). The
 // PaymentForm only consumes their return shape — never the actual
 // tokenization side effects in this test.
-const squareInitializeCard = vi.fn(async () => {});
+// Keep initialization pending so the configured-provider case has a stable
+// loading state to assert. Resolving immediately makes this test timing
+// dependent when the full component project is under load.
+const squareInitializeCard = vi.fn(() => new Promise<void>(() => {}));
 vi.mock('@/hooks/use-square-payment', () => ({
   useSquarePayment: () => ({
     card: null,
