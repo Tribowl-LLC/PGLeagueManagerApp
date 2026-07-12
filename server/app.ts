@@ -369,7 +369,9 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
           }
         }
       }));
-      app.get('*', (req, res) => {
+      // Express 5 requires a named wildcard; include the root path for the
+      // static SPA fallback used by the test harness.
+      app.get('/{*splat}', (req, res) => {
         if (req.path.startsWith('/api/')) {
           return res.status(404).json({ error: 'API endpoint not found' });
         }
@@ -400,7 +402,9 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
           }
         }
       }));
-      app.get('*', (req, res) => {
+      // Express 5 requires a named wildcard; include the root path for the
+      // production static SPA fallback.
+      app.get('/{*splat}', (req, res) => {
         if (req.path.startsWith('/api/')) {
           return res.status(404).json({ error: 'API endpoint not found' });
         }
