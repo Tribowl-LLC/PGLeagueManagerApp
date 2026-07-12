@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { randomBytes } from 'crypto';
 import { eq } from 'drizzle-orm';
 import { sendSuccess, sendError, sanitizeUser, sanitizeOrg, sanitizeOrgs, handleZodError, handleUserOrgError } from '../utils/api.js';
+import { singleRouteParam } from '../utils/route-params';
 import { validateDataUri } from '../utils/image-magic-bytes.js';
 import { storage } from '../storage';
 import { 
@@ -80,7 +81,7 @@ router.get('/', requireAdmin, async (req, res) => {
 // Get an organization by ID (admin only)
 router.get('/:id', async (req, res) => {
   try {
-    const id = parseInt(req.params.id, 10);
+    const id = parseInt(singleRouteParam(req.params.id), 10);
     if (isNaN(id)) {
       return sendError(res, 'Invalid organization ID', 400, 'InvalidRequest');
     }
@@ -206,7 +207,7 @@ router.post('/', requireAdmin, adminWriteLimiter, inviteLimiter, async (req, res
 // Update an organization (admin only)
 router.patch('/:id', requireAdmin, adminWriteLimiter, async (req, res) => {
   try {
-    const id = parseInt(req.params.id, 10);
+    const id = parseInt(singleRouteParam(req.params.id), 10);
     if (isNaN(id)) {
       return sendError(res, 'Invalid organization ID', 400, 'InvalidRequest');
     }
@@ -258,7 +259,7 @@ router.patch('/:id', requireAdmin, adminWriteLimiter, async (req, res) => {
 // Archive an organization (admin only)
 router.patch('/:id/archive', requireAdmin, adminWriteLimiter, async (req, res) => {
   try {
-    const id = parseInt(req.params.id, 10);
+    const id = parseInt(singleRouteParam(req.params.id), 10);
     if (isNaN(id)) {
       return sendError(res, 'Invalid organization ID', 400, 'InvalidRequest');
     }
@@ -279,7 +280,7 @@ router.patch('/:id/archive', requireAdmin, adminWriteLimiter, async (req, res) =
 // Restore an archived organization (admin only)
 router.patch('/:id/restore', requireAdmin, adminWriteLimiter, async (req, res) => {
   try {
-    const id = parseInt(req.params.id, 10);
+    const id = parseInt(singleRouteParam(req.params.id), 10);
     if (isNaN(id)) {
       return sendError(res, 'Invalid organization ID', 400, 'InvalidRequest');
     }
@@ -300,7 +301,7 @@ router.patch('/:id/restore', requireAdmin, adminWriteLimiter, async (req, res) =
 // Delete an organization permanently (admin only)
 router.delete('/:id', requireAdmin, adminWriteLimiter, async (req, res) => {
   try {
-    const id = parseInt(req.params.id, 10);
+    const id = parseInt(singleRouteParam(req.params.id), 10);
     if (isNaN(id)) {
       return sendError(res, 'Invalid organization ID', 400, 'InvalidRequest');
     }
@@ -337,7 +338,7 @@ router.get('/user/me', async (req, res) => {
 // Set user's organization (admin only)
 router.post('/user/:userId/set', requireAdmin, adminWriteLimiter, async (req, res) => {
   try {
-    const userId = parseInt(req.params.userId, 10);
+    const userId = parseInt(singleRouteParam(req.params.userId), 10);
     if (isNaN(userId)) {
       return sendError(res, 'Invalid user ID', 400, 'InvalidRequest');
     }
@@ -378,7 +379,7 @@ router.post('/user/:userId/set', requireAdmin, adminWriteLimiter, async (req, re
 // Get organization leagues
 router.get('/:id/leagues', async (req, res) => {
   try {
-    const id = parseInt(req.params.id, 10);
+    const id = parseInt(singleRouteParam(req.params.id), 10);
     if (isNaN(id)) {
       return sendError(res, 'Invalid organization ID', 400, 'InvalidRequest');
     }

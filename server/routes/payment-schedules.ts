@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { storage } from '../storage';
 import { insertPaymentScheduleSchema, DEFAULT_TIMEZONE } from '@shared/schema';
 import { sendSuccess, sendError, handleZodError } from '../utils/api.js';
+import { singleRouteParam } from '../utils/route-params';
 import { hasAccessToLeague, hasSelfOrAdminAccessToBowler } from '../utils/access-control.js';
 import { paymentScheduler } from '../services/payment-scheduler.js';
 import { addMonths, setHours, setMinutes, setSeconds, setMilliseconds } from 'date-fns';
@@ -190,8 +191,8 @@ router.get('/:bowlerId/:leagueId', async (req, res) => {
       return sendError(res, 'Authentication required', 401, 'AUTH_REQUIRED');
     }
 
-    const bowlerId = parseInt(req.params.bowlerId, 10);
-    const leagueId = parseInt(req.params.leagueId, 10);
+    const bowlerId = parseInt(singleRouteParam(req.params.bowlerId), 10);
+    const leagueId = parseInt(singleRouteParam(req.params.leagueId), 10);
 
     if (isNaN(bowlerId) || isNaN(leagueId)) {
       return sendError(res, 'Invalid bowler or league ID', 400, 'INVALID_ID');
@@ -228,7 +229,7 @@ router.delete('/:id', adminWriteLimiter, async (req, res) => {
       return sendError(res, 'Authentication required', 401, 'AUTH_REQUIRED');
     }
 
-    const id = parseInt(req.params.id, 10);
+    const id = parseInt(singleRouteParam(req.params.id), 10);
     if (isNaN(id)) {
       return sendError(res, 'Invalid schedule ID', 400, 'INVALID_ID');
     }
@@ -261,7 +262,7 @@ router.patch('/:id', adminWriteLimiter, async (req, res) => {
       return sendError(res, 'Authentication required', 401, 'AUTH_REQUIRED');
     }
 
-    const id = parseInt(req.params.id, 10);
+    const id = parseInt(singleRouteParam(req.params.id), 10);
     if (isNaN(id)) {
       return sendError(res, 'Invalid schedule ID', 400, 'INVALID_ID');
     }

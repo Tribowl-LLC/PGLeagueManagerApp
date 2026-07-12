@@ -110,7 +110,7 @@ The current allowlist entries are:
 | Effective path | Why it's safe |
 |----------------|---------------|
 | `/uploads/avatars` | `app.use('/uploads/avatars', express.static(...))` in `server/index.ts`. `express.static` is read-only — it only responds to GET/HEAD and falls through for POST/PUT/PATCH/DELETE, so no CSRF-protectable mutation is possible. |
-| `*` | `app.use("*", ...)` SPA catchalls in `server/vite.ts` (dev-mode Vite middleware and prod static fallback). Both handlers respond with HTML for unknown paths and don't mutate any server state. `server/vite.ts` is part of the platform-managed Vite setup that may not be modified. |
+| `/{*splat}` | `app.use("/{*splat}", ...)` SPA catchalls in `server/vite.ts` (dev-mode Vite middleware and prod static fallback). Both handlers respond with HTML for unknown paths and don't mutate any server state. The named braced wildcard is required by Express 5 and preserves the previous catch-all behavior. |
 
 The guard runs as a standalone step in
 [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) on every

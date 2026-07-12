@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { sendError, sendSuccess, sanitizeUser, handleZodError } from '../utils/api';
+import { singleRouteParam } from '../utils/route-params';
 import { storage } from '../storage';
 import { createLogger } from '../logger';
 import { isDev } from '../config';
@@ -54,7 +55,7 @@ const router = Router();
 // admin-only endpoint — do not relax this one.
 router.patch('/profile/:id', requireAuth, async (req: Request, res: Response) => {
   try {
-    const userId = parseInt(req.params.id, 10);
+    const userId = parseInt(singleRouteParam(req.params.id), 10);
     if (isNaN(userId)) {
       return sendError(res, 'Invalid user ID', 400, 'INVALID_ID');
     }
@@ -306,7 +307,7 @@ const adminRetryPaymentSyncLimiter = rateLimit({
   // exactly; route to a single 'invalid' bucket on NaN so garbage
   // path callers can't spawn unbounded fresh buckets either.
   keyGenerator: (req: Request) => {
-    const parsed = Number.parseInt(req.params.id ?? '', 10);
+    const parsed = Number.parseInt(singleRouteParam(req.params.id), 10);
     return Number.isNaN(parsed) ? 'b:invalid' : `b:${parsed}`;
   },
   handler: (req, res) => {
@@ -356,7 +357,7 @@ router.post(
       // strict check below is a separate concern (correctness of
       // which row we act on) and runs after the limiter, so the
       // two contracts compose without conflict.
-      const rawId = req.params.id ?? '';
+      const rawId = singleRouteParam(req.params.id);
       if (!/^\d+$/.test(rawId)) {
         return sendError(res, 'Invalid bowler ID', 400, 'INVALID_ID');
       }

@@ -3,6 +3,7 @@ import { randomBytes } from 'crypto';
 import { db } from '../db';
 import { storage } from '../storage';
 import { sendSuccess, sendError, sanitizeUser, handleZodError, handleUserOrgError } from '../utils/api';
+import { singleRouteParam } from '../utils/route-params';
 import { hashPassword, destroyOtherSessionsForUser } from '../auth';
 import {
   sendInviteEmail,
@@ -248,7 +249,7 @@ router.patch('/users/:id/admin-status', requireOrgAdminOrSystemAdmin, adminWrite
       return sendError(res, 'You must be logged in to access this resource', 401, 'UNAUTHORIZED');
     }
 
-    const userId = parseInt(req.params.id, 10);
+    const userId = parseInt(singleRouteParam(req.params.id), 10);
     if (isNaN(userId)) {
       return sendError(res, 'Invalid user ID', 400, 'bad_request');
     }
@@ -359,7 +360,7 @@ router.post('/users/:id/add', requireOrgAdminOrSystemAdmin, adminWriteLimiter, a
       return sendError(res, 'You must be logged in to access this resource', 401, 'UNAUTHORIZED');
     }
 
-    const userId = parseInt(req.params.id, 10);
+    const userId = parseInt(singleRouteParam(req.params.id), 10);
     if (isNaN(userId)) {
       return sendError(res, 'Invalid user ID', 400, 'bad_request');
     }
@@ -468,7 +469,7 @@ router.delete('/users/:id', requireOrgAdminOrSystemAdmin, adminWriteLimiter, asy
       return sendError(res, 'You must be logged in to access this resource', 401, 'UNAUTHORIZED');
     }
 
-    const userId = parseInt(req.params.id, 10);
+    const userId = parseInt(singleRouteParam(req.params.id), 10);
     if (isNaN(userId)) {
       return sendError(res, 'Invalid user ID', 400, 'bad_request');
     }
@@ -550,7 +551,7 @@ router.patch('/users/:id/location', requireOrgAdminOrSystemAdmin, adminWriteLimi
       return sendError(res, 'You must be logged in to access this resource', 401, 'UNAUTHORIZED');
     }
 
-    const userId = parseInt(req.params.id, 10);
+    const userId = parseInt(singleRouteParam(req.params.id), 10);
     if (isNaN(userId)) {
       return sendError(res, 'Invalid user ID', 400, 'bad_request');
     }
@@ -742,7 +743,7 @@ router.post('/users/:id/reset-password', requireOrgAdminOrSystemAdmin, adminWrit
       return sendError(res, 'You must be logged in to access this resource', 401, 'UNAUTHORIZED');
     }
 
-    const userId = parseInt(req.params.id, 10);
+    const userId = parseInt(singleRouteParam(req.params.id), 10);
     if (isNaN(userId)) {
       return sendError(res, 'Invalid user ID', 400, 'bad_request');
     }
@@ -922,7 +923,7 @@ router.post('/users/:id/resend-invite', requireOrgAdminOrSystemAdmin, inviteLimi
       return sendError(res, 'You must be logged in to access this resource', 401, 'UNAUTHORIZED');
     }
 
-    const userId = parseInt(req.params.id, 10);
+    const userId = parseInt(singleRouteParam(req.params.id), 10);
     if (isNaN(userId)) {
       return sendError(res, 'Invalid user ID', 400, 'bad_request');
     }

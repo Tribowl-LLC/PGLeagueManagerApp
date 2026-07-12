@@ -10,6 +10,7 @@ import {
   leagues,
 } from '@shared/schema';
 import { sendSuccess, sendError, handleZodError, sanitizeUser, sanitizePayments, handleUserOrgError } from '../utils/api';
+import { singleRouteParam } from '../utils/route-params';
 import { z } from 'zod';
 import { updateEmailTemplateSchema } from '@shared/schema/email-templates';
 import { requireAdmin } from '../middleware/admin';
@@ -42,7 +43,7 @@ router.get('/users', requireAdmin, async (req, res) => {
 // Make a user an admin (admin only)
 router.patch('/users/:userId/admin-status', requireAdmin, async (req, res) => {
   try {
-    const { userId } = req.params;
+    const userId = singleRouteParam(req.params.userId);
     const parsedData = setAdminStatusSchema.parse({ 
       userId: parseInt(userId), 
       makeSystemAdmin: req.body.isAdmin ?? req.body.makeSystemAdmin
@@ -147,7 +148,7 @@ router.get('/email-templates', requireAdmin, async (req, res) => {
 
 router.get('/email-templates/:id', requireAdmin, async (req, res) => {
   try {
-    const id = parseInt(req.params.id, 10);
+    const id = parseInt(singleRouteParam(req.params.id), 10);
     if (isNaN(id)) {
       return sendError(res, 'Invalid template ID', 400, 'InvalidRequest');
     }
@@ -164,7 +165,7 @@ router.get('/email-templates/:id', requireAdmin, async (req, res) => {
 
 router.patch('/email-templates/:id', requireAdmin, async (req, res) => {
   try {
-    const id = parseInt(req.params.id, 10);
+    const id = parseInt(singleRouteParam(req.params.id), 10);
     if (isNaN(id)) {
       return sendError(res, 'Invalid template ID', 400, 'InvalidRequest');
     }
@@ -186,7 +187,7 @@ router.patch('/email-templates/:id', requireAdmin, async (req, res) => {
 
 router.post('/email-templates/:id/send-test', requireAdmin, emailTestLimiter, async (req, res) => {
   try {
-    const id = parseInt(req.params.id, 10);
+    const id = parseInt(singleRouteParam(req.params.id), 10);
     if (isNaN(id)) {
       return sendError(res, 'Invalid template ID', 400, 'InvalidRequest');
     }
@@ -380,7 +381,7 @@ router.post('/unclaimed-users/:userId/create-bowler', async (req, res) => {
     const ctx = resolveAdminOrgId(req, res);
     if (!ctx) return;
 
-    const userId = parseInt(req.params.userId, 10);
+    const userId = parseInt(singleRouteParam(req.params.userId), 10);
     if (!Number.isFinite(userId) || userId <= 0) {
       return sendError(res, 'Invalid user ID', 400, 'InvalidRequest');
     }
@@ -489,7 +490,7 @@ router.post('/unclaimed-users/:userId/link-existing', async (req, res) => {
     const ctx = resolveAdminOrgId(req, res);
     if (!ctx) return;
 
-    const userId = parseInt(req.params.userId, 10);
+    const userId = parseInt(singleRouteParam(req.params.userId), 10);
     if (!Number.isFinite(userId) || userId <= 0) {
       return sendError(res, 'Invalid user ID', 400, 'InvalidRequest');
     }
@@ -634,7 +635,7 @@ router.delete('/unclaimed-users/:userId', adminWriteLimiter, async (req, res) =>
     const ctx = resolveAdminOrgId(req, res);
     if (!ctx) return;
 
-    const userId = parseInt(req.params.userId, 10);
+    const userId = parseInt(singleRouteParam(req.params.userId), 10);
     if (!Number.isFinite(userId) || userId <= 0) {
       return sendError(res, 'Invalid user ID', 400, 'InvalidRequest');
     }

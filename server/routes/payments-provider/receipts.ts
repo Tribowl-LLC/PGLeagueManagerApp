@@ -7,6 +7,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { storage } from '../../storage';
 import { sendError, sendSuccess } from '../../utils/api.js';
+import { singleRouteParam } from '../../utils/route-params';
 import { hasAccessToPayment } from '../../utils/access-control.js';
 import { paymentWriteLimiter } from '../../middleware/rate-limit.js';
 import { createLogger } from '../../logger';
@@ -88,7 +89,7 @@ async function resolveReceiptUrl(paymentId: number): Promise<{
 
 router.get('/payments/:id/receipt', async (req, res) => {
   try {
-    const id = parseInt(req.params.id);
+    const id = parseInt(singleRouteParam(req.params.id));
     if (isNaN(id)) {
       return sendError(res, 'Invalid payment ID', 400, 'INVALID_ID');
     }
@@ -117,7 +118,7 @@ router.get('/payments/:id/receipt', async (req, res) => {
 
 router.post('/payments/:id/resend-receipt', paymentWriteLimiter, async (req, res) => {
   try {
-    const id = parseInt(req.params.id);
+    const id = parseInt(singleRouteParam(req.params.id));
     if (isNaN(id)) {
       return sendError(res, 'Invalid payment ID', 400, 'INVALID_ID');
     }

@@ -8,6 +8,7 @@ import { Router } from 'express';
 import { storage } from '../../storage';
 import { isCardPaymentType } from "@shared/schema/constants";
 import { sendSuccess, sendError, sanitizePayment } from '../../utils/api.js';
+import { singleRouteParam } from '../../utils/route-params';
 import { getPaymentProvider } from '../../services/payment-provider-factory';
 import { buildPaymentErrorResponse } from '../../utils/payment-error-response.js';
 import { hasAccessToPayment, hasAdminAccessToLeague, isSystemAdmin, isOrgOrHigher } from '../../utils/access-control.js';
@@ -20,7 +21,7 @@ const router = Router();
 
 router.post("/:id/refund", paymentWriteLimiter, async (req, res) => {
   try {
-    const id = parseInt(req.params.id);
+    const id = parseInt(singleRouteParam(req.params.id));
     if (isNaN(id)) {
       return sendError(res, "Invalid payment ID", 400, "INVALID_ID");
     }

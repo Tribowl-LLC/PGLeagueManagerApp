@@ -1,6 +1,7 @@
 import { Router, Request } from 'express';
 import { z } from 'zod';
 import { sendSuccess, sendError, handleZodError, sanitizeLocation, sanitizeLocations } from '../utils/api.js';
+import { singleRouteParam } from '../utils/route-params';
 import { storage } from '../storage';
 import { insertLocationSchema, updateLocationSchema, locationSquareCredentialsSchema, locationCloverCredentialsSchema, PAYMENT_PROVIDERS } from '@shared/schema';
 import { filterByOrganization } from '../middleware/organization.js';
@@ -49,7 +50,7 @@ router.get('/', filterByOrganization, async (req: Request, res) => {
 
 router.get('/:id', async (req: Request, res) => {
   try {
-    const id = parseInt(req.params.id, 10);
+    const id = parseInt(singleRouteParam(req.params.id), 10);
     if (isNaN(id)) {
       return sendError(res, 'Invalid location ID', 400, 'InvalidRequest');
     }
@@ -112,7 +113,7 @@ router.post('/', async (req: Request, res) => {
 
 router.patch('/:id', async (req: Request, res) => {
   try {
-    const id = parseInt(req.params.id, 10);
+    const id = parseInt(singleRouteParam(req.params.id), 10);
     if (isNaN(id)) {
       return sendError(res, 'Invalid location ID', 400, 'InvalidRequest');
     }
@@ -194,7 +195,7 @@ router.patch('/:id', async (req: Request, res) => {
 
 router.patch('/:id/archive', async (req: Request, res) => {
   try {
-    const id = parseInt(req.params.id, 10);
+    const id = parseInt(singleRouteParam(req.params.id), 10);
     if (isNaN(id)) {
       return sendError(res, 'Invalid location ID', 400, 'InvalidRequest');
     }
@@ -218,7 +219,7 @@ router.patch('/:id/archive', async (req: Request, res) => {
 
 router.patch('/:id/restore', async (req: Request, res) => {
   try {
-    const id = parseInt(req.params.id, 10);
+    const id = parseInt(singleRouteParam(req.params.id), 10);
     if (isNaN(id)) {
       return sendError(res, 'Invalid location ID', 400, 'InvalidRequest');
     }
@@ -242,7 +243,7 @@ router.patch('/:id/restore', async (req: Request, res) => {
 
 router.delete('/:id', async (req: Request, res) => {
   try {
-    const id = parseInt(req.params.id, 10);
+    const id = parseInt(singleRouteParam(req.params.id), 10);
     if (isNaN(id)) {
       return sendError(res, 'Invalid location ID', 400, 'InvalidRequest');
     }
@@ -266,7 +267,7 @@ router.delete('/:id', async (req: Request, res) => {
 
 router.get('/:id/square-config', async (req: Request, res) => {
   try {
-    const id = parseInt(req.params.id, 10);
+    const id = parseInt(singleRouteParam(req.params.id), 10);
     if (isNaN(id)) return sendError(res, 'Invalid location ID', 400, 'InvalidRequest');
 
     const location = await storage.getLocation(id);
@@ -292,7 +293,7 @@ router.get('/:id/square-config', async (req: Request, res) => {
 
 router.patch('/:id/square-config', async (req: Request, res) => {
   try {
-    const id = parseInt(req.params.id, 10);
+    const id = parseInt(singleRouteParam(req.params.id), 10);
     if (isNaN(id)) return sendError(res, 'Invalid location ID', 400, 'InvalidRequest');
 
     const location = await storage.getLocation(id);
@@ -334,7 +335,7 @@ router.patch('/:id/square-config', async (req: Request, res) => {
 
 router.get('/:id/clover-config', async (req: Request, res) => {
   try {
-    const id = parseInt(req.params.id, 10);
+    const id = parseInt(singleRouteParam(req.params.id), 10);
     if (isNaN(id)) return sendError(res, 'Invalid location ID', 400, 'InvalidRequest');
 
     const location = await storage.getLocation(id);
@@ -361,7 +362,7 @@ router.get('/:id/clover-config', async (req: Request, res) => {
 
 router.patch('/:id/clover-config', async (req: Request, res) => {
   try {
-    const id = parseInt(req.params.id, 10);
+    const id = parseInt(singleRouteParam(req.params.id), 10);
     if (isNaN(id)) return sendError(res, 'Invalid location ID', 400, 'InvalidRequest');
 
     const location = await storage.getLocation(id);
@@ -403,7 +404,7 @@ router.patch('/:id/clover-config', async (req: Request, res) => {
 
 router.patch('/:id/payment-provider', async (req: Request, res) => {
   try {
-    const id = parseInt(req.params.id, 10);
+    const id = parseInt(singleRouteParam(req.params.id), 10);
     if (isNaN(id)) return sendError(res, 'Invalid location ID', 400, 'InvalidRequest');
 
     const location = await storage.getLocation(id);

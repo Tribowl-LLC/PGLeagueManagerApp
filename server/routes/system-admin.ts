@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import { sendSuccess, sendError, sanitizeUser, handleZodError, handleUserOrgError } from '../utils/api.js';
+import { singleRouteParam } from '../utils/route-params';
 import { storage } from '../storage';
 import { db } from '../db';
 import {
@@ -50,7 +51,7 @@ const router = Router();
 
 router.post('/create/:id', requireAdmin, async (req: Request, res: Response) => {
   try {
-    const userId = parseInt(req.params.id, 10);
+    const userId = parseInt(singleRouteParam(req.params.id), 10);
     if (isNaN(userId)) {
       return sendError(res, 'Invalid user ID', 400, 'INVALID_ID');
     }
@@ -86,7 +87,7 @@ router.get('/', requireAdmin, async (req: Request, res: Response) => {
 
 router.post('/revoke/:id', requireAdmin, async (req: Request, res: Response) => {
   try {
-    const userId = parseInt(req.params.id, 10);
+    const userId = parseInt(singleRouteParam(req.params.id), 10);
     if (isNaN(userId)) {
       return sendError(res, 'Invalid user ID', 400, 'INVALID_ID');
     }
@@ -146,7 +147,7 @@ router.get('/deletion-requests', requireAdmin, async (req: Request, res: Respons
 
 router.patch('/deletion-requests/:id', requireAdmin, async (req: Request, res: Response) => {
   try {
-    const id = parseInt(req.params.id, 10);
+    const id = parseInt(singleRouteParam(req.params.id), 10);
     if (isNaN(id)) {
       return sendError(res, 'Invalid request ID', 400, 'INVALID_ID');
     }
@@ -190,7 +191,7 @@ router.patch('/deletion-requests/:id', requireAdmin, async (req: Request, res: R
 // cannot trigger the destructive flow.
 router.post('/deletion-requests/:id/execute', requireAdmin, async (req: Request, res: Response) => {
   try {
-    const id = parseInt(req.params.id, 10);
+    const id = parseInt(singleRouteParam(req.params.id), 10);
     if (isNaN(id)) {
       return sendError(res, 'Invalid request ID', 400, 'INVALID_ID');
     }
@@ -262,7 +263,7 @@ function parseOrphanType(raw: string): OrphanedResourceType | null {
 }
 
 router.get('/orphaned-data/:type', requireAdmin, async (req: Request, res: Response) => {
-  const type = parseOrphanType(req.params.type);
+  const type = parseOrphanType(singleRouteParam(req.params.type));
   if (!type) return sendError(res, 'Invalid resource type', 400, 'INVALID_TYPE');
   try {
     const rows = await (
@@ -298,12 +299,12 @@ function handleRepairError(res: Response, error: unknown, action: string, type: 
 }
 
 router.post('/orphaned-data/:type/:id/reassign', requireAdmin, async (req: Request, res: Response) => {
-  const type = parseOrphanType(req.params.type);
+  const type = parseOrphanType(singleRouteParam(req.params.type));
   if (!type) return sendError(res, 'Invalid resource type', 400, 'INVALID_TYPE');
   if (type !== 'leagues' && type !== 'users') {
     return sendError(res, 'Reassignment is only supported for leagues and users; child rows inherit their org from the parent league', 400, 'REASSIGN_UNSUPPORTED');
   }
-  const id = parseInt(req.params.id, 10);
+  const id = parseInt(singleRouteParam(req.params.id), 10);
   if (isNaN(id)) return sendError(res, 'Invalid id', 400, 'INVALID_ID');
   const adminUserId = req.user?.id;
   if (!adminUserId) return sendError(res, 'Authentication required', 401, 'AUTH_REQUIRED');
@@ -333,9 +334,9 @@ router.post('/orphaned-data/:type/:id/reassign', requireAdmin, async (req: Reque
 });
 
 router.post('/orphaned-data/:type/:id/delete', requireAdmin, async (req: Request, res: Response) => {
-  const type = parseOrphanType(req.params.type);
+  const type = parseOrphanType(singleRouteParam(req.params.type));
   if (!type) return sendError(res, 'Invalid resource type', 400, 'INVALID_TYPE');
-  const id = parseInt(req.params.id, 10);
+  const id = parseInt(singleRouteParam(req.params.id), 10);
   if (isNaN(id)) return sendError(res, 'Invalid id', 400, 'INVALID_ID');
   const adminUserId = req.user?.id;
   if (!adminUserId) return sendError(res, 'Authentication required', 401, 'AUTH_REQUIRED');
@@ -375,7 +376,7 @@ router.post('/orphaned-data/:type/:id/delete', requireAdmin, async (req: Request
 // out of the org we put it in (preventing an unrelated change from being
 // silently reverted).
 router.post('/orphaned-data-audits/:id/undo', requireAdmin, async (req: Request, res: Response) => {
-  const auditId = parseInt(req.params.id, 10);
+    const auditId = parseInt(singleRouteParam(req.params.id), 10);
   if (isNaN(auditId)) return sendError(res, 'Invalid audit id', 400, 'INVALID_ID');
   const adminUserId = req.user?.id;
   if (!adminUserId) return sendError(res, 'Authentication required', 401, 'AUTH_REQUIRED');

@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import { sendSuccess, sendError, sanitizeUser, handleZodError } from '../utils/api.js';
+import { singleRouteParam } from '../utils/route-params';
 import { storage } from '../storage';
 import { hashPassword, safeTokenCompare } from '../auth.js';
 import { passwordSchema } from '@shared/password-validation.js';
@@ -94,7 +95,7 @@ router.post('/first-system-admin/:id', setupAdminLimiter, async (req: Request, r
   try {
     if (!checkSetupSecret(req, res)) return;
 
-    const userId = parseInt(req.params.id, 10);
+    const userId = parseInt(singleRouteParam(req.params.id), 10);
     if (isNaN(userId)) {
       return sendError(res, 'Invalid user ID', 400, 'INVALID_ID');
     }

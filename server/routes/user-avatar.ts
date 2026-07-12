@@ -3,6 +3,7 @@ import multer from "multer";
 import fs from "fs";
 import path from "path";
 import { sendSuccess, sendError } from "../utils/api";
+import { singleRouteParam } from '../utils/route-params';
 import { createLogger } from '../logger';
 
 const log = createLogger("UserAvatar");
@@ -131,7 +132,7 @@ router.post("/avatar", upload.single("avatar"), async (req: Request, res: Respon
 // (filenames are `${userId}.${ext}`, fully predictable).
 router.get("/avatar/:userId", async (req: Request, res: Response) => {
   try {
-    const userId = parseInt(req.params.userId, 10);
+    const userId = parseInt(singleRouteParam(req.params.userId), 10);
     if (isNaN(userId)) {
       return sendError(res, "Invalid user ID", 400);
     }
