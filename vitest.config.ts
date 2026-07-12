@@ -262,6 +262,9 @@ export default defineConfig({
         },
       },
       {
+        // Vitest projects do not consistently inherit Vite transform options;
+        // this project imports shared client .tsx modules from node tests.
+        oxc: { jsx: { runtime: 'automatic' } },
         test: {
           name: 'parallel-isolated',
           sequence: { groupOrder: 2 },
