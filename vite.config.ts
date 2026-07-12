@@ -17,7 +17,7 @@ export default defineConfig({
   },
   root: path.resolve(__dirname, "client"),
   build: {
-    // Preserve the Vite 6 browser baseline during the Vite 7 upgrade.
+    // Preserve the established browser baseline during the Vite 8 upgrade.
     target: ['es2020', 'edge88', 'firefox78', 'chrome87', 'safari14'],
     outDir: path.resolve(__dirname, "dist/public"),
     emptyOutDir: true,
