@@ -169,6 +169,10 @@ const sharedAlias = {
 };
 
 export default defineConfig({
+  // Vite 8 uses Oxc for TS/JSX transforms. Keep the automatic JSX runtime
+  // enabled for every Vitest project, including node-environment suites that
+  // import shared client .tsx modules.
+  oxc: { jsx: { runtime: 'automatic' } },
   test: {
     globals: true,
     environment: 'node',
@@ -258,6 +262,9 @@ export default defineConfig({
         },
       },
       {
+        // Vitest projects do not consistently inherit Vite transform options;
+        // this project imports shared client .tsx modules from node tests.
+        oxc: { jsx: { runtime: 'automatic' } },
         test: {
           name: 'parallel-isolated',
           sequence: { groupOrder: 2 },
@@ -329,9 +336,10 @@ export default defineConfig({
         // so the node-environment suites above don't pay the
         // jsdom setup cost.
         // Vite's React plugin isn't loaded for vitest, so opt in to
-        // esbuild's automatic JSX runtime here so .tsx test files
-        // don't need to import React explicitly.
-        esbuild: { jsx: 'automatic' },
+        // Oxc's automatic JSX runtime here so .tsx test files don't
+        // need to import React explicitly. Vite 8 migrated this from
+        // the deprecated esbuild.jsx option.
+        oxc: { jsx: { runtime: 'automatic' } },
         test: {
           name: 'client-components',
           sequence: { groupOrder: 3 },
