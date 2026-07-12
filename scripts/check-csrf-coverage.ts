@@ -126,12 +126,12 @@ const EXPLICIT_NON_API_ALLOWLIST: readonly string[] = [
   // coverage added in #471 surfaces this mount as a state-changing
   // handler shape, so it has to be allowlisted here.
   '/uploads/avatars',
-  // `app.use("*", ...)` in `server/vite.ts` — the dev SPA catchall and
+  // `app.use("/{*splat}", ...)` in `server/vite.ts` — the dev SPA catchall and
   // the prod static-fallback. Both handlers respond with HTML for
   // unknown paths and don't mutate any server state. `server/vite.ts`
   // is part of the platform-managed Vite setup that may not be
   // modified, so the path is allowlisted here rather than rewritten.
-  '*',
+  '/{*splat}',
 ];
 
 // `app.<method>('<path>', ...)` — direct routes on the Express app.
