@@ -148,7 +148,7 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
       for (const f of findings) {
         log.error(`  - ${f.envVar}: ${f.reason}`);
       }
-      log.error('Remove the listed credentials from this Repl\'s Secrets and re-deploy. See docs/BETA_ENVIRONMENT_SETUP.md.');
+      log.error('Remove the listed credentials from this Repl\'s Secrets and re-deploy. See docs/replit-handoff.md.');
       process.exit(1);
     }
   }

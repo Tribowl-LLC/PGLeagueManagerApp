@@ -61,11 +61,11 @@ export const envSchema = z.object({
   // the server defaults via `resolveAppEnv` (REPLIT_DEPLOYMENT → prod,
   // otherwise dev). The beta Repl MUST set APP_ENV=beta in Secrets;
   // see `shared/app-env.ts` for the resolution rules and
-  // `docs/BETA_ENVIRONMENT_SETUP.md` for the runbook.
+  // `docs/replit-handoff.md` for the historical Replit runbook.
   APP_ENV: z
     .enum(APP_ENV_VALUES, {
       error: () =>
-        `APP_ENV must be one of: ${APP_ENV_VALUES.join(', ')}. Leave it unset to use the safe per-runtime default (prod on a Replit deploy, dev locally). The beta Repl MUST set APP_ENV=beta in Secrets — see docs/BETA_ENVIRONMENT_SETUP.md.`,
+        `APP_ENV must be one of: ${APP_ENV_VALUES.join(', ')}. Leave it unset to use the safe per-runtime default (prod on a Replit deploy, dev locally). The beta Repl MUST set APP_ENV=beta in Secrets — see docs/replit-handoff.md.`,
     })
     .optional(),
 
@@ -199,7 +199,7 @@ function validateEnv(): Env {
 export const env = validateEnv();
 
 // Enforce SETUP_SECRET strength at boot. Refuses to start the server when
-// a secret is set but weak — see task 282 / the docs section in replit.md.
+// a secret is set but weak — see task 282 / the docs section in AGENTS.md.
 {
   const check = validateSetupSecret(env.SETUP_SECRET);
   if (!check.ok) {
