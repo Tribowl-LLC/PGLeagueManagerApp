@@ -19,3 +19,25 @@ describe('Express 5 static SPA fallbacks', () => {
     ).toBe(2);
   });
 });
+
+describe('Express 5 auth aliases', () => {
+  it('rewrites aliases and forwards them through the canonical auth mount', () => {
+    const routesSource = readFileSync(
+      path.join(process.cwd(), 'server', 'routes', 'index.ts'),
+      'utf8',
+    );
+
+    expect(routesSource).not.toContain('app._router.handle');
+    expect(routesSource).not.toContain('app.router.handle');
+
+    const aliasStart = routesSource.indexOf("app.get('/api/user'");
+    const canonicalMount = routesSource.indexOf('registerAuthRoutes(app);');
+    expect(aliasStart).toBeGreaterThanOrEqual(0);
+    expect(canonicalMount).toBeGreaterThan(aliasStart);
+
+    const aliases = routesSource.slice(aliasStart, canonicalMount);
+    expect(aliases).toContain("req.url = '/api/auth/user';");
+    expect(aliases).toContain("req.url = '/api/auth/logout';");
+    expect((aliases.match(/next\(\);/g) ?? []).length).toBe(2);
+  });
+});

@@ -251,7 +251,10 @@ function main(): void {
     const stripped = stripComments(raw);
     const expressLines = findExpressCallLines(stripped);
     if (expressLines.length === 0) continue;
-    const rel = relative(process.cwd(), file);
+    // Keep diagnostics stable across Windows and POSIX runners. The
+    // path is user-facing output and is also asserted by the CI guard
+    // tests, so it should use repository-style separators everywhere.
+    const rel = relative(process.cwd(), file).replaceAll('\\', '/');
     if (!callsAssertion(stripped)) {
       for (const line of expressLines) {
         violations.push({ file: rel, line, kind: 'missing' });

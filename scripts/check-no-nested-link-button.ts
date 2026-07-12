@@ -330,7 +330,7 @@ function scanFile(filePath: string, violations: Violation[]): void {
   );
 
   const linkIsWouter = fileImportsLinkFromWouter(sf);
-  const relFile = relative(ROOT, filePath);
+  const relFile = relative(ROOT, filePath).replaceAll('\\', '/');
 
   const visit = (node: ts.Node): void => {
     if (ts.isJsxElement(node)) {

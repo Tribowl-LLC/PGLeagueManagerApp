@@ -21,19 +21,18 @@ import {
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
+import { TSX_CLI } from '../helpers/tsx-command';
 
 const SCRIPT = join(process.cwd(), 'scripts/check-eslint-baseline.ts');
 
 // Use the locally-installed tsx binary directly rather than `npx tsx`:
 // in CI `npx` may try to resolve/install tsx over the network, and a
 // corrupted download pollutes stderr and leaves the script unrun.
-const TSX_BIN = join(process.cwd(), 'node_modules/.bin/tsx');
-
 function runIn(
   cwd: string,
   args: string[] = [],
 ): { status: number; stdout: string; stderr: string } {
-  const r = spawnSync(TSX_BIN, [SCRIPT, ...args], {
+  const r = spawnSync(process.execPath, [TSX_CLI, SCRIPT, ...args], {
     cwd,
     encoding: 'utf8',
     env: { ...process.env, NODE_ENV: 'test' },

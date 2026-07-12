@@ -20,6 +20,7 @@ import { writeFileSync, mkdtempSync, mkdirSync } from 'node:fs';
 import { join, dirname, delimiter } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
+import { TSX_CLI } from '../helpers/tsx-command';
 
 const SCRIPT = join(process.cwd(), 'scripts/check-org-isolation-coverage.ts');
 
@@ -27,8 +28,7 @@ function runIn(
   cwd: string,
   args: string[] = [],
 ): { status: number; stdout: string; stderr: string } {
-  // eslint-disable-next-line leaguevault/no-spawn-tsx-in-test -- script-as-subprocess pattern; converting to in-process invocation tracked under task #684.
-  const r = spawnSync('npx', ['tsx', SCRIPT, ...args], {
+  const r = spawnSync(process.execPath, [TSX_CLI, SCRIPT, ...args], {
     cwd,
     encoding: 'utf8',
     // The fixture `cwd` (a tmpdir) has no local `node_modules`, so a bare

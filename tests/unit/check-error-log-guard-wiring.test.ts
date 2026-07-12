@@ -16,6 +16,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
+import { TSX_CLI } from '../helpers/tsx-command';
 
 const SCRIPT = join(process.cwd(), 'scripts/check-error-log-guard-wiring.ts');
 
@@ -29,11 +30,10 @@ function run(
   base: string | null,
   args: string[] = [],
 ): { status: number; stdout: string; stderr: string } {
-  const tsxBin = join(process.cwd(), 'node_modules', '.bin', 'tsx');
   const env: NodeJS.ProcessEnv = { ...process.env, NODE_ENV: 'test' };
   if (base !== null) env.LV_GUARD_WIRING_BASE = base;
   else delete env.LV_GUARD_WIRING_BASE;
-  const r = spawnSync(tsxBin, [SCRIPT, ...args], { cwd: process.cwd(), encoding: 'utf8', env });
+  const r = spawnSync(process.execPath, [TSX_CLI, SCRIPT, ...args], { cwd: process.cwd(), encoding: 'utf8', env });
   return { status: r.status ?? -1, stdout: r.stdout, stderr: r.stderr };
 }
 

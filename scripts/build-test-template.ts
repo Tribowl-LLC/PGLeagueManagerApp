@@ -29,6 +29,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import pg from 'pg';
 import { assertSafeDatabaseHost } from '../server/utils/db-safety';
 import { createDbClient } from '../server/db';
@@ -147,12 +148,15 @@ async function recreateNeonTemplateBranch(cfg: NeonConfig): Promise<string> {
 
 function runDrizzlePush(targetUrl: string): void {
   const env = { ...process.env, DATABASE_URL: targetUrl };
-  const result = spawnSync('npx', ['drizzle-kit', 'push', '--force'], {
+  const npxCommand = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+  const result = spawnSync(npxCommand, ['drizzle-kit', 'push', '--force'], {
     stdio: 'inherit',
     env,
+    shell: process.platform === 'win32',
   });
+  if (result.error) throw result.error;
   if (result.status !== 0) {
-    throw new Error(`drizzle-kit push failed with exit code ${result.status}`);
+    throw new Error(`drizzle-kit push failed with exit code ${result.status ?? 'unknown'}`);
   }
 }
 
@@ -244,7 +248,7 @@ export async function buildTestTemplate(): Promise<void> {
   console.log(`[build-test-template] done. hash=${hash.slice(0, 12)}…`);
 }
 
-const isMain = import.meta.url === `file://${process.argv[1]}`;
+const isMain = import.meta.url === pathToFileURL(process.argv[1] ?? '').href;
 if (isMain) {
   buildTestTemplate().catch((err) => {
     console.error('[build-test-template] failed:', err);

@@ -34,6 +34,7 @@ import { eq, inArray } from 'drizzle-orm';
 import { db } from '../../server/db';
 import { bowlers, locations } from '@shared/schema';
 import { acquireFixtureOrg, releaseFixtureOrg } from '../helpers';
+import { TSX_CLI } from '../helpers/tsx-command';
 
 // Task #607: deterministic-slug fixture orgs that are torn down +
 // recreated per run. Each org has its own scratch location and the
@@ -70,8 +71,7 @@ function runScript(env: Record<string, string | undefined>, args: string[]): Run
       childEnv[k] = v;
     }
   }
-  // eslint-disable-next-line leaguevault/no-spawn-tsx-in-test -- script-as-subprocess pattern; converting to in-process invocation tracked under task #684.
-  const r = spawnSync('npx', ['tsx', SCRIPT, ...args], {
+  const r = spawnSync(process.execPath, [TSX_CLI, SCRIPT, ...args], {
     env: childEnv,
     encoding: 'utf-8',
     timeout: SCRIPT_TIMEOUT_MS,

@@ -32,6 +32,7 @@
  *     --organizationId=<id> --locationId=<id>
  */
 import { createRequire } from "node:module";
+import { pathToFileURL } from 'node:url';
 
 // Lazy-load `square` (task #692). The script's module body builds
 // arg parsers and validators before any Square call; deferring the
@@ -137,7 +138,10 @@ async function buildSquareClient(): Promise<SquareClientLike> {
   const fakeImplPath = process.env.SQUARE_CLIENT_IMPL_PATH;
   const testSeamAllowed = process.env.NODE_ENV !== 'production' && process.env.VITEST === 'true';
   if (fakeImplPath && testSeamAllowed) {
-    const mod = await import(fakeImplPath);
+    const moduleSpecifier = fakeImplPath.startsWith('file:')
+      ? fakeImplPath
+      : pathToFileURL(fakeImplPath).href;
+    const mod = await import(moduleSpecifier);
     const factory = (mod as { createSquareClient?: unknown; default?: unknown }).createSquareClient
       ?? (mod as { default?: unknown }).default;
     if (typeof factory !== 'function') {

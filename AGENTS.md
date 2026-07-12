@@ -39,11 +39,13 @@ existing state instead of switching branches blindly.
 
 ## Verification
 
-Use the smallest useful local loop, then rely on GitHub CI for the complete
-matrix:
+Use Node.js 22.22 or newer within the 22.x line, as specified by
+`.node-version` and the package engine. Docker Desktop must be running for the
+database-backed suite. The normal local sequence is:
 
 ```bash
 npm ci
+npm run test:local
 npm run check
 npm run lint
 npm run build
@@ -51,10 +53,19 @@ npm run security:audit:prod
 npm run security:audit:all
 ```
 
-Run focused Vitest files locally for the code being changed. GitHub CI runs
-the complete test suite, database-backed tests, race suite, and security
-workflows. A full local `npm test` can be slow or resource-intensive on a
-developer machine; do not mistake a local resource limit for a product bug.
+`npm run test:local` starts or reuses the local `leaguevault-test-postgres`
+PostgreSQL 16 Docker container, applies the schema, configures UTC and
+deterministic local-only secrets, prepares the test template, and runs the
+complete Vitest suite with isolated worker databases. No manually exported
+`DATABASE_URL` or dev server is required. Set `TEST_LOCAL_START_DEV_SERVER=1`
+only when the full test run also needs a dev server on port 5000.
+
+Run focused Vitest files locally for fast iteration, then run
+`npm run test:local` before handing off a database-backed change. `npm test`
+remains the underlying raw Vitest command, but it does not provide the Docker,
+schema, timezone, or deterministic environment setup supplied by
+`npm run test:local`. GitHub CI still runs the complete test suite, database
+backed tests, race suite, and security workflows.
 
 The main CI checks are `Type check & lint` and `Tests`. `Race suite`, Semgrep,
 Gitleaks, HoundDog, and the post-deploy trust-proxy probe are separate quality
