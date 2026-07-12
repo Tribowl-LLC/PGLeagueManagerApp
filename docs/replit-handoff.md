@@ -1,24 +1,26 @@
-# Beta Environment Setup
+# Replit Handoff (Historical)
 
-This runbook describes how to set up and operate the **beta** environment
-for LeagueVault. Beta is a separate Replit deploy that runs the same
-codebase as production, against its own database and sandbox payment
-credentials, behind the custom domain `beta.leaguevault.app`.
+This runbook describes how to set up and operate a **beta** environment
+when a separate Replit copy of LeagueVault is used. It is retained for the
+Replit handoff and is not the production deployment process.
 
-Beta exists so we can test pre-release changes against a realistic
-deploy (Replit Reserved-VM, real domain, real CDN, real Vite build)
-without risking production data or charging real cards.
+Production is hosted on Render and uses Neon PostgreSQL. Do not use this
+document to deploy or operate `leaguevault.app`.
+
+Beta exists so a Replit copy can test pre-release changes against a realistic
+deploy (Replit Reserved-VM, real domain, real CDN, real Vite build) without
+risking production data or charging real cards.
 
 ## TL;DR
 
 | | dev | beta | prod |
 | --- | --- | --- | --- |
-| Repl | local workspace | forked Repl | live Repl |
+| Repl | local workspace | forked Repl | not applicable; production is Render |
 | Domain | Replit dev URL | `beta.leaguevault.app` | `leaguevault.app` |
-| Branch | `main` | `beta` | `main` |
+| Branch | `main` | `beta` | `main` on GitHub |
 | Database | dev DB (separate) | beta DB (separate, empty) | prod DB |
 | Payment creds | as configured | **sandbox only** | live |
-| `APP_ENV` | unset (defaults to `dev`) | **`beta`** (must be set) | unset (defaults to `prod` on deploy) |
+| `APP_ENV` | unset (defaults to `dev`) | **`beta`** (must be set) | **`prod`** on Render |
 | BETA banner | hidden | **visible** | hidden |
 
 ## How environment is detected
@@ -45,9 +47,9 @@ inherits the codebase but **not** the secrets — that's intentional.
 ### 2. Point the fork at the `beta` Git branch
 
 The beta Repl tracks the `beta` branch. Configure the Git pane in
-the forked Repl to use `beta` as the default branch. Day-to-day
-promotion (`main` → `beta`, `beta` → `main`) is documented in
-`replit.md` (Promotion Workflow section).
+the forked Repl to use `beta` as the default branch. Day-to-day Replit
+promotion is historical. The current production branch and Render workflow
+are documented in `AGENTS.md` and `docs/production-runbook.md`.
 
 ### 3. Provision a separate empty database
 
@@ -191,9 +193,9 @@ prod value. The post-pull script reminds you of this when run with
 ### Deploying a change to beta
 
 The beta Repl follows the same `git pull` → `bash scripts/post-pull.sh`
-→ Replit "Deploy" flow as any other Replit deploy. The promotion
-direction (`main` → `beta` for testing, then back into `main` once
-approved) is documented in `replit.md` → Promotion Workflow.
+→ Replit "Deploy" flow as any other Replit deploy. The old promotion
+direction (`main` → `beta` for testing, then back into `main`) is historical
+and is not used for Render production releases.
 
 ### Resetting beta data
 
@@ -208,3 +210,14 @@ payment credentials are present in environment`), do **not**
 override the check. Find and remove the offending Secret in the
 beta Repl, then re-deploy. The error log lists each offending
 variable name.
+
+## Replit Canvas Mockup Sandbox
+
+The former `artifacts/mockup-sandbox` directory was isolated Replit Canvas
+preview tooling. It rendered individual components for design exploration and
+was never part of the production runtime or threat model.
+
+It is intentionally absent from the production LeagueVault `main` branch. It
+may remain in Chris's separate Replit handoff repository so Canvas previews
+continue to work there. Do not add its dependencies or workflows to the Render
+production release process.

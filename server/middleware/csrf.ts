@@ -23,7 +23,7 @@ const EXEMPT_PATHS = [
   // Disaster-recovery promote-to-admin endpoint. Authenticated by the
   // `x-setup-secret` header, not a session-bound CSRF token — operators run
   // this from `curl` against a fresh DB before any browser session exists.
-  // See `docs/security/csrf-coverage.md` and replit.md "Disaster Recovery".
+  // See `docs/security/csrf-coverage.md` and AGENTS.md for operational rules.
   '/setup/first-system-admin',
   '/account/request-deletion',
   // Confirmation link in the email is the auth factor (like password

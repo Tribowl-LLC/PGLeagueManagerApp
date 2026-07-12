@@ -108,7 +108,7 @@ if [ "${APP_ENV:-}" = "beta" ]; then
   echo "  • Confirm payment Secrets are still SANDBOX (no SQUARE_PROD_TOKEN /"
   echo "    SQUARE_PRODUCTION_*, no sk_live_/pk_live_ keys). The server"
   echo "    refuses to start when APP_ENV=beta and a live credential is"
-  echo "    present — see docs/BETA_ENVIRONMENT_SETUP.md."
+  echo "    present — see docs/replit-handoff.md."
   echo "  • If the pulled commit added new secrets, mirror them from prod"
   echo "    using SANDBOX values, never the live ones."
   echo ""

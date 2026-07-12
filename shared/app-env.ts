@@ -10,8 +10,9 @@
  *   - `beta`  the forked Repl deployed to beta.leaguevault.app
  *   - `prod`  the live Repl deployed to leaguevault.app
  *
- * The runbook is in `docs/BETA_ENVIRONMENT_SETUP.md`. The promotion
- * workflow is documented in `replit.md` (Promotion Workflow section).
+ * The historical Replit runbook is in `docs/replit-handoff.md`. The current
+ * production workflow is documented in `AGENTS.md` and
+ * `docs/production-runbook.md`.
  *
  * Resolution rules (single source of truth — used both in
  * `server/config.ts` to validate the env var and in

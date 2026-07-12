@@ -29,7 +29,7 @@ const log = createLogger("AccessControl");
  * production deploy that sets `LOG_LEVEL=info` (or higher) will suppress
  * them entirely. The drift signal itself remains observable in production
  * via the system-admin "Data integrity" surface
- * (`GET /api/system-admin/orphaned-data-counts` and friends — see replit.md
+ * (`GET /api/system-admin/orphaned-data-counts` and friends — see AGENTS.md
  * for the full route list). Any new deny-on-null branch added to this file
  * MUST follow the same `log.debug` convention.
  */

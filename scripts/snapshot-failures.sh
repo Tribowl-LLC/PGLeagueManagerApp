@@ -166,7 +166,7 @@ write_banner_atomic() {
     echo "newly-merged main, so the **next** task can see at a glance which checks"
     echo "are pre-existing failures vs. which it broke itself."
     echo
-    echo "Per \`replit.md\` user preferences: pre-existing failures should be"
+    echo "Per \`AGENTS.md\` project guidance: pre-existing failures should be"
     echo "fixed as part of any in-flight task unless they are clearly out-of-scope."
     echo
     echo "**Note:** the post-merge hook runs typecheck + lint synchronously and"
