@@ -329,9 +329,10 @@ export default defineConfig({
         // so the node-environment suites above don't pay the
         // jsdom setup cost.
         // Vite's React plugin isn't loaded for vitest, so opt in to
-        // esbuild's automatic JSX runtime here so .tsx test files
-        // don't need to import React explicitly.
-        esbuild: { jsx: 'automatic' },
+        // Oxc's automatic JSX runtime here so .tsx test files don't
+        // need to import React explicitly. Vite 8 migrated this from
+        // the deprecated esbuild.jsx option.
+        oxc: { jsx: { runtime: 'automatic' } },
         test: {
           name: 'client-components',
           sequence: { groupOrder: 3 },
