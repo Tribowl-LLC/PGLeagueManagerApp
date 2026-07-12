@@ -65,7 +65,7 @@
     "express": "^4.21.2",
     "express-rate-limit": "^8.5.2",
     "express-session": "^1.18.1",
-    "helmet": "^8.2.0",
+    "helmet": "^8.3.0",
     "ipaddr.js": "^2.4.0",
     "lucide-react": "^1.24.0",
     "multer": "^2.2.0",
