@@ -169,6 +169,10 @@ const sharedAlias = {
 };
 
 export default defineConfig({
+  // Vite 8 uses Oxc for TS/JSX transforms. Keep the automatic JSX runtime
+  // enabled for every Vitest project, including node-environment suites that
+  // import shared client .tsx modules.
+  oxc: { jsx: { runtime: 'automatic' } },
   test: {
     globals: true,
     environment: 'node',
