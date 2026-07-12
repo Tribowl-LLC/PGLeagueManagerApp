@@ -71,6 +71,17 @@ export default tseslint.config(
   },
   js.configs.recommended,
   {
+    // ESLint 10 adds these core rules to the recommended preset. They flag
+    // existing error-wrapping and retry-state patterns across the payment
+    // and infrastructure code without changing the repository's established
+    // lint contract. Keep the migration behavior-preserving; adopt these
+    // rules separately with focused fixes and tests.
+    rules: {
+      'preserve-caught-error': 'off',
+      'no-useless-assignment': 'off',
+    },
+  },
+  {
     files: ['**/*.{ts,tsx}'],
     languageOptions: {
       parser: tseslint.parser,
