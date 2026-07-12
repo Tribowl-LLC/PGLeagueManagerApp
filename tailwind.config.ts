@@ -5,6 +5,11 @@ export default {
   content: ["./client/index.html", "./client/src/**/*.{js,jsx,ts,tsx}"],
   theme: {
     extend: {
+      // Tailwind 4's JavaScript-config compatibility layer does not inject
+      // the default font scale, but the global stylesheet applies font-sans.
+      fontFamily: {
+        sans: ["ui-sans-serif", "system-ui", "sans-serif"],
+      },
       borderRadius: {
         lg: "var(--radius)",
         md: "calc(var(--radius) - 2px)",
