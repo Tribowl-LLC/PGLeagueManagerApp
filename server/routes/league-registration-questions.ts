@@ -9,6 +9,7 @@ import { z } from "zod";
 import { storage } from "../storage";
 import * as regStorage from "../storage/league-registrations";
 import { sendSuccess, sendError, handleZodError } from "../utils/api";
+import { singleRouteParam } from "../utils/route-params";
 import { hasAccessToLeague, isOrgOrHigher } from "../utils/access-control";
 import {
   REGISTRATION_QUESTION_TYPES,
@@ -21,7 +22,7 @@ const log = createLogger("LeagueRegQuestions");
 const router = Router({ mergeParams: true });
 
 function parseLeagueId(req: Request): number | null {
-  const id = parseInt(req.params.leagueId ?? "", 10);
+  const id = parseInt(singleRouteParam(req.params.leagueId), 10);
   return Number.isFinite(id) && id > 0 ? id : null;
 }
 

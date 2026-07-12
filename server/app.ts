@@ -294,7 +294,9 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
 
   registerRoutes(app);
 
-  app.all('/api/*', (req, res) => {
+  // Express 5 requires a named wildcard; the braced form also matches the
+  // bare `/api/` path, preserving the previous catch-all behavior.
+  app.all('/api/{*splat}', (req, res) => {
     res.status(404).json({
       success: false,
       error: {

@@ -10,6 +10,7 @@ import { insertPaymentSchema, updatePaymentSchema } from "@shared/schema";
 import { isCardPaymentType } from "@shared/schema/constants";
 import { z } from "zod";
 import { sendSuccess, sendError, handleZodError, sanitizePayment } from '../../utils/api.js';
+import { singleRouteParam } from '../../utils/route-params';
 import { hasAccessToPayment, hasAdminAccessToLeague, isSystemAdmin } from '../../utils/access-control.js';
 import { paymentWriteLimiter } from '../../middleware/rate-limit.js';
 import { differenceInWeeks } from 'date-fns';
@@ -170,7 +171,7 @@ router.post("/", paymentWriteLimiter, async (req, res) => {
 // Update payment
 router.patch("/:id", paymentWriteLimiter, async (req, res) => {
   try {
-    const id = parseInt(req.params.id);
+    const id = parseInt(singleRouteParam(req.params.id));
     const parsed = updatePaymentSchema.parse(req.body);
 
     const update = Object.fromEntries(
@@ -209,7 +210,7 @@ router.patch("/:id", paymentWriteLimiter, async (req, res) => {
 // Delete payment
 router.delete("/:id", paymentWriteLimiter, async (req, res) => {
   try {
-    const id = parseInt(req.params.id);
+    const id = parseInt(singleRouteParam(req.params.id));
     if (isNaN(id)) {
       return sendError(res, "Invalid payment ID", 400, "INVALID_ID");
     }

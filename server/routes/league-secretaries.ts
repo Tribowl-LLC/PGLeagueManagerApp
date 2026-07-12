@@ -35,6 +35,7 @@
  *   captured for forensic linkage.
  */
 import { Router, Request, Response } from 'express';
+import { singleRouteParam } from '../utils/route-params';
 import { storage } from '../storage';
 import { sendSuccess, sendError, handleZodError } from '../utils/api';
 import {
@@ -238,7 +239,7 @@ router.delete('/:userId', async (req: Request, res: Response) => {
   try {
     const leagueId = getLeagueIdParam(req);
     if (leagueId === null) return sendError(res, 'Invalid league ID', 400, 'INVALID_ID');
-    const userId = Number.parseInt(req.params.userId, 10);
+    const userId = Number.parseInt(singleRouteParam(req.params.userId), 10);
     if (!Number.isFinite(userId) || userId <= 0) {
       return sendError(res, 'Invalid user ID', 400, 'INVALID_ID');
     }

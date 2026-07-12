@@ -5,6 +5,7 @@ import { insertLeagueSchema, updateLeagueSchema, DEFAULT_TIMEZONE, WEEKDAYS, dat
 import { validateDoublePayDates } from "@shared/schema/leagues";
 import { z } from "zod";
 import { sendSuccess, sendError, handleZodError, parseOptionalIntParam } from '../utils/api';
+import { singleRouteParam } from '../utils/route-params';
 import { requireOrganizationAccess, hasAccessToLeague, hasAdminAccessToLeague, isOrgOrHigher } from '../utils/access-control';
 import { getOrganizationFilter, filterByOrganization } from '../middleware/organization';
 import { hashPassword } from '../auth';
@@ -195,7 +196,7 @@ router.get("/square-missing-alerts/recent", async (req: Request, res) => {
 
 router.get("/:id", async (req: Request, res) => {
   try {
-    const id = parseInt(req.params.id);
+    const id = parseInt(singleRouteParam(req.params.id));
     const league = await storage.getLeague(id);
     
     if (!league) {
@@ -309,7 +310,7 @@ router.post("/", async (req: Request, res) => {
 
 router.patch("/:id", async (req: Request, res) => {
   try {
-    const id = parseInt(req.params.id);
+    const id = parseInt(singleRouteParam(req.params.id));
     
     // Get the league to verify organization access
     const league = await storage.getLeague(id);
@@ -533,7 +534,7 @@ router.patch("/:id", async (req: Request, res) => {
 // Archive a league
 router.patch("/:id/archive", async (req: Request, res) => {
   try {
-    const id = parseInt(req.params.id);
+    const id = parseInt(singleRouteParam(req.params.id));
     const league = await storage.getLeague(id);
     if (!league) {
       return sendError(res, "League not found", 404, 'NOT_FOUND');
@@ -556,7 +557,7 @@ router.patch("/:id/archive", async (req: Request, res) => {
 // Restore an archived league
 router.patch("/:id/restore", async (req: Request, res) => {
   try {
-    const id = parseInt(req.params.id);
+    const id = parseInt(singleRouteParam(req.params.id));
     const league = await storage.getLeague(id);
     if (!league) {
       return sendError(res, "League not found", 404, 'NOT_FOUND');
@@ -577,7 +578,7 @@ router.patch("/:id/restore", async (req: Request, res) => {
 
 router.delete("/:id", async (req: Request, res) => {
   try {
-    const id = parseInt(req.params.id);
+    const id = parseInt(singleRouteParam(req.params.id));
     
     // Get the league to verify organization access
     const league = await storage.getLeague(id);
@@ -626,7 +627,7 @@ router.delete("/:id", async (req: Request, res) => {
 
 router.post("/:id/send-invites", async (req: Request, res) => {
   try {
-    const leagueId = parseInt(req.params.id);
+    const leagueId = parseInt(singleRouteParam(req.params.id));
     const league = await storage.getLeague(leagueId);
 
     if (!league) {
@@ -693,7 +694,7 @@ router.post("/:id/send-invites", async (req: Request, res) => {
 
 router.post("/:id/new-season", async (req: Request, res) => {
   try {
-    const id = parseInt(req.params.id);
+    const id = parseInt(singleRouteParam(req.params.id));
     if (isNaN(id)) {
       return sendError(res, "Invalid league ID", 400, "INVALID_ID");
     }
@@ -838,7 +839,7 @@ router.post("/:id/new-season", async (req: Request, res) => {
 
 router.get("/:id/season-history", async (req: Request, res) => {
   try {
-    const id = parseInt(req.params.id);
+    const id = parseInt(singleRouteParam(req.params.id));
     if (isNaN(id)) {
       return sendError(res, "Invalid league ID", 400, "INVALID_ID");
     }
