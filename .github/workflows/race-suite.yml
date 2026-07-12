@@ -143,10 +143,10 @@ jobs:
         if: steps.decide.outputs.run == 'true'
         uses: actions/setup-node@v6
         with:
-          # Pinned to the runtime declared in `replit.md` so CI matches
+          # Pinned to the runtime declared in `.node-version` so CI matches
           # the dev/prod environment. Bump in lockstep when that file
           # gets bumped (mirrors `ci.yml`).
-          node-version: '22'
+          node-version: '22.22.0'
           cache: 'npm'
 
       - name: Install dependencies

@@ -215,10 +215,10 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v6
         with:
-          # Pinned to the runtime declared in `replit.md` so the
+          # Pinned to the runtime declared in `.node-version` so the
           # script runs under the same node major as the live app.
           # Bump in lockstep when the Node version moves.
-          node-version: '22'
+          node-version: '22.22.0'
           cache: 'npm'
 
       - name: Install dependencies

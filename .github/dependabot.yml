@@ -6,8 +6,8 @@ updates:
   - package-ecosystem: "npm"
     directory: "/"
     schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 10
+      interval: "monthly"
+    open-pull-requests-limit: 5
     # Keep runtime updates grouped by ownership and blast radius. Major
     # updates intentionally remain ungrouped so framework migrations arrive
     # as individual PRs instead of being bundled into a broken batch.
@@ -75,7 +75,7 @@ updates:
     # `/` covers everything under .github/workflows/.
     directory: "/"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
     groups:
       github-actions:
         patterns:
