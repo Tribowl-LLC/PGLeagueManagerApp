@@ -35,17 +35,6 @@ Docker Desktop is required by the recommended full local test command,
 
 ## Quick Start
 
-For a first-time checkout:
-
-```bash
-git clone https://github.com/Tribowl-LLC/PGLeagueManagerApp.git
-cd PGLeagueManagerApp
-npm ci
-```
-
-Continue with [`Local Setup`](#local-setup) to create the database, configure
-environment variables, apply the schema, and start the application.
-
 For returning contributors who already have the repository, local database
 container, and environment variables configured:
 
@@ -56,7 +45,7 @@ git pull --ff-only origin main
 npm ci
 ```
 
-If `leaguevault-postgres` exists but is stopped, start it:
+Start the database container if it is not already running:
 
 ```bash
 docker start leaguevault-postgres
@@ -69,7 +58,7 @@ npm run db:push
 npm run dev
 ```
 
-If `leaguevault-postgres` has not been created yet, follow the complete
+If the repository or `leaguevault-postgres` container has not been created yet, follow the complete
 [`Local Setup`](#local-setup) instructions below.
 
 ## Local Setup
@@ -159,11 +148,12 @@ export PORT=5000
 ```
 
 These commands generate new secrets for the current shell session. Preserve the
-same `FIELD_ENCRYPTION_KEY` while using an existing local database; changing it
+same `FIELD_ENCRYPTION_KEY` while using an existing local database. Changing it
 may make previously encrypted local fields unreadable. Changing
-`SESSION_SECRET` invalidates existing local sessions. For durable local
-development, use a local secret manager or persistent shell configuration, but
-never commit those secrets.
+`SESSION_SECRET` invalidates existing local sessions.
+
+Store stable local values in a secure local secret manager or shell
+configuration that is excluded from source control.
 
 Apply the schema and start the development server:
 
