@@ -254,6 +254,9 @@ databases.
 | `npm start` | Start the production server from the existing `dist/` build. |
 | `npm run check` | Run TypeScript type checking. This does not run ESLint. |
 | `npm run lint` | Run ESLint. |
+| `npm run db:inventory` | Collect normalized PostgreSQL catalog state plus the approved Drizzle journal in a read-only transaction. |
+| `npm run db:inventory:compare` | Compare two normalized schema inventory files. |
+| `npm run db:inventory:validate-local` | Reproduce the known `db:push` versus journal mismatch in an ephemeral local container. |
 | `npm run db:push` | Apply the Drizzle schema to `DATABASE_URL`. |
 | `npm run seed` | Seed local development users and organizations. |
 | `npm run check:csrf` | Check CSRF coverage. |

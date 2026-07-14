@@ -7,6 +7,7 @@ vite.config.ts.*
 scripts/zap-report.html
 uploads/avatars/
 attached_assets/
+.artifacts/db-inventory/
 
 .git.backup.*
 .local/known-failures.md

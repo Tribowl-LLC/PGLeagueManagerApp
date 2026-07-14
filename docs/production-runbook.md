@@ -42,6 +42,45 @@ Clover webhooks are enabled. Keep payment-provider credentials in their
 intended environment and location; never copy production credentials into a
 beta or local environment.
 
+## Read-only Schema Inventory
+
+`npm run db:inventory` uses PostgreSQL catalog queries plus a narrowly scoped
+read of the approved Drizzle migration-journal relation inside an explicit
+repeatable-read, read-only transaction. It verifies both transaction settings
+and does not apply schema changes. The approved transitional use is a
+disposable Neon branch cloned from production, not the production endpoint
+itself.
+
+For a disposable branch:
+
+1. Independently record and verify the Neon project, branch, endpoint host,
+   database, and role. Keep this operator record separate from the inventory.
+2. Use a pre-provisioned read-only or least-privilege role where practical.
+   Do not use or copy the production application's credentials.
+3. Supply the branch URL through `DATABASE_URL` in a secure operator shell.
+   Never echo it or pass it as a command-line argument.
+4. Run only the inventory command:
+
+   ```bash
+   npm run db:inventory -- --output .artifacts/db-inventory/neon/<review-id>.json
+   ```
+
+   The approved default journal is `drizzle.__drizzle_migrations`. If the
+   separately verified branch uses another relation, pass it explicitly as
+   `--journal-relation <schema.relation>`. Never select a relation merely to
+   bypass the command's multiple-journal refusal.
+
+5. Match the reported database, role, PostgreSQL version, and host fingerprint
+   to the separately recorded target. Store the normalized JSON in the
+   approved review-artifact system; do not commit it.
+6. Do not run the application, `db:push`, migrations, invariant installation,
+   seeds, or backfills as part of inventory collection. Unset `DATABASE_URL`
+   afterward.
+
+See [`DATABASE.md`](./DATABASE.md#disposable-neon-branch-inventory-procedure)
+for the complete comparison procedure. Direct production inventory remains a
+separately approved future operation.
+
 ## Schema Release
 
 Schema changes require a deliberate release step:
