@@ -123,6 +123,13 @@ those self-tests teeth on PRs:
   `'clover'` string literal. Locks in task #610's fix so a future
   call site can't silently regress Clover-only locations to the
   "Square isn't connected" copy.
+- `tests/unit/db-schema-inventory-tools.test.ts` — verifies deterministic
+  comparison, missing/extra/changed categorization, journal selection and SQL
+  preflight, quote-aware definition normalization, container ownership and
+  cleanup behavior, inventory format validation, and connection-detail
+  redaction. The disposable 29-versus-17 database reproduction remains the
+  explicit local `npm run db:inventory:validate-local` command rather than a
+  separate CI service job.
 
 ## What runs in `Race suite`
 

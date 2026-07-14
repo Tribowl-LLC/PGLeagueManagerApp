@@ -2,6 +2,39 @@
 
 Detailed architecture notes for the Vitest per-worker test-DB / Neon-branch infrastructure. Split out of `AGENTS.md` to keep the project overview lean. See also the verification guidance in `AGENTS.md` for the day-to-day test recipe.
 
+## Schema inventory validation
+
+`npm run db:inventory:validate-local` owns a separate, uniquely named,
+ephemeral `postgres:16` Docker container. It does not reuse or mutate the
+long-lived `leaguevault-test-postgres` container, a Neon test branch, or any
+configured `DATABASE_URL`.
+
+Inside that disposable container, the validation creates one database through
+current `db:push` and one by transactionally replaying only the SQL files named
+by `migrations/meta/_journal.json`. Every listed file is parsed and checked
+against the current six-category statement allowlist before Docker starts or
+the replay database is created. It does not create or write a
+`__drizzle_migrations` table.
+
+Each invocation has a random run id, an ownership-labeled container, and an
+ignored `.artifacts/db-inventory/<run-id>/` directory. Docker returns the exact
+container ID; later actions use that ID after label verification. Graceful
+cleanup is checked, force removal is attempted only after ownership is
+reverified, and unresolved cleanup makes the command fail. Parallel runs
+therefore cannot overwrite artifacts or clean up one another's containers.
+The same `db:push` database is inventoried twice and the validator requires
+byte-for-byte identical JSON.
+
+The validator asserts the known transitional mismatch: 29 tables from
+`db:push`, 17 from journal replay, and 12 tables missing from the journal
+result. Detecting and correctly categorizing that difference is success. It is
+not a migration-equivalence gate and is not currently run as a separate CI
+database job. The pure comparison behavior is covered by
+`tests/unit/db-schema-inventory-tools.test.ts` in the ordinary Vitest CI suite.
+Those tests also cover unsafe SQL rejection, quote-aware definition
+normalization, run-specific artifact paths, cleanup failure, and ownership
+mismatch refusal.
+
 - **Per-Pool Test DB Clone via Deterministic Name**: For vitest projects that combine `pool: 'forks'` with `isolate: true` (`parallel-isolated`, `serial-fk-bypass`, `parallel-isolated-with-app`), the per-worker template-DB clone uses a deterministic name `test_worker_<LV_TEST_RUN_ID>_pool_<VITEST_POOL_ID>` (Task #722). `LV_TEST_RUN_ID` is generated once by `globalSetup` and inherited by every spawned fork (including those vitest recycles between files under `isolate: true`). `cloneTemplate()` short-circuits when the target DB already exists. Combined with the in-process `process.env` memo (`__LV_WORKER_DB_NAME__`/`__LV_WORKER_DB_URL__`/`__LV_WORKER_APP_PORT__`), this bounds per-pool clone count at exactly 1, so the project's total clone count is exactly `maxForks` regardless of file count or fork-recycle frequency.
 - **End-of-run-only cleanup model for Neon test branches** (Task #723 review): Branch deletion happens in exactly two places and nowhere else. (1) **End-of-run hook** in `tests/setup/summary-reporter.ts` `onTestRunEnd` — runs once in the main vitest process after every project + every fork has finished, scoped to `test_worker_<RUN_ID>_*` so a concurrently-running sibling vitest process is never touched. (2) **Startup cross-run sweep** in `tests/setup/global-setup.ts` via `cleanupTestDbs({ minAgeMs: 10*60*1000, connectionAware: true })` — **connection-aware** (Task #742): instead of guessing from age, it probes each `test_worker_*` branch's compute for live client connections. A branch with **no active compute** (idle/suspended) or a warm compute with **zero client connections** is a crashed-run orphan and is reaped immediately regardless of age; a branch with **live connections** is an actively-running sibling vitest process and is always kept. `minAgeMs` is retained only as a fallback when the compute probe can't reach a branch. The idle branches are reaped without opening a connection (so a suspended compute is never needlessly woken). This replaces the old blunt 10-minute age gate so your own killed-run orphans are cleaned within seconds during rapid debug retries. Implementation: `classifyBranchForSweep` in `scripts/cleanup-test-dbs.ts` uses `getBranchEndpoints` (compute state) + a short-lived `pg.Client` probe of `pg_stat_activity` (`backend_type = 'client backend'`). Covered by `tests/unit/cleanup-connection-aware-sweep.test.ts`. **Per-fork `process.on('beforeExit')` deletion was tried and reverted** because vitest projects with `isolate: true` (`parallel-isolated-with-app`, `serial-fk-bypass`) recycle fork processes between files: a per-fork hook fires after every file and deletes the branch the next file's fresh fork is about to use, breaking the run with `endpoint not found` errors. **`globalSetup` per-project teardown is also unsafe** because vitest fires it when each project finishes its files, not when the whole run ends — a fast project would yank shared per-pool branches out from under sibling projects. Reporter-based end-of-run cleanup is the only hook that fires exactly once after all projects + all forks are guaranteed done. Opt-out: `LV_TEST_SKIP_BRANCH_CLEANUP=1`. Both call sites go through `cleanupTestDbs()` which calls `assertSafeDatabaseHost()` first; `ensure-test-template.ts` also calls `assertSafeDatabaseHost()` before its hash-match Neon-API fast path. The `cleanupViaNeonBranches` helper accepts an optional `minAgeMs` (filters by `branch.created_at`) and an optional `branchNamePrefix` (RUN_ID-scoping for end-of-run); legacy mode keeps its existing `pg_advisory_lock` + active-connection skip safeguard unchanged.
 - **Neon Branches API password reveal** (Task #727): worker-branch URLs are composed using the password returned by `GET /projects/{p}/branches/{b}/roles/{role}/reveal_password` rather than the password baked into `DATABASE_URL`. The dev compute and the production-parented template/worker computes can carry different SCRAM verifiers when a project-wide role-password rotation hasn't propagated to a long-suspended compute, and the stale verifier rejects `DATABASE_URL`'s current password with 28P01. `revealBranchRolePassword()` in `tests/setup/neon-branches.ts` is memoised per `(branchId, roleName)` for the calling process; `createBranchWithEndpoint` and `resolveBranchUrl` both call it before composing the URL. The reveal response is treated as a secret (never logged, never echoed in error messages). Worker forks generally never call the API themselves — they read the per-pool URL (already containing the revealed password) from `__LV_WORKER_DB_URL_pool_<N>__`.

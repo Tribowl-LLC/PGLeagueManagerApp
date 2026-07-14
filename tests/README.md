@@ -183,6 +183,22 @@ during the `npm test` step. The minimal job ordering looks like:
 |------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `SETUP_SECRET`   | `tests/api/setup-admin-header.test.ts` runs in the default `npm test` job and exercises both the `checkSetupSecret` header-normalisation matrix and the per-endpoint secret-gate coverage. Without `SETUP_SECRET` exported, the suite hard-fails with a remediation pointer rather than silently skipping — a CI job that forgets to wire it through will exit non-zero instead of reporting a misleading green build. |
 
+## Database schema inventory validation
+
+Run `npm run db:inventory:validate-local` to build and compare the current
+`db:push` schema and the journal-tracked SQL chain in a separate ephemeral
+PostgreSQL 16 container. The expected result is a categorized mismatch: 29
+tables from `db:push`, 17 from journal replay, and 12 tables missing from the
+journal result. Generated JSON lives under ignored
+`.artifacts/db-inventory/<run-id>/`, so concurrent invocations do not share
+output paths.
+
+This command is intentionally separate from `npm run test:local`; it owns its
+own temporary container and does not use the test template or worker databases.
+The pure comparison, redaction, journal preflight, definition normalization,
+container ownership, and cleanup behavior is covered by
+`tests/unit/db-schema-inventory-tools.test.ts` in the default Vitest run.
+
 ## Layout
 
 - `tests/api/*.test.ts` — black-box API/integration tests that go over
