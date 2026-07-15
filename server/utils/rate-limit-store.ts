@@ -7,7 +7,8 @@
  * limiter with the existing pg pool keeps the budget consistent
  * across every process pointed at the same database.
  *
- * Schema lives in `migrations/0028_add_rate_limit_buckets.sql`. One
+ * Schema is declared in `shared/schema/rate-limit-buckets.ts` and the active
+ * normalized baseline. One
  * row per (limiter, key) tuple; the per-limiter `prefix` argument is
  * prepended to every stored key so a single table can serve every
  * limiter without bucket collisions.

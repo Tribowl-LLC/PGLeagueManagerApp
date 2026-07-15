@@ -21,6 +21,14 @@
  */
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import {
+  LEAGUE_SECRETARY_ORG_MATCH_FUNCTION_SQL,
+  LEAGUE_SECRETARY_ORG_MATCH_STARTUP_SQL,
+  USERS_ORG_CHANGE_REVOKE_SECRETARIES_STARTUP_SQL,
+  USERS_ORG_CHANGE_REVOKE_SECRETARIES_FUNCTION_SQL,
+  USERS_ROLE_ORG_REQUIRED_TRIGGER_SQL,
+  USERS_ROLE_ORG_REQUIRED_FUNCTION_SQL,
+} from '@shared/database-invariants';
 import * as schema from '@shared/schema';
 import { db as defaultDb } from './db';
 
@@ -54,49 +62,17 @@ export async function installDbInvariants(db: AnyDb = defaultDb): Promise<void> 
       sql`ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_org_required`,
     );
 
-    await tx.execute(sql`
-      CREATE OR REPLACE FUNCTION users_role_org_required_fn()
-      RETURNS trigger
-      LANGUAGE plpgsql
-      AS $$
-      BEGIN
-        IF NEW.role <> 'system_admin' AND NEW.organization_id IS NULL THEN
-          RAISE EXCEPTION 'users_role_org_required: non-admin users must have organization_id'
-            USING ERRCODE = 'check_violation';
-        END IF;
-        RETURN NEW;
-      END;
-      $$;
-    `);
+    await tx.execute(sql.raw(USERS_ROLE_ORG_REQUIRED_FUNCTION_SQL));
 
     await tx.execute(
       sql`DROP TRIGGER IF EXISTS users_role_org_required ON users`,
     );
-    await tx.execute(sql`
-      CREATE TRIGGER users_role_org_required
-      BEFORE INSERT OR UPDATE ON users
-      FOR EACH ROW
-      EXECUTE FUNCTION users_role_org_required_fn();
-    `);
+    await tx.execute(sql.raw(USERS_ROLE_ORG_REQUIRED_TRIGGER_SQL));
 
-    // Task #356 follow-up: ensure the shared rate-limit bucket table
-    // exists. It deliberately lives outside `shared/schema.ts` because
-    // the application never accesses it through Drizzle — every read
-    // and write goes through the raw SQL in
-    // `server/utils/rate-limit-store.ts`, which is what the
-    // express-rate-limit `Store` interface expects. That means
-    // `npm run db:push` (driven by `shared/schema.ts`) doesn't know
-    // about it, and the matching SQL file
-    // `migrations/0028_add_rate_limit_buckets.sql` isn't executed by
-    // anything in the deployment pipeline either — `drizzle-kit push`
-    // doesn't replay raw migration files. Without this block the table
-    // exists in environments where someone happened to apply 0028 by
-    // hand and is missing everywhere else, including the CI Postgres
-    // container, which made `tests/unit/rate-limit-store.test.ts` fail
-    // with `relation "rate_limit_buckets" does not exist`. Creating the
-    // table here keeps this in lockstep with the trigger above: every
-    // boot path (prod, dev, vitest globalSetup) lands on the same
-    // schema, idempotently.
+    // Temporary rollout compatibility: rate_limit_buckets is now a normal
+    // declared table in shared/schema and the active baseline. Keep this
+    // idempotent fallback until every environment has adopted the baseline;
+    // a follow-up can then convert startup installation to verification only.
     await tx.execute(sql`
       CREATE TABLE IF NOT EXISTS rate_limit_buckets (
         key       text PRIMARY KEY,
@@ -118,61 +94,13 @@ export async function installDbInvariants(db: AnyDb = defaultDb): Promise<void> 
     // BEFORE INSERT/UPDATE trigger keeps the matching-org invariant
     // enforced at the DB layer regardless of which path inserted the
     // row. Idempotent install per the file-level convention.
-    await tx.execute(sql`
-      CREATE OR REPLACE FUNCTION league_secretary_org_match_fn()
-      RETURNS trigger
-      LANGUAGE plpgsql
-      AS $$
-      DECLARE
-        league_org_id integer;
-        user_org_id integer;
-      BEGIN
-        SELECT organization_id INTO league_org_id FROM leagues WHERE id = NEW.league_id;
-        IF league_org_id IS NULL THEN
-          RAISE EXCEPTION 'league_secretary_org_match: league % has no organization_id (org-less rows are not eligible for secretary grants)', NEW.league_id
-            USING ERRCODE = 'check_violation';
-        END IF;
-        IF NEW.organization_id <> league_org_id THEN
-          RAISE EXCEPTION 'league_secretary_org_match: league_secretaries.organization_id (%) must match league %.organization_id (%)', NEW.organization_id, NEW.league_id, league_org_id
-            USING ERRCODE = 'check_violation';
-        END IF;
-        -- Defence in depth: the granted user must belong to the same
-        -- organization as the league. The route layer also enforces this
-        -- (USER_NOT_IN_ORG), but a buggy bypass or direct SQL operation
-        -- could otherwise grant a cross-tenant user per-league powers.
-        SELECT organization_id INTO user_org_id FROM users WHERE id = NEW.user_id;
-        IF user_org_id IS NULL THEN
-          RAISE EXCEPTION 'league_secretary_org_match: user % has no organization_id (org-less users are not eligible for secretary grants)', NEW.user_id
-            USING ERRCODE = 'check_violation';
-        END IF;
-        IF user_org_id <> league_org_id THEN
-          RAISE EXCEPTION 'league_secretary_org_match: user %.organization_id (%) must match league %.organization_id (%)', NEW.user_id, user_org_id, NEW.league_id, league_org_id
-            USING ERRCODE = 'check_violation';
-        END IF;
-        RETURN NEW;
-      END;
-      $$;
-    `);
+    await tx.execute(sql.raw(LEAGUE_SECRETARY_ORG_MATCH_FUNCTION_SQL));
     // The table may not yet exist on the very first boot after a fresh
-    // schema where `npm run db:push` has not run. Both the DROP and the
+    // schema where checked-in migrations have not run. Both the DROP and the
     // CREATE reference `league_secretaries` and would error on a missing
     // relation, so guard the entire drop/create pair with an existence
     // check (DROP TRIGGER IF EXISTS still requires the table to exist).
-    await tx.execute(sql`
-      DO $$
-      BEGIN
-        IF EXISTS (
-          SELECT 1 FROM information_schema.tables
-          WHERE table_schema = current_schema() AND table_name = 'league_secretaries'
-        ) THEN
-          EXECUTE 'DROP TRIGGER IF EXISTS league_secretaries_org_match ON league_secretaries';
-          EXECUTE 'CREATE TRIGGER league_secretaries_org_match
-            BEFORE INSERT OR UPDATE ON league_secretaries
-            FOR EACH ROW
-            EXECUTE FUNCTION league_secretary_org_match_fn()';
-        END IF;
-      END $$;
-    `);
+    await tx.execute(sql.raw(LEAGUE_SECRETARY_ORG_MATCH_STARTUP_SQL));
 
     // Task #735 drift protection: when a user is moved to a different
     // organization (or has their org cleared), any existing
@@ -186,33 +114,7 @@ export async function installDbInvariants(db: AnyDb = defaultDb): Promise<void> 
     // is defence in depth — but it is the only thing that prevents the
     // grant rows from being visible to admins of the new org via
     // `listSecretariesForLeague` (which keys on user_id).
-    await tx.execute(sql`
-      CREATE OR REPLACE FUNCTION users_org_change_revoke_secretaries_fn()
-      RETURNS trigger
-      LANGUAGE plpgsql
-      AS $$
-      BEGIN
-        IF OLD.organization_id IS DISTINCT FROM NEW.organization_id THEN
-          DELETE FROM league_secretaries WHERE user_id = NEW.id;
-        END IF;
-        RETURN NEW;
-      END;
-      $$;
-    `);
-    await tx.execute(sql`
-      DO $$
-      BEGIN
-        IF EXISTS (
-          SELECT 1 FROM information_schema.tables
-          WHERE table_schema = current_schema() AND table_name = 'league_secretaries'
-        ) THEN
-          EXECUTE 'DROP TRIGGER IF EXISTS users_org_change_revoke_secretaries ON users';
-          EXECUTE 'CREATE TRIGGER users_org_change_revoke_secretaries
-            AFTER UPDATE OF organization_id ON users
-            FOR EACH ROW
-            EXECUTE FUNCTION users_org_change_revoke_secretaries_fn()';
-        END IF;
-      END $$;
-    `);
+    await tx.execute(sql.raw(USERS_ORG_CHANGE_REVOKE_SECRETARIES_FUNCTION_SQL));
+    await tx.execute(sql.raw(USERS_ORG_CHANGE_REVOKE_SECRETARIES_STARTUP_SQL));
   });
 }

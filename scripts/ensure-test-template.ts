@@ -7,20 +7,23 @@
  *   1. If the schema-input hash differs from `.local/test-template-hash`,
  *      rebuild (covers schema/seed/invariants drift).
  *
- *   2. In Neon-branches mode, additionally verify the template branch
- *      actually exists in the Neon project even when the hash matches.
- *      Without this, a manually-deleted template branch (or one wiped
- *      by a teammate's reset) would silently leave the hash file
- *      claiming "up-to-date" and the next per-pool branch create would
- *      fail with "parent branch not found". We rebuild on absence so
- *      the next clone can succeed.
+ *   2. On a hash match, resolve the actual local template database or
+ *      pre-existing Neon template branch and require its exact active
+ *      migration journal. Missing or conflicting state is refused; this
+ *      guard never applies migrations as a repair fallback.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { assertSafeDatabaseHost } from '../server/utils/db-safety';
-import { buildTestTemplate, computeTemplateHash } from './build-test-template';
+import {
+  assertMigratedTemplateReady,
+  buildTestTemplate,
+  computeTemplateHash,
+  templateDatabaseUrl,
+} from './build-test-template';
 import {
   findBranchByName,
   getNeonConfig,
+  resolveBranchUrl,
   TEMPLATE_BRANCH_NAME,
 } from '../tests/setup/neon-branches';
 
@@ -39,9 +42,10 @@ export async function ensureTestTemplate(): Promise<void> {
     return;
   }
 
-  // Hash matches — but in Neon-branches mode, also confirm the
-  // template branch is still present. (This is a single ~150ms API
-  // call; cheap enough to do on every test run.)
+  // A matching local hash is only a cache hint. The template itself must still
+  // contain the exact checked-in migration journal. This is deliberately a
+  // read-only assertion: an absent or stale journal fails rather than being
+  // silently repaired before behavioral tests.
   //
   // Host-allow-list rail (Task #723 review): refuse to talk to the
   // Neon control plane unless the connected DB host is on the dev
@@ -50,19 +54,24 @@ export async function ensureTestTemplate(): Promise<void> {
   // per process inside `assertSafeDatabaseHost`.
   assertSafeDatabaseHost('ensure-test-template');
   const cfg = getNeonConfig();
+  let templateUrl: string;
   if (cfg) {
     const branch = await findBranchByName(cfg, TEMPLATE_BRANCH_NAME);
     if (!branch) {
-      console.log(
-        `[ensure-test-template] hash up-to-date but Neon template branch ` +
-          `"${TEMPLATE_BRANCH_NAME}" missing; rebuilding…`,
+      throw new Error(
+        `Cached Neon test-template branch "${TEMPLATE_BRANCH_NAME}" is missing; ` +
+          'automatic Neon template construction is disabled because a branch is not an empty migration target.',
       );
-      await buildTestTemplate();
-      return;
     }
+    templateUrl = await resolveBranchUrl(cfg, branch.id);
+  } else {
+    templateUrl = templateDatabaseUrl();
   }
 
-  console.log('[ensure-test-template] hash up-to-date; skipping rebuild.');
+  await assertMigratedTemplateReady(templateUrl);
+  console.log(
+    '[test-template-provenance] source=db:migrate cache=hit journal=exact fingerprint=exact rebuild=skipped',
+  );
 }
 
 const isMain = import.meta.url === `file://${process.argv[1]}`;

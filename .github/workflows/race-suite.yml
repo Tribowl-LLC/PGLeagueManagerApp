@@ -50,7 +50,7 @@ jobs:
     # match against. If you rename it, update branch protection too.
     name: Race suite
     runs-on: ubuntu-latest
-    # The race suite spins up a Postgres container, runs `db:push`,
+    # The race suite spins up a Postgres container, replays migrations,
     # boots the dev server, and runs two race files serially. Locally
     # it finishes in ~3 minutes; 20 is a generous ceiling that still
     # kills a hung dev-server boot or a deadlocked test before it eats
@@ -70,7 +70,7 @@ jobs:
         ports:
           - 5432:5432
         # Wait for `pg_isready` before the job's own steps can connect.
-        # Without this, `npm run db:push` can race the container's
+        # Without this, `npm run db:migrate` can race the container's
         # initdb and fail on a cold cache.
         options: >-
           --health-cmd pg_isready
@@ -153,14 +153,13 @@ jobs:
         if: steps.decide.outputs.run == 'true'
         run: npm ci
 
-      # Apply the Drizzle schema to the empty Postgres container.
-      # `db:push` is idempotent and matches what `npm run dev` expects
-      # to find on first boot.
+      # Apply the checked-in forward-only migration history to the empty
+      # Postgres container.
       - name: Apply database schema
         if: steps.decide.outputs.run == 'true'
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/leaguevault_race
-        run: npm run db:push
+        run: npm run db:migrate
 
       # Boot the same dev server the tests talk to. The race files hit
       # `http://localhost:5000` directly (see the `BASE_URL` constant in

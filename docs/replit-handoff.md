@@ -55,7 +55,7 @@ are documented in `AGENTS.md` and `docs/production-runbook.md`.
 
 Beta starts with an **empty** database — no production data is
 copied over. Provision a fresh Replit-managed Postgres for the beta
-Repl and set its `DATABASE_URL` in Secrets. Run `npm run db:push`
+Repl and set its `DATABASE_URL` in Secrets. Run `npm run db:migrate`
 once to apply the schema.
 
 ### 4. Configure beta secrets (sandbox only)
@@ -200,7 +200,7 @@ and is not used for Render production releases.
 ### Resetting beta data
 
 Beta data is disposable. To reset, drop the beta database in the
-Replit Database pane and re-run `npm run db:push` followed by
+Replit Database pane and re-run `npm run db:migrate` followed by
 `npx tsx scripts/seed.ts all`.
 
 ### Suspecting a creds leak

@@ -38,7 +38,7 @@ import { normalizeSqlDefinition } from '../../scripts/lib/sql-definition-normali
 
 function emptyInventory(database: string): DatabaseInventory {
   return {
-    formatVersion: 2,
+    formatVersion: 3,
     target: {
       hostFingerprint: 'sha256:test',
       database,
@@ -55,6 +55,7 @@ function emptyInventory(database: string): DatabaseInventory {
     tablePrivileges: [],
     policies: [],
     columns: [],
+    sequences: [],
     constraints: [],
     indexes: [],
     types: [],
@@ -190,7 +191,7 @@ describe('database schema inventory tools', () => {
   });
 
   it('validates the inventory format before comparison', () => {
-    expect(() => assertDatabaseInventory({ formatVersion: 2 }, 'partial.json')).toThrow(
+    expect(() => assertDatabaseInventory({ formatVersion: 3 }, 'partial.json')).toThrow(
       'partial.json is missing target metadata',
     );
     expect(() => assertDatabaseInventory({ formatVersion: 99 }, 'future.json')).toThrow(
@@ -722,7 +723,7 @@ describe('database schema inventory tools', () => {
       return result;
     };
     expect(() => cleanupOwnedContainer(container, runner)).toThrow(
-      `Cleanup failed for verified inventory container ${container.id}`,
+      'Cleanup failed for the verified inventory container',
     );
     expect(calls.map((args) => args[0])).toEqual(['inspect', 'stop', 'inspect', 'rm']);
     expect(calls[1]).toContain(container.id);

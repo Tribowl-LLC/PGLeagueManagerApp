@@ -1,14 +1,14 @@
 #!/bin/bash
 set -e
 npm install
-npm run db:push -- --force
+npm run db:migrate
 # Phase 1 of the per-worker test isolation work (Task #699): rebuild
-# the `leaguevault_test_template` database so any schema change pulled
-# in by this merge is reflected in the template Phase 2 will clone
+# the `leaguevault_test_template` database so the active migration history
+# in this merge is reflected in the template Phase 2 will clone
 # per vitest worker. No-op-ish if the schema-input hash hasn't moved,
 # but we run the full build here for safety because the post-pull /
 # post-merge hook is the canonical "bring my dev env in sync" step.
-npm run db:push:template || true
+npm run test:template:build || true
 # Re-seed ~/.ssh/id_ed25519 + known_hosts so `git push` keeps working
 # after a task merge (the merged container can land on a fresh box
 # where ~/.ssh/ doesn't exist yet). --quiet exits 0 silently if the

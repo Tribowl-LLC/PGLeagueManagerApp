@@ -5,57 +5,8 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1776746055088,
-      "tag": "0000_baseline",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "7",
-      "when": 1776747226090,
-      "tag": "0001_add_apple_pay_jobs",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "7",
-      "when": 1776747887659,
-      "tag": "0002_leagues_org_not_null",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "7",
-      "when": 1776750779086,
-      "tag": "0003_apple_pay_item_lease",
-      "breakpoints": true
-    },
-    {
-      "idx": 4,
-      "version": "7",
-      "when": 1776751391589,
-      "tag": "0004_apple_pay_item_recovered_count",
-      "breakpoints": true
-    },
-    {
-      "idx": 5,
-      "version": "7",
-      "when": 1776754748249,
-      "tag": "0005_add_payment_sync_pending_at",
-      "breakpoints": true
-    },
-    {
-      "idx": 6,
-      "version": "7",
-      "when": 1776756941868,
-      "tag": "0006_nostalgic_black_knight",
-      "breakpoints": true
-    },
-    {
-      "idx": 7,
-      "version": "7",
-      "when": 1776978619390,
-      "tag": "0007_add_bowler_payment_provider_location",
+      "when": 1784104330176,
+      "tag": "0000_normalized_baseline",
       "breakpoints": true
     }
   ]

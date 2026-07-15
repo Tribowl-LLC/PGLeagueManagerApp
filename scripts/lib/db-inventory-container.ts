@@ -57,10 +57,10 @@ export function assertContainerOwnership(
   expected: OwnedInventoryContainer,
 ): void {
   if (inspection.id !== expected.id) {
-    throw new Error(`Refusing container action: expected container id ${expected.id} was not verified.`);
+    throw new Error('Refusing container action: the expected container identity was not verified.');
   }
   if (inspection.runIdLabel !== expected.runId) {
-    throw new Error(`Refusing container action: ownership label mismatch for container ${expected.id}.`);
+    throw new Error('Refusing container action: container ownership label mismatch.');
   }
 }
 
@@ -75,11 +75,11 @@ export function inspectOwnedContainer(
     container.id,
   ]);
   if (result.error || result.status !== 0) {
-    throw new Error(`Could not verify ownership of inventory container ${container.id}.`);
+    throw new Error('Could not verify ownership of the inventory container.');
   }
   const separator = result.stdout.trim().indexOf('|');
   if (separator === -1) {
-    throw new Error(`Docker returned invalid ownership metadata for container ${container.id}.`);
+    throw new Error('Docker returned invalid inventory-container ownership metadata.');
   }
   const inspection = {
     id: result.stdout.trim().slice(0, separator),
@@ -103,6 +103,6 @@ export function cleanupOwnedContainer(
   const remove = runDocker(['rm', '--force', container.id]);
   if (!remove.error && remove.status === 0) return { usedFallbackRemoval: true };
   throw new Error(
-    `Cleanup failed for verified inventory container ${container.id}; manual removal is required.`,
+    'Cleanup failed for the verified inventory container; manual removal is required.',
   );
 }

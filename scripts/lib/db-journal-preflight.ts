@@ -447,12 +447,12 @@ export function preflightJournalSql(tag: string, sql: string): PreflightStatemen
 }
 
 export function loadTrackedJournalReplayPlan(
-  migrationsDirectory = resolve('migrations'),
+  migrationsDirectory = resolve('migrations-legacy-do-not-replay'),
 ): TrackedMigrationReplay[] {
   const journalPath = join(migrationsDirectory, 'meta', '_journal.json');
   const parsed = JSON.parse(readFileSync(journalPath, 'utf8')) as unknown;
   if (parsed === null || typeof parsed !== 'object' || !Array.isArray((parsed as DrizzleJournal).entries)) {
-    throw new Error('migrations/meta/_journal.json does not contain an entries array.');
+    throw new Error('The selected legacy migration journal does not contain an entries array.');
   }
   const journal = parsed as DrizzleJournal;
   const plan: TrackedMigrationReplay[] = [];

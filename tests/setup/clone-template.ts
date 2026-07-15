@@ -37,6 +37,7 @@ import { randomBytes } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import pg from 'pg';
 import { assertSafeDatabaseHost } from '../../server/utils/db-safety';
+import { assertCheckedMigrationsCurrent } from '../../scripts/lib/db-migration-runner';
 import { CLONE_ADVISORY_LOCK_KEY, TEMPLATE_DB_NAME } from './per-worker-lock';
 import {
   buildBranchUrl,
@@ -273,10 +274,15 @@ async function cloneViaCreateDatabase(targetDb: string): Promise<CloneResult> {
 
 export async function cloneTemplate(targetName: string): Promise<CloneResult> {
   ensureCloneHostSafe();
-  if (getNeonConfig()) {
-    return cloneViaBranch(targetName);
-  }
-  return cloneViaCreateDatabase(targetName);
+  const result = getNeonConfig()
+    ? await cloneViaBranch(targetName)
+    : await cloneViaCreateDatabase(targetName);
+  // Physical cloning must preserve the exact active journal. Never apply a
+  // missing migration here: an invalid clone must fail before its URL is
+  // stashed or an application process can bind to it.
+  await assertCheckedMigrationsCurrent(result.url);
+  console.log('[test-worker-provenance] source=migrated-template journal=exact');
+  return result;
 }
 
 // Module-level memo of the cold-path DB clone. Wiped by vitest's

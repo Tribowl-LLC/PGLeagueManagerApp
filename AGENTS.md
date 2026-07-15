@@ -114,6 +114,7 @@ The normal local validation sequence is:
 
 ```bash
 npm ci
+npm run db:check
 npm run test:local
 npm run check
 npm run lint
@@ -216,8 +217,12 @@ browser-delivered code.
 - PostgreSQL is the production database.
 - Drizzle and the definitions under `shared/schema/` are the schema authority.
 - Modify database definitions in `shared/schema/`.
-- Create deliberate schema changes through the project's documented Drizzle
-  workflow.
+- Create deliberate schema changes with `npm run db:generate -- --name
+  <description>`, review the SQL and metadata under `migrations/`, and apply
+  checked-in migrations with `npm run db:migrate`.
+- `migrations/` is the only active forward-only history.
+  `migrations-legacy-do-not-replay/` is evidence only and must never be
+  replayed or generated into.
 - Do not manually alter an already-applied production migration.
 - Do not edit migration history to disguise a later schema change.
 - Do not run destructive production database commands.
@@ -226,9 +231,12 @@ browser-delivered code.
 - Application startup must not silently mutate the production schema unless
   that behavior is explicitly documented and approved.
 - Before a production schema release, back up the intended Neon database.
-- Verify the Neon project, branch, host, database, and `DATABASE_URL` before
-  running `npm run db:push`.
-- Review every destructive statement shown by Drizzle.
+- Existing databases must never infer baseline adoption from an absent or
+  empty journal. Use the explicit fingerprint-, backup-, target-, commit-, and
+  confirmation-gated adoption workflow documented in `docs/DATABASE.md`.
+- `db:push` is retained only as `db:push:disposable`; never use it for a
+  durable shared environment.
+- Review every generated migration statement before commit and deployment.
 - Abort unexpected table, column, constraint, or data-loss changes.
 - Identify migration order, deployment order, compatibility concerns, and
   rollback implications in the pull request.

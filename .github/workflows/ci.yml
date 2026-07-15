@@ -253,6 +253,45 @@ jobs:
   #
   # See `docs/ci.md` for the full layout of which suite runs in which
   # job and the env-var contract.
+  database-migrations:
+    name: Database migrations (PostgreSQL ${{ matrix.postgres }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: ['16', '17']
+    steps:
+      - name: Check out the PR
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '22.22.0'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Migration hashes cover the exact LF-normalized bytes committed to Git.
+      # Re-check from a clean clone with Windows-style autocrlf enabled so a
+      # missing or changed .gitattributes rule cannot pass only on Linux.
+      - name: Verify exact migration bytes across checkout modes
+        run: |
+          npm run db:migration-bytes:check
+          clone="$RUNNER_TEMP/leaguevault-migration-bytes"
+          git clone --quiet --no-hardlinks --no-checkout "$GITHUB_WORKSPACE" "$clone"
+          git -C "$clone" config core.autocrlf true
+          git -C "$clone" checkout --quiet --detach "$GITHUB_SHA"
+          (
+            cd "$clone"
+            "$GITHUB_WORKSPACE/node_modules/.bin/tsx" scripts/check-migration-bytes.ts
+          )
+
+      - name: Replay, fingerprint, and adopt disposable databases
+        run: npm run db:check -- --postgres-version ${{ matrix.postgres }}
+
   tests:
     name: Tests
     runs-on: ubuntu-latest
@@ -281,7 +320,7 @@ jobs:
         ports:
           - 5432:5432
         # Wait for `pg_isready` before the job's own steps can connect.
-        # Without this, `npm run db:push` can race the container's
+        # Without this, `npm run db:migrate` can race the container's
         # initdb and fail on a cold cache.
         options: >-
           --health-cmd pg_isready
@@ -306,25 +345,20 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Apply the Drizzle schema to the empty Postgres container.
-      # `db:push` is idempotent and matches what `npm run dev` expects
-      # to find on first boot. Same step name + invocation as
-      # `race-suite.yml` so the two workflows can share remediation
-      # docs.
+      # Apply the checked-in forward-only migration history to the empty
+      # Postgres container. The guarded runner verifies journal metadata and
+      # refuses to infer baseline adoption from an empty journal.
       - name: Apply database schema
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/leaguevault_test
-        run: npm run db:push
+        run: npm run db:migrate
 
-      # Boot the same dev server the API tests talk to. The HTTP-based
-      # tests under `tests/api/` resolve their base URL through
-      # `tests/helpers.ts`, which falls back to
-      # `http://localhost:5000` when no `REPLIT_DEV_DOMAIN` /
-      # `TEST_BASE_URL` is set — that's the path CI takes.
+      # Boot a migrated-database startup/health smoke server. Behavioral
+      # tests use isolated per-worker Express processes whose databases are
+      # cloned from a separately migrated canonical test template.
       #
-      # `tests/setup/global-setup.ts` runs `installDbInvariants()` and
-      # `seedTestUsers()` at vitest start, so we don't need a separate
-      # `npm run seed` step.
+      # `tests/setup/global-setup.ts` builds or verifies that migrated
+      # template, installs the retained startup invariants, and seeds it.
       #
       # Env var contract (kept in sync with `race-suite.yml`):
       #   * DATABASE_URL — points at the service container above.
@@ -390,9 +424,8 @@ jobs:
           tail -n 200 /tmp/dev-server.log >&2 || true
           exit 1
 
-      # `npm test` = `vitest run`, which executes the three projects
-      # declared in `vitest.config.ts` (parallel, serial-fk-bypass,
-      # client-components). The two opt-in race files are gated behind
+      # `npm test` = `vitest run`, which executes all six projects
+      # declared in `vitest.config.ts`. The two opt-in race files are gated behind
       # `RUN_BOOTSTRAP_RACE_TESTS=1` and are NOT run here — they have
       # their own workflow (`race-suite.yml`).
       #
@@ -407,7 +440,11 @@ jobs:
           FIELD_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
           SETUP_SECRET: ${{ secrets.SETUP_SECRET || 'ci-tests-fallback-setup-secret-deterministic-not-a-real-secret' }}
           NODE_ENV: development
-        run: npm test
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee /tmp/vitest.log
+          grep -F '[test-template-provenance] source=db:migrate' /tmp/vitest.log
+          grep -F '[test-worker-provenance] source=migrated-template journal=exact' /tmp/vitest.log
 
       # Always-run cleanup: SIGTERM the backgrounded dev server so the
       # job finishes promptly even when the test step fails. `|| true`

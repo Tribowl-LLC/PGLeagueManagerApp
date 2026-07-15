@@ -20,15 +20,15 @@
 # Idempotent: every step is a no-op if there's nothing to do, so it's
 # safe to run even when the pull only touched code (no deps / schema
 # changes). Exits non-zero on the first hard failure (npm install or
-# db:push). Refuses to run when REPLIT_DEPLOYMENT=1 or
-# NODE_ENV=production unless --allow-prod is passed, because step 2
-# applies destructive schema changes to whatever DATABASE_URL points at.
+# checked-in migrations). Refuses to run when REPLIT_DEPLOYMENT=1 or
+# NODE_ENV=production unless --allow-prod is passed, because step 2 applies
+# reviewed schema changes to whatever DATABASE_URL points at.
 
 set -e
 
 # --- Production-DB safety rail ---------------------------------------
-# `db:push --force` in step 2 applies schema directly to whatever
-# `DATABASE_URL` points at, with destructive force semantics. This
+# `db:migrate` in step 2 applies the reviewed forward-only active migration
+# history to whatever `DATABASE_URL` points at. This
 # script is only intended for the Replit dev environment. Refuse to
 # run if anything looks like a production deployment context unless
 # the operator explicitly opts in with --allow-prod (escape hatch
@@ -39,7 +39,7 @@ if [ "$ALLOW_PROD" = "0" ]; then
   if [ "${REPLIT_DEPLOYMENT:-0}" = "1" ] || [ "${NODE_ENV:-}" = "production" ]; then
     echo "ERROR: post-pull.sh refuses to run in a production-looking context." >&2
     echo "       (REPLIT_DEPLOYMENT=${REPLIT_DEPLOYMENT:-} NODE_ENV=${NODE_ENV:-})" >&2
-    echo "       This script runs 'db:push --force' which can destroy production schema." >&2
+    echo "       This script runs 'db:migrate' and must not target production." >&2
     echo "       If you really mean to do this, re-run with: bash scripts/post-pull.sh --allow-prod" >&2
     exit 2
   fi
@@ -56,19 +56,19 @@ npm install
 echo "      done."
 echo ""
 
-echo "[2/3] npm run db:push --force — applying migrations to dev DB…"
-npm run db:push -- --force
+echo "[2/3] npm run db:migrate — applying checked-in migrations to dev DB…"
+npm run db:migrate
 echo "      done."
 echo ""
 
-echo "[2b/3] npm run db:push:template — rebuilding test template DB…"
+echo "[2b/3] npm run test:template:build — rebuilding the migrated test template DB…"
 # Phase 1 of per-worker test isolation (Task #699). Keeps the
-# `leaguevault_test_template` DB in sync with the just-pushed schema
+# `leaguevault_test_template` DB in sync with the active migration history
 # so Phase 2's per-worker `CREATE DATABASE … TEMPLATE …` clones
 # inherit the latest invariants + seeded users. Non-fatal so a
 # template-build hiccup doesn't block the rest of the post-pull
 # reset (the next task that runs the suite will rebuild on demand).
-npm run db:push:template || echo "      WARNING: template build failed; will rebuild on next test run."
+npm run test:template:build || echo "      WARNING: template build failed; will rebuild on next test run."
 echo "      done."
 echo ""
 

@@ -82,13 +82,30 @@ For a disposable branch:
    `PGOPTIONS` must be unset. The command refuses before catalog inventory if
    the server-reported database or role differs. Store the normalized JSON in
    the approved review-artifact system; do not commit it.
-6. Do not run the application, `db:push`, migrations, invariant installation,
+6. Do not run the application, a schema push, migrations, invariant installation,
    seeds, or backfills as part of inventory collection. Unset `DATABASE_URL`
    afterward.
 
 See [`DATABASE.md`](./DATABASE.md#disposable-neon-branch-inventory-procedure)
 for the complete comparison procedure. Direct production inventory remains a
 separately approved future operation.
+
+## Baseline adoption is disabled remotely
+
+Production adoption has not been performed. The command in this pull request
+accepts only a strictly verified repository-tool-owned local Docker database;
+it rejects Neon, all other remote hosts, ordinary CI targets, and every
+production-shaped process or target. There is no current remote rehearsal
+procedure, and `db:adopt-baseline` must not be run against a disposable Neon
+branch.
+
+Any future Neon rehearsal or production-enablement change requires separate
+review. At minimum it must add provider-backed proof that the endpoint belongs
+to the independently recorded project and branch, a backup/restore gate, a
+reviewed lock design for catalog object classes that table/sequence locks do
+not cover, and tests proving atomic journal registration and safe concurrent
+refusal. The read-only disposable-branch inventory procedure above remains
+available; it is not permission to adopt that branch.
 
 ## Schema Release
 
@@ -98,17 +115,26 @@ Schema changes require a deliberate release step:
 2. Confirm the target Neon project, branch, host, database name, and user.
 3. Set `DATABASE_URL` only in the shell or deployment environment where the
    intended target has been independently verified.
-4. Run `npm run db:push`.
-5. Read every proposed statement. Abort if Drizzle proposes an unexpected
-   table, column, constraint, or data-loss operation.
+4. Confirm the exact checked-in migration SQL was reviewed and the target has
+   the exact active journal prefix. Existing production is not yet adopted;
+   stop until a separate operator-only production-enablement change is
+   approved.
+5. Run `npm run db:migrate` with exactly one executor for the environment.
+   Abort on any journal mismatch or migration failure.
 6. Apply the schema change to the intended database and record the result.
 7. Deploy the matching CI-verified application commit.
 8. Verify `/api/health`, login, the changed workflow, and relevant provider or
    webhook behavior.
 
-`db:push` is not a substitute for a backup. A destructive schema change may
-require restoring the database or manually reconstructing data; plan that
-before confirming a destructive prompt.
+`db:migrate` is not a substitute for a backup. Use expand–migrate–contract
+releases and plan restoration before a destructive contract migration.
+`db:push:disposable` accepts only the exact marked database in a running,
+repository-tool-owned local Docker container after full-ID, label, loopback
+port, auto-remove/anonymous-volume, database, role, and database-comment
+verification. It pins the reviewed Drizzle config and gives the child only the
+exact verified URL plus a minimal environment, with no inherited target/config
+override. It has no remote-host allowlist or development bypass and is
+prohibited for production, Neon, and every durable database.
 
 ## Post-Deployment Checks
 
@@ -132,6 +158,6 @@ For an application-only regression, redeploy the previous known-good commit
 from GitHub and verify the health endpoint and affected workflow.
 
 For a schema regression, stop further deploys, preserve logs, and use the
-prepared Neon backup or restore plan. Do not guess at a reverse `db:push`; schema
+prepared Neon backup or restore plan. Do not guess at a reverse migration; schema
 changes and data restoration require an explicit review of the current database
 state.

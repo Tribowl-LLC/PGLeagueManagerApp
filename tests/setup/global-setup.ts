@@ -34,7 +34,7 @@ import { precloneAllWorkerDbs } from './clone-template';
 // in sync if any project's `maxWorkers` is raised.
 const MAX_POOL_ID = 4;
 
-// Vitest invokes `globalSetup` once per project (we have ≥3 node
+// Vitest invokes `globalSetup` once per DB-backed project (we have four
 // projects). Without memoisation the second project's `cleanupTestDbs()`
 // would drop the worker databases the FIRST project's workers had just
 // finished cloning — the visible symptom is `database "test_worker_…"

@@ -15,6 +15,14 @@ import {
   type OwnedInventoryContainer,
 } from './lib/db-inventory-container';
 import {
+  DISPOSABLE_DATABASE_LABELS,
+  DISPOSABLE_DATABASE_OWNER,
+  disposableDatabaseMarker,
+  disposableTargetProofEnvironment,
+  encodeDisposableDatabaseLabel,
+  type DisposableTargetProof,
+} from './lib/db-disposable-target';
+import {
   loadTrackedJournalReplayPlan,
   type TrackedMigrationReplay,
 } from './lib/db-journal-preflight';
@@ -31,6 +39,7 @@ const POSTGRES_USER = 'postgres';
 const POSTGRES_PASSWORD = 'leaguevault-inventory-local-only';
 const PUSH_DATABASE = 'inventory_push';
 const JOURNAL_DATABASE = 'inventory_journal';
+const DISPOSABLE_PURPOSE = 'db-inventory-validate-local';
 const activeConnectionStrings = new Set<string>();
 
 interface RunOptions {
@@ -99,6 +108,14 @@ function createOwnedContainer(runId: string): OwnedInventoryContainer {
     name,
     '--label',
     `${INVENTORY_CONTAINER_LABEL}=${runId}`,
+    '--label',
+    `${DISPOSABLE_DATABASE_LABELS.owner}=${DISPOSABLE_DATABASE_OWNER}`,
+    '--label',
+    `${DISPOSABLE_DATABASE_LABELS.runId}=${runId}`,
+    '--label',
+    `${DISPOSABLE_DATABASE_LABELS.purpose}=${DISPOSABLE_PURPOSE}`,
+    '--label',
+    `${DISPOSABLE_DATABASE_LABELS.databases}=${encodeDisposableDatabaseLabel([PUSH_DATABASE, JOURNAL_DATABASE])}`,
     '--env',
     `POSTGRES_USER=${POSTGRES_USER}`,
     '--env',
@@ -125,14 +142,14 @@ async function waitForPostgres(container: OwnedInventoryContainer): Promise<void
     if (!result.error && result.status === 0) return;
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 1000));
   }
-  throw new Error(`Ephemeral PostgreSQL container ${container.id} was not ready within 45 seconds.`);
+  throw new Error('Ephemeral PostgreSQL container was not ready within 45 seconds.');
 }
 
 function publishedPort(container: OwnedInventoryContainer): number {
   inspectOwnedContainer(container, runDocker);
   const result = runDocker(['port', container.id, '5432/tcp']);
   if (result.error || result.status !== 0) {
-    throw new Error(`Could not read the loopback port for inventory container ${container.id}.`);
+    throw new Error('Could not read the loopback port for the inventory container.');
   }
   const match = result.stdout.match(/:(\d+)\s*$/m);
   if (!match) throw new Error('Could not determine the ephemeral PostgreSQL loopback port.');
@@ -154,7 +171,23 @@ function databaseUrl(port: number, database: string): string {
   return value;
 }
 
-async function createDisposableDatabases(adminUrl: string): Promise<void> {
+function disposableProof(container: OwnedInventoryContainer, database: string): DisposableTargetProof {
+  return {
+    containerId: container.id,
+    runId: container.runId,
+    purpose: DISPOSABLE_PURPOSE,
+    database,
+  };
+}
+
+function sqlLiteral(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+async function createDisposableDatabases(
+  adminUrl: string,
+  container: OwnedInventoryContainer,
+): Promise<void> {
   const client = new pg.Client({
     connectionString: adminUrl,
     application_name: 'leaguevault-db-inventory-setup',
@@ -163,6 +196,12 @@ async function createDisposableDatabases(adminUrl: string): Promise<void> {
     await client.connect();
     await client.query(`CREATE DATABASE ${PUSH_DATABASE}`);
     await client.query(`CREATE DATABASE ${JOURNAL_DATABASE}`);
+    await client.query(
+      `COMMENT ON DATABASE ${PUSH_DATABASE} IS ${sqlLiteral(disposableDatabaseMarker(disposableProof(container, PUSH_DATABASE)))}`,
+    );
+    await client.query(
+      `COMMENT ON DATABASE ${JOURNAL_DATABASE} IS ${sqlLiteral(disposableDatabaseMarker(disposableProof(container, JOURNAL_DATABASE)))}`,
+    );
   } finally {
     await client.end().catch(() => undefined);
   }
@@ -174,13 +213,14 @@ function npmInvocation(args: string[]): { command: string; args: string[] } {
   return { command: process.platform === 'win32' ? 'npm.cmd' : 'npm', args };
 }
 
-function applyCurrentSchema(pushUrl: string): void {
-  const invocation = npmInvocation(['run', 'db:push', '--', '--force']);
+function applyCurrentSchema(pushUrl: string, container: OwnedInventoryContainer): void {
+  const invocation = npmInvocation(['run', 'db:push:disposable', '--', '--force']);
   run(invocation.command, invocation.args, {
     env: {
       ...process.env,
       DATABASE_URL: pushUrl,
       NODE_ENV: 'test',
+      ...disposableTargetProofEnvironment(disposableProof(container, PUSH_DATABASE)),
     },
     sensitiveValues: [pushUrl],
   });
@@ -301,8 +341,8 @@ export async function validateDatabaseInventoryLocally(): Promise<void> {
     const pushUrl = databaseUrl(port, PUSH_DATABASE);
     const journalUrl = databaseUrl(port, JOURNAL_DATABASE);
 
-    await createDisposableDatabases(adminUrl);
-    applyCurrentSchema(pushUrl);
+    await createDisposableDatabases(adminUrl, container);
+    applyCurrentSchema(pushUrl, container);
     const appliedJournalTags = await replayTrackedJournal(journalUrl, replayPlan);
 
     const pushPath = join(artifactDirectory, 'db-push.json');
