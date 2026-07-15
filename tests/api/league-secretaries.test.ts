@@ -57,8 +57,7 @@ describe('League Secretary grants (Task #735)', () => {
   let orgBAdmin: AuthSession;
   let orgAId: number;
   let orgBId: number;
-  let orgALeagueId: number;
-  let orgBLeagueId: number;
+  let orgALeagueId = 0;
 
   // Test users we provision directly via storage.
   let orgAUserPlainId = 0;
@@ -80,15 +79,20 @@ describe('League Secretary grants (Task #735)', () => {
     orgAId = orgAAdmin.user.organizationId;
     orgBId = orgBAdmin.user.organizationId;
 
-    const leaguesA = await apiGet<LeagueLite[]>('/api/leagues', orgAAdmin);
-    const dataA = Array.isArray(leaguesA.data.data) ? leaguesA.data.data : [];
-    expect(dataA.length).toBeGreaterThan(0);
-    orgALeagueId = dataA[0].id;
-
-    const leaguesB = await apiGet<LeagueLite[]>('/api/leagues', orgBAdmin);
-    const dataB = Array.isArray(leaguesB.data.data) ? leaguesB.data.data : [];
-    expect(dataB.length).toBeGreaterThan(0);
-    orgBLeagueId = dataB[0].id;
+    // This suite renames and otherwise mutates its subject league. Own the
+    // fixture so those mutations cannot leak into tests that depend on the
+    // seeded baseline league's stable name.
+    const [ownedLeague] = await db
+      .insert(leaguesTable)
+      .values({
+        name: `Vitest Secretary League ${stamp}`,
+        organizationId: orgAId,
+        seasonStart: '2025-01-01',
+        seasonEnd: '2099-12-31',
+        weekDay: 'Monday',
+      })
+      .returning({ id: leaguesTable.id });
+    orgALeagueId = ownedLeague.id;
 
     const password = await hashPassword('test-password-123!');
     const [u1] = await db
@@ -149,14 +153,20 @@ describe('League Secretary grants (Task #735)', () => {
   });
 
   afterAll(async () => {
-    if (createdUserIds.length === 0) return;
-    await db
-      .delete(leagueSecretaryAudits)
-      .where(inArray(leagueSecretaryAudits.targetUserId, createdUserIds));
-    await db
-      .delete(leagueSecretaries)
-      .where(inArray(leagueSecretaries.userId, createdUserIds));
-    await db.delete(users).where(inArray(users.id, createdUserIds));
+    if (orgALeagueId > 0) {
+      await db
+        .delete(leagueSecretaryAudits)
+        .where(eq(leagueSecretaryAudits.leagueId, orgALeagueId));
+      await db
+        .delete(leagueSecretaries)
+        .where(eq(leagueSecretaries.leagueId, orgALeagueId));
+    }
+    if (createdUserIds.length > 0) {
+      await db.delete(users).where(inArray(users.id, createdUserIds));
+    }
+    if (orgALeagueId > 0) {
+      await db.delete(leaguesTable).where(eq(leaguesTable.id, orgALeagueId));
+    }
   });
 
   describe('POST grant', () => {
