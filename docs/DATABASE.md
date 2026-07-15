@@ -293,6 +293,19 @@ schemas and extensions as provider-managed objects outside the application
 baseline. Any future non-bypass runtime or Data API role requires a new,
 explicit RLS design before it receives table privileges.
 
+Baseline verification has one narrow compatibility state for that exact legacy
+inventory. It accepts all 29 application tables with RLS enabled only when
+`FORCE ROW LEVEL SECURITY` is disabled everywhere, there are zero application
+policies or policy dependencies, the connected non-superuser role owns every
+application table, and that role has `BYPASSRLS`. The verifier then normalizes
+only those 29 RLS flags for comparison with the unchanged canonical
+fingerprint and reports `legacy-inert-rls`. Mixed enabled/disabled tables,
+policies (including provider/Auth/JWT references), FORCE RLS, missing ownership
+or BYPASSRLS, and every non-RLS structural difference remain refusals. Raw
+inventories and ordinary fingerprint generation are unchanged; this exception
+exists only in explicit baseline verification. It does not enable remote or
+production adoption, and production has not been adopted.
+
 ## Organizations subdomain index decision
 
 The active baseline definition is the production-shaped partial index:

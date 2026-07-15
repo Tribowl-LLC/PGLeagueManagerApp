@@ -111,6 +111,13 @@ export interface BaselineFingerprint {
   structure: ApplicationSchemaStructure;
 }
 
+export type BaselineVerificationState = 'canonical' | 'legacy-inert-rls';
+
+export interface BaselineVerificationResult {
+  state: BaselineVerificationState;
+  fingerprint: BaselineFingerprint;
+}
+
 function compareKey(left: Record<string, unknown>, right: Record<string, unknown>): number {
   const leftKey = [left.schema, left.table, left.name, left.identityArguments]
     .filter((value) => typeof value === 'string')
@@ -350,6 +357,70 @@ export function assertApprovedBaselineFingerprint(
       `Application schema fingerprint mismatch (expected sha256:${approved.digest}; received sha256:${actual.digest}).`,
     );
   }
+}
+
+function classifyBaselineVerificationState(inventory: DatabaseInventory): BaselineVerificationState {
+  const tables = sortObjects(inventory.tables.filter((table) => table.schema === 'public'));
+  exactNames(
+    tables.map((table) => table.name),
+    APPLICATION_TABLE_NAMES,
+    'public application tables',
+  );
+  if (tables.some((table) => table.forceRowSecurity)) {
+    throw new Error('Application baseline verification refuses FORCE RLS on application tables.');
+  }
+
+  const enabledCount = tables.filter((table) => table.rowSecurity).length;
+  if (enabledCount === 0) return 'canonical';
+  if (enabledCount !== APPLICATION_TABLE_NAMES.length) {
+    throw new Error('Application baseline verification refuses mixed RLS state across application tables.');
+  }
+
+  const applicationPolicies = inventory.policies.filter((policy) => policy.schema === 'public');
+  if (applicationPolicies.length > 0) {
+    throw new Error('Legacy inert-RLS compatibility requires zero policies and policy dependencies.');
+  }
+  if (inventory.target.roleSuperuser) {
+    throw new Error('Legacy inert-RLS compatibility requires a non-superuser application role.');
+  }
+  if (!inventory.target.roleBypassRls) {
+    throw new Error('Legacy inert-RLS compatibility requires the application role to have BYPASSRLS.');
+  }
+  if (tables.some((table) => !table.connectedRoleOwnsTable)) {
+    throw new Error('Legacy inert-RLS compatibility requires the application role to own every application table.');
+  }
+  if (tables.some((table) => table.connectedRoleRlsMode !== 'bypass-bypassrls')) {
+    throw new Error('Legacy inert-RLS compatibility requires the exact BYPASSRLS table mode.');
+  }
+  return 'legacy-inert-rls';
+}
+
+/**
+ * Verifies either the canonical baseline or the one approved legacy Neon
+ * state. The compatibility normalization is deliberately confined to this
+ * verification path: raw inventories and ordinary fingerprint generation
+ * continue to preserve and reject enabled RLS flags.
+ */
+export function verifyBaselineInventory(
+  inventory: DatabaseInventory,
+  baseline: ActiveMigration = baselineMigration(),
+  approved: BaselineFingerprint = loadApprovedBaselineFingerprint(undefined, baseline),
+): BaselineVerificationResult {
+  const state = classifyBaselineVerificationState(inventory);
+  const verificationInventory = state === 'canonical'
+    ? inventory
+    : {
+        ...inventory,
+        tables: inventory.tables.map((table) =>
+          table.schema === 'public' &&
+          APPLICATION_TABLE_NAMES.includes(table.name as (typeof APPLICATION_TABLE_NAMES)[number])
+            ? { ...table, rowSecurity: false }
+            : table,
+        ),
+      };
+  const fingerprint = createBaselineFingerprint(verificationInventory, baseline);
+  assertApprovedBaselineFingerprint(fingerprint, approved);
+  return { state, fingerprint };
 }
 
 export function serializeBaselineFingerprint(fingerprint: BaselineFingerprint): string {

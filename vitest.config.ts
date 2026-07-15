@@ -87,6 +87,7 @@ const PARALLEL_ISOLATED_WITH_APP = [
 const UNIT_NO_DB = [
   'tests/unit/neon-branches-reveal-password.test.ts',
   'tests/unit/cleanup-connection-aware-sweep.test.ts',
+  'tests/unit/db-baseline-rls-compatibility.test.ts',
   'tests/unit/db-baseline-migration-tools.test.ts',
   'tests/unit/db-disposable-target.test.ts',
   'tests/unit/db-migration-bytes.test.ts',

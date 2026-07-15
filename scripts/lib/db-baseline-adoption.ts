@@ -5,9 +5,9 @@ import {
 } from '../../shared/database-invariants';
 import {
   APPLICATION_TABLE_NAMES,
-  assertApprovedBaselineFingerprint,
-  createBaselineFingerprint,
   loadApprovedBaselineFingerprint,
+  verifyBaselineInventory,
+  type BaselineVerificationState,
 } from './db-baseline-fingerprint';
 import {
   type DisposableTargetProof,
@@ -80,6 +80,7 @@ export interface AdoptionRuntime {
 export interface AdoptionResult {
   status: 'adopted' | 'no-op';
   baselineTag: string;
+  verificationState: BaselineVerificationState;
 }
 
 interface CapabilitySummaryRow extends QueryResultRow {
@@ -412,7 +413,7 @@ async function atomicallyRegisterBaseline(
   baseline: ActiveMigration,
   approved: ReturnType<typeof loadApprovedBaselineFingerprint>,
   runtime: AdoptionRuntime,
-): Promise<'adopted' | 'no-op'> {
+): Promise<{ status: 'adopted' | 'no-op'; verificationState: BaselineVerificationState }> {
   const client = new pg.Client({
     connectionString,
     application_name: 'leaguevault-db-adopt-baseline',
@@ -462,14 +463,14 @@ async function atomicallyRegisterBaseline(
     const inventory = await collectDatabaseInventoryOnClient(client, connectionString, {
       expectedTarget: request.expectedTarget,
     });
-    assertApprovedBaselineFingerprint(createBaselineFingerprint(inventory, baseline), approved);
+    const verification = verifyBaselineInventory(inventory, baseline, approved);
 
     const journal = await inspectApprovedJournal(client, { lock: true });
     const state = classifyBaselineJournal(journal.entries, baseline);
     if (state === 'baseline') {
       await client.query('COMMIT');
       transaction = false;
-      return 'no-op';
+      return { status: 'no-op', verificationState: verification.state };
     }
 
     await client.query(
@@ -480,14 +481,14 @@ async function atomicallyRegisterBaseline(
     const confirmedInventory = await collectDatabaseInventoryOnClient(client, connectionString, {
       expectedTarget: request.expectedTarget,
     });
-    assertApprovedBaselineFingerprint(createBaselineFingerprint(confirmedInventory, baseline), approved);
+    const confirmedVerification = verifyBaselineInventory(confirmedInventory, baseline, approved);
     const confirmed = await inspectApprovedJournal(client, { lock: true });
     if (classifyBaselineJournal(confirmed.entries, baseline) !== 'baseline') {
       throw new Error('The exact baseline journal record was not confirmed before adoption commit.');
     }
     await client.query('COMMIT');
     transaction = false;
-    return 'adopted';
+    return { status: 'adopted', verificationState: confirmedVerification.state };
   } finally {
     if (transaction) await client.query('ROLLBACK').catch(() => undefined);
     if (sessionLock) {
@@ -522,15 +523,15 @@ export async function adoptExistingDatabaseBaseline(
   const preliminaryInventory = await collectDatabaseInventory(connectionString, {
     expectedTarget: request.expectedTarget,
   });
-  assertApprovedBaselineFingerprint(createBaselineFingerprint(preliminaryInventory, baseline), approved);
+  verifyBaselineInventory(preliminaryInventory, baseline, approved);
   await runtime.afterPreliminaryVerification?.();
 
-  const status = await atomicallyRegisterBaseline(
+  const result = await atomicallyRegisterBaseline(
     connectionString,
     request,
     baseline,
     approved,
     runtime,
   );
-  return { status, baselineTag: baseline.tag };
+  return { ...result, baselineTag: baseline.tag };
 }
