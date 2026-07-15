@@ -81,6 +81,23 @@ catalog queries plus a narrowly scoped read of the approved Drizzle
 migration-journal relation. It does not run application startup, `db:push`,
 migrations, invariant installation, or data backfills.
 
+Inventory format version 2 also records PostgreSQL row-security metadata. For
+each table it captures `relrowsecurity`, `relforcerowsecurity`, owner,
+connected-role ownership, effective connected-role table privileges, and the
+reason that role is governed by or bypasses RLS. It separately records the
+normalized ACL, every `pg_policy` name, command, permissive/restrictive mode,
+target roles, `USING`, `WITH CHECK`, catalog-visible function/relation
+dependencies, and whether the policy applies to the connected role. Reference
+signals flag the documented Neon Data API/Auth objects (`auth`, `neon_auth`,
+`authenticated`, `anonymous`, and JWT-related expressions) for owner review;
+they do not automatically declare application ownership.
+
+PostgreSQL 17 and newer add the `MAINTAIN` table privilege. Inventory format
+version 2 records it from ACLs on every supported server and includes it in
+the connected role's effective privileges on PostgreSQL 17 and newer. The
+effective-privilege query omits that token on PostgreSQL 16 and older, where
+asking `has_table_privilege` about `MAINTAIN` is itself an error.
+
 The installed Drizzle PostgreSQL migrator defaults to
 `drizzle.__drizzle_migrations`, so that is the approved default. Catalog
 discovery reports every non-system relation named `__drizzle_migrations`, but
@@ -99,8 +116,11 @@ The normalized JSON captures:
 - a SHA-256 fingerprint of the connection host and port, without the hostname,
   URL, password, or connection-string credentials;
 - current database, role, PostgreSQL version, and confirmed transaction mode;
+- connected-role `rolsuper` and `rolbypassrls` state;
 - schemas, tables, columns, data types, nullability, defaults, identity and
   generated-column behavior;
+- table owners, effective and granted table privileges, RLS enforcement mode,
+  normalized policy definitions, and policy dependency/reference signals;
 - primary, foreign-key, unique, check, and exclusion constraints;
 - indexes and PostgreSQL's normalized index definitions;
 - enum, domain, range, multirange, composite, and user-schema base types;
@@ -129,11 +149,11 @@ quoted identifiers, regular expressions, comments, and dollar-quoted function
 bodies. Lexically incomplete or uncertain definitions are retained
 byte-for-byte rather than being rewritten.
 It reports missing-from-right, extra-in-right, and changed objects separately
-for environment metadata, schemas, tables, columns, constraints, indexes,
-types, functions, triggers, extensions, and migration journal state. A normal
-comparison exits nonzero when differences exist or input is invalid or
-incomplete. `--report-only` preserves the report but exits zero for an expected
-transitional mismatch.
+for environment metadata, schemas, tables, table privileges, policies,
+columns, constraints, indexes, types, functions, triggers, extensions, and
+migration journal state. A normal comparison exits nonzero when differences
+exist or input is invalid or incomplete. `--report-only` preserves the report
+but exits zero for an expected transitional mismatch.
 
 Run the known local comparison with Docker Desktop available:
 
@@ -165,6 +185,48 @@ the two schema-deployment mechanisms before application startup. An inventory
 of a database where the application has booted will capture those functions
 and triggers and report them as structural differences.
 
+Fresh current-schema and current-schema-plus-invariants databases both leave
+RLS disabled and define no policies. Do not enable RLS locally merely to make a
+provider clone compare cleanly.
+
+The approved enhanced inventory of the independently verified disposable
+production clone established the ownership decision for the current state:
+all 29 public application tables have RLS enabled, none use `FORCE ROW LEVEL
+SECURITY`, and none define a policy. The connected application role is a
+non-superuser with `BYPASSRLS`, owns all 29 tables, and is the only ACL grantee
+on them. No policy, provider role grant, or policy dependency references Neon
+Auth, the Data API, JWT claims, or another provider object. Consequently the
+enabled flags are inert for the current application role and are classified
+`EXCLUDE_FROM_APPLICATION_BASELINE` on all 29 tables. Local RLS-disabled state
+is the intentional application baseline definition; do not copy the clone's
+bare enabled flags into source. Preserve the separately inventoried provider
+schemas and extensions as provider-managed objects outside the application
+baseline. Any future non-bypass runtime or Data API role requires a new,
+explicit RLS design before it receives table privileges.
+
+## Organizations subdomain index decision
+
+The intended future baseline definition is the production-shaped partial
+index:
+
+```sql
+CREATE UNIQUE INDEX organization_subdomain_idx
+  ON organizations (subdomain)
+  WHERE subdomain IS NOT NULL;
+```
+
+PostgreSQL unique indexes treat nulls as distinct unless `NULLS NOT DISTINCT`
+is specified, so both the partial definition and the current full source index
+allow multiple null subdomains and reject duplicate non-null subdomains. The
+application lookup is equality on `organizations.subdomain`; there is no
+application `IS NULL` lookup. A PostgreSQL 16 generic prepared-plan probe
+confirmed that equality lookup can use the partial index. The partial form
+stores and maintains only assigned subdomains, while the full form additionally
+stores null entries and could serve a future `IS NULL` lookup or full index
+ordering. Those unused capabilities do not justify production index churn or
+a larger baseline index. Changing `shared/schema` to express the predicate is
+a separate reviewed schema task; this inventory task does not alter the index.
+
 ## Disposable Neon branch inventory procedure
 
 This procedure is for a disposable Neon branch cloned from production. It is
@@ -183,13 +245,34 @@ not approval to inventory production itself.
    secret manager or current shell without echoing it, writing it to a file,
    or adding it to command arguments. Do not copy production credentials to
    the disposable branch.
-4. Reconcile the command's database, role, PostgreSQL version, and host
-   fingerprint with the separately recorded Neon target before accepting the
-   artifact.
+4. Independently set all five expected-target values in the same secret-aware
+   operator environment. Do not put the values in shell history or source:
+
+   - `DB_INVENTORY_EXPECTED_DATABASE`
+   - `DB_INVENTORY_EXPECTED_ROLE`
+   - `DB_INVENTORY_EXPECTED_HOST_FINGERPRINT`
+   - `DB_INVENTORY_EXPECTED_NEON_BRANCH_ID`
+   - `DB_INVENTORY_EXPECTED_NEON_SOURCE_BRANCH_ID`
+
+   The last two identifiers must differ. Before opening a connection, the
+   command requires the URL to explicitly name its database and role and
+   compares both plus the endpoint fingerprint to the independent
+   expectations. It then verifies the server-reported database and role inside
+   the confirmed read-only transaction before running catalog inventory
+   queries. Connection-target query overrides (including host, port, database,
+   role, service selectors, and PostgreSQL startup options) and percent-encoded
+   hostnames are rejected before a client is constructed. If ambient `PGPORT`
+   is set, the URL must name its port explicitly, and `PGOPTIONS` must be unset;
+   ordinary TLS query parameters remain supported. Mismatch errors do not echo
+   actual or expected values. The operator record remains responsible for
+   proving that the independently fingerprinted endpoint belongs to the
+   recorded disposable branch; the command does not call the Neon control
+   plane.
 5. Run only:
 
    ```bash
-   npm run db:inventory -- --output .artifacts/db-inventory/neon/<review-id>.json
+   npm run db:inventory -- --require-expected-target \
+     --output .artifacts/db-inventory/neon/<review-id>.json
    ```
 
    Do not start the application, run `db:push`, invoke a migration runner,
@@ -205,6 +288,44 @@ not approval to inventory production itself.
 Any future production inventory requires a separately approved operator plan,
 an independently verified read-only role, explicit production target
 verification, and an approved destination for the resulting artifact.
+
+## Baseline adoption design (not implemented)
+
+The installed versions are `drizzle-orm@0.45.2` and
+`drizzle-kit@0.31.10`. The PostgreSQL migrator defaults to schema `drizzle`
+and table `__drizzle_migrations`; it creates `id SERIAL PRIMARY KEY`,
+`hash text NOT NULL`, and nullable `created_at bigint`. It hashes the exact SQL
+file bytes with SHA-256, uses the journal entry's `when` value as
+`created_at`, reads only the row with the greatest `created_at`, and runs every
+migration whose journal timestamp is greater. An existing empty table means
+there is no last migration, so it causes every checked-in migration to run; it
+is not evidence that a baseline is satisfied. The runner does not reconcile
+stored hashes against the checked-in files.
+
+A future baseline-adoption tool must therefore be an explicit, backup-gated
+operator workflow, not startup inference. It should:
+
+1. generate and review one checked-in baseline that initializes an empty
+   database, including approved application-owned functions, triggers, RLS,
+   policies, privileges, and the selected organizations index definition;
+2. compute an exact, versioned fingerprint from a fresh read-only inventory;
+3. refuse missing target metadata, target mismatch, drift, unresolved RLS or
+   index ownership, a nonempty/unexpected journal, or an unapproved server
+   version;
+4. in one separately approved transaction, create/validate the exact installed
+   journal relation if necessary and register only the baseline hash and
+   journal `when` value, without executing baseline SQL;
+5. validate first on a disposable local database, then on a production-cloned
+   Neon branch, and prove ordering with a reviewed no-op post-baseline
+   migration such as `SELECT 1`;
+6. verify that an empty database executes the baseline while an adopted
+   matching database skips it and runs only the later proof migration; and
+7. require an operator confirmation, current backup/restore plan, retained
+   before/after inventories, and an exact CI-verified commit for any eventual
+   production adoption.
+
+No baseline SQL, migration metadata, or journal registration is created by the
+inventory commands.
 
 ## Production migration process
 
