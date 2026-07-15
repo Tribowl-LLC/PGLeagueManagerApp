@@ -2,7 +2,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { __testing, assertSafeDatabaseHost } from '../db-safety';
 
 describe('assertSafeDatabaseHost', () => {
-  const ENV_KEYS = ['DEV_DB_OK', 'DATABASE_URL', 'DEV_DB_HOST_ALLOWLIST'] as const;
+  const ENV_KEYS = [
+    'DEV_DB_OK',
+    'DATABASE_URL',
+    'DEV_DB_HOST_ALLOWLIST',
+    ...__testing.AMBIENT_TARGET_OVERRIDE_ENVIRONMENT_KEYS,
+  ] as const;
   const saved = new Map<string, string | undefined>();
 
   beforeEach(() => {
@@ -46,9 +51,14 @@ describe('assertSafeDatabaseHost', () => {
     it('refuses an unrecognized prod-shaped Neon host with no allow-list', () => {
       process.env.DATABASE_URL =
         'postgresql://u:p@ep-cool-bird-99999999.us-west-2.aws.neon.tech/db';
-      expect(() => assertSafeDatabaseHost('cleanup-test-organizations')).toThrowError(
-        /not on the dev-database allow-list/,
-      );
+      let message = '';
+      try {
+        assertSafeDatabaseHost('cleanup-test-organizations');
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+      }
+      expect(message).toMatch(/not on the dev-database allow-list/);
+      expect(message).not.toContain('ep-cool-bird-99999999');
     });
 
     it('refuses an arbitrary remote host even when DEV_DB_HOST_ALLOWLIST is set to something else', () => {
@@ -56,6 +66,33 @@ describe('assertSafeDatabaseHost', () => {
       process.env.DEV_DB_HOST_ALLOWLIST = 'ep-dawn-unit-a66zn28k';
       expect(() => assertSafeDatabaseHost('cleanup')).toThrowError(
         /not on the dev-database allow-list/,
+      );
+    });
+
+    it('refuses connection query parameters that can override a loopback target', () => {
+      process.env.DEV_DB_OK = '1';
+      process.env.DATABASE_URL =
+        'postgresql://u:p@127.0.0.1:5432/db?host=durable.example&port=6543&user=other';
+      expect(() => assertSafeDatabaseHost('build-test-template')).toThrowError(
+        /one exact target without target-changing query parameters/,
+      );
+    });
+
+    it('refuses ambient PostgreSQL target and role overrides', () => {
+      process.env.DEV_DB_OK = '1';
+      process.env.DATABASE_URL = 'postgresql://u:p@127.0.0.1:5432/db';
+      process.env.PGOPTIONS = '-c role=other';
+      process.env.PGHOST = 'durable.example';
+      expect(() => assertSafeDatabaseHost('cleanup-test-dbs')).toThrowError(
+        /PGHOST, PGOPTIONS/,
+      );
+    });
+
+    it('refuses URLs without an explicit database role and database name', () => {
+      process.env.DEV_DB_OK = '1';
+      process.env.DATABASE_URL = 'postgresql://127.0.0.1:5432/';
+      expect(() => assertSafeDatabaseHost('cleanup-test-dbs')).toThrowError(
+        /database role and database name/,
       );
     });
 
@@ -92,6 +129,12 @@ describe('assertSafeDatabaseHost', () => {
 
     it('allows 127.0.0.1', () => {
       process.env.DATABASE_URL = 'postgresql://u:p@127.0.0.1:5432/db';
+      expect(() => assertSafeDatabaseHost('test-script')).not.toThrow();
+    });
+
+    it('allows non-target connection options such as sslmode', () => {
+      process.env.DATABASE_URL =
+        'postgresql://u:p@127.0.0.1:5432/db?sslmode=require&application_name=test';
       expect(() => assertSafeDatabaseHost('test-script')).not.toThrow();
     });
 

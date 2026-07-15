@@ -14,9 +14,20 @@ import {
 } from '../../scripts/lib/db-baseline-fingerprint';
 import {
   ACTIVE_MIGRATIONS_DIRECTORY,
+  LEGACY_MIGRATIONS_DIRECTORY,
   baselineMigration,
   loadActiveMigrations,
 } from '../../scripts/lib/db-migration-assets';
+import {
+  assertJournalPrefix,
+  classifyBaselineJournal,
+  type JournalEntryRow,
+} from '../../scripts/lib/db-migration-journal';
+import {
+  createGenerateInvocation,
+  parseReviewedMigrationName,
+} from '../../scripts/db-generate';
+import { REVIEWED_DRIZZLE_CONFIG_PATH } from '../../scripts/lib/drizzle-cli-environment';
 
 const SOURCE_COMMIT = '0123456789abcdef0123456789abcdef01234567';
 
@@ -36,6 +47,10 @@ function completeEnvironment(): NodeJS.ProcessEnv {
     DB_ADOPTION_EXPECTED_BASELINE_TAG: baseline.tag,
     DB_ADOPTION_EXPECTED_BASELINE_HASH: baseline.hash,
     DB_ADOPTION_EXPECTED_BASELINE_CREATED_AT: String(baseline.createdAt),
+    LV_DISPOSABLE_DB_CONTAINER_ID: 'a'.repeat(64),
+    LV_DISPOSABLE_DB_RUN_ID: 'baseline-unit-run',
+    LV_DISPOSABLE_DB_PURPOSE: 'baseline-adoption',
+    LV_DISPOSABLE_DB_DATABASE: 'leaguevault_disposable',
   };
 }
 
@@ -58,10 +73,12 @@ describe('normalized migration baseline tools', () => {
 
   it('pins the complete application structure without physical column order or provider objects', () => {
     const fingerprint = loadApprovedBaselineFingerprint();
-    expect(fingerprint.digest).toBe('f66a78e566b5338a7e356d3ce7a7b8cd2fe1c68a51a351556bb83b60ac42fa36');
+    expect(fingerprint.formatVersion).toBe(2);
+    expect(fingerprint.digest).toBe('1c3c518e09d155bc3d447399c6c7a41ee4433423ed445b5f4a7554ed7607772a');
     expect(fingerprint.counts).toEqual({
       tables: 29,
       columns: 307,
+      sequences: 26,
       constraints: 95,
       indexes: 104,
       types: 1,
@@ -71,6 +88,7 @@ describe('normalized migration baseline tools', () => {
     });
     expect(fingerprint.structure.tables.map((table) => table.name)).toEqual(APPLICATION_TABLE_NAMES);
     expect(fingerprint.structure.tables.every((table) => !table.rowSecurity && !table.forceRowSecurity)).toBe(true);
+    expect(fingerprint.structure.sequences.every((sequence) => sequence.persistence === 'permanent')).toBe(true);
     expect(fingerprint.structure.columns.every((column) => !('ordinal' in column))).toBe(true);
     expect(fingerprint.structure.types.map((type) => `${type.schema}.${type.name}`)).toEqual(['public.user_role']);
     expect(fingerprint.structure.functions).toHaveLength(3);
@@ -85,6 +103,65 @@ describe('normalized migration baseline tools', () => {
     expect(metadata.tag).toBe('0001_ordering_proof');
     expect(metadata.createdAt).toBeGreaterThan(baselineMigration().createdAt);
     expect(loadActiveMigrations().some((migration) => migration.tag === metadata.tag)).toBe(false);
+  });
+
+  it('refuses to load the legacy evidence tree as active migration history', () => {
+    expect(() => loadActiveMigrations(LEGACY_MIGRATIONS_DIRECTORY)).toThrow(
+      'legacy history is evidence only',
+    );
+    expect(() => loadActiveMigrations(resolve(LEGACY_MIGRATIONS_DIRECTORY, 'meta'))).toThrow(
+      'legacy history is evidence only',
+    );
+  });
+
+  it('allows only one safe name through the active migration generator wrapper', () => {
+    expect(parseReviewedMigrationName(['--name', 'add_payment_index'])).toBe('add_payment_index');
+    expect(() => parseReviewedMigrationName(['--name=add-payment-index'])).toThrow(
+      /lowercase letters, digits, or underscores/,
+    );
+    expect(() => parseReviewedMigrationName([
+      '--name',
+      'unsafe',
+      '--out',
+      'migrations-legacy-do-not-replay',
+    ])).toThrow('output overrides are refused');
+    expect(() => parseReviewedMigrationName(['--name', '../legacy'])).toThrow(
+      'output overrides are refused',
+    );
+    expect(() => parseReviewedMigrationName(['--config', 'alternate.ts', '--name', 'unsafe'])).toThrow(
+      'config, schema, dialect, and output overrides are refused',
+    );
+
+    const invocation = createGenerateInvocation(['--name', 'safe_change'], {
+      DATABASE_URL: 'postgresql://production.example/durable',
+      TEST_CONFIG_PATH_PREFIX: 'C:\\unreviewed-config',
+      DOTENV_CONFIG_PATH: 'C:\\unreviewed.env',
+      DOTENV_CONFIG_OVERRIDE: '1',
+      NODE_OPTIONS: '--require C:\\unreviewed-preload.cjs',
+    });
+    expect(invocation.args).toEqual(expect.arrayContaining([
+      'generate',
+      '--config',
+      REVIEWED_DRIZZLE_CONFIG_PATH,
+      '--name',
+      'safe_change',
+    ]));
+    expect(invocation.environment.DATABASE_URL).toBeUndefined();
+    expect(invocation.environment.TEST_CONFIG_PATH_PREFIX).toBe('');
+    expect(invocation.environment.DOTENV_CONFIG_OVERRIDE).toBe('');
+    expect(invocation.environment.DOTENV_CONFIG_PATH).not.toBe('C:\\unreviewed.env');
+    expect(invocation.environment.NODE_OPTIONS).toBeUndefined();
+  });
+
+  it('requires exact one-based journal ids as well as migration identity', () => {
+    const baseline = baselineMigration();
+    const wrongId = [{
+      id: '99',
+      hash: baseline.hash,
+      created_at: String(baseline.createdAt),
+    }] as JournalEntryRow[];
+    expect(() => assertJournalPrefix(wrongId, [baseline])).toThrow('row 1');
+    expect(() => classifyBaselineJournal(wrongId, baseline)).toThrow('conflicting');
   });
 
   it('requires every independently supplied adoption expectation', () => {
@@ -113,20 +190,18 @@ describe('normalized migration baseline tools', () => {
     })).toThrow('Production baseline adoption is disabled');
   });
 
-  it('requires a distinct source identity only for Neon rehearsal adoption', () => {
-    const rehearsal: NodeJS.ProcessEnv = {
+  it('disables remote rehearsal and ordinary CI adoption classes', () => {
+    const remote: NodeJS.ProcessEnv = {
       ...completeEnvironment(),
       DB_ADOPTION_ENVIRONMENT_CLASS: 'neon-rehearsal',
     };
-    expect(() => parseAdoptionEnvironment(rehearsal)).toThrow('DB_ADOPTION_SOURCE_ENVIRONMENT_ID');
     expect(() => parseAdoptionEnvironment({
-      ...rehearsal,
-      DB_ADOPTION_SOURCE_ENVIRONMENT_ID: rehearsal.DB_ADOPTION_ENVIRONMENT_ID,
-    })).toThrow('distinct');
-    expect(parseAdoptionEnvironment({
-      ...rehearsal,
-      DB_ADOPTION_SOURCE_ENVIRONMENT_ID: 'neon-source-production-branch-id',
-    }).sourceEnvironmentId).toBe('neon-source-production-branch-id');
+      ...remote,
+    })).toThrow('Remote and ordinary CI baseline adoption are disabled');
+    expect(() => parseAdoptionEnvironment({
+      ...completeEnvironment(),
+      DB_ADOPTION_ENVIRONMENT_CLASS: 'ci',
+    })).toThrow('Remote and ordinary CI baseline adoption are disabled');
   });
 
   it('requires confirmation, backup attestation, a clean exact commit, and exact baseline identity', () => {

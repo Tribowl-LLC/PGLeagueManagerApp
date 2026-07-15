@@ -13,6 +13,7 @@ export type ComparisonCategory =
   | 'tablePrivileges'
   | 'policies'
   | 'columns'
+  | 'sequences'
   | 'constraints'
   | 'indexes'
   | 'types'
@@ -101,7 +102,7 @@ function normalizeJournal(value: InventoryObject): InventoryObject {
 
 function normalizeDefinitionFields(value: InventoryObject): InventoryObject {
   const normalized = { ...value };
-  for (const field of ['definition', 'predicate', 'default', 'using', 'withCheck']) {
+  for (const field of ['definition', 'predicate', 'default', 'columnDefault', 'using', 'withCheck']) {
     if (typeof normalized[field] === 'string') {
       normalized[field] = normalizeSqlDefinition(normalized[field]);
     }
@@ -141,6 +142,7 @@ const CATEGORY_SPECS: CategorySpec[] = [
     normalize: normalizeDefinitionFields,
   },
   { name: 'columns', values: (inventory) => asInventoryObjects(inventory.columns), key: objectKey('schema', 'table', 'name'), normalize: normalizeDefinitionFields },
+  { name: 'sequences', values: (inventory) => asInventoryObjects(inventory.sequences), key: objectKey('schema', 'name'), normalize: normalizeDefinitionFields },
   { name: 'constraints', values: (inventory) => asInventoryObjects(inventory.constraints), key: objectKey('schema', 'table', 'name'), normalize: normalizeDefinitionFields },
   { name: 'indexes', values: (inventory) => asInventoryObjects(inventory.indexes), key: objectKey('schema', 'table', 'name'), normalize: normalizeDefinitionFields },
   { name: 'types', values: (inventory) => asInventoryObjects(inventory.types), key: objectKey('schema', 'name'), normalize: normalizeDefinitionFields },
@@ -268,6 +270,7 @@ export function assertDatabaseInventory(value: unknown, source: string): asserts
     'tablePrivileges',
     'policies',
     'columns',
+    'sequences',
     'constraints',
     'indexes',
     'types',
@@ -296,6 +299,7 @@ export function compareDatabaseInventories(
     tablePrivileges: emptyDifference(),
     policies: emptyDifference(),
     columns: emptyDifference(),
+    sequences: emptyDifference(),
     constraints: emptyDifference(),
     indexes: emptyDifference(),
     types: emptyDifference(),

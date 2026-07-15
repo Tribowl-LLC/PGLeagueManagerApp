@@ -274,6 +274,21 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Migration hashes cover the exact LF-normalized bytes committed to Git.
+      # Re-check from a clean clone with Windows-style autocrlf enabled so a
+      # missing or changed .gitattributes rule cannot pass only on Linux.
+      - name: Verify exact migration bytes across checkout modes
+        run: |
+          npm run db:migration-bytes:check
+          clone="$RUNNER_TEMP/leaguevault-migration-bytes"
+          git clone --quiet --no-hardlinks --no-checkout "$GITHUB_WORKSPACE" "$clone"
+          git -C "$clone" config core.autocrlf true
+          git -C "$clone" checkout --quiet --detach "$GITHUB_SHA"
+          (
+            cd "$clone"
+            "$GITHUB_WORKSPACE/node_modules/.bin/tsx" scripts/check-migration-bytes.ts
+          )
+
       - name: Replay, fingerprint, and adopt disposable databases
         run: npm run db:check -- --postgres-version ${{ matrix.postgres }}
 
@@ -338,15 +353,12 @@ jobs:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/leaguevault_test
         run: npm run db:migrate
 
-      # Boot the same dev server the API tests talk to. The HTTP-based
-      # tests under `tests/api/` resolve their base URL through
-      # `tests/helpers.ts`, which falls back to
-      # `http://localhost:5000` when no `REPLIT_DEV_DOMAIN` /
-      # `TEST_BASE_URL` is set — that's the path CI takes.
+      # Boot a migrated-database startup/health smoke server. Behavioral
+      # tests use isolated per-worker Express processes whose databases are
+      # cloned from a separately migrated canonical test template.
       #
-      # `tests/setup/global-setup.ts` runs `installDbInvariants()` and
-      # `seedTestUsers()` at vitest start, so we don't need a separate
-      # `npm run seed` step.
+      # `tests/setup/global-setup.ts` builds or verifies that migrated
+      # template, installs the retained startup invariants, and seeds it.
       #
       # Env var contract (kept in sync with `race-suite.yml`):
       #   * DATABASE_URL — points at the service container above.
@@ -412,9 +424,8 @@ jobs:
           tail -n 200 /tmp/dev-server.log >&2 || true
           exit 1
 
-      # `npm test` = `vitest run`, which executes the three projects
-      # declared in `vitest.config.ts` (parallel, serial-fk-bypass,
-      # client-components). The two opt-in race files are gated behind
+      # `npm test` = `vitest run`, which executes all six projects
+      # declared in `vitest.config.ts`. The two opt-in race files are gated behind
       # `RUN_BOOTSTRAP_RACE_TESTS=1` and are NOT run here — they have
       # their own workflow (`race-suite.yml`).
       #
@@ -429,7 +440,11 @@ jobs:
           FIELD_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
           SETUP_SECRET: ${{ secrets.SETUP_SECRET || 'ci-tests-fallback-setup-secret-deterministic-not-a-real-secret' }}
           NODE_ENV: development
-        run: npm test
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee /tmp/vitest.log
+          grep -F '[test-template-provenance] source=db:migrate' /tmp/vitest.log
+          grep -F '[test-worker-provenance] source=migrated-template journal=exact' /tmp/vitest.log
 
       # Always-run cleanup: SIGTERM the backgrounded dev server so the
       # job finishes promptly even when the test step fails. `|| true`

@@ -11,9 +11,14 @@ npm run test:watch    # watch mode
 npm run test:race     # opt-in race suite (see "Opt-in suites" below)
 ```
 
-The recommended `test:local` wrapper provisions PostgreSQL, applies active
-migrations, and uses isolated per-worker application instances. A separate dev
-server is only needed for raw `npm test` workflows that use the shared HTTP
+The recommended `test:local` wrapper provisions PostgreSQL and builds the
+canonical test template from an empty local database by applying the complete
+active history with `db:migrate`. It verifies the exact journal, requires a
+second migration run to be a no-op, installs the startup invariants and test
+seed, then uses isolated per-worker application instances. Every physical
+worker clone rechecks the journal and emits migration provenance. Remote Neon
+template construction and any schema-push fallback are disabled. A separate
+dev server is only needed for raw `npm test` workflows that use the shared HTTP
 base URL. Start it in another shell first when using that path:
 
 ```bash
@@ -190,15 +195,20 @@ during the `npm test` step. The minimal job ordering looks like:
 
 Run `npm run db:check` for the authoritative normalized migration gate. It
 uses owned disposable PostgreSQL 16 and 17 containers to replay the active
-baseline, compare the exact checked-in fingerprint, exercise guarded adoption
-and every refusal class, and prove later ordering with the isolated
-`tests/fixtures/migrations/ordering-proof.sql` fixture. The fixture is combined
+baseline, verify exact LF SQL bytes and the checked-in format-version-2
+fingerprint (including 26 owned sequences), exercise guarded local adoption,
+concurrent/atomic registration and every refusal class, and prove later
+ordering with the isolated `tests/fixtures/migrations/ordering-proof.sql`
+fixture. The fixture is combined
 with active migrations only under ignored run artifacts; it is not deployable
 SQL and creates no production object.
 
 The migration matrix also proves that empty databases execute the baseline,
 matching existing databases register only the baseline journal record, adopted
-databases skip baseline DDL, and all migration/adoption reruns are no-ops.
+databases skip baseline application DDL, exact adopted journals are no-ops,
+conflicting journals are refused, and all migration/adoption reruns are safe.
+Adoption is limited to exact tool-owned local Docker databases; remote and
+production adoption are disabled.
 
 ### Legacy history reproduction
 
@@ -213,6 +223,11 @@ output paths.
 
 This command is intentionally separate from `npm run test:local`; it owns its
 own temporary container and does not use the test template or worker databases.
+Its `db:push:disposable` half verifies the full container ID, per-run labels,
+approved database name, exact `127.0.0.1` port, role, and database comment
+marker immediately before passing the same URL to Drizzle. Remote hosts and
+generic development bypasses are refused.
+
 The pure comparison, redaction, legacy-journal preflight, definition normalization,
 container ownership, and cleanup behavior is covered by
 `tests/unit/db-schema-inventory-tools.test.ts` in the default Vitest run.

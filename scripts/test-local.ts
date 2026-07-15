@@ -26,6 +26,10 @@ const testEnv: NodeJS.ProcessEnv = {
   DATABASE_URL: DB_URL,
   APP_ENV: 'dev',
   NODE_ENV: 'development',
+  // The canonical behavioral-test template must be created from an empty
+  // local database and replayed through db:migrate. A Neon branch inherits
+  // its parent schema, so it cannot provide that proof in this PR.
+  LV_TEST_USE_NEON_BRANCHES: '0',
   TZ: 'UTC',
   PORT: '5000',
   SESSION_SECRET: process.env.SESSION_SECRET ?? 'local-test-session-secret-not-production',
@@ -77,7 +81,7 @@ async function ensurePostgresContainer(): Promise<void> {
       '--env', 'POSTGRES_USER=postgres',
       '--env', 'POSTGRES_PASSWORD=postgres',
       '--env', `POSTGRES_DB=${DB_NAME}`,
-      '--publish', '5432:5432',
+      '--publish', '127.0.0.1:5432:5432',
       'postgres:16',
     ]);
   } else if (state !== 'true') {

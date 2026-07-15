@@ -50,7 +50,7 @@ jobs:
     # match against. If you rename it, update branch protection too.
     name: Race suite
     runs-on: ubuntu-latest
-    # The race suite spins up a Postgres container, runs `db:push`,
+    # The race suite spins up a Postgres container, replays migrations,
     # boots the dev server, and runs two race files serially. Locally
     # it finishes in ~3 minutes; 20 is a generous ceiling that still
     # kills a hung dev-server boot or a deadlocked test before it eats

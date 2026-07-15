@@ -20,8 +20,21 @@
  * provision per-worker infra.
  */
 
-export const TEMPLATE_DB_NAME =
-  process.env.TEST_TEMPLATE_DB_NAME ?? 'leaguevault_test_template';
+export function validateTestTemplateDatabaseName(value: string): string {
+  if (
+    !/^leaguevault_test_[a-z0-9_]+$/.test(value) ||
+    Buffer.byteLength(value, 'utf8') > 63
+  ) {
+    throw new Error(
+      'TEST_TEMPLATE_DB_NAME must be a PostgreSQL-safe identifier beginning with leaguevault_test_ and no longer than 63 bytes.',
+    );
+  }
+  return value;
+}
+
+export const TEMPLATE_DB_NAME = validateTestTemplateDatabaseName(
+  process.env.TEST_TEMPLATE_DB_NAME ?? 'leaguevault_test_template',
+);
 
 export const CLONE_ADVISORY_LOCK_KEY = (() => {
   let h = 0;

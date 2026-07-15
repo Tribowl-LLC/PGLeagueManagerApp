@@ -30,6 +30,13 @@ import {
 } from './lib/db-migration-assets';
 import { runCheckedMigrations } from './lib/db-migration-runner';
 import {
+  DISPOSABLE_DATABASE_LABELS,
+  DISPOSABLE_DATABASE_OWNER,
+  disposableDatabaseMarker,
+  encodeDisposableDatabaseLabel,
+  type DisposableTargetProof,
+} from './lib/db-disposable-target';
+import {
   cleanupOwnedContainer,
   createInventoryRunId,
   inspectOwnedContainer,
@@ -58,6 +65,10 @@ interface CheckOptions {
 interface ProofMetadata {
   tag: string;
   createdAt: number;
+}
+
+interface DbCheckContainer extends OwnedInventoryContainer {
+  purpose: string;
 }
 
 function parseOptions(args: string[]): CheckOptions {
@@ -127,8 +138,14 @@ function run(command: string, args: string[], environment = process.env): string
   return (result.stdout ?? '').trim();
 }
 
-function createContainer(runId: string, version: '16' | '17'): OwnedInventoryContainer {
-  const name = inventoryContainerName(`${runId}-${version}`);
+function createContainer(
+  runId: string,
+  version: '16' | '17',
+  approvedDatabases: readonly string[],
+): DbCheckContainer {
+  const ownedRunId = `${runId}-${version}`;
+  const purpose = `db-check-${version}`;
+  const name = inventoryContainerName(ownedRunId);
   const output = run('docker', [
     'run',
     '--detach',
@@ -136,7 +153,15 @@ function createContainer(runId: string, version: '16' | '17'): OwnedInventoryCon
     '--name',
     name,
     '--label',
-    `${INVENTORY_CONTAINER_LABEL}=${runId}-${version}`,
+    `${INVENTORY_CONTAINER_LABEL}=${ownedRunId}`,
+    '--label',
+    `${DISPOSABLE_DATABASE_LABELS.owner}=${DISPOSABLE_DATABASE_OWNER}`,
+    '--label',
+    `${DISPOSABLE_DATABASE_LABELS.runId}=${ownedRunId}`,
+    '--label',
+    `${DISPOSABLE_DATABASE_LABELS.purpose}=${purpose}`,
+    '--label',
+    `${DISPOSABLE_DATABASE_LABELS.databases}=${encodeDisposableDatabaseLabel(approvedDatabases)}`,
     '--env',
     `POSTGRES_USER=${POSTGRES_USER}`,
     '--env',
@@ -145,7 +170,7 @@ function createContainer(runId: string, version: '16' | '17'): OwnedInventoryCon
     '127.0.0.1::5432',
     `postgres:${version}`,
   ]);
-  return { id: parseCreatedContainerId(output), name, runId: `${runId}-${version}` };
+  return { id: parseCreatedContainerId(output), name, runId: ownedRunId, purpose };
 }
 
 async function waitForPostgres(container: OwnedInventoryContainer): Promise<void> {
@@ -155,7 +180,7 @@ async function waitForPostgres(container: OwnedInventoryContainer): Promise<void
     if (!result.error && result.status === 0) return;
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 1000));
   }
-  throw new Error(`Ephemeral PostgreSQL ${container.id} was not ready within 60 seconds.`);
+  throw new Error('Ephemeral PostgreSQL was not ready within 60 seconds.');
 }
 
 function publishedPort(container: OwnedInventoryContainer): number {
@@ -183,17 +208,54 @@ function databaseUrl(port: number, database: string): string {
   return value;
 }
 
+function databaseUrlForRole(
+  port: number,
+  database: string,
+  role: string,
+  password: string,
+): string {
+  const url = new URL(databaseUrl(port, database));
+  url.username = role;
+  url.password = password;
+  const value = url.toString();
+  activeConnectionStrings.add(value);
+  return value;
+}
+
 function quoteIdentifier(identifier: string): string {
   if (!/^[a-z][a-z0-9_]*$/.test(identifier)) throw new Error('Unsafe disposable database identifier.');
   return `"${identifier}"`;
 }
 
-async function createDatabase(adminUrl: string, database: string, template?: string): Promise<void> {
+function quoteLiteral(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+function disposableProof(container: DbCheckContainer, database: string): DisposableTargetProof {
+  return {
+    containerId: container.id,
+    runId: container.runId,
+    purpose: container.purpose,
+    database,
+  };
+}
+
+async function createDatabase(
+  adminUrl: string,
+  database: string,
+  container: DbCheckContainer,
+  template?: string,
+): Promise<void> {
   const client = new pg.Client({ connectionString: adminUrl, application_name: 'leaguevault-db-check-setup' });
   try {
     await client.connect();
     const templateClause = template ? ` TEMPLATE ${quoteIdentifier(template)}` : '';
     await client.query(`CREATE DATABASE ${quoteIdentifier(database)}${templateClause}`);
+    await client.query(
+      `COMMENT ON DATABASE ${quoteIdentifier(database)} IS ${quoteLiteral(
+        disposableDatabaseMarker(disposableProof(container, database)),
+      )}`,
+    );
   } finally {
     await client.end().catch(() => undefined);
   }
@@ -222,13 +284,20 @@ function npmInvocation(args: string[]): { command: string; args: string[] } {
   return { command: process.platform === 'win32' ? 'npm.cmd' : 'npm', args };
 }
 
-async function installDeclaredSchema(connectionString: string): Promise<void> {
+async function installDeclaredSchema(
+  connectionString: string,
+  proof: DisposableTargetProof,
+): Promise<void> {
   const invocation = npmInvocation(['run', 'db:push:disposable', '--', '--force']);
   run(invocation.command, invocation.args, {
     ...process.env,
     DATABASE_URL: connectionString,
     APP_ENV: 'dev',
     NODE_ENV: 'test',
+    LV_DISPOSABLE_DB_CONTAINER_ID: proof.containerId,
+    LV_DISPOSABLE_DB_RUN_ID: proof.runId,
+    LV_DISPOSABLE_DB_PURPOSE: proof.purpose,
+    LV_DISPOSABLE_DB_DATABASE: proof.database,
   });
   await executeSql(connectionString, [
     ...APPROVED_INVARIANT_FUNCTION_SQL,
@@ -288,18 +357,23 @@ function buildProofMigrationDirectory(artifactDirectory: string): { directory: s
   return { directory, metadata };
 }
 
-function adoptionRequest(connectionString: string, database: string): AdoptionRequest {
+function adoptionRequest(
+  connectionString: string,
+  database: string,
+  proof: DisposableTargetProof,
+  role = POSTGRES_USER,
+): AdoptionRequest {
   const baseline = baselineMigration();
   return {
     expectedTarget: {
       hostFingerprint: fingerprintDatabaseHost(connectionString),
       database,
-      role: POSTGRES_USER,
+      role,
     },
-    environmentClass: 'ci',
+    environmentClass: 'local-disposable',
     environmentId: `db-check-${database}`,
     expectedEnvironmentId: `db-check-${database}`,
-    sourceEnvironmentId: null,
+    disposableTargetProof: proof,
     backupAttestation: BACKUP_ATTESTATION,
     confirmation: ADOPTION_CONFIRMATION,
     expectedCommit: SOURCE_COMMIT,
@@ -312,6 +386,144 @@ function adoptionRequest(connectionString: string, database: string): AdoptionRe
 const adoptionRuntime = {
   sourceControlState: () => ({ commit: SOURCE_COMMIT, clean: true }),
 };
+
+interface AdoptionRefusalCase {
+  label: string;
+  sql?: string[];
+  request?: (request: AdoptionRequest) => AdoptionRequest;
+}
+
+function adoptionRefusalCases(): AdoptionRefusalCase[] {
+  const baseline = baselineMigration();
+  return [
+    { label: 'missing table', sql: ['DROP TABLE alerter_state'] },
+    { label: 'extra application-owned table', sql: ['CREATE TABLE unexpected_application_table (id integer)'] },
+    { label: 'changed column type', sql: ['ALTER TABLE alerter_state ALTER COLUMN last_summary_sent_at TYPE text USING last_summary_sent_at::text'] },
+    { label: 'changed nullability', sql: ['ALTER TABLE organizations ALTER COLUMN address SET NOT NULL'] },
+    { label: 'changed default', sql: ['ALTER TABLE rate_limit_buckets ALTER COLUMN count SET DEFAULT 1'] },
+    { label: 'missing constraint', sql: ['ALTER TABLE alerter_state DROP CONSTRAINT alerter_state_pkey'] },
+    { label: 'changed index predicate', sql: [
+      'DROP INDEX organization_subdomain_idx',
+      'CREATE UNIQUE INDEX organization_subdomain_idx ON organizations (subdomain)',
+    ] },
+    { label: 'missing trigger', sql: ['DROP TRIGGER users_role_org_required ON users'] },
+    { label: 'changed function definition', sql: [
+      `CREATE OR REPLACE FUNCTION users_role_org_required_fn() RETURNS trigger LANGUAGE plpgsql AS $$
+       BEGIN RETURN NEW; END; $$`,
+    ] },
+    { label: 'RLS unexpectedly enabled', sql: ['ALTER TABLE organizations ENABLE ROW LEVEL SECURITY'] },
+    { label: 'retired CardPointe column', sql: ['ALTER TABLE locations ADD COLUMN cardpointe_site text'] },
+    { label: 'application sequence persistence', sql: ['ALTER SEQUENCE users_id_seq SET UNLOGGED'] },
+    { label: 'application sequence increment', sql: ['ALTER SEQUENCE users_id_seq INCREMENT BY 2'] },
+    { label: 'application sequence cache', sql: ['ALTER SEQUENCE users_id_seq CACHE 2'] },
+    { label: 'application sequence cycle', sql: ['ALTER SEQUENCE users_id_seq CYCLE'] },
+    { label: 'application sequence ownership', sql: ['ALTER SEQUENCE users_id_seq OWNED BY NONE'] },
+    { label: 'application sequence default link', sql: ['ALTER TABLE users ALTER COLUMN id DROP DEFAULT'] },
+    { label: 'missing application sequence', sql: ['DROP SEQUENCE users_id_seq CASCADE'] },
+    { label: 'journal extra column', sql: ['ALTER TABLE drizzle.__drizzle_migrations ADD COLUMN unexpected text'] },
+    { label: 'journal dropped column', sql: [
+      'ALTER TABLE drizzle.__drizzle_migrations ADD COLUMN discarded text',
+      'ALTER TABLE drizzle.__drizzle_migrations DROP COLUMN discarded',
+    ] },
+    { label: 'journal extra check', sql: [
+      'ALTER TABLE drizzle.__drizzle_migrations ADD CONSTRAINT unexpected_check CHECK (id > 0)',
+    ] },
+    { label: 'journal extra index', sql: [
+      'CREATE INDEX unexpected_journal_hash_idx ON drizzle.__drizzle_migrations (hash)',
+    ] },
+    { label: 'journal trigger', sql: [
+      `CREATE FUNCTION drizzle.unexpected_journal_trigger_fn() RETURNS trigger LANGUAGE plpgsql AS $$
+       BEGIN RETURN NEW; END; $$`,
+      `CREATE TRIGGER unexpected_journal_trigger BEFORE INSERT ON drizzle.__drizzle_migrations
+       FOR EACH ROW EXECUTE FUNCTION drizzle.unexpected_journal_trigger_fn()`,
+    ] },
+    { label: 'journal rewrite rule', sql: [
+      `CREATE RULE unexpected_journal_insert_rule AS
+       ON INSERT TO drizzle.__drizzle_migrations DO INSTEAD NOTHING`,
+    ] },
+    { label: 'journal RLS', sql: ['ALTER TABLE drizzle.__drizzle_migrations ENABLE ROW LEVEL SECURITY'] },
+    { label: 'journal persistence', sql: ['ALTER TABLE drizzle.__drizzle_migrations SET UNLOGGED'] },
+    { label: 'journal relation options', sql: [
+      'ALTER TABLE drizzle.__drizzle_migrations SET (fillfactor = 80)',
+    ] },
+    { label: 'journal inheritance', sql: [
+      'CREATE TABLE drizzle.unexpected_journal_child () INHERITS (drizzle.__drizzle_migrations)',
+    ] },
+    { label: 'journal primary key', sql: [
+      'ALTER TABLE drizzle.__drizzle_migrations DROP CONSTRAINT __drizzle_migrations_pkey',
+      'ALTER TABLE drizzle.__drizzle_migrations ADD CONSTRAINT unexpected_journal_pk PRIMARY KEY (id)',
+    ] },
+    { label: 'journal id default', sql: [
+      'ALTER TABLE drizzle.__drizzle_migrations ALTER COLUMN id SET DEFAULT 7',
+    ] },
+    { label: 'journal column type', sql: [
+      'ALTER TABLE drizzle.__drizzle_migrations ALTER COLUMN hash TYPE varchar(64)',
+    ] },
+    { label: 'journal column nullability', sql: [
+      'ALTER TABLE drizzle.__drizzle_migrations ALTER COLUMN hash DROP NOT NULL',
+    ] },
+    { label: 'journal primary index include column', sql: [
+      'ALTER TABLE drizzle.__drizzle_migrations DROP CONSTRAINT __drizzle_migrations_pkey',
+      `CREATE UNIQUE INDEX __drizzle_migrations_pkey
+       ON drizzle.__drizzle_migrations USING btree (id) INCLUDE (hash)`,
+      `ALTER TABLE drizzle.__drizzle_migrations
+       ADD CONSTRAINT __drizzle_migrations_pkey PRIMARY KEY USING INDEX __drizzle_migrations_pkey`,
+    ] },
+    { label: 'journal sequence increment', sql: [
+      'ALTER SEQUENCE drizzle.__drizzle_migrations_id_seq INCREMENT BY 2',
+    ] },
+    { label: 'journal sequence cache', sql: ['ALTER SEQUENCE drizzle.__drizzle_migrations_id_seq CACHE 2'] },
+    { label: 'journal sequence cycle', sql: ['ALTER SEQUENCE drizzle.__drizzle_migrations_id_seq CYCLE'] },
+    { label: 'journal sequence ownership', sql: [
+      'ALTER SEQUENCE drizzle.__drizzle_migrations_id_seq OWNED BY NONE',
+    ] },
+    { label: 'wrong database', request: (request) => ({
+      ...request,
+      expectedTarget: { ...request.expectedTarget, database: 'wrong_database' },
+    }) },
+    { label: 'wrong role', request: (request) => ({
+      ...request,
+      expectedTarget: { ...request.expectedTarget, role: 'wrong_role' },
+    }) },
+    { label: 'wrong host fingerprint', request: (request) => ({
+      ...request,
+      expectedTarget: { ...request.expectedTarget, hostFingerprint: `sha256:${'f'.repeat(64)}` },
+    }) },
+    { label: 'ambiguous journal', sql: [
+      'CREATE SCHEMA legacy',
+      'CREATE TABLE legacy.__drizzle_migrations (id serial primary key, hash text not null, created_at bigint)',
+    ] },
+    { label: 'unexpected journal row', sql: [
+      "INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ('unexpected', 1)",
+    ] },
+    { label: 'journal row id mismatch', sql: [
+      `INSERT INTO drizzle.__drizzle_migrations (id, hash, created_at)
+       VALUES (99, '${baseline.hash}', ${baseline.createdAt})`,
+    ] },
+    { label: 'journal sequence runtime state', sql: [
+      `INSERT INTO drizzle.__drizzle_migrations (hash, created_at)
+       VALUES ('${baseline.hash}', ${baseline.createdAt})`,
+      "SELECT pg_catalog.setval('drizzle.__drizzle_migrations_id_seq'::pg_catalog.regclass, 1, false)",
+    ] },
+    { label: 'baseline hash mismatch', sql: [
+      `INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ('${'0'.repeat(64)}', ${baseline.createdAt})`,
+    ] },
+    { label: 'baseline timestamp mismatch', sql: [
+      `INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ('${baseline.hash}', ${baseline.createdAt + 1})`,
+    ] },
+    { label: 'missing backup attestation', request: (request) => ({ ...request, backupAttestation: '' }) },
+    { label: 'missing operator confirmation', request: (request) => ({ ...request, confirmation: '' }) },
+    { label: 'mismatched environment identity', request: (request) => ({
+      ...request,
+      expectedEnvironmentId: `${request.expectedEnvironmentId}-other`,
+    }) },
+    { label: 'production-shaped environment identity', request: (request) => ({
+      ...request,
+      environmentId: 'leaguevault-production-live',
+      expectedEnvironmentId: 'leaguevault-production-live',
+    }) },
+  ];
+}
 
 async function verifiedFingerprint(connectionString: string): Promise<ReturnType<typeof createBaselineFingerprint>> {
   const fingerprint = createBaselineFingerprint(await collectDatabaseInventory(connectionString));
@@ -332,9 +544,44 @@ async function assertProofMarker(connectionString: string): Promise<void> {
   }
 }
 
+async function journalEntryCount(connectionString: string): Promise<number> {
+  const client = new pg.Client({ connectionString, application_name: 'leaguevault-db-check-journal-count' });
+  try {
+    await client.connect();
+    const result = await client.query<{ count: string }>(
+      'SELECT count(*)::text AS count FROM drizzle.__drizzle_migrations',
+    );
+    const count = Number(result.rows[0]?.count);
+    if (!Number.isSafeInteger(count) || count < 0) throw new Error('Invalid migration journal count.');
+    return count;
+  } finally {
+    await client.end().catch(() => undefined);
+  }
+}
+
+async function waitForApplicationLock(
+  client: pg.Client,
+  applicationName: string,
+): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const result = await client.query<{ waiting: boolean }>(`
+      SELECT EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_locks lock
+        JOIN pg_catalog.pg_stat_activity activity ON activity.pid = lock.pid
+        WHERE activity.application_name = $1 AND NOT lock.granted
+      ) AS waiting
+    `, [applicationName]);
+    if (result.rows[0]?.waiting === true) return;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+  }
+  throw new Error('Concurrent DDL did not wait on the adoption object locks.');
+}
+
 async function expectAdoptionRefusal(
   adminUrl: string,
   port: number,
+  container: DbCheckContainer,
   template: string,
   caseIndex: number,
   label: string,
@@ -344,10 +591,10 @@ async function expectAdoptionRefusal(
   } = {},
 ): Promise<void> {
   const database = `refusal_${caseIndex}`;
-  await createDatabase(adminUrl, database, template);
+  await createDatabase(adminUrl, database, container, template);
   const connectionString = databaseUrl(port, database);
   if (options.sql) await executeSql(connectionString, options.sql);
-  const baseRequest = adoptionRequest(connectionString, database);
+  const baseRequest = adoptionRequest(connectionString, database, disposableProof(container, database));
   const request = options.request ? options.request(baseRequest) : baseRequest;
   let refused = false;
   try {
@@ -363,11 +610,24 @@ async function validateVersion(
   runId: string,
   artifactDirectory: string,
 ): Promise<void> {
-  let container: OwnedInventoryContainer | null = null;
+  let container: DbCheckContainer | null = null;
   let validationError: unknown;
   let cleanupError: unknown;
   try {
-    container = createContainer(runId, version);
+    const refusalDatabases = adoptionRefusalCases().map((_refusal, index) => `refusal_${index + 1}`);
+    const approvedDatabases = [
+      'fresh_active',
+      'fresh_proof',
+      'adoption_template',
+      'adoption_success',
+      'adoption_rollback',
+      'adoption_drift',
+      'adoption_concurrent',
+      'adoption_concurrent_sequence',
+      'adoption_capability',
+      ...refusalDatabases,
+    ];
+    container = createContainer(runId, version, approvedDatabases);
     inspectOwnedContainer(container, runDocker);
     await waitForPostgres(container);
     const port = publishedPort(container);
@@ -376,7 +636,7 @@ async function validateVersion(
     const proof = buildProofMigrationDirectory(join(artifactDirectory, `postgres-${version}`));
 
     const freshActive = 'fresh_active';
-    await createDatabase(adminUrl, freshActive);
+    await createDatabase(adminUrl, freshActive, container);
     const freshActiveUrl = databaseUrl(port, freshActive);
     const firstRun = await runCheckedMigrations(freshActiveUrl);
     if (firstRun.applied.length !== 1 || firstRun.applied[0] !== baselineMigration().tag) {
@@ -388,7 +648,7 @@ async function validateVersion(
     }
 
     const freshProof = 'fresh_proof';
-    await createDatabase(adminUrl, freshProof);
+    await createDatabase(adminUrl, freshProof, container);
     const freshProofUrl = databaseUrl(port, freshProof);
     const freshProofRun = await runCheckedMigrations(freshProofUrl, proof.directory);
     if (JSON.stringify(freshProofRun.applied) !== JSON.stringify([baselineMigration().tag, proof.metadata.tag])) {
@@ -401,17 +661,20 @@ async function validateVersion(
     }
 
     const template = 'adoption_template';
-    await createDatabase(adminUrl, template);
-    await installDeclaredSchema(databaseUrl(port, template));
+    await createDatabase(adminUrl, template, container);
+    await installDeclaredSchema(
+      databaseUrl(port, template),
+      disposableProof(container, template),
+    );
     await verifiedFingerprint(databaseUrl(port, template));
 
     const adoptionDatabase = 'adoption_success';
-    await createDatabase(adminUrl, adoptionDatabase, template);
+    await createDatabase(adminUrl, adoptionDatabase, container, template);
     const adoptionUrl = databaseUrl(port, adoptionDatabase);
     const beforeAdoption = await verifiedFingerprint(adoptionUrl);
     const adopted = await adoptExistingDatabaseBaseline(
       adoptionUrl,
-      adoptionRequest(adoptionUrl, adoptionDatabase),
+      adoptionRequest(adoptionUrl, adoptionDatabase, disposableProof(container, adoptionDatabase)),
       adoptionRuntime,
     );
     if (adopted.status !== 'adopted') throw new Error('Matching existing database was not adopted.');
@@ -421,10 +684,173 @@ async function validateVersion(
     }
     const adoptionNoOp = await adoptExistingDatabaseBaseline(
       adoptionUrl,
-      adoptionRequest(adoptionUrl, adoptionDatabase),
+      adoptionRequest(adoptionUrl, adoptionDatabase, disposableProof(container, adoptionDatabase)),
       adoptionRuntime,
     );
     if (adoptionNoOp.status !== 'no-op') throw new Error('Exact adoption rerun was not a safe no-op.');
+
+    const rollbackDatabase = 'adoption_rollback';
+    await createDatabase(adminUrl, rollbackDatabase, container, template);
+    const rollbackUrl = databaseUrl(port, rollbackDatabase);
+    let postInsertFailed = false;
+    try {
+      await adoptExistingDatabaseBaseline(
+        rollbackUrl,
+        adoptionRequest(rollbackUrl, rollbackDatabase, disposableProof(container, rollbackDatabase)),
+        {
+          ...adoptionRuntime,
+          afterJournalInsert: () => {
+            throw new Error('injected failure immediately after journal insert');
+          },
+        },
+      );
+    } catch {
+      postInsertFailed = true;
+    }
+    if (!postInsertFailed || await journalEntryCount(rollbackUrl) !== 0) {
+      throw new Error('Post-insert adoption failure did not roll back the baseline journal record.');
+    }
+
+    const driftDatabase = 'adoption_drift';
+    await createDatabase(adminUrl, driftDatabase, container, template);
+    const driftUrl = databaseUrl(port, driftDatabase);
+    let driftRefused = false;
+    try {
+      await adoptExistingDatabaseBaseline(
+        driftUrl,
+        adoptionRequest(driftUrl, driftDatabase, disposableProof(container, driftDatabase)),
+        {
+          ...adoptionRuntime,
+          afterPreliminaryVerification: async () => {
+            await executeSql(driftUrl, ['ALTER TABLE alerter_state ADD COLUMN drift_probe integer']);
+          },
+        },
+      );
+    } catch {
+      driftRefused = true;
+    }
+    if (!driftRefused || await journalEntryCount(driftUrl) !== 0) {
+      throw new Error('Drift after preliminary verification was not refused without journal registration.');
+    }
+
+    const concurrentDatabase = 'adoption_concurrent';
+    await createDatabase(adminUrl, concurrentDatabase, container, template);
+    const concurrentUrl = databaseUrl(port, concurrentDatabase);
+    const concurrentApplication = `leaguevault-db-check-concurrent-ddl-${version}`;
+    const concurrentClient = new pg.Client({
+      connectionString: concurrentUrl,
+      application_name: concurrentApplication,
+    });
+    const concurrentDdl: { promise: Promise<void> | null } = { promise: null };
+    try {
+      await concurrentClient.connect();
+      await concurrentClient.query('BEGIN');
+      await concurrentClient.query("SET LOCAL statement_timeout = '15s'");
+      const concurrentResult = await adoptExistingDatabaseBaseline(
+        concurrentUrl,
+        adoptionRequest(concurrentUrl, concurrentDatabase, disposableProof(container, concurrentDatabase)),
+        {
+          ...adoptionRuntime,
+          afterApplicationLocks: async (adoptionClient) => {
+            concurrentDdl.promise = concurrentClient
+              .query('ALTER TABLE users ADD COLUMN concurrent_adoption_probe integer')
+              .then(() => undefined);
+            await waitForApplicationLock(adoptionClient, concurrentApplication);
+          },
+        },
+      );
+      if (!concurrentDdl.promise) throw new Error('Concurrent DDL probe was not started.');
+      await concurrentDdl.promise;
+      if (concurrentResult.status !== 'adopted') {
+        throw new Error('Concurrent-DDL adoption probe did not register the baseline.');
+      }
+      await concurrentClient.query('ROLLBACK');
+    } finally {
+      await concurrentClient.query('ROLLBACK').catch(() => undefined);
+      await concurrentClient.end().catch(() => undefined);
+    }
+
+    const concurrentSequenceDatabase = 'adoption_concurrent_sequence';
+    await createDatabase(adminUrl, concurrentSequenceDatabase, container, template);
+    const concurrentSequenceUrl = databaseUrl(port, concurrentSequenceDatabase);
+    const sequenceDdlApplication = `leaguevault-db-check-concurrent-sequence-${version}`;
+    const sequenceDdlClient = new pg.Client({
+      connectionString: concurrentSequenceUrl,
+      application_name: sequenceDdlApplication,
+    });
+    const sequenceDdl: { promise: Promise<void> | null } = { promise: null };
+    try {
+      await sequenceDdlClient.connect();
+      await sequenceDdlClient.query('BEGIN');
+      await sequenceDdlClient.query("SET LOCAL statement_timeout = '15s'");
+      const result = await adoptExistingDatabaseBaseline(
+        concurrentSequenceUrl,
+        adoptionRequest(
+          concurrentSequenceUrl,
+          concurrentSequenceDatabase,
+          disposableProof(container, concurrentSequenceDatabase),
+        ),
+        {
+          ...adoptionRuntime,
+          afterApplicationLocks: async (adoptionClient) => {
+            sequenceDdl.promise = sequenceDdlClient
+              .query('ALTER SEQUENCE users_id_seq CACHE 2')
+              .then(() => undefined);
+            await waitForApplicationLock(adoptionClient, sequenceDdlApplication);
+          },
+        },
+      );
+      if (!sequenceDdl.promise) throw new Error('Concurrent sequence DDL probe was not started.');
+      await sequenceDdl.promise;
+      if (result.status !== 'adopted') {
+        throw new Error('Concurrent-sequence-DDL adoption probe did not register the baseline.');
+      }
+      await sequenceDdlClient.query('ROLLBACK');
+    } finally {
+      await sequenceDdlClient.query('ROLLBACK').catch(() => undefined);
+      await sequenceDdlClient.end().catch(() => undefined);
+    }
+
+    const capabilityDatabase = 'adoption_capability';
+    const limitedRole = 'adoption_limited';
+    const limitedPassword = 'leaguevault-adoption-limited-local-only';
+    await createDatabase(adminUrl, capabilityDatabase, container, template);
+    const capabilityOwnerUrl = databaseUrl(port, capabilityDatabase);
+    await executeSql(adminUrl, [
+      `CREATE ROLE ${limitedRole} LOGIN PASSWORD ${quoteLiteral(limitedPassword)}`,
+    ]);
+    await executeSql(capabilityOwnerUrl, [
+      `GRANT CONNECT, CREATE ON DATABASE ${capabilityDatabase} TO ${limitedRole}`,
+      `GRANT USAGE, CREATE ON SCHEMA public TO ${limitedRole}`,
+      `GRANT USAGE ON SCHEMA drizzle TO ${limitedRole}`,
+      `GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public, drizzle TO ${limitedRole}`,
+      `GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public, drizzle TO ${limitedRole}`,
+    ]);
+    const capabilityUrl = databaseUrlForRole(
+      port,
+      capabilityDatabase,
+      limitedRole,
+      limitedPassword,
+    );
+    let capabilityRefusal = '';
+    try {
+      await adoptExistingDatabaseBaseline(
+        capabilityUrl,
+        adoptionRequest(
+          capabilityUrl,
+          capabilityDatabase,
+          disposableProof(container, capabilityDatabase),
+          limitedRole,
+        ),
+        adoptionRuntime,
+      );
+    } catch (error) {
+      capabilityRefusal = error instanceof Error ? error.message : String(error);
+    }
+    if (!capabilityRefusal.includes('cannot act as owner')) {
+      throw new Error('Inadequate migration-role capability was not refused by the explicit preflight.');
+    }
+
     const adoptedProofRun = await runCheckedMigrations(adoptionUrl, proof.directory);
     if (JSON.stringify(adoptedProofRun.applied) !== JSON.stringify([proof.metadata.tag])) {
       throw new Error('Adopted database did not skip baseline and apply only the proof migration.');
@@ -438,70 +864,11 @@ async function validateVersion(
       throw new Error('Fresh and adopted final application schemas differ.');
     }
 
-    const baseline = baselineMigration();
-    const refusalCases: Array<{
-      label: string;
-      sql?: string[];
-      request?: (request: AdoptionRequest) => AdoptionRequest;
-    }> = [
-      { label: 'missing table', sql: ['DROP TABLE alerter_state'] },
-      { label: 'extra application-owned table', sql: ['CREATE TABLE unexpected_application_table (id integer)'] },
-      { label: 'changed column type', sql: ['ALTER TABLE alerter_state ALTER COLUMN last_summary_sent_at TYPE text USING last_summary_sent_at::text'] },
-      { label: 'changed nullability', sql: ['ALTER TABLE organizations ALTER COLUMN address SET NOT NULL'] },
-      { label: 'changed default', sql: ['ALTER TABLE rate_limit_buckets ALTER COLUMN count SET DEFAULT 1'] },
-      { label: 'missing constraint', sql: ['ALTER TABLE alerter_state DROP CONSTRAINT alerter_state_pkey'] },
-      { label: 'changed index predicate', sql: [
-        'DROP INDEX organization_subdomain_idx',
-        'CREATE UNIQUE INDEX organization_subdomain_idx ON organizations (subdomain)',
-      ] },
-      { label: 'missing trigger', sql: ['DROP TRIGGER users_role_org_required ON users'] },
-      { label: 'changed function definition', sql: [
-        `CREATE OR REPLACE FUNCTION users_role_org_required_fn() RETURNS trigger LANGUAGE plpgsql AS $$
-         BEGIN RETURN NEW; END; $$`,
-      ] },
-      { label: 'RLS unexpectedly enabled', sql: ['ALTER TABLE organizations ENABLE ROW LEVEL SECURITY'] },
-      { label: 'retired CardPointe column', sql: ['ALTER TABLE locations ADD COLUMN cardpointe_site text'] },
-      { label: 'wrong database', request: (request) => ({
-        ...request,
-        expectedTarget: { ...request.expectedTarget, database: 'wrong_database' },
-      }) },
-      { label: 'wrong role', request: (request) => ({
-        ...request,
-        expectedTarget: { ...request.expectedTarget, role: 'wrong_role' },
-      }) },
-      { label: 'wrong host fingerprint', request: (request) => ({
-        ...request,
-        expectedTarget: { ...request.expectedTarget, hostFingerprint: `sha256:${'f'.repeat(64)}` },
-      }) },
-      { label: 'ambiguous journal', sql: [
-        'CREATE SCHEMA legacy',
-        'CREATE TABLE legacy.__drizzle_migrations (id serial primary key, hash text not null, created_at bigint)',
-      ] },
-      { label: 'unexpected journal row', sql: [
-        "INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ('unexpected', 1)",
-      ] },
-      { label: 'baseline hash mismatch', sql: [
-        `INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ('${'0'.repeat(64)}', ${baseline.createdAt})`,
-      ] },
-      { label: 'baseline timestamp mismatch', sql: [
-        `INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ('${baseline.hash}', ${baseline.createdAt + 1})`,
-      ] },
-      { label: 'missing backup attestation', request: (request) => ({ ...request, backupAttestation: '' }) },
-      { label: 'missing operator confirmation', request: (request) => ({ ...request, confirmation: '' }) },
-      { label: 'mismatched environment identity', request: (request) => ({
-        ...request,
-        expectedEnvironmentId: `${request.expectedEnvironmentId}-other`,
-      }) },
-      { label: 'production-shaped environment identity', request: (request) => ({
-        ...request,
-        environmentId: 'leaguevault-production-live',
-        expectedEnvironmentId: 'leaguevault-production-live',
-      }) },
-    ];
+    const refusalCases = adoptionRefusalCases();
     for (let index = 0; index < refusalCases.length; index += 1) {
       const refusal = refusalCases[index];
       if (!refusal) throw new Error('Refusal case inventory is incomplete.');
-      await expectAdoptionRefusal(adminUrl, port, template, index + 1, refusal.label, refusal);
+      await expectAdoptionRefusal(adminUrl, port, container, template, index + 1, refusal.label, refusal);
     }
 
     process.stdout.write(

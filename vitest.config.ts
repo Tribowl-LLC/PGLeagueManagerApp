@@ -88,7 +88,10 @@ const UNIT_NO_DB = [
   'tests/unit/neon-branches-reveal-password.test.ts',
   'tests/unit/cleanup-connection-aware-sweep.test.ts',
   'tests/unit/db-baseline-migration-tools.test.ts',
+  'tests/unit/db-disposable-target.test.ts',
+  'tests/unit/db-migration-bytes.test.ts',
   'tests/unit/db-schema-inventory-tools.test.ts',
+  'tests/unit/test-template-migration-source.test.ts',
   'tests/unit/zod-v4-migration-contracts.test.ts',
 ];
 
@@ -185,7 +188,6 @@ export default defineConfig({
     environment: 'node',
     testTimeout: 30000,
     hookTimeout: 30000,
-    globalSetup: ['./tests/setup/global-setup.ts'],
     alias: sharedAlias,
     // Defence against the workflow-log truncation problem (~73s of
     // vitest's tail output was being lost when the per-worker app
@@ -215,6 +217,7 @@ export default defineConfig({
           environment: 'node',
           testTimeout: 30000,
           hookTimeout: 30000,
+          globalSetup: ['./tests/setup/global-setup.ts'],
           alias: sharedAlias,
           include: SHARED_TABLE_WRITERS,
           setupFiles: ['./tests/setup/per-worker-setup.ts'],
@@ -237,6 +240,7 @@ export default defineConfig({
           environment: 'node',
           testTimeout: 30000,
           hookTimeout: 30000,
+          globalSetup: ['./tests/setup/global-setup.ts'],
           alias: sharedAlias,
           include: ['tests/**/*.test.ts', 'server/**/__tests__/**/*.test.ts'],
           exclude: [
@@ -279,6 +283,7 @@ export default defineConfig({
           environment: 'node',
           testTimeout: 30000,
           hookTimeout: 30000,
+          globalSetup: ['./tests/setup/global-setup.ts'],
           alias: sharedAlias,
           include: PARALLEL_ISOLATED,
           setupFiles: ['./tests/setup/per-worker-db-only.ts'],
@@ -314,6 +319,7 @@ export default defineConfig({
           environment: 'node',
           testTimeout: 60000,
           hookTimeout: 60000,
+          globalSetup: ['./tests/setup/global-setup.ts'],
           alias: sharedAlias,
           include: PARALLEL_ISOLATED_WITH_APP,
           // Full per-worker setup: clones DB AND spawns Express. With

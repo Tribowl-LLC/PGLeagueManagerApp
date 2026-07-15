@@ -240,11 +240,28 @@ recreated if disposable or use the guarded adoption workflow in
 [`docs/DATABASE.md`](docs/DATABASE.md). An empty journal is never adoption
 evidence.
 
+Active migration SQL is hashed from its exact committed bytes. The
+`.gitattributes` rules force LF endings for active and test-fixture migration
+SQL, and `npm run db:migration-bytes:check` rejects carriage returns, invalid
+UTF-8, missing attributes, or a checksum/metadata mismatch. This keeps the
+baseline identity identical across Windows and Linux checkouts.
+
 Generate a reviewed future migration without connecting to a database with
-`npm run db:generate -- --name <description>`. `db:push` remains available only
-as `npm run db:push:disposable` for explicitly disposable development/test
-targets; it is guarded against production-shaped environments and is not a
-deployment workflow.
+`npm run db:generate -- --name <lowercase_description>` (letters, digits, and
+underscores only). `db:push` remains available only
+as `npm run db:push:disposable` for a tool-created local Docker database whose
+exact container, loopback port, ownership labels, approved database name, role,
+and database marker are verified immediately before execution. There is no
+host allowlist or development override for remote or durable targets, and the
+same verified URL is passed to Drizzle. It is not a deployment workflow.
+
+`db:adopt-baseline` is likewise limited to a strictly verified tool-owned local
+Docker database. Remote, Neon, ordinary CI, and production execution are
+disabled. Adoption never runs baseline application DDL; after target, backup,
+commit, capability, fingerprint, and journal gates pass, it can create the
+exact Drizzle journal infrastructure and register only the reviewed baseline
+row in one guarded transaction. Exact adopted state is a no-op and conflicting
+journal state is refused.
 
 The `npm run seed` command idempotently creates local development users and
 organizations described in [`tests/README.md`](tests/README.md). These accounts
@@ -260,15 +277,16 @@ databases.
 | `npm start` | Start the production server from the existing `dist/` build. |
 | `npm run check` | Run TypeScript type checking. This does not run ESLint. |
 | `npm run lint` | Run ESLint. |
-| `npm run db:generate -- --name <description>` | Generate reviewed future SQL and metadata without touching a database. |
+| `npm run db:generate -- --name <lowercase_description>` | Generate reviewed future SQL and metadata without touching a database. |
 | `npm run db:migrate` | Apply the checked-in active migration history with guarded journal validation. |
+| `npm run db:migration-bytes:check` | Verify exact LF migration bytes, metadata, and the checksum manifest. |
 | `npm run db:fingerprint` | Produce the versioned exact application-schema fingerprint from read-only catalog inventory. |
-| `npm run db:adopt-baseline` | Explicitly register a matching existing disposable/rehearsal database after all target and safety gates pass. |
+| `npm run db:adopt-baseline` | Register a matching tool-owned local disposable database after all target and safety gates pass; remote and production adoption are disabled. |
 | `npm run db:check` | Replay, fingerprint, adopt, prove ordering, and exercise refusal cases on disposable PostgreSQL 16 and 17. |
 | `npm run db:inventory` | Collect normalized PostgreSQL catalog state plus the approved Drizzle journal in a read-only transaction. |
 | `npm run db:inventory:compare` | Compare two normalized schema inventory files. |
 | `npm run db:inventory:validate-local` | Reproduce the preserved legacy-history mismatch in an ephemeral local container. |
-| `npm run db:push:disposable` | Directly reconcile declarations only on an explicitly disposable development/test target. |
+| `npm run db:push:disposable` | Reconcile declarations only on an exactly proven tool-owned local Docker database. |
 | `npm run seed` | Seed local development users and organizations. |
 | `npm run check:csrf` | Check CSRF coverage. |
 | `npm run check:org-isolation` | Check organization-isolation coverage in strict mode. |
@@ -289,8 +307,13 @@ npm run test:local
 
 This command checks the Node.js version, starts or reuses the
 `leaguevault-test-postgres` PostgreSQL 16 Docker container, applies the schema,
-and runs the Vitest suite with isolated worker databases. Start Docker Desktop
-before running it. Most test runs do not require a development server. Set
+builds the canonical test template from an empty database with `db:migrate`,
+requires the second migration run to be a no-op and the journal to be exact,
+then runs the Vitest suite with isolated worker clones. Every physical worker
+clone rechecks the journal and emits migration provenance consumed by CI.
+Remote Neon template construction is disabled because a branch inherits its
+parent schema and cannot prove a from-zero replay. Start Docker Desktop before
+running the wrapper. Most test runs do not require a development server. Set
 `TEST_LOCAL_START_DEV_SERVER=1` only for suites explicitly documented as
 requiring live HTTP access on port 5000.
 

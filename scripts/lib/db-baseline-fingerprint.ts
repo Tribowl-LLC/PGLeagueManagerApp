@@ -18,12 +18,13 @@ import type {
   FunctionInfo,
   IndexInfo,
   PolicyInfo,
+  SequenceInfo,
   TableInfo,
   TriggerInfo,
   TypeInfo,
 } from './db-schema-inventory';
 
-export const BASELINE_FINGERPRINT_FORMAT_VERSION = 1 as const;
+export const BASELINE_FINGERPRINT_FORMAT_VERSION = 2 as const;
 export const BASELINE_FINGERPRINT_PATH = resolve('migrations', 'baseline-fingerprint.json');
 
 export const APPLICATION_TABLE_NAMES = [
@@ -58,11 +59,16 @@ export const APPLICATION_TABLE_NAMES = [
   'users',
 ] as const;
 
+export const APPLICATION_SEQUENCE_NAMES = APPLICATION_TABLE_NAMES
+  .filter((name) => !['alerter_state', 'rate_limit_buckets', 'session'].includes(name))
+  .map((name) => `${name}_id_seq`);
+
 type StructuralTable = Pick<
   TableInfo,
   'schema' | 'name' | 'kind' | 'persistence' | 'rowSecurity' | 'forceRowSecurity'
 >;
 type StructuralColumn = Omit<ColumnInfo, 'ordinal'>;
+type StructuralSequence = Omit<SequenceInfo, 'owner' | 'connectedRoleCanAlter'>;
 
 export interface ApplicationSchemaStructure {
   scope: {
@@ -73,6 +79,7 @@ export interface ApplicationSchemaStructure {
   };
   tables: StructuralTable[];
   columns: StructuralColumn[];
+  sequences: StructuralSequence[];
   constraints: ConstraintInfo[];
   indexes: IndexInfo[];
   types: TypeInfo[];
@@ -93,6 +100,7 @@ export interface BaselineFingerprint {
   counts: {
     tables: number;
     columns: number;
+    sequences: number;
     constraints: number;
     indexes: number;
     types: number;
@@ -139,6 +147,31 @@ function assertCompleteStructure(structure: ApplicationSchemaStructure): void {
   }
   if (structure.columns.some((column) => /cardpointe/i.test(column.name))) {
     throw new Error('Application fingerprint contains retired CardPointe columns.');
+  }
+  exactNames(
+    structure.sequences.map((sequence) => sequence.name),
+    APPLICATION_SEQUENCE_NAMES,
+    'public application sequences',
+  );
+  if (structure.sequences.length !== 26) {
+    throw new Error('Application fingerprint must contain 26 application-owned serial sequences.');
+  }
+  for (const sequence of structure.sequences) {
+    const expectedTable = sequence.name.replace(/_id_seq$/, '');
+    const column = structure.columns.find((candidate) =>
+      candidate.schema === 'public' && candidate.table === expectedTable && candidate.name === 'id',
+    );
+    if (
+      sequence.schema !== 'public' || sequence.persistence !== 'permanent' ||
+      sequence.dataType !== 'integer' || sequence.start !== '1' ||
+      sequence.increment !== '1' || sequence.minimum !== '1' || sequence.maximum !== '2147483647' ||
+      sequence.cache !== '1' || sequence.cycle || sequence.ownedBySchema !== 'public' ||
+      sequence.ownedByTable !== expectedTable || sequence.ownedByColumn !== 'id' ||
+      sequence.ownershipDependency !== 'auto' || !sequence.defaultReferencesOwnedSequence ||
+      !column || sequence.columnDefault !== column.default
+    ) {
+      throw new Error(`Application fingerprint contains an unexpected sequence definition: ${sequence.name}.`);
+    }
   }
   if (structure.tables.some((table) => table.rowSecurity || table.forceRowSecurity)) {
     throw new Error('Application fingerprint requires RLS disabled on every application table.');
@@ -209,6 +242,15 @@ export function applicationStructureFromInventory(
         .filter((column) => column.schema === 'public')
         .map(({ ordinal: _ordinal, ...column }) => column),
     ),
+    sequences: sortObjects(
+      inventory.sequences
+        .filter((sequence) =>
+          sequence.ownedBySchema === 'public' &&
+          sequence.ownedByTable !== null &&
+          APPLICATION_TABLE_NAMES.includes(sequence.ownedByTable as (typeof APPLICATION_TABLE_NAMES)[number]),
+        )
+        .map(({ owner: _owner, connectedRoleCanAlter: _canAlter, ...sequence }) => sequence),
+    ),
     constraints: sortObjects(inventory.constraints.filter((constraint) => constraint.schema === 'public')),
     indexes: sortObjects(inventory.indexes.filter((index) => index.schema === 'public')),
     types: sortObjects(inventory.types.filter((type) => type.schema === 'public')),
@@ -222,6 +264,20 @@ export function applicationStructureFromInventory(
 
 function digestStructure(structure: ApplicationSchemaStructure): string {
   return createHash('sha256').update(JSON.stringify(structure)).digest('hex');
+}
+
+function structureCounts(structure: ApplicationSchemaStructure): BaselineFingerprint['counts'] {
+  return {
+    tables: structure.tables.length,
+    columns: structure.columns.length,
+    sequences: structure.sequences.length,
+    constraints: structure.constraints.length,
+    indexes: structure.indexes.length,
+    types: structure.types.length,
+    functions: structure.functions.length,
+    triggers: structure.triggers.length,
+    policies: structure.policies.length,
+  };
 }
 
 export function createBaselineFingerprint(
@@ -238,16 +294,7 @@ export function createBaselineFingerprint(
       createdAt: baseline.createdAt,
     },
     digest: digestStructure(structure),
-    counts: {
-      tables: structure.tables.length,
-      columns: structure.columns.length,
-      constraints: structure.constraints.length,
-      indexes: structure.indexes.length,
-      types: structure.types.length,
-      functions: structure.functions.length,
-      triggers: structure.triggers.length,
-      policies: structure.policies.length,
-    },
+    counts: structureCounts(structure),
     structure,
   };
 }
@@ -276,6 +323,9 @@ export function loadApprovedBaselineFingerprint(
     throw new Error('Approved baseline fingerprint identity does not match the active baseline migration.');
   }
   assertCompleteStructure(parsed.structure);
+  if (JSON.stringify(parsed.counts) !== JSON.stringify(structureCounts(parsed.structure))) {
+    throw new Error('Approved baseline fingerprint counts do not match its structural inventory.');
+  }
   if (parsed.digest !== digestStructure(parsed.structure)) {
     throw new Error('Approved baseline fingerprint digest does not match its structural inventory.');
   }
@@ -287,10 +337,13 @@ export function assertApprovedBaselineFingerprint(
   approved: BaselineFingerprint = loadApprovedBaselineFingerprint(),
 ): void {
   if (
+    actual.formatVersion !== approved.formatVersion ||
+    actual.algorithm !== approved.algorithm ||
     actual.baseline.tag !== approved.baseline.tag ||
     actual.baseline.hash !== approved.baseline.hash ||
     actual.baseline.createdAt !== approved.baseline.createdAt ||
     actual.digest !== approved.digest ||
+    JSON.stringify(actual.counts) !== JSON.stringify(approved.counts) ||
     JSON.stringify(actual.structure) !== JSON.stringify(approved.structure)
   ) {
     throw new Error(

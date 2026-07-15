@@ -31,6 +31,16 @@ baseline rollout; the checked-in baseline owns the same definitions, and
 `db:check` verifies them exactly. A follow-up converts startup installation to
 verification-only behavior after every environment is verified.
 
+The canonical set is
+`users_role_org_required_fn()` / `users.users_role_org_required`,
+`league_secretary_org_match_fn()` /
+`league_secretaries.league_secretaries_org_match`, and
+`users_org_change_revoke_secretaries_fn()` /
+`users.users_org_change_revoke_secretaries`. Their function bodies, trigger
+timing/events, conditions, arguments, and enabled state in the baseline must
+remain identical to the shared compatibility definitions used by startup;
+`db:check` compares both paths on PostgreSQL 16 and 17.
+
 The routines under [`server/migrations/`](../server/migrations/) are narrow
 startup or data-backfill routines. They are not a replacement for the schema
 release process.
@@ -43,20 +53,34 @@ approved 29-table, 307-column application schema and installs the three
 approved invariant functions and triggers. Its journal uses the installed
 Drizzle format at `drizzle.__drizzle_migrations`.
 
+Active SQL identity is the SHA-256 of the exact committed bytes, not a
+line-ending-normalized string. Active and test-fixture migration SQL must be
+valid UTF-8 with LF endings. `.gitattributes` enforces those endings across
+Windows and Linux, and `npm run db:migration-bytes:check` verifies the
+attributes, raw bytes, active metadata, and `migration-checksums.json`. CI runs
+the same check in a clean `core.autocrlf=true` clone without ignored or local
+artifacts.
+
 [`migrations-legacy-do-not-replay/`](../migrations-legacy-do-not-replay/) keeps
 the old mixed SQL and metadata as evidence only. Its journal selected eight
 files, replayed 17 tables, and did not reconstruct the 29-table intended
-schema. No package command or Drizzle configuration points at it. Never replay,
-generate into, or adopt from that directory.
+schema. No active/deployment migrator or Drizzle configuration points at it.
+Never generate into, adopt from, or replay that directory except through the
+fail-closed `db:inventory:validate-local` evidence-reproduction command below,
+which preflights the legacy statements and confines replay to its own
+tool-owned disposable database.
 
 ## Migration commands
 
 ```bash
 # Generate reviewed SQL and metadata; does not connect to PostgreSQL.
-npm run db:generate -- --name <description>
+npm run db:generate -- --name <lowercase_description>
 
 # Apply checked-in migrations in deterministic journal order.
 npm run db:migrate
+
+# Verify exact LF SQL bytes, metadata, and the checksum manifest.
+npm run db:migration-bytes:check
 
 # Produce or verify the exact versioned application fingerprint.
 npm run db:fingerprint -- --verify
@@ -66,15 +90,37 @@ npm run db:check
 ```
 
 `db:migrate` validates the journal relation, exact column/primary-key format,
-every stored hash/timestamp against the checked-in prefix, the checked-in
+absence of rewrite rules, contiguous row ids, sequence `last_value`/`is_called`
+state, every stored hash/timestamp against the checked-in prefix, the checked-in
 `migration-checksums.json`, and all active metadata before applying SQL.
-`db:generate` refreshes that checksum manifest without exposing or using
-`DATABASE_URL`, so a later SQL or timestamp edit is visible and `db:check`
-fails until the reviewed manifest is deliberately refreshed. A database advisory lock serializes migration
+`db:generate` accepts exactly one `--name` containing only lowercase letters,
+digits, and underscores; it pins the reviewed
+`drizzle.config.ts`, and runs with an isolated environment that contains no
+database URL or config/output overrides. It therefore cannot generate into the
+legacy evidence tree. It refreshes the checksum manifest, so a later SQL or
+timestamp edit is visible and `db:check` fails until the reviewed manifest is
+deliberately refreshed. A database advisory lock serializes migration
 executors. Reruns are no-ops. If the journal is absent or empty while
 application-owned public objects already exist, the command refuses to run the
 baseline and directs the operator to guarded adoption; it never treats an
 empty journal as proof of schema state.
+
+Journal validation is physical, not name-only. The only accepted relation is
+the ordinary permanent, standalone, nonpartitioned and noninherited heap table
+`drizzle.__drizzle_migrations`, with default physical options and no RLS, with
+exactly these columns in physical order: `id integer NOT NULL` using the
+installed `SERIAL` default, `hash text NOT NULL`, and a nullable
+`created_at bigint` column. It requires the sole, validated, non-deferrable
+primary key and sole ready/valid B-tree index named
+`__drizzle_migrations_pkey` on `id`, no other
+constraints, indexes, triggers, policies, or user rewrite rules, and the exact
+owned integer
+sequence `__drizzle_migrations_id_seq` (start/increment/minimum/cache `1`,
+maximum `2147483647`, no cycle, matching owner, one automatic ownership
+dependency, and one default dependency). Its rows must use ids `1..N`, and the
+sequence must be `1`/not-called when empty or `N`/called for `N` rows. Extra,
+dropped, identity, generated, or defaulted columns and alternate or ambiguous
+journals are refused.
 
 Use one migration executor per environment and deploy with
 expand–migrate–contract sequencing: add backward-compatible structures first,
@@ -84,10 +130,17 @@ Do not combine destructive contract steps with the expansion that makes them
 safe.
 
 Direct schema reconciliation is retained only as `npm run
-db:push:disposable`. The wrapper refuses production-shaped environments and
-requires a loopback or explicitly allow-listed development host. It is for
-throwaway development/test targets and adoption test setup, not durable Neon
-branches, deployment, or migration generation.
+db:push:disposable`. It accepts only the exact `127.0.0.1` published port of a
+running tool-owned Docker container. Immediately before spawning Drizzle it
+verifies the full container ID, per-run ownership/purpose labels, exact
+approved-database label, database name and role, and database comment marker;
+the same immutable URL is used for proof and execution. The child gets only a
+minimal operating-system environment, the exact URL, a disabled dotenv input,
+and the explicit reviewed config, so inherited Node/Drizzle/PostgreSQL overrides
+cannot redirect it. Remote hosts, generic
+development allowlists, and `DEV_DB_OK`-style bypasses are not accepted. It is
+for throwaway databases created by repository tooling, not durable local
+databases, Neon branches, deployment, or migration generation.
 
 ## Read-only schema inventory
 
@@ -104,7 +157,7 @@ catalog queries plus a narrowly scoped read of the approved Drizzle
 migration-journal relation. It does not run application startup, `db:push`,
 migrations, invariant installation, or data backfills.
 
-Inventory format version 2 also records PostgreSQL row-security metadata. For
+Inventory format version 3 records PostgreSQL row-security metadata. For
 each table it captures `relrowsecurity`, `relforcerowsecurity`, owner,
 connected-role ownership, effective connected-role table privileges, and the
 reason that role is governed by or bypasses RLS. It separately records the
@@ -116,10 +169,18 @@ signals flag the documented Neon Data API/Auth objects (`auth`, `neon_auth`,
 they do not automatically declare application ownership.
 
 PostgreSQL 17 and newer add the `MAINTAIN` table privilege. Inventory format
-version 2 records it from ACLs on every supported server and includes it in
+version 3 records it from ACLs on every supported server and includes it in
 the connected role's effective privileges on PostgreSQL 17 and newer. The
 effective-privilege query omits that token on PostgreSQL 16 and older, where
 asking `has_table_privilege` about `MAINTAIN` is itself an error.
+
+Format version 3 also inventories sequences. For each sequence it records the
+schema/name, permanent/unlogged persistence, integer type and numeric settings,
+cycle state, owning table and
+column, ownership-dependency type, column default linkage, owner, and whether
+the connected role can act as that owner. The application fingerprint uses
+the 26 sequences automatically owned by approved public-table `id` columns;
+provider-managed and unrelated sequences remain outside its scope.
 
 The installed Drizzle PostgreSQL migrator defaults to
 `drizzle.__drizzle_migrations`, so that is the approved default. Catalog
@@ -141,7 +202,8 @@ The normalized JSON captures:
 - current database, role, PostgreSQL version, and confirmed transaction mode;
 - connected-role `rolsuper` and `rolbypassrls` state;
 - schemas, tables, columns, data types, nullability, defaults, identity and
-  generated-column behavior;
+  generated-column behavior, plus sequence definitions and ownership/default
+  linkages;
 - table owners, effective and granted table privileges, RLS enforcement mode,
   normalized policy definitions, and policy dependency/reference signals;
 - primary, foreign-key, unique, check, and exclusion constraints;
@@ -152,7 +214,10 @@ The normalized JSON captures:
 - installed extensions; and
 - migration-journal discovery metadata, separate column-inspection and
   row-collection status, and the approved journal's `id`, `hash`, and
-  `created_at` entries when that relation exists.
+  `created_at` entries when that relation exists. Exact journal validation also
+  covers the table's physical relation properties, absence of user rewrite
+  rules, primary-key index details, sequence definition/ownership, contiguous
+  row ids, and the sequence's runtime state.
 
 Inventory files contain structural and environment metadata. Treat them as
 review artifacts rather than source files. The default generated path,
@@ -173,8 +238,8 @@ bodies. Lexically incomplete or uncertain definitions are retained
 byte-for-byte rather than being rewritten.
 It reports missing-from-right, extra-in-right, and changed objects separately
 for environment metadata, schemas, tables, table privileges, policies,
-columns, constraints, indexes, types, functions, triggers, extensions, and
-migration journal state. A normal comparison exits nonzero when differences
+columns, sequences, constraints, indexes, types, functions, triggers,
+extensions, and migration journal state. A normal comparison exits nonzero when differences
 exist or input is invalid or incomplete. `--report-only` preserves the report
 but exits zero for an expected transitional mismatch.
 
@@ -325,15 +390,17 @@ there is no last migration, so it causes every checked-in migration to run; it
 is not evidence that a baseline is satisfied. The runner does not reconcile
 stored hashes against the checked-in files.
 
-`migrations/baseline-fingerprint.json` is fingerprint format version 1. It
-contains a SHA-256 digest plus the exact normalized structural inventory for
-the 29 application tables, 307 declared columns, constraints, physical
-indexes, `public.user_role`, three functions, three triggers, and zero
-policies. It records RLS disabled on every application table. Provider-managed
-schemas, roles, extensions, privileges, ownership, connection metadata, and
-physical column ordinals are deliberately excluded. Column names and all other
-declared properties remain exact, so historical physical order can differ
-without weakening adoption checks.
+`migrations/baseline-fingerprint.json` is fingerprint format version 2. Older
+format versions are refused rather than silently reinterpreted. It contains a
+SHA-256 digest plus the exact normalized structural inventory for the 29
+application tables, 307 declared columns, 26 owned integer sequences and their
+settings/ownership/default linkages, constraints, physical indexes,
+`public.user_role`, three functions, three triggers, and zero policies. It
+records RLS disabled on every application table. Provider-managed schemas,
+roles, extensions, privileges, role-owner identities/capability metadata,
+connection metadata, and physical column ordinals are deliberately excluded.
+Column names and all other declared properties remain exact, so historical
+physical order can differ without weakening adoption checks.
 
 The approved identity is:
 
@@ -342,7 +409,7 @@ The approved identity is:
   `9f4398b0e90bb5a5e33406cc5f35faf73b9c9dcbff3c781bacc892479c31a302`
 - journal `created_at`: `1784104330176`
 - structural fingerprint SHA-256:
-  `f66a78e566b5338a7e356d3ce7a7b8cd2fe1c68a51a351556bb83b60ac42fa36`
+  `1c3c518e09d155bc3d447399c6c7a41ee4433423ed445b5f4a7554ed7607772a`
 
 `npm run db:fingerprint -- --verify` collects catalog state inside a confirmed
 `REPEATABLE READ, READ ONLY` transaction, reads no application rows, fails on
@@ -351,15 +418,45 @@ the digest.
 
 ## Guarded existing-database adoption
 
-Adoption never executes baseline DDL. It is an explicit operator action that
-first verifies the exact fingerprint and journal in read-only transactions,
-then inserts only the reviewed baseline row in a separate serialized
-transaction. A shared advisory lock serializes that inspection/write sequence
-against `db:migrate`. It refuses an alternate or ambiguous journal, extra columns,
-wrong types/defaults/constraints, any unexpected row, any hash/timestamp
-mismatch, target mismatch, structural drift, RLS/policies, retired CardPointe
-objects, or missing invariant definitions. An exact rerun fingerprints again
-and returns a no-op.
+Adoption never executes baseline application DDL. It is currently a local
+safety harness only: `local-disposable` is the sole accepted environment class,
+and the target must pass the same exact tool-owned Docker proof used by
+`db:push:disposable`. Remote hosts, ordinary CI targets, Neon rehearsal
+branches, and production are unconditionally disabled in this pull request.
+
+Before any lock-taking write phase, the command uses query-only, read-only
+preflight transactions to verify the exact target and fingerprint and to prove
+that the connected role can create in the database, use/create in `public`, and
+act as owner for all 29 tables, all 26 owned sequences, `public.user_role`, and
+the three invariant functions. It refuses structural drift, RLS or policies,
+provider-managed/retired objects in application scope, missing invariant
+definitions, target mismatch, an alternate or ambiguous journal, any
+journal-shape difference, or any unexpected row/hash/timestamp.
+
+The decisive registration phase uses one PostgreSQL connection and one
+`SERIALIZABLE` transaction under the advisory lock shared with `db:migrate`.
+It first takes `ACCESS EXCLUSIVE` locks on all 29 application tables, reads all
+26 approved sequence relations without advancing them, locks their
+`pg_sequence` configuration and ownership-dependency rows against concurrent
+changes, and creates/locks the exact journal infrastructure. On that
+same connection it rechecks target identity and role capability, recollects
+and compares the final fingerprint, and reclassifies journal state. Only then
+may it insert the reviewed baseline row. That in-transaction capability check
+also requires `drizzle` schema use, journal `SELECT`/`INSERT`, journal-owner
+capability, and journal-sequence `USAGE`/owner capability. It reads the journal
+back and requires the exact adopted state before commit. A failure at any point
+rolls the journal creation/insertion back. An exact adopted journal is a no-op;
+non-empty or conflicting state is refused.
+
+PostgreSQL does not provide one lock statement covering every catalog object
+class. The table locks protect table-bound columns, constraints, indexes,
+triggers, and policies, and the sequence relation/catalog locks protect the
+approved sequences' identity, configuration, and ownership, but
+function/type DDL and unrelated object classes are not held by equivalent
+relation locks. The final serializable inventory still detects a
+snapshot-visible mismatch. Until a provider-backed remote lock/identity design
+is reviewed, limiting adoption to an isolated tool-owned local container keeps
+that remaining concurrency limitation out of durable environments.
 
 Supply every value independently through the secret-aware operator
 environment; never put target values or credentials in source or shell
@@ -369,9 +466,8 @@ arguments:
 - `DB_ADOPTION_EXPECTED_DATABASE`
 - `DB_ADOPTION_EXPECTED_ROLE`
 - `DB_ADOPTION_EXPECTED_HOST_FINGERPRINT`
-- `DB_ADOPTION_ENVIRONMENT_CLASS` (`local-disposable`, `ci`, or
-  `neon-rehearsal`)
-- `DB_ADOPTION_ENVIRONMENT_ID` (the trusted runtime/provider identity)
+- `DB_ADOPTION_ENVIRONMENT_CLASS=local-disposable`
+- `DB_ADOPTION_ENVIRONMENT_ID` (the tool-run environment identity)
 - `DB_ADOPTION_EXPECTED_ENVIRONMENT_ID`
 - `DB_ADOPTION_BACKUP_ATTESTATION=BACKUP_AND_RESTORE_VERIFIED`
 - `DB_ADOPTION_CONFIRM=ADOPT_LEAGUEVAULT_BASELINE_WITHOUT_DDL`
@@ -379,35 +475,35 @@ arguments:
 - `DB_ADOPTION_EXPECTED_BASELINE_TAG`
 - `DB_ADOPTION_EXPECTED_BASELINE_HASH`
 - `DB_ADOPTION_EXPECTED_BASELINE_CREATED_AT`
-
-For `neon-rehearsal`, also supply
-`DB_ADOPTION_SOURCE_ENVIRONMENT_ID`. It must identify the independently
-recorded source branch and must differ from the target environment identity.
-The source-identity key is refused for local/CI adoption.
+- `LV_DISPOSABLE_DB_CONTAINER_ID` (the full lowercase 64-character Docker ID)
+- `LV_DISPOSABLE_DB_RUN_ID`
+- `LV_DISPOSABLE_DB_PURPOSE`
+- `LV_DISPOSABLE_DB_DATABASE`
 
 The runtime environment identity must exactly match the independently supplied
-expectation. The command does not call the Neon control plane, so the runtime
-identity must come from a trusted provider/operator context and the operator
-record must independently prove that the endpoint fingerprint belongs to that
-disposable branch. After a current
-backup/restorable branch and restore procedure are verified, run:
+expectation. The expected database, role, host fingerprint, clean checkout and
+exact commit, baseline tag/hash/timestamp, backup-and-restore attestation, and
+explicit confirmation must all agree with the checked-in and server-reported
+state. The disposable proof additionally binds the same URL to the running
+container's full ID, labels, published loopback port, auto-remove setting,
+Docker-created anonymous data volume, approved database list, role, and
+per-database marker. `db:push:disposable` passes that exact verified URL to
+Drizzle and accepts only its optional `--force` flag; target/config overrides
+are refused. After those local gates are prepared, run:
 
 ```bash
 npm run db:adopt-baseline
 npm run db:migrate
 ```
 
-For a disposable Neon rehearsal, retain before/after fingerprints, the target
-record, command output, backup/restore evidence, and the exact CI-verified
-commit. Confirm that adoption changed only the Drizzle journal and that the
-following migration path is a no-op until a real later migration exists.
-
-Production adoption remains unperformed and disabled by this change.
+Production adoption remains unperformed and impossible in this change.
 `db:adopt-baseline` refuses `APP_ENV=prod`, `NODE_ENV=production`, the
 production application domain, Render/Replit deployment markers,
-production-shaped or mismatched environment identities, and every environment
-class outside the disposable/rehearsal allowlist. Enabling production requires
-a separately reviewed operator-only change and rehearsal evidence.
+production-shaped or mismatched environment identities, every class except
+`local-disposable`, every remote URL, and any target without exact repository-
+tool Docker ownership proof. Enabling any remote or production path requires a
+separately reviewed provider-backed target-identity and locking design plus
+rehearsal evidence.
 
 ## Production migration process
 

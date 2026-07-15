@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 export const ACTIVE_MIGRATIONS_DIRECTORY = resolve('migrations');
+export const LEGACY_MIGRATIONS_DIRECTORY = resolve('migrations-legacy-do-not-replay');
 export const BASELINE_TAG = '0000_normalized_baseline';
 export const EXPECTED_BASELINE_TABLE_COUNT = 29;
 export const EXPECTED_BASELINE_COLUMN_COUNT = 307;
@@ -63,6 +64,39 @@ function parseJsonFile(path: string): unknown {
     const reason = error instanceof Error ? error.message : String(error);
     throw new Error(`Could not parse migration metadata ${path}: ${reason}`);
   }
+}
+
+function assertNotLegacyMigrationDirectory(migrationsDirectory: string): void {
+  const candidate = resolve(migrationsDirectory);
+  const pathFromLegacyRoot = relative(LEGACY_MIGRATIONS_DIRECTORY, candidate);
+  const outsideLegacyRoot =
+    isAbsolute(pathFromLegacyRoot) ||
+    pathFromLegacyRoot === '..' ||
+    pathFromLegacyRoot.startsWith(`..${sep}`);
+  if (!outsideLegacyRoot) {
+    throw new Error(
+      'The active migration loader refuses migrations-legacy-do-not-replay; legacy history is evidence only.',
+    );
+  }
+}
+
+function readMigrationSql(path: string, tag: string): { sql: string; hash: string } {
+  const bytes = readFileSync(path);
+  if (bytes.includes(0x0d)) {
+    throw new Error(`Active migration ${tag} must use exact LF line endings without carriage returns.`);
+  }
+
+  let sql: string;
+  try {
+    sql = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error(`Active migration ${tag} must contain valid UTF-8 bytes.`);
+  }
+
+  return {
+    sql,
+    hash: createHash('sha256').update(bytes).digest('hex'),
+  };
 }
 
 function validateTag(value: unknown): string {
@@ -152,6 +186,7 @@ export function loadActiveMigrations(
   migrationsDirectory = ACTIVE_MIGRATIONS_DIRECTORY,
   options: { verifyChecksums?: boolean } = {},
 ): ActiveMigration[] {
+  assertNotLegacyMigrationDirectory(migrationsDirectory);
   const journalPath = join(migrationsDirectory, 'meta', '_journal.json');
   const parsed = parseJsonFile(journalPath);
   if (!isRecord(parsed)) throw new Error('Active migration journal must be a JSON object.');
@@ -177,7 +212,7 @@ export function loadActiveMigrations(
     const snapshotPath = join(migrationsDirectory, 'meta', `${String(position).padStart(4, '0')}_snapshot.json`);
     if (!existsSync(sqlPath)) throw new Error(`Active migration SQL is missing for ${tag}.`);
     if (!existsSync(snapshotPath)) throw new Error(`Active migration snapshot is missing for ${tag}.`);
-    const sql = readFileSync(sqlPath, 'utf8');
+    const { sql, hash } = readMigrationSql(sqlPath, tag);
     if (!sql.trim()) throw new Error(`Active migration ${tag} is empty.`);
     const migration: ActiveMigration = {
       idx: position,
@@ -186,7 +221,7 @@ export function loadActiveMigrations(
       tag,
       breakpoints: true,
       sql,
-      hash: createHash('sha256').update(sql).digest('hex'),
+      hash,
       path: sqlPath,
       snapshotPath,
     };

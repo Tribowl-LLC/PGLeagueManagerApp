@@ -90,33 +90,22 @@ See [`DATABASE.md`](./DATABASE.md#disposable-neon-branch-inventory-procedure)
 for the complete comparison procedure. Direct production inventory remains a
 separately approved future operation.
 
-## Disposable baseline-adoption rehearsal
+## Baseline adoption is disabled remotely
 
-Production adoption has not been performed and is disabled in this pull
-request. Before any future production-enablement change, rehearse on an
-independently verified disposable Neon branch cloned from production:
+Production adoption has not been performed. The command in this pull request
+accepts only a strictly verified repository-tool-owned local Docker database;
+it rejects Neon, all other remote hosts, ordinary CI targets, and every
+production-shaped process or target. There is no current remote rehearsal
+procedure, and `db:adopt-baseline` must not be run against a disposable Neon
+branch.
 
-1. Record the project, source branch, disposable branch, endpoint fingerprint,
-   database, and role outside the repository.
-2. Create a current restorable branch/backup and prove the restore procedure.
-3. Use a clean checkout of the exact CI-verified commit. Supply every
-   `DB_ADOPTION_*` expectation documented in [`DATABASE.md`](./DATABASE.md),
-   with environment class `neon-rehearsal`. Set the runtime target identity
-   from trusted Neon/operator context, independently supply the matching
-   expected target identity, and name the distinct source branch identity; do
-   not expose values in arguments or logs.
-4. Capture a before fingerprint, run `npm run db:adopt-baseline`, capture an
-   after fingerprint, and confirm only the exact baseline journal record was
-   inserted. Baseline DDL must not execute.
-5. Rerun adoption and require a safe no-op. Run `npm run db:migrate` and require
-   a no-op until a reviewed post-baseline migration exists.
-6. Retain target, backup/restore, before/after inventory, exact commit, baseline
-   hash/timestamp, command output, and reviewer approval as the production
-   enablement evidence.
-
-The current command rejects production-shaped process/environment identity,
-target/expectation mismatch, and a rehearsal target equal to its source.
-Do not weaken or bypass that gate during rehearsal.
+Any future Neon rehearsal or production-enablement change requires separate
+review. At minimum it must add provider-backed proof that the endpoint belongs
+to the independently recorded project and branch, a backup/restore gate, a
+reviewed lock design for catalog object classes that table/sequence locks do
+not cover, and tests proving atomic journal registration and safe concurrent
+refusal. The read-only disposable-branch inventory procedure above remains
+available; it is not permission to adopt that branch.
 
 ## Schema Release
 
@@ -139,7 +128,13 @@ Schema changes require a deliberate release step:
 
 `db:migrate` is not a substitute for a backup. Use expand–migrate–contract
 releases and plan restoration before a destructive contract migration.
-`db:push:disposable` is prohibited for production and durable Neon branches.
+`db:push:disposable` accepts only the exact marked database in a running,
+repository-tool-owned local Docker container after full-ID, label, loopback
+port, auto-remove/anonymous-volume, database, role, and database-comment
+verification. It pins the reviewed Drizzle config and gives the child only the
+exact verified URL plus a minimal environment, with no inherited target/config
+override. It has no remote-host allowlist or development bypass and is
+prohibited for production, Neon, and every durable database.
 
 ## Post-Deployment Checks
 

@@ -61,14 +61,14 @@ npm run db:migrate
 echo "      done."
 echo ""
 
-echo "[2b/3] npm run db:push:template — rebuilding test template DB…"
+echo "[2b/3] npm run test:template:build — rebuilding the migrated test template DB…"
 # Phase 1 of per-worker test isolation (Task #699). Keeps the
-# `leaguevault_test_template` DB in sync with the just-pushed schema
+# `leaguevault_test_template` DB in sync with the active migration history
 # so Phase 2's per-worker `CREATE DATABASE … TEMPLATE …` clones
 # inherit the latest invariants + seeded users. Non-fatal so a
 # template-build hiccup doesn't block the rest of the post-pull
 # reset (the next task that runs the suite will rebuild on demand).
-npm run db:push:template || echo "      WARNING: template build failed; will rebuild on next test run."
+npm run test:template:build || echo "      WARNING: template build failed; will rebuild on next test run."
 echo "      done."
 echo ""
 

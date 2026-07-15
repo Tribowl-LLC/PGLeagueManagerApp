@@ -1,0 +1,2 @@
+migrations/*.sql text eol=lf
+tests/fixtures/migrations/*.sql text eol=lf

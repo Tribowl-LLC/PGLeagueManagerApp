@@ -10,8 +10,8 @@ suite never gates the fast static checks (and vice versa).
 | Workflow file | Job name | Triggers | What it runs |
 |---|---|---|---|
 | `ci.yml` | `Type check & lint` | Every PR to `main`, every push to `main` | Dependency audits, `tsc`, `eslint .`, `check:csrf`, `check:org-isolation`, `check-wire-sanitization`, `npm run build` |
-| `ci.yml` | `Database migrations (PostgreSQL 16/17)` | Every PR to `main`, every push to `main` | Active-history replay, exact fingerprint/drift checks, guarded adoption, refusal matrix, and isolated post-baseline ordering proof on both PostgreSQL versions |
-| `ci.yml` | `Tests` | Every PR to `main`, every push to `main` | `npm test` (vitest: parallel + serial-fk-bypass + client-components projects) |
+| `ci.yml` | `Database migrations (PostgreSQL 16/17)` | Every PR to `main`, every push to `main` | Exact migration-byte checks (including a clean `core.autocrlf=true` clone), active-history replay, fingerprint/drift checks, guarded local adoption, refusal/concurrency matrix, and isolated post-baseline ordering proof on both PostgreSQL versions |
+| `ci.yml` | `Tests` | Every PR to `main`, every push to `main` | `npm test` against a canonical template initialized by `db:migrate`, with exact template/worker journal-provenance assertions and application behavior on migrated worker databases |
 | `race-suite.yml` | `Race suite` | PRs that touch the sweep / bootstrap files (and every push to `main`) | `npm run test:race` — alias for `bash scripts/test-race.sh` (the two `RUN_BOOTSTRAP_RACE_TESTS=1` race files, serially) |
 | `post-deploy-trust-proxy.yml` | `Probe trust-proxy on live deploy` | Every 30 minutes (cron) and on `workflow_dispatch` | `scripts/verify-trust-proxy-deploy.ts` against the live deploy (task #379) — see [Post-deploy trust-proxy probe](#post-deploy-trust-proxy-probe) below |
 
@@ -48,7 +48,7 @@ The repository uses GitHub Dependabot at no additional service cost:
 
 ## What runs in `Tests`
 
-`npm test` invokes `vitest run`, which executes the three projects
+`npm test` invokes `vitest run`, which executes the six projects
 declared in `vitest.config.ts`:
 
 - **`parallel`** — the default project. Most files under
@@ -62,6 +62,12 @@ declared in `vitest.config.ts`:
 - **`client-components`** — the React component tests under
   `tests/components/`. Run in jsdom; kept in their own project so the
   node-environment suites above don't pay the jsdom setup cost.
+- **`parallel-isolated`** — tests whose module mocks require an isolated
+  fork and a migrated worker database, without a spawned application.
+- **`parallel-isolated-with-app`** — the small set that requires a fresh
+  migrated worker database and Express process for each file.
+- **`unit-no-db`** — pure unit tests that must not import database setup or
+  require database/application secrets.
 
 The two opt-in race files
 (`tests/api/setup-admin-bootstrap-race.test.ts` and
@@ -133,8 +139,19 @@ those self-tests teeth on PRs:
   separate CI service job.
 - `tests/unit/db-baseline-migration-tools.test.ts` — pins the active baseline
   hash/timestamp, versioned fingerprint counts/digest, physical-order/provider
-  exclusions, isolated proof fixture, and adoption target/backup/confirmation/
-  environment-identity/commit/baseline gates.
+  exclusions, owned-sequence count, isolated proof fixture, and adoption
+  target/backup/confirmation/environment-class/identity/commit/baseline gates.
+- `tests/unit/db-migration-bytes.test.ts` verifies exact LF/UTF-8 SQL hashing,
+  checkout attributes, checksum validation, and CRLF/invalid-UTF-8 refusal in
+  copied temporary migration trees.
+- `tests/unit/db-disposable-target.test.ts` proves `db:push:disposable` and
+  local adoption require the exact owned Docker container, port, labels,
+  auto-remove/anonymous-volume state, database marker, role, and unchanged
+  execution URL; target/config overrides, remote targets, and generic
+  development bypasses remain refused.
+- `tests/unit/test-template-migration-source.test.ts` pins the canonical
+  template hash inputs, excludes legacy history, and prevents a schema-push
+  fallback from re-entering template construction.
 
 ## What runs in `Race suite`
 
@@ -161,18 +178,27 @@ fresh on every run, so there is no shared state between PRs and the
 deterministic CI-only `FIELD_ENCRYPTION_KEY` is never used to
 decrypt real data.
 
-`tests/setup/global-setup.ts` runs the temporarily retained idempotent
-`installDbInvariants()` and
-`seedTestUsers()` before any test file executes. That covers the
-fixture seeding the `Tests` job needs — there is no separate
-`npm run seed` step in CI.
+For behavioral tests, `tests/setup/global-setup.ts` creates the canonical
+template as an empty local database, applies the complete active history with
+the checked migration runner, requires a second run to be a no-op, and verifies
+the exact journal and approved fingerprint before installing the temporarily
+retained invariants and test seed. Every physical worker clone verifies that exact journal again before
+an application process can use it. CI captures the run and requires both
+`[test-template-provenance] source=db:migrate` and
+`[test-worker-provenance] source=migrated-template journal=exact`; a missing
+provenance marker fails the job. There is no schema-push fallback. Remote Neon
+template construction is disabled because a branch cannot prove an empty
+from-zero replay. A failed rebuild cannot retain a valid cache token, and a
+cache hit revalidates the journal and fingerprint. The canonical template supplies the fixtures the `Tests` job
+needs, so CI has no separate `npm run seed` step.
 
 The sibling `Database migrations` matrix does not use service credentials or
 Neon. `npm run db:check -- --postgres-version <16|17>` owns and cleans an
 ephemeral local Docker container, validates active Drizzle metadata and
-declared-schema drift, replays from zero, adopts a matching populated fixture,
-tests all refusal paths, and proves post-baseline ordering. PostgreSQL 16 and
-17 must produce the same application fingerprint.
+exact SQL bytes, declared-schema drift and all 26 owned sequences, replays from
+zero, adopts a matching populated fixture in one guarded transaction, tests
+journal/concurrency/refusal paths, and proves post-baseline ordering.
+PostgreSQL 16 and 17 must produce the same application fingerprint.
 
 ## Required CI secrets
 

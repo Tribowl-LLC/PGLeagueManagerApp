@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import pg, { type QueryResultRow } from 'pg';
 import { normalizeSqlDefinition } from './sql-definition-normalization';
 
-export const DB_INVENTORY_FORMAT_VERSION = 2 as const;
+export const DB_INVENTORY_FORMAT_VERSION = 3 as const;
 
 export type TablePrivilege =
   | 'delete'
@@ -27,8 +27,8 @@ export interface DatabaseTarget {
   role: string;
   serverVersion: string;
   serverVersionNumber: string;
-  transactionIsolation: 'repeatable read';
-  transactionReadOnly: true;
+  transactionIsolation: 'repeatable read' | 'serializable';
+  transactionReadOnly: boolean;
   roleSuperuser: boolean;
   roleBypassRls: boolean;
 }
@@ -101,6 +101,27 @@ export interface ColumnInfo {
   identity: 'always' | 'by default' | null;
   generated: 'stored' | 'virtual' | null;
   collation: string | null;
+}
+
+export interface SequenceInfo {
+  schema: string;
+  name: string;
+  persistence: 'permanent' | 'unlogged' | 'temporary';
+  dataType: string;
+  start: string;
+  increment: string;
+  minimum: string;
+  maximum: string;
+  cache: string;
+  cycle: boolean;
+  ownedBySchema: string | null;
+  ownedByTable: string | null;
+  ownedByColumn: string | null;
+  ownershipDependency: 'auto' | 'internal' | null;
+  columnDefault: string | null;
+  defaultReferencesOwnedSequence: boolean;
+  owner: string;
+  connectedRoleCanAlter: boolean;
 }
 
 export interface ConstraintInfo {
@@ -238,6 +259,7 @@ export interface DatabaseInventory {
   tablePrivileges: TablePrivilegeInfo[];
   policies: PolicyInfo[];
   columns: ColumnInfo[];
+  sequences: SequenceInfo[];
   constraints: ConstraintInfo[];
   indexes: IndexInfo[];
   types: TypeInfo[];
@@ -321,6 +343,28 @@ interface ColumnRow extends QueryResultRow {
   identity_kind: string;
   generated_kind: string;
   collation_name: string | null;
+}
+
+interface SequenceRow extends QueryResultRow {
+  schema_name: string;
+  sequence_name: string;
+  persistence: SequenceInfo['persistence'];
+  data_type: string;
+  start_value: string;
+  increment_by: string;
+  minimum_value: string;
+  maximum_value: string;
+  cache_size: string;
+  cycle: boolean;
+  owned_by_schema: string | null;
+  owned_by_table: string | null;
+  owned_by_column: string | null;
+  ownership_dependency: string | null;
+  column_default: string | null;
+  default_reference_count: string;
+  all_default_reference_count: string;
+  owner_name: string;
+  connected_role_can_alter: boolean;
 }
 
 interface ConstraintRow extends QueryResultRow {
@@ -713,12 +757,16 @@ export function resolveApprovedMigrationJournal(
 export function assertInventoryTransactionMode(
   readOnly: string | undefined,
   isolation: string | undefined,
+  expected: { readOnly: boolean; isolation: 'repeatable read' | 'serializable' } = {
+    readOnly: true,
+    isolation: 'repeatable read',
+  },
 ): void {
-  if (readOnly !== 'on') {
-    throw new Error('PostgreSQL did not confirm a read-only inventory transaction.');
+  if (readOnly !== (expected.readOnly ? 'on' : 'off')) {
+    throw new Error(`PostgreSQL did not confirm the expected ${expected.readOnly ? 'read-only' : 'read-write'} inventory transaction.`);
   }
-  if (isolation !== 'repeatable read') {
-    throw new Error('PostgreSQL did not confirm repeatable-read inventory isolation.');
+  if (isolation !== expected.isolation) {
+    throw new Error(`PostgreSQL did not confirm ${expected.isolation.replace(' ', '-')} inventory isolation.`);
   }
 }
 
@@ -823,24 +871,37 @@ async function inspectMigrationJournal(
   };
 }
 
-export async function collectDatabaseInventory(
+interface InventoryCollectionRuntime {
+  client?: pg.Client;
+  hostFingerprint?: string;
+  expectedTransaction?: {
+    readOnly: boolean;
+    isolation: 'repeatable read' | 'serializable';
+  };
+}
+
+async function collectDatabaseInventoryInternal(
   connectionString: string,
   options: DatabaseInventoryOptions = {},
+  runtime: InventoryCollectionRuntime = {},
 ): Promise<DatabaseInventory> {
-  const hostFingerprint = fingerprintDatabaseHost(connectionString);
+  const hostFingerprint = runtime.hostFingerprint ?? fingerprintDatabaseHost(connectionString);
   if (options.expectedTarget) assertExpectedConnectionUrlTarget(connectionString, options.expectedTarget);
-  const client = new pg.Client({
+  const managesClient = runtime.client === undefined;
+  const client = runtime.client ?? new pg.Client({
     connectionString,
     application_name: 'leaguevault-db-inventory',
   });
 
   let transactionStarted = false;
   try {
-    await client.connect();
-    await client.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
-    transactionStarted = true;
-    await client.query("SET LOCAL statement_timeout = '30s'");
-    await client.query("SET LOCAL lock_timeout = '5s'");
+    if (managesClient) {
+      await client.connect();
+      await client.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      transactionStarted = true;
+      await client.query("SET LOCAL statement_timeout = '30s'");
+      await client.query("SET LOCAL lock_timeout = '5s'");
+    }
 
     const targetResult = await client.query<TargetRow>(`
       SELECT
@@ -856,7 +917,15 @@ export async function collectDatabaseInventory(
           AS role_bypass_rls
     `);
     const target = targetResult.rows[0];
-    assertInventoryTransactionMode(target?.transaction_read_only, target?.transaction_isolation);
+    const expectedTransaction = runtime.expectedTransaction ?? {
+      readOnly: true,
+      isolation: 'repeatable read' as const,
+    };
+    assertInventoryTransactionMode(
+      target?.transaction_read_only,
+      target?.transaction_isolation,
+      expectedTransaction,
+    );
     if (!target) throw new Error('PostgreSQL did not return inventory target metadata.');
     if (options.expectedTarget) {
       assertExpectedDatabaseTarget({
@@ -1046,6 +1115,74 @@ export async function collectDatabaseInventory(
         AND NOT a.attisdropped
         AND ${USER_SCHEMA_PREDICATE}
       ORDER BY n.nspname, c.relname, a.attnum
+    `);
+
+    const sequencesResult = await client.query<SequenceRow>(`
+      SELECT
+        n.nspname AS schema_name,
+        sequence_class.relname AS sequence_name,
+        CASE sequence_class.relpersistence
+          WHEN 'p' THEN 'permanent'
+          WHEN 'u' THEN 'unlogged'
+          WHEN 't' THEN 'temporary'
+        END AS persistence,
+        pg_catalog.format_type(sequence_info.seqtypid, NULL) AS data_type,
+        sequence_info.seqstart::text AS start_value,
+        sequence_info.seqincrement::text AS increment_by,
+        sequence_info.seqmin::text AS minimum_value,
+        sequence_info.seqmax::text AS maximum_value,
+        sequence_info.seqcache::text AS cache_size,
+        sequence_info.seqcycle AS cycle,
+        owned_namespace.nspname AS owned_by_schema,
+        owned_table.relname AS owned_by_table,
+        owned_column.attname AS owned_by_column,
+        ownership.deptype::text AS ownership_dependency,
+        pg_catalog.pg_get_expr(column_default.adbin, column_default.adrelid, true) AS column_default,
+        CASE WHEN column_default.oid IS NULL THEN '0' ELSE (
+          SELECT count(*)::text
+          FROM pg_catalog.pg_depend default_dependency
+          WHERE default_dependency.classid = 'pg_catalog.pg_attrdef'::pg_catalog.regclass
+            AND default_dependency.objid = column_default.oid
+            AND default_dependency.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass
+            AND default_dependency.refobjid = sequence_class.oid
+            AND default_dependency.deptype = 'n'
+        ) END AS default_reference_count,
+        (
+          SELECT count(*)::text
+          FROM pg_catalog.pg_depend default_dependency
+          WHERE default_dependency.classid = 'pg_catalog.pg_attrdef'::pg_catalog.regclass
+            AND default_dependency.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass
+            AND default_dependency.refobjid = sequence_class.oid
+            AND default_dependency.deptype = 'n'
+        ) AS all_default_reference_count,
+        pg_catalog.pg_get_userbyid(sequence_class.relowner) AS owner_name,
+        pg_catalog.pg_has_role(sequence_class.relowner, 'USAGE') AS connected_role_can_alter
+      FROM pg_catalog.pg_class sequence_class
+      JOIN pg_catalog.pg_namespace n ON n.oid = sequence_class.relnamespace
+      JOIN pg_catalog.pg_sequence sequence_info ON sequence_info.seqrelid = sequence_class.oid
+      LEFT JOIN LATERAL (
+        SELECT dependency.refobjid, dependency.refobjsubid, dependency.deptype
+        FROM pg_catalog.pg_depend dependency
+        WHERE dependency.classid = 'pg_catalog.pg_class'::pg_catalog.regclass
+          AND dependency.objid = sequence_class.oid
+          AND dependency.objsubid = 0
+          AND dependency.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass
+          AND dependency.deptype IN ('a', 'i')
+        ORDER BY dependency.deptype, dependency.refobjid, dependency.refobjsubid
+      ) ownership ON true
+      LEFT JOIN pg_catalog.pg_class owned_table ON owned_table.oid = ownership.refobjid
+      LEFT JOIN pg_catalog.pg_namespace owned_namespace ON owned_namespace.oid = owned_table.relnamespace
+      LEFT JOIN pg_catalog.pg_attribute owned_column
+        ON owned_column.attrelid = owned_table.oid
+        AND owned_column.attnum = ownership.refobjsubid
+        AND NOT owned_column.attisdropped
+      LEFT JOIN pg_catalog.pg_attrdef column_default
+        ON column_default.adrelid = owned_table.oid
+        AND column_default.adnum = owned_column.attnum
+      WHERE sequence_class.relkind = 'S'
+        AND ${USER_SCHEMA_PREDICATE}
+      ORDER BY n.nspname, sequence_class.relname, owned_namespace.nspname,
+        owned_table.relname, owned_column.attname
     `);
 
     const constraintsResult = await client.query<ConstraintRow>(`
@@ -1288,8 +1425,10 @@ export async function collectDatabaseInventory(
       };
     });
 
-    await client.query('COMMIT');
-    transactionStarted = false;
+    if (managesClient) {
+      await client.query('COMMIT');
+      transactionStarted = false;
+    }
 
     return {
       formatVersion: DB_INVENTORY_FORMAT_VERSION,
@@ -1299,8 +1438,8 @@ export async function collectDatabaseInventory(
         role: target.role_name,
         serverVersion: target.server_version,
         serverVersionNumber: target.server_version_number,
-        transactionIsolation: 'repeatable read',
-        transactionReadOnly: true,
+        transactionIsolation: expectedTransaction.isolation,
+        transactionReadOnly: expectedTransaction.readOnly,
         roleSuperuser: target.role_superuser,
         roleBypassRls: target.role_bypass_rls,
       },
@@ -1348,6 +1487,31 @@ export async function collectDatabaseInventory(
         identity: row.identity_kind === 'a' ? 'always' : row.identity_kind === 'd' ? 'by default' : null,
         generated: row.generated_kind === 's' ? 'stored' : row.generated_kind === 'v' ? 'virtual' : null,
         collation: row.collation_name,
+      })),
+      sequences: sequencesResult.rows.map((row) => ({
+        schema: row.schema_name,
+        name: row.sequence_name,
+        persistence: row.persistence,
+        dataType: row.data_type,
+        start: row.start_value,
+        increment: row.increment_by,
+        minimum: row.minimum_value,
+        maximum: row.maximum_value,
+        cache: row.cache_size,
+        cycle: row.cycle,
+        ownedBySchema: row.owned_by_schema,
+        ownedByTable: row.owned_by_table,
+        ownedByColumn: row.owned_by_column,
+        ownershipDependency: row.ownership_dependency === 'a'
+          ? 'auto'
+          : row.ownership_dependency === 'i'
+            ? 'internal'
+            : null,
+        columnDefault: normalizeSqlDefinition(row.column_default),
+        defaultReferencesOwnedSequence:
+          row.default_reference_count === '1' && row.all_default_reference_count === '1',
+        owner: row.owner_name,
+        connectedRoleCanAlter: row.connected_role_can_alter,
       })),
       constraints: constraintsResult.rows.map((row) => ({
         schema: row.schema_name,
@@ -1438,8 +1602,27 @@ export async function collectDatabaseInventory(
     }
     throw error;
   } finally {
-    await client.end().catch(() => undefined);
+    if (managesClient) await client.end().catch(() => undefined);
   }
+}
+
+export async function collectDatabaseInventory(
+  connectionString: string,
+  options: DatabaseInventoryOptions = {},
+): Promise<DatabaseInventory> {
+  return collectDatabaseInventoryInternal(connectionString, options);
+}
+
+export async function collectDatabaseInventoryOnClient(
+  client: pg.Client,
+  connectionString: string,
+  options: DatabaseInventoryOptions = {},
+): Promise<DatabaseInventory> {
+  return collectDatabaseInventoryInternal(connectionString, options, {
+    client,
+    hostFingerprint: fingerprintDatabaseHost(connectionString),
+    expectedTransaction: { readOnly: false, isolation: 'serializable' },
+  });
 }
 
 export function serializeDatabaseInventory(inventory: DatabaseInventory): string {
