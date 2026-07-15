@@ -2,7 +2,24 @@ import { createHash } from 'node:crypto';
 import pg, { type QueryResultRow } from 'pg';
 import { normalizeSqlDefinition } from './sql-definition-normalization';
 
-export const DB_INVENTORY_FORMAT_VERSION = 1 as const;
+export const DB_INVENTORY_FORMAT_VERSION = 2 as const;
+
+export type TablePrivilege =
+  | 'delete'
+  | 'insert'
+  | 'maintain'
+  | 'references'
+  | 'select'
+  | 'trigger'
+  | 'truncate'
+  | 'update';
+
+export type ConnectedRoleRlsMode =
+  | 'not-enabled'
+  | 'bypass-superuser'
+  | 'bypass-bypassrls'
+  | 'bypass-owner'
+  | 'governed';
 
 export interface DatabaseTarget {
   hostFingerprint: string;
@@ -12,6 +29,8 @@ export interface DatabaseTarget {
   serverVersionNumber: string;
   transactionIsolation: 'repeatable read';
   transactionReadOnly: true;
+  roleSuperuser: boolean;
+  roleBypassRls: boolean;
 }
 
 export interface SchemaInfo {
@@ -25,6 +44,48 @@ export interface TableInfo {
   persistence: 'permanent' | 'unlogged' | 'temporary';
   rowSecurity: boolean;
   forceRowSecurity: boolean;
+  owner: string;
+  connectedRoleOwnsTable: boolean;
+  connectedRolePrivileges: TablePrivilege[];
+  connectedRoleRlsMode: ConnectedRoleRlsMode;
+}
+
+export interface TablePrivilegeInfo {
+  schema: string;
+  table: string;
+  grantor: string;
+  grantee: string;
+  privilege: TablePrivilege;
+  grantable: boolean;
+}
+
+export interface PolicyDependencyInfo {
+  kind: 'function' | 'relation';
+  schema: string;
+  name: string;
+  identityArguments: string | null;
+}
+
+export interface PolicyReferenceSignals {
+  neonManagedFunctions: string[];
+  neonManagedRoles: string[];
+  neonManagedSchemas: string[];
+  referencesJwtClaims: boolean;
+  authObjects: string[];
+}
+
+export interface PolicyInfo {
+  schema: string;
+  table: string;
+  name: string;
+  command: 'all' | 'select' | 'insert' | 'update' | 'delete';
+  mode: 'permissive' | 'restrictive';
+  roles: string[];
+  appliesToConnectedRole: boolean;
+  using: string | null;
+  withCheck: string | null;
+  dependencies: PolicyDependencyInfo[];
+  referenceSignals: PolicyReferenceSignals;
 }
 
 export interface ColumnInfo {
@@ -148,6 +209,19 @@ export interface MigrationJournalInspection {
 
 export interface DatabaseInventoryOptions {
   migrationJournalRelation?: MigrationJournalRelation;
+  expectedTarget?: ExpectedDatabaseTarget;
+}
+
+export interface ExpectedDatabaseTarget {
+  hostFingerprint: string;
+  database: string;
+  role: string;
+}
+
+export interface RequiredExpectedTargetEnvironment {
+  expectedTarget: ExpectedDatabaseTarget;
+  disposableBranchId: string;
+  productionSourceBranchId: string;
 }
 
 export interface ApprovedMigrationJournalSelection {
@@ -161,6 +235,8 @@ export interface DatabaseInventory {
   target: DatabaseTarget;
   schemas: SchemaInfo[];
   tables: TableInfo[];
+  tablePrivileges: TablePrivilegeInfo[];
+  policies: PolicyInfo[];
   columns: ColumnInfo[];
   constraints: ConstraintInfo[];
   indexes: IndexInfo[];
@@ -181,6 +257,8 @@ interface TargetRow extends QueryResultRow {
   server_version_number: string;
   transaction_read_only: string;
   transaction_isolation: string;
+  role_superuser: boolean;
+  role_bypass_rls: boolean;
 }
 
 interface NamedRow extends QueryResultRow {
@@ -194,6 +272,40 @@ interface TableRow extends QueryResultRow {
   persistence: TableInfo['persistence'];
   row_security: boolean;
   force_row_security: boolean;
+  owner_name: string;
+  connected_role_owns_table: boolean;
+  connected_role_privileges: TablePrivilege[];
+}
+
+interface TablePrivilegeRow extends QueryResultRow {
+  schema_name: string;
+  table_name: string;
+  grantor_name: string;
+  grantee_name: string;
+  privilege_type: TablePrivilege;
+  is_grantable: boolean;
+}
+
+interface PolicyRow extends QueryResultRow {
+  schema_name: string;
+  table_name: string;
+  policy_name: string;
+  command: PolicyInfo['command'];
+  mode: PolicyInfo['mode'];
+  roles: string[];
+  applies_to_connected_role: boolean;
+  using_expression: string | null;
+  with_check_expression: string | null;
+}
+
+interface PolicyDependencyRow extends QueryResultRow {
+  schema_name: string;
+  table_name: string;
+  policy_name: string;
+  dependency_kind: PolicyDependencyInfo['kind'];
+  dependency_schema: string;
+  dependency_name: string;
+  identity_arguments: string | null;
 }
 
 interface ColumnRow extends QueryResultRow {
@@ -320,6 +432,235 @@ function compareText(a: string, b: string): number {
   return a.localeCompare(b, 'en');
 }
 
+const EXPECTED_TARGET_ENVIRONMENT_KEYS = [
+  'DB_INVENTORY_EXPECTED_DATABASE',
+  'DB_INVENTORY_EXPECTED_ROLE',
+  'DB_INVENTORY_EXPECTED_HOST_FINGERPRINT',
+  'DB_INVENTORY_EXPECTED_NEON_BRANCH_ID',
+  'DB_INVENTORY_EXPECTED_NEON_SOURCE_BRANCH_ID',
+] as const;
+type ExpectedTargetEnvironmentKey = (typeof EXPECTED_TARGET_ENVIRONMENT_KEYS)[number];
+
+const CONNECTION_TARGET_OVERRIDE_QUERY_PARAMETERS = new Set([
+  'database',
+  'db',
+  'dbname',
+  'host',
+  'hostaddr',
+  'options',
+  'port',
+  'role',
+  'service',
+  'servicefile',
+  'user',
+]);
+
+const NEON_MANAGED_ROLES = new Set(['authenticated', 'anonymous']);
+const NEON_MANAGED_SCHEMAS = new Set(['auth', 'neon_auth']);
+
+function uniqueSorted(values: Iterable<string>): string[] {
+  return [...new Set(values)].sort(compareText);
+}
+
+export function parseRequiredExpectedTargetEnvironment(
+  environment: NodeJS.ProcessEnv,
+): RequiredExpectedTargetEnvironment {
+  const missing = EXPECTED_TARGET_ENVIRONMENT_KEYS.filter((key) => !environment[key]?.trim());
+  if (missing.length > 0) {
+    throw new Error(`Required expected-target environment variable(s) are absent: ${missing.join(', ')}.`);
+  }
+
+  const readRequired = (key: ExpectedTargetEnvironmentKey): string => {
+    const value = environment[key]?.trim();
+    if (!value) {
+      throw new Error(`Required expected-target environment variable is absent: ${key}.`);
+    }
+    return value;
+  };
+
+  const hostFingerprint = readRequired('DB_INVENTORY_EXPECTED_HOST_FINGERPRINT');
+  if (!/^sha256:[0-9a-f]{64}$/.test(hostFingerprint)) {
+    throw new Error('DB_INVENTORY_EXPECTED_HOST_FINGERPRINT must be a lowercase SHA-256 fingerprint.');
+  }
+
+  const disposableBranchId = readRequired('DB_INVENTORY_EXPECTED_NEON_BRANCH_ID');
+  const productionSourceBranchId = readRequired('DB_INVENTORY_EXPECTED_NEON_SOURCE_BRANCH_ID');
+  if (disposableBranchId === productionSourceBranchId) {
+    throw new Error('Refusing inventory because the disposable and production source branch identifiers match.');
+  }
+
+  return {
+    expectedTarget: {
+      hostFingerprint,
+      database: readRequired('DB_INVENTORY_EXPECTED_DATABASE'),
+      role: readRequired('DB_INVENTORY_EXPECTED_ROLE'),
+    },
+    disposableBranchId,
+    productionSourceBranchId,
+  };
+}
+
+export function assertExpectedDatabaseTarget(
+  actual: Pick<DatabaseTarget, 'hostFingerprint' | 'database' | 'role'>,
+  expected: ExpectedDatabaseTarget,
+): void {
+  if (actual.hostFingerprint !== expected.hostFingerprint) {
+    throw new Error('Connected endpoint fingerprint does not match the independently verified target.');
+  }
+  if (actual.database !== expected.database) {
+    throw new Error('Connected database does not match the independently verified target.');
+  }
+  if (actual.role !== expected.role) {
+    throw new Error('Connected role does not match the independently verified target.');
+  }
+}
+
+function parseDatabaseConnectionUrl(connectionString: string): URL {
+  let parsed: URL;
+  try {
+    parsed = new URL(connectionString);
+  } catch {
+    throw new Error('DATABASE_URL is not a valid URL.');
+  }
+  if (parsed.protocol !== 'postgres:' && parsed.protocol !== 'postgresql:') {
+    throw new Error('DATABASE_URL must use the postgres or postgresql scheme.');
+  }
+  if (!parsed.hostname) throw new Error('DATABASE_URL does not contain a hostname.');
+  if (parsed.hostname.includes('%')) {
+    throw new Error('DATABASE_URL percent-encoded hostnames are not allowed.');
+  }
+  if (!parsed.port && process.env.PGPORT?.trim()) {
+    throw new Error(
+      'DATABASE_URL cannot rely on ambient connection target overrides; specify the port explicitly when PGPORT is set.',
+    );
+  }
+  if (process.env.PGOPTIONS?.trim()) {
+    throw new Error(
+      'DATABASE_URL cannot rely on ambient connection role overrides; unset PGOPTIONS before inventory.',
+    );
+  }
+
+  const hasTargetOverride = [...parsed.searchParams.keys()].some((key) =>
+    CONNECTION_TARGET_OVERRIDE_QUERY_PARAMETERS.has(key.toLowerCase()),
+  );
+  if (hasTargetOverride) {
+    throw new Error(
+      'DATABASE_URL target override query parameters are not allowed; encode the endpoint, database, and role in the URL authority and path.',
+    );
+  }
+  return parsed;
+}
+
+function fingerprintParsedDatabaseHost(parsed: URL): string {
+  const port = parsed.port || '5432';
+  const material = `${parsed.hostname.toLowerCase()}:${port}`;
+  return `sha256:${createHash('sha256').update(material).digest('hex')}`;
+}
+
+export function deriveDatabaseTargetFromConnectionString(
+  connectionString: string,
+): ExpectedDatabaseTarget {
+  const parsed = parseDatabaseConnectionUrl(connectionString);
+
+  let database: string;
+  let role: string;
+  try {
+    database = decodeURI(parsed.pathname.replace(/^\//, ''));
+    role = decodeURIComponent(parsed.username);
+  } catch {
+    throw new Error('DATABASE_URL contains invalid percent-encoding in target metadata.');
+  }
+  if (!database) throw new Error('DATABASE_URL must explicitly name a database.');
+  if (!role) throw new Error('DATABASE_URL must explicitly name a role.');
+
+  return {
+    hostFingerprint: fingerprintParsedDatabaseHost(parsed),
+    database,
+    role,
+  };
+}
+
+export function assertExpectedConnectionUrlTarget(
+  connectionString: string,
+  expected: ExpectedDatabaseTarget,
+): void {
+  const actual = deriveDatabaseTargetFromConnectionString(connectionString);
+  if (actual.hostFingerprint !== expected.hostFingerprint) {
+    throw new Error('DATABASE_URL endpoint fingerprint does not match the independently verified target.');
+  }
+  if (actual.database !== expected.database) {
+    throw new Error('DATABASE_URL database does not match the independently verified target.');
+  }
+  if (actual.role !== expected.role) {
+    throw new Error('DATABASE_URL role does not match the independently verified target.');
+  }
+}
+
+export function postgresqlSupportsMaintainPrivilege(serverVersionNumber: string): boolean {
+  const parsedVersion = Number.parseInt(serverVersionNumber, 10);
+  return Number.isFinite(parsedVersion) && parsedVersion >= 170000;
+}
+
+export function determineConnectedRoleRlsMode(input: {
+  rowSecurity: boolean;
+  forceRowSecurity: boolean;
+  connectedRoleOwnsTable: boolean;
+  roleSuperuser: boolean;
+  roleBypassRls: boolean;
+}): ConnectedRoleRlsMode {
+  if (!input.rowSecurity) return 'not-enabled';
+  if (input.roleSuperuser) return 'bypass-superuser';
+  if (input.roleBypassRls) return 'bypass-bypassrls';
+  if (input.connectedRoleOwnsTable && !input.forceRowSecurity) return 'bypass-owner';
+  return 'governed';
+}
+
+function dependencyKey(dependency: PolicyDependencyInfo): string {
+  const suffix = dependency.kind === 'function'
+    ? `(${dependency.identityArguments ?? ''})`
+    : '';
+  return `${dependency.schema}.${dependency.name}${suffix}`;
+}
+
+export function detectPolicyReferenceSignals(
+  roles: readonly string[],
+  usingExpression: string | null,
+  withCheckExpression: string | null,
+  dependencies: readonly PolicyDependencyInfo[],
+): PolicyReferenceSignals {
+  const expressions = [usingExpression, withCheckExpression].filter(
+    (value): value is string => value !== null,
+  ).join(' ');
+  const neonManagedRoles = roles.filter(
+    (role) => NEON_MANAGED_ROLES.has(role) || role.toLowerCase().startsWith('neon_'),
+  );
+  const managedDependencies = dependencies.filter((dependency) =>
+    NEON_MANAGED_SCHEMAS.has(dependency.schema) || dependency.schema.toLowerCase().startsWith('neon_'),
+  );
+  const neonManagedFunctions = managedDependencies
+    .filter((dependency) => dependency.kind === 'function')
+    .map(dependencyKey);
+  const neonManagedSchemas = managedDependencies.map((dependency) => dependency.schema);
+  if (/\bauth\s*\.\s*[A-Za-z_][A-Za-z0-9_$]*/i.test(expressions)) {
+    neonManagedSchemas.push('auth');
+  }
+  if (/\bneon_auth\s*\./i.test(expressions)) neonManagedSchemas.push('neon_auth');
+
+  const authObjects = managedDependencies.map(dependencyKey);
+  const referencesAuthUserId = /\bauth\s*\.\s*user_id\s*\(/i.test(expressions);
+  const referencesRawJwtClaims = /request\s*\.\s*jwt\s*\.\s*claims|\bjwt\b/i.test(expressions);
+  if (referencesAuthUserId) authObjects.push('auth.user_id');
+  if (referencesRawJwtClaims) authObjects.push('request.jwt.claims');
+
+  return {
+    neonManagedFunctions: uniqueSorted(neonManagedFunctions),
+    neonManagedRoles: uniqueSorted(neonManagedRoles),
+    neonManagedSchemas: uniqueSorted(neonManagedSchemas),
+    referencesJwtClaims: referencesAuthUserId || referencesRawJwtClaims,
+    authObjects: uniqueSorted(authObjects),
+  };
+}
+
 function quoteIdentifier(identifier: string): string {
   if (!SAFE_IDENTIFIER.test(identifier)) {
     throw new Error(`Unsafe PostgreSQL identifier: ${identifier}`);
@@ -382,19 +723,7 @@ export function assertInventoryTransactionMode(
 }
 
 export function fingerprintDatabaseHost(connectionString: string): string {
-  let parsed: URL;
-  try {
-    parsed = new URL(connectionString);
-  } catch {
-    throw new Error('DATABASE_URL is not a valid URL.');
-  }
-  if (parsed.protocol !== 'postgres:' && parsed.protocol !== 'postgresql:') {
-    throw new Error('DATABASE_URL must use the postgres or postgresql scheme.');
-  }
-  if (!parsed.hostname) throw new Error('DATABASE_URL does not contain a hostname.');
-  const port = parsed.port || '5432';
-  const material = `${parsed.hostname.toLowerCase()}:${port}`;
-  return `sha256:${createHash('sha256').update(material).digest('hex')}`;
+  return fingerprintParsedDatabaseHost(parseDatabaseConnectionUrl(connectionString));
 }
 
 export function redactConnectionDetails(message: string, connectionString?: string): string {
@@ -409,6 +738,21 @@ export function redactConnectionDetails(message: string, connectionString?: stri
       if (parsed.password) {
         redacted = redacted.replaceAll(parsed.password, '[password redacted]');
         redacted = redacted.replaceAll(decodeURIComponent(parsed.password), '[password redacted]');
+      }
+      if (parsed.username) {
+        redacted = redacted.replaceAll(parsed.username, '[role redacted]');
+        redacted = redacted.replaceAll(decodeURIComponent(parsed.username), '[role redacted]');
+      }
+      const rawDatabase = parsed.pathname.replace(/^\//, '');
+      const databaseRepresentations = new Set([rawDatabase]);
+      try {
+        databaseRepresentations.add(decodeURI(rawDatabase));
+        databaseRepresentations.add(decodeURIComponent(rawDatabase));
+      } catch {
+        // The caller will report invalid target metadata without echoing the value.
+      }
+      for (const database of databaseRepresentations) {
+        if (database) redacted = redacted.replaceAll(database, '[database redacted]');
       }
     } catch {
       // The caller will report the URL parse error without echoing the value.
@@ -484,6 +828,7 @@ export async function collectDatabaseInventory(
   options: DatabaseInventoryOptions = {},
 ): Promise<DatabaseInventory> {
   const hostFingerprint = fingerprintDatabaseHost(connectionString);
+  if (options.expectedTarget) assertExpectedConnectionUrlTarget(connectionString, options.expectedTarget);
   const client = new pg.Client({
     connectionString,
     application_name: 'leaguevault-db-inventory',
@@ -504,11 +849,22 @@ export async function collectDatabaseInventory(
         current_setting('server_version') AS server_version,
         current_setting('server_version_num') AS server_version_number,
         current_setting('transaction_read_only') AS transaction_read_only,
-        current_setting('transaction_isolation') AS transaction_isolation
+        current_setting('transaction_isolation') AS transaction_isolation,
+        COALESCE((SELECT r.rolsuper FROM pg_catalog.pg_roles r WHERE r.rolname = current_user), false)
+          AS role_superuser,
+        COALESCE((SELECT r.rolbypassrls FROM pg_catalog.pg_roles r WHERE r.rolname = current_user), false)
+          AS role_bypass_rls
     `);
     const target = targetResult.rows[0];
     assertInventoryTransactionMode(target?.transaction_read_only, target?.transaction_isolation);
     if (!target) throw new Error('PostgreSQL did not return inventory target metadata.');
+    if (options.expectedTarget) {
+      assertExpectedDatabaseTarget({
+        hostFingerprint,
+        database: target.database_name,
+        role: target.role_name,
+      }, options.expectedTarget);
+    }
 
     const schemasResult = await client.query<NamedRow>(`
       SELECT n.nspname AS name
@@ -517,6 +873,9 @@ export async function collectDatabaseInventory(
       ORDER BY n.nspname
     `);
 
+    const maintainPrivilegeExpression = postgresqlSupportsMaintainPrivilege(target.server_version_number)
+      ? "CASE WHEN pg_catalog.has_table_privilege(c.oid, 'MAINTAIN') THEN 'maintain' END,"
+      : '';
     const tablesResult = await client.query<TableRow>(`
       SELECT
         n.nspname AS schema_name,
@@ -528,12 +887,136 @@ export async function collectDatabaseInventory(
           ELSE 'permanent'
         END AS persistence,
         c.relrowsecurity AS row_security,
-        c.relforcerowsecurity AS force_row_security
+        c.relforcerowsecurity AS force_row_security,
+        pg_catalog.pg_get_userbyid(c.relowner) AS owner_name,
+        c.relowner = (SELECT r.oid FROM pg_catalog.pg_roles r WHERE r.rolname = current_user)
+          AS connected_role_owns_table,
+        ARRAY_REMOVE(ARRAY[
+          CASE WHEN pg_catalog.has_table_privilege(c.oid, 'DELETE') THEN 'delete' END,
+          CASE WHEN pg_catalog.has_table_privilege(c.oid, 'INSERT') THEN 'insert' END,
+          ${maintainPrivilegeExpression}
+          CASE WHEN pg_catalog.has_table_privilege(c.oid, 'REFERENCES') THEN 'references' END,
+          CASE WHEN pg_catalog.has_table_privilege(c.oid, 'SELECT') THEN 'select' END,
+          CASE WHEN pg_catalog.has_table_privilege(c.oid, 'TRIGGER') THEN 'trigger' END,
+          CASE WHEN pg_catalog.has_table_privilege(c.oid, 'TRUNCATE') THEN 'truncate' END,
+          CASE WHEN pg_catalog.has_table_privilege(c.oid, 'UPDATE') THEN 'update' END
+        ]::text[], NULL) AS connected_role_privileges
       FROM pg_catalog.pg_class c
       JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
       WHERE c.relkind IN ('r', 'p')
         AND ${USER_SCHEMA_PREDICATE}
       ORDER BY n.nspname, c.relname
+    `);
+
+    const tablePrivilegesResult = await client.query<TablePrivilegeRow>(`
+      SELECT
+        n.nspname AS schema_name,
+        c.relname AS table_name,
+        pg_catalog.pg_get_userbyid(acl.grantor) AS grantor_name,
+        CASE
+          WHEN acl.grantee = 0 THEN 'PUBLIC'
+          ELSE pg_catalog.pg_get_userbyid(acl.grantee)
+        END AS grantee_name,
+        lower(acl.privilege_type) AS privilege_type,
+        acl.is_grantable
+      FROM pg_catalog.pg_class c
+      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+      CROSS JOIN LATERAL pg_catalog.aclexplode(
+        COALESCE(c.relacl, pg_catalog.acldefault('r', c.relowner))
+      ) acl
+      WHERE c.relkind IN ('r', 'p')
+        AND ${USER_SCHEMA_PREDICATE}
+      ORDER BY n.nspname, c.relname, grantee_name, privilege_type, grantor_name
+    `);
+
+    const policiesResult = await client.query<PolicyRow>(`
+      SELECT
+        n.nspname AS schema_name,
+        c.relname AS table_name,
+        pol.polname AS policy_name,
+        CASE pol.polcmd
+          WHEN 'r' THEN 'select'
+          WHEN 'a' THEN 'insert'
+          WHEN 'w' THEN 'update'
+          WHEN 'd' THEN 'delete'
+          ELSE 'all'
+        END AS command,
+        CASE WHEN pol.polpermissive THEN 'permissive' ELSE 'restrictive' END AS mode,
+        ARRAY(
+          SELECT CASE
+            WHEN policy_role.role_oid = 0 THEN 'PUBLIC'
+            ELSE r.rolname
+          END
+          FROM unnest(pol.polroles) WITH ORDINALITY AS policy_role(role_oid, ordinal)
+          LEFT JOIN pg_catalog.pg_roles r ON r.oid = policy_role.role_oid
+          ORDER BY policy_role.ordinal
+        )::text[] AS roles,
+        EXISTS (
+          SELECT 1
+          FROM unnest(pol.polroles) AS policy_role(role_oid)
+          WHERE CASE
+            WHEN policy_role.role_oid = 0 THEN true
+            ELSE pg_catalog.pg_has_role(policy_role.role_oid, 'MEMBER')
+          END
+        ) AS applies_to_connected_role,
+        pg_catalog.pg_get_expr(pol.polqual, pol.polrelid, true) AS using_expression,
+        pg_catalog.pg_get_expr(pol.polwithcheck, pol.polrelid, true) AS with_check_expression
+      FROM pg_catalog.pg_policy pol
+      JOIN pg_catalog.pg_class c ON c.oid = pol.polrelid
+      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+      WHERE c.relkind IN ('r', 'p')
+        AND ${USER_SCHEMA_PREDICATE}
+      ORDER BY n.nspname, c.relname, pol.polname
+    `);
+
+    const policyDependenciesResult = await client.query<PolicyDependencyRow>(`
+      SELECT
+        n.nspname AS schema_name,
+        c.relname AS table_name,
+        pol.polname AS policy_name,
+        'function' AS dependency_kind,
+        dependency_namespace.nspname AS dependency_schema,
+        dependency_function.proname AS dependency_name,
+        pg_catalog.pg_get_function_identity_arguments(dependency_function.oid) AS identity_arguments
+      FROM pg_catalog.pg_policy pol
+      JOIN pg_catalog.pg_class c ON c.oid = pol.polrelid
+      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+      JOIN pg_catalog.pg_depend dependency
+        ON dependency.classid = 'pg_catalog.pg_policy'::pg_catalog.regclass
+        AND dependency.objid = pol.oid
+        AND dependency.refclassid = 'pg_catalog.pg_proc'::pg_catalog.regclass
+      JOIN pg_catalog.pg_proc dependency_function ON dependency_function.oid = dependency.refobjid
+      JOIN pg_catalog.pg_namespace dependency_namespace
+        ON dependency_namespace.oid = dependency_function.pronamespace
+      WHERE c.relkind IN ('r', 'p')
+        AND ${USER_SCHEMA_PREDICATE}
+
+      UNION ALL
+
+      SELECT
+        n.nspname AS schema_name,
+        c.relname AS table_name,
+        pol.polname AS policy_name,
+        'relation' AS dependency_kind,
+        dependency_namespace.nspname AS dependency_schema,
+        dependency_relation.relname AS dependency_name,
+        NULL AS identity_arguments
+      FROM pg_catalog.pg_policy pol
+      JOIN pg_catalog.pg_class c ON c.oid = pol.polrelid
+      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+      JOIN pg_catalog.pg_depend dependency
+        ON dependency.classid = 'pg_catalog.pg_policy'::pg_catalog.regclass
+        AND dependency.objid = pol.oid
+        AND dependency.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass
+        AND dependency.refobjid <> pol.polrelid
+      JOIN pg_catalog.pg_class dependency_relation ON dependency_relation.oid = dependency.refobjid
+      JOIN pg_catalog.pg_namespace dependency_namespace
+        ON dependency_namespace.oid = dependency_relation.relnamespace
+      WHERE c.relkind IN ('r', 'p')
+        AND ${USER_SCHEMA_PREDICATE}
+
+      ORDER BY schema_name, table_name, policy_name, dependency_kind,
+        dependency_schema, dependency_name, identity_arguments
     `);
 
     const columnsResult = await client.query<ColumnRow>(`
@@ -763,6 +1246,48 @@ export async function collectDatabaseInventory(
       : null;
     const migrationJournals = inspectedJournal ? [inspectedJournal] : [];
 
+    const policyDependencies = new Map<string, PolicyDependencyInfo[]>();
+    for (const row of policyDependenciesResult.rows) {
+      const key = `${row.schema_name}\u0000${row.table_name}\u0000${row.policy_name}`;
+      const dependency: PolicyDependencyInfo = {
+        kind: row.dependency_kind,
+        schema: row.dependency_schema,
+        name: row.dependency_name,
+        identityArguments: row.identity_arguments,
+      };
+      const existing = policyDependencies.get(key) ?? [];
+      if (!existing.some((candidate) => dependencyKey(candidate) === dependencyKey(dependency))) {
+        existing.push(dependency);
+      }
+      policyDependencies.set(key, existing);
+    }
+    const policies = policiesResult.rows.map((row): PolicyInfo => {
+      const key = `${row.schema_name}\u0000${row.table_name}\u0000${row.policy_name}`;
+      const dependencies = (policyDependencies.get(key) ?? []).sort((left, right) =>
+        dependencyKey(left).localeCompare(dependencyKey(right), 'en') || left.kind.localeCompare(right.kind, 'en'),
+      );
+      const usingExpression = normalizeSqlDefinition(row.using_expression);
+      const withCheckExpression = normalizeSqlDefinition(row.with_check_expression);
+      return {
+        schema: row.schema_name,
+        table: row.table_name,
+        name: row.policy_name,
+        command: row.command,
+        mode: row.mode,
+        roles: row.roles,
+        appliesToConnectedRole: row.applies_to_connected_role,
+        using: usingExpression,
+        withCheck: withCheckExpression,
+        dependencies,
+        referenceSignals: detectPolicyReferenceSignals(
+          row.roles,
+          usingExpression,
+          withCheckExpression,
+          dependencies,
+        ),
+      };
+    });
+
     await client.query('COMMIT');
     transactionStarted = false;
 
@@ -776,16 +1301,40 @@ export async function collectDatabaseInventory(
         serverVersionNumber: target.server_version_number,
         transactionIsolation: 'repeatable read',
         transactionReadOnly: true,
+        roleSuperuser: target.role_superuser,
+        roleBypassRls: target.role_bypass_rls,
       },
       schemas: schemasResult.rows.map((row) => ({ name: row.name })),
-      tables: tablesResult.rows.map((row) => ({
+      tables: tablesResult.rows.map((row) => {
+        const connectedRoleRlsMode = determineConnectedRoleRlsMode({
+          rowSecurity: row.row_security,
+          forceRowSecurity: row.force_row_security,
+          connectedRoleOwnsTable: row.connected_role_owns_table,
+          roleSuperuser: target.role_superuser,
+          roleBypassRls: target.role_bypass_rls,
+        });
+        return {
+          schema: row.schema_name,
+          name: row.table_name,
+          kind: row.kind,
+          persistence: row.persistence,
+          rowSecurity: row.row_security,
+          forceRowSecurity: row.force_row_security,
+          owner: row.owner_name,
+          connectedRoleOwnsTable: row.connected_role_owns_table,
+          connectedRolePrivileges: row.connected_role_privileges,
+          connectedRoleRlsMode,
+        };
+      }),
+      tablePrivileges: tablePrivilegesResult.rows.map((row) => ({
         schema: row.schema_name,
-        name: row.table_name,
-        kind: row.kind,
-        persistence: row.persistence,
-        rowSecurity: row.row_security,
-        forceRowSecurity: row.force_row_security,
+        table: row.table_name,
+        grantor: row.grantor_name,
+        grantee: row.grantee_name,
+        privilege: row.privilege_type,
+        grantable: row.is_grantable,
       })),
+      policies,
       columns: columnsResult.rows.map((row) => ({
         schema: row.schema_name,
         table: row.table_name,

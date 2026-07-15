@@ -1,12 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_MIGRATION_JOURNAL_RELATION,
+  assertExpectedConnectionUrlTarget,
+  assertExpectedDatabaseTarget,
   assertInventoryTransactionMode,
+  detectPolicyReferenceSignals,
+  deriveDatabaseTargetFromConnectionString,
+  determineConnectedRoleRlsMode,
   fingerprintDatabaseHost,
   parseMigrationJournalRelation,
+  parseRequiredExpectedTargetEnvironment,
+  postgresqlSupportsMaintainPrivilege,
   redactConnectionDetails,
   resolveApprovedMigrationJournal,
   type DatabaseInventory,
+  type TableInfo,
 } from '../../scripts/lib/db-schema-inventory';
 import {
   assertDatabaseInventory,
@@ -28,7 +36,7 @@ import { normalizeSqlDefinition } from '../../scripts/lib/sql-definition-normali
 
 function emptyInventory(database: string): DatabaseInventory {
   return {
-    formatVersion: 1,
+    formatVersion: 2,
     target: {
       hostFingerprint: 'sha256:test',
       database,
@@ -37,9 +45,13 @@ function emptyInventory(database: string): DatabaseInventory {
       serverVersionNumber: '160009',
       transactionIsolation: 'repeatable read',
       transactionReadOnly: true,
+      roleSuperuser: false,
+      roleBypassRls: false,
     },
     schemas: [],
     tables: [],
+    tablePrivileges: [],
+    policies: [],
     columns: [],
     constraints: [],
     indexes: [],
@@ -60,13 +72,28 @@ function emptyInventory(database: string): DatabaseInventory {
   };
 }
 
+function testTable(name: string, rowSecurity = false): TableInfo {
+  return {
+    schema: 'public',
+    name,
+    kind: 'table',
+    persistence: 'permanent',
+    rowSecurity,
+    forceRowSecurity: false,
+    owner: 'inventory_reader',
+    connectedRoleOwnsTable: true,
+    connectedRolePrivileges: ['delete', 'insert', 'references', 'select', 'trigger', 'truncate', 'update'],
+    connectedRoleRlsMode: rowSecurity ? 'bypass-owner' : 'not-enabled',
+  };
+}
+
 describe('database schema inventory tools', () => {
   it('ignores top-level object ordering and normalized migration journal ordering', () => {
     const left = emptyInventory('left');
     left.schemas = [{ name: 'zeta' }, { name: 'public' }];
     left.tables = [
-      { schema: 'public', name: 'users', kind: 'table', persistence: 'permanent', rowSecurity: false, forceRowSecurity: false },
-      { schema: 'public', name: 'organizations', kind: 'table', persistence: 'permanent', rowSecurity: false, forceRowSecurity: false },
+      testTable('users'),
+      testTable('organizations'),
     ];
     left.migrationJournals = [{
       schema: 'drizzle',
@@ -104,8 +131,8 @@ describe('database schema inventory tools', () => {
   it('categorizes missing, extra, and changed objects independently', () => {
     const left = emptyInventory('db_push');
     left.tables = [
-      { schema: 'public', name: 'only_left', kind: 'table', persistence: 'permanent', rowSecurity: false, forceRowSecurity: false },
-      { schema: 'public', name: 'shared', kind: 'table', persistence: 'permanent', rowSecurity: false, forceRowSecurity: false },
+      testTable('only_left'),
+      testTable('shared'),
     ];
     left.columns = [{
       schema: 'public', table: 'shared', name: 'id', ordinal: 1,
@@ -115,8 +142,8 @@ describe('database schema inventory tools', () => {
 
     const right = emptyInventory('journal');
     right.tables = [
-      { schema: 'public', name: 'only_right', kind: 'table', persistence: 'permanent', rowSecurity: false, forceRowSecurity: false },
-      { schema: 'public', name: 'shared', kind: 'table', persistence: 'permanent', rowSecurity: true, forceRowSecurity: false },
+      testTable('only_right'),
+      testTable('shared', true),
     ];
     right.columns = [{
       ...left.columns[0],
@@ -127,7 +154,7 @@ describe('database schema inventory tools', () => {
     expect(comparison.categories.tables.missingFromRight).toEqual(['public.only_left']);
     expect(comparison.categories.tables.extraInRight).toEqual(['public.only_right']);
     expect(comparison.categories.tables.changed).toEqual([
-      { key: 'public.shared', fields: ['rowSecurity'] },
+      { key: 'public.shared', fields: ['connectedRoleRlsMode', 'rowSecurity'] },
     ]);
     expect(comparison.categories.columns.changed).toEqual([
       { key: 'public.shared.id', fields: ['nullable'] },
@@ -136,7 +163,7 @@ describe('database schema inventory tools', () => {
   });
 
   it('validates the inventory format before comparison', () => {
-    expect(() => assertDatabaseInventory({ formatVersion: 1 }, 'partial.json')).toThrow(
+    expect(() => assertDatabaseInventory({ formatVersion: 2 }, 'partial.json')).toThrow(
       'partial.json is missing target metadata',
     );
     expect(() => assertDatabaseInventory({ formatVersion: 99 }, 'future.json')).toThrow(
@@ -200,6 +227,124 @@ describe('database schema inventory tools', () => {
     expect(redacted).not.toContain(first);
     expect(redacted).toContain('[DATABASE_URL redacted]');
     expect(redactConnectionDetails('getaddrinfo example.test', first)).not.toContain('example.test');
+    const targetMetadata = redactConnectionDetails('role=reader database=app', first);
+    expect(targetMetadata).not.toContain('reader');
+    expect(targetMetadata).not.toContain('database=app');
+
+    const encodedDatabase = 'postgresql://reader:secret@example.test:5432/approved%2Fdatabase';
+    expect(redactConnectionDetails(
+      'database approved%2Fdatabase does not exist',
+      encodedDatabase,
+    )).not.toContain('approved%2Fdatabase');
+  });
+
+  it('derives and validates URL target metadata before a connection is opened', () => {
+    const connectionString = 'postgresql://approved%5Frole:secret@branch.example.test/approved%5Fdatabase';
+    const expectedTarget = {
+      hostFingerprint: fingerprintDatabaseHost(connectionString),
+      database: 'approved_database',
+      role: 'approved_role',
+    };
+
+    expect(deriveDatabaseTargetFromConnectionString(connectionString)).toEqual(expectedTarget);
+    expect(() => assertExpectedConnectionUrlTarget(connectionString, expectedTarget)).not.toThrow();
+
+    for (const [field, value, expectedMessage] of [
+      ['hostFingerprint', `sha256:${'a'.repeat(64)}`, 'endpoint fingerprint'],
+      ['database', 'different_database', 'DATABASE_URL database'],
+      ['role', 'different_role', 'DATABASE_URL role'],
+    ] as const) {
+      expect(() => assertExpectedConnectionUrlTarget(connectionString, {
+        ...expectedTarget,
+        [field]: value,
+      })).toThrow(expectedMessage);
+    }
+
+    expect(() => deriveDatabaseTargetFromConnectionString('postgresql://role:secret@branch.example.test'))
+      .toThrow('explicitly name a database');
+    expect(() => deriveDatabaseTargetFromConnectionString('postgresql://branch.example.test/database'))
+      .toThrow('explicitly name a role');
+    expect(deriveDatabaseTargetFromConnectionString(
+      'postgresql://approved_role:secret@branch.example.test/approved%2Fdatabase',
+    ).database).toBe('approved%2Fdatabase');
+    expect(() => deriveDatabaseTargetFromConnectionString(
+      'postgresql://approved_role:secret@%65xample.test/approved_database',
+    )).toThrow('percent-encoded hostnames');
+  });
+
+  it('rejects connection target query overrides before a connection can be opened', () => {
+    const base = 'postgresql://approved_role:secret@branch.example.test/approved_database';
+
+    for (const parameter of [
+      'host=override.example.test',
+      'hostaddr=192.0.2.1',
+      'port=6543',
+      'user=override_role',
+      'database=override_database',
+      'db=override_database',
+      'dbname=override_database',
+      'service=override_service',
+      'servicefile=override_service_file',
+      'options=-c%20role%3Doverride_role',
+      'role=override_role',
+    ]) {
+      expect(() => deriveDatabaseTargetFromConnectionString(`${base}?${parameter}`))
+        .toThrow('target override query parameters');
+    }
+
+    const combinedOverride = `${base}?host=override.example.test&port=6543&user=override_role`;
+    try {
+      deriveDatabaseTargetFromConnectionString(combinedOverride);
+      throw new Error('Expected connection target override rejection.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      expect(message).toContain('target override query parameters');
+      expect(message).not.toContain('override.example.test');
+      expect(message).not.toContain('6543');
+      expect(message).not.toContain('override_role');
+    }
+
+    expect(deriveDatabaseTargetFromConnectionString(`${base}?sslmode=require`)).toEqual({
+      hostFingerprint: fingerprintDatabaseHost(base),
+      database: 'approved_database',
+      role: 'approved_role',
+    });
+  });
+
+  it('rejects an ambient PGPORT target override unless the URL names its port', () => {
+    const previousPgPort = process.env.PGPORT;
+    process.env.PGPORT = '6543';
+    try {
+      expect(() => deriveDatabaseTargetFromConnectionString(
+        'postgresql://approved_role:secret@branch.example.test/approved_database',
+      )).toThrow('ambient connection target overrides');
+
+      expect(deriveDatabaseTargetFromConnectionString(
+        'postgresql://approved_role:secret@branch.example.test:5432/approved_database',
+      )).toEqual({
+        hostFingerprint: fingerprintDatabaseHost(
+          'postgresql://approved_role:secret@branch.example.test:5432/approved_database',
+        ),
+        database: 'approved_database',
+        role: 'approved_role',
+      });
+    } finally {
+      if (previousPgPort === undefined) delete process.env.PGPORT;
+      else process.env.PGPORT = previousPgPort;
+    }
+  });
+
+  it('rejects ambient PostgreSQL startup options before a connection can be opened', () => {
+    const previousPgOptions = process.env.PGOPTIONS;
+    process.env.PGOPTIONS = '-c role=override_role';
+    try {
+      expect(() => deriveDatabaseTargetFromConnectionString(
+        'postgresql://approved_role:secret@branch.example.test:5432/approved_database',
+      )).toThrow('ambient connection role overrides');
+    } finally {
+      if (previousPgOptions === undefined) delete process.env.PGOPTIONS;
+      else process.env.PGOPTIONS = previousPgOptions;
+    }
   });
 
   it('validates explicit migration journal identifiers conservatively', () => {
@@ -240,6 +385,127 @@ describe('database schema inventory tools', () => {
     expect(() => assertInventoryTransactionMode('on', 'repeatable read')).not.toThrow();
     expect(() => assertInventoryTransactionMode('off', 'repeatable read')).toThrow('read-only');
     expect(() => assertInventoryTransactionMode('on', 'read committed')).toThrow('repeatable-read');
+  });
+
+  it('queries the MAINTAIN table privilege only on PostgreSQL versions that support it', () => {
+    expect(postgresqlSupportsMaintainPrivilege('160014')).toBe(false);
+    expect(postgresqlSupportsMaintainPrivilege('170000')).toBe(true);
+    expect(postgresqlSupportsMaintainPrivilege('170010')).toBe(true);
+    expect(postgresqlSupportsMaintainPrivilege('invalid')).toBe(false);
+  });
+
+  it('requires independently supplied Neon target metadata and distinct branch identifiers', () => {
+    expect(() => parseRequiredExpectedTargetEnvironment({})).toThrow(
+      'Required expected-target environment variable(s) are absent',
+    );
+    const environment: NodeJS.ProcessEnv = {
+      DB_INVENTORY_EXPECTED_DATABASE: 'approved_database',
+      DB_INVENTORY_EXPECTED_ROLE: 'approved_role',
+      DB_INVENTORY_EXPECTED_HOST_FINGERPRINT: `sha256:${'a'.repeat(64)}`,
+      DB_INVENTORY_EXPECTED_NEON_BRANCH_ID: 'disposable-branch',
+      DB_INVENTORY_EXPECTED_NEON_SOURCE_BRANCH_ID: 'production-branch',
+    };
+    expect(parseRequiredExpectedTargetEnvironment(environment)).toEqual({
+      expectedTarget: {
+        hostFingerprint: `sha256:${'a'.repeat(64)}`,
+        database: 'approved_database',
+        role: 'approved_role',
+      },
+      disposableBranchId: 'disposable-branch',
+      productionSourceBranchId: 'production-branch',
+    });
+    expect(() => parseRequiredExpectedTargetEnvironment({
+      ...environment,
+      DB_INVENTORY_EXPECTED_NEON_BRANCH_ID: 'same-branch',
+      DB_INVENTORY_EXPECTED_NEON_SOURCE_BRANCH_ID: 'same-branch',
+    })).toThrow('branch identifiers match');
+
+    const mismatch = () => assertExpectedDatabaseTarget({
+      hostFingerprint: `sha256:${'b'.repeat(64)}`,
+      database: 'actual_database',
+      role: 'actual_role',
+    }, {
+      hostFingerprint: `sha256:${'a'.repeat(64)}`,
+      database: 'approved_database',
+      role: 'approved_role',
+    });
+    expect(mismatch).toThrow('endpoint fingerprint does not match');
+    try {
+      mismatch();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      expect(message).not.toContain('actual_database');
+      expect(message).not.toContain('approved_database');
+      expect(message).not.toContain('actual_role');
+      expect(message).not.toContain('approved_role');
+      expect(message).not.toContain('aaaa');
+      expect(message).not.toContain('bbbb');
+    }
+  });
+
+  it('classifies connected-role RLS enforcement using PostgreSQL bypass precedence', () => {
+    const base = {
+      rowSecurity: true,
+      forceRowSecurity: false,
+      connectedRoleOwnsTable: false,
+      roleSuperuser: false,
+      roleBypassRls: false,
+    };
+    expect(determineConnectedRoleRlsMode({ ...base, rowSecurity: false })).toBe('not-enabled');
+    expect(determineConnectedRoleRlsMode({ ...base, roleSuperuser: true })).toBe('bypass-superuser');
+    expect(determineConnectedRoleRlsMode({ ...base, roleBypassRls: true })).toBe('bypass-bypassrls');
+    expect(determineConnectedRoleRlsMode({ ...base, connectedRoleOwnsTable: true })).toBe('bypass-owner');
+    expect(determineConnectedRoleRlsMode({
+      ...base,
+      connectedRoleOwnsTable: true,
+      forceRowSecurity: true,
+    })).toBe('governed');
+    expect(determineConnectedRoleRlsMode(base)).toBe('governed');
+  });
+
+  it('captures policy and privilege differences and identifies documented Neon auth dependencies', () => {
+    const left = emptyInventory('left');
+    left.tablePrivileges = [{
+      schema: 'public', table: 'notes', grantor: 'owner', grantee: 'authenticated',
+      privilege: 'select', grantable: false,
+    }];
+    const dependencies = [{
+      kind: 'function' as const,
+      schema: 'auth',
+      name: 'user_id',
+      identityArguments: '',
+    }];
+    left.policies = [{
+      schema: 'public',
+      table: 'notes',
+      name: 'owner_access',
+      command: 'all',
+      mode: 'permissive',
+      roles: ['authenticated'],
+      appliesToConnectedRole: false,
+      using: '(auth.user_id() = owner_id)',
+      withCheck: '(auth.user_id() = owner_id)',
+      dependencies,
+      referenceSignals: detectPolicyReferenceSignals(
+        ['authenticated'],
+        '(auth.user_id() = owner_id)',
+        '(auth.user_id() = owner_id)',
+        dependencies,
+      ),
+    }];
+
+    expect(left.policies[0].referenceSignals).toEqual({
+      neonManagedFunctions: ['auth.user_id()'],
+      neonManagedRoles: ['authenticated'],
+      neonManagedSchemas: ['auth'],
+      referencesJwtClaims: true,
+      authObjects: ['auth.user_id', 'auth.user_id()'],
+    });
+    const comparison = compareDatabaseInventories(left, emptyInventory('right'));
+    expect(comparison.categories.tablePrivileges.missingFromRight).toEqual([
+      'public.notes.authenticated.select.owner',
+    ]);
+    expect(comparison.categories.policies.missingFromRight).toEqual(['public.notes.owner_access']);
   });
 
   it('preflights all eight currently tracked migrations with the narrow allowlist', () => {

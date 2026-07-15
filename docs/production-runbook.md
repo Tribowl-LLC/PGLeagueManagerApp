@@ -58,11 +58,15 @@ For a disposable branch:
 2. Use a pre-provisioned read-only or least-privilege role where practical.
    Do not use or copy the production application's credentials.
 3. Supply the branch URL through `DATABASE_URL` in a secure operator shell.
-   Never echo it or pass it as a command-line argument.
-4. Run only the inventory command:
+   Never echo it or pass it as a command-line argument. Set the five
+   independently verified `DB_INVENTORY_EXPECTED_*` values documented in
+   [`DATABASE.md`](./DATABASE.md#disposable-neon-branch-inventory-procedure)
+   in the same environment.
+4. Run only the strict inventory command:
 
    ```bash
-   npm run db:inventory -- --output .artifacts/db-inventory/neon/<review-id>.json
+   npm run db:inventory -- --require-expected-target \
+     --output .artifacts/db-inventory/neon/<review-id>.json
    ```
 
    The approved default journal is `drizzle.__drizzle_migrations`. If the
@@ -70,9 +74,14 @@ For a disposable branch:
    `--journal-relation <schema.relation>`. Never select a relation merely to
    bypass the command's multiple-journal refusal.
 
-5. Match the reported database, role, PostgreSQL version, and host fingerprint
-   to the separately recorded target. Store the normalized JSON in the
-   approved review-artifact system; do not commit it.
+5. The command refuses before connection if the URL-derived database, role, or
+   endpoint fingerprint differs from the independent expectation or if the URL
+   uses query parameters or PostgreSQL startup options to override its
+   connection target or role. Percent-encoded hostnames are refused. When
+   ambient `PGPORT` is set, the URL must name its port explicitly, and
+   `PGOPTIONS` must be unset. The command refuses before catalog inventory if
+   the server-reported database or role differs. Store the normalized JSON in
+   the approved review-artifact system; do not commit it.
 6. Do not run the application, `db:push`, migrations, invariant installation,
    seeds, or backfills as part of inventory collection. Unset `DATABASE_URL`
    afterward.

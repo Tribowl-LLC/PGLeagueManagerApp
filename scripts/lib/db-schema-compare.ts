@@ -10,6 +10,8 @@ export type ComparisonCategory =
   | 'environment'
   | 'schemas'
   | 'tables'
+  | 'tablePrivileges'
+  | 'policies'
   | 'columns'
   | 'constraints'
   | 'indexes'
@@ -99,7 +101,7 @@ function normalizeJournal(value: InventoryObject): InventoryObject {
 
 function normalizeDefinitionFields(value: InventoryObject): InventoryObject {
   const normalized = { ...value };
-  for (const field of ['definition', 'predicate', 'default']) {
+  for (const field of ['definition', 'predicate', 'default', 'using', 'withCheck']) {
     if (typeof normalized[field] === 'string') {
       normalized[field] = normalizeSqlDefinition(normalized[field]);
     }
@@ -120,11 +122,24 @@ const CATEGORY_SPECS: CategorySpec[] = [
       key: 'postgresql',
       serverVersion: inventory.target.serverVersion,
       serverVersionNumber: inventory.target.serverVersionNumber,
+      roleSuperuser: inventory.target.roleSuperuser,
+      roleBypassRls: inventory.target.roleBypassRls,
     }],
     key: objectKey('key'),
   },
   { name: 'schemas', values: (inventory) => asInventoryObjects(inventory.schemas), key: objectKey('name') },
   { name: 'tables', values: (inventory) => asInventoryObjects(inventory.tables), key: objectKey('schema', 'name') },
+  {
+    name: 'tablePrivileges',
+    values: (inventory) => asInventoryObjects(inventory.tablePrivileges),
+    key: objectKey('schema', 'table', 'grantee', 'privilege', 'grantor'),
+  },
+  {
+    name: 'policies',
+    values: (inventory) => asInventoryObjects(inventory.policies),
+    key: objectKey('schema', 'table', 'name'),
+    normalize: normalizeDefinitionFields,
+  },
   { name: 'columns', values: (inventory) => asInventoryObjects(inventory.columns), key: objectKey('schema', 'table', 'name'), normalize: normalizeDefinitionFields },
   { name: 'constraints', values: (inventory) => asInventoryObjects(inventory.constraints), key: objectKey('schema', 'table', 'name'), normalize: normalizeDefinitionFields },
   { name: 'indexes', values: (inventory) => asInventoryObjects(inventory.indexes), key: objectKey('schema', 'table', 'name'), normalize: normalizeDefinitionFields },
@@ -250,6 +265,8 @@ export function assertDatabaseInventory(value: unknown, source: string): asserts
   for (const field of [
     'schemas',
     'tables',
+    'tablePrivileges',
+    'policies',
     'columns',
     'constraints',
     'indexes',
@@ -276,6 +293,8 @@ export function compareDatabaseInventories(
     environment: emptyDifference(),
     schemas: emptyDifference(),
     tables: emptyDifference(),
+    tablePrivileges: emptyDifference(),
+    policies: emptyDifference(),
     columns: emptyDifference(),
     constraints: emptyDifference(),
     indexes: emptyDifference(),
@@ -311,8 +330,8 @@ export function formatInventoryComparison(comparison: InventoryComparison): stri
     comparison.hasDifferences
       ? `Database inventories differ (${comparison.differenceCount} object-level difference(s)).`
       : 'Database inventories match.',
-    `Left: database=${comparison.leftTarget.database} role=${comparison.leftTarget.role} PostgreSQL=${comparison.leftTarget.serverVersion}`,
-    `Right: database=${comparison.rightTarget.database} role=${comparison.rightTarget.role} PostgreSQL=${comparison.rightTarget.serverVersion}`,
+    `Left: PostgreSQL=${comparison.leftTarget.serverVersion}`,
+    `Right: PostgreSQL=${comparison.rightTarget.serverVersion}`,
   ];
 
   for (const spec of CATEGORY_SPECS) {
