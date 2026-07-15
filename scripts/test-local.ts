@@ -131,8 +131,8 @@ async function main(): Promise<void> {
   assertDockerAvailable();
   await ensurePostgresContainer();
 
-  console.log('[test-local] applying schema...');
-  run(npmCommand, npmArgs(['run', 'db:push']));
+  console.log('[test-local] applying checked-in migrations...');
+  run(npmCommand, npmArgs(['run', 'db:migrate']));
 
   let devServer: ChildProcess | null = null;
   try {

@@ -54,7 +54,7 @@ docker start leaguevault-postgres
 Then apply the schema and start the development server:
 
 ```bash
-npm run db:push
+npm run db:migrate
 npm run dev
 ```
 
@@ -90,7 +90,7 @@ Wait for PostgreSQL to report that it is ready:
 docker exec leaguevault-postgres pg_isready -U postgres -d leaguevault
 ```
 
-Wait for `accepting connections` before running `npm run db:push`.
+Wait for `accepting connections` before running `npm run db:migrate`.
 
 This example publishes PostgreSQL only on loopback port `5433`, leaving port
 `5432` available for the `npm run test:local` container. The `postgres` /
@@ -158,7 +158,7 @@ configuration that is excluded from source control.
 Apply the schema and start the development server:
 
 ```bash
-npm run db:push
+npm run db:migrate
 npm run dev
 ```
 
@@ -224,21 +224,27 @@ node --input-type=module -e "import { randomBytes } from 'node:crypto'; process.
 ## Database Setup
 
 Set `DATABASE_URL` to a development or test PostgreSQL database before using
-Drizzle commands. The schema is defined under `shared/schema/` and is applied
-with:
+Drizzle commands. `shared/schema/` is the declaration authority and
+`migrations/` is the only active, forward-only history. Initialize an empty
+database with:
 
 ```bash
-npm run db:push
+npm run db:migrate
 ```
 
-`npm run db:push` runs Drizzle Kit's default `push` behavior. It does not always
-ask for confirmation; use `npm run db:push -- --strict` to always require
-confirmation. Review the command output, confirm that `DATABASE_URL` points to
-the intended disposable local database. Do not use `--force` during normal
-development; it bypasses interactive confirmation for potentially destructive
-changes. Use it only as part of an explicitly approved and reviewed recovery or
-migration procedure. Never point local commands at the production Neon database
-without following the safeguards in [`docs/production-runbook.md`](docs/production-runbook.md).
+`db:migrate` verifies the exact journal format and checked-in hash/timestamp
+prefix, serializes migration executors with an advisory lock, and refuses to
+run the baseline when a database already contains application-owned public
+objects but has no baseline journal record. Such an existing database must be
+recreated if disposable or use the guarded adoption workflow in
+[`docs/DATABASE.md`](docs/DATABASE.md). An empty journal is never adoption
+evidence.
+
+Generate a reviewed future migration without connecting to a database with
+`npm run db:generate -- --name <description>`. `db:push` remains available only
+as `npm run db:push:disposable` for explicitly disposable development/test
+targets; it is guarded against production-shaped environments and is not a
+deployment workflow.
 
 The `npm run seed` command idempotently creates local development users and
 organizations described in [`tests/README.md`](tests/README.md). These accounts
@@ -254,10 +260,15 @@ databases.
 | `npm start` | Start the production server from the existing `dist/` build. |
 | `npm run check` | Run TypeScript type checking. This does not run ESLint. |
 | `npm run lint` | Run ESLint. |
+| `npm run db:generate -- --name <description>` | Generate reviewed future SQL and metadata without touching a database. |
+| `npm run db:migrate` | Apply the checked-in active migration history with guarded journal validation. |
+| `npm run db:fingerprint` | Produce the versioned exact application-schema fingerprint from read-only catalog inventory. |
+| `npm run db:adopt-baseline` | Explicitly register a matching existing disposable/rehearsal database after all target and safety gates pass. |
+| `npm run db:check` | Replay, fingerprint, adopt, prove ordering, and exercise refusal cases on disposable PostgreSQL 16 and 17. |
 | `npm run db:inventory` | Collect normalized PostgreSQL catalog state plus the approved Drizzle journal in a read-only transaction. |
 | `npm run db:inventory:compare` | Compare two normalized schema inventory files. |
-| `npm run db:inventory:validate-local` | Reproduce the known `db:push` versus journal mismatch in an ephemeral local container. |
-| `npm run db:push` | Apply the Drizzle schema to `DATABASE_URL`. |
+| `npm run db:inventory:validate-local` | Reproduce the preserved legacy-history mismatch in an ephemeral local container. |
+| `npm run db:push:disposable` | Directly reconcile declarations only on an explicitly disposable development/test target. |
 | `npm run seed` | Seed local development users and organizations. |
 | `npm run check:csrf` | Check CSRF coverage. |
 | `npm run check:org-isolation` | Check organization-isolation coverage in strict mode. |
@@ -272,6 +283,7 @@ The CI job named `Type check & lint` runs both `npm run check` and
 For the complete local suite, use the repository wrapper:
 
 ```bash
+npm run db:check
 npm run test:local
 ```
 

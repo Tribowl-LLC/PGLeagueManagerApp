@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 npm install
-npm run db:push -- --force
+npm run db:migrate
 # Phase 1 of the per-worker test isolation work (Task #699): rebuild
 # the `leaguevault_test_template` database so any schema change pulled
 # in by this merge is reflected in the template Phase 2 will clone

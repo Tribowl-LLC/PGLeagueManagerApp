@@ -82,13 +82,41 @@ For a disposable branch:
    `PGOPTIONS` must be unset. The command refuses before catalog inventory if
    the server-reported database or role differs. Store the normalized JSON in
    the approved review-artifact system; do not commit it.
-6. Do not run the application, `db:push`, migrations, invariant installation,
+6. Do not run the application, a schema push, migrations, invariant installation,
    seeds, or backfills as part of inventory collection. Unset `DATABASE_URL`
    afterward.
 
 See [`DATABASE.md`](./DATABASE.md#disposable-neon-branch-inventory-procedure)
 for the complete comparison procedure. Direct production inventory remains a
 separately approved future operation.
+
+## Disposable baseline-adoption rehearsal
+
+Production adoption has not been performed and is disabled in this pull
+request. Before any future production-enablement change, rehearse on an
+independently verified disposable Neon branch cloned from production:
+
+1. Record the project, source branch, disposable branch, endpoint fingerprint,
+   database, and role outside the repository.
+2. Create a current restorable branch/backup and prove the restore procedure.
+3. Use a clean checkout of the exact CI-verified commit. Supply every
+   `DB_ADOPTION_*` expectation documented in [`DATABASE.md`](./DATABASE.md),
+   with environment class `neon-rehearsal`. Set the runtime target identity
+   from trusted Neon/operator context, independently supply the matching
+   expected target identity, and name the distinct source branch identity; do
+   not expose values in arguments or logs.
+4. Capture a before fingerprint, run `npm run db:adopt-baseline`, capture an
+   after fingerprint, and confirm only the exact baseline journal record was
+   inserted. Baseline DDL must not execute.
+5. Rerun adoption and require a safe no-op. Run `npm run db:migrate` and require
+   a no-op until a reviewed post-baseline migration exists.
+6. Retain target, backup/restore, before/after inventory, exact commit, baseline
+   hash/timestamp, command output, and reviewer approval as the production
+   enablement evidence.
+
+The current command rejects production-shaped process/environment identity,
+target/expectation mismatch, and a rehearsal target equal to its source.
+Do not weaken or bypass that gate during rehearsal.
 
 ## Schema Release
 
@@ -98,17 +126,20 @@ Schema changes require a deliberate release step:
 2. Confirm the target Neon project, branch, host, database name, and user.
 3. Set `DATABASE_URL` only in the shell or deployment environment where the
    intended target has been independently verified.
-4. Run `npm run db:push`.
-5. Read every proposed statement. Abort if Drizzle proposes an unexpected
-   table, column, constraint, or data-loss operation.
+4. Confirm the exact checked-in migration SQL was reviewed and the target has
+   the exact active journal prefix. Existing production is not yet adopted;
+   stop until a separate operator-only production-enablement change is
+   approved.
+5. Run `npm run db:migrate` with exactly one executor for the environment.
+   Abort on any journal mismatch or migration failure.
 6. Apply the schema change to the intended database and record the result.
 7. Deploy the matching CI-verified application commit.
 8. Verify `/api/health`, login, the changed workflow, and relevant provider or
    webhook behavior.
 
-`db:push` is not a substitute for a backup. A destructive schema change may
-require restoring the database or manually reconstructing data; plan that
-before confirming a destructive prompt.
+`db:migrate` is not a substitute for a backup. Use expand–migrate–contract
+releases and plan restoration before a destructive contract migration.
+`db:push:disposable` is prohibited for production and durable Neon branches.
 
 ## Post-Deployment Checks
 
@@ -132,6 +163,6 @@ For an application-only regression, redeploy the previous known-good commit
 from GitHub and verify the health endpoint and affected workflow.
 
 For a schema regression, stop further deploys, preserve logs, and use the
-prepared Neon backup or restore plan. Do not guess at a reverse `db:push`; schema
+prepared Neon backup or restore plan. Do not guess at a reverse migration; schema
 changes and data restoration require an explicit review of the current database
 state.

@@ -10,13 +10,14 @@ suite never gates the fast static checks (and vice versa).
 | Workflow file | Job name | Triggers | What it runs |
 |---|---|---|---|
 | `ci.yml` | `Type check & lint` | Every PR to `main`, every push to `main` | Dependency audits, `tsc`, `eslint .`, `check:csrf`, `check:org-isolation`, `check-wire-sanitization`, `npm run build` |
+| `ci.yml` | `Database migrations (PostgreSQL 16/17)` | Every PR to `main`, every push to `main` | Active-history replay, exact fingerprint/drift checks, guarded adoption, refusal matrix, and isolated post-baseline ordering proof on both PostgreSQL versions |
 | `ci.yml` | `Tests` | Every PR to `main`, every push to `main` | `npm test` (vitest: parallel + serial-fk-bypass + client-components projects) |
 | `race-suite.yml` | `Race suite` | PRs that touch the sweep / bootstrap files (and every push to `main`) | `npm run test:race` — alias for `bash scripts/test-race.sh` (the two `RUN_BOOTSTRAP_RACE_TESTS=1` race files, serially) |
 | `post-deploy-trust-proxy.yml` | `Probe trust-proxy on live deploy` | Every 30 minutes (cron) and on `workflow_dispatch` | `scripts/verify-trust-proxy-deploy.ts` against the live deploy (task #379) — see [Post-deploy trust-proxy probe](#post-deploy-trust-proxy-probe) below |
 
-The two jobs in `ci.yml` (`Type check & lint` and `Tests`) run in
-parallel, so total wall-clock for a PR is roughly the slower of the
-two — not the sum. The race suite is its own workflow because it
+The three jobs in `ci.yml` (`Type check & lint`, the two-version database
+migration matrix, and `Tests`) run in parallel, so total wall-clock for a PR is
+roughly the slowest job — not the sum. The race suite is its own workflow because it
 needs a backgrounded dev server, takes ~3 minutes when it actually
 runs, and only needs to run when the sweep / bootstrap critical
 sections are touched.
@@ -130,6 +131,10 @@ those self-tests teeth on PRs:
   redaction. The disposable 29-versus-17 database reproduction remains the
   explicit local `npm run db:inventory:validate-local` command rather than a
   separate CI service job.
+- `tests/unit/db-baseline-migration-tools.test.ts` — pins the active baseline
+  hash/timestamp, versioned fingerprint counts/digest, physical-order/provider
+  exclusions, isolated proof fixture, and adoption target/backup/confirmation/
+  environment-identity/commit/baseline gates.
 
 ## What runs in `Race suite`
 
@@ -149,17 +154,25 @@ user without the gate firing.
 ## Database
 
 Both the `Tests` job and the `Race suite` job spin up an ephemeral
-`postgres:16` service container, apply the schema with
-`npm run db:push`, and then point `DATABASE_URL` at
+`postgres:16` service container, apply the active history with
+`npm run db:migrate`, and then point `DATABASE_URL` at
 `postgres://postgres:postgres@localhost:5432/<db>`. The container is
 fresh on every run, so there is no shared state between PRs and the
 deterministic CI-only `FIELD_ENCRYPTION_KEY` is never used to
 decrypt real data.
 
-`tests/setup/global-setup.ts` runs `installDbInvariants()` and
+`tests/setup/global-setup.ts` runs the temporarily retained idempotent
+`installDbInvariants()` and
 `seedTestUsers()` before any test file executes. That covers the
 fixture seeding the `Tests` job needs — there is no separate
 `npm run seed` step in CI.
+
+The sibling `Database migrations` matrix does not use service credentials or
+Neon. `npm run db:check -- --postgres-version <16|17>` owns and cleans an
+ephemeral local Docker container, validates active Drizzle metadata and
+declared-schema drift, replays from zero, adopts a matching populated fixture,
+tests all refusal paths, and proves post-baseline ordering. PostgreSQL 16 and
+17 must produce the same application fingerprint.
 
 ## Required CI secrets
 

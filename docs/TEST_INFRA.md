@@ -4,14 +4,45 @@ Detailed architecture notes for the Vitest per-worker test-DB / Neon-branch infr
 
 ## Schema inventory validation
 
+`npm run db:check` is the authoritative migration-infrastructure gate. By
+default it owns separate ephemeral `postgres:16` and `postgres:17` containers;
+CI runs the same command as a two-version matrix. For each version it:
+
+- replays the active baseline from zero and verifies the exact approved
+  fingerprint and journal row;
+- reruns migration and requires a no-op;
+- builds the current declared schema plus invariant definitions without a
+  baseline journal record, adopts it explicitly, and proves adoption changed no
+  application DDL;
+- appends the isolated `tests/fixtures/migrations/ordering-proof.sql` fixture
+  only in the disposable artifact directory, proving fresh databases run
+  baseline then proof while adopted databases run only proof;
+- compares the fresh/adopted final application fingerprints; and
+- exercises missing/extra/changed objects, RLS, retired state, target mismatch,
+  ambiguous/unexpected journals, baseline hash/timestamp, backup, and
+  confirmation/environment-identity refusals.
+
+The proof marker is never part of `migrations/` and therefore cannot create a
+meaningless production object. Containers and artifacts use per-run ownership
+identities and checked cleanup. No Neon or production credentials are used.
+
+`npm run test:local` applies the active checked-in history with `db:migrate`
+before building the test template and running Vitest. A pre-baseline local test
+container with application tables and an empty/absent journal is deliberately
+refused; because that database is disposable, remove/recreate the named
+`leaguevault-test-postgres` container rather than bypassing adoption gates.
+
+## Legacy inventory reproduction
+
 `npm run db:inventory:validate-local` owns a separate, uniquely named,
 ephemeral `postgres:16` Docker container. It does not reuse or mutate the
 long-lived `leaguevault-test-postgres` container, a Neon test branch, or any
 configured `DATABASE_URL`.
 
 Inside that disposable container, the validation creates one database through
-current `db:push` and one by transactionally replaying only the SQL files named
-by `migrations/meta/_journal.json`. Every listed file is parsed and checked
+current declarations through `db:push:disposable` and one by transactionally
+replaying only the SQL files named by
+`migrations-legacy-do-not-replay/meta/_journal.json`. Every listed file is parsed and checked
 against the current six-category statement allowlist before Docker starts or
 the replay database is created. It does not create or write a
 `__drizzle_migrations` table.

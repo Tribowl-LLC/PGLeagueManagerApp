@@ -175,7 +175,7 @@ function npmInvocation(args: string[]): { command: string; args: string[] } {
 }
 
 function applyCurrentSchema(pushUrl: string): void {
-  const invocation = npmInvocation(['run', 'db:push', '--', '--force']);
+  const invocation = npmInvocation(['run', 'db:push:disposable', '--', '--force']);
   run(invocation.command, invocation.args, {
     env: {
       ...process.env,

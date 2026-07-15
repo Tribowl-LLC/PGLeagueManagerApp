@@ -1065,7 +1065,7 @@ export async function collectDatabaseInventory(
           FROM unnest(con.conkey) WITH ORDINALITY AS key(attnum, ordinal)
           JOIN pg_catalog.pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = key.attnum
           ORDER BY key.ordinal
-        ) AS columns,
+        )::text[] AS columns,
         rn.nspname AS referenced_schema,
         rc.relname AS referenced_table,
         ARRAY(
@@ -1073,7 +1073,7 @@ export async function collectDatabaseInventory(
           FROM unnest(con.confkey) WITH ORDINALITY AS key(attnum, ordinal)
           JOIN pg_catalog.pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = key.attnum
           ORDER BY key.ordinal
-        ) AS referenced_columns,
+        )::text[] AS referenced_columns,
         pg_catalog.pg_get_constraintdef(con.oid, true) AS definition,
         con.condeferrable AS deferrable,
         con.condeferred AS initially_deferred,
@@ -1132,7 +1132,7 @@ export async function collectDatabaseInventory(
           FROM pg_catalog.pg_enum e
           WHERE e.enumtypid = t.oid
           ORDER BY e.enumsortorder
-        ) AS enum_labels,
+        )::text[] AS enum_labels,
         CASE WHEN t.typtype = 'd' THEN pg_catalog.format_type(t.typbasetype, t.typtypmod) ELSE NULL END AS base_type,
         CASE WHEN t.typtype IN ('r', 'm') THEN (
           SELECT pg_catalog.format_type(r.rngsubtype, NULL)

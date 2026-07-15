@@ -5,13 +5,16 @@ Vitest-based API/integration and unit tests live here.
 ## Running the tests
 
 ```bash
+npm run test:local    # complete local wrapper: active migrations + isolated DBs
 npm run test          # one-shot run
 npm run test:watch    # watch mode
 npm run test:race     # opt-in race suite (see "Opt-in suites" below)
 ```
 
-The suite expects the dev server to be running locally. Start it in
-another shell first:
+The recommended `test:local` wrapper provisions PostgreSQL, applies active
+migrations, and uses isolated per-worker application instances. A separate dev
+server is only needed for raw `npm test` workflows that use the shared HTTP
+base URL. Start it in another shell first when using that path:
 
 ```bash
 npm run dev
@@ -185,8 +188,23 @@ during the `npm test` step. The minimal job ordering looks like:
 
 ## Database schema inventory validation
 
+Run `npm run db:check` for the authoritative normalized migration gate. It
+uses owned disposable PostgreSQL 16 and 17 containers to replay the active
+baseline, compare the exact checked-in fingerprint, exercise guarded adoption
+and every refusal class, and prove later ordering with the isolated
+`tests/fixtures/migrations/ordering-proof.sql` fixture. The fixture is combined
+with active migrations only under ignored run artifacts; it is not deployable
+SQL and creates no production object.
+
+The migration matrix also proves that empty databases execute the baseline,
+matching existing databases register only the baseline journal record, adopted
+databases skip baseline DDL, and all migration/adoption reruns are no-ops.
+
+### Legacy history reproduction
+
 Run `npm run db:inventory:validate-local` to build and compare the current
-`db:push` schema and the journal-tracked SQL chain in a separate ephemeral
+declared schema and the journal-tracked SQL chain under
+`migrations-legacy-do-not-replay/` in a separate ephemeral
 PostgreSQL 16 container. The expected result is a categorized mismatch: 29
 tables from `db:push`, 17 from journal replay, and 12 tables missing from the
 journal result. Generated JSON lives under ignored
@@ -195,7 +213,7 @@ output paths.
 
 This command is intentionally separate from `npm run test:local`; it owns its
 own temporary container and does not use the test template or worker databases.
-The pure comparison, redaction, journal preflight, definition normalization,
+The pure comparison, redaction, legacy-journal preflight, definition normalization,
 container ownership, and cleanup behavior is covered by
 `tests/unit/db-schema-inventory-tools.test.ts` in the default Vitest run.
 

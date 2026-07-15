@@ -162,13 +162,14 @@ function runDrizzlePush(targetUrl: string): void {
 
 /**
  * Hash of the inputs that determine whether the template is stale.
- * Bumped whenever `shared/schema/**`, `server/db-invariants.ts`, or
- * `tests/setup/seed-test-users.ts` change.
+ * Bumped whenever `shared/schema/**`, the shared/startup invariant definitions,
+ * or `tests/setup/seed-test-users.ts` change.
  */
 export function computeTemplateHash(): string {
   const hasher = createHash('sha256');
   const inputs: Array<{ root: string; recursive: boolean }> = [
     { root: 'shared/schema', recursive: true },
+    { root: 'shared/database-invariants.ts', recursive: false },
     { root: 'server/db-invariants.ts', recursive: false },
     { root: 'tests/setup/seed-test-users.ts', recursive: false },
   ];
