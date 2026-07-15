@@ -141,6 +141,10 @@ those self-tests teeth on PRs:
   hash/timestamp, versioned fingerprint counts/digest, physical-order/provider
   exclusions, owned-sequence count, isolated proof fixture, and adoption
   target/backup/confirmation/environment-class/identity/commit/baseline gates.
+- `tests/unit/db-baseline-rls-compatibility.test.ts` proves the explicit
+  baseline-verification-only equivalence for the exact all-table legacy inert
+  RLS state and refusal of mixed RLS, FORCE RLS, policies/dependencies,
+  ownership/BYPASSRLS failures, extra tables, and non-RLS drift.
 - `tests/unit/db-migration-bytes.test.ts` verifies exact LF/UTF-8 SQL hashing,
   checkout attributes, checksum validation, and CRLF/invalid-UTF-8 refusal in
   copied temporary migration trees.
@@ -197,7 +201,8 @@ Neon. `npm run db:check -- --postgres-version <16|17>` owns and cleans an
 ephemeral local Docker container, validates active Drizzle metadata and
 exact SQL bytes, declared-schema drift and all 26 owned sequences, replays from
 zero, adopts a matching populated fixture in one guarded transaction, tests
-journal/concurrency/refusal paths, and proves post-baseline ordering.
+journal/concurrency/refusal paths, verifies a real-catalog legacy inert-RLS
+fixture without adopting it, and proves post-baseline ordering.
 PostgreSQL 16 and 17 must produce the same application fingerprint.
 
 ## Required CI secrets

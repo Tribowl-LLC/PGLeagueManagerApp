@@ -19,8 +19,10 @@ import {
   type AdoptionRequest,
 } from './lib/db-baseline-adoption';
 import {
+  APPLICATION_TABLE_NAMES,
   assertApprovedBaselineFingerprint,
   createBaselineFingerprint,
+  verifyBaselineInventory,
 } from './lib/db-baseline-fingerprint';
 import {
   ACTIVE_MIGRATIONS_DIRECTORY,
@@ -619,6 +621,7 @@ async function validateVersion(
       'fresh_active',
       'fresh_proof',
       'adoption_template',
+      'legacy_inert_rls',
       'adoption_success',
       'adoption_rollback',
       'adoption_drift',
@@ -666,7 +669,50 @@ async function validateVersion(
       databaseUrl(port, template),
       disposableProof(container, template),
     );
-    await verifiedFingerprint(databaseUrl(port, template));
+    const templateFingerprint = await verifiedFingerprint(databaseUrl(port, template));
+
+    const legacyDatabase = 'legacy_inert_rls';
+    const legacyRole = `legacy_inert_role_${version}`;
+    const legacyPassword = `leaguevault-legacy-inert-${version}-local-only`;
+    await createDatabase(adminUrl, legacyDatabase, container, template);
+    const legacyOwnerUrl = databaseUrl(port, legacyDatabase);
+    await executeSql(adminUrl, [
+      `CREATE ROLE ${legacyRole} LOGIN BYPASSRLS PASSWORD ${quoteLiteral(legacyPassword)}`,
+    ]);
+    await executeSql(legacyOwnerUrl, [
+      `GRANT CONNECT ON DATABASE ${legacyDatabase} TO ${legacyRole}`,
+      `GRANT USAGE ON SCHEMA public, drizzle TO ${legacyRole}`,
+      `GRANT SELECT ON drizzle.__drizzle_migrations TO ${legacyRole}`,
+      ...APPLICATION_TABLE_NAMES.map((name) =>
+        `ALTER TABLE public."${name}" OWNER TO ${legacyRole}`,
+      ),
+      ...APPLICATION_TABLE_NAMES.map((name) =>
+        `ALTER TABLE public."${name}" ENABLE ROW LEVEL SECURITY`,
+      ),
+    ]);
+    const legacyUrl = databaseUrlForRole(
+      port,
+      legacyDatabase,
+      legacyRole,
+      legacyPassword,
+    );
+    const legacyInventory = await collectDatabaseInventory(legacyUrl);
+    let strictFingerprintRefused = false;
+    try {
+      createBaselineFingerprint(legacyInventory);
+    } catch {
+      strictFingerprintRefused = true;
+    }
+    if (!strictFingerprintRefused) {
+      throw new Error('Ordinary fingerprint generation unexpectedly normalized legacy inert RLS.');
+    }
+    const legacyVerification = verifyBaselineInventory(legacyInventory);
+    if (
+      legacyVerification.state !== 'legacy-inert-rls' ||
+      legacyVerification.fingerprint.digest !== templateFingerprint.digest
+    ) {
+      throw new Error('Legacy inert-RLS inventory did not verify as the canonical baseline digest.');
+    }
 
     const adoptionDatabase = 'adoption_success';
     await createDatabase(adminUrl, adoptionDatabase, container, template);

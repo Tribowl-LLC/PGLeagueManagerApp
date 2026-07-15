@@ -2,9 +2,9 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
-  assertApprovedBaselineFingerprint,
   createBaselineFingerprint,
   serializeBaselineFingerprint,
+  verifyBaselineInventory,
 } from './lib/db-baseline-fingerprint';
 import {
   assertExpectedConnectionUrlTarget,
@@ -72,8 +72,8 @@ export async function fingerprintConfiguredDatabase(
     assertExpectedConnectionUrlTarget(connectionString, expectedTarget);
   }
   const inventory = await collectDatabaseInventory(connectionString, { expectedTarget });
-  const fingerprint = createBaselineFingerprint(inventory);
-  if (options.verify) assertApprovedBaselineFingerprint(fingerprint);
+  const verification = options.verify ? verifyBaselineInventory(inventory) : null;
+  const fingerprint = verification?.fingerprint ?? createBaselineFingerprint(inventory);
   const serialized = serializeBaselineFingerprint(fingerprint);
   if (options.output) {
     mkdirSync(dirname(options.output), { recursive: true });
@@ -82,7 +82,11 @@ export async function fingerprintConfiguredDatabase(
   } else {
     process.stdout.write(serialized);
   }
-  if (options.verify) process.stdout.write('[db:fingerprint] approved baseline fingerprint verified\n');
+  if (verification) {
+    process.stdout.write(
+      `[db:fingerprint] approved baseline fingerprint verified; state=${verification.state}\n`,
+    );
+  }
 }
 
 const isMain = import.meta.url === pathToFileURL(process.argv[1] ?? '').href;

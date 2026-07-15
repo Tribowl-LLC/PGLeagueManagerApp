@@ -12,10 +12,11 @@ export async function adoptConfiguredDatabaseBaseline(
   if (!connectionString) throw new Error('DATABASE_URL is required for db:adopt-baseline.');
   const request = parseAdoptionEnvironment(environment);
   const result = await adoptExistingDatabaseBaseline(connectionString, request);
+  const verifiedState = `verified state=${result.verificationState}`;
   process.stdout.write(
     result.status === 'adopted'
-      ? `[db:adopt-baseline] registered ${result.baselineTag}; baseline DDL was not executed\n`
-      : `[db:adopt-baseline] ${result.baselineTag} already registered exactly; no-op\n`,
+      ? `[db:adopt-baseline] registered ${result.baselineTag}; ${verifiedState}; baseline DDL was not executed\n`
+      : `[db:adopt-baseline] ${result.baselineTag} already registered exactly; ${verifiedState}; no-op\n`,
   );
 }
 
