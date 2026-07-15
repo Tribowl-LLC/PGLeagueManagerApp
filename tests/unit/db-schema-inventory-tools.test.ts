@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { getTableConfig, PgDialect } from 'drizzle-orm/pg-core';
+import { organizations } from '../../shared/schema/organizations';
 import {
   DEFAULT_MIGRATION_JOURNAL_RELATION,
   assertExpectedConnectionUrlTarget,
@@ -87,7 +89,32 @@ function testTable(name: string, rowSecurity = false): TableInfo {
   };
 }
 
+function indexColumnName(column: object): string | undefined {
+  return 'name' in column && typeof column.name === 'string' ? column.name : undefined;
+}
+
 describe('database schema inventory tools', () => {
+  it('declares the approved partial unique organizations subdomain index', () => {
+    const subdomainIndexes = getTableConfig(organizations).indexes.filter(({ config }) =>
+      config.columns.some((column) => indexColumnName(column) === organizations.subdomain.name),
+    );
+
+    expect(organizations.subdomain.notNull).toBe(false);
+    expect(subdomainIndexes).toHaveLength(1);
+
+    const index = subdomainIndexes[0];
+    if (!index) throw new Error('organization subdomain index is missing');
+
+    expect(index.config.name).toBe('organization_subdomain_idx');
+    expect(index.config.unique).toBe(true);
+    expect(index.config.columns.map(indexColumnName)).toEqual(['subdomain']);
+
+    const predicate = index.config.where;
+    if (!predicate) throw new Error('organization subdomain index predicate is missing');
+    expect(new PgDialect().sqlToQuery(predicate).sql)
+      .toBe('"organizations"."subdomain" IS NOT NULL');
+  });
+
   it('ignores top-level object ordering and normalized migration journal ordering', () => {
     const left = emptyInventory('left');
     left.schemas = [{ name: 'zeta' }, { name: 'public' }];

@@ -224,8 +224,8 @@ confirmed that equality lookup can use the partial index. The partial form
 stores and maintains only assigned subdomains, while the full form additionally
 stores null entries and could serve a future `IS NULL` lookup or full index
 ordering. Those unused capabilities do not justify production index churn or
-a larger baseline index. Changing `shared/schema` to express the predicate is
-a separate reviewed schema task; this inventory task does not alter the index.
+a larger baseline index. The `shared/schema` declaration now expresses the
+approved predicate; normalized baseline generation remains a separate task.
 
 ## Disposable Neon branch inventory procedure
 

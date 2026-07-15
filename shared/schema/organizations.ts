@@ -70,7 +70,7 @@ export const organizations = pgTable("organizations", {
   allowedEmbedDomains: text("allowed_embed_domains").array().notNull().default(sql`'{}'`),
 }, (table) => ({
   slugIdx: uniqueIndex("organization_slug_idx").on(table.slug),
-  subdomainIdx: uniqueIndex("organization_subdomain_idx").on(table.subdomain),
+  subdomainIdx: uniqueIndex("organization_subdomain_idx").on(table.subdomain).where(sql`${table.subdomain} IS NOT NULL`),
 }));
 
 const baseOrganizationSchema = createInsertSchema(organizations);
