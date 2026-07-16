@@ -90,22 +90,49 @@ See [`DATABASE.md`](./DATABASE.md#disposable-neon-branch-inventory-procedure)
 for the complete comparison procedure. Direct production inventory remains a
 separately approved future operation.
 
-## Baseline adoption is disabled remotely
+## Baseline adoption: one provider-verified Neon rehearsal only
 
-Production adoption has not been performed. The command in this pull request
-accepts only a strictly verified repository-tool-owned local Docker database;
-it rejects Neon, all other remote hosts, ordinary CI targets, and every
-production-shaped process or target. There is no current remote rehearsal
-procedure, and `db:adopt-baseline` must not be run against a disposable Neon
-branch.
+Production adoption has not been performed and remains unconditionally
+disabled. In addition to the existing repository-tool-owned local Docker mode,
+`db:adopt-baseline` accepts exactly one class of remote target:
+`DB_ADOPTION_ENVIRONMENT_CLASS=neon-rehearsal` for an independently identified,
+disposable, unprotected, non-default/non-primary child of the expected
+production source branch. All other remote targets and every production-shaped
+process or target are refused.
 
-Any future Neon rehearsal or production-enablement change requires separate
-review. At minimum it must add provider-backed proof that the endpoint belongs
-to the independently recorded project and branch, a backup/restore gate, a
-reviewed lock design for catalog object classes that table/sequence locks do
-not cover, and tests proving atomic journal registration and safe concurrent
-refusal. The read-only disposable-branch inventory procedure above remains
-available; it is not permission to adopt that branch.
+The verifier uses only bounded, retry-limited Neon API GETs for project, both
+branches, and endpoint details. It requires the provider's `parent_id`,
+`default`, `protected`, state/init-source, endpoint `project_id`, `branch_id`,
+and `host` metadata to agree with independently supplied identifiers and the
+PostgreSQL hostname. URL-derived identifiers are not independent evidence.
+Missing or unexpected metadata, API/authentication/timeout failure, protected
+or recovering targets, and any production/default/primary/endpoint mismatch
+fail closed. Host matching normalizes only case and one terminal DNS dot; it
+does not accept suffixes, wildcards, ports, or alternate hosts. Provider proof
+is repeated immediately before the registration transaction so a paused
+approval workflow cannot reuse stale metadata. Use a project-scoped
+organization API key where available; the
+tool does not need or issue write-capable Neon API requests and never requests
+database credentials from Neon. The key is not retained in the database
+adoption request or inherited by source-control child processes and is passed
+only to the control-plane verifier.
+
+Required Neon-specific variables are `NEON_API_KEY`,
+`DB_ADOPTION_NEON_EXPECTED_PROJECT_ID`,
+`DB_ADOPTION_NEON_EXPECTED_TARGET_BRANCH_ID`,
+`DB_ADOPTION_NEON_EXPECTED_PRODUCTION_BRANCH_ID`, and
+`DB_ADOPTION_NEON_EXPECTED_ENDPOINT_ID`, in addition to every common adoption
+identity, baseline, backup, commit, and confirmation variable documented in
+[`DATABASE.md`](./DATABASE.md#guarded-existing-database-adoption). Provider bodies are
+not persisted or logged; operator-visible failures redact credentials, URLs,
+hostnames, and provider identifiers.
+
+Follow the exact post-merge rehearsal procedure in `DATABASE.md`. Stop before
+setting the confirmation unless the read-only inventory evidence and all
+independent identifiers have been reviewed. This implementation PR performed
+no live Neon rehearsal, no production connection, and no adoption. It does not
+authorize production use; production enablement requires a separate reviewed
+change.
 
 ## Schema Release
 

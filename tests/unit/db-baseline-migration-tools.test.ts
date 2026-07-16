@@ -58,6 +58,20 @@ function completeRequest(): AdoptionRequest {
   return parseAdoptionEnvironment(completeEnvironment());
 }
 
+function completeNeonEnvironment(): NodeJS.ProcessEnv {
+  return {
+    ...completeEnvironment(),
+    DB_ADOPTION_ENVIRONMENT_CLASS: 'neon-rehearsal',
+    DB_ADOPTION_ENVIRONMENT_ID: 'neon-disposable-rehearsal',
+    DB_ADOPTION_EXPECTED_ENVIRONMENT_ID: 'neon-disposable-rehearsal',
+    NEON_API_KEY: 'unit-test-api-key',
+    DB_ADOPTION_NEON_EXPECTED_PROJECT_ID: 'project-rehearsal',
+    DB_ADOPTION_NEON_EXPECTED_TARGET_BRANCH_ID: 'br-disposable-rehearsal',
+    DB_ADOPTION_NEON_EXPECTED_PRODUCTION_BRANCH_ID: 'br-production-source',
+    DB_ADOPTION_NEON_EXPECTED_ENDPOINT_ID: 'ep-disposable-rehearsal',
+  };
+}
+
 describe('normalized migration baseline tools', () => {
   it('has one authoritative active baseline with exact checked-in identity', () => {
     const migrations = loadActiveMigrations();
@@ -190,18 +204,44 @@ describe('normalized migration baseline tools', () => {
     })).toThrow('Production baseline adoption is disabled');
   });
 
-  it('disables remote rehearsal and ordinary CI adoption classes', () => {
-    const remote: NodeJS.ProcessEnv = {
-      ...completeEnvironment(),
-      DB_ADOPTION_ENVIRONMENT_CLASS: 'neon-rehearsal',
-    };
-    expect(() => parseAdoptionEnvironment({
-      ...remote,
-    })).toThrow('Remote and ordinary CI baseline adoption are disabled');
+  it('allows only the exact Neon rehearsal class in addition to local Docker', () => {
+    const request = parseAdoptionEnvironment(completeNeonEnvironment());
+    expect(request.environmentClass).toBe('neon-rehearsal');
+    if (request.environmentClass !== 'neon-rehearsal') throw new Error('unexpected request class');
+    expect(request.neonExpectation).toMatchObject({
+      projectId: 'project-rehearsal',
+      targetBranchId: 'br-disposable-rehearsal',
+      productionBranchId: 'br-production-source',
+      endpointId: 'ep-disposable-rehearsal',
+    });
+    expect(request.neonExpectation).not.toHaveProperty('apiKey');
     expect(() => parseAdoptionEnvironment({
       ...completeEnvironment(),
       DB_ADOPTION_ENVIRONMENT_CLASS: 'ci',
-    })).toThrow('Remote and ordinary CI baseline adoption are disabled');
+    })).toThrow('Only tool-owned local disposable or provider-verified Neon rehearsal');
+  });
+
+  it('refuses Neon self-attestation without provider proof and keeps production impossible', () => {
+    const withoutProviderProof = completeNeonEnvironment();
+    delete withoutProviderProof.NEON_API_KEY;
+    expect(() => parseAdoptionEnvironment(withoutProviderProof)).toThrow('NEON_API_KEY');
+
+    expect(() => parseAdoptionEnvironment({
+      ...completeNeonEnvironment(),
+      APP_ENV: 'prod',
+    })).toThrow('Production baseline adoption is disabled');
+    expect(() => parseAdoptionEnvironment({
+      ...completeNeonEnvironment(),
+      NODE_ENV: 'production',
+    })).toThrow('Production baseline adoption is disabled');
+    expect(() => parseAdoptionEnvironment({
+      ...completeNeonEnvironment(),
+      RENDER_SERVICE_ID: 'production-service',
+    })).toThrow('Production baseline adoption is disabled');
+
+    const adoptionSource = readFileSync(resolve('scripts/lib/db-baseline-adoption.ts'), 'utf8');
+    expect(adoptionSource).not.toContain('runtime.verifyNeonRehearsal');
+    expect(adoptionSource).not.toContain('verifyNeonRehearsal?:');
   });
 
   it('requires confirmation, backup attestation, a clean exact commit, and exact baseline identity', () => {
