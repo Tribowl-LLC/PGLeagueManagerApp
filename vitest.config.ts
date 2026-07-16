@@ -57,6 +57,10 @@ const SHARED_TABLE_WRITERS = [
  */
 const PARALLEL_ISOLATED_WITH_APP = [
   'tests/api/change-password.test.ts',
+  // This suite creates and removes roster fixtures beneath a shared baseline
+  // league. Keep its setup on a private DB/app so sibling suites cannot make
+  // the selected league stale or collide with its temporary team.
+  'tests/api/admin-unclaimed-users.test.ts',
   // This suite mutates the shared baseline org's roster and depends on
   // its baseline league. Keep it on a private DB/app so another parallel
   // suite cannot remove or alter that baseline between beforeAll and the
@@ -105,10 +109,6 @@ const PARALLEL_ISOLATED = [
   'server/services/__tests__/square-version-runtime-guard.test.ts',
   'server/services/__tests__/third-party-pins.test.ts',
   'server/services/__tests__/third-party-pin-verifier.test.ts',
-  // 'tests/api/admin-unclaimed-users.test.ts' — moved to parallel
-  // project (#700): it needs HTTP against the spawned per-worker app
-  // and does not actually use vi.mock factory closures, so it is safe
-  // to share its worker DB with sibling files in `parallel`.
   'tests/api/create-square-customers-cross-org.test.ts',
   'tests/api/payment-sync-retry-race.test.ts',
   'tests/api/payment-sync-state-transitions.test.ts',
