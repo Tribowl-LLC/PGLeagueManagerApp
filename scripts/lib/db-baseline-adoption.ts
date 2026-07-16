@@ -31,7 +31,7 @@ import {
 } from './db-schema-inventory';
 import {
   verifyNeonRehearsalTarget,
-  type NeonRehearsalExpectation,
+  type NeonRehearsalIdentityExpectation,
   type VerifiedNeonRehearsal,
 } from './neon-rehearsal-verifier';
 
@@ -76,7 +76,7 @@ export interface LocalAdoptionRequest extends AdoptionRequestBase {
 
 export interface NeonRehearsalAdoptionRequest extends AdoptionRequestBase {
   environmentClass: 'neon-rehearsal';
-  neonExpectation: NeonRehearsalExpectation;
+  neonExpectation: NeonRehearsalIdentityExpectation;
 }
 
 export type AdoptionRequest = LocalAdoptionRequest | NeonRehearsalAdoptionRequest;
@@ -91,10 +91,6 @@ export interface AdoptionRuntime {
   afterPreliminaryVerification?: () => void | Promise<void>;
   afterApplicationLocks?: (client: pg.Client) => void | Promise<void>;
   afterJournalInsert?: (client: pg.Client) => void | Promise<void>;
-  verifyNeonRehearsal?: (
-    expectation: NeonRehearsalExpectation,
-    connectionHostname: string,
-  ) => Promise<VerifiedNeonRehearsal>;
 }
 
 export interface AdoptionResult {
@@ -195,8 +191,9 @@ export function parseAdoptionEnvironment(environment: NodeJS.ProcessEnv): Adopti
       disposableTargetProof: readDisposableTargetProof(environment),
     };
   }
-  const apiKey = environment.NEON_API_KEY?.trim();
-  if (!apiKey) throw new Error('Required baseline-adoption environment variable is absent: NEON_API_KEY.');
+  if (!environment.NEON_API_KEY?.trim()) {
+    throw new Error('Required baseline-adoption environment variable is absent: NEON_API_KEY.');
+  }
   const readNeonId = (key: string): string => {
     const value = environment[key]?.trim();
     if (!value) throw new Error(`Required baseline-adoption environment variable is absent: ${key}.`);
@@ -206,7 +203,6 @@ export function parseAdoptionEnvironment(environment: NodeJS.ProcessEnv): Adopti
     ...common,
     environmentClass,
     neonExpectation: {
-      apiKey,
       projectId: readNeonId('DB_ADOPTION_NEON_EXPECTED_PROJECT_ID'),
       targetBranchId: readNeonId('DB_ADOPTION_NEON_EXPECTED_TARGET_BRANCH_ID'),
       productionBranchId: readNeonId('DB_ADOPTION_NEON_EXPECTED_PRODUCTION_BRANCH_ID'),
@@ -215,14 +211,25 @@ export function parseAdoptionEnvironment(environment: NodeJS.ProcessEnv): Adopti
   };
 }
 
+function sourceControlChildEnvironment(): NodeJS.ProcessEnv {
+  const childEnvironment = { ...process.env };
+  for (const key of Object.keys(childEnvironment)) {
+    if (key.toUpperCase() === 'NEON_API_KEY') delete childEnvironment[key];
+  }
+  return childEnvironment;
+}
+
 function readSourceControlState(): SourceControlState {
+  const environment = sourceControlChildEnvironment();
   const commit = execFileSync('git', ['rev-parse', 'HEAD'], {
     encoding: 'utf8',
+    env: environment,
     stdio: ['ignore', 'pipe', 'ignore'],
     windowsHide: true,
   }).trim();
   const status = execFileSync('git', ['status', '--porcelain'], {
     encoding: 'utf8',
+    env: environment,
     stdio: ['ignore', 'pipe', 'ignore'],
     windowsHide: true,
   });
@@ -551,12 +558,14 @@ export async function adoptExistingDatabaseBaseline(
   connectionString: string,
   request: AdoptionRequest,
   runtime: AdoptionRuntime = {},
+  neonApiKey?: string,
 ): Promise<AdoptionResult> {
   const baseline = baselineMigration();
   const approved = loadApprovedBaselineFingerprint(undefined, baseline);
   const sourceControl = (runtime.sourceControlState ?? readSourceControlState)();
   validateAdoptionRequest(request, sourceControl, baseline);
   assertExpectedConnectionUrlTarget(connectionString, request.expectedTarget);
+  let verifyProviderIdentityImmediately = async (): Promise<void> => undefined;
   if (request.environmentClass === 'local-disposable') {
     const verified = await verifyOwnedLocalDisposableTarget(
       connectionString,
@@ -570,17 +579,26 @@ export async function adoptExistingDatabaseBaseline(
     }
   } else {
     const hostname = new URL(connectionString).hostname;
-    const providerVerifier = runtime.verifyNeonRehearsal ?? verifyNeonRehearsalTarget;
-    const verified = await providerVerifier(request.neonExpectation, hostname);
-    if (
-      verified.projectId !== request.neonExpectation.projectId ||
-      verified.targetBranchId !== request.neonExpectation.targetBranchId ||
-      verified.productionBranchId !== request.neonExpectation.productionBranchId ||
-      verified.endpointId !== request.neonExpectation.endpointId ||
-      verified.endpointHostname !== hostname.toLowerCase()
-    ) {
-      throw new Error('Verified Neon provider identity does not match the exact rehearsal request.');
-    }
+    const assertVerifiedIdentity = (verified: VerifiedNeonRehearsal): void => {
+      const normalizedHostname = hostname.toLowerCase().replace(/\.$/, '');
+      if (
+        verified.projectId !== request.neonExpectation.projectId ||
+        verified.targetBranchId !== request.neonExpectation.targetBranchId ||
+        verified.productionBranchId !== request.neonExpectation.productionBranchId ||
+        verified.endpointId !== request.neonExpectation.endpointId ||
+        verified.endpointHostname !== normalizedHostname
+      ) {
+        throw new Error('Verified Neon provider identity does not match the exact rehearsal request.');
+      }
+    };
+    verifyProviderIdentityImmediately = async (): Promise<void> => {
+      const verified = await verifyNeonRehearsalTarget({
+        ...request.neonExpectation,
+        apiKey: neonApiKey ?? '',
+      }, hostname);
+      assertVerifiedIdentity(verified);
+    };
+    await verifyProviderIdentityImmediately();
   }
 
   await assertMigrationRoleCapabilityReadOnly(connectionString, request.expectedTarget);
@@ -589,6 +607,7 @@ export async function adoptExistingDatabaseBaseline(
   });
   verifyBaselineInventory(preliminaryInventory, baseline, approved);
   await runtime.afterPreliminaryVerification?.();
+  await verifyProviderIdentityImmediately();
 
   const result = await atomicallyRegisterBaseline(
     connectionString,

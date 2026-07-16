@@ -77,7 +77,7 @@ function provider(overrides: {
 
 async function verify(fetchImplementation = provider(), expected = expectation, host = hostname) {
   return verifyNeonRehearsalTarget(expected, host, {
-    fetch: fetchImplementation as typeof fetch,
+    fetch: fetchImplementation,
     timeoutMs: 100,
     attempts: 1,
   });
@@ -128,6 +128,25 @@ describe('Neon rehearsal control-plane verifier', () => {
     await expect(verify(provider(), expectation, 'production.example.neon.tech')).rejects.toThrow('compute endpoint');
   });
 
+  it('normalizes casing and one terminal DNS dot while retaining exact hostname equality', async () => {
+    await expect(verify(provider({
+      endpoint: endpoint({ host: `${hostname.toUpperCase()}.` }),
+    }), expectation, `${hostname}.`)).resolves.toMatchObject({ endpointHostname: hostname });
+
+    await expect(verify(provider({
+      endpoint: endpoint({ host: `other.${hostname}` }),
+    }))).rejects.toThrow('compute endpoint');
+    await expect(verify(provider({
+      endpoint: endpoint({ host: `*.${hostname}` }),
+    }))).rejects.toThrow('hostname metadata');
+    await expect(verify(provider({
+      endpoint: endpoint({ host: `${hostname}:5432` }),
+    }))).rejects.toThrow('hostname metadata');
+    await expect(verify(provider({
+      endpoint: endpoint({ host: `${hostname}..` }),
+    }))).rejects.toThrow('hostname metadata');
+  });
+
   it('refuses missing API proof and target-equals-production masquerading', async () => {
     await expect(verify(provider(), { ...expectation, apiKey: '' })).rejects.toThrow('NEON_API_KEY');
     await expect(verify(provider(), {
@@ -144,17 +163,51 @@ describe('Neon rehearsal control-plane verifier', () => {
       .rejects.toThrow('invalid or unexpected');
   });
 
+  it('does not retry authentication, malformed-response, or identity failures', async () => {
+    const authenticationFailure = vi.fn(async () => response({}, 401));
+    await expect(verifyNeonRehearsalTarget(expectation, hostname, {
+      fetch: authenticationFailure,
+      timeoutMs: 100,
+      attempts: 2,
+    })).rejects.toThrow('authentication');
+    expect(authenticationFailure).toHaveBeenCalledTimes(1);
+
+    const malformedResponse = vi.fn(async () => response('{bad json'));
+    await expect(verifyNeonRehearsalTarget(expectation, hostname, {
+      fetch: malformedResponse,
+      timeoutMs: 100,
+      attempts: 2,
+    })).rejects.toThrow('not valid JSON');
+    expect(malformedResponse).toHaveBeenCalledTimes(1);
+
+    const identityFailure = provider({ project: { project: { id: 'project-other' } } });
+    await expect(verifyNeonRehearsalTarget(expectation, hostname, {
+      fetch: identityFailure,
+      timeoutMs: 100,
+      attempts: 2,
+    })).rejects.toThrow('project identity');
+    expect(identityFailure).toHaveBeenCalledTimes(1);
+  });
+
   it('refuses a bounded timeout and retries only the safe GET request', async () => {
     const timedOut = vi.fn((_input: string | URL | Request, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
       init?.signal?.addEventListener('abort', () => reject(new Error('request URL with secrets')));
     }));
     await expect(verifyNeonRehearsalTarget(expectation, hostname, {
-      fetch: timedOut as typeof fetch,
+      fetch: timedOut,
       timeoutMs: 100,
       attempts: 2,
     })).rejects.toThrow('timed out or failed');
     expect(timedOut).toHaveBeenCalledTimes(2);
     expect(timedOut.mock.calls.every(([, init]) => init?.method === 'GET')).toBe(true);
+  });
+
+  it('hard-caps provider GET attempts at two', async () => {
+    await expect(verifyNeonRehearsalTarget(expectation, hostname, {
+      fetch: provider(),
+      timeoutMs: 100,
+      attempts: 3,
+    })).rejects.toThrow('runtime bounds');
   });
 
   it('redacts every secret provider identifier without logging raw hostnames or responses', () => {

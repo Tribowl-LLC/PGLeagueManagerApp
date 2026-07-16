@@ -107,9 +107,15 @@ and `host` metadata to agree with independently supplied identifiers and the
 PostgreSQL hostname. URL-derived identifiers are not independent evidence.
 Missing or unexpected metadata, API/authentication/timeout failure, protected
 or recovering targets, and any production/default/primary/endpoint mismatch
-fail closed. Use a project-scoped organization API key where available; the
+fail closed. Host matching normalizes only case and one terminal DNS dot; it
+does not accept suffixes, wildcards, ports, or alternate hosts. Provider proof
+is repeated immediately before the registration transaction so a paused
+approval workflow cannot reuse stale metadata. Use a project-scoped
+organization API key where available; the
 tool does not need or issue write-capable Neon API requests and never requests
-database credentials from Neon.
+database credentials from Neon. The key is not retained in the database
+adoption request or inherited by source-control child processes and is passed
+only to the control-plane verifier.
 
 Required Neon-specific variables are `NEON_API_KEY`,
 `DB_ADOPTION_NEON_EXPECTED_PROJECT_ID`,

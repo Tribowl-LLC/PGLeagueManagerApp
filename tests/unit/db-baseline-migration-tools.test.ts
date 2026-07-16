@@ -214,6 +214,7 @@ describe('normalized migration baseline tools', () => {
       productionBranchId: 'br-production-source',
       endpointId: 'ep-disposable-rehearsal',
     });
+    expect(request.neonExpectation).not.toHaveProperty('apiKey');
     expect(() => parseAdoptionEnvironment({
       ...completeEnvironment(),
       DB_ADOPTION_ENVIRONMENT_CLASS: 'ci',
@@ -237,6 +238,10 @@ describe('normalized migration baseline tools', () => {
       ...completeNeonEnvironment(),
       RENDER_SERVICE_ID: 'production-service',
     })).toThrow('Production baseline adoption is disabled');
+
+    const adoptionSource = readFileSync(resolve('scripts/lib/db-baseline-adoption.ts'), 'utf8');
+    expect(adoptionSource).not.toContain('runtime.verifyNeonRehearsal');
+    expect(adoptionSource).not.toContain('verifyNeonRehearsal?:');
   });
 
   it('requires confirmation, backup attestation, a clean exact commit, and exact baseline identity', () => {

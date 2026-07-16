@@ -526,7 +526,9 @@ The target must be a distinct, ready, unprotected, non-default/non-primary
 source branch. Restored/recovering branches, restricted branches, schema-only
 branches, and ambiguous or incomplete metadata are refused. The endpoint must
 be an enabled read-write endpoint in the same project, belong only to that
-target child, and have a hostname exactly matching the PostgreSQL URL hostname.
+target child, and have a hostname exactly matching the PostgreSQL URL hostname
+after ASCII case folding and removal of at most one terminal DNS dot. Suffix,
+wildcard, port, and alternate-host matches are refused.
 Identifiers parsed or inferred solely from `DATABASE_URL` never count as
 provider proof.
 
@@ -537,6 +539,11 @@ identity or hierarchy mismatches. Requests have a five-second timeout and at
 most two attempts; retries apply only to idempotent GETs. Provider response
 bodies are neither logged nor persisted. Errors redact the API key, URL,
 password, hostname, and all supplied project/branch/endpoint identifiers.
+The API key is kept out of the adoption request and PostgreSQL registration
+state, removed from source-control child-process environments, and passed only
+to the Neon verifier. Provider identity is fetched immediately before database preflight
+and fetched again after the write-free approval boundary immediately before
+the registration transaction; either failure refuses adoption.
 
 The runtime environment identity must exactly match the independently supplied
 expectation. The expected database, role, host fingerprint, clean checkout and

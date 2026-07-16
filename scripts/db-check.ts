@@ -397,7 +397,6 @@ function neonAdoptionRequest(connectionString: string, database: string): Adopti
     environmentId: `neon-rehearsal-${database}`,
     expectedEnvironmentId: `neon-rehearsal-${database}`,
     neonExpectation: {
-      apiKey: 'db-check-provider-fixture-only',
       projectId: 'project-rehearsal',
       targetBranchId: 'br-disposable-rehearsal',
       productionBranchId: 'br-production-source',
@@ -412,15 +411,66 @@ function neonAdoptionRequest(connectionString: string, database: string): Adopti
   };
 }
 
-function verifiedNeonFixture(connectionString: string) {
+async function withNeonProviderFixture<T>(
+  connectionString: string,
+  action: () => Promise<T>,
+  invalidateOnRefresh = false,
+): Promise<T> {
   const hostname = new URL(connectionString).hostname.toLowerCase();
-  return async () => ({
-    projectId: 'project-rehearsal',
-    targetBranchId: 'br-disposable-rehearsal',
-    productionBranchId: 'br-production-source',
-    endpointId: 'ep-disposable-rehearsal',
-    endpointHostname: hostname,
-  });
+  const originalFetch = globalThis.fetch;
+  let endpointReads = 0;
+  const fixtureFetch: typeof fetch = async (input, init) => {
+    const authorization = new Headers(init?.headers).get('authorization');
+    if (
+      init?.method !== 'GET' ||
+      authorization !== 'Bearer db-check-provider-fixture-only'
+    ) {
+      return new Response('{}', { status: 405, headers: { 'content-type': 'application/json' } });
+    }
+    const url = String(input);
+    let body: unknown;
+    if (url.endsWith('/projects/project-rehearsal')) {
+      body = { project: { id: 'project-rehearsal' } };
+    } else if (url.endsWith('/branches/br-production-source')) {
+      body = { branch: { id: 'br-production-source', project_id: 'project-rehearsal' } };
+    } else if (url.endsWith('/branches/br-disposable-rehearsal')) {
+      body = {
+        branch: {
+          id: 'br-disposable-rehearsal',
+          project_id: 'project-rehearsal',
+          parent_id: 'br-production-source',
+          current_state: 'ready',
+          init_source: 'parent-data',
+          default: false,
+          protected: false,
+        },
+      };
+    } else if (url.endsWith('/endpoints/ep-disposable-rehearsal')) {
+      endpointReads += 1;
+      body = {
+        endpoint: {
+          id: 'ep-disposable-rehearsal',
+          project_id: 'project-rehearsal',
+          branch_id: invalidateOnRefresh && endpointReads > 1
+            ? 'br-production-source'
+            : 'br-disposable-rehearsal',
+          host: hostname,
+          type: 'read_write',
+          current_state: 'idle',
+          disabled: false,
+        },
+      };
+    } else {
+      return new Response('{}', { status: 404, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } });
+  };
+  globalThis.fetch = fixtureFetch;
+  try {
+    return await action();
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 }
 
 const adoptionRuntime = {
@@ -781,14 +831,12 @@ async function validateVersion(
     await executeSql(neonFingerprintUrl, ['ALTER TABLE alerter_state ADD COLUMN provider_verified_drift integer']);
     let providerVerifiedFingerprintRefused = false;
     try {
-      await adoptExistingDatabaseBaseline(
+      await withNeonProviderFixture(neonFingerprintUrl, () => adoptExistingDatabaseBaseline(
         neonFingerprintUrl,
         neonAdoptionRequest(neonFingerprintUrl, neonFingerprintDatabase),
-        {
-          ...adoptionRuntime,
-          verifyNeonRehearsal: verifiedNeonFixture(neonFingerprintUrl),
-        },
-      );
+        adoptionRuntime,
+        'db-check-provider-fixture-only',
+      ));
     } catch {
       providerVerifiedFingerprintRefused = true;
     }
@@ -801,23 +849,41 @@ async function validateVersion(
     const neonBoundaryUrl = databaseUrl(port, neonBoundaryDatabase);
     let reachedApprovalBoundary = false;
     try {
-      await adoptExistingDatabaseBaseline(
+      await withNeonProviderFixture(neonBoundaryUrl, () => adoptExistingDatabaseBaseline(
         neonBoundaryUrl,
         neonAdoptionRequest(neonBoundaryUrl, neonBoundaryDatabase),
         {
           ...adoptionRuntime,
-          verifyNeonRehearsal: verifiedNeonFixture(neonBoundaryUrl),
           afterPreliminaryVerification: () => {
             reachedApprovalBoundary = true;
             throw new Error('db-check stop at explicit operator approval boundary');
           },
         },
-      );
+        'db-check-provider-fixture-only',
+      ));
     } catch {
       // Expected test-only stop before the registration transaction.
     }
     if (!reachedApprovalBoundary || await journalEntryCount(neonBoundaryUrl) !== 0) {
       throw new Error('Provider-verified Neon rehearsal did not reach the write-free approval boundary.');
+    }
+
+    const neonFreshnessDatabase = 'neon_rehearsal_freshness_refusal';
+    await createDatabase(adminUrl, neonFreshnessDatabase, container, template);
+    const neonFreshnessUrl = databaseUrl(port, neonFreshnessDatabase);
+    let staleProviderProofRefused = false;
+    try {
+      await withNeonProviderFixture(neonFreshnessUrl, () => adoptExistingDatabaseBaseline(
+        neonFreshnessUrl,
+        neonAdoptionRequest(neonFreshnessUrl, neonFreshnessDatabase),
+        adoptionRuntime,
+        'db-check-provider-fixture-only',
+      ), true);
+    } catch {
+      staleProviderProofRefused = true;
+    }
+    if (!staleProviderProofRefused || await journalEntryCount(neonFreshnessUrl) !== 0) {
+      throw new Error('Neon rehearsal reused stale provider proof at the write boundary.');
     }
 
     const rollbackDatabase = 'adoption_rollback';

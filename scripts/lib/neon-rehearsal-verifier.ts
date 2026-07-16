@@ -12,6 +12,8 @@ export interface NeonRehearsalExpectation {
   endpointId: string;
 }
 
+export type NeonRehearsalIdentityExpectation = Omit<NeonRehearsalExpectation, 'apiKey'>;
+
 export interface VerifiedNeonRehearsal {
   projectId: string;
   targetBranchId: string;
@@ -94,7 +96,7 @@ async function providerGet(
   const fetchImplementation = runtime.fetch ?? fetch;
   const attempts = runtime.attempts ?? NEON_REQUEST_ATTEMPTS;
   const timeoutMs = runtime.timeoutMs ?? NEON_REQUEST_TIMEOUT_MS;
-  if (!Number.isInteger(attempts) || attempts < 1 || attempts > 3 || timeoutMs < 100 || timeoutMs > 15_000) {
+  if (!Number.isInteger(attempts) || attempts < 1 || attempts > 2 || timeoutMs < 100 || timeoutMs > 15_000) {
     throw new Error('Neon control-plane verifier runtime bounds are invalid.');
   }
 
@@ -143,6 +145,20 @@ async function providerGet(
   throw new Error('Neon control-plane verification failed; rehearsal adoption is refused.');
 }
 
+function normalizeExactHostname(hostname: string): string {
+  const lowered = hostname.toLowerCase();
+  const normalized = lowered.endsWith('.') ? lowered.slice(0, -1) : lowered;
+  if (
+    normalized.length === 0 ||
+    normalized.endsWith('.') ||
+    normalized.length > 253 ||
+    !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(normalized)
+  ) {
+    throw new Error('Neon control-plane hostname metadata is invalid or unexpected.');
+  }
+  return normalized;
+}
+
 function validateBranchIdentity(
   branch: JsonObject,
   expectedProjectId: string,
@@ -165,6 +181,7 @@ export async function verifyNeonRehearsalTarget(
   if (!connectionHostname || connectionHostname.includes('%')) {
     throw new Error('PostgreSQL connection hostname is invalid for Neon rehearsal verification.');
   }
+  const normalizedConnectionHostname = normalizeExactHostname(connectionHostname);
   const projectPath = `/projects/${encodeURIComponent(expectation.projectId)}`;
   const project = exactEnvelope(
     await providerGet(projectPath, expectation.apiKey, runtime),
@@ -215,7 +232,7 @@ export async function verifyNeonRehearsalTarget(
     expectation.apiKey,
     runtime,
   ), 'endpoint');
-  const endpointHostname = requiredString(endpoint, 'host').toLowerCase();
+  const endpointHostname = normalizeExactHostname(requiredString(endpoint, 'host'));
   const endpointState = requiredString(endpoint, 'current_state');
   if (
     requiredString(endpoint, 'id') !== expectation.endpointId ||
@@ -224,7 +241,7 @@ export async function verifyNeonRehearsalTarget(
     requiredString(endpoint, 'type') !== 'read_write' ||
     requiredBoolean(endpoint, 'disabled') ||
     (endpointState !== 'active' && endpointState !== 'idle') ||
-    endpointHostname !== connectionHostname.toLowerCase()
+    endpointHostname !== normalizedConnectionHostname
   ) {
     throw new Error('Neon compute endpoint does not match the verified rehearsal target and PostgreSQL host.');
   }

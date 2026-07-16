@@ -12,7 +12,10 @@ export async function adoptConfiguredDatabaseBaseline(
   const connectionString = environment.DATABASE_URL;
   if (!connectionString) throw new Error('DATABASE_URL is required for db:adopt-baseline.');
   const request = parseAdoptionEnvironment(environment);
-  const result = await adoptExistingDatabaseBaseline(connectionString, request);
+  const neonApiKey = request.environmentClass === 'neon-rehearsal'
+    ? environment.NEON_API_KEY?.trim()
+    : undefined;
+  const result = await adoptExistingDatabaseBaseline(connectionString, request, {}, neonApiKey);
   const verifiedState = `verified state=${result.verificationState}`;
   process.stdout.write(
     result.status === 'adopted'
