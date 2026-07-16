@@ -385,6 +385,44 @@ function adoptionRequest(
   };
 }
 
+function neonAdoptionRequest(connectionString: string, database: string): AdoptionRequest {
+  const baseline = baselineMigration();
+  return {
+    expectedTarget: {
+      hostFingerprint: fingerprintDatabaseHost(connectionString),
+      database,
+      role: POSTGRES_USER,
+    },
+    environmentClass: 'neon-rehearsal',
+    environmentId: `neon-rehearsal-${database}`,
+    expectedEnvironmentId: `neon-rehearsal-${database}`,
+    neonExpectation: {
+      apiKey: 'db-check-provider-fixture-only',
+      projectId: 'project-rehearsal',
+      targetBranchId: 'br-disposable-rehearsal',
+      productionBranchId: 'br-production-source',
+      endpointId: 'ep-disposable-rehearsal',
+    },
+    backupAttestation: BACKUP_ATTESTATION,
+    confirmation: ADOPTION_CONFIRMATION,
+    expectedCommit: SOURCE_COMMIT,
+    expectedBaselineTag: baseline.tag,
+    expectedBaselineHash: baseline.hash,
+    expectedBaselineCreatedAt: baseline.createdAt,
+  };
+}
+
+function verifiedNeonFixture(connectionString: string) {
+  const hostname = new URL(connectionString).hostname.toLowerCase();
+  return async () => ({
+    projectId: 'project-rehearsal',
+    targetBranchId: 'br-disposable-rehearsal',
+    productionBranchId: 'br-production-source',
+    endpointId: 'ep-disposable-rehearsal',
+    endpointHostname: hostname,
+  });
+}
+
 const adoptionRuntime = {
   sourceControlState: () => ({ commit: SOURCE_COMMIT, clean: true }),
 };
@@ -628,6 +666,8 @@ async function validateVersion(
       'adoption_concurrent',
       'adoption_concurrent_sequence',
       'adoption_capability',
+      'neon_rehearsal_fingerprint_refusal',
+      'neon_rehearsal_approval_boundary',
       ...refusalDatabases,
     ];
     container = createContainer(runId, version, approvedDatabases);
@@ -734,6 +774,51 @@ async function validateVersion(
       adoptionRuntime,
     );
     if (adoptionNoOp.status !== 'no-op') throw new Error('Exact adoption rerun was not a safe no-op.');
+
+    const neonFingerprintDatabase = 'neon_rehearsal_fingerprint_refusal';
+    await createDatabase(adminUrl, neonFingerprintDatabase, container, template);
+    const neonFingerprintUrl = databaseUrl(port, neonFingerprintDatabase);
+    await executeSql(neonFingerprintUrl, ['ALTER TABLE alerter_state ADD COLUMN provider_verified_drift integer']);
+    let providerVerifiedFingerprintRefused = false;
+    try {
+      await adoptExistingDatabaseBaseline(
+        neonFingerprintUrl,
+        neonAdoptionRequest(neonFingerprintUrl, neonFingerprintDatabase),
+        {
+          ...adoptionRuntime,
+          verifyNeonRehearsal: verifiedNeonFixture(neonFingerprintUrl),
+        },
+      );
+    } catch {
+      providerVerifiedFingerprintRefused = true;
+    }
+    if (!providerVerifiedFingerprintRefused || await journalEntryCount(neonFingerprintUrl) !== 0) {
+      throw new Error('Provider-verified Neon rehearsal did not refuse a database fingerprint mismatch.');
+    }
+
+    const neonBoundaryDatabase = 'neon_rehearsal_approval_boundary';
+    await createDatabase(adminUrl, neonBoundaryDatabase, container, template);
+    const neonBoundaryUrl = databaseUrl(port, neonBoundaryDatabase);
+    let reachedApprovalBoundary = false;
+    try {
+      await adoptExistingDatabaseBaseline(
+        neonBoundaryUrl,
+        neonAdoptionRequest(neonBoundaryUrl, neonBoundaryDatabase),
+        {
+          ...adoptionRuntime,
+          verifyNeonRehearsal: verifiedNeonFixture(neonBoundaryUrl),
+          afterPreliminaryVerification: () => {
+            reachedApprovalBoundary = true;
+            throw new Error('db-check stop at explicit operator approval boundary');
+          },
+        },
+      );
+    } catch {
+      // Expected test-only stop before the registration transaction.
+    }
+    if (!reachedApprovalBoundary || await journalEntryCount(neonBoundaryUrl) !== 0) {
+      throw new Error('Provider-verified Neon rehearsal did not reach the write-free approval boundary.');
+    }
 
     const rollbackDatabase = 'adoption_rollback';
     await createDatabase(adminUrl, rollbackDatabase, container, template);

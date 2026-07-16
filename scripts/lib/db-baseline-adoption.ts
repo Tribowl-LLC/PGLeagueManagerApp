@@ -29,6 +29,11 @@ import {
   fingerprintDatabaseHost,
   type ExpectedDatabaseTarget,
 } from './db-schema-inventory';
+import {
+  verifyNeonRehearsalTarget,
+  type NeonRehearsalExpectation,
+  type VerifiedNeonRehearsal,
+} from './neon-rehearsal-verifier';
 
 export const ADOPTION_CONFIRMATION = 'ADOPT_LEAGUEVAULT_BASELINE_WITHOUT_DDL';
 export const BACKUP_ATTESTATION = 'BACKUP_AND_RESTORE_VERIFIED';
@@ -49,14 +54,13 @@ const REQUIRED_ADOPTION_KEYS = [
   'DB_ADOPTION_EXPECTED_BASELINE_CREATED_AT',
 ] as const;
 
-export type AdoptionEnvironmentClass = 'local-disposable';
+export type AdoptionEnvironmentClass = 'local-disposable' | 'neon-rehearsal';
 
-export interface AdoptionRequest {
+interface AdoptionRequestBase {
   expectedTarget: ExpectedDatabaseTarget;
   environmentClass: AdoptionEnvironmentClass;
   environmentId: string;
   expectedEnvironmentId: string;
-  disposableTargetProof: DisposableTargetProof;
   backupAttestation: string;
   confirmation: string;
   expectedCommit: string;
@@ -64,6 +68,18 @@ export interface AdoptionRequest {
   expectedBaselineHash: string;
   expectedBaselineCreatedAt: number;
 }
+
+export interface LocalAdoptionRequest extends AdoptionRequestBase {
+  environmentClass: 'local-disposable';
+  disposableTargetProof: DisposableTargetProof;
+}
+
+export interface NeonRehearsalAdoptionRequest extends AdoptionRequestBase {
+  environmentClass: 'neon-rehearsal';
+  neonExpectation: NeonRehearsalExpectation;
+}
+
+export type AdoptionRequest = LocalAdoptionRequest | NeonRehearsalAdoptionRequest;
 
 export interface SourceControlState {
   commit: string;
@@ -75,6 +91,10 @@ export interface AdoptionRuntime {
   afterPreliminaryVerification?: () => void | Promise<void>;
   afterApplicationLocks?: (client: pg.Client) => void | Promise<void>;
   afterJournalInsert?: (client: pg.Client) => void | Promise<void>;
+  verifyNeonRehearsal?: (
+    expectation: NeonRehearsalExpectation,
+    connectionHostname: string,
+  ) => Promise<VerifiedNeonRehearsal>;
 }
 
 export interface AdoptionResult {
@@ -132,8 +152,8 @@ export function parseAdoptionEnvironment(environment: NodeJS.ProcessEnv): Adopti
   }
   assertNonProductionEnvironment(environment);
   const environmentClass = required(environment, 'DB_ADOPTION_ENVIRONMENT_CLASS');
-  if (environmentClass !== 'local-disposable') {
-    throw new Error('Remote and ordinary CI baseline adoption are disabled; only tool-owned local disposable adoption is supported.');
+  if (environmentClass !== 'local-disposable' && environmentClass !== 'neon-rehearsal') {
+    throw new Error('Only tool-owned local disposable or provider-verified Neon rehearsal adoption is supported.');
   }
   const environmentId = required(environment, 'DB_ADOPTION_ENVIRONMENT_ID');
   const expectedEnvironmentId = required(environment, 'DB_ADOPTION_EXPECTED_ENVIRONMENT_ID');
@@ -153,22 +173,45 @@ export function parseAdoptionEnvironment(environment: NodeJS.ProcessEnv): Adopti
   if (!Number.isSafeInteger(createdAt) || createdAt <= 0 || String(createdAt) !== createdAtText) {
     throw new Error('DB_ADOPTION_EXPECTED_BASELINE_CREATED_AT must be an exact positive integer timestamp.');
   }
-  return {
+  const common = {
     expectedTarget: {
       database: required(environment, 'DB_ADOPTION_EXPECTED_DATABASE'),
       role: required(environment, 'DB_ADOPTION_EXPECTED_ROLE'),
       hostFingerprint,
     },
-    environmentClass: 'local-disposable',
     environmentId,
     expectedEnvironmentId,
-    disposableTargetProof: readDisposableTargetProof(environment),
     backupAttestation: required(environment, 'DB_ADOPTION_BACKUP_ATTESTATION'),
     confirmation: required(environment, 'DB_ADOPTION_CONFIRM'),
     expectedCommit: required(environment, 'DB_ADOPTION_EXPECTED_COMMIT'),
     expectedBaselineTag: required(environment, 'DB_ADOPTION_EXPECTED_BASELINE_TAG'),
     expectedBaselineHash: required(environment, 'DB_ADOPTION_EXPECTED_BASELINE_HASH'),
     expectedBaselineCreatedAt: createdAt,
+  };
+  if (environmentClass === 'local-disposable') {
+    return {
+      ...common,
+      environmentClass,
+      disposableTargetProof: readDisposableTargetProof(environment),
+    };
+  }
+  const apiKey = environment.NEON_API_KEY?.trim();
+  if (!apiKey) throw new Error('Required baseline-adoption environment variable is absent: NEON_API_KEY.');
+  const readNeonId = (key: string): string => {
+    const value = environment[key]?.trim();
+    if (!value) throw new Error(`Required baseline-adoption environment variable is absent: ${key}.`);
+    return value;
+  };
+  return {
+    ...common,
+    environmentClass,
+    neonExpectation: {
+      apiKey,
+      projectId: readNeonId('DB_ADOPTION_NEON_EXPECTED_PROJECT_ID'),
+      targetBranchId: readNeonId('DB_ADOPTION_NEON_EXPECTED_TARGET_BRANCH_ID'),
+      productionBranchId: readNeonId('DB_ADOPTION_NEON_EXPECTED_PRODUCTION_BRANCH_ID'),
+      endpointId: readNeonId('DB_ADOPTION_NEON_EXPECTED_ENDPOINT_ID'),
+    },
   };
 }
 
@@ -192,14 +235,17 @@ export function validateAdoptionRequest(
   baseline: ActiveMigration = baselineMigration(),
 ): void {
   if (
-    request.environmentClass !== 'local-disposable' ||
+    (request.environmentClass !== 'local-disposable' && request.environmentClass !== 'neon-rehearsal') ||
     request.environmentId !== request.expectedEnvironmentId ||
     !/^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/.test(request.environmentId) ||
     /(?:^|[-_.:])(prod|production|live)(?:$|[-_.:])/i.test(request.environmentId)
   ) {
-    throw new Error('Only an exactly identified nonproduction local disposable environment may be adopted.');
+    throw new Error('Only an exactly identified nonproduction disposable environment may be adopted.');
   }
-  if (request.disposableTargetProof.database !== request.expectedTarget.database) {
+  if (
+    request.environmentClass === 'local-disposable' &&
+    request.disposableTargetProof.database !== request.expectedTarget.database
+  ) {
     throw new Error('The disposable database proof does not identify the expected adoption database.');
   }
   if (request.confirmation !== ADOPTION_CONFIRMATION) {
@@ -455,7 +501,10 @@ async function atomicallyRegisterBaseline(
       database: row.database_name,
       role: row.role_name,
     }, request.expectedTarget);
-    if (row.marker !== disposableDatabaseMarker(request.disposableTargetProof)) {
+    if (
+      request.environmentClass === 'local-disposable' &&
+      row.marker !== disposableDatabaseMarker(request.disposableTargetProof)
+    ) {
       throw new Error('The atomic adoption connection lost its exact disposable database ownership marker.');
     }
 
@@ -508,15 +557,30 @@ export async function adoptExistingDatabaseBaseline(
   const sourceControl = (runtime.sourceControlState ?? readSourceControlState)();
   validateAdoptionRequest(request, sourceControl, baseline);
   assertExpectedConnectionUrlTarget(connectionString, request.expectedTarget);
-  const verified = await verifyOwnedLocalDisposableTarget(
-    connectionString,
-    request.disposableTargetProof,
-  );
-  if (
-    verified.targetUrl !== connectionString || verified.database !== request.expectedTarget.database ||
-    verified.role !== request.expectedTarget.role
-  ) {
-    throw new Error('Verified disposable target does not match the exact requested adoption target.');
+  if (request.environmentClass === 'local-disposable') {
+    const verified = await verifyOwnedLocalDisposableTarget(
+      connectionString,
+      request.disposableTargetProof,
+    );
+    if (
+      verified.targetUrl !== connectionString || verified.database !== request.expectedTarget.database ||
+      verified.role !== request.expectedTarget.role
+    ) {
+      throw new Error('Verified disposable target does not match the exact requested adoption target.');
+    }
+  } else {
+    const hostname = new URL(connectionString).hostname;
+    const providerVerifier = runtime.verifyNeonRehearsal ?? verifyNeonRehearsalTarget;
+    const verified = await providerVerifier(request.neonExpectation, hostname);
+    if (
+      verified.projectId !== request.neonExpectation.projectId ||
+      verified.targetBranchId !== request.neonExpectation.targetBranchId ||
+      verified.productionBranchId !== request.neonExpectation.productionBranchId ||
+      verified.endpointId !== request.neonExpectation.endpointId ||
+      verified.endpointHostname !== hostname.toLowerCase()
+    ) {
+      throw new Error('Verified Neon provider identity does not match the exact rehearsal request.');
+    }
   }
 
   await assertMigrationRoleCapabilityReadOnly(connectionString, request.expectedTarget);

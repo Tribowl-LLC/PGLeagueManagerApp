@@ -467,9 +467,9 @@ triggers, and policies, and the sequence relation/catalog locks protect the
 approved sequences' identity, configuration, and ownership, but
 function/type DDL and unrelated object classes are not held by equivalent
 relation locks. The final serializable inventory still detects a
-snapshot-visible mismatch. Until a provider-backed remote lock/identity design
-is reviewed, limiting adoption to an isolated tool-owned local container keeps
-that remaining concurrency limitation out of durable environments.
+snapshot-visible mismatch. Adoption therefore remains limited to an isolated
+tool-owned local container or one independently identified disposable Neon
+production-clone branch used only for the reviewed rehearsal.
 
 Supply every value independently through the secret-aware operator
 environment; never put target values or credentials in source or shell
@@ -493,6 +493,51 @@ arguments:
 - `LV_DISPOSABLE_DB_PURPOSE`
 - `LV_DISPOSABLE_DB_DATABASE`
 
+For the one allowed Neon rehearsal mode, replace the local Docker class and
+proof variables with all of these independently recorded values:
+
+- `DB_ADOPTION_ENVIRONMENT_CLASS=neon-rehearsal`
+- `NEON_API_KEY`
+- `DB_ADOPTION_NEON_EXPECTED_PROJECT_ID`
+- `DB_ADOPTION_NEON_EXPECTED_TARGET_BRANCH_ID`
+- `DB_ADOPTION_NEON_EXPECTED_PRODUCTION_BRANCH_ID`
+- `DB_ADOPTION_NEON_EXPECTED_ENDPOINT_ID`
+
+The common `DATABASE_URL`, database, role, endpoint fingerprint, environment
+identity, backup attestation, confirmation, commit, and exact baseline identity
+variables remain required. Use a project-scoped organization API key for the
+expected project where available. The verifier needs only project member/read
+access and sends only authenticated `GET` requests; it never requests a
+connection URI, role password, or any provider mutation. Do not use an
+organization-wide administrative key when a project-scoped key is available.
+
+Before PostgreSQL preflight, the verifier reads only:
+
+- `GET /api/v2/projects/{project_id}` and requires `project.id`;
+- `GET /api/v2/projects/{project_id}/branches/{branch_id}` for both branches
+  and requires `branch.id`, `project_id`, immutable `parent_id`, `default`,
+  `protected`, `current_state`, `init_source`, and optional deprecated
+  `primary` when returned;
+- `GET /api/v2/projects/{project_id}/endpoints/{endpoint_id}` and requires
+  `endpoint.id`, `project_id`, `branch_id`, `host`, `type`, and `disabled`.
+
+The target must be a distinct, ready, unprotected, non-default/non-primary
+`parent-data` child whose `parent_id` is the independently expected production
+source branch. Restored/recovering branches, restricted branches, schema-only
+branches, and ambiguous or incomplete metadata are refused. The endpoint must
+be an enabled read-write endpoint in the same project, belong only to that
+target child, and have a hostname exactly matching the PostgreSQL URL hostname.
+Identifiers parsed or inferred solely from `DATABASE_URL` never count as
+provider proof.
+
+Every provider failure refuses adoption: missing credentials, authentication
+or authorization failure, timeout, network error, non-JSON response, malformed
+JSON, missing fields, unexpected response envelopes, missing resources, and
+identity or hierarchy mismatches. Requests have a five-second timeout and at
+most two attempts; retries apply only to idempotent GETs. Provider response
+bodies are neither logged nor persisted. Errors redact the API key, URL,
+password, hostname, and all supplied project/branch/endpoint identifiers.
+
 The runtime environment identity must exactly match the independently supplied
 expectation. The expected database, role, host fingerprint, clean checkout and
 exact commit, baseline tag/hash/timestamp, backup-and-restore attestation, and
@@ -513,10 +558,35 @@ Production adoption remains unperformed and impossible in this change.
 `db:adopt-baseline` refuses `APP_ENV=prod`, `NODE_ENV=production`, the
 production application domain, Render/Replit deployment markers,
 production-shaped or mismatched environment identities, every class except
-`local-disposable`, every remote URL, and any target without exact repository-
-tool Docker ownership proof. Enabling any remote or production path requires a
-separately reviewed provider-backed target-identity and locking design plus
-rehearsal evidence.
+`local-disposable` and `neon-rehearsal`, every ordinary remote target, local
+targets without repository-tool Docker ownership proof, and Neon targets
+without the complete provider proof above. Production credentials and
+self-attestations cannot enable a path: the target must differ from production,
+must be its verified child, and cannot be default, primary, or protected.
+
+After this change is merged, the exact rehearsal procedure is:
+
+1. Create and independently review the disposable production clone outside
+   this tool; record the project, production source branch, target child branch,
+   endpoint, hostname fingerprint, database, and role without deriving them
+   from the connection URL.
+2. Confirm a tested backup/restore path and set
+   `DB_ADOPTION_BACKUP_ATTESTATION=BACKUP_AND_RESTORE_VERIFIED`.
+3. Check out the exact clean CI-verified `main` commit and set every common and
+   Neon-specific variable above in a secret-aware operator shell. Keep
+   `APP_ENV`, `NODE_ENV`, domain, and deployment markers nonproduction.
+4. Independently compare the checked-in tag, LF-byte SHA-256 hash, and created
+   timestamp before setting the exact baseline identity variables.
+5. Set `DB_ADOPTION_CONFIRM=ADOPT_LEAGUEVAULT_BASELINE_WITHOUT_DDL` only at the
+   reviewed human approval boundary, then run `npm run db:adopt-baseline` once.
+6. Require the provider proof, database/role/endpoint proof, canonical
+   fingerprint, exact empty journal, capability checks, and atomic registration
+   result to succeed. Abort on any mismatch; do not bypass or substitute IDs.
+7. Rerun once and require the exact no-op result, then unset all secrets and
+   record only redacted evidence. Do not point this command at production.
+
+No live Neon rehearsal or production adoption was performed while implementing
+this mode. Production enablement still requires a separate reviewed change.
 
 ## Production migration process
 

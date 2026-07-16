@@ -4,6 +4,7 @@ import {
   parseAdoptionEnvironment,
 } from './lib/db-baseline-adoption';
 import { redactConnectionDetails } from './lib/db-schema-inventory';
+import { redactNeonControlPlaneDetails } from './lib/neon-rehearsal-verifier';
 
 export async function adoptConfiguredDatabaseBaseline(
   environment: NodeJS.ProcessEnv = process.env,
@@ -24,8 +25,18 @@ const isMain = import.meta.url === pathToFileURL(process.argv[1] ?? '').href;
 if (isMain) {
   adoptConfiguredDatabaseBaseline().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
+    const neonExpectation = {
+      apiKey: process.env.NEON_API_KEY,
+      projectId: process.env.DB_ADOPTION_NEON_EXPECTED_PROJECT_ID,
+      targetBranchId: process.env.DB_ADOPTION_NEON_EXPECTED_TARGET_BRANCH_ID,
+      productionBranchId: process.env.DB_ADOPTION_NEON_EXPECTED_PRODUCTION_BRANCH_ID,
+      endpointId: process.env.DB_ADOPTION_NEON_EXPECTED_ENDPOINT_ID,
+    };
     process.stderr.write(
-      `[db:adopt-baseline] failed: ${redactConnectionDetails(message, process.env.DATABASE_URL)}\n`,
+      `[db:adopt-baseline] failed: ${redactNeonControlPlaneDetails(
+        redactConnectionDetails(message, process.env.DATABASE_URL),
+        neonExpectation,
+      )}\n`,
     );
     process.exitCode = 1;
   });
