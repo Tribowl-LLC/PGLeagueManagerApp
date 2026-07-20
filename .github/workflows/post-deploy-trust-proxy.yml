@@ -170,11 +170,10 @@ name: Post-deploy trust-proxy probe
 # separately as a follow-up.
 
 on:
-  # Recurring probe — every 30 minutes. Cheap (one HTTP request) and
-  # tight enough to catch a bad proxy config within one rate-limit
-  # window of when it lands.
+  # Recurring daily probe at 09:17 UTC. The workflow_dispatch trigger
+  # below remains available for immediate post-deploy verification.
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '17 9 * * *'
   # On-demand trigger so a release operator can run it immediately
   # after a deploy without waiting for the next cron tick.
   workflow_dispatch:
