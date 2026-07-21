@@ -15,6 +15,7 @@
     "db:migration-bytes:check": "tsx scripts/check-migration-bytes.ts",
     "db:migrate": "tsx scripts/db-migrate.ts",
     "db:fingerprint": "tsx scripts/db-fingerprint.ts",
+    "db:adopt-baseline:preflight": "tsx scripts/db-adopt-baseline-preflight.ts",
     "db:adopt-baseline": "tsx scripts/db-adopt-baseline.ts",
     "db:check": "tsx scripts/db-check.ts",
     "db:inventory": "tsx scripts/db-inventory.ts",

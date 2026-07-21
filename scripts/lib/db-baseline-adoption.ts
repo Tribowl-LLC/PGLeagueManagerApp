@@ -30,13 +30,18 @@ import {
   type ExpectedDatabaseTarget,
 } from './db-schema-inventory';
 import {
+  verifyNeonProductionTarget,
   verifyNeonRehearsalTarget,
+  type NeonProductionIdentityExpectation,
   type NeonRehearsalIdentityExpectation,
+  type VerifiedNeonProduction,
   type VerifiedNeonRehearsal,
 } from './neon-rehearsal-verifier';
 
 export const ADOPTION_CONFIRMATION = 'ADOPT_LEAGUEVAULT_BASELINE_WITHOUT_DDL';
 export const BACKUP_ATTESTATION = 'BACKUP_AND_RESTORE_VERIFIED';
+export const PRODUCTION_ENVIRONMENT_CLASS = 'neon-production';
+export const PRODUCTION_JOURNAL_RELATION = 'drizzle.__drizzle_migrations';
 const ADOPTION_LOCK_KEY = 843_103_001;
 
 const REQUIRED_ADOPTION_KEYS = [
@@ -47,14 +52,14 @@ const REQUIRED_ADOPTION_KEYS = [
   'DB_ADOPTION_ENVIRONMENT_ID',
   'DB_ADOPTION_EXPECTED_ENVIRONMENT_ID',
   'DB_ADOPTION_BACKUP_ATTESTATION',
-  'DB_ADOPTION_CONFIRM',
   'DB_ADOPTION_EXPECTED_COMMIT',
   'DB_ADOPTION_EXPECTED_BASELINE_TAG',
   'DB_ADOPTION_EXPECTED_BASELINE_HASH',
   'DB_ADOPTION_EXPECTED_BASELINE_CREATED_AT',
 ] as const;
 
-export type AdoptionEnvironmentClass = 'local-disposable' | 'neon-rehearsal';
+export type AdoptionMode = 'preflight' | 'execute';
+export type AdoptionEnvironmentClass = 'local-disposable' | 'neon-rehearsal' | 'neon-production';
 
 interface AdoptionRequestBase {
   expectedTarget: ExpectedDatabaseTarget;
@@ -79,7 +84,18 @@ export interface NeonRehearsalAdoptionRequest extends AdoptionRequestBase {
   neonExpectation: NeonRehearsalIdentityExpectation;
 }
 
-export type AdoptionRequest = LocalAdoptionRequest | NeonRehearsalAdoptionRequest;
+export interface NeonProductionAdoptionRequest extends AdoptionRequestBase {
+  environmentClass: 'neon-production';
+  neonExpectation: NeonProductionIdentityExpectation;
+  expectedSchemaFingerprint: string;
+  expectedJournalRelation: typeof PRODUCTION_JOURNAL_RELATION;
+  approvalToken: string;
+}
+
+export type AdoptionRequest =
+  | LocalAdoptionRequest
+  | NeonRehearsalAdoptionRequest
+  | NeonProductionAdoptionRequest;
 
 export interface SourceControlState {
   commit: string;
@@ -97,6 +113,26 @@ export interface AdoptionResult {
   status: 'adopted' | 'no-op';
   baselineTag: string;
   verificationState: BaselineVerificationState;
+}
+
+export interface ProductionPreflightResult {
+  status: 'ready';
+  baselineTag: string;
+  baselineHash: string;
+  baselineCreatedAt: number;
+  schemaFingerprint: string;
+  verificationState: BaselineVerificationState;
+  journalRelation: typeof PRODUCTION_JOURNAL_RELATION;
+  journalRowCount: 0;
+  projectId: string;
+  productionBranchId: string;
+  endpointId: string;
+  endpointHostname: string;
+  database: string;
+  role: string;
+  serverVersion: string;
+  transactionIsolation: string;
+  transactionReadOnly: true;
 }
 
 interface CapabilitySummaryRow extends QueryResultRow {
@@ -121,7 +157,7 @@ interface JournalCapabilityRow extends QueryResultRow {
   journal_sequence_owner_capability: boolean;
 }
 
-function required(environment: NodeJS.ProcessEnv, key: (typeof REQUIRED_ADOPTION_KEYS)[number]): string {
+function required(environment: NodeJS.ProcessEnv, key: string): string {
   const value = environment[key]?.trim();
   if (!value) throw new Error(`Required baseline-adoption environment variable is absent: ${key}.`);
   return value;
@@ -141,24 +177,61 @@ function assertNonProductionEnvironment(environment: NodeJS.ProcessEnv): void {
   }
 }
 
-export function parseAdoptionEnvironment(environment: NodeJS.ProcessEnv): AdoptionRequest {
+function assertProductionOperatorEnvironment(environment: NodeJS.ProcessEnv): void {
+  if (
+    environment.APP_ENV?.trim().toLowerCase() !== 'prod' ||
+    environment.NODE_ENV?.trim().toLowerCase() !== 'production' ||
+    environment.APP_DOMAIN?.trim().toLowerCase() !== 'leaguevault.app'
+  ) {
+    throw new Error('Production adoption requires the exact production application identity.');
+  }
+  if (
+    Boolean(environment.REPLIT_DEPLOYMENT?.trim()) ||
+    Boolean(environment.RENDER?.trim()) ||
+    Boolean(environment.RENDER_SERVICE_ID?.trim()) ||
+    Boolean(environment.RENDER_EXTERNAL_HOSTNAME?.trim())
+  ) {
+    throw new Error('Production adoption is operator-only and cannot run inside a deployed application process.');
+  }
+}
+
+export function parseAdoptionEnvironment(
+  environment: NodeJS.ProcessEnv,
+  mode: AdoptionMode = 'execute',
+): AdoptionRequest {
   const missing = REQUIRED_ADOPTION_KEYS.filter((key) => !environment[key]?.trim());
   if (missing.length > 0) {
     throw new Error(`Required baseline-adoption environment variable(s) are absent: ${missing.join(', ')}.`);
   }
-  assertNonProductionEnvironment(environment);
   const environmentClass = required(environment, 'DB_ADOPTION_ENVIRONMENT_CLASS');
-  if (environmentClass !== 'local-disposable' && environmentClass !== 'neon-rehearsal') {
-    throw new Error('Only tool-owned local disposable or provider-verified Neon rehearsal adoption is supported.');
+  if (
+    environmentClass !== 'local-disposable' &&
+    environmentClass !== 'neon-rehearsal' &&
+    environmentClass !== PRODUCTION_ENVIRONMENT_CLASS
+  ) {
+    throw new Error('Only tool-owned local disposable or provider-verified Neon adoption is supported.');
+  }
+  if (environmentClass === PRODUCTION_ENVIRONMENT_CLASS) {
+    assertProductionOperatorEnvironment(environment);
+  } else {
+    assertNonProductionEnvironment(environment);
+    if (mode === 'preflight') {
+      throw new Error('The standalone read-only preflight accepts only the Neon production environment class.');
+    }
   }
   const environmentId = required(environment, 'DB_ADOPTION_ENVIRONMENT_ID');
   const expectedEnvironmentId = required(environment, 'DB_ADOPTION_EXPECTED_ENVIRONMENT_ID');
   if (
     environmentId !== expectedEnvironmentId ||
-    !/^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/.test(expectedEnvironmentId) ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/.test(expectedEnvironmentId)
+  ) {
+    throw new Error('The independently expected environment identity is mismatched or invalid.');
+  }
+  if (
+    environmentClass !== PRODUCTION_ENVIRONMENT_CLASS &&
     /(?:^|[-_.:])(prod|production|live)(?:$|[-_.:])/i.test(expectedEnvironmentId)
   ) {
-    throw new Error('The independently expected environment identity is mismatched, invalid, or production-shaped.');
+    throw new Error('The independently expected environment identity is production-shaped.');
   }
   const hostFingerprint = required(environment, 'DB_ADOPTION_EXPECTED_HOST_FINGERPRINT');
   if (!/^sha256:[0-9a-f]{64}$/.test(hostFingerprint)) {
@@ -178,7 +251,7 @@ export function parseAdoptionEnvironment(environment: NodeJS.ProcessEnv): Adopti
     environmentId,
     expectedEnvironmentId,
     backupAttestation: required(environment, 'DB_ADOPTION_BACKUP_ATTESTATION'),
-    confirmation: required(environment, 'DB_ADOPTION_CONFIRM'),
+    confirmation: mode === 'execute' ? required(environment, 'DB_ADOPTION_CONFIRM') : '',
     expectedCommit: required(environment, 'DB_ADOPTION_EXPECTED_COMMIT'),
     expectedBaselineTag: required(environment, 'DB_ADOPTION_EXPECTED_BASELINE_TAG'),
     expectedBaselineHash: required(environment, 'DB_ADOPTION_EXPECTED_BASELINE_HASH'),
@@ -199,22 +272,66 @@ export function parseAdoptionEnvironment(environment: NodeJS.ProcessEnv): Adopti
     if (!value) throw new Error(`Required baseline-adoption environment variable is absent: ${key}.`);
     return value;
   };
+  const neonExpectation = {
+    projectId: readNeonId('DB_ADOPTION_NEON_EXPECTED_PROJECT_ID'),
+    targetBranchId: readNeonId('DB_ADOPTION_NEON_EXPECTED_TARGET_BRANCH_ID'),
+    productionBranchId: readNeonId('DB_ADOPTION_NEON_EXPECTED_PRODUCTION_BRANCH_ID'),
+    endpointId: readNeonId('DB_ADOPTION_NEON_EXPECTED_ENDPOINT_ID'),
+  };
+  if (environmentClass === PRODUCTION_ENVIRONMENT_CLASS) {
+    if (neonExpectation.targetBranchId !== neonExpectation.productionBranchId) {
+      throw new Error('The production environment identity requires the target branch to equal production.');
+    }
+    const exactEnvironmentId = [
+      PRODUCTION_ENVIRONMENT_CLASS,
+      neonExpectation.projectId,
+      neonExpectation.productionBranchId,
+      neonExpectation.endpointId,
+    ].join(':');
+    if (environmentId !== exactEnvironmentId) {
+      throw new Error('The production environment identity does not exactly bind the expected project, branch, and endpoint.');
+    }
+    const expectedSchemaFingerprint = environment.DB_ADOPTION_EXPECTED_SCHEMA_FINGERPRINT?.trim();
+    if (!expectedSchemaFingerprint || !/^[0-9a-f]{64}$/.test(expectedSchemaFingerprint)) {
+      throw new Error('DB_ADOPTION_EXPECTED_SCHEMA_FINGERPRINT must be an exact lowercase SHA-256 digest.');
+    }
+    if (expectedSchemaFingerprint !== loadApprovedBaselineFingerprint().digest) {
+      throw new Error('The independently supplied schema fingerprint does not match the checked-in baseline.');
+    }
+    const expectedJournalRelation = environment.DB_ADOPTION_EXPECTED_JOURNAL_RELATION?.trim();
+    if (expectedJournalRelation !== PRODUCTION_JOURNAL_RELATION) {
+      throw new Error(`DB_ADOPTION_EXPECTED_JOURNAL_RELATION must be ${PRODUCTION_JOURNAL_RELATION}.`);
+    }
+    const suppliedToken = environment.DB_ADOPTION_APPROVAL_TOKEN?.trim() ?? '';
+    if (mode === 'preflight') {
+      if (environment.DB_ADOPTION_CONFIRM?.trim() || suppliedToken) {
+        throw new Error('Production preflight requires confirmation and the ephemeral approval token to be absent.');
+      }
+    } else if (!/^[A-Za-z0-9_-]{43,128}$/.test(suppliedToken)) {
+      throw new Error('Production execution requires an ephemeral base64url approval token of at least 256 bits.');
+    }
+    return {
+      ...common,
+      environmentClass,
+      neonExpectation,
+      expectedSchemaFingerprint,
+      expectedJournalRelation,
+      approvalToken: suppliedToken,
+    };
+  }
   return {
     ...common,
     environmentClass,
-    neonExpectation: {
-      projectId: readNeonId('DB_ADOPTION_NEON_EXPECTED_PROJECT_ID'),
-      targetBranchId: readNeonId('DB_ADOPTION_NEON_EXPECTED_TARGET_BRANCH_ID'),
-      productionBranchId: readNeonId('DB_ADOPTION_NEON_EXPECTED_PRODUCTION_BRANCH_ID'),
-      endpointId: readNeonId('DB_ADOPTION_NEON_EXPECTED_ENDPOINT_ID'),
-    },
+    neonExpectation,
   };
 }
 
 function sourceControlChildEnvironment(): NodeJS.ProcessEnv {
   const childEnvironment = { ...process.env };
   for (const key of Object.keys(childEnvironment)) {
-    if (key.toUpperCase() === 'NEON_API_KEY') delete childEnvironment[key];
+    if (['NEON_API_KEY', 'DB_ADOPTION_APPROVAL_TOKEN'].includes(key.toUpperCase())) {
+      delete childEnvironment[key];
+    }
   }
   return childEnvironment;
 }
@@ -240,14 +357,38 @@ export function validateAdoptionRequest(
   request: AdoptionRequest,
   sourceControl: SourceControlState,
   baseline: ActiveMigration = baselineMigration(),
+  mode: AdoptionMode = 'execute',
 ): void {
   if (
-    (request.environmentClass !== 'local-disposable' && request.environmentClass !== 'neon-rehearsal') ||
+    !['local-disposable', 'neon-rehearsal', PRODUCTION_ENVIRONMENT_CLASS].includes(request.environmentClass) ||
     request.environmentId !== request.expectedEnvironmentId ||
-    !/^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/.test(request.environmentId) ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/.test(request.environmentId)
+  ) {
+    throw new Error('Only an exactly identified approved environment may be adopted.');
+  }
+  if (
+    request.environmentClass !== PRODUCTION_ENVIRONMENT_CLASS &&
     /(?:^|[-_.:])(prod|production|live)(?:$|[-_.:])/i.test(request.environmentId)
   ) {
-    throw new Error('Only an exactly identified nonproduction disposable environment may be adopted.');
+    throw new Error('A nonproduction adoption request cannot use a production-shaped environment identity.');
+  }
+  if (mode === 'preflight' && request.environmentClass !== PRODUCTION_ENVIRONMENT_CLASS) {
+    throw new Error('The standalone read-only preflight accepts only the Neon production environment class.');
+  }
+  if (request.environmentClass === PRODUCTION_ENVIRONMENT_CLASS) {
+    const exactEnvironmentId = [
+      PRODUCTION_ENVIRONMENT_CLASS,
+      request.neonExpectation.projectId,
+      request.neonExpectation.productionBranchId,
+      request.neonExpectation.endpointId,
+    ].join(':');
+    if (
+      request.environmentId !== exactEnvironmentId ||
+      request.neonExpectation.targetBranchId !== request.neonExpectation.productionBranchId ||
+      request.expectedJournalRelation !== PRODUCTION_JOURNAL_RELATION
+    ) {
+      throw new Error('The production request does not exactly bind the approved project, branch, endpoint, and journal.');
+    }
   }
   if (
     request.environmentClass === 'local-disposable' &&
@@ -255,8 +396,22 @@ export function validateAdoptionRequest(
   ) {
     throw new Error('The disposable database proof does not identify the expected adoption database.');
   }
-  if (request.confirmation !== ADOPTION_CONFIRMATION) {
+  if (mode === 'execute' && request.confirmation !== ADOPTION_CONFIRMATION) {
     throw new Error('Explicit baseline-adoption confirmation is missing or incorrect.');
+  }
+  if (
+    request.environmentClass === PRODUCTION_ENVIRONMENT_CLASS &&
+    mode === 'execute' &&
+    !/^[A-Za-z0-9_-]{43,128}$/.test(request.approvalToken)
+  ) {
+    throw new Error('Production execution requires a valid ephemeral approval token.');
+  }
+  if (
+    request.environmentClass === PRODUCTION_ENVIRONMENT_CLASS &&
+    mode === 'preflight' &&
+    (request.confirmation || request.approvalToken)
+  ) {
+    throw new Error('Production preflight cannot carry execution authorization.');
   }
   if (request.backupAttestation !== BACKUP_ATTESTATION) {
     throw new Error('Backup and restore attestation is missing or incorrect.');
@@ -274,6 +429,12 @@ export function validateAdoptionRequest(
     request.expectedBaselineCreatedAt !== baseline.createdAt
   ) {
     throw new Error('The independently supplied baseline identity does not match the checked-in baseline.');
+  }
+  if (
+    request.environmentClass === PRODUCTION_ENVIRONMENT_CLASS &&
+    request.expectedSchemaFingerprint !== loadApprovedBaselineFingerprint(undefined, baseline).digest
+  ) {
+    throw new Error('The independently supplied schema fingerprint does not match the checked-in baseline.');
   }
 }
 
@@ -379,6 +540,7 @@ export async function assertMigrationRoleCapabilityOnClient(
 async function assertMigrationRoleCapabilityReadOnly(
   connectionString: string,
   expectedTarget: ExpectedDatabaseTarget,
+  includeJournal = false,
 ): Promise<void> {
   const client = new pg.Client({
     connectionString,
@@ -399,7 +561,7 @@ async function assertMigrationRoleCapabilityReadOnly(
       database: row.database_name,
       role: row.role_name,
     }, expectedTarget);
-    await assertMigrationRoleCapabilityOnClient(client, false);
+    await assertMigrationRoleCapabilityOnClient(client, includeJournal);
     await client.query('COMMIT');
     transaction = false;
   } finally {
@@ -483,7 +645,14 @@ async function atomicallyRegisterBaseline(
     await client.query('SELECT pg_catalog.pg_advisory_xact_lock($1)', [ADOPTION_LOCK_KEY]);
     await runtime.afterApplicationLocks?.(client);
 
-    await ensureApprovedJournal(client);
+    if (request.environmentClass === PRODUCTION_ENVIRONMENT_CLASS) {
+      const existingJournal = await inspectApprovedJournal(client, { lock: true });
+      if (!existingJournal.exists) {
+        throw new Error('Production adoption requires the approved migration journal to exist before execution.');
+      }
+    } else {
+      await ensureApprovedJournal(client);
+    }
     await lockSequenceDefinitions(client, [{
       schema: 'drizzle',
       name: '__drizzle_migrations_id_seq',
@@ -570,7 +739,7 @@ export async function adoptExistingDatabaseBaseline(
     ) {
       throw new Error('Verified disposable target does not match the exact requested adoption target.');
     }
-  } else {
+  } else if (request.environmentClass === 'neon-rehearsal') {
     const hostname = new URL(connectionString).hostname;
     const assertVerifiedIdentity = (verified: VerifiedNeonRehearsal): void => {
       const normalizedHostname = hostname.toLowerCase().replace(/\.$/, '');
@@ -592,9 +761,34 @@ export async function adoptExistingDatabaseBaseline(
       assertVerifiedIdentity(verified);
     };
     await verifyProviderIdentityImmediately();
+  } else {
+    const hostname = new URL(connectionString).hostname;
+    const assertVerifiedIdentity = (verified: VerifiedNeonProduction): void => {
+      const normalizedHostname = hostname.toLowerCase().replace(/\.$/, '');
+      if (
+        verified.projectId !== request.neonExpectation.projectId ||
+        verified.productionBranchId !== request.neonExpectation.productionBranchId ||
+        verified.endpointId !== request.neonExpectation.endpointId ||
+        verified.endpointHostname !== normalizedHostname
+      ) {
+        throw new Error('Verified Neon provider identity does not match the exact production request.');
+      }
+    };
+    verifyProviderIdentityImmediately = async (): Promise<void> => {
+      const verified = await verifyNeonProductionTarget({
+        ...request.neonExpectation,
+        apiKey: neonApiKey ?? '',
+      }, hostname);
+      assertVerifiedIdentity(verified);
+    };
+    await verifyProviderIdentityImmediately();
   }
 
-  await assertMigrationRoleCapabilityReadOnly(connectionString, request.expectedTarget);
+  await assertMigrationRoleCapabilityReadOnly(
+    connectionString,
+    request.expectedTarget,
+    request.environmentClass === PRODUCTION_ENVIRONMENT_CLASS,
+  );
   const preliminaryInventory = await collectDatabaseInventory(connectionString, {
     expectedTarget: request.expectedTarget,
   });
@@ -610,4 +804,83 @@ export async function adoptExistingDatabaseBaseline(
     runtime,
   );
   return { ...result, baselineTag: baseline.tag };
+}
+
+export async function preflightProductionDatabaseBaseline(
+  connectionString: string,
+  request: NeonProductionAdoptionRequest,
+  runtime: Pick<AdoptionRuntime, 'sourceControlState'> = {},
+  neonApiKey?: string,
+): Promise<ProductionPreflightResult> {
+  const baseline = baselineMigration();
+  const approved = loadApprovedBaselineFingerprint(undefined, baseline);
+  const sourceControl = (runtime.sourceControlState ?? readSourceControlState)();
+  validateAdoptionRequest(request, sourceControl, baseline, 'preflight');
+  assertExpectedConnectionUrlTarget(connectionString, request.expectedTarget);
+  const hostname = new URL(connectionString).hostname;
+  const verifyProviderIdentity = async (): Promise<VerifiedNeonProduction> => {
+    const verified = await verifyNeonProductionTarget({
+      ...request.neonExpectation,
+      apiKey: neonApiKey ?? '',
+    }, hostname);
+    const normalizedHostname = hostname.toLowerCase().replace(/\.$/, '');
+    if (
+      verified.projectId !== request.neonExpectation.projectId ||
+      verified.productionBranchId !== request.neonExpectation.productionBranchId ||
+      verified.endpointId !== request.neonExpectation.endpointId ||
+      verified.endpointHostname !== normalizedHostname
+    ) {
+      throw new Error('Verified Neon provider identity does not match the exact production preflight request.');
+    }
+    return verified;
+  };
+
+  await verifyProviderIdentity();
+  const client = new pg.Client({
+    connectionString,
+    application_name: 'leaguevault-db-adopt-production-journal-preflight',
+  });
+  let transaction = false;
+  try {
+    await client.connect();
+    await client.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    transaction = true;
+    const journal = await inspectApprovedJournal(client);
+    if (!journal.exists) {
+      throw new Error('Production preflight requires the approved migration journal to exist.');
+    }
+    if (classifyBaselineJournal(journal.entries, baseline) !== 'absent-or-empty') {
+      throw new Error('Production preflight requires an exact empty migration journal.');
+    }
+    await client.query('COMMIT');
+    transaction = false;
+  } finally {
+    if (transaction) await client.query('ROLLBACK').catch(() => undefined);
+    await client.end().catch(() => undefined);
+  }
+  await assertMigrationRoleCapabilityReadOnly(connectionString, request.expectedTarget, true);
+  const inventory = await collectDatabaseInventory(connectionString, {
+    expectedTarget: request.expectedTarget,
+  });
+  const verification = verifyBaselineInventory(inventory, baseline, approved);
+  const finalProvider = await verifyProviderIdentity();
+  return {
+    status: 'ready',
+    baselineTag: baseline.tag,
+    baselineHash: baseline.hash,
+    baselineCreatedAt: baseline.createdAt,
+    schemaFingerprint: verification.fingerprint.digest,
+    verificationState: verification.state,
+    journalRelation: PRODUCTION_JOURNAL_RELATION,
+    journalRowCount: 0,
+    projectId: finalProvider.projectId,
+    productionBranchId: finalProvider.productionBranchId,
+    endpointId: finalProvider.endpointId,
+    endpointHostname: finalProvider.endpointHostname,
+    database: inventory.target.database,
+    role: inventory.target.role,
+    serverVersion: inventory.target.serverVersion,
+    transactionIsolation: inventory.target.transactionIsolation,
+    transactionReadOnly: true,
+  };
 }

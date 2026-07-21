@@ -104,27 +104,27 @@ See [`DATABASE.md`](./DATABASE.md#disposable-neon-branch-inventory-procedure)
 for the complete comparison procedure. Direct production inventory remains a
 separately approved future operation.
 
-## Baseline adoption: one provider-verified Neon rehearsal only
+## Baseline adoption: production preflight and separately authorized execution
 
-Production adoption has not been performed and remains unconditionally
-disabled. In addition to the existing repository-tool-owned local Docker mode,
-`db:adopt-baseline` accepts exactly one class of remote target:
-`DB_ADOPTION_ENVIRONMENT_CLASS=neon-rehearsal` for an independently identified,
-disposable, unprotected, non-default/non-primary child of the expected
-production source branch. All other remote targets and every production-shaped
-process or target are refused.
+Production adoption has not been performed. The operator-only production mode
+uses `DB_ADOPTION_ENVIRONMENT_CLASS=neon-production`, requires the target branch
+to equal the independently expected protected default production root branch,
+and refuses Render/Replit deployment processes. The dedicated
+`db:adopt-baseline:preflight` command is read-only and rejects execution
+confirmation and approval-token variables. The separate `db:adopt-baseline`
+entrypoint is the only registration path.
 
-The verifier uses only bounded, retry-limited Neon API GETs for project, both
-branches, and endpoint details. It requires the provider's `parent_id`,
-`default`, `protected`, state/init-source, endpoint `project_id`, `branch_id`,
-and `host` metadata to agree with independently supplied identifiers and the
-PostgreSQL hostname. URL-derived identifiers are not independent evidence.
-Missing or unexpected metadata, API/authentication/timeout failure, protected
-or recovering targets, and any production/default/primary/endpoint mismatch
-fail closed. Host matching normalizes only case and one terminal DNS dot; it
-does not accept suffixes, wildcards, ports, or alternate hosts. Provider proof
-is repeated immediately before the registration transaction so a paused
-approval workflow cannot reuse stale metadata. Use a project-scoped
+The verifier uses only bounded, retry-limited Neon API GETs for project, branch,
+and endpoint details. It requires root/default/protected/state metadata plus
+endpoint `project_id`, `branch_id`, and `host` to agree with independently
+supplied identifiers and the PostgreSQL hostname. URL-derived identifiers are
+not independent evidence. Missing or unexpected metadata,
+API/authentication/timeout failure, recovering/restored/restricted targets,
+child branches, and endpoint mismatches fail closed. Host matching normalizes
+only case and one terminal DNS dot; it does not accept suffixes, wildcards,
+ports, or alternate hosts. Provider proof is repeated at the end of preflight
+and immediately before registration so stale metadata cannot cross either
+boundary. Use a project-scoped
 organization API key where available; the
 tool does not need or issue write-capable Neon API requests and never requests
 database credentials from Neon. The key is not retained in the database
@@ -136,17 +136,19 @@ Required Neon-specific variables are `NEON_API_KEY`,
 `DB_ADOPTION_NEON_EXPECTED_TARGET_BRANCH_ID`,
 `DB_ADOPTION_NEON_EXPECTED_PRODUCTION_BRANCH_ID`, and
 `DB_ADOPTION_NEON_EXPECTED_ENDPOINT_ID`, in addition to every common adoption
-identity, baseline, backup, commit, and confirmation variable documented in
+identity, baseline, schema fingerprint, journal relation, backup, commit, and
+confirmation variable documented in
 [`DATABASE.md`](./DATABASE.md#guarded-existing-database-adoption). Provider bodies are
 not persisted or logged; operator-visible failures redact credentials, URLs,
 hostnames, and provider identifiers.
 
-Follow the exact post-merge rehearsal procedure in `DATABASE.md`. Stop before
-setting the confirmation unless the read-only inventory evidence and all
-independent identifiers have been reviewed. This implementation PR performed
-no live Neon rehearsal, no production connection, and no adoption. It does not
-authorize production use; production enablement requires a separate reviewed
-change.
+Follow the exact post-merge production procedure in `DATABASE.md`. Run
+`npm run db:adopt-baseline:preflight` with confirmation and approval token
+absent, then stop after its sanitized report. Only a separate explicit human
+authorization may set the confirmation and a fresh 256-bit-or-stronger
+base64url approval token for one `npm run db:adopt-baseline` execution. Unset
+the token immediately afterward. This implementation PR performs no live
+production adoption and does not itself authorize execution.
 
 ## Schema Release
 
@@ -157,9 +159,8 @@ Schema changes require a deliberate release step:
 3. Set `DATABASE_URL` only in the shell or deployment environment where the
    intended target has been independently verified.
 4. Confirm the exact checked-in migration SQL was reviewed and the target has
-   the exact active journal prefix. Existing production is not yet adopted;
-   stop until a separate operator-only production-enablement change is
-   approved.
+   the exact active journal prefix. If production is not yet adopted, complete
+   the separately authorized baseline procedure above before migration.
 5. Run `npm run db:migrate` with exactly one executor for the environment.
    Abort on any journal mismatch or migration failure.
 6. Apply the schema change to the intended database and record the result.

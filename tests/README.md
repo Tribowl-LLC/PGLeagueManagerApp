@@ -207,8 +207,11 @@ The migration matrix also proves that empty databases execute the baseline,
 matching existing databases register only the baseline journal record, adopted
 databases skip baseline application DDL, exact adopted journals are no-ops,
 conflicting journals are refused, and all migration/adoption reruns are safe.
-Adoption is limited to exact tool-owned local Docker databases; remote and
-production adoption are disabled.
+Production-mode fixtures use only disposable local databases and mocked Neon
+GET responses. They prove the dedicated preflight leaves both application
+structure and the empty journal unchanged, refuses nonempty journals, and that
+the separately gated execution path inserts exactly one baseline row. No test
+connects to or mutates a live Neon target.
 
 ### Legacy history reproduction
 

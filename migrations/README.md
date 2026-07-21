@@ -24,7 +24,10 @@ ignored or local artifacts.
 
 Do not run the baseline on an existing populated database. Existing matching
 databases require the explicit, fingerprint-gated `db:adopt-baseline` workflow,
-which is currently limited to strictly verified tool-owned local Docker
-databases. Remote and production adoption are disabled. Historical SQL is
+which accepts strictly verified tool-owned local Docker, disposable Neon
+rehearsal, and separately gated production modes. Production must first pass
+the dedicated read-only `db:adopt-baseline:preflight` command; only a separate
+human authorization may supply the execution confirmation and ephemeral token.
+Historical SQL is
 retained under `migrations-legacy-do-not-replay/` and must not be copied back
 into this journal or exposed to the active migrator.

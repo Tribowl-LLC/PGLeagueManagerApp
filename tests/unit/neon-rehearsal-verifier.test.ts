@@ -1,9 +1,20 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   redactNeonControlPlaneDetails,
+  verifyNeonProductionTarget,
   verifyNeonRehearsalTarget,
+  type NeonProductionExpectation,
   type NeonRehearsalExpectation,
 } from '../../scripts/lib/neon-rehearsal-verifier';
+
+const productionExpectation: NeonProductionExpectation = {
+  apiKey: 'neon-production-secret-api-key',
+  projectId: 'project-production',
+  targetBranchId: 'br-production',
+  productionBranchId: 'br-production',
+  endpointId: 'ep-production',
+};
+const productionHostname = 'ep-production.us-east-2.aws.neon.tech';
 
 const expectation: NeonRehearsalExpectation = {
   apiKey: 'neon-secret-api-key',
@@ -256,5 +267,136 @@ describe('Neon rehearsal control-plane verifier', () => {
     expect(redacted).not.toContain(expectation.targetBranchId);
     expect(redacted).not.toContain(expectation.productionBranchId);
     expect(redacted).not.toContain(expectation.endpointId);
+  });
+});
+
+function productionProvider(overrides: {
+  project?: unknown;
+  production?: unknown;
+  endpoint?: unknown;
+} = {}) {
+  return vi.fn(async (input: string | URL | Request, _init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith(`/projects/${productionExpectation.projectId}`)) {
+      return response(overrides.project ?? { project: { id: productionExpectation.projectId } });
+    }
+    if (url.endsWith(`/branches/${productionExpectation.productionBranchId}`)) {
+      return response(overrides.production ?? {
+        branch: {
+          id: productionExpectation.productionBranchId,
+          project_id: productionExpectation.projectId,
+          current_state: 'ready',
+          default: true,
+          protected: true,
+          primary: true,
+          parent_id: null,
+          restricted_actions: null,
+          recovery: null,
+          restored_from: null,
+          restored_as: null,
+        },
+        annotation: { object: { type: '', id: '' }, value: {} },
+      });
+    }
+    if (url.endsWith(`/endpoints/${productionExpectation.endpointId}`)) {
+      return response(overrides.endpoint ?? {
+        endpoint: {
+          id: productionExpectation.endpointId,
+          project_id: productionExpectation.projectId,
+          branch_id: productionExpectation.productionBranchId,
+          host: productionHostname,
+          type: 'read_write',
+          current_state: 'active',
+          disabled: false,
+        },
+      });
+    }
+    return response({}, 404);
+  });
+}
+
+async function verifyProduction(
+  fetchImplementation = productionProvider(),
+  expected = productionExpectation,
+  host = productionHostname,
+) {
+  return verifyNeonProductionTarget(expected, host, {
+    fetch: fetchImplementation,
+    timeoutMs: 100,
+    attempts: 1,
+  });
+}
+
+describe('Neon production control-plane verifier', () => {
+  it('accepts only the exact protected default production root and its endpoint using GET only', async () => {
+    const fetchImplementation = productionProvider();
+    await expect(verifyProduction(fetchImplementation)).resolves.toEqual({
+      projectId: productionExpectation.projectId,
+      productionBranchId: productionExpectation.productionBranchId,
+      endpointId: productionExpectation.endpointId,
+      endpointHostname: productionHostname,
+    });
+    expect(fetchImplementation).toHaveBeenCalledTimes(3);
+    for (const [, init] of fetchImplementation.mock.calls) {
+      expect(init).toMatchObject({ method: 'GET', redirect: 'error' });
+    }
+  });
+
+  it.each([
+    ['different target branch', { targetBranchId: 'br-child' }, {}, 'must exactly equal'],
+    ['unprotected branch', {}, { production: {
+      branch: {
+        id: productionExpectation.productionBranchId,
+        project_id: productionExpectation.projectId,
+        current_state: 'ready',
+        default: true,
+        protected: false,
+      },
+      annotation: { object: { type: '', id: '' }, value: {} },
+    } }, 'protected default root'],
+    ['non-default branch', {}, { production: {
+      branch: {
+        id: productionExpectation.productionBranchId,
+        project_id: productionExpectation.projectId,
+        current_state: 'ready',
+        default: false,
+        protected: true,
+      },
+      annotation: { object: { type: '', id: '' }, value: {} },
+    } }, 'protected default root'],
+    ['child branch', {}, { production: {
+      branch: {
+        id: productionExpectation.productionBranchId,
+        project_id: productionExpectation.projectId,
+        parent_id: 'br-parent',
+        current_state: 'ready',
+        default: true,
+        protected: true,
+      },
+      annotation: { object: { type: '', id: '' }, value: {} },
+    } }, 'protected default root'],
+  ])('refuses %s', async (_label, expectationOverrides, providerOverrides, message) => {
+    await expect(verifyProduction(
+      productionProvider(providerOverrides),
+      { ...productionExpectation, ...expectationOverrides },
+    )).rejects.toThrow(message);
+  });
+
+  it('refuses an endpoint on any other branch or hostname', async () => {
+    await expect(verifyProduction(productionProvider({
+      endpoint: {
+        endpoint: {
+          id: productionExpectation.endpointId,
+          project_id: productionExpectation.projectId,
+          branch_id: 'br-child',
+          host: productionHostname,
+          type: 'read_write',
+          current_state: 'active',
+          disabled: false,
+        },
+      },
+    }))).rejects.toThrow('production target');
+    await expect(verifyProduction(productionProvider(), productionExpectation, 'ep-other.neon.tech'))
+      .rejects.toThrow('production target');
   });
 });

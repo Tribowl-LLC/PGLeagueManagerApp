@@ -1,32 +1,47 @@
 import { pathToFileURL } from 'node:url';
 import {
-  adoptExistingDatabaseBaseline,
   parseAdoptionEnvironment,
+  preflightProductionDatabaseBaseline,
 } from './lib/db-baseline-adoption';
 import { redactConnectionDetails } from './lib/db-schema-inventory';
 import { redactNeonControlPlaneDetails } from './lib/neon-rehearsal-verifier';
 
-export async function adoptConfiguredDatabaseBaseline(
+export async function preflightConfiguredProductionBaseline(
   environment: NodeJS.ProcessEnv = process.env,
 ): Promise<void> {
   const connectionString = environment.DATABASE_URL;
-  if (!connectionString) throw new Error('DATABASE_URL is required for db:adopt-baseline.');
-  const request = parseAdoptionEnvironment(environment);
-  const neonApiKey = request.environmentClass !== 'local-disposable'
-    ? environment.NEON_API_KEY?.trim()
-    : undefined;
-  const result = await adoptExistingDatabaseBaseline(connectionString, request, {}, neonApiKey);
-  const verifiedState = `verified state=${result.verificationState}`;
-  process.stdout.write(
-    result.status === 'adopted'
-      ? `[db:adopt-baseline] registered ${result.baselineTag}; ${verifiedState}; baseline DDL was not executed\n`
-      : `[db:adopt-baseline] ${result.baselineTag} already registered exactly; ${verifiedState}; no-op\n`,
+  if (!connectionString) {
+    throw new Error('DATABASE_URL is required for db:adopt-baseline:preflight.');
+  }
+  const request = parseAdoptionEnvironment(environment, 'preflight');
+  if (request.environmentClass !== 'neon-production') {
+    throw new Error('Production preflight requires DB_ADOPTION_ENVIRONMENT_CLASS=neon-production.');
+  }
+  const result = await preflightProductionDatabaseBaseline(
+    connectionString,
+    request,
+    {},
+    environment.NEON_API_KEY?.trim(),
   );
+  process.stdout.write(`${JSON.stringify({
+    recommendation: 'READY FOR FINAL PRODUCTION ADOPTION AUTHORIZATION',
+    ...result,
+    intendedJournalRegistration: {
+      sql: 'INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ($1, $2)',
+      parameters: [result.baselineHash, result.baselineCreatedAt],
+      executesBaselineSql: false,
+      altersSchema: false,
+      touchesApplicationData: false,
+      changesRls: false,
+      runsLaterMigrations: false,
+    },
+    mutationsPerformed: false,
+  }, null, 2)}\n`);
 }
 
 const isMain = import.meta.url === pathToFileURL(process.argv[1] ?? '').href;
 if (isMain) {
-  adoptConfiguredDatabaseBaseline().catch((error: unknown) => {
+  preflightConfiguredProductionBaseline().catch((error: unknown) => {
     let message = error instanceof Error ? error.message : String(error);
     const approvalToken = process.env.DB_ADOPTION_APPROVAL_TOKEN;
     if (approvalToken) message = message.replaceAll(approvalToken, '[approval token redacted]');
@@ -38,7 +53,7 @@ if (isMain) {
       endpointId: process.env.DB_ADOPTION_NEON_EXPECTED_ENDPOINT_ID,
     };
     process.stderr.write(
-      `[db:adopt-baseline] failed: ${redactNeonControlPlaneDetails(
+      `[db:adopt-baseline:preflight] failed: ${redactNeonControlPlaneDetails(
         redactConnectionDetails(message, process.env.DATABASE_URL),
         neonExpectation,
       )}\n`,
