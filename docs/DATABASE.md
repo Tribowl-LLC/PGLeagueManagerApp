@@ -59,6 +59,22 @@ and migration history is append-only. These rules give fresh databases,
 long-lived databases, reviewers, and deployment tooling one unambiguous state
 to compare.
 
+The normal path from a schema declaration to production is:
+
+```mermaid
+flowchart TD
+    A["Developer"] --> B["shared/schema"]
+    B --> C["db:generate"]
+    C --> D["Reviewed SQL migration"]
+    D --> E["db:check on disposable databases"]
+    E --> F["Target identity, journal, and canonical fingerprint verified"]
+    F --> G["db:migrate"]
+    G --> H["Production matches the canonical history"]
+```
+
+Each transition is a gate. A review or verification failure stops the release
+before the next step; it is not bypassed with manual SQL.
+
 Existing production databases did not execute the baseline SQL. They adopted
 `0000_normalized_baseline` by guarded registration of the reviewed migration in
 the Drizzle journal only after their existing structure matched the canonical
