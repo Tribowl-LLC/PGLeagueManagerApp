@@ -449,9 +449,11 @@ journal-shape difference, or any unexpected row/hash/timestamp.
 The decisive registration phase uses one PostgreSQL connection and one
 `SERIALIZABLE` transaction under the advisory lock shared with `db:migrate`.
 It first takes `ACCESS EXCLUSIVE` locks on all 29 application tables, reads all
-26 approved sequence relations without advancing them, locks their
-`pg_sequence` configuration and ownership-dependency rows against concurrent
-changes, and creates/locks the exact journal infrastructure. On that
+26 approved sequence relations without advancing them through
+`pg_sequence_last_value`, verifies the resulting `ROW EXCLUSIVE` relation locks
+that conflict with `ALTER SEQUENCE`, and creates/locks the exact journal
+infrastructure. This protects sequence identity, configuration, and ownership
+without requiring row-lock privileges on provider-managed catalogs. On that
 same connection it rechecks target identity and role capability, recollects
 and compares the final fingerprint, and reclassifies journal state. Only then
 may it insert the reviewed baseline row. That in-transaction capability check
@@ -463,7 +465,7 @@ non-empty or conflicting state is refused.
 
 PostgreSQL does not provide one lock statement covering every catalog object
 class. The table locks protect table-bound columns, constraints, indexes,
-triggers, and policies, and the sequence relation/catalog locks protect the
+triggers, and policies, and the sequence relation locks protect the
 approved sequences' identity, configuration, and ownership, but
 function/type DDL and unrelated object classes are not held by equivalent
 relation locks. The final serializable inventory still detects a

@@ -421,42 +421,35 @@ async function lockSequenceDefinitions(
     .map((sequence) => `"${sequence.schema}"."${sequence.name}"`)
     .join(', ');
   const relationOids = sequences
-    .map((sequence) => `'${sequence.schema}.${sequence.name}'::pg_catalog.regclass`)
-    .join(', ');
+    .map((sequence) => `'${sequence.schema}.${sequence.name}'::pg_catalog.regclass`);
 
-  // Sequence relations do not support LOCK TABLE. Reading last_value holds an
-  // AccessShare relation lock, preventing DROP/rename while catalog-row locks
-  // below prevent configuration and OWNED BY changes.
-  const relationLocks = await client.query(
-    sequences.map((sequence) => `SELECT last_value FROM "${sequence.schema}"."${sequence.name}"`).join(' UNION ALL '),
-  );
+  // Sequence relations do not support LOCK TABLE. PostgreSQL's
+  // pg_sequence_last_value() opens each sequence with RowExclusiveLock without
+  // advancing it. That conflicts with the ShareRowExclusiveLock used by ALTER
+  // SEQUENCE, covering configuration and OWNED BY changes without requiring
+  // row-lock privileges on provider-managed system catalogs.
+  const relationLocks = await client.query<{ seqrelid: string; last_value: string | null }>(`
+    SELECT approved.seqrelid::text,
+      pg_catalog.pg_sequence_last_value(approved.seqrelid)::text AS last_value
+    FROM (VALUES ${relationOids.map((oid) => `(${oid})`).join(', ')}) approved(seqrelid)
+    ORDER BY approved.seqrelid
+  `);
   if (relationLocks.rows.length !== sequences.length) {
     throw new Error(`Could not lock every approved sequence relation: ${relations}.`);
   }
-  const configurationLocks = await client.query<{ seqrelid: string }>(`
-    SELECT sequence.seqrelid::text
-    FROM pg_catalog.pg_sequence sequence
-    WHERE sequence.seqrelid = ANY(ARRAY[${relationOids}])
-    ORDER BY sequence.seqrelid
-    FOR SHARE
+
+  const heldLocks = await client.query<{ relation_oid: string }>(`
+    SELECT relation::text AS relation_oid
+    FROM pg_catalog.pg_locks
+    WHERE pid = pg_catalog.pg_backend_pid()
+      AND locktype = 'relation'
+      AND relation = ANY(ARRAY[${relationOids.join(', ')}])
+      AND mode = 'RowExclusiveLock'
+      AND granted
+    ORDER BY relation
   `);
-  if (configurationLocks.rows.length !== sequences.length) {
-    throw new Error('Could not lock every approved sequence configuration row.');
-  }
-  const ownershipLocks = await client.query<{ objid: string }>(`
-    SELECT dependency.objid::text
-    FROM pg_catalog.pg_depend dependency
-    WHERE dependency.classid = 'pg_catalog.pg_class'::pg_catalog.regclass
-      AND dependency.objid = ANY(ARRAY[${relationOids}])
-      AND dependency.objsubid = 0
-      AND dependency.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass
-      AND dependency.refobjsubid > 0
-      AND dependency.deptype IN ('a', 'i')
-    ORDER BY dependency.objid
-    FOR SHARE
-  `);
-  if (ownershipLocks.rows.length !== sequences.length) {
-    throw new Error('Could not lock every approved sequence ownership row.');
+  if (heldLocks.rows.length !== sequences.length) {
+    throw new Error('Could not confirm the protective lock on every approved sequence relation.');
   }
 }
 

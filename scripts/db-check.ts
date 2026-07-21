@@ -10,6 +10,7 @@ import { pathToFileURL } from 'node:url';
 import pg from 'pg';
 import {
   APPROVED_INVARIANT_FUNCTION_SQL,
+  APPROVED_INVARIANT_FUNCTION_NAMES,
   APPROVED_INVARIANT_TRIGGER_SQL,
 } from '../shared/database-invariants';
 import {
@@ -19,6 +20,7 @@ import {
   type AdoptionRequest,
 } from './lib/db-baseline-adoption';
 import {
+  APPLICATION_SEQUENCE_NAMES,
   APPLICATION_TABLE_NAMES,
   assertApprovedBaselineFingerprint,
   createBaselineFingerprint,
@@ -806,6 +808,55 @@ async function validateVersion(
       legacyVerification.fingerprint.digest !== templateFingerprint.digest
     ) {
       throw new Error('Legacy inert-RLS inventory did not verify as the canonical baseline digest.');
+    }
+
+    // Exercise adoption as a realistic non-superuser owner without elevated
+    // write privileges on provider-managed system catalogs.
+    await executeSql(adminUrl, [
+      `ALTER DATABASE ${legacyDatabase} OWNER TO ${legacyRole}`,
+    ]);
+    await executeSql(legacyOwnerUrl, [
+      `ALTER SCHEMA public OWNER TO ${legacyRole}`,
+      `ALTER SCHEMA drizzle OWNER TO ${legacyRole}`,
+      ...APPLICATION_SEQUENCE_NAMES.map((name) =>
+        `ALTER SEQUENCE public."${name}" OWNER TO ${legacyRole}`,
+      ),
+      ...APPROVED_INVARIANT_FUNCTION_NAMES.map((name) =>
+        `ALTER FUNCTION public."${name}"() OWNER TO ${legacyRole}`,
+      ),
+      `ALTER TYPE public.user_role OWNER TO ${legacyRole}`,
+      `ALTER TABLE drizzle.__drizzle_migrations OWNER TO ${legacyRole}`,
+      `ALTER SEQUENCE drizzle.__drizzle_migrations_id_seq OWNER TO ${legacyRole}`,
+    ]);
+    const catalogProbe = new pg.Client({ connectionString: legacyUrl });
+    let catalogRowLockRefused = false;
+    try {
+      await catalogProbe.connect();
+      await catalogProbe.query('BEGIN');
+      try {
+        await catalogProbe.query(`
+          SELECT seqrelid
+          FROM pg_catalog.pg_sequence
+          WHERE seqrelid = 'public.users_id_seq'::pg_catalog.regclass
+          FOR SHARE
+        `);
+      } catch {
+        catalogRowLockRefused = true;
+      }
+    } finally {
+      await catalogProbe.query('ROLLBACK').catch(() => undefined);
+      await catalogProbe.end().catch(() => undefined);
+    }
+    if (!catalogRowLockRefused) {
+      throw new Error('Non-superuser catalog-lock regression fixture has elevated catalog privileges.');
+    }
+    const legacyAdopted = await adoptExistingDatabaseBaseline(
+      legacyUrl,
+      adoptionRequest(legacyUrl, legacyDatabase, disposableProof(container, legacyDatabase), legacyRole),
+      adoptionRuntime,
+    );
+    if (legacyAdopted.status !== 'adopted') {
+      throw new Error('Non-superuser application owner could not register the approved legacy baseline.');
     }
 
     const adoptionDatabase = 'adoption_success';
