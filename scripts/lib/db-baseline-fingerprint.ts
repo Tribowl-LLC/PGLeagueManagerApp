@@ -23,6 +23,7 @@ import type {
   TriggerInfo,
   TypeInfo,
 } from './db-schema-inventory';
+import { functionDefinitionsDifferOnlyByInsignificantWhitespace } from './sql-definition-normalization';
 
 export const BASELINE_FINGERPRINT_FORMAT_VERSION = 2 as const;
 export const BASELINE_FINGERPRINT_PATH = resolve('migrations', 'baseline-fingerprint.json');
@@ -407,6 +408,12 @@ export function verifyBaselineInventory(
   approved: BaselineFingerprint = loadApprovedBaselineFingerprint(undefined, baseline),
 ): BaselineVerificationResult {
   const state = classifyBaselineVerificationState(inventory);
+  const approvedFunctions = new Map(
+    approved.structure.functions.map((fn) => [
+      `${fn.schema}.${fn.name}(${fn.identityArguments})`,
+      fn,
+    ]),
+  );
   const verificationInventory = state === 'canonical'
     ? inventory
     : {
@@ -417,6 +424,17 @@ export function verifyBaselineInventory(
             ? { ...table, rowSecurity: false }
             : table,
         ),
+        functions: inventory.functions.map((fn) => {
+          const expected = approvedFunctions.get(
+            `${fn.schema}.${fn.name}(${fn.identityArguments})`,
+          );
+          return expected && functionDefinitionsDifferOnlyByInsignificantWhitespace(
+            fn.definition,
+            expected.definition,
+          )
+            ? { ...fn, definition: expected.definition }
+            : fn;
+        }),
       };
   const fingerprint = createBaselineFingerprint(verificationInventory, baseline);
   assertApprovedBaselineFingerprint(fingerprint, approved);

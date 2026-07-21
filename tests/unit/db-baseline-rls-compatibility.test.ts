@@ -124,6 +124,37 @@ describe('legacy inert-RLS baseline compatibility', () => {
     expect(inventory.tables.every((table) => table.rowSecurity)).toBe(true);
   });
 
+  it('accepts insignificant function-body whitespace only in the legacy compatibility path', () => {
+    const inventory = legacyInertRlsInventory();
+    const original = requiredAt(inventory.functions, 0, 'function');
+    const reformatted = original.definition.replace(/\n {2,}/g, (whitespace) =>
+      whitespace.replace(/ +$/, '        '));
+    expect(reformatted).not.toBe(original.definition);
+    inventory.functions[0] = { ...original, definition: reformatted };
+
+    expect(verifyBaselineInventory(inventory).state).toBe('legacy-inert-rls');
+
+    const canonical = canonicalInventory();
+    canonical.functions[0] = {
+      ...requiredAt(canonical.functions, 0, 'function'),
+      definition: reformatted,
+    };
+    expect(() => verifyBaselineInventory(canonical)).toThrow('fingerprint mismatch');
+  });
+
+  it('refuses function-body changes inside quoted content', () => {
+    const inventory = legacyInertRlsInventory();
+    const original = requiredAt(inventory.functions, 0, 'function');
+    const changed = original.definition.replace(
+      'league % has no organization_id',
+      'league  % has no organization_id',
+    );
+    expect(changed).not.toBe(original.definition);
+    inventory.functions[0] = { ...original, definition: changed };
+
+    expect(() => verifyBaselineInventory(inventory)).toThrow('fingerprint mismatch');
+  });
+
   it('refuses a single enabled table in an otherwise canonical inventory', () => {
     const inventory = canonicalInventory();
     inventory.tables[0] = { ...requiredAt(inventory.tables, 0, 'table'), rowSecurity: true };
