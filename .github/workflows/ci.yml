@@ -1,20 +1,18 @@
 name: CI
 
-# Run on every pull request to main and on every push to main.
-# Push-to-main is included so the dashboard shows a green/red
-# checkmark for the tip of main even after a merge bypasses the PR
-# gate (e.g. a fast-forward from a privileged user).
+# Run the complete merge-result suite once on every pull request to main.
+# The strict main ruleset requires the branch to be current before merging.
+# Pushes to main use the short exact-main certification workflow instead of
+# repeating this database-backed suite.
 on:
   pull_request:
-    branches: [main]
-  push:
     branches: [main]
 
 # Cancel any in-flight run for the same ref when a new push lands.
 # A PR that gets a quick follow-up commit shouldn't burn an extra
 # few minutes finishing the now-superseded run.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 # Minimum-privilege GITHUB_TOKEN. This job only needs to read the

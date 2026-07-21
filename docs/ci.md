@@ -1,28 +1,29 @@
 # CI
 
-This project's GitHub Actions setup is split across two workflow files
-under `.github/workflows/`. Each workflow owns a different cost
-profile and a different blast radius, so a slow or flaky integration
-suite never gates the fast static checks (and vice versa).
+This project's GitHub Actions setup separates pull-request merge-result
+validation, exact-main certification, security scanning, and live-deployment
+probing. The complete database-backed suite runs once before merge. A short
+push workflow then certifies the exact `main` tree without repeating that suite.
 
 ## Workflow layout
 
 | Workflow file | Job name | Triggers | What it runs |
 |---|---|---|---|
-| `ci.yml` | `Type check & lint` | Every PR to `main`, every push to `main` | Dependency audits, `tsc`, `eslint .`, `check:csrf`, `check:org-isolation`, `check-wire-sanitization`, `npm run build` |
-| `ci.yml` | `Database migrations (PostgreSQL 16/17)` | Every PR to `main`, every push to `main` | Exact migration-byte checks (including a clean `core.autocrlf=true` clone), active-history replay, fingerprint/drift checks, guarded local adoption, refusal/concurrency matrix, and isolated post-baseline ordering proof on both PostgreSQL versions |
-| `ci.yml` | `Tests` | Every PR to `main`, every push to `main` | `npm test` against a canonical template initialized by `db:migrate`, with exact template/worker journal-provenance assertions and application behavior on migrated worker databases |
-| `race-suite.yml` | `Race suite` | PRs that touch the sweep / bootstrap files (and every push to `main`) | `npm run test:race` — alias for `bash scripts/test-race.sh` (the two `RUN_BOOTSTRAP_RACE_TESTS=1` race files, serially) |
-| `post-deploy-trust-proxy.yml` | `Probe trust-proxy on live deploy` | Every 30 minutes (cron) and on `workflow_dispatch` | `scripts/verify-trust-proxy-deploy.ts` against the live deploy (task #379) — see [Post-deploy trust-proxy probe](#post-deploy-trust-proxy-probe) below |
+| `ci.yml` | `Type check & lint` | Every PR to `main` | Dependency audits, `tsc`, `eslint .`, policy guards, and `npm run build` |
+| `ci.yml` | `Database migrations (PostgreSQL 16/17)` | Every PR to `main` | Exact migration-byte checks (including a clean `core.autocrlf=true` clone), active-history replay, fingerprint/drift checks, guarded local adoption, refusal/concurrency matrix, and isolated post-baseline ordering proof on both PostgreSQL versions |
+| `ci.yml` | `Tests` | Every PR to `main` | `npm test` against a canonical template initialized by `db:migrate`, with exact template/worker journal-provenance assertions and application behavior on migrated worker databases |
+| `race-suite.yml` | `Race suite` | Every PR to `main` | `npm run test:race` — alias for `bash scripts/test-race.sh` (the two `RUN_BOOTSTRAP_RACE_TESTS=1` race files, serially) |
+| `exact-main-certification.yml` | `Exact main certification` | Every push to `main`, and `workflow_dispatch` | Exact checkout proof, successful PR-run provenance and tree-identity proof, migration bytes/metadata, and production build |
+| `gitleaks.yml`, `hounddog.yml`, `semgrep.yml` | Security scan names | Every PR to `main`, weekly schedule, and `workflow_dispatch` | Diff-aware PR scans and recurring/manual full-history or full-tree scans |
+| `post-deploy-trust-proxy.yml` | `Probe trust-proxy on live deploy` | Daily (cron) and on `workflow_dispatch` | `scripts/verify-trust-proxy-deploy.ts` against the live deploy (task #379) — see [Post-deploy trust-proxy probe](#post-deploy-trust-proxy-probe) below |
 
-The three jobs in `ci.yml` (`Type check & lint`, the two-version database
+The jobs in `ci.yml` (`Type check & lint`, the two-version database
 migration matrix, and `Tests`) run in parallel, so total wall-clock for a PR is
-roughly the slowest job — not the sum. The race suite is its own workflow because it
-needs a backgrounded dev server, takes ~3 minutes when it actually
-runs, and only needs to run when the sweep / bootstrap critical
-sections are touched.
+roughly the slowest job — not the sum. The race suite is its own parallel
+workflow because it needs a backgrounded dev server and serial execution.
 
-> Job names (`Type check & lint`, `Tests`, `Race suite`) are the
+> Job names (`Type check & lint`, `Tests`, both database-migration names,
+> `Race suite`, and `Exact main certification`) are the
 > values branch-protection rules will match against. **Don't rename
 > them** without updating branch protection — append a step to an
 > existing job instead.
@@ -159,18 +160,29 @@ those self-tests teeth on PRs:
 
 ## What runs in `Race suite`
 
-The `race-suite.yml` workflow is gated by `dorny/paths-filter` on the
-files listed in its `Detect sweep-related changes` step (the shared
-`lockedSweep` helper, the payment-sync-retry sweep, the
-admin-bootstrap critical section, the two race test files, the
-wrapper script, and the workflow file itself). PRs that don't touch
-any of those files report the job as a green "skipped" so a required
-branch-protection rule keyed on `Race suite` doesn't get stuck
-waiting forever.
+The `race-suite.yml` workflow runs for every PR. It is intentionally
+unconditional because exact-main certification requires a successful `Race
+suite` result for the same PR head tree. The suite covers the shared
+`lockedSweep` helper, payment-sync retry sweep, and admin-bootstrap critical
+section. It does not run again on the resulting push to `main`.
 
-Pushes to `main` always run the suite so the tip of `main` keeps a
-green/red signal even if a PR was fast-forwarded by a privileged
-user without the gate firing.
+## Exact-main certification
+
+`exact-main-certification.yml` checks out `github.sha`, proves `HEAD` and the
+clean worktree correspond to that SHA, and finds the pull request recorded by
+GitHub as producing the main commit. `scripts/verify-exact-main-provenance.ts`
+then requires the main commit tree to equal the merged PR head tree and requires
+successful PR runs containing `Type check & lint`, `Tests`, both PostgreSQL
+migration jobs, and `Race suite` for that head SHA. It prints the PR number,
+tree SHA, and Actions run URLs as auditable evidence.
+
+After provenance succeeds, the job re-checks exact LF/UTF-8 migration bytes and
+metadata in the normal checkout and a clean `core.autocrlf=true` clone, then
+builds the production application. It does not use application, database,
+payment-provider, or deployment secrets.
+
+See [`ci-duplication-audit.md`](./ci-duplication-audit.md) for the event matrix,
+timing baseline, required ruleset transition, deployment gate, and rollback.
 
 ## Database
 
@@ -246,8 +258,7 @@ system_admin-only debug endpoint) and asserts:
 
 ### Triggers
 
-- **Schedule (`*/30 * * * *`)** — every 30 minutes, so a regression
-  is caught within one rate-limit window of when it lands.
+- **Schedule (`17 9 * * *`)** — daily at 09:17 UTC.
 - **`workflow_dispatch`** — release operators trigger this manually
   immediately after a deploy.
 
@@ -281,9 +292,7 @@ system_admin-only debug endpoint) and asserts:
   pick it up automatically.
 - A new **vitest file that mutates shared global state** (e.g.
   deletes the system_admin row): gate it behind a new
-  `RUN_<NAME>_TESTS=1` env var, add it to `scripts/test-race.sh`, and
-  expand the `paths-filter` list in `race-suite.yml` so the suite
-  re-runs when relevant files change.
+  `RUN_<NAME>_TESTS=1` env var and add it to `scripts/test-race.sh`.
 - A new **integration test that needs a different service** (e.g. a
   Redis container): consider a third sibling job in `ci.yml` rather
   than expanding the existing service block, so failures stay
@@ -330,11 +339,8 @@ When adding a new workflow file:
    `.github/workflows/`, so a new file there is covered
    automatically).
 
-This convention currently applies to `ci.yml`. The sibling
-workflows (`race-suite.yml`, `post-deploy-trust-proxy.yml`) still
-reference `actions/checkout@v4` and `actions/setup-node@v4` by
-floating tag — they were not in the scope of task #444 and will be
-brought into line when next touched.
+All action references in the merge-result and exact-main workflows are pinned
+to full commit SHAs. Keep the same rule when touching the remaining workflows.
 
 ## See also
 
