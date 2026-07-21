@@ -133,3 +133,45 @@ export function normalizeSqlDefinition(value: string | null): string | null {
   }
   return output;
 }
+
+interface FunctionDefinitionParts {
+  prefix: string;
+  body: string;
+  suffix: string;
+}
+
+function splitFunctionDefinition(value: string): FunctionDefinitionParts | null {
+  const bodyStart = /\bAS\s+(\$[A-Za-z_][A-Za-z0-9_]*\$|\$\$)/i.exec(value);
+  const delimiter = bodyStart?.[1];
+  if (!bodyStart || !delimiter) return null;
+
+  const openingIndex = bodyStart.index + bodyStart[0].lastIndexOf(delimiter);
+  const bodyIndex = openingIndex + delimiter.length;
+  const closingIndex = value.lastIndexOf(delimiter);
+  if (closingIndex < bodyIndex) return null;
+
+  return {
+    prefix: value.slice(0, bodyIndex),
+    body: value.slice(bodyIndex, closingIndex),
+    suffix: value.slice(closingIndex),
+  };
+}
+
+/**
+ * Compare pg_get_functiondef output while ignoring only ordinary SQL
+ * whitespace inside the outer function body. Quoted strings, identifiers,
+ * nested dollar-quoted literals, and comments remain byte-sensitive.
+ */
+export function functionDefinitionsDifferOnlyByInsignificantWhitespace(
+  left: string,
+  right: string,
+): boolean {
+  if (left === right) return true;
+  const leftParts = splitFunctionDefinition(left);
+  const rightParts = splitFunctionDefinition(right);
+  if (!leftParts || !rightParts) return false;
+
+  return normalizeSqlDefinition(leftParts.prefix) === normalizeSqlDefinition(rightParts.prefix) &&
+    normalizeSqlDefinition(leftParts.body) === normalizeSqlDefinition(rightParts.body) &&
+    normalizeSqlDefinition(leftParts.suffix) === normalizeSqlDefinition(rightParts.suffix);
+}
