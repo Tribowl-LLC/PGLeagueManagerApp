@@ -12,11 +12,27 @@ export interface NeonRehearsalExpectation {
   endpointId: string;
 }
 
+export interface NeonProductionExpectation {
+  apiKey: string;
+  projectId: string;
+  productionBranchId: string;
+  targetBranchId: string;
+  endpointId: string;
+}
+
 export type NeonRehearsalIdentityExpectation = Omit<NeonRehearsalExpectation, 'apiKey'>;
+export type NeonProductionIdentityExpectation = Omit<NeonProductionExpectation, 'apiKey'>;
 
 export interface VerifiedNeonRehearsal {
   projectId: string;
   targetBranchId: string;
+  productionBranchId: string;
+  endpointId: string;
+  endpointHostname: string;
+}
+
+export interface VerifiedNeonProduction {
+  projectId: string;
   productionBranchId: string;
   endpointId: string;
   endpointHostname: string;
@@ -116,6 +132,29 @@ function validateExpectation(expectation: NeonRehearsalExpectation): void {
   }
   if (expectation.targetBranchId === expectation.productionBranchId) {
     throw new Error('Neon rehearsal target must differ from the production source branch.');
+  }
+}
+
+function validateProductionExpectation(expectation: NeonProductionExpectation): void {
+  if (!expectation.apiKey.trim()) throw new Error('NEON_API_KEY is required for Neon production verification.');
+  const identifiers = [
+    expectation.projectId,
+    expectation.productionBranchId,
+    expectation.targetBranchId,
+    expectation.endpointId,
+  ];
+  if (identifiers.some((identifier) => !PROVIDER_ID.test(identifier))) {
+    throw new Error('Neon production provider identifiers are missing or invalid.');
+  }
+  if (
+    !expectation.productionBranchId.startsWith('br-') ||
+    !expectation.targetBranchId.startsWith('br-') ||
+    !expectation.endpointId.startsWith('ep-')
+  ) {
+    throw new Error('Neon production branch or endpoint identifiers have invalid provider prefixes.');
+  }
+  if (expectation.targetBranchId !== expectation.productionBranchId) {
+    throw new Error('Neon production target must exactly equal the independently expected production branch.');
   }
 }
 
@@ -287,6 +326,83 @@ export async function verifyNeonRehearsalTarget(
   return {
     projectId: expectation.projectId,
     targetBranchId: expectation.targetBranchId,
+    productionBranchId: expectation.productionBranchId,
+    endpointId: expectation.endpointId,
+    endpointHostname,
+  };
+}
+
+export async function verifyNeonProductionTarget(
+  expectation: NeonProductionExpectation,
+  connectionHostname: string,
+  runtime: NeonVerifierRuntime = {},
+): Promise<VerifiedNeonProduction> {
+  validateProductionExpectation(expectation);
+  if (!connectionHostname || connectionHostname.includes('%')) {
+    throw new Error('PostgreSQL connection hostname is invalid for Neon production verification.');
+  }
+  const normalizedConnectionHostname = normalizeExactHostname(connectionHostname);
+  const projectPath = `/projects/${encodeURIComponent(expectation.projectId)}`;
+  const project = exactEnvelope(
+    await providerGet(projectPath, expectation.apiKey, runtime),
+    'project',
+  );
+  if (requiredString(project, 'id') !== expectation.projectId) {
+    throw new Error('Neon control-plane project identity does not match the independent expectation.');
+  }
+
+  const production = exactBranchEnvelope(await providerGet(
+    `${projectPath}/branches/${encodeURIComponent(expectation.productionBranchId)}`,
+    expectation.apiKey,
+    runtime,
+  ));
+  validateBranchIdentity(production, expectation.projectId, expectation.productionBranchId);
+  const primary = production.primary;
+  if (primary !== undefined && typeof primary !== 'boolean') {
+    throw new Error('Neon control-plane response schema is invalid or incomplete.');
+  }
+  if (
+    !requiredBoolean(production, 'default') ||
+    !requiredBoolean(production, 'protected') ||
+    primary === false ||
+    requiredString(production, 'current_state') !== 'ready' ||
+    (production.parent_id !== undefined && production.parent_id !== null) ||
+    (production.recovery !== undefined && production.recovery !== null) ||
+    (production.restored_from !== undefined && production.restored_from !== null) ||
+    (production.restored_as !== undefined && production.restored_as !== null) ||
+    (Array.isArray(production.restricted_actions) && production.restricted_actions.length > 0)
+  ) {
+    throw new Error('Neon production target is not the ready, protected default root branch.');
+  }
+  if (
+    production.restricted_actions !== undefined &&
+    production.restricted_actions !== null &&
+    !Array.isArray(production.restricted_actions)
+  ) {
+    throw new Error('Neon control-plane response schema is invalid or incomplete.');
+  }
+
+  const endpoint = exactEnvelope(await providerGet(
+    `${projectPath}/endpoints/${encodeURIComponent(expectation.endpointId)}`,
+    expectation.apiKey,
+    runtime,
+  ), 'endpoint');
+  const endpointHostname = normalizeExactHostname(requiredString(endpoint, 'host'));
+  const endpointState = requiredString(endpoint, 'current_state');
+  if (
+    requiredString(endpoint, 'id') !== expectation.endpointId ||
+    requiredString(endpoint, 'project_id') !== expectation.projectId ||
+    requiredString(endpoint, 'branch_id') !== expectation.productionBranchId ||
+    requiredString(endpoint, 'type') !== 'read_write' ||
+    requiredBoolean(endpoint, 'disabled') ||
+    (endpointState !== 'active' && endpointState !== 'idle') ||
+    endpointHostname !== normalizedConnectionHostname
+  ) {
+    throw new Error('Neon compute endpoint does not match the verified production target and PostgreSQL host.');
+  }
+
+  return {
+    projectId: expectation.projectId,
     productionBranchId: expectation.productionBranchId,
     endpointId: expectation.endpointId,
     endpointHostname,

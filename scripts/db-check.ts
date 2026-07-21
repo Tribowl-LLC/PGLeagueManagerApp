@@ -17,6 +17,9 @@ import {
   ADOPTION_CONFIRMATION,
   adoptExistingDatabaseBaseline,
   BACKUP_ATTESTATION,
+  preflightProductionDatabaseBaseline,
+  PRODUCTION_ENVIRONMENT_CLASS,
+  PRODUCTION_JOURNAL_RELATION,
   type AdoptionRequest,
 } from './lib/db-baseline-adoption';
 import {
@@ -24,6 +27,7 @@ import {
   APPLICATION_TABLE_NAMES,
   assertApprovedBaselineFingerprint,
   createBaselineFingerprint,
+  loadApprovedBaselineFingerprint,
   verifyBaselineInventory,
 } from './lib/db-baseline-fingerprint';
 import {
@@ -413,6 +417,39 @@ function neonAdoptionRequest(connectionString: string, database: string): Adopti
   };
 }
 
+function productionAdoptionRequest(connectionString: string, database: string): AdoptionRequest {
+  const baseline = baselineMigration();
+  const projectId = 'project-production';
+  const branchId = 'br-production-primary';
+  const endpointId = 'ep-production-primary';
+  const environmentId = [PRODUCTION_ENVIRONMENT_CLASS, projectId, branchId, endpointId].join(':');
+  return {
+    expectedTarget: {
+      hostFingerprint: fingerprintDatabaseHost(connectionString),
+      database,
+      role: POSTGRES_USER,
+    },
+    environmentClass: PRODUCTION_ENVIRONMENT_CLASS,
+    environmentId,
+    expectedEnvironmentId: environmentId,
+    neonExpectation: {
+      projectId,
+      targetBranchId: branchId,
+      productionBranchId: branchId,
+      endpointId,
+    },
+    backupAttestation: BACKUP_ATTESTATION,
+    confirmation: ADOPTION_CONFIRMATION,
+    expectedCommit: SOURCE_COMMIT,
+    expectedBaselineTag: baseline.tag,
+    expectedBaselineHash: baseline.hash,
+    expectedBaselineCreatedAt: baseline.createdAt,
+    expectedSchemaFingerprint: loadApprovedBaselineFingerprint().digest,
+    expectedJournalRelation: PRODUCTION_JOURNAL_RELATION,
+    approvalToken: 'a'.repeat(43),
+  };
+}
+
 async function withNeonProviderFixture<T>(
   connectionString: string,
   action: () => Promise<T>,
@@ -463,6 +500,58 @@ async function withNeonProviderFixture<T>(
           host: hostname,
           type: 'read_write',
           current_state: 'idle',
+          disabled: false,
+        },
+      };
+    } else {
+      return new Response('{}', { status: 404, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } });
+  };
+  globalThis.fetch = fixtureFetch;
+  try {
+    return await action();
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
+async function withProductionProviderFixture<T>(
+  connectionString: string,
+  action: () => Promise<T>,
+): Promise<T> {
+  const hostname = new URL(connectionString).hostname.toLowerCase();
+  const originalFetch = globalThis.fetch;
+  const fixtureFetch: typeof fetch = async (input, init) => {
+    const authorization = new Headers(init?.headers).get('authorization');
+    if (init?.method !== 'GET' || authorization !== 'Bearer db-check-provider-fixture-only') {
+      return new Response('{}', { status: 405, headers: { 'content-type': 'application/json' } });
+    }
+    const url = String(input);
+    let body: unknown;
+    if (url.endsWith('/projects/project-production')) {
+      body = { project: { id: 'project-production' } };
+    } else if (url.endsWith('/branches/br-production-primary')) {
+      body = {
+        branch: {
+          id: 'br-production-primary',
+          project_id: 'project-production',
+          current_state: 'ready',
+          default: true,
+          protected: true,
+          primary: true,
+        },
+        annotation: { object: { type: '', id: '' }, value: {} },
+      };
+    } else if (url.endsWith('/endpoints/ep-production-primary')) {
+      body = {
+        endpoint: {
+          id: 'ep-production-primary',
+          project_id: 'project-production',
+          branch_id: 'br-production-primary',
+          host: hostname,
+          type: 'read_write',
+          current_state: 'active',
           disabled: false,
         },
       };
@@ -724,6 +813,9 @@ async function validateVersion(
       'adoption_capability',
       'neon_rehearsal_fingerprint_refusal',
       'neon_rehearsal_approval_boundary',
+      'production_preflight_empty',
+      'baseline_preflight_nonempty',
+      'production_adoption_success',
       ...refusalDatabases,
     ];
     container = createContainer(runId, version, approvedDatabases);
@@ -921,6 +1013,94 @@ async function validateVersion(
     }
     if (!reachedApprovalBoundary || await journalEntryCount(neonBoundaryUrl) !== 0) {
       throw new Error('Provider-verified Neon rehearsal did not reach the write-free approval boundary.');
+    }
+
+    const productionPreflightDatabase = 'production_preflight_empty';
+    await createDatabase(adminUrl, productionPreflightDatabase, container, template);
+    const productionPreflightUrl = databaseUrl(port, productionPreflightDatabase);
+    const productionPreflightBefore = await verifiedFingerprint(productionPreflightUrl);
+    const productionPreflightRequest = productionAdoptionRequest(
+      productionPreflightUrl,
+      productionPreflightDatabase,
+    );
+    if (productionPreflightRequest.environmentClass !== PRODUCTION_ENVIRONMENT_CLASS) {
+      throw new Error('Production preflight fixture has the wrong environment class.');
+    }
+    productionPreflightRequest.confirmation = '';
+    productionPreflightRequest.approvalToken = '';
+    const productionPreflight = await withProductionProviderFixture(
+      productionPreflightUrl,
+      () => preflightProductionDatabaseBaseline(
+        productionPreflightUrl,
+        productionPreflightRequest,
+        adoptionRuntime,
+        'db-check-provider-fixture-only',
+      ),
+    );
+    const productionPreflightAfter = await verifiedFingerprint(productionPreflightUrl);
+    if (
+      productionPreflight.status !== 'ready' ||
+      productionPreflight.journalRowCount !== 0 ||
+      await journalEntryCount(productionPreflightUrl) !== 0 ||
+      JSON.stringify(productionPreflightBefore.structure) !==
+        JSON.stringify(productionPreflightAfter.structure)
+    ) {
+      throw new Error('Production preflight was not exactly read-only and ready.');
+    }
+
+    const productionNonemptyDatabase = 'baseline_preflight_nonempty';
+    await createDatabase(adminUrl, productionNonemptyDatabase, container, template);
+    const productionNonemptyUrl = databaseUrl(port, productionNonemptyDatabase);
+    await adoptExistingDatabaseBaseline(
+      productionNonemptyUrl,
+      adoptionRequest(
+        productionNonemptyUrl,
+        productionNonemptyDatabase,
+        disposableProof(container, productionNonemptyDatabase),
+      ),
+      adoptionRuntime,
+    );
+    const productionNonemptyRequest = productionAdoptionRequest(
+      productionNonemptyUrl,
+      productionNonemptyDatabase,
+    );
+    if (productionNonemptyRequest.environmentClass !== PRODUCTION_ENVIRONMENT_CLASS) {
+      throw new Error('Production nonempty fixture has the wrong environment class.');
+    }
+    productionNonemptyRequest.confirmation = '';
+    productionNonemptyRequest.approvalToken = '';
+    let productionNonemptyRefused = false;
+    try {
+      await withProductionProviderFixture(
+        productionNonemptyUrl,
+        () => preflightProductionDatabaseBaseline(
+          productionNonemptyUrl,
+          productionNonemptyRequest,
+          adoptionRuntime,
+          'db-check-provider-fixture-only',
+        ),
+      );
+    } catch {
+      productionNonemptyRefused = true;
+    }
+    if (!productionNonemptyRefused || await journalEntryCount(productionNonemptyUrl) !== 1) {
+      throw new Error('Production preflight did not refuse an already registered journal without mutation.');
+    }
+
+    const productionAdoptionDatabase = 'production_adoption_success';
+    await createDatabase(adminUrl, productionAdoptionDatabase, container, template);
+    const productionAdoptionUrl = databaseUrl(port, productionAdoptionDatabase);
+    const productionAdoption = await withProductionProviderFixture(
+      productionAdoptionUrl,
+      () => adoptExistingDatabaseBaseline(
+        productionAdoptionUrl,
+        productionAdoptionRequest(productionAdoptionUrl, productionAdoptionDatabase),
+        adoptionRuntime,
+        'db-check-provider-fixture-only',
+      ),
+    );
+    if (productionAdoption.status !== 'adopted' || await journalEntryCount(productionAdoptionUrl) !== 1) {
+      throw new Error('Production execution did not register exactly one baseline journal row.');
     }
 
     const neonFreshnessDatabase = 'neon_rehearsal_freshness_refusal';

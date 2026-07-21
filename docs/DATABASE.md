@@ -431,11 +431,13 @@ the digest.
 
 ## Guarded existing-database adoption
 
-Adoption never executes baseline application DDL. It is currently a local
-safety harness only: `local-disposable` is the sole accepted environment class,
-and the target must pass the same exact tool-owned Docker proof used by
-`db:push:disposable`. Remote hosts, ordinary CI targets, Neon rehearsal
-branches, and production are unconditionally disabled in this pull request.
+Adoption never executes baseline application DDL. The tooling has three exact
+environment classes: repository-owned `local-disposable`, provider-verified
+`neon-rehearsal`, and operator-only `neon-production`. Production has a
+dedicated read-only command, `npm run db:adopt-baseline:preflight`, which cannot
+call the registration entrypoint and rejects both execution confirmation and
+the ephemeral approval token. The write-capable `npm run db:adopt-baseline`
+remains a separate entrypoint.
 
 Before any lock-taking write phase, the command uses query-only, read-only
 preflight transactions to verify the exact target and fingerprint and to prove
@@ -452,7 +454,10 @@ It first takes `ACCESS EXCLUSIVE` locks on all 29 application tables, reads all
 26 approved sequence relations without advancing them through
 `pg_sequence_last_value`, verifies the resulting `ROW EXCLUSIVE` relation locks
 that conflict with `ALTER SEQUENCE`, and creates/locks the exact journal
-infrastructure. This protects sequence identity, configuration, and ownership
+infrastructure for disposable modes. In production it refuses an absent
+journal and locks and validates the existing approved journal; it cannot create
+the journal schema, table, or sequence. This protects sequence identity,
+configuration, and ownership
 without requiring row-lock privileges on provider-managed catalogs. On that
 same connection it rechecks target identity and role capability, recollects
 and compares the final fingerprint, and reclassifies journal state. Only then
@@ -460,7 +465,9 @@ may it insert the reviewed baseline row. That in-transaction capability check
 also requires `drizzle` schema use, journal `SELECT`/`INSERT`, journal-owner
 capability, and journal-sequence `USAGE`/owner capability. It reads the journal
 back and requires the exact adopted state before commit. A failure at any point
-rolls the journal creation/insertion back. An exact adopted journal is a no-op;
+rolls the journal creation/insertion back. For production, the journal-row
+insert and its serial sequence advancement are the only persistent database
+mutation. An exact adopted journal is a no-op;
 non-empty or conflicting state is refused.
 
 PostgreSQL does not provide one lock statement covering every catalog object
@@ -513,6 +520,44 @@ access and sends only authenticated `GET` requests; it never requests a
 connection URI, role password, or any provider mutation. Do not use an
 organization-wide administrative key when a project-scoped key is available.
 
+For production, use all common and Neon variables above plus:
+
+- `APP_ENV=prod`
+- `NODE_ENV=production`
+- `APP_DOMAIN=leaguevault.app`
+- `DB_ADOPTION_ENVIRONMENT_CLASS=neon-production`
+- `DB_ADOPTION_ENVIRONMENT_ID=neon-production:<project-id>:<production-branch-id>:<endpoint-id>`
+- `DB_ADOPTION_EXPECTED_ENVIRONMENT_ID` with exactly the same independently
+  reviewed value
+- `DB_ADOPTION_EXPECTED_SCHEMA_FINGERPRINT` with the approved 64-character
+  structural digest
+- `DB_ADOPTION_EXPECTED_JOURNAL_RELATION=drizzle.__drizzle_migrations`
+
+The production target and production branch identifiers must be identical.
+The branch must be the ready, protected, default root branch and cannot be a
+restored/recovering branch or have restricted actions. The enabled read-write
+endpoint must belong to that branch and match the independently fingerprinted
+PostgreSQL hostname. Render and Replit deployment markers are refused so the
+operator-only command cannot run inside a deployed application process.
+
+During production preflight, `DB_ADOPTION_CONFIRM` and
+`DB_ADOPTION_APPROVAL_TOKEN` must both be absent. The preflight performs only
+bounded Neon API GETs and PostgreSQL `REPEATABLE READ, READ ONLY` transactions.
+It requires the exact existing journal relation and sequence, zero journal
+rows, exact database/role/host identity, migration-owner capability, the
+canonical or approved legacy-inert-RLS fingerprint, and a final fresh provider
+identity check. It prints the exact parameterized journal insert for review but
+does not execute it.
+
+Only after a separate human authorization may the execution shell set
+`DB_ADOPTION_CONFIRM=ADOPT_LEAGUEVAULT_BASELINE_WITHOUT_DDL` and a newly
+generated, base64url `DB_ADOPTION_APPROVAL_TOKEN` representing at least 256
+bits. The token is required only for production execution, is redacted from
+errors, is removed from source-control child-process environments, and must be
+unset after the one execution. It is an authorization boundary, not a target
+identity source; all independent provider, database, commit, baseline,
+fingerprint, journal, backup, and capability gates still run again.
+
 Before PostgreSQL preflight, the verifier reads only:
 
 - `GET /api/v2/projects/{project_id}` and requires `project.id`;
@@ -563,39 +608,38 @@ npm run db:adopt-baseline
 npm run db:migrate
 ```
 
-Production adoption remains unperformed and impossible in this change.
-`db:adopt-baseline` refuses `APP_ENV=prod`, `NODE_ENV=production`, the
-production application domain, Render/Replit deployment markers,
-production-shaped or mismatched environment identities, every class except
-`local-disposable` and `neon-rehearsal`, every ordinary remote target, local
-targets without repository-tool Docker ownership proof, and Neon targets
-without the complete provider proof above. Production credentials and
-self-attestations cannot enable a path: the target must differ from production,
-must be its verified child, and cannot be default, primary, or protected.
+Production adoption remains unperformed by this change. Production credentials
+alone cannot enable execution: the exact production class and deterministic
+environment identity, clean reviewed commit, current backup attestation,
+canonical baseline and schema identities, exact existing empty journal,
+provider proof, explicit confirmation, and ephemeral approval token must all
+agree. Any mismatch fails closed before the insert commits.
 
-After this change is merged, the exact rehearsal procedure is:
+After this change is merged, the exact production procedure is:
 
-1. Create and independently review the disposable production clone outside
-   this tool; record the project, production source branch, target child branch,
-   endpoint, hostname fingerprint, database, and role without deriving them
-   from the connection URL.
+1. Independently record the Neon project, protected default production branch,
+   production endpoint, hostname fingerprint, database, and role without
+   deriving identity solely from the connection URL.
 2. Confirm a tested backup/restore path and set
    `DB_ADOPTION_BACKUP_ATTESTATION=BACKUP_AND_RESTORE_VERIFIED`.
 3. Check out the exact clean CI-verified `main` commit and set every common and
-   Neon-specific variable above in a secret-aware operator shell. Keep
-   `APP_ENV`, `NODE_ENV`, domain, and deployment markers nonproduction.
+   production-specific variable above in a secret-aware operator shell. Keep
+   Render/Replit deployment markers absent.
 4. Independently compare the checked-in tag, LF-byte SHA-256 hash, and created
    timestamp before setting the exact baseline identity variables.
-5. Set `DB_ADOPTION_CONFIRM=ADOPT_LEAGUEVAULT_BASELINE_WITHOUT_DDL` only at the
-   reviewed human approval boundary, then run `npm run db:adopt-baseline` once.
-6. Require the provider proof, database/role/endpoint proof, canonical
+5. Keep confirmation and the approval token absent, run
+   `npm run db:adopt-baseline:preflight`, preserve the sanitized report, and
+   stop for final human review.
+6. In a separate execution only after explicit authorization, set the exact
+   confirmation and a fresh ephemeral approval token, then run
+   `npm run db:adopt-baseline` once.
+7. Require the provider proof, database/role/endpoint proof, canonical
    fingerprint, exact empty journal, capability checks, and atomic registration
    result to succeed. Abort on any mismatch; do not bypass or substitute IDs.
-7. Rerun once and require the exact no-op result, then unset all secrets and
-   record only redacted evidence. Do not point this command at production.
+8. Unset the approval token immediately, record only redacted evidence, then
+   run `npm run db:migrate` only under the separately reviewed migration plan.
 
-No live Neon rehearsal or production adoption was performed while implementing
-this mode. Production enablement still requires a separate reviewed change.
+No live production adoption is performed by implementing or testing this mode.
 
 ## Production migration process
 

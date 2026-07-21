@@ -4,6 +4,8 @@ import { describe, expect, it } from 'vitest';
 import {
   ADOPTION_CONFIRMATION,
   BACKUP_ATTESTATION,
+  PRODUCTION_ENVIRONMENT_CLASS,
+  PRODUCTION_JOURNAL_RELATION,
   parseAdoptionEnvironment,
   validateAdoptionRequest,
   type AdoptionRequest,
@@ -69,6 +71,39 @@ function completeNeonEnvironment(): NodeJS.ProcessEnv {
     DB_ADOPTION_NEON_EXPECTED_TARGET_BRANCH_ID: 'br-disposable-rehearsal',
     DB_ADOPTION_NEON_EXPECTED_PRODUCTION_BRANCH_ID: 'br-production-source',
     DB_ADOPTION_NEON_EXPECTED_ENDPOINT_ID: 'ep-disposable-rehearsal',
+  };
+}
+
+function completeProductionEnvironment(): NodeJS.ProcessEnv {
+  const projectId = 'project-production';
+  const branchId = 'br-production-primary';
+  const endpointId = 'ep-production-primary';
+  return {
+    ...completeEnvironment(),
+    APP_ENV: 'prod',
+    NODE_ENV: 'production',
+    APP_DOMAIN: 'leaguevault.app',
+    DB_ADOPTION_ENVIRONMENT_CLASS: PRODUCTION_ENVIRONMENT_CLASS,
+    DB_ADOPTION_ENVIRONMENT_ID: [
+      PRODUCTION_ENVIRONMENT_CLASS,
+      projectId,
+      branchId,
+      endpointId,
+    ].join(':'),
+    DB_ADOPTION_EXPECTED_ENVIRONMENT_ID: [
+      PRODUCTION_ENVIRONMENT_CLASS,
+      projectId,
+      branchId,
+      endpointId,
+    ].join(':'),
+    NEON_API_KEY: 'unit-test-production-api-key',
+    DB_ADOPTION_NEON_EXPECTED_PROJECT_ID: projectId,
+    DB_ADOPTION_NEON_EXPECTED_TARGET_BRANCH_ID: branchId,
+    DB_ADOPTION_NEON_EXPECTED_PRODUCTION_BRANCH_ID: branchId,
+    DB_ADOPTION_NEON_EXPECTED_ENDPOINT_ID: endpointId,
+    DB_ADOPTION_EXPECTED_SCHEMA_FINGERPRINT: loadApprovedBaselineFingerprint().digest,
+    DB_ADOPTION_EXPECTED_JOURNAL_RELATION: PRODUCTION_JOURNAL_RELATION,
+    DB_ADOPTION_APPROVAL_TOKEN: 'a'.repeat(43),
   };
 }
 
@@ -184,7 +219,7 @@ describe('normalized migration baseline tools', () => {
     expect(() => parseAdoptionEnvironment(environment)).toThrow('DB_ADOPTION_EXPECTED_ROLE');
   });
 
-  it('disables production adoption and production-shaped environment identities', () => {
+  it('keeps production indicators and identities out of nonproduction adoption', () => {
     expect(() => parseAdoptionEnvironment({
       ...completeEnvironment(),
       APP_ENV: 'prod',
@@ -204,6 +239,73 @@ describe('normalized migration baseline tools', () => {
     })).toThrow('Production baseline adoption is disabled');
   });
 
+  it('parses production preflight without execution authorization and binds provider identity', () => {
+    const environment = completeProductionEnvironment();
+    delete environment.DB_ADOPTION_CONFIRM;
+    delete environment.DB_ADOPTION_APPROVAL_TOKEN;
+    const request = parseAdoptionEnvironment(environment, 'preflight');
+    expect(request.environmentClass).toBe(PRODUCTION_ENVIRONMENT_CLASS);
+    if (request.environmentClass !== PRODUCTION_ENVIRONMENT_CLASS) throw new Error('unexpected request class');
+    expect(request.confirmation).toBe('');
+    expect(request.approvalToken).toBe('');
+    expect(request.neonExpectation.targetBranchId).toBe(request.neonExpectation.productionBranchId);
+    expect(request.expectedJournalRelation).toBe(PRODUCTION_JOURNAL_RELATION);
+    expect(request.expectedSchemaFingerprint).toBe(loadApprovedBaselineFingerprint().digest);
+    expect(() => validateAdoptionRequest(
+      request,
+      { commit: SOURCE_COMMIT, clean: true },
+      undefined,
+      'preflight',
+    )).not.toThrow();
+  });
+
+  it('separates production preflight from execution authorization', () => {
+    const execution = completeProductionEnvironment();
+    expect(parseAdoptionEnvironment(execution).environmentClass).toBe(PRODUCTION_ENVIRONMENT_CLASS);
+
+    const missingToken = { ...execution };
+    delete missingToken.DB_ADOPTION_APPROVAL_TOKEN;
+    expect(() => parseAdoptionEnvironment(missingToken)).toThrow('ephemeral');
+
+    const preflightWithConfirmation = { ...execution };
+    delete preflightWithConfirmation.DB_ADOPTION_APPROVAL_TOKEN;
+    expect(() => parseAdoptionEnvironment(preflightWithConfirmation, 'preflight')).toThrow(
+      'confirmation and the ephemeral approval token to be absent',
+    );
+
+    const preflightWithToken = { ...execution };
+    delete preflightWithToken.DB_ADOPTION_CONFIRM;
+    expect(() => parseAdoptionEnvironment(preflightWithToken, 'preflight')).toThrow(
+      'confirmation and the ephemeral approval token to be absent',
+    );
+  });
+
+  it('refuses incomplete or self-inconsistent production identity', () => {
+    expect(() => parseAdoptionEnvironment({
+      ...completeProductionEnvironment(),
+      DB_ADOPTION_NEON_EXPECTED_TARGET_BRANCH_ID: 'br-child',
+    })).toThrow('environment identity');
+    expect(() => parseAdoptionEnvironment({
+      ...completeProductionEnvironment(),
+      DB_ADOPTION_EXPECTED_SCHEMA_FINGERPRINT: 'f'.repeat(64),
+    })).toThrow('schema fingerprint');
+    expect(() => parseAdoptionEnvironment({
+      ...completeProductionEnvironment(),
+      DB_ADOPTION_EXPECTED_JOURNAL_RELATION: 'public.__drizzle_migrations',
+    })).toThrow('DB_ADOPTION_EXPECTED_JOURNAL_RELATION');
+    expect(() => parseAdoptionEnvironment({
+      ...completeProductionEnvironment(),
+      RENDER_SERVICE_ID: 'srv-production',
+    })).toThrow('operator-only');
+  });
+
+  it('keeps the preflight entrypoint separate from the registration entrypoint', () => {
+    const source = readFileSync(resolve('scripts/db-adopt-baseline-preflight.ts'), 'utf8');
+    expect(source).toContain('preflightProductionDatabaseBaseline');
+    expect(source).not.toContain('adoptExistingDatabaseBaseline');
+    expect(source).not.toContain('DB_ADOPTION_CONFIRM=');
+  });
+
   it('allows only the exact Neon rehearsal class in addition to local Docker', () => {
     const request = parseAdoptionEnvironment(completeNeonEnvironment());
     expect(request.environmentClass).toBe('neon-rehearsal');
@@ -218,7 +320,7 @@ describe('normalized migration baseline tools', () => {
     expect(() => parseAdoptionEnvironment({
       ...completeEnvironment(),
       DB_ADOPTION_ENVIRONMENT_CLASS: 'ci',
-    })).toThrow('Only tool-owned local disposable or provider-verified Neon rehearsal');
+    })).toThrow('Only tool-owned local disposable or provider-verified Neon adoption');
   });
 
   it('refuses Neon self-attestation without provider proof and keeps production impossible', () => {
