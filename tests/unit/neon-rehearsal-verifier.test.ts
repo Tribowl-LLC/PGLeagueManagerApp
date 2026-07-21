@@ -26,6 +26,10 @@ function branch(id: string, overrides: Record<string, unknown> = {}) {
       protected: false,
       ...overrides,
     },
+    annotation: {
+      object: { type: '', id: '' },
+      value: {},
+    },
   };
 }
 
@@ -161,6 +165,39 @@ describe('Neon rehearsal control-plane verifier', () => {
     await expect(verify(provider({ project: { project: {} } }))).rejects.toThrow('invalid or incomplete');
     await expect(verify(provider({ project: { project: { id: expectation.projectId }, extra: {} } })))
       .rejects.toThrow('invalid or unexpected');
+  });
+
+  it('requires the documented branch annotation envelope without accepting unknown top-level fields', async () => {
+    const exact = branch(expectation.productionBranchId);
+    const { annotation: _annotation, ...branchOnly } = exact;
+    await expect(verify(provider({ production: branchOnly }))).rejects.toThrow('invalid or unexpected');
+    await expect(verify(provider({ production: { ...exact, extra: {} } })))
+      .rejects.toThrow('invalid or unexpected');
+  });
+
+  it('accepts populated annotation metadata without using it as branch identity', async () => {
+    const exact = branch(expectation.productionBranchId);
+    await expect(verify(provider({
+      production: {
+        ...exact,
+        annotation: {
+          object: { type: 'branch', id: expectation.productionBranchId },
+          value: { source: 'operator' },
+          created_at: '2026-07-21T00:00:00Z',
+          updated_at: '2026-07-21T00:00:00Z',
+        },
+      },
+    }))).resolves.toMatchObject({ productionBranchId: expectation.productionBranchId });
+  });
+
+  it('refuses malformed branch annotation metadata', async () => {
+    const exact = branch(expectation.productionBranchId);
+    await expect(verify(provider({
+      production: { ...exact, annotation: { object: { type: 1 }, value: {} } },
+    }))).rejects.toThrow('invalid or incomplete');
+    await expect(verify(provider({
+      production: { ...exact, annotation: { object: { type: 'branch', id: 'branch' }, value: { invalid: 1 } } },
+    }))).rejects.toThrow('invalid or incomplete');
   });
 
   it('does not retry authentication, malformed-response, or identity failures', async () => {
