@@ -37,12 +37,47 @@ function plainObject(value: unknown): JsonObject {
   return value as JsonObject;
 }
 
-function exactEnvelope(value: unknown, key: 'project' | 'branch' | 'endpoint'): JsonObject {
+function exactEnvelope(value: unknown, key: 'project' | 'endpoint'): JsonObject {
   const envelope = plainObject(value);
   if (Object.keys(envelope).length !== 1 || !(key in envelope)) {
     throw new Error('Neon control-plane response schema is invalid or unexpected.');
   }
   return plainObject(envelope[key]);
+}
+
+function exactBranchEnvelope(value: unknown): JsonObject {
+  const envelope = plainObject(value);
+  const keys = Object.keys(envelope).sort();
+  if (keys.length !== 2 || keys[0] !== 'annotation' || keys[1] !== 'branch') {
+    throw new Error('Neon control-plane response schema is invalid or unexpected.');
+  }
+
+  const annotation = plainObject(envelope.annotation);
+  const annotationObject = plainObject(annotation.object);
+  // Neon currently returns empty annotation.object type/id strings for an
+  // unannotated branch. These fields are descriptive only; validate their
+  // documented type while branch identity and hierarchy continue to come
+  // exclusively from branch.
+  for (const identityField of ['type', 'id']) {
+    if (annotationObject[identityField] !== undefined &&
+        typeof annotationObject[identityField] !== 'string') {
+      throw new Error('Neon control-plane response schema is invalid or incomplete.');
+    }
+  }
+
+  const annotationValue = plainObject(annotation.value);
+  const annotationEntries = Object.entries(annotationValue);
+  if (annotationEntries.length > 50 || annotationEntries.some(([, entry]) => typeof entry !== 'string')) {
+    throw new Error('Neon control-plane response schema is invalid or incomplete.');
+  }
+  for (const timestamp of ['created_at', 'updated_at']) {
+    if (annotation[timestamp] !== undefined &&
+        (typeof annotation[timestamp] !== 'string' || annotation[timestamp].length === 0)) {
+      throw new Error('Neon control-plane response schema is invalid or incomplete.');
+    }
+  }
+
+  return plainObject(envelope.branch);
 }
 
 function requiredString(object: JsonObject, key: string): string {
@@ -191,18 +226,18 @@ export async function verifyNeonRehearsalTarget(
     throw new Error('Neon control-plane project identity does not match the independent expectation.');
   }
 
-  const production = exactEnvelope(await providerGet(
+  const production = exactBranchEnvelope(await providerGet(
     `${projectPath}/branches/${encodeURIComponent(expectation.productionBranchId)}`,
     expectation.apiKey,
     runtime,
-  ), 'branch');
+  ));
   validateBranchIdentity(production, expectation.projectId, expectation.productionBranchId);
 
-  const target = exactEnvelope(await providerGet(
+  const target = exactBranchEnvelope(await providerGet(
     `${projectPath}/branches/${encodeURIComponent(expectation.targetBranchId)}`,
     expectation.apiKey,
     runtime,
-  ), 'branch');
+  ));
   validateBranchIdentity(target, expectation.projectId, expectation.targetBranchId);
   const parentId = requiredString(target, 'parent_id');
   const isDefault = requiredBoolean(target, 'default');

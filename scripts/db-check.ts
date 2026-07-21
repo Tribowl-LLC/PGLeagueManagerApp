@@ -432,7 +432,10 @@ async function withNeonProviderFixture<T>(
     if (url.endsWith('/projects/project-rehearsal')) {
       body = { project: { id: 'project-rehearsal' } };
     } else if (url.endsWith('/branches/br-production-source')) {
-      body = { branch: { id: 'br-production-source', project_id: 'project-rehearsal' } };
+      body = {
+        branch: { id: 'br-production-source', project_id: 'project-rehearsal' },
+        annotation: { object: { type: '', id: '' }, value: {} },
+      };
     } else if (url.endsWith('/branches/br-disposable-rehearsal')) {
       body = {
         branch: {
@@ -444,6 +447,7 @@ async function withNeonProviderFixture<T>(
           default: false,
           protected: false,
         },
+        annotation: { object: { type: '', id: '' }, value: {} },
       };
     } else if (url.endsWith('/endpoints/ep-disposable-rehearsal')) {
       endpointReads += 1;
