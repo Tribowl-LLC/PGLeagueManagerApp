@@ -11,31 +11,95 @@ credentials.
 3. Run the relevant focused tests locally, plus `npm run check`, `npm run
    lint`, and `npm run build` when practical.
 4. Push the branch and open a pull request.
-5. Wait for `Type check & lint`, `Tests`, `Database migrations (PostgreSQL
-   16)`, `Database migrations (PostgreSQL 17)`, and `Race suite`. The optimized
-   release path requires all five to be configured as ruleset-required checks;
-   until that settings transition is complete, treat the latter three as
-   manually blocking. Also review Semgrep, Semgrep Cloud, Gitleaks, HoundDog,
-   and dependency-audit results.
-6. Merge the pull request into `main`.
-7. Wait for `Exact main certification` on the merged `main` SHA. Confirm its
+5. Wait for `Type check & lint` and `Tests`, which the active GitHub `main`
+   ruleset requires. Also verify `Database migrations (PostgreSQL 16)`,
+   `Database migrations (PostgreSQL 17)`, and `Race suite` manually; repository
+   policy treats those three as release-blocking even though the current
+   ruleset does not enforce them. Review Semgrep, Semgrep Cloud, Gitleaks,
+   HoundDog, and dependency-audit results as well. Confirm the live ruleset
+   before every release instead of assuming repository settings have remained
+   unchanged.
+6. If the release contains a schema migration, follow the
+   [schema-release auto-deploy hold](#schema-release-auto-deploy-hold) to switch
+   the Render service from `After CI Checks Pass` to `Off` **before** merging.
+   This holds the application rollout until the reviewed production migration
+   has run. Code-only releases keep the normal auto-deploy setting.
+7. Merge the pull request into `main`.
+8. Wait for `Exact main certification` on the merged `main` SHA. Confirm its
    log identifies the merged PR, identical tree SHA, and successful PR CI and
    Race suite runs.
-8. Deploy that exact certified commit through Render. Render must be configured
-   not to deploy a new `main` commit before this check succeeds; if the current
-   service cannot express that gate, use manual deploy for the certified commit
-   until an approved deploy-hook workflow is installed.
-9. Run the post-deploy trust-proxy probe manually when a release changes
+9. If the commit contains schema changes, follow [Schema Release](#schema-release)
+   through the reviewed migration step before deploying the application. If it
+   contains no schema changes, do not run a migration merely as a deployment
+   ritual.
+10. For a code-only release, confirm Render automatically selects that exact
+    commit after GitHub checks pass. For a schema release, manually deploy that
+    exact commit after migration succeeds, then complete the runbook's verified
+    restoration procedure. Never allow Render to deploy a schema-dependent
+    revision before its migration.
+11. Run the post-deploy trust-proxy probe manually when a release changes
    proxy, cookie, auth, or rate-limit behavior. The scheduled workflow also
    probes the live deployment daily.
 
 ## Render Configuration
 
-The repository does not contain a Render deployment workflow and GitHub's
-deployment API currently records no deployment for the inspected main SHA.
-Treat Render's dashboard configuration as an external control: record whether
-auto-deploy is disabled or waits for `Exact main certification` before relying
-on it. A plain deploy-on-push setting is not an acceptable certification gate.
+The production Render project, last verified in the live dashboard on
+2026-07-21, contains one `LeagueVault` Node Web Service in the Ohio region,
+using one Starter instance. It tracks GitHub
+`Tribowl-LLC/PGLeagueManagerApp` branch `main`. The exact dashboard commands are:
+
+```text
+Build: npm install --include=dev && npm run build
+Pre-deploy: unset
+Start: npm run start
+Auto-deploy: After CI Checks Pass
+```
+
+The repository does not contain a Render Blueprint or deployment workflow, so
+the dashboard remains an external control. Before every release, verify that
+the service inventory, branch, commands, instance count, and auto-deploy mode
+still match this section. `After CI Checks Pass` must include successful Exact
+main certification for the selected SHA. If that cannot be proved, switch to a
+manual deploy of the certified commit.
+
+The production Render Web Service is configured with `/api/health` as its
+Health Check Path. Render uses this endpoint during deployment rollouts and
+normal service monitoring. Operators must still probe it explicitly during
+rollout and complete the commit, authentication, workflow, provider, worker,
+and log checks below; Render's health signal is one deployment gate, not proof
+that the release is complete.
+
+### Schema-release auto-deploy hold
+
+Schema releases require an explicit Render hold so application code cannot
+deploy before its reviewed migration:
+
+1. Before merging the schema pull request, open the production `LeagueVault`
+   Web Service in Render and go to **Settings → Deploy → Auto-Deploy**.
+2. Change Auto-Deploy from `After CI Checks Pass` to `Off`. Return to the
+   service settings and verify that `Off` is displayed; opening the edit control
+   is not evidence that the change persisted.
+3. Record the Render service, release pull request, intended commit, operator,
+   and time in the release record. Assign one operator responsibility for both
+   the hold and its eventual restoration.
+4. Merge, wait for Exact main certification, execute the reviewed migration,
+   and manually deploy the exact certified commit using the procedures below.
+5. Complete health, commit, authentication, workflow, provider, worker, and log
+   verification while Auto-Deploy remains `Off`.
+6. Only after every applicable check passes, restore Auto-Deploy to
+   `After CI Checks Pass`. Re-open the setting and verify the displayed value,
+   then record restoration in the release record.
+
+If the release is stopped, fails, rolls back, or is handed to another operator,
+leave Auto-Deploy `Off`. Record the hold as active and require the receiving
+operator to reassess schema/application compatibility before restoring it.
+Never restore Auto-Deploy merely because the migration command exited or the
+new process started.
+
+Manual toggling is the current control because the repository has no Render
+Blueprint or API-driven release workflow. A future automation change should
+encode the same hold, exact-commit, migration, verification, and restoration
+state machine and must fail closed without silently restoring Auto-Deploy.
 
 Production should explicitly set:
 
@@ -104,51 +168,23 @@ See [`DATABASE.md`](./DATABASE.md#disposable-neon-branch-inventory-procedure)
 for the complete comparison procedure. Direct production inventory remains a
 separately approved future operation.
 
-## Baseline adoption: production preflight and separately authorized execution
+## Baseline adoption status
 
-Production adoption has not been performed. The operator-only production mode
-uses `DB_ADOPTION_ENVIRONMENT_CLASS=neon-production`, requires the target branch
-to equal the independently expected protected default production root branch,
-and refuses Render/Replit deployment processes. The dedicated
-`db:adopt-baseline:preflight` command is read-only and rejects execution
-confirmation and approval-token variables. The separate `db:adopt-baseline`
-entrypoint is the only registration path.
+Production has completed the one-time guarded adoption of
+`0000_normalized_baseline`. The adoption registered the already-verified
+production schema in the Drizzle journal; it did not execute the baseline DDL
+or change application data.
 
-The verifier uses only bounded, retry-limited Neon API GETs for project, branch,
-and endpoint details. It requires root/default/protected/state metadata plus
-endpoint `project_id`, `branch_id`, and `host` to agree with independently
-supplied identifiers and the PostgreSQL hostname. URL-derived identifiers are
-not independent evidence. Missing or unexpected metadata,
-API/authentication/timeout failure, recovering/restored/restricted targets,
-child branches, and endpoint mismatches fail closed. Host matching normalizes
-only case and one terminal DNS dot; it does not accept suffixes, wildcards,
-ports, or alternate hosts. Provider proof is repeated at the end of preflight
-and immediately before registration so stale metadata cannot cross either
-boundary. Use a project-scoped
-organization API key where available; the
-tool does not need or issue write-capable Neon API requests and never requests
-database credentials from Neon. The key is not retained in the database
-adoption request or inherited by source-control child processes and is passed
-only to the control-plane verifier.
+Do not run `db:adopt-baseline:preflight` or `db:adopt-baseline` against the
+adopted production database. Do not replay `0000_normalized_baseline`. An
+absent, empty, or mismatched production journal is now a target-identity or
+schema-drift incident: stop and investigate rather than attempting adoption or
+manual journal repair.
 
-Required Neon-specific variables are `NEON_API_KEY`,
-`DB_ADOPTION_NEON_EXPECTED_PROJECT_ID`,
-`DB_ADOPTION_NEON_EXPECTED_TARGET_BRANCH_ID`,
-`DB_ADOPTION_NEON_EXPECTED_PRODUCTION_BRANCH_ID`, and
-`DB_ADOPTION_NEON_EXPECTED_ENDPOINT_ID`, in addition to every common adoption
-identity, baseline, schema fingerprint, journal relation, backup, commit, and
-confirmation variable documented in
-[`DATABASE.md`](./DATABASE.md#guarded-existing-database-adoption). Provider bodies are
-not persisted or logged; operator-visible failures redact credentials, URLs,
-hostnames, and provider identifiers.
-
-Follow the exact post-merge production procedure in `DATABASE.md`. Run
-`npm run db:adopt-baseline:preflight` with confirmation and approval token
-absent, then stop after its sanitized report. Only a separate explicit human
-authorization may set the confirmation and a fresh 256-bit-or-stronger
-base64url approval token for one `npm run db:adopt-baseline` execution. Unset
-the token immediately afterward. This implementation PR performs no live
-production adoption and does not itself authorize execution.
+See [`DATABASE.md`](./DATABASE.md#baseline-adoption-history) for the retained
+adoption evidence, exact status, and prohibited practices. Normal
+production schema releases now use only the forward-only migration procedure
+below.
 
 ## Schema Release
 
@@ -158,9 +194,9 @@ Schema changes require a deliberate release step:
 2. Confirm the target Neon project, branch, host, database name, and user.
 3. Set `DATABASE_URL` only in the shell or deployment environment where the
    intended target has been independently verified.
-4. Confirm the exact checked-in migration SQL was reviewed and the target has
-   the exact active journal prefix. If production is not yet adopted, complete
-   the separately authorized baseline procedure above before migration.
+4. Confirm the exact checked-in migration SQL was reviewed and the adopted
+   target has the exact active journal prefix. If the baseline row is absent or
+   differs, stop: baseline adoption must never be repeated.
 5. Run `npm run db:migrate` with exactly one executor for the environment.
    Abort on any journal mismatch or migration failure.
 6. Apply the schema change to the intended database and record the result.
