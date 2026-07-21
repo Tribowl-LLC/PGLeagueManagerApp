@@ -1,16 +1,18 @@
 name: Semgrep
 
-# Diff-aware scans run for pull requests. Pushes and the weekly schedule
-# run full scans against the current main branch. workflow_dispatch makes
-# it possible to run a full scan immediately after a security change.
+# Diff-aware scans run for pull requests. The weekly schedule and manual runs
+# scan main in full. Exact-main certification proves a pushed tree is identical
+# to the successfully scanned pull request tree.
 on:
   pull_request:
-    branches: [main]
-  push:
     branches: [main]
   schedule:
     - cron: '17 3 * * 1'
   workflow_dispatch:
+
+concurrency:
+  group: semgrep-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -19,6 +21,7 @@ jobs:
   semgrep:
     name: Semgrep
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     # GitHub does not expose repository secrets to Dependabot PRs. The
     # normal CI and scheduled scans still run; this avoids a misleading

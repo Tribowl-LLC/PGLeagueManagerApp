@@ -11,17 +11,31 @@ credentials.
 3. Run the relevant focused tests locally, plus `npm run check`, `npm run
    lint`, and `npm run build` when practical.
 4. Push the branch and open a pull request.
-5. Wait for the required branch-protection checks to pass. At minimum, verify
-   `Type check & lint` and `Tests`; also review Race suite, Semgrep, Gitleaks,
-   HoundDog, and dependency-audit results.
+5. Wait for `Type check & lint`, `Tests`, `Database migrations (PostgreSQL
+   16)`, `Database migrations (PostgreSQL 17)`, and `Race suite`. The optimized
+   release path requires all five to be configured as ruleset-required checks;
+   until that settings transition is complete, treat the latter three as
+   manually blocking. Also review Semgrep, Semgrep Cloud, Gitleaks, HoundDog,
+   and dependency-audit results.
 6. Merge the pull request into `main`.
-7. Deploy the exact merged commit through Render according to the service's
-   configured deployment mode.
-8. Run the post-deploy trust-proxy probe manually when a release changes
+7. Wait for `Exact main certification` on the merged `main` SHA. Confirm its
+   log identifies the merged PR, identical tree SHA, and successful PR CI and
+   Race suite runs.
+8. Deploy that exact certified commit through Render. Render must be configured
+   not to deploy a new `main` commit before this check succeeds; if the current
+   service cannot express that gate, use manual deploy for the certified commit
+   until an approved deploy-hook workflow is installed.
+9. Run the post-deploy trust-proxy probe manually when a release changes
    proxy, cookie, auth, or rate-limit behavior. The scheduled workflow also
-   probes the live deployment every 30 minutes.
+   probes the live deployment daily.
 
 ## Render Configuration
+
+The repository does not contain a Render deployment workflow and GitHub's
+deployment API currently records no deployment for the inspected main SHA.
+Treat Render's dashboard configuration as an external control: record whether
+auto-deploy is disabled or waits for `Exact main certification` before relying
+on it. A plain deploy-on-push setting is not an acceptable certification gate.
 
 Production should explicitly set:
 
