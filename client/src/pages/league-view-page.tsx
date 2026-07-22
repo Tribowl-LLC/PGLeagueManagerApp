@@ -18,7 +18,7 @@ import {
 import { Loader2, Mail, RefreshCw } from "lucide-react";
 import { PageLoadingState, PageErrorState } from "@/components/page-states";
 
-import type { ApiResponse, League, User } from "@shared/schema";
+import type { League } from "@shared/schema";
 import { useParams, Link, useLocation } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -50,18 +50,6 @@ export default function LeagueViewPage() {
   });
 
   const league = leagueResponse?.data;
-
-  // Task #735: only org_admin/system_admin may grant or revoke
-  // league_secretary roles. The "Secretaries" admin card is hidden
-  // for non-admin viewers (incl. secretaries themselves) and the
-  // route itself is gated server-side; this is purely a UX prune.
-  const { data: currentUserResponse } = useQuery<ApiResponse<User>>({
-    queryKey: ['/api/user'],
-    staleTime: 1000 * 60 * 5,
-  });
-  const currentUser = currentUserResponse?.data;
-  const canManageSecretaries =
-    currentUser?.role === 'system_admin' || currentUser?.role === 'org_admin';
 
   const { data: seasonHistoryResponse } = useQuery<{ success: true; data: League[] }>({
     queryKey: ['/api/leagues', leagueId, 'season-history'],
@@ -198,7 +186,7 @@ export default function LeagueViewPage() {
         {inviteResult && <InviteResultCard inviteResult={inviteResult} />}
 
         <ErrorBoundary level="section">
-          <LeagueActionCards leagueId={leagueId} canManageSecretaries={canManageSecretaries} />
+          <LeagueActionCards leagueId={leagueId} />
         </ErrorBoundary>
 
         <ErrorBoundary level="section">

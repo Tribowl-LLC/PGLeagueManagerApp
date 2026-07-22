@@ -54,7 +54,7 @@ const mockStorage = {
 vi.mock('../../server/storage', () => ({ storage: mockStorage }));
 
 // Keep the real pure role-check helpers (isSystemAdmin, isOrgOrHigher) via
-// importOriginal — Task #735 added isOrgOrHigher usage to bowlers.ts so a
+// importOriginal — bowlers.ts uses isOrgOrHigher, so a
 // bare partial mock drifts and throws "No <export> defined on mock".
 vi.mock('../../server/utils/access-control', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../server/utils/access-control')>();

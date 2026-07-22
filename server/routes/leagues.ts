@@ -75,19 +75,14 @@ router.get("/", async (req: Request, res) => {
       return sendSuccess(res, []);
     }
 
-    // Task #735: plain `user`-role callers must NOT see every league in
-    // the org by virtue of org membership alone — that would make a
-    // league_secretary grant a no-op for visibility. Scope the visible
-    // set to (a) leagues the caller is rostered into as a bowler, plus
-    // (b) leagues they were granted a secretary role on.
+    // Plain users only see leagues where they are rostered as a bowler;
+    // organization membership alone does not grant league visibility.
     if (!isSystemAdmin && !isOrgAdmin && req.user) {
       const visibleLeagueIds = new Set<number>();
       if (req.user.bowlerId) {
         const bowlerLeagueRows = await storage.getBowlerLeagues({ bowlerId: req.user.bowlerId });
         for (const r of bowlerLeagueRows) visibleLeagueIds.add(r.leagueId);
       }
-      const grantedLeagueIds = await storage.getSecretaryLeagueIdsForUser(req.user.id);
-      for (const id of grantedLeagueIds) visibleLeagueIds.add(id);
       leagues = leagues.filter((l) => visibleLeagueIds.has(l.id));
     }
 
@@ -203,8 +198,7 @@ router.get("/:id", async (req: Request, res) => {
       return sendError(res, "League not found", 404, 'NOT_FOUND');
     }
     
-    // Task #735: hasAccessToLeague honors secretary grants AND has been
-    // tightened so that a plain `user`-role caller no longer gets
+    // A plain `user`-role caller does not get
     // org-wide league visibility purely from org membership.
     if (!(await hasAccessToLeague(req, id))) {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
@@ -319,44 +313,11 @@ router.patch("/:id", async (req: Request, res) => {
       return sendError(res, "League not found", 404, 'NOT_FOUND');
     }
     
-    // Task #735: PATCH /api/leagues/:id is allowed for org_admin /
-    // system_admin in the same org, OR for a league_secretary on this
-    // league, BUT secretaries may only mutate a narrow allowlist of
-    // fields. Forbidden for secretaries: organizationId, locationId,
-    // active (archive control), and every payment-provider /
-    // catalog-mapping field (square*, lineageItemVariationId,
-    // prizeFundItemVariationId). Any payload containing a forbidden
-    // key is rejected outright with 403 — we do NOT silently drop
-    // forbidden fields, so a buggy client can't think the change took.
+    // PATCH /api/leagues/:id is limited to organization and system administrators.
     const isAdminCaller =
       isOrgOrHigher(req.user) && requireOrganizationAccess(req, league.organizationId, 'league', id);
-    let isSecretaryCaller = false;
     if (!isAdminCaller) {
-      isSecretaryCaller = await hasAdminAccessToLeague(req, id);
-      if (!isSecretaryCaller) {
-        return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
-      }
-      const SECRETARY_FORBIDDEN_FIELDS = new Set([
-        'organizationId',
-        'locationId',
-        'active',
-        'squareLineageItemId',
-        'lineageItemVariationId',
-        'squareLineageItemName',
-        'squarePrizeFundItemId',
-        'prizeFundItemVariationId',
-        'squarePrizeFundItemName',
-        'squareCategoryId',
-      ]);
-      const offending = Object.keys(req.body ?? {}).filter((k) => SECRETARY_FORBIDDEN_FIELDS.has(k));
-      if (offending.length > 0) {
-        return sendError(
-          res,
-          `League secretaries may not modify: ${offending.join(', ')}`,
-          403,
-          'SECRETARY_FORBIDDEN_FIELD',
-        );
-      }
+      return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
     
     // Non-admin users cannot change the organization of a league
@@ -539,8 +500,7 @@ router.patch("/:id/archive", async (req: Request, res) => {
     if (!league) {
       return sendError(res, "League not found", 404, 'NOT_FOUND');
     }
-    // Task #735: archive is a destructive admin action — secretaries
-    // do not get to take a league down.
+    // Archive is a destructive administrator action.
     if (!isOrgOrHigher(req.user) || !requireOrganizationAccess(req, league.organizationId, 'league', id)) {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
@@ -562,7 +522,7 @@ router.patch("/:id/restore", async (req: Request, res) => {
     if (!league) {
       return sendError(res, "League not found", 404, 'NOT_FOUND');
     }
-    // Task #735: restore mirrors archive — admin only.
+    // Restore mirrors archive — admin only.
     if (!isOrgOrHigher(req.user) || !requireOrganizationAccess(req, league.organizationId, 'league', id)) {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
@@ -587,8 +547,7 @@ router.delete("/:id", async (req: Request, res) => {
       return sendError(res, "League not found", 404, 'NOT_FOUND');
     }
     
-    // Task #735: league deletion is explicitly OUT of the secretary
-    // contract — only org_admin/system_admin may delete a league.
+    // Only org_admin/system_admin may delete a league.
     if (!isOrgOrHigher(req.user) || !requireOrganizationAccess(req, league.organizationId, 'league', id)) {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
@@ -634,8 +593,7 @@ router.post("/:id/send-invites", async (req: Request, res) => {
       return sendError(res, "League not found", 404, 'NOT_FOUND');
     }
 
-    // Task #735: send-invites is a league-admin action a secretary
-    // legitimately needs to perform for their league.
+    // Sending invitations is an administrator action.
     if (!(await hasAdminAccessToLeague(req, leagueId))) {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }

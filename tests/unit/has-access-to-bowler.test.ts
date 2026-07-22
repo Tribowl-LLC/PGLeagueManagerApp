@@ -25,12 +25,10 @@ const {
   mockGetBowler,
   mockGetBowlerLeagues,
   mockGetLeaguesByIds,
-  mockGetSecretaryLeagueIdsForUser,
 } = vi.hoisted(() => ({
   mockGetBowler: vi.fn(),
   mockGetBowlerLeagues: vi.fn(),
   mockGetLeaguesByIds: vi.fn(),
-  mockGetSecretaryLeagueIdsForUser: vi.fn(),
 }));
 
 vi.mock('../../server/storage', () => ({
@@ -38,10 +36,6 @@ vi.mock('../../server/storage', () => ({
     getBowler: (...args: unknown[]) => mockGetBowler(...args),
     getBowlerLeagues: (...args: unknown[]) => mockGetBowlerLeagues(...args),
     getLeaguesByIds: (...args: unknown[]) => mockGetLeaguesByIds(...args),
-    // Task #735: hasAccessToBowler consults league-secretary grants.
-    // Default to no grants so these tests pin the non-secretary behavior.
-    getSecretaryLeagueIdsForUser: (...args: unknown[]) =>
-      mockGetSecretaryLeagueIdsForUser(...args),
   },
 }));
 
@@ -65,8 +59,6 @@ beforeEach(() => {
   mockGetBowler.mockReset();
   mockGetBowlerLeagues.mockReset();
   mockGetLeaguesByIds.mockReset();
-  mockGetSecretaryLeagueIdsForUser.mockReset();
-  mockGetSecretaryLeagueIdsForUser.mockResolvedValue([]);
 });
 
 afterEach(() => {

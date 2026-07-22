@@ -36,7 +36,7 @@ router.get("/", async (req, res) => {
         return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
       }
 
-      // Task #735: secretaries may list teams for their granted league.
+      // Team lists require administrative access to the league.
       const userHasAccess = await hasAdminAccessToLeague(req, leagueId);
       if (userHasAccess) {
         teams = await storage.getTeams(leagueId);
@@ -60,29 +60,15 @@ router.get("/", async (req, res) => {
         const allTeams = await storage.getTeams();
         teams = allTeams.filter(t => orgScopedLeagueIds.has(t.leagueId));
       } else if (scopedOrgId !== null) {
-        // Task #735: a secretary (a plain `user`-role caller with grants)
-        // only sees teams for leagues they have an active grant on. Org
-        // admins AND affiliated system admins see all teams across the org.
-        // (An affiliated system_admin is neither org_admin nor a secretary,
-        // so without this they would fall into the grant-only branch and get
-        // an empty list — mirrors the org-or-higher handling in leagues.ts /
-        // bowlers.ts and was the cause of empty past-due reports.)
+        // Org admins and affiliated system admins see all teams across the org.
+        // Plain users cannot use this organization-wide listing surface.
         if (isOrgOrHigher(req.user)) {
           const leagues = await storage.getLeagues(scopedOrgId);
           const teamPromises = leagues.map(league => storage.getTeams(league.id));
           const teamsArrays = await Promise.all(teamPromises);
           teams = teamsArrays.flat();
         } else {
-          const grantedIds = req.user?.id
-            ? await storage.getSecretaryLeagueIdsForUser(req.user.id)
-            : [];
-          if (grantedIds.length === 0) {
-            teams = [];
-          } else {
-            const teamPromises = grantedIds.map((id) => storage.getTeams(id));
-            const teamsArrays = await Promise.all(teamPromises);
-            teams = teamsArrays.flat();
-          }
+          teams = [];
         }
       } else {
         teams = [];

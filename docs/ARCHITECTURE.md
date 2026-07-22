@@ -278,7 +278,6 @@ organization
 │   ├── bowler_leagues ── bowlers
 │   ├── games ── scores
 │   ├── payments / payment schedules
-│   └── league-secretary grants
 ├── users
 ├── registrations / payment links
 └── organization audit and recovery records
@@ -304,10 +303,8 @@ The supported roles are `system_admin`, `org_admin`, and `user`.
 - `system_admin` is a platform role. It may be unassigned from an organization
   and may perform explicitly documented cross-tenant administration.
 - `org_admin` administers the user’s organization.
-- `user` is an organization member. Access is normally limited to the user’s
-  own bowler account and permitted league workflows; a
-  `league_secretary` grant can provide scoped administrative access to specific
-  leagues.
+- `user` is an organization member. Access is limited to the user’s own bowler
+  account and explicitly permitted league workflows.
 
 Authorization is enforced in layers:
 
@@ -317,9 +314,8 @@ Authorization is enforced in layers:
 3. Storage methods apply organization filters and use system-admin variants
    only where the operation explicitly permits them.
 4. Database invariants installed by [`server/db-invariants.ts`](../server/db-invariants.ts)
-   protect the non-admin user role/organization requirement and
-   league-secretary organization matching/revocation even if an application
-   caller is incorrect. Other tenant-stamp checks remain in route, access-
+   protect the non-admin user role/organization requirement even if an
+   application caller is incorrect. Other tenant-stamp checks remain in route, access-
    control, and storage paths.
 
 Org-less tenant resources are treated as orphaned data and denied rather than
@@ -388,7 +384,7 @@ curated map, not a complete module inventory.
 ### Server-Side Foundations
 
 - [`server/utils/access-control.ts`](../server/utils/access-control.ts) —
-  resource-level organization, bowler, payment, and league-secretary checks.
+  resource-level organization, bowler, league, and payment checks.
 - [`server/utils/api.ts`](../server/utils/api.ts) — response envelopes,
   deliberate error responses, safe-field projections, and wire sanitization.
 - [`server/utils/league-datetime.ts`](../server/utils/league-datetime.ts) —

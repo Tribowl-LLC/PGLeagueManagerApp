@@ -119,10 +119,7 @@ router.get("/", async (req, res) => {
       if (!league) {
         return sendError(res, "League not found", 404, 'NOT_FOUND');
       }
-      // Task #735: secretaries may view payment reports scoped to their
-      // granted league. `hasAdminAccessToLeague` covers system_admin,
-      // org_admin, and active league-secretary grants while still
-      // enforcing the org-less deny rule.
+      // Payment reports require administrator access to the league.
       if (!(await hasAdminAccessToLeague(req, leagueId))) {
         return sendError(res, "You don't have access to this league's payments", 403, 'FORBIDDEN');
       }
@@ -132,35 +129,17 @@ router.get("/", async (req, res) => {
       return sendSuccess(res, []);
     }
 
-    // Task #735: SQL-scope listing for non-admin callers. With a
-    // grant set: restrict to those leagues. Without a grant set:
-    // restrict to the caller's own bowler payments (or empty when
-    // the user is not a bowler). An explicit leagueId is gated above
-    // by hasAdminAccessToLeague.
-    let secretaryScopedLeagueIds: number[] | undefined;
+    // Plain users may only list their own bowler payments.
     let scopedBowlerId: number | null | undefined = bowlerId;
     if (!isSystemAdmin && req.user?.role !== 'org_admin' && req.user?.id) {
-      const grantedIds = await storage.getSecretaryLeagueIdsForUser(req.user.id);
       if (leagueId === undefined) {
-        if (grantedIds.length > 0) {
-          secretaryScopedLeagueIds = grantedIds;
-          if (bowlerId == null && req.user.bowlerId) {
-            // No bowlerId filter: union grant-leagues with self-payments
-            // by also returning the caller's own bowler rows.
-            // Storage `bowlerId` filter is single-valued; when grants
-            // exist we keep the leagueIds filter and let self-rows
-            // surface through bowler-detail/dashboard endpoints, since
-            // mixing self-rows here would require a new storage shape.
-          }
-        } else {
-          if (!req.user.bowlerId) {
-            return sendSuccess(res, []);
-          }
-          if (bowlerId != null && bowlerId !== req.user.bowlerId) {
-            return sendSuccess(res, []);
-          }
-          scopedBowlerId = req.user.bowlerId;
+        if (!req.user.bowlerId) {
+          return sendSuccess(res, []);
         }
+        if (bowlerId != null && bowlerId !== req.user.bowlerId) {
+          return sendSuccess(res, []);
+        }
+        scopedBowlerId = req.user.bowlerId;
       }
     }
 
@@ -187,7 +166,6 @@ router.get("/", async (req, res) => {
     const filters = {
       ...baseFilters,
       organizationId: effectiveOrgId!,
-      ...(secretaryScopedLeagueIds !== undefined ? { leagueIds: secretaryScopedLeagueIds } : {}),
     };
 
     if (paginationParams) {

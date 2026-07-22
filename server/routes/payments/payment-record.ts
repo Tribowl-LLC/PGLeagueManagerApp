@@ -40,10 +40,8 @@ router.post("/", paymentWriteLimiter, async (req, res) => {
     if (!league) {
       return sendError(res, "League not found", 404, 'NOT_FOUND');
     }
-    // Task #735: secretaries may record cash/check payments for their
-    // granted league. `hasAdminAccessToLeague` covers system_admin,
-    // org_admin (matching org), and active league-secretary grants —
-    // and still respects the org-less deny rule.
+    // Cash/check payment recording requires administrator access to the
+    // league and still respects the org-less deny rule.
     if (!(await hasAdminAccessToLeague(req, payment.leagueId))) {
       return sendError(res, "You don't have access to create payments for this league", 403, 'FORBIDDEN');
     }
@@ -65,7 +63,7 @@ router.post("/", paymentWriteLimiter, async (req, res) => {
     // P1 security: having admin access to the league is NOT sufficient to
     // record a payment for an arbitrary bowler. The bowler must belong to
     // the league's organization AND be actively rostered in this league —
-    // otherwise an admin/secretary could pair a legitimate league with a
+    // otherwise an administrator could pair a legitimate league with a
     // non-rostered (or cross-org) bowler and corrupt balances/reports.
     if (targetBowler.organizationId !== league.organizationId) {
       return sendError(res, "Bowler is not in this league's organization", 403, 'FORBIDDEN');
@@ -183,8 +181,8 @@ router.patch("/:id", paymentWriteLimiter, async (req, res) => {
       return sendError(res, 'Check number is required for check payments', 400, 'VALIDATION_ERROR');
     }
     
-    // Check if user has access to this payment (system_admin, org_admin
-    // of the payment's org, or a league secretary on the payment's league).
+    // Check if the user is a system administrator or an organization
+    // administrator for the payment's organization.
     if (!isSystemAdmin(req.user)) {
       const hasAccess = await hasAccessToPayment(req, id);
       if (!hasAccess) {
@@ -220,10 +218,7 @@ router.delete("/:id", paymentWriteLimiter, async (req, res) => {
       return sendError(res, "Payment not found", 404, "NOT_FOUND");
     }
 
-    // Card payments may only be deleted by org/system admins (not
-    // secretaries) — the deletion of a card payment is a payment-
-    // provider-touching surface that the task explicitly keeps out of
-    // the secretary role.
+    // Card payments may only be deleted by organization or system administrators.
     if (isCardPaymentType(payment.type) && req.user?.role !== 'system_admin' && req.user?.role !== 'org_admin') {
       return sendError(res, "Only admins can delete card payments", 403, "FORBIDDEN");
     }

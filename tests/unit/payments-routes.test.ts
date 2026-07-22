@@ -76,9 +76,8 @@ const mockHasAccessToPayment = vi.fn();
 const mockRequireOrgAccess = vi.fn();
 const mockHasAdminAccessToLeague = vi.fn();
 // Keep the real pure role-check helpers (isSystemAdmin, isOrgOrHigher) via
-// importOriginal — only the DB-touching helpers are overridden. Task #735
-// added hasAdminAccessToLeague/isSystemAdmin/isOrgOrHigher usage to the
-// payment routes, so a hand-rolled partial mock drifts and throws
+// importOriginal — only the DB-touching helpers are overridden. Payment routes
+// use hasAdminAccessToLeague/isSystemAdmin/isOrgOrHigher, so a hand-rolled partial mock drifts and throws
 // "No <export> defined on mock".
 vi.mock('../../server/utils/access-control', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../server/utils/access-control')>();
@@ -299,9 +298,7 @@ describe('POST /api/payments', () => {
 
   it('returns 403 when caller has no access to the league org', async () => {
     mockStorage.getLeague.mockResolvedValue(LEAGUE_OK);
-    // Task #735: create now gates on hasAdminAccessToLeague (covers
-    // system_admin, org_admin, and active secretary grants) rather than
-    // the bare requireOrganizationAccess check.
+    // Creation gates on administrator access to the league.
     mockHasAdminAccessToLeague.mockResolvedValue(false);
 
     const res = await post('/api/payments', basePayment());
@@ -492,10 +489,7 @@ describe('POST /api/payments/:id/refund', () => {
   });
 
   it('rejects non-admins → 403', async () => {
-    // Task #735: refund access is now evaluated after the payment is
-    // fetched (a non-admin "user" falls through to the secretary check,
-    // which requires the payment's leagueId). A plain user with no
-    // secretary grant is denied.
+    // Refund access is evaluated after the payment is fetched; a plain user is denied.
     mockStorage.getPaymentById.mockResolvedValue(cardPayment);
     mockHasAdminAccessToLeague.mockResolvedValue(false);
     const res = await post('/api/payments/50/refund', {}, REGULAR_USER);

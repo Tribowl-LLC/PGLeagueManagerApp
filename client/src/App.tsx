@@ -43,8 +43,6 @@ const ProfileSettingsPage = lazy(() => import("@/pages/profile-settings-page"));
 const ClaimBowlerPage = lazy(() => import("@/pages/claim-bowler-page"));
 const RegistrationCompletePage = lazy(() => import("@/pages/registration-complete-page"));
 const AdminUnclaimedUsersPage = lazy(() => import("@/pages/admin-unclaimed-users-page"));
-const LeagueSecretariesPage = lazy(() => import("@/pages/league-secretaries-page"));
-const SecretaryLeaguesPage = lazy(() => import("@/pages/secretary-leagues-page"));
 const EmailTemplatesPage = lazy(() => import("@/pages/email-templates-page"));
 const IntegrationsPage = lazy(() => import("@/pages/integrations-page"));
 const PrivacyPolicyPage = lazy(() => import("@/pages/privacy-policy-page"));
@@ -72,32 +70,8 @@ const RootRedirectHandler: FC = () => {
     staleTime: 1000 * 60 * 5,
   });
 
-  // Task #735: secretary-first landing. A plain `user`-role caller
-  // who is not a bowler but holds at least one league_secretary grant
-  // should land on /my-leagues (their granted-leagues admin surface),
-  // not the bowler dashboard or a generic /leagues page they cannot
-  // act on. We only fire the lookup for that narrow shape so the
-  // common-case redirect is not delayed by an extra round-trip.
-  const user = currentUserResponse?.data ?? null;
-  const isPlainOrgUser =
-    !!user &&
-    user.role === 'user' &&
-    !user.bowlerId &&
-    !!user.organizationId;
-  const { data: secretaryLeaguesResponse, isLoading: secretaryLoading } = useQuery<
-    ApiResponse<Array<{ id: number }>>
-  >({
-    queryKey: ['/api/me/league-secretary-leagues'],
-    enabled: isPlainOrgUser,
-    staleTime: 1000 * 60 * 5,
-  });
-  const hasSecretaryGrant =
-    isPlainOrgUser &&
-    Array.isArray(secretaryLeaguesResponse?.data) &&
-    secretaryLeaguesResponse.data.length > 0;
-
   useEffect(() => {
-    if (!isLoading && !(isPlainOrgUser && secretaryLoading)) {
+    if (!isLoading) {
       if (error || !currentUserResponse?.data) {
         navigate('/login');
       } else {
@@ -119,8 +93,6 @@ const RootRedirectHandler: FC = () => {
           navigate('/home');
         } else if (user.bowlerId) {
           navigate('/bowler-dashboard');
-        } else if (hasSecretaryGrant) {
-          navigate('/my-leagues');
         } else if (user.organizationId) {
           navigate('/leagues');
         } else {
@@ -128,7 +100,7 @@ const RootRedirectHandler: FC = () => {
         }
       }
     }
-  }, [isLoading, error, currentUserResponse, navigate, isPlainOrgUser, secretaryLoading, hasSecretaryGrant]);
+  }, [isLoading, error, currentUserResponse, navigate]);
 
   if (isLoading) {
     return <PageLoader />;
@@ -209,9 +181,6 @@ function Router() {
         <Route path="/integrations">{guard('orgAdmin', <IntegrationsPage />)}</Route>
         <Route path="/messaging">{guard('orgAdmin', <MessagingPage />)}</Route>
         <Route path="/admin/unclaimed-users">{guard('orgAdmin', <AdminUnclaimedUsersPage />)}</Route>
-        <Route path="/leagues/:leagueId/secretaries">{guard('orgAdmin', <LeagueSecretariesPage />)}</Route>
-        <Route path="/my-leagues">{guard('auth', <SecretaryLeaguesPage />)}</Route>
-
         {/* System Admin routes */}
         <Route path="/organizations">{guard('systemAdmin', <OrganizationsPage />)}</Route>
         <Route path="/admin/link-bowler">{guard('systemAdmin', <AdminLinkBowlerPage />)}</Route>

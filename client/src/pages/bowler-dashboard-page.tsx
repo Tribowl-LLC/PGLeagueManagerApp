@@ -10,7 +10,6 @@ import { PaymentStatusSection } from "@/components/payment-status-section";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { useSelectedLeague } from "@/hooks/use-selected-league";
-import { SecretaryToggleButton } from "./bowler-dashboard-page/secretary-toggle-button";
 import { ErrorCard } from "./bowler-dashboard-page/error-card";
 import { AuthRequiredCard } from "./bowler-dashboard-page/auth-required-card";
 import { LeagueUnavailableCard } from "./bowler-dashboard-page/league-unavailable-card";
@@ -240,13 +239,6 @@ const BowlerDashboardPage: FC = () => {
       leagueName={leagueName}
       currentLeagueId={activeBowlerLeague?.leagueId}
     >
-      {/* Task #735: bowler ↔ secretary toggle. A user who holds at
-          least one league_secretary grant gets a one-click switch to
-          their secretary surface. The toggle button on /my-leagues
-          provides the reciprocal link back. We render only when the
-          /api/me/league-secretary-leagues lookup returned at least
-          one row so non-secretaries see no extra UI. */}
-      <SecretaryToggleButton enabled={!isSystemAdmin} />
       {isSystemAdmin && <BackToDashboardButton />}
       
       <ErrorBoundary level="section">

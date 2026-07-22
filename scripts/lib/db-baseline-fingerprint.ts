@@ -2,10 +2,6 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
-  APPROVED_INVARIANT_FUNCTION_NAMES,
-  APPROVED_INVARIANT_TRIGGER_NAMES,
-} from '../../shared/database-invariants';
-import {
   baselineMigration,
   EXPECTED_BASELINE_COLUMN_COUNT,
   EXPECTED_BASELINE_TABLE_COUNT,
@@ -23,6 +19,20 @@ import type {
   TriggerInfo,
   TypeInfo,
 } from './db-schema-inventory';
+
+// The adoption fingerprint describes immutable migration 0000, not the
+// current post-migration schema. Later migrations may retire baseline objects.
+const BASELINE_INVARIANT_FUNCTION_NAMES = [
+  'league_secretary_org_match_fn',
+  'users_org_change_revoke_secretaries_fn',
+  'users_role_org_required_fn',
+] as const;
+
+const BASELINE_INVARIANT_TRIGGER_NAMES = [
+  'league_secretaries_org_match',
+  'users_org_change_revoke_secretaries',
+  'users_role_org_required',
+] as const;
 import { functionDefinitionsDifferOnlyByInsignificantWhitespace } from './sql-definition-normalization';
 
 export const BASELINE_FINGERPRINT_FORMAT_VERSION = 2 as const;
@@ -201,12 +211,12 @@ function assertCompleteStructure(structure: ApplicationSchemaStructure): void {
   }
   exactNames(
     structure.functions.map((fn) => fn.name),
-    APPROVED_INVARIANT_FUNCTION_NAMES,
+    BASELINE_INVARIANT_FUNCTION_NAMES,
     'public invariant functions',
   );
   exactNames(
     structure.triggers.map((trigger) => trigger.name),
-    APPROVED_INVARIANT_TRIGGER_NAMES,
+    BASELINE_INVARIANT_TRIGGER_NAMES,
     'public invariant triggers',
   );
   const partialIndex = structure.indexes.find((index) =>
