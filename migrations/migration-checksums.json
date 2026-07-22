@@ -6,6 +6,12 @@
       "tag": "0000_normalized_baseline",
       "createdAt": 1784104330176,
       "hash": "9f4398b0e90bb5a5e33406cc5f35faf73b9c9dcbff3c781bacc892479c31a302"
+    },
+    {
+      "idx": 1,
+      "tag": "0001_organization_hostname_namespace_guard",
+      "createdAt": 1784694843315,
+      "hash": "8902cc5fee270a2841e87570e8bb7d811b79608393ae44f17aef6b9c78219652"
     }
   ]
 }

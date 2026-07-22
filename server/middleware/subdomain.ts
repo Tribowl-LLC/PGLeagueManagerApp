@@ -51,15 +51,9 @@ function extractSubdomain(hostname: string): string | null {
   return null;
 }
 
-const orgCache = new Map<string, { org: Organization | null; expiry: number }>();
-const CACHE_TTL_MS = 5 * 60 * 1000;
-
-async function lookupOrgBySubdomain(subdomain: string): Promise<Organization | null> {
-  const cached = orgCache.get(subdomain);
-  if (cached && cached.expiry > Date.now()) {
-    return cached.org;
-  }
-
+export async function lookupOrganizationByHostname(
+  subdomain: string,
+): Promise<Organization | null> {
   try {
     let org = await storage.getOrganizationBySubdomain(subdomain);
 
@@ -67,7 +61,6 @@ async function lookupOrgBySubdomain(subdomain: string): Promise<Organization | n
       org = await storage.getOrganizationBySlug(subdomain);
     }
 
-    orgCache.set(subdomain, { org: org ?? null, expiry: Date.now() + CACHE_TTL_MS });
     return org ?? null;
   } catch (err) {
     log.error(`Failed to lookup org by subdomain "${subdomain}":`, err);
@@ -80,7 +73,7 @@ export function subdomainDetection(req: Request, _res: Response, next: NextFunct
     const devOverride = req.query.__org_slug as string | undefined;
     if (devOverride && SLUG_REGEX.test(devOverride)) {
       req.orgSlug = devOverride;
-      lookupOrgBySubdomain(devOverride).then((org) => {
+      lookupOrganizationByHostname(devOverride).then((org) => {
         req.subdomainOrg = org;
         next();
       }).catch(() => next());
@@ -99,7 +92,7 @@ export function subdomainDetection(req: Request, _res: Response, next: NextFunct
   }
 
   req.orgSlug = slug;
-  lookupOrgBySubdomain(slug).then((org) => {
+  lookupOrganizationByHostname(slug).then((org) => {
     req.subdomainOrg = org;
     next();
   }).catch(() => {
@@ -156,14 +149,6 @@ export function orgSessionGuard(req: Request, res: Response, next: NextFunction)
   }).catch(() => {
     res.status(401).json({ success: false, error: { message: 'Not authenticated', code: 'AUTH_REQUIRED' } });
   });
-}
-
-function clearSubdomainCache(slug?: string) {
-  if (slug) {
-    orgCache.delete(slug);
-  } else {
-    orgCache.clear();
-  }
 }
 
 export { extractSubdomain };

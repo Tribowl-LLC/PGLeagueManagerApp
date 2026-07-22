@@ -14,6 +14,7 @@ import {
 } from 'vitest';
 import express from 'express';
 import { readFileSync } from 'node:fs';
+import { request as httpRequest, type IncomingHttpHeaders } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 
@@ -113,15 +114,54 @@ interface PostOptions {
   headers?: Record<string, string>;
 }
 
-async function postSquare({ ip, body, query = '', headers = {} }: PostOptions) {
+async function postSquare({
+  ip,
+  body,
+  query = '',
+  headers = {},
+}: PostOptions) {
+  const requestHeaders: Record<string, string> = {
+    'x-forwarded-for': ip,
+    ...headers,
+  };
+  if (requestHeaders['content-type'] === undefined) {
+    requestHeaders['content-type'] = 'application/json';
+  }
   return fetch(`${baseUrl}${SQUARE_WEBHOOK_TRIPWIRE_PATH}${query}`, {
     method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-forwarded-for': ip,
-      ...headers,
-    },
+    headers: requestHeaders,
     body,
+  });
+}
+
+async function postSquareHttp(
+  ip: string,
+  chunks: readonly string[],
+  headers: Record<string, string>,
+): Promise<{
+  status: number;
+  headers: IncomingHttpHeaders;
+  body: string;
+}> {
+  return await new Promise((resolve, reject) => {
+    const request = httpRequest(`${baseUrl}${SQUARE_WEBHOOK_TRIPWIRE_PATH}`, {
+      method: 'POST',
+      headers: {
+        'x-forwarded-for': ip,
+        ...headers,
+      },
+    }, (response) => {
+      const responseChunks: Buffer[] = [];
+      response.on('data', (chunk: Buffer) => responseChunks.push(chunk));
+      response.on('end', () => resolve({
+        status: response.statusCode ?? 0,
+        headers: response.headers,
+        body: Buffer.concat(responseChunks).toString('utf8'),
+      }));
+    });
+    request.on('error', reject);
+    for (const chunk of chunks) request.write(chunk);
+    request.end();
   });
 }
 
@@ -153,6 +193,7 @@ describe('disabled Square webhook tripwire', () => {
       control: 'SENTINEL_CONTROL\n[ERROR] forged-log-line',
       userAgent: 'SENTINEL_USER_AGENT',
       contentTypeParameter: 'SENTINEL_CONTENT_TYPE_PARAMETER',
+      callerRequestId: 'SENTINEL_CALLER_REQUEST_ID',
     };
     const body = JSON.stringify({
       data: {
@@ -171,6 +212,7 @@ describe('disabled Square webhook tripwire', () => {
         'x-square-signature': sentinels.signature,
         'x-custom-sensitive': sentinels.custom,
         'user-agent': sentinels.userAgent,
+        'x-request-id': sentinels.callerRequestId,
         'content-type': `application/json; profile=${sentinels.contentTypeParameter}`,
       },
     });
@@ -260,13 +302,19 @@ describe('disabled Square webhook tripwire', () => {
     expectNoSideEffects();
   });
 
-  it('applies the same small limit to non-JSON bodies without logging bytes', async () => {
+  it.each([
+    ['text/plain', 'text/plain'],
+    ['application/octet-stream', 'application/octet-stream'],
+  ])('applies the same small limit to %s bodies without logging bytes', async (
+    _label,
+    contentType,
+  ) => {
     const sentinel = 'SENTINEL_NON_JSON_OVERSIZED_BODY';
     const body = sentinel + 'x'.repeat(SQUARE_WEBHOOK_TRIPWIRE_BODY_LIMIT_BYTES);
     const res = await postSquare({
-      ip: '203.0.113.17',
+      ip: `203.0.113.${contentType === 'text/plain' ? 17 : 18}`,
       body,
-      headers: { 'content-type': 'application/octet-stream' },
+      headers: { 'content-type': contentType },
     });
 
     expect(res.status).toBe(413);
@@ -274,6 +322,49 @@ describe('disabled Square webhook tripwire', () => {
     expect(JSON.parse(responseText).error.code).toBe('SQUARE_WEBHOOK_PAYLOAD_TOO_LARGE');
     expect(fakeLogger.error).not.toHaveBeenCalled();
     expect(serializedObservations(responseText)).not.toContain(sentinel);
+    expectNoSideEffects();
+  });
+
+  it('limits a body with no Content-Type header', async () => {
+    const sentinel = 'SENTINEL_MISSING_CONTENT_TYPE_BODY';
+    const body = sentinel + 'x'.repeat(SQUARE_WEBHOOK_TRIPWIRE_BODY_LIMIT_BYTES);
+    const result = await postSquareHttp('203.0.113.19', [body], {
+      'content-length': String(Buffer.byteLength(body)),
+    });
+
+    expect(result.status).toBe(413);
+    expect(JSON.parse(result.body).error.code).toBe('SQUARE_WEBHOOK_PAYLOAD_TOO_LARGE');
+    expect(fakeLogger.warn.mock.calls[0]?.[1]).toMatchObject({
+      contentType: 'none',
+      declaredContentLength: Buffer.byteLength(body),
+      outcome: 'rejected_payload_too_large',
+    });
+    expect(serializedObservations(result.body)).not.toContain(sentinel);
+    expectNoSideEffects();
+  });
+
+  it('limits chunked bodies without trusting a Content-Length header', async () => {
+    const sentinel = 'SENTINEL_CHUNKED_OVERSIZED_BODY';
+    const result = await postSquareHttp(
+      '203.0.113.20',
+      [sentinel, 'x'.repeat(SQUARE_WEBHOOK_TRIPWIRE_BODY_LIMIT_BYTES)],
+      {
+        'content-type': 'text/plain',
+        'transfer-encoding': 'chunked',
+      },
+    );
+
+    expect(result.status).toBe(413);
+    const requestId = result.headers[SQUARE_WEBHOOK_REQUEST_ID_HEADER.toLowerCase()];
+    expect(requestId).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(JSON.parse(result.body).error.code).toBe('SQUARE_WEBHOOK_PAYLOAD_TOO_LARGE');
+    expect(fakeLogger.warn.mock.calls[0]?.[1]).toMatchObject({
+      requestId,
+      contentType: 'other',
+      declaredContentLength: null,
+      outcome: 'rejected_payload_too_large',
+    });
+    expect(serializedObservations(result.body)).not.toContain(sentinel);
     expectNoSideEffects();
   });
 

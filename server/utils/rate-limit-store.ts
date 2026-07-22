@@ -24,6 +24,10 @@ import type { Store, IncrementResponse, Options as RateLimitOptions } from 'expr
 import type { Pool } from 'pg';
 import { pool as defaultPool } from '../db.js';
 import { createLogger } from '../logger';
+import {
+  assertProductionRateLimitStore,
+  usesSharedRateLimitStore,
+} from './rate-limit-environment';
 
 const log = createLogger('RateLimitStore');
 
@@ -205,7 +209,8 @@ export class PostgresRateLimitStore implements Store {
  * construct `new PostgresRateLimitStore({ prefix })` directly.
  */
 export function createSharedRateLimitStore(prefix: string): PostgresRateLimitStore | undefined {
-  if (process.env.NODE_ENV !== 'production') {
+  assertProductionRateLimitStore(process.env);
+  if (!usesSharedRateLimitStore(process.env)) {
     return undefined;
   }
   return new PostgresRateLimitStore({ prefix });

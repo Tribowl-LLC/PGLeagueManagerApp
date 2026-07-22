@@ -70,7 +70,7 @@ export async function ensureTestTemplate(): Promise<void> {
 
   await assertMigratedTemplateReady(templateUrl);
   console.log(
-    '[test-template-provenance] source=db:migrate cache=hit journal=exact fingerprint=exact rebuild=skipped',
+    '[test-template-provenance] source=db:migrate cache=hit journal=exact current-invariants=exact rebuild=skipped',
   );
 }
 

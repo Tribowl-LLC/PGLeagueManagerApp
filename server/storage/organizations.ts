@@ -27,8 +27,33 @@ import {
 import { createLogger } from '../logger';
 import { cacheInvalidate } from '../utils/cache';
 import { NonAdminMissingOrgError } from './users';
+import { getPgErrorCode, getPgErrorConstraint } from '../utils/db-errors';
 
 const log = createLogger("StorageOrgs");
+
+const HOSTNAME_CONSTRAINTS = new Set([
+  'organization_hostname_namespace_guard',
+  'organization_slug_idx',
+  'organization_subdomain_idx',
+  'organizations_slug_unique',
+]);
+
+export class OrganizationHostnameConflictError extends Error {
+  constructor() {
+    super('Organization hostname is already in use');
+    this.name = 'OrganizationHostnameConflictError';
+  }
+}
+
+function rethrowOrganizationHostnameConflict(error: unknown): never {
+  if (
+    getPgErrorCode(error) === '23505'
+    && HOSTNAME_CONSTRAINTS.has(getPgErrorConstraint(error) ?? '')
+  ) {
+    throw new OrganizationHostnameConflictError();
+  }
+  throw error;
+}
 
 export async function getOrganizations(): Promise<Organization[]> {
   return db.select().from(organizations).orderBy(organizations.name);
@@ -50,13 +75,21 @@ export async function getOrganizationBySubdomain(subdomain: string): Promise<Org
 }
 
 export async function createOrganization(organization: InsertOrganization): Promise<Organization> {
-  const [result] = await db.insert(organizations).values(organization).returning();
-  return result;
+  try {
+    const [result] = await db.insert(organizations).values(organization).returning();
+    return result;
+  } catch (error) {
+    rethrowOrganizationHostnameConflict(error);
+  }
 }
 
 export async function updateOrganization(id: number, organization: UpdateOrganization): Promise<Organization> {
-  const [result] = await db.update(organizations).set(organization).where(eq(organizations.id, id)).returning();
-  return result;
+  try {
+    const [result] = await db.update(organizations).set(organization).where(eq(organizations.id, id)).returning();
+    return result;
+  } catch (error) {
+    rethrowOrganizationHostnameConflict(error);
+  }
 }
 
 export async function archiveOrganization(id: number): Promise<Organization> {

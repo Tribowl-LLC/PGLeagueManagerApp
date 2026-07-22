@@ -7,26 +7,38 @@ import {
   REVIEWED_DRIZZLE_CONFIG_PATH,
 } from './lib/drizzle-cli-environment';
 
-export function parseReviewedMigrationName(args: readonly string[]): string {
+export function parseReviewedMigrationArgs(args: readonly string[]): {
+  name: string;
+  custom: boolean;
+} {
+  const custom = args.includes('--custom');
+  const nameArgs = args.filter((argument) => argument !== '--custom');
   let name: string | undefined;
-  if (args.length === 1 && args[0]?.startsWith('--name=')) {
-    name = args[0].slice('--name='.length);
-  } else if (args.length === 2 && args[0] === '--name') {
-    name = args[1];
+  if (nameArgs.length === 1 && nameArgs[0]?.startsWith('--name=')) {
+    name = nameArgs[0].slice('--name='.length);
+  } else if (nameArgs.length === 2 && nameArgs[0] === '--name') {
+    name = nameArgs[1];
   }
   if (!name || !/^[a-z0-9][a-z0-9_]*$/.test(name)) {
     throw new Error(
       'db:generate accepts exactly --name <reviewed_description> using lowercase letters, digits, or underscores; config, schema, dialect, and output overrides are refused.',
     );
   }
-  return name;
+  if (args.filter((argument) => argument === '--custom').length > 1) {
+    throw new Error('db:generate accepts --custom at most once.');
+  }
+  return { name, custom };
+}
+
+export function parseReviewedMigrationName(args: readonly string[]): string {
+  return parseReviewedMigrationArgs(args).name;
 }
 
 export function createGenerateInvocation(
   args: readonly string[],
   sourceEnvironment: NodeJS.ProcessEnv,
 ): { args: string[]; environment: NodeJS.ProcessEnv } {
-  const name = parseReviewedMigrationName(args);
+  const { name, custom } = parseReviewedMigrationArgs(args);
   return {
     args: [
       resolve('node_modules', 'drizzle-kit', 'bin.cjs'),
@@ -35,6 +47,7 @@ export function createGenerateInvocation(
       REVIEWED_DRIZZLE_CONFIG_PATH,
       '--name',
       name,
+      ...(custom ? ['--custom'] : []),
     ],
     environment: isolatedDrizzleEnvironment(sourceEnvironment),
   };

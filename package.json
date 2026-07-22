@@ -18,6 +18,7 @@
     "db:adopt-baseline:preflight": "tsx scripts/db-adopt-baseline-preflight.ts",
     "db:adopt-baseline": "tsx scripts/db-adopt-baseline.ts",
     "db:check": "tsx scripts/db-check.ts",
+    "db:audit:organization-hostnames": "tsx scripts/audit-organization-hostname-collisions.ts",
     "db:inventory": "tsx scripts/db-inventory.ts",
     "db:inventory:compare": "tsx scripts/db-inventory-compare.ts",
     "db:inventory:validate-local": "tsx scripts/db-inventory-validate-local.ts",

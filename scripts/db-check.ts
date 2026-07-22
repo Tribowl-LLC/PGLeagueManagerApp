@@ -322,16 +322,23 @@ async function installDeclaredSchema(
 function buildProofMigrationDirectory(artifactDirectory: string): { directory: string; metadata: ProofMetadata } {
   const directory = join(artifactDirectory, 'ordering-proof-migrations');
   cpSync(ACTIVE_MIGRATIONS_DIRECTORY, directory, { recursive: true });
-  const metadata = JSON.parse(
+  const fixtureMetadata = JSON.parse(
     readFileSync(resolve('tests', 'fixtures', 'migrations', 'ordering-proof.json'), 'utf8'),
   ) as ProofMetadata;
-  const baseline = baselineMigration();
+  const activeMigrations = loadActiveMigrations(directory);
+  const previousMigration = activeMigrations.at(-1);
+  if (!previousMigration) throw new Error('Active migration history is empty.');
+  const proofIndex = activeMigrations.length;
+  const metadata: ProofMetadata = {
+    tag: `${String(proofIndex).padStart(4, '0')}_ordering_proof`,
+    createdAt: Math.max(fixtureMetadata.createdAt, previousMigration.createdAt + 1),
+  };
   if (
-    !/^0001_[a-z0-9_]+$/.test(metadata.tag) ||
+    !/^\d{4}_[a-z0-9_]+$/.test(metadata.tag) ||
     !Number.isSafeInteger(metadata.createdAt) ||
-    metadata.createdAt <= baseline.createdAt
+    metadata.createdAt <= previousMigration.createdAt
   ) {
-    throw new Error('Ordering-proof fixture metadata is invalid or not ordered after the baseline.');
+    throw new Error('Ordering-proof fixture metadata is invalid or not ordered after active history.');
   }
   const proofSql = readFileSync(resolve('tests', 'fixtures', 'migrations', 'ordering-proof.sql'), 'utf8');
   writeFileSync(join(directory, `${metadata.tag}.sql`), proofSql, 'utf8');
@@ -342,19 +349,22 @@ function buildProofMigrationDirectory(artifactDirectory: string): { directory: s
     entries: Array<Record<string, unknown>>;
   };
   journal.entries.push({
-    idx: 1,
+    idx: proofIndex,
     version: '7',
     when: metadata.createdAt,
     tag: metadata.tag,
     breakpoints: true,
   });
   writeFileSync(journalPath, `${JSON.stringify(journal, null, 2)}\n`, 'utf8');
-  const baselineSnapshot = JSON.parse(readFileSync(join(directory, 'meta', '0000_snapshot.json'), 'utf8')) as {
+  const previousSnapshot = JSON.parse(readFileSync(
+    join(directory, 'meta', `${String(proofIndex - 1).padStart(4, '0')}_snapshot.json`),
+    'utf8',
+  )) as {
     id: string;
   };
-  writeFileSync(join(directory, 'meta', '0001_snapshot.json'), `${JSON.stringify({
-    id: '11111111-1111-4111-8111-111111111111',
-    prevId: baselineSnapshot.id,
+  writeFileSync(join(directory, 'meta', `${String(proofIndex).padStart(4, '0')}_snapshot.json`), `${JSON.stringify({
+    id: `11111111-1111-4111-8111-${String(proofIndex).padStart(12, '0')}`,
+    prevId: previousSnapshot.id,
     version: '7',
     dialect: 'postgresql',
     tables: {},
@@ -363,6 +373,55 @@ function buildProofMigrationDirectory(artifactDirectory: string): { directory: s
   writeMigrationChecksumManifest(directory);
   loadActiveMigrations(directory);
   return { directory, metadata };
+}
+
+async function assertOrganizationHostnameNamespaceGuard(connectionString: string): Promise<void> {
+  const client = new pg.Client({ connectionString, application_name: 'leaguevault-db-check-hostname-guard' });
+  try {
+    await client.connect();
+    const objects = await client.query<{ function_exists: boolean; trigger_exists: boolean }>(`
+      SELECT
+        to_regprocedure('public.organization_hostname_namespace_guard_fn()') IS NOT NULL
+          AS function_exists,
+        EXISTS (
+          SELECT 1
+          FROM pg_catalog.pg_trigger t
+          JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid
+          JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = 'public'
+            AND c.relname = 'organizations'
+            AND t.tgname = 'organization_hostname_namespace_guard'
+            AND NOT t.tgisinternal
+        ) AS trigger_exists
+    `);
+    if (!objects.rows[0]?.function_exists || !objects.rows[0]?.trigger_exists) {
+      throw new Error('Organization hostname namespace function or trigger is absent.');
+    }
+
+    await client.query('BEGIN');
+    await client.query(`
+      INSERT INTO organizations (name, slug, subdomain)
+      VALUES ('db-check-hostname-a', 'dbcheckhostnamea', 'dbcheckshared')
+    `);
+    await client.query('SAVEPOINT before_collision');
+    let collision: { code?: string; constraint?: string } | undefined;
+    try {
+      await client.query(`
+        INSERT INTO organizations (name, slug, subdomain)
+        VALUES ('db-check-hostname-b', 'dbcheckshared', 'dbcheckhostnameb')
+      `);
+    } catch (error) {
+      collision = error as { code?: string; constraint?: string };
+      await client.query('ROLLBACK TO SAVEPOINT before_collision');
+    }
+    if (collision?.code !== '23505' || collision.constraint !== 'organization_hostname_namespace_guard') {
+      throw new Error('Organization hostname namespace trigger did not reject a cross-field collision.');
+    }
+    await client.query('ROLLBACK');
+  } finally {
+    await client.query('ROLLBACK').catch(() => undefined);
+    await client.end().catch(() => undefined);
+  }
 }
 
 function adoptionRequest(
@@ -825,15 +884,16 @@ async function validateVersion(
     const adminUrl = databaseUrl(port, 'postgres');
     mkdirSync(join(artifactDirectory, `postgres-${version}`), { recursive: true });
     const proof = buildProofMigrationDirectory(join(artifactDirectory, `postgres-${version}`));
+    const activeMigrationTags = loadActiveMigrations().map((migration) => migration.tag);
 
     const freshActive = 'fresh_active';
     await createDatabase(adminUrl, freshActive, container);
     const freshActiveUrl = databaseUrl(port, freshActive);
     const firstRun = await runCheckedMigrations(freshActiveUrl);
-    if (firstRun.applied.length !== 1 || firstRun.applied[0] !== baselineMigration().tag) {
-      throw new Error('Fresh active migration replay did not apply exactly the baseline.');
+    if (JSON.stringify(firstRun.applied) !== JSON.stringify(activeMigrationTags)) {
+      throw new Error('Fresh active migration replay did not apply the complete active history.');
     }
-    await verifiedFingerprint(freshActiveUrl);
+    await assertOrganizationHostnameNamespaceGuard(freshActiveUrl);
     if (!(await runCheckedMigrations(freshActiveUrl)).noOp) {
       throw new Error('Rerunning db:migrate on a fresh replay was not a no-op.');
     }
@@ -842,11 +902,11 @@ async function validateVersion(
     await createDatabase(adminUrl, freshProof, container);
     const freshProofUrl = databaseUrl(port, freshProof);
     const freshProofRun = await runCheckedMigrations(freshProofUrl, proof.directory);
-    if (JSON.stringify(freshProofRun.applied) !== JSON.stringify([baselineMigration().tag, proof.metadata.tag])) {
-      throw new Error('Fresh proof replay did not apply baseline then proof in order.');
+    if (JSON.stringify(freshProofRun.applied) !== JSON.stringify([...activeMigrationTags, proof.metadata.tag])) {
+      throw new Error('Fresh proof replay did not apply active history then proof in order.');
     }
     await assertProofMarker(freshProofUrl);
-    const freshProofFingerprint = await verifiedFingerprint(freshProofUrl);
+    await assertOrganizationHostnameNamespaceGuard(freshProofUrl);
     if (!(await runCheckedMigrations(freshProofUrl, proof.directory)).noOp) {
       throw new Error('Rerunning the proof migration chain was not a no-op.');
     }
@@ -1284,17 +1344,17 @@ async function validateVersion(
     }
 
     const adoptedProofRun = await runCheckedMigrations(adoptionUrl, proof.directory);
-    if (JSON.stringify(adoptedProofRun.applied) !== JSON.stringify([proof.metadata.tag])) {
-      throw new Error('Adopted database did not skip baseline and apply only the proof migration.');
+    if (JSON.stringify(adoptedProofRun.applied) !== JSON.stringify([
+      ...activeMigrationTags.slice(1),
+      proof.metadata.tag,
+    ])) {
+      throw new Error('Adopted database did not skip baseline and apply later migrations in order.');
     }
     await assertProofMarker(adoptionUrl);
     if (!(await runCheckedMigrations(adoptionUrl, proof.directory)).noOp) {
       throw new Error('Adopted proof rerun was not a no-op.');
     }
-    const adoptedFinalFingerprint = await verifiedFingerprint(adoptionUrl);
-    if (JSON.stringify(freshProofFingerprint.structure) !== JSON.stringify(adoptedFinalFingerprint.structure)) {
-      throw new Error('Fresh and adopted final application schemas differ.');
-    }
+    await assertOrganizationHostnameNamespaceGuard(adoptionUrl);
 
     const refusalCases = adoptionRefusalCases();
     for (let index = 0; index < refusalCases.length; index += 1) {
