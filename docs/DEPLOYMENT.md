@@ -2,11 +2,11 @@
 
 This is the authoritative overview and operator checklist for deploying
 LeagueVault to production. It explains the release boundaries and the order of
-operations. This file is stored at the repository root as `DEPLOYMENT.md`.
+operations. This file is stored under `docs/` as `DEPLOYMENT.md`.
 Repository paths are case-sensitive on Linux: the database authority is
-uppercase [`docs/DATABASE.md`](docs/DATABASE.md), while the detailed release
+uppercase [`DATABASE.md`](DATABASE.md), while the detailed release
 runbook is lowercase
-[`docs/production-runbook.md`](docs/production-runbook.md).
+[`production-runbook.md`](production-runbook.md).
 
 > **Operational dashboard state last verified:** 2026-07-21
 >
@@ -52,7 +52,7 @@ in the live dashboard on 2026-07-21):
 
 | Service | Purpose and type | Trigger and scaling | Interactions |
 | --- | --- | --- | --- |
-| `LeagueVault` | Render **Node Web Service** in the Ohio region, serving the React application and Express API on the Starter plan | Tracks GitHub `main`; Auto-Deploy is `After CI Checks Pass`. Production runs one instance. A schema release uses the runbook's verified [auto-deploy hold and restoration procedure](docs/production-runbook.md#schema-release-auto-deploy-hold) so migration precedes rollout. | Receives all HTTP requests, opens the PostgreSQL connection pool to Neon, serves the built frontend, and starts the in-process payment scheduler, retry sweeps, Apple Pay recovery worker, catalog audit, and provider probes. |
+| `LeagueVault` | Render **Node Web Service** in the Ohio region, serving the React application and Express API on the Starter plan | Tracks GitHub `main`; Auto-Deploy is `After CI Checks Pass`. Production runs one instance. A schema release uses the runbook's verified [auto-deploy hold and restoration procedure](production-runbook.md#schema-release-auto-deploy-hold) so migration precedes rollout. | Receives all HTTP requests, opens the PostgreSQL connection pool to Neon, serves the built frontend, and starts the in-process payment scheduler, retry sweeps, Apple Pay recovery worker, catalog audit, and provider probes. |
 
 There is no checked-in Render Blueprint and no separately documented production
 Render worker or cron service. Render dashboard state is therefore an external
@@ -217,7 +217,7 @@ Environment variables cross several ownership boundaries:
 
 The production runtime requires the environment classification, domain,
 database connection, session signing, and field-encryption configuration
-documented in [`docs/production-runbook.md`](docs/production-runbook.md#render-configuration).
+documented in [`production-runbook.md`](production-runbook.md#render-configuration).
 Optional integrations and provider credentials are configured only when their
 features are enabled.
 
@@ -249,7 +249,7 @@ Use this order for every release:
 1. Determine whether the reviewed release contains a schema migration. For a
    schema release, switch Render Auto-Deploy from `After CI Checks Pass` to
    `Off` before merge using the runbook's
-   [verified hold procedure](docs/production-runbook.md#schema-release-auto-deploy-hold)
+   [verified hold procedure](production-runbook.md#schema-release-auto-deploy-hold)
    so the application cannot outrun its schema. A code-only release keeps the
    normal auto-deploy setting.
 2. Merge the reviewed pull request into `main`; never push a normal release
@@ -267,7 +267,7 @@ Use this order for every release:
 8. Confirm a current Neon backup or restorable branch and an approved recovery
    plan are available.
 9. From the exact certified revision, run the reviewed migration once with the
-   guarded procedure in [`docs/DATABASE.md`](docs/DATABASE.md#production-migration-process).
+   guarded procedure in [`DATABASE.md`](DATABASE.md#production-migration-process).
    Stop on any identity, fingerprint, journal, checksum, or SQL failure.
 10. For a schema release, manually deploy the matching certified application
     revision. For a code-only release, verify Render's `After CI Checks Pass`
@@ -292,7 +292,7 @@ schema expectations, and reviewed migration bytes traceable to one source.
 
 ## 8. Migration sequence
 
-[`docs/DATABASE.md`](docs/DATABASE.md) is authoritative for schema state and
+[`DATABASE.md`](DATABASE.md) is authoritative for schema state and
 operator safeguards. The essential release rules are:
 
 - `migrations/` is forward-only and append-only;
@@ -347,7 +347,7 @@ migrations must remain compatible with the previous application revision.
 A database restore is an operational recovery event, not a routine deployment
 step. It can discard or fork production writes and requires explicit review and
 coordination. See
-[`docs/DATABASE.md`](docs/DATABASE.md#backup-expectations) for the recovery
+[`DATABASE.md`](DATABASE.md#backup-expectations) for the recovery
 boundary.
 
 ## 10. Deployment verification

@@ -27,7 +27,7 @@ Build and submit LeagueVault to the Apple App Store and Google Play Store.
 
 The native apps are thin shells that load the live production website (`https://leaguevault.app`) inside a native WebView. This means:
 
-> **Note:** The runtime backend reads the production hostname from the `APP_DOMAIN` env var (defaults to `leaguevault.app`); see `AGENTS.md`. The mobile entitlements and capacitor config below are **build-time** artifacts that intentionally stay hardcoded — they are baked into signed app bundles, not read from env.
+> **Note:** The runtime backend reads the production hostname from the `APP_DOMAIN` env var (defaults to `leaguevault.app`); see `docs/AGENTS.md`. The mobile entitlements and capacitor config below are **build-time** artifacts that intentionally stay hardcoded — they are baked into signed app bundles, not read from env.
 
 
 - **No app store re-submission needed** for web updates — any changes deployed to the website are instantly reflected in the app.

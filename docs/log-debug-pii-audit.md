@@ -6,7 +6,7 @@ safe to surface in production when an operator deliberately opts into
 `LOG_LEVEL=debug` to debug a live incident.
 
 The default minimum log level in production is `info` (see task #306 and the
-operator note in `AGENTS.md`), so debug lines do not flow by default. This
+operator note in `docs/AGENTS.md`), so debug lines do not flow by default. This
 audit exists so an operator can flip to `LOG_LEVEL=debug` without leaking
 PII into a production log sink.
 
@@ -45,7 +45,7 @@ Payload: `resourceType`, `resourceId`, `userId`, `role`.
 
 **Verdict: safe.** Internal numeric ids only. This is the original
 motivating site for routing org-less drift signal at debug instead of
-warn (see task #296 and the operator note in `AGENTS.md`). The doc
+warn (see task #296 and the operator note in `docs/AGENTS.md`). The doc
 comment at the top of the file already pins the contract.
 
 ### `server/utils/bowler-claim-tokens.ts:88`
