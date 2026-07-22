@@ -22,7 +22,6 @@ import { getPaymentProvider, ProviderNotConfiguredError } from '../services/paym
 import { hasWalletSupport } from '../services/payment-provider';
 import { canonicalApplePayDomain } from '../services/apple-pay-domains';
 import { OrganizationHostnameConflictError } from '../storage/organizations';
-import { invalidateOrganizationHostnameCache } from '../middleware/subdomain';
 
 const log = createLogger("Organizations");
 
@@ -139,7 +138,6 @@ router.post('/', requireAdmin, adminWriteLimiter, inviteLimiter, async (req, res
     const validatedData = insertOrganizationSchema.parse(orgData);
     
     const organization = await storage.createOrganization(validatedData);
-    invalidateOrganizationHostnameCache([organization.slug, organization.subdomain]);
 
     if (organization.subdomain || organization.slug) {
       autoRegisterApplePayDomain(organization).catch(() => {});
@@ -236,12 +234,6 @@ router.patch('/:id', requireAdmin, adminWriteLimiter, async (req, res) => {
     const subdomainChanged = validatedData.subdomain !== undefined && validatedData.subdomain !== organization.subdomain;
     const slugChanged = validatedData.slug !== undefined && validatedData.slug !== organization.slug;
     if (subdomainChanged || slugChanged) {
-      invalidateOrganizationHostnameCache([
-        organization.slug,
-        organization.subdomain,
-        updatedOrganization.slug,
-        updatedOrganization.subdomain,
-      ]);
       autoRegisterApplePayDomain(updatedOrganization).catch(() => {});
     }
 
