@@ -68,7 +68,7 @@ router.post("/:id/refund", paymentWriteLimiter, async (req, res) => {
     const { reason } = req.body || {};
     let providerRefundId: string | undefined;
 
-    const providerPaymentRef = payment.cloverChargeId || payment.providerPaymentId;
+    const providerPaymentRef = payment.providerPaymentId;
     if (providerPaymentRef && isCardPaymentType(payment.type)) {
       const league = await storage.getLeague(payment.leagueId);
       const locationId = league?.locationId ?? null;

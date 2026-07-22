@@ -18,7 +18,7 @@
  * Mounts the real `account` router on an isolated express app with
  * `storage` + `syncBowlerForUser` mocked, mirroring the harness used
  * by tests/unit/auth-user-payment-sync-status.test.ts. No real DB,
- * Square, Clover, or email service is contacted.
+ * Square or the email service is contacted.
  */
 import {
   afterAll,

@@ -24,7 +24,7 @@ allows otherwise.
 - Express provides the HTTP API and serves the built client.
 - Drizzle ORM and the `pg` driver access Neon PostgreSQL.
 - Zod is used for environment and request validation.
-- Square and Clover are separate payment-provider integrations.
+- Square is the only supported payment-provider integration.
 
 The frontend and backend deliberately contain some imperative effects for
 browser APIs, payment SDK lifecycles, and state reconciliation. React Doctor
@@ -39,7 +39,6 @@ correctness or simplify a real workflow, especially around payment behavior.
 - Wire sanitization prevents raw sensitive database objects from reaching the
   client.
 - Passwords and payment credentials must not appear in logs.
-- Clover webhooks require signature verification in production.
 - Trust-proxy configuration affects IP-based rate limiting and is checked at
   boot and by the scheduled post-deploy probe.
 
@@ -52,7 +51,7 @@ webhook, or tenant-access path.
 Permanent organization teardown is system-admin-only and atomic. The database
 transaction removes app-owned tenant records and organization-specific audit
 records, while preserving platform system-admin accounts and detaching them
-from the deleted organization. Remote Square and Clover customer records are
+from the deleted organization. Remote Square customer records are
 not removed by this operation.
 
 New season creation carries forward the selected league structure while

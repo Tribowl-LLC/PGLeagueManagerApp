@@ -16,7 +16,6 @@ import type { Payment } from "@shared/schema";
 
 function refundProviderHint(payment: Payment): string {
   if (payment.type === "credit_card" || payment.type === "square") return " The refund will be processed through Square.";
-  if (payment.type === "clover") return " The refund will be processed through Clover.";
   if (isCardPaymentType(payment.type)) return " The refund will be processed through your payment provider.";
   return "";
 }
@@ -25,7 +24,6 @@ function paymentLabel(payment: Payment): string {
   switch (payment.type) {
     case "credit_card": return "Credit Card";
     case "square": return "Square";
-    case "clover": return "Clover";
     case "check": return "Check";
     case "cash": return "Cash";
     default: return payment.type;

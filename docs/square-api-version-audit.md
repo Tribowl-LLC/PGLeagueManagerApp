@@ -16,10 +16,7 @@ version pin from `2025-01-23` to a current version.
   outbound request — independently of the dashboard pin.
 - We make **zero raw HTTP** calls to Square. 100% of our wire goes
   through the SDK client.
-- We have **no real Square webhook receiver** (only Clover). The
-  CSRF-exempt path covers `/payments-provider/webhooks`
-  generically; `webhooks.ts` mounts the real `POST /webhooks/clover`
-  handler, while `app.ts` registers the disabled
+- We have **no real Square webhook receiver**. `app.ts` registers the disabled
   `POST /webhooks/square` tripwire before tenant resolution and the
   global JSON parser. The tripwire returns 501 and logs bounded metadata only.
 - Our SDK call surface is small and already on the v40+ flat-client
@@ -231,9 +228,6 @@ client. No raw HTTP.**
 
 ### Receivers in this repo
 
-- `server/routes/payments-provider/webhooks.ts` — **Clover handler**.
-  - `POST /webhooks/clover` is the real, signed Clover handler from
-    task #577.
 - `server/routes/payments-provider/square-webhook-tripwire.ts` — **disabled
   Square tripwire**.
   - `POST /webhooks/square` is a tripwire stub added in task #612.
@@ -244,9 +238,7 @@ client. No raw HTTP.**
     to any Square webhook events today, so the tripwire exists only to make an
     accidental subscription visible without processing it. There is no HMAC
     verification because the endpoint does not accept Square events.
-- `server/middleware/csrf.ts:39-45` — exempts the path prefix
-  `/payments-provider/webhooks` from CSRF. Clover reaches that exemption;
-  the exact Square tripwire returns earlier in the stack, before session and
+- The exact Square tripwire returns earlier in the stack, before session and
   CSRF middleware, because provider callbacks cannot use browser sessions.
 
 ### Subscriptions on Square's side

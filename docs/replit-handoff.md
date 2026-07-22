@@ -72,7 +72,7 @@ match (see `server/utils/live-credential-check.ts`).
 | `APP_ENV` | `beta` | Locks in the beta envelope. |
 | `DATABASE_URL` | (auto-set by Replit DB) | Must point at the beta DB, not prod. |
 | `SESSION_SECRET` | `openssl rand -base64 48` | Generate fresh — do **not** reuse prod. |
-| `FIELD_ENCRYPTION_KEY` | `openssl rand -hex 32` | Generate fresh — do **not** reuse prod. With a fresh value, any encrypted Clover credentials seeded into beta must be re-entered. |
+| `FIELD_ENCRYPTION_KEY` | `openssl rand -hex 32` | Generate fresh — do **not** reuse prod. |
 | `APP_DOMAIN` | `leaguevault.app` | Stays the same — the parent domain controls subdomain matching. |
 
 #### Square (sandbox)
@@ -106,13 +106,6 @@ slots and refuses to start when:
 If the boot guard fires, the error log lists each offending env var
 and the matched heuristic.
 
-#### Clover (per-tenant, in DB)
-
-Clover credentials are encrypted in the database, not env vars. After
-the beta DB is provisioned and a test organization is seeded, use the
-in-app Integrations page to enter **Clover sandbox** credentials for
-each test tenant. (Clover sandbox is at `https://sandbox.dev.clover.com`.)
-
 #### Optional / disabled by default on beta
 
 | Secret | Recommendation |
@@ -144,10 +137,6 @@ In the Square Developer Dashboard → your sandbox app → Webhooks:
 - Notification URL: `https://beta.leaguevault.app/api/webhooks/square`
   (or whichever path you use for Square webhooks today).
 - Subscribe to the same event topics as production.
-
-For Clover sandbox webhooks, configure them per-tenant inside the
-LeagueVault Integrations UI as you would in prod, but with the beta
-domain as the callback URL.
 
 ### 7. Seed test data
 

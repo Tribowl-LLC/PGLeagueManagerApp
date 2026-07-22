@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 /**
- * Task #651 — Clover / SendGrid pin verifier registrations.
+ * Task #651 — SendGrid pin verifier registration.
  *
  * Square's verifier has its own dedicated test
  * (`square-version-runtime-guard.test.ts`) that asserts on its
@@ -68,45 +68,7 @@ describe('third-party pin registrations (task #651)', () => {
     // The Square verifier registers itself when `third-party-pins`
     // imports `square-provider` for its side-effect; the other two
     // register directly inside `third-party-pins`.
-    expect(providers).toEqual(
-      expect.arrayContaining(['square', 'clover', 'sendgrid']),
-    );
-  });
-
-  describe('Clover webhook signature scheme verifier', () => {
-    it('passes against the live receiver constants (hmac-sha256 + x-clover-signature)', async () => {
-      const outcome = await verifyThirdPartyPin('clover');
-      expect(outcome).toMatchObject({
-        provider: 'clover',
-        ok: true,
-        actual: 'hmac-sha256(x-clover-signature)',
-        expected: 'hmac-sha256(x-clover-signature)',
-      });
-      expect(loggerCalls('CloverWebhook').error).not.toHaveBeenCalled();
-    });
-
-    it('emits a [PAGE]-prefixed structured error when the receiver constants drift from the pin', async () => {
-      _setThirdPartyPinProbeForTests('clover', async () => ({
-        ok: false,
-        actual: 'hmac-sha512(x-clover-signature)',
-        reason: 'drift',
-      }));
-
-      const outcome = await verifyThirdPartyPin('clover');
-      expect(outcome.ok).toBe(false);
-
-      const error = loggerCalls('CloverWebhook').error;
-      expect(error).toHaveBeenCalledTimes(1);
-      const [message, payload] = error.mock.calls[0] ?? [];
-      expect(message).toMatch(/^\[PAGE\] /);
-      expect(message).toMatch(/clover webhook signature scheme drift/);
-      expect(payload).toMatchObject({
-        provider: 'clover',
-        expected: 'hmac-sha256(x-clover-signature)',
-        actual: 'hmac-sha512(x-clover-signature)',
-        runbook: 'docs/third-party-pins.md#clover',
-      });
-    });
+    expect(providers).toEqual(expect.arrayContaining(['square', 'sendgrid']));
   });
 
   describe('SendGrid SDK major + base URL verifier', () => {

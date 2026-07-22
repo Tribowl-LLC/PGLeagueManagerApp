@@ -16,7 +16,7 @@ export interface ChargeResult {
   cardId?: string;
   providerRef?: Record<string, string>;
   providerName?: string;
-  // Square hosted-receipt fields; undefined for Clover.
+  // Square hosted-receipt fields.
   receiptUrl?: string;
   receiptNumber?: string;
   // True when a Square charge ran without buyer email (no auto-receipt).
@@ -298,7 +298,6 @@ async function createPaymentRecord(
     type: providerNameToPaymentType(providerName || ''),
     weekOf: weekOf ?? scheduleRecord.nextPaymentDate,
     providerPaymentId: paymentId,
-    cloverChargeId: providerRef?.cloverChargeId,
     receiptUrl: receipt?.receiptUrl,
     receiptNumber: receipt?.receiptNumber,
     receiptEmailMissing:

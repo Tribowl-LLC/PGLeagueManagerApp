@@ -133,8 +133,7 @@ an issue.
 Provider configuration is optional for ordinary development. Examples include
 SendGrid (`SENDGRID_API_KEY`), Sentry (`SENTRY_DSN` and build-time
 `VITE_SENTRY_DSN`), setup endpoints (`SETUP_SECRET`),
-Square sandbox credentials, and Clover webhook verification
-(`CLOVER_WEBHOOK_SIGNING_SECRET`). Configure an integration only when the
+Square sandbox credentials. Configure an integration only when the
 feature under test needs it, and use sandbox or deterministic local values.
 Variables prefixed with `VITE_` are delivered to browser code and must never
 contain secrets.

@@ -198,12 +198,11 @@ export function sanitizeOrgs(orgs: Organization[]): SanitizedOrganization[] {
   return orgs.map(sanitizeOrg);
 }
 
-// Same allowlist strategy for locations (task #381). The
-// `squareCredentials` and `cloverCredentials` JSONB columns hold
-// the raw `accessToken` / `apiToken` for the location's payment
-// processor — they MUST never appear on the wire. The dedicated
-// `/api/locations/:id/square-config` and `/clover-config`
-// endpoints already publish the safe boolean-flag projection
+// Same allowlist strategy for locations (task #381).
+// The `squareCredentials` JSONB column holds the raw access token for
+// the location's payment processor and must never appear on the wire.
+// The dedicated `/api/locations/:id/square-config` endpoint publishes
+// the safe boolean-flag projection
 // (`accessTokenConfigured: true`); the base CRUD routes had been
 // returning the raw blob alongside it for years. Anything new that
 // lands on the table will be dropped by default until it's
@@ -218,7 +217,6 @@ const SAFE_LOCATION_FIELDS = [
   'phone',
   'active',
   'organizationId',
-  'paymentProvider',
 ] as const;
 
 export type SanitizedLocation = Pick<Location, typeof SAFE_LOCATION_FIELDS[number]>;
@@ -240,10 +238,8 @@ export function sanitizeLocations(locations: Location[]): SanitizedLocation[] {
 // risk live on this table:
 //
 //   1. Saved-card vault references that are not safe to publish
-//      (`cloverCustomerId` is the handle the Clover API uses
-//      to charge the bowler's saved card; `paymentProviderLocationId`
-//      is internal routing data for the deletion service). Neither
-//      has any UI consumer today — they're dropped.
+//      (`paymentProviderLocationId` is internal routing data for the
+//      deletion service). This value has no UI consumer today and is dropped.
 //
 //   2. Payment-system identifiers and retry bookkeeping that the
 //      bowlers/admin UI legitimately needs to render. These stay on
@@ -283,13 +279,12 @@ export function sanitizeBowlers(bowlers: Bowler[]): SanitizedBowler[] {
 
 // Same allowlist strategy for payments (task #504). Task #381 covered
 // locations + bowlers; payments was deferred as lower-risk because
-// the only sensitive-looking columns are operational:
+// the only sensitive-looking column is operational:
 //
-//   - `cloverChargeId` is already printed on receipts.
 //   - `idempotencyKey` is a client-supplied dedupe key.
 //
-// Both stay on the allowlist because their UI consumers depend on
-// them. The point of wiring an allowlist projection in anyway is
+// It stays on the allowlist because UI consumers depend on it. The point of
+// wiring an allowlist projection in anyway is
 // deny-by-default for the *next* column: a future addition to the
 // `payments` table (e.g. `processorWebhookSecret`, `merchantApiKey`,
 // `customerCardToken`) will be dropped at the response boundary
@@ -312,10 +307,6 @@ const SAFE_PAYMENT_FIELDS = [
   // in view-receipt-button.tsx. Not a credential — Square treats it
   // as a public-ish reference (the dashboard URL contains it).
   'providerPaymentId',
-  // Clover charge reference printed on the physical receipt; the
-  // refund flow needs `cloverChargeId` to issue a refund through
-  // Clover. Operational, not a credential.
-  'cloverChargeId',
   // Client-supplied dedupe key. Surfacing it back to the same client
   // that submitted it doesn't disclose anything new.
   'idempotencyKey',

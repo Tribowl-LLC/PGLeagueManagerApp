@@ -3,8 +3,8 @@
  *
  * Generalizes the runtime drift guard pattern that
  * `verifySquareSdkVersion` (task #627) introduced for the Square SDK
- * to every other third-party client we depend on (Clover,
- * SendGrid, …). The risk is the same in every case: a silent SDK
+ * to every other third-party client we depend on (SendGrid, etc.).
+ * The risk is the same in every case: a silent SDK
  * upgrade — a hotfix `npm i provider@latest`, a `package-lock.json`
  * regen, an unintentional major-version float — could change the
  * wire shape we audited against without any test catching it,
@@ -58,7 +58,7 @@ export interface PinVerificationOutcome {
 }
 
 export interface PinVerifier {
-  /** Stable provider key, e.g. `'square'`, `'clover'`. Used to
+  /** Stable provider key, e.g. `'square'`, `'sendgrid'`. Used to
    *  dedupe registrations and to address the verifier from tests. */
   provider: string;
   /** Human-friendly name of the wire literal being pinned, e.g.

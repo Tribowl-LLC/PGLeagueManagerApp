@@ -130,11 +130,6 @@ const PARALLEL_ISOLATED = [
   'tests/unit/change-password-notification.test.ts',
   'tests/unit/charges-buyer-email-enforcement.test.ts',
   'tests/unit/charges-receipt-persistence.test.ts',
-  'tests/unit/clover-charge.test.ts',
-  'tests/unit/clover-disable-card-ownership-mismatch.test.ts',
-  'tests/unit/clover-refund.test.ts',
-  'tests/unit/clover-saved-card.test.ts',
-  'tests/unit/clover-webhooks.test.ts',
   'tests/unit/confirm-email-change-no-token-leak.test.ts',
   'tests/unit/csrf-no-token-leak.test.ts', // Task #720 hoist preserved as precaution after sibling regressions (#722). Reverted.
   'tests/unit/customers-route-pnce-422.test.ts',

@@ -115,7 +115,6 @@ vi.mock('../../server/services/payment-provider', () => ({
 }));
 vi.mock('../../server/services/payment-utils', () => ({
   getProviderCustomerId: () => 'cust_1',
-  persistCloverCustomer: vi.fn(),
 }));
 vi.mock('../../server/routes/payments-provider/shared.js', () => ({
   getProviderForLeague: vi.fn(async () => fakeProvider),

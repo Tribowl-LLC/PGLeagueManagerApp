@@ -29,24 +29,21 @@ export const PaymentStatus = {
   PENDING: PAYMENT_STATUSES[1],
   FAILED: PAYMENT_STATUSES[2],
   REFUNDED: PAYMENT_STATUSES[3],
-  // Cardholder opened a dispute / chargeback. Set by the Clover
-  // webhook receiver (task #577) and may be set by the Square
-  // receiver in a follow-up. Distinct from `refunded` because the
+  // Cardholder opened a dispute / chargeback. Distinct from `refunded` because the
   // funds aren't necessarily moved yet — the dispute could still be
   // won.
   DISPUTED: PAYMENT_STATUSES[4],
 } as const;
 
-export const PAYMENT_TYPES = ["cash", "check", "credit_card", "square", "clover"] as const;
+export const PAYMENT_TYPES = ["cash", "check", "credit_card", "square"] as const;
 export const PaymentType = {
   CASH: PAYMENT_TYPES[0],
   CHECK: PAYMENT_TYPES[1],
   CREDIT_CARD: PAYMENT_TYPES[2],
   SQUARE: PAYMENT_TYPES[3],
-  CLOVER: PAYMENT_TYPES[4],
 } as const;
 
-export const CARD_PAYMENT_TYPES: readonly string[] = [PaymentType.CREDIT_CARD, PaymentType.SQUARE, PaymentType.CLOVER];
+export const CARD_PAYMENT_TYPES: readonly string[] = [PaymentType.CREDIT_CARD, PaymentType.SQUARE];
 export function isCardPaymentType(type: string): boolean {
   return CARD_PAYMENT_TYPES.includes(type);
 }
@@ -54,7 +51,6 @@ export function isCardPaymentType(type: string): boolean {
 export type PaymentTypeValue = (typeof PAYMENT_TYPES)[number];
 const PROVIDER_TO_PAYMENT_TYPE: Record<string, PaymentTypeValue> = {
   square: PaymentType.SQUARE,
-  clover: PaymentType.CLOVER,
 };
 export function providerNameToPaymentType(providerName: string): PaymentTypeValue {
   return PROVIDER_TO_PAYMENT_TYPE[providerName] ?? PaymentType.CREDIT_CARD;

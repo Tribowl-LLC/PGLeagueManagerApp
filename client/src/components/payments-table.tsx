@@ -22,7 +22,6 @@ function paymentTypeLabel(payment: Payment): string {
     case "check": return `Check #${payment.checkNumber}`;
     case "credit_card": return "Credit Card";
     case "square": return "Square";
-    case "clover": return "Clover";
     default: return "Other Payment";
   }
 }

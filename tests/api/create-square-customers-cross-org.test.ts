@@ -128,7 +128,6 @@ beforeAll(async () => {
       name: `vitest-csc-loc-a-${suffix}`,
       organizationId: orgAId,
       active: true,
-      paymentProvider: 'square',
     })
     .returning({ id: locations.id });
   const [locationB] = await db
@@ -137,7 +136,6 @@ beforeAll(async () => {
       name: `vitest-csc-loc-b-${suffix}`,
       organizationId: orgBId,
       active: true,
-      paymentProvider: 'square',
     })
     .returning({ id: locations.id });
   partial.locationAId = locationA.id;

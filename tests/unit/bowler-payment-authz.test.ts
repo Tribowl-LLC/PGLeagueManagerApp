@@ -75,7 +75,6 @@ function makeBowler(
     order: overrides.order ?? 0,
     organizationId: overrides.organizationId as number,
     paymentCustomerId: overrides.paymentCustomerId ?? null,
-    cloverCustomerId: overrides.cloverCustomerId ?? null,
     paymentProviderLocationId: overrides.paymentProviderLocationId ?? null,
     paymentSyncPendingAt: overrides.paymentSyncPendingAt ?? null,
     paymentSyncAttempts: overrides.paymentSyncAttempts ?? 0,

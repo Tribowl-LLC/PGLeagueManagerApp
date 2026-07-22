@@ -8,7 +8,7 @@ import { Router } from 'express';
 import { storage } from '../../storage';
 import { createLogger } from '../../logger';
 import { isDev } from '../../config';
-import { getMissingCloverFields, getMissingSquareFields } from '@shared/schema';
+import { getMissingSquareFields } from '@shared/schema';
 
 const log = createLogger('Payments');
 
@@ -26,32 +26,11 @@ router.get('/config', async (req, res) => {
             req.user?.role === 'system_admin' ||
             (req.user?.organizationId != null && req.user.organizationId === loc.organizationId);
           if (isAuthorized) {
-            if (loc.paymentProvider === 'clover') {
-              const clCreds = await storage.getLocationCloverConfig(lvLocationId);
-              // Always advertise that this location is on Clover so the
-              // client can branch its UI even when the config is
-              // missing or partial. The `providerConfigured` flag and
-              // `missingFields` list let the payment form / settings
-              // page show a friendly "Clover not fully configured"
-              // message instead of silently rendering a broken card
-              // tokenizer (task #575).
-              const missingFields = getMissingCloverFields(clCreds ?? null);
-              return res.json({
-                paymentProvider: 'clover',
-                merchantId: clCreds?.merchantId?.trim() || '',
-                publicTokenizerKey: clCreds?.publicTokenizerKey?.trim() || '',
-                environment: clCreds?.environment ?? 'sandbox',
-                providerConfigured: missingFields.length === 0,
-                missingFields,
-              });
-            }
-
             const creds = await storage.getLocationSquareConfig(lvLocationId);
             // Always advertise per-location Square config (even when
             // partial / missing) so the client can branch its UI on
-            // `providerConfigured` + `missingFields`. Mirrors the
-            // Clover branch above. Falling through to env-var config
-            // when a location is explicitly on Square would mask a
+            // `providerConfigured` + `missingFields`. Falling through to
+            // env-var config would mask a
             // half-configured location with stale process-level
             // credentials and silently break the partial-config UX
             // settings/payment surfaces depend on. (Task #579 —
@@ -60,7 +39,6 @@ router.get('/config', async (req, res) => {
             return res.json({
               appId: creds?.appId?.trim() || '',
               locationId: creds?.locationId?.trim() || '',
-              paymentProvider: loc.paymentProvider ?? 'square',
               providerConfigured: sqMissingFields.length === 0,
               missingFields: sqMissingFields,
             });
@@ -90,7 +68,7 @@ router.get('/config', async (req, res) => {
   });
 
   const squareLocationId = process.env.SQUARE_LOCATION_ID || process.env.VITE_SQUARE_LOCATION_ID || '';
-  res.json({ appId, locationId: squareLocationId, paymentProvider: 'square' });
+  res.json({ appId, locationId: squareLocationId });
 });
 
 export default router;

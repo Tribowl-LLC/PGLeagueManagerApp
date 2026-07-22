@@ -11,9 +11,7 @@ import {
 import { sanitizePaymentErrorMessage } from "@/lib/payment-user-error";
 import type { InsertPaymentInput, InsertPayment } from "@shared/schema";
 import type { SquareCard } from "@/hooks/use-square-payment";
-import type { CloverCard } from "@/hooks/use-clover-payment";
-
-type PaymentCard = SquareCard | CloverCard | null;
+type PaymentCard = SquareCard | null;
 
 interface UsePaymentFormSubmitOptions {
   form: UseFormReturn<InsertPaymentInput, unknown, InsertPayment>;
@@ -22,7 +20,6 @@ interface UsePaymentFormSubmitOptions {
   selectedSavedCardId: string;
   setPaymentError: (error: string | null) => void;
   onClose: () => void;
-  isClover?: boolean;
   // optional inline email captured when the selected
   // bowler has none on file — threaded to /payments-provider/payments
   // as `buyerEmail` so Square's hosted receipt still fires.
@@ -38,7 +35,6 @@ export function usePaymentFormSubmit({
   selectedSavedCardId,
   setPaymentError,
   onClose,
-  isClover = false,
   buyerEmail,
   locationId,
 }: UsePaymentFormSubmitOptions) {
@@ -85,13 +81,7 @@ export function usePaymentFormSubmit({
 
         let sourceToken: string;
 
-        if (isClover) {
-          const cvCard = card as CloverCard;
-          const result = await cvCard.tokenize();
-          sourceToken = result.token;
-        } else {
-          const sqCard = card as SquareCard;
-          const result = await sqCard.tokenize(
+        const result = await card.tokenize(
             data.storeCard ? {
               cardOnFile: true,
               verificationMethod: 'EXTERNAL',
@@ -101,15 +91,14 @@ export function usePaymentFormSubmit({
                 intent: 'STORE'
               }
             } : undefined
-          );
+        );
 
-          if (result.status !== 'OK' || !result.token) {
-            const errors = result.errors || [];
-            const errorMessage = errors.map((e: { message: string }) => e.message).join(', ') || 'Card validation failed';
-            throw new Error(errorMessage);
-          }
-          sourceToken = result.token;
+        if (result.status !== 'OK' || !result.token) {
+          const errors = result.errors || [];
+          const errorMessage = errors.map((e: { message: string }) => e.message).join(', ') || 'Card validation failed';
+          throw new Error(errorMessage);
         }
+        sourceToken = result.token;
 
         const response = await csrfFetch('/api/payments-provider/payments', {
           method: 'POST',
@@ -158,7 +147,6 @@ export function usePaymentFormSubmit({
         const props = providerNotConfiguredToast({
           navigate,
           locationId: locationId ?? null,
-          provider: isClover ? "clover" : "square",
         });
         setPaymentError(props.title);
         toast(props);

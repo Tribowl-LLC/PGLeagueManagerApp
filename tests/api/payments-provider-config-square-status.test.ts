@@ -3,7 +3,7 @@
  *
  * GET /api/payments-provider/config now exposes a `providerConfigured`
  * boolean and a `missingFields` array for Square locations as well as
- * Clover, so the payment form and settings page can show a friendly
+ * Square, so the payment form and settings page can show a friendly
  * "Square not fully configured" message instead of failing silently
  * at checkout.
  *
@@ -27,7 +27,6 @@ import { storage } from '../../server/storage';
 import { z } from 'zod';
 
 const squareConfigResponseSchema = z.object({
-  paymentProvider: z.string(),
   providerConfigured: z.boolean(),
   missingFields: z.array(z.string()),
   appId: z.string().nullable().optional(),
@@ -61,7 +60,6 @@ describe('GET /api/payments-provider/config — Square partial-config status (ta
       .values({
         name: `vitest-square-empty-${Date.now()}`,
         organizationId: orgId,
-        paymentProvider: 'square',
       })
       .returning();
     createdLocationIds.push(loc.id);
@@ -73,7 +71,6 @@ describe('GET /api/payments-provider/config — Square partial-config status (ta
 
     expect(status).toBe(200);
     const body = parseSquareConfig(data);
-    expect(body.paymentProvider).toBe('square');
     expect(body.providerConfigured).toBe(false);
     expect(Array.isArray(body.missingFields)).toBe(true);
     expect(body.missingFields).toEqual(
@@ -92,7 +89,6 @@ describe('GET /api/payments-provider/config — Square partial-config status (ta
       .values({
         name: `vitest-square-partial-${Date.now()}`,
         organizationId: orgId,
-        paymentProvider: 'square',
       })
       .returning();
     createdLocationIds.push(loc.id);
@@ -112,7 +108,6 @@ describe('GET /api/payments-provider/config — Square partial-config status (ta
 
     expect(status).toBe(200);
     const body = parseSquareConfig(data);
-    expect(body.paymentProvider).toBe('square');
     expect(body.appId).toBe('sq0idp-partial');
     expect(body.providerConfigured).toBe(false);
     expect(body.missingFields).toEqual(
@@ -132,7 +127,6 @@ describe('GET /api/payments-provider/config — Square partial-config status (ta
       .values({
         name: `vitest-square-full-${Date.now()}`,
         organizationId: orgId,
-        paymentProvider: 'square',
       })
       .returning();
     createdLocationIds.push(loc.id);
@@ -150,7 +144,6 @@ describe('GET /api/payments-provider/config — Square partial-config status (ta
 
     expect(status).toBe(200);
     const body = parseSquareConfig(data);
-    expect(body.paymentProvider).toBe('square');
     expect(body.providerConfigured).toBe(true);
     expect(body.missingFields).toEqual([]);
     expect(body.appId).toBe('sq0idp-full');

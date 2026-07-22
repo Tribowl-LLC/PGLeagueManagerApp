@@ -72,7 +72,6 @@ vi.mock('../../server/services/payment-execution', () => ({
 
 vi.mock('../../server/services/payment-utils', () => ({
   getProviderCustomerId: () => 'cust_xyz',
-  persistCloverCustomer: vi.fn(),
   ensureProviderCustomer: vi.fn().mockResolvedValue(undefined),
 }));
 

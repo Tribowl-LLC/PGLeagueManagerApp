@@ -1,6 +1,6 @@
 /**
  * task #770: the client logger (`client/src/lib/logger.ts`) is the
- * central funnel for non-401 API/query failures and Square/Clover/
+ * central funnel for non-401 API/query failures and Square/
  * wallet/provider payment errors that get forwarded to Sentry. These
  * tests pin the redaction scrubber so PII (emails, phones) and
  * secret-shaped strings (provider/customer/card IDs, tokens, sensitive

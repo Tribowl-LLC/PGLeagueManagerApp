@@ -7,7 +7,7 @@ export interface PaymentResult {
     brand: string;
   };
   providerRef?: Record<string, string>;
-  // Square hosted-receipt fields; undefined for Clover.
+  // Square hosted-receipt fields.
   receiptUrl?: string;
   receiptNumber?: string;
 }

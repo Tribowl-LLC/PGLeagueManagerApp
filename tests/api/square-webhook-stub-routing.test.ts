@@ -4,16 +4,14 @@
  * and WITHOUT a CSRF token.
  *
  * Pins three properties of the wiring at once:
- *   1. The Square stub is mounted under the same
- *      `/api/payments-provider/webhooks` prefix that the Clover
- *      handler uses, so it inherits the BEFORE-`requireAuth` mount
- *      order from `server/routes/index.ts`. If a future refactor
+ *   1. The Square stub is mounted before `requireAuth` in
+ *      `server/routes/index.ts`. If a future refactor
  *      re-applies session auth to the prefix, this test fails with
  *      `AUTH_REQUIRED` instead of the expected 501.
  *   2. The CSRF exemption at `server/middleware/csrf.ts` covers the
  *      whole `/payments-provider/webhooks` prefix, including the
  *      Square stub. A CSRF rejection (`CSRF_ERROR`) here would mean
- *      the exemption was narrowed to the Clover sub-path only.
+ *      the exemption was removed unexpectedly.
  *   3. The stub itself returns 501 with the documented error code,
  *      not a generic 404 / 500.
  *

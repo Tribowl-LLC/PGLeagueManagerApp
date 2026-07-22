@@ -9,7 +9,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useSquarePayment } from "@/hooks/use-square-payment";
-import { useCloverPayment } from "@/hooks/use-clover-payment";
 import { usePaymentProvider } from "@/hooks/use-payment-provider";
 import { useWalletPayments } from "@/hooks/use-wallet-payments";
 import { useSavedCardDefault } from "@/hooks/use-saved-card-default";
@@ -95,20 +94,16 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
   });
 
   const {
-    config: providerConfig,
-    isClover,
-    isSquare,
     supportsWallets,
     isLoading: providerLoading,
     isProviderConfigured,
     missingFields: providerMissingFields,
   } = usePaymentProvider(leagueInfo?.locationId ?? null);
-  // Both Clover (#575) and Square (#579) expose per-field "missing" data via
+  // Square exposes per-field "missing" data via
   // `/payments-provider/config`. When the active provider is partially
   // configured we replace the card UI with an alert listing missing fields
   // and disable submit — instead of spinning up a tokenizer that will fail.
-  const providerNotFullyConfigured =
-    (isClover || isSquare) && !providerLoading && !isProviderConfigured;
+  const providerNotFullyConfigured = !providerLoading && !isProviderConfigured;
 
   const {
     card: squareCard,
@@ -128,31 +123,11 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
     },
   });
 
-  const {
-    card: cvCard,
-    isInitialized: cvInitialized,
-    error: cvError,
-    initializeCard: cvInitializeCard,
-    cleanupCard: cvCleanupCard,
-  } = useCloverPayment({
-    publicTokenizerKey: providerConfig?.publicTokenizerKey,
-    merchantId: providerConfig?.merchantId,
-    environment: providerConfig?.environment,
-    onError: (error) => {
-      form.setValue("type", "cash");
-      toast({
-        title: "Payment Form Notice",
-        description: "Credit card form unavailable. Please try another payment method.",
-        variant: "default",
-      });
-    },
-  });
-
-  const card = isClover ? cvCard : squareCard;
-  const isInitialized = isClover ? cvInitialized : squareInitialized;
-  const cardError = isClover ? cvError : squareError;
-  const initializeCard = isClover ? cvInitializeCard : squareInitializeCard;
-  const cleanupCard = isClover ? cvCleanupCard : squareCleanupCard;
+  const card = squareCard;
+  const isInitialized = squareInitialized;
+  const cardError = squareError;
+  const initializeCard = squareInitializeCard;
+  const cleanupCard = squareCleanupCard;
 
   useEffect(() => {
     if (leagueId) {
@@ -283,12 +258,10 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
     }
     // Thread the inline-captured email through wallet (Apple/Google Pay)
     // charges so Square's hosted receipt fires for bowlers with no email on
-    // file. Mirrors the server's BUYER_EMAIL_REQUIRED gate. Only Square
-    // enforces it; Clover doesn't emit hosted receipts so it must NOT be
-    // blocked here.
+    // file. Mirrors the server's BUYER_EMAIL_REQUIRED gate.
     const selected = bowlers.find((b) => b.id === bowlerId);
     const trimmedReceiptEmail = receiptEmail.trim();
-    if (!isClover && !selected?.email && !trimmedReceiptEmail) {
+    if (!selected?.email && !trimmedReceiptEmail) {
       setPaymentError(
         'This bowler has no email on file. Enter an email for the receipt before paying with Apple Pay / Google Pay.',
       );
@@ -325,7 +298,6 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
         const props = providerNotConfiguredToast({
           navigate,
           locationId: leagueInfo?.locationId ?? null,
-          provider: isClover ? "clover" : "square",
         });
         setPaymentError(props.title);
         toast(props);
@@ -335,7 +307,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
       setPaymentError(errorMessage);
       toast({ title: "Error", description: errorMessage, variant: "destructive" });
     }
-  }, [form, toast, queryClient, onClose, bowlers, receiptEmail, navigate, leagueInfo?.locationId, isClover]);
+  }, [form, toast, queryClient, onClose, bowlers, receiptEmail, navigate, leagueInfo?.locationId]);
 
   const {
     applePayAvailable,
@@ -374,7 +346,6 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
     selectedSavedCardId,
     setPaymentError,
     onClose,
-    isClover,
     buyerEmail: !bowlerHasEmail ? receiptEmail : undefined,
     locationId: leagueInfo?.locationId ?? null,
   });
@@ -403,15 +374,12 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
               squareLoadFailed={squareLoadFailed}
             />
             {paymentType === "check" && <PaymentCheckNumberField form={form} />}
-            {/* only Square enforces BUYER_EMAIL_REQUIRED. Don't render the
-                inline gate for Clover — it has no hosted-receipt support
-                and the server doesn't require buyerEmail. */}
-            {paymentType === "credit_card" && selectedBowlerId && !bowlerHasEmail && !isClover && (
+            {/* Square requires a buyer email for hosted receipts. */}
+            {paymentType === "credit_card" && selectedBowlerId && !bowlerHasEmail && (
               <PaymentReceiptEmailField value={receiptEmail} onChange={setReceiptEmail} />
             )}
             {paymentType === "credit_card" && providerNotFullyConfigured && (
               <PaymentProviderNotConfiguredAlert
-                isClover={isClover}
                 missingFields={providerMissingFields}
                 isAdmin={isAdmin}
                 onOpenSettings={() => {
@@ -458,7 +426,6 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
               selectedBowlerId={selectedBowlerId}
               bowlerHasEmail={bowlerHasEmail}
               receiptEmail={receiptEmail}
-              isClover={isClover}
             />
           </form>
         </Form>

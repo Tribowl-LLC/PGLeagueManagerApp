@@ -69,7 +69,6 @@ const baseBowler = {
   active: true,
   order: 0,
   paymentCustomerId: null as string | null,
-  cloverCustomerId: null,
   paymentSyncPendingAt: null as string | null,
 };
 

@@ -167,7 +167,6 @@ function fakeBowler(overrides: Partial<BowlerArg>): BowlerArg {
     order: 0,
     organizationId: 5,
     paymentCustomerId: null,
-    cloverCustomerId: null,
     paymentProviderLocationId: null,
     paymentSyncPendingAt: null,
     paymentSyncAttempts: 0,

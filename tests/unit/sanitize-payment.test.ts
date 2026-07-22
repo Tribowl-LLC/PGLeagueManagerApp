@@ -37,7 +37,6 @@ function makeFullyPopulatedPayment(): Payment {
     status: 'paid',
     type: 'square',
     providerPaymentId: 'sq-payment-id',
-    cloverChargeId: 'cv-charge-id',
     idempotencyKey: 'idem-key-1',
     squareRefundId: null,
     refundReason: null,
@@ -95,8 +94,7 @@ describe('sanitizePayment', () => {
   it('preserves the operational fields the receipts / refund / sync UI consumes', () => {
     // `providerPaymentId` powers the Square dashboard deep-link in
     // bowler-payment-history-table.tsx and the lazy receipt backfill
-    // in view-receipt-button.tsx; `cloverChargeId` is printed on the
-    // physical receipt and powers the Clover refund flow;
+    // in view-receipt-button.tsx;
     // `idempotencyKey` is echoed back on the deduplicated-success
     // response; `receiptUrl` / `receiptNumber` / `receiptEmailMissing`
     // drive the receipt UI; `checkNumber` / `notes` are admin-visible.
@@ -104,7 +102,6 @@ describe('sanitizePayment', () => {
     // flow.
     const sanitized = sanitizePayment(makeFullyPopulatedPayment());
     expect(sanitized.providerPaymentId).toBe('sq-payment-id');
-    expect(sanitized.cloverChargeId).toBe('cv-charge-id');
     expect(sanitized.idempotencyKey).toBe('idem-key-1');
     expect(sanitized.receiptUrl).toBe('https://squareup.com/receipt/preview/abc');
     expect(sanitized.receiptNumber).toBe('rcpt-123');

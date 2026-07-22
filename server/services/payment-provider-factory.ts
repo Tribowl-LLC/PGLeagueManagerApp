@@ -1,6 +1,5 @@
 import type { PaymentProvider } from './payment-provider';
 import { SquarePaymentProvider } from './square-provider';
-import { CloverPaymentProvider } from './clover-provider';
 import { storage } from '../storage';
 import { createLogger } from '../logger';
 import { isDev } from '../config';
@@ -55,22 +54,7 @@ export async function getPaymentProvider(locationId: number | null): Promise<Pay
     );
   }
 
-  const providerType = location.paymentProvider ?? 'square';
-
-  let provider: PaymentProvider;
-  switch (providerType) {
-    case 'square':
-      provider = new SquarePaymentProvider(locationId);
-      break;
-    case 'clover':
-      provider = new CloverPaymentProvider(locationId);
-      break;
-    default:
-      throw new ProviderNotConfiguredError(
-        `Unknown payment provider "${providerType}" for location ${locationId}`,
-        locationId,
-      );
-  }
+  const provider: PaymentProvider = new SquarePaymentProvider(locationId);
 
   providerCache.set(locationId, { provider, expiresAt: now + CACHE_TTL_MS });
   return provider;

@@ -7,7 +7,7 @@ leagues. It helps organizations manage locations, leagues and seasons, teams,
 bowlers, schedules, registrations, payments, refunds, and administration.
 
 The application supports organization subdomains, organization-scoped access
-control, transactional email, and Square and Clover payment integrations.
+control, transactional email, and a Square payment integration.
 
 ## Architecture
 
@@ -212,8 +212,6 @@ Optional integrations and operational settings include `SENDGRID_API_KEY`
 error tracking at build time), and `SETUP_SECRET` (admin bootstrap endpoints).
 If `SETUP_SECRET` is set, it must
 be at least 32 characters long and must not be a single repeated character.
-Clover webhook verification uses `CLOVER_WEBHOOK_SIGNING_SECRET` when Clover
-webhooks are enabled.
 
 Generate a suitable local field-encryption key with:
 

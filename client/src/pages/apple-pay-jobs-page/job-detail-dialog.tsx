@@ -10,7 +10,6 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
-import { usePaymentProvider } from '@/hooks/use-payment-provider';
 import { useToast } from '@/hooks/use-toast';
 import {
   isProviderNotConfiguredError,
@@ -70,18 +69,13 @@ export function JobDetailDialog({ jobId, onClose }: { jobId: number; onClose: ()
     return items.every((it) => it.locationId === first) ? first : null;
   })();
 
-  // Look up the active provider for the job's owning location so the
-  // PROVIDER_NOT_CONFIGURED toast names "Clover" instead of always
-  // saying "Square" on Clover-only locations (task #610). When a job
-  // spans multiple locations `jobLocationId` is null and the toast
-  // falls back to the legacy Square copy + bare /integrations link,
+  // Resolve the job's owning location for provider configuration errors.
+  // When a job spans multiple locations `jobLocationId` is null and the
+  // toast falls back to the bare /integrations link,
   // which is the only signal we can give without picking a winner.
-  const { isClover } = usePaymentProvider(jobLocationId);
-  const provider = isClover ? 'clover' : 'square';
-
   const handleMutationError = (titleFallback: string) => (err: unknown) => {
     if (isProviderNotConfiguredError(err)) {
-      toast(providerNotConfiguredToast({ navigate, locationId: jobLocationId, provider }));
+      toast(providerNotConfiguredToast({ navigate, locationId: jobLocationId }));
       return;
     }
     toast({
@@ -97,7 +91,7 @@ export function JobDetailDialog({ jobId, onClose }: { jobId: number; onClose: ()
   ): boolean => {
     if (resp.success) return true;
     if (resp.error?.code === 'PROVIDER_NOT_CONFIGURED') {
-      toast(providerNotConfiguredToast({ navigate, locationId: jobLocationId, provider }));
+      toast(providerNotConfiguredToast({ navigate, locationId: jobLocationId }));
     } else {
       toast({ title: titleFallback, description: resp.error?.message ?? 'Unknown error', variant: 'destructive' });
     }

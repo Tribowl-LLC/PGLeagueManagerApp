@@ -13,7 +13,6 @@ interface PaymentFormActionsProps {
   selectedBowlerId: number | null | undefined;
   bowlerHasEmail: boolean;
   receiptEmail: string;
-  isClover: boolean;
 }
 
 export function PaymentFormActions({
@@ -28,7 +27,6 @@ export function PaymentFormActions({
   selectedBowlerId,
   bowlerHasEmail,
   receiptEmail,
-  isClover,
 }: PaymentFormActionsProps) {
   return (
     <div className="flex justify-end gap-x-2">
@@ -52,9 +50,7 @@ export function PaymentFormActions({
           // none on file. Server enforces this with
           // BUYER_EMAIL_REQUIRED; mirrored here so the user
           // never sees an avoidable round-trip.
-          // Clover doesn't
-          // enforce BUYER_EMAIL_REQUIRED so excluded here.
-          (paymentType === "credit_card" && !!selectedBowlerId && !bowlerHasEmail && !receiptEmail.trim() && !isClover)
+          (paymentType === "credit_card" && !!selectedBowlerId && !bowlerHasEmail && !receiptEmail.trim())
         }
       >
         {isSubmitting ? (

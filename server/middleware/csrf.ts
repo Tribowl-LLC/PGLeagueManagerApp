@@ -36,13 +36,6 @@ const EXEMPT_PATHS = [
   // can exercise the post-window-reset path without 10 minutes of waiting).
   // Production never mounts the route, so the exemption is inert there.
   '/account/_test',
-  // Payment processor webhooks originate outside a browser session, so they
-  // cannot present session-bound CSRF tokens. Clover reaches this exemption
-  // and verifies its signature in payments-provider/webhooks.ts. The disabled
-  // Square tripwire is registered even earlier in app.ts; it does not process
-  // events and is bounded by an exact route, small body limit, shared rate
-  // limiter, and metadata-only diagnostics.
-  '/payments-provider/webhooks',
   // Task #681: public, no-auth embed registration submit. The endpoint
   // originates from third-party parent pages that have no session-bound
   // CSRF token; abuse is bounded by the per-IP rate limiter wired in

@@ -2,7 +2,7 @@
  * Payment provider router (mounted at /api/payments-provider).
  *
  * Owns the **execution side** of payments: charging the payment provider
- * (Square / Clover), customer create/update, catalog, card vault, wallet
+ * (Square), customer create/update, catalog, card vault, wallet
  * domain registration, and idempotent payment recording for live charges.
  *
  * For straight DB CRUD over the payments table (list/update/delete/refund),
@@ -21,9 +21,6 @@ import cardsRouter from './cards.js';
 import applePayRouter from './apple-pay.js';
 import configRouter from './config.js';
 import receiptsRouter from './receipts.js';
-// NOTE: the Clover webhook receiver (`./webhooks.ts`) is intentionally
-// NOT mounted here. It must be reachable WITHOUT the session-auth
-// middleware that this router applies, so it is mounted directly at
 // the app level from `server/routes/index.ts` on the more specific
 // path `/api/payments-provider/webhooks` (which Express routes BEFORE
 // `/api/payments-provider` because it is registered first).
