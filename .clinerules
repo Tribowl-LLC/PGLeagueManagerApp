@@ -1,0 +1,22 @@
+# LeagueVault - Project Rules & Invariants
+
+## Core Tech Stack
+- Frontend: React 19, Vite, Wouter (Routing - DO NOT install/use react-router-dom), TanStack Query v5 (@tanstack/react-query), Tailwind CSS v4, Radix UI.
+- Backend: Node.js, Express 5, Passport.js (Session Auth), PostgreSQL, Drizzle ORM.
+- Shared/Validation: TypeScript, Zod, Drizzle-Zod (`shared/schema.ts`).
+- Testing & Audits: Vitest (`npm test`), TypeScript (`npm run check`), ESLint (`npm run lint`).
+
+## Critical Codebase Guidelines
+1. Client Routing: ALWAYS use `wouter` (`useLocation`, `Link`, `Route`, `Switch`). Never import `react-router-dom`.
+2. Schema & Types: All database tables, relations, and Zod insert/select schemas MUST be defined or exported from `shared/schema.ts`.
+3. Organization Isolation: LeagueVault is a multi-tenant app. All backend database queries MUST respect organization boundaries (`organization_id` checks).
+4. Forms: Use `react-hook-form` paired with `@hookform/resolvers/zod` and Zod schemas from `shared/schema.ts`.
+5. Error Handling & Verification: After making backend or shared schema edits, run `npm run check` via terminal to verify TypeScript compilation.
+## Git & Branching Protocol
+- NEVER commit or push directly to `main`.
+- ALWAYS verify the current branch before making changes (`git branch --show-current`).
+- If currently on `main`, immediately create and switch to a feature branch:
+  `git checkout -b feature/<descriptive-task-name>`
+- After completing a task and running tests, push the feature branch and create a PR using GitHub CLI:
+  `git push -u origin feature/<descriptive-task-name>`
+  `gh pr create --fill`
