@@ -266,10 +266,12 @@ justify exposing passwords through an administrator workflow or message.
   administrative, invitation, and other abuse-prone paths use rate limits.
   Every current `express-rate-limit` instance supplies the repository's shared
   store factory. With the required production setting `NODE_ENV=production`,
-  all 19 limiter namespaces persist their buckets in PostgreSQL and share the
-  same quota across application processes. Development and test intentionally
-  use the library's process-local memory store so test runs start with empty
-  buckets; that configuration is not suitable for a multi-process deployment.
+  production persists those namespaces in PostgreSQL and shares each quota
+  across application processes. A source-scanning test fails when a new
+  `express-rate-limit` instance omits `createSharedRateLimitStore`. Development
+  and test intentionally use the library's process-local memory store so test
+  runs start with empty buckets; that configuration is not suitable for a
+  multi-process deployment.
 - Express trusts one proxy hop. A boot assertion, code checks, tests, and a
   deployed probe protect the `req.ip` and secure-cookie assumptions. See the
   [production runbook](docs/production-runbook.md).
@@ -302,6 +304,14 @@ Resource helpers in `server/utils/access-control.ts`, route checks, scoped
 storage methods, and selected database invariants provide the narrower
 resource boundary. Background workers receive authority from stored,
 server-owned job or schedule records, not from a browser session.
+
+The shared access helpers do not treat `system_admin` as authority over
+org-less rows: they require established, non-null resource organization
+context, and ID-based helpers load the ownership chain before deciding. Missing
+or null organization ownership is denied for every role. A helper may grant a
+system administrator cross-tenant access only after establishing a real owning
+organization. Routes that need broader inspection or repair behavior use an
+explicit system-administration path rather than weakening the shared helpers.
 
 Server-side authorization is required before reading protected data,
 modifying a row, charging or refunding, changing users or organizations,
@@ -721,15 +731,14 @@ Do **not** open a public GitHub issue, discussion, or pull request for an
 unpatched vulnerability. Do not paste sensitive details into a public contact
 form or social-media message.
 
-> **Private reporting channel last verified:** 2026-07-21
+> **Private reporting channel last verified:** 2026-07-22
 
-At that verification, this repository was private. GitHub Private
-Vulnerability Reporting was not available because GitHub provides that intake
-for public repositories. No dedicated security email or other formal security
-intake was published in the repository or the Tribowl organization's public
-GitHub profile, and no separate organizational security-contact process was
-available to verify. This is a known process limitation, not permission to
-disclose publicly.
+At that verification, this repository was private and its observed GitHub
+Security configuration exposed no Private Vulnerability Reporting intake. No
+dedicated security email or other formal security intake was published in the
+repository or the Tribowl organization's public GitHub profile, and no separate
+organizational security-contact process was available to verify. This is a
+known process limitation, not permission to disclose publicly.
 
 - Repository collaborators should contact LeagueVault/Tribowl maintainers
   through an existing private, access-controlled organizational channel and
@@ -805,10 +814,10 @@ repository configuration:
 | --- | --- | --- |
 | Tenant isolation is application-enforced; active PostgreSQL RLS is not configured. | Server authorization, scoped queries/storage methods, tenant tests and coverage guard, foreign keys, and selected runtime database triggers. Production's legacy RLS flags are verified as inert. | A missed application check can cross a tenant boundary. Active RLS requires a coordinated design of policies, roles, privileges, migrations, provider operations, and tests; do not enable flags or policies piecemeal. Track database architecture in [docs/DATABASE.md](docs/DATABASE.md). |
 | No verified dedicated private vulnerability-reporting intake exists for this private repository. | Collaborators and known reporters can use existing private organizational channels; public disclosure is prohibited. | An external researcher may be unable to deliver details safely. The repository owner should establish and publish a monitored security email or another verified private intake, then update this file. |
-| Square webhooks are not implemented or subscribed, and the disabled endpoint does not verify Square signatures or process events. | The exact `POST` route runs before tenant resolution and global raw-body capture, permits only 12 KB for any content type, uses the shared production rate-limit store with a dedicated namespace, generates a server-controlled request id, and logs one warning containing only a fixed event name, request id, method, static path, normalized content type, bounded declared length, and rejection outcome. It never logs headers, query strings, bodies, or raw bytes; returns `501 SQUARE_WEBHOOK_NOT_IMPLEMENTED`; and makes no application-storage, payment, tenant, queue, reconciliation, or provider call. | A real or accidentally configured Square subscription would still have every event rejected and unprocessed. Keep the subscription list empty. Before enabling processing, implement raw-byte signature verification, strict event validation, tenant mapping, durable replay/idempotency protection, safe conditional state transitions, redacted logging, and focused negative tests. |
+| Square webhooks are not implemented or subscribed, and the disabled endpoint does not verify Square signatures or process events. | The exact `POST` route runs before tenant resolution and global raw-body capture. JSON and catch-all raw parsers enforce the same 12 KB received-body limit for JSON, text, binary, missing content type, and chunked requests. It uses the shared production rate-limit store with a dedicated namespace, generates a server-controlled request id before rate limiting and parsing, and logs one warning for each request admitted by the limiter containing only a fixed event name, the same request id returned to the caller, method, static path, normalized content type, bounded declared content length, and rejection outcome. The declared length is untrusted diagnostic metadata derived from `Content-Length`; invalid, absent, chunked, or excessive values become `null`. Rate-limited requests do not add a route warning. The route never logs headers, query strings, bodies, or raw bytes; returns a deliberate rejection; and makes no application-storage, payment, tenant, queue, reconciliation, or provider call. | A distributed caller can still create bounded warning noise across source addresses, and a real or accidentally configured Square subscription would have every event rejected and unprocessed. Keep the subscription list empty and monitor the dedicated rejection event. Before enabling processing, implement raw-byte signature verification, strict event validation, tenant mapping, durable replay/idempotency protection, safe conditional state transitions, redacted logging, and focused negative tests. |
 | Per-organization BowlNow configuration can include an API key in `organizations.integrations` JSON without application-layer field encryption. | Normal organization API projections omit integrations; access is limited by database and server authorization, and a global key may instead be injected server-side. | Database or overly broad server access can expose the stored key. Encrypting it requires a reviewed schema/data migration, backward-compatible read path, rotation plan, and tenant tests before existing rows change. |
 | Sentry initialization does not set an explicit release identifier. | Server runtime logs include a commit identifier, CI certifies the exact `main` tree, and browser/server telemetry includes environment context. | Incident correlation between an event and the deployed source may require manual work. Add a release identifier only with coordinated build/runtime injection, privacy review, and deployment verification. |
-| Shared rate-limit storage is selected only when `NODE_ENV=production`. | All 19 current `express-rate-limit` instances use `createSharedRateLimitStore`, and a production application environment fails during limiter construction unless `NODE_ENV=production` selects the PostgreSQL store. The process-local store remains intentional in development and beta/test environments. | Keep `APP_ENV=prod` and `NODE_ENV=production` explicit and verified in Render. Do not bypass the startup invariant or introduce a limiter that omits the shared-store factory. |
+| Shared rate-limit storage is selected only when `NODE_ENV=production`. | Every current `express-rate-limit` instance is required to use `createSharedRateLimitStore`; a source-scanning test enforces that policy. A production application environment fails during limiter construction unless `NODE_ENV=production` selects the PostgreSQL store. The process-local store remains intentional in development and beta/test environments. | Keep `APP_ENV=prod` and `NODE_ENV=production` explicit and verified in Render. Do not bypass the startup invariant or weaken the shared-store coverage guard. |
 | Organization hostname resolution performs a PostgreSQL lookup on every request. | There is no process-local tenant mapping to become stale during a rename or reassignment; every application process observes committed hostname mutations on its next request. Authorization and the organization-host session guard still run against the selected organization. | Tenant-host routing depends on database availability and adds lookup load. Preserve the uncached behavior unless a future shared cache provides tested, fail-safe cross-process invalidation. |
 | Clover webhook replay handling is based on the payment row's current status, not a durable event ledger or an atomic conditional transition. | HMAC-SHA256 is verified over the exact raw bytes before dispatch. Sequential repeat refunds and disputes are no-ops once the matching terminal status is present, dispute-after-refund is ignored, and unknown charge ids are acknowledged without mutation. | Event ids and event times are not stored or compared. Concurrent duplicates can both pass the status check and re-stamp a row, and refund-after-dispute changes the status to refunded. Add a durable unique event record and transactional or conditional state transition before claiming general deduplication or ordering guarantees. |
 
