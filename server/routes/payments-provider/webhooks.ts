@@ -1,16 +1,9 @@
 /**
  * Clover Ecommerce webhook receiver (task #577).
  *
- * Also hosts the Square webhook tripwire stub at `POST /square`
- * (task #612). We do not subscribe to any Square webhook events
- * today, but the CSRF exemption at `server/middleware/csrf.ts`
- * covers the whole `/payments-provider/webhooks` prefix, so a
- * Square-configured subscription pointing at this URL would
- * otherwise 404 silently and we'd lose money-relevant events with
- * no alarms. The stub answers `501 Not Implemented` and emits a
- * single `log.error` line that captures method, path, headers, and
- * raw body so any unexpected delivery is loud, not silent. See
- * `docs/square-api-version-audit.md` §4.
+ * The disabled Square tripwire is registered separately and earlier in
+ * `server/app.ts` so it can enforce its small body limit without the global
+ * JSON parser capturing raw payload bytes.
  *
  * Mounted at `/api/payments-provider/webhooks` from
  * `server/routes/index.ts` BEFORE the session-auth middleware so real
@@ -47,7 +40,6 @@ import { sendError, sendSuccess } from '../../utils/api.js';
 import { createLogger } from '../../logger';
 
 const log = createLogger('CloverWebhook');
-const squareLog = createLogger('SquareWebhook');
 
 const REFUND_SETTLED_TYPES = new Set([
   'refund.created',
@@ -248,72 +240,6 @@ router.post('/clover', verifyCloverSignature, async (req, res) => {
 
   log.info('Clover webhook ignored unknown event type', { eventType, eventId });
   return sendSuccess(res, { received: true, ignored: 'unknown_event_type' });
-});
-
-/**
- * Square webhook tripwire (task #612).
- *
- * We do not subscribe to any Square webhook events today (see
- * `docs/square-api-version-audit.md` §4). The CSRF exemption at
- * `server/middleware/csrf.ts` is a generic prefix match for
- * `/payments-provider/webhooks`, so a Square subscription that gets
- * turned on out-of-band — Subscriptions, OAuth notifications,
- * dispute alerts — would deliver POSTs to this URL. Without this
- * stub the request would 404 silently and we'd lose money-relevant
- * events with no alarms.
- *
- * The stub:
- *   - Answers `501 Not Implemented` so Square classifies the URL as
- *     "endpoint exists but cannot process this event" instead of
- *     "endpoint missing" (404). Square's retry policy keeps
- *     redelivering both; the 501 makes the operator-visible signal
- *     in their dashboard match what's actually happening on our
- *     side (the receiver is unbuilt, not gone).
- *   - Emits a single `log.error` line capturing method, path, all
- *     request headers, and the raw body — bypassing the usual
- *     `log.warn` floor so on-call sees it immediately. Headers are
- *     useful for identifying the subscription (`square-environment`,
- *     `square-initial-delivery-timestamp`, `square-signature`,
- *     `square-retry-number`, etc.) without us having implemented
- *     signature verification yet.
- *
- * Intentional design choices:
- *   - The route is `POST` only. Square only POSTs webhook events;
- *     a `GET` from a curious operator falling through to a 404 is
- *     fine and not worth the noise of an `error` log line.
- *   - The handler has no signature verification because we have no
- *     secret to verify against. Anyone can hit this URL and trigger
- *     a log line — that is the whole point of a tripwire. If/when
- *     a real Square handler ships, it MUST add HMAC verification
- *     before reading the body, mirroring the Clover handler above.
- *   - We log the raw body via `req.rawBody` (captured by the
- *     `express.json()` verify hook in `server/index.ts`) rather than
- *     the parsed JSON because the parsed shape is unknown until a
- *     real handler is built and the raw bytes are what would be
- *     needed for any future signature verification.
- */
-router.post('/square', (req, res) => {
-  const headers: Record<string, string> = {};
-  for (const [key, value] of Object.entries(req.headers)) {
-    if (value === undefined) continue;
-    headers[key] = Array.isArray(value) ? value.join(', ') : String(value);
-  }
-  const rawBody = req.rawBody?.toString('utf8') ?? null;
-  squareLog.error(
-    'Unexpected Square webhook delivery — no Square subscription should exist (task #612)',
-    {
-      method: req.method,
-      path: req.originalUrl,
-      headers,
-      rawBody,
-    },
-  );
-  return sendError(
-    res,
-    'Square webhook receiver is not implemented',
-    501,
-    'SQUARE_WEBHOOK_NOT_IMPLEMENTED',
-  );
 });
 
 export default router;

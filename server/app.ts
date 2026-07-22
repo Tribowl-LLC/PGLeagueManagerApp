@@ -61,12 +61,12 @@ import { assertTrustProxyAtBoot } from './lib/trust-proxy-check';
 import { embedFrameAncestorsOverride } from './middleware/embed-csp';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import * as schema from '@shared/schema';
+import { registerSquareWebhookTripwire } from './routes/payments-provider/square-webhook-tripwire';
 
 declare module 'express-serve-static-core' {
   interface Request {
     // Captured by the verify hook on the global express.json() so that
-    // signature-verifying webhook receivers (Clover today; possibly
-    // Square next — see task #577 follow-ups) can hash the exact bytes
+    // signature-verifying webhook receivers (Clover today) can hash the exact bytes
     // the processor signed instead of a re-stringified copy.
     rawBody?: Buffer;
   }
@@ -185,6 +185,10 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
   const PORT = opts.port ?? env.PORT;
 
   app.use(requestTracker);
+  // Register the disabled endpoint before tenant resolution and the global
+  // raw-body-capturing JSON parser. The exact route supplies its own security
+  // headers, rate limiter, 12 KB parser, safe parser-error handling, and 501.
+  registerSquareWebhookTripwire(app);
   app.use(subdomainDetection);
   app.use(compression());
   app.use(securityHeaders);
@@ -201,7 +205,8 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
   // auth/account/admin/payment/public-embed JSON payloads are far below this;
   // oversized bodies are rejected early with a 413 before route handlers run.
   // The `verify` hook captures the exact raw bytes so signature-verifying
-  // webhook receivers (Clover today; Square tripwire) can HMAC the payload.
+  // webhook receivers (Clover today) can HMAC the payload. The disabled Square
+  // tripwire is registered above and never reaches this parser.
   app.use(express.json({
     limit: '256kb',
     verify: (req: Request, _res, buf) => {
