@@ -237,7 +237,7 @@ prefix, serializes migration executors with an advisory lock, and refuses to
 run the baseline when a database already contains application-owned public
 objects but has no baseline journal record. Such an existing database must be
 recreated if disposable or use the guarded adoption workflow in
-[`DATABASE.md`](DATABASE.md). An empty journal is never adoption
+[`docs/DATABASE.md`](docs/DATABASE.md). An empty journal is never adoption
 evidence.
 
 Active migration SQL is hashed from its exact committed bytes. The
@@ -264,7 +264,7 @@ row in one guarded transaction. Exact adopted state is a no-op and conflicting
 journal state is refused.
 
 The `npm run seed` command idempotently creates local development users and
-organizations described in [`tests/README.md`](../tests/README.md). These accounts
+organizations described in [`tests/README.md`](tests/README.md). These accounts
 support manual browser testing. Automated tests seed their own isolated
 databases.
 
@@ -328,7 +328,7 @@ npm test -- tests/unit/app-domain-config.test.ts # focused test file
 
 The race suite is a separate, serial suite for tests that mutate shared state.
 It requires `SETUP_SECRET` and should not run against a production database.
-See [`tests/README.md`](../tests/README.md) and [`TEST_INFRA.md`](TEST_INFRA.md)
+See [`tests/README.md`](tests/README.md) and [`docs/TEST_INFRA.md`](docs/TEST_INFRA.md)
 for authoritative details about test isolation, seeding, and CI. This README
 provides the normal developer workflow.
 
@@ -397,22 +397,22 @@ Actions as appropriate; do not commit them.
 
 After deployment, verify `/api/health`, authentication, the affected workflow,
 and the relevant provider or webhook behavior. The complete release procedure
-is in [`production-runbook.md`](production-runbook.md).
+is in [`docs/production-runbook.md`](docs/production-runbook.md).
 
 ## Additional Documentation
 
 - [`AGENTS.md`](AGENTS.md) — durable architecture, security, database, and
   contribution rules.
-- [`engineering-context.md`](engineering-context.md) — product
+- [`docs/engineering-context.md`](docs/engineering-context.md) — product
   boundaries and architecture decisions.
-- [`ci.md`](ci.md) — GitHub Actions workflows, checks, and CI secrets.
-- [`TEST_INFRA.md`](TEST_INFRA.md) — local and CI test database
+- [`docs/ci.md`](docs/ci.md) — GitHub Actions workflows, checks, and CI secrets.
+- [`docs/TEST_INFRA.md`](docs/TEST_INFRA.md) — local and CI test database
   infrastructure.
-- [`tests/README.md`](../tests/README.md) — test layout, fixtures, and opt-in
+- [`tests/README.md`](tests/README.md) — test layout, fixtures, and opt-in
   suites.
-- [`CONTRIBUTING.md`](../CONTRIBUTING.md) — contribution and lint-baseline rules.
-- [`NATIVE_BUILD.md`](../NATIVE_BUILD.md) — iOS and Android build instructions.
-- [`square-production-guide.md`](../square-production-guide.md) — Square payment
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — contribution and lint-baseline rules.
+- [`NATIVE_BUILD.md`](NATIVE_BUILD.md) — iOS and Android build instructions.
+- [`square-production-guide.md`](square-production-guide.md) — Square payment
   integration guidance.
-- [`system-admin-guide.md`](../system-admin-guide.md) — system administrator
+- [`system-admin-guide.md`](system-admin-guide.md) — system administrator
   operations.

@@ -72,7 +72,7 @@ workflow.
 
 ## Durable Documentation Map
 
-- `docs/AGENTS.md`: concise rules Codex and contributors should apply to every task.
+- `AGENTS.md`: concise rules Codex and contributors should apply to every task.
 - `docs/production-runbook.md`: Render, Neon, schema, and post-deploy steps.
 - `docs/ci.md`: workflows, status checks, action pinning, and CI secrets.
 - `docs/TEST_INFRA.md`: test database and worker isolation details.

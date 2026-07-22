@@ -7,7 +7,7 @@ authorization, persistence, payment-provider calls, webhooks, and background
 work.
 
 The durable product and security constraints are summarized in
-[`AGENTS.md`](AGENTS.md). This document describes how the current code is
+[`AGENTS.md`](../AGENTS.md). This document describes how the current code is
 organized and how the main runtime paths fit together.
 
 ## Document Scope

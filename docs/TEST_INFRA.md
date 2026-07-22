@@ -1,6 +1,6 @@
 # Test Infrastructure
 
-Detailed architecture notes for the Vitest per-worker test-DB / Neon-branch infrastructure. Split out of `docs/AGENTS.md` to keep the project overview lean. See also the verification guidance in `docs/AGENTS.md` for the day-to-day test recipe.
+Detailed architecture notes for the Vitest per-worker test-DB / Neon-branch infrastructure. Split out of `AGENTS.md` to keep the project overview lean. See also the verification guidance in `AGENTS.md` for the day-to-day test recipe.
 
 ## Schema inventory validation
 

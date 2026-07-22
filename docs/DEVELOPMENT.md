@@ -2,7 +2,7 @@
 
 This document is the authoritative starting point for developing LeagueVault
 locally. It explains how to prepare a workstation, run the application, and
-validate a change. Read [`README.md`](README.md) for the product overview and
+validate a change. Read [`README.md`](../README.md) for the product overview and
 repository map, [`DATABASE.md`](DATABASE.md) for the database model
 and migration safeguards, and [`DEPLOYMENT.md`](DEPLOYMENT.md) for the boundary
 between local work and deployment. This guide does not describe production
@@ -107,14 +107,14 @@ manifest and lockfile, and produces the same dependency selection as CI. Never
 delete or regenerate the lockfile merely to get past an installation error.
 
 The complete Docker database example and quick-start commands are in
-[`README.md`](README.md#local-setup).
+[`README.md`](../README.md#local-setup).
 
 ## 4. Environment configuration
 
 The application reads the process environment directly. A root `.env` file is
 not automatically loaded by `npm run dev`, and the repository currently does
 not provide an `.env.example`. Treat the variable table in
-[`README.md`](README.md#environment-variables) as the current configuration
+[`README.md`](../README.md#environment-variables) as the current configuration
 reference. Set local values in the active shell or in a secure, local secret
 manager that exports them to the process.
 
@@ -148,7 +148,7 @@ file, it must contain names and safe examples only, never usable credentials.
 
 PostgreSQL stores all application state. Use PostgreSQL 16 for the normal
 persistent development database. The recommended setup in
-[`README.md`](README.md#local-setup) creates `leaguevault-postgres` on loopback
+[`README.md`](../README.md#local-setup) creates `leaguevault-postgres` on loopback
 port `5433`, which leaves port `5432` available to the isolated test container.
 An equivalent local PostgreSQL installation is acceptable if `DATABASE_URL`
 points to the intended local database.
@@ -338,7 +338,7 @@ Use this sequence for normal work:
    explicit authorization.
 
 Repository-wide contribution, security, and database invariants are in
-[`AGENTS.md`](AGENTS.md); lint-baseline expectations are in
+[`AGENTS.md`](../AGENTS.md); lint-baseline expectations are in
 [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 
 ## 10. Common development tasks
@@ -375,7 +375,7 @@ HTTP process from a healthy database connection.
 First prove that the target is the disposable or developer-owned local
 database and that none of its contents are needed. For the recommended Docker
 setup, follow the exact container and named-volume procedure in
-[`README.md`](README.md#local-setup). Removing the container alone can preserve
+[`README.md`](../README.md#local-setup). Removing the container alone can preserve
 the named volume; removing the named volume permanently deletes the local
 database. Recreate the empty database and run `npm run db:migrate`. Never use a
 broad cleanup command or a production/shared URL.
@@ -429,7 +429,7 @@ persistent database, use the diagnosis in
 ### Environment-variable error
 
 Compare the named variable with the table in
-[`README.md`](README.md#environment-variables). Confirm it is exported in the
+[`README.md`](../README.md#environment-variables). Confirm it is exported in the
 same shell that starts Node.js. Remember that `.env` is not automatically
 loaded and `FIELD_ENCRYPTION_KEY` must be exactly 64 hexadecimal characters.
 

@@ -49,7 +49,7 @@ inherits the codebase but **not** the secrets — that's intentional.
 The beta Repl tracks the `beta` branch. Configure the Git pane in
 the forked Repl to use `beta` as the default branch. Day-to-day Replit
 promotion is historical. The current production branch and Render workflow
-are documented in `docs/AGENTS.md` and `docs/production-runbook.md`.
+are documented in `AGENTS.md` and `docs/production-runbook.md`.
 
 ### 3. Provision a separate empty database
 
