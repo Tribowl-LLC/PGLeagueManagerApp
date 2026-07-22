@@ -6,14 +6,13 @@
  * (the regression that motivated this task: self-registered
  * users had a phone on `users` that was never copied onto
  * `bowlers`, so the admin "Edit Bowler" modal showed an empty
- * field and BowlNow sync — which reads `bowler.phone` —
- * propagated nothing to CRM).
+ * field).
  *
  * The helper is intentionally idempotent: it only writes when
  * the user has a non-empty phone AND the bowler's current
  * phone differs. That keeps the backfill safe to re-run and
  * keeps the link-time call sites cheap (no spurious updates,
- * no spurious cache busts, no spurious BowlNow re-syncs).
+ * no spurious cache busts, and no spurious external updates).
  *
  * Direction is user → bowler only — see task brief "Out of
  * scope".

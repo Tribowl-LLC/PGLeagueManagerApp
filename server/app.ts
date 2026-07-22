@@ -38,12 +38,11 @@ import { installDbInvariants } from "./db-invariants";
 import { setupAuth } from "./auth";
 import { paymentScheduler } from './services/payment-scheduler';
 import { startPaymentSyncRetrySweep } from './services/payment-sync-retry';
-import { startBowlnowSyncRetrySweep } from './services/bowlnow-sync-retry';
 import { bootstrapAllSquareCustomAttributeDefinitions } from './services/square-startup-bootstrap';
 import { verifySquareSdkVersion } from './services/square-provider';
 import { verifyAllThirdPartyPins } from './services/third-party-pin-verifier';
-// Side-effect import: registers BowlNow / Clover / SendGrid pin
-// verifiers (and re-exposes Square's via the shared registry) so
+// Side-effect import: registers Clover / SendGrid pin verifiers (and
+// re-exposes Square's via the shared registry) so
 // `verifyAllThirdPartyPins()` below sees a fully-populated registry.
 import './services/third-party-pins';
 import { applePayWorker } from './services/apple-pay-worker';
@@ -477,7 +476,6 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
       log.info('Schedulers initialized with 60-second sweep poll');
 
       startPaymentSyncRetrySweep();
-      startBowlnowSyncRetrySweep();
 
       verifySquareSdkVersion().catch((err) => {
         log.error('Square SDK version probe threw at boot:', err);

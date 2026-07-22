@@ -11,7 +11,6 @@ import type {
   Location, InsertLocation, UpdateLocation,
   PaymentSchedule, InsertPaymentSchedule, UpdatePaymentSchedule,
   UserRole,
-  OrgIntegrations,
   LocationSquareCredentials,
   LocationCloverCredentials,
   PaginatedResult,
@@ -67,7 +66,6 @@ export interface IBowlerStorage {
   getBowlersByEmailSystemAdmin(email: string): Promise<Bowler[]>;
   createBowler(bowler: InsertBowler): Promise<Bowler>;
   updateBowler(id: number, bowler: UpdateBowler): Promise<Bowler>;
-  updateBowlerBnContactId(bowlerId: number, bnContactId: string): Promise<void>;
   deleteBowler(id: number): Promise<void>;
   anonymizeBowler(id: number): Promise<Bowler>;
   getBowlerLeagues(filters?: { bowlerId?: number; leagueId?: number; teamId?: number }): Promise<BowlerLeague[]>;
@@ -168,8 +166,6 @@ export interface IOrganizationStorage {
   getUserOrganizations(userId: number): Promise<Organization[]>;
   setUserOrganization(userId: number, organizationId: number | null): Promise<User>;
   getOrganizationUsers(organizationId: number): Promise<User[]>;
-  getOrgIntegrations(orgId: number): Promise<OrgIntegrations | null>;
-  updateOrgIntegrations(orgId: number, integrations: OrgIntegrations): Promise<Organization>;
 }
 
 export interface ILocationStorage {

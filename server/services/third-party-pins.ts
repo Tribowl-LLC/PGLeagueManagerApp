@@ -8,7 +8,6 @@
  *     `server/services/square-provider.ts` itself (legacy log
  *     format from task #627). We import the module here for its
  *     side effect.
- *   - **BowlNow** (`Version` header) — registered below.
  *   - **Clover** (webhook signature scheme + algorithm) —
  *     registered below.
  *   - **SendGrid** (`@sendgrid/mail` major version + API base URL)
@@ -29,10 +28,6 @@ import {
   makeDefaultPinOnResult,
   type PinProbeResult,
 } from './third-party-pin-verifier';
-import {
-  BOWLNOW_EXPECTED_API_VERSION,
-  _bowlnowProbeHeadersForPinVerifier,
-} from './bowlnow';
 
 // Importing `square-provider` for its side-effect: the file calls
 // `registerThirdPartyPin({ provider: 'square', ... })` at module
@@ -43,54 +38,6 @@ import {
 import './square-provider';
 
 const log = createLogger('ThirdPartyPins');
-
-// ---------------------------------------------------------------------------
-// BowlNow — `Version` header literal
-// ---------------------------------------------------------------------------
-//
-// BowlNow is fronted by HighLevel's REST API at
-// `services.leadconnectorhq.com`. Every request must carry the
-// `Version: 2021-07-28` header (per HighLevel's API docs); a future
-// change to that pin would silently change response shapes the way
-// a Square-Version bump would.
-//
-// We have no SDK to upgrade here — every request is a hand-rolled
-// `fetch` whose headers come from `getHeaders()` in
-// `server/services/bowlnow.ts`. The risk pattern is therefore
-// "someone edits the constant or `getHeaders` without re-running
-// the audit". The probe re-derives the headers via the test seam
-// `_bowlnowProbeHeadersForPinVerifier()` and asserts that the
-// `Version` header equals `BOWLNOW_EXPECTED_API_VERSION`.
-
-registerThirdPartyPin({
-  provider: 'bowlnow',
-  pinName: 'Version header',
-  expected: BOWLNOW_EXPECTED_API_VERSION,
-  probe: async (): Promise<PinProbeResult> => {
-    let headers: Record<string, string>;
-    try {
-      headers = _bowlnowProbeHeadersForPinVerifier();
-    } catch {
-      // `getHeaders` shouldn't throw — but if it does (e.g. someone
-      // refactors it to require config it can't see at boot), don't
-      // fail-shut on a probe bug. Treat as non-conclusive.
-      return { ok: true, actual: undefined, reason: 'no-captured-request' };
-    }
-    const raw = headers['Version'];
-    const actual = typeof raw === 'string' ? raw : undefined;
-    if (actual !== BOWLNOW_EXPECTED_API_VERSION) {
-      return { ok: false, actual, reason: 'drift' };
-    }
-    return { ok: true, actual };
-  },
-  runbook: 'docs/third-party-pins.md#bowlnow',
-  onResult: makeDefaultPinOnResult({
-    loggerName: 'BowlNowService',
-    runbook: 'docs/third-party-pins.md#bowlnow',
-    remediation:
-      'Re-run the BowlNow audit before changing BN_API_VERSION. If HighLevel published a newer wire version, update BOWLNOW_EXPECTED_API_VERSION + the audit table in docs/third-party-pins.md in the same commit; otherwise revert the constant change.',
-  }),
-});
 
 // ---------------------------------------------------------------------------
 // Clover — webhook signature scheme

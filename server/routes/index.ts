@@ -21,8 +21,6 @@ import systemAdminRouter from './system-admin.js';
 import userAvatarRouter from './user-avatar.js';
 import locationsRouter from './locations.js';
 import paymentSchedulesRouter from './payment-schedules.js';
-import bowlnowRouter from './bowlnow.js';
-import integrationsRouter from './integrations.js';
 import accountRouter from './account.js';
 import { registerAuthRoutes } from './auth.js';
 import bulkImportRouter from './bulk-import.js';
@@ -157,8 +155,6 @@ export function registerRoutes(app: Express): void {
   app.use('/api/user', requireAuth, userAvatarRouter);
   app.use('/api/locations', requireAuth, locationsRouter);
   app.use('/api/payment-schedules', requireAuth, paymentSchedulesRouter);
-  app.use('/api/bn', requireOrgAdmin, bowlnowRouter);
-  app.use('/api/integrations', requireOrgAdmin, integrationsRouter);
   app.use('/api/account', accountRouter);
   app.use('/api/search', requireAuth, searchRouter);
   app.use('/api/bowler-links', requireAuth, bowlerLinksRouter);

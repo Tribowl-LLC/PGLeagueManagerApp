@@ -4,7 +4,7 @@ import { ErrorBoundary } from "@/components/error-boundary";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { CreditCard, Mail, MessageSquare, Info, ExternalLink } from "lucide-react";
+import { CreditCard, MessageSquare, Info, ExternalLink } from "lucide-react";
 import { Link } from "wouter";
 import type { ApiResponse, User, Location } from "@shared/schema";
 
@@ -13,14 +13,6 @@ interface SquareLocationConfig {
   accessTokenConfigured?: boolean;
   appIdConfigured?: boolean;
   locationId?: string | null;
-}
-
-// Org-level integrations payload (mirrors BowlNow card).
-interface OrgIntegrations {
-  bowlnow?: {
-    enabled?: boolean;
-    apiKeyConfigured?: boolean;
-  };
 }
 
 function StatusBadge({ connected }: { connected: boolean }) {
@@ -35,25 +27,9 @@ function StatusBadge({ connected }: { connected: boolean }) {
   );
 }
 
-interface MessagingContentProps {
-  orgId: number;
-}
-
-function MessagingContent({ orgId }: MessagingContentProps) {
+function MessagingContent() {
   const { data: locationsResp } = useQuery<ApiResponse<Location[]>>({
     queryKey: ["/api/locations"],
-    staleTime: 1000 * 60 * 5,
-  });
-
-  const { data: integrationsResp } = useQuery<ApiResponse<OrgIntegrations>>({
-    queryKey: ["/api/integrations", orgId],
-    queryFn: async () => {
-      const res = await fetch(`/api/integrations?organizationId=${orgId}`, {
-        credentials: "include",
-      });
-      if (!res.ok) throw new Error(`Failed to fetch integrations: ${res.status}`);
-      return res.json();
-    },
     staleTime: 1000 * 60 * 5,
   });
 
@@ -85,9 +61,7 @@ function MessagingContent({ orgId }: MessagingContentProps) {
     (q) => (q.data as ApiResponse<SquareLocationConfig> | undefined)?.data?.accessTokenConfigured === true,
   );
 
-  const bowlnow = integrationsResp?.data?.bowlnow;
-  const bowlnowConnected = !!(bowlnow?.enabled && bowlnow?.apiKeyConfigured);
-  const noneConnected = !squareConnected && !bowlnowConnected;
+  const noneConnected = !squareConnected;
 
   return (
     <>
@@ -110,7 +84,7 @@ function MessagingContent({ orgId }: MessagingContentProps) {
           <Info className="size-4" />
           <AlertTitle>No messaging platforms connected yet</AlertTitle>
           <AlertDescription>
-            Connect Square or BowlNow on the{" "}
+            Connect Square on the{" "}
             <Link href="/integrations" className="underline font-medium">
               Integrations page
             </Link>{" "}
@@ -119,7 +93,7 @@ function MessagingContent({ orgId }: MessagingContentProps) {
         </Alert>
       )}
 
-      <div className="grid gap-6 md:grid-cols-2">
+      <div className="grid gap-6 max-w-2xl">
         {/* Square card — describes Smart Lists driven by custom attributes. */}
         <Card data-testid="card-square">
           <CardHeader>
@@ -190,75 +164,6 @@ function MessagingContent({ orgId }: MessagingContentProps) {
           </CardContent>
         </Card>
 
-        {/* BowlNow card — describes Smart Lists driven by League Name. */}
-        <Card data-testid="card-bowlnow">
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="size-10 rounded-lg bg-orange-500 flex items-center justify-center">
-                  <Mail className="text-white size-5" />
-                </div>
-                <CardTitle className="text-base">BowlNow Marketing</CardTitle>
-              </div>
-              <StatusBadge connected={bowlnowConnected} />
-            </div>
-          </CardHeader>
-          <CardContent className="text-sm space-y-4">
-            <p className="text-muted-foreground">
-              Bowler league assignments flow into BowlNow as two custom
-              fields you can use to build Smart Lists.
-            </p>
-            <div className="rounded-md border bg-slate-50 p-4 space-y-2">
-              <div className="flex items-baseline gap-2">
-                <span className="font-mono text-xs bg-white border px-1.5 py-0.5 rounded">
-                  League Name
-                </span>
-                <span className="text-muted-foreground text-xs">
-                  e.g. "Tuesday Night Mixed"
-                </span>
-              </div>
-              <div className="flex items-baseline gap-2">
-                <span className="font-mono text-xs bg-white border px-1.5 py-0.5 rounded">
-                  League Season
-                </span>
-                <span className="text-muted-foreground text-xs">
-                  e.g. "Fall '25 Season"
-                </span>
-              </div>
-            </div>
-            <div>
-              <h4 className="font-medium mb-2">Send a Targeted Email or SMS</h4>
-              <ol className="list-decimal pl-5 space-y-1.5 text-muted-foreground">
-                <li>Open BowlNow → Contacts → Smart Lists.</li>
-                <li>
-                  Click <strong>+ New Smart List</strong>.
-                </li>
-                <li>
-                  Add a filter on{" "}
-                  <strong>Custom Field → League Name</strong> (or League
-                  Season) and pick the value you want to message.
-                </li>
-                <li>
-                  Save the list, then create a Campaign or SMS blast and
-                  select this list as the audience.
-                </li>
-              </ol>
-            </div>
-            {bowlnowConnected && (
-              <>
-                <p className="text-muted-foreground text-xs">
-                  League Season requires the custom field to exist in your
-                  BowlNow account first; paste its field ID into the
-                  organization's BowlNow integration settings to enable it.
-                </p>
-                <p className="text-muted-foreground text-xs">
-                  Custom field updates may take a few seconds after a bowler
-                  is added, removed, or moved between leagues.
-                </p>
-              </>
-            )}
-          </CardContent>
-        </Card>
       </div>
 
       <Alert className="mt-6">
@@ -267,7 +172,7 @@ function MessagingContent({ orgId }: MessagingContentProps) {
         <AlertDescription>
           Whenever a bowler joins, leaves, or moves leagues (or when a league
           is renamed, archived, or has its season dates changed), we update
-          their record on every connected platform automatically. If a sync
+          their Square customer record automatically. If a sync
           fails, it's retried in the background.
         </AlertDescription>
       </Alert>
@@ -302,7 +207,7 @@ export default function MessagingPage() {
             </div>
           </div>
         ) : (
-          <MessagingContent orgId={orgId} />
+          <MessagingContent />
         )}
       </ErrorBoundary>
     </Layout>

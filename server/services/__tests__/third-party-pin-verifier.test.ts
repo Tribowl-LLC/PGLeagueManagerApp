@@ -7,7 +7,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
  * `server/services/third-party-pin-verifier.ts` in isolation from
  * any provider's specific probe. Per-provider verifier tests live
  * next to their probes (Square: `square-version-runtime-guard.test.ts`;
- * BowlNow / Clover / SendGrid: `third-party-pins.test.ts`).
+ * Clover / SendGrid: `third-party-pins.test.ts`).
  */
 
 const mocks = vi.hoisted(() => ({

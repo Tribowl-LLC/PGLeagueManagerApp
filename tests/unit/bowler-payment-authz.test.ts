@@ -77,13 +77,9 @@ function makeBowler(
     paymentCustomerId: overrides.paymentCustomerId ?? null,
     cloverCustomerId: overrides.cloverCustomerId ?? null,
     paymentProviderLocationId: overrides.paymentProviderLocationId ?? null,
-    bnContactId: overrides.bnContactId ?? null,
     paymentSyncPendingAt: overrides.paymentSyncPendingAt ?? null,
     paymentSyncAttempts: overrides.paymentSyncAttempts ?? 0,
     paymentSyncLastAttemptAt: overrides.paymentSyncLastAttemptAt ?? null,
-    bnSyncPendingAt: overrides.bnSyncPendingAt ?? null,
-    bnSyncAttempts: overrides.bnSyncAttempts ?? 0,
-    bnSyncLastAttemptAt: overrides.bnSyncLastAttemptAt ?? null,
   } satisfies Bowler;
 }
 

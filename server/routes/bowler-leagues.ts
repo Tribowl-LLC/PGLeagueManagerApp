@@ -194,7 +194,7 @@ router.post("/", async (req, res) => {
       if (!created) {
         return sendError(res, "Bowler is already in this league", 400);
       }
-      // Push updated league_name/league_season to Square + BowlNow
+      // Push updated league_name/league_season to Square
       // (task #429). Fire-and-forget — never blocks the response.
       fireBowlerExternalResync(created.bowlerId, req.user?.organizationId);
       return sendSuccess(res, created, 201);
@@ -215,7 +215,7 @@ router.post("/", async (req, res) => {
     if (!created) {
       return sendError(res, "Bowler is already in this league", 400);
     }
-    // Push updated league_name/league_season to Square + BowlNow
+    // Push updated league_name/league_season to Square
     // (task #429). Fire-and-forget — never blocks the response.
     fireBowlerExternalResync(created.bowlerId, req.user?.organizationId);
     sendSuccess(res, created, 201);

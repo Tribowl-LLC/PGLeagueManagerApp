@@ -388,8 +388,7 @@ lockfile that's actually running:
   fires a fake-fetcher probe against a real `SquareClient`, captures
   the outgoing `Square-Version` header, and compares it to
   `SQUARE_EXPECTED_VERSION`. Memoized per process.
-- The probe runs eagerly at server boot from `server/index.ts`
-  (right after `startBowlnowSyncRetrySweep()`). It also kicks off
+- The probe runs eagerly at server boot from `server/index.ts`. It also kicks off
   lazily on the first `getSquareClient()` call — whichever happens
   first.
 - **Drift is fail-shut.** When the captured header doesn't match

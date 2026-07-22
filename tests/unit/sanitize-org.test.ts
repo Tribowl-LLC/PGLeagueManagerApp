@@ -38,13 +38,6 @@ function makeFullyPopulatedOrg(): Organization {
     darkLogo: 'dark-logo-url',
     appIcon: 'app-icon-url',
     active: true,
-    integrations: {
-      bowlnow: {
-        enabled: true,
-        apiKey: 'super-secret-api-key-do-not-leak',
-        locationId: 'loc-1',
-      },
-    },
     allowedEmbedDomains: [],
   });
   // `id` and `createdAt` are omitted from the insert schema, so we re-add
@@ -56,11 +49,6 @@ function makeFullyPopulatedOrg(): Organization {
 }
 
 describe('sanitizeOrg', () => {
-  it('strips the known sensitive fields', () => {
-    const sanitized = sanitizeOrg(makeFullyPopulatedOrg()) as Record<string, unknown>;
-    expect(sanitized).not.toHaveProperty('integrations');
-  });
-
   it('preserves the safe fields', () => {
     const sanitized = sanitizeOrg(makeFullyPopulatedOrg());
     expect(sanitized.id).toBe(1);
@@ -121,18 +109,6 @@ describe('sanitizeOrg', () => {
     expect(sanitized).not.toHaveProperty('arbitraryFutureColumn');
     expect(sanitized.id).toBe(1);
     expect(sanitized.name).toBe('Org');
-  });
-
-  // Belt-and-suspenders: even though no current column name matches the
-  // pattern, the `integrations` JSONB column holds OAuth tokens and
-  // provider API keys. Pin that it stays stripped regardless of any
-  // future rename of the strip list.
-  it('strips the integrations column even though its name does not match the sensitive pattern', () => {
-    const cols = Object.keys(getTableColumns(organizations));
-    expect(cols).toContain('integrations');
-    const fakeOrg = Object.fromEntries(cols.map(c => [c, `__${c}__`])) as unknown as Organization;
-    const sanitized = sanitizeOrg(fakeOrg) as Record<string, unknown>;
-    expect(sanitized).not.toHaveProperty('integrations');
   });
 
   it('does not mutate the input organization', () => {

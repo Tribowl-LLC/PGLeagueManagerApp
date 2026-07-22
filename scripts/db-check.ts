@@ -9,9 +9,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import pg from 'pg';
 import {
-  APPROVED_INVARIANT_FUNCTION_SQL,
   APPROVED_INVARIANT_FUNCTION_NAMES,
-  APPROVED_INVARIANT_TRIGGER_SQL,
 } from '../shared/database-invariants';
 import {
   ADOPTION_CONFIRMATION,
@@ -286,30 +284,17 @@ async function executeSql(connectionString: string, statements: readonly string[
   }
 }
 
-function npmInvocation(args: string[]): { command: string; args: string[] } {
-  const npmCli = process.env.npm_execpath;
-  if (npmCli) return { command: process.execPath, args: [npmCli, ...args] };
-  return { command: process.platform === 'win32' ? 'npm.cmd' : 'npm', args };
-}
-
-async function installDeclaredSchema(
-  connectionString: string,
-  proof: DisposableTargetProof,
-): Promise<void> {
-  const invocation = npmInvocation(['run', 'db:push:disposable', '--', '--force']);
-  run(invocation.command, invocation.args, {
-    ...process.env,
-    DATABASE_URL: connectionString,
-    APP_ENV: 'dev',
-    NODE_ENV: 'test',
-    LV_DISPOSABLE_DB_CONTAINER_ID: proof.containerId,
-    LV_DISPOSABLE_DB_RUN_ID: proof.runId,
-    LV_DISPOSABLE_DB_PURPOSE: proof.purpose,
-    LV_DISPOSABLE_DB_DATABASE: proof.database,
-  });
+async function installBaselineSchema(connectionString: string): Promise<void> {
+  const client = new pg.Client({ connectionString });
+  try {
+    await client.connect();
+    for (const statement of baselineMigration().sql.split('--> statement-breakpoint')) {
+      if (statement.trim()) await client.query(statement);
+    }
+  } finally {
+    await client.end().catch(() => undefined);
+  }
   await executeSql(connectionString, [
-    ...APPROVED_INVARIANT_FUNCTION_SQL,
-    ...APPROVED_INVARIANT_TRIGGER_SQL,
     'CREATE SCHEMA drizzle',
     `CREATE TABLE drizzle.__drizzle_migrations (
       id SERIAL PRIMARY KEY,
@@ -913,10 +898,7 @@ async function validateVersion(
 
     const template = 'adoption_template';
     await createDatabase(adminUrl, template, container);
-    await installDeclaredSchema(
-      databaseUrl(port, template),
-      disposableProof(container, template),
-    );
+    await installBaselineSchema(databaseUrl(port, template));
     const templateFingerprint = await verifiedFingerprint(databaseUrl(port, template));
 
     const legacyDatabase = 'legacy_inert_rls';

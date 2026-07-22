@@ -196,7 +196,7 @@ The endpoint intentionally does **not** prove:
 - that every migration, invariant, or data backfill has the intended result;
 - that authentication, tenant isolation, or a changed business workflow works;
 - that schedulers and background workers are making progress; or
-- that Square, Clover, SendGrid, BowlNow, Sentry, or webhooks are configured and
+- that Square, Clover, SendGrid, Sentry, or webhooks are configured and
   operational.
 
 Deployment success therefore requires the Render rollout and health check,
@@ -391,7 +391,7 @@ After rollout, verify all applicable items:
 - [ ] Square and/or Clover configuration, charges, refunds, and webhooks affected
       by the release work as expected; no live charge is created merely as a
       generic smoke test.
-- [ ] Relevant SendGrid, BowlNow, and other enabled integrations behave normally.
+- [ ] Relevant SendGrid and other enabled integrations behave normally.
 - [ ] Payment schedules, retry sweeps, Apple Pay recovery, catalog audits, and
       other affected background jobs show expected progress without duplicates.
 - [ ] Scheduler timing uses the configured business time zone and does not show

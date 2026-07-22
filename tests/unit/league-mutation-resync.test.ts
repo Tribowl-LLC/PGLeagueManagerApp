@@ -10,7 +10,7 @@
  *
  * This file mounts the real `leagues` and `bowler-leagues` routers
  * onto an isolated Express app, mocks the boundary modules
- * (`storage`, `payment-provider-factory`, `bowlnow.js`,
+ * (`storage`, `payment-provider-factory`,
  * `access-control`, `middleware/organization`, `db.js`,
  * `payment-scheduler.js`), and drives each mutation over real HTTP.
  *
@@ -88,9 +88,6 @@ const mockStorage = {
   updateBowlerLeague: vi.fn(),
   deleteBowlerLeague: vi.fn(),
   createBowlerLeagueIfBowlerFree: vi.fn(),
-  // Org integrations (BowlNow branch — always returns null in these
-  // tests so the BN side is a no-op and we focus on Square).
-  getOrgIntegrations: vi.fn(),
 };
 vi.mock('../../server/storage', () => ({ storage: mockStorage }));
 
@@ -133,16 +130,6 @@ vi.mock('../../server/db.js', () => ({
 vi.mock('../../server/services/email', () => ({ sendInviteEmail: vi.fn() }));
 vi.mock('../../server/auth', () => ({
   hashPassword: () => Promise.resolve('hashed'),
-}));
-
-// ---------------------------------------------------------------------------
-// BowlNow — return "not configured" so the BN branch in bowler-resync is a
-// silent skip. All our assertions are on the Square side.
-// ---------------------------------------------------------------------------
-const mockSyncBowlerToBN = vi.fn();
-vi.mock('../../server/services/bowlnow.js', () => ({
-  isOrgBNConfigured: () => false,
-  syncBowlerToBN: (...a: unknown[]) => mockSyncBowlerToBN(...a),
 }));
 
 // ---------------------------------------------------------------------------
@@ -332,8 +319,6 @@ beforeEach(() => {
   mockGetPaymentProvider.mockImplementation(
     async (locationId: number) => new FakeSquareProvider(locationId),
   );
-  mockSyncBowlerToBN.mockReset();
-  mockStorage.getOrgIntegrations.mockResolvedValue(null);
 });
 
 afterEach(() => vi.clearAllMocks());

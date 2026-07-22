@@ -16,8 +16,6 @@ import type { PaymentProvider } from '../services/payment-provider';
 import { hasAccessToTeam, hasAccessToBowler, hasAccessToBowlers, hasSelfOrAdminAccessToBowler, isOrgOrHigher } from '../utils/access-control.js';
 import { canUserPayForBowler } from '../utils/bowler-payment-authz.js';
 import { bowlerSearchLimiter } from '../middleware/rate-limit.js';
-import { syncBowlerToBN, isOrgBNConfigured } from '../services/bowlnow.js';
-import { flagBowlerForBnRetry, clearBowlerBnRetry } from '../services/bowlnow-retry-flag.js';
 import { runBowlerPostCreateSync } from '../services/bowler-sync.js';
 import { syncBowlerLeagueAttributesToProvider } from '../services/bowler-attributes';
 import { createLogger } from '../logger';
@@ -686,36 +684,6 @@ router.patch("/:id", async (req, res) => {
       }
     }
 
-    const updateOrgId = req.user?.organizationId;
-    if (updateOrgId) {
-      const updateOrgConfig = await storage.getOrgIntegrations(updateOrgId);
-      if (isOrgBNConfigured(updateOrgConfig)) {
-        // Fire-and-forget but inspect the resolved value too:
-        // `syncBowlerToBN` returns `{success:false}` for most BN
-        // failures (only auth/network errors throw), so the prior
-        // `.catch()`-only handler dropped them silently. Flag for
-        // the retry sweep on either path (task #480 architect review).
-        void syncBowlerToBN(updated.id, updateOrgConfig)
-          .then(async (result) => {
-            if (!result.success) {
-              log.warn('BowlNow sync returned failure on bowler PATCH', {
-                bowlerId: updated.id,
-                error: result.error,
-              });
-              await flagBowlerForBnRetry(updated.id);
-            } else {
-              // Clear any prior pending/attempt state on success so a
-              // row that hit max attempts earlier isn't stuck forever
-              // (architect review on #480).
-              await clearBowlerBnRetry(updated.id);
-            }
-          })
-          .catch(async (e) => {
-            log.error('BowlNow sync error:', e);
-            await flagBowlerForBnRetry(updated.id);
-          });
-      }
-    }
     sendSuccess(res, sanitizeBowler(updated));
   } catch (error) {
     log.error('Error updating bowler:', error);

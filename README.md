@@ -209,8 +209,8 @@ Common local settings:
 
 Optional integrations and operational settings include `SENDGRID_API_KEY`
 (email), `SENTRY_DSN` (server error tracking), `VITE_SENTRY_DSN` (browser
-error tracking at build time), `BN_API_KEY` (BowlNow CRM sync), and
-`SETUP_SECRET` (admin bootstrap endpoints). If `SETUP_SECRET` is set, it must
+error tracking at build time), and `SETUP_SECRET` (admin bootstrap endpoints).
+If `SETUP_SECRET` is set, it must
 be at least 32 characters long and must not be a single repeated character.
 Clover webhook verification uses `CLOVER_WEBHOOK_SIGNING_SECRET` when Clover
 webhooks are enabled.

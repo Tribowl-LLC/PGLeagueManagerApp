@@ -2,7 +2,7 @@
  * Expected-error-log test helper (Task #746).
  *
  * Several in-process unit/service tests intentionally exercise error
- * branches (SendGrid 503, BowlNow sync "boom", payment-customer-sync
+ * branches (SendGrid 503, payment-customer-sync
  * giving up, crypto/decrypt failures, provider-not-configured, …).
  * Production code logs those at `[ERROR]` via `server/logger`, so on a
  * fully *green* run the test output is polluted with real `[ERROR]`

@@ -397,14 +397,6 @@
       "count": 1
     }
   },
-  "tests/components/bowlnow-toggle-preserves-field-ids.test.tsx": {
-    "@typescript-eslint/no-unnecessary-type-assertion": {
-      "count": 1
-    },
-    "no-restricted-syntax": {
-      "count": 1
-    }
-  },
   "tests/components/deletion-requests-page-confirmation-email.test.tsx": {
     "@typescript-eslint/no-unnecessary-type-assertion": {
       "count": 1
@@ -578,11 +570,6 @@
       "count": 2
     }
   },
-  "tests/unit/integrations-bowlnow-fields-roundtrip.test.ts": {
-    "no-restricted-syntax": {
-      "count": 3
-    }
-  },
   "tests/unit/league-mutation-resync.test.ts": {
     "@typescript-eslint/no-non-null-assertion": {
       "count": 4
@@ -682,7 +669,7 @@
   },
   "tests/unit/sanitize-org.test.ts": {
     "no-restricted-syntax": {
-      "count": 3
+      "count": 2
     }
   },
   "tests/unit/sanitize-payment.test.ts": {

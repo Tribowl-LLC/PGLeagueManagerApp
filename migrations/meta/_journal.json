@@ -15,6 +15,13 @@
       "when": 1784694843315,
       "tag": "0001_organization_hostname_namespace_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1784702857273,
+      "tag": "0002_remove_legacy_crm_columns",
+      "breakpoints": true
     }
   ]
 }

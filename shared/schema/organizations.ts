@@ -1,4 +1,4 @@
-import { pgTable, text, serial, boolean, timestamp, uniqueIndex, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, boolean, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -14,35 +14,6 @@ const hostnameSchema = z
   .max(253)
   .regex(/^[a-z0-9.-]+$/, "Use a bare hostname (no scheme or path)")
   .refine((h) => !h.startsWith(".") && !h.endsWith("."), "Hostname cannot start or end with a dot");
-
-export interface OrgIntegrations {
-  bowlnow?: {
-    enabled: boolean;
-    apiKey?: string;
-    locationId?: string;
-    // Per-org overrides for the BowlNow custom-field IDs. Each
-    // BowlNow (LeadConnector) location has its own opaque field IDs
-    // — they cannot be created via the BN API, so ops creates the
-    // field in the BN dashboard and then pastes the resulting ID
-    // here. When unset, we fall back to the platform-default IDs in
-    // `server/services/bowlnow.ts`. Task #478 added
-    // `leagueSeasonFieldId`; without it the season tag write is
-    // skipped silently rather than failing, so orgs that haven't
-    // created the field yet keep working as before.
-    leagueNameFieldId?: string;
-    leagueSeasonFieldId?: string;
-  };
-}
-
-export const orgIntegrationsSchema = z.object({
-  bowlnow: z.object({
-    enabled: z.boolean(),
-    apiKey: z.string().optional(),
-    locationId: z.string().optional(),
-    leagueNameFieldId: z.string().optional(),
-    leagueSeasonFieldId: z.string().optional(),
-  }).optional(),
-}).nullable().optional();
 
 export const organizations = pgTable("organizations", {
   id: serial("id").primaryKey(),
@@ -60,7 +31,6 @@ export const organizations = pgTable("organizations", {
   appIcon: text("app_icon"),
   active: boolean("active").notNull().default(true),
   createdAt: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
-  integrations: jsonb("integrations").$type<OrgIntegrations>(),
   // Task #681: domains allowed to embed this org's
   // registration iframe. The /embed/register/:leagueId middleware
   // sets `Content-Security-Policy: frame-ancestors 'self' <domains>`
@@ -89,7 +59,6 @@ export const insertOrganizationSchema = baseOrganizationSchema.extend({
   darkLogo: z.string().optional(),
   appIcon: z.string().optional(),
   active: z.boolean().default(true),
-  integrations: orgIntegrationsSchema,
   allowedEmbedDomains: z.array(hostnameSchema).max(50).default([]),
 }).omit({ id: true, createdAt: true });
 
@@ -107,7 +76,6 @@ export const updateOrganizationSchema = z.object({
   darkLogo: z.string().nullable(),
   appIcon: z.string().nullable(),
   active: z.boolean(),
-  integrations: orgIntegrationsSchema,
   allowedEmbedDomains: z.array(hostnameSchema).max(50),
 }).partial();
 

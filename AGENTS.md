@@ -187,7 +187,6 @@ Optional application integrations include:
 
 - `SENDGRID_API_KEY`
 - `SENTRY_DSN`
-- `BN_API_KEY`
 - `SETUP_SECRET`
 
 Payment-provider credentials may be location-specific and are not

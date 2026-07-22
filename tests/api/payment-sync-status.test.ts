@@ -107,7 +107,6 @@ describe('PATCH /api/account/profile/:id payment sync status', () => {
         organizationId: org.id,
         paymentCustomerId: null,
         cloverCustomerId: null,
-        bnContactId: null,
         paymentSyncPendingAt: null,
       })
       .returning();
@@ -181,7 +180,6 @@ describe('PATCH /api/account/profile/:id payment sync status', () => {
         organizationId: org.id,
         paymentCustomerId: null,
         cloverCustomerId: null,
-        bnContactId: null,
         paymentSyncPendingAt: null,
       })
       .returning();
@@ -265,7 +263,6 @@ describe('POST /api/account/bowlers/:id/retry-payment-sync', () => {
         organizationId: org.id,
         paymentCustomerId: null,
         cloverCustomerId: null,
-        bnContactId: null,
         paymentSyncPendingAt: null,
       })
       .returning();

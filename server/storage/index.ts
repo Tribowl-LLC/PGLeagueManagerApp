@@ -49,7 +49,6 @@ export class DatabaseStorage implements IStorage {
   getBowlersByEmailSystemAdmin!: IStorage["getBowlersByEmailSystemAdmin"];
   createBowler!: IStorage["createBowler"];
   updateBowler!: IStorage["updateBowler"];
-  updateBowlerBnContactId!: IStorage["updateBowlerBnContactId"];
   deleteBowler!: IStorage["deleteBowler"];
   anonymizeBowler!: IStorage["anonymizeBowler"];
   getBowlerLeagues!: IStorage["getBowlerLeagues"];
@@ -137,9 +136,6 @@ export class DatabaseStorage implements IStorage {
   getUserOrganizations!: IStorage["getUserOrganizations"];
   setUserOrganization!: IStorage["setUserOrganization"];
   getOrganizationUsers!: IStorage["getOrganizationUsers"];
-  getOrgIntegrations!: IStorage["getOrgIntegrations"];
-  updateOrgIntegrations!: IStorage["updateOrgIntegrations"];
-
   getLocations!: IStorage["getLocations"];
   getAllLocationsSystemAdmin!: IStorage["getAllLocationsSystemAdmin"];
   getLocation!: IStorage["getLocation"];

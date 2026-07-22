@@ -1112,23 +1112,6 @@ describe('Organization Isolation', () => {
         expect(data.success).toBe(false);
       });
 
-      it('org A GET /api/bn/status?organizationId=<orgB> returns the same body as the own-org call (param ignored for org_admin)', async () => {
-        // For non-system-admin callers the handler always uses
-        // req.user.organizationId and silently ignores the
-        // ?organizationId query param. The cross-org call must
-        // therefore reveal exactly zero new information vs an
-        // unparameterised own-org call from the same session.
-        expect(orgBId).not.toBeNull();
-        const cross = await apiGet(
-          `/api/bn/status?organizationId=${orgBId}`,
-          sessionA,
-        );
-        const own = await apiGet('/api/bn/status', sessionA);
-        expect(cross.status).toBe(200);
-        expect(own.status).toBe(200);
-        expect(cross.data).toEqual(own.data);
-      });
-
       it('org A GET /api/bowlers?organizationId=<orgB> must not include the org B bowler', async () => {
         expect(orgBBowlerId).not.toBeNull();
         expect(orgBId).not.toBeNull();

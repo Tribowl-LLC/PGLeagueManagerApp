@@ -57,7 +57,7 @@ The Express server under [`server/`](../server/) is responsible for:
 - enforcing authentication, roles, CSRF, rate limits, and resource access;
 - applying business rules and coordinating transactions;
 - reading and writing PostgreSQL through Drizzle and the storage layer;
-- calling Square, Clover, SendGrid, BowlNow, and Sentry integrations;
+- calling Square, Clover, SendGrid, and Sentry integrations;
 - receiving and verifying provider webhooks; and
 - running scheduled payment, synchronization, audit, and recovery workers.
 
@@ -84,7 +84,7 @@ other sensitive rows.
 | [`server/routes/`](../server/routes/) | HTTP route modules. [`routes/index.ts`](../server/routes/index.ts) mounts the API routers and their broad auth boundaries. |
 | [`server/middleware/`](../server/middleware/) | Cross-cutting request behavior: authentication gates, CSRF, subdomain context, security headers, organization context, and embed CSP. |
 | [`server/storage/`](../server/storage/) | Database access facade and domain-specific storage modules for leagues, teams, bowlers, payments, users, organizations, and operational records. |
-| [`server/services/`](../server/services/) | Business workflows and external-system adapters, including payments, email, BowlNow sync, account lifecycle, schedulers, and recovery workers. |
+| [`server/services/`](../server/services/) | Business workflows and external-system adapters, including payments, email, account lifecycle, schedulers, and recovery workers. |
 | [`server/lib/`](../server/lib/) | Server infrastructure helpers such as password handling, shutdown, and trust-proxy verification. |
 | [`server/utils/`](../server/utils/) | API, authorization, encryption, date/time, PII, payment-error, input, and operational safety helpers. |
 | [`server/migrations/`](../server/migrations/) | Narrow, idempotent application startup or data-backfill routines. This is not a substitute for Drizzle schema changes or the documented production schema-deployment procedure. |
@@ -347,7 +347,6 @@ mapping.
 | Square | Per-location payment provider for charges, orders, refunds, customers, saved cards, catalog operations, Square customer attributes, receipts, and Apple Pay domain registration. Provider selection and caching are centralized. | [`server/services/payment-provider-factory.ts`](../server/services/payment-provider-factory.ts), [`server/services/square-provider.ts`](../server/services/square-provider.ts), [Square service modules](../server/services/) |
 | Clover | Per-location payment provider for charges, refunds, customer/source management, and payment lifecycle updates. Production webhooks require HMAC verification with the configured Clover signing secret. | [`server/services/clover-provider.ts`](../server/services/clover-provider.ts), [`server/services/clover.ts`](../server/services/clover.ts), [`server/routes/payments-provider/webhooks.ts`](../server/routes/payments-provider/webhooks.ts) |
 | SendGrid | Transactional authentication, account, payment, and administrative email. Email templates are stored and rendered through server services. | [`server/services/email.ts`](../server/services/email.ts), [`server/services/email-core.ts`](../server/services/email-core.ts) |
-| BowlNow | Optional per-organization CRM/contact synchronization for bowlers. Sync state is independent from payment sync state and is retried by a background sweep. | [`server/services/bowlnow.ts`](../server/services/bowlnow.ts), [`server/services/bowlnow-sync-retry.ts`](../server/services/bowlnow-sync-retry.ts), [`server/routes/bowlnow.ts`](../server/routes/bowlnow.ts) |
 | Sentry | Server and browser error reporting. Client events are scrubbed before sending; server errors are registered with the Express error handler. | [`client/src/main.tsx`](../client/src/main.tsx), [`server/app.ts`](../server/app.ts), [`client/src/lib/logger.ts`](../client/src/lib/logger.ts) |
 | Capacitor / Apple and Android platform services | Packages the same product for native iOS and Android targets. The server also exposes the Apple/Android association files and Apple Pay domain-verification path required by the mobile/web flows. | [`client/src/lib/capacitor.ts`](../client/src/lib/capacitor.ts), [`ios/`](../ios/), [`android/`](../android/) |
 
@@ -361,7 +360,7 @@ messages are business-critical contracts; changes require focused tests and
 provider review.
 
 The normal boot path also starts schedulers and recovery/audit work, including
-payment scheduling, payment and BowlNow retry sweeps, Apple Pay job recovery,
+payment scheduling, payment retry sweeps, Apple Pay job recovery,
 Square catalog audits, provider pin/version checks, and Square custom-attribute
 bootstrap. These workers are intentionally suppressed by the test harness.
 

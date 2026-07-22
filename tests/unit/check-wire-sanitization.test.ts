@@ -148,7 +148,6 @@ function makeFixture(extraFiles: Record<string, string>): string {
   paymentCustomerId: string | null;
   cloverCustomerId: string | null;
   paymentProviderLocationId: number | null;
-  bnContactId: string | null;
 };
 `,
   );
@@ -195,7 +194,7 @@ import type { Payment } from '../../shared/schema/payments';
 export type SanitizedUser = Pick<User, 'id' | 'email' | 'name' | 'createdAt'>;
 export type SanitizedOrganization = Pick<Organization, 'id' | 'name' | 'slug' | 'createdAt'>;
 export type SanitizedLocation = Pick<Location, 'id' | 'name' | 'address' | 'city' | 'state' | 'zipCode' | 'organizationId' | 'paymentProvider'>;
-export type SanitizedBowler = Pick<Bowler, 'id' | 'name' | 'email' | 'phone' | 'active' | 'organizationId' | 'paymentCustomerId' | 'bnContactId'>;
+export type SanitizedBowler = Pick<Bowler, 'id' | 'name' | 'email' | 'phone' | 'active' | 'organizationId' | 'paymentCustomerId'>;
 export type SanitizedPayment = Pick<Payment, 'id' | 'bowlerId' | 'leagueId' | 'amount' | 'status' | 'type' | 'providerPaymentId' | 'cloverChargeId' | 'createdAt'>;
 
 // Deny-list (#501): the inverse of the safe lists above. The script

@@ -6,8 +6,7 @@
  *
  * Why: self-registered users had their phone saved on `users` but
  * never propagated to `bowlers`. The admin "Edit Bowler" modal
- * therefore showed an empty phone field, and BowlNow sync (which
- * reads `bowler.phone`) sent no phone for those bowlers either.
+ * therefore showed an empty phone field.
  * This script heals the existing rows; the live registration /
  * `runBowlerPostCreateSync` paths handle new pairs going forward.
  *
@@ -16,10 +15,8 @@
  *
  * Side effects beyond the DB write: for each bowler whose phone
  * was actually changed, the AWAITABLE `runBowlerExternalResync`
- * helper is invoked so the new phone propagates to BowlNow (and
- * Square attribute sync, as a bonus). Awaited per row so script
- * completion guarantees every dispatch finished. Orgs without
- * BowlNow configured silently skip inside that helper.
+ * helper is invoked so Square attributes stay current. Awaited per
+ * row so script completion guarantees every dispatch finished.
  *
  * Usage:
  *   npx tsx scripts/backfill-bowler-phone-from-user.ts            # dry-run by default

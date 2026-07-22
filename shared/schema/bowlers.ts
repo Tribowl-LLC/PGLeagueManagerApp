@@ -34,7 +34,6 @@ export const bowlers = pgTable("bowlers", {
   // See server/services/account-deletion.ts (collectProviderTargets)
   // and task #346.
   paymentProviderLocationId: integer("payment_provider_location_id").references(() => locations.id, { onDelete: 'set null' }),
-  bnContactId: text("bn_contact_id"),
   // Set when a profile-update tried to push the bowler to the payment
   // provider and the call failed for a non-config reason (auth, rate
   // limit, network). Cleared when a subsequent sync attempt succeeds.
@@ -51,20 +50,6 @@ export const bowlers = pgTable("bowlers", {
   // between sweep ticks.
   paymentSyncAttempts: integer("payment_sync_attempts").notNull().default(0),
   paymentSyncLastAttemptAt: timestamp("payment_sync_last_attempt_at", { mode: "string" }),
-  // BowlNow contact-sync retry state (task #480). Parallel triple to
-  // `paymentSync*` above but kept SEPARATE on purpose — Square and
-  // BowlNow are independent external systems with independent
-  // failure modes (different APIs, different rate limits, different
-  // outages). A single shared flag would force a Square success to
-  // clear a still-failing BowlNow retry (or vice-versa) and would
-  // conflate the per-provider attempt counts.
-  // `bnSyncPendingAt` is set by `bowler-resync.ts` when a fire-and-
-  // forget BowlNow sync attempt fails; the background sweep
-  // (`server/services/bowlnow-sync-retry.ts`) walks flagged rows,
-  // re-runs `syncBowlerToBN`, and clears the flag on success.
-  bnSyncPendingAt: timestamp("bn_sync_pending_at", { mode: "string" }),
-  bnSyncAttempts: integer("bn_sync_attempts").notNull().default(0),
-  bnSyncLastAttemptAt: timestamp("bn_sync_last_attempt_at", { mode: "string" }),
 });
 
 // Mirror of `PAYMENT_SYNC_MAX_ATTEMPTS` in
@@ -101,12 +86,6 @@ export function parsePaymentSyncStatus(value: unknown): PaymentSyncStatus {
     ? (value as PaymentSyncStatus)
     : 'not_applicable';
 }
-
-// Same shape as PAYMENT_SYNC_MAX_ATTEMPTS but for the BowlNow retry
-// sweep (task #480). Kept as a distinct constant so we can tune the
-// two providers' attempt budgets independently if one ends up flakier
-// than the other in production.
-export const BN_SYNC_MAX_ATTEMPTS = 5;
 
 export const bowlerLeagues = pgTable("bowler_leagues", {
   id: serial("id").primaryKey(),
@@ -157,9 +136,6 @@ export const insertBowlerSchema = baseBowlerSchema.extend({
   paymentSyncPendingAt: z.string().nullable().optional(),
   paymentSyncAttempts: z.number().int().min(0).optional(),
   paymentSyncLastAttemptAt: z.string().nullable().optional(),
-  bnSyncPendingAt: z.string().nullable().optional(),
-  bnSyncAttempts: z.number().int().min(0).optional(),
-  bnSyncLastAttemptAt: z.string().nullable().optional(),
 }).omit({ id: true });
 
 export const insertBowlerLeagueSchema = baseBowlerLeagueSchema.extend({
@@ -179,13 +155,9 @@ export const updateBowlerSchema = z.object({
   paymentCustomerId: z.string().nullable(),
   cloverCustomerId: z.string().nullable(),
   paymentProviderLocationId: z.number().int().positive().nullable(),
-  bnContactId: z.string().nullable(),
   paymentSyncPendingAt: z.string().nullable(),
   paymentSyncAttempts: z.number().int().min(0),
   paymentSyncLastAttemptAt: z.string().nullable(),
-  bnSyncPendingAt: z.string().nullable(),
-  bnSyncAttempts: z.number().int().min(0),
-  bnSyncLastAttemptAt: z.string().nullable(),
 }).partial();
 
 export const updateBowlerLeagueSchema = z.object({

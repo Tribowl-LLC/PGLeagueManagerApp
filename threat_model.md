@@ -12,7 +12,7 @@ Production scope for this threat model excludes the mockup sandbox, local-only s
 - **Bowler data** - names, emails, phone numbers, team/league membership, and related profile state. This is tenant-sensitive PII.
 - **Payment state** - payment rows, provider payment IDs, saved-card references, provider customer IDs, autopay schedules, refunds, receipts, and payment-verification metadata. Raw PAN data is delegated to payment providers, but tokenized references still enable sensitive actions.
 - **Tenant boundaries** - `organizationId`, subdomain routing, and organization-scoped admin capabilities. Loss of tenant isolation exposes one league operator's data to another.
-- **Application secrets and third-party credentials** - database URL, session secret, webhook secrets, SendGrid/BowlNow/payment-provider credentials, and setup secret.
+- **Application secrets and third-party credentials** - database URL, session secret, webhook secrets, SendGrid/payment-provider credentials, and setup secret.
 
 ## Trust Boundaries
 
@@ -22,7 +22,7 @@ Production scope for this threat model excludes the mockup sandbox, local-only s
 - **League secretary (per-league admin) boundary (Task #735)** - a `league_secretaries` join table grants per-league admin powers to a non-admin user for one league only. Secretaries get league-scoped admin powers (rosters, refunds, cash/check payments) but must never see saved cards or payment-provider customer IDs, must never modify location/payment-provider settings, must never delete the league, and must never see other leagues' or organization-level data in the same organization. Grants are issued only by an `org_admin` of the league's owning organization; `system_admin` is explicitly rejected (`SYSTEM_ADMIN_DENIED`). The relationship is decoupled from being a bowler - secretaries are users, not bowlers. A DB trigger enforces `league_secretaries.organization_id == leagues.organization_id`; route handlers must consult `hasAdminAccessToLeague` / `hasSecretaryAccessToBowler` rather than relying on broad organization membership.
 - **Cross-tenant organization boundary** - organization-scoped data is keyed by `organizationId` and sometimes subdomain context. Matching organization membership alone is not sufficient for every sensitive bowler or payment action.
 - **Server to database** - the API has broad write access to user, bowler, and payment tables. Authorization failures at the route layer can become direct database tampering.
-- **Server to external services** - payment providers, SendGrid, and BowlNow are trusted integrations reached with stored secrets. Webhooks and callback-style traffic must be authenticated and fail closed.
+- **Server to external services** - payment providers and SendGrid are trusted integrations reached with stored secrets. Webhooks and callback-style traffic must be authenticated and fail closed.
 
 ## Scan Anchors
 
