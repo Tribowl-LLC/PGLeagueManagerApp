@@ -79,7 +79,7 @@ flowchart LR
 
     subgraph X["Verified external-system boundaries"]
         PAY["Square and Clover"]
-        MSG["SendGrid and BowlNow"]
+        MSG["SendGrid"]
         OBS["Sentry"]
     end
 
@@ -440,7 +440,7 @@ remain excluded from Git.
 
 Secret material includes database credentials, `SESSION_SECRET`,
 `FIELD_ENCRYPTION_KEY`, payment-provider credentials, webhook signing secrets,
-SendGrid and BowlNow keys, setup/bootstrap credentials, probe or recovery
+SendGrid keys, setup/bootstrap credentials, probe or recovery
 credentials, provider tokens, and temporary database migration confirmations.
 The [Development guide](docs/DEVELOPMENT.md) and
 [production runbook](docs/production-runbook.md) document configuration
@@ -463,8 +463,7 @@ Location-specific Square and Clover access tokens are encrypted before
 storage with AES-256-GCM using `FIELD_ENCRYPTION_KEY` and are removed from
 normal API projections. The key itself remains server-only. A decryption or
 authentication-tag failure must prevent use of the credential and produce a
-safely redacted operational error. See the known limitation below for the
-separate per-organization BowlNow configuration.
+safely redacted operational error.
 
 Rotation is an operator-owned, provider-specific process:
 
@@ -575,7 +574,6 @@ league/location relationship rather than from a client claim.
 | Square | Charges, customers, saved cards, refunds, catalog, receipts, and Apple Pay use server-selected credentials and provider interfaces. Payment creation uses idempotency and local payment state. No Square webhook subscription is currently supported; see limitations. |
 | Clover | Charges, customers/sources, refunds, and disputes use location-specific credentials. Every production Clover webhook request uses the common HMAC-SHA256 raw-body gate; processing, replay behavior, and acknowledgement are event-specific as described below. |
 | SendGrid | Receives only the minimum recipient and template data needed for transactional mail. API keys stay server-side; templates and substitutions must be safely escaped for their context. |
-| BowlNow | Optional CRM/contact synchronization uses organization context and durable retry state. Keep BowlNow sync state separate from payment state; see the stored-key limitation below. |
 | Sentry | Receives diagnostics, not an authorization role. Browser events are scrubbed before send. Server events and metadata must be deliberately minimized and redacted at their call sites. |
 | Apple/Google wallet and native platform services | Tokenization and domain/app association are external boundaries. They do not grant payment or tenant authority by themselves. |
 
@@ -815,7 +813,6 @@ repository configuration:
 | Tenant isolation is application-enforced; active PostgreSQL RLS is not configured. | Server authorization, scoped queries/storage methods, tenant tests and coverage guard, foreign keys, and selected runtime database triggers. Production's legacy RLS flags are verified as inert. | A missed application check can cross a tenant boundary. Active RLS requires a coordinated design of policies, roles, privileges, migrations, provider operations, and tests; do not enable flags or policies piecemeal. Track database architecture in [docs/DATABASE.md](docs/DATABASE.md). |
 | No verified dedicated private vulnerability-reporting intake exists for this private repository. | Collaborators and known reporters can use existing private organizational channels; public disclosure is prohibited. | An external researcher may be unable to deliver details safely. The repository owner should establish and publish a monitored security email or another verified private intake, then update this file. |
 | Square webhooks are not implemented or subscribed, and the disabled endpoint does not verify Square signatures or process events. | The exact `POST` route runs before tenant resolution and global raw-body capture. JSON and catch-all raw parsers enforce the same 12 KB received-body limit for JSON, text, binary, missing content type, and chunked requests. It uses the shared production rate-limit store with a dedicated namespace, generates a server-controlled request id before rate limiting and parsing, and logs one warning for each request admitted by the limiter containing only a fixed event name, the same request id returned to the caller, method, static path, normalized content type, bounded declared content length, and rejection outcome. The declared length is untrusted diagnostic metadata derived from `Content-Length`; invalid, absent, chunked, or excessive values become `null`. Rate-limited requests do not add a route warning. The route never logs headers, query strings, bodies, or raw bytes; returns a deliberate rejection; and makes no application-storage, payment, tenant, queue, reconciliation, or provider call. | A distributed caller can still create bounded warning noise across source addresses, and a real or accidentally configured Square subscription would have every event rejected and unprocessed. Keep the subscription list empty and monitor the dedicated rejection event. Before enabling processing, implement raw-byte signature verification, strict event validation, tenant mapping, durable replay/idempotency protection, safe conditional state transitions, redacted logging, and focused negative tests. |
-| Per-organization BowlNow configuration can include an API key in `organizations.integrations` JSON without application-layer field encryption. | Normal organization API projections omit integrations; access is limited by database and server authorization, and a global key may instead be injected server-side. | Database or overly broad server access can expose the stored key. Encrypting it requires a reviewed schema/data migration, backward-compatible read path, rotation plan, and tenant tests before existing rows change. |
 | Sentry initialization does not set an explicit release identifier. | Server runtime logs include a commit identifier, CI certifies the exact `main` tree, and browser/server telemetry includes environment context. | Incident correlation between an event and the deployed source may require manual work. Add a release identifier only with coordinated build/runtime injection, privacy review, and deployment verification. |
 | Shared rate-limit storage is selected only when `NODE_ENV=production`. | Every current `express-rate-limit` instance is required to use `createSharedRateLimitStore`; a source-scanning test enforces that policy. A production application environment fails during limiter construction unless `NODE_ENV=production` selects the PostgreSQL store. The process-local store remains intentional in development and beta/test environments. | Keep `APP_ENV=prod` and `NODE_ENV=production` explicit and verified in Render. Do not bypass the startup invariant or weaken the shared-store coverage guard. |
 | Organization hostname resolution performs a PostgreSQL lookup on every request. | There is no process-local tenant mapping to become stale during a rename or reassignment; every application process observes committed hostname mutations on its next request. Authorization and the organization-host session guard still run against the selected organization. | Tenant-host routing depends on database availability and adds lookup load. Preserve the uncached behavior unless a future shared cache provides tested, fail-safe cross-process invalidation. |

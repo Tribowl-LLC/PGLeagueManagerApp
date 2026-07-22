@@ -20,7 +20,6 @@ const mockGetBowler = vi.fn();
 const mockUpdateBowler = vi.fn();
 const mockGetLocationSquareConfig = vi.fn();
 const mockGetFirstSquareConfiguredLocation = vi.fn();
-const mockGetOrgIntegrations = vi.fn();
 
 vi.mock('../../server/storage', () => ({
   storage: {
@@ -28,7 +27,6 @@ vi.mock('../../server/storage', () => ({
     updateBowler: (...args: unknown[]) => mockUpdateBowler(...args),
     getLocationSquareConfig: (...args: unknown[]) => mockGetLocationSquareConfig(...args),
     getFirstSquareConfiguredLocation: (...args: unknown[]) => mockGetFirstSquareConfiguredLocation(...args),
-    getOrgIntegrations: (...args: unknown[]) => mockGetOrgIntegrations(...args),
   },
 }));
 
@@ -49,26 +47,6 @@ vi.mock('../../server/services/payment-provider-factory', async () => {
     getPaymentProvider: (...args: unknown[]) => mockGetPaymentProvider(...args),
   };
 });
-
-// BN side (task #480 architect review): the helper now inspects
-// `syncBowlerToBN`'s `{success, error}` return value and queues
-// failures for the retry sweep via `flagBowlerForBnRetry`. Defaults:
-// `isOrgBNConfigured` returns false so existing tests that don't
-// care about BN don't accidentally enter the BN branch; the failure
-// test below overrides both.
-const mockSyncBowlerToBN = vi.fn();
-const mockIsOrgBNConfigured = vi.fn();
-vi.mock('../../server/services/bowlnow', () => ({
-  syncBowlerToBN: (...args: unknown[]) => mockSyncBowlerToBN(...args),
-  isOrgBNConfigured: (...args: unknown[]) => mockIsOrgBNConfigured(...args),
-}));
-
-const mockFlagBowlerForBnRetry = vi.fn();
-const mockClearBowlerBnRetry = vi.fn();
-vi.mock('../../server/services/bowlnow-retry-flag', () => ({
-  flagBowlerForBnRetry: (...args: unknown[]) => mockFlagBowlerForBnRetry(...args),
-  clearBowlerBnRetry: (...args: unknown[]) => mockClearBowlerBnRetry(...args),
-}));
 
 import { syncBowlerForUser, type SyncableUser } from '../../server/services/payment-customer-sync';
 import { ProviderNotConfiguredError } from '../../server/services/payment-provider-factory';
@@ -92,7 +70,6 @@ const baseBowler = {
   order: 0,
   paymentCustomerId: null as string | null,
   cloverCustomerId: null,
-  bnContactId: null,
   paymentSyncPendingAt: null as string | null,
 };
 
@@ -104,18 +81,9 @@ beforeEach(() => {
   mockGetLocationSquareConfig.mockReset();
   mockGetFirstSquareConfiguredLocation.mockReset();
   mockGetPaymentProvider.mockReset();
-  mockGetOrgIntegrations.mockReset();
-  mockSyncBowlerToBN.mockReset();
-  mockIsOrgBNConfigured.mockReset();
-  mockFlagBowlerForBnRetry.mockReset();
-  mockClearBowlerBnRetry.mockReset();
   mockSyncBowlerLeagueAttributesToProvider.mockReset();
   // Default attribute sync to ok so existing tests are unaffected.
   mockSyncBowlerLeagueAttributesToProvider.mockResolvedValue({ ok: true });
-  // Default: org has NO BN configured, so the BN branch is a no-op
-  // for tests that only care about Square. The dedicated BN-failure
-  // test below overrides this.
-  mockIsOrgBNConfigured.mockReturnValue(false);
 });
 
 afterEach(() => {
@@ -186,74 +154,6 @@ describe('syncBowlerForUser', () => {
     if (!lastCall) throw new Error('expected updateBowler to have been called');
     expect(lastCall[1].paymentSyncPendingAt).toBeNull();
     expect(lastCall[1].paymentCustomerId).toBe('cust_123');
-  });
-
-  it('queues the bowler for the BN retry sweep when BN sync returns success:false during a Square-successful flow', async () => {
-    // Architect review on #480: previously, a `{success:false}` from
-    // `syncBowlerToBN` here was logged-only — it didn't flip
-    // `bn_sync_pending_at`, so the background BN-sync sweep never
-    // picked the bowler up. Without this fix, a transient BN 5xx
-    // during a profile update silently leaves the bowler's BN contact
-    // stale until the next manual sync-all.
-    mockGetBowler.mockResolvedValue(baseBowler);
-    mockGetLocationSquareConfig.mockResolvedValue({ accessToken: 'live-token' });
-    mockUpdateBowler.mockResolvedValue(baseBowler);
-    mockGetPaymentProvider.mockResolvedValue({
-      createOrUpdateCustomer: vi.fn().mockResolvedValue({ id: 'cust_999' }),
-    });
-    mockGetOrgIntegrations.mockResolvedValue({ bowlnow: { enabled: true, apiKey: 'k' } });
-    mockIsOrgBNConfigured.mockReturnValue(true);
-    mockSyncBowlerToBN.mockResolvedValue({ success: false, error: 'BowlNow 503' });
-
-    const status = await syncBowlerForUser(baseUser, allChanged);
-
-    // Square side still wins — Square is the source of truth for the
-    // top-level status here; BN is best-effort but flagged for retry.
-    expect(status).toBe('synced');
-    expect(mockSyncBowlerToBN).toHaveBeenCalledTimes(1);
-    expect(mockFlagBowlerForBnRetry).toHaveBeenCalledTimes(1);
-    expect(mockFlagBowlerForBnRetry).toHaveBeenCalledWith(42);
-  });
-
-  it('queues the bowler for the BN retry sweep when syncBowlerToBN throws', async () => {
-    mockGetBowler.mockResolvedValue(baseBowler);
-    mockGetLocationSquareConfig.mockResolvedValue({ accessToken: 'live-token' });
-    mockUpdateBowler.mockResolvedValue(baseBowler);
-    mockGetPaymentProvider.mockResolvedValue({
-      createOrUpdateCustomer: vi.fn().mockResolvedValue({ id: 'cust_999' }),
-    });
-    mockGetOrgIntegrations.mockResolvedValue({ bowlnow: { enabled: true, apiKey: 'k' } });
-    mockIsOrgBNConfigured.mockReturnValue(true);
-    mockSyncBowlerToBN.mockRejectedValue(new Error('connect ETIMEDOUT'));
-
-    const status = await syncBowlerForUser(baseUser, allChanged);
-
-    expect(status).toBe('synced');
-    expect(mockFlagBowlerForBnRetry).toHaveBeenCalledTimes(1);
-    expect(mockFlagBowlerForBnRetry).toHaveBeenCalledWith(42);
-  });
-
-  it('clears BN retry state and does NOT queue when syncBowlerToBN succeeds (rescues stuck-at-max rows)', async () => {
-    // Architect review on #480 (round 2): a row that previously hit
-    // BN_SYNC_MAX_ATTEMPTS would otherwise stay flagged forever
-    // because the sweep's `attempts < cap` filter excludes it. A
-    // foreground success must reset the retry state symmetrically.
-    mockGetBowler.mockResolvedValue(baseBowler);
-    mockGetLocationSquareConfig.mockResolvedValue({ accessToken: 'live-token' });
-    mockUpdateBowler.mockResolvedValue(baseBowler);
-    mockGetPaymentProvider.mockResolvedValue({
-      createOrUpdateCustomer: vi.fn().mockResolvedValue({ id: 'cust_999' }),
-    });
-    mockGetOrgIntegrations.mockResolvedValue({ bowlnow: { enabled: true, apiKey: 'k' } });
-    mockIsOrgBNConfigured.mockReturnValue(true);
-    mockSyncBowlerToBN.mockResolvedValue({ success: true, contactId: 'bn_ok' });
-
-    await syncBowlerForUser(baseUser, allChanged);
-
-    expect(mockSyncBowlerToBN).toHaveBeenCalledTimes(1);
-    expect(mockFlagBowlerForBnRetry).not.toHaveBeenCalled();
-    expect(mockClearBowlerBnRetry).toHaveBeenCalledTimes(1);
-    expect(mockClearBowlerBnRetry).toHaveBeenCalledWith(42);
   });
 
   it('bumps paymentSyncAttempts and stamps last-attempt when the attribute-write step fails (task #680)', async () => {

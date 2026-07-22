@@ -182,13 +182,9 @@ const BOWLERS: Bowler[] = [
     paymentCustomerId: null,
     cloverCustomerId: null,
     paymentProviderLocationId: null,
-    bnContactId: null,
     paymentSyncPendingAt: null,
     paymentSyncAttempts: 0,
     paymentSyncLastAttemptAt: null,
-    bnSyncPendingAt: null,
-    bnSyncAttempts: 0,
-    bnSyncLastAttemptAt: null,
   },
 ];
 

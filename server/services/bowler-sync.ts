@@ -1,7 +1,5 @@
 import { storage } from '../storage';
 import { getPaymentProvider, ProviderNotConfiguredError } from './payment-provider-factory';
-import { syncBowlerToBN, isOrgBNConfigured } from './bowlnow.js';
-import { flagBowlerForBnRetry, clearBowlerBnRetry } from './bowlnow-retry-flag.js';
 import { createLogger } from '../logger';
 import { isDev } from '../config';
 import type { Bowler } from '@shared/schema';
@@ -38,10 +36,8 @@ export async function runBowlerPostCreateSync(
         log.info(`Auto-linked user ${matchingUser.id} to bowler ${current.id}`);
 
         // Task #677: user wins for `phone`. Apply the overwrite
-        // BEFORE the Square / BowlNow branches below so the
-        // downstream `createOrUpdateCustomer` and `syncBowlerToBN`
-        // both see the right value (they read off `current.phone`
-        // / `bowler.phone` respectively).
+        // BEFORE the Square branch below so the downstream customer
+        // update sees the right value from `current.phone`.
         const phoneDecision = decideBowlerPhoneSync(matchingUser, current);
         if (phoneDecision.write) {
           try {
@@ -159,39 +155,6 @@ export async function runBowlerPostCreateSync(
           markErr,
         );
       }
-    }
-  }
-
-  if (organizationId) {
-    try {
-      const orgConfig = await storage.getOrgIntegrations(organizationId);
-      if (isOrgBNConfigured(orgConfig)) {
-        // Inspect the resolved value too — `syncBowlerToBN` returns
-        // `{success:false}` for most BN failures rather than throwing,
-        // so the prior `.catch()`-only handler dropped them silently
-        // (task #480 architect review).
-        void syncBowlerToBN(current.id, orgConfig)
-          .then(async (result) => {
-            if (!result.success) {
-              log.warn('BowlNow sync returned failure during bowler sync', {
-                bowlerId: current.id,
-                error: result.error,
-              });
-              await flagBowlerForBnRetry(current.id);
-            } else {
-              // Clear any prior pending/attempt state on success so a
-              // row that hit max attempts earlier isn't stuck forever
-              // (architect review on #480).
-              await clearBowlerBnRetry(current.id);
-            }
-          })
-          .catch(async (e) => {
-            log.error('BowlNow sync error:', e);
-            await flagBowlerForBnRetry(current.id);
-          });
-      }
-    } catch (bnError) {
-      log.error('BowlNow config error during bowler sync:', bnError);
     }
   }
 

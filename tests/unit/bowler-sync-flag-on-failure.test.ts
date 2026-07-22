@@ -20,7 +20,6 @@ const mockGetUserByEmail = vi.fn<(email: string) => Promise<unknown>>(async () =
 const mockLinkUserToBowler = vi.fn<(u: number, b: number) => Promise<unknown>>(async () => undefined);
 const mockUpdateBowler = vi.fn<(id: number, patch: unknown) => Promise<unknown>>();
 const mockGetFirstSquareConfiguredLocation = vi.fn<(orgId: number) => Promise<unknown>>(async () => null);
-const mockGetOrgIntegrations = vi.fn<(orgId: number) => Promise<unknown>>(async () => null);
 const mockGetBowlerLeagues = vi.fn<() => Promise<unknown[]>>(async () => []);
 const mockGetLeague = vi.fn<() => Promise<unknown>>(async () => null);
 
@@ -30,7 +29,6 @@ vi.mock('../../server/storage', () => ({
     linkUserToBowler: (u: number, b: number) => mockLinkUserToBowler(u, b),
     updateBowler: (id: number, patch: unknown) => mockUpdateBowler(id, patch),
     getFirstSquareConfiguredLocation: (o: number) => mockGetFirstSquareConfiguredLocation(o),
-    getOrgIntegrations: (o: number) => mockGetOrgIntegrations(o),
     getBowlerLeagues: () => mockGetBowlerLeagues(),
     getLeague: () => mockGetLeague(),
   },
@@ -50,16 +48,6 @@ async function getProviderNotConfiguredError() {
   const mod = await import('../../server/services/payment-provider-factory');
   return mod.ProviderNotConfiguredError;
 }
-
-vi.mock('../../server/services/bowlnow.js', () => ({
-  isOrgBNConfigured: () => false,
-  syncBowlerToBN: vi.fn(),
-}));
-
-vi.mock('../../server/services/bowlnow-retry-flag.js', () => ({
-  flagBowlerForBnRetry: vi.fn(async () => undefined),
-  clearBowlerBnRetry: vi.fn(async () => undefined),
-}));
 
 vi.mock('../../server/services/bowler-attributes', () => ({
   syncBowlerLeagueAttributesToProvider: vi.fn(async () => ({ ok: true })),
@@ -87,13 +75,9 @@ function fakeBowler(overrides: Partial<BowlerArg> = {}): BowlerArg {
     paymentCustomerId: null,
     cloverCustomerId: null,
     paymentProviderLocationId: null,
-    bnContactId: null,
     paymentSyncPendingAt: null,
     paymentSyncAttempts: 0,
     paymentSyncLastAttemptAt: null,
-    bnSyncPendingAt: null,
-    bnSyncAttempts: 0,
-    bnSyncLastAttemptAt: null,
     ...overrides,
   });
   // `id` is omitted from the insert schema; re-add it for the SELECT
@@ -106,7 +90,6 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockGetUserByEmail.mockResolvedValue(null);
   mockGetFirstSquareConfiguredLocation.mockResolvedValue(null);
-  mockGetOrgIntegrations.mockResolvedValue(null);
   // Default: updateBowler echoes the merged state back so chained
   // calls see the latest row.
   mockUpdateBowler.mockImplementation(async (_id, patch) => ({

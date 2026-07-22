@@ -34,7 +34,6 @@ const mockGetBowlerLeagues = vi.fn<(filter: unknown) => Promise<unknown[]>>(asyn
 const mockGetLeague = vi.fn<(id: number) => Promise<unknown>>(async () => null);
 const mockSetUserOrganization = vi.fn<(userId: number, orgId: number) => Promise<unknown>>();
 const mockGetFirstSquareConfiguredLocation = vi.fn<(orgId: number) => Promise<unknown>>(async () => null);
-const mockGetOrgIntegrations = vi.fn<(orgId: number) => Promise<unknown>>(async () => null);
 
 vi.mock('../../server/storage', () => ({
   storage: {
@@ -47,23 +46,12 @@ vi.mock('../../server/storage', () => ({
     getLeague: (id: number) => mockGetLeague(id),
     setUserOrganization: (userId: number, orgId: number) => mockSetUserOrganization(userId, orgId),
     getFirstSquareConfiguredLocation: (orgId: number) => mockGetFirstSquareConfiguredLocation(orgId),
-    getOrgIntegrations: (orgId: number) => mockGetOrgIntegrations(orgId),
   },
 }));
 
 vi.mock('../../server/services/payment-provider-factory', () => ({
   getPaymentProvider: vi.fn(),
   ProviderNotConfiguredError: class ProviderNotConfiguredError extends Error {},
-}));
-
-vi.mock('../../server/services/bowlnow.js', () => ({
-  isOrgBNConfigured: () => false,
-  syncBowlerToBN: vi.fn(),
-}));
-
-vi.mock('../../server/services/bowlnow-retry-flag.js', () => ({
-  flagBowlerForBnRetry: vi.fn(async () => undefined),
-  clearBowlerBnRetry: vi.fn(async () => undefined),
 }));
 
 vi.mock('../../server/services/bowler-attributes', () => ({
@@ -82,7 +70,6 @@ beforeEach(() => {
   mockGetBowlerLeagues.mockResolvedValue([]);
   mockGetLeague.mockResolvedValue(null);
   mockGetFirstSquareConfiguredLocation.mockResolvedValue(null);
-  mockGetOrgIntegrations.mockResolvedValue(null);
 });
 
 describe('decideBowlerPhoneSync', () => {
@@ -182,13 +169,9 @@ function fakeBowler(overrides: Partial<BowlerArg>): BowlerArg {
     paymentCustomerId: null,
     cloverCustomerId: null,
     paymentProviderLocationId: null,
-    bnContactId: null,
     paymentSyncPendingAt: null,
     paymentSyncAttempts: 0,
     paymentSyncLastAttemptAt: null,
-    bnSyncPendingAt: null,
-    bnSyncAttempts: 0,
-    bnSyncLastAttemptAt: null,
     ...overrides,
   });
   return Object.assign({ id: 42 }, parsed, overrides) as BowlerArg;

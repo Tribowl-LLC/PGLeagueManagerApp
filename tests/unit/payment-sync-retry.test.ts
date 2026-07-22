@@ -107,7 +107,6 @@ function bowler(overrides: Record<string, unknown> = {}) {
     order: 0,
     paymentCustomerId: null,
     cloverCustomerId: null,
-    bnContactId: null,
     paymentSyncPendingAt: '2026-04-22T11:00:00.000Z',
     paymentSyncAttempts: 0,
     paymentSyncLastAttemptAt: null as string | null,

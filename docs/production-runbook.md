@@ -114,7 +114,7 @@ Required application variables are `DATABASE_URL`, `SESSION_SECRET`, and
 in Render. Do not create secret files unless the application is specifically
 changed to read them.
 
-Optional integrations include SendGrid, Sentry, BowlNow, and setup bootstrap.
+Optional integrations include SendGrid, Sentry, and setup bootstrap.
 Clover webhook verification requires `CLOVER_WEBHOOK_SIGNING_SECRET` when
 Clover webhooks are enabled. Keep payment-provider credentials in their
 intended environment and location; never copy production credentials into a

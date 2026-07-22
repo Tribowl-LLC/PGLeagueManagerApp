@@ -109,9 +109,9 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 }
 
 describe('normalized migration baseline tools', () => {
-  it('keeps the exact baseline first and the hostname guard as a forward migration', () => {
+  it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(2);
+    expect(migrations).toHaveLength(3);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -124,6 +124,13 @@ describe('normalized migration baseline tools', () => {
       createdAt: 1784694843315,
       hash: '8902cc5fee270a2841e87570e8bb7d811b79608393ae44f17aef6b9c78219652',
     });
+    expect(migrations[2]).toMatchObject({
+      idx: 2,
+      tag: '0002_remove_legacy_crm_columns',
+      createdAt: 1784702857273,
+      hash: '2691703a0012e2e7caebd417e6956d33bfd0dd373e212fb472d0822924dde15d',
+    });
+    expect(migrations[2]?.sql.match(/DROP COLUMN/g)).toHaveLength(5);
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 

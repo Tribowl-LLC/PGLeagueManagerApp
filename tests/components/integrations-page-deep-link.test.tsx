@@ -41,12 +41,6 @@ vi.mock('@/components/layout', () => ({
   Layout: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
 
-// The BowlNow card has its own data fetching that's irrelevant to this
-// test; render a placeholder so we don't have to mock its endpoints.
-vi.mock('@/components/bowlnow-integration-card', () => ({
-  BowlNowCard: () => <div data-testid="stub-bowlnow-card" />,
-}));
-
 // Drive the wouter `useSearch()` hook from the test so each case can
 // pick its own query string.
 let currentSearch = '';
@@ -106,13 +100,6 @@ function installFetch(opts: { locationLookupStatus?: number } = {}) {
       return jsonResponse({
         success: true,
         data: { id: 1, role: 'org_admin', organizationId: ORG_ID },
-      });
-    }
-
-    if (url.startsWith(`/api/integrations?organizationId=${ORG_ID}`)) {
-      return jsonResponse({
-        success: true,
-        data: { bowlnow: { enabled: false } },
       });
     }
 

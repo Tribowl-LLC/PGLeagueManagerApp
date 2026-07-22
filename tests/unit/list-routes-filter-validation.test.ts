@@ -50,8 +50,6 @@ const mockStorage = {
   getBowlerLeagues: vi.fn(),
   getBowler: vi.fn(),
   getLocation: vi.fn(),
-  getOrgIntegrations: vi.fn(),
-  updateOrgIntegrations: vi.fn(),
 };
 vi.mock('../../server/storage', () => ({ storage: mockStorage }));
 
@@ -92,8 +90,8 @@ vi.mock('../../server/middleware/organization', () => ({
   getOrganizationFilter: () => 1,
 }));
 
-// bowlers.ts pulls in the payment provider factory, the bowlnow
-// service, and a few utils for its POST/PATCH paths. The cards
+// bowlers.ts pulls in the payment provider factory and a few utils
+// for its POST/PATCH paths. The cards
 // route also calls listCardsOnFile / disableCard on the returned
 // provider, so the mock has to ship stubs for those — without them
 // the `?leagueId=` empty-string regression tests would 500 and
@@ -107,16 +105,6 @@ const fakeProvider = {
 vi.mock('../../server/services/payment-provider-factory', () => ({
   getPaymentProvider: vi.fn().mockResolvedValue(fakeProvider),
   ProviderNotConfiguredError: class ProviderNotConfiguredError extends Error {},
-}));
-vi.mock('../../server/services/bowlnow', () => ({
-  isOrgBNConfigured: () => false,
-  syncBowlerToBN: vi.fn(),
-  syncAllBowlersToBN: vi.fn(),
-}));
-vi.mock('../../server/services/bowlnow.js', () => ({
-  isOrgBNConfigured: () => false,
-  syncBowlerToBN: vi.fn(),
-  syncAllBowlersToBN: vi.fn(),
 }));
 vi.mock('../../server/services/bowler-sync.js', () => ({
   runBowlerPostCreateSync: vi.fn(async (b: unknown) => b),
@@ -150,8 +138,6 @@ vi.mock('../../server/services/payment-scheduler.js', () => ({
 const leaguesRouter = (await import('../../server/routes/leagues')).default;
 const teamsRouter = (await import('../../server/routes/teams')).default;
 const bowlersRouter = (await import('../../server/routes/bowlers')).default;
-const bowlnowRouter = (await import('../../server/routes/bowlnow')).default;
-const integrationsRouter = (await import('../../server/routes/integrations')).default;
 const cardsRouter = (await import('../../server/routes/payments-provider/cards')).default;
 const catalogRouter = (await import('../../server/routes/payments-provider/catalog')).default;
 
@@ -192,8 +178,6 @@ beforeAll(async () => {
   app.use('/api/leagues', leaguesRouter);
   app.use('/api/teams', teamsRouter);
   app.use('/api/bowlers', bowlersRouter);
-  app.use('/api/bn', bowlnowRouter);
-  app.use('/api/integrations', integrationsRouter);
   app.use('/api/payments-provider', cardsRouter);
   app.use('/api/payments-provider', catalogRouter);
 
@@ -232,8 +216,6 @@ beforeEach(() => {
     paymentCustomerId: 'cust_1',
   });
   mockStorage.getLocation.mockResolvedValue({ id: 1, organizationId: 1 });
-  mockStorage.getOrgIntegrations.mockResolvedValue({ bowlnow: { enabled: false } });
-  mockStorage.updateOrgIntegrations.mockResolvedValue(undefined);
   mockStorage.getLeague.mockResolvedValue({ id: 11, organizationId: 1 });
 });
 
@@ -405,99 +387,6 @@ describe('GET /api/bowlers/unlinked — organizationId filter', () => {
     // The old isNaN check would let "1abc" through as 1.
     const res = await get('/api/bowlers/unlinked?organizationId=1abc', SYSADMIN);
     expect(res.status).toBe(400);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// GET /api/bn/status — organizationId filter
-// ---------------------------------------------------------------------------
-describe('GET /api/bn/status — organizationId filter', () => {
-  it('rejects a non-numeric ?organizationId with a 400 instead of silently ignoring it', async () => {
-    // Pre-#421 the route silently treated NaN as "no org" and
-    // returned `{ configured: false }` — indistinguishable from a
-    // legitimately unaffiliated sysadmin. The 400 makes the bad
-    // input explicit.
-    const res = await get('/api/bn/status?organizationId=foo', SYSADMIN);
-    expect(res.status).toBe(400);
-    expect((await res.json()).error.message).toMatch(/organization/i);
-    expect(mockStorage.getOrgIntegrations).not.toHaveBeenCalled();
-  });
-
-  it('still treats an empty ?organizationId= as "no org" → configured:false', async () => {
-    const res = await get('/api/bn/status?organizationId=', SYSADMIN);
-    expect(res.status).toBe(200);
-    expect((await res.json()).data).toEqual({ configured: false });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// GET / PATCH /api/integrations — organizationId filter on both verbs
-// ---------------------------------------------------------------------------
-describe('GET /api/integrations — organizationId filter', () => {
-  it('rejects a non-numeric ?organizationId with a 400 (Invalid format, NOT "No organization context")', async () => {
-    // The pre-#421 `parseInt + ||` fallback chain would silently
-    // coerce NaN → falsy → fall back to the caller's session org;
-    // a sysadmin with no session org would then see the generic
-    // "No organization context" message. The new tagged-union
-    // resolver surfaces the malformed input directly.
-    const res = await get('/api/integrations?organizationId=foo', SYSADMIN);
-    expect(res.status).toBe(400);
-    expect((await res.json()).error.message).toMatch(/invalid organization/i);
-    expect(mockStorage.getOrgIntegrations).not.toHaveBeenCalled();
-  });
-
-  it('rejects partially-numeric ?organizationId (e.g. "1abc")', async () => {
-    const res = await get('/api/integrations?organizationId=1abc', SYSADMIN);
-    expect(res.status).toBe(400);
-    expect((await res.json()).error.message).toMatch(/invalid organization/i);
-  });
-
-  it('treats an empty ?organizationId= as missing and falls back to session org', async () => {
-    // Regression pin: empty-string must continue to mean "no
-    // override" so the resolver falls back to the caller's session
-    // org. With ORG_USER (org=1) and an empty query param, we
-    // expect the storage lookup to be made for org 1.
-    const res = await get('/api/integrations?organizationId=', ORG_USER);
-    expect(res.status).toBe(200);
-    expect(mockStorage.getOrgIntegrations).toHaveBeenCalledWith(1);
-  });
-});
-
-describe('PATCH /api/integrations — organizationId filter', () => {
-  it('rejects a non-numeric ?organizationId in the query string with the same 400', async () => {
-    // The resolver checks the query string first, so a malformed
-    // value there must 400 even when the body is well-formed.
-    const res = await patchJson(
-      '/api/integrations?organizationId=foo',
-      { bowlnow: { enabled: false } },
-      SYSADMIN,
-    );
-    expect(res.status).toBe(400);
-    expect((await res.json()).error.message).toMatch(/invalid organization/i);
-    expect(mockStorage.updateOrgIntegrations).not.toHaveBeenCalled();
-  });
-
-  it('rejects a non-numeric body.organizationId with the same 400', async () => {
-    // Same `Invalid organization ID format` message regardless of
-    // whether the bad input came from the query string or the body.
-    const res = await patchJson(
-      '/api/integrations',
-      { organizationId: 'foo', bowlnow: { enabled: false } },
-      SYSADMIN,
-    );
-    expect(res.status).toBe(400);
-    expect((await res.json()).error.message).toMatch(/invalid organization/i);
-    expect(mockStorage.updateOrgIntegrations).not.toHaveBeenCalled();
-  });
-
-  it('rejects a non-integer body.organizationId (e.g. 1.5)', async () => {
-    const res = await patchJson(
-      '/api/integrations',
-      { organizationId: 1.5, bowlnow: { enabled: false } },
-      SYSADMIN,
-    );
-    expect(res.status).toBe(400);
-    expect((await res.json()).error.message).toMatch(/invalid organization/i);
   });
 });
 

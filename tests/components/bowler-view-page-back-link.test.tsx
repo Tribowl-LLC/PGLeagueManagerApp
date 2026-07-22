@@ -73,7 +73,6 @@ const DETAILS: BowlerDetailsResponse = {
     email: 'jane@example.com',
     active: true,
     organizationId: 1,
-    bnContactId: null,
     hasAccount: false,
     paymentSyncStatus: null,
     paymentSyncRetryAt: null,
@@ -111,7 +110,6 @@ function renderPage(search: string) {
     [`/api/bowlers/${BOWLER_ID}/details`],
     { success: true, data: DETAILS },
   );
-  qc.setQueryData([`/api/bn/status`], { success: true, data: { configured: false } });
 
   return render(
     <QueryClientProvider client={qc}>

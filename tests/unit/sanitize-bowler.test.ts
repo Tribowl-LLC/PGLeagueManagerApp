@@ -25,13 +25,9 @@ function makeFullyPopulatedBowler(): Bowler {
     paymentCustomerId: 'sq-customer-id',
     cloverCustomerId: 'cv-customer-id-do-not-leak',
     paymentProviderLocationId: 3,
-    bnContactId: 'bn-contact-id',
     paymentSyncPendingAt: '2024-01-01T00:00:00.000Z',
     paymentSyncAttempts: 2,
     paymentSyncLastAttemptAt: '2024-01-01T00:00:00.000Z',
-    bnSyncPendingAt: '2024-01-01T00:00:00.000Z',
-    bnSyncAttempts: 1,
-    bnSyncLastAttemptAt: '2024-01-01T00:00:00.000Z',
   });
   // `id` is omitted from the insert schema, so we re-add it to satisfy
   // the SELECT type. `Object.assign` (instead of an object literal) keeps
@@ -61,20 +57,13 @@ describe('sanitizeBowler', () => {
   });
 
   it('preserves the operational identifiers the bowlers / admin UI consumes', () => {
-    // `paymentCustomerId` powers the Square dashboard link in
-    // bowlers-page.tsx; `bnContactId` powers the BowlNow sync badge
-    // in bowlers-page.tsx and bowler-view-page.tsx; the paymentSync*
-    // / bnSync* triples power payment-sync-retry-status.tsx. Dropping
-    // any of these would silently break the UI.
+    // These fields power the Square dashboard link and payment-sync
+    // retry status. Dropping them would silently break the UI.
     const sanitized = sanitizeBowler(makeFullyPopulatedBowler());
     expect(sanitized.paymentCustomerId).toBe('sq-customer-id');
-    expect(sanitized.bnContactId).toBe('bn-contact-id');
     expect(sanitized.paymentSyncPendingAt).toBe('2024-01-01T00:00:00.000Z');
     expect(sanitized.paymentSyncAttempts).toBe(2);
     expect(sanitized.paymentSyncLastAttemptAt).toBe('2024-01-01T00:00:00.000Z');
-    expect(sanitized.bnSyncPendingAt).toBe('2024-01-01T00:00:00.000Z');
-    expect(sanitized.bnSyncAttempts).toBe(1);
-    expect(sanitized.bnSyncLastAttemptAt).toBe('2024-01-01T00:00:00.000Z');
   });
 
   it('never returns any field whose name looks sensitive', () => {

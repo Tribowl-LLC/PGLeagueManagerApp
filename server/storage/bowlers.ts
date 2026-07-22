@@ -23,13 +23,9 @@ const bowlerColumns = {
   paymentCustomerId: bowlers.paymentCustomerId,
   cloverCustomerId: bowlers.cloverCustomerId,
   paymentProviderLocationId: bowlers.paymentProviderLocationId,
-  bnContactId: bowlers.bnContactId,
   paymentSyncPendingAt: bowlers.paymentSyncPendingAt,
   paymentSyncAttempts: bowlers.paymentSyncAttempts,
   paymentSyncLastAttemptAt: bowlers.paymentSyncLastAttemptAt,
-  bnSyncPendingAt: bowlers.bnSyncPendingAt,
-  bnSyncAttempts: bowlers.bnSyncAttempts,
-  bnSyncLastAttemptAt: bowlers.bnSyncLastAttemptAt,
 };
 
 export async function getBowlers(filters: { teamId?: number; organizationId: number }): Promise<Bowler[]> {
@@ -91,11 +87,6 @@ export async function updateBowler(id: number, bowler: UpdateBowler): Promise<Bo
   const [result] = await db.update(bowlers).set(bowler).where(eq(bowlers.id, id)).returning();
   cacheInvalidate('bowlers:');
   return result;
-}
-
-export async function updateBowlerBnContactId(bowlerId: number, bnContactId: string): Promise<void> {
-  await db.update(bowlers).set({ bnContactId }).where(eq(bowlers.id, bowlerId));
-  cacheInvalidate('bowlers:');
 }
 
 export async function deleteBowler(id: number): Promise<void> {
@@ -530,7 +521,6 @@ export async function anonymizeBowler(id: number): Promise<Bowler> {
       paymentCustomerId: null,
       cloverCustomerId: null,
       paymentProviderLocationId: null,
-      bnContactId: null,
       paymentSyncPendingAt: null,
       paymentSyncAttempts: 0,
       paymentSyncLastAttemptAt: null,

@@ -52,7 +52,6 @@ const RULE_CEILINGS: Record<string, number> = {
   // tests, expanded sanitize/payment/charges receipt tests) all
   // landed `value!` patterns in test fixtures and mock builders
   // without ratcheting. The source-side `!`s in
-  // `server/services/bowlnow-sync-retry.ts` and
   // `scripts/verify-trust-proxy-deploy.ts` were typed away in the
   // same pass; the remaining sites are test-only.
   // Ratcheted 256 → 255 in task #646 after deleting the dead
@@ -100,7 +99,7 @@ const RULE_CEILINGS: Record<string, number> = {
   // landed `as unknown as Foo` patterns in test mocks (notably
   // `tests/api/system-admin-trust-proxy-status.test.ts`,
   // `tests/api/admin-email-change-audits*.test.ts`, the
-  // sanitize/charges/payment receipt tests, and the BowlNow toggle /
+  // sanitize/charges/payment receipt tests and other component /
   // post-confirm component tests). The source-side double cast in
   // `client/src/lib/square.ts` was removed by typing `responseData`
   // as `Partial<PaymentResult>`, and the one in

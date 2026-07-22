@@ -16,7 +16,6 @@ export const envSchema = z.object({
 
   SENDGRID_API_KEY: z.string().min(1).optional(),
   SENTRY_DSN: z.string().min(1).optional(),
-  BN_API_KEY: z.string().min(1).optional(),
   SETUP_SECRET: z.string().min(1).optional(),
 
   SQUARE_PROD_TOKEN: z.string().min(1).optional(),
@@ -161,7 +160,6 @@ export function validateSetupSecret(value: string | undefined): SetupSecretValid
 const optionalWarnings: { key: keyof Env; feature: string }[] = [
   { key: "SENDGRID_API_KEY", feature: "transactional emails (SendGrid)" },
   { key: "SENTRY_DSN", feature: "error tracking (Sentry)" },
-  { key: "BN_API_KEY", feature: "CRM contact sync (BowlNow)" },
   { key: "SETUP_SECRET", feature: "admin bootstrap / disaster recovery endpoints" },
 ];
 

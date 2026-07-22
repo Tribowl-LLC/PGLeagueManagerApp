@@ -201,8 +201,8 @@ export function registerAuthRoutes(app: Express): void {
             // Task #677: copy the freshly-registered user's phone
             // onto the linked bowler row (user wins, since the
             // bowler typed it themselves at sign-up). Then kick the
-            // existing external-resync path so BowlNow gets the
-            // updated phone propagated to CRM. Both calls absorb
+            // existing external-resync path so payment-provider
+            // attributes stay current. Both calls absorb
             // their own errors — they must NEVER block the
             // registration response.
             try {

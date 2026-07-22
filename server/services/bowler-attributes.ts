@@ -1,6 +1,6 @@
 /**
- * Resolves the two messaging-platform string attributes a bowler
- * exposes to outside marketing tools (task #429):
+ * Resolves the two payment-provider string attributes a bowler
+ * exposes to Square (task #429):
  *
  *   league_name   — alphabetical comma-joined unique league names the
  *                   bowler is currently in (active rows only).
@@ -8,7 +8,7 @@
  *                   chronologically ordered by `seasonStart`.
  *
  * Both strings are computed from a single bowler-leagues fetch so the
- * Square sync (and any future BowlNow season-label backfill) shares
+ * Square sync shares
  * exactly the same source of truth as the in-app season chips users
  * see — there is no second derivation in the call chain.
  *
@@ -38,20 +38,6 @@ export interface ResolvedBowlerAttributes {
    * label string so two leagues running the same season collapse.
    */
   leagueSeason: string;
-  /**
-   * Same content as `leagueName`, in array form (alphabetical, unique).
-   * Used by BowlNow (task #478) where the custom field is a multi-
-   * value type and an array preserves per-league filterability — a
-   * Smart List filter for "Tuesday Night Mixed" matches even when
-   * the bowler is in multiple leagues. Empty array when none.
-   */
-  leagueNames: string[];
-  /**
-   * Same content as `leagueSeason`, in array form (chronological,
-   * deduped). Same multi-value rationale as `leagueNames` for the
-   * BowlNow side. Empty array when none.
-   */
-  leagueSeasons: string[];
 }
 
 export async function resolveBowlerLeagueAttributes(
@@ -60,8 +46,6 @@ export async function resolveBowlerLeagueAttributes(
   const empty: ResolvedBowlerAttributes = {
     leagueName: '',
     leagueSeason: '',
-    leagueNames: [],
-    leagueSeasons: [],
   };
 
   const bowlerLeagues = await storage.getBowlerLeagues({ bowlerId });
@@ -114,8 +98,6 @@ export async function resolveBowlerLeagueAttributes(
   return {
     leagueName,
     leagueSeason,
-    leagueNames: uniqueNames,
-    leagueSeasons: orderedLabels,
   };
 }
 

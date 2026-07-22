@@ -118,7 +118,6 @@ each test tenant. (Clover sandbox is at `https://sandbox.dev.clover.com`.)
 | Secret | Recommendation |
 | --- | --- |
 | `SENDGRID_API_KEY` | Use a SendGrid sandbox key, or omit to disable email entirely. |
-| `BN_API_KEY` | Use a BowlNow staging key, or omit to disable CRM sync. |
 | `SENTRY_DSN` | Either point at a separate "leaguevault-beta" Sentry project, or omit. |
 | `SETUP_SECRET` | Generate a fresh strong value if needed for bootstrap. |
 | `BLOCK_EMAIL_DOMAINS` | Set to `vitest.local,example.com` if you want extra bounce protection. |

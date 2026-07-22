@@ -12,6 +12,12 @@
       "tag": "0001_organization_hostname_namespace_guard",
       "createdAt": 1784694843315,
       "hash": "8902cc5fee270a2841e87570e8bb7d811b79608393ae44f17aef6b9c78219652"
+    },
+    {
+      "idx": 2,
+      "tag": "0002_remove_legacy_crm_columns",
+      "createdAt": 1784702857273,
+      "hash": "2691703a0012e2e7caebd417e6956d33bfd0dd373e212fb472d0822924dde15d"
     }
   ]
 }

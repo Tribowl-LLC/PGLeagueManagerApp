@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 /**
- * Task #651 — BowlNow / Clover / SendGrid pin verifier registrations.
+ * Task #651 — Clover / SendGrid pin verifier registrations.
  *
  * Square's verifier has its own dedicated test
  * (`square-version-runtime-guard.test.ts`) that asserts on its
- * legacy log format from task #627. The three other providers all
+ * legacy log format from task #627. The other providers all
  * use the framework's `makeDefaultPinOnResult` helper, so this file
  * exercises each one's probe + onResult routing through the shared
  * registry.
@@ -30,10 +30,6 @@ vi.mock('../../logger', () => ({
   },
 }));
 
-// `bowlnow.ts` reaches into storage via the BowlNow service; that
-// path is never exercised by the pin probe (which only re-derives
-// `getHeaders()`), but the import would still pull it in. Stub so
-// the import doesn't fail at module load.
 vi.mock('../../storage', () => ({
   storage: {},
 }));
@@ -70,52 +66,11 @@ describe('third-party pin registrations (task #651)', () => {
   it('registers every expected provider in the shared registry at import time', () => {
     const providers = _getRegisteredPinProvidersForTests();
     // The Square verifier registers itself when `third-party-pins`
-    // imports `square-provider` for its side-effect; the other three
+    // imports `square-provider` for its side-effect; the other two
     // register directly inside `third-party-pins`.
     expect(providers).toEqual(
-      expect.arrayContaining(['square', 'bowlnow', 'clover', 'sendgrid']),
+      expect.arrayContaining(['square', 'clover', 'sendgrid']),
     );
-  });
-
-  describe('BowlNow Version-header verifier', () => {
-    it('passes against the live `getHeaders()` builder (which still emits Version: 2021-07-28)', async () => {
-      const outcome = await verifyThirdPartyPin('bowlnow');
-      expect(outcome).toMatchObject({
-        provider: 'bowlnow',
-        ok: true,
-        actual: '2021-07-28',
-        expected: '2021-07-28',
-      });
-      expect(loggerCalls('BowlNowService').error).not.toHaveBeenCalled();
-      expect(loggerCalls('BowlNowService').info).toHaveBeenCalledWith(
-        expect.stringContaining('bowlnow Version header verified at runtime'),
-        expect.objectContaining({ actual: '2021-07-28', expected: '2021-07-28' }),
-      );
-    });
-
-    it('emits a [PAGE]-prefixed structured error when the probe reports drift', async () => {
-      _setThirdPartyPinProbeForTests('bowlnow', async () => ({
-        ok: false,
-        actual: '2099-01-01',
-        reason: 'drift',
-      }));
-
-      const outcome = await verifyThirdPartyPin('bowlnow');
-      expect(outcome.ok).toBe(false);
-
-      const error = loggerCalls('BowlNowService').error;
-      expect(error).toHaveBeenCalledTimes(1);
-      const [message, payload] = error.mock.calls[0] ?? [];
-      expect(message).toMatch(/^\[PAGE\] /);
-      expect(message).toMatch(/bowlnow Version header drift/);
-      expect(payload).toMatchObject({
-        provider: 'bowlnow',
-        expected: '2021-07-28',
-        actual: '2099-01-01',
-        runbook: 'docs/third-party-pins.md#bowlnow',
-      });
-      expect((payload as { remediation?: unknown })?.remediation).toBeTypeOf('string');
-    });
   });
 
   describe('Clover webhook signature scheme verifier', () => {

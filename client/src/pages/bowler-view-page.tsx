@@ -131,13 +131,6 @@ export default function BowlerViewPage() {
 
   const payments = paymentsResponse?.data || [];
 
-  const { data: bnStatusResponse } = useQuery<ApiResponse<{ configured: boolean }>>({
-    queryKey: ["/api/bn/status"],
-    staleTime: 1000 * 60 * 30,
-    retry: false,
-  });
-  const bnConfigured = bnStatusResponse?.data?.configured || false;
-
   if (loadingDetails) {
     return <Layout><PageLoadingState /></Layout>;
   }
@@ -186,14 +179,6 @@ export default function BowlerViewPage() {
                 <Pencil className="size-4 mr-2" />
                 Edit Bowler
               </Button>
-            )}
-            {bnConfigured && (
-              <Badge
-                variant={bowler?.bnContactId ? "default" : "outline"}
-                className={bowler?.bnContactId ? "bg-green-600" : ""}
-              >
-                {bowler?.bnContactId ? "BN Synced" : "BN Not Synced"}
-              </Badge>
             )}
             {bowler && (
               <PaymentSyncRetryStatus

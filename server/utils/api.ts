@@ -119,12 +119,8 @@ export function sanitizeUser(user: User): SanitizedUser {
   return safeUser as SanitizedUser;
 }
 
-// Same allowlist strategy for organizations. The `integrations` JSONB
-// column holds OAuth tokens and provider API keys (see
-// `OrgIntegrations` in shared/schema/organizations.ts) and was the
-// concrete motivating case — but more importantly, anything new that
-// lands on the table will be dropped by default until it's
-// deliberately added here.
+// Same allowlist strategy for organizations: anything new that lands on
+// the table is dropped by default until it is deliberately added here.
 //
 // Exported alongside `SAFE_USER_FIELDS` so the integration test in
 // `tests/api/safe-fields-contract.test.ts` can pin the wire contract
@@ -152,9 +148,6 @@ export const SAFE_ORG_FIELDS = [
 ] as const;
 
 // Deny-list (task #501) — the inverse of `SAFE_ORG_FIELDS`. The
-// `integrations` JSONB column holds OAuth tokens and provider API
-// keys (see `OrgIntegrations` in shared/schema/organizations.ts) and
-// is the only sensitive column on the table today; the
 // exhaustiveness check below pins that any future column has to be
 // classified into one of the two halves before the project will
 // type-check. The deny-list scanner in
@@ -163,10 +156,8 @@ export const SAFE_ORG_FIELDS = [
 // `sendPaginatedSuccess` / `res.json` call site whose name OR
 // initializer source matches a member here — closing the gap that
 // the structural check leaves open against hand-rolled projections
-// like `sendSuccess(res, { slug: org.slug, integrations: org.integrations })`.
-const SENSITIVE_ORG_FIELDS = [
-  'integrations',
-] as const;
+// like `sendSuccess(res, { slug: org.slug, credentials: org.credentials })`.
+const SENSITIVE_ORG_FIELDS = [] as const;
 
 // Same compile-time exhaustiveness check as for `User`: SAFE ∪
 // SENSITIVE = keyof Organization. A new column on the table without
@@ -254,13 +245,9 @@ export function sanitizeLocations(locations: Location[]): SanitizedLocation[] {
 //      is internal routing data for the deletion service). Neither
 //      has any UI consumer today — they're dropped.
 //
-//   2. External-system identifiers and retry-bookkeeping that the
-//      bowlers/admin UI legitimately needs to render
-//      (`paymentCustomerId` powers the Square dashboard link;
-//      `bnContactId` powers the BowlNow sync badge; the
-//      `paymentSync*` / `bnSync*` triples power
-//      `payment-sync-retry-status.tsx`). These stay on the
-//      allowlist because dropping them would silently break the UI;
+//   2. Payment-system identifiers and retry bookkeeping that the
+//      bowlers/admin UI legitimately needs to render. These stay on
+//      the allowlist because dropping them would silently break the UI;
 //      they are not credentials.
 //
 // Anything new that lands on the table will be dropped by default
@@ -274,13 +261,9 @@ const SAFE_BOWLER_FIELDS = [
   'order',
   'organizationId',
   'paymentCustomerId',
-  'bnContactId',
   'paymentSyncPendingAt',
   'paymentSyncAttempts',
   'paymentSyncLastAttemptAt',
-  'bnSyncPendingAt',
-  'bnSyncAttempts',
-  'bnSyncLastAttemptAt',
 ] as const;
 
 export type SanitizedBowler = Pick<Bowler, typeof SAFE_BOWLER_FIELDS[number]>;

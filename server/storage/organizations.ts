@@ -16,13 +16,11 @@ import {
   leagueSecretaryAudits,
   leagues,
   locations,
-  orgIntegrationsSchema,
   organizations,
   orphanCleanupAudits,
   users,
   type Organization, type InsertOrganization, type UpdateOrganization,
   type User,
-  type OrgIntegrations,
 } from "@shared/schema";
 import { createLogger } from '../logger';
 import { cacheInvalidate } from '../utils/cache';
@@ -283,32 +281,6 @@ export async function setUserOrganization(userId: number, organizationId: number
     .returning();
   cacheInvalidate(`user:${userId}`);
   return updatedUser;
-}
-
-export async function getOrgIntegrations(orgId: number): Promise<OrgIntegrations | null> {
-  const [org] = await db
-    .select({ integrations: organizations.integrations })
-    .from(organizations)
-    .where(eq(organizations.id, orgId));
-
-  if (!org?.integrations) return null;
-
-  const parsed = orgIntegrationsSchema.safeParse(org.integrations);
-  if (!parsed.success) {
-    log.warn(`Malformed integrations JSONB for org ${orgId}:`, parsed.error.format());
-    return null;
-  }
-  return parsed.data ?? null;
-}
-
-export async function updateOrgIntegrations(orgId: number, integrations: OrgIntegrations): Promise<Organization> {
-  const [result] = await db
-    .update(organizations)
-    .set({ integrations })
-    .where(eq(organizations.id, orgId))
-    .returning();
-  if (!result) throw new Error(`Organization with ID ${orgId} not found`);
-  return result;
 }
 
 export async function getOrganizationUsers(organizationId: number): Promise<User[]> {

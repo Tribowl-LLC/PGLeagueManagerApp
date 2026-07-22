@@ -14,8 +14,6 @@ import { createLogger } from '../logger';
 import { isDev } from '../config';
 import type { PaymentProvider } from './payment-provider';
 import { syncBowlerLeagueAttributesToProvider } from './bowler-attributes';
-import { syncBowlerToBN, isOrgBNConfigured } from './bowlnow.js';
-import { flagBowlerForBnRetry, clearBowlerBnRetry } from './bowlnow-retry-flag.js';
 import type { Bowler, PaymentSyncStatus } from '@shared/schema';
 
 const log = createLogger('PaymentCustomerSync');
@@ -158,52 +156,6 @@ export async function syncBowlerForUser(
     attrSyncOk = attrResult.ok;
   }
 
-  // BowlNow parity (architect review on #429): the retry sweep
-  // re-runs this helper to recover failed Square attribute writes;
-  // when it does, also re-fire the BowlNow sync so the same
-  // membership state lands on both platforms. Non-fatal — a BowlNow
-  // failure here does NOT mark the bowler pending again (Square
-  // remains the source of truth for the pending flag) but it is
-  // logged for ops visibility. Use `bowler.organizationId` rather
-  // than `user.organizationId` because for cross-org system_admin
-  // edits the user's org may differ from the bowler's owning org.
-  const bnOrgId = bowler.organizationId ?? user.organizationId ?? null;
-  if (bnOrgId) {
-    try {
-      const orgConfig = await storage.getOrgIntegrations(bnOrgId);
-      if (isOrgBNConfigured(orgConfig)) {
-        // Inspect the result: `syncBowlerToBN` returns `{success:false}`
-        // for most BN failures rather than throwing. Without this flag,
-        // a transient BN 5xx during a profile-update / email-confirm
-        // flow would silently leave the bowler's BN contact stale until
-        // the next manual sync-all (architect feedback on #480).
-        const bnResult = await syncBowlerToBN(bowler.id, orgConfig);
-        if (!bnResult.success) {
-          log.warn('BowlNow re-sync returned failure during payment-customer sync', {
-            bowlerId: bowler.id,
-            organizationId: bnOrgId,
-            error: bnResult.error,
-          });
-          await flagBowlerForBnRetry(bowler.id);
-        } else {
-          // Symmetry with the sweep: a successful foreground BN sync
-          // also clears any prior pending/attempt state so a row that
-          // hit BN_SYNC_MAX_ATTEMPTS earlier doesn't stay stuck
-          // (architect review on #480).
-          await clearBowlerBnRetry(bowler.id);
-        }
-      }
-    } catch (bnErr) {
-      log.warn('BowlNow re-sync threw during payment-customer sync', {
-        bowlerId: bowler.id,
-        organizationId: bnOrgId,
-        errorName: bnErr instanceof Error ? bnErr.name : 'unknown',
-        errorMessage: bnErr instanceof Error ? bnErr.message : String(bnErr),
-      });
-      await flagBowlerForBnRetry(bowler.id);
-    }
-  }
-
   const updates: Record<string, unknown> = { ...bowlerUpdate };
   let needsWrite = false;
   if (providerCustomer && providerCustomer.id !== bowler.paymentCustomerId) {
@@ -303,9 +255,6 @@ export async function syncBowlerForUser(
  * attempt counter, stamps `paymentCustomerId` +
  * `paymentProviderLocationId`): also mirrors `syncBowlerForUser`.
  *
- * BowlNow re-sync is intentionally NOT performed here — task #705
- * scope explicitly excludes BowlNow behavior changes, and unclaimed
- * bowlers go through their own BN sync path on creation.
  */
 export async function syncUnclaimedBowler(bowlerId: number): Promise<PaymentSyncStatus> {
   const bowler = await storage.getBowler(bowlerId);

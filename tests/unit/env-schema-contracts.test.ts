@@ -267,7 +267,6 @@ describe('Optional credential env-schema entries', () => {
   const optionalCredFields = [
     ['SENDGRID_API_KEY', envSchema.shape.SENDGRID_API_KEY],
     ['SENTRY_DSN', envSchema.shape.SENTRY_DSN],
-    ['BN_API_KEY', envSchema.shape.BN_API_KEY],
     ['SETUP_SECRET', envSchema.shape.SETUP_SECRET],
     ['SQUARE_PROD_TOKEN', envSchema.shape.SQUARE_PROD_TOKEN],
     ['SQUARE_PRODUCTION_ACCESS_TOKEN', envSchema.shape.SQUARE_PRODUCTION_ACCESS_TOKEN],

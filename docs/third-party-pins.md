@@ -43,7 +43,7 @@ Every verifier in the registry implements:
 
 ```ts
 interface PinVerifier {
-  provider: string;        // 'square', 'bowlnow', 'clover', 'sendgrid'
+  provider: string;        // 'square', 'clover', 'sendgrid'
   pinName: string;         // human-friendly literal name
   expected: string;        // the audited wire literal
   probe: () => Promise<PinProbeResult>;
@@ -53,20 +53,17 @@ interface PinVerifier {
 ```
 
 A probe must capture the *current* wire literal **without making a
-real network call**. Today's three techniques:
+real network call**. Today's techniques:
 
 1. **Fake-fetcher capture** (Square). Build a real `SquareClient`
    with a fetcher that records the headers and short-circuits
    before dispatch. Read `square-version` off the captured
    request.
-2. **Header re-derivation** (BowlNow). Re-call the production
-   `getHeaders()` builder with a synthetic API key and read the
-   `Version` header. Catches typos and constant edits.
-3. **Self-test round-trip** (Clover). Hash a known body with our
+2. **Self-test round-trip** (Clover). Hash a known body with our
    pinned algorithm and verify our own verification path would
    accept the result. Catches "someone changed `'sha256'` to
    `'sha512'` in the receiver".
-4. **SDK metadata read** (SendGrid). Read `package.json` major +
+3. **SDK metadata read** (SendGrid). Read `package.json` major +
    the SDK singleton's `client.defaultRequest.baseUrl`. Catches
    accidental major-version floats and region-helper firings.
 
@@ -97,28 +94,6 @@ treated as **drift** (paging `error` line, optional fail-shut).
 - **Tests:**
   - Merge-gating: `server/services/__tests__/square-version-header.test.ts`
   - Runtime guard: `server/services/__tests__/square-version-runtime-guard.test.ts`
-
-### BowlNow
-
-- **Anchor:** `#bowlnow`
-- **Pin name:** `Version` header
-- **Expected:** `BOWLNOW_EXPECTED_API_VERSION` (currently `2021-07-28`)
-- **Source of truth:** HighLevel REST API docs (`services.leadconnectorhq.com`).
-  We control the constant directly in `server/services/bowlnow.ts`
-  because there is no SDK to upgrade.
-- **Probe:** re-derive headers via the
-  `_bowlnowProbeHeadersForPinVerifier()` test seam and assert
-  `headers['Version'] === BOWLNOW_EXPECTED_API_VERSION`.
-- **Drift behavior:** paging `error` line; **does not** fail-shut.
-  BowlNow sync is a non-critical background path (a flagged retry
-  sweep already exists in `server/services/bowlnow-sync-retry.ts`),
-  so refusing to issue requests on drift would create more outage
-  than the drift itself. The page is enough.
-- **Recovery:** Re-read HighLevel's API version docs. If they
-  published a new version, update `BN_API_VERSION` +
-  `BOWLNOW_EXPECTED_API_VERSION` + the audit row above in the same
-  commit. Otherwise revert the constant change that caused the
-  drift.
 
 ### Clover
 
