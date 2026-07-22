@@ -293,7 +293,6 @@ The supported user roles are:
 | Role or grant | Boundary |
 | --- | --- |
 | `user` | Organization member. Normally limited to the user's linked bowler and explicitly permitted league workflows. |
-| `league_secretary` grant | Delegated administration for named leagues only. It is not a platform role and does not grant organization-wide payment-provider or location authority. |
 | `org_admin` | Administrative authority within the user's organization. It is not cross-tenant authority. |
 | `system_admin` | Explicit platform administration. Cross-tenant actions must still use routes and storage paths designed for that purpose. |
 
@@ -320,7 +319,7 @@ saved source, and owning location as applicable.
 Representative secure patterns already used by the repository include:
 
 - loading a league and checking its organization before permitting an
-  organization administrator or league secretary action;
+  organization administrator action;
 - using `hasAdminAccessToLeague`, `hasAccessToBowler`, or the relevant payment
   authorization helper before reading or mutating a target;
 - passing a server-authorized `organizationId` into scoped storage methods;
@@ -370,9 +369,6 @@ Users carry an organization membership. A `system_admin` account may exist
 without an organization membership where the specific platform workflow
 supports that state. Normal users and organization administrators may not. A
 runtime database trigger enforces the non-admin user/organization invariant.
-League-secretary grants carry organization, user, and league references, with
-database invariants protecting their organization consistency and revoking
-stale grants when membership changes.
 
 Tenant ownership is direct for some rows and inherited through parents for
 others:
@@ -384,7 +380,7 @@ others:
   their league and related rows;
 - payments and schedules reference both bowler and league and require those
   relationships to agree;
-- registrations, payment links, secretary grants, and tenant audit rows carry
+- registrations, payment links, and tenant audit rows carry
   direct or relational ownership; and
 - sessions, rate-limit buckets, email templates, deletion requests, and
   selected operational state are platform-wide rather than tenant roots.

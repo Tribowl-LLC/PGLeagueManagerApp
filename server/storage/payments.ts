@@ -16,11 +16,6 @@ interface PaymentFilters {
   teamId?: number;
   weekOf?: Date;
   organizationId: number;
-  // Task #735: optional secretary-grant scope. When provided, the
-  // returned set is additionally constrained to payments whose
-  // `leagueId` falls inside this list. An empty array deliberately
-  // matches zero rows.
-  leagueIds?: number[];
 }
 
 interface AllPaymentFilters {
@@ -49,16 +44,6 @@ export function buildPaymentConditions(filters: AllPaymentFilters, options?: { e
   }
   if (filters.leagueId !== undefined) {
     conditions.push(eq(payments.leagueId, filters.leagueId));
-  }
-  // Task #735: secretary scope. An explicit empty list yields a
-  // contradiction so no rows match (which is exactly what we want for
-  // a caller with zero grants).
-  if (filters.leagueIds !== undefined) {
-    if (filters.leagueIds.length === 0) {
-      conditions.push(sql`1 = 0`);
-    } else {
-      conditions.push(sql`${payments.leagueId} IN (${sql.join(filters.leagueIds.map((id) => sql`${id}`), sql`, `)})`);
-    }
   }
   if (filters.teamId !== undefined) {
     const bowlerLeaguesSubquery = db

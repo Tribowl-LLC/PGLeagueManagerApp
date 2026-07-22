@@ -13,7 +13,6 @@ import * as deletionRequestStorage from "./deletion-requests";
 import * as emailChangeRequestStorage from "./email-change-requests";
 import * as applePayJobStorage from "./apple-pay-jobs";
 import * as alerterStateStorage from "./alerter-state";
-import * as leagueSecretaryStorage from "./league-secretaries";
 
 export type { IStorage };
 
@@ -196,18 +195,6 @@ export class DatabaseStorage implements IStorage {
   retryApplePayJob!: IStorage["retryApplePayJob"];
   retryApplePayJobItem!: IStorage["retryApplePayJobItem"];
 
-  // Task #735: per-league Secretary admin grants.
-  createLeagueSecretary!: typeof leagueSecretaryStorage.createLeagueSecretary;
-  deleteLeagueSecretary!: typeof leagueSecretaryStorage.deleteLeagueSecretary;
-  getLeagueSecretary!: typeof leagueSecretaryStorage.getLeagueSecretary;
-  isLeagueSecretary!: typeof leagueSecretaryStorage.isLeagueSecretary;
-  getSecretaryLeagueIdsForUser!: typeof leagueSecretaryStorage.getSecretaryLeagueIdsForUser;
-  getSecretaryLeagueIdsAmong!: typeof leagueSecretaryStorage.getSecretaryLeagueIdsAmong;
-  listSecretariesForLeague!: typeof leagueSecretaryStorage.listSecretariesForLeague;
-  userHasAnySecretaryRoleInOrg!: typeof leagueSecretaryStorage.userHasAnySecretaryRoleInOrg;
-  recordLeagueSecretaryAudit!: typeof leagueSecretaryStorage.recordLeagueSecretaryAudit;
-  getLeagueOrgIdDirect!: typeof leagueSecretaryStorage.getLeagueOrgIdDirect;
-
   tryClaimAlerterSlot!: IStorage["tryClaimAlerterSlot"];
   recordAlerterSummary!: IStorage["recordAlerterSummary"];
   getRecentAlerterEvent!: IStorage["getRecentAlerterEvent"];
@@ -229,7 +216,6 @@ export class DatabaseStorage implements IStorage {
       ...emailChangeRequestStorage,
       ...applePayJobStorage,
       ...alerterStateStorage,
-      ...leagueSecretaryStorage,
     });
   }
 }

@@ -53,58 +53,8 @@ export function requireOrganizationAccess(req: Request, resourceOrgId: number | 
 }
 
 /**
- * Task #735: returns true iff the requesting user has been granted the
- * League Secretary role for `leagueId` via the `league_secretaries`
- * join table. The lookup goes directly to the DB on every call — these
- * grants are intentionally NOT memoised on the `req.user` session so
- * that an org_admin's revoke takes effect immediately on the very next
- * request from the affected user (no session refresh required).
- *
- * Returns false for unauthenticated callers, system_admin (who already
- * has cross-tenant access via other gates), and for any user whose grant
- * row's organization_id does not match the league's organization_id.
- * The DB-level invariant in `server/db-invariants.ts` enforces the
- * matching-org constraint at write time, so a stamp mismatch is treated
- * as a data-integrity bug — the access check fails closed.
- */
-export async function isLeagueSecretaryFor(req: Request, leagueId: number): Promise<boolean> {
-  if (!req.user) return false;
-  // System admin is intentionally NOT a secretary — they have wider
-  // cross-tenant powers via other gates and `system_admin` is excluded
-  // from `league_secretaries` to keep the per-league admin surface
-  // strictly an org-level construct.
-  if (req.user.role === 'system_admin') return false;
-  const league = await storage.getLeague(leagueId);
-  if (!league || league.organizationId === null) return false;
-  // Task #735 hardening: the caller's CURRENT org must also match the
-  // league's org. `users.organization_id` is mutable (admins can move
-  // a user between orgs); if a user is reassigned to a new org, any
-  // stale `league_secretaries` rows pointing at their old org must NOT
-  // continue to grant cross-tenant powers on the next request. The
-  // BEFORE UPDATE trigger on `users` (see `server/db-invariants.ts`)
-  // auto-revokes the rows in-transaction, but we also fail closed at
-  // the auth layer in case a buggy migration or direct SQL operation
-  // bypasses the trigger.
-  if (req.user.organizationId !== league.organizationId) return false;
-  // Defence in depth: even if a stale grant survives a league
-  // org-reassignment, only honour grants whose stamped org matches the
-  // league's current org.
-  const grant = await storage.getLeagueSecretary(req.user.id, leagueId);
-  if (!grant) return false;
-  return grant.organizationId === league.organizationId;
-}
-
-/**
- * Task #735: combined "may act as an admin on this league" gate.
- * Returns true for: system_admin, org_admin of the league's owning org,
- * or any user with a current league-secretary grant for this league.
- *
- * Use this for read/write gates that should be open to all three admin
- * tiers but still respect the org-less deny rule. Sensitive surfaces
- * that must be HIDDEN from secretaries (saved cards, payment provider
- * config, league delete, location/payment-provider mutations) must
- * continue to use `requireOrganizationAccess` or `isOrgOrHigher` instead
- * of this helper.
+ * Returns true for system administrators or an organization administrator
+ * in the league's organization.
  */
 export async function hasAdminAccessToLeague(req: Request, leagueId: number): Promise<boolean> {
   if (!req.user) return false;
@@ -115,45 +65,13 @@ export async function hasAdminAccessToLeague(req: Request, leagueId: number): Pr
     return false;
   }
   if (isSystemAdmin(req.user)) return true;
-  if (req.user.role === 'org_admin' && req.user.organizationId === league.organizationId) {
-    return true;
-  }
-  // Task #735 hardening: caller's CURRENT org must also match the
-  // league's org before honouring any secretary grant. See the
-  // matching note in `isLeagueSecretaryFor` for the reasoning.
-  if (req.user.organizationId !== league.organizationId) return false;
-  // Fall through to the secretary check.
-  const grant = await storage.getLeagueSecretary(req.user.id, leagueId);
-  return !!grant && grant.organizationId === league.organizationId;
+  return req.user.role === 'org_admin' && req.user.organizationId === league.organizationId;
 }
 
 /**
- * Task #735: returns true iff the requesting user is a league secretary
- * for at least one league the bowler is rostered into (and that league's
- * org matches the secretary grant's stamped org). The secretary's view
- * of bowlers is strictly scoped to their granted leagues — a bowler in
- * a sibling league of the same org is NOT visible.
- *
- * Returns false for system_admin (use `hasAccessToBowler` instead) and
- * for any caller without at least one matching grant.
+ * League reads remain limited to administrators and rostered bowlers.
+ * Plain organization membership does not grant league access.
  */
-async function hasSecretaryAccessToBowler(req: Request, bowlerId: number): Promise<boolean> {
-  if (!req.user) return false;
-  if (req.user.role === 'system_admin') return false;
-  const grantedLeagueIds = await storage.getSecretaryLeagueIdsForUser(req.user.id);
-  if (grantedLeagueIds.length === 0) return false;
-  const bowlerLeagueEntries = await storage.getBowlerLeagues({ bowlerId });
-  if (bowlerLeagueEntries.length === 0) return false;
-  const grantedSet = new Set(grantedLeagueIds);
-  const overlap = bowlerLeagueEntries.find((bl) => grantedSet.has(bl.leagueId));
-  if (!overlap) return false;
-  // Verify org match defensively.
-  const league = await storage.getLeague(overlap.leagueId);
-  if (!league || league.organizationId === null) return false;
-  if (req.user.organizationId !== league.organizationId) return false;
-  return true;
-}
-
 export async function hasAccessToLeague(req: Request, leagueId: number): Promise<boolean> {
   if (!req.user) {
     return false;
@@ -184,28 +102,19 @@ export async function hasAccessToLeague(req: Request, leagueId: number): Promise
     return false;
   }
 
-  // Task #735 hardening: org-match alone is NOT sufficient for plain
+  // Organization match alone is NOT sufficient for plain
   // `user`-role callers. Previously any user whose `organizationId`
   // matched the league's org could see every league in the org, which
-  // turned league_secretary grants into a no-op for visibility (the
-  // secretary user already saw every other league). We restrict the
+  // exposed every league in the organization. We restrict the
   // org-match shortcut to `org_admin`/`system_admin` and require
   // non-admin callers to either be a bowler in the league (handled
-  // above) or to hold an explicit secretary grant for it.
+  // above).
   if (isOrgOrHigher(req.user) && req.user.organizationId === league.organizationId) {
     return true;
   }
 
-  // Task #735: a user with an active League Secretary grant for this
-  // league has league-scoped read+admin access. The grant carries its
-  // own org_id == league.org_id invariant (DB trigger + defence-in-depth
-  // check inside `isLeagueSecretaryFor`), so this never widens
-  // cross-tenant access. Sensitive surfaces that must remain hidden
-  // from secretaries (saved cards, payment-provider config, league
-  // delete, location/payment-provider mutations) must continue to gate
-  // on `requireOrganizationAccess` / `isOrgOrHigher` rather than this
-  // helper.
-  return await isLeagueSecretaryFor(req, leagueId);
+  // Plain users without a roster membership have no league access.
+  return false;
 }
 
 export async function hasAccessToTeam(req: Request, teamId: number): Promise<boolean> {
@@ -273,13 +182,13 @@ export async function hasAccessToBowler(req: Request, bowlerId: number): Promise
     if (isSystemAdmin(req.user)) {
       return true;
     }
-    // Task #735 hardening: org-stamp match alone is NOT sufficient
+    // Organization stamp match alone is NOT sufficient
     // for plain `user`-role callers. Previously any user whose
     // `organizationId` matched the bowler's org could read every
     // bowler in the org, which leaked sibling-league bowler data and
-    // turned league_secretary scoping into a no-op. The org-match
+    // exposed sibling-league bowler data. The org-match
     // shortcut is now restricted to org_admin/system_admin; non-admin
-    // callers must qualify via the secretary scoping (below) or the
+    // callers must qualify via the
     // bowler-self league overlap rule in the league scan.
     if (
       isOrgOrHigher(req.user) &&
@@ -290,19 +199,10 @@ export async function hasAccessToBowler(req: Request, bowlerId: number): Promise
     }
     // Admin from a different org → DENIED authoritatively (no league
     // fallback for admins). Non-admin "user" → fall through to the
-    // secretary check + league scan below.
+    // league scan below.
     if (isOrgOrHigher(req.user)) {
       return false;
     }
-  }
-
-  // Task #735: a League Secretary may access a bowler iff the bowler
-  // is rostered into one of their granted leagues (and that league's
-  // org matches the grant's stamped org). Checked before the legacy
-  // bowler-self league scan so a secretary who is not themselves a
-  // bowler still gets access.
-  if (await hasSecretaryAccessToBowler(req, bowlerId)) {
-    return true;
   }
 
   const bowlerLeagueEntries = await storage.getBowlerLeagues({ bowlerId });
@@ -333,11 +233,11 @@ export async function hasAccessToBowler(req: Request, bowlerId: number): Promise
     if (userIsSystemAdmin) {
       return true;
     }
-    // Task #735 hardening: same rule as the bowler-row stamp gate
+    // Same rule as the bowler-row stamp gate
     // above — only org_admin / system_admin get the org-wide league
     // shortcut. Plain `user` callers must qualify via the bowler-self
     // membership rule (handled at the top of the loop) or the
-    // secretary scoping rule (handled before this scan).
+    // membership rule.
     if (
       isOrgOrHigher(req.user) &&
       req.user.organizationId &&
@@ -442,10 +342,9 @@ export async function hasAccessToBowlers(
         result.set(id, true);
         continue;
       }
-      // Task #735 hardening: org-stamp match shortcut restricted to
+      // Organization-stamp match shortcut restricted to
       // admins. Non-admin "user" callers must qualify via the league
-      // self-membership rule below (or the secretary scoping rule
-      // applied at the route layer / via hasAccessToBowler).
+      // self-membership rule below.
       if (
         callerIsOrgOrHigher &&
         callerOrgIdShort !== null &&
@@ -540,10 +439,10 @@ export async function hasAccessToBowlers(
         allowed = true;
         break;
       }
-      // Task #735 hardening: only org_admin / system_admin get the
+      // Only org_admin / system_admin get the
       // org-wide league shortcut. Plain `user` callers must qualify
       // via the userBowlerId league self-membership rule (handled at
-      // the top of the loop) or the secretary scoping rule.
+      // the top of the loop).
       if (
         isOrgOrHigher(req.user) &&
         userOrgId !== null &&
@@ -555,31 +454,6 @@ export async function hasAccessToBowlers(
     }
 
     result.set(bowlerId, allowed);
-  }
-
-  // Task #735: a non-admin user may also access bowlers via a
-  // league_secretary grant. Resolve the remaining `false`s through
-  // the secretary scoping check, which itself confirms the bowler is
-  // rostered into one of the caller's granted leagues. Single small
-  // batched lookup keyed off the caller, not per-bowler.
-  if (!callerIsSystemAdmin && !isOrgOrHigher(req.user)) {
-    const grantedLeagueIds = await storage.getSecretaryLeagueIdsForUser(req.user.id);
-    if (grantedLeagueIds.length > 0) {
-      const grantedSet = new Set(grantedLeagueIds);
-      for (const bowlerId of stillToCheck) {
-        if (result.get(bowlerId)) continue;
-        const bowlerLeagueIds = leagueIdsByBowler.get(bowlerId);
-        if (!bowlerLeagueIds) continue;
-        for (const leagueId of bowlerLeagueIds) {
-          if (!grantedSet.has(leagueId)) continue;
-          const league = leagueMap.get(leagueId);
-          if (!league || league.organizationId === null) continue;
-          if (req.user.organizationId !== league.organizationId) continue;
-          result.set(bowlerId, true);
-          break;
-        }
-      }
-    }
   }
 
   return result;
@@ -658,11 +532,11 @@ export async function hasAccessToPayment(req: Request, paymentId: number): Promi
       return true;
     }
 
-    // Task #735 hardening: org-match alone is NOT sufficient for a
+    // Organization match alone is NOT sufficient for a
     // plain `user`-role caller — they could otherwise update or delete
     // any same-org payment without an admin grant. Restrict the
     // org-match shortcut to org_admin/system_admin and require a
-    // secretary grant for non-admin callers.
+    // admin role for non-admin callers.
     if (
       isOrgOrHigher(req.user) &&
       req.user.organizationId &&
@@ -671,10 +545,7 @@ export async function hasAccessToPayment(req: Request, paymentId: number): Promi
       return true;
     }
 
-    // Task #735: a league secretary may act on payments for their
-    // granted league. The grant carries its own org match invariant
-    // (DB trigger + defence-in-depth check inside `isLeagueSecretaryFor`).
-    return await isLeagueSecretaryFor(req, payment.leagueId);
+    return false;
   } catch (error) {
     log.error(`Error checking payment access:`, error);
     return false;

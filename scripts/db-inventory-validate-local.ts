@@ -303,8 +303,6 @@ function assertKnownMismatch(
     'public.bowler_payment_links',
     'public.league_registration_questions',
     'public.league_registrations',
-    'public.league_secretaries',
-    'public.league_secretary_audits',
     'public.orphan_cleanup_audits',
     'public.rate_limit_buckets',
   ];

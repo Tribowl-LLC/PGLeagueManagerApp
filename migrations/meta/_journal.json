@@ -29,6 +29,13 @@
       "when": 1784730543756,
       "tag": "0003_remove_clover_integration",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1784736825589,
+      "tag": "0004_remove_league_secretaries",
+      "breakpoints": true
     }
   ]
 }

@@ -24,18 +24,13 @@ The runtime Drizzle client is created in [`server/db.ts`](../server/db.ts).
 Database invariants that are not represented solely by table declarations are
 installed idempotently at application startup by
 [`server/db-invariants.ts`](../server/db-invariants.ts). This currently
-includes the non-system-admin user organization trigger, league-secretary
-organization-matching and grant-revocation triggers, and the rate-limit bucket
-table/index. The checked-in baseline owns the same definitions, and `db:check`
+includes the non-system-admin user organization trigger and the rate-limit
+bucket table/index. The checked-in baseline owns the same definitions, and `db:check`
 verifies them exactly. Runtime compatibility behavior does not replace a
 reviewed schema migration.
 
 The canonical set is
-`users_role_org_required_fn()` / `users.users_role_org_required`,
-`league_secretary_org_match_fn()` /
-`league_secretaries.league_secretaries_org_match`, and
-`users_org_change_revoke_secretaries_fn()` /
-`users.users_org_change_revoke_secretaries`. Their function bodies, trigger
+`users_role_org_required_fn()` / `users.users_role_org_required`. Its function body, trigger
 timing/events, conditions, arguments, and enabled state in the baseline must
 remain identical to the shared compatibility definitions used by startup;
 `db:check` compares both paths on PostgreSQL 16 and 17.
@@ -582,11 +577,10 @@ runtime invariants remain part of the tenant boundary.
 | `bowlers` | Directly owned by `organizations` through required `organization_id`. `bowler_leagues` connects a bowler to a league and team and must remain within the same tenant. |
 | `payments`, `payment_schedules` | Reference both `bowler_id` and `league_id`; tenant access is derived from and checked against those owning rows. |
 | `league_registrations` | Direct required `organization_id`, plus `league_id`, `bowler_id`, and optional `payment_id`. The direct organization stamp is checked against the related workflow by the application. |
-| `league_secretaries`, `league_secretary_audits` | Direct organization stamps plus user/league references. The boot-time database trigger requires a secretary grant's organization to match both the league and the granted user's organization; changing a user's organization revokes stale grants. |
 | `users` | `organization_id` is nullable only for platform `system_admin` accounts. The runtime trigger rejects org-less non-system-admin users. Users may also reference a bowler and location. |
 | `bowler_payment_links` | Direct required `organization_id`, plus two bowlers and the creating user. The payment-link routes verify that both bowlers and the caller belong to the same organization. |
 | `apple_pay_job_items` | Optional organization and location references identify the tenant work item. The parent `apple_pay_jobs` row is platform operational state and may reference its creator. |
-| Tenant audit/recovery rows | Admin password/role audits, orphan-cleanup audits, and related secretary audits carry direct organization references where applicable. Some audit foreign keys are nullable or `set null` so history can survive cleanup. Email/profile audit rows are scoped through their user references. |
+| Tenant audit/recovery rows | Admin password/role audits and orphan-cleanup audits carry direct organization references where applicable. Some audit foreign keys are nullable or `set null` so history can survive cleanup. Email/profile audit rows are scoped through their user references. |
 
 The remaining operational tables are not tenant roots: `session`, email
 templates, deletion requests, rate-limit buckets, and alerter state are

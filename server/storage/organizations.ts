@@ -12,8 +12,6 @@ import {
   bowlers,
   deletionRequests,
   leagueRegistrations,
-  leagueSecretaries,
-  leagueSecretaryAudits,
   leagues,
   locations,
   organizations,
@@ -142,15 +140,6 @@ export async function deleteOrganization(id: number): Promise<void> {
       ...locationIds.map((locationId) => `square_catalog_cap:loc:${locationId}`),
     ];
 
-    if (leagueIds.length > 0) {
-      await tx.delete(leagueSecretaryAudits).where(or(
-        eq(leagueSecretaryAudits.organizationId, id),
-        inArray(leagueSecretaryAudits.leagueId, leagueIds),
-      ));
-    } else {
-      await tx.delete(leagueSecretaryAudits).where(eq(leagueSecretaryAudits.organizationId, id));
-    }
-    await tx.delete(leagueSecretaries).where(eq(leagueSecretaries.organizationId, id));
     await tx.delete(leagueRegistrations).where(eq(leagueRegistrations.organizationId, id));
     await tx.delete(bowlerPaymentLinks).where(eq(bowlerPaymentLinks.organizationId, id));
     await tx.delete(applePayJobItems).where(eq(applePayJobItems.organizationId, id));
@@ -195,10 +184,6 @@ export async function deleteOrganization(id: number): Promise<void> {
       await tx.delete(adminRoleChangeAudits).where(or(
         inArray(adminRoleChangeAudits.actorUserId, userIds),
         inArray(adminRoleChangeAudits.targetUserId, userIds),
-      ));
-      await tx.delete(leagueSecretaryAudits).where(or(
-        inArray(leagueSecretaryAudits.actorUserId, userIds),
-        inArray(leagueSecretaryAudits.targetUserId, userIds),
       ));
       await tx.delete(orphanCleanupAudits).where(inArray(orphanCleanupAudits.adminUserId, userIds));
 

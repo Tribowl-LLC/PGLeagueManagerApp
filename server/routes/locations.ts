@@ -13,8 +13,7 @@ const log = createLogger("Locations");
 
 const router = Router();
 
-// Task #735: locations are an org-level admin surface. League
-// secretaries (role='user' with grants) must not list/read/mutate
+// Locations are an organization-level admin surface. Plain users must not list/read/mutate
 // them, even though they share an organizationId. Allow only
 // system_admin and org_admin.
 function isOrgOrSysAdmin(user: User | undefined): boolean {

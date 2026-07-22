@@ -24,6 +24,12 @@
       "tag": "0003_remove_clover_integration",
       "createdAt": 1784730543756,
       "hash": "6cf2092637094bafdf8062a17d6b439a97f48c3bbb2945b91dd247bba33cc4fe"
+    },
+    {
+      "idx": 4,
+      "tag": "0004_remove_league_secretaries",
+      "createdAt": 1784736825589,
+      "hash": "1516fb7b4c419e90e3df340d33ef90dfdba668a07296aa9c3a26b96640ee277e"
     }
   ]
 }

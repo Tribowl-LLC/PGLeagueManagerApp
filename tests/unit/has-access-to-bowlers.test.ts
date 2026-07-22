@@ -14,12 +14,10 @@ const {
   mockGetBowlerLeaguesByBowlerIds,
   mockGetLeaguesByIds,
   mockGetBowlersByIds,
-  mockGetSecretaryLeagueIdsForUser,
 } = vi.hoisted(() => ({
   mockGetBowlerLeaguesByBowlerIds: vi.fn(),
   mockGetLeaguesByIds: vi.fn(),
   mockGetBowlersByIds: vi.fn(),
-  mockGetSecretaryLeagueIdsForUser: vi.fn(),
 }));
 
 vi.mock('../../server/storage', () => ({
@@ -33,10 +31,6 @@ vi.mock('../../server/storage', () => ({
     // legacy/orphan row (organizationId === null) — that path matches
     // the pre-#342 behavior the rest of these tests pin.
     getBowlersByIds: (...args: unknown[]) => mockGetBowlersByIds(...args),
-    // Task #735: hasAccessToBowlers consults league-secretary grants.
-    // Default to no grants so these tests pin the non-secretary behavior.
-    getSecretaryLeagueIdsForUser: (...args: unknown[]) =>
-      mockGetSecretaryLeagueIdsForUser(...args),
   },
 }));
 
@@ -65,10 +59,6 @@ beforeEach(() => {
   // unit tests). Tests that want to exercise the org-stamp short-circuit
   // can override this with `.mockResolvedValueOnce(...)`.
   mockGetBowlersByIds.mockResolvedValue([]);
-  // Task #735: default to no league-secretary grants so these tests pin
-  // the non-secretary behavior.
-  mockGetSecretaryLeagueIdsForUser.mockReset();
-  mockGetSecretaryLeagueIdsForUser.mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -208,7 +198,7 @@ describe('hasAccessToBowlers', () => {
 
     // Self-access always wins for the caller's own bowler.
     expect(result.get(99)).toBe(true);
-    // Task #735 hardening: a plain "user" caller no longer gets org-wide
+    // A plain "user" caller does not get org-wide
     // access. Bowler 60 is in the same org but a league the caller does
     // NOT share (caller has no league entries), so access is denied.
     expect(result.get(60)).toBe(false);

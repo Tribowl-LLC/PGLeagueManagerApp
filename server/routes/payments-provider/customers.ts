@@ -37,8 +37,8 @@ router.post('/customers', paymentLimiter, async (req, res) => {
         return sendError(res, "You don't have access to this team", 403, 'FORBIDDEN');
       }
 
-      // Task #735: payment-provider customer surfaces are explicitly
-      // off-limits to league secretaries (could expose provider
+      // Payment-provider customer surfaces are explicitly
+      // off-limits to plain users (could expose provider
       // customer IDs / vault metadata). Restrict to org_admin /
       // system_admin in the league's owning org.
       const userHasAccess =

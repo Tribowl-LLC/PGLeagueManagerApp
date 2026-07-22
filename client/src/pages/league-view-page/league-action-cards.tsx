@@ -1,14 +1,8 @@
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
-import { Users, CircleDollarSign, ShieldCheck } from "lucide-react";
+import { Users, CircleDollarSign } from "lucide-react";
 import { Link } from "wouter";
 
-export function LeagueActionCards({
-  leagueId,
-  canManageSecretaries,
-}: {
-  leagueId: number;
-  canManageSecretaries: boolean;
-}) {
+export function LeagueActionCards({ leagueId }: { leagueId: number }) {
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
       <Link href={`/leagues/${leagueId}/teams`} className="block">
@@ -42,28 +36,6 @@ export function LeagueActionCards({
           </CardContent>
         </Card>
       </Link>
-
-      {canManageSecretaries && (
-        <Link
-          href={`/leagues/${leagueId}/secretaries`}
-          className="block"
-          data-testid="link-league-secretaries"
-        >
-          <Card className="hover:bg-accent transition-colors">
-            <CardHeader>
-              <div className="flex justify-center mb-2">
-                <ShieldCheck className="size-6" />
-              </div>
-              <CardTitle>Secretaries</CardTitle>
-              <CardDescription>
-                Grant per-league admin access to a non-admin user
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-            </CardContent>
-          </Card>
-        </Link>
-      )}
     </div>
   );
 }

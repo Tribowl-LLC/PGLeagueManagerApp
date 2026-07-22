@@ -4,7 +4,6 @@ import { locations } from "./locations";
 import { leagues } from "./leagues";
 import { teams } from "./teams";
 import { bowlers, bowlerLeagues } from "./bowlers";
-import { leagueSecretaries } from "./league-secretaries";
 import { payments, paymentSchedules } from "./payments";
 import { users } from "./users";
 import { games, scores } from "./games";
@@ -41,27 +40,6 @@ export const leagueRelations = relations(leagues, ({ one, many }) => ({
   teams: many(teams),
   bowlerLeagues: many(bowlerLeagues),
   payments: many(payments),
-  secretaries: many(leagueSecretaries),
-}));
-
-export const leagueSecretaryRelations = relations(leagueSecretaries, ({ one }) => ({
-  user: one(users, {
-    fields: [leagueSecretaries.userId],
-    references: [users.id],
-  }),
-  league: one(leagues, {
-    fields: [leagueSecretaries.leagueId],
-    references: [leagues.id],
-  }),
-  organization: one(organizations, {
-    fields: [leagueSecretaries.organizationId],
-    references: [organizations.id],
-  }),
-  grantedBy: one(users, {
-    fields: [leagueSecretaries.grantedByUserId],
-    references: [users.id],
-    relationName: "leagueSecretaryGrantedBy",
-  }),
 }));
 
 export const teamRelations = relations(teams, ({ one, many }) => ({
