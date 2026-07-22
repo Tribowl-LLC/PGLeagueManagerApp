@@ -194,14 +194,21 @@ Schema changes require a deliberate release step:
 2. Confirm the target Neon project, branch, host, database name, and user.
 3. Set `DATABASE_URL` only in the shell or deployment environment where the
    intended target has been independently verified.
-4. Confirm the exact checked-in migration SQL was reviewed and the adopted
+4. For the organization-hostname namespace migration, run
+   `npm run db:audit:organization-hostnames` against the independently verified
+   target. The command is read-only and returns a non-zero status for
+   mixed-case identifiers or any slug/subdomain value owned by multiple
+   organizations. Stop and obtain an explicit tenant rename/remediation
+   decision for every reported row; never let migration precedence silently
+   choose a hostname owner.
+5. Confirm the exact checked-in migration SQL was reviewed and the adopted
    target has the exact active journal prefix. If the baseline row is absent or
    differs, stop: baseline adoption must never be repeated.
-5. Run `npm run db:migrate` with exactly one executor for the environment.
+6. Run `npm run db:migrate` with exactly one executor for the environment.
    Abort on any journal mismatch or migration failure.
-6. Apply the schema change to the intended database and record the result.
-7. Deploy the matching CI-verified application commit.
-8. Verify `/api/health`, login, the changed workflow, and relevant provider or
+7. Apply the schema change to the intended database and record the result.
+8. Deploy the matching CI-verified application commit.
+9. Verify `/api/health`, login, the changed workflow, and relevant provider or
    webhook behavior.
 
 `db:migrate` is not a substitute for a backup. Use expand–migrate–contract

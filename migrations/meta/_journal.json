@@ -8,6 +8,13 @@
       "when": 1784104330176,
       "tag": "0000_normalized_baseline",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1784694843315,
+      "tag": "0001_organization_hostname_namespace_guard",
+      "breakpoints": true
     }
   ]
 }

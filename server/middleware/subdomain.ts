@@ -166,4 +166,12 @@ function clearSubdomainCache(slug?: string) {
   }
 }
 
+export function invalidateOrganizationHostnameCache(
+  identifiers: ReadonlyArray<string | null | undefined>,
+): void {
+  for (const identifier of identifiers) {
+    if (identifier) orgCache.delete(identifier.toLowerCase());
+  }
+}
+
 export { extractSubdomain };

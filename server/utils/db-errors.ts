@@ -25,3 +25,17 @@ export function getPgErrorCode(err: unknown): string | undefined {
   }
   return undefined;
 }
+
+export function getPgErrorConstraint(err: unknown): string | undefined {
+  let current: unknown = err;
+  const seen = new Set<unknown>();
+  while (current && typeof current === 'object' && !seen.has(current)) {
+    seen.add(current);
+    const constraint = (current as { constraint?: unknown }).constraint;
+    if (typeof constraint === 'string' && constraint.length > 0) {
+      return constraint;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return undefined;
+}

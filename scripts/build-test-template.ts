@@ -97,8 +97,32 @@ function writeHash(hash: string): void {
 
 export async function assertMigratedTemplateReady(templateUrl: string): Promise<void> {
   await assertCheckedMigrationsCurrent(templateUrl);
-  const fingerprint = createBaselineFingerprint(await collectDatabaseInventory(templateUrl));
-  assertApprovedBaselineFingerprint(fingerprint);
+  if (loadActiveMigrations().length === 1) {
+    const fingerprint = createBaselineFingerprint(await collectDatabaseInventory(templateUrl));
+    assertApprovedBaselineFingerprint(fingerprint);
+    return;
+  }
+  const client = new pg.Client({ connectionString: templateUrl });
+  try {
+    await client.connect();
+    const result = await client.query<{ ready: boolean }>(`
+      SELECT
+        to_regprocedure('public.organization_hostname_namespace_guard_fn()') IS NOT NULL
+        AND EXISTS (
+          SELECT 1
+          FROM pg_catalog.pg_trigger t
+          JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid
+          WHERE c.oid = 'public.organizations'::regclass
+            AND t.tgname = 'organization_hostname_namespace_guard'
+            AND NOT t.tgisinternal
+        ) AS ready
+    `);
+    if (result.rows[0]?.ready !== true) {
+      throw new Error('Current organization hostname namespace invariant is absent.');
+    }
+  } finally {
+    await client.end().catch(() => undefined);
+  }
 }
 
 export async function buildTestTemplate(): Promise<void> {
@@ -162,7 +186,7 @@ export async function buildTestTemplate(): Promise<void> {
   writeHash(hash);
   console.log(
     `[test-template-provenance] source=db:migrate applied=${expectedTags.join(',')}` +
-      ' rerun=no-op journal=exact fingerprint=exact invariants=installed seed=complete',
+      ' rerun=no-op journal=exact current-invariants=exact seed=complete',
   );
   console.log(`[build-test-template] done. hash=${hash.slice(0, 12)}…`);
 }

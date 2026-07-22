@@ -27,6 +27,7 @@ import {
 } from '../../scripts/lib/db-migration-journal';
 import {
   createGenerateInvocation,
+  parseReviewedMigrationArgs,
   parseReviewedMigrationName,
 } from '../../scripts/db-generate';
 import { REVIEWED_DRIZZLE_CONFIG_PATH } from '../../scripts/lib/drizzle-cli-environment';
@@ -108,14 +109,20 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 }
 
 describe('normalized migration baseline tools', () => {
-  it('has one authoritative active baseline with exact checked-in identity', () => {
+  it('keeps the exact baseline first and the hostname guard as a forward migration', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(1);
+    expect(migrations).toHaveLength(2);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
       createdAt: 1784104330176,
       hash: '9f4398b0e90bb5a5e33406cc5f35faf73b9c9dcbff3c781bacc892479c31a302',
+    });
+    expect(migrations[1]).toMatchObject({
+      idx: 1,
+      tag: '0001_organization_hostname_namespace_guard',
+      createdAt: 1784694843315,
+      hash: '8902cc5fee270a2841e87570e8bb7d811b79608393ae44f17aef6b9c78219652',
     });
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
@@ -200,6 +207,19 @@ describe('normalized migration baseline tools', () => {
     expect(invocation.environment.DOTENV_CONFIG_OVERRIDE).toBe('');
     expect(invocation.environment.DOTENV_CONFIG_PATH).not.toBe('C:\\unreviewed.env');
     expect(invocation.environment.NODE_OPTIONS).toBeUndefined();
+
+    expect(parseReviewedMigrationArgs(['--custom', '--name', 'hostname_guard'])).toEqual({
+      name: 'hostname_guard',
+      custom: true,
+    });
+    expect(createGenerateInvocation(['--name', 'hostname_guard', '--custom'], {}).args)
+      .toContain('--custom');
+    expect(() => parseReviewedMigrationArgs([
+      '--custom',
+      '--custom',
+      '--name',
+      'hostname_guard',
+    ])).toThrow('--custom at most once');
   });
 
   it('requires exact one-based journal ids as well as migration identity', () => {

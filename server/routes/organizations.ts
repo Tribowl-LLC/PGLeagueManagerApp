@@ -21,6 +21,8 @@ import { createLogger } from '../logger';
 import { getPaymentProvider, ProviderNotConfiguredError } from '../services/payment-provider-factory';
 import { hasWalletSupport } from '../services/payment-provider';
 import { canonicalApplePayDomain } from '../services/apple-pay-domains';
+import { OrganizationHostnameConflictError } from '../storage/organizations';
+import { invalidateOrganizationHostnameCache } from '../middleware/subdomain';
 
 const log = createLogger("Organizations");
 
@@ -113,7 +115,8 @@ router.get('/check-slug/:slug', async (req, res) => {
       return sendError(res, 'Invalid slug format. Use only lowercase letters, numbers, and hyphens.', 400, 'INVALID_FORMAT');
     }
     
-    const organization = await storage.getOrganizationBySlug(slug);
+    const organization = await storage.getOrganizationBySubdomain(slug)
+      ?? await storage.getOrganizationBySlug(slug);
     
     // Return the availability status
     sendSuccess(res, { 
@@ -135,13 +138,8 @@ router.post('/', requireAdmin, adminWriteLimiter, inviteLimiter, async (req, res
     log.debug('Create request body keys:', Object.keys(orgData));
     const validatedData = insertOrganizationSchema.parse(orgData);
     
-    // Check if organization with slug already exists
-    const existingOrg = await storage.getOrganizationBySlug(validatedData.slug);
-    if (existingOrg) {
-      return sendError(res, 'An organization with this slug already exists', 409, 'Conflict');
-    }
-
     const organization = await storage.createOrganization(validatedData);
+    invalidateOrganizationHostnameCache([organization.slug, organization.subdomain]);
 
     if (organization.subdomain || organization.slug) {
       autoRegisterApplePayDomain(organization).catch(() => {});
@@ -198,6 +196,9 @@ router.post('/', requireAdmin, adminWriteLimiter, inviteLimiter, async (req, res
     if (error instanceof z.ZodError) {
       return handleZodError(res, error);
     }
+    if (error instanceof OrganizationHostnameConflictError) {
+      return sendError(res, error.message, 409, 'ORG_HOSTNAME_CONFLICT');
+    }
     if (handleUserOrgError(res, error)) return;
     log.error('Error creating organization:', error);
     sendError(res, 'Failed to create organization', 500, 'ServerError');
@@ -230,19 +231,17 @@ router.patch('/:id', requireAdmin, adminWriteLimiter, async (req, res) => {
       }
     }
     
-    // If slug is being updated, check if it's already in use
-    if (validatedData.slug && validatedData.slug !== organization.slug) {
-      const existingOrg = await storage.getOrganizationBySlug(validatedData.slug);
-      if (existingOrg && existingOrg.id !== id) {
-        return sendError(res, 'An organization with this slug already exists', 409, 'Conflict');
-      }
-    }
-
     const updatedOrganization = await storage.updateOrganization(id, validatedData);
 
     const subdomainChanged = validatedData.subdomain !== undefined && validatedData.subdomain !== organization.subdomain;
     const slugChanged = validatedData.slug !== undefined && validatedData.slug !== organization.slug;
     if (subdomainChanged || slugChanged) {
+      invalidateOrganizationHostnameCache([
+        organization.slug,
+        organization.subdomain,
+        updatedOrganization.slug,
+        updatedOrganization.subdomain,
+      ]);
       autoRegisterApplePayDomain(updatedOrganization).catch(() => {});
     }
 
@@ -250,6 +249,9 @@ router.patch('/:id', requireAdmin, adminWriteLimiter, async (req, res) => {
   } catch (error) {
     if (error instanceof z.ZodError) {
       return handleZodError(res, error);
+    }
+    if (error instanceof OrganizationHostnameConflictError) {
+      return sendError(res, error.message, 409, 'ORG_HOSTNAME_CONFLICT');
     }
     log.error(`Error updating organization with ID ${req.params.id}:`, error);
     sendError(res, 'Failed to update organization', 500, 'ServerError');
