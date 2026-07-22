@@ -123,6 +123,14 @@ Authentication is divided as follows:
 | PostgreSQL | Stores `scrypt` password hashes, server-side session rows, invitation/reset state, organization membership, lockout state, and shared production rate-limit buckets. |
 | SendGrid | Delivers invitation, recovery, password-change, and other account notifications. An email message or link is not trusted after its server-side token expires or is consumed. |
 
+A Capacitor application is an untrusted API client. Packaging, application
+signing, device identity, and store distribution do not replace server-side
+authentication, authorization, CSRF or equivalent request protection, tenant
+resolution, and input validation. The current Capacitor shell uses the same
+HTTPS origin and session-cookie model as the browser, so its state-changing
+requests use the same session-bound CSRF protection rather than a separate
+native authentication scheme.
+
 ### Passwords and sessions
 
 - Passwords are hashed using Node.js `scrypt` with a fresh random 16-byte salt.
@@ -212,9 +220,11 @@ ordering.
 
 Administrator-driven password reset forces the user to change the temporary
 password before other protected workflows are available. Repeated failures on
-the authenticated password-change endpoint can lock that operation, destroy
-sessions, and send a notification. These protections do not justify exposing
-passwords through an administrator workflow or message.
+the authenticated password-change endpoint can temporarily block further
+password-change attempts for that account, destroy all of the account's
+sessions, and send a notification. The lock is specific to password changes;
+it is not a general account-status or login lock. These protections do not
+justify exposing passwords through an administrator workflow or message.
 
 ### Request protections
 
@@ -348,12 +358,13 @@ session guard requires the authenticated user to belong to that organization,
 except for the explicit system-administrator boundary and a documented
 bootstrap path that stamps an otherwise unassigned linked bowler user.
 
-Users carry an organization membership. `system_admin` users may be org-less;
-normal users and organization administrators may not. A runtime database
-trigger enforces the non-admin user/organization invariant. League-secretary
-grants carry organization, user, and league references, with database
-invariants protecting their organization consistency and revoking stale
-grants when membership changes.
+Users carry an organization membership. A `system_admin` account may exist
+without an organization membership where the specific platform workflow
+supports that state. Normal users and organization administrators may not. A
+runtime database trigger enforces the non-admin user/organization invariant.
+League-secretary grants carry organization, user, and league references, with
+database invariants protecting their organization consistency and revoking
+stale grants when membership changes.
 
 Tenant ownership is direct for some rows and inherited through parents for
 others:
@@ -440,9 +451,10 @@ keys, and setup tokens remain server-only.
 
 Location-specific Square and Clover access tokens are encrypted before
 storage with AES-256-GCM using `FIELD_ENCRYPTION_KEY` and are removed from
-normal API projections. The key itself remains server-only. Decryption fails
-closed by returning no usable credential. See the known limitation below for
-the separate per-organization BowlNow configuration.
+normal API projections. The key itself remains server-only. A decryption or
+authentication-tag failure must prevent use of the credential and produce a
+safely redacted operational error. See the known limitation below for the
+separate per-organization BowlNow configuration.
 
 Rotation is an operator-owned, provider-specific process:
 
@@ -484,6 +496,10 @@ operational logs.
   unnecessary personal information. Client telemetry has a central scrubber
   and Sentry `beforeSend` backstop. Server call sites remain responsible for
   selecting safe fields, supported by repository checks and tests.
+- Audit records must be written from server-derived actor and tenant context.
+  Client-supplied actor names, roles, organization identifiers, or
+  descriptions must not be treated as authoritative audit identity,
+  particularly for administrative and financial events.
 - API responses use allowlisted projections for sensitive rows and sanitized
   payment/provider error contracts. Internal stack traces and database or
   provider details must not be sent to users.
@@ -639,6 +655,11 @@ Authentication, sessions, cookies, authorization, organization membership,
 tenant queries, payments, webhooks, cryptography, secrets, uploads, proxy
 handling, rate limits, setup endpoints, background jobs, database ownership,
 provider configuration, and logging/telemetry are security-sensitive.
+
+A dependency update is security-sensitive when it changes authentication,
+cryptography, HTTP parsing, sessions, database access, payments, uploads,
+serialization, or build-time client exposure. Review its changelog and
+transitive dependency changes rather than relying only on the audit result.
 
 For such a change:
 
