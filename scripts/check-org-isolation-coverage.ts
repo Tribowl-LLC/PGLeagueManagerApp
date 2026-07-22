@@ -62,7 +62,6 @@ const EXPLICIT_ALLOWLIST: Record<string, string> = {
   // org-scoped payload, so cross-org id traversal yields nothing more
   // than a public image already addressable at /uploads/avatars/...
   '/api/user/avatar/:userId': 'authenticated avatar redirect; response is a 302 to a static image with no org-sensitive payload',
-  '/api/public/embed/leagues/:leagueId': 'task #681 public embed registration form; intentionally unauthenticated and returns only league name + roster counts + org branding (no roster, no PII)',
 };
 
 const APP_USE_RE = /\bapp\s*\.\s*use\s*\(\s*(['"`])([^'"`]+)\1\s*,\s*([^)]+)\)/g;

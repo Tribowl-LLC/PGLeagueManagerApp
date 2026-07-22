@@ -38,7 +38,6 @@ function makeFullyPopulatedOrg(): Organization {
     darkLogo: 'dark-logo-url',
     appIcon: 'app-icon-url',
     active: true,
-    allowedEmbedDomains: [],
   });
   // `id` and `createdAt` are omitted from the insert schema, so we re-add
   // them to satisfy the SELECT type.

@@ -17,7 +17,7 @@ Production scope for this threat model excludes the mockup sandbox, local-only s
 ## Trust Boundaries
 
 - **Browser/mobile client to API** - all request bodies, query params, and route paths are attacker-controlled. Client-side UI restrictions are not security boundaries.
-- **Public routes to authenticated routes** - public surfaces such as `/api/auth/*`, `/api/public/embed/*`, `/api/bowler-link-respond/*`, `/api/setup/*`, `/api/payments-provider/webhooks/*`, and public organization redirects must not inherit privileges intended for signed-in users.
+- **Public routes to authenticated routes** - public surfaces such as `/api/auth/*`, `/api/bowler-link-respond/*`, `/api/setup/*`, `/api/payments-provider/webhooks/*`, and public organization redirects must not inherit privileges intended for signed-in users.
 - **Authenticated user to org admin/system admin** - normal bowlers, organization admins, and system admins have materially different privileges. Role checks and row-level scoping must be enforced server-side per route.
 - **Cross-tenant organization boundary** - organization-scoped data is keyed by `organizationId` and sometimes subdomain context. Matching organization membership alone is not sufficient for every sensitive bowler or payment action.
 - **Server to database** - the API has broad write access to user, bowler, and payment tables. Authorization failures at the route layer can become direct database tampering.
@@ -27,7 +27,7 @@ Production scope for this threat model excludes the mockup sandbox, local-only s
 
 - **Production entry points:** `server/index.ts`, `server/app.ts`, `server/routes/index.ts`
 - **Highest-risk code areas:** `server/routes/auth.ts`, `server/utils/access-control.ts`, `server/routes/bowlers.ts`, `server/routes/user-bowlers.ts`, `server/routes/payments-provider/`, `server/routes/payment-schedules.ts`, `server/routes/public-embed-registration.ts`
-- **Public surfaces:** `/api/auth/*`, `/api/public/embed/*`, `/api/bowler-link-respond/*`, `/api/setup/*`, `/api/payments-provider/webhooks/*`, `/api/organizations/public-*`, `/api/health`
+- **Public surfaces:** `/api/auth/*`, `/api/bowler-link-respond/*`, `/api/setup/*`, `/api/payments-provider/webhooks/*`, `/api/organizations/public-*`, `/api/health`
 - **Authenticated/admin surfaces:** `requireAuth` and `requireOrgAdmin` middleware, organization-scoped CRUD routes, and payment-provider admin/verification routes
 - **Usually dev-only / out of scope:** test setup under `tests/`, local scripts under `scripts/` unless they are invoked by production runtime
 

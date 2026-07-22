@@ -26,8 +26,6 @@ import bulkImportRouter from './bulk-import.js';
 import searchRouter from './search.js';
 import bowlerLinksRouter from './bowler-links.js';
 import bowlerLinkRespondRouter from './bowler-link-respond.js';
-import leagueRegistrationQuestionsRouter from './league-registration-questions.js';
-import publicEmbedRegistrationRouter from './public-embed-registration.js';
 import { requireAuth, requireOrgAdmin, requireSystemAdmin, requirePasswordRotated } from '../middleware/auth.js';
 import { createLogger } from '../logger';
 
@@ -104,11 +102,6 @@ export function registerRoutes(app: Express): void {
   registerAuthRoutes(app);
 
   app.use('/api/organizations', organizationsPublicRouter);
-  // Task #681: public, no-auth embed registration endpoints. Mounted
-  // BEFORE the requirePasswordRotated/requireAuth middleware below so
-  // anonymous traffic from an embedding site can read the form schema and post a
-  // registration without a session.
-  app.use('/api/public/embed', publicEmbedRegistrationRouter);
   // Task #704: one-click accept/decline for bowler-payment-link invites.
   // Mounted BEFORE requirePasswordRotated/requireAuth because the link
   // recipient may not be logged in (or may be logged in as a different
@@ -149,9 +142,5 @@ export function registerRoutes(app: Express): void {
   app.use('/api/account', accountRouter);
   app.use('/api/search', requireAuth, searchRouter);
   app.use('/api/bowler-links', requireAuth, bowlerLinksRouter);
-  // Task #681: admin endpoints for managing a league's embed
-  // registration questions. Auth is enforced inside the router via
-  // hasAccessToLeague + isOrgOrHigher.
-  app.use('/api/leagues/:leagueId/registration-questions', requireAuth, leagueRegistrationQuestionsRouter);
   log.info('API routes registered');
 }

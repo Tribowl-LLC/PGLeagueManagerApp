@@ -19,11 +19,6 @@
       "count": 1
     }
   },
-  "client/src/components/organization-form-body.tsx": {
-    "no-restricted-syntax": {
-      "count": 1
-    }
-  },
   "client/src/components/payment-form.tsx": {
     "react-hooks/exhaustive-deps": {
       "count": 2

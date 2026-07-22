@@ -36,6 +36,13 @@
       "when": 1784736825589,
       "tag": "0004_remove_league_secretaries",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1784743908431,
+      "tag": "0005_remove_embeddable_registration",
+      "breakpoints": true
     }
   ]
 }
