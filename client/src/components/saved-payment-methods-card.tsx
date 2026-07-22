@@ -21,7 +21,6 @@ import {
   providerNotConfiguredToast,
   makeApiError,
 } from "@/lib/provider-not-configured";
-import { usePaymentProvider } from "@/hooks/use-payment-provider";
 import type { SavedCard } from "@shared/schema";
 
 interface SavedPaymentMethodsCardProps {
@@ -35,11 +34,6 @@ export function SavedPaymentMethodsCard({ bowlerId, locationId }: SavedPaymentMe
   const [, navigate] = useLocation();
   const [cardToDelete, setCardToDelete] = useState<SavedCard | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
-  // Resolve the active provider for this card's owning location so
-  // the PROVIDER_NOT_CONFIGURED toast names "Square" or "Clover"
-  // accurately. (Task #599.)
-  const { isClover } = usePaymentProvider(locationId ?? null);
-
   const { data: savedCardsResponse, isLoading } = useQuery<{ success: boolean; data: SavedCard[] }>({
     queryKey: [`/api/payments-provider/cards/${bowlerId}`],
     queryFn: async () => {
@@ -67,7 +61,6 @@ export function SavedPaymentMethodsCard({ bowlerId, locationId }: SavedPaymentMe
           providerNotConfiguredToast({
             navigate,
             locationId: locationId ?? null,
-            provider: isClover ? "clover" : "square",
           }),
         );
       } else {

@@ -113,7 +113,6 @@ describe('payment_sync_pending_at lifecycle (mocked provider)', () => {
         order: 0,
         organizationId: org.id,
         paymentCustomerId: null,
-        cloverCustomerId: null,
         paymentSyncPendingAt: null,
       })
       .returning();
@@ -235,7 +234,6 @@ describe('payment_sync_pending_at lifecycle (mocked provider)', () => {
         order: 0,
         organizationId: org.id,
         paymentCustomerId: null,
-        cloverCustomerId: null,
         // Pre-flag the row as if the foreground PATCH had stamped it.
         paymentSyncPendingAt: new Date().toISOString(),
         paymentSyncAttempts: 1,

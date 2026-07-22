@@ -21,7 +21,6 @@ const mockStorage = {
   updatePaymentScheduleCard: vi.fn(),
   updateBowler: vi.fn(),
   getLocationSquareConfig: vi.fn(),
-  getLocationCloverConfig: vi.fn(),
   updatePaymentScheduleFields: vi.fn(),
   deactivatePaymentSchedule: vi.fn(),
 };
@@ -67,9 +66,7 @@ vi.mock('../../server/services/payment-execution', async () => {
 });
 
 vi.mock('../../server/services/payment-utils', () => ({
-  getProviderCustomerId: (bowler: { squareCustomerId?: string; cloverCustomerId?: string }) =>
-    bowler.squareCustomerId || bowler.cloverCustomerId,
-  persistCloverCustomer: vi.fn(),
+  getProviderCustomerId: (bowler: { paymentCustomerId?: string }) => bowler.paymentCustomerId,
   ensureProviderCustomer: vi.fn(),
 }));
 
@@ -91,20 +88,6 @@ vi.mock('square', async () => {
   return {
     ...actual,
     SquareClient: FakeSquareClient,
-  };
-});
-
-// --- Clover SDK Mock ---
-const mockCloverCreateCharge = vi.fn();
-const mockCloverCreateRefund = vi.fn();
-vi.mock('../../server/services/clover', async () => {
-  const actual = await vi.importActual<typeof import('../../server/services/clover')>(
-    '../../server/services/clover',
-  );
-  return {
-    ...actual,
-    createCharge: (...a: unknown[]) => mockCloverCreateCharge(...a),
-    createRefund: (...a: unknown[]) => mockCloverCreateRefund(...a),
   };
 });
 
@@ -186,9 +169,7 @@ const { PROVIDER_NOT_CONFIGURED_USER_MESSAGE } = await import(
   '../../server/utils/payment-error-response'
 );
 const { SquarePaymentProvider } = await import('../../server/services/square-provider');
-const { CloverPaymentProvider } = await import('../../server/services/clover-provider');
 const { SquareError } = await import('square');
-const { CloverApiError } = await import('../../server/services/clover');
 const { buildLineItems } = await import('../../server/services/payment-execution');
 
 // --- Test Setup ---
@@ -229,17 +210,6 @@ const mockSquareProvider = {
   validateCardId: vi.fn().mockReturnValue(false),
 };
 
-const mockCloverProvider = {
-  providerName: 'clover' as const,
-  locationId: 99,
-  processPayment: vi.fn(),
-  createOrderWithPayment: vi.fn(),
-  refundPayment: vi.fn(),
-  getPayment: vi.fn(),
-  saveCardOnFile: vi.fn(),
-  validateCardId: vi.fn().mockReturnValue(false),
-};
-
 beforeEach(() => {
   vi.clearAllMocks();
   for (const fn of Object.values(mockStorage)) (fn as ReturnType<typeof vi.fn>).mockReset();
@@ -250,10 +220,7 @@ beforeEach(() => {
   mockPaymentsCreate.mockReset();
   mockOrdersCreate.mockReset();
   mockRefundsCreate.mockReset();
-  mockCloverCreateCharge.mockReset();
-  mockCloverCreateRefund.mockReset();
-
-  for (const p of [mockSquareProvider, mockCloverProvider]) {
+  for (const p of [mockSquareProvider]) {
     p.processPayment.mockReset();
     p.createOrderWithPayment.mockReset();
     p.refundPayment.mockReset();
@@ -272,7 +239,7 @@ beforeEach(() => {
     lineageItemVariationId: null, prizeFundItemVariationId: null,
   };
   dbState.bowler = {
-    id: 42, organizationId: 1, name: 'Pat', email: 'pat@example.com', squareCustomerId: 'sq_cust_1', cloverCustomerId: 'cv_cust_1',
+    id: 42, organizationId: 1, name: 'Pat', email: 'pat@example.com',
     paymentCustomerId: 'sq_cust_1',
   };
 
@@ -286,9 +253,6 @@ beforeEach(() => {
   }));
   mockStorage.getLocationSquareConfig.mockResolvedValue({
     accessToken: 'EAAAEsandboxtoken', appId: 'sandbox-sq0idp-abc', locationId: 'L_TEST_123', environment: 'sandbox',
-  });
-  mockStorage.getLocationCloverConfig.mockResolvedValue({
-    apiToken: 'tok_xyz', merchantId: 'merch_1', environment: 'sandbox',
   });
 
   vi.mocked(buildLineItems).mockReturnValue([]);
@@ -336,15 +300,12 @@ const autopayCallbacks = {
 
 // --- Tests ---
 
-type ProviderInstance = InstanceType<typeof SquarePaymentProvider> | InstanceType<typeof CloverPaymentProvider>;
+type ProviderInstance = InstanceType<typeof SquarePaymentProvider>;
 type ProviderFactory = (locationId: number) => ProviderInstance;
 
 const makeSquare: ProviderFactory = (loc) => new SquarePaymentProvider(loc);
-const makeClover: ProviderFactory = (loc) => new CloverPaymentProvider(loc);
-
-describe.each<[string, typeof mockSquareProvider | typeof mockCloverProvider, ProviderFactory]>([
+describe.each<[string, typeof mockSquareProvider, ProviderFactory]>([
   ['square', mockSquareProvider, makeSquare],
-  ['clover', mockCloverProvider, makeClover],
 ])('Payment Provider failure harness: %s', (providerName, mockProvider, ProviderClass) => {
 
   beforeEach(() => {
@@ -353,11 +314,7 @@ describe.each<[string, typeof mockSquareProvider | typeof mockCloverProvider, Pr
 
   describe('Provider Layer: Error Mapping', () => {
     it('maps 402 decline to PAYMENT_DECLINED', async () => {
-      if (providerName === 'square') {
-        mockPaymentsCreate.mockRejectedValue(squareErr(402, 'CARD_DECLINED', 'CARD_DECLINED'));
-      } else {
-        mockCloverCreateCharge.mockRejectedValue(new CloverApiError('card_declined', 402, { error: { code: 'card_declined' } }));
-      }
+      mockPaymentsCreate.mockRejectedValue(squareErr(402, 'CARD_DECLINED', 'CARD_DECLINED'));
 
       const provider = ProviderClass(99);
       await expect(provider.processPayment('tok', 2000, false, 'cust', 'pat@example.com', 'idem'))
@@ -368,11 +325,7 @@ describe.each<[string, typeof mockSquareProvider | typeof mockCloverProvider, Pr
     });
 
     it('maps 401/403 auth to SYSTEM_ERROR', async () => {
-      if (providerName === 'square') {
-        mockPaymentsCreate.mockRejectedValue(squareErr(401, 'unauthorized', 'UNAUTHORIZED'));
-      } else {
-        mockCloverCreateCharge.mockRejectedValue(new CloverApiError('Unauthorized', 401, 'Bearer token rejected'));
-      }
+      mockPaymentsCreate.mockRejectedValue(squareErr(401, 'unauthorized', 'UNAUTHORIZED'));
 
       const provider = ProviderClass(99);
       await expect(provider.processPayment('tok', 2000, false, 'cust', 'pat@example.com', 'idem'))
@@ -383,11 +336,7 @@ describe.each<[string, typeof mockSquareProvider | typeof mockCloverProvider, Pr
     });
 
     it('maps 400 validation to INVALID_REQUEST', async () => {
-      if (providerName === 'square') {
-        mockPaymentsCreate.mockRejectedValue(squareErr(400, 'bad amount', 'BAD_REQUEST'));
-      } else {
-        mockCloverCreateCharge.mockRejectedValue(new CloverApiError('bad amount', 400, { error: { message: 'bad amount' } }));
-      }
+      mockPaymentsCreate.mockRejectedValue(squareErr(400, 'bad amount', 'BAD_REQUEST'));
 
       const provider = ProviderClass(99);
       await expect(provider.processPayment('tok', 2000, false, 'cust', 'pat@example.com', 'idem'))
@@ -399,13 +348,8 @@ describe.each<[string, typeof mockSquareProvider | typeof mockCloverProvider, Pr
 
     it('maps network/timeout (non-typed throw) to PAYMENT_FAILED/REFUND_FAILED', async () => {
       const netErr = new TypeError('fetch failed');
-      if (providerName === 'square') {
-        mockPaymentsCreate.mockRejectedValue(netErr);
-        mockRefundsCreate.mockRejectedValue(netErr);
-      } else {
-        mockCloverCreateCharge.mockRejectedValue(netErr);
-        mockCloverCreateRefund.mockRejectedValue(netErr);
-      }
+      mockPaymentsCreate.mockRejectedValue(netErr);
+      mockRefundsCreate.mockRejectedValue(netErr);
 
       const provider = ProviderClass(99);
       await expect(provider.processPayment('tok', 2000, false, 'cust', 'pat@example.com', 'idem'))
@@ -421,11 +365,7 @@ describe.each<[string, typeof mockSquareProvider | typeof mockCloverProvider, Pr
 
     it('passes through existing PaymentProviderError unchanged', async () => {
       const existing = new PaymentProviderError('already typed', 'INVALID_REQUEST');
-      if (providerName === 'square') {
-        mockPaymentsCreate.mockRejectedValue(existing);
-      } else {
-        mockCloverCreateCharge.mockRejectedValue(existing);
-      }
+      mockPaymentsCreate.mockRejectedValue(existing);
 
       const provider = ProviderClass(99);
       await expect(provider.processPayment('tok', 2000, false, 'cust', 'pat@example.com', 'idem'))
@@ -436,11 +376,7 @@ describe.each<[string, typeof mockSquareProvider | typeof mockCloverProvider, Pr
     });
 
     it('passes through ProviderNotConfiguredError unchanged', async () => {
-      if (providerName === 'square') {
-        mockStorage.getLocationSquareConfig.mockResolvedValue({ accessToken: '' });
-      } else {
-        mockStorage.getLocationCloverConfig.mockResolvedValue({ apiToken: '' });
-      }
+      mockStorage.getLocationSquareConfig.mockResolvedValue({ accessToken: '' });
 
       const provider = ProviderClass(99);
       await expect(provider.processPayment('tok', 2000, false, 'cust', 'pat@example.com', 'idem'))
@@ -467,7 +403,6 @@ describe.each<[string, typeof mockSquareProvider | typeof mockCloverProvider, Pr
         type: providerName,
         leagueId: 11,
         providerPaymentId: providerName === 'square' ? 'sq_pay_777' : undefined,
-        cloverChargeId: providerName === 'clover' ? 'cl_charge_777' : undefined,
       });
       mockStorage.refundPayment.mockClear();
       mockProvider.refundPayment.mockRejectedValue(new PaymentProviderError('failed', 'INVALID_REQUEST'));

@@ -17,7 +17,7 @@ Treated as PII / sensitive and **not allowed** at debug level in raw form:
 - Email addresses (full or partial — must be routed through `maskEmail` in
   `server/utils/pii.ts`).
 - Personal names, phone numbers, mailing addresses.
-- Payment identifiers (Square payment ids, Clover charge ids, customer
+- Payment identifiers (Square payment ids, customer
   ids, card-on-file ids).
 - Session ids, CSRF tokens, password hashes, invite/setup secrets,
   password-reset tokens.

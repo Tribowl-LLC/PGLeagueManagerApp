@@ -331,8 +331,7 @@ export async function refundPayment(
       throw error;
     }
 
-    // Parity with processPayment / createOrderWithPayment above and
-    // CloverPaymentProvider.refundPayment below: collapse any Square
+    // Parity with processPayment / createOrderWithPayment above: collapse any Square
     // SDK error shape into a typed PaymentProviderError so the refund
     // route can show admins the actionable reason (declined card,
     // validation error, system error) instead of a generic wall.

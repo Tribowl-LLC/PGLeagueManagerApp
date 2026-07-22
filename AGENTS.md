@@ -52,7 +52,7 @@ uses npm. Do not introduce Yarn, pnpm, or an additional lockfile.
 - Deploy the exact `main` commit that passed the required checks. Do not deploy
   a different local commit or an unverified branch.
 - Keep production secrets in the appropriate provider: Render, Neon, Square,
-  Clover, SendGrid, Sentry, or GitHub Actions secrets.
+  SendGrid, Sentry, or GitHub Actions secrets.
 - Never put production credentials in Codex prompts, source files, commits,
   logs, screenshots, test fixtures, or test output.
 
@@ -194,7 +194,6 @@ interchangeable between environments.
 
 Operational variables and secrets used by specific workflows include:
 
-- `CLOVER_WEBHOOK_SIGNING_SECRET` for production Clover webhook verification
 - `TRUST_PROXY_PROBE_TOKEN` on the deployed application for token-based
   trust-proxy verification
 - `DEPLOY_BASE_URL` and `DEPLOY_PROBE_TOKEN` as GitHub repository secrets for
@@ -275,9 +274,8 @@ Tenant isolation is a security boundary, not merely a filtering convention.
   deleted organization.
 - Organization teardown deletes app-owned tenant data and organization audit
   data.
-- Organization teardown does not delete remote Square or Clover customer
-  objects.
-- Square and Clover payment behavior is business-critical.
+- Organization teardown does not delete remote Square customer objects.
+- Square payment behavior is business-critical.
 - Do not change provider SDK usage, credentials, payment amounts, refund
   behavior, idempotency behavior, or webhook behavior without focused tests
   and review of the provider contract.

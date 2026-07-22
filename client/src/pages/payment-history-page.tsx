@@ -5,7 +5,6 @@ import { BowlerLayout } from "@/components/bowler-layout";
 import { PageLoadingState } from "@/components/page-states";
 import { useSearch, useLocation as useWouterLocation } from "wouter";
 import { useSquarePayment } from "@/hooks/use-square-payment";
-import { useCloverPayment } from "@/hooks/use-clover-payment";
 import { usePaymentProvider } from "@/hooks/use-payment-provider";
 import { useWalletPayments } from "@/hooks/use-wallet-payments";
 import { useSavedCardDefault } from "@/hooks/use-saved-card-default";
@@ -140,7 +139,7 @@ export default function PaymentHistoryPage() {
 
   const league = leagueMap.get(leagueId!);
 
-  const { config: providerConfig, isClover, supportsWallets, isLoading: providerLoading } = usePaymentProvider(league?.locationId ?? null);
+  const { supportsWallets, isLoading: providerLoading } = usePaymentProvider(league?.locationId ?? null);
 
   const { card: sqCard, isInitialized: sqInit, initializeCard: sqInitCard, cleanupCard: sqCleanup } = useSquarePayment({
     onError: (error) => {
@@ -149,20 +148,10 @@ export default function PaymentHistoryPage() {
     }
   });
 
-  const { card: cvCard, isInitialized: cvInit, initializeCard: cvInitCard, cleanupCard: cvCleanup } = useCloverPayment({
-    publicTokenizerKey: providerConfig?.publicTokenizerKey,
-    merchantId: providerConfig?.merchantId,
-    environment: providerConfig?.environment,
-    onError: (error) => {
-      logger.error('Clover Payment', 'Payment failed', error);
-      toast({ title: "Payment Setup Error", description: error, variant: "destructive" });
-    }
-  });
-
-  const card = isClover ? cvCard : sqCard;
-  const isInitialized = isClover ? cvInit : sqInit;
-  const initializeCard = isClover ? cvInitCard : sqInitCard;
-  const cleanupCard = isClover ? cvCleanup : sqCleanup;
+  const card = sqCard;
+  const isInitialized = sqInit;
+  const initializeCard = sqInitCard;
+  const cleanupCard = sqCleanup;
 
   useEffect(() => {
     if (!payDialogType) {
@@ -204,10 +193,8 @@ export default function PaymentHistoryPage() {
     // server's BUYER_EMAIL_REQUIRED so the wallet sheet doesn't
     // launch into an avoidable 400.
     const trimmedReceiptEmail = receiptEmail.trim();
-    // only Square enforces
-    // BUYER_EMAIL_REQUIRED server-side; Clover doesn't emit
-    // hosted receipts so don't block its wallet flow either.
-    if (!isClover && !bowlerEmail && !trimmedReceiptEmail) {
+    // Square requires a buyer email for hosted receipts.
+    if (!bowlerEmail && !trimmedReceiptEmail) {
       toast({
         title: 'Email required',
         description: 'Enter an email for the receipt before paying with Apple Pay / Google Pay.',
@@ -251,7 +238,6 @@ export default function PaymentHistoryPage() {
         toast(providerNotConfiguredToast({
           navigate,
           locationId: league?.locationId ?? null,
-          provider: isClover ? 'clover' : 'square',
         }));
       } else {
         toast({ title: "Payment Failed", description: error instanceof Error ? error.message : "Unable to process payment.", variant: "destructive" });
@@ -259,7 +245,7 @@ export default function PaymentHistoryPage() {
     } finally {
       setIsWalletProcessing(false);
     }
-  }, [bowlerId, leagueId, dialogAmountCents, payDialogType, toast, bowlerEmail, receiptEmail, navigate, league?.locationId, isClover]);
+  }, [bowlerId, leagueId, dialogAmountCents, payDialogType, toast, bowlerEmail, receiptEmail, navigate, league?.locationId]);
 
   const {
     applePayAvailable,
@@ -347,7 +333,6 @@ export default function PaymentHistoryPage() {
         toast(providerNotConfiguredToast({
           navigate,
           locationId: league?.locationId ?? null,
-          provider: isClover ? 'clover' : 'square',
         }));
       } else {
         toast({ title: "Payment Failed", description: error instanceof Error ? error.message : "Unable to process payment. Please try again.", variant: "destructive" });
@@ -442,7 +427,7 @@ export default function PaymentHistoryPage() {
       onApplePayClick={handleApplePayClick}
       onGooglePayClick={handleGooglePayClick}
       isWalletProcessing={isWalletBusy || isWalletProcessing}
-      bowlerHasEmail={!!bowlerEmail || isClover}
+      bowlerHasEmail={!!bowlerEmail}
       receiptEmail={receiptEmail}
       onReceiptEmailChange={setReceiptEmail}
       bowlerPayments={bowlerPayments}

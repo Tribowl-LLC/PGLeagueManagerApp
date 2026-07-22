@@ -39,7 +39,7 @@ function summaryWith(
     email: 'gone@example.com',
     user: { deleted: true, userId: 42 },
     bowlers: [
-      { bowlerId: 100, anonymized: true, hadPaymentCustomerId: false, hadCloverCustomerId: false },
+      { bowlerId: 100, anonymized: true, hadPaymentCustomerId: false },
     ],
     paymentProvider: [],
     emailChangeRequestsDeleted: 0,
@@ -63,7 +63,6 @@ function rowWithSummary(summary: DeletionExecutionSummary | { __omitConfirmation
               bowlerId: 100,
               anonymized: true,
               hadPaymentCustomerId: false,
-              hadCloverCustomerId: false,
             },
           ],
           paymentProvider: [],

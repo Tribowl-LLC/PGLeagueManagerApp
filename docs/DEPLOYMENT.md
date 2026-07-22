@@ -196,7 +196,7 @@ The endpoint intentionally does **not** prove:
 - that every migration, invariant, or data backfill has the intended result;
 - that authentication, tenant isolation, or a changed business workflow works;
 - that schedulers and background workers are making progress; or
-- that Square, Clover, SendGrid, Sentry, or webhooks are configured and
+- that Square, SendGrid, Sentry, or webhooks are configured and
   operational.
 
 Deployment success therefore requires the Render rollout and health check,
@@ -388,7 +388,7 @@ After rollout, verify all applicable items:
 - [ ] Authentication, session behavior, and organization/subdomain access work.
 - [ ] A representative database-backed read and write succeed with correct
       tenant scoping.
-- [ ] Square and/or Clover configuration, charges, refunds, and webhooks affected
+- [ ] Square configuration, charges, refunds, and webhooks affected
       by the release work as expected; no live charge is created merely as a
       generic smoke test.
 - [ ] Relevant SendGrid and other enabled integrations behave normally.

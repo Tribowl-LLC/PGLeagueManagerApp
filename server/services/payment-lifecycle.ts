@@ -240,7 +240,6 @@ async function handleSuccessfulPayment(
         type: providerNameToPaymentType(paymentResult.providerName || ''),
         weekOf: scheduleRecord.nextPaymentDate,
         providerPaymentId: paymentResult.paymentId,
-        cloverChargeId: paymentResult.providerRef?.cloverChargeId,
         receiptUrl: paymentResult.receiptUrl,
         receiptNumber: paymentResult.receiptNumber,
         receiptEmailMissing:
@@ -266,7 +265,6 @@ async function handleSuccessfulPayment(
         type: providerNameToPaymentType(paymentResult.providerName || ''),
         weekOf: scheduleRecord.nextPaymentDate,
         providerPaymentId: paymentResult.paymentId,
-        cloverChargeId: paymentResult.providerRef?.cloverChargeId,
         receiptUrl: paymentResult.receiptUrl,
         receiptNumber: paymentResult.receiptNumber,
         receiptEmailMissing:

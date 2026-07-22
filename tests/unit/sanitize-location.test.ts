@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { getTableColumns } from 'drizzle-orm';
 import { sanitizeLocation, sanitizeLocations } from '../../server/utils/api';
-import { locations, insertLocationSchema, type Location } from '@shared/schema';
+import { locations, insertLocationSchema, updateLocationSchema, type Location } from '@shared/schema';
 
 // Mirror of the regex used by tests/unit/sanitize-user.test.ts. Field-
 // name patterns we never want to leak in any user-facing response.
@@ -33,13 +33,6 @@ function makeFullyPopulatedLocation(): Location {
       accessToken: 'sq-access-token-do-not-leak',
       locationId: 'sq-location-id-do-not-leak',
     },
-    cloverCredentials: {
-      merchantId: 'cv-merchant-id-do-not-leak',
-      apiToken: 'cv-api-token-do-not-leak',
-      publicTokenizerKey: 'cv-public-key-do-not-leak',
-      environment: 'sandbox',
-    },
-    paymentProvider: 'square',
   });
   // `id` is omitted from the insert schema, so we re-add it to satisfy
   // the SELECT type.
@@ -50,7 +43,19 @@ describe('sanitizeLocation', () => {
   it('strips the known sensitive fields', () => {
     const sanitized = sanitizeLocation(makeFullyPopulatedLocation()) as Record<string, unknown>;
     expect(sanitized).not.toHaveProperty('squareCredentials');
-    expect(sanitized).not.toHaveProperty('cloverCredentials');
+  });
+
+  it('rejects retired provider-selection fields at create and update boundaries', () => {
+    const retiredFields = {
+      paymentProvider: 'clover',
+      cloverCredentials: { merchantId: 'retired' },
+    };
+    expect(insertLocationSchema.safeParse({
+      name: 'Main Lanes',
+      organizationId: 7,
+      ...retiredFields,
+    }).success).toBe(false);
+    expect(updateLocationSchema.safeParse(retiredFields).success).toBe(false);
   });
 
   it('preserves the safe fields', () => {
@@ -64,7 +69,6 @@ describe('sanitizeLocation', () => {
     expect(sanitized.phone).toBe('+15555550100');
     expect(sanitized.active).toBe(true);
     expect(sanitized.organizationId).toBe(7);
-    expect(sanitized.paymentProvider).toBe('square');
   });
 
   it('never returns any field whose name looks sensitive', () => {
@@ -134,7 +138,6 @@ describe('sanitizeLocation', () => {
     expect(sanitized).toHaveLength(2);
     for (const row of sanitized) {
       expect(row).not.toHaveProperty('squareCredentials');
-      expect(row).not.toHaveProperty('cloverCredentials');
     }
     expect(sanitized[0].id).toBe(1);
     expect(sanitized[1].id).toBe(2);

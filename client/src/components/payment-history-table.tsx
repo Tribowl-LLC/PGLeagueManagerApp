@@ -114,7 +114,6 @@ export const PaymentHistoryTable = memo(function PaymentHistoryTable({
                         payment.type === 'check' ? `Check #${payment.checkNumber}` :
                         payment.type === 'credit_card' ? 'Credit Card' :
                         payment.type === 'square' ? 'Square' :
-                        payment.type === 'clover' ? 'Clover' :
                         payment.type}
                     </Badge>
                   </TableCell>

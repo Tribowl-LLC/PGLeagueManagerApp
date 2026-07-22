@@ -41,8 +41,7 @@ import { startPaymentSyncRetrySweep } from './services/payment-sync-retry';
 import { bootstrapAllSquareCustomAttributeDefinitions } from './services/square-startup-bootstrap';
 import { verifySquareSdkVersion } from './services/square-provider';
 import { verifyAllThirdPartyPins } from './services/third-party-pin-verifier';
-// Side-effect import: registers Clover / SendGrid pin verifiers (and
-// re-exposes Square's via the shared registry) so
+// Side-effect import: registers SendGrid and Square pin verifiers so
 // `verifyAllThirdPartyPins()` below sees a fully-populated registry.
 import './services/third-party-pins';
 import { applePayWorker } from './services/apple-pay-worker';
@@ -61,15 +60,6 @@ import { embedFrameAncestorsOverride } from './middleware/embed-csp';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import * as schema from '@shared/schema';
 import { registerSquareWebhookTripwire } from './routes/payments-provider/square-webhook-tripwire';
-
-declare module 'express-serve-static-core' {
-  interface Request {
-    // Captured by the verify hook on the global express.json() so that
-    // signature-verifying webhook receivers (Clover today) can hash the exact bytes
-    // the processor signed instead of a re-stringified copy.
-    rawBody?: Buffer;
-  }
-}
 
 const log = createLogger("Server");
 
@@ -203,15 +193,7 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
   // Global body-parser ceilings are intentionally small (256 KB). Normal
   // auth/account/admin/payment/public-embed JSON payloads are far below this;
   // oversized bodies are rejected early with a 413 before route handlers run.
-  // The `verify` hook captures the exact raw bytes so signature-verifying
-  // webhook receivers (Clover today) can HMAC the payload. The disabled Square
-  // tripwire is registered above and never reaches this parser.
-  app.use(express.json({
-    limit: '256kb',
-    verify: (req: Request, _res, buf) => {
-      req.rawBody = buf;
-    },
-  }));
+  app.use(express.json({ limit: '256kb' }));
   app.use(express.urlencoded({ extended: false, limit: '256kb' }));
   await setupAuth(app);
   app.use(orgSessionGuard);

@@ -78,7 +78,7 @@ flowchart LR
     end
 
     subgraph X["Verified external-system boundaries"]
-        PAY["Square and Clover"]
+        PAY["Square"]
         MSG["SendGrid"]
         OBS["Sentry"]
     end
@@ -246,9 +246,7 @@ justify exposing passwords through an administrator workflow or message.
   - setup endpoints require the out-of-band `x-setup-secret`, a configured
     strength floor, rate limiting, and the atomic invariant that no
     administrator already exists;
-  - every production request to the Clover webhook endpoint passes the same
-    HMAC-SHA256 gate over the exact raw JSON bytes before event-type dispatch,
-    lookup, or mutation. The Square webhook path remains an unauthenticated,
+  - the Square webhook path remains an unauthenticated,
     non-processing tripwire: it applies a small route-specific body limit and
     shared production rate limit before returning `501`, does not enter tenant
     resolution or call application storage, and records only bounded metadata
@@ -409,13 +407,6 @@ server-side ownership reconcile it to the same tenant.
 Workers preserve tenant context through the stored bowler, league, location,
 schedule, job item, or organization relationships. Payment and sync sweeps use
 database locks, leases, or durable state to coordinate across processes.
-Clover settled-refund and dispute callbacks map `data.object.charge` exactly
-to a local payment's `cloverChargeId`. For those event families, a missing or
-unknown charge identifier is acknowledged with `200` without mutation; it
-does not grant access or create a new tenant association. Other event types
-follow the event-specific behavior documented below rather than a universal
-identifier-mapping rule.
-
 Support and administrative access is limited to explicit `system_admin`
 routes and purpose-built data-integrity workflows. Organization teardown is a
 system-admin-only atomic database operation. It removes app-owned tenant data
@@ -432,7 +423,7 @@ invariants.
 ## 6. Secret handling
 
 Production secrets belong in the system that owns or consumes them: Render,
-Neon, Square, Clover, SendGrid, Sentry, GitHub Actions, or another approved
+Neon, Square, SendGrid, Sentry, GitHub Actions, or another approved
 provider secret store. Render injects literal environment-variable values at
 runtime; the application does not expect Render secret files. Local-only
 secrets belong in a secure local secret manager or the active shell and must
@@ -459,7 +450,7 @@ application/location identifiers and a Sentry DSN are configuration, while
 access tokens, webhook secrets, database URLs, session secrets, encryption
 keys, and setup tokens remain server-only.
 
-Location-specific Square and Clover access tokens are encrypted before
+Location-specific Square access tokens are encrypted before
 storage with AES-256-GCM using `FIELD_ENCRYPTION_KEY` and are removed from
 normal API projections. The key itself remains server-only. A decryption or
 authentication-tag failure must prevent use of the credential and produce a
@@ -572,36 +563,9 @@ league/location relationship rather than from a client claim.
 | Integration | Current boundary and required controls |
 | --- | --- |
 | Square | Charges, customers, saved cards, refunds, catalog, receipts, and Apple Pay use server-selected credentials and provider interfaces. Payment creation uses idempotency and local payment state. No Square webhook subscription is currently supported; see limitations. |
-| Clover | Charges, customers/sources, refunds, and disputes use location-specific credentials. Every production Clover webhook request uses the common HMAC-SHA256 raw-body gate; processing, replay behavior, and acknowledgement are event-specific as described below. |
 | SendGrid | Receives only the minimum recipient and template data needed for transactional mail. API keys stay server-side; templates and substitutions must be safely escaped for their context. |
 | Sentry | Receives diagnostics, not an authorization role. Browser events are scrubbed before send. Server events and metadata must be deliberately minimized and redacted at their call sites. |
 | Apple/Google wallet and native platform services | Tokenization and domain/app association are external boundaries. They do not grant payment or tenant authority by themselves. |
-
-The current Clover webhook behavior is deliberately narrow:
-
-- Production rejects an unset signing secret with `503` and a missing or
-  mismatched `x-clover-signature` with `401`. Only the explicit
-  `NODE_ENV=test` seam may bypass verification, and only when the signing
-  secret is unset.
-- `refund.created`, `refund.updated`, `refund.succeeded`, and
-  `charge.refunded` look up `data.object.charge` in `payments.cloverChargeId`.
-  An already-refunded row is acknowledged without another write. Otherwise
-  the handler marks the row refunded and stamps the local refund fields; a
-  row currently marked disputed is not exempt from that transition.
-- `dispute.created`, `charge.dispute.created`, and `chargeback.created` use
-  the same charge lookup. An already-disputed row is acknowledged without
-  another write, and a dispute arriving after the row is refunded is
-  acknowledged without overwriting the refunded state. A missing dispute id
-  is also acknowledged without mutation.
-- `refund.failed` is acknowledged and logged without even looking up or
-  changing a payment. Missing event types, unsupported event types, missing
-  charge ids, and unknown charge ids in the supported refund/dispute families
-  are likewise acknowledged without mutation.
-- This is state-based handling of sequential deliveries, not general webhook
-  deduplication or chronological ordering. Clover event ids and event times
-  are not persisted or compared, and the read-then-write transitions do not
-  atomically exclude concurrent duplicate deliveries. See the limitation
-  below.
 
 For payment changes:
 
@@ -816,7 +780,6 @@ repository configuration:
 | Sentry initialization does not set an explicit release identifier. | Server runtime logs include a commit identifier, CI certifies the exact `main` tree, and browser/server telemetry includes environment context. | Incident correlation between an event and the deployed source may require manual work. Add a release identifier only with coordinated build/runtime injection, privacy review, and deployment verification. |
 | Shared rate-limit storage is selected only when `NODE_ENV=production`. | Every current `express-rate-limit` instance is required to use `createSharedRateLimitStore`; a source-scanning test enforces that policy. A production application environment fails during limiter construction unless `NODE_ENV=production` selects the PostgreSQL store. The process-local store remains intentional in development and beta/test environments. | Keep `APP_ENV=prod` and `NODE_ENV=production` explicit and verified in Render. Do not bypass the startup invariant or weaken the shared-store coverage guard. |
 | Organization hostname resolution performs a PostgreSQL lookup on every request. | There is no process-local tenant mapping to become stale during a rename or reassignment; every application process observes committed hostname mutations on its next request. Authorization and the organization-host session guard still run against the selected organization. | Tenant-host routing depends on database availability and adds lookup load. Preserve the uncached behavior unless a future shared cache provides tested, fail-safe cross-process invalidation. |
-| Clover webhook replay handling is based on the payment row's current status, not a durable event ledger or an atomic conditional transition. | HMAC-SHA256 is verified over the exact raw bytes before dispatch. Sequential repeat refunds and disputes are no-ops once the matching terminal status is present, dispute-after-refund is ignored, and unknown charge ids are acknowledged without mutation. | Event ids and event times are not stored or compared. Concurrent duplicates can both pass the status check and re-stamp a row, and refund-after-dispute changes the status to refunded. Add a durable unique event record and transactional or conditional state transition before claiming general deduplication or ordering guarantees. |
 
 Coverage guards are intentionally scoped static analyses, not exhaustive proof.
 Their documented limitations live under [docs/security](docs/security/). A new

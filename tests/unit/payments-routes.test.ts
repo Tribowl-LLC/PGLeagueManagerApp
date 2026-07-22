@@ -473,8 +473,7 @@ describe('POST /api/payments/:id/refund', () => {
     status: 'paid',
     amount: 2500,
     leagueId: LEAGUE_OK.id,
-    cloverChargeId: 'CHARGE-XYZ',
-    providerPaymentId: null,
+    providerPaymentId: 'CHARGE-XYZ',
   };
 
   it('happy path: delegates to provider then refunds in storage → 200', async () => {

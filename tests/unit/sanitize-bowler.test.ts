@@ -23,7 +23,6 @@ function makeFullyPopulatedBowler(): Bowler {
     order: 0,
     organizationId: 7,
     paymentCustomerId: 'sq-customer-id',
-    cloverCustomerId: 'cv-customer-id-do-not-leak',
     paymentProviderLocationId: 3,
     paymentSyncPendingAt: '2024-01-01T00:00:00.000Z',
     paymentSyncAttempts: 2,
@@ -38,9 +37,6 @@ function makeFullyPopulatedBowler(): Bowler {
 describe('sanitizeBowler', () => {
   it('strips the known sensitive / non-public fields', () => {
     const sanitized = sanitizeBowler(makeFullyPopulatedBowler()) as Record<string, unknown>;
-    // Clover customer reference: handle used to charge the
-    // saved card. No UI consumer; not safe to publish.
-    expect(sanitized).not.toHaveProperty('cloverCustomerId');
     // Internal routing data for the deletion service. No UI consumer.
     expect(sanitized).not.toHaveProperty('paymentProviderLocationId');
   });
@@ -128,7 +124,6 @@ describe('sanitizeBowler', () => {
     const sanitized = sanitizeBowlers([a, b]) as Record<string, unknown>[];
     expect(sanitized).toHaveLength(2);
     for (const row of sanitized) {
-      expect(row).not.toHaveProperty('cloverCustomerId');
       expect(row).not.toHaveProperty('paymentProviderLocationId');
     }
     expect(sanitized[0].id).toBe(1);

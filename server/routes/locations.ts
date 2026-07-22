@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { sendSuccess, sendError, handleZodError, sanitizeLocation, sanitizeLocations } from '../utils/api.js';
 import { singleRouteParam } from '../utils/route-params';
 import { storage } from '../storage';
-import { insertLocationSchema, updateLocationSchema, locationSquareCredentialsSchema, locationCloverCredentialsSchema, PAYMENT_PROVIDERS } from '@shared/schema';
+import { insertLocationSchema, updateLocationSchema, locationSquareCredentialsSchema } from '@shared/schema';
 import { filterByOrganization } from '../middleware/organization.js';
 import { createLogger } from '../logger';
 import { clearProviderCache } from '../services/payment-provider-factory';
@@ -37,9 +37,8 @@ router.get('/', filterByOrganization, async (req: Request, res) => {
       return sendSuccess(res, []);
     }
     // task #381: deny-by-default projection (sanitizeLocations) drops
-    // `squareCredentials` / `cloverCredentials` blobs that used
-    // to ride along on the base CRUD payload. The dedicated
-    // `/square-config` / `/clover-config` endpoints already
+    // `squareCredentials` blobs that used to ride along on the base CRUD payload. The dedicated
+    // `/square-config` endpoint already
     // publish the safe boolean-flag projection.
     sendSuccess(res, sanitizeLocations(locations));
   } catch (error) {
@@ -135,52 +134,8 @@ router.patch('/:id', async (req: Request, res) => {
       }
     }
 
-    const isProviderChange = 'paymentProvider' in cleanedData && cleanedData.paymentProvider !== location.paymentProvider;
-
-    if (isProviderChange) {
-      const activeSchedules = await storage.getActiveSchedulesByLocationId(id);
-
-      if (activeSchedules.length > 0) {
-        if (req.body.confirmProviderSwitch !== true) {
-          return sendSuccess(res, {
-            warning: true,
-            message: `Switching payment provider from "${location.paymentProvider}" to "${cleanedData.paymentProvider}" will break ${activeSchedules.length} active auto-pay schedule(s). Card tokens from the current provider will no longer work. To proceed, resend with confirmProviderSwitch: true.`,
-            activeScheduleCount: activeSchedules.length,
-            currentProvider: location.paymentProvider,
-            newProvider: cleanedData.paymentProvider,
-          }, 200);
-        }
-
-        const updatedLocation = await storage.updateLocationAndDeactivateSchedules(
-          id,
-          cleanedData,
-          activeSchedules.map(s => s.id)
-        );
-
-        log.warn(`Payment provider switch: location ${id} changed from "${location.paymentProvider}" to "${cleanedData.paymentProvider}". Deactivated ${activeSchedules.length} active schedule(s).`, {
-          locationId: id,
-          previousProvider: location.paymentProvider,
-          newProvider: cleanedData.paymentProvider,
-          deactivatedScheduleCount: activeSchedules.length,
-          deactivatedScheduleIds: activeSchedules.map(s => s.id),
-          confirmedBy: req.user?.id ?? 'unknown',
-        });
-
-        clearProviderCache(id);
-        return sendSuccess(res, sanitizeLocation(updatedLocation));
-      } else {
-        log.info(`Payment provider switch: location ${id} changed from "${location.paymentProvider}" to "${cleanedData.paymentProvider}". No active schedules affected.`, {
-          locationId: id,
-          previousProvider: location.paymentProvider,
-          newProvider: cleanedData.paymentProvider,
-          deactivatedScheduleCount: 0,
-          changedBy: req.user?.id ?? 'unknown',
-        });
-      }
-    }
-
     const updatedLocation = await storage.updateLocation(id, cleanedData);
-    if ('paymentProvider' in cleanedData || 'squareCredentials' in cleanedData || 'cloverCredentials' in cleanedData) {
+    if ('squareCredentials' in cleanedData) {
       clearProviderCache(id);
     }
     sendSuccess(res, sanitizeLocation(updatedLocation));
@@ -330,104 +285,6 @@ router.patch('/:id/square-config', async (req: Request, res) => {
   } catch (error) {
     log.error(`Error updating Square config for location ${req.params.id}:`, error);
     sendError(res, 'Failed to update Square configuration', 500, 'ServerError');
-  }
-});
-
-router.get('/:id/clover-config', async (req: Request, res) => {
-  try {
-    const id = parseInt(singleRouteParam(req.params.id), 10);
-    if (isNaN(id)) return sendError(res, 'Invalid location ID', 400, 'InvalidRequest');
-
-    const location = await storage.getLocation(id);
-    if (!location) return sendError(res, 'Location not found', 404, 'NOT_FOUND');
-
-    const isOrgAdmin = req.user?.role === 'org_admin' || req.user?.role === 'system_admin';
-    const hasAccess = req.user?.role === 'system_admin' || (isOrgOrSysAdmin(req.user) && req.user?.organizationId === location.organizationId);
-    if (!isOrgAdmin || !hasAccess) {
-      return sendError(res, 'You do not have access to this location', 403, 'Forbidden');
-    }
-
-    const creds = await storage.getLocationCloverConfig(id);
-    sendSuccess(res, {
-      merchantId: creds?.merchantId || null,
-      apiTokenConfigured: !!(creds?.apiToken && creds.apiToken.trim().length > 0),
-      publicTokenizerKey: creds?.publicTokenizerKey || null,
-      environment: creds?.environment || null,
-    });
-  } catch (error) {
-    log.error(`Error fetching Clover config for location ${req.params.id}:`, error);
-    sendError(res, 'Failed to fetch Clover configuration', 500, 'ServerError');
-  }
-});
-
-router.patch('/:id/clover-config', async (req: Request, res) => {
-  try {
-    const id = parseInt(singleRouteParam(req.params.id), 10);
-    if (isNaN(id)) return sendError(res, 'Invalid location ID', 400, 'InvalidRequest');
-
-    const location = await storage.getLocation(id);
-    if (!location) return sendError(res, 'Location not found', 404, 'NOT_FOUND');
-
-    const isOrgAdmin = req.user?.role === 'org_admin' || req.user?.role === 'system_admin';
-    const hasAccess = req.user?.role === 'system_admin' || (isOrgOrSysAdmin(req.user) && req.user?.organizationId === location.organizationId);
-    if (!isOrgAdmin || !hasAccess) {
-      return sendError(res, 'You do not have access to this location', 403, 'Forbidden');
-    }
-
-    const parseResult = locationCloverCredentialsSchema.safeParse(req.body);
-    if (!parseResult.success) {
-      return handleZodError(res, parseResult.error);
-    }
-
-    const incoming = parseResult.data ?? {};
-    const existing = await storage.getLocationCloverConfig(id);
-    const creds = {
-      merchantId: incoming.merchantId !== undefined ? (incoming.merchantId || undefined) : (existing?.merchantId || undefined),
-      apiToken: incoming.apiToken !== undefined ? (incoming.apiToken || undefined) : (existing?.apiToken || undefined),
-      publicTokenizerKey: incoming.publicTokenizerKey !== undefined ? (incoming.publicTokenizerKey || undefined) : (existing?.publicTokenizerKey || undefined),
-      environment: incoming.environment !== undefined ? (incoming.environment || undefined) : (existing?.environment || undefined),
-    };
-
-    await storage.updateLocationCloverConfig(id, creds);
-    clearProviderCache(id);
-    sendSuccess(res, {
-      merchantId: creds.merchantId || null,
-      apiTokenConfigured: !!(creds.apiToken && creds.apiToken.trim().length > 0),
-      publicTokenizerKey: creds.publicTokenizerKey || null,
-      environment: creds.environment || null,
-    });
-  } catch (error) {
-    log.error(`Error updating Clover config for location ${req.params.id}:`, error);
-    sendError(res, 'Failed to update Clover configuration', 500, 'ServerError');
-  }
-});
-
-router.patch('/:id/payment-provider', async (req: Request, res) => {
-  try {
-    const id = parseInt(singleRouteParam(req.params.id), 10);
-    if (isNaN(id)) return sendError(res, 'Invalid location ID', 400, 'InvalidRequest');
-
-    const location = await storage.getLocation(id);
-    if (!location) return sendError(res, 'Location not found', 404, 'NOT_FOUND');
-
-    const isOrgAdmin = req.user?.role === 'org_admin' || req.user?.role === 'system_admin';
-    const hasAccess = req.user?.role === 'system_admin' || (isOrgOrSysAdmin(req.user) && req.user?.organizationId === location.organizationId);
-    if (!isOrgAdmin || !hasAccess) {
-      return sendError(res, 'You do not have access to this location', 403, 'Forbidden');
-    }
-
-    const schema = z.object({ paymentProvider: z.enum(PAYMENT_PROVIDERS) });
-    const parseResult = schema.safeParse(req.body);
-    if (!parseResult.success) {
-      return handleZodError(res, parseResult.error);
-    }
-
-    await storage.updateLocation(id, { paymentProvider: parseResult.data.paymentProvider });
-    clearProviderCache(id);
-    sendSuccess(res, { paymentProvider: parseResult.data.paymentProvider });
-  } catch (error) {
-    log.error(`Error updating payment provider for location ${req.params.id}:`, error);
-    sendError(res, 'Failed to update payment provider', 500, 'ServerError');
   }
 });
 

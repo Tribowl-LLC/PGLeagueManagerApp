@@ -22,7 +22,7 @@ import {
 } from '../../services/payment-provider-factory';
 import { buildPaymentErrorResponse } from '../../utils/payment-error-response.js';
 import { computePaymentSplit, buildLineItems } from '../../services/payment-execution';
-import { getProviderCustomerId, persistCloverCustomer, ensureProviderCustomer } from '../../services/payment-utils';
+import { getProviderCustomerId, ensureProviderCustomer } from '../../services/payment-utils';
 import { providerNameToPaymentType } from '@shared/schema/constants';
 import { isDev } from '../../config';
 import { getProviderForLeague } from './shared.js';
@@ -336,7 +336,6 @@ router.post('/combined-payments', paymentLimiter, async (req, res) => {
           } catch {
             /* no schedule yet — fine */
           }
-          await persistCloverCustomer(provider, customerId, payerBowlerId);
         }
       } catch (err) {
         log.error('combined-pay: failed to save card on file', err);
@@ -363,7 +362,6 @@ router.post('/combined-payments', paymentLimiter, async (req, res) => {
             status: 'paid' as const,
             type: providerNameToPaymentType(provider.providerName),
             providerPaymentId: payment.id,
-            cloverChargeId: payment.providerRef?.cloverChargeId,
             receiptUrl: payment.receiptUrl,
             receiptNumber: payment.receiptNumber,
             receiptEmailMissing: false,
@@ -669,7 +667,6 @@ router.post('/payments', paymentLimiter, async (req, res) => {
           } catch (schedError) {
             if (isDev) log.info('No payment schedule to update (normal for one-time payments)');
           }
-          await persistCloverCustomer(provider, cid, vaultBowler.id);
         }
       } catch (error) {
         log.error('Failed to save card on file:', error);
@@ -693,7 +690,6 @@ router.post('/payments', paymentLimiter, async (req, res) => {
       status: 'paid',
       type: providerNameToPaymentType(provider.providerName),
       providerPaymentId: payment.id,
-      cloverChargeId: payment.providerRef?.cloverChargeId,
       receiptUrl: payment.receiptUrl,
       receiptNumber: payment.receiptNumber,
       receiptEmailMissing: false,

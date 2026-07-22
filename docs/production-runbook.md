@@ -115,10 +115,36 @@ in Render. Do not create secret files unless the application is specifically
 changed to read them.
 
 Optional integrations include SendGrid, Sentry, and setup bootstrap.
-Clover webhook verification requires `CLOVER_WEBHOOK_SIGNING_SECRET` when
-Clover webhooks are enabled. Keep payment-provider credentials in their
+Keep Square credentials in their
 intended environment and location; never copy production credentials into a
 beta or local environment.
+
+### Retired payment-provider schema cleanup
+
+Migration `0003_remove_clover_integration.sql` removes the unused provider
+selector and Clover-only credential, customer, and charge-reference columns.
+Before applying it:
+
+1. Create and verify a Neon backup for the target database.
+2. Run the normal migration preflight against the exact target and reviewed
+   commit.
+3. Confirm the migration's fail-closed checks find no Clover payments, charge
+   references, customer references, non-Square locations, or active schedules
+   attached to a Clover-selected location. Any exception aborts the migration;
+   investigate rather than deleting or rewriting the unexpected data.
+4. Deploy the Square-only application while the legacy columns still exist,
+   verify health/authentication/tenant isolation and a Square charge/refund,
+   then apply the migration from the same CI-verified release. The new code is
+   compatible with the extra legacy columns; the old code is not compatible
+   after they are dropped.
+5. Remove `CLOVER_WEBHOOK_SIGNING_SECRET` from Render and any CI secret stores
+   only after the Square-only release is healthy. No Clover remote cleanup or
+   historical-data conversion is expected because the integration was never
+   rolled out to customers.
+
+Rollback before the migration is an application rollback. After the migration,
+restore the verified Neon backup before rolling back to code that still expects
+the removed columns.
 
 ## Read-only Schema Inventory
 

@@ -70,11 +70,10 @@ vi.mock('../../server/routes/payments-provider/shared', () => ({
 }));
 
 // Mock payment-utils so the route resolves a customer id from the
-// stub bowler row without needing the real Square / Clover lookup.
+// stub bowler row without needing the real Square lookup.
 vi.mock('../../server/services/payment-utils', () => ({
   getProviderCustomerId: (bowler: { squareCustomerId?: string }) =>
     bowler.squareCustomerId ?? null,
-  persistCloverCustomer: vi.fn(),
   ensureProviderCustomer: vi.fn(),
 }));
 

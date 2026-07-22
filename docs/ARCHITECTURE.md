@@ -57,7 +57,7 @@ The Express server under [`server/`](../server/) is responsible for:
 - enforcing authentication, roles, CSRF, rate limits, and resource access;
 - applying business rules and coordinating transactions;
 - reading and writing PostgreSQL through Drizzle and the storage layer;
-- calling Square, Clover, SendGrid, and Sentry integrations;
+- calling Square, SendGrid, and Sentry integrations;
 - receiving and verifying provider webhooks; and
 - running scheduled payment, synchronization, audit, and recovery workers.
 
@@ -138,7 +138,7 @@ storage calls.
 Database transactions cannot make external provider calls atomic. Workflows
 that combine database state and external side effects must use the established
 idempotency, durable-state, retry, or reconciliation mechanisms. This is
-especially relevant for Square and Clover.
+especially relevant for Square.
 
 External side effects must be retry-safe where the provider contract permits
 it. Payment creation, refunds, webhooks, scheduled jobs, and recovery workers
@@ -201,7 +201,7 @@ In [`server/app.ts`](../server/app.ts), the important request stages are:
 Public or specialized paths are intentionally mounted outside the broad
 authenticated API mounts. Examples include organization-public endpoints,
 embedded registration, bowler-payment-link responses, authentication
-management, and the signature-verified Clover webhook receiver.
+management.
 
 ## Authentication Flow
 
@@ -326,7 +326,7 @@ Org-less tenant resources are treated as orphaned data and denied rather than
 being treated as global data. Non-system-admin users must have an organization,
 and organization teardown is a system-admin-only atomic operation. It deletes
 app-owned tenant data while preserving platform system-admin accounts and
-remote Square/Clover customer objects.
+remote Square customer objects.
 
 ## External Integrations
 
@@ -345,7 +345,6 @@ mapping.
 | --- | --- | --- |
 | PostgreSQL / Neon | System of record for application data, sessions, rate-limit buckets, jobs, and audit state. Drizzle schema definitions live in `shared/schema/`. | [`server/db.ts`](../server/db.ts), [`server/storage/`](../server/storage/), [`shared/schema/`](../shared/schema/) |
 | Square | Per-location payment provider for charges, orders, refunds, customers, saved cards, catalog operations, Square customer attributes, receipts, and Apple Pay domain registration. Provider selection and caching are centralized. | [`server/services/payment-provider-factory.ts`](../server/services/payment-provider-factory.ts), [`server/services/square-provider.ts`](../server/services/square-provider.ts), [Square service modules](../server/services/) |
-| Clover | Per-location payment provider for charges, refunds, customer/source management, and payment lifecycle updates. Production webhooks require HMAC verification with the configured Clover signing secret. | [`server/services/clover-provider.ts`](../server/services/clover-provider.ts), [`server/services/clover.ts`](../server/services/clover.ts), [`server/routes/payments-provider/webhooks.ts`](../server/routes/payments-provider/webhooks.ts) |
 | SendGrid | Transactional authentication, account, payment, and administrative email. Email templates are stored and rendered through server services. | [`server/services/email.ts`](../server/services/email.ts), [`server/services/email-core.ts`](../server/services/email-core.ts) |
 | Sentry | Server and browser error reporting. Client events are scrubbed before sending; server errors are registered with the Express error handler. | [`client/src/main.tsx`](../client/src/main.tsx), [`server/app.ts`](../server/app.ts), [`client/src/lib/logger.ts`](../client/src/lib/logger.ts) |
 | Capacitor / Apple and Android platform services | Packages the same product for native iOS and Android targets. The server also exposes the Apple/Android association files and Apple Pay domain-verification path required by the mobile/web flows. | [`client/src/lib/capacitor.ts`](../client/src/lib/capacitor.ts), [`ios/`](../ios/), [`android/`](../android/) |

@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(3);
+    expect(migrations).toHaveLength(4);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -131,6 +131,13 @@ describe('normalized migration baseline tools', () => {
       hash: '2691703a0012e2e7caebd417e6956d33bfd0dd373e212fb472d0822924dde15d',
     });
     expect(migrations[2]?.sql.match(/DROP COLUMN/g)).toHaveLength(5);
+    expect(migrations[3]).toMatchObject({
+      idx: 3,
+      tag: '0003_remove_clover_integration',
+      createdAt: 1784730543756,
+      hash: '6cf2092637094bafdf8062a17d6b439a97f48c3bbb2945b91dd247bba33cc4fe',
+    });
+    expect(migrations[3]?.sql.match(/DROP COLUMN/g)).toHaveLength(4);
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 

@@ -8,7 +8,7 @@ import * as Sentry from "@sentry/react";
 // convention used across the client.
 //
 // task #770: this logger is the central funnel for every non-401
-// API/query failure and for Square/Clover/wallet/provider payment
+// API/query failure and for Square/wallet payment
 // failures, so browser SDK and provider errors can carry request
 // context, response bodies, emails, phone numbers, customer/card/
 // payment IDs, tokens, and invite/reset/confirm links. Because a

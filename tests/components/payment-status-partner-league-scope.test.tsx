@@ -22,7 +22,7 @@
  *
  * Strategy: render <PaymentStatusSection /> with the form already
  * opened (one-time mode triggers the recipient picker AND the combined
- * pay group when partners exist). Heavy hooks (square / clover /
+ * pay group when partners exist). Heavy hooks (Square /
  * provider / wallet / submit / toast) are stubbed; useQuery + useQueries
  * run for real against a `csrfFetch` mock that dispatches per URL so
  * the component goes through the actual react-query plumbing.
@@ -44,8 +44,7 @@ if (typeof globalThis.ResizeObserver === 'undefined') {
 
 vi.mock('@/hooks/use-payment-provider', () => ({
   usePaymentProvider: () => ({
-    config: { paymentProvider: 'square', providerConfigured: true, missingFields: [] },
-    isClover: false,
+    config: { providerConfigured: true, missingFields: [] },
     isSquare: true,
     supportsWallets: false,
     isLoading: false,
@@ -60,16 +59,6 @@ vi.mock('@/hooks/use-square-payment', () => ({
   useSquarePayment: () => ({
     card: null,
     isInitialized: true,
-    error: null,
-    initializeCard: vi.fn(async () => {}),
-    cleanupCard: vi.fn(),
-  }),
-}));
-
-vi.mock('@/hooks/use-clover-payment', () => ({
-  useCloverPayment: () => ({
-    card: null,
-    isInitialized: false,
     error: null,
     initializeCard: vi.fn(async () => {}),
     cleanupCard: vi.fn(),
@@ -190,7 +179,6 @@ function makeBowler(id: number, name: string) {
     order: 0,
     organizationId: 1,
     paymentCustomerId: null,
-    cloverCustomerId: null,
     paymentProviderLocationId: null,
     paymentSyncPendingAt: null,
     paymentSyncAttempts: 0,

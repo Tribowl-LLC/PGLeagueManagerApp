@@ -602,4 +602,4 @@ explicit system-admin data-integrity tooling.
 Permanent organization deletion is system-admin-only and runs as one database
 transaction. It removes application-owned tenant data and related audit rows,
 preserves platform system-admin accounts by detaching them, and does not
-delete remote Square or Clover customer objects.
+delete remote Square customer objects.

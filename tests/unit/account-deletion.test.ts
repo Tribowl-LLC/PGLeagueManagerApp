@@ -12,9 +12,8 @@
  *     matches the email (still scrubs bowler rows)
  *
  * Hits the real test database; cleans up after itself. Bowlers are
- * created without paymentCustomerId / cloverCustomerId so the
- * provider-deletion branch is a no-op (and does not require live
- * Square/Clover credentials).
+ * created without paymentCustomerId so the provider-deletion branch is a
+ * no-op (and does not require live Square credentials).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { expectErrorLog, getCapturedErrorLogs } from '../helpers/expected-error-logs';
@@ -86,11 +85,11 @@ async function makeBowler(email: string, organizationId: number): Promise<number
 // ---------------------------------------------------------------------------
 // Provider cleanup helpers (#316)
 //
-// The account-deletion service calls Square / Clover to remove the
+// The account-deletion service calls Square to remove the
 // user's stored customer records. The original test suite intentionally
-// skipped this branch by leaving paymentCustomerId/cloverCustomerId
+// skipped this branch by leaving paymentCustomerId
 // null on every bowler, because exercising it for real would require
-// live Square + Clover credentials. To get CI coverage of that loop
+// live Square credentials. To get CI coverage of that loop
 // without leaving the test database, we stub `getPaymentProvider` so
 // each (locationId -> mock provider) wiring is local to a single test
 // and the production cache is left untouched.
@@ -146,7 +145,7 @@ async function makeLeague(organizationId: number, locationId: number): Promise<n
 async function makeBowlerWithCustomerIds(
   email: string,
   paymentCustomerId: string | null,
-  cloverCustomerId: string | null,
+  _retiredCustomerId: string | null,
   organizationId: number,
   paymentProviderLocationId: number | null = null,
 ): Promise<number> {
@@ -157,7 +156,6 @@ async function makeBowlerWithCustomerIds(
       email,
       organizationId,
       paymentCustomerId,
-      cloverCustomerId,
       paymentProviderLocationId,
     })
     .returning({ id: bowlers.id });
@@ -237,7 +235,6 @@ describe('executeAccountDeletion — service', () => {
       expect(b.name).toBe('Deleted Bowler');
       expect(b.active).toBe(false);
       expect(b.paymentCustomerId).toBeNull();
-      expect(b.cloverCustomerId).toBeNull();
     }
 
     // The unrelated bowler row must be untouched.
@@ -322,8 +319,7 @@ describe('executeAccountDeletion — payment-provider cleanup (#316)', () => {
     // deleteCustomer call.
     //   bowlerOne:   sq-1, linked to leagueA + leagueB
     //                -> (locA,sq-1) + (locB,sq-1)
-    //   bowlerTwo:   sq-2 + clover "cv-2", linked to leagueA only
-    //                -> (locA,sq-2) + (locA,cv-2)
+    //   bowlerTwo:   sq-2, linked to leagueA only -> (locA,sq-2)
     //   bowlerThree: sq-1 (DUPLICATE of bowlerOne's), linked to
     //                leagueA only
     //                -> (locA,sq-1) — must collapse into bowlerOne's
@@ -347,18 +343,18 @@ describe('executeAccountDeletion — payment-provider cleanup (#316)', () => {
     // 4 distinct (locationId, customerId) targets above — bowlerThree's
     // (locA, sq-1) collapses into bowlerOne's, so still 4 calls and not
     // 5. The two sq-1 entries are for distinct locations (locA, locB).
-    expect(deleteCustomer).toHaveBeenCalledTimes(4);
+    expect(deleteCustomer).toHaveBeenCalledTimes(3);
     const calledWith = deleteCustomer.mock.calls.map((c) => c[0]).sort();
-    expect(calledWith).toEqual(['cp-2', 'sq-1', 'sq-1', 'sq-2']);
+    expect(calledWith).toEqual(['sq-1', 'sq-1', 'sq-2']);
 
     // Provider was resolved once per target, with the expected
     // locationIds — confirms the join-to-provider wiring.
     const resolvedLocationIds = (getPaymentProviderSpy.mock.calls as [number | null][])
       .map((c) => c[0])
       .sort();
-    expect(resolvedLocationIds).toEqual([locA, locA, locA, locB].sort());
+    expect(resolvedLocationIds).toEqual([locA, locA, locB].sort());
 
-    expect(summary.paymentProvider).toHaveLength(4);
+    expect(summary.paymentProvider).toHaveLength(3);
     expect(summary.paymentProvider.every((p) => p.deleted)).toBe(true);
     expect(summary.paymentProvider.every((p) => p.providerName === 'square')).toBe(true);
     const pairs = summary.paymentProvider
@@ -368,7 +364,6 @@ describe('executeAccountDeletion — payment-provider cleanup (#316)', () => {
       [
         `${locA}:sq-1`,
         `${locA}:sq-2`,
-        `${locA}:cp-2`,
         `${locB}:sq-1`,
       ].sort(),
     );

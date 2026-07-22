@@ -17,7 +17,7 @@ import {
   CardOwnershipMismatchError,
 } from '../../services/payment-provider-factory';
 import { buildPaymentErrorResponse } from '../../utils/payment-error-response.js';
-import { getProviderCustomerId, persistCloverCustomer, ensureProviderCustomer } from '../../services/payment-utils';
+import { getProviderCustomerId, ensureProviderCustomer } from '../../services/payment-utils';
 import { getProviderForLeague } from './shared.js';
 
 const log = createLogger('Payments');
@@ -66,10 +66,8 @@ router.post('/cards/:bowlerId', async (req, res) => {
     const provider = resolvedLeagueId
       ? await getProviderForLeague(resolvedLeagueId)
       : await getPaymentProvider(null);
-    // Bootstrap a provider customer on first save (task #573). Without
-    // this, a brand-new Clover bowler — who never went through the
-    // Square-only profile-sync path — would always see "no payment
-    // customer account" 400s on save-card.
+    // Bootstrap a Square customer on first save so a new bowler does not
+    // receive a "no payment customer account" error.
     const providerCustId = await ensureProviderCustomer(provider, bowler);
     if (!providerCustId) {
       return sendError(res, 'Bowler does not have a payment customer account', 400);
@@ -81,7 +79,6 @@ router.post('/cards/:bowlerId', async (req, res) => {
     }
 
     log.info('Card saved on file (no-charge):', { success: true });
-    await persistCloverCustomer(provider, providerCustId, bowlerId);
     return sendSuccess(res, { savedCardId: savedCard.id, last4: savedCard.last4, brand: savedCard.brand });
   } catch (error) {
     log.error('Save card error:', error);

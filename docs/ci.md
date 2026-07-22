@@ -123,14 +123,9 @@ those self-tests teeth on PRs:
 - `tests/unit/check-not-found-code.test.ts` — pins the behavior of
   `scripts/check-not-found-code.ts` so a regression in the 404
   error-code allow-list guard fails CI.
-- `tests/unit/check-provider-not-configured.test.ts` (#624) — pins
-  the behavior of `scripts/check-provider-not-configured.ts`. The
-  guard walks `client/src/` for `providerNotConfiguredToast(...)`
-  call sites and asserts each one passes an inline options literal
-  with a `provider:` field that is not a hardcoded `'square'` /
-  `'clover'` string literal. Locks in task #610's fix so a future
-  call site can't silently regress Clover-only locations to the
-  "Square isn't connected" copy.
+- `tests/unit/check-retired-payment-providers.test.ts` pins the
+  source guard that prevents retired payment-provider references from
+  returning under `client/src/`, `server/`, or `shared/`.
 - `tests/unit/db-schema-inventory-tools.test.ts` — verifies deterministic
   comparison, missing/extra/changed categorization, journal selection and SQL
   preflight, quote-aware definition normalization, container ownership and

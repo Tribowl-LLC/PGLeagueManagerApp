@@ -7,20 +7,12 @@ const {
   invalidateQueriesMock,
   createPaymentMock,
   tokenizeCardMock,
-  providerState,
 } = vi.hoisted(() => ({
   toastMock: vi.fn(),
   csrfFetchMock: vi.fn(),
   invalidateQueriesMock: vi.fn(),
   createPaymentMock: vi.fn(),
   tokenizeCardMock: vi.fn(),
-  // Per-test override hook for the active provider returned by
-  // `usePaymentProvider`. The catch block in
-  // `useBowlerPaymentSubmit` reads `isClover` to decide whether the
-  // PROVIDER_NOT_CONFIGURED toast names "Clover" or "Square"
-  // (task #610). Default to Square so the existing success-path
-  // tests behave as before.
-  providerState: { isClover: false },
 }));
 
 vi.mock('react', async () => {
@@ -52,14 +44,6 @@ vi.mock('@/lib/square', () => ({
   tokenizeCard: tokenizeCardMock,
 }));
 
-vi.mock('@/hooks/use-payment-provider', () => ({
-  usePaymentProvider: () => ({
-    isClover: providerState.isClover,
-    isSquare: !providerState.isClover,
-  }),
-  clearProviderConfigCache: () => {},
-}));
-
 // Mock the toast helper so the test can pin the exact `provider`
 // argument the hook forwards (rather than constructing the JSX
 // `ToastAction` and asserting on serialized output). This is the
@@ -83,7 +67,7 @@ vi.mock('@/lib/provider-not-configured', async () => {
       // real-shaped object to forward and the test can assert on the
       // toast-mock's `title` if it wants to.
       return {
-        title: `${opts.provider === 'clover' ? 'Clover' : 'Square'} isn't connected for this location`,
+        title: "Square isn't connected for this location",
         variant: 'destructive' as const,
       };
     },
@@ -104,7 +88,7 @@ function jsonResponse(body: unknown, ok = true): Promise<FakeResponse> {
 }
 
 function makeLeague(paymentMode: 'pay-as-you-go' | 'upfront' = 'pay-as-you-go'): League {
-  return { id: 'league-1', paymentMode } as unknown as League;
+  return { id: 'league-1', locationId: 99, paymentMode } as unknown as League;
 }
 
 function makeBowler(): Bowler {
@@ -157,9 +141,6 @@ beforeEach(() => {
   invalidateQueriesMock.mockReset();
   createPaymentMock.mockReset();
   tokenizeCardMock.mockReset();
-  // Default to Square so success-path tests stay legacy-shaped.
-  // The PROVIDER_NOT_CONFIGURED test below opts back into Clover.
-  providerState.isClover = false;
   providerNotConfiguredToastMock.mockReset();
 });
 
@@ -374,11 +355,7 @@ describe('useBowlerPaymentSubmit success toasts', () => {
   });
 });
 
-// Task #610: bowler-facing payment submission was the last
-// PROVIDER_NOT_CONFIGURED toast site that still hard-coded a Square
-// label even on Clover-only locations. Pin both the Clover and Square
-// branches so a future refactor of `useBowlerPaymentSubmit` can't
-// silently regress to "Square isn't connected" on Clover leagues.
+// Pin the Square-only provider-not-configured behavior.
 describe('useBowlerPaymentSubmit PROVIDER_NOT_CONFIGURED toast (#610)', () => {
   // Helper: drive the upfront-with-new-card branch so the catch block
   // sees a structured PROVIDER_NOT_CONFIGURED error. After task #672
@@ -402,35 +379,19 @@ describe('useBowlerPaymentSubmit PROVIDER_NOT_CONFIGURED toast (#610)', () => {
     await submit();
   }
 
-  it('forwards provider:"clover" to providerNotConfiguredToast when usePaymentProvider returns clover', async () => {
-    providerState.isClover = true;
+  it('uses the Square-only provider-not-configured toast', async () => {
 
     await triggerNotConfigured();
 
-    // Pin the wiring contract directly: the hook MUST forward the
-    // resolved provider so the helper can render "Clover isn't
-    // connected …" instead of falling back to its 'square' default.
+    // Pin the wiring contract directly.
     expect(providerNotConfiguredToastMock).toHaveBeenCalledTimes(1);
     expect(providerNotConfiguredToastMock).toHaveBeenCalledWith(
-      expect.objectContaining({ provider: 'clover' }),
+      expect.objectContaining({ locationId: 99 }),
     );
 
-    // Belt-and-suspenders: the toast that actually fires must say Clover.
     const { title, variant } = lastToast();
     expect(variant).toBe('destructive');
-    expect(title).toBe("Clover isn't connected for this location");
-    expect(title).not.toMatch(/Square/);
+    expect(title).toBe("Square isn't connected for this location");
   });
 
-  it('forwards provider:"square" when usePaymentProvider returns square', async () => {
-    providerState.isClover = false;
-
-    await triggerNotConfigured();
-
-    expect(providerNotConfiguredToastMock).toHaveBeenCalledTimes(1);
-    expect(providerNotConfiguredToastMock).toHaveBeenCalledWith(
-      expect.objectContaining({ provider: 'square' }),
-    );
-    expect(lastToast().title).toBe("Square isn't connected for this location");
-  });
 });

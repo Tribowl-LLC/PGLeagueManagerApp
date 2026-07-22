@@ -3,7 +3,7 @@ import type { Request, Response, NextFunction, RequestHandler } from "express";
 import { env, isDev } from "../config";
 
 /**
- * Helmet middleware with our Content-Security-Policy. Allows Square/Clover
+ * Helmet middleware with our Content-Security-Policy. Allows Square
  * payment SDKs, Google/Apple Pay, and Sentry error reporting.
  */
 export const securityHeaders: RequestHandler = helmet({
@@ -14,8 +14,6 @@ export const securityHeaders: RequestHandler = helmet({
         "'self'",
         "https://web.squarecdn.com",
         "https://sandbox.web.squarecdn.com",
-        "https://checkout.clover.com",
-        "https://checkout.sandbox.dev.clover.com",
         "https://pay.google.com",
         ...(isDev ? ["'unsafe-inline'", "'unsafe-eval'"] : []),
       ],
@@ -24,8 +22,6 @@ export const securityHeaders: RequestHandler = helmet({
         "'unsafe-inline'",
         "https://web.squarecdn.com",
         "https://sandbox.web.squarecdn.com",
-        "https://checkout.clover.com",
-        "https://checkout.sandbox.dev.clover.com",
       ],
       connectSrc: [
         "'self'",
@@ -39,10 +35,6 @@ export const securityHeaders: RequestHandler = helmet({
         "https://square-fonts-production-f.squarecdn.com",
         "https://d1g145x70srn7h.cloudfront.net",
         "https://cash-f.squarecdn.com",
-        "https://scl.clover.com",
-        "https://scl-sandbox.dev.clover.com",
-        "https://checkout.clover.com",
-        "https://checkout.sandbox.dev.clover.com",
         "https://pay.google.com",
         "https://google.com",
         "https://apple.com",
@@ -58,14 +50,12 @@ export const securityHeaders: RequestHandler = helmet({
         "https://sandbox.web.squarecdn.com",
         "https://pci-connect.squareup.com",
         "https://pci-connect.squareupsandbox.com",
-        "https://checkout.clover.com",
-        "https://checkout.sandbox.dev.clover.com",
         "https://pay.google.com",
         "https://apple.com",
         "https://*.apple.com",
       ],
-      imgSrc: ["'self'", "data:", "blob:", "https://web.squarecdn.com", "https://sandbox.web.squarecdn.com", "https://checkout.clover.com", "https://checkout.sandbox.dev.clover.com"],
-      fontSrc: ["'self'", "data:", "https://square-fonts-production-f.squarecdn.com", "https://d1g145x70srn7h.cloudfront.net", "https://cash-f.squarecdn.com", "https://checkout.clover.com", "https://checkout.sandbox.dev.clover.com"],
+      imgSrc: ["'self'", "data:", "blob:", "https://web.squarecdn.com", "https://sandbox.web.squarecdn.com"],
+      fontSrc: ["'self'", "data:", "https://square-fonts-production-f.squarecdn.com", "https://d1g145x70srn7h.cloudfront.net", "https://cash-f.squarecdn.com"],
       objectSrc: ["'none'"],
       baseUri: ["'self'"],
       formAction: ["'self'"],

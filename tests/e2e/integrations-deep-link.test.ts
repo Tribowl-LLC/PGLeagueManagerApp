@@ -94,7 +94,6 @@ async function createLocation(orgId: number, name: string): Promise<SeededLocati
     {
       name,
       organizationId: orgId,
-      paymentProvider: 'square',
       active: true,
     },
     adminSession,

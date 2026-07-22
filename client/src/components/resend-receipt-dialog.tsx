@@ -19,7 +19,6 @@ import {
   providerNotConfiguredToast,
   makeApiError,
 } from "@/lib/provider-not-configured";
-import { usePaymentProvider } from "@/hooks/use-payment-provider";
 import type { Payment } from "@shared/schema";
 
 interface Props {
@@ -35,11 +34,6 @@ export function ResendReceiptDialog({ payment, defaultEmail, onClose, locationId
   const [, navigate] = useLocation();
   const [email, setEmail] = useState(defaultEmail ?? "");
   const [isPending, setIsPending] = useState(false);
-  // Resolve the active provider for this row's location so the
-  // PROVIDER_NOT_CONFIGURED toast names "Square" or "Clover"
-  // accurately instead of always reading "Square". (Task #599.)
-  const { isClover } = usePaymentProvider(locationId ?? null);
-
   useEffect(() => {
     if (payment) {
       setEmail(defaultEmail ?? "");
@@ -85,7 +79,6 @@ export function ResendReceiptDialog({ payment, defaultEmail, onClose, locationId
           providerNotConfiguredToast({
             navigate,
             locationId: locationId ?? null,
-            provider: isClover ? "clover" : "square",
           }),
         );
       } else {

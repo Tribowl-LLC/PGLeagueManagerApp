@@ -10,9 +10,8 @@
  * `Organization`, `Location`, `Bowler`, or `Payment` row to the
  * wire. Anything not on the allowlist is dropped at the boundary so
  * a future column (`apiKey`, `clientSecret`, `webhookKey`, OAuth
- * tokens in `integrations`, the `squareCredentials` /
- * `cloverCredentials` blobs on locations, `cloverCustomerId`
- * on bowlers, a future `processorWebhookSecret` /
+ * tokens in `integrations`, the `squareCredentials` blob on locations,
+ * a future `processorWebhookSecret` /
  * `merchantApiKey` / `customerCardToken` on payments, etc.) cannot
  * leak just because nobody noticed.
  *
@@ -68,8 +67,7 @@
  * is NOT assignable to `User` and so does NOT trigger the guard.
  * The same is true for `SanitizedLocation`, `SanitizedBowler`, and
  * `SanitizedPayment` — they drop the
- * `squareCredentials` / `cloverCredentials` and
- * `cloverCustomerId` / `paymentProviderLocationId` columns
+ * `squareCredentials` and `paymentProviderLocationId` columns
  * respectively (and, for `SanitizedPayment`, whatever future
  * sensitive payment column gets added without being added to the
  * payment safe-list), so the canonical
@@ -205,16 +203,15 @@ const CANONICAL_TYPE_SOURCES: ReadonlyArray<{
  * Background: every other row type (`User`, `Organization`,
  * `Location`, `Bowler`) has at least one column that is intentionally
  * NOT on the SAFE_*_FIELDS allowlist (`password`, `integrations`,
- * `squareCredentials` / `cloverCredentials`,
- * `cloverCustomerId` / `paymentProviderLocationId`). That makes
+ * `squareCredentials`, `paymentProviderLocationId`). That makes
  * the corresponding `Sanitized*` `Pick<…>` type a STRICT subset of
  * the row, so `isTypeAssignableTo(SanitizedUser, User)` returns
  * `false` (missing required columns) and the canonical wraps stay
  * green via pure structure.
  *
  * `Payment` is the exception today: SAFE_PAYMENT_FIELDS lists every
- * current `payments` column (the only sensitive-looking ones —
- * `cloverChargeId`, `idempotencyKey` — are operational and
+ * current `payments` column (the only sensitive-looking one —
+ * `idempotencyKey` — is operational and
  * intentionally on the allowlist; see the comment in
  * `server/utils/api.ts`). So `SanitizedPayment ≡ Payment`
  * structurally, and the assignability check below would falsely

@@ -6,8 +6,6 @@
  *   2. Set `buyerEmailMissing=true` and emit a `log.warn` whenever a
  *      Square charge runs without a buyer email — that's the
  *      observability hook ops uses to chase up missing receipts.
- *   3. Leave `buyerEmailMissing=false` for Clover (no hosted
- *      receipts are ever emitted) regardless of the email state.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -28,19 +26,19 @@ const { executeCharge } = await import('../../server/services/payment-execution'
 
 beforeEach(() => warnSpy.mockReset());
 
-function makeProvider(name: 'square' | 'clover', overrides: Record<string, unknown> = {}) {
+function makeProvider(overrides: Record<string, unknown> = {}) {
   return {
-    providerName: name,
+    providerName: 'square',
     processPayment: vi.fn().mockResolvedValue({
       id: 'pay_1', status: 'COMPLETED',
-      receiptUrl: name === 'square' ? 'https://squareup.com/receipt/preview/pay_1' : undefined,
-      receiptNumber: name === 'square' ? 'NUM-001' : undefined,
+      receiptUrl: 'https://squareup.com/receipt/preview/pay_1',
+      receiptNumber: 'NUM-001',
       providerRef: {},
     }),
     createOrderWithPayment: vi.fn().mockResolvedValue({
       id: 'pay_1', status: 'COMPLETED',
-      receiptUrl: name === 'square' ? 'https://squareup.com/receipt/preview/pay_1' : undefined,
-      receiptNumber: name === 'square' ? 'NUM-001' : undefined,
+      receiptUrl: 'https://squareup.com/receipt/preview/pay_1',
+      receiptNumber: 'NUM-001',
       providerRef: {},
     }),
     ...overrides,
@@ -49,7 +47,7 @@ function makeProvider(name: 'square' | 'clover', overrides: Record<string, unkno
 
 describe('executeCharge — receipt fields & missing-email warn (Task #503)', () => {
   it('warns and flags buyerEmailMissing when Square charge has no buyer email', async () => {
-    const provider = makeProvider('square');
+    const provider = makeProvider();
     const result = await executeCharge(provider, 'card_1', 2000, [], 'cust_1', undefined);
 
     expect(result.buyerEmailMissing).toBe(true);
@@ -59,7 +57,7 @@ describe('executeCharge — receipt fields & missing-email warn (Task #503)', ()
   });
 
   it('returns receiptUrl/receiptNumber from the provider when buyer email present', async () => {
-    const provider = makeProvider('square');
+    const provider = makeProvider();
     const result = await executeCharge(provider, 'card_1', 2000, [], 'cust_1', 'pat@example.com');
 
     expect(result.buyerEmailMissing).toBe(false);
@@ -68,12 +66,4 @@ describe('executeCharge — receipt fields & missing-email warn (Task #503)', ()
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
-  it('does not warn for Clover charges even without a buyer email (no hosted receipt)', async () => {
-    const provider = makeProvider('clover');
-    const result = await executeCharge(provider, 'card_1', 2000, [], 'cust_1', undefined);
-
-    expect(result.buyerEmailMissing).toBeFalsy();
-    expect(result.receiptUrl).toBeUndefined();
-    expect(warnSpy).not.toHaveBeenCalled();
-  });
 });

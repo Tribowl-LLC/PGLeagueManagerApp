@@ -38,8 +38,8 @@ const ORG_ID = 1;
 // sibling integrations-page-deep-link test and avoids laundering a
 // partial fixture past the type checker with a double cast.
 const LOCATIONS = [
-  { id: 1, organizationId: ORG_ID, name: 'Lanes A', active: true, paymentProvider: 'square' },
-  { id: 2, organizationId: ORG_ID, name: 'Lanes B', active: true, paymentProvider: 'square' },
+  { id: 1, organizationId: ORG_ID, name: 'Lanes A', active: true },
+  { id: 2, organizationId: ORG_ID, name: 'Lanes B', active: true },
 ];
 
 const ORIGINAL_FETCH = global.fetch;
@@ -61,17 +61,6 @@ function installFetchMock() {
       return jsonResponse({
         success: true,
         data: { appId: null, accessTokenConfigured: false, locationId: null },
-      });
-    }
-    if (url.includes('/clover-config')) {
-      return jsonResponse({
-        success: true,
-        data: {
-          merchantId: null,
-          apiTokenConfigured: false,
-          publicTokenizerKey: null,
-          environment: null,
-        },
       });
     }
     throw new Error(`unexpected fetch: ${url}`);

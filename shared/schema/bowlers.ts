@@ -23,9 +23,8 @@ export const bowlers = pgTable("bowlers", {
   // silently producing an orphan row that's invisible to its own org.
   organizationId: integer("organization_id").notNull().references(() => organizations.id),
   paymentCustomerId: text("payment_customer_id"),
-  cloverCustomerId: text("clover_customer_id"),
   // Records which location's payment processor created the bowler's
-  // saved-customer record (`paymentCustomerId` / `cloverCustomerId`).
+  // saved-customer record (`paymentCustomerId`).
   // Set whenever either of those columns is first written and used by
   // the account-deletion service to target exactly one processor for
   // saved-card cleanup instead of fanning out to every location
@@ -131,7 +130,6 @@ export const insertBowlerSchema = baseBowlerSchema.extend({
   // any creation path that forgets to set it.
   organizationId: z.number().int().positive().optional(),
   paymentCustomerId: z.string().nullable().optional(),
-  cloverCustomerId: z.string().nullable().optional(),
   paymentProviderLocationId: z.number().int().positive().nullable().optional(),
   paymentSyncPendingAt: z.string().nullable().optional(),
   paymentSyncAttempts: z.number().int().min(0).optional(),
@@ -153,7 +151,6 @@ export const updateBowlerSchema = z.object({
   active: z.boolean(),
   order: z.number().min(0),
   paymentCustomerId: z.string().nullable(),
-  cloverCustomerId: z.string().nullable(),
   paymentProviderLocationId: z.number().int().positive().nullable(),
   paymentSyncPendingAt: z.string().nullable(),
   paymentSyncAttempts: z.number().int().min(0),

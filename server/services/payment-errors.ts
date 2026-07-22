@@ -3,7 +3,7 @@
  *
  * Extracted from `payment-provider-factory.ts` to break the circular
  * import between the factory and its concrete providers
- * (square-provider, clover-provider). The factory imports the
+ * (square-provider). The factory imports the
  * concrete providers (to construct them), and the providers throw
  * these typed errors — putting them on the factory caused
  * `factory → provider → factory` cycles.

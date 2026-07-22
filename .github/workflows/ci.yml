@@ -173,14 +173,11 @@ jobs:
       - name: Not-found error-code drift
         run: npx tsx scripts/check-not-found-code.ts
 
-      # `npx tsx scripts/check-provider-not-configured.ts` (task #624).
-      # Walks `client/src/` and fails if any
-      # `providerNotConfiguredToast(...)` call site omits the
-      # `provider` field or hardcodes it as a `'square'` / `'clover'`
-      # string literal. Pinned by
-      # `tests/unit/check-provider-not-configured.test.ts`.
-      - name: Provider-not-configured toast wiring
-        run: npx tsx scripts/check-provider-not-configured.ts
+      # Prevent retired payment providers from returning to active
+      # client, server, or shared source. Historical migrations and
+      # documentation remain outside this source-only guard.
+      - name: Retired payment-provider references
+        run: npx tsx scripts/check-retired-payment-providers.ts
 
       # `npm run build` = `vite build && esbuild server/index.ts ...`
       # (task #468). Runs the full production build of both halves of

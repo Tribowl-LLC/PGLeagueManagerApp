@@ -43,7 +43,7 @@ Every verifier in the registry implements:
 
 ```ts
 interface PinVerifier {
-  provider: string;        // 'square', 'clover', 'sendgrid'
+  provider: string;        // 'square', 'sendgrid'
   pinName: string;         // human-friendly literal name
   expected: string;        // the audited wire literal
   probe: () => Promise<PinProbeResult>;
@@ -59,11 +59,7 @@ real network call**. Today's techniques:
    with a fetcher that records the headers and short-circuits
    before dispatch. Read `square-version` off the captured
    request.
-2. **Self-test round-trip** (Clover). Hash a known body with our
-   pinned algorithm and verify our own verification path would
-   accept the result. Catches "someone changed `'sha256'` to
-   `'sha512'` in the receiver".
-3. **SDK metadata read** (SendGrid). Read `package.json` major +
+2. **SDK metadata read** (SendGrid). Read `package.json` major +
    the SDK singleton's `client.defaultRequest.baseUrl`. Catches
    accidental major-version floats and region-helper firings.
 
@@ -94,30 +90,6 @@ treated as **drift** (paging `error` line, optional fail-shut).
 - **Tests:**
   - Merge-gating: `server/services/__tests__/square-version-header.test.ts`
   - Runtime guard: `server/services/__tests__/square-version-runtime-guard.test.ts`
-
-### Clover
-
-- **Anchor:** `#clover`
-- **Pin name:** webhook signature scheme
-- **Expected:** `hmac-sha256(x-clover-signature)`
-- **Source of truth:** Clover Ecommerce webhook signature docs.
-  We have no SDK to upgrade — the receiver is a hand-rolled
-  `verifyCloverSignature` middleware in
-  `server/routes/payments-provider/webhooks.ts`.
-- **Probe:** round-trip self-test using the receiver's actual
-  `SIGNATURE_HEADER` and `SIGNATURE_ALGORITHM` constants (re-derived
-  via the `describeCloverSignatureSchemeForPinVerifier()` test
-  seam). Hashes a known body with our pinned algorithm and
-  verifies the round-trip succeeds, then compares the receiver's
-  derived literal against the registered pin.
-- **Drift behavior:** paging `error` line. The receiver itself is
-  unaffected — drift here means the receiver's constants no longer
-  match what was audited, not that incoming webhooks are failing.
-- **Recovery:** Re-read Clover Ecommerce webhook signature docs.
-  If Clover changed the header name or algorithm, update
-  `verifyCloverSignature` + `describeCloverSignatureSchemeForPinVerifier`
-  + `CLOVER_EXPECTED_SIGNATURE_SCHEME` together in the same commit.
-  Otherwise revert the receiver change that caused the drift.
 
 ### SendGrid
 

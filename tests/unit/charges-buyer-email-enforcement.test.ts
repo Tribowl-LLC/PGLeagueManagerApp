@@ -12,7 +12,6 @@
  *  - Square + bowler.email + no override          -> 200 (uses on-file email)
  *  - Square + no bowler.email + override          -> 200 (uses override)
  *  - Square + no bowler.email + no override       -> 400 BUYER_EMAIL_REQUIRED
- *  - Clover + no email anywhere               -> 200 (no enforcement; CP has no hosted receipts)
  */
 import {
   afterAll, afterEach, beforeAll, beforeEach,
@@ -54,14 +53,6 @@ const mockSquareProvider = {
   saveCardOnFile: vi.fn(),
   validateCardId: vi.fn().mockReturnValue(false),
 };
-const mockCloverProvider = {
-  providerName: 'clover' as const,
-  processPayment: vi.fn(),
-  createOrderWithPayment: vi.fn(),
-  getPayment: vi.fn(),
-  saveCardOnFile: vi.fn(),
-  validateCardId: vi.fn().mockReturnValue(false),
-};
 const mockGetPaymentProvider = vi.fn();
 vi.mock('../../server/services/payment-provider-factory', async () => {
   const actual = await vi.importActual<
@@ -80,7 +71,6 @@ vi.mock('../../server/services/payment-execution', () => ({
 
 vi.mock('../../server/services/payment-utils', () => ({
   getProviderCustomerId: () => 'cust_xyz',
-  persistCloverCustomer: vi.fn(),
   ensureProviderCustomer: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -130,7 +120,7 @@ beforeEach(() => {
   mockHasAccessToLeague.mockReset();
   mockHasAccessToBowler.mockReset();
   mockGetPaymentProvider.mockReset();
-  for (const provider of [mockSquareProvider, mockCloverProvider]) {
+  for (const provider of [mockSquareProvider]) {
     for (const fn of [provider.processPayment, provider.createOrderWithPayment, provider.getPayment, provider.saveCardOnFile]) {
       (fn as ReturnType<typeof vi.fn>).mockReset();
     }
@@ -227,20 +217,4 @@ describe('POST /api/payments-provider/payments — buyer email enforcement (Task
     expect(mockStorage.createPayment).not.toHaveBeenCalled();
   });
 
-  it('Clover + NO email anywhere -> 200, enforcement does NOT trigger', async () => {
-    mockGetPaymentProvider.mockResolvedValue(mockCloverProvider);
-    mockStorage.getBowler.mockResolvedValue({
-      id: 7, organizationId: 1, name: 'Pat', email: null, cloverCustomerId: 'cv_123',
-    });
-    mockCloverProvider.processPayment.mockResolvedValue({
-      id: 'cv_pay_c', status: 'COMPLETED', providerRef: {},
-    });
-
-    const res = await postCharge({
-      sourceId: 'cp_tok', amount: 2000, bowlerId: 7, leagueId: 11, storeCard: false,
-    });
-
-    expect(res.status).toBe(200);
-    expect(mockCloverProvider.processPayment).toHaveBeenCalled();
-  });
 });

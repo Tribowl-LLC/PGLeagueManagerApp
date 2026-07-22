@@ -576,7 +576,6 @@ describe('Organization Isolation', () => {
         .values({
           organizationId: orgBOrgId,
           name: `Vitest Iso Location ${stamp}`,
-          paymentProvider: 'square',
         })
         .returning({ id: locationsTable.id });
       orgBLocationId = createdLocation?.id ?? null;
@@ -1019,10 +1018,6 @@ describe('Organization Isolation', () => {
           path: () => `/api/locations/${orgBLocationId}`,
         },
         {
-          name: 'GET /api/locations/:id/clover-config (org B location)',
-          path: () => `/api/locations/${orgBLocationId}/clover-config`,
-        },
-        {
           name: 'GET /api/locations/:id/square-config (org B location)',
           path: () => `/api/locations/${orgBLocationId}/square-config`,
         },
@@ -1075,11 +1070,6 @@ describe('Organization Isolation', () => {
           label: 'org A GET /api/locations/:id (org B location) → 403 and does not leak the row',
           path: () => `/api/locations/${orgBLocationId}`,
           checkLeak: true,
-        },
-        {
-          label: 'org A GET /api/locations/:id/clover-config (org B location) → 403',
-          path: () => `/api/locations/${orgBLocationId}/clover-config`,
-          checkLeak: false,
         },
         {
           label: 'org A GET /api/locations/:id/square-config (org B location) → 403',

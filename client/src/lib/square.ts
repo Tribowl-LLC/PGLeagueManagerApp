@@ -2,7 +2,6 @@ import { loadScript } from "@/lib/utils";
 import { logger } from "@/lib/logger";
 import { csrfFetch } from '@/lib/queryClient';
 import { makeApiError, type ApiErrorLike } from "@/lib/provider-not-configured";
-import type { CloverCard } from "@/hooks/use-clover-payment";
 import type { SquareCard as SquareCardHook } from "@/hooks/use-square-payment";
 
 const SDK_LOAD_MAX_ATTEMPTS = 3;
@@ -289,7 +288,7 @@ export async function tokenizeCard(
   // defensive `if (!cardInstance)` guard isn't dead code per the
   // type system. Callers that already hold a non-null card see no
   // behavior change; tests can pass `null` without a double-cast.
-  cardInstance: SquareCard | CloverCard | null | undefined,
+  cardInstance: SquareCard | null | undefined,
 ): Promise<string> {
   if (!cardInstance) {
     throw makePaymentError('Card element not initialized', 'INITIALIZATION_ERROR');
@@ -305,11 +304,7 @@ export async function tokenizeCard(
   } catch {
     throw makePaymentError('Please check your card details and try again.', 'TOKENIZATION_ERROR');
   }
-  if ('status' in result) {
-    if (result.status === 'OK' && result.token) {
-      return result.token;
-    }
-  } else if (result.token) {
+  if (result.status === 'OK' && result.token) {
     return result.token;
   }
   throw makePaymentError('Please check your card details and try again.', 'TOKENIZATION_ERROR');
@@ -326,7 +321,7 @@ function cleanPaymentMessage(message: string): string {
     .replace(/\bLY5C3TE48WEXX\b/, 'configuration');
 }
 
-export async function createPayment(amount: number, cardInstance: SquareCardHook | CloverCard, bowlerId: number, leagueId: number, storeCard: boolean = false, buyerEmail?: string): Promise<PaymentResult> {
+export async function createPayment(amount: number, cardInstance: SquareCardHook, bowlerId: number, leagueId: number, storeCard: boolean = false, buyerEmail?: string): Promise<PaymentResult> {
   try {
     if (!cardInstance) {
       throw makePaymentError(

@@ -6,7 +6,7 @@
  * ---
  * `bowlers.paymentProviderLocationId` records the location whose
  * payment processor created the bowler's saved-customer record
- * (`paymentCustomerId` / `cloverCustomerId`). When an account is
+ * (`paymentCustomerId`). When an account is
  * deleted the deletion service (`server/services/account-deletion.ts`,
  * `collectProviderTargets`) uses that column to talk to exactly one
  * processor. Rows with the column NULL fall back to the legacy
@@ -58,7 +58,7 @@ import {
   organizations,
   type Location,
 } from '@shared/schema';
-import { and, eq, inArray, isNull, isNotNull, or } from 'drizzle-orm';
+import { and, eq, inArray, isNull, isNotNull } from 'drizzle-orm';
 import { createLogger } from '../logger';
 
 const log = createLogger('BackfillBowlerProviderLocation');
@@ -98,25 +98,13 @@ const organizationIdFlag: number = parsedOrgIdFlag;
  *     `accessToken` (see `server/services/square-provider.ts`); the
  *     Square `locationId` is only needed for payment / order routes,
  *     not customer deletion.
- *   - Clover: the `CloverPaymentProvider` constructor refuses to
- *     instantiate unless `apiToken` and `merchantId` are present
- *     (see `server/services/clover-provider.ts`).
- *
  * Keeping this predicate aligned with the providers means we never
  * stamp a bowler with a location that the deletion service would
  * later reject as not configured.
  */
 function isLocationPaymentConfigured(loc: Location): boolean {
-  const provider = loc.paymentProvider ?? 'square';
-  if (provider === 'square') {
-    const c = loc.squareCredentials ?? {};
-    return Boolean(c.accessToken && c.accessToken.trim().length > 0);
-  }
-  if (provider === 'clover') {
-    const c = loc.cloverCredentials ?? {};
-    return Boolean(c.apiToken && c.apiToken.trim().length > 0 && c.merchantId);
-  }
-  return false;
+  const credentials = loc.squareCredentials ?? {};
+  return Boolean(credentials.accessToken && credentials.accessToken.trim().length > 0);
 }
 
 async function assertOrganizationExists(orgId: number): Promise<void> {
@@ -149,10 +137,7 @@ async function main() {
     .where(
       and(
         isNull(bowlers.paymentProviderLocationId),
-        or(
-          isNotNull(bowlers.paymentCustomerId),
-          isNotNull(bowlers.cloverCustomerId),
-        ),
+        isNotNull(bowlers.paymentCustomerId),
       ),
     );
 
@@ -160,17 +145,13 @@ async function main() {
     .select({
       id: bowlers.id,
       paymentCustomerId: bowlers.paymentCustomerId,
-      cloverCustomerId: bowlers.cloverCustomerId,
     })
     .from(bowlers)
     .where(
       and(
         eq(bowlers.organizationId, organizationIdFlag),
         isNull(bowlers.paymentProviderLocationId),
-        or(
-          isNotNull(bowlers.paymentCustomerId),
-          isNotNull(bowlers.cloverCustomerId),
-        ),
+        isNotNull(bowlers.paymentCustomerId),
       ),
     );
 

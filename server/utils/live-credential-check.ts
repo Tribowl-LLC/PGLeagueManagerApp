@@ -32,10 +32,6 @@
  *     future drift / a developer who pastes a Stripe key into the
  *     wrong slot.
  *
- * Per-tenant Clover credentials live encrypted in the DB (not in env),
- * and a fresh beta DB starts empty — no env-level scan is needed
- * for them. The runbook covers seeding Clover sandbox credentials.
- *
  * This check runs ONLY when `APP_ENV=beta`. `dev` and `prod` are
  * unaffected (dev intentionally uses whichever creds are set; prod
  * SHOULD have live creds).

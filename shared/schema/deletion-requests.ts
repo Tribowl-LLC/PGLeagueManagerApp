@@ -66,7 +66,6 @@ export interface DeletionExecutionSummary {
     bowlerId: number;
     anonymized: boolean;
     hadPaymentCustomerId: boolean;
-    hadCloverCustomerId: boolean;
     reason?: string;
   }>;
   paymentProvider: Array<{

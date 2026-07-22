@@ -26,18 +26,16 @@ import {
 function Trigger({
   navigate,
   locationId,
-  provider,
 }: {
   navigate?: (path: string) => void;
   locationId?: number | null;
-  provider: 'square' | 'clover';
 }) {
   const { toast } = useToast();
   return (
     <button
       type="button"
       onClick={() =>
-        toast(providerNotConfiguredToast({ navigate, locationId, provider }))
+        toast(providerNotConfiguredToast({ navigate, locationId }))
       }
       data-testid="fire-toast"
     >
@@ -53,7 +51,7 @@ describe('providerNotConfiguredToast', () => {
 
     render(
       <>
-        <Trigger navigate={navigate} provider="square" />
+        <Trigger navigate={navigate} />
         <Toaster />
       </>,
     );
@@ -77,7 +75,7 @@ describe('providerNotConfiguredToast', () => {
 
     render(
       <>
-        <Trigger navigate={navigate} locationId={42} provider="square" />
+        <Trigger navigate={navigate} locationId={42} />
         <Toaster />
       </>,
     );
@@ -90,37 +88,11 @@ describe('providerNotConfiguredToast', () => {
     expect(navigate).toHaveBeenCalledWith('/integrations?location=42');
   });
 
-  // Task #599: when the active provider for the location is Clover,
-  // the toast must name "Clover" instead of always reading "Square"
-  // so admins know which integration to actually fix.
-  it('renders Clover-flavored title and body when provider="clover"', async () => {
-    const user = userEvent.setup();
-    const navigate = vi.fn();
-
-    render(
-      <>
-        <Trigger navigate={navigate} provider="clover" />
-        <Toaster />
-      </>,
-    );
-
-    await user.click(screen.getByTestId('fire-toast'));
-
-    expect(
-      await screen.findByText(/Clover isn't connected for this location/i),
-    ).toBeInTheDocument();
-    expect(
-      await screen.findByText(/Connect this location's Clover account/i),
-    ).toBeInTheDocument();
-    // Square copy must not leak into the Clover toast.
-    expect(screen.queryByText(/Square isn't connected/i)).not.toBeInTheDocument();
-  });
-
-  it('uses the bowler-facing Clover copy when no navigate is provided', () => {
-    const props = providerNotConfiguredToast({ provider: 'clover' });
-    expect(props.title).toBe("Clover isn't connected for this location");
+  it('uses bowler-facing Square copy when no navigate is provided', () => {
+    const props = providerNotConfiguredToast({});
+    expect(props.title).toBe("Square isn't connected for this location");
     expect(props.description).toBe(
-      "Please ask your league admin to connect Clover in Settings, then try again.",
+      "Please ask your league admin to connect Square in Settings, then try again.",
     );
   });
 });

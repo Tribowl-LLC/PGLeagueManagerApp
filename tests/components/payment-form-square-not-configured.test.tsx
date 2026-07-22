@@ -1,10 +1,8 @@
 /**
  * Component test for the inline "Square isn't fully set up" alert
- * in <PaymentForm /> (task #582; mirror of #580 for the Square
- * branch of the same provider-not-configured code path).
+ * in <PaymentForm />.
  *
- * Background: #579 added Square parity for the Clover partial-config
- * UX introduced in #575 — when a location's Square credentials
+ * When a location's Square credentials
  * (`appId`, `accessToken`, `locationId`) are partial, the form must:
  *   - render an inline destructive Alert (data-testid
  *     `alert-square-not-configured`) listing each missing field by
@@ -14,12 +12,7 @@
  *   - disable the submit button while still letting the operator
  *     pick Cash / Check as a fallback.
  *
- * Task #580 already pinned the Clover branch of this exact UI. The
- * Square branch shares the same `providerNotFullyConfigured` logic
- * but uses a different testid + label map, so without its own test
- * a future refactor of the shared branch could quietly break Square
- * checkout while the Clover test stays green. This test is the
- * symmetric React-side pin for the Square half.
+ * This test pins that Square behavior.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
@@ -48,21 +41,17 @@ import { SQUARE_FIELD_LABELS, type Bowler } from '@shared/schema';
 let providerState: {
   config: PaymentProviderConfig | null;
   isLoading: boolean;
-  isClover: boolean;
   isSquare: boolean;
   supportsWallets: boolean;
   isProviderConfigured: boolean;
   missingFields: RequiredProviderField[];
 } = {
   config: {
-    paymentProvider: 'square',
     locationId: 'L_PARTIAL',
-    environment: 'sandbox',
     providerConfigured: false,
     missingFields: ['appId', 'accessToken'],
   },
   isLoading: false,
-  isClover: false,
   isSquare: true,
   // Square supports Apple/Google Pay in production, but the wallet
   // hook is mocked below to report neither is available so the test
@@ -81,7 +70,7 @@ vi.mock('@/hooks/use-payment-provider', () => ({
 }));
 
 // Stub the tokenizer hooks so jsdom doesn't try to load the real
-// Square / Clover SDKs (they reach for window.Square / Clover, fetch
+// Square SDK (it reaches for window.Square and fetches
 // remote scripts, and would explode in a unit environment). The
 // PaymentForm only consumes their return shape — never the actual
 // tokenization side effects in this test.
@@ -95,16 +84,6 @@ vi.mock('@/hooks/use-square-payment', () => ({
     isInitialized: false,
     error: null,
     initializeCard: squareInitializeCard,
-    cleanupCard: vi.fn(),
-  }),
-}));
-
-vi.mock('@/hooks/use-clover-payment', () => ({
-  useCloverPayment: () => ({
-    card: null,
-    isInitialized: false,
-    error: null,
-    initializeCard: vi.fn(async () => {}),
     cleanupCard: vi.fn(),
   }),
 }));
@@ -178,7 +157,6 @@ const BOWLERS: Bowler[] = [
     order: 0,
     organizationId: 1,
     paymentCustomerId: null,
-    cloverCustomerId: null,
     paymentProviderLocationId: null,
     paymentSyncPendingAt: null,
     paymentSyncAttempts: 0,
@@ -213,14 +191,11 @@ describe('<PaymentForm /> — Square not fully configured (#582)', () => {
   it('shows the friendly Square-not-configured Alert in place of the card UI when credentials are missing', async () => {
     providerState = {
       config: {
-        paymentProvider: 'square',
         locationId: 'L_PARTIAL',
-        environment: 'sandbox',
         providerConfigured: false,
         missingFields: ['appId', 'accessToken'],
       },
       isLoading: false,
-      isClover: false,
       isSquare: true,
       supportsWallets: true,
       isProviderConfigured: false,
@@ -291,15 +266,12 @@ describe('<PaymentForm /> — Square not fully configured (#582)', () => {
   it('renders the credit card section (and no Square-not-configured alert) when the provider is fully configured', async () => {
     providerState = {
       config: {
-        paymentProvider: 'square',
         appId: 'sq_app_ok',
         locationId: 'L_OK',
-        environment: 'sandbox',
         providerConfigured: true,
         missingFields: [],
       },
       isLoading: false,
-      isClover: false,
       isSquare: true,
       supportsWallets: true,
       isProviderConfigured: true,

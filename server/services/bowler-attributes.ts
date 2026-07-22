@@ -106,7 +106,7 @@ export async function resolveBowlerLeagueAttributes(
  * customer for a bowler, resolves the bowler's current league_name +
  * league_season attribute values and writes them to Square.
  *
- * No-op for non-Square providers (Clover has no equivalent).
+ * No-op when Square metadata synchronization is unavailable.
  *
  * Returns `{ ok: false }` when the Square API rejects the writes; the
  * caller should flip `bowlers.payment_sync_pending_at` so the existing

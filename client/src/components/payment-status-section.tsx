@@ -1,6 +1,5 @@
 import { FC, useRef, useEffect, useState, useMemo, useCallback } from "react";
 import { useSquarePayment } from "@/hooks/use-square-payment";
-import { useCloverPayment } from "@/hooks/use-clover-payment";
 import { usePaymentProvider } from "@/hooks/use-payment-provider";
 import { useWalletPayments } from "@/hooks/use-wallet-payments";
 import { useSavedCardDefault } from "@/hooks/use-saved-card-default";
@@ -78,7 +77,7 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
   // pick can never silently ride into the next checkout.
   const [additionalBowlerIds, setAdditionalBowlerIds] = useState<number[]>([]);
 
-  const { config: providerConfig, isClover, supportsWallets, isLoading: providerLoading } = usePaymentProvider(league.locationId ?? null);
+  const { supportsWallets, isLoading: providerLoading } = usePaymentProvider(league.locationId ?? null);
 
   const { card: sqCard, isInitialized: sqInit, error: sqError, initializeCard: sqInitCard, cleanupCard: sqCleanup } = useSquarePayment({
     locationId: league.locationId ?? null,
@@ -88,21 +87,11 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
     }
   });
 
-  const { card: cvCard, isInitialized: cvInit, error: cvError, initializeCard: cvInitCard, cleanupCard: cvCleanup } = useCloverPayment({
-    publicTokenizerKey: providerConfig?.publicTokenizerKey,
-    merchantId: providerConfig?.merchantId,
-    environment: providerConfig?.environment,
-    onError: (error) => {
-      logger.error('Clover Payment', 'Payment failed', error);
-      toast({ title: "Payment Setup Error", description: error, variant: "destructive" });
-    }
-  });
-
-  const card = isClover ? cvCard : sqCard;
-  const isInitialized = isClover ? cvInit : sqInit;
-  const squareError = isClover ? cvError : sqError;
-  const initializeCard = isClover ? cvInitCard : sqInitCard;
-  const cleanupCard = isClover ? cvCleanup : sqCleanup;
+  const card = sqCard;
+  const isInitialized = sqInit;
+  const squareError = sqError;
+  const initializeCard = sqInitCard;
+  const cleanupCard = sqCleanup;
 
   // pull accepted partner links so the
   // recipient picker in PaymentSetupForm can offer them as targets.

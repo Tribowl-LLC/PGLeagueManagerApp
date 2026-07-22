@@ -11,12 +11,9 @@ import {
   makeApiError,
 } from "@/lib/provider-not-configured";
 import { sanitizePaymentErrorMessage } from "@/lib/payment-user-error";
-import { usePaymentProvider } from "@/hooks/use-payment-provider";
 import type { League, Bowler } from "@shared/schema";
 import type { SquareCard } from "@/hooks/use-square-payment";
-import type { CloverCard } from "@/hooks/use-clover-payment";
-
-type PaymentCard = SquareCard | CloverCard | null;
+type PaymentCard = SquareCard | null;
 
 // Human-friendly cadence label for auto-pay toast copy (avoids
 // interpolating raw schedule keys into user-facing text).
@@ -87,12 +84,6 @@ export function useBowlerPaymentSubmit({
   const chargeForBowlerId = targetBowlerId ?? bowler.id;
   const { toast } = useToast();
   const [, navigate] = useLocation();
-  // Look up the active provider for this league's location so the
-  // PROVIDER_NOT_CONFIGURED toast in the catch block names the right
-  // integration (Clover-only locations were getting "Square isn't
-  // connected for this location" — task #610).
-  const { isClover } = usePaymentProvider(league.locationId ?? null);
-
   // Local helper that lets the inline csrfFetch calls below propagate
   // the structured `error.code` (specifically PROVIDER_NOT_CONFIGURED)
   // up to the catch block — the previous code threw a bare-message
@@ -474,7 +465,6 @@ export function useBowlerPaymentSubmit({
         toast(providerNotConfiguredToast({
           navigate,
           locationId: league.locationId ?? null,
-          provider: isClover ? 'clover' : 'square',
         }));
         return;
       }
@@ -494,7 +484,7 @@ export function useBowlerPaymentSubmit({
   }, [
     card, cardMode, selectedSavedCardId, league, bowler, weeklyFee,
     selectedSchedule, storeCard,
-    buyerEmail, chargeForBowlerId, additionalBowlerIds, financials, calculateTotalAmount, toast, navigate, isClover,
+    buyerEmail, chargeForBowlerId, additionalBowlerIds, financials, calculateTotalAmount, toast, navigate,
     setIsSubmitting, setShowPaymentSetup, partnerPastDueByBowlerId,
   ]);
 }

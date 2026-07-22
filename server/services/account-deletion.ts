@@ -25,7 +25,6 @@ interface ProviderTarget {
  * written (see task #346 and the writers in
  * `server/services/payment-customer-sync.ts`,
  * `server/services/bowler-sync.ts`,
- * `server/services/payment-utils.ts::persistCloverCustomer`,
  * and the bowlers PATCH route). For those rows we emit a single
  * (locationId, customerId) pair per saved id — no fan-out across
  * unrelated locations and no spurious `provider does not support
@@ -41,7 +40,6 @@ async function collectProviderTargets(
   bowlers: {
     id: number;
     paymentCustomerId: string | null;
-    cloverCustomerId: string | null;
     paymentProviderLocationId: number | null;
   }[],
 ): Promise<ProviderTarget[]> {
@@ -49,9 +47,6 @@ async function collectProviderTargets(
   for (const b of bowlers) {
     const ids: string[] = [];
     if (b.paymentCustomerId) ids.push(b.paymentCustomerId);
-    if (b.cloverCustomerId && b.cloverCustomerId !== b.paymentCustomerId) {
-      ids.push(b.cloverCustomerId);
-    }
     if (ids.length > 0) customerByBowler.set(b.id, ids);
   }
   if (customerByBowler.size === 0) return [];
@@ -136,7 +131,7 @@ export async function executeAccountDeletion(
   const bowlersToScrub = await storage.getBowlersByEmailSystemAdmin(email);
 
   // Collect provider cleanup targets BEFORE we anonymize, since the
-  // anonymize step nulls paymentCustomerId/cloverCustomerId.
+  // anonymize step nulls paymentCustomerId.
   const providerTargets = await collectProviderTargets(bowlersToScrub);
 
   // 1. Best-effort delete customer records at the payment processors.
@@ -203,7 +198,6 @@ export async function executeAccountDeletion(
       bowlerId: bowler.id,
       anonymized: false,
       hadPaymentCustomerId: !!bowler.paymentCustomerId,
-      hadCloverCustomerId: !!bowler.cloverCustomerId,
     } as DeletionExecutionSummary['bowlers'][number];
     try {
       await storage.anonymizeBowler(bowler.id);

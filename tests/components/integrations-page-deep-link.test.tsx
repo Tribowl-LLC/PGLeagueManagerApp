@@ -67,21 +67,18 @@ const LOCATIONS = [
     organizationId: ORG_ID,
     name: 'Lakeside Lanes',
     active: true,
-    paymentProvider: 'square',
   },
   {
     id: HIGHLIGHT_LOCATION_ID,
     organizationId: ORG_ID,
     name: 'Northside Bowl',
     active: true,
-    paymentProvider: 'square',
   },
   {
     id: 99,
     organizationId: ORG_ID,
     name: 'Westside Strikes',
     active: true,
-    paymentProvider: 'clover',
   },
 ];
 
@@ -129,17 +126,6 @@ function installFetch(opts: { locationLookupStatus?: number } = {}) {
       return jsonResponse({
         success: true,
         data: { appId: null, accessTokenConfigured: false, locationId: null },
-      });
-    }
-    if (url.match(/\/api\/locations\/\d+\/clover-config$/)) {
-      return jsonResponse({
-        success: true,
-        data: {
-          merchantId: null,
-          apiTokenConfigured: false,
-          publicTokenizerKey: null,
-          environment: null,
-        },
       });
     }
 

@@ -232,8 +232,7 @@ router.get("/", async (req, res) => {
     const linkedBowlerIds = new Set(await storage.getLinkedBowlerIds());
 
     // task #381: project each bowler through the deny-by-default
-    // allowlist before composing the response so a future column
-    // (cloverCustomerId today, anything new tomorrow) cannot
+    // allowlist before composing the response so a future column cannot
     // silently leak via the spread below.
     const bowlersWithAccountStatus = filteredBowlers.map(b => ({
       ...sanitizeBowler(b),
@@ -390,8 +389,8 @@ router.get("/:id/details", async (req, res) => {
     ]);
 
     const response: Record<string, unknown> = {
-      // task #381: project before spreading so cloverCustomerId /
-      // paymentProviderLocationId (and any future sensitive column)
+      // task #381: project before spreading so paymentProviderLocationId
+      // (and any future sensitive column)
       // cannot ride along on the details payload.
       bowler: { ...sanitizeBowler(bowler), hasAccount },
       bowlerLeagues,
