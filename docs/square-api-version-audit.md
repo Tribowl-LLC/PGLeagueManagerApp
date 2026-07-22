@@ -18,10 +18,10 @@ version pin from `2025-01-23` to a current version.
   through the SDK client.
 - We have **no real Square webhook receiver** (only Clover). The
   CSRF-exempt path covers `/payments-provider/webhooks`
-  generically; the `webhooks.ts` router mounts the real
-  `POST /webhooks/clover` handler plus a tripwire stub at
-  `POST /webhooks/square` (task #612) that 501's any unexpected
-  Square delivery and emits a `log.error` line so on-call sees it.
+  generically; `webhooks.ts` mounts the real `POST /webhooks/clover`
+  handler, while `app.ts` registers the disabled
+  `POST /webhooks/square` tripwire before tenant resolution and the
+  global JSON parser. The tripwire returns 501 and logs bounded metadata only.
 - Our SDK call surface is small and already on the v40+ flat-client
   shape (no `.result.errors[]` wrapper, structured errors directly on
   `SquareError`). All response field reads in our code are on fields
@@ -231,23 +231,23 @@ client. No raw HTTP.**
 
 ### Receivers in this repo
 
-- `server/routes/payments-provider/webhooks.ts` — **Clover handler
-  + Square tripwire stub**.
+- `server/routes/payments-provider/webhooks.ts` — **Clover handler**.
   - `POST /webhooks/clover` is the real, signed Clover handler from
     task #577.
+- `server/routes/payments-provider/square-webhook-tripwire.ts` — **disabled
+  Square tripwire**.
   - `POST /webhooks/square` is a tripwire stub added in task #612.
-    It answers `501 Not Implemented` and emits a single
-    `log.error` line capturing method, path, all request headers,
-    and the raw body. We do not subscribe to any Square webhook
-    events today, so the tripwire exists purely to make an
-    accidental subscription loud instead of silent. There is no
-    HMAC verification on the stub — we have no Square webhook
-    secret to verify against, and the whole point is to fire on
-    any unexpected delivery so on-call sees it.
+    It answers `501 Not Implemented`, enforces a 12 KB body limit and
+    dedicated shared production rate limit, and emits one warning with a
+    server-generated request id plus fixed, bounded request metadata. It does
+    not log headers, query strings, bodies, or raw bytes. We do not subscribe
+    to any Square webhook events today, so the tripwire exists only to make an
+    accidental subscription visible without processing it. There is no HMAC
+    verification because the endpoint does not accept Square events.
 - `server/middleware/csrf.ts:39-45` — exempts the path prefix
-  `/payments-provider/webhooks` from CSRF. The exemption covers
-  both the Clover handler and the Square tripwire above without
-  needing to be touched.
+  `/payments-provider/webhooks` from CSRF. Clover reaches that exemption;
+  the exact Square tripwire returns earlier in the stack, before session and
+  CSRF middleware, because provider callbacks cannot use browser sessions.
 
 ### Subscriptions on Square's side
 
@@ -259,7 +259,7 @@ events to whatever URL was registered, and:
 
 1. We still have no signed-receiver code, so a real subscription's
    events would hit the task #612 tripwire stub and return 501.
-   The 501 is loud enough to surface in on-call but it is not a
+   The correlated metadata warning makes delivery visible, but it is not a
    substitute for a real handler — money-relevant events
    (refunds, disputes, chargebacks) would still go unprocessed.
 2. The dashboard version pin would dictate the payload schema. Today
@@ -493,10 +493,11 @@ None of these block the version bump. They were filed as separate
 project tasks so the bump itself (Task #600) can ship independently.
 
 1. **Task #612 — Stub a Square webhook receiver. ✅ DONE.**
-   Implemented in `server/routes/payments-provider/webhooks.ts` as
+   Implemented in `server/routes/payments-provider/square-webhook-tripwire.ts` as
    a `POST /webhooks/square` handler that returns
-   `501 SQUARE_WEBHOOK_NOT_IMPLEMENTED` and emits a single
-   `log.error` line with method, path, headers, and raw body.
+   `501 SQUARE_WEBHOOK_NOT_IMPLEMENTED` after a small body limit and
+   dedicated rate limit, then emits one metadata-only warning correlated by a
+   server-generated request id.
    Closes the "what if someone registers a subscription
    out-of-band" risk surfaced in §4.
 2. **Task #613 — Capture catalog pagination in `listCatalogItems`.**

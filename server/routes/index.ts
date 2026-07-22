@@ -144,6 +144,8 @@ export function registerRoutes(app: Express): void {
   // intentionally unauthenticated. Per-request HMAC verification
   // happens inside the router (see `./payments-provider/webhooks.ts`)
   // and the path is in CSRF EXEMPT_PATHS in `server/middleware/csrf.ts`.
+  // The disabled Square tripwire is registered earlier in `server/app.ts`
+  // so it never enters tenant resolution or the global JSON parser.
   app.use('/api/payments-provider/webhooks', paymentProviderWebhooksRouter);
   app.use('/api/payments-provider', requireAuth, paymentRoutesRouter);
   app.use('/api/admin', requireOrgAdmin, adminRouter);
