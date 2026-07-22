@@ -141,10 +141,6 @@ export const SAFE_ORG_FIELDS = [
   'appIcon',
   'active',
   'createdAt',
-  // Task #681: surfaced read-only on the org admin form so admins can
-  // see/edit which third-party domains are allowed to embed the
-  // registration iframe. Not sensitive — bare hostnames.
-  'allowedEmbedDomains',
 ] as const;
 
 // Deny-list (task #501) — the inverse of `SAFE_ORG_FIELDS`. The

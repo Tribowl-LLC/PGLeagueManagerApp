@@ -108,7 +108,7 @@ export function OrganizationFormBody({ editOrg, onClose }: { editOrg?: Organizat
     } else {
       const adminData = { name: adminName, email: adminEmail, phone: adminPhone || null };
       const dataToSend = { ...orgData, active: true, adminData };
-      createMutation.mutate(dataToSend as unknown as InsertOrganization);
+      createMutation.mutate(dataToSend);
     }
   };
 

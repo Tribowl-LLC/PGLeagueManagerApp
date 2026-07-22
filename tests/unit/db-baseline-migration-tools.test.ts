@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(5);
+    expect(migrations).toHaveLength(6);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -146,6 +146,15 @@ describe('normalized migration baseline tools', () => {
     });
     expect(migrations[4]?.sql).toContain('DROP TABLE "league_secretaries"');
     expect(migrations[4]?.sql).toContain('DROP TABLE "league_secretary_audits"');
+    expect(migrations[5]).toMatchObject({
+      idx: 5,
+      tag: '0005_remove_embeddable_registration',
+      createdAt: 1784743908431,
+      hash: '1612874cc86ac939949b9b92722eb548a9ed9ee43208c1644d96cffd64aa3ac0',
+    });
+    expect(migrations[5]?.sql).toContain('DROP TABLE "league_registration_questions"');
+    expect(migrations[5]?.sql).toContain('DROP TABLE "league_registrations"');
+    expect(migrations[5]?.sql.match(/DROP COLUMN/g)).toHaveLength(3);
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 

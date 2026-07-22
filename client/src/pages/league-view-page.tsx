@@ -23,7 +23,6 @@ import { useParams, Link, useLocation } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { getSeasonLabel } from "@shared/season-utils";
-import { EmbedAdminPanel } from "./league-view-page/embed-admin-panel";
 import { InviteResultCard } from "./league-view-page/invite-result-card";
 import { LeagueActionCards } from "./league-view-page/league-action-cards";
 import { SeasonHistoryCard } from "./league-view-page/season-history-card";
@@ -187,10 +186,6 @@ export default function LeagueViewPage() {
 
         <ErrorBoundary level="section">
           <LeagueActionCards leagueId={leagueId} />
-        </ErrorBoundary>
-
-        <ErrorBoundary level="section">
-          <EmbedAdminPanel league={league} />
         </ErrorBoundary>
 
         <ErrorBoundary level="section">

@@ -30,6 +30,12 @@
       "tag": "0004_remove_league_secretaries",
       "createdAt": 1784736825589,
       "hash": "1516fb7b4c419e90e3df340d33ef90dfdba668a07296aa9c3a26b96640ee277e"
+    },
+    {
+      "idx": 5,
+      "tag": "0005_remove_embeddable_registration",
+      "createdAt": 1784743908431,
+      "hash": "1612874cc86ac939949b9b92722eb548a9ed9ee43208c1644d96cffd64aa3ac0"
     }
   ]
 }

@@ -36,11 +36,6 @@ const EXEMPT_PATHS = [
   // can exercise the post-window-reset path without 10 minutes of waiting).
   // Production never mounts the route, so the exemption is inert there.
   '/account/_test',
-  // Task #681: public, no-auth embed registration submit. The endpoint
-  // originates from third-party parent pages that have no session-bound
-  // CSRF token; abuse is bounded by the per-IP rate limiter wired in
-  // server/routes/public-embed-registration.ts.
-  '/public/embed',
 ];
 
 const STATE_CHANGING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);

@@ -21,7 +21,6 @@ function org(slug: string, subdomain: string | null): InsertOrganization {
     slug,
     subdomain,
     active: true,
-    allowedEmbedDomains: [],
   };
 }
 

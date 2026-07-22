@@ -11,7 +11,6 @@ import {
   bowlerPaymentLinks,
   bowlers,
   deletionRequests,
-  leagueRegistrations,
   leagues,
   locations,
   organizations,
@@ -140,7 +139,6 @@ export async function deleteOrganization(id: number): Promise<void> {
       ...locationIds.map((locationId) => `square_catalog_cap:loc:${locationId}`),
     ];
 
-    await tx.delete(leagueRegistrations).where(eq(leagueRegistrations.organizationId, id));
     await tx.delete(bowlerPaymentLinks).where(eq(bowlerPaymentLinks.organizationId, id));
     await tx.delete(applePayJobItems).where(eq(applePayJobItems.organizationId, id));
     await tx.delete(adminRoleChangeAudits).where(eq(adminRoleChangeAudits.organizationId, id));

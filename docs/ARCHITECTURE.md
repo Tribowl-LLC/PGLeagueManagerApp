@@ -82,7 +82,7 @@ other sensitive rows.
 | [`client/src/App.tsx`](../client/src/App.tsx) | Client route map, role-aware redirects, lazy loading, and protected-route presentation. |
 | [`server/app.ts`](../server/app.ts) | Express app factory, middleware order, health endpoint, static/Vite serving, boot checks, and worker startup. |
 | [`server/routes/`](../server/routes/) | HTTP route modules. [`routes/index.ts`](../server/routes/index.ts) mounts the API routers and their broad auth boundaries. |
-| [`server/middleware/`](../server/middleware/) | Cross-cutting request behavior: authentication gates, CSRF, subdomain context, security headers, organization context, and embed CSP. |
+| [`server/middleware/`](../server/middleware/) | Cross-cutting request behavior: authentication gates, CSRF, subdomain context, security headers, and organization context. |
 | [`server/storage/`](../server/storage/) | Database access facade and domain-specific storage modules for leagues, teams, bowlers, payments, users, organizations, and operational records. |
 | [`server/services/`](../server/services/) | Business workflows and external-system adapters, including payments, email, account lifecycle, schedulers, and recovery workers. |
 | [`server/lib/`](../server/lib/) | Server infrastructure helpers such as password handling, shutdown, and trust-proxy verification. |
@@ -184,7 +184,7 @@ In [`server/app.ts`](../server/app.ts), the important request stages are:
 3. `setupAuth` installs the session store and Passport middleware. The
    `orgSessionGuard` then prevents a logged-in user from using a different
    organization subdomain without membership.
-4. API headers, embed CSP handling, the CSRF-token endpoint, and CSRF protection
+4. API headers, the CSRF-token endpoint, and CSRF protection
    are installed. Webhook and other explicitly public routes are mounted with
    deliberate exceptions.
 5. [`server/routes/index.ts`](../server/routes/index.ts) mounts the route
@@ -200,7 +200,7 @@ In [`server/app.ts`](../server/app.ts), the important request stages are:
 
 Public or specialized paths are intentionally mounted outside the broad
 authenticated API mounts. Examples include organization-public endpoints,
-embedded registration, bowler-payment-link responses, authentication
+bowler-payment-link responses and authentication
 management.
 
 ## Authentication Flow

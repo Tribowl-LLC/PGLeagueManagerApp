@@ -56,7 +56,6 @@ import { securityHeaders, apiHeaders } from './middleware/security';
 import { requestTracker, registerShutdownHandlers } from './lib/shutdown';
 import manifestRouter from './routes/manifest';
 import { assertTrustProxyAtBoot } from './lib/trust-proxy-check';
-import { embedFrameAncestorsOverride } from './middleware/embed-csp';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import * as schema from '@shared/schema';
 import { registerSquareWebhookTripwire } from './routes/payments-provider/square-webhook-tripwire';
@@ -191,7 +190,7 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
   app.use('/api/admin/email-templates', express.json({ limit: '1mb' }));
 
   // Global body-parser ceilings are intentionally small (256 KB). Normal
-  // auth/account/admin/payment/public-embed JSON payloads are far below this;
+  // auth/account/admin/payment JSON payloads are far below this;
   // oversized bodies are rejected early with a 413 before route handlers run.
   app.use(express.json({ limit: '256kb' }));
   app.use(express.urlencoded({ extended: false, limit: '256kb' }));
@@ -255,10 +254,6 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
   });
 
   app.use('/api', apiHeaders);
-
-  // Task #681: per-org frame-ancestors override for the embed
-  // registration page.
-  app.use(embedFrameAncestorsOverride);
 
   app.get('/api/csrf-token', csrfTokenEndpoint);
   app.use('/api', csrfProtection);

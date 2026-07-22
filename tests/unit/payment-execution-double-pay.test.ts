@@ -127,8 +127,6 @@ function makeLeague(overrides: Partial<League> = {}): League {
     skipDates: [],
     cancelledDates: [],
     doublePayDates: [],
-    rosterCap: null,
-    embedRegistrationFee: null,
   });
   // `id` is omitted from the insert schema; re-add it to satisfy the
   // SELECT type. Overrides win.

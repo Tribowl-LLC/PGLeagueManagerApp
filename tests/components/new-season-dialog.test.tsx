@@ -36,8 +36,6 @@ const league = {
   skipDates: [],
   cancelledDates: [],
   doublePayDates: [],
-  rosterCap: null,
-  embedRegistrationFee: null,
 } satisfies League;
 
 describe('NewSeasonDialog', () => {

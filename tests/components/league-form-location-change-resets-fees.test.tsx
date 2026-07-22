@@ -86,8 +86,6 @@ const seededLeague: League = {
   skipDates: [],
   cancelledDates: [],
   doublePayDates: [],
-    rosterCap: null,
-    embedRegistrationFee: null,
 };
 
 function renderForm() {

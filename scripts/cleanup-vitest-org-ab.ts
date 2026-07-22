@@ -14,7 +14,7 @@
  * Behaviour:
  *   - Pre-counts every dependent / cascaded child table so the
  *     completion notes can record per-table counts (sessions, scores,
- *     payments, registrations, saved cards, payment links,
+ *     payments, saved cards, payment links,
  *     teams, games, email_change_requests, etc.) before the deletes
  *     run and the rows disappear.
  *   - Deletes leaf-first inside one transaction.
@@ -47,8 +47,6 @@ import {
   paymentSchedules,
   bowlerLeagues,
   bowlerPaymentLinks,
-  leagueRegistrations,
-  leagueRegistrationQuestions,
   emailChangeRequests,
   applePayJobs,
   applePayJobItems,
@@ -189,9 +187,6 @@ async function main(): Promise<void> {
     bowlerPaymentLinks: orgFilter
       ? await countWhere(bowlerPaymentLinks, inArray(bowlerPaymentLinks.organizationId, doomedIds))
       : 0,
-    leagueRegistrations: orgFilter
-      ? await countWhere(leagueRegistrations, inArray(leagueRegistrations.organizationId, doomedIds))
-      : 0,
     applePayJobItems: orgFilter
       ? await countWhere(applePayJobItems, inArray(applePayJobItems.organizationId, doomedIds))
       : 0,
@@ -237,12 +232,6 @@ async function main(): Promise<void> {
                 : inArray(bowlerLeagues.bowlerId, bowlerIds),
           )
         : 0,
-    leagueRegistrationQuestions: leagueFilter
-      ? await countWhere(
-          leagueRegistrationQuestions,
-          inArray(leagueRegistrationQuestions.leagueId, leagueIds),
-        )
-      : 0,
     emailChangeRequests: userFilter
       ? await countWhere(emailChangeRequests, inArray(emailChangeRequests.userId, userIds))
       : 0,
@@ -390,10 +379,6 @@ async function main(): Promise<void> {
       await countWhere(bowlerPaymentLinks, inArray(bowlerPaymentLinks.organizationId, doomedIds)),
     ],
     [
-      'league_registrations.organization_id',
-      await countWhere(leagueRegistrations, inArray(leagueRegistrations.organizationId, doomedIds)),
-    ],
-    [
       'apple_pay_job_items.organization_id',
       await countWhere(applePayJobItems, inArray(applePayJobItems.organizationId, doomedIds)),
     ],
@@ -528,13 +513,6 @@ async function main(): Promise<void> {
           [
             'bowler_leagues.league_id',
             await countWhere(bowlerLeagues, inArray(bowlerLeagues.leagueId, leagueIds)),
-          ],
-          [
-            'league_registration_questions.league_id',
-            await countWhere(
-              leagueRegistrationQuestions,
-              inArray(leagueRegistrationQuestions.leagueId, leagueIds),
-            ),
           ],
         ] satisfies Array<[string, number]>)
       : []),
