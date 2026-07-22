@@ -1,77 +1,90 @@
 /**
- * Task #612 — Square webhook tripwire stub coverage.
- *
- * We do not subscribe to any Square webhook events today, but the
- * CSRF exemption at `server/middleware/csrf.ts` is a generic prefix
- * match for `/payments-provider/webhooks`, so a Square subscription
- * configured out-of-band would deliver events to
- * `POST /api/payments-provider/webhooks/square`. Without a stub the
- * request would 404 silently and we'd lose money-relevant events
- * with no alarms.
- *
- * The stub MUST:
- *   1. Answer with HTTP 501 and the structured error code
- *      `SQUARE_WEBHOOK_NOT_IMPLEMENTED`.
- *   2. Emit a single `log.error` line — not `warn` — with method,
- *      path, all request headers, and the raw body. `log.error` is
- *      the visibility-floor in production; `warn` would be too
- *      easy to miss when on-call is paging.
- *   3. Touch no storage method (there's no payment row to update;
- *      this is a tripwire, not a handler).
- *   4. Run with no signature requirement — there is no Square
- *      webhook secret to verify against today, and the whole point
- *      is to fire on any unexpected delivery.
- *
- * The companion integration test
- * `tests/api/clover-webhook-routing.test.ts` already pins that the
- * `/payments-provider/webhooks` prefix is reachable without session
- * auth; the Square stub inherits that property.
+ * Security regression coverage for the deliberately disabled Square webhook.
+ * The route must remain observable without accepting events or copying any
+ * caller-controlled payload, query, or header value into logs.
  */
 import {
-  afterAll, beforeAll, beforeEach,
-  describe, expect, it, vi,
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
 } from 'vitest';
 import express from 'express';
+import { readFileSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 
-const { mockStorage, fakeLogger } = vi.hoisted(() => ({
+const {
+  fakeLogger,
+  mockStorage,
+  mockGetPaymentProvider,
+  mockProcessScheduledPayment,
+  mockEnqueue,
+  downstreamTenantResolver,
+} = vi.hoisted(() => ({
+  fakeLogger: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  },
   mockStorage: {
-    getPaymentByCloverChargeId: vi.fn(),
+    createPayment: vi.fn(),
+    updatePayment: vi.fn(),
     refundPayment: vi.fn(),
     openDispute: vi.fn(),
-    updatePayment: vi.fn(),
+    getOrganizationBySubdomain: vi.fn(),
+    getOrganizationBySlug: vi.fn(),
   },
-  fakeLogger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+  mockGetPaymentProvider: vi.fn(),
+  mockProcessScheduledPayment: vi.fn(),
+  mockEnqueue: vi.fn(),
+  downstreamTenantResolver: vi.fn(),
+}));
+
+vi.mock('../../server/logger', () => ({
+  logger: fakeLogger,
+  createLogger: () => fakeLogger,
 }));
 vi.mock('../../server/storage', () => ({ storage: mockStorage }));
-vi.mock('../../server/logger', () => ({ logger: fakeLogger, createLogger: () => fakeLogger }));
+vi.mock('../../server/services/payment-provider-factory', () => ({
+  getPaymentProvider: mockGetPaymentProvider,
+}));
+vi.mock('../../server/services/payment-lifecycle', () => ({
+  processScheduledPaymentJob: mockProcessScheduledPayment,
+}));
+vi.mock('../../server/services/payment-scheduler', () => ({
+  paymentScheduler: { schedulePayment: mockEnqueue },
+}));
 
-const webhooksRouter = (await import('../../server/routes/payments-provider/webhooks')).default;
+const {
+  registerSquareWebhookTripwire,
+  SQUARE_WEBHOOK_REQUEST_ID_HEADER,
+  SQUARE_WEBHOOK_TRIPWIRE_BODY_LIMIT_BYTES,
+  SQUARE_WEBHOOK_TRIPWIRE_PATH,
+} = await import('../../server/routes/payments-provider/square-webhook-tripwire');
+const { SQUARE_WEBHOOK_TRIPWIRE_MAX_REQUESTS } = await import(
+  '../../server/middleware/rate-limit'
+);
 
 let server: Server;
 let baseUrl: string;
 
 beforeAll(async () => {
   const app = express();
-  // Mirror the production wiring: capture rawBody on the global JSON
-  // parser so the stub can log the exact bytes that came in (which
-  // is what a future signature-verifying handler will need anyway).
-  app.use(express.json({
-    verify: (req: express.Request, _res, buf) => {
-      req.rawBody = buf;
-    },
-  }));
-  // Also accept raw bytes for non-JSON content types so the tripwire
-  // exercises the rawBody path even when a misconfigured subscription
-  // sends, say, `application/x-www-form-urlencoded`.
-  app.use(express.raw({
-    type: () => true,
-    verify: (req: express.Request, _res, buf) => {
-      if (!req.rawBody) req.rawBody = buf;
-    },
-  }));
-  app.use('/api/payments-provider/webhooks', webhooksRouter);
+  app.set('trust proxy', 1);
+  registerSquareWebhookTripwire(app);
+
+  // Any request that reaches this middleware has escaped the exact tripwire
+  // chain and could enter tenant/business routing in the production app.
+  app.use((_req, res) => {
+    downstreamTenantResolver();
+    res.status(204).end();
+  });
+
   await new Promise<void>((resolve) => {
     server = app.listen(0, '127.0.0.1', () => resolve());
   });
@@ -85,110 +98,269 @@ afterAll(async () => {
 });
 
 beforeEach(() => {
-  for (const fn of Object.values(mockStorage)) (fn as ReturnType<typeof vi.fn>).mockReset();
-  fakeLogger.info.mockReset();
-  fakeLogger.warn.mockReset();
-  fakeLogger.error.mockReset();
-  fakeLogger.debug.mockReset();
+  for (const fn of Object.values(fakeLogger)) fn.mockReset();
+  for (const fn of Object.values(mockStorage)) fn.mockReset();
+  mockGetPaymentProvider.mockReset();
+  mockProcessScheduledPayment.mockReset();
+  mockEnqueue.mockReset();
+  downstreamTenantResolver.mockReset();
 });
 
-async function postSquare(
-  body: string,
-  headers: Record<string, string> = {},
-) {
-  return fetch(`${baseUrl}/api/payments-provider/webhooks/square`, {
+interface PostOptions {
+  ip: string;
+  body?: string;
+  query?: string;
+  headers?: Record<string, string>;
+}
+
+async function postSquare({ ip, body, query = '', headers = {} }: PostOptions) {
+  return fetch(`${baseUrl}${SQUARE_WEBHOOK_TRIPWIRE_PATH}${query}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', ...headers },
+    headers: {
+      'content-type': 'application/json',
+      'x-forwarded-for': ip,
+      ...headers,
+    },
     body,
   });
 }
 
-describe('POST /api/payments-provider/webhooks/square — tripwire stub (task #612)', () => {
-  it('responds 501 with SQUARE_WEBHOOK_NOT_IMPLEMENTED and a non-empty message', async () => {
-    const res = await postSquare(JSON.stringify({
-      type: 'payment.updated',
-      event_id: 'evt_sq_1',
-      data: { type: 'payment', id: 'sq_pay_1' },
-    }));
+function expectNoSideEffects(): void {
+  for (const fn of Object.values(mockStorage)) expect(fn).not.toHaveBeenCalled();
+  expect(mockGetPaymentProvider).not.toHaveBeenCalled();
+  expect(mockProcessScheduledPayment).not.toHaveBeenCalled();
+  expect(mockEnqueue).not.toHaveBeenCalled();
+  expect(downstreamTenantResolver).not.toHaveBeenCalled();
+}
+
+function serializedObservations(responseText: string): string {
+  return JSON.stringify({
+    warnCalls: fakeLogger.warn.mock.calls,
+    errorCalls: fakeLogger.error.mock.calls,
+    responseText,
+  });
+}
+
+describe('disabled Square webhook tripwire', () => {
+  it('returns 501 with a correlated server-generated request id and exact safe metadata', async () => {
+    const sentinels = {
+      authorization: 'Bearer SENTINEL_AUTHORIZATION_TOKEN',
+      cookie: 'session=SENTINEL_COOKIE_VALUE',
+      signature: 'SENTINEL_SQUARE_SIGNATURE',
+      custom: 'SENTINEL_CUSTOM_HEADER',
+      query: 'SENTINEL_QUERY_VALUE',
+      nested: 'SENTINEL_NESTED_BODY_TOKEN',
+      control: 'SENTINEL_CONTROL\n[ERROR] forged-log-line',
+      userAgent: 'SENTINEL_USER_AGENT',
+      contentTypeParameter: 'SENTINEL_CONTENT_TYPE_PARAMETER',
+    };
+    const body = JSON.stringify({
+      data: {
+        token: sentinels.nested,
+        nested: { control: sentinels.control },
+      },
+    });
+
+    const res = await postSquare({
+      ip: '203.0.113.11',
+      body,
+      query: `?payload=${encodeURIComponent(sentinels.query)}`,
+      headers: {
+        authorization: sentinels.authorization,
+        cookie: sentinels.cookie,
+        'x-square-signature': sentinels.signature,
+        'x-custom-sensitive': sentinels.custom,
+        'user-agent': sentinels.userAgent,
+        'content-type': `application/json; profile=${sentinels.contentTypeParameter}`,
+      },
+    });
 
     expect(res.status).toBe(501);
-    const body = await res.json();
-    expect(body).toMatchObject({
+    const requestId = res.headers.get(SQUARE_WEBHOOK_REQUEST_ID_HEADER);
+    expect(requestId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+
+    const responseText = await res.text();
+    const response = JSON.parse(responseText);
+    expect(response).toEqual({
       success: false,
-      error: { code: 'SQUARE_WEBHOOK_NOT_IMPLEMENTED' },
+      error: {
+        code: 'SQUARE_WEBHOOK_NOT_IMPLEMENTED',
+        message: 'Square webhook receiver is not implemented',
+      },
     });
-    expect(typeof body.error.message).toBe('string');
-    expect(body.error.message.length).toBeGreaterThan(0);
+    expect(response.success).not.toBe(true);
+
+    expect(fakeLogger.warn).toHaveBeenCalledTimes(1);
+    expect(fakeLogger.error).not.toHaveBeenCalled();
+    expect(fakeLogger.warn.mock.calls[0]).toEqual([
+      'Disabled Square webhook request rejected',
+      {
+        event: 'square_webhook_not_implemented',
+        requestId,
+        method: 'POST',
+        path: SQUARE_WEBHOOK_TRIPWIRE_PATH,
+        contentType: 'application/json',
+        declaredContentLength: Buffer.byteLength(body),
+        outcome: 'rejected_not_implemented',
+      },
+    ]);
+
+    const observed = serializedObservations(responseText);
+    for (const sentinel of Object.values(sentinels)) {
+      expect(observed).not.toContain(sentinel);
+    }
+    const metadata = fakeLogger.warn.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(metadata).not.toHaveProperty('headers');
+    expect(metadata).not.toHaveProperty('body');
+    expect(metadata).not.toHaveProperty('rawBody');
+    expect(metadata).not.toHaveProperty('originalUrl');
+    expectNoSideEffects();
   });
 
-  it('emits exactly one log.error (NOT warn / info) with method, path, headers, and rawBody', async () => {
-    const eventBody = JSON.stringify({
-      type: 'refund.updated',
-      event_id: 'evt_sq_2',
-      data: { type: 'refund', id: 'sq_rfnd_2' },
+  it('accepts an under-limit JSON body only to reject the disabled endpoint', async () => {
+    const body = JSON.stringify({ payload: 'x'.repeat(512) });
+    const res = await postSquare({ ip: '203.0.113.12', body });
+
+    expect(res.status).toBe(501);
+    expect(res.headers.get(SQUARE_WEBHOOK_REQUEST_ID_HEADER)).toBeTruthy();
+    expect((await res.json()).error.code).toBe('SQUARE_WEBHOOK_NOT_IMPLEMENTED');
+    expectNoSideEffects();
+  });
+
+  it('rejects an oversized body before the handler without logging its contents', async () => {
+    const sentinel = 'SENTINEL_OVERSIZED_BODY_SECRET';
+    const body = JSON.stringify({
+      payload: sentinel + 'x'.repeat(SQUARE_WEBHOOK_TRIPWIRE_BODY_LIMIT_BYTES),
     });
-    await postSquare(eventBody, {
-      'x-square-signature': 'sig_for_diagnostic_capture',
-      'square-environment': 'Production',
-      'square-retry-number': '3',
+    const res = await postSquare({ ip: '203.0.113.13', body });
+
+    expect(res.status).toBe(413);
+    const requestId = res.headers.get(SQUARE_WEBHOOK_REQUEST_ID_HEADER);
+    expect(requestId).toBeTruthy();
+    const responseText = await res.text();
+    expect(JSON.parse(responseText).error).toEqual({
+      code: 'SQUARE_WEBHOOK_PAYLOAD_TOO_LARGE',
+      message: 'Request body exceeds the allowed size',
+    });
+    expect(fakeLogger.warn.mock.calls[0]).toEqual([
+      'Disabled Square webhook request rejected',
+      {
+        event: 'square_webhook_not_implemented',
+        requestId,
+        method: 'POST',
+        path: SQUARE_WEBHOOK_TRIPWIRE_PATH,
+        contentType: 'application/json',
+        declaredContentLength: Buffer.byteLength(body),
+        outcome: 'rejected_payload_too_large',
+      },
+    ]);
+    expect(fakeLogger.error).not.toHaveBeenCalled();
+    expect(serializedObservations(responseText)).not.toContain(sentinel);
+    expect(responseText).not.toMatch(/entity\.too\.large|stack|SyntaxError/i);
+    expectNoSideEffects();
+  });
+
+  it('applies the same small limit to non-JSON bodies without logging bytes', async () => {
+    const sentinel = 'SENTINEL_NON_JSON_OVERSIZED_BODY';
+    const body = sentinel + 'x'.repeat(SQUARE_WEBHOOK_TRIPWIRE_BODY_LIMIT_BYTES);
+    const res = await postSquare({
+      ip: '203.0.113.17',
+      body,
+      headers: { 'content-type': 'application/octet-stream' },
     });
 
-    // The "loud, not silent" requirement is the whole point of the
-    // task. If a future refactor downgrades this to warn or info,
-    // operators on a default-warn or default-info log floor would
-    // miss it — exactly the regression the task was filed to prevent.
-    expect(fakeLogger.error).toHaveBeenCalledTimes(1);
+    expect(res.status).toBe(413);
+    const responseText = await res.text();
+    expect(JSON.parse(responseText).error.code).toBe('SQUARE_WEBHOOK_PAYLOAD_TOO_LARGE');
+    expect(fakeLogger.error).not.toHaveBeenCalled();
+    expect(serializedObservations(responseText)).not.toContain(sentinel);
+    expectNoSideEffects();
+  });
+
+  it('contains malformed JSON errors without logging body fragments or parser details', async () => {
+    const sentinel = 'SENTINEL_MALFORMED_JSON_TOKEN';
+    const body = `{"nested":{"token":"${sentinel}"`;
+    const res = await postSquare({ ip: '203.0.113.14', body });
+
+    expect(res.status).toBe(400);
+    const requestId = res.headers.get(SQUARE_WEBHOOK_REQUEST_ID_HEADER);
+    expect(requestId).toBeTruthy();
+    const responseText = await res.text();
+    expect(JSON.parse(responseText).error).toEqual({
+      code: 'SQUARE_WEBHOOK_INVALID_JSON',
+      message: 'Malformed JSON body',
+    });
+    expect(fakeLogger.warn.mock.calls[0]).toEqual([
+      'Disabled Square webhook request rejected',
+      {
+        event: 'square_webhook_not_implemented',
+        requestId,
+        method: 'POST',
+        path: SQUARE_WEBHOOK_TRIPWIRE_PATH,
+        contentType: 'application/json',
+        declaredContentLength: Buffer.byteLength(body),
+        outcome: 'rejected_invalid_json',
+      },
+    ]);
+    expect(fakeLogger.error).not.toHaveBeenCalled();
+    expect(serializedObservations(responseText)).not.toContain(sentinel);
+    expect(responseText).not.toMatch(/Unexpected token|JSON at position|stack/i);
+    expectNoSideEffects();
+  });
+
+  it('rate-limits only this exact endpoint before parsing or logging a blocked body', async () => {
+    const limitedIp = '203.0.113.15';
+    for (let i = 0; i < SQUARE_WEBHOOK_TRIPWIRE_MAX_REQUESTS; i += 1) {
+      const allowed = await postSquare({
+        ip: limitedIp,
+        body: JSON.stringify({ probe: i }),
+      });
+      expect(allowed.status).toBe(501);
+    }
+
+    fakeLogger.warn.mockClear();
+    const blockedSentinel = 'SENTINEL_RATE_LIMITED_BODY';
+    const blocked = await postSquare({
+      ip: limitedIp,
+      body: `{"secret":"${blockedSentinel}"}`,
+    });
+    expect(blocked.status).toBe(429);
+    expect(blocked.headers.get(SQUARE_WEBHOOK_REQUEST_ID_HEADER)).toBeTruthy();
+    const blockedText = await blocked.text();
+    expect(JSON.parse(blockedText).error.code).toBe('RATE_LIMITED');
     expect(fakeLogger.warn).not.toHaveBeenCalled();
-    expect(fakeLogger.info).not.toHaveBeenCalled();
+    expect(fakeLogger.error).not.toHaveBeenCalled();
+    expect(blockedText).not.toContain(blockedSentinel);
 
-    const [message, context] = fakeLogger.error.mock.calls[0] as [
-      string,
-      Record<string, unknown>,
-    ];
-    expect(message).toMatch(/Square webhook/i);
-    expect(context).toMatchObject({
-      method: 'POST',
-      path: '/api/payments-provider/webhooks/square',
-      rawBody: eventBody,
+    const separateIdentity = await postSquare({
+      ip: '203.0.113.16',
+      body: '{}',
     });
-    const headers = context.headers as Record<string, string>;
-    expect(headers['x-square-signature']).toBe('sig_for_diagnostic_capture');
-    expect(headers['square-environment']).toBe('Production');
-    expect(headers['square-retry-number']).toBe('3');
-  });
+    expect(separateIdentity.status).toBe(501);
 
-  it('does not touch storage — there is no payment row to update', async () => {
-    await postSquare(JSON.stringify({
-      type: 'dispute.created',
-      data: { type: 'dispute', id: 'sq_disp_1', object: { dispute: { id: 'sq_disp_1' } } },
-    }));
-
-    expect(mockStorage.getPaymentByCloverChargeId).not.toHaveBeenCalled();
-    expect(mockStorage.refundPayment).not.toHaveBeenCalled();
-    expect(mockStorage.openDispute).not.toHaveBeenCalled();
-    expect(mockStorage.updatePayment).not.toHaveBeenCalled();
-  });
-
-  it('still 501s and still logs even when the body is empty', async () => {
-    const res = await fetch(`${baseUrl}/api/payments-provider/webhooks/square`, {
+    const siblingPath = await fetch(`${baseUrl}${SQUARE_WEBHOOK_TRIPWIRE_PATH}/extra`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        'x-forwarded-for': limitedIp,
+      },
+      body: '{}',
     });
-
-    expect(res.status).toBe(501);
-    expect(fakeLogger.error).toHaveBeenCalledTimes(1);
+    expect(siblingPath.status).toBe(204);
+    expect(downstreamTenantResolver).toHaveBeenCalledTimes(1);
   });
 
-  it('does not require any HMAC signature header — fires on every delivery', async () => {
-    // No `x-square-signature`, no `x-clover-signature`, no anything.
-    // The whole point of the tripwire is to surface ANY unexpected
-    // delivery. If a future refactor ever adds signature
-    // verification here without also wiring up a Square webhook
-    // secret, the path goes back to silently 401-ing or 503-ing
-    // and on-call stops getting the alarm.
-    const res = await postSquare(JSON.stringify({ type: 'whatever' }));
+  it('is registered before tenant resolution and global raw-body capture', () => {
+    const appSource = readFileSync(
+      new URL('../../server/app.ts', import.meta.url),
+      'utf8',
+    );
+    const tripwireIndex = appSource.indexOf('registerSquareWebhookTripwire(app);');
+    const tenantIndex = appSource.indexOf('app.use(subdomainDetection);');
+    const globalJsonIndex = appSource.indexOf("limit: '256kb'");
 
-    expect(res.status).toBe(501);
-    expect(fakeLogger.error).toHaveBeenCalledTimes(1);
+    expect(tripwireIndex).toBeGreaterThan(-1);
+    expect(tripwireIndex).toBeLessThan(tenantIndex);
+    expect(tripwireIndex).toBeLessThan(globalJsonIndex);
   });
 });
