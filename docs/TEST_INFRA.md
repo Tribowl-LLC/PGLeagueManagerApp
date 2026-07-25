@@ -69,7 +69,7 @@ bypassing adoption gates.
 ## Legacy inventory reproduction
 
 `npm run db:inventory:validate-local` owns a separate, uniquely named,
-ephemeral `postgres:16` Docker container. It does not reuse or mutate the
+ephemeral `postgres:17` Docker container. It does not reuse or mutate the
 long-lived `leaguevault-test-postgres` container, a Neon test branch, or any
 configured `DATABASE_URL`.
 

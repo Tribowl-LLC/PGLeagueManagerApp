@@ -122,7 +122,7 @@ function createOwnedContainer(runId: string): OwnedInventoryContainer {
     `POSTGRES_PASSWORD=${POSTGRES_PASSWORD}`,
     '--publish',
     '127.0.0.1::5432',
-    'postgres:16',
+    'postgres:17',
   ]);
   return { id: parseCreatedContainerId(output), name, runId };
 }

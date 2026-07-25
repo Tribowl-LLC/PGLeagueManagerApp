@@ -53,11 +53,11 @@ jobs:
     timeout-minutes: 20
 
     # Ephemeral Postgres so the race tests can take real row locks.
-    # Using `postgres:16` matches the prod runtime and the version the
+    # Using `postgres:17` matches the target prod runtime and the version the
     # Drizzle migrations have been validated against.
     services:
       postgres:
-        image: postgres:16
+        image: postgres:17
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres

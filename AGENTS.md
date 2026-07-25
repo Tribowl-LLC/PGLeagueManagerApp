@@ -128,7 +128,7 @@ unavailable, inappropriate for the task, or blocked by the environment, report
 that explicitly. Do not silently skip validation.
 
 `npm run test:local` starts or reuses the local
-`leaguevault-test-postgres` PostgreSQL 16 Docker container, applies the schema,
+`leaguevault-test-postgres` PostgreSQL 17 Docker container, applies the schema,
 configures UTC and deterministic local-only secrets, prepares the test
 template, and runs the complete Vitest suite with isolated worker databases.
 No manually exported `DATABASE_URL` or development server is required.

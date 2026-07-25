@@ -126,4 +126,12 @@ describe('migrated test-template source contract', () => {
     expect(source).toContain('assertMigratedTemplateReady(templateUrl)');
     expect(source).toContain('[test-template-provenance] source=db:migrate');
   });
+
+  it('pins the local behavioral suite to PostgreSQL 17 and invalidates stale container caches', () => {
+    const source = readFileSync(resolve(process.cwd(), 'scripts/test-local.ts'), 'utf8');
+    expect(source).toContain("const POSTGRES_IMAGE = 'postgres:17'");
+    expect(source).toContain("'{{.Config.Image}}'");
+    expect(source).toContain('image !== POSTGRES_IMAGE');
+    expect(source).toContain("rmSync('.local/test-template-hash', { force: true })");
+  });
 });

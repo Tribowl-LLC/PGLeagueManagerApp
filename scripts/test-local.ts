@@ -1,5 +1,5 @@
 /**
- * Run the complete local Vitest suite against an isolated PostgreSQL 16
+ * Run the complete local Vitest suite against an isolated PostgreSQL 17
  * container. This mirrors the CI Tests job and is intentionally cross-platform
  * so Windows contributors do not need Bash or a manually-exported env file.
  *
@@ -8,9 +8,11 @@
  * much faster while retaining a fixed local-only connection target.
  */
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { rmSync } from 'node:fs';
 import { delimiter, dirname, join } from 'node:path';
 
 const CONTAINER_NAME = process.env.LV_TEST_DB_CONTAINER ?? 'leaguevault-test-postgres';
+const POSTGRES_IMAGE = 'postgres:17';
 const DB_NAME = 'leaguevault_test';
 const DB_URL = `postgres://postgres:postgres@127.0.0.1:5432/${DB_NAME}`;
 const [nodeMajor, nodeMinor] = process.versions.node.split('.').map(Number);
@@ -82,10 +84,22 @@ async function ensurePostgresContainer(): Promise<void> {
       '--env', 'POSTGRES_PASSWORD=postgres',
       '--env', `POSTGRES_DB=${DB_NAME}`,
       '--publish', '127.0.0.1:5432:5432',
-      'postgres:16',
+      POSTGRES_IMAGE,
     ]);
-  } else if (state !== 'true') {
-    run('docker', ['start', CONTAINER_NAME]);
+    // The template hash is only a cache hint; a new container cannot contain
+    // the database it describes, even when the schema inputs are unchanged.
+    rmSync('.local/test-template-hash', { force: true });
+  } else {
+    const image = capture('docker', ['inspect', '--format', '{{.Config.Image}}', CONTAINER_NAME]);
+    if (image !== POSTGRES_IMAGE) {
+      throw new Error(
+        `PostgreSQL test container ${CONTAINER_NAME} uses ${image ?? 'an unknown image'}; ` +
+        `remove and recreate that test-only container with ${POSTGRES_IMAGE}.`,
+      );
+    }
+    if (state !== 'true') {
+      run('docker', ['start', CONTAINER_NAME]);
+    }
   }
 
   for (let attempt = 1; attempt <= 30; attempt += 1) {
