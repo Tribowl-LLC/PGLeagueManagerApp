@@ -182,7 +182,7 @@ timing baseline, required ruleset transition, deployment gate, and rollback.
 ## Database
 
 Both the `Tests` job and the `Race suite` job spin up an ephemeral
-`postgres:16` service container, apply the active history with
+`postgres:17` service container, apply the active history with
 `npm run db:migrate`, and then point `DATABASE_URL` at
 `postgres://postgres:postgres@localhost:5432/<db>`. The container is
 fresh on every run, so there is no shared state between PRs and the

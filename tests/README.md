@@ -152,8 +152,8 @@ workflow files (see [`docs/ci.md`](../docs/ci.md) for the full layout):
 
 | Workflow file | Job | What it runs |
 |---|---|---|
-| [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | `Tests` | `npm test` against an ephemeral `postgres:16` + backgrounded dev server |
-| [`.github/workflows/race-suite.yml`](../.github/workflows/race-suite.yml) | `Race suite` | `npm run test:race` against its own ephemeral `postgres:16` + backgrounded dev server, gated on touched files |
+| [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | `Tests` | `npm test` against an ephemeral `postgres:17` + backgrounded dev server |
+| [`.github/workflows/race-suite.yml`](../.github/workflows/race-suite.yml) | `Race suite` | `npm run test:race` against its own ephemeral `postgres:17` + backgrounded dev server, gated on touched files |
 
 The race suite lives in its own workflow (rather than as a serial step
 appended to the `Tests` job) so it can run in parallel with `npm test`
@@ -218,7 +218,7 @@ connects to or mutates a live Neon target.
 Run `npm run db:inventory:validate-local` to build and compare the current
 declared schema and the journal-tracked SQL chain under
 `migrations-legacy-do-not-replay/` in a separate ephemeral
-PostgreSQL 16 container. The expected result is a categorized mismatch: 29
+PostgreSQL 17 container. The expected result is a categorized mismatch: 29
 tables from `db:push`, 17 from journal replay, and 12 tables missing from the
 journal result. Generated JSON lives under ignored
 `.artifacts/db-inventory/<run-id>/`, so concurrent invocations do not share

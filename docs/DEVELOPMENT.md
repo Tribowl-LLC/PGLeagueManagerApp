@@ -10,7 +10,7 @@ configuration or releases.
 
 ## Quick start
 
-For an existing checkout with PostgreSQL 16 already running locally:
+For an existing checkout with PostgreSQL 17 already running locally:
 
 ```bash
 npm ci
@@ -59,7 +59,7 @@ Install the following tools before setting up the repository:
 | Node.js | `22.22.x`; `package.json` accepts `>=22.22.0 <23` and `.node-version` pins `22.22.0` | CI and Render use the pinned Node.js version. Matching it avoids runtime and dependency differences. |
 | npm | Use the npm version bundled with the repository-supported Node.js installation unless the repository explicitly pins a different version | The repository uses npm and a lockfile version 3. Do not upgrade npm independently as part of unrelated work, and do not add a Yarn or pnpm lockfile. |
 | Git | A current version with support for worktrees and normal branch workflows | `main` is protected and changes are reviewed through pull requests. |
-| PostgreSQL | PostgreSQL 16 for the normal persistent development database | This is the standard local runtime and the version used by the full local test wrapper. Migration validation also exercises PostgreSQL 17. |
+| PostgreSQL | PostgreSQL 17 for the normal persistent development database | This is the standard local runtime and the version used by the full local test wrapper. Migration validation also exercises PostgreSQL 16 for rollback compatibility. |
 | Docker | Docker Desktop on Windows or macOS, or a compatible Docker Engine on Linux | `npm run test:local` and `npm run db:check` create or reuse local PostgreSQL containers. |
 | Bash | Required only for `npm run test:race` | The race-suite wrapper is a Bash script. On Windows, run it from Git Bash or WSL with Docker access. |
 
@@ -153,7 +153,7 @@ names and safe placeholders only; keep it that way.
 
 ## 5. Local database requirements
 
-PostgreSQL stores all application state. Use PostgreSQL 16 for the normal
+PostgreSQL stores all application state. Use PostgreSQL 17 for the normal
 persistent development database. The recommended setup in
 [`README.md`](../README.md#local-setup) creates `leaguevault-postgres` on loopback
 port `5433`, which leaves port `5432` available to the isolated test container.
@@ -162,7 +162,7 @@ points to the intended local database.
 
 First-time database setup is:
 
-1. Create and start an empty local PostgreSQL 16 database.
+1. Create and start an empty local PostgreSQL 17 database.
 2. Export a `DATABASE_URL` that names that database.
 3. Apply the checked-in migration history.
 
@@ -240,7 +240,7 @@ repository wrappers for isolated PostgreSQL and race coverage.
 | `npm test -- <path-to-test>` | A focused one-shot Vitest file during implementation; for example, `npm test -- tests/unit/zod-v4-migration-contracts.test.ts`. npm forwards the path after `--` to the repository's `vitest run` script. |
 | `npm run test:watch` | Interactive Vitest watch mode while developing. It is not a substitute for the complete suite. |
 | `npm test` | Raw one-shot Vitest run across the configured default projects. It expects its database, environment, and any required app server to have been prepared. Prefer `test:local` for normal full validation. |
-| `npm run test:local` | Recommended complete local suite. It verifies Node.js, starts or reuses the local PostgreSQL 16 test container, applies migrations, builds an exact test template, and runs isolated worker databases. Docker must be available. |
+| `npm run test:local` | Recommended complete local suite. It verifies Node.js, starts or reuses the local PostgreSQL 17 test container, applies migrations, builds an exact test template, and runs isolated worker databases. Docker must be available. |
 | `npm run test:race` | Separate serial coverage for shared-state concurrency behavior. It requires Bash, a prepared test database/application environment, and `SETUP_SECRET`; run it when changing the covered bootstrap, locking, payment retry, or shared-state behavior. Never point it at production. |
 | `npm run db:check` | Migration suite. It validates replay, fingerprints, ordering, adoption/refusal safeguards, and PostgreSQL 16/17 compatibility on disposable containers. |
 | `npm run test:template:build` | Test-infrastructure diagnostic that rebuilds the canonical test template. Routine contributors should normally let `test:local` manage it. |

@@ -315,7 +315,7 @@ Unsupported, data-changing, destructive, privilege, ownership, role, schema,
 or database operations are rejected before Docker starts, before the replay
 database exists, and before a replay connection opens.
 
-After preflight, the command creates a uniquely named PostgreSQL 16 container
+After preflight, the command creates a uniquely named PostgreSQL 17 container
 with an invocation ownership label and captures its exact container ID. It
 creates one database from current declarations with the guarded disposable
 push wrapper and another by transactionally replaying the journal under

@@ -26,7 +26,7 @@ control, transactional email, and a Square payment integration.
 - Node.js `22.22.x` (the repository requires `>=22.22.0 <23`; see
   `.node-version`).
 - npm, installed with Node.js.
-- PostgreSQL 16 for local development, either installed locally or run with
+- PostgreSQL 17 for local development, either installed locally or run with
   Docker Desktop.
 - Git.
 
@@ -81,7 +81,7 @@ docker run --detach --name leaguevault-postgres \
   --env POSTGRES_DB=leaguevault \
   --publish 127.0.0.1:5433:5432 \
   --volume leaguevault-postgres-data:/var/lib/postgresql/data \
-  postgres:16
+  postgres:17
 ```
 
 Wait for PostgreSQL to report that it is ready:
@@ -316,7 +316,7 @@ npm run test:local
 ```
 
 This command checks the Node.js version, starts or reuses the
-`leaguevault-test-postgres` PostgreSQL 16 Docker container, applies the schema,
+`leaguevault-test-postgres` PostgreSQL 17 Docker container, applies the schema,
 builds the canonical test template from an empty database with `db:migrate`,
 requires the second migration run to be a no-op and the journal to be exact,
 then runs the Vitest suite with isolated worker clones. Every physical worker

@@ -301,13 +301,13 @@ jobs:
     # Ephemeral Postgres so the API tests (and the unit tests that
     # import `server/db` for fixture seeding via `installDbInvariants`
     # in `tests/setup/global-setup.ts`) can talk to a real database.
-    # Using `postgres:16` matches the prod runtime and the version the
+    # Using `postgres:17` matches the target prod runtime and the version the
     # Drizzle migrations have been validated against — same pin as
     # `race-suite.yml`, deliberately, so a future runtime bump only
     # has to be applied in one place at a time.
     services:
       postgres:
-        image: postgres:16
+        image: postgres:17
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
