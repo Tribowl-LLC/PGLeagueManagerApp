@@ -182,11 +182,6 @@
       "count": 1
     }
   },
-  "server/routes/bulk-import.ts": {
-    "@typescript-eslint/no-non-null-assertion": {
-      "count": 6
-    }
-  },
   "server/routes/leagues.ts": {
     "@typescript-eslint/no-non-null-assertion": {
       "count": 3

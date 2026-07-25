@@ -116,8 +116,8 @@ router.post("/", async (req, res) => {
       // regular access check via the legacy league-scan fallback path
       // (no shared league with the caller), so the public API would
       // otherwise have no way to attach a brand-new bowler to its first
-      // league. Production bootstrap paths (bulk import, season clone)
-      // call `storage.createBowlerLeague` directly to dodge the same
+      // league. The production season-clone bootstrap path calls
+      // `storage.createBowlerLeague` directly to dodge the same
       // chicken-egg problem.
       //
       // History: pre-#342 this branch was gated by an in-memory

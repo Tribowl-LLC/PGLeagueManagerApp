@@ -5,7 +5,7 @@
  * which forgets to stamp the owning organization on a new bowler is
  * rejected by Postgres instead of silently producing an invisible
  * orphan row. Pairs with the application-level stamping in
- * `server/routes/bowlers.ts` and `server/routes/bulk-import.ts`.
+ * `server/routes/bowlers.ts`.
  */
 import { describe, it, expect } from 'vitest';
 import { sql } from 'drizzle-orm';

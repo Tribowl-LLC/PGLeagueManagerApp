@@ -25,7 +25,6 @@ on a column with an FK constraint, with the path that gates it.
 | Route | Admin-supplied id(s) | FK target | Status |
 | --- | --- | --- | --- |
 | `POST /api/bowlers` | `?organizationId` | `bowlers.organization_id -> organizations.id` | Existence check (#422). Pinned by `tests/api/bowler-creation-org-required.test.ts` |
-| `POST /api/bowlers/bulk-import` | none (session-derived) | `bowlers.organization_id` | 403 if no session org. Pinned by same test file |
 | `POST /api/teams` | body `leagueId` | `teams.league_id -> leagues.id` | Existing 404 in `server/routes/teams.ts` |
 | `PATCH /api/teams/:id` | none (id-from-row) | n/a | n/a |
 | `POST /api/bowler-leagues` | body `bowlerId` / `leagueId` / `teamId` | `bowler_leagues.*_id` | `hasAccessToBowler` / `hasAccessToLeague` / `hasAccessToTeam` return false for missing rows -> 403 (no FK fallthrough). Pinned by `tests/api/bowler-leagues-bootstrap.test.ts` |

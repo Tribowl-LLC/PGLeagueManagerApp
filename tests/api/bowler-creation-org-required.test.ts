@@ -1,18 +1,16 @@
 /**
  * Task #415 — route-level audit of every bowler-insert call site.
  *
- * Production has exactly two paths that insert into `bowlers`:
- *   - POST /api/bowlers                (server/routes/bowlers.ts)
- *   - POST /api/bowlers/bulk-import    (server/routes/bulk-import.ts,
- *                                       mounted in server/routes/index.ts)
+ * Production inserts into `bowlers` through POST /api/bowlers
+ * (`server/routes/bowlers.ts`).
  *
- * Both stamp `organizationId` from the caller's session before
- * delegating to `storage.createBowler`. Both refuse with a clean
+ * The route stamps `organizationId` from the caller's session before
+ * delegating to `storage.createBowler`. It refuses with a clean
  * 403 FORBIDDEN when the org cannot be derived, so the user never
  * sees the raw `bowlers.organization_id` NOT NULL DB error from
  * task #407.
  *
- * These tests pin BOTH 403 guards as a regression net. Pairs with:
+ * These tests pin the 403 guard as a regression net. Pairs with:
  *   - tests/unit/bowler-org-not-null.test.ts  (DB-level safety net)
  *   - tests/api/auth-org-required.test.ts     (sister route guard)
  *
@@ -228,38 +226,6 @@ describe('Bowler creation routes — organization context guards (task #415)', (
       const [row] = await db.select().from(bowlers).where(eq(bowlers.id, created.id));
       expect(row).toBeDefined();
       expect(row.organizationId).toBe(session.user.organizationId);
-    });
-  });
-
-  describe('POST /api/bowlers/bulk-import', () => {
-    it('returns 403 FORBIDDEN when a system_admin uploads without a session org', async () => {
-      const session = await login(TEST_ADMIN_EMAIL, TEST_ADMIN_PASSWORD);
-      expect(session.user.role).toBe('system_admin');
-      expect(session.user.organizationId).toBeNull();
-
-      // The org guard at server/routes/bulk-import.ts:170-173 runs
-      // AFTER multer parses the file, so we must upload a valid-ish
-      // CSV to reach it. The contents are never inspected because
-      // the 403 fires before parseFile() is called.
-      const csv = 'League Name,Team Name,Team Number,Bowler Name\nL,T,1,B\n';
-      const blob = new Blob([csv], { type: 'text/csv' });
-      const form = new FormData();
-      form.append('file', blob, 'vitest-415.csv');
-
-      const res = await fetch(`${BASE_URL}/api/bowlers/bulk-import`, {
-        method: 'POST',
-        headers: {
-          Cookie: session.cookies,
-          'x-csrf-token': session.csrfToken,
-        },
-        body: form,
-      });
-      const data = await res.json();
-
-      expect(res.status).toBe(403);
-      expect(data.success).toBe(false);
-      expect(data.error?.code).toBe('FORBIDDEN');
-      expect(data.error?.message).toMatch(/organization context required/i);
     });
   });
 });
