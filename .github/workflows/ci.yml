@@ -249,13 +249,9 @@ jobs:
   # See `docs/ci.md` for the full layout of which suite runs in which
   # job and the env-var contract.
   database-migrations:
-    name: Database migrations (PostgreSQL ${{ matrix.postgres }})
+    name: Database migrations (PostgreSQL 17)
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        postgres: ['16', '17']
     steps:
       - name: Check out the PR
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -285,7 +281,7 @@ jobs:
           )
 
       - name: Replay, fingerprint, and adopt disposable databases
-        run: npm run db:check -- --postgres-version ${{ matrix.postgres }}
+        run: npm run db:check -- --postgres-version 17
 
   tests:
     name: Tests

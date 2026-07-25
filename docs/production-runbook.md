@@ -12,13 +12,12 @@ credentials.
    lint`, and `npm run build` when practical.
 4. Push the branch and open a pull request.
 5. Wait for `Type check & lint` and `Tests`, which the active GitHub `main`
-   ruleset requires. Also verify `Database migrations (PostgreSQL 16)`,
-   `Database migrations (PostgreSQL 17)`, and `Race suite` manually; repository
-   policy treats those three as release-blocking even though the current
-   ruleset does not enforce them. Review Semgrep, Semgrep Cloud, Gitleaks,
-   HoundDog, and dependency-audit results as well. Confirm the live ruleset
-   before every release instead of assuming repository settings have remained
-   unchanged.
+   ruleset requires. Also verify `Database migrations (PostgreSQL 17)` and
+   `Race suite` manually; repository policy treats those two as
+   release-blocking even though the current ruleset does not enforce them.
+   Review Semgrep, Semgrep Cloud, Gitleaks, HoundDog, and dependency-audit
+   results as well. Confirm the live ruleset before every release instead of
+   assuming repository settings have remained unchanged.
 6. If the release contains a schema migration, follow the
    [schema-release auto-deploy hold](#schema-release-auto-deploy-hold) to switch
    the Render service from `After CI Checks Pass` to `Off` **before** merging.

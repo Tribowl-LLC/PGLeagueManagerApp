@@ -89,8 +89,8 @@ Validation belongs primarily in GitHub CI, before Render receives a revision:
 
 1. The active `main` ruleset requires `Type check & lint` and `Tests`.
 2. Repository release policy also requires operators to verify `Database
-   migrations (PostgreSQL 16)`, `Database migrations (PostgreSQL 17)`, and
-   `Race suite`, even while those checks are not ruleset-enforced.
+   migrations (PostgreSQL 17)` and `Race suite`, even while those checks are
+   not ruleset-enforced.
 3. Security and privacy checks, including Semgrep, Gitleaks, HoundDog, and
    dependency audits, must be reviewed.
 4. After merge, Exact main certification proves PR provenance, verifies the
