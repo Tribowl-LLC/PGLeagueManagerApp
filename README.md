@@ -184,10 +184,18 @@ evolve.
 
 ## Environment Variables
 
-The server reads environment variables from the process environment. This
-repository does not include a Node dotenv loader, so a root `.env` file is not
-automatically loaded by `npm run dev`; configure variables in your shell, local
-secret manager, or deployment provider. Keep secrets out of source control.
+The server reads environment variables from the process environment. Start
+with [`.env.example`](.env.example), which labels required, optional,
+server-only, and browser-visible settings. This repository does not include a
+Node dotenv loader, so a root `.env` file is not automatically loaded by
+`npm run dev`; configure variables in your shell, local secret manager, or
+deployment provider. Keep secrets out of source control.
+
+For a development checkout, remove or unset any ambient
+`NODE_ENV=production` setting before running `npm ci`; npm otherwise omits the
+build, type-check, lint, and test tools. If the setting cannot be corrected
+immediately, `npm ci --include=dev` is a one-time recovery command, not a
+replacement for fixing the development environment.
 
 Required for the server and database commands:
 
@@ -212,6 +220,10 @@ Optional integrations and operational settings include `SENDGRID_API_KEY`
 error tracking at build time), and `SETUP_SECRET` (admin bootstrap endpoints).
 If `SETUP_SECRET` is set, it must
 be at least 32 characters long and must not be a single repeated character.
+All variables prefixed with `VITE_` are bundled into browser code and therefore
+must never contain credentials. Production-only provider aliases, deployment
+probes, database-adoption gates, and test-runner controls are intentionally
+documented in their owning runbooks rather than enabled in the local example.
 
 Generate a suitable local field-encryption key with:
 
