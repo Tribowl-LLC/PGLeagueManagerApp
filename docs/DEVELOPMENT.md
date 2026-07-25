@@ -105,6 +105,14 @@ Use `npm ci`, not an unlocked install, for normal setup and rebuilds. It starts
 from the committed `package-lock.json`, rejects disagreement between the
 manifest and lockfile, and produces the same dependency selection as CI. Never
 delete or regenerate the lockfile merely to get past an installation error.
+If the parent shell has `NODE_ENV=production`, npm omits the development tools
+needed by `npm run check`, `npm run lint`, and `npm run build`. The durable fix
+is to remove `NODE_ENV` from the workstation's persistent development
+environment and unset it in the current shell before running `npm ci`. As an
+immediate recovery option, `npm ci --include=dev` installs the omitted tools
+for that installation. Do not treat that flag as a replacement for correcting
+the environment, and do not commit `include=dev` as a project-wide npm setting
+because that would also change production installation behavior.
 
 The complete Docker database example and quick-start commands are in
 [`README.md`](../README.md#local-setup).
@@ -112,11 +120,11 @@ The complete Docker database example and quick-start commands are in
 ## 4. Environment configuration
 
 The application reads the process environment directly. A root `.env` file is
-not automatically loaded by `npm run dev`, and the repository currently does
-not provide an `.env.example`. Treat the variable table in
-[`README.md`](../README.md#environment-variables) as the current configuration
-reference. Set local values in the active shell or in a secure, local secret
-manager that exports them to the process.
+not automatically loaded by `npm run dev`. Use
+[`.env.example`](../.env.example) as the placeholder-only inventory for normal
+local application settings, then export the values you need from the active
+shell or a secure local secret manager. The variable table in
+[`README.md`](../README.md#environment-variables) provides additional context.
 
 The server requires:
 
@@ -140,8 +148,8 @@ contain secrets.
 
 Never copy production secrets, customer data, database URLs, or payment
 credentials into a development shell, `.env` file, fixture, log, or prompt.
-Never commit a local environment file. If the project later adds a placeholder
-file, it must contain names and safe examples only, never usable credentials.
+Never commit a local environment file. The committed `.env.example` contains
+names and safe placeholders only; keep it that way.
 
 ## 5. Local database requirements
 
