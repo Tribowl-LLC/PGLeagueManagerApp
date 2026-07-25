@@ -21,9 +21,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Plus, Upload } from "lucide-react";
+import { Plus } from "lucide-react";
 import { LeaguesTableSkeleton } from "@/components/page-states";
-import { BulkBowlerImport } from "@/components/bulk-bowler-import";
 import { LeaguesTable } from "@/components/leagues-table";
 import { LeagueSquareMissingBanner } from "@/components/league-square-missing-banner";
 import { ConfirmArchiveDialog } from "@/components/confirm-archive-dialog";
@@ -37,7 +36,6 @@ import { filterAndSortLeagues, buildLocationMap, countArchivedLeagues } from "@/
 
 export default function LeaguesPage() {
   const [showForm, setShowForm] = useState(false);
-  const [showBulkImport, setShowBulkImport] = useState(false);
   const [selectedLeague, setSelectedLeague] = useState<League | undefined>();
   const [showArchived, setShowArchived] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<number | null>(null);
@@ -142,10 +140,6 @@ export default function LeaguesPage() {
         <div className="flex justify-between items-center mb-6">
           <h1 className="text-2xl font-bold">Leagues</h1>
           <div className="flex gap-2">
-            <Button variant="outline" onClick={() => setShowBulkImport(true)}>
-              <Upload className="size-4 mr-2" />
-              Import Bowlers
-            </Button>
             <Button onClick={() => { setSelectedLeague(undefined); setShowForm(true); }}>
               <Plus className="size-4 mr-2" />
               Add League
@@ -265,10 +259,6 @@ export default function LeaguesPage() {
           onConfirm={() => deleteConfirmId && deleteMutation.mutate(deleteConfirmId)}
         />
 
-        <BulkBowlerImport
-          open={showBulkImport}
-          onClose={() => setShowBulkImport(false)}
-        />
       </ErrorBoundary>
     </Layout>
   );

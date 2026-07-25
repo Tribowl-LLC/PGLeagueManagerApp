@@ -266,8 +266,7 @@ describe('Organization Isolation', () => {
 
       // Link bowler → team → league directly via the DB. The /api/bowler-leagues
       // POST refuses to operate on a bowler with no existing league entries
-      // (bootstrap chicken-egg), so production code paths that need to
-      // bootstrap a fresh bowler (bulk import, season clone) call
+      // (bootstrap chicken-egg), so the production season-clone path calls
       // `storage.createBowlerLeague` directly and we mirror that here. This
       // is what makes hasAccessToBowler resolve to the org B league for
       // session B and lets cross-org tests prove session A is denied.

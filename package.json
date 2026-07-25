@@ -78,7 +78,6 @@
     "date-fns-tz": "^3.2.0",
     "drizzle-orm": "^0.45.2",
     "drizzle-zod": "^0.8.3",
-    "exceljs": "^4.4.0",
     "express": "^5.2.1",
     "express-rate-limit": "^8.5.2",
     "express-session": "^1.18.1",
@@ -135,7 +134,7 @@
     "jsdom": "^29.1.1",
     "knip": "^6.26.0",
     "playwright": "^1.61.1",
-    "postcss": "^8.5.17",
+    "postcss": "^8.5.23",
     "tailwindcss": "^4.3.2",
     "tsx": "^4.23.0",
     "typescript": "npm:@typescript/typescript6@^6.0.2",
@@ -161,7 +160,8 @@
     "ip-address": "^10.2.0",
     "brace-expansion@1": "^1.1.16",
     "brace-expansion@2": "^2.1.2",
-    "brace-expansion@5": "^5.0.7",
+    "brace-expansion@5": "^5.0.8",
+    "tar": "^7.5.22",
     "uuid": "^11.1.1",
     "form-data": "^4.0.6"
   }
