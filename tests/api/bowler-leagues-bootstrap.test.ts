@@ -46,8 +46,8 @@ function hasNumericId(v: unknown): v is { id: number } {
  * `hasAccessToBowler` unconditionally, which returns false for any bowler
  * with zero existing league entries. That made the "create a fresh bowler,
  * then attach them to a team" public-API flow impossible — every caller
- * got 403, and production code paths (bulk import, season clone) had to
- * call `storage.createBowlerLeague` directly to dodge the check.
+ * got 403, and the production season-clone path had to call
+ * `storage.createBowlerLeague` directly to dodge the check.
  *
  * Task #340 originally added a bootstrap exception gated by an
  * in-memory creation-time claim token. Tasks #342 / #407 made every

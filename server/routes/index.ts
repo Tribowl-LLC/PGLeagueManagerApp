@@ -22,7 +22,6 @@ import locationsRouter from './locations.js';
 import paymentSchedulesRouter from './payment-schedules.js';
 import accountRouter from './account.js';
 import { registerAuthRoutes } from './auth.js';
-import bulkImportRouter from './bulk-import.js';
 import searchRouter from './search.js';
 import bowlerLinksRouter from './bowler-links.js';
 import bowlerLinkRespondRouter from './bowler-link-respond.js';
@@ -121,7 +120,6 @@ export function registerRoutes(app: Express): void {
 
   app.use('/api/leagues', requireAuth, leaguesRouter);
   app.use('/api/teams', requireAuth, teamsRouter);
-  app.use('/api/bowlers/bulk-import', requireOrgAdmin, bulkImportRouter);
   app.use('/api/bowlers', requireAuth, bowlersRouter);
   app.use('/api/bowler-leagues', requireAuth, bowlerLeaguesRouter);
   app.use('/api/payments', requireAuth, paymentsRouter);
