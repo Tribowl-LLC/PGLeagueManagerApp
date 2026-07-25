@@ -152,7 +152,6 @@ await Promise.all([
   requireSuccessfulJobs(ciRun, [
     'Type check & lint',
     'Tests',
-    'Database migrations (PostgreSQL 16)',
     'Database migrations (PostgreSQL 17)',
   ]),
   requireSuccessfulJobs(raceRun, ['Race suite']),

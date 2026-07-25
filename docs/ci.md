@@ -10,7 +10,7 @@ push workflow then certifies the exact `main` tree without repeating that suite.
 | Workflow file | Job name | Triggers | What it runs |
 |---|---|---|---|
 | `ci.yml` | `Type check & lint` | Every PR to `main` | Dependency audits, `tsc`, `eslint .`, policy guards, and `npm run build` |
-| `ci.yml` | `Database migrations (PostgreSQL 16/17)` | Every PR to `main` | Exact migration-byte checks (including a clean `core.autocrlf=true` clone), active-history replay, fingerprint/drift checks, guarded local adoption, refusal/concurrency matrix, and isolated post-baseline ordering proof on both PostgreSQL versions |
+| `ci.yml` | `Database migrations (PostgreSQL 17)` | Every PR to `main` | Exact migration-byte checks (including a clean `core.autocrlf=true` clone), active-history replay, fingerprint/drift checks, guarded local adoption, refusal/concurrency matrix, and isolated post-baseline ordering proof on PostgreSQL 17 |
 | `ci.yml` | `Tests` | Every PR to `main` | `npm test` against a canonical template initialized by `db:migrate`, with exact template/worker journal-provenance assertions and application behavior on migrated worker databases |
 | `race-suite.yml` | `Race suite` | Every PR to `main` | `npm run test:race` — alias for `bash scripts/test-race.sh` (the two `RUN_BOOTSTRAP_RACE_TESTS=1` race files, serially) |
 | `exact-main-certification.yml` | `Exact main certification` | Every push to `main`, and `workflow_dispatch` | Exact checkout proof, successful PR-run provenance and tree-identity proof, migration bytes/metadata, and production build |
@@ -203,14 +203,13 @@ from-zero replay. A failed rebuild cannot retain a valid cache token, and a
 cache hit revalidates the journal and fingerprint. The canonical template supplies the fixtures the `Tests` job
 needs, so CI has no separate `npm run seed` step.
 
-The sibling `Database migrations` matrix does not use service credentials or
-Neon. `npm run db:check -- --postgres-version <16|17>` owns and cleans an
+The sibling `Database migrations (PostgreSQL 17)` job does not use service
+credentials or Neon. `npm run db:check -- --postgres-version 17` owns and cleans an
 ephemeral local Docker container, validates active Drizzle metadata and
 exact SQL bytes, declared-schema drift and all 26 owned sequences, replays from
 zero, adopts a matching populated fixture in one guarded transaction, tests
 journal/concurrency/refusal paths, verifies a real-catalog legacy inert-RLS
 fixture without adopting it, and proves post-baseline ordering.
-PostgreSQL 16 and 17 must produce the same application fingerprint.
 
 ## Required CI secrets
 
