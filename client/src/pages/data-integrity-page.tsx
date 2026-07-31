@@ -336,6 +336,18 @@ export default function DataIntegrityPage() {
 
   const { data: rowsResponse, isLoading: rowsLoading } = useQuery<ApiResponse<unknown[]>>({
     queryKey: ['/api/system-admin/orphaned-data', activeType],
+    queryFn: async ({ signal }) => {
+      const response = await fetch(`/api/system-admin/orphaned-data/${activeType}`, {
+        credentials: 'include',
+        headers: { Accept: 'application/json' },
+        signal,
+      });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData?.error?.message || `Failed to fetch orphaned ${activeType}`);
+      }
+      return response.json() as Promise<ApiResponse<unknown[]>>;
+    },
   });
   const rows = (rowsResponse?.data ?? []) as unknown[];
 
