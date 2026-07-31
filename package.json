@@ -31,7 +31,7 @@
     "test:watch": "vitest",
     "test:race": "bash scripts/test-race.sh",
     "seed": "tsx scripts/seed.ts",
-    "lint": "eslint .",
+    "lint": "eslint . --cache --cache-location .eslintcache",
     "security:audit:prod": "npm audit --omit=dev --audit-level=high",
     "security:audit:all": "npm audit --audit-level=moderate",
     "check:csrf": "tsx scripts/check-csrf-coverage.ts",
