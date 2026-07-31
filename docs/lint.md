@@ -50,10 +50,22 @@ program via `allowDefaultProject`.
 ```bash
 npm run lint
 # or, equivalently:
-npx eslint .
+npx eslint . --cache --cache-location .eslintcache
 ```
 
-Exit code is non-zero on any new violation.
+The normal command uses ESLint's local result cache, which is ignored by Git.
+This makes repeat runs and targeted follow-up work much faster while keeping
+the same type-aware rules and diagnostics. A clean uncached run is available
+when needed:
+
+```bash
+npm run lint -- --no-cache
+```
+
+The first clean or type-aware run can take several minutes on a developer
+machine. Use a local command timeout of at least five minutes; CI allows ten
+minutes for the combined type-check and lint job. Exit code is non-zero on any
+new violation.
 
 ## CI integration
 

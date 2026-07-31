@@ -17,6 +17,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Loader2, RefreshCw } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
 import type { League } from "@shared/schema";
 import { WEEKDAYS } from "@shared/schema";
 import type { ScheduleWeekType } from "@shared/schedule-utils";
@@ -36,6 +37,7 @@ export type NewSeasonFormValues = {
   skipDates: string[];
   cancelledDates: string[];
   doublePayDates: string[];
+  allowPublicSignup: boolean;
 };
 
 export function NewSeasonDialog({
@@ -57,6 +59,7 @@ export function NewSeasonDialog({
   const [skipDates, setSkipDates] = useState<string[]>([]);
   const [cancelledDates, setCancelledDates] = useState<string[]>([]);
   const [doublePayDates, setDoublePayDates] = useState<string[]>([]);
+  const [allowPublicSignup, setAllowPublicSignup] = useState(league.allowPublicSignup ?? false);
   const [showSchedule, setShowSchedule] = useState(false);
 
   const resetForm = useCallback(() => {
@@ -66,8 +69,9 @@ export function NewSeasonDialog({
     setSkipDates([]);
     setCancelledDates([]);
     setDoublePayDates([]);
+    setAllowPublicSignup(league.allowPublicSignup ?? false);
     setShowSchedule(false);
-  }, [league.totalBowlingWeeks, league.weekDay]);
+  }, [league.allowPublicSignup, league.totalBowlingWeeks, league.weekDay]);
 
   useEffect(() => {
     if (showNewSeason) resetForm();
@@ -132,6 +136,7 @@ export function NewSeasonDialog({
       skipDates,
       cancelledDates,
       doublePayDates,
+      allowPublicSignup,
     });
   };
 
@@ -230,6 +235,23 @@ export function NewSeasonDialog({
                 </SelectContent>
               </Select>
             </div>
+          </div>
+
+          <div className="flex items-center justify-between rounded-lg border p-3">
+            <div className="space-y-0.5">
+              <label htmlFor="new-season-public-signup" className="text-sm font-medium">
+                Allow Public Sign-up
+              </label>
+              <p className="text-xs text-muted-foreground">
+                List this new season on the public sign-up page.
+              </p>
+            </div>
+            <Switch
+              id="new-season-public-signup"
+              checked={allowPublicSignup}
+              onCheckedChange={setAllowPublicSignup}
+              aria-label="Allow Public Sign-up"
+            />
           </div>
 
           <LeagueSchedulePreview

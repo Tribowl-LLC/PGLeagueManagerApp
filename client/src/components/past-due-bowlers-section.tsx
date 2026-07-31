@@ -50,13 +50,15 @@ export function PastDueBowlersSection() {
   const pastDueBowlers = bowlers
     .flatMap(bowler => {
       if (!bowler.active) return [];
-      const bowlerAssociations = bowlerLeagues.filter(bl => bl.bowlerId === bowler.id);
+      const bowlerAssociations = bowlerLeagues.filter(
+        bl => bl.bowlerId === bowler.id && bl.active,
+      );
 
       return bowlerAssociations.flatMap(association => {
         const league = leagues.find(l => l.id === association.leagueId);
         const team = teams.find(t => t.id === association.teamId);
 
-        if (!league || !team || !league.seasonStart) {
+        if (!league || !league.active || !team || !league.seasonStart) {
           return [];
         }
 
