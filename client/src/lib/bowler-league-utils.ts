@@ -1,4 +1,4 @@
-import type { BowlerLeague, Bowler } from "@shared/schema";
+import type { BowlerLeague, Bowler, League } from "@shared/schema";
 
 export function filterActiveBowlerLeagues(
   allLeagues: BowlerLeague[],
@@ -21,6 +21,13 @@ export function filterActiveBowlerLeagues(
       return unique;
     }, [])
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+}
+
+export function filterBowlerLeaguesForActiveLeagues<T extends Pick<BowlerLeague, "leagueId">>(
+  bowlerLeagues: T[],
+  leagueMap: ReadonlyMap<number, Pick<League, "active">>
+): T[] {
+  return bowlerLeagues.filter((bl) => leagueMap.get(bl.leagueId)?.active === true);
 }
 
 export interface TeamBowlerEntry<B extends Bowler = Bowler> {

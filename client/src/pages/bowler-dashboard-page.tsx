@@ -15,6 +15,7 @@ import { AuthRequiredCard } from "./bowler-dashboard-page/auth-required-card";
 import { LeagueUnavailableCard } from "./bowler-dashboard-page/league-unavailable-card";
 import { DashboardHero } from "./bowler-dashboard-page/dashboard-hero";
 import { BackToDashboardButton } from "./bowler-dashboard-page/back-to-dashboard-button";
+import { filterBowlerLeaguesForActiveLeagues } from "@/lib/bowler-league-utils";
 
 const STALE_TIME = 1000 * 60 * 5;
 
@@ -48,22 +49,14 @@ const BowlerDashboardPage: FC = () => {
     retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 5000),
   });
 
-  const activeBowlerLeagues = useMemo((): BowlerLeague[] => {
+  const rosteredBowlerLeagues = useMemo((): BowlerLeague[] => {
     if (!bowler || !bowlerLeaguesResponse?.data) return [];
     return bowlerLeaguesResponse.data.filter(bl => bl.bowlerId === bowler.id && bl.active);
   }, [bowlerLeaguesResponse?.data, bowler]);
 
-  const activeBowlerLeague = useMemo((): BowlerLeague | null => {
-    if (activeBowlerLeagues.length === 0) return null;
-    if (selectedLeagueId) {
-      return activeBowlerLeagues.find(bl => bl.leagueId === selectedLeagueId) ?? activeBowlerLeagues[0];
-    }
-    return activeBowlerLeagues[0];
-  }, [activeBowlerLeagues, selectedLeagueId]);
-
   const { data: leaguesResponse, isLoading: isLoadingLeagues, isFetching: isFetchingLeagues, error: leaguesError } = useQuery<ApiResponse<League[]>>({
     queryKey: ['/api/leagues'],
-    enabled: activeBowlerLeagues.length > 0,
+    enabled: rosteredBowlerLeagues.length > 0,
     staleTime: 0,
     retry: 3,
     retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 5000),
@@ -79,11 +72,24 @@ const BowlerDashboardPage: FC = () => {
     return map;
   }, [leaguesResponse?.data]);
 
+  const activeBowlerLeagues = useMemo(
+    () => filterBowlerLeaguesForActiveLeagues(rosteredBowlerLeagues, leagueMap),
+    [rosteredBowlerLeagues, leagueMap]
+  );
+
+  const activeBowlerLeague = useMemo((): BowlerLeague | null => {
+    if (activeBowlerLeagues.length === 0) return null;
+    if (selectedLeagueId) {
+      return activeBowlerLeagues.find(bl => bl.leagueId === selectedLeagueId) ?? activeBowlerLeagues[0];
+    }
+    return activeBowlerLeagues[0];
+  }, [activeBowlerLeagues, selectedLeagueId]);
+
   const league = activeBowlerLeague ? leagueMap.get(activeBowlerLeague.leagueId) : undefined;
 
   const { data: bowlerDetailsResponse, isLoading: isLoadingTeams, error: teamsError } = useQuery<ApiResponse<BowlerDetailsResponse>>({
     queryKey: [`/api/bowlers/${bowler?.id}/details`],
-    enabled: !!bowler && activeBowlerLeagues.length > 0,
+    enabled: !!bowler && rosteredBowlerLeagues.length > 0,
     staleTime: 0,
     retry: 3,
     retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 5000),
@@ -148,7 +154,7 @@ const BowlerDashboardPage: FC = () => {
     staleTime: STALE_TIME,
   });
 
-  const leagueNotYetResolved = activeBowlerLeagues.length > 0 && !leagueMap.has(activeBowlerLeagues[0].leagueId);
+  const leagueNotYetResolved = rosteredBowlerLeagues.length > 0 && !leaguesResponse;
 
   const isStillLoadingChain =
     isLoadingUser ||
@@ -159,8 +165,8 @@ const BowlerDashboardPage: FC = () => {
     isLoadingPayments ||
     (!!currentUser?.bowlerId && !bowlersResponse) ||
     (!!bowler && !bowlerLeaguesResponse) ||
-    (activeBowlerLeagues.length > 0 && !leaguesResponse) ||
-    (activeBowlerLeagues.length > 0 && !bowlerDetailsResponse) ||
+    (rosteredBowlerLeagues.length > 0 && !leaguesResponse) ||
+    (rosteredBowlerLeagues.length > 0 && !bowlerDetailsResponse) ||
     (leagueNotYetResolved && isFetchingLeagues);
 
   const handleRetry = () => {
