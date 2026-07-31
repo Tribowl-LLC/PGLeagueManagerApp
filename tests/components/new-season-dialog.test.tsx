@@ -65,6 +65,7 @@ describe('NewSeasonDialog', () => {
 
     await user.click(screen.getByRole('button', { name: /bowling schedule/i }));
     await user.click(screen.getByTestId('schedule-week-2026-09-07'));
+    await user.click(screen.getByRole('switch', { name: /allow public sign-up/i }));
 
     expect(endDate).toHaveValue('2026-11-30');
 
@@ -76,6 +77,7 @@ describe('NewSeasonDialog', () => {
       skipDates: ['2026-09-07'],
       cancelledDates: [],
       doublePayDates: [],
+      allowPublicSignup: true,
     });
   });
 });
