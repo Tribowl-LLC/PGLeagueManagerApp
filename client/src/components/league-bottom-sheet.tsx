@@ -1,6 +1,7 @@
 import { FC } from "react";
 import { X, Check } from "lucide-react";
 import type { League, BowlerLeague, Team } from "@shared/schema";
+import { getSeasonYearRange } from "@shared/season-utils";
 
 interface LeagueBottomSheetProps {
   open: boolean;
@@ -55,6 +56,9 @@ export const LeagueBottomSheet: FC<LeagueBottomSheetProps> = ({
               const isSelected = bl.leagueId === selectedLeagueId;
               const totalWeeks = totalWeeksMap?.get(bl.leagueId);
               const currentWeek = currentWeekMap?.get(bl.leagueId);
+              const leagueTitle = league?.seasonStart && league.seasonEnd
+                ? `${league.name} ${getSeasonYearRange(league.seasonStart, league.seasonEnd)}`
+                : league?.name ?? `League #${bl.leagueId}`;
 
               return (
                 <button type="button"
@@ -69,7 +73,7 @@ export const LeagueBottomSheet: FC<LeagueBottomSheetProps> = ({
                 >
                   <div>
                     <div className={`font-medium ${isSelected ? 'text-indigo-700' : 'text-slate-900'}`}>
-                      {league?.name ?? `League #${bl.leagueId}`}
+                      {leagueTitle}
                     </div>
                     <div className="text-sm text-slate-500 mt-0.5">
                       {team?.name ?? 'No Team'}

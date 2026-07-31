@@ -5,7 +5,7 @@ import { LeagueBottomSheet } from "@/components/league-bottom-sheet";
 import { BowlerLayout } from "@/components/bowler-layout";
 import { getSeasonLengthWeeks, getWeeksPassedInSeason } from "@/lib/financial-utils";
 import { DEFAULT_WEEKLY_FEE_CENTS } from "@shared/schema";
-import type { League, Payment, User, Bowler, BowlerLeague, Team, ApiResponse } from "@shared/schema";
+import type { League, Payment, User, Bowler, BowlerLeague, Team, BowlerDetailsResponse, ApiResponse } from "@shared/schema";
 import { PaymentStatusSection } from "@/components/payment-status-section";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { ErrorBoundary } from "@/components/error-boundary";
@@ -87,9 +87,9 @@ const BowlerDashboardPage: FC = () => {
 
   const league = activeBowlerLeague ? leagueMap.get(activeBowlerLeague.leagueId) : undefined;
 
-  const { data: teamsResponse, isLoading: isLoadingTeams, error: teamsError } = useQuery<ApiResponse<Team[]>>({
-    queryKey: ['/api/teams'],
-    enabled: rosteredBowlerLeagues.length > 0,
+  const { data: bowlerDetailsResponse, isLoading: isLoadingTeams, error: teamsError } = useQuery<ApiResponse<BowlerDetailsResponse>>({
+    queryKey: [`/api/bowlers/${bowler?.id}/details`],
+    enabled: !!bowler && rosteredBowlerLeagues.length > 0,
     staleTime: 0,
     retry: 3,
     retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 5000),
@@ -97,13 +97,13 @@ const BowlerDashboardPage: FC = () => {
 
   const teamMap = useMemo(() => {
     const map = new Map<number, Team>();
-    if (teamsResponse?.data) {
-      for (const t of teamsResponse.data) {
+    if (bowlerDetailsResponse?.data?.teams) {
+      for (const t of bowlerDetailsResponse.data.teams) {
         map.set(t.id, t);
       }
     }
     return map;
-  }, [teamsResponse?.data]);
+  }, [bowlerDetailsResponse?.data?.teams]);
 
   const team = activeBowlerLeague?.teamId ? teamMap.get(activeBowlerLeague.teamId) : undefined;
 
@@ -166,7 +166,7 @@ const BowlerDashboardPage: FC = () => {
     (!!currentUser?.bowlerId && !bowlersResponse) ||
     (!!bowler && !bowlerLeaguesResponse) ||
     (rosteredBowlerLeagues.length > 0 && !leaguesResponse) ||
-    (rosteredBowlerLeagues.length > 0 && !teamsResponse) ||
+    (rosteredBowlerLeagues.length > 0 && !bowlerDetailsResponse) ||
     (leagueNotYetResolved && isFetchingLeagues);
 
   const handleRetry = () => {
@@ -174,7 +174,9 @@ const BowlerDashboardPage: FC = () => {
     queryClient.invalidateQueries({ queryKey: ['/api/bowlers'] });
     queryClient.invalidateQueries({ queryKey: ['/api/bowler-leagues'] });
     queryClient.invalidateQueries({ queryKey: ['/api/leagues'] });
-    queryClient.invalidateQueries({ queryKey: ['/api/teams'] });
+    if (bowler?.id) {
+      queryClient.invalidateQueries({ queryKey: [`/api/bowlers/${bowler.id}/details`] });
+    }
     queryClient.invalidateQueries({ queryKey: ['/api/payments'] });
   };
 
