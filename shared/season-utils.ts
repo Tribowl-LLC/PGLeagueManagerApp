@@ -9,6 +9,17 @@
 // Behavior is unchanged from the prior client-only version: same
 // inputs, same outputs, no new branches. Client and server both import
 // `getSeasonLabel` directly from this module.
+export function getSeasonYearRange(seasonStart: Date | string, seasonEnd: Date | string): string {
+  const start = new Date(seasonStart);
+  const end = new Date(seasonEnd);
+  const startYear = start.getFullYear();
+  const endYear = end.getFullYear();
+
+  const startYY = String(startYear).slice(-2);
+  const endYY = String(endYear).slice(-2);
+  return startYear === endYear ? startYY : `${startYY}/${endYY}`;
+}
+
 export function getSeasonLabel(seasonStart: Date | string, seasonEnd: Date | string): string {
   const start = new Date(seasonStart);
   const end = new Date(seasonEnd);
@@ -16,9 +27,7 @@ export function getSeasonLabel(seasonStart: Date | string, seasonEnd: Date | str
   const endYear = end.getFullYear();
 
   if (startYear !== endYear) {
-    const startYY = String(startYear).slice(-2);
-    const endYY = String(endYear).slice(-2);
-    return `${startYY}/${endYY} Season`;
+    return `${getSeasonYearRange(seasonStart, seasonEnd)} Season`;
   }
 
   const month = start.getMonth();
