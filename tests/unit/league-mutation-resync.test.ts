@@ -724,6 +724,7 @@ describe('POST /api/leagues/:id/new-season → fires resync for every bowler clo
       skipDates: ['2026-09-08'],
       cancelledDates: [],
       doublePayDates: ['2026-09-15'],
+      allowPublicSignup: true,
     });
     expect(res.status, await res.text().catch(() => '')).toBe(201);
 
@@ -734,6 +735,7 @@ describe('POST /api/leagues/:id/new-season → fires resync for every bowler clo
         skipDates: ['2026-09-08'],
         cancelledDates: [],
         doublePayDates: ['2026-09-15'],
+        allowPublicSignup: true,
       }),
     );
 

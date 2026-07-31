@@ -38,6 +38,7 @@ const newSeasonRequestSchema = z.object({
   skipDates: z.array(z.string()).default([]),
   cancelledDates: z.array(z.string()).default([]),
   doublePayDates: z.array(z.string()).max(2, "At most 2 double-pay weeks allowed").default([]),
+  allowPublicSignup: z.boolean().optional(),
 });
 
 // Apply organization filtering to all league routes
@@ -686,6 +687,7 @@ router.post("/:id/new-season", async (req: Request, res) => {
       skipDates,
       cancelledDates,
       doublePayDates,
+      allowPublicSignup,
     } = parsedRequest.data;
     const newSeasonWeekDay = weekDay ?? sourceLeague.weekDay;
     const newSeasonWeeks = totalBowlingWeeks ?? sourceLeague.totalBowlingWeeks;
@@ -719,7 +721,7 @@ router.post("/:id/new-season", async (req: Request, res) => {
       name: sourceLeague.name,
       description: sourceLeague.description,
       active: true,
-      allowPublicSignup: sourceLeague.allowPublicSignup ?? false,
+      allowPublicSignup: allowPublicSignup ?? sourceLeague.allowPublicSignup ?? false,
       seasonStart: newSeasonStart.toISOString(),
       seasonEnd: newSeasonEnd.toISOString(),
       weekDay: newSeasonWeekDay,
