@@ -97,12 +97,17 @@ vi.mock('passport', () => ({
 }));
 
 const sessionFactory = vi.fn(() => (_req: unknown, _res: unknown, next: () => void) => next());
+const captured_store_options: { value?: Record<string, unknown> } = {};
 vi.mock('express-session', () => ({
   default: Object.assign(sessionFactory, { Store: class {} }),
 }));
 
 vi.mock('connect-pg-simple', () => ({
-  default: () => class FakeStore {},
+  default: () => class FakeStore {
+    constructor(options: Record<string, unknown>) {
+      captured_store_options.value = options;
+    }
+  },
 }));
 
 vi.mock('../../server/db', () => ({
@@ -161,6 +166,7 @@ beforeEach(async () => {
   captured_strategy.verify = undefined;
   captured_serialize.fn = undefined;
   captured_deserialize.fn = undefined;
+  captured_store_options.value = undefined;
   sessionFactory.mockClear();
   // setupAuth is async (initDummyHash). Re-run before every test so
   // each test gets fresh callbacks against fresh recorders.
@@ -210,6 +216,10 @@ describe('setupAuth wires express-session without leaking SESSION_SECRET to logs
     const opts = (sessionFactory.mock.calls[0] as unknown as [{ secret: string }])[0];
     expect(opts.secret).toBe(SESSION_SECRET);
     assertNoSessionLeak();
+  });
+
+  it('does not start a recurring database session-pruning timer', () => {
+    expect(captured_store_options.value?.pruneSessionInterval).toBe(false);
   });
 });
 
