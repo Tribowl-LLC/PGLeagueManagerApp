@@ -92,7 +92,11 @@ export async function setupAuth(app: Express) {
     saveUninitialized: false,
     store: new PostgresSessionStore({
       pool,
-      pruneSessionInterval: 60,
+      // Expired sessions are excluded by the store's reads, so automatic
+      // pruning is database housekeeping rather than session correctness.
+      // Keep it out of the request process so Neon can reach its idle window;
+      // cleanup can run through a deliberate low-frequency maintenance path.
+      pruneSessionInterval: false,
       tableName: 'session',
     }),
     cookie: {
