@@ -3,22 +3,20 @@
  *
  * The default MemoryStore keeps counts in process-local memory, so
  * once we run more than one app instance / replica the same client
- * effectively gets `max * replicas` requests per window. Backing the
+ * effectively gets max * replicas requests per window. Backing the
  * limiter with the existing pg pool keeps the budget consistent
  * across every process pointed at the same database.
  *
- * Schema is declared in `shared/schema/rate-limit-buckets.ts` and the active
- * normalized baseline. One
- * row per (limiter, key) tuple; the per-limiter `prefix` argument is
- * prepended to every stored key so a single table can serve every
- * limiter without bucket collisions.
+ * Schema is declared in shared/schema/rate-limit-buckets.ts and the active
+ * normalized baseline. One row per (limiter, key) tuple; the per-limiter
+ * prefix argument is prepended to every stored key so a single table can
+ * serve every limiter without bucket collisions.
  *
- * The store also runs a low-frequency in-process GC sweep that
- * deletes rows whose `reset_at` has passed. With `ON CONFLICT … DO
- * UPDATE` semantics in `increment` the table is self-repairing
- * (expired rows get reused as soon as the same key is seen again),
- * so the sweep is purely a size optimisation — losing it would not
- * affect correctness.
+ * Expired rows are garbage-collected opportunistically after normal
+ * rate-limit traffic. With upsert semantics in increment, the table is
+ * self-repairing (expired rows get reused as soon as the same key is seen
+ * again), so garbage collection is purely a size optimization and must not
+ * become a database keepalive.
  */
 import type { Store, IncrementResponse, Options as RateLimitOptions } from 'express-rate-limit';
 import type { Pool } from 'pg';
@@ -31,10 +29,11 @@ import {
 
 const log = createLogger('RateLimitStore');
 
-const GC_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+const GC_MIN_INTERVAL_MS = 5 * 60 * 1000;
 const GC_SWEEP_BATCH_LIMIT = 1000;
 
-let sharedSweepTimer: NodeJS.Timeout | null = null;
+let lastGcAt = 0;
+let gcInFlight: Promise<void> | null = null;
 
 async function sweepExpiredBuckets(p: Pool): Promise<void> {
   try {
@@ -51,7 +50,7 @@ async function sweepExpiredBuckets(p: Pool): Promise<void> {
       log.debug('Swept expired rate-limit buckets', { count: result.rowCount });
     }
   } catch (err) {
-    // Best-effort: a failed sweep doesn't affect correctness, only
+    // Best-effort: a failed sweep does not affect correctness, only
     // table size. Log so it shows up in monitoring if it persists.
     log.error('Rate-limit GC sweep failed', {
       error: err instanceof Error ? err.message : String(err),
@@ -60,28 +59,33 @@ async function sweepExpiredBuckets(p: Pool): Promise<void> {
 }
 
 /**
- * Process-singleton timer. Re-entered when the first store is
- * constructed; cleared by `shutdown()` (only useful for tests).
+ * Process-singleton cooldown. Shared by all store instances so cleanup
+ * remains bounded without a free-running timer.
  */
-function ensureGcTimer(p: Pool): void {
-  if (sharedSweepTimer) return;
-  sharedSweepTimer = setInterval(() => {
-    void sweepExpiredBuckets(p);
-  }, GC_SWEEP_INTERVAL_MS);
-  // Don't keep the event loop alive just for the sweep — Node
-  // should shut down cleanly when nothing else is pending.
-  sharedSweepTimer.unref?.();
+function maybeSweepExpiredBuckets(p: Pool): void {
+  const now = Date.now();
+  if (gcInFlight !== null || now - lastGcAt < GC_MIN_INTERVAL_MS) return;
+
+  lastGcAt = now;
+  gcInFlight = sweepExpiredBuckets(p).finally(() => {
+    gcInFlight = null;
+  });
+  // Fire-and-forget: this cleanup is best-effort and must not delay a
+  // rate-limit response.
+  void gcInFlight;
 }
 
+/**
+ * Compatibility hook retained for tests and shutdown callers. There is no
+ * timer to clear; resetting the cooldown lets the next real request perform
+ * cleanup.
+ */
 export function stopRateLimitGc(): void {
-  if (sharedSweepTimer) {
-    clearInterval(sharedSweepTimer);
-    sharedSweepTimer = null;
-  }
+  lastGcAt = 0;
 }
 
 export interface PostgresRateLimitStoreOptions {
-  /** Unique per-limiter namespace prepended to every key. Required. */
+  /** Unique per-limiter namespace prepended to every stored key. Required. */
   prefix: string;
   /** Override the default app pool (only useful for tests). */
   pool?: Pool;
@@ -96,11 +100,11 @@ export class PostgresRateLimitStore implements Store {
     if (!opts.prefix || opts.prefix.length === 0) {
       throw new Error('PostgresRateLimitStore: `prefix` is required');
     }
-    // The prefix is used both as a literal join (`${prefix}:${key}`)
-    // and inside a LIKE pattern in `resetAll()`. A prefix containing
-    // `:` would let a sibling limiter accidentally share a namespace,
-    // and one containing `%` or `_` (both LIKE wildcards) would let
-    // `resetAll()` match unrelated buckets. Restrict to a safe
+    // The prefix is used both as a literal join (${prefix}:${key})
+    // and inside a LIKE pattern in resetAll(). A prefix containing
+    // : would let a sibling limiter accidentally share a namespace,
+    // and one containing % or _ (both LIKE wildcards) would let
+    // resetAll() match unrelated buckets. Restrict to a safe
     // alphanumeric/dash/dot alphabet so we fail fast on any future
     // call site mistake.
     if (!/^[A-Za-z0-9.-]+$/.test(opts.prefix)) {
@@ -114,11 +118,10 @@ export class PostgresRateLimitStore implements Store {
 
   /**
    * express-rate-limit invokes this once at construction time,
-   * giving us the windowMs to use when seeding `reset_at`.
+   * giving us the windowMs to use when seeding reset_at.
    */
   init(options: RateLimitOptions): void {
     this.windowMs = options.windowMs;
-    ensureGcTimer(this.pool);
   }
 
   private fullKey(key: string): string {
@@ -131,7 +134,7 @@ export class PostgresRateLimitStore implements Store {
     // to 1 and start a new window; otherwise increment the existing
     // count and keep the existing reset_at. Done in a single
     // statement so two concurrent requests from different replicas
-    // can't race past `max`.
+    // cannot race past max.
     const sql = `
       INSERT INTO rate_limit_buckets (key, count, reset_at)
       VALUES ($1, 1, now() + ($2 || ' milliseconds')::interval)
@@ -152,6 +155,7 @@ export class PostgresRateLimitStore implements Store {
       [fullKey, String(this.windowMs)],
     );
     const row = rows[0]!;
+    maybeSweepExpiredBuckets(this.pool);
     return {
       totalHits: Number(row.count),
       resetTime: row.reset_at,
@@ -198,15 +202,15 @@ export class PostgresRateLimitStore implements Store {
  * call sites. Keeps the noise at each call site to one line.
  *
  * In non-production environments (NODE_ENV !== 'production') this returns
- * `undefined`, which causes express-rate-limit to fall back to its default
+ * undefined, which causes express-rate-limit to fall back to its default
  * per-process MemoryStore. That preserves the historical dev/test behaviour
- * where each test run starts with empty buckets — without that, tests
+ * where each test run starts with empty buckets - without that, tests
  * sharing the loopback IP would inherit accumulated hits from prior runs
  * and immediately get 429s. Production deployments (which is the only
  * place multi-replica matters) always get the shared Postgres store.
  *
  * Tests that explicitly want to exercise the Postgres store path can
- * construct `new PostgresRateLimitStore({ prefix })` directly.
+ * construct new PostgresRateLimitStore({ prefix }) directly.
  */
 export function createSharedRateLimitStore(prefix: string): PostgresRateLimitStore | undefined {
   assertProductionRateLimitStore(process.env);
