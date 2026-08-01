@@ -25,6 +25,12 @@ base URL. Start it in another shell first when using that path:
 npm run dev
 ```
 
+The wrapper runs Vitest in a directly managed child process, prints a
+30-second heartbeat, and writes the complete child output to
+`.local/test-local.log` while keeping terminal output small. On Windows,
+interrupting the command also terminates the Vitest child process tree so
+worker and test-app processes do not remain behind.
+
 ## Automatic seeding
 
 `vitest.config.ts` registers `tests/setup/global-setup.ts` as a global

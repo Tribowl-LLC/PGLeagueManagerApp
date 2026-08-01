@@ -16,3 +16,4 @@ attached_assets/
 .git.backup.*
 .local/known-failures.md
 .local/test-template-hash
+.local/test-local.log
