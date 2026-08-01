@@ -181,6 +181,12 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
   app.use(compression());
   app.use(securityHeaders);
 
+  // Render liveness must not touch Neon. Keep the database-backed readiness
+  // probe below at /api/health for operators and deployment verification.
+  app.get('/healthz', (_req, res) => {
+    res.set('Cache-Control', 'no-store').type('text/plain').send('ok');
+  });
+
   // Admin email templates hold rich HTML bodies (and may carry inline
   // markup/base64) that can legitimately exceed the small global ceiling.
   // Mount a route-scoped 1 MB JSON parser BEFORE the global parser so it
@@ -450,7 +456,7 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
     try {
       await paymentScheduler.initialize();
       paymentScheduler.startSweepPoll();
-      log.info('Schedulers initialized with 60-second sweep poll');
+      log.info('Schedulers initialized with event-driven payment recovery');
 
       startPaymentSyncRetrySweep();
 

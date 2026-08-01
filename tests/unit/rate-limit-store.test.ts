@@ -47,7 +47,7 @@ describe('PostgresRateLimitStore (task #356)', () => {
   });
 
   afterAll(() => {
-    // Stop the GC sweep timer so vitest can exit cleanly.
+    // Reset the opportunistic GC cooldown for any later test file.
     stopRateLimitGc();
   });
 

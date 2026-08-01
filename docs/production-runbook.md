@@ -61,12 +61,13 @@ still match this section. `After CI Checks Pass` must include successful Exact
 main certification for the selected SHA. If that cannot be proved, switch to a
 manual deploy of the certified commit.
 
-The production Render Web Service is configured with `/api/health` as its
-Health Check Path. Render uses this endpoint during deployment rollouts and
-normal service monitoring. Operators must still probe it explicitly during
-rollout and complete the commit, authentication, workflow, provider, worker,
-and log checks below; Render's health signal is one deployment gate, not proof
-that the release is complete.
+The production Render Web Service should use `/healthz` as its Health Check
+Path. This is a database-free liveness endpoint, so Render's normal monitoring
+does not keep Neon compute awake. `/api/health` remains the database-backed
+readiness probe for operators and deployment verification. Operators must
+still probe it explicitly during rollout and complete the commit,
+authentication, workflow, provider, worker, and log checks below; Render's
+health signal is one deployment gate, not proof that the release is complete.
 
 ### Schema-release auto-deploy hold
 

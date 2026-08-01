@@ -41,3 +41,17 @@ describe('Express 5 auth aliases', () => {
     expect((aliases.match(/next\(\);/g) ?? []).length).toBe(2);
   });
 });
+
+describe('Render liveness health check', () => {
+  it('uses a database-free endpoint and keeps the deep probe separate', () => {
+    const livenessStart = appSource.indexOf("app.get('/healthz'");
+    const deepHealthStart = appSource.indexOf("app.get('/api/health'");
+
+    expect(livenessStart).toBeGreaterThanOrEqual(0);
+    expect(deepHealthStart).toBeGreaterThan(livenessStart);
+
+    const livenessSource = appSource.slice(livenessStart, deepHealthStart);
+    expect(livenessSource).toContain("type('text/plain').send('ok')");
+    expect(livenessSource).not.toContain('testConnection');
+  });
+});
