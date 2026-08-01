@@ -39,7 +39,7 @@ flowchart LR
     MIGRATE --> NEON["Neon PostgreSQL"]
     CERT --> RENDER["Render web service"]
     RENDER --> NEON
-    RENDER --> HEALTH["/api/health and workflow verification"]
+    RENDER --> HEALTH["/healthz liveness; /api/health and workflow verification"]
 ```
 
 Deploy the exact `main` commit certified by GitHub. Do not deploy a local build,
@@ -116,7 +116,8 @@ production startup sequence is:
 1. Parse and validate the runtime environment and fail closed on missing or
    invalid required configuration.
 2. Create the Express application, install security/authentication middleware,
-   register `/api/health` and application routes, and configure production
+   register `/healthz`, the database-backed `/api/health`, and application
+   routes, and configure production
    static-file serving.
 3. Initialize the PostgreSQL pool and prove connectivity with a bounded retry.
    Startup exits if the database cannot be reached.
@@ -171,19 +172,22 @@ around a reviewed migration is prohibited.
 
 ## 5. Health checks
 
-The production Render Web Service is configured with the following Health Check
-Path:
+The production Render Web Service should be configured with the following
+database-free Health Check Path:
 
 ```text
-/api/health
+/healthz
 ```
 
 Render uses this endpoint during deployment rollouts and normal service
-monitoring. A healthy request returns HTTP 200 and JSON containing
-`status: "healthy"` plus a current timestamp.
+monitoring. A healthy request returns HTTP 200 with the plain-text body `ok`.
 
-The endpoint executes a database connection probe, so a successful response
-confirms that:
+Use `/api/health` separately for a database-backed readiness check. It returns
+HTTP 200 with `status: "healthy"` when the connection probe succeeds and HTTP
+503 with `status: "unhealthy"` when it fails.
+
+The readiness endpoint executes a database connection probe, so a successful
+response confirms that:
 
 - the Express process can receive and serve HTTP requests; and
 - the PostgreSQL connection pool can successfully execute a simple query.
@@ -381,8 +385,9 @@ After rollout, verify all applicable items:
 - [ ] Render's deployment record contains the exact certified full SHA, and
       `/api/org-context` independently reports `appEnv: "prod"` plus the
       matching short SHA.
-- [ ] Render reports the service healthy using the configured `/api/health`
-      path, and an explicit request returns HTTP 200 with
+- [ ] Render reports the service healthy using the configured `/healthz` path,
+      and an explicit request returns HTTP 200 with body `ok`.
+- [ ] An explicit `/api/health` request returns HTTP 200 with
       `status: "healthy"`.
 - [ ] Render boot/runtime logs and Sentry show no new task-related errors.
 - [ ] Authentication, session behavior, and organization/subdomain access work.

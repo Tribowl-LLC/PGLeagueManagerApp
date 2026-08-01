@@ -90,8 +90,11 @@ vi.mock('../../server/services/payment-customer-sync', async () => {
 });
 
 import {
+  PAYMENT_SYNC_RETRY_BACKSTOP_INTERVAL_MS,
   paymentSyncBackoffMs,
   runPaymentSyncRetrySweep,
+  startPaymentSyncRetrySweep,
+  stopPaymentSyncRetrySweep,
 } from '../../server/services/payment-sync-retry';
 import { PAYMENT_SYNC_MAX_ATTEMPTS } from '../../server/services/payment-customer-sync';
 
@@ -334,5 +337,22 @@ describe('runPaymentSyncRetrySweep', () => {
     expect(result.skippedMaxAttempts).toBe(1);
     expect(result.retried).toBe(0);
     expect(mockGetUserByBowlerId).not.toHaveBeenCalled();
+  });
+});
+
+describe('payment-sync retry backstop', () => {
+  it('uses a low-frequency backstop instead of a Neon keepalive interval', async () => {
+    mockSelect.mockResolvedValue([]);
+    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval');
+
+    startPaymentSyncRetrySweep();
+
+    expect(setIntervalSpy).toHaveBeenCalledWith(
+      expect.any(Function),
+      PAYMENT_SYNC_RETRY_BACKSTOP_INTERVAL_MS,
+    );
+
+    stopPaymentSyncRetrySweep();
+    await new Promise(resolve => setTimeout(resolve, 0));
   });
 });

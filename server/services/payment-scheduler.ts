@@ -8,12 +8,18 @@ import { processScheduledPaymentJob } from "./payment-lifecycle";
 import { getPaymentProvider, ProviderNotConfiguredError } from "./payment-provider-factory";
 import { lockedSweep } from "./_internal/locked-sweep";
 
-const SWEEP_INTERVAL_MS = 60_000;
+// node-schedule is the primary execution path. The recovery backstop is
+// armed for the next known payment instead of polling the database every
+// minute, which lets Neon scale to zero between payment work. A short retry
+// remains active while a schedule is overdue or could not be processed.
+const RECOVERY_GRACE_MS = 10_000;
+const OVERDUE_RETRY_INTERVAL_MS = 60_000;
 
 export class PaymentScheduler {
   private jobs: Map<string, schedule.Job> = new Map();
   private locks: Map<number, Promise<void>> = new Map();
-  private sweepInterval: ReturnType<typeof setInterval> | null = null;
+  private recoveryTimer: ReturnType<typeof setTimeout> | null = null;
+  private recoveryBackstopActive = false;
   private sweepRunning = false;
 
   private async withScheduleLock<T>(scheduleId: number, fn: () => Promise<T>): Promise<T> {
@@ -303,49 +309,95 @@ export class PaymentScheduler {
       } finally {
         if (this.jobs.get(jobId) === job) {
           this.jobs.delete(jobId);
+          this.armRecoveryBackstop(new Date(Date.now() + OVERDUE_RETRY_INTERVAL_MS));
+        } else {
+          this.armRecoveryBackstop();
         }
       }
     });
 
     if (job) {
       this.jobs.set(jobId, job);
+      this.armRecoveryBackstop();
     } else {
-      logger.warn(`[PaymentScheduler] node-schedule returned null for ${jobId} (date ${scheduledDate.toISOString()} is in the past). Sweep poll will catch this.`);
+      logger.warn(`[PaymentScheduler] node-schedule returned null for ${jobId} (date ${scheduledDate.toISOString()} is in the past). Recovery backstop will catch this.`);
+      this.armRecoveryBackstop(new Date(Date.now() + OVERDUE_RETRY_INTERVAL_MS));
     }
   }
 
   public startSweepPoll(immediateFirstTick = true) {
     this.stopSweepPoll();
-    logger.info(`[PaymentScheduler] Starting sweep poll (every ${SWEEP_INTERVAL_MS / 1000}s)`);
-
-    this.sweepInterval = setInterval(() => {
-      this.sweepTick().catch(err => {
-        logger.error('[PaymentScheduler] Sweep poll tick error', {
-          error: err instanceof Error ? { name: err.name, message: err.message, stack: err.stack } : err,
-          timestamp: new Date().toISOString()
-        });
-      });
-    }, SWEEP_INTERVAL_MS);
-
-    if (this.sweepInterval && typeof this.sweepInterval === 'object' && 'unref' in this.sweepInterval) {
-      this.sweepInterval.unref();
-    }
+    this.recoveryBackstopActive = true;
+    logger.info('[PaymentScheduler] Starting event-driven recovery backstop');
 
     if (immediateFirstTick) {
       this.sweepTick().catch(err => {
-        logger.error('[PaymentScheduler] Immediate sweep tick error', {
+        logger.error('[PaymentScheduler] Immediate recovery tick error', {
           error: err instanceof Error ? { name: err.name, message: err.message, stack: err.stack } : err,
           timestamp: new Date().toISOString()
         });
       });
+    } else {
+      this.armRecoveryBackstop();
     }
   }
 
   public stopSweepPoll() {
-    if (this.sweepInterval !== null) {
-      clearInterval(this.sweepInterval);
-      this.sweepInterval = null;
-      logger.info('[PaymentScheduler] Sweep poll stopped');
+    this.recoveryBackstopActive = false;
+    if (this.recoveryTimer !== null) {
+      clearTimeout(this.recoveryTimer);
+      this.recoveryTimer = null;
+      logger.info('[PaymentScheduler] Recovery backstop stopped');
+    }
+  }
+
+  /**
+   * Arm one recovery query for the next known payment, or for a short retry
+   * window when an overdue schedule has no live node-schedule job. This keeps
+   * recovery durable without turning an idle Render instance into a database
+   * keepalive client.
+   */
+  private armRecoveryBackstop(retryAt?: Date): void {
+    if (!this.recoveryBackstopActive) return;
+
+    if (this.recoveryTimer !== null) {
+      clearTimeout(this.recoveryTimer);
+      this.recoveryTimer = null;
+    }
+
+    const now = Date.now();
+    const nextJobTimes = Array.from(this.jobs.values())
+      .map(job => job.nextInvocation()?.getTime() ?? null)
+      .filter((time): time is number => time !== null);
+    const nextJobAt = nextJobTimes.length > 0 ? Math.min(...nextJobTimes) : null;
+    const recoveryTimes: number[] = [];
+
+    if (nextJobAt !== null) {
+      recoveryTimes.push(
+        nextJobAt > now
+          ? nextJobAt + RECOVERY_GRACE_MS
+          : now + OVERDUE_RETRY_INTERVAL_MS,
+      );
+    }
+    if (retryAt !== undefined) {
+      recoveryTimes.push(retryAt.getTime());
+    }
+
+    if (recoveryTimes.length === 0) return;
+
+    const targetAt = Math.max(now + 1_000, Math.min(...recoveryTimes));
+    this.recoveryTimer = setTimeout(() => {
+      this.recoveryTimer = null;
+      this.sweepTick().catch(err => {
+        logger.error('[PaymentScheduler] Recovery backstop tick error', {
+          error: err instanceof Error ? { name: err.name, message: err.message, stack: err.stack } : err,
+          timestamp: new Date().toISOString(),
+        });
+      });
+    }, targetAt - now);
+
+    if (this.recoveryTimer && typeof this.recoveryTimer === 'object' && 'unref' in this.recoveryTimer) {
+      this.recoveryTimer.unref();
     }
   }
 
@@ -361,6 +413,7 @@ export class PaymentScheduler {
     let alreadyTracked = 0;
     let lockContention = 0;
     let invalidCard = 0;
+    let retryOverdueAt: Date | undefined;
 
     try {
       const now = new Date();
@@ -395,7 +448,7 @@ export class PaymentScheduler {
       alreadyTracked = checked - missedSchedules.length;
 
       if (missedSchedules.length > 0) {
-        logger.warn(`[PaymentScheduler] Sweep poll found ${missedSchedules.length} missed schedule(s) — safety net activated`, {
+        logger.warn(`[PaymentScheduler] Recovery backstop found ${missedSchedules.length} missed schedule(s) — safety net activated`, {
           missedIds: missedSchedules.map(r => r.schedule.id),
           timestamp: now.toISOString()
         });
@@ -460,7 +513,14 @@ export class PaymentScheduler {
       }
 
       skipped = alreadyTracked + lockContention + invalidCard;
-      logger.info(`[PaymentScheduler] Sweep poll tick`, {
+      retryOverdueAt = dueSchedules.some(({ schedule: scheduleRecord }) => {
+        const job = this.jobs.get(`payment-${scheduleRecord.id}`);
+        return !job || !job.nextInvocation();
+      })
+        ? new Date(Date.now() + OVERDUE_RETRY_INTERVAL_MS)
+        : undefined;
+
+      logger.info(`[PaymentScheduler] Recovery backstop tick`, {
         checked,
         processed,
         skipped,
@@ -469,8 +529,12 @@ export class PaymentScheduler {
         invalidCard,
         timestamp: now.toISOString()
       });
+    } catch (error) {
+      retryOverdueAt = new Date(Date.now() + OVERDUE_RETRY_INTERVAL_MS);
+      throw error;
     } finally {
       this.sweepRunning = false;
+      this.armRecoveryBackstop(retryOverdueAt);
     }
   }
 
@@ -492,6 +556,7 @@ export class PaymentScheduler {
       this.jobs.get(jobId)?.cancel();
       this.jobs.delete(jobId);
       logger.info(`[PaymentScheduler] Job ${jobId} cancelled successfully`);
+      this.armRecoveryBackstop();
     } else {
       logger.info(`[PaymentScheduler] No active job found for ${jobId}`);
     }
