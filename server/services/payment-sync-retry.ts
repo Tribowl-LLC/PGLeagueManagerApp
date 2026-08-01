@@ -29,10 +29,12 @@ import type { PaymentSyncStatus } from '@shared/schema';
 
 const log = createLogger('PaymentSyncRetry');
 
-// Tick interval for the sweep. Kept independent of the per-bowler
-// backoff: every tick re-evaluates eligibility, so a short interval
-// just means faster pickup once a bowler's backoff window closes.
-const SWEEP_INTERVAL_MS = 5 * 60_000;
+// Low-frequency recovery backstop for rows flagged by a failed customer
+// sync. This is deliberately longer than Neon’s default scale-to-zero idle
+// window: foreground syncs and manual retry endpoints remain immediate, while
+// an idle Render process no longer performs a database keepalive every five
+// minutes.
+export const PAYMENT_SYNC_RETRY_BACKSTOP_INTERVAL_MS = 15 * 60_000;
 
 // Exponential backoff anchored at the most recent retry attempt:
 //   attempts=0 → 1m, 1 → 2m, 2 → 4m, 3 → 8m, 4 → 16m
@@ -267,7 +269,9 @@ export async function runPaymentSyncRetrySweep(now: Date = new Date()): Promise<
 let sweepInterval: ReturnType<typeof setInterval> | null = null;
 let sweepInFlight = false;
 
-export function startPaymentSyncRetrySweep(intervalMs: number = SWEEP_INTERVAL_MS): void {
+export function startPaymentSyncRetrySweep(
+  intervalMs: number = PAYMENT_SYNC_RETRY_BACKSTOP_INTERVAL_MS,
+): void {
   stopPaymentSyncRetrySweep();
   log.info('Starting payment-sync retry sweep', {
     intervalMs,

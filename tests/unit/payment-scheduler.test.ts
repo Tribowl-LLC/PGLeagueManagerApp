@@ -202,11 +202,25 @@ describe('PaymentScheduler', () => {
 
       expect(mockProcessScheduledPaymentJob).not.toHaveBeenCalled();
 
+      const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+      scheduler.startSweepPoll(false);
+      expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), expect.any(Number));
+
       scheduler.cancelAllJobs();
     });
   });
 
   describe('startSweepPoll', () => {
+    it('does not create a recurring database-poll interval', () => {
+      const setIntervalSpy = vi.spyOn(globalThis, 'setInterval');
+      const scheduler = new PaymentScheduler();
+
+      scheduler.startSweepPoll(false);
+
+      expect(setIntervalSpy).not.toHaveBeenCalled();
+      scheduler.cancelAllJobs();
+    });
+
     it('runs an immediate first tick on startup', async () => {
       const scheduler = new PaymentScheduler();
 
@@ -230,7 +244,7 @@ describe('PaymentScheduler', () => {
       scheduler.cancelAllJobs();
     });
 
-    it('stopSweepPoll clears the interval', () => {
+    it('stopSweepPoll clears the recovery backstop', () => {
       const scheduler = new PaymentScheduler();
 
       mockDbSelect.mockReturnValue({
