@@ -134,4 +134,16 @@ describe('migrated test-template source contract', () => {
     expect(source).toContain('image !== POSTGRES_IMAGE');
     expect(source).toContain("rmSync('.local/test-template-hash', { force: true })");
   });
+
+  it('runs Vitest directly with progress and Windows process-tree cleanup', () => {
+    const source = readFileSync(resolve(process.cwd(), 'scripts/test-local.ts'), 'utf8');
+    expect(source).toContain("const vitestEntry = join(process.cwd(), 'node_modules', 'vitest', 'vitest.mjs')");
+    expect(source).toContain('FULL_SUITE_HEARTBEAT_MS = 30_000');
+    expect(source).toContain("taskkill', ['/pid', String(child.pid), '/t', '/f']");
+    expect(source).toContain("await runFullVitestSuite()");
+    expect(source).toContain('full Vitest suite still running');
+    expect(source).toContain("const logPath = join(process.cwd(), '.local', 'test-local.log')");
+    expect(source).toContain("stdio: ['ignore', 'pipe', 'pipe']");
+    expect(source).toContain('full-suite log');
+  });
 });

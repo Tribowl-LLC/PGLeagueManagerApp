@@ -8,7 +8,7 @@
  * much faster while retaining a fixed local-only connection target.
  */
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { rmSync } from 'node:fs';
+import { createWriteStream, mkdirSync, rmSync } from 'node:fs';
 import { delimiter, dirname, join } from 'node:path';
 
 const CONTAINER_NAME = process.env.LV_TEST_DB_CONTAINER ?? 'leaguevault-test-postgres';
@@ -22,6 +22,8 @@ const npmCli = process.env.npm_execpath ??
     : undefined);
 const npmCommand = npmCli ? process.execPath : process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const npmArgs = (args: string[]): string[] => (npmCli ? [npmCli, ...args] : args);
+const vitestEntry = join(process.cwd(), 'node_modules', 'vitest', 'vitest.mjs');
+const FULL_SUITE_HEARTBEAT_MS = 30_000;
 
 const testEnv: NodeJS.ProcessEnv = {
   ...process.env,
@@ -127,16 +129,116 @@ async function waitForDevServer(): Promise<void> {
   throw new Error('The local dev server did not become healthy within 120 seconds.');
 }
 
-function stopProcess(child: ChildProcess): void {
-  if (child.exitCode !== null) return;
+function stopProcessTree(child: ChildProcess): void {
+  if (child.pid === undefined) return;
   if (process.platform === 'win32' && child.pid !== undefined) {
     spawnSync('taskkill', ['/pid', String(child.pid), '/t', '/f'], {
       stdio: 'ignore',
       windowsHide: true,
     });
   } else {
-    child.kill('SIGTERM');
+    if (child.exitCode === null) {
+      try { child.kill('SIGTERM'); } catch { /* noop */ }
+      const hardKill = setTimeout(() => {
+        if (child.exitCode === null) {
+          try { child.kill('SIGKILL'); } catch { /* noop */ }
+        }
+      }, 2_000);
+      hardKill.unref();
+    }
   }
+}
+
+function runFullVitestSuite(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const startedAt = Date.now();
+    const logPath = join(process.cwd(), '.local', 'test-local.log');
+    mkdirSync(join(process.cwd(), '.local'), { recursive: true });
+    const log = createWriteStream(logPath, { encoding: 'utf8' });
+    const child = spawn(process.execPath, [vitestEntry, 'run'], {
+      env: testEnv,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+      shell: false,
+    });
+
+    const childStdout = child.stdout;
+    const childStderr = child.stderr;
+    if (childStdout === null || childStderr === null) {
+      stopProcessTree(child);
+      log.end();
+      reject(new Error('Vitest stdout/stderr unavailable'));
+      return;
+    }
+
+    let tail = '';
+    const consumeOutput = (chunk: string): void => {
+      log.write(chunk);
+      tail = `${tail}${chunk}`.slice(-16_000);
+      const summaryLines = chunk
+        .split(/\r?\n/)
+        .filter((line) => line.includes('[lv-test-summary]'));
+      for (const line of summaryLines) {
+        console.log(line.trim());
+      }
+    };
+    childStdout.setEncoding('utf8');
+    childStderr.setEncoding('utf8');
+    childStdout.on('data', consumeOutput);
+    childStderr.on('data', consumeOutput);
+
+    const heartbeat = setInterval(() => {
+      const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
+      console.log(
+        `[test-local] full Vitest suite still running (${elapsedSeconds}s, pid=${child.pid ?? 'unknown'})`,
+      );
+    }, FULL_SUITE_HEARTBEAT_MS);
+
+    const cleanup = (): void => {
+      clearInterval(heartbeat);
+      process.off('SIGINT', onSignal);
+      process.off('SIGTERM', onSignal);
+    };
+
+    let settled = false;
+    const finish = (error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      log.end(() => {
+        if (error) {
+          console.error(`[test-local] full-suite log: ${logPath}`);
+          console.error('[test-local] final output tail:');
+          console.error(tail);
+          reject(error);
+        } else {
+          console.log(`[test-local] full-suite log: ${logPath}`);
+          resolve();
+        }
+      });
+    };
+
+    const onSignal = (): void => {
+      console.error('[test-local] stopping the full Vitest process tree...');
+      stopProcessTree(child);
+    };
+
+    process.once('SIGINT', onSignal);
+    process.once('SIGTERM', onSignal);
+    child.once('error', (error) => {
+      stopProcessTree(child);
+      finish(error);
+    });
+    child.once('close', (status, signal) => {
+      if (status === 0) {
+        finish();
+        return;
+      }
+      finish(new Error(
+        `Vitest exited with code ${status ?? 'unknown'}${signal ? ` (${signal})` : ''}`,
+      ));
+    });
+  });
 }
 
 async function main(): Promise<void> {
@@ -168,9 +270,9 @@ async function main(): Promise<void> {
       await waitForDevServer();
     }
     console.log('[test-local] running full Vitest suite...');
-    run(npmCommand, npmArgs(['test']));
+    await runFullVitestSuite();
   } finally {
-    if (devServer !== null) stopProcess(devServer);
+    if (devServer !== null) stopProcessTree(devServer);
   }
 }
 
