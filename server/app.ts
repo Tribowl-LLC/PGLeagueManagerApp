@@ -173,6 +173,12 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
   const PORT = opts.port ?? env.PORT;
 
   app.use(requestTracker);
+  // Render sends health checks with a verified custom domain as the Host
+  // header. Register liveness before tenant resolution so those probes cannot
+  // perform an organization lookup and keep Neon awake.
+  app.get('/healthz', (_req, res) => {
+    res.set('Cache-Control', 'no-store').type('text/plain').send('ok');
+  });
   // Register the disabled endpoint before tenant resolution and the global
   // raw-body-capturing JSON parser. The exact route supplies its own security
   // headers, rate limiter, 12 KB parser, safe parser-error handling, and 501.
@@ -180,12 +186,6 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
   app.use(subdomainDetection);
   app.use(compression());
   app.use(securityHeaders);
-
-  // Render liveness must not touch Neon. Keep the database-backed readiness
-  // probe below at /api/health for operators and deployment verification.
-  app.get('/healthz', (_req, res) => {
-    res.set('Cache-Control', 'no-store').type('text/plain').send('ok');
-  });
 
   // Admin email templates hold rich HTML bodies (and may carry inline
   // markup/base64) that can legitimately exceed the small global ceiling.

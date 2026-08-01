@@ -43,11 +43,13 @@ describe('Express 5 auth aliases', () => {
 });
 
 describe('Render liveness health check', () => {
-  it('uses a database-free endpoint and keeps the deep probe separate', () => {
+  it('runs before tenant resolution and keeps the deep probe separate', () => {
     const livenessStart = appSource.indexOf("app.get('/healthz'");
+    const tenantResolutionStart = appSource.indexOf('app.use(subdomainDetection)');
     const deepHealthStart = appSource.indexOf("app.get('/api/health'");
 
     expect(livenessStart).toBeGreaterThanOrEqual(0);
+    expect(tenantResolutionStart).toBeGreaterThan(livenessStart);
     expect(deepHealthStart).toBeGreaterThan(livenessStart);
 
     const livenessSource = appSource.slice(livenessStart, deepHealthStart);
