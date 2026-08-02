@@ -389,9 +389,9 @@ export async function inspectApprovedJournal(
   }
   await assertExactJournalShape(client);
   const entries = await client.query<JournalEntryRow>(`
-    SELECT id::text, hash::text, created_at::text
-    FROM ${DRIZZLE_JOURNAL_SCHEMA}.${DRIZZLE_JOURNAL_TABLE}
-    ORDER BY id
+    SELECT journal.id::text, journal.hash::text, journal.created_at::text
+    FROM ${DRIZZLE_JOURNAL_SCHEMA}.${DRIZZLE_JOURNAL_TABLE} AS journal
+    ORDER BY journal.id
   `);
   const sequenceState = await client.query<{ last_value: string; is_called: boolean }>(`
     SELECT last_value::text, is_called

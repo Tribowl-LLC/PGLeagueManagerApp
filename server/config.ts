@@ -5,6 +5,13 @@ import { APP_ENV_VALUES, resolveAppEnv, type AppEnv } from '../shared/app-env';
 
 const log = createLogger("Config");
 
+export const SCHEDULED_PAYMENT_EXECUTION_MODES = [
+  'legacy',
+  'ledger_paused',
+  'ledger_execute',
+] as const;
+export type ScheduledPaymentExecutionMode = (typeof SCHEDULED_PAYMENT_EXECUTION_MODES)[number];
+
 export const envSchema = z.object({
   DATABASE_URL: z.string().min(1, "DATABASE_URL must be set. Did you forget to provision a database?"),
   SESSION_SECRET: z.string().min(1, "SESSION_SECRET must be set. Sessions cannot be secured without a signing key."),
@@ -13,6 +20,11 @@ export const envSchema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
 
   FIELD_ENCRYPTION_KEY: z.string().regex(/^[0-9a-fA-F]{64}$/, "FIELD_ENCRYPTION_KEY must be a 64-character hex string (32 bytes). Payment credentials cannot be stored without encryption."),
+
+  // Phase 2B is deliberately opt-in. Production-like runtimes must set this
+  // explicitly; local/test runtimes retain the legacy default so dormant
+  // infrastructure does not alter the scheduled-payment path.
+  SCHEDULED_PAYMENT_EXECUTION_MODE: z.enum(SCHEDULED_PAYMENT_EXECUTION_MODES).optional(),
 
   SENDGRID_API_KEY: z.string().min(1).optional(),
   SENTRY_DSN: z.string().min(1).optional(),
@@ -118,6 +130,21 @@ export const envSchema = z.object({
 
 type Env = z.infer<typeof envSchema>;
 
+export function validateScheduledPaymentExecutionMode(input: {
+  mode: ScheduledPaymentExecutionMode | undefined;
+  nodeEnv: string | undefined;
+  appEnv: string | undefined;
+}): { ok: true; mode: ScheduledPaymentExecutionMode } | { ok: false; reason: string } {
+  const productionLike = input.nodeEnv === 'production' || input.appEnv === 'prod';
+  if (productionLike && input.mode === undefined) {
+    return {
+      ok: false,
+      reason: 'SCHEDULED_PAYMENT_EXECUTION_MODE must be explicitly set in production',
+    };
+  }
+  return { ok: true, mode: input.mode ?? 'legacy' };
+}
+
 // Minimum SETUP_SECRET length in characters. 32 chars of base64 is ~24 bytes
 // of entropy; we want at least 32 bytes, which is 44 base64 chars, but we
 // keep the floor at 32 chars so operators can also use 32-byte hex-ish
@@ -166,6 +193,19 @@ const optionalWarnings: { key: keyof Env; feature: string }[] = [
 function validateEnv(): Env {
   const result = envSchema.safeParse(process.env);
 
+  const requireExecutionMode = (parsed: Env): Env => {
+    const executionMode = validateScheduledPaymentExecutionMode({
+      mode: parsed.SCHEDULED_PAYMENT_EXECUTION_MODE,
+      nodeEnv: parsed.NODE_ENV,
+      appEnv: parsed.APP_ENV,
+    });
+    if (!executionMode.ok) {
+      log.error(`Environment validation failed: ${executionMode.reason}`);
+      process.exit(1);
+    }
+    return parsed;
+  };
+
   if (!result.success) {
     const errors = result.error.issues
       .filter((issue) => {
@@ -181,20 +221,22 @@ function validateEnv(): Env {
       process.exit(1);
     }
 
-    return envSchema.parse({
+    return requireExecutionMode(envSchema.parse({
       ...process.env,
       ...Object.fromEntries(
         result.error.issues
           .filter((issue) => optionalWarnings.some((w) => w.key === issue.path[0]))
           .map((issue) => [issue.path[0], undefined])
       ),
-    });
+    }));
   }
 
-  return result.data;
+  return requireExecutionMode(result.data);
 }
 
 export const env = validateEnv();
+export const scheduledPaymentExecutionMode: ScheduledPaymentExecutionMode =
+  env.SCHEDULED_PAYMENT_EXECUTION_MODE ?? 'legacy';
 
 // Enforce SETUP_SECRET strength at boot. Refuses to start the server when
 // a secret is set but weak — see task 282 / the docs section in AGENTS.md.

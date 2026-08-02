@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildPaymentOperationIdentity,
   canonicalizePaymentOperationInput,
+  deriveSquareOperationIdempotencyKey,
   SQUARE_OPERATION_IDEMPOTENCY_MAX_LENGTH,
   type StablePaymentOperationRequest,
 } from "../../server/services/payment-operation-idempotency";
@@ -69,6 +70,22 @@ describe("payment operation stable identity", () => {
     expect(refund.providerIdempotencyKey.length).toBeLessThanOrEqual(45);
   });
 
+  it("derives independent deterministic Square order and payment keys within 45 characters", () => {
+    const logical = buildPaymentOperationIdentity(scheduledRequest).providerIdempotencyKey;
+    const order = deriveSquareOperationIdempotencyKey(logical, "order");
+    const payment = deriveSquareOperationIdempotencyKey(logical, "payment");
+
+    expect(order).toMatch(/^lv-sq1-o-/);
+    expect(payment).toMatch(/^lv-sq1-p-/);
+    expect(order).not.toBe(payment);
+    expect(order).toBe(deriveSquareOperationIdempotencyKey(logical, "order"));
+    expect(payment).toBe(deriveSquareOperationIdempotencyKey(logical, "payment"));
+    expect(order.length).toBeLessThanOrEqual(45);
+    expect(payment.length).toBeLessThanOrEqual(45);
+    expect(order).not.toContain(`${logical}-order`);
+    expect(payment).not.toContain(`${logical}-pay`);
+  });
+
   it.each([
     ["tenant", { organizationId: 42 }],
     ["target", { targetKey: "payment-schedule:73", paymentScheduleId: 73 }],
@@ -83,16 +100,25 @@ describe("payment operation stable identity", () => {
   });
 });
 
-describe("Phase 2A dormant boundary", () => {
+describe("Phase 2B-1 dormant boundary", () => {
   it.each([
     "server/services/payment-scheduler.ts",
     "server/services/payment-lifecycle.ts",
     "server/services/payment-execution.ts",
     "server/routes/payments-provider/charges.ts",
     "server/routes/payments/payment-refunds.ts",
+    "server/routes/payment-schedules.ts",
+    "server/routes/index.ts",
+    "server/app.ts",
+    "server/lib/shutdown.ts",
     "server/index.ts",
   ])("does not wire the ledger into %s", (path) => {
     const source = readFileSync(resolve(path), "utf8");
     expect(source).not.toMatch(/payment-operation|paymentOperations/);
+  });
+
+  it("keeps transaction-capable finalization independent from provider refunds", () => {
+    const source = readFileSync(resolve("server/storage/payment-operations.ts"), "utf8");
+    expect(source).not.toMatch(/refundPayment|payment-provider|square-payments/);
   });
 });

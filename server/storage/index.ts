@@ -87,6 +87,8 @@ export class DatabaseStorage implements IStorage {
   updatePaymentScheduleCard!: IStorage["updatePaymentScheduleCard"];
 
   createOrGetScheduledPaymentOperation!: IStorage["createOrGetScheduledPaymentOperation"];
+  persistScheduledPaymentOperationSnapshot!: IStorage["persistScheduledPaymentOperationSnapshot"];
+  getScheduledPaymentOperationSnapshotForOrganization!: IStorage["getScheduledPaymentOperationSnapshotForOrganization"];
   getPaymentOperationForOrganization!: IStorage["getPaymentOperationForOrganization"];
   acquirePaymentOperationLease!: IStorage["acquirePaymentOperationLease"];
   schedulePaymentOperationRetry!: IStorage["schedulePaymentOperationRetry"];
@@ -94,6 +96,9 @@ export class DatabaseStorage implements IStorage {
   recordPaymentOperationActionRequired!: IStorage["recordPaymentOperationActionRequired"];
   recordPaymentOperationFailedTerminal!: IStorage["recordPaymentOperationFailedTerminal"];
   finalizePaymentOperationSuccess!: IStorage["finalizePaymentOperationSuccess"];
+  getNextPaymentOperationWake!: IStorage["getNextPaymentOperationWake"];
+  recordExpiredPaymentOperationAttemptExhausted!: IStorage["recordExpiredPaymentOperationAttemptExhausted"];
+  hasNonterminalScheduledPaymentOperation!: IStorage["hasNonterminalScheduledPaymentOperation"];
   cancelPaymentOperation!: IStorage["cancelPaymentOperation"];
 
   getGames!: IStorage["getGames"];

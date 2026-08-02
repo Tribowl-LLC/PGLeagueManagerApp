@@ -14,6 +14,128 @@ It must never contain a card number, CVV, access token, authorization header,
 raw provider response, raw provider error detail, payment source token, or
 unnecessary customer data.
 
+## Phase 2B-1 boundary (migration 0008)
+
+Phase 2B-1 remains dormant. It adds only the data and service primitives needed
+to make the later scheduled-charge cutover reviewable:
+
+- forward-only additive migration
+  `0008_scheduled_payment_operation_execution`;
+- one encrypted, versioned execution snapshot per scheduled operation, plus
+  structured allocation and Square order-line children;
+- deterministic, domain-separated Square order and payment keys;
+- structured provider failure dispositions;
+- transaction-capable operation creation/snapshot and atomic
+  operation/payment-row finalization primitives;
+- atomic attempt-exhaustion and expired-lease recovery bookkeeping; and
+- an unconnected one-shot operation wake component.
+
+No scheduler, startup hook, route, payment lifecycle, interactive charge,
+refund, or Square webhook constructs or starts the operation executor in this
+phase. The production scheduled-payment path remains the legacy path. Migration
+0008 performs no backfill, and the Phase 2A application safely ignores all new
+tables and nullable columns.
+
+Production must explicitly set `SCHEDULED_PAYMENT_EXECUTION_MODE`. Missing mode
+with either `NODE_ENV=production` or `APP_ENV=prod` fails startup. The modes are:
+
+| Mode | Phase 2B-1 behavior | Phase 2B-2 contract |
+| --- | --- | --- |
+| `legacy` | Existing scheduled behavior; operation wake code is not started | Temporary rollback-compatible mode, subject to the nonterminal-operation guard |
+| `ledger_paused` | Existing scheduled behavior remains unchanged; the dormant operation wake component performs no query and creates no timer | No ledger provider calls, no executor query/timer/hot loop, and no legacy fallback for a cycle represented in the ledger |
+| `ledger_execute` | Still inert because nothing wires the component | The only mode permitted to lease and call Square for scheduled ledger operations |
+
+`ledger_execute` must not be selected in production for the Phase 2B-1 commit.
+The Phase 2B-1 `ledger_paused` setting proves the startup gate and zero-query
+executor behavior; it does not claim to pause the still-unmodified legacy
+scheduler.
+
+## Immutable scheduled execution snapshot
+
+The snapshot is the minimum semantic input needed to reconstruct exactly the
+same Square request. Sensitive source, customer, and buyer-email references are
+encrypted with the existing `FIELD_ENCRYPTION_KEY` AES-256-GCM mechanism. No
+new secret is required. Card numbers, CVVs, credentials, authorization headers,
+raw responses, and raw provider errors are prohibited.
+
+The canonical `lvpayexec:v1` fingerprint covers every
+Square-idempotency-relevant field:
+
+- tenant, schedule, UTC billing cycle, amount, currency, and provider;
+- immutable league, internal location, and Square location context;
+- direct-versus-order request shape;
+- independently derived payment and optional order idempotency keys;
+- `autocomplete` and `storeCard` request semantics;
+- encrypted-at-rest source, customer, and buyer-email values (plaintext only
+  while calculating or reconstructing the semantic fingerprint);
+- double-pay and paid-in-full calculation inputs;
+- every allocation index, bowler, total, lineage/prize split, note, and
+  paid-by-user reference; and
+- every Square catalog object identifier, line index, and quantity.
+
+The children use stable indexes and database uniqueness. Allocations must sum
+to the operation total. An order request must have line items and both keys; a
+direct request must have neither order line items nor an order key. On every
+retry the encrypted fields are authenticated and the complete fingerprint is
+recomputed. Decryption, validation, derived-key, or fingerprint mismatch fails
+closed before provider dispatch. Mutable schedule, league, partner-link,
+payment-method, location, or catalog rows are not an alternative source for an
+existing operation.
+
+The 42-character Phase 2A logical provider key is never suffixed. Square keys
+are derived with distinct `order` and `payment` domains and are each independently
+at most 45 characters.
+
+## Atomic local finalization and failed history
+
+Success finalization conditionally changes the leased operation to `succeeded`
+and inserts all local `payments` rows in one database transaction, guarded by
+tenant, operation UUID, `leased` state, and the exact lease token. Nullable
+`payments.payment_operation_id` plus the allocation index link split rows to
+the operation. A partial unique index permits several legitimate combined rows
+with one provider payment ID while preventing a second local row for the same
+operation/allocation.
+
+If any payment-row insert fails, the operation transition rolls back and stays
+recoverable under its lease. The storage layer has no provider or refund
+dependency: a database finalization failure can never initiate an automatic
+compensation refund. Recovery must replay Square with the identical request
+and keys, accept Square's original idempotent result, and retry the same local
+transaction.
+
+Phase 2B-2 must preserve the existing deliberate failed-history behavior: no
+row for a transient attempt, and at most one operation-linked failed row when a
+hard decline or terminal policy requires history. For a combined charge this
+preserves the legacy shape: one ungrouped payer-level failed row for the payer's
+base scheduled amount, not one row per payee, the combined provider total, or
+each retry. The terminal transition and that row insert are one transaction and
+idempotent on replay.
+
+Attempt eight transitions directly from the completing lease to
+`failed_terminal`, clears `next_attempt_at`, sets `completed_at` and sanitized
+`ATTEMPTS_EXHAUSTED`, and inserts any deliberate terminal history in the same
+transaction. It cannot briefly become retryable, and lease acquisition requires
+an attempt count below eight.
+
+## Dormant one-shot wake infrastructure
+
+The wake query returns only the earliest `next_attempt_at` for pending,
+provider-unknown, or retry-scheduled work, or the earliest lease expiration.
+The component uses one unreferenced timeout, re-queries only at startup or after
+a committed operation transition, and leaves no timer when the queue is empty.
+An unchanged overdue row after a handler returns is treated as missing durable
+progress and stops instead of forming a hot loop. `legacy` and `ledger_paused`
+return before the first queue query or timer. Phase 2B-1 does not start this
+component at all.
+
+Provider results preserve structured Square information before a generic user
+message is chosen: ambiguous transport and non-specific 5xx outcomes are
+`provider_unknown`; 429 and Square's documented `TEMPORARY_ERROR` are definite
+transient results; hard card errors are `action_required`; authentication,
+location, permission, and processing-enable errors are configuration failures;
+and definite bad requests are invalid. Known provider order IDs may be retained
+for reconciliation. Only sanitized codes enter the ledger.
+
 ## Data and identity invariants
 
 One row represents one logical provider operation. Supported operation types
@@ -103,14 +225,19 @@ and cannot reuse the row. Reconciliation records `succeeded`, schedules a
 bounded retry, or sends the operation to `action_required`/`failed_terminal`;
 it must never guess success from a transport error.
 
-## Exact Phase 2B scheduled-charge cutover
+## Exact Phase 2B-2 scheduled-charge cutover
 
-1. Require migration `0007_payment_operation_ledger` to be present and verified
+1. Require migrations `0007_payment_operation_ledger` and
+   `0008_scheduled_payment_operation_execution` to be present and verified
    before deploying the cutover application.
-2. In one short transaction, lock the current schedule cycle, validate the
-   tenant and immutable charge calculation (including double-pay and combined
-   payees), insert or verify the cycle operation, advance the schedule to its
-   next normal cycle, and commit. No provider call occurs in this transaction.
+2. In one short `SERIALIZABLE` transaction (with bounded serialization retry),
+   lock the exact schedule row `FOR UPDATE`, re-read the joined tenant/league
+   state inside that transaction, and validate the tenant and immutable charge
+   calculation (including double-pay and combined payees). Insert or verify the
+   cycle operation, advance the schedule to its next normal cycle, and commit.
+   No provider call occurs in this transaction. Every preparation code path
+   must use this isolation/locking contract. Upfront schedules deactivate after
+   their one prepared payment and create no future recurring cycle.
 3. Replace direct scheduled execution with an event-driven wake for the newly
    due operation. Do not add a fixed recurring database sweep; arm the next
    wake from `next_attempt_at`/lease expiry and retain a bounded recovery path.
@@ -128,6 +255,12 @@ it must never guess success from a transport error.
 7. Run focused schedule, combined-payment, tenant, Square, race, and rollback
    tests; deploy the exact CI-verified main commit only after migration-first
    release checks.
+
+Before the first legacy Square call, Phase 2B-2 must tenant-scope a check for
+any nonterminal operation on that schedule. If one exists, legacy execution is
+prohibited even if the mode is changed back to `legacy`; the operation must be
+paused or recovered through the ledger. Duplicate scheduler delivery must
+re-enter the same locked preparation and converge on the same operation.
 
 Interactive charges and refunds should adopt the same create/lease/call/finalize
 shape in later scoped changes. They are not part of the Phase 2B scheduled
@@ -148,18 +281,74 @@ What remains a product-policy decision is the shape and authorization of an
 explicit organization-level pause rule, notifications, and arrears-resolution
 UI. Phase 2A implements none of those behaviors.
 
-## Migration-first deployment
+## Phase 2B-1 migration-first deployment and verification
 
-This additive table starts empty and needs no backfill. Hold Render Auto-Deploy,
-back up the intended Neon database, and run `npm run db:migrate` from the exact
-CI-verified commit. Expected output includes successful application of
-`0007_payment_operation_ledger` and no unexpected schema statements. Inspect
-the migration journal/table and the new empty table/indexes, then release the
-matching application commit. Verify `/api/health`, `/healthz`, authentication,
-tenant isolation, and representative scheduled/interactive/refund workflows.
+Migration 0007 is already present in production. Migration 0008 is additive,
+starts empty, needs no backfill, and uses only the existing field-encryption
+key. Use this exact sequence for the 2B-1 release:
 
-The previous application revision safely ignores the additive table. Normal
-rollback is therefore an application rollback while retaining the table and
-its rows; do not drop it as part of rollback. If migration application fails,
-stop before application deployment and restore from the reviewed backup when
-required.
+1. Leave the PR unmerged until every GitHub check is green and the migration
+   SQL, Drizzle snapshot, journal entry, and checksum are reviewed. Record the
+   exact certified main SHA.
+2. Set Render Auto-Deploy to **Off before merging** the schema release. Confirm
+   it remains Off after merge and certification.
+3. Confirm production still reports the previously verified Phase 2A-or-later
+   SHA, `/healthz` is `ok`, `/api/health` is healthy, and scheduled,
+   interactive, and refund smoke checks are normal.
+4. Create/verify the intended Neon backup or restorable branch and record the
+   exact database target. Do not proceed on a target, journal, or fingerprint
+   mismatch.
+5. Drain the old application instance: suspend the single Render web service,
+   wait for active HTTP requests to finish, and verify no service instance or
+   scheduled-payment process remains running. This prevents a scheduler from
+   crossing the migration/deploy boundary.
+6. While the service is suspended, set
+   `SCHEDULED_PAYMENT_EXECUTION_MODE=ledger_paused` together with the existing
+   production values (`APP_ENV=prod`, `NODE_ENV=production`). Do not select
+   `ledger_execute`.
+7. From the exact CI-certified release SHA, run the guarded migration preflight
+   and `npm run db:migrate` once against the recorded Neon target. Verify
+   migration 0008's checksum/journal row, three snapshot/child tables, nullable
+   payment linkage, operation recovery columns, constraints, and indexes.
+8. Manually deploy that same exact SHA and resume one Render instance while
+   Auto-Deploy remains Off. Verify the runtime commit, `/healthz`,
+   `/api/health`, authentication, tenant isolation, and startup logs showing
+   explicit `ledger_paused` with no operation lease, queue query, wake timer,
+   or Square operation call.
+9. Run deterministic sandbox/fake-provider smoke checks for one normal legacy
+   scheduled payment, one interactive payment, and one refund. Confirm no
+   `payment_operations` or snapshot rows were created by those production
+   paths and no payment amount/receipt/refund behavior changed.
+10. Observe at least one full idle autosuspension window: no empty operation
+    query/timer may appear in logs or Neon query history, and Neon compute must
+    return to autosuspended state. Restore normal Render Auto-Deploy only after
+    this release is accepted; do not activate `ledger_execute` in 2B-1.
+
+If migration 0008 fails, keep Render suspended and Auto-Deploy Off, preserve all
+output, and use the reviewed Neon restore procedure when necessary. Do not edit
+0007/0008, invent a reverse migration, or deploy 2B-1 code without its schema.
+
+Before any 2B-2 cutover, repeat steps 1-8 with the new certified commit and an
+old-instance drain, initially deploying 2B-2 in `ledger_paused`. Verify no
+legacy or ledger provider dispatch occurs for a cycle with a nonterminal
+operation, then switch only the environment mode to `ledger_execute`, deploy
+one instance, and confirm: one due cycle creates one immutable operation,
+schedule cursor advancement commits before Square, one lease winner dispatches,
+local rows link atomically, retries retain keys/fingerprint, the queue arms only
+its earliest real wake, and idle Neon autosuspends. Activation is an explicit
+operator action; no default enables it.
+
+For 2B-1 rollback, suspend the service, restore the prior Phase 2A application,
+and retain migration 0008. Because 2B-1 never creates scheduled ledger work,
+the prior application safely ignores the additive structures. Keep production
+mode requirements appropriate to the deployed revision and rerun health,
+tenant, scheduled, interactive, and refund checks before resuming.
+
+After 2B-2 has created any nonterminal operation, do **not** roll back to an
+application lacking the nonterminal-operation legacy guard and resume billing;
+that could charge a ledger-represented cycle through legacy code. The safe
+rollback is: set `ledger_paused`, drain/suspend all instances, preserve schedule
+cursors and operations, reconcile every ambiguous/provider-success state, and
+deploy a forward fix or a reviewed guarded revision. Never delete operations,
+move schedule cursors backward, or refund a confirmed provider success merely
+because local finalization failed.

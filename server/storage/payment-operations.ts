@@ -1,9 +1,16 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray, lt, lte, or, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
 import {
+  bowlers,
   leagues,
+  locations,
   paymentOperations,
   paymentSchedules,
+  payments,
+  scheduledPaymentOperationAllocations,
+  scheduledPaymentOperationLineItems,
+  scheduledPaymentOperationSnapshots,
+  users,
   PAYMENT_OPERATION_ERROR_CLASSIFICATIONS,
   PAYMENT_OPERATION_MAX_ATTEMPTS,
   PAYMENT_OPERATION_MAX_LEASE_MS,
@@ -13,6 +20,12 @@ import {
 } from "@shared/schema";
 import { db } from "../db.js";
 import { buildPaymentOperationIdentity } from "../services/payment-operation-idempotency.js";
+import {
+  encryptScheduledPaymentSnapshot,
+  fingerprintScheduledPaymentSnapshot,
+  reconstructScheduledPaymentSnapshot,
+  type ScheduledPaymentSemanticSnapshot,
+} from "../services/scheduled-payment-operation-snapshot.js";
 
 export class PaymentOperationNotFoundError extends Error {
   constructor() {
@@ -51,6 +64,16 @@ export interface CreateOrGetScheduledPaymentOperationInput {
   providerName: string;
 }
 
+export type PaymentOperationTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+export interface PaymentOperationLinkedPaymentInput {
+  allocationIndex: number;
+  values: Omit<
+    typeof payments.$inferInsert,
+    "paymentOperationId" | "paymentOperationAllocationIndex"
+  >;
+}
+
 export interface AcquirePaymentOperationLeaseInput {
   organizationId: number;
   operationId: string;
@@ -68,6 +91,8 @@ export interface LeasedPaymentOperationInput {
 
 interface ErrorOutcomeInput extends LeasedPaymentOperationInput {
   errorCode?: string | null;
+  providerOrderId?: string | null;
+  failedPaymentRows?: PaymentOperationLinkedPaymentInput[];
 }
 
 function toIso(value: Date, label: string): string {
@@ -105,6 +130,129 @@ function validateProviderObjectId(providerObjectId: string): void {
   ) {
     throw new PaymentOperationValidationError("providerObjectId has an invalid format");
   }
+}
+
+function validateProviderOrderId(providerOrderId: string): void {
+  validateProviderObjectId(providerOrderId);
+}
+
+function validateLinkedPaymentRows(rows: PaymentOperationLinkedPaymentInput[] | undefined): void {
+  if (rows === undefined) return;
+  const indexes = new Set<number>();
+  for (const row of rows) {
+    if (!Number.isSafeInteger(row.allocationIndex) || row.allocationIndex < 0) {
+      throw new PaymentOperationValidationError("payment allocation index must be a non-negative integer");
+    }
+    if (indexes.has(row.allocationIndex)) {
+      throw new PaymentOperationValidationError("payment allocation indexes must be unique");
+    }
+    indexes.add(row.allocationIndex);
+  }
+}
+
+function validateFailedPaymentRows(rows: PaymentOperationLinkedPaymentInput[] | undefined): void {
+  validateLinkedPaymentRows(rows);
+  if (rows === undefined) return;
+  if (rows.length > 1) {
+    throw new PaymentOperationValidationError(
+      "scheduled failure history permits only the payer-level row",
+    );
+  }
+  const row = rows[0];
+  if (!row) return;
+  if (
+    row.allocationIndex !== 0
+    || row.values.status !== "failed"
+    || row.values.combinedChargeGroupId != null
+  ) {
+    throw new PaymentOperationValidationError(
+      "scheduled failure history must be one ungrouped failed payer row",
+    );
+  }
+}
+
+async function validateSnapshotTenantReferences(
+  executor: PaymentOperationTransaction,
+  snapshot: ScheduledPaymentSemanticSnapshot,
+): Promise<void> {
+  const bowlerIds = [...new Set(snapshot.allocations.map((row) => row.bowlerId))];
+  const paidByUserIds = [...new Set(snapshot.allocations
+    .map((row) => row.paidByUserId)
+    .filter((id): id is number => id !== null))];
+  const [ownedBowlers, ownedLeague, ownedPaidByUsers, ownedLocations] = await Promise.all([
+    executor.select({ id: bowlers.id }).from(bowlers).where(and(
+      eq(bowlers.organizationId, snapshot.organizationId),
+      inArray(bowlers.id, bowlerIds),
+    )),
+    executor.select({ id: leagues.id }).from(leagues).where(and(
+      eq(leagues.organizationId, snapshot.organizationId),
+      eq(leagues.id, snapshot.leagueId),
+    )),
+    paidByUserIds.length === 0
+      ? Promise.resolve([])
+      : executor.select({ id: users.id }).from(users).where(and(
+        eq(users.organizationId, snapshot.organizationId),
+        inArray(users.id, paidByUserIds),
+      )),
+    snapshot.locationId === null
+      ? Promise.resolve([])
+      : executor.select({ id: locations.id }).from(locations).where(and(
+        eq(locations.organizationId, snapshot.organizationId),
+        eq(locations.id, snapshot.locationId),
+      )),
+  ]);
+  if (
+    ownedBowlers.length !== bowlerIds.length
+    || ownedLeague.length !== 1
+    || ownedPaidByUsers.length !== paidByUserIds.length
+    || ownedLocations.length !== (snapshot.locationId === null ? 0 : 1)
+  ) {
+    throw new PaymentOperationValidationError(
+      "scheduled payment snapshot references do not belong to the operation tenant",
+    );
+  }
+}
+
+async function insertLinkedPaymentRows(
+  executor: PaymentOperationTransaction,
+  organizationId: number,
+  operationId: string,
+  rows: PaymentOperationLinkedPaymentInput[] | undefined,
+): Promise<void> {
+  if (!rows || rows.length === 0) return;
+  const bowlerIds = [...new Set(rows.map((row) => row.values.bowlerId))];
+  const leagueIds = [...new Set(rows.map((row) => row.values.leagueId))];
+  const paidByUserIds = [...new Set(rows
+    .map((row) => row.values.paidByUserId)
+    .filter((id): id is number => typeof id === "number"))];
+  const [ownedBowlers, ownedLeagues, ownedPaidByUsers] = await Promise.all([
+    executor.select({ id: bowlers.id }).from(bowlers).where(and(
+      eq(bowlers.organizationId, organizationId),
+      inArray(bowlers.id, bowlerIds),
+    )),
+    executor.select({ id: leagues.id }).from(leagues).where(and(
+      eq(leagues.organizationId, organizationId),
+      inArray(leagues.id, leagueIds),
+    )),
+    paidByUserIds.length === 0
+      ? Promise.resolve([])
+      : executor.select({ id: users.id }).from(users).where(and(
+        eq(users.organizationId, organizationId),
+        inArray(users.id, paidByUserIds),
+      )),
+  ]);
+  if (
+    ownedBowlers.length !== bowlerIds.length
+    || ownedLeagues.length !== leagueIds.length
+    || ownedPaidByUsers.length !== paidByUserIds.length
+  ) {
+    throw new PaymentOperationValidationError("linked payment rows do not belong to the operation tenant");
+  }
+  await executor.insert(payments).values(rows.map((row) => ({
+    ...row.values,
+    paymentOperationId: operationId,
+    paymentOperationAllocationIndex: row.allocationIndex,
+  })));
 }
 
 function validateErrorDetails(
@@ -156,6 +304,7 @@ function immutableScheduledOperationMatches(
  */
 export async function createOrGetScheduledPaymentOperation(
   input: CreateOrGetScheduledPaymentOperationInput,
+  existingTransaction?: PaymentOperationTransaction,
 ): Promise<PaymentOperation> {
   const identity = buildPaymentOperationIdentity({
     organizationId: input.organizationId,
@@ -170,7 +319,7 @@ export async function createOrGetScheduledPaymentOperation(
   const request = identity.normalizedRequest;
   const now = new Date().toISOString();
 
-  return db.transaction(async (tx) => {
+  const run = async (tx: PaymentOperationTransaction): Promise<PaymentOperation> => {
     // Lock both the schedule and joined league rows for the duration of this
     // short insert/get transaction. That closes the tenant-check TOCTOU window
     // without ever spanning a provider call.
@@ -221,7 +370,118 @@ export async function createOrGetScheduledPaymentOperation(
       throw new PaymentOperationImmutableMismatchError();
     }
     return existing;
+  };
+  return existingTransaction ? run(existingTransaction) : db.transaction(run);
+}
+
+async function loadScheduledPaymentOperationSnapshot(
+  executor: typeof db | PaymentOperationTransaction,
+  operation: PaymentOperation,
+): Promise<ScheduledPaymentSemanticSnapshot | undefined> {
+  if (operation.paymentScheduleId === null || operation.billingCycleAt === null) return undefined;
+  const [stored] = await executor
+    .select()
+    .from(scheduledPaymentOperationSnapshots)
+    .where(eq(scheduledPaymentOperationSnapshots.operationId, operation.id))
+    .limit(1);
+  if (!stored) return undefined;
+  const allocationRows = await executor
+    .select()
+    .from(scheduledPaymentOperationAllocations)
+    .where(eq(scheduledPaymentOperationAllocations.operationId, operation.id))
+    .orderBy(asc(scheduledPaymentOperationAllocations.allocationIndex));
+  const lineItemRows = await executor
+    .select()
+    .from(scheduledPaymentOperationLineItems)
+    .where(eq(scheduledPaymentOperationLineItems.operationId, operation.id))
+    .orderBy(asc(scheduledPaymentOperationLineItems.lineItemIndex));
+  return reconstructScheduledPaymentSnapshot({
+    organizationId: operation.organizationId,
+    paymentScheduleId: operation.paymentScheduleId,
+    billingCycleAt: storedTimestampToIso(operation.billingCycleAt) ?? operation.billingCycleAt,
+    amountMinor: operation.amountMinor,
+    currency: operation.currency,
+    providerName: operation.providerName,
+    providerIdempotencyKey: operation.providerIdempotencyKey,
+    stored,
+    allocations: allocationRows.map((row) => ({
+      allocationIndex: row.allocationIndex,
+      bowlerId: row.bowlerId,
+      amountMinor: row.amountMinor,
+      lineageAmountMinor: row.lineageAmountMinor,
+      prizeFundAmountMinor: row.prizeFundAmountMinor,
+      notes: row.notes,
+      paidByUserId: row.paidByUserId,
+    })),
+    lineItems: lineItemRows.map((row) => ({
+      lineItemIndex: row.lineItemIndex,
+      catalogObjectId: row.catalogObjectId,
+      quantity: row.quantity,
+    })),
   });
+}
+
+/**
+ * Persist or verify the encrypted structured snapshot inside the caller's
+ * cycle-preparation transaction. Phase 2B-1 exposes this primitive but does
+ * not call it from the production scheduler.
+ */
+export async function persistScheduledPaymentOperationSnapshot(
+  operation: PaymentOperation,
+  snapshot: ScheduledPaymentSemanticSnapshot,
+  transaction: PaymentOperationTransaction,
+): Promise<ScheduledPaymentSemanticSnapshot> {
+  if (
+    operation.operationType !== "scheduled_charge"
+    || operation.paymentScheduleId === null
+    || operation.billingCycleAt === null
+    || snapshot.organizationId !== operation.organizationId
+    || snapshot.paymentScheduleId !== operation.paymentScheduleId
+    || new Date(snapshot.billingCycleAt).toISOString() !== storedTimestampToIso(operation.billingCycleAt)
+    || snapshot.amountMinor !== operation.amountMinor
+    || snapshot.currency !== operation.currency
+    || snapshot.providerName !== operation.providerName
+  ) {
+    throw new PaymentOperationImmutableMismatchError();
+  }
+
+  await validateSnapshotTenantReferences(transaction, snapshot);
+  const encrypted = encryptScheduledPaymentSnapshot(snapshot);
+  const [created] = await transaction
+    .insert(scheduledPaymentOperationSnapshots)
+    .values({ operationId: operation.id, ...encrypted })
+    .onConflictDoNothing()
+    .returning({ operationId: scheduledPaymentOperationSnapshots.operationId });
+  if (created) {
+    await transaction.insert(scheduledPaymentOperationAllocations).values(
+      snapshot.allocations.map((row) => ({ operationId: operation.id, ...row })),
+    );
+    if (snapshot.lineItems.length > 0) {
+      await transaction.insert(scheduledPaymentOperationLineItems).values(
+        snapshot.lineItems.map((row) => ({ operationId: operation.id, ...row })),
+      );
+    }
+  }
+
+  let stored: ScheduledPaymentSemanticSnapshot | undefined;
+  try {
+    stored = await loadScheduledPaymentOperationSnapshot(transaction, operation);
+  } catch {
+    throw new PaymentOperationImmutableMismatchError();
+  }
+  if (!stored || encrypted.snapshotFingerprint !== fingerprintScheduledPaymentSnapshot(stored)) {
+    throw new PaymentOperationImmutableMismatchError();
+  }
+  return stored;
+}
+
+export async function getScheduledPaymentOperationSnapshotForOrganization(
+  organizationId: number,
+  operationId: string,
+): Promise<ScheduledPaymentSemanticSnapshot | undefined> {
+  const operation = await getPaymentOperationForOrganization(organizationId, operationId);
+  if (!operation) return undefined;
+  return loadScheduledPaymentOperationSnapshot(db, operation);
 }
 
 export async function getPaymentOperationForOrganization(
@@ -275,6 +535,15 @@ export async function acquirePaymentOperationLease(
       leaseOwner: input.leaseOwner,
       leaseToken,
       leaseExpiresAt,
+      leaseRecoveryCount: sql`CASE
+        WHEN ${paymentOperations.status} = 'leased'
+        THEN ${paymentOperations.leaseRecoveryCount} + 1
+        ELSE ${paymentOperations.leaseRecoveryCount}
+      END`,
+      lastLeaseRecoveredAt: sql`CASE
+        WHEN ${paymentOperations.status} = 'leased' THEN ${now}
+        ELSE ${paymentOperations.lastLeaseRecoveredAt}
+      END`,
       errorClassification: null,
       errorCode: null,
       startedAt: sql`COALESCE(${paymentOperations.startedAt}, ${now})`,
@@ -306,31 +575,71 @@ export async function schedulePaymentOperationRetry(
   },
 ): Promise<PaymentOperation> {
   validateLeaseToken(input.leaseToken);
+  validateFailedPaymentRows(input.failedPaymentRows);
+  if (input.providerOrderId != null) validateProviderOrderId(input.providerOrderId);
   const nowDate = input.now ?? new Date();
   const now = toIso(nowDate, "now");
   const nextAttemptAt = validateFutureDueAt(input.nextAttemptAt, nowDate, "nextAttemptAt");
   const errorCode = validateErrorDetails(input.errorClassification, input.errorCode);
 
-  const [updated] = await db
-    .update(paymentOperations)
-    .set({
-      status: "retry_scheduled",
-      nextAttemptAt,
-      leaseOwner: null,
-      leaseToken: null,
-      leaseExpiresAt: null,
-      errorClassification: input.errorClassification,
-      errorCode,
-      updatedAt: now,
-    })
-    .where(and(
-      eq(paymentOperations.organizationId, input.organizationId),
-      eq(paymentOperations.id, input.operationId),
-      eq(paymentOperations.status, "leased"),
-      eq(paymentOperations.leaseToken, input.leaseToken),
-      lt(paymentOperations.attemptCount, PAYMENT_OPERATION_MAX_ATTEMPTS),
-    ))
-    .returning();
+  const updated = await db.transaction(async (tx) => {
+    const [transitioned] = await tx
+      .update(paymentOperations)
+      .set({
+        status: sql`CASE
+          WHEN ${paymentOperations.attemptCount} >= ${PAYMENT_OPERATION_MAX_ATTEMPTS}
+          THEN 'failed_terminal'
+          ELSE 'retry_scheduled'
+        END`,
+        nextAttemptAt: sql`CASE
+          WHEN ${paymentOperations.attemptCount} >= ${PAYMENT_OPERATION_MAX_ATTEMPTS}
+          THEN NULL::timestamp
+          ELSE ${nextAttemptAt}::timestamp
+        END`,
+        leaseOwner: null,
+        leaseToken: sql`CASE
+          WHEN ${paymentOperations.attemptCount} >= ${PAYMENT_OPERATION_MAX_ATTEMPTS}
+          THEN ${paymentOperations.leaseToken}
+          ELSE NULL
+        END`,
+        leaseExpiresAt: null,
+        providerOrderId: input.providerOrderId ?? undefined,
+        errorClassification: input.errorClassification,
+        errorCode: sql`CASE
+          WHEN ${paymentOperations.attemptCount} >= ${PAYMENT_OPERATION_MAX_ATTEMPTS}
+          THEN 'ATTEMPTS_EXHAUSTED'
+          ELSE ${errorCode}
+        END`,
+        completedAt: sql`CASE
+          WHEN ${paymentOperations.attemptCount} >= ${PAYMENT_OPERATION_MAX_ATTEMPTS}
+          THEN ${now}::timestamp
+          ELSE NULL::timestamp
+        END`,
+        updatedAt: now,
+      })
+      .where(and(
+        eq(paymentOperations.organizationId, input.organizationId),
+        eq(paymentOperations.id, input.operationId),
+        eq(paymentOperations.status, "leased"),
+        eq(paymentOperations.leaseToken, input.leaseToken),
+        input.providerOrderId == null
+          ? undefined
+          : or(
+            isNull(paymentOperations.providerOrderId),
+            eq(paymentOperations.providerOrderId, input.providerOrderId),
+          ),
+      ))
+      .returning();
+    if (transitioned?.status === "failed_terminal") {
+      await insertLinkedPaymentRows(
+        tx,
+        input.organizationId,
+        input.operationId,
+        input.failedPaymentRows,
+      );
+    }
+    return transitioned;
+  });
   if (!updated) return throwInvalidTransition(input.organizationId, input.operationId);
   return updated;
 }
@@ -339,30 +648,71 @@ export async function recordPaymentOperationProviderUnknown(
   input: ErrorOutcomeInput & { recoveryAt: Date },
 ): Promise<PaymentOperation> {
   validateLeaseToken(input.leaseToken);
+  validateFailedPaymentRows(input.failedPaymentRows);
+  if (input.providerOrderId != null) validateProviderOrderId(input.providerOrderId);
   const nowDate = input.now ?? new Date();
   const now = toIso(nowDate, "now");
   const nextAttemptAt = validateFutureDueAt(input.recoveryAt, nowDate, "recoveryAt");
   const errorCode = validateErrorDetails("provider_unknown", input.errorCode);
 
-  const [updated] = await db
-    .update(paymentOperations)
-    .set({
-      status: "provider_unknown",
-      nextAttemptAt,
-      leaseOwner: null,
-      leaseToken: null,
-      leaseExpiresAt: null,
-      errorClassification: "provider_unknown",
-      errorCode,
-      updatedAt: now,
-    })
-    .where(and(
-      eq(paymentOperations.organizationId, input.organizationId),
-      eq(paymentOperations.id, input.operationId),
-      eq(paymentOperations.status, "leased"),
-      eq(paymentOperations.leaseToken, input.leaseToken),
-    ))
-    .returning();
+  const updated = await db.transaction(async (tx) => {
+    const [transitioned] = await tx
+      .update(paymentOperations)
+      .set({
+        status: sql`CASE
+          WHEN ${paymentOperations.attemptCount} >= ${PAYMENT_OPERATION_MAX_ATTEMPTS}
+          THEN 'failed_terminal'
+          ELSE 'provider_unknown'
+        END`,
+        nextAttemptAt: sql`CASE
+          WHEN ${paymentOperations.attemptCount} >= ${PAYMENT_OPERATION_MAX_ATTEMPTS}
+          THEN NULL::timestamp
+          ELSE ${nextAttemptAt}::timestamp
+        END`,
+        leaseOwner: null,
+        leaseToken: sql`CASE
+          WHEN ${paymentOperations.attemptCount} >= ${PAYMENT_OPERATION_MAX_ATTEMPTS}
+          THEN ${paymentOperations.leaseToken}
+          ELSE NULL
+        END`,
+        leaseExpiresAt: null,
+        providerOrderId: input.providerOrderId ?? undefined,
+        errorClassification: "provider_unknown",
+        errorCode: sql`CASE
+          WHEN ${paymentOperations.attemptCount} >= ${PAYMENT_OPERATION_MAX_ATTEMPTS}
+          THEN 'ATTEMPTS_EXHAUSTED'
+          ELSE ${errorCode}
+        END`,
+        completedAt: sql`CASE
+          WHEN ${paymentOperations.attemptCount} >= ${PAYMENT_OPERATION_MAX_ATTEMPTS}
+          THEN ${now}::timestamp
+          ELSE NULL::timestamp
+        END`,
+        updatedAt: now,
+      })
+      .where(and(
+        eq(paymentOperations.organizationId, input.organizationId),
+        eq(paymentOperations.id, input.operationId),
+        eq(paymentOperations.status, "leased"),
+        eq(paymentOperations.leaseToken, input.leaseToken),
+        input.providerOrderId == null
+          ? undefined
+          : or(
+            isNull(paymentOperations.providerOrderId),
+            eq(paymentOperations.providerOrderId, input.providerOrderId),
+          ),
+      ))
+      .returning();
+    if (transitioned?.status === "failed_terminal") {
+      await insertLinkedPaymentRows(
+        tx,
+        input.organizationId,
+        input.operationId,
+        input.failedPaymentRows,
+      );
+    }
+    return transitioned;
+  });
   if (!updated) return throwInvalidTransition(input.organizationId, input.operationId);
   return updated;
 }
@@ -374,30 +724,61 @@ async function recordTerminalErrorOutcome(
   },
 ): Promise<PaymentOperation> {
   validateLeaseToken(input.leaseToken);
+  validateFailedPaymentRows(input.failedPaymentRows);
+  if (input.providerOrderId != null) validateProviderOrderId(input.providerOrderId);
   const now = toIso(input.now ?? new Date(), "now");
   const errorCode = validateErrorDetails(input.errorClassification, input.errorCode);
 
-  const [updated] = await db
-    .update(paymentOperations)
-    .set({
-      status: input.status,
-      nextAttemptAt: null,
-      leaseOwner: null,
-      leaseExpiresAt: null,
-      errorClassification: input.errorClassification,
-      errorCode,
-      completedAt: now,
-      updatedAt: now,
-    })
-    .where(and(
-      eq(paymentOperations.organizationId, input.organizationId),
-      eq(paymentOperations.id, input.operationId),
-      eq(paymentOperations.status, "leased"),
-      eq(paymentOperations.leaseToken, input.leaseToken),
-    ))
-    .returning();
-  if (!updated) return throwInvalidTransition(input.organizationId, input.operationId);
-  return updated;
+  const updated = await db.transaction(async (tx) => {
+    const [transitioned] = await tx
+      .update(paymentOperations)
+      .set({
+        status: input.status,
+        nextAttemptAt: null,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        providerOrderId: input.providerOrderId ?? undefined,
+        errorClassification: input.errorClassification,
+        errorCode,
+        completedAt: now,
+        updatedAt: now,
+      })
+      .where(and(
+        eq(paymentOperations.organizationId, input.organizationId),
+        eq(paymentOperations.id, input.operationId),
+        eq(paymentOperations.status, "leased"),
+        eq(paymentOperations.leaseToken, input.leaseToken),
+        input.providerOrderId == null
+          ? undefined
+          : or(
+            isNull(paymentOperations.providerOrderId),
+            eq(paymentOperations.providerOrderId, input.providerOrderId),
+          ),
+      ))
+      .returning();
+    if (!transitioned) return undefined;
+    await insertLinkedPaymentRows(
+      tx,
+      input.organizationId,
+      input.operationId,
+      input.failedPaymentRows,
+    );
+    return transitioned;
+  });
+  if (updated) return updated;
+
+  const existing = await getPaymentOperationForOrganization(input.organizationId, input.operationId);
+  if (!existing) throw new PaymentOperationNotFoundError();
+  if (
+    existing.status === input.status
+    && existing.leaseToken === input.leaseToken
+    && existing.errorClassification === input.errorClassification
+    && existing.errorCode === errorCode
+    && (input.providerOrderId == null || existing.providerOrderId === input.providerOrderId)
+  ) {
+    return existing;
+  }
+  throw new PaymentOperationInvalidTransitionError(existing.status);
 }
 
 export async function recordPaymentOperationActionRequired(
@@ -417,32 +798,55 @@ export async function recordPaymentOperationFailedTerminal(
 }
 
 export async function finalizePaymentOperationSuccess(
-  input: LeasedPaymentOperationInput & { providerObjectId: string },
+  input: LeasedPaymentOperationInput & {
+    providerObjectId: string;
+    providerOrderId?: string | null;
+    paymentRows?: PaymentOperationLinkedPaymentInput[];
+  },
 ): Promise<PaymentOperation> {
   validateLeaseToken(input.leaseToken);
   validateProviderObjectId(input.providerObjectId);
+  validateLinkedPaymentRows(input.paymentRows);
+  if (input.providerOrderId != null) validateProviderOrderId(input.providerOrderId);
   const now = toIso(input.now ?? new Date(), "now");
 
-  const [updated] = await db
-    .update(paymentOperations)
-    .set({
-      status: "succeeded",
-      providerObjectId: input.providerObjectId,
-      nextAttemptAt: null,
-      leaseOwner: null,
-      leaseExpiresAt: null,
-      errorClassification: null,
-      errorCode: null,
-      completedAt: now,
-      updatedAt: now,
-    })
-    .where(and(
-      eq(paymentOperations.organizationId, input.organizationId),
-      eq(paymentOperations.id, input.operationId),
-      eq(paymentOperations.status, "leased"),
-      eq(paymentOperations.leaseToken, input.leaseToken),
-    ))
-    .returning();
+  const updated = await db.transaction(async (tx) => {
+    const [transitioned] = await tx
+      .update(paymentOperations)
+      .set({
+        status: "succeeded",
+        providerObjectId: input.providerObjectId,
+        providerOrderId: input.providerOrderId ?? undefined,
+        nextAttemptAt: null,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        errorClassification: null,
+        errorCode: null,
+        completedAt: now,
+        updatedAt: now,
+      })
+      .where(and(
+        eq(paymentOperations.organizationId, input.organizationId),
+        eq(paymentOperations.id, input.operationId),
+        eq(paymentOperations.status, "leased"),
+        eq(paymentOperations.leaseToken, input.leaseToken),
+        input.providerOrderId == null
+          ? undefined
+          : or(
+            isNull(paymentOperations.providerOrderId),
+            eq(paymentOperations.providerOrderId, input.providerOrderId),
+          ),
+      ))
+      .returning();
+    if (!transitioned) return undefined;
+    await insertLinkedPaymentRows(
+      tx,
+      input.organizationId,
+      input.operationId,
+      input.paymentRows,
+    );
+    return transitioned;
+  });
   if (updated) return updated;
 
   const existing = await getPaymentOperationForOrganization(input.organizationId, input.operationId);
@@ -451,10 +855,112 @@ export async function finalizePaymentOperationSuccess(
     existing.status === "succeeded"
     && existing.leaseToken === input.leaseToken
     && existing.providerObjectId === input.providerObjectId
+    && (input.providerOrderId == null || existing.providerOrderId === input.providerOrderId)
   ) {
     return existing;
   }
   throw new PaymentOperationInvalidTransitionError(existing.status);
+}
+
+export interface PaymentOperationWake {
+  organizationId: number;
+  operationId: string;
+  status: PaymentOperation["status"];
+  attemptCount: number;
+  dueAt: string;
+}
+
+/** One indexed query for the earliest retry or lease-recovery instant. */
+export async function getNextPaymentOperationWake(): Promise<PaymentOperationWake | undefined> {
+  const dueAt = sql<string>`CASE
+    WHEN ${paymentOperations.status} = 'leased' THEN ${paymentOperations.leaseExpiresAt}
+    ELSE ${paymentOperations.nextAttemptAt}
+  END`;
+  const [next] = await db
+    .select({
+      organizationId: paymentOperations.organizationId,
+      operationId: paymentOperations.id,
+      status: paymentOperations.status,
+      attemptCount: paymentOperations.attemptCount,
+      dueAt,
+    })
+    .from(paymentOperations)
+    .where(or(
+      and(
+        inArray(paymentOperations.status, ["pending", "provider_unknown", "retry_scheduled"]),
+        sql`${paymentOperations.nextAttemptAt} IS NOT NULL`,
+      ),
+      and(
+        eq(paymentOperations.status, "leased"),
+        sql`${paymentOperations.leaseExpiresAt} IS NOT NULL`,
+      ),
+    ))
+    .orderBy(asc(dueAt))
+    .limit(1);
+  return next;
+}
+
+/**
+ * A lease that consumed attempt eight and then expired cannot be acquired
+ * again. This single token-fencing update makes exhaustion terminal instead
+ * of leaving an immortal leased row.
+ */
+export async function recordExpiredPaymentOperationAttemptExhausted(input: {
+  organizationId: number;
+  operationId: string;
+  now?: Date;
+  failedPaymentRows?: PaymentOperationLinkedPaymentInput[];
+}): Promise<PaymentOperation | undefined> {
+  validateFailedPaymentRows(input.failedPaymentRows);
+  const now = toIso(input.now ?? new Date(), "now");
+  return db.transaction(async (tx) => {
+    const [updated] = await tx
+      .update(paymentOperations)
+      .set({
+        status: "failed_terminal",
+        nextAttemptAt: null,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        errorClassification: "provider_unknown",
+        errorCode: "ATTEMPTS_EXHAUSTED",
+        completedAt: now,
+        updatedAt: now,
+      })
+      .where(and(
+        eq(paymentOperations.organizationId, input.organizationId),
+        eq(paymentOperations.id, input.operationId),
+        eq(paymentOperations.status, "leased"),
+        gte(paymentOperations.attemptCount, PAYMENT_OPERATION_MAX_ATTEMPTS),
+        lte(paymentOperations.leaseExpiresAt, now),
+      ))
+      .returning();
+    if (!updated) return undefined;
+    await insertLinkedPaymentRows(
+      tx,
+      input.organizationId,
+      input.operationId,
+      input.failedPaymentRows,
+    );
+    return updated;
+  });
+}
+
+/** Phase 2B-2 legacy guard; deliberately not wired into the scheduler here. */
+export async function hasNonterminalScheduledPaymentOperation(input: {
+  organizationId: number;
+  paymentScheduleId: number;
+}): Promise<boolean> {
+  const [row] = await db
+    .select({ id: paymentOperations.id })
+    .from(paymentOperations)
+    .where(and(
+      eq(paymentOperations.organizationId, input.organizationId),
+      eq(paymentOperations.operationType, "scheduled_charge"),
+      eq(paymentOperations.paymentScheduleId, input.paymentScheduleId),
+      inArray(paymentOperations.status, ["pending", "leased", "provider_unknown", "retry_scheduled"]),
+    ))
+    .limit(1);
+  return row !== undefined;
 }
 
 export async function cancelPaymentOperation(

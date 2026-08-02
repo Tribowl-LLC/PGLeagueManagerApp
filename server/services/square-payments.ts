@@ -3,6 +3,8 @@ import { createLogger } from '../logger';
 import {
   ProviderNotConfiguredError,
   PaymentProviderError,
+  sanitizeProviderErrorCode,
+  type PaymentProviderFailureDisposition,
 } from './payment-errors';
 import { getSquareErrorCtor, type SquareProviderContext } from './square-client';
 import type {
@@ -10,9 +12,112 @@ import type {
   RefundResult,
   PaymentVerification,
   OrderLineItem,
+  PaymentIdempotencyInput,
 } from './payment-provider';
 
 const log = createLogger("SquareService");
+const SQUARE_IDEMPOTENCY_KEY_MAX_LENGTH = 45;
+const HARD_CARD_CODES = new Set([
+  'ADDRESS_VERIFICATION_FAILURE',
+  'ALLOWABLE_PIN_TRIES_EXCEEDED',
+  'BAD_EXPIRATION',
+  'CARD_DECLINED',
+  'CARD_DECLINED_CALL_ISSUER',
+  'CARD_DECLINED_VERIFICATION_REQUIRED',
+  'CARD_EXPIRED',
+  'CARDHOLDER_INSUFFICIENT_PERMISSIONS',
+  'CARD_NOT_SUPPORTED',
+  'CVV_FAILURE',
+  'EXPIRATION_FAILURE',
+  'GENERIC_DECLINE',
+  'INSUFFICIENT_FUNDS',
+  'INVALID_ACCOUNT',
+  'INVALID_CARD',
+  'INVALID_CARD_DATA',
+  'INVALID_EXPIRATION',
+  'INVALID_EXPIRATION_DATE',
+  'INVALID_EXPIRATION_YEAR',
+  'INVALID_PIN',
+  'INVALID_POSTAL_CODE',
+  'MANUALLY_ENTERED_PAYMENT_NOT_SUPPORTED',
+  'PAN_FAILURE',
+  'PAYMENT_LIMIT_EXCEEDED',
+  'TRANSACTION_LIMIT',
+  'VERIFY_CVV_FAILURE',
+  'VERIFY_AVS_FAILURE',
+  'VOICE_FAILURE',
+]);
+const CONFIGURATION_CODES = new Set([
+  'CARD_PROCESSING_NOT_ENABLED',
+  'INSUFFICIENT_PERMISSIONS',
+  'INVALID_LOCATION',
+  'PAYMENT_SOURCE_NOT_ENABLED_FOR_TARGET',
+]);
+const DEFINITE_TRANSIENT_CODES = new Set(['TEMPORARY_ERROR']);
+
+function assertSquareIdempotencyKey(value: string, label: string): string {
+  if (value.length === 0 || value.length > SQUARE_IDEMPOTENCY_KEY_MAX_LENGTH || value.trim() !== value) {
+    throw new PaymentProviderError(
+      `${label} idempotency key is invalid`,
+      'INVALID_IDEMPOTENCY_KEY',
+      undefined,
+      { disposition: 'invalid_request' },
+    );
+  }
+  return value;
+}
+
+function paymentIdentity(input: PaymentIdempotencyInput | undefined): {
+  paymentKey: string;
+  orderKey?: string;
+  providerLocationId?: string;
+} {
+  if (typeof input === 'object') {
+    return {
+      paymentKey: assertSquareIdempotencyKey(input.paymentKey, 'Payment'),
+      orderKey: input.orderKey === undefined
+        ? undefined
+        : assertSquareIdempotencyKey(input.orderKey, 'Order'),
+      providerLocationId: input.providerLocationId,
+    };
+  }
+  return {
+    paymentKey: input === undefined
+      ? `${Date.now()}-${Math.random()}`
+      : assertSquareIdempotencyKey(input, 'Payment'),
+  };
+}
+
+function classifySquareFailure(error: unknown): {
+  detail?: string;
+  disposition: PaymentProviderFailureDisposition;
+  providerCode: string;
+  statusCode?: number;
+} {
+  const apiErr = error instanceof getSquareErrorCtor() ? error : null;
+  const statusCode = apiErr?.statusCode;
+  const detail = apiErr?.errors?.[0]?.detail;
+  const providerCode = sanitizeProviderErrorCode(apiErr?.errors?.[0]?.code, 'SQUARE_TRANSPORT_UNKNOWN');
+  if (statusCode === 401 || statusCode === 403) {
+    return { detail, disposition: 'configuration', providerCode, statusCode };
+  }
+  if (statusCode === 429 || DEFINITE_TRANSIENT_CODES.has(providerCode)) {
+    return { detail, disposition: 'transient', providerCode, statusCode };
+  }
+  if (statusCode === 402 || HARD_CARD_CODES.has(providerCode)) {
+    return { detail, disposition: 'action_required', providerCode, statusCode };
+  }
+  if (CONFIGURATION_CODES.has(providerCode)) {
+    return { detail, disposition: 'configuration', providerCode, statusCode };
+  }
+  if (typeof statusCode === 'number' && statusCode >= 400 && statusCode < 500) {
+    return { detail, disposition: 'invalid_request', providerCode, statusCode };
+  }
+  // A transport exception, timeout, or provider 5xx after dispatch may have
+  // accepted the POST. Scheduled-operation callers must reconcile it with the
+  // same immutable request instead of guessing that it failed.
+  return { detail, disposition: 'provider_unknown', providerCode, statusCode };
+}
 
 export async function processPayment(
   ctx: SquareProviderContext,
@@ -21,7 +126,7 @@ export async function processPayment(
   storeCard?: boolean,
   customerId?: string,
   buyerEmail?: string,
-  idempotencyKey?: string,
+  idempotencyKey?: PaymentIdempotencyInput,
 ): Promise<PaymentResult> {
   const client = await ctx.getClient();
   if (!client) {
@@ -39,6 +144,8 @@ export async function processPayment(
       throw new PaymentProviderError(
         'Missing required payment information',
         'INVALID_REQUEST',
+        undefined,
+        { disposition: 'invalid_request' },
       );
     }
 
@@ -46,18 +153,25 @@ export async function processPayment(
       throw new PaymentProviderError(
         'Invalid payment amount',
         'INVALID_AMOUNT',
+        undefined,
+        { disposition: 'invalid_request' },
       );
     }
 
+    const identity = paymentIdentity(idempotencyKey);
     const paymentRequest: CreatePaymentRequest = {
       sourceId,
-      idempotencyKey: idempotencyKey || `${Date.now()}-${Math.random()}`,
+      idempotencyKey: identity.paymentKey,
       amountMoney: {
         amount: BigInt(amount),
         currency: 'USD'
       },
       autocomplete: true
     };
+
+    if (identity.providerLocationId) {
+      paymentRequest.locationId = identity.providerLocationId;
+    }
 
     if (customerId) {
       paymentRequest.customerId = customerId;
@@ -73,6 +187,8 @@ export async function processPayment(
       throw new PaymentProviderError(
         'Unable to process payment',
         'INVALID_RESPONSE',
+        undefined,
+        { disposition: 'provider_unknown', providerCode: 'INVALID_RESPONSE' },
       );
     }
 
@@ -107,33 +223,41 @@ export async function processPayment(
     // SquareError instance (`.errors[]`, `.statusCode`, `.body`); the
     // legacy `.result.errors[]` wrapper is gone. We capture the first
     // `detail` for server-side logs only — never forwarded to the user.
-    const apiErr = error instanceof getSquareErrorCtor() ? error : null;
-    const detail = apiErr?.errors?.[0]?.detail;
-    if (apiErr?.statusCode === 400) {
+    const failure = classifySquareFailure(error);
+    // Preserve the established interactive API mapping by HTTP status. The
+    // richer `disposition` metadata is additive for the future ledger worker.
+    if (failure.statusCode === 400) {
       throw new PaymentProviderError(
         'Invalid payment information. Please check your card details.',
         'INVALID_REQUEST',
-        detail,
+        failure.detail,
+        failure,
       );
     }
-    if (apiErr?.statusCode === 401) {
+    if (failure.statusCode === 401) {
       throw new PaymentProviderError(
         'Payment system is temporarily unavailable. Please try again later.',
         'SYSTEM_ERROR',
-        detail,
+        failure.detail,
+        failure,
       );
     }
-    if (apiErr?.statusCode === 402) {
+    if (failure.statusCode === 402) {
       throw new PaymentProviderError(
         'Your payment was declined. Please try a different card.',
         'PAYMENT_DECLINED',
-        detail,
+        failure.detail,
+        failure,
       );
     }
     throw new PaymentProviderError(
       'Unable to process your payment. Please try again later.',
+      // Keep the existing interactive-route API contract. The durable
+      // scheduled executor will branch on `disposition`, not this legacy
+      // user-facing code.
       'PAYMENT_FAILED',
-      detail,
+      failure.detail,
+      failure,
     );
   }
 }
@@ -146,7 +270,7 @@ export async function createOrderWithPayment(
   storeCard?: boolean,
   customerId?: string,
   buyerEmail?: string,
-  idempotencyKey?: string,
+  idempotencyKey?: PaymentIdempotencyInput,
 ): Promise<PaymentResult> {
   const [client, squareLocationId] = await Promise.all([
     ctx.getClient(),
@@ -161,33 +285,61 @@ export async function createOrderWithPayment(
     );
   }
 
-  if (!squareLocationId) {
+  const identity = paymentIdentity(idempotencyKey);
+  const immutableLocationId = identity.providerLocationId ?? squareLocationId;
+  if (!immutableLocationId) {
     throw new PaymentProviderError(
       'Square location not configured for this location',
       'CONFIGURATION_ERROR',
+      undefined,
+      { disposition: 'configuration' },
     );
   }
 
+  let providerOrderId: string | undefined;
   try {
-    const locationId = squareLocationId;
+    const locationId = immutableLocationId;
+    const orderKey = typeof idempotencyKey === 'object'
+      ? identity.orderKey
+      : idempotencyKey
+        ? assertSquareIdempotencyKey(`${idempotencyKey}-order`, 'Order')
+        : `order-${Date.now()}-${Math.random()}`;
+    if (!orderKey) {
+      throw new PaymentProviderError(
+        'Order idempotency key is required',
+        'INVALID_IDEMPOTENCY_KEY',
+        undefined,
+        { disposition: 'invalid_request' },
+      );
+    }
     const orderResponse = await client.orders.create({
       order: {
         locationId,
         lineItems,
       },
-      idempotencyKey: idempotencyKey ? `${idempotencyKey}-order` : `order-${Date.now()}-${Math.random()}`,
+      idempotencyKey: orderKey,
     });
 
     const order = orderResponse.order;
     if (!order?.id) {
-      throw new Error('Failed to create order');
+      throw new PaymentProviderError(
+        'Payment processing failed. Please try again.',
+        'PAYMENT_FAILED',
+        undefined,
+        { disposition: 'provider_unknown', providerCode: 'INVALID_ORDER_RESPONSE' },
+      );
     }
+    providerOrderId = order.id;
 
     log.info('Order created:', order.id);
 
     const paymentRequest: CreatePaymentRequest = {
       sourceId,
-      idempotencyKey: idempotencyKey ? `${idempotencyKey}-pay` : `pay-${Date.now()}-${Math.random()}`,
+      idempotencyKey: typeof idempotencyKey === 'object'
+        ? identity.paymentKey
+        : idempotencyKey
+          ? assertSquareIdempotencyKey(`${idempotencyKey}-pay`, 'Payment')
+          : `pay-${Date.now()}-${Math.random()}`,
       amountMoney: {
         amount: BigInt(amount),
         currency: 'USD',
@@ -211,6 +363,8 @@ export async function createOrderWithPayment(
       throw new PaymentProviderError(
         'Unable to process payment',
         'INVALID_RESPONSE',
+        undefined,
+        { disposition: 'provider_unknown', providerCode: 'INVALID_RESPONSE', providerOrderId },
       );
     }
 
@@ -230,26 +384,39 @@ export async function createOrderWithPayment(
       receiptNumber: payment.receiptNumber,
     };
   } catch (error) {
-    log.error('Order+Payment error:', error);
+    log.error('Order+Payment failed', {
+      name: error instanceof Error ? error.name : 'UnknownError',
+      code: error instanceof PaymentProviderError ? error.code : undefined,
+      disposition: error instanceof PaymentProviderError ? error.disposition : undefined,
+      hasProviderOrderId: providerOrderId !== undefined,
+    });
     // Re-throw already-typed errors verbatim so the route's catch
     // sees the original `userMessage`/`code` we set above (or the
     // PNCE from getSquareClient/getSquareLocationId).
-    if (
-      error instanceof PaymentProviderError ||
-      error instanceof ProviderNotConfiguredError
-    ) {
+    if (error instanceof PaymentProviderError) {
+      if (!providerOrderId || error.providerOrderId === providerOrderId) throw error;
+      throw new PaymentProviderError(error.userMessage, error.code, error.detail, {
+        disposition: error.disposition,
+        providerCode: error.providerCode,
+        providerOrderId,
+      });
+    }
+    if (error instanceof ProviderNotConfiguredError) {
       throw error;
     }
-    const apiErr = error instanceof getSquareErrorCtor() ? error : null;
-    const detail = apiErr?.errors?.[0]?.detail;
-    if (apiErr?.statusCode === 402) {
+    const failure = classifySquareFailure(error);
+    const metadata = { ...failure, providerOrderId };
+    // Preserve the established interactive API mapping by HTTP status. The
+    // future ledger worker consumes `metadata.disposition` directly.
+    if (failure.statusCode === 402) {
       throw new PaymentProviderError(
         'Your payment was declined. Please try a different card.',
         'PAYMENT_DECLINED',
-        detail,
+        failure.detail,
+        metadata,
       );
     }
-    if (apiErr?.statusCode === 401) {
+    if (failure.statusCode === 401) {
       // Same mapping as processPayment above: a Square auth failure
       // (revoked / expired access token, wrong app id, etc.) is a
       // server-side credential problem the admin can't action with
@@ -259,22 +426,25 @@ export async function createOrderWithPayment(
       throw new PaymentProviderError(
         'Payment system is temporarily unavailable. Please try again later.',
         'SYSTEM_ERROR',
-        detail,
+        failure.detail,
+        metadata,
       );
     }
-    if (apiErr?.statusCode === 400) {
+    if (failure.statusCode === 400) {
       // Raw `detail` is captured for logs only — the user gets the
       // hand-authored sentence regardless of what Square returned.
       throw new PaymentProviderError(
         'Payment could not be processed. Please check your details and try again.',
         'INVALID_REQUEST',
-        detail,
+        failure.detail,
+        metadata,
       );
     }
     throw new PaymentProviderError(
       'Payment processing failed. Please try again.',
       'PAYMENT_FAILED',
-      detail,
+      failure.detail,
+      metadata,
     );
   }
 }

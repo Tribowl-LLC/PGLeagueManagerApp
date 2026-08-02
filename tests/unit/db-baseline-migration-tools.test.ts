@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(8);
+    expect(migrations).toHaveLength(9);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -173,7 +173,28 @@ describe('normalized migration baseline tools', () => {
     expect(migrations[7]?.sql).toContain('payment_operations_recurring_cycle_unique');
     expect(migrations[7]?.sql).toContain('payment_operations_provider_idempotency_key_unique');
     expect(migrations[7]?.sql).not.toMatch(/(?:^|\n)\s*(?:DROP|UPDATE|DELETE|INSERT)\b/);
+    expect(migrations[8]).toMatchObject({
+      idx: 8,
+      tag: '0008_scheduled_payment_operation_execution',
+      createdAt: 1785649485058,
+      hash: 'fbc70da0fa40b9f8fa66f9c26aa7c9c437628b364524957c01810f8283387a45',
+    });
+    expect(migrations[8]?.sql).toContain('CREATE TABLE "scheduled_payment_operation_snapshots"');
+    expect(migrations[8]?.sql).toContain('CREATE TABLE "scheduled_payment_operation_allocations"');
+    expect(migrations[8]?.sql).toContain('CREATE TABLE "scheduled_payment_operation_line_items"');
+    expect(migrations[8]?.sql).toContain('scheduled_payment_operation_snapshots_league_id_leagues_id_fk');
+    expect(migrations[8]?.sql).toContain('payments_operation_allocation_unique');
+    expect(migrations[8]?.sql).not.toMatch(/(?:^|\n)\s*(?:DROP|UPDATE|DELETE|INSERT)\b/);
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
+  });
+
+  it('orders two-digit migration journal ids numerically', () => {
+    const source = readFileSync(
+      resolve('scripts', 'lib', 'db-migration-journal.ts'),
+      'utf8',
+    );
+    expect(source).toContain('ORDER BY journal.id');
+    expect(source).not.toMatch(/ORDER BY id\b/);
   });
 
   it('pins the complete application structure without physical column order or provider objects', () => {

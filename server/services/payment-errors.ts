@@ -14,11 +14,39 @@
 
 export class ProviderNotConfiguredError extends Error {
   public readonly code = 'PROVIDER_NOT_CONFIGURED';
+  public readonly disposition = 'configuration' as const;
+  public readonly providerCode = 'PROVIDER_NOT_CONFIGURED';
 
   constructor(reason: string, public readonly locationId: number | null) {
     super(reason);
     this.name = 'ProviderNotConfiguredError';
   }
+}
+
+export const PAYMENT_PROVIDER_FAILURE_DISPOSITIONS = [
+  'provider_unknown',
+  'transient',
+  'action_required',
+  'configuration',
+  'invalid_request',
+  'internal',
+] as const;
+export type PaymentProviderFailureDisposition =
+  (typeof PAYMENT_PROVIDER_FAILURE_DISPOSITIONS)[number];
+
+export interface PaymentProviderErrorMetadata {
+  disposition?: PaymentProviderFailureDisposition;
+  providerCode?: string;
+  providerOrderId?: string;
+}
+
+export function sanitizeProviderErrorCode(value: unknown, fallback: string): string {
+  const candidate = typeof value === 'string' ? value.toUpperCase() : '';
+  const normalizedFallback = fallback.toUpperCase();
+  const safeFallback = /^[A-Z0-9][A-Z0-9_.:-]{0,127}$/.test(normalizedFallback)
+    ? normalizedFallback
+    : 'PROVIDER_ERROR';
+  return /^[A-Z0-9][A-Z0-9_.:-]{0,127}$/.test(candidate) ? candidate : safeFallback;
 }
 
 /**
@@ -45,13 +73,24 @@ export class PaymentProviderError extends Error {
   public readonly userMessage: string;
   public readonly code: string;
   public readonly detail?: string;
+  public readonly disposition: PaymentProviderFailureDisposition;
+  public readonly providerCode: string;
+  public readonly providerOrderId?: string;
 
-  constructor(userMessage: string, code: string, detail?: string) {
+  constructor(
+    userMessage: string,
+    code: string,
+    detail?: string,
+    metadata: PaymentProviderErrorMetadata = {},
+  ) {
     super(userMessage);
     this.name = 'PaymentProviderError';
     this.userMessage = userMessage;
     this.code = code;
     this.detail = detail;
+    this.disposition = metadata.disposition ?? 'internal';
+    this.providerCode = sanitizeProviderErrorCode(metadata.providerCode, code);
+    this.providerOrderId = metadata.providerOrderId;
   }
 }
 

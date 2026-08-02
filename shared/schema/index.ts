@@ -21,12 +21,17 @@ export type { Payment, InsertPaymentInput, InsertPayment, UpdatePayment, Payment
 
 export {
   paymentOperations,
+  scheduledPaymentOperationSnapshots,
+  scheduledPaymentOperationAllocations,
+  scheduledPaymentOperationLineItems,
   PAYMENT_OPERATION_TYPES,
   PAYMENT_OPERATION_STATUSES,
   PAYMENT_OPERATION_ERROR_CLASSIFICATIONS,
   PAYMENT_OPERATION_MAX_ATTEMPTS,
   PAYMENT_OPERATION_MAX_LEASE_MS,
   PAYMENT_OPERATION_MAX_RETRY_DELAY_MS,
+  SCHEDULED_PAYMENT_SNAPSHOT_VERSION,
+  SCHEDULED_PAYMENT_REQUEST_KINDS,
 } from "./payment-operations";
 export type {
   PaymentOperation,
@@ -34,6 +39,10 @@ export type {
   PaymentOperationType,
   PaymentOperationStatus,
   PaymentOperationErrorClassification,
+  ScheduledPaymentRequestKind,
+  ScheduledPaymentOperationSnapshot,
+  ScheduledPaymentOperationAllocation,
+  ScheduledPaymentOperationLineItem,
 } from "./payment-operations";
 
 export { users, insertUserSchema, updateUserSchema, updateUserSchemaBase } from "./users";

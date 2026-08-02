@@ -57,6 +57,13 @@
       "when": 1785638674949,
       "tag": "0007_payment_operation_ledger",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1785649485058,
+      "tag": "0008_scheduled_payment_operation_execution",
+      "breakpoints": true
     }
   ]
 }

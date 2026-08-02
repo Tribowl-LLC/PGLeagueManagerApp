@@ -19,7 +19,10 @@
  *     future refactor that strips the custom message is caught.
  */
 import { describe, expect, it } from 'vitest';
-import { envSchema } from '../../server/config';
+import {
+  envSchema,
+  validateScheduledPaymentExecutionMode,
+} from '../../server/config';
 import { isReplitDeploymentValue } from '../../server/utils/replit-env';
 
 describe('FIELD_ENCRYPTION_KEY env-schema entry', () => {
@@ -110,6 +113,49 @@ describe('NODE_ENV env-schema entry', () => {
     [''],
   ])('rejects %s', (value) => {
     expect(field.safeParse(value).success).toBe(false);
+  });
+});
+
+describe('SCHEDULED_PAYMENT_EXECUTION_MODE startup gate', () => {
+  const field = envSchema.shape.SCHEDULED_PAYMENT_EXECUTION_MODE;
+
+  it.each(['legacy', 'ledger_paused', 'ledger_execute'])('accepts %s', (value) => {
+    expect(field.safeParse(value).success).toBe(true);
+  });
+
+  it.each(['', 'paused', 'execute', 'LEGACY'])('rejects %s', (value) => {
+    expect(field.safeParse(value).success).toBe(false);
+  });
+
+  it('fails closed when either production selector is active and mode is missing', () => {
+    expect(validateScheduledPaymentExecutionMode({
+      mode: undefined,
+      nodeEnv: 'production',
+      appEnv: 'prod',
+    })).toMatchObject({ ok: false });
+    expect(validateScheduledPaymentExecutionMode({
+      mode: undefined,
+      nodeEnv: 'development',
+      appEnv: 'prod',
+    })).toMatchObject({ ok: false });
+  });
+
+  it('keeps local and test runtimes on legacy when mode is omitted', () => {
+    expect(validateScheduledPaymentExecutionMode({
+      mode: undefined,
+      nodeEnv: 'test',
+      appEnv: 'dev',
+    })).toEqual({ ok: true, mode: 'legacy' });
+  });
+
+  it('honors every explicit production mode', () => {
+    for (const mode of ['legacy', 'ledger_paused', 'ledger_execute'] as const) {
+      expect(validateScheduledPaymentExecutionMode({
+        mode,
+        nodeEnv: 'production',
+        appEnv: 'prod',
+      })).toEqual({ ok: true, mode });
+    }
   });
 });
 
