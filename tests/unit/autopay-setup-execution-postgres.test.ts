@@ -237,6 +237,28 @@ afterAll(async () => {
 });
 
 describe("weekly auto-pay setup execution", () => {
+  it("serializes transaction queries through the pinned PostgreSQL client", async () => {
+    const fixture = await createFixture("transaction-query-serialization");
+    const provider = new IdempotentSetupProvider(locationId);
+    getPaymentProviderMock.mockResolvedValue(provider);
+    const { input } = await quoteAndSetup(fixture, dueToday);
+    const concurrentQueryWarnings: Error[] = [];
+    const onWarning = (warning: Error) => {
+      if (warning.message.includes("client.query() when the client is already executing")) {
+        concurrentQueryWarnings.push(warning);
+      }
+    };
+    process.on("warning", onWarning);
+    try {
+      await setupWeeklyAutopay(input);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    } finally {
+      process.off("warning", onWarning);
+    }
+
+    expect(concurrentQueryWarnings).toEqual([]);
+  });
+
   it("creates a zero-dollar pre-start schedule without a provider effect", async () => {
     const fixture = await createFixture("pre-start");
     const provider = new IdempotentSetupProvider(locationId);
