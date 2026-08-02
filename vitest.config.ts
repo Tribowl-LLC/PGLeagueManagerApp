@@ -104,6 +104,7 @@ const UNIT_NO_DB = [
   'tests/unit/rate-limit-shared-store-coverage.test.ts',
   'tests/unit/subdomain-resolution-consistency.test.ts',
   'tests/unit/scheduled-payment-operation-snapshot.test.ts',
+  'tests/unit/interactive-payment-operation-snapshot.test.ts',
   'tests/unit/weekly-billing-occurrence-planner.test.ts',
   'tests/unit/test-template-migration-source.test.ts',
   'tests/unit/zod-v4-migration-contracts.test.ts',
@@ -158,6 +159,7 @@ const PARALLEL_ISOLATED = [
   // Storage-only PostgreSQL race suite; it needs an isolated database but no
   // spawned Express process or mutable application singleton state.
   'tests/unit/payment-operations.test.ts',
+  'tests/unit/interactive-payment-operation-executor.test.ts',
   'tests/unit/scheduled-payment-ledger-cutover.test.ts',
   'tests/unit/payment-provider-error-mapping.test.ts',
   'tests/unit/payment-refunds-receipt-dependency.test.ts',

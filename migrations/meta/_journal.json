@@ -78,6 +78,13 @@
       "when": 1785695299184,
       "tag": "0010_autopay_setup_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1785707848197,
+      "tag": "0011_interactive_payment_operation_foundation",
+      "breakpoints": true
     }
   ]
 }
