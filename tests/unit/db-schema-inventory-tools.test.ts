@@ -536,7 +536,7 @@ describe('database schema inventory tools', () => {
     expect(comparison.categories.policies.missingFromRight).toEqual(['public.notes.owner_access']);
   });
 
-  it('preflights all eight currently tracked migrations with the narrow allowlist', () => {
+  it('preflights all nine currently tracked migrations with the narrow allowlist', () => {
     const plan = loadTrackedJournalReplayPlan();
     expect(plan).toHaveLength(8);
     expect(new Set(plan.flatMap((migration) => migration.statements.map((statement) => statement.category))))

@@ -109,6 +109,7 @@ export interface IPaymentStorage {
 export interface IPaymentOperationStorage {
   createOrGetScheduledPaymentOperation(
     input: import("./payment-operations").CreateOrGetScheduledPaymentOperationInput,
+    existingTransaction?: import("./payment-operations").PaymentOperationTransaction,
   ): Promise<PaymentOperation>;
   getPaymentOperationForOrganization(
     organizationId: number,
@@ -122,30 +123,60 @@ export interface IPaymentOperationStorage {
       nextAttemptAt: Date;
       errorClassification: PaymentOperationErrorClassification;
       errorCode?: string | null;
+      providerOrderId?: string | null;
+      failedPaymentRows?: import("./payment-operations").PaymentOperationLinkedPaymentInput[];
     },
   ): Promise<PaymentOperation>;
   recordPaymentOperationProviderUnknown(
     input: import("./payment-operations").LeasedPaymentOperationInput & {
       recoveryAt: Date;
       errorCode?: string | null;
+      providerOrderId?: string | null;
+      failedPaymentRows?: import("./payment-operations").PaymentOperationLinkedPaymentInput[];
     },
   ): Promise<PaymentOperation>;
   recordPaymentOperationActionRequired(
     input: import("./payment-operations").LeasedPaymentOperationInput & {
       errorCode?: string | null;
+      providerOrderId?: string | null;
+      failedPaymentRows?: import("./payment-operations").PaymentOperationLinkedPaymentInput[];
     },
   ): Promise<PaymentOperation>;
   recordPaymentOperationFailedTerminal(
     input: import("./payment-operations").LeasedPaymentOperationInput & {
       errorClassification: PaymentOperationErrorClassification;
       errorCode?: string | null;
+      providerOrderId?: string | null;
+      failedPaymentRows?: import("./payment-operations").PaymentOperationLinkedPaymentInput[];
     },
   ): Promise<PaymentOperation>;
   finalizePaymentOperationSuccess(
     input: import("./payment-operations").LeasedPaymentOperationInput & {
       providerObjectId: string;
+      providerOrderId?: string | null;
+      paymentRows?: import("./payment-operations").PaymentOperationLinkedPaymentInput[];
     },
   ): Promise<PaymentOperation>;
+  persistScheduledPaymentOperationSnapshot(
+    operation: PaymentOperation,
+    snapshot: import("../services/scheduled-payment-operation-snapshot").ScheduledPaymentSemanticSnapshot,
+    transaction: import("./payment-operations").PaymentOperationTransaction,
+  ): Promise<import("../services/scheduled-payment-operation-snapshot").ScheduledPaymentSemanticSnapshot>;
+  getScheduledPaymentOperationSnapshotForOrganization(
+    organizationId: number,
+    operationId: string,
+  ): Promise<import("../services/scheduled-payment-operation-snapshot").ScheduledPaymentSemanticSnapshot | undefined>;
+  getNextPaymentOperationWake(): Promise<import("./payment-operations").PaymentOperationWake | undefined>;
+  recordExpiredPaymentOperationAttemptExhausted(input: {
+    organizationId: number;
+    operationId: string;
+    now?: Date;
+    failedPaymentRows?: import("./payment-operations").PaymentOperationLinkedPaymentInput[];
+  }): Promise<PaymentOperation | undefined>;
+  hasNonterminalScheduledPaymentOperation(input: {
+    organizationId: number;
+    paymentScheduleId: number;
+  }): Promise<boolean>;
   cancelPaymentOperation(
     input: Omit<import("./payment-operations").LeasedPaymentOperationInput, "leaseToken"> & {
       leaseToken?: string;

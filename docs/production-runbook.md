@@ -1,5 +1,12 @@
 # Production Runbook
 
+Payment-operation schema releases additionally follow the exact old-instance
+drain, `ledger_paused` deploy, verification, activation, and rollback sequence
+in [Payment operation ledger](payment-operation-ledger.md#phase-2b-1-migration-first-deployment-and-verification).
+Production must set `SCHEDULED_PAYMENT_EXECUTION_MODE` explicitly; a missing
+value fails startup. Render Auto-Deploy must be Off before merging migration
+0008 or any later payment-operation schema release.
+
 Production is hosted on Render and uses Neon PostgreSQL. GitHub `main` is the
 release source. This document covers the safe release path; it does not store
 credentials.

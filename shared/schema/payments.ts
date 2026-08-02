@@ -1,4 +1,5 @@
-import { pgTable, text, serial, integer, boolean, timestamp, index } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, integer, boolean, timestamp, index, uniqueIndex, uuid, check } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { PAYMENT_STATUSES, PAYMENT_TYPES, SCHEDULE_FREQUENCIES, positiveIntSchema, dateSchema } from "./constants";
@@ -59,6 +60,12 @@ export const payments = pgTable("payments", {
   // future provider could legitimately reuse across rows for other
   // reasons.
   combinedChargeGroupId: text("combined_charge_group_id"),
+  // Additive Phase 2B lineage from a durable scheduled operation to each
+  // local split row. The allocation index is stable within the immutable
+  // operation snapshot, so combined rows can share one operation/provider
+  // payment while retries cannot insert the same logical row twice.
+  paymentOperationId: uuid("payment_operation_id"),
+  paymentOperationAllocationIndex: integer("payment_operation_allocation_index"),
   createdAt: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
 }, (table) => ({
   bowlerIdx: index("payments_bowler_idx").on(table.bowlerId),
@@ -66,6 +73,13 @@ export const payments = pgTable("payments", {
   weekOfIdx: index("payments_week_of_idx").on(table.weekOf),
   paidByUserIdx: index("payments_paid_by_user_idx").on(table.paidByUserId),
   combinedGroupIdx: index("payments_combined_group_idx").on(table.combinedChargeGroupId),
+  paymentOperationAllocationUnique: uniqueIndex("payments_operation_allocation_unique")
+    .on(table.paymentOperationId, table.paymentOperationAllocationIndex)
+    .where(sql`${table.paymentOperationId} IS NOT NULL`),
+  paymentOperationLinkCheck: check(
+    "payments_payment_operation_link_check",
+    sql`(${table.paymentOperationId} IS NULL) = (${table.paymentOperationAllocationIndex} IS NULL)`,
+  ),
 }));
 
 export const paymentSchedules = pgTable("payment_schedules", {
@@ -118,7 +132,14 @@ export const insertPaymentSchema = basePaymentSchema.extend({
   storeCard: z.boolean().optional(),
   paidByUserId: z.number().int().positive().nullable().optional(),
   combinedChargeGroupId: z.string().nullable().optional(),
-}).omit({ id: true, createdAt: true });
+}).omit({
+  id: true,
+  createdAt: true,
+  // Operation linkage is an internal, token-fenced finalization concern and
+  // must never be accepted from ordinary payment API payloads.
+  paymentOperationId: true,
+  paymentOperationAllocationIndex: true,
+});
 
 export const insertPaymentScheduleSchema = basePaymentScheduleSchema.extend({
   bowlerId: positiveIntSchema,

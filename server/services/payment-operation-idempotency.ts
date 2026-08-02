@@ -5,6 +5,8 @@ export const PAYMENT_OPERATION_REQUEST_VERSION = 1 as const;
 export const PAYMENT_OPERATION_FINGERPRINT_PREFIX = "lvpayreq:v1:" as const;
 export const SQUARE_OPERATION_IDEMPOTENCY_MAX_LENGTH = 45;
 
+export type SquareOperationIdempotencyDomain = "order" | "payment";
+
 const KEY_PREFIX_BY_TYPE: Record<PaymentOperationType, string> = {
   scheduled_charge: "lv-op1-sc-",
   interactive_charge: "lv-op1-ic-",
@@ -158,4 +160,34 @@ export function buildPaymentOperationIdentity(
     requestFingerprint,
     providerIdempotencyKey,
   };
+}
+
+/**
+ * Square order and payment requests are separate idempotency domains. Hashing
+ * the stored logical-operation key with an explicit domain gives each request
+ * an independent key without exceeding Square's 45-character ceiling or
+ * appending a suffix to the already-42-character ledger key.
+ */
+export function deriveSquareOperationIdempotencyKey(
+  providerIdempotencyKey: string,
+  domain: SquareOperationIdempotencyDomain,
+): string {
+  if (
+    providerIdempotencyKey.length === 0
+    || providerIdempotencyKey.length > SQUARE_OPERATION_IDEMPOTENCY_MAX_LENGTH
+    || providerIdempotencyKey.trim() !== providerIdempotencyKey
+  ) {
+    throw new Error("provider idempotency key has an invalid format");
+  }
+  const digest = createHash("sha256")
+    .update(`lv-square-request:v1\0${domain}\0${providerIdempotencyKey}`)
+    .digest()
+    .subarray(0, 24)
+    .toString("base64url");
+  const prefix = domain === "order" ? "lv-sq1-o-" : "lv-sq1-p-";
+  const key = `${prefix}${digest}`;
+  if (key.length > SQUARE_OPERATION_IDEMPOTENCY_MAX_LENGTH) {
+    throw new Error(`Square ${domain} idempotency key exceeds the provider limit`);
+  }
+  return key;
 }

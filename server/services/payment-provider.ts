@@ -51,6 +51,14 @@ export interface OrderLineItem {
   quantity: string;
 }
 
+export interface PaymentRequestIdentity {
+  paymentKey: string;
+  orderKey?: string;
+  providerLocationId?: string;
+}
+
+export type PaymentIdempotencyInput = string | PaymentRequestIdentity;
+
 export interface CatalogCategory {
   id: string;
   name: string;
@@ -85,7 +93,7 @@ export interface PaymentProvider {
     storeCard?: boolean,
     customerId?: string,
     buyerEmail?: string,
-    idempotencyKey?: string,
+    idempotencyKey?: PaymentIdempotencyInput,
   ): Promise<PaymentResult>;
 
   createOrderWithPayment(
@@ -95,7 +103,7 @@ export interface PaymentProvider {
     storeCard?: boolean,
     customerId?: string,
     buyerEmail?: string,
-    idempotencyKey?: string,
+    idempotencyKey?: PaymentIdempotencyInput,
   ): Promise<PaymentResult>;
 
   refundPayment(

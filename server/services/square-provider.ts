@@ -42,6 +42,7 @@ import type {
   PaymentCustomer,
   PaymentVerification,
   OrderLineItem,
+  PaymentIdempotencyInput,
   CatalogCategory,
   CatalogItem,
 } from './payment-provider';
@@ -154,7 +155,7 @@ export class SquarePaymentProvider implements PaymentProvider, CatalogProvider, 
     storeCard?: boolean,
     customerId?: string,
     buyerEmail?: string,
-    idempotencyKey?: string,
+    idempotencyKey?: PaymentIdempotencyInput,
   ): Promise<PaymentResult> {
     return processPayment(
       this.ctx,
@@ -174,7 +175,7 @@ export class SquarePaymentProvider implements PaymentProvider, CatalogProvider, 
     storeCard?: boolean,
     customerId?: string,
     buyerEmail?: string,
-    idempotencyKey?: string,
+    idempotencyKey?: PaymentIdempotencyInput,
   ): Promise<PaymentResult> {
     return createOrderWithPayment(
       this.ctx,

@@ -320,6 +320,8 @@ describe.each<[string, typeof mockSquareProvider, ProviderFactory]>([
       await expect(provider.processPayment('tok', 2000, false, 'cust', 'pat@example.com', 'idem'))
         .rejects.toMatchObject({
           code: 'PAYMENT_DECLINED',
+          disposition: 'action_required',
+          providerCode: 'CARD_DECLINED',
           userMessage: 'Your payment was declined. Please try a different card.',
         });
     });
@@ -331,6 +333,7 @@ describe.each<[string, typeof mockSquareProvider, ProviderFactory]>([
       await expect(provider.processPayment('tok', 2000, false, 'cust', 'pat@example.com', 'idem'))
         .rejects.toMatchObject({
           code: 'SYSTEM_ERROR',
+          disposition: 'configuration',
           userMessage: 'Payment system is temporarily unavailable. Please try again later.',
         });
     });
@@ -342,11 +345,12 @@ describe.each<[string, typeof mockSquareProvider, ProviderFactory]>([
       await expect(provider.processPayment('tok', 2000, false, 'cust', 'pat@example.com', 'idem'))
         .rejects.toMatchObject({
           code: 'INVALID_REQUEST',
+          disposition: 'invalid_request',
           userMessage: expect.stringContaining('Invalid payment information'),
         });
     });
 
-    it('maps network/timeout (non-typed throw) to PAYMENT_FAILED/REFUND_FAILED', async () => {
+    it('maps ambiguous network/timeout to provider_unknown without changing refunds', async () => {
       const netErr = new TypeError('fetch failed');
       mockPaymentsCreate.mockRejectedValue(netErr);
       mockRefundsCreate.mockRejectedValue(netErr);
@@ -355,12 +359,98 @@ describe.each<[string, typeof mockSquareProvider, ProviderFactory]>([
       await expect(provider.processPayment('tok', 2000, false, 'cust', 'pat@example.com', 'idem'))
         .rejects.toMatchObject({
           code: 'PAYMENT_FAILED',
+          disposition: 'provider_unknown',
         });
 
       await expect(provider.refundPayment('pay_id', 2000))
         .rejects.toMatchObject({
           code: 'REFUND_FAILED',
         });
+    });
+
+    it('classifies Square rate limiting as a definite transient result', async () => {
+      mockPaymentsCreate.mockRejectedValue(squareErr(429, 'slow down', 'RATE_LIMITED'));
+
+      const provider = ProviderClass(99);
+      await expect(provider.processPayment('tok', 2000, false, 'cust', 'pat@example.com', 'idem'))
+        .rejects.toMatchObject({
+          code: 'PAYMENT_FAILED',
+          disposition: 'transient',
+          providerCode: 'RATE_LIMITED',
+        });
+    });
+
+    it('classifies documented 400 card failures without changing the interactive code', async () => {
+      mockPaymentsCreate.mockRejectedValue(squareErr(400, 'expired card', 'CARD_EXPIRED'));
+
+      const provider = ProviderClass(99);
+      await expect(provider.processPayment('tok', 2000, false, 'cust', 'pat@example.com', 'idem'))
+        .rejects.toMatchObject({
+          code: 'INVALID_REQUEST',
+          disposition: 'action_required',
+          providerCode: 'CARD_EXPIRED',
+        });
+    });
+
+    it('classifies Square TEMPORARY_ERROR as a definite transient result', async () => {
+      mockPaymentsCreate.mockRejectedValue(squareErr(503, 'retry safely', 'TEMPORARY_ERROR'));
+
+      const provider = ProviderClass(99);
+      await expect(provider.processPayment('tok', 2000, false, 'cust', 'pat@example.com', 'idem'))
+        .rejects.toMatchObject({
+          code: 'PAYMENT_FAILED',
+          disposition: 'transient',
+          providerCode: 'TEMPORARY_ERROR',
+        });
+    });
+
+    it('classifies documented provider setup failures without changing the interactive code', async () => {
+      mockPaymentsCreate.mockRejectedValue(
+        squareErr(403, 'card processing disabled', 'CARD_PROCESSING_NOT_ENABLED'),
+      );
+
+      const provider = ProviderClass(99);
+      await expect(provider.processPayment('tok', 2000, false, 'cust', 'pat@example.com', 'idem'))
+        .rejects.toMatchObject({
+          code: 'PAYMENT_FAILED',
+          disposition: 'configuration',
+          providerCode: 'CARD_PROCESSING_NOT_ENABLED',
+        });
+    });
+
+    it('uses exact pre-derived order/payment keys and immutable provider location', async () => {
+      mockOrdersCreate.mockResolvedValue({ order: { id: 'order-original' } });
+      mockPaymentsCreate.mockResolvedValue({
+        payment: { id: 'payment-original', status: 'COMPLETED' },
+      });
+
+      const provider = ProviderClass(99);
+      await provider.createOrderWithPayment(
+        'source-token',
+        2_000,
+        [{ catalogObjectId: 'variation-1', quantity: '2' }],
+        false,
+        'customer-1',
+        'buyer@example.test',
+        {
+          orderKey: 'lv-sq1-o-exact',
+          paymentKey: 'lv-sq1-p-exact',
+          providerLocationId: 'L_IMMUTABLE',
+        },
+      );
+
+      expect(mockOrdersCreate).toHaveBeenCalledWith({
+        order: {
+          locationId: 'L_IMMUTABLE',
+          lineItems: [{ catalogObjectId: 'variation-1', quantity: '2' }],
+        },
+        idempotencyKey: 'lv-sq1-o-exact',
+      });
+      expect(mockPaymentsCreate).toHaveBeenCalledWith(expect.objectContaining({
+        idempotencyKey: 'lv-sq1-p-exact',
+        locationId: 'L_IMMUTABLE',
+        orderId: 'order-original',
+      }));
     });
 
     it('passes through existing PaymentProviderError unchanged', async () => {
@@ -373,6 +463,16 @@ describe.each<[string, typeof mockSquareProvider, ProviderFactory]>([
           const err = e as { name?: string; code?: string };
           return err.name === 'PaymentProviderError' && err.code === 'INVALID_REQUEST';
         });
+    });
+
+    it('never exposes an unsanitized provider code to ledger callers', () => {
+      const error = new PaymentProviderError(
+        'safe message',
+        'bad fallback code',
+        undefined,
+        { providerCode: '{"raw":"provider-payload"}', disposition: 'internal' },
+      );
+      expect(error.providerCode).toBe('PROVIDER_ERROR');
     });
 
     it('passes through ProviderNotConfiguredError unchanged', async () => {

@@ -88,6 +88,8 @@ const PAYMENT: Payment = {
   type: 'square',
   checkNumber: null,
   combinedChargeGroupId: null,
+  paymentOperationId: null,
+  paymentOperationAllocationIndex: null,
   providerPaymentId: 'sq_pay_abc',
   idempotencyKey: null,
   squareRefundId: null,
