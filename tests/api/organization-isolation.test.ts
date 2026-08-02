@@ -944,6 +944,20 @@ describe('Organization Isolation', () => {
       expect(owner.data.success).toBe(true);
     });
 
+    it('org A GET /api/payment-schedules/setup-quote/<orgB bowler>/<orgB league> returns 403', async () => {
+      expect(orgBBowlerId).not.toBeNull();
+      expect(orgBLeagueId).not.toBeNull();
+      const { status, data } = await apiGet(
+        `/api/payment-schedules/setup-quote/${orgBBowlerId}/${orgBLeagueId}`,
+        sessionA,
+      );
+      expect(status).toBe(403);
+      expect(data.success).toBe(false);
+      const payload = JSON.stringify(data);
+      expect(payload).not.toContain(`Vitest #341 Bowler ${stamp}`);
+      expect(payload).not.toContain(`Vitest #341 Team ${stamp}`);
+    });
+
     it('org A GET /api/locations must not include the org B location row', async () => {
       // The locations list uses filterByOrganization middleware. Any
       // accidental fall-through to "all locations" would surface the

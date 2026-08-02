@@ -15,6 +15,7 @@ import {
   type AutopaySetupRequest,
   type AutopaySetupSnapshot,
   type PaymentOperation,
+  type PaymentSchedule,
 } from "@shared/schema";
 import { db } from "../db.js";
 import {
@@ -24,6 +25,9 @@ import {
 import { decrypt, encrypt } from "../utils/crypto.js";
 import {
   createOrGetInteractivePaymentOperation,
+  finalizePaymentOperationSuccessInTransaction,
+  type FinalizePaymentOperationSuccessInput,
+  type PaymentOperationLinkedPaymentInput,
   type PaymentOperationTransaction,
 } from "./payment-operations.js";
 
@@ -549,6 +553,162 @@ export async function getAutopaySetupRequestByOperationForOrganization(
   if (!owned) return undefined;
   await db.transaction((tx) => loadOperation(tx, owned.request));
   return owned.request;
+}
+
+async function ensureAutopaySetupSchedule(
+  tx: PaymentOperationTransaction,
+  request: AutopaySetupRequest,
+): Promise<PaymentSchedule | null> {
+  const { snapshot } = request;
+  if (snapshot.firstAutomaticAt === null) return null;
+  const sourceId = decrypt(request.encryptedSourceId);
+  if (!sourceId) {
+    throw new AutopaySetupRequestImmutableMismatchError();
+  }
+  const [inserted] = await tx.insert(paymentSchedules).values({
+    bowlerId: request.payerBowlerId,
+    leagueId: request.leagueId,
+    frequency: "weekly",
+    amount: snapshot.recurringAmountMinor,
+    nextPaymentDate: snapshot.firstAutomaticAt,
+    active: true,
+    paymentCardId: sourceId,
+    additionalBowlerIds: snapshot.additionalBowlerIds.length > 0
+      ? snapshot.additionalBowlerIds
+      : null,
+  }).onConflictDoNothing().returning();
+  const schedule = inserted ?? await tx.select().from(paymentSchedules).where(and(
+    eq(paymentSchedules.bowlerId, request.payerBowlerId),
+    eq(paymentSchedules.leagueId, request.leagueId),
+    eq(paymentSchedules.active, true),
+  )).limit(1).then((rows) => rows[0]);
+  if (
+    !schedule
+    || storedTimestampToIso(schedule.nextPaymentDate) !== snapshot.firstAutomaticAt
+    || schedule.amount !== snapshot.recurringAmountMinor
+    || schedule.frequency !== "weekly"
+    || schedule.paymentCardId !== sourceId
+    || canonicalizePaymentOperationInput(schedule.additionalBowlerIds ?? [])
+      !== canonicalizePaymentOperationInput(snapshot.additionalBowlerIds)
+  ) {
+    throw new AutopaySetupRequestValidationError(
+      "an incompatible active payment schedule already exists",
+    );
+  }
+  return schedule;
+}
+
+async function markAutopaySetupCompleted(
+  tx: PaymentOperationTransaction,
+  request: AutopaySetupRequest,
+  schedule: PaymentSchedule | null,
+  now: string,
+): Promise<AutopaySetupRequest> {
+  const [completed] = await tx.update(autopaySetupRequests).set({
+    workflowStatus: "completed",
+    paymentScheduleId: schedule?.id ?? null,
+    completedAt: now,
+    updatedAt: now,
+  }).where(and(
+    eq(autopaySetupRequests.organizationId, request.organizationId),
+    eq(autopaySetupRequests.id, request.id),
+    eq(autopaySetupRequests.workflowStatus, "pending"),
+  )).returning();
+  if (!completed) {
+    throw new AutopaySetupRequestInvalidTransitionError(request.workflowStatus);
+  }
+  return completed;
+}
+
+export async function finalizeZeroDollarAutopaySetupRequest(input: {
+  organizationId: number;
+  requestId: string;
+  now?: Date;
+}): Promise<{ request: AutopaySetupRequest; schedule: PaymentSchedule | null }> {
+  const now = input.now ?? new Date();
+  if (!Number.isFinite(now.getTime())) {
+    throw new AutopaySetupRequestValidationError("now is invalid");
+  }
+  return db.transaction(async (tx) => {
+    const [request] = await tx.select().from(autopaySetupRequests).where(and(
+      eq(autopaySetupRequests.organizationId, input.organizationId),
+      eq(autopaySetupRequests.id, input.requestId),
+    )).limit(1).for("update");
+    if (!request) throw new AutopaySetupRequestNotFoundError();
+    if (request.workflowStatus === "completed") {
+      const schedule = request.paymentScheduleId === null
+        ? null
+        : await tx.select().from(paymentSchedules)
+          .where(eq(paymentSchedules.id, request.paymentScheduleId))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+      return { request, schedule };
+    }
+    if (
+      request.workflowStatus !== "pending"
+      || request.snapshot.immediateAmountMinor !== 0
+      || request.paymentOperationId !== null
+    ) {
+      throw new AutopaySetupRequestInvalidTransitionError(request.workflowStatus);
+    }
+    const schedule = await ensureAutopaySetupSchedule(tx, request);
+    const completed = await markAutopaySetupCompleted(
+      tx,
+      request,
+      schedule,
+      now.toISOString(),
+    );
+    return { request: completed, schedule };
+  });
+}
+
+export async function finalizeAutopaySetupOperationSuccess(
+  input: Omit<FinalizePaymentOperationSuccessInput, "paymentRows"> & {
+    paymentRows: PaymentOperationLinkedPaymentInput[];
+  },
+): Promise<{
+  request: AutopaySetupRequest;
+  operation: PaymentOperation;
+  schedule: PaymentSchedule | null;
+}> {
+  const now = input.now ?? new Date();
+  if (!Number.isFinite(now.getTime())) {
+    throw new AutopaySetupRequestValidationError("now is invalid");
+  }
+  return db.transaction(async (tx) => {
+    const [request] = await tx.select().from(autopaySetupRequests).where(and(
+      eq(autopaySetupRequests.organizationId, input.organizationId),
+      eq(autopaySetupRequests.paymentOperationId, input.operationId),
+    )).limit(1).for("update");
+    if (!request) throw new AutopaySetupRequestNotFoundError();
+    const loadedOperation = await loadOperation(tx, request);
+    if (!loadedOperation) throw new AutopaySetupRequestImmutableMismatchError();
+    const operation = await finalizePaymentOperationSuccessInTransaction(tx, {
+      ...input,
+      now,
+    });
+    if (request.workflowStatus === "completed") {
+      const schedule = request.paymentScheduleId === null
+        ? null
+        : await tx.select().from(paymentSchedules)
+          .where(eq(paymentSchedules.id, request.paymentScheduleId))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+      return { request, operation, schedule };
+    }
+    if (request.workflowStatus !== "pending") {
+      throw new AutopaySetupRequestInvalidTransitionError(request.workflowStatus);
+    }
+    await validateCompletedPaymentAllocations(tx, request);
+    const schedule = await ensureAutopaySetupSchedule(tx, request);
+    const completed = await markAutopaySetupCompleted(
+      tx,
+      request,
+      schedule,
+      now.toISOString(),
+    );
+    return { request: completed, operation, schedule };
+  });
 }
 
 export async function completeAutopaySetupRequest(input: {

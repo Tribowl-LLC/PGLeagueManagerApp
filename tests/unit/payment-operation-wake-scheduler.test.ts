@@ -2,10 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { PaymentOperationWakeScheduler } from '../../server/services/payment-operation-wake-scheduler';
 import type { PaymentOperationWake } from '../../server/storage/payment-operations';
 
-const wake: PaymentOperationWake = {
+const wake: Extract<PaymentOperationWake, { kind: 'operation' }> = {
   kind: 'operation',
   operationId: '00000000-0000-4000-8000-000000000001',
   organizationId: 1,
+  operationType: 'scheduled_charge',
   status: 'pending',
   attemptCount: 0,
   dueAt: '2032-01-01T00:00:10.000Z',

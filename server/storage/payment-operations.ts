@@ -947,12 +947,20 @@ export async function recordPaymentOperationFailedTerminal(
   return recordTerminalErrorOutcome({ ...input, status: "failed_terminal" });
 }
 
-export async function finalizePaymentOperationSuccess(
-  input: LeasedPaymentOperationInput & {
-    providerObjectId: string;
-    providerOrderId?: string | null;
-    paymentRows?: PaymentOperationLinkedPaymentInput[];
-  },
+export type FinalizePaymentOperationSuccessInput = LeasedPaymentOperationInput & {
+  providerObjectId: string;
+  providerOrderId?: string | null;
+  paymentRows?: PaymentOperationLinkedPaymentInput[];
+};
+
+/**
+ * Transaction-scoped success finalization. Interactive setup uses this to
+ * commit the provider outcome, exact payment allocations, future schedule,
+ * and setup completion atomically after the provider call.
+ */
+export async function finalizePaymentOperationSuccessInTransaction(
+  tx: PaymentOperationTransaction,
+  input: FinalizePaymentOperationSuccessInput,
 ): Promise<PaymentOperation> {
   validateLeaseToken(input.leaseToken);
   validateProviderObjectId(input.providerObjectId);
@@ -960,35 +968,34 @@ export async function finalizePaymentOperationSuccess(
   if (input.providerOrderId != null) validateProviderOrderId(input.providerOrderId);
   const now = toIso(input.now ?? new Date(), "now");
 
-  const updated = await db.transaction(async (tx) => {
-    const [transitioned] = await tx
-      .update(paymentOperations)
-      .set({
-        status: "succeeded",
-        providerObjectId: input.providerObjectId,
-        providerOrderId: input.providerOrderId ?? undefined,
-        nextAttemptAt: null,
-        leaseOwner: null,
-        leaseExpiresAt: null,
-        errorClassification: null,
-        errorCode: null,
-        completedAt: now,
-        updatedAt: now,
-      })
-      .where(and(
-        eq(paymentOperations.organizationId, input.organizationId),
-        eq(paymentOperations.id, input.operationId),
-        eq(paymentOperations.status, "leased"),
-        eq(paymentOperations.leaseToken, input.leaseToken),
-        input.providerOrderId == null
-          ? undefined
-          : or(
-            isNull(paymentOperations.providerOrderId),
-            eq(paymentOperations.providerOrderId, input.providerOrderId),
-          ),
-      ))
-      .returning();
-    if (!transitioned) return undefined;
+  const [transitioned] = await tx
+    .update(paymentOperations)
+    .set({
+      status: "succeeded",
+      providerObjectId: input.providerObjectId,
+      providerOrderId: input.providerOrderId ?? undefined,
+      nextAttemptAt: null,
+      leaseOwner: null,
+      leaseExpiresAt: null,
+      errorClassification: null,
+      errorCode: null,
+      completedAt: now,
+      updatedAt: now,
+    })
+    .where(and(
+      eq(paymentOperations.organizationId, input.organizationId),
+      eq(paymentOperations.id, input.operationId),
+      eq(paymentOperations.status, "leased"),
+      eq(paymentOperations.leaseToken, input.leaseToken),
+      input.providerOrderId == null
+        ? undefined
+        : or(
+          isNull(paymentOperations.providerOrderId),
+          eq(paymentOperations.providerOrderId, input.providerOrderId),
+        ),
+    ))
+    .returning();
+  if (transitioned) {
     await insertLinkedPaymentRows(
       tx,
       input.organizationId,
@@ -997,10 +1004,12 @@ export async function finalizePaymentOperationSuccess(
     );
     await deactivatePaidInFullSchedule(tx, input.operationId, now);
     return transitioned;
-  });
-  if (updated) return updated;
+  }
 
-  const existing = await getPaymentOperationForOrganization(input.organizationId, input.operationId);
+  const [existing] = await tx.select().from(paymentOperations).where(and(
+    eq(paymentOperations.organizationId, input.organizationId),
+    eq(paymentOperations.id, input.operationId),
+  )).limit(1);
   if (!existing) throw new PaymentOperationNotFoundError();
   if (
     existing.status === "succeeded"
@@ -1013,10 +1022,17 @@ export async function finalizePaymentOperationSuccess(
   throw new PaymentOperationInvalidTransitionError(existing.status);
 }
 
+export async function finalizePaymentOperationSuccess(
+  input: FinalizePaymentOperationSuccessInput,
+): Promise<PaymentOperation> {
+  return db.transaction((tx) => finalizePaymentOperationSuccessInTransaction(tx, input));
+}
+
 export type PaymentOperationWake = {
   kind: "operation";
   organizationId: number;
   operationId: string;
+  operationType: PaymentOperation["operationType"];
   status: PaymentOperation["status"];
   attemptCount: number;
   dueAt: string;
@@ -1035,6 +1051,7 @@ export function buildNextPaymentOperationWakeQuery() {
         'schedule'::text AS kind,
         ${leagues.organizationId} AS organization_id,
         ${paymentSchedules.id}::text AS work_id,
+        NULL::text AS operation_type,
         NULL::text AS status,
         NULL::integer AS attempt_count,
         ${paymentSchedules.nextPaymentDate} AS due_at
@@ -1049,6 +1066,7 @@ export function buildNextPaymentOperationWakeQuery() {
         'operation'::text AS kind,
         ${paymentOperations.organizationId} AS organization_id,
         ${paymentOperations.id}::text AS work_id,
+        ${paymentOperations.operationType} AS operation_type,
         ${paymentOperations.status} AS status,
         ${paymentOperations.attemptCount} AS attempt_count,
         CASE
@@ -1070,6 +1088,7 @@ export function buildNextPaymentOperationWakeQuery() {
       kind,
       organization_id,
       work_id,
+      operation_type,
       status,
       attempt_count,
       (due_at AT TIME ZONE 'UTC')::text AS due_at
@@ -1089,6 +1108,7 @@ export async function getNextPaymentOperationWake(): Promise<PaymentOperationWak
     kind: "operation" | "schedule";
     organization_id: number;
     work_id: string;
+    operation_type: PaymentOperation["operationType"] | null;
     status: PaymentOperation["status"] | null;
     attempt_count: number | null;
     due_at: string;
@@ -1103,13 +1123,14 @@ export async function getNextPaymentOperationWake(): Promise<PaymentOperationWak
       dueAt: row.due_at,
     };
   }
-  if (row.status === null || row.attempt_count === null) {
+  if (row.operation_type === null || row.status === null || row.attempt_count === null) {
     throw new PaymentOperationValidationError("operation wake row is incomplete");
   }
   return {
     kind: "operation",
     organizationId: Number(row.organization_id),
     operationId: row.work_id,
+    operationType: row.operation_type,
     status: row.status,
     attemptCount: Number(row.attempt_count),
     dueAt: row.due_at,

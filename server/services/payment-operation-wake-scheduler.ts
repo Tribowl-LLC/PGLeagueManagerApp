@@ -27,6 +27,7 @@ function wakeContext(wake: PaymentOperationWake): Record<string, unknown> {
       workKind: wake.kind,
       organizationId: wake.organizationId,
       operationId: wake.operationId,
+      operationType: wake.operationType,
       status: wake.status,
       attemptCount: wake.attemptCount,
     }
@@ -39,7 +40,7 @@ function wakeContext(wake: PaymentOperationWake): Record<string, unknown> {
 
 function wakeSignature(wake: PaymentOperationWake, dueMs: number): string {
   return wake.kind === "operation"
-    ? `operation:${wake.operationId}:${wake.status}:${wake.attemptCount}:${dueMs}`
+    ? `operation:${wake.operationId}:${wake.operationType}:${wake.status}:${wake.attemptCount}:${dueMs}`
     : `schedule:${wake.paymentScheduleId}:${dueMs}`;
 }
 

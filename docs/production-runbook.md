@@ -302,6 +302,41 @@ foundation application fails before any later behavior cutover, keep migration
 Do not reverse the migration, delete setup/operation evidence, or enable the
 future client/server setup flow as a rollback technique.
 
+### Weekly auto-pay setup behavior activation
+
+The behavior release after migration 0010 requires no additional migration or
+secret. It activates the quote/setup routes, weekly auto-pay client cutover,
+interactive-operation dispatch, exact occurrence allocations, and the
+three-hour past-due boundary. Production must already be running the verified
+0010 schema and `SCHEDULED_PAYMENT_EXECUTION_MODE=ledger_execute`; the latter
+is required for durable recovery wakes after transient or unknown provider
+outcomes.
+
+Deploy the exact CI-certified behavior commit with Auto-Deploy still Off. Verify
+all of the following before allowing normal traffic:
+
+1. A setup just before the first league start quotes and charges $0, then
+   schedules that first occurrence.
+2. A setup after the league start but before the three-hour deadline charges
+   exactly the current week and labels it `due_today`.
+3. A setup at or after the deadline classifies that occurrence as
+   `past_due`, requires every older occurrence to be settled, and schedules
+   the first unpaid future occurrence.
+4. The operation, provider payment, local payment allocation, setup request,
+   and future schedule share the expected tenant and stable identity.
+5. Combined auto-pay stores the per-bowler weekly base and does not multiply
+   the payer-plus-partner total twice.
+6. Duplicate submission and process-restart recovery reuse one Square effect;
+   no compensation refund is issued for a local finalization failure.
+7. One-time/upfront payments, scheduled ledger execution, refunds, receipts,
+   authentication, and tenant isolation remain healthy.
+
+Before the first setup request is created, application rollback to the dormant
+foundation commit is schema-compatible. After any activated setup request or
+interactive operation exists, do not resume the old client-orchestrated weekly
+setup path: drain the service and deploy a forward fix while preserving all
+setup, operation, payment, and provider evidence.
+
 ## Post-Deployment Checks
 
 - Confirm the Render deploy is running the expected commit.

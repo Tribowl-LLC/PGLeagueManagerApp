@@ -26,7 +26,7 @@
   },
   "client/src/components/payment-status-section.tsx": {
     "@tanstack/query/no-unstable-deps": {
-      "count": 2
+      "count": 1
     }
   },
   "client/src/components/reorder-teams-dialog.tsx": {

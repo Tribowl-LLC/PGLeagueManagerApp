@@ -3,6 +3,7 @@ import type { League, Bowler, SavedCard } from "@shared/schema";
 import type { FinancialCalculation } from "@/lib/financial-utils";
 import { PaymentOverviewCard } from "@/components/payment-overview-card";
 import { PaymentSetupForm } from "@/components/payment-setup-form";
+import type { AutopaySetupQuote } from "@/lib/autopay-setup";
 
 type PaymentSchedule = "weekly" | "custom";
 
@@ -60,7 +61,9 @@ interface PaymentStatusViewProps {
   setTargetBowlerId: (id: number) => void;
   additionalBowlerIds: number[];
   setAdditionalBowlerIds: (ids: number[]) => void;
-  partnerPastDueByBowlerId: Record<number, number>;
+  autopayQuote?: AutopaySetupQuote;
+  autopayQuoteLoading: boolean;
+  autopayQuoteError: string | null;
   activeSchedule?: ScheduleData;
   onSetupPayment: (mode: 'autopay' | 'onetime') => void;
 }
@@ -110,7 +113,9 @@ export const PaymentStatusView: FC<PaymentStatusViewProps> = ({
   setTargetBowlerId,
   additionalBowlerIds,
   setAdditionalBowlerIds,
-  partnerPastDueByBowlerId,
+  autopayQuote,
+  autopayQuoteLoading,
+  autopayQuoteError,
   activeSchedule,
   onSetupPayment,
 }) => {
@@ -164,7 +169,9 @@ export const PaymentStatusView: FC<PaymentStatusViewProps> = ({
         allowPartnerSelection={paymentMode !== 'autopay'}
         additionalBowlerIds={additionalBowlerIds}
         setAdditionalBowlerIds={setAdditionalBowlerIds}
-        partnerPastDueByBowlerId={partnerPastDueByBowlerId}
+        autopayQuote={autopayQuote}
+        autopayQuoteLoading={autopayQuoteLoading}
+        autopayQuoteError={autopayQuoteError}
       />
     );
   }

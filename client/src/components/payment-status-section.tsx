@@ -7,11 +7,12 @@ import { useToast } from "@/hooks/use-toast";
 import { useQuery, useQueries } from "@tanstack/react-query";
 import { csrfFetch, queryClient } from '@/lib/queryClient';
 import { logger } from "@/lib/logger";
-import { calculateFinancials, calculateBowlerPastDue } from "@/lib/financial-utils";
+import { calculateFinancials } from "@/lib/financial-utils";
 import { sanitizePaymentErrorMessage } from "@/lib/payment-user-error";
 import type { League, Bowler, Payment, SavedCard, ApiResponse, BowlerDetailsResponse } from "@shared/schema";
 import { PaymentStatusView } from "@/components/payment-status-view";
 import { useBowlerPaymentSubmit } from "@/hooks/use-bowler-payment-submit";
+import type { AutopaySetupQuote } from "@/lib/autopay-setup";
 
 interface BowlerLinkRow {
   id: number;
@@ -76,6 +77,35 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
   // the form closes or paymentMode flips so a stale combined-autopay
   // pick can never silently ride into the next checkout.
   const [additionalBowlerIds, setAdditionalBowlerIds] = useState<number[]>([]);
+  const quotePartnerKey = useMemo(
+    () => [...additionalBowlerIds].sort((left, right) => left - right).join(','),
+    [additionalBowlerIds],
+  );
+
+  const {
+    data: autopayQuoteResponse,
+    isLoading: autopayQuoteLoading,
+    error: autopayQuoteError,
+  } = useQuery<ApiResponse<AutopaySetupQuote>>({
+    queryKey: ['/api/payment-schedules/setup-quote', bowler.id, league.id, quotePartnerKey],
+    queryFn: async () => {
+      const query = quotePartnerKey
+        ? `?additionalBowlerIds=${encodeURIComponent(quotePartnerKey)}`
+        : '';
+      const response = await csrfFetch(
+        `/api/payment-schedules/setup-quote/${bowler.id}/${league.id}${query}`,
+      );
+      const body = await response.json();
+      if (!response.ok) {
+        throw new Error(body.error?.message || 'Unable to calculate automatic payment dates.');
+      }
+      return body;
+    },
+    enabled: showPaymentSetup && paymentMode === 'autopay' && selectedSchedule === 'weekly',
+    staleTime: 0,
+    retry: false,
+  });
+  const autopayQuote = autopayQuoteResponse?.data;
 
   const { supportsWallets, isLoading: providerLoading } = usePaymentProvider(league.locationId ?? null);
 
@@ -148,22 +178,6 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
       );
     });
   }, [acceptedPartners, partnerDetailsQueries, league.id]);
-
-  const partnerPastDueByBowlerId = useMemo(() => {
-    const map: Record<number, number> = {};
-    acceptedPartners.forEach((p, idx) => {
-      const data = partnerDetailsQueries[idx]?.data?.data;
-      if (!data) return;
-      const partnerPayments = (data.payments ?? []).filter(
-        (pmt) => pmt.leagueId === league.id,
-      );
-      const paid = partnerPayments
-        .filter((pmt) => pmt.status === 'paid')
-        .reduce((sum, pmt) => sum + pmt.amount, 0);
-      map[p.id] = calculateBowlerPastDue(league, paid);
-    });
-    return map;
-  }, [acceptedPartners, league, partnerDetailsQueries]);
 
   const { data: savedCardsResponse } = useQuery<{ success: boolean; data: SavedCard[] }>({
     queryKey: [`/api/payments-provider/cards/${bowler.id}`, league.id],
@@ -390,7 +404,7 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
     storeCard,
     targetBowlerId,
     additionalBowlerIds,
-    partnerPastDueByBowlerId,
+    autopayQuote,
     financials,
     calculateTotalAmount,
     setIsSubmitting,
@@ -476,7 +490,9 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
       setTargetBowlerId={setTargetBowlerId}
       additionalBowlerIds={additionalBowlerIds}
       setAdditionalBowlerIds={setAdditionalBowlerIds}
-      partnerPastDueByBowlerId={partnerPastDueByBowlerId}
+      autopayQuote={autopayQuote}
+      autopayQuoteLoading={autopayQuoteLoading}
+      autopayQuoteError={autopayQuoteError instanceof Error ? autopayQuoteError.message : null}
       activeSchedule={activeSchedule}
       onSetupPayment={(mode) => {
         setPaymentMode(mode);

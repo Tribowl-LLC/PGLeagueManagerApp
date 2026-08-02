@@ -32,6 +32,7 @@ import {
 import type { PaymentProvider, PaymentResult } from "./payment-provider";
 import { PaymentOperationWakeScheduler } from "./payment-operation-wake-scheduler";
 import { prepareScheduledPaymentCycle } from "./scheduled-payment-operation-preparation";
+import { autopaySetupOperationExecutor } from "./autopay-setup-operation-executor";
 
 const log = createLogger("ScheduledPaymentLedger");
 const LEASE_DURATION_MS = PAYMENT_OPERATION_MAX_LEASE_MS;
@@ -190,6 +191,22 @@ export class ScheduledPaymentOperationExecutor {
           leaseRecoveryCount: reconciled.leaseRecoveryCount,
         });
       }
+      return;
+    }
+
+    if (wake.operationType === "interactive_charge") {
+      await autopaySetupOperationExecutor.execute({
+        organizationId: wake.organizationId,
+        operationId: wake.operationId,
+      });
+      return;
+    }
+    if (wake.operationType !== "scheduled_charge") {
+      log.error("Unsupported payment operation type reached the automatic executor", {
+        organizationId: wake.organizationId,
+        operationId: wake.operationId,
+        operationType: wake.operationType,
+      });
       return;
     }
 

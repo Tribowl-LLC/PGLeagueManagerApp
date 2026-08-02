@@ -3,7 +3,7 @@ import type { League, Payment } from "@shared/schema";
 import {
   getEffectiveBowlingWeeks,
   countBowlingWeeksPassed,
-  toIsoDateStr,
+  getWeeklyBillingOccurrences,
 } from "@shared/schedule-utils";
 
 /**
@@ -168,17 +168,28 @@ export function calculateFinancials(league: League | null | undefined, payments:
     };
   }
 
-  const today = startOfToday();
-  const todayStr = toIsoDateStr(today);
-  const pastDoublePayCount = doublePayDates.filter(d => d <= todayStr).length;
-  const pastExtra = pastDoublePayCount * perWeekExtra;
-
-  // Last N bowling weeks aren't billed (their money was collected earlier
-  // on the double-pay dates), so cap chargeable weeks at totalWeeks - N.
-  const billableWeeks = Math.max(0, totalWeeksInSeason - doublePayDates.length);
-  const chargedWeeks = Math.min(weeksPassed, billableWeeks);
-  const totalDueToDateRaw = league.weeklyFee * chargedWeeks + pastExtra;
-  const totalDueToDate = Math.min(totalDueToDateRaw, fullSeasonAmount);
+  const now = new Date();
+  const occurrences = getWeeklyBillingOccurrences({
+    seasonStart: league.seasonStart,
+    seasonEnd: league.seasonEnd,
+    weekDay: league.weekDay ?? "",
+    competitionStartTime: league.competitionStartTime ?? "12:00",
+    timezone: league.timezone,
+    weeklyFee: league.weeklyFee,
+    totalBowlingWeeks: league.totalBowlingWeeks,
+    skipDates: league.skipDates,
+    cancelledDates: league.cancelledDates,
+    doublePayDates: league.doublePayDates,
+  });
+  const dueOccurrences = occurrences.filter(
+    (occurrence) => new Date(occurrence.graceDeadlineAt).getTime() <= now.getTime(),
+  );
+  const pastExtra = dueOccurrences.filter((occurrence) => occurrence.isDoublePay)
+    .length * perWeekExtra;
+  const totalDueToDate = Math.min(
+    dueOccurrences.reduce((sum, occurrence) => sum + occurrence.amountMinor, 0),
+    fullSeasonAmount,
+  );
   const amountPastDue = Math.max(0, totalDueToDate - totalPaid);
 
   return {
@@ -227,53 +238,15 @@ export function calculateBowlerViewFinancials(
   payments: Payment[]
 ): BowlerViewFinancials {
   const { totalPaidAmount, totalUnpaidAmount } = getPaymentSummary(payments);
-
-  let weeksDue = 0;
-  let totalSeasonDues = 0;
-  let totalWeeksInSeason = 0;
-  let fullSeasonAmount = 0;
-  let amountPastDue = 0;
-
-  if (league?.seasonStart && league.seasonEnd && league.weeklyFee) {
-    weeksDue = getWeeksPassedInSeason(league);
-    totalWeeksInSeason = getSeasonLengthWeeks(league);
-    const doublePayDates = (league.doublePayDates ?? [])
-      .map(d => d.slice(0, 10))
-      .filter(Boolean);
-    // Redistribution model — see calculateFinancials for full notes.
-    fullSeasonAmount = league.weeklyFee * totalWeeksInSeason;
-
-    if (league.paymentMode === "upfront") {
-      // Upfront leagues: full season is due immediately. "Amount due to date"
-      // is the entire season amount and "past due" is the unpaid remainder.
-      // Mirrors calculateFinancials + the shared calculateBowlerPastDue
-      // helper exactly (neither gates on season-start; pre-season gating
-      // would need to land in all three helpers together).
-      totalSeasonDues = fullSeasonAmount;
-      amountPastDue = Math.max(0, fullSeasonAmount - totalPaidAmount);
-    } else {
-      const today = startOfToday();
-      const todayStr = toIsoDateStr(today);
-      const pastExtra = doublePayDates.filter(d => d <= todayStr).length * league.weeklyFee;
-      const billableWeeks = Math.max(0, totalWeeksInSeason - doublePayDates.length);
-      const chargedWeeks = Math.min(weeksDue, billableWeeks);
-      totalSeasonDues = Math.min(
-        league.weeklyFee * chargedWeeks + pastExtra,
-        fullSeasonAmount,
-      );
-      amountPastDue = Math.max(0, totalSeasonDues - totalPaidAmount);
-    }
-  }
-
-  const remainingBalance = fullSeasonAmount - totalPaidAmount;
+  const financials = calculateFinancials(league, payments);
 
   return {
-    weeksDue,
-    totalSeasonDues,
-    totalWeeksInSeason,
-    fullSeasonAmount,
-    amountPastDue,
-    remainingBalance,
+    weeksDue: financials.weeksPassed,
+    totalSeasonDues: financials.totalDueToDate,
+    totalWeeksInSeason: financials.totalWeeksInSeason,
+    fullSeasonAmount: financials.fullSeasonAmount,
+    amountPastDue: financials.amountPastDue,
+    remainingBalance: financials.remainingBalance,
     totalPaidAmount,
     totalUnpaidAmount,
   };

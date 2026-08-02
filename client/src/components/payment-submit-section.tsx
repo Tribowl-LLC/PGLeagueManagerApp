@@ -14,11 +14,10 @@ interface PaymentSubmitSectionProps {
   isInitialized: boolean;
   selectedSavedCardId: string;
   additionalBowlerCount?: number;
-  // Task #715: when weekly auto-pay is being set up against a bowler
-  // (or combined group) with a past-due balance, the immediate charge
-  // is `Σ(amountPastDue + weeklyFee)`. When provided, it replaces the
-  // displayed "Total Amount" with a "Total due today" line.
+  // Server-calculated amount to charge during weekly auto-pay setup.
   autopayDueTodayOverride?: number | null;
+  autopayQuoteLoading?: boolean;
+  autopayQuoteError?: string | null;
   onSubmit: () => void;
   onCancel: () => void;
 }
@@ -35,6 +34,8 @@ export const PaymentSubmitSection: FC<PaymentSubmitSectionProps> = ({
   selectedSavedCardId,
   additionalBowlerCount = 0,
   autopayDueTodayOverride = null,
+  autopayQuoteLoading = false,
+  autopayQuoteError = null,
   onSubmit,
   onCancel,
 }) => {
@@ -84,6 +85,8 @@ export const PaymentSubmitSection: FC<PaymentSubmitSectionProps> = ({
             (cardMode === 'new' && !isInitialized) ||
             (cardMode === 'saved' && !selectedSavedCardId) ||
             isSubmitting
+            || autopayQuoteLoading
+            || autopayQuoteError !== null
           }
           className="min-w-[200px]"
         >
