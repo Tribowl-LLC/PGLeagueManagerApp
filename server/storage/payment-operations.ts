@@ -189,28 +189,28 @@ async function validateSnapshotTenantReferences(
   const paidByUserIds = [...new Set(snapshot.allocations
     .map((row) => row.paidByUserId)
     .filter((id): id is number => id !== null))];
-  const [ownedBowlers, ownedLeague, ownedPaidByUsers, ownedLocations] = await Promise.all([
-    executor.select({ id: bowlers.id }).from(bowlers).where(and(
-      eq(bowlers.organizationId, snapshot.organizationId),
-      inArray(bowlers.id, bowlerIds),
-    )),
-    executor.select({ id: leagues.id }).from(leagues).where(and(
-      eq(leagues.organizationId, snapshot.organizationId),
-      eq(leagues.id, snapshot.leagueId),
-    )),
-    paidByUserIds.length === 0
-      ? Promise.resolve([])
-      : executor.select({ id: users.id }).from(users).where(and(
-        eq(users.organizationId, snapshot.organizationId),
-        inArray(users.id, paidByUserIds),
-      )),
-    snapshot.locationId === null
-      ? Promise.resolve([])
-      : executor.select({ id: locations.id }).from(locations).where(and(
-        eq(locations.organizationId, snapshot.organizationId),
-        eq(locations.id, snapshot.locationId),
-      )),
-  ]);
+  // PaymentOperationTransaction may be a single pinned pg client. Do not
+  // overlap its queries: pg@8 warns and pg@9 will reject that usage.
+  const ownedBowlers = await executor.select({ id: bowlers.id }).from(bowlers).where(and(
+    eq(bowlers.organizationId, snapshot.organizationId),
+    inArray(bowlers.id, bowlerIds),
+  ));
+  const ownedLeague = await executor.select({ id: leagues.id }).from(leagues).where(and(
+    eq(leagues.organizationId, snapshot.organizationId),
+    eq(leagues.id, snapshot.leagueId),
+  ));
+  const ownedPaidByUsers = paidByUserIds.length === 0
+    ? []
+    : await executor.select({ id: users.id }).from(users).where(and(
+      eq(users.organizationId, snapshot.organizationId),
+      inArray(users.id, paidByUserIds),
+    ));
+  const ownedLocations = snapshot.locationId === null
+    ? []
+    : await executor.select({ id: locations.id }).from(locations).where(and(
+      eq(locations.organizationId, snapshot.organizationId),
+      eq(locations.id, snapshot.locationId),
+    ));
   if (
     ownedBowlers.length !== bowlerIds.length
     || ownedLeague.length !== 1
@@ -235,22 +235,20 @@ async function insertLinkedPaymentRows(
   const paidByUserIds = [...new Set(rows
     .map((row) => row.values.paidByUserId)
     .filter((id): id is number => typeof id === "number"))];
-  const [ownedBowlers, ownedLeagues, ownedPaidByUsers] = await Promise.all([
-    executor.select({ id: bowlers.id }).from(bowlers).where(and(
-      eq(bowlers.organizationId, organizationId),
-      inArray(bowlers.id, bowlerIds),
-    )),
-    executor.select({ id: leagues.id }).from(leagues).where(and(
-      eq(leagues.organizationId, organizationId),
-      inArray(leagues.id, leagueIds),
-    )),
-    paidByUserIds.length === 0
-      ? Promise.resolve([])
-      : executor.select({ id: users.id }).from(users).where(and(
-        eq(users.organizationId, organizationId),
-        inArray(users.id, paidByUserIds),
-      )),
-  ]);
+  const ownedBowlers = await executor.select({ id: bowlers.id }).from(bowlers).where(and(
+    eq(bowlers.organizationId, organizationId),
+    inArray(bowlers.id, bowlerIds),
+  ));
+  const ownedLeagues = await executor.select({ id: leagues.id }).from(leagues).where(and(
+    eq(leagues.organizationId, organizationId),
+    inArray(leagues.id, leagueIds),
+  ));
+  const ownedPaidByUsers = paidByUserIds.length === 0
+    ? []
+    : await executor.select({ id: users.id }).from(users).where(and(
+      eq(users.organizationId, organizationId),
+      inArray(users.id, paidByUserIds),
+    ));
   if (
     ownedBowlers.length !== bowlerIds.length
     || ownedLeagues.length !== leagueIds.length

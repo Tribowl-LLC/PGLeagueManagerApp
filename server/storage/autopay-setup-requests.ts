@@ -260,38 +260,38 @@ async function validateTenantReferences(
   const paidByUserIds = [...new Set(snapshot.allocations
     .map((allocation) => allocation.paidByUserId)
     .filter((id): id is number => id !== null))];
-  const [ownedOrganization, ownedLeague, ownedLocation, ownedBowlers, activeRoster, ownedUsers] = await Promise.all([
-    tx.select({ id: organizations.id }).from(organizations)
-      .where(eq(organizations.id, snapshot.organizationId)),
-    tx.select({ id: leagues.id, locationId: leagues.locationId }).from(leagues)
+  // A transaction owns one pinned pg client. Keep its queries sequential:
+  // pg@8 only warns when client.query() overlaps, while pg@9 will reject it.
+  const ownedOrganization = await tx.select({ id: organizations.id }).from(organizations)
+    .where(eq(organizations.id, snapshot.organizationId));
+  const ownedLeague = await tx.select({ id: leagues.id, locationId: leagues.locationId }).from(leagues)
+    .where(and(
+      eq(leagues.id, snapshot.leagueId),
+      eq(leagues.organizationId, snapshot.organizationId),
+    ));
+  const ownedLocation = await tx.select({ id: locations.id }).from(locations)
+    .where(and(
+      eq(locations.id, snapshot.locationId),
+      eq(locations.organizationId, snapshot.organizationId),
+    ));
+  const ownedBowlers = await tx.select({ id: bowlers.id }).from(bowlers)
+    .where(and(
+      eq(bowlers.organizationId, snapshot.organizationId),
+      inArray(bowlers.id, bowlerIds),
+    ));
+  const activeRoster = await tx.select({ bowlerId: bowlerLeagues.bowlerId }).from(bowlerLeagues)
+    .where(and(
+      eq(bowlerLeagues.leagueId, snapshot.leagueId),
+      eq(bowlerLeagues.active, true),
+      inArray(bowlerLeagues.bowlerId, bowlerIds),
+    ));
+  const ownedUsers = paidByUserIds.length === 0
+    ? []
+    : await tx.select({ id: users.id }).from(users)
       .where(and(
-        eq(leagues.id, snapshot.leagueId),
-        eq(leagues.organizationId, snapshot.organizationId),
-      )),
-    tx.select({ id: locations.id }).from(locations)
-      .where(and(
-        eq(locations.id, snapshot.locationId),
-        eq(locations.organizationId, snapshot.organizationId),
-      )),
-    tx.select({ id: bowlers.id }).from(bowlers)
-      .where(and(
-        eq(bowlers.organizationId, snapshot.organizationId),
-        inArray(bowlers.id, bowlerIds),
-      )),
-    tx.select({ bowlerId: bowlerLeagues.bowlerId }).from(bowlerLeagues)
-      .where(and(
-        eq(bowlerLeagues.leagueId, snapshot.leagueId),
-        eq(bowlerLeagues.active, true),
-        inArray(bowlerLeagues.bowlerId, bowlerIds),
-      )),
-    paidByUserIds.length === 0
-      ? Promise.resolve([])
-      : tx.select({ id: users.id }).from(users)
-        .where(and(
-          eq(users.organizationId, snapshot.organizationId),
-          inArray(users.id, paidByUserIds),
-        )),
-  ]);
+        eq(users.organizationId, snapshot.organizationId),
+        inArray(users.id, paidByUserIds),
+      ));
   if (
     ownedOrganization.length !== 1
     || ownedLeague.length !== 1
