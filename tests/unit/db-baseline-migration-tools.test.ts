@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(11);
+    expect(migrations).toHaveLength(12);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -204,6 +204,17 @@ describe('normalized migration baseline tools', () => {
     expect(migrations[10]?.sql).toContain('payment_operations_interactive_target_unique');
     expect(migrations[10]?.sql).toContain('payment_schedules_active_bowler_league_unique');
     expect(migrations[10]?.sql).not.toMatch(/(?:^|\n)\s*(?:DROP|UPDATE|DELETE|INSERT)\b/);
+    expect(migrations[11]).toMatchObject({
+      idx: 11,
+      tag: '0011_interactive_payment_operation_foundation',
+      createdAt: 1785707848197,
+      hash: '57f5e65bb0a88423d0ac9e8c516d4ee9e346b1216a0212905df21feb6b9203ae',
+    });
+    expect(migrations[11]?.sql).toContain('CREATE TABLE "interactive_payment_operation_snapshots"');
+    expect(migrations[11]?.sql).toContain('CREATE TABLE "interactive_payment_operation_allocations"');
+    expect(migrations[11]?.sql).toContain('CREATE TABLE "interactive_payment_operation_line_items"');
+    expect(migrations[11]?.sql).toContain('interactive_payment_allocations_total');
+    expect(migrations[11]?.sql).not.toMatch(/(?:^|\n)\s*(?:DROP|UPDATE|DELETE|INSERT)\b/);
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 

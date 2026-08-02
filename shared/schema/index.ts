@@ -36,6 +36,9 @@ export {
   scheduledPaymentOperationSnapshots,
   scheduledPaymentOperationAllocations,
   scheduledPaymentOperationLineItems,
+  interactivePaymentOperationSnapshots,
+  interactivePaymentOperationAllocations,
+  interactivePaymentOperationLineItems,
   PAYMENT_OPERATION_TYPES,
   PAYMENT_OPERATION_STATUSES,
   PAYMENT_OPERATION_ERROR_CLASSIFICATIONS,
@@ -44,6 +47,8 @@ export {
   PAYMENT_OPERATION_MAX_RETRY_DELAY_MS,
   SCHEDULED_PAYMENT_SNAPSHOT_VERSION,
   SCHEDULED_PAYMENT_REQUEST_KINDS,
+  INTERACTIVE_PAYMENT_SNAPSHOT_VERSION,
+  INTERACTIVE_PAYMENT_REQUEST_KINDS,
 } from "./payment-operations";
 export type {
   PaymentOperation,
@@ -55,6 +60,10 @@ export type {
   ScheduledPaymentOperationSnapshot,
   ScheduledPaymentOperationAllocation,
   ScheduledPaymentOperationLineItem,
+  InteractivePaymentRequestKind,
+  InteractivePaymentOperationSnapshot,
+  InteractivePaymentOperationAllocation,
+  InteractivePaymentOperationLineItem,
 } from "./payment-operations";
 
 export { users, insertUserSchema, updateUserSchema, updateUserSchemaBase } from "./users";

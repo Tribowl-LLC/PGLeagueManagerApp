@@ -66,6 +66,12 @@
       "tag": "0010_autopay_setup_foundation",
       "createdAt": 1785695299184,
       "hash": "ed9956a9d32d3d2cf0f5e2d0f584cf24397514d27f234b274b34624c74710c61"
+    },
+    {
+      "idx": 11,
+      "tag": "0011_interactive_payment_operation_foundation",
+      "createdAt": 1785707848197,
+      "hash": "57f5e65bb0a88423d0ac9e8c516d4ee9e346b1216a0212905df21feb6b9203ae"
     }
   ]
 }

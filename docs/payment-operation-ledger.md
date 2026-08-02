@@ -517,6 +517,72 @@ Activation is not part of the code deployment. Use this conservative sequence:
     forward fix. Explicit success reconciliation must use the retained exact
     token; automatic execution never leases `reconciliation_required`.
 
-Phase 3 remains the separately reviewed adoption of the operation ledger by
-interactive charges/refunds. Phase 4 remains broader reconciliation tooling,
-notifications, and operator UX. Neither boundary is part of Phase 2B-2.
+## Phase 3A-1 boundary (migration 0011)
+
+Phase 3A-1 adds a dormant foundation for general interactive charges. It does
+not change a route, scheduler, startup hook, wake dispatcher, provider adapter,
+weekly auto-pay setup, scheduled billing, or refund behavior. General
+interactive operations are not created or executed by production code in this
+phase.
+
+The additive migration adds one encrypted interactive snapshot per general
+`interactive_charge` operation, ordered allocation children, and ordered
+Square line-item children. It deliberately does not reuse scheduled snapshots
+or `autopay_setup_requests`. The snapshot stores no PAN, CVV, credential, raw
+provider response, or raw provider request body. Source, customer, and buyer
+email identities use the existing field-encryption boundary.
+
+The `lvpayexecic:v1` fingerprint covers the complete normalized semantic
+request: tenant, location and Square location, direct-versus-order charge
+kind, currency, amount, encrypted-at-rest source/customer/email identities,
+save-card intent, exact Square payment/order identities, week, combined-charge
+group, every ordered allocation and every ordered Square line item. The
+plaintext semantic values are fingerprinted before encryption so randomized
+authenticated ciphertext does not change a retry fingerprint. Child indexes
+are persisted and validated; order changes are not interchangeable.
+
+General logical targets use the reserved `interactive-charge:` namespace and
+never use a Square source token as identity. Preparation converges only when
+the logical target and immutable fingerprint match. A mismatching fingerprint
+fails closed, while a genuinely new target creates a separate operation.
+Tenant validation proves that the operation, league, location, payer,
+allocation bowlers, roster links, and paid-by users belong to the same
+organization before any snapshot row is written. A deferred PostgreSQL
+constraint trigger also requires allocation amounts to equal the parent
+operation amount at commit time, in addition to positive-minor-unit and
+ordered-child constraints.
+
+The dormant executor demonstrates the Phase 3A-2 call boundary: commit the
+lease before provider HTTP, call Square outside PostgreSQL, and finalize local
+payment rows with the exact fenced operation. A local finalization failure
+retains the operation for same-key replay and never issues a compensation
+refund. Only a provider result with status `COMPLETED` may finalize local paid
+rows; pending, approved, failed, canceled, missing-status, or missing-ID
+results fail closed. Store-card execution is explicitly rejected until the
+Phase 3A-2 route cutover owns the vault-write behavior. No application import
+reaches this executor in Phase 3A-1.
+
+### Phase 3 split and rollback
+
+The remaining work is intentionally split into focused pull requests:
+
+1. Phase 3A-1: this dormant general interactive snapshot, storage, executor,
+   migration, and concurrency/tenant/encryption foundation.
+2. Phase 3A-2: separately reviewed cutover of single and combined interactive
+   charge routes, including the validated client logical-request identity.
+3. Phase 3B: durable refund operations, stable refund keys, provider-state
+   handling, and atomic local refund finalization. Refund statuses and policy
+   are not changed here.
+4. Phase 4: webhook inbox, reconciliation tooling, disputes, and operator UX.
+
+Migration 0011 is additive and may be applied before the application release;
+the currently deployed application safely ignores its dormant tables. This
+PR has no live path that creates these rows, so the pre-Phase-3 application
+remains a valid rollback target. Once Phase 3A-2 creates the first general
+interactive operation, the pre-Phase-3 application is no longer an approved
+rollback target; rollback must preserve operation rows and use a compatible
+application or forward recovery. No production migration is applied as part
+of Phase 3A-1.
+
+Phase 3 remains separate from Phase 4's broader reconciliation tooling,
+notifications, disputes, webhooks, and operator UX.
