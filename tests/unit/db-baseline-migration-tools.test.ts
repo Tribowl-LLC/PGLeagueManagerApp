@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(6);
+    expect(migrations).toHaveLength(7);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -155,6 +155,14 @@ describe('normalized migration baseline tools', () => {
     expect(migrations[5]?.sql).toContain('DROP TABLE "league_registration_questions"');
     expect(migrations[5]?.sql).toContain('DROP TABLE "league_registrations"');
     expect(migrations[5]?.sql.match(/DROP COLUMN/g)).toHaveLength(3);
+    expect(migrations[6]).toMatchObject({
+      idx: 6,
+      tag: '0006_payment_sync_next_due',
+      createdAt: 1785630087761,
+      hash: 'e3aa1bdce9fbdacbbb2eb49c4ffe2bb1bfd3ff9a51a9d031d962a8c0d488b4e7',
+    });
+    expect(migrations[6]?.sql).toContain('ADD COLUMN "payment_sync_next_retry_at"');
+    expect(migrations[6]?.sql).toContain('CREATE INDEX "bowlers_payment_sync_next_retry_idx"');
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 

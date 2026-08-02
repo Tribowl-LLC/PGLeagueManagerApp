@@ -95,6 +95,7 @@ export default function DeletionRequestsPage() {
     },
     onSuccess: (response) => {
       queryClient.invalidateQueries({ queryKey: ['/api/system-admin/deletion-requests'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/system-admin/deletion-requests/pending-count'] });
       setActiveRequest(null);
       setAdminNote('');
       setExecuteConfirmText('');

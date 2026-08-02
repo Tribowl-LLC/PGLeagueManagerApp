@@ -667,26 +667,21 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const isOrgAdmin = userRole === 'org_admin';
   const canSeeOrgAdminItems = isSystemAdmin || (isOrgAdmin && !!userOrgId);
 
-  // Poll the pending-deletion-request count for the sidebar badge.
-  // System-admin only; refetches every 60s and on window focus so an
-  // admin sitting on another page sees new requests without reloading.
+  // Load the pending-deletion-request count for the sidebar badge on mount
+  // and focus. Mutations on the deletion-requests page invalidate this key.
   // The deletion-requests page also invalidates this key on review,
   // which clears the badge as soon as the queue is empty.
   const { data: pendingDeletionResponse } = useQuery<ApiResponse<{ count: number }>>({
     queryKey: ['/api/system-admin/deletion-requests/pending-count'],
     enabled: isSystemAdmin,
-    refetchInterval: 60_000,
     refetchOnWindowFocus: true,
     staleTime: 30_000,
   });
-  // Same polling cadence as the deletion-requests badge above (#313).
-  // System-admin only; the apple-pay jobs page also invalidates this key
-  // after cancel/retry actions so the badge clears as soon as the queue
-  // drains.
+  // System-admin only; Apple Pay mutations invalidate this key, and focus
+  // refresh catches work completed outside this browser session (#313).
   const { data: pendingApplePayResponse } = useQuery<ApiResponse<{ count: number }>>({
     queryKey: ['/api/payments-provider/apple-pay/jobs/pending-count'],
     enabled: isSystemAdmin,
-    refetchInterval: 60_000,
     refetchOnWindowFocus: true,
     staleTime: 30_000,
   });

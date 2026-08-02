@@ -31,17 +31,26 @@ import { storage } from '../storage';
 import { getPaymentProvider, ProviderNotConfiguredError } from './payment-provider-factory';
 import { syncBowlerLeagueAttributesToProvider } from './bowler-attributes';
 import { createLogger } from '../logger';
+import { notifyPaymentSyncRetryChanged } from './payment-sync-retry-scheduler';
+import { PAYMENT_SYNC_MAX_ATTEMPTS } from '@shared/schema';
 
 const log = createLogger('BowlerResync');
 
 async function flagBowlerForRetry(bowlerId: number): Promise<void> {
   try {
     const fresh = await storage.getBowler(bowlerId);
-    if (!fresh || fresh.paymentSyncPendingAt != null) return;
+    if (
+      !fresh
+      || fresh.paymentSyncNextRetryAt != null
+      || fresh.paymentSyncAttempts >= PAYMENT_SYNC_MAX_ATTEMPTS
+    ) return;
+    const nowIso = new Date().toISOString();
     await storage.updateBowler(bowlerId, {
       ...fresh,
-      paymentSyncPendingAt: new Date().toISOString(),
+      paymentSyncPendingAt: fresh.paymentSyncPendingAt ?? nowIso,
+      paymentSyncNextRetryAt: nowIso,
     });
+    notifyPaymentSyncRetryChanged();
   } catch (markErr) {
     log.error('External resync: failed to flag bowler for retry', {
       bowlerId,

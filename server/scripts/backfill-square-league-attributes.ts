@@ -50,7 +50,12 @@
  * source of truth for credentials.
  */
 import { db, cleanup as closeDbPool } from '../db';
-import { bowlers, locations, organizations } from '@shared/schema';
+import {
+  bowlers,
+  locations,
+  organizations,
+  PAYMENT_SYNC_MAX_ATTEMPTS,
+} from '@shared/schema';
 import { and, eq, isNotNull } from 'drizzle-orm';
 import { createLogger } from '../logger';
 import { getPaymentProvider, ProviderNotConfiguredError } from '../services/payment-provider-factory';
@@ -132,10 +137,16 @@ async function assertLocationBelongsToOrg(locationId: number, orgId: number): Pr
 async function flagBowlerForRetry(bowlerId: number): Promise<void> {
   try {
     const fresh = await storage.getBowler(bowlerId);
-    if (!fresh || fresh.paymentSyncPendingAt != null) return;
+    if (
+      !fresh
+      || fresh.paymentSyncNextRetryAt != null
+      || fresh.paymentSyncAttempts >= PAYMENT_SYNC_MAX_ATTEMPTS
+    ) return;
+    const nowIso = new Date().toISOString();
     await storage.updateBowler(bowlerId, {
       ...fresh,
-      paymentSyncPendingAt: new Date().toISOString(),
+      paymentSyncPendingAt: fresh.paymentSyncPendingAt ?? nowIso,
+      paymentSyncNextRetryAt: nowIso,
     });
   } catch (markErr) {
     log.error(`Failed to flag bowler ${bowlerId} for retry`, markErr);

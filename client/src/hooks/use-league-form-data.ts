@@ -172,6 +172,7 @@ export function useLeagueFormData({
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/leagues"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/leagues/square-missing-alerts/recent"] });
       toast({
         title: league ? "League updated" : "League created",
         description: league
@@ -197,6 +198,7 @@ export function useLeagueFormData({
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/leagues"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/leagues/square-missing-alerts/recent"] });
       toast({
         title: "League deleted",
         description: "The league has been removed from the system.",

@@ -20,7 +20,7 @@
  *   2. Sentinel-held lock ("SKIP LOCKED returns immediately"):
  *      The natural race above can pass even if `SKIP LOCKED` were
  *      silently replaced with a blocking `FOR UPDATE`, because the
- *      lease-stamp `UPDATE payment_sync_last_attempt_at = NOW()`
+ *      lease update that moves `payment_sync_next_retry_at` forward
  *      would still cause the loser's predicate-drift to report
  *      `skippedByLock = 1` after the lock-wait completes. To
  *      distinguish "skipped immediately" from "waited then drifted",
@@ -47,8 +47,8 @@
  *   fast. With perfectly-ordered Promise.all dispatch the contention
  *   window is reliable, but the loser's transaction can occasionally
  *   start AFTER the winner commits — at which point the row no
- *   longer matches the backoff-eligible predicate (the lease-stamp
- *   UPDATE bumped `payment_sync_last_attempt_at` to NOW) and the
+ *   longer matches the due predicate (the lease update moved
+ *   `payment_sync_next_retry_at` into the future) and the
  *   loser sees zero rows with no contention recorded. We retry up to
  *   `MAX_RACE_ATTEMPTS` looking for the contention case and fail
  *   loudly if we never observe it (which would indicate the sweep no
@@ -139,6 +139,7 @@ async function seedFlaggedBowler(orgId: number): Promise<SeededBowler> {
       paymentSyncPendingAt: new Date(Date.now() - 60 * 60_000).toISOString(),
       paymentSyncAttempts: 0,
       paymentSyncLastAttemptAt: null,
+      paymentSyncNextRetryAt: new Date(Date.now() - 60_000).toISOString(),
     })
     .returning({ id: bowlers.id, organizationId: bowlers.organizationId });
   seededBowlerIds.push(row.id);
@@ -147,8 +148,8 @@ async function seedFlaggedBowler(orgId: number): Promise<SeededBowler> {
 }
 
 async function resetForNextIteration(bowlerId: number): Promise<void> {
-  // Clear the lease-stamp that the previous (winning) sweep tick set,
-  // and reset attempts so the row is eligible again. The mocked
+  // Clear the lease state that the previous (winning) sweep tick set,
+  // and reset attempts/next-due time so the row is eligible again. The mocked
   // syncBowlerForUser doesn't touch any DB columns itself, so the
   // pending flag is still set from the original insert.
   await db
@@ -156,6 +157,7 @@ async function resetForNextIteration(bowlerId: number): Promise<void> {
     .set({
       paymentSyncAttempts: 0,
       paymentSyncLastAttemptAt: null,
+      paymentSyncNextRetryAt: new Date(Date.now() - 60_000).toISOString(),
     })
     .where(eq(bowlers.id, bowlerId));
 }
@@ -297,8 +299,8 @@ describe.skipIf(!RUN)('payment-sync retry sweep — multi-process race coverage'
       // were silently changed to `.for('update')` (blocking lock), the
       // natural race would still appear to pass because the loser's
       // post-wait predicate-drift would still report `skippedByLock=1`
-      // (its count saw the row, then sweep A's lease-stamp UPDATE
-      // bumped lastAttemptAt, so the locked SELECT after the wait
+      // (its count saw the row, then sweep A's lease update moved
+      // nextRetryAt forward, so the locked SELECT after the wait
       // returns 0 rows). Wallclock is the only signal that
       // distinguishes "skipped immediately" from "waited then drifted".
       const seeded = await seedFlaggedBowler(orgAId);

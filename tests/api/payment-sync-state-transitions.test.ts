@@ -163,6 +163,7 @@ describe('payment_sync_pending_at lifecycle (mocked provider)', () => {
     expect(afterFailure.paymentSyncPendingAt).not.toBeNull();
     expect(afterFailure.paymentSyncAttempts).toBe(1);
     expect(afterFailure.paymentSyncLastAttemptAt).not.toBeNull();
+    expect(afterFailure.paymentSyncNextRetryAt).not.toBeNull();
     const flaggedAt = afterFailure.paymentSyncPendingAt;
 
     // --- Act 2: the admin retry endpoint. The route resolves the linked
@@ -198,6 +199,7 @@ describe('payment_sync_pending_at lifecycle (mocked provider)', () => {
     expect(afterRetry.paymentSyncPendingAt).toBeNull();
     expect(afterRetry.paymentSyncAttempts).toBe(0);
     expect(afterRetry.paymentSyncLastAttemptAt).toBeNull();
+    expect(afterRetry.paymentSyncNextRetryAt).toBeNull();
     expect(afterRetry.paymentCustomerId).toBe('cust_mock_ok');
 
     // Sanity: the original failure timestamp existed before being cleared.
@@ -256,6 +258,7 @@ describe('payment_sync_pending_at lifecycle (mocked provider)', () => {
       .where(eq(bowlers.id, bowler.id));
     expect(afterFailure.paymentSyncPendingAt).not.toBeNull();
     expect(afterFailure.paymentSyncAttempts).toBe(2);
+    expect(afterFailure.paymentSyncNextRetryAt).not.toBeNull();
     expect(afterFailure.paymentCustomerId).toBeNull();
 
     // --- Act 2: provider call succeeds → flag cleared, attempts reset,
@@ -271,6 +274,7 @@ describe('payment_sync_pending_at lifecycle (mocked provider)', () => {
     expect(afterRetry.paymentSyncPendingAt).toBeNull();
     expect(afterRetry.paymentSyncAttempts).toBe(0);
     expect(afterRetry.paymentSyncLastAttemptAt).toBeNull();
+    expect(afterRetry.paymentSyncNextRetryAt).toBeNull();
     expect(afterRetry.paymentCustomerId).toBe('cust_unclaimed_ok');
     // The org may already have a baseline Square-configured location,
     // and `getFirstSquareConfiguredLocation` returns whichever one ranks

@@ -36,6 +36,12 @@
       "tag": "0005_remove_embeddable_registration",
       "createdAt": 1784743908431,
       "hash": "1612874cc86ac939949b9b92722eb548a9ed9ee43208c1644d96cffd64aa3ac0"
+    },
+    {
+      "idx": 6,
+      "tag": "0006_payment_sync_next_due",
+      "createdAt": 1785630087761,
+      "hash": "e3aa1bdce9fbdacbbb2eb49c4ffe2bb1bfd3ff9a51a9d031d962a8c0d488b4e7"
     }
   ]
 }

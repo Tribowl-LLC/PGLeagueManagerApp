@@ -1,8 +1,9 @@
 import { storage } from '../storage';
 import { getPaymentProvider, ProviderNotConfiguredError } from './payment-provider-factory';
 import { createLogger } from '../logger';
+import { notifyPaymentSyncRetryChanged } from './payment-sync-retry-scheduler';
 import { isDev } from '../config';
-import type { Bowler } from '@shared/schema';
+import { PAYMENT_SYNC_MAX_ATTEMPTS, type Bowler } from '@shared/schema';
 import type { PaymentProvider } from './payment-provider';
 import { syncBowlerLeagueAttributesToProvider } from './bowler-attributes';
 import { decideBowlerPhoneSync } from './bowler-phone-sync';
@@ -110,12 +111,19 @@ export async function runBowlerPostCreateSync(
               providerCustomer.id,
               current.id,
             );
-            if (!attrResult.ok && current.paymentSyncPendingAt == null) {
+            if (
+              !attrResult.ok
+              && current.paymentSyncNextRetryAt == null
+              && current.paymentSyncAttempts < PAYMENT_SYNC_MAX_ATTEMPTS
+            ) {
               try {
+                const nowIso = new Date().toISOString();
                 current = await storage.updateBowler(current.id, {
                   ...current,
-                  paymentSyncPendingAt: new Date().toISOString(),
+                  paymentSyncPendingAt: current.paymentSyncPendingAt ?? nowIso,
+                  paymentSyncNextRetryAt: nowIso,
                 });
+                notifyPaymentSyncRetryChanged();
               } catch (markErr) {
                 log.error(
                   'Bowler sync: failed to flag bowler for attribute-sync retry',
@@ -140,15 +148,21 @@ export async function runBowlerPostCreateSync(
     // `paymentSyncPendingAt` is set, and no other code path was
     // restamping it after the silent failure.
     //
-    // Leave `paymentSyncAttempts` at 0 so the first sweep tick
-    // retries promptly (the backoff math anchors on the most recent
-    // attempt; with attempts=0 the backoff is the base 60s).
-    if (!squareCustomerLinked && current.paymentSyncPendingAt == null) {
+    // Queue the first durable retry immediately. A failed retry computes its
+    // next due time from the shared bounded backoff policy.
+    if (
+      !squareCustomerLinked
+      && current.paymentSyncNextRetryAt == null
+      && current.paymentSyncAttempts < PAYMENT_SYNC_MAX_ATTEMPTS
+    ) {
       try {
+        const nowIso = new Date().toISOString();
         current = await storage.updateBowler(current.id, {
           ...current,
-          paymentSyncPendingAt: new Date().toISOString(),
+          paymentSyncPendingAt: current.paymentSyncPendingAt ?? nowIso,
+          paymentSyncNextRetryAt: nowIso,
         });
+        notifyPaymentSyncRetryChanged();
       } catch (markErr) {
         log.error(
           'Bowler sync: failed to flag bowler for post-create retry',

@@ -97,6 +97,7 @@ const UNIT_NO_DB = [
   'tests/unit/db-migration-bytes.test.ts',
   'tests/unit/db-schema-inventory-tools.test.ts',
   'tests/unit/neon-rehearsal-verifier.test.ts',
+  'tests/unit/passive-database-polling.test.ts',
   'tests/unit/rate-limit-environment.test.ts',
   'tests/unit/rate-limit-shared-store-coverage.test.ts',
   'tests/unit/subdomain-resolution-consistency.test.ts',
@@ -151,6 +152,7 @@ const PARALLEL_ISOLATED = [
   'tests/unit/payment-provider-error-mapping.test.ts',
   'tests/unit/payment-refunds-receipt-dependency.test.ts',
   'tests/unit/payment-scheduler.test.ts',
+  'tests/unit/payment-sync-retry-scheduler.test.ts',
   'tests/unit/payment-sync-retry.test.ts',
   'tests/unit/payments-by-org.test.ts', // Task #720 moved this to `parallel` but its vi.mock of server/storage poisons the shared module registry under isolate:false, breaking sibling api tests (#722). Reverted to parallel-isolated.
   'tests/unit/payments-receipt-endpoints.test.ts',

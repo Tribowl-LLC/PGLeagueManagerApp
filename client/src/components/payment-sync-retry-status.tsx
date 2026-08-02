@@ -20,7 +20,7 @@ import {
 type Props = {
   bowler: Pick<
     Bowler,
-    "id" | "paymentSyncPendingAt" | "paymentSyncAttempts" | "paymentSyncLastAttemptAt"
+    "id" | "paymentSyncPendingAt" | "paymentSyncAttempts" | "paymentSyncLastAttemptAt" | "paymentSyncNextRetryAt"
   >;
   // When true, render a compact badge-only view suitable for table cells.
   // When false (default), render the badge plus a Retry button — used on
@@ -102,6 +102,7 @@ export function PaymentSyncRetryStatus({
 
   const attempts = bowler.paymentSyncAttempts ?? 0;
   const givenUp = attempts >= PAYMENT_SYNC_MAX_ATTEMPTS;
+  const automaticRetryPaused = !givenUp && bowler.paymentSyncNextRetryAt == null;
   const lastAttemptLabel = formatRelativeTime(bowler.paymentSyncLastAttemptAt);
 
   // "Given up" is visually distinct (destructive variant + alert icon) so
@@ -129,6 +130,8 @@ export function PaymentSyncRetryStatus({
         <div className="text-destructive-foreground/90">
           Background sweep stopped. Use Retry to try again manually.
         </div>
+      ) : automaticRetryPaused ? (
+        <div>Automatic retry paused. Use Retry after fixing provider configuration.</div>
       ) : (
         <div>Background sweep will keep retrying with backoff.</div>
       )}

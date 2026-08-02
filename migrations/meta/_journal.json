@@ -43,6 +43,13 @@
       "when": 1784743908431,
       "tag": "0005_remove_embeddable_registration",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1785630087761,
+      "tag": "0006_payment_sync_next_due",
+      "breakpoints": true
     }
   ]
 }

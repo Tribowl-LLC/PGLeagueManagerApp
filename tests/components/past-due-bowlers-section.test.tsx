@@ -27,6 +27,7 @@ const bowler: BowlerWithAccount = {
   paymentSyncPendingAt: null,
   paymentSyncAttempts: 0,
   paymentSyncLastAttemptAt: null,
+  paymentSyncNextRetryAt: null,
   hasAccount: false,
 };
 

@@ -1,6 +1,10 @@
 import { Router } from 'express';
 import { storage } from '../storage';
-import { insertBowlerSchema, updateBowlerSchema } from "@shared/schema";
+import {
+  insertBowlerSchema,
+  PAYMENT_SYNC_MAX_ATTEMPTS,
+  updateBowlerSchema,
+} from "@shared/schema";
 import { z } from "zod";
 import {
   sendSuccess,
@@ -18,6 +22,7 @@ import { canUserPayForBowler } from '../utils/bowler-payment-authz.js';
 import { bowlerSearchLimiter } from '../middleware/rate-limit.js';
 import { runBowlerPostCreateSync } from '../services/bowler-sync.js';
 import { syncBowlerLeagueAttributesToProvider } from '../services/bowler-attributes';
+import { notifyPaymentSyncRetryChanged } from '../services/payment-sync-retry-scheduler';
 import { createLogger } from '../logger';
 import { isDev } from '../config';
 // reuse the same payer-name lookup the
@@ -657,12 +662,19 @@ router.patch("/:id", async (req, res) => {
                 providerCustomer.id,
                 id,
               );
-              if (!attrResult.ok && updated.paymentSyncPendingAt == null) {
+              if (
+                !attrResult.ok
+                && updated.paymentSyncNextRetryAt == null
+                && updated.paymentSyncAttempts < PAYMENT_SYNC_MAX_ATTEMPTS
+              ) {
                 try {
+                  const nowIso = new Date().toISOString();
                   updated = await storage.updateBowler(id, {
                     ...updated,
-                    paymentSyncPendingAt: new Date().toISOString(),
+                    paymentSyncPendingAt: updated.paymentSyncPendingAt ?? nowIso,
+                    paymentSyncNextRetryAt: nowIso,
                   });
+                  notifyPaymentSyncRetryChanged();
                 } catch (markErr) {
                   log.error('Bowler PATCH: failed to flag for attribute-sync retry', markErr);
                 }

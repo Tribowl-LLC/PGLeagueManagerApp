@@ -26,6 +26,7 @@ import { sql } from 'drizzle-orm';
 import { db } from '../db';
 import { bowlers } from '@shared/schema';
 import { createLogger } from '../logger';
+import { notifyPaymentSyncRetryChanged } from '../services/payment-sync-retry-scheduler';
 
 const log = createLogger('MissingPaymentCustomerBackfill');
 
@@ -44,6 +45,7 @@ export async function backfillMissingPaymentCustomers(): Promise<void> {
       // re-attempted by the sweep.
       paymentSyncAttempts: 0,
       paymentSyncLastAttemptAt: null,
+      paymentSyncNextRetryAt: sql`NOW()`,
     })
     .where(sql`${bowlers.paymentCustomerId} IS NULL
       AND ${bowlers.email} IS NOT NULL
@@ -53,4 +55,5 @@ export async function backfillMissingPaymentCustomers(): Promise<void> {
   log.info(
     `Flagged ${result.length} legacy bowler(s) (paymentCustomerId IS NULL, email IS NOT NULL) for the payment-sync retry sweep.`,
   );
+  if (result.length > 0) notifyPaymentSyncRetryChanged();
 }

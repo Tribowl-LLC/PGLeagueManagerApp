@@ -79,6 +79,7 @@ function makeBowler(
     paymentSyncPendingAt: overrides.paymentSyncPendingAt ?? null,
     paymentSyncAttempts: overrides.paymentSyncAttempts ?? 0,
     paymentSyncLastAttemptAt: overrides.paymentSyncLastAttemptAt ?? null,
+    paymentSyncNextRetryAt: overrides.paymentSyncNextRetryAt ?? null,
   } satisfies Bowler;
 }
 
