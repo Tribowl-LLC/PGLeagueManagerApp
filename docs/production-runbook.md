@@ -2,7 +2,7 @@
 
 Payment-operation schema releases additionally follow the exact old-instance
 drain, `ledger_paused` deploy, verification, activation, and rollback sequence
-in [Payment operation ledger](payment-operation-ledger.md#phase-2b-1-migration-first-deployment-and-verification).
+in [Payment operation ledger](payment-operation-ledger.md#phase-2b-2-deployment-activation-and-rollback).
 Production must set `SCHEDULED_PAYMENT_EXECUTION_MODE` explicitly; a missing
 value fails startup. Render Auto-Deploy must be Off before merging migration
 0008 or any later payment-operation schema release.

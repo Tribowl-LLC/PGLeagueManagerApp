@@ -30,6 +30,14 @@ const fakeTx = {
 };
 
 vi.mock('../../server/db', () => ({
+  pool: {
+    connect: async () => ({
+      query: async (text: string) => ({
+        rows: [text.includes('pg_try_advisory_lock') ? { acquired: true } : { unlocked: true }],
+      }),
+      release: vi.fn(),
+    }),
+  },
   db: {
     update: () => ({
       set: () => ({
@@ -40,6 +48,26 @@ vi.mock('../../server/db', () => ({
     }),
     select: () => ({
       from: () => ({
+        innerJoin: () => ({
+          where: () => ({
+            limit: () => Promise.resolve([{
+              schedule: {
+                id: 333, bowlerId: 42, leagueId: 11, amount: 2000,
+                frequency: 'weekly', paymentCardId: 'card_token_abcdef',
+                nextPaymentDate: '2026-04-22T19:00:00.000Z', active: true,
+                additionalBowlerIds: null, lastPaymentDate: null,
+              },
+              league: {
+                id: 11, organizationId: 1, weeklyFee: 2000,
+                lineageFee: 0, prizeFundFee: 0,
+                seasonStart: '2026-01-01', seasonEnd: '2026-04-01',
+                totalBowlingWeeks: 12, cancelledDates: [], skipDates: [],
+                paymentMode: 'recurring', timezone: 'America/Chicago',
+                weekDay: 3, competitionStartTime: '19:00',
+              },
+            }]),
+          }),
+        }),
         where: () => Promise.resolve([{
           id: 11, organizationId: 1, weeklyFee: 2000,
           lineageFee: 0, prizeFundFee: 0,
@@ -58,6 +86,12 @@ const mockExecuteScheduled = vi.fn();
 vi.mock('../../server/services/payment-execution', () => ({
   executeScheduledPayment: (...a: unknown[]) => mockExecuteScheduled(...a),
   computePaymentSplit: () => ({ lineageAmount: 0, prizeFundAmount: 0 }),
+  buildScheduledChargePlan: (schedule: { amount: number }) => ({
+    amountMinor: schedule.amount,
+    allocationAmountMinor: schedule.amount,
+    isDoublePay: false,
+    lineItems: [],
+  }),
 }));
 
 vi.mock('../../server/services/payment-checks', () => ({
@@ -69,6 +103,10 @@ vi.mock('../../server/storage', () => ({
     updatePaymentScheduleFields: vi.fn(),
     deactivatePaymentSchedule: vi.fn(),
   },
+}));
+
+vi.mock('../../server/storage/payment-operations', () => ({
+  getLegacyScheduledPaymentCycleBlock: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('../../server/utils/league-datetime.js', () => ({

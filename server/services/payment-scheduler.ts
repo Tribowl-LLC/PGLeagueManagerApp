@@ -7,6 +7,10 @@ import { storage } from "../storage";
 import { processScheduledPaymentJob } from "./payment-lifecycle";
 import { getPaymentProvider, ProviderNotConfiguredError } from "./payment-provider-factory";
 import { lockedSweep } from "./_internal/locked-sweep";
+import {
+  isScheduledPaymentLedgerExecute,
+  notifyScheduledPaymentMutation,
+} from "./scheduled-payment-runtime";
 
 // node-schedule is the primary execution path. The recovery backstop is
 // armed for the next known payment instead of polling the database every
@@ -102,6 +106,11 @@ export class PaymentScheduler {
   }
 
   async initialize(organizationId?: number | null) {
+    if (isScheduledPaymentLedgerExecute()) {
+      this.cancelAllJobs();
+      await notifyScheduledPaymentMutation();
+      return;
+    }
     try {
       this.cancelAllJobs();
       logger.info('[PaymentScheduler] Initializing payment scheduler...', {
@@ -326,6 +335,7 @@ export class PaymentScheduler {
   }
 
   public startSweepPoll(immediateFirstTick = true) {
+    if (isScheduledPaymentLedgerExecute()) return;
     this.stopSweepPoll();
     this.recoveryBackstopActive = true;
     logger.info('[PaymentScheduler] Starting event-driven recovery backstop');
@@ -564,15 +574,18 @@ export class PaymentScheduler {
 
   async addSchedule(scheduleRecord: PaymentSchedule, organizationId?: number | null) {
     return this.withScheduleLock(scheduleRecord.id, async () => {
-      const isValid = await this.validateCardForProvider(scheduleRecord.paymentCardId, scheduleRecord.leagueId);
-      if (!isValid) {
-        return;
-      }
-      
       if (organizationId !== undefined) {
         const allowed = await this.checkLeagueOrgAccess(scheduleRecord.leagueId, organizationId, 'addSchedule');
         if (!allowed) return;
       }
+
+      if (isScheduledPaymentLedgerExecute()) {
+        await notifyScheduledPaymentMutation();
+        return;
+      }
+
+      const isValid = await this.validateCardForProvider(scheduleRecord.paymentCardId, scheduleRecord.leagueId);
+      if (!isValid) return;
 
       logger.info(`[PaymentScheduler] Adding new payment schedule`, {
         scheduleId: scheduleRecord.id,
@@ -609,13 +622,28 @@ export class PaymentScheduler {
         const allowed = await this.checkLeagueOrgAccess(scheduleRow[0].leagueId, organizationId, 'removeSchedule');
         if (!allowed) return;
       }
-      
+
+      if (isScheduledPaymentLedgerExecute()) {
+        await notifyScheduledPaymentMutation();
+        return;
+      }
+
       this.cancelJob(`payment-${scheduleId}`);
     });
   }
 
   async updateSchedule(schedule: PaymentSchedule, organizationId?: number | null) {
     return this.withScheduleLock(schedule.id, async () => {
+      if (organizationId !== undefined) {
+        const allowed = await this.checkLeagueOrgAccess(schedule.leagueId, organizationId, 'updateSchedule');
+        if (!allowed) return;
+      }
+
+      if (isScheduledPaymentLedgerExecute()) {
+        await notifyScheduledPaymentMutation();
+        return;
+      }
+
       const isValid = await this.validateCardForProvider(schedule.paymentCardId, schedule.leagueId);
       if (!isValid) {
         logger.error(`[PaymentScheduler] Cannot update schedule with invalid card ID`, {
@@ -624,11 +652,6 @@ export class PaymentScheduler {
           validationTime: new Date().toISOString()
         });
         return;
-      }
-      
-      if (organizationId !== undefined) {
-        const allowed = await this.checkLeagueOrgAccess(schedule.leagueId, organizationId, 'updateSchedule');
-        if (!allowed) return;
       }
 
       logger.info(`[PaymentScheduler] Updating payment schedule ${schedule.id}`, {

@@ -8,7 +8,12 @@ import { logger } from "../logger";
 import { getNextLeagueDateTime } from "../utils/league-datetime.js";
 import { storage } from "../storage";
 import { isDateSkippedOrCancelled } from "@shared/schedule-utils";
-import { executeScheduledPayment, computePaymentSplit, type ChargeResult } from "./payment-execution";
+import {
+  buildScheduledChargePlan,
+  executeScheduledPayment,
+  computePaymentSplit,
+  type ChargeResult,
+} from "./payment-execution";
 import crypto from "crypto";
 import { checkPaidInFull } from "./payment-checks";
 import { getUserByBowlerId } from "../storage/users";
@@ -25,6 +30,12 @@ async function safeResolvePaidByUserId(bowlerId: number): Promise<number | null>
 import { arePartners } from "../storage/bowler-payment-links";
 import { bowlers } from "@shared/schema";
 import { getPaymentProvider, ProviderNotConfiguredError } from "./payment-provider-factory";
+import { getLegacyScheduledPaymentCycleBlock } from "../storage/payment-operations.js";
+import { withLegacyScheduledCycleLock } from "./scheduled-payment-cycle-lock.js";
+import {
+  buildPaymentOperationIdentity,
+  buildSquarePaymentRequestIdentity,
+} from "./payment-operation-idempotency.js";
 
 interface SchedulerCallbacks {
   schedulePayment: (record: PaymentSchedule) => void;
@@ -34,23 +45,58 @@ interface SchedulerCallbacks {
 export async function processScheduledPaymentJob(
   scheduleRecord: PaymentSchedule,
   jobId: string,
+  callbacks: SchedulerCallbacks,
+): Promise<void> {
+  const locked = await withLegacyScheduledCycleLock(
+    scheduleRecord.id,
+    scheduleRecord.nextPaymentDate,
+    () => processLegacyScheduledPaymentJob(scheduleRecord, jobId, callbacks),
+  );
+  if (!locked.acquired) {
+    logger.warn(`[PaymentScheduler] Skipping ${jobId} — exact cycle is owned by another worker`);
+  }
+}
+
+async function processLegacyScheduledPaymentJob(
+  scheduledInput: PaymentSchedule,
+  jobId: string,
   callbacks: SchedulerCallbacks
 ): Promise<void> {
   try {
-    const claimed = await db
-      .update(paymentSchedules)
-      .set({ lastPaymentDate: new Date().toISOString() })
-      .where(
-        and(
-          eq(paymentSchedules.id, scheduleRecord.id),
-          eq(paymentSchedules.nextPaymentDate, scheduleRecord.nextPaymentDate),
-          eq(paymentSchedules.active, true)
-        )
-      )
-      .returning({ id: paymentSchedules.id });
-
-    if (claimed.length === 0) {
+    const [current] = await db
+      .select({ schedule: paymentSchedules, league: leagues })
+      .from(paymentSchedules)
+      .innerJoin(leagues, eq(paymentSchedules.leagueId, leagues.id))
+      .where(and(
+        eq(paymentSchedules.id, scheduledInput.id),
+        eq(paymentSchedules.nextPaymentDate, scheduledInput.nextPaymentDate),
+        eq(paymentSchedules.active, true),
+      ))
+      .limit(1);
+    if (current === undefined) {
       logger.warn(`[PaymentScheduler] Skipping ${jobId} — already claimed by another process or deactivated`);
+      return;
+    }
+    const scheduleRecord = current.schedule;
+    const league = current.league;
+    const organizationId = league.organizationId;
+    if (organizationId === null) {
+      logger.warn(`[PaymentScheduler] Skipping ${jobId} because its schedule has no tenant owner`);
+      return;
+    }
+    const ledgerBlock = await getLegacyScheduledPaymentCycleBlock({
+      organizationId,
+      paymentScheduleId: scheduleRecord.id,
+      billingCycleAt: scheduleRecord.nextPaymentDate,
+    });
+    if (ledgerBlock) {
+      logger.warn(`[PaymentScheduler] Legacy charge blocked by durable ledger ownership`, {
+        organizationId,
+        scheduleId: scheduleRecord.id,
+        operationId: ledgerBlock.operationId,
+        operationStatus: ledgerBlock.status,
+        blockScope: ledgerBlock.scope,
+      });
       return;
     }
 
@@ -62,7 +108,6 @@ export async function processScheduledPaymentJob(
       scheduledTime: scheduleRecord.nextPaymentDate
     });
 
-    const league = await db.select().from(leagues).where(eq(leagues.id, scheduleRecord.leagueId)).then(r => r[0]);
     const leagueTz = league?.timezone ?? DEFAULT_TIMEZONE;
     const nextPaymentDateObj = new Date(scheduleRecord.nextPaymentDate);
     const firingDateLeagueLocal = league
@@ -130,7 +175,28 @@ export async function processScheduledPaymentJob(
       }
     }
 
-    const paymentResult = await executeScheduledPayment(scheduleRecord, league, jobId, validPartnerIds.length);
+    const plan = buildScheduledChargePlan(scheduleRecord, league, validPartnerIds.length);
+    const operationIdentity = buildPaymentOperationIdentity({
+      organizationId,
+      operationType: "scheduled_charge",
+      targetKey: `payment-schedule:${scheduleRecord.id}`,
+      paymentScheduleId: scheduleRecord.id,
+      billingCycleAt: scheduleRecord.nextPaymentDate,
+      amountMinor: plan.amountMinor,
+      currency: "USD",
+      providerName: "square",
+    });
+    const requestIdentity = buildSquarePaymentRequestIdentity({
+      providerIdempotencyKey: operationIdentity.providerIdempotencyKey,
+      requestKind: plan.lineItems.length > 0 ? "order" : "direct",
+    });
+    const paymentResult = await executeScheduledPayment(
+      scheduleRecord,
+      league,
+      jobId,
+      validPartnerIds.length,
+      requestIdentity,
+    );
 
     if (paymentResult.status === 'success') {
       await handleSuccessfulPayment(scheduleRecord, league, paymentResult, jobId, callbacks, validPartnerIds);
@@ -143,17 +209,17 @@ export async function processScheduledPaymentJob(
         name: error.name, message: error.message, stack: error.stack
       } : error,
       schedule: {
-        id: scheduleRecord.id,
-        bowlerId: scheduleRecord.bowlerId,
-        amount: scheduleRecord.amount,
-        cardToken: `${scheduleRecord.paymentCardId?.substring(0, 10)}...`
+        id: scheduledInput.id,
+        bowlerId: scheduledInput.bowlerId,
+        amount: scheduledInput.amount,
+        cardToken: `${scheduledInput.paymentCardId?.substring(0, 10)}...`
       },
       executionTime: new Date().toISOString()
     });
   }
 }
 
-function computeNextPaymentDate(
+export function computeNextPaymentDate(
   scheduleRecord: PaymentSchedule,
   league: typeof leagues.$inferSelect
 ): Date {

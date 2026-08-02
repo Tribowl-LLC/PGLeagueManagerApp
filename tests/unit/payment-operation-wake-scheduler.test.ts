@@ -3,6 +3,7 @@ import { PaymentOperationWakeScheduler } from '../../server/services/payment-ope
 import type { PaymentOperationWake } from '../../server/storage/payment-operations';
 
 const wake: PaymentOperationWake = {
+  kind: 'operation',
   operationId: '00000000-0000-4000-8000-000000000001',
   organizationId: 1,
   status: 'pending',
@@ -10,7 +11,7 @@ const wake: PaymentOperationWake = {
   dueAt: '2032-01-01T00:00:10.000Z',
 };
 
-describe('dormant payment-operation one-shot wake scheduler', () => {
+describe('scheduled ledger one-shot wake scheduler', () => {
   it.each(['legacy', 'ledger_paused'] as const)(
     '%s performs no queue query and creates no timer',
     async (mode) => {
@@ -56,6 +57,47 @@ describe('dormant payment-operation one-shot wake scheduler', () => {
     scheduler.stop();
   });
 
+  it('arms future schedule preparation even when there are no operations', async () => {
+    const scheduleWake: PaymentOperationWake = {
+      kind: 'schedule',
+      organizationId: 8,
+      paymentScheduleId: 44,
+      dueAt: '2032-01-01T00:00:30.000Z',
+    };
+    const setTimeoutFn = vi.fn((callback: () => void, delayMs: number) =>
+      setTimeout(callback, delayMs));
+    const scheduler = new PaymentOperationWakeScheduler({
+      loadNextWake: vi.fn().mockResolvedValue(scheduleWake),
+      handleWake: vi.fn(),
+      now: () => new Date('2032-01-01T00:00:00.000Z'),
+      setTimeoutFn,
+      clearTimeoutFn: vi.fn(clearTimeout),
+    });
+
+    await scheduler.start('ledger_execute');
+    expect(setTimeoutFn).toHaveBeenCalledWith(expect.any(Function), 30_000);
+    scheduler.stop();
+  });
+
+  it('clamps a long future wake to a safe JavaScript timer delay', async () => {
+    const setTimeoutFn = vi.fn((callback: () => void, delayMs: number) =>
+      setTimeout(callback, delayMs));
+    const scheduler = new PaymentOperationWakeScheduler({
+      loadNextWake: vi.fn().mockResolvedValue({
+        ...wake,
+        dueAt: '2033-01-01T00:00:00.000Z',
+      }),
+      handleWake: vi.fn(),
+      now: () => new Date('2032-01-01T00:00:00.000Z'),
+      setTimeoutFn,
+      clearTimeoutFn: vi.fn(clearTimeout),
+    });
+
+    await scheduler.start('ledger_execute');
+    expect(setTimeoutFn).toHaveBeenCalledWith(expect.any(Function), 2_147_000_000);
+    scheduler.stop();
+  });
+
   it('cannot be rearmed after stop without a new explicit execute start', async () => {
     const loadNextWake = vi.fn().mockResolvedValue(wake);
     const setTimeoutFn = vi.fn((callback: () => void, delayMs: number) =>
@@ -77,7 +119,7 @@ describe('dormant payment-operation one-shot wake scheduler', () => {
   });
 
   it('executes once, then re-queries only after the handler commits progress', async () => {
-    const progressed: PaymentOperationWake = {
+    const progressed: Extract<PaymentOperationWake, { kind: 'operation' }> = {
       ...wake,
       status: 'retry_scheduled',
       attemptCount: 1,
@@ -133,7 +175,32 @@ describe('dormant payment-operation one-shot wake scheduler', () => {
     expect(setTimeoutFn).toHaveBeenCalledTimes(1);
     expect(log.error).toHaveBeenCalledWith(
       expect.stringContaining('no durable progress'),
-      expect.objectContaining({ operationId: overdue.operationId }),
+      expect.objectContaining({ operationId: wake.operationId }),
     );
+  });
+
+  it('uses one bounded retry after a due-work handler failure', async () => {
+    const overdue = { ...wake, dueAt: '2031-12-31T23:59:59.000Z' };
+    const loadNextWake = vi.fn().mockResolvedValue(overdue);
+    const callbacks: Array<() => void> = [];
+    const delays: number[] = [];
+    const setTimeoutFn = vi.fn((callback: () => void, delayMs: number) => {
+      callbacks.push(callback);
+      delays.push(delayMs);
+      return setTimeout(() => undefined, 60_000);
+    });
+    const scheduler = new PaymentOperationWakeScheduler({
+      loadNextWake,
+      handleWake: vi.fn().mockRejectedValue(new Error('transient preparation failure')),
+      now: () => new Date('2032-01-01T00:00:00.000Z'),
+      setTimeoutFn,
+      clearTimeoutFn: vi.fn(clearTimeout),
+    });
+
+    await scheduler.start('ledger_execute');
+    callbacks[0]?.();
+    await vi.waitFor(() => expect(setTimeoutFn).toHaveBeenCalledTimes(2));
+    expect(delays).toEqual([0, 60_000]);
+    scheduler.stop();
   });
 });

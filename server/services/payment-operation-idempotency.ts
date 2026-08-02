@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { PaymentOperationType } from "@shared/schema";
+import type { PaymentRequestIdentity } from "./payment-provider";
 
 export const PAYMENT_OPERATION_REQUEST_VERSION = 1 as const;
 export const PAYMENT_OPERATION_FINGERPRINT_PREFIX = "lvpayreq:v1:" as const;
@@ -190,4 +191,19 @@ export function deriveSquareOperationIdempotencyKey(
     throw new Error(`Square ${domain} idempotency key exceeds the provider limit`);
   }
   return key;
+}
+
+/** Single versioned Square identity constructor used by legacy and ledger. */
+export function buildSquarePaymentRequestIdentity(input: {
+  providerIdempotencyKey: string;
+  requestKind: "direct" | "order";
+  providerLocationId?: string | null;
+}): PaymentRequestIdentity {
+  return {
+    paymentKey: deriveSquareOperationIdempotencyKey(input.providerIdempotencyKey, "payment"),
+    orderKey: input.requestKind === "order"
+      ? deriveSquareOperationIdempotencyKey(input.providerIdempotencyKey, "order")
+      : undefined,
+    providerLocationId: input.providerLocationId ?? undefined,
+  };
 }

@@ -28,6 +28,7 @@ import {
   recordPaymentOperationFailedTerminal,
   recordPaymentOperationProviderUnknown,
   recordExpiredPaymentOperationAttemptExhausted,
+  reconcilePaymentOperationSuccess,
   schedulePaymentOperationRetry,
 } from "../../server/storage/payment-operations";
 import {
@@ -699,11 +700,13 @@ describe("payment operation ledger PostgreSQL invariants", () => {
       cursor = recoveryAt;
     }
 
-    expect(finalStatus?.status).toBe("failed_terminal");
+    expect(finalStatus?.status).toBe("reconciliation_required");
     expect(finalStatus?.attemptCount).toBe(8);
-    expect(finalStatus?.errorCode).toBe("ATTEMPTS_EXHAUSTED");
+    expect(finalStatus?.errorCode).toBe("PROVIDER_OUTCOME_UNCERTAIN");
     expect(finalStatus?.nextAttemptAt).toBeNull();
     expect(finalStatus?.completedAt).not.toBeNull();
+    expect(await db.select().from(payments)
+      .where(eq(payments.paymentOperationId, operation.id))).toHaveLength(0);
     expect(await acquirePaymentOperationLease({
       organizationId: orgAId,
       operationId: operation.id,
@@ -752,8 +755,8 @@ describe("payment operation ledger PostgreSQL invariants", () => {
       operationId: operation.id,
       now: afterExpiry,
     });
-    expect(terminal?.status).toBe("failed_terminal");
-    expect(terminal?.errorCode).toBe("ATTEMPTS_EXHAUSTED");
+    expect(terminal?.status).toBe("reconciliation_required");
+    expect(terminal?.errorCode).toBe("PROVIDER_OUTCOME_UNCERTAIN");
 
     await expect(finalizePaymentOperationSuccess({
       organizationId: orgAId,
@@ -762,6 +765,23 @@ describe("payment operation ledger PostgreSQL invariants", () => {
       providerObjectId: "square-payment-after-expired-exhaustion",
       now: new Date(afterExpiry.getTime() + 1),
     })).rejects.toBeInstanceOf(PaymentOperationInvalidTransitionError);
+
+    await expect(reconcilePaymentOperationSuccess({
+      organizationId: orgAId,
+      operationId: operation.id,
+      leaseToken: randomUUID(),
+      providerObjectId: "square-payment-after-expired-exhaustion",
+      now: new Date(afterExpiry.getTime() + 1),
+    })).rejects.toBeInstanceOf(PaymentOperationInvalidTransitionError);
+
+    const reconciled = await reconcilePaymentOperationSuccess({
+      organizationId: orgAId,
+      operationId: operation.id,
+      leaseToken: eighthLease.leaseToken,
+      providerObjectId: "square-payment-after-expired-exhaustion",
+      now: new Date(afterExpiry.getTime() + 2),
+    });
+    expect(reconciled.status).toBe("succeeded");
   });
 
   it("exposes the dormant legacy guard without connecting it to production", async () => {

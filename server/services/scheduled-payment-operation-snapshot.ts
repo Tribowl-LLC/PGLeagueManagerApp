@@ -7,7 +7,7 @@ import {
 import { decrypt, encrypt } from "../utils/crypto";
 import {
   canonicalizePaymentOperationInput,
-  deriveSquareOperationIdempotencyKey,
+  buildSquarePaymentRequestIdentity,
 } from "./payment-operation-idempotency";
 
 export const SCHEDULED_PAYMENT_SNAPSHOT_FINGERPRINT_PREFIX = "lvpayexec:v1:" as const;
@@ -107,8 +107,8 @@ export interface StoredScheduledPaymentSnapshot {
 }
 
 export class ScheduledPaymentSnapshotValidationError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = "ScheduledPaymentSnapshotValidationError";
   }
 }
@@ -116,7 +116,10 @@ export class ScheduledPaymentSnapshotValidationError extends Error {
 function normalize(snapshot: ScheduledPaymentSemanticSnapshot): ScheduledPaymentSemanticSnapshot {
   const parsed = semanticSnapshotSchema.safeParse(snapshot);
   if (!parsed.success) {
-    throw new ScheduledPaymentSnapshotValidationError("scheduled payment execution snapshot is invalid");
+    throw new ScheduledPaymentSnapshotValidationError(
+      "scheduled payment execution snapshot is invalid",
+      { cause: parsed.error },
+    );
   }
   return {
     ...parsed.data,
@@ -166,6 +169,16 @@ function decryptOptional(ciphertext: string | null, label: string): string | nul
   return ciphertext === null ? null : decryptRequired(ciphertext, label);
 }
 
+function storedTimestampToIso(value: string | null): string | null {
+  if (value === null) return null;
+  const includesZone = /(?:Z|[+-]\d{2}(?::?\d{2})?)$/i.test(value);
+  const parsed = new Date(includesZone ? value : `${value.replace(" ", "T")}Z`);
+  if (!Number.isFinite(parsed.getTime())) {
+    throw new ScheduledPaymentSnapshotValidationError("stored snapshot timestamp is invalid");
+  }
+  return parsed.toISOString();
+}
+
 export function reconstructScheduledPaymentSnapshot(input: {
   organizationId: number;
   paymentScheduleId: number;
@@ -181,6 +194,11 @@ export function reconstructScheduledPaymentSnapshot(input: {
   if (input.stored.snapshotVersion !== SCHEDULED_PAYMENT_SNAPSHOT_VERSION) {
     throw new ScheduledPaymentSnapshotValidationError("scheduled payment snapshot version is unsupported");
   }
+  const squareIdentity = buildSquarePaymentRequestIdentity({
+    providerIdempotencyKey: input.providerIdempotencyKey,
+    requestKind: input.stored.requestKind,
+    providerLocationId: input.stored.providerLocationId,
+  });
   const snapshot = normalize({
     snapshotVersion: SCHEDULED_PAYMENT_SNAPSHOT_VERSION,
     organizationId: input.organizationId,
@@ -193,12 +211,9 @@ export function reconstructScheduledPaymentSnapshot(input: {
     locationId: input.stored.locationId,
     providerLocationId: input.stored.providerLocationId,
     requestKind: input.stored.requestKind,
-    squarePaymentIdempotencyKey: deriveSquareOperationIdempotencyKey(
-      input.providerIdempotencyKey,
-      "payment",
-    ),
+    squarePaymentIdempotencyKey: squareIdentity.paymentKey,
     squareOrderIdempotencyKey: input.stored.requestKind === "order"
-      ? deriveSquareOperationIdempotencyKey(input.providerIdempotencyKey, "order")
+      ? squareIdentity.orderKey ?? null
       : null,
     autocomplete: true,
     storeCard: false,
@@ -208,8 +223,8 @@ export function reconstructScheduledPaymentSnapshot(input: {
     isDoublePay: input.stored.isDoublePay,
     deactivateScheduleOnPreparation: input.stored.deactivateScheduleOnPreparation,
     paidInFullThresholdAmountMinor: input.stored.paidInFullThresholdAmountMinor,
-    seasonStartAt: input.stored.seasonStartAt,
-    seasonEndAt: input.stored.seasonEndAt,
+    seasonStartAt: storedTimestampToIso(input.stored.seasonStartAt),
+    seasonEndAt: storedTimestampToIso(input.stored.seasonEndAt),
     allocations: input.allocations,
     lineItems: input.lineItems,
   });

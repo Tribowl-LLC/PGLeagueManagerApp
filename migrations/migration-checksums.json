@@ -54,6 +54,12 @@
       "tag": "0008_scheduled_payment_operation_execution",
       "createdAt": 1785649485058,
       "hash": "fbc70da0fa40b9f8fa66f9c26aa7c9c437628b364524957c01810f8283387a45"
+    },
+    {
+      "idx": 9,
+      "tag": "0009_payment_operation_reconciliation_required",
+      "createdAt": 1785680310111,
+      "hash": "74bf179555ff73656760c205375bc15ba1075691e49c6cfd6169de42f4372157"
     }
   ]
 }
