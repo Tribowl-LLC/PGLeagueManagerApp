@@ -21,6 +21,8 @@ const mocks = vi.hoisted(() => {
     },
     cards: {
       create: vi.fn(),
+      list: vi.fn(),
+      disable: vi.fn(),
     },
     // Stable logger so pagination tests can assert that the safety
     // cap fired (`log.warn(...)`) on the same instance the
@@ -146,6 +148,45 @@ describe('saveCardOnFile idempotency key (task #671)', () => {
     await localProvider.saveCardOnFile(sourceId, customerId);
     const secondBody = mocks.cards.create.mock.calls[1]?.[0] as { idempotencyKey: string };
     expect(secondBody.idempotencyKey).toBe(firstBody.idempotencyKey);
+  });
+});
+
+describe('card-list query compatibility', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.getLocationSquareConfig.mockResolvedValue({
+      accessToken: 'EAAAEv-test-token',
+      appId: 'sq0idp-test',
+      locationId: 'LOC123',
+    });
+    mocks.cards.list.mockResolvedValue({ data: [] });
+    mocks.cards.disable.mockResolvedValue({});
+  });
+
+  it('sends an explicit sort order when listing cards on file', async () => {
+    const provider = new SquarePaymentProvider(1);
+
+    await provider.listCardsOnFile('customer-1');
+
+    expect(mocks.cards.list).toHaveBeenCalledWith({
+      customerId: 'customer-1',
+      sortOrder: 'ASC',
+    });
+  });
+
+  it('sends an explicit sort order for the disable-card ownership check', async () => {
+    mocks.cards.list.mockResolvedValue({
+      data: [{ id: 'card-1', enabled: true }],
+    });
+    const provider = new SquarePaymentProvider(1);
+
+    await provider.disableCard('card-1', 'customer-1');
+
+    expect(mocks.cards.list).toHaveBeenCalledWith({
+      customerId: 'customer-1',
+      sortOrder: 'ASC',
+    });
+    expect(mocks.cards.disable).toHaveBeenCalledWith({ cardId: 'card-1' });
   });
 });
 
