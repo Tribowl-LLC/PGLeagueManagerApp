@@ -27,6 +27,7 @@ function makeFullyPopulatedBowler(): Bowler {
     paymentSyncPendingAt: '2024-01-01T00:00:00.000Z',
     paymentSyncAttempts: 2,
     paymentSyncLastAttemptAt: '2024-01-01T00:00:00.000Z',
+    paymentSyncNextRetryAt: '2024-01-01T00:02:00.000Z',
   });
   // `id` is omitted from the insert schema, so we re-add it to satisfy
   // the SELECT type. `Object.assign` (instead of an object literal) keeps
@@ -60,6 +61,7 @@ describe('sanitizeBowler', () => {
     expect(sanitized.paymentSyncPendingAt).toBe('2024-01-01T00:00:00.000Z');
     expect(sanitized.paymentSyncAttempts).toBe(2);
     expect(sanitized.paymentSyncLastAttemptAt).toBe('2024-01-01T00:00:00.000Z');
+    expect(sanitized.paymentSyncNextRetryAt).toBe('2024-01-01T00:02:00.000Z');
   });
 
   it('never returns any field whose name looks sensitive', () => {

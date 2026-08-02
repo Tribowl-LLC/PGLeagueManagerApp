@@ -458,7 +458,7 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
       paymentScheduler.startSweepPoll();
       log.info('Schedulers initialized with event-driven payment recovery');
 
-      startPaymentSyncRetrySweep();
+      await startPaymentSyncRetrySweep();
 
       verifySquareSdkVersion().catch((err) => {
         log.error('Square SDK version probe threw at boot:', err);

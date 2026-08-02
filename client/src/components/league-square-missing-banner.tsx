@@ -85,7 +85,7 @@ export function LeagueSquareMissingBanner({ leagues, onEditLeague }: LeagueSquar
     queryKey: ['/api/leagues/square-missing-alerts/recent'],
     enabled: isAdmin,
     staleTime: 60_000,
-    refetchInterval: 5 * 60_000,
+    refetchOnWindowFocus: true,
     retry: false,
   });
 

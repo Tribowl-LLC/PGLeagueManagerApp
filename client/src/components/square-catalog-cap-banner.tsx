@@ -77,7 +77,7 @@ export function SquareCatalogCapBanner() {
     queryKey: ['/api/payments-provider/catalog/cap-alerts/recent'],
     enabled: isSystemAdmin,
     staleTime: 60_000,
-    refetchInterval: 5 * 60_000,
+    refetchOnWindowFocus: true,
     retry: false,
   });
 

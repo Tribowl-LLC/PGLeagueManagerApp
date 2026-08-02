@@ -256,6 +256,7 @@ const SAFE_BOWLER_FIELDS = [
   'paymentSyncPendingAt',
   'paymentSyncAttempts',
   'paymentSyncLastAttemptAt',
+  'paymentSyncNextRetryAt',
 ] as const;
 
 export type SanitizedBowler = Pick<Bowler, typeof SAFE_BOWLER_FIELDS[number]>;

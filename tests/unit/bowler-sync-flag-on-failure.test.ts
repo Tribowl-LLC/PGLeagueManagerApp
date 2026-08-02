@@ -77,6 +77,7 @@ function fakeBowler(overrides: Partial<BowlerArg> = {}): BowlerArg {
     paymentSyncPendingAt: null,
     paymentSyncAttempts: 0,
     paymentSyncLastAttemptAt: null,
+    paymentSyncNextRetryAt: null,
     ...overrides,
   });
   // `id` is omitted from the insert schema; re-add it for the SELECT
@@ -181,12 +182,15 @@ describe('runBowlerPostCreateSync — flag-on-failure (task #682)', () => {
     expect(linkedPatch).toBeDefined();
   });
 
-  it('does NOT re-stamp a bowler that already has paymentSyncPendingAt', async () => {
+  it('does NOT re-arm a bowler that already has a scheduled retry', async () => {
     mockGetFirstSquareConfiguredLocation.mockResolvedValue(null);
 
     const existing = '2024-01-01T00:00:00.000Z';
     await runBowlerPostCreateSync(
-      fakeBowler({ paymentSyncPendingAt: existing }),
+      fakeBowler({
+        paymentSyncPendingAt: existing,
+        paymentSyncNextRetryAt: '2024-01-01T00:01:00.000Z',
+      }),
       5,
     );
 

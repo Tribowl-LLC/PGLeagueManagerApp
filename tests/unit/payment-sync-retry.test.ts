@@ -19,6 +19,7 @@ import { expectErrorLog } from '../helpers/expected-error-logs';
 const mockSelect = vi.fn();
 const mockGetUserByBowlerId = vi.fn();
 const mockUpdateClaim = vi.fn();
+const mockUpdatePark = vi.fn();
 
 // The sweep now wraps candidate selection in `db.transaction(...)`
 // and uses `.for('update', { skipLocked: true })` to claim rows so
@@ -66,6 +67,14 @@ vi.mock('../../server/db', () => ({
     select: (projection?: Record<string, unknown>) =>
       buildSelectChain(projection !== undefined),
     transaction: async <T,>(fn: (txArg: typeof tx) => Promise<T>) => fn(tx),
+    update: (_table: unknown) => ({
+      set: (values: Record<string, unknown>) => ({
+        where: (predicate: unknown) => {
+          mockUpdatePark({ values, predicate });
+          return Promise.resolve();
+        },
+      }),
+    }),
   },
 }));
 
@@ -90,11 +99,8 @@ vi.mock('../../server/services/payment-customer-sync', async () => {
 });
 
 import {
-  PAYMENT_SYNC_RETRY_BACKSTOP_INTERVAL_MS,
   paymentSyncBackoffMs,
   runPaymentSyncRetrySweep,
-  startPaymentSyncRetrySweep,
-  stopPaymentSyncRetrySweep,
 } from '../../server/services/payment-sync-retry';
 import { PAYMENT_SYNC_MAX_ATTEMPTS } from '../../server/services/payment-customer-sync';
 
@@ -112,6 +118,7 @@ function bowler(overrides: Record<string, unknown> = {}) {
     paymentSyncPendingAt: '2026-04-22T11:00:00.000Z',
     paymentSyncAttempts: 0,
     paymentSyncLastAttemptAt: null as string | null,
+    paymentSyncNextRetryAt: '2026-04-22T11:59:00.000Z' as string | null,
     ...overrides,
   };
 }
@@ -122,6 +129,7 @@ beforeEach(() => {
   mockSyncBowlerForUser.mockReset();
   mockSyncUnclaimedBowler.mockReset();
   mockUpdateClaim.mockReset();
+  mockUpdatePark.mockReset();
 });
 
 afterEach(() => vi.clearAllMocks());
@@ -146,6 +154,7 @@ describe('runPaymentSyncRetrySweep', () => {
       bowler({
         paymentSyncAttempts: 2,
         paymentSyncLastAttemptAt: new Date(NOW.getTime() - 60_000).toISOString(),
+        paymentSyncNextRetryAt: new Date(NOW.getTime() + 3 * 60_000).toISOString(),
       }),
     ]);
 
@@ -225,6 +234,8 @@ describe('runPaymentSyncRetrySweep', () => {
     expect(result.skippedNoUser).toBe(1);
     expect(result.retried).toBe(1);
     expect(result.succeeded).toBe(1);
+    expect(mockUpdatePark).toHaveBeenCalledTimes(1);
+    expect(mockUpdatePark.mock.calls[0][0].values.paymentSyncNextRetryAt).toBeNull();
   });
 
   it('syncs an unclaimed bowler with email + Square configured and reports success (task #705)', async () => {
@@ -288,7 +299,7 @@ describe('runPaymentSyncRetrySweep', () => {
     expect(result.retried).toBe(2);
   });
 
-  it('claims locked rows by stamping payment_sync_last_attempt_at = NOW so a peer worker is fenced out', async () => {
+  it('claims locked rows by stamping an expiring next-retry lease so a peer worker is fenced out', async () => {
     // Multi-process safety (task #321): even though FOR UPDATE
     // SKIP LOCKED prevents two workers from selecting the same row
     // in the SAME tick, locks are released at tx commit. The
@@ -315,6 +326,8 @@ describe('runPaymentSyncRetrySweep', () => {
     expect(values).toHaveProperty('paymentSyncLastAttemptAt');
     expect(values.paymentSyncLastAttemptAt).not.toBeNull();
     expect(values.paymentSyncLastAttemptAt).not.toBeUndefined();
+    expect(values.paymentSyncNextRetryAt).not.toBeNull();
+    expect(values.paymentSyncNextRetryAt).not.toBeUndefined();
   });
 
   it('does not write a claim update when no rows were locked', async () => {
@@ -337,22 +350,5 @@ describe('runPaymentSyncRetrySweep', () => {
     expect(result.skippedMaxAttempts).toBe(1);
     expect(result.retried).toBe(0);
     expect(mockGetUserByBowlerId).not.toHaveBeenCalled();
-  });
-});
-
-describe('payment-sync retry backstop', () => {
-  it('uses a low-frequency backstop instead of a Neon keepalive interval', async () => {
-    mockSelect.mockResolvedValue([]);
-    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval');
-
-    startPaymentSyncRetrySweep();
-
-    expect(setIntervalSpy).toHaveBeenCalledWith(
-      expect.any(Function),
-      PAYMENT_SYNC_RETRY_BACKSTOP_INTERVAL_MS,
-    );
-
-    stopPaymentSyncRetrySweep();
-    await new Promise(resolve => setTimeout(resolve, 0));
   });
 });

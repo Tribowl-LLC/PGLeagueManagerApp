@@ -259,6 +259,7 @@ interface BowlerRow {
   paymentSyncPendingAt: string | null;
   paymentSyncAttempts: number;
   paymentSyncLastAttemptAt: string | null;
+  paymentSyncNextRetryAt: string | null;
   email: string | null;
   active: boolean;
 }
@@ -273,6 +274,7 @@ function makeBowler(overrides: Partial<BowlerRow> = {}): BowlerRow {
     paymentSyncPendingAt: null,
     paymentSyncAttempts: 0,
     paymentSyncLastAttemptAt: null,
+    paymentSyncNextRetryAt: null,
     email: 'pat@example.com',
     active: true,
     ...overrides,
@@ -1013,5 +1015,7 @@ describe('bowler-resync helper guarantees (exercised via a bowler-leagues mutati
           'string',
     );
     expect(flagCall, 'expected updateBowler with paymentSyncPendingAt set').toBeDefined();
+    expect((flagCall?.[1] as { paymentSyncNextRetryAt?: string }).paymentSyncNextRetryAt)
+      .toEqual(expect.any(String));
   });
 });

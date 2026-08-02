@@ -14,38 +14,31 @@
  * error at that point). The admin retry endpoint stays available as a
  * manual override regardless of attempt count.
  */
-import { and, inArray, isNotNull, lt, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, lt, lte } from 'drizzle-orm';
 import { db } from '../db';
 import { bowlers } from '@shared/schema';
 import { storage } from '../storage';
 import { createLogger } from '../logger';
 import { lockedSweep } from './_internal/locked-sweep';
 import {
-  PAYMENT_SYNC_MAX_ATTEMPTS,
   syncBowlerForUser,
   syncUnclaimedBowler,
 } from './payment-customer-sync';
 import type { PaymentSyncStatus } from '@shared/schema';
+import { PAYMENT_SYNC_MAX_ATTEMPTS } from './payment-sync-retry-policy';
+import {
+  startPaymentSyncRetryScheduler,
+  stopPaymentSyncRetryScheduler,
+} from './payment-sync-retry-scheduler';
 
 const log = createLogger('PaymentSyncRetry');
 
-// Low-frequency recovery backstop for rows flagged by a failed customer
-// sync. This is deliberately longer than Neon’s default scale-to-zero idle
-// window: foreground syncs and manual retry endpoints remain immediate, while
-// an idle Render process no longer performs a database keepalive every five
-// minutes.
-export const PAYMENT_SYNC_RETRY_BACKSTOP_INTERVAL_MS = 15 * 60_000;
+// The durable queue timestamp doubles as an expiring claim lease after the
+// row-locking transaction commits. Normal success/failure persistence clears
+// or replaces it; a crashed worker becomes recoverable after this deadline.
+export const PAYMENT_SYNC_CLAIM_LEASE_MS = 5 * 60_000;
 
-// Exponential backoff anchored at the most recent retry attempt:
-//   attempts=0 → 1m, 1 → 2m, 2 → 4m, 3 → 8m, 4 → 16m
-// `attempts` here is the count *before* the next retry; once it hits
-// `PAYMENT_SYNC_MAX_ATTEMPTS` we stop trying altogether.
-const BASE_BACKOFF_MS = 60_000;
-
-export function paymentSyncBackoffMs(attempts: number): number {
-  const safe = Math.max(0, Math.min(attempts, 16));
-  return BASE_BACKOFF_MS * Math.pow(2, safe);
-}
+export { paymentSyncBackoffMs } from './payment-sync-retry-policy';
 
 export interface SweepResult {
   scanned: number;
@@ -83,17 +76,8 @@ export async function runPaymentSyncRetrySweep(now: Date = new Date()): Promise<
   // SQL filter responsibilities:
   //   1. Exclude bowlers that already hit the attempts cap so the
   //      working set keeps shrinking once we've given up.
-  //   2. Exclude bowlers still inside their per-attempt backoff
-  //      window. This used to live only in JS below, but we now need
-  //      it in SQL too so the lease-stamp step (see comment lower
-  //      down) only marks rows we're actually about to retry —
-  //      otherwise a row in backoff would be re-stamped every tick
-  //      and starve forever (review feedback on task #321).
-  //
-  //      Backoff math mirrors paymentSyncBackoffMs:
-  //        dueAt = last_attempt_at + 60s * 2 ^ LEAST(attempts, 16)
-  //      LEAST clamps the exponent so an absurd attempt count can't
-  //      overflow the interval arithmetic.
+  //   2. Select only explicit queue rows whose indexed due time has
+  //      arrived. Rows in backoff never enter the lock transaction.
   //
   // Concurrency: we mirror the row-locking pattern used by the
   // payment scheduler (see `server/services/payment-scheduler.ts`,
@@ -106,16 +90,17 @@ export async function runPaymentSyncRetrySweep(now: Date = new Date()): Promise<
   // We also count the matching rows separately so we can log how
   // many were skipped because of contention with another instance
   // (matching the scheduler's lock-contention telemetry).
-  const backoffEligible = sql`(
-    ${bowlers.paymentSyncLastAttemptAt} IS NULL
-    OR ${bowlers.paymentSyncLastAttemptAt} + (interval '60 seconds' * power(2, LEAST(${bowlers.paymentSyncAttempts}, 16))) <= NOW()
-  )`;
-
   const conditions = and(
     isNotNull(bowlers.paymentSyncPendingAt),
+    isNotNull(bowlers.paymentSyncNextRetryAt),
     lt(bowlers.paymentSyncAttempts, PAYMENT_SYNC_MAX_ATTEMPTS),
-    backoffEligible,
+    lte(bowlers.paymentSyncNextRetryAt, now.toISOString()),
   );
+
+  const claimAttemptedAt = now.toISOString();
+  const claimLeaseUntil = new Date(
+    now.getTime() + PAYMENT_SYNC_CLAIM_LEASE_MS,
+  ).toISOString();
 
   const { candidates, skippedByLock } = await db.transaction(async (tx) => {
     // The shared lockedSweep helper drives both the count query and
@@ -137,12 +122,8 @@ export async function runPaymentSyncRetrySweep(now: Date = new Date()): Promise<
     // a second worker's next tick a moment later could re-select the
     // same row and double-call the payment provider.
     //
-    // We close that window by stamping `payment_sync_last_attempt_at`
-    // to NOW for every locked row before releasing the lock. The JS
-    // backoff guard further down (`now < dueAt`) then naturally
-    // excludes these rows from any other worker's tick until the
-    // backoff window for the current attempt count elapses — so even
-    // a slow external retry can't be raced by a peer.
+    // We close that window by stamping the attempt time plus an expiring
+    // `payment_sync_next_retry_at` lease before releasing the lock.
     //
     // We deliberately do NOT bump `payment_sync_attempts` here:
     // `syncBowlerForUser` already increments it on failure (and
@@ -151,7 +132,10 @@ export async function runPaymentSyncRetrySweep(now: Date = new Date()): Promise<
       const lockedIds = locked.map((b) => b.id);
       await tx
         .update(bowlers)
-        .set({ paymentSyncLastAttemptAt: sql`NOW()` })
+        .set({
+          paymentSyncLastAttemptAt: claimAttemptedAt,
+          paymentSyncNextRetryAt: claimLeaseUntil,
+        })
         .where(inArray(bowlers.id, lockedIds));
     }
 
@@ -177,15 +161,12 @@ export async function runPaymentSyncRetrySweep(now: Date = new Date()): Promise<
       continue;
     }
 
-    const lastAttempt = bowler.paymentSyncLastAttemptAt
-      ? new Date(bowler.paymentSyncLastAttemptAt).getTime()
+    const dueAt = bowler.paymentSyncNextRetryAt
+      ? new Date(bowler.paymentSyncNextRetryAt).getTime()
       : null;
-    if (lastAttempt !== null) {
-      const dueAt = lastAttempt + paymentSyncBackoffMs(bowler.paymentSyncAttempts ?? 0);
-      if (now.getTime() < dueAt) {
-        result.skippedBackoff++;
-        continue;
-      }
+    if (dueAt === null || Number.isNaN(dueAt) || now.getTime() < dueAt) {
+      result.skippedBackoff++;
+      continue;
     }
 
     const linkedUser = await storage.getUserByBowlerId(bowler.id);
@@ -260,55 +241,33 @@ export async function runPaymentSyncRetrySweep(now: Date = new Date()): Promise<
       result.skippedNoUser++;
       // Don't double-count: a skipped row didn't actually retry.
       result.retried--;
+      // Missing identity/provider configuration is not transient provider
+      // work. Park this row until a foreground/manual action changes it;
+      // otherwise it would create an endless one-shot timer wake. Fence the
+      // update by this worker's lease so a concurrent foreground failure wins.
+      await db
+        .update(bowlers)
+        .set({ paymentSyncNextRetryAt: null })
+        .where(and(
+          eq(bowlers.id, bowler.id),
+          eq(bowlers.paymentSyncLastAttemptAt, claimAttemptedAt),
+          eq(bowlers.paymentSyncNextRetryAt, claimLeaseUntil),
+        ));
     }
   }
 
   return result;
 }
 
-let sweepInterval: ReturnType<typeof setInterval> | null = null;
-let sweepInFlight = false;
-
-export function startPaymentSyncRetrySweep(
-  intervalMs: number = PAYMENT_SYNC_RETRY_BACKSTOP_INTERVAL_MS,
-): void {
-  stopPaymentSyncRetrySweep();
-  log.info('Starting payment-sync retry sweep', {
-    intervalMs,
-    maxAttempts: PAYMENT_SYNC_MAX_ATTEMPTS,
-  });
-
-  const tick = async () => {
-    if (sweepInFlight) return;
-    sweepInFlight = true;
-    try {
-      const summary = await runPaymentSyncRetrySweep();
-      if (summary.scanned > 0 || summary.retried > 0) {
-        log.info('Payment-sync retry sweep tick', summary);
-      }
-    } catch (err) {
-      log.error('Payment-sync retry sweep tick failed', {
-        error: err instanceof Error ? { name: err.name, message: err.message, stack: err.stack } : err,
-      });
-    } finally {
-      sweepInFlight = false;
+export async function startPaymentSyncRetrySweep(): Promise<void> {
+  await startPaymentSyncRetryScheduler(async () => {
+    const summary = await runPaymentSyncRetrySweep();
+    if (summary.scanned > 0 || summary.retried > 0) {
+      log.info('Payment-sync retry sweep tick', summary);
     }
-  };
-
-  sweepInterval = setInterval(() => { void tick(); }, intervalMs);
-  if (sweepInterval && typeof sweepInterval === 'object' && 'unref' in sweepInterval) {
-    sweepInterval.unref();
-  }
-
-  // Fire one tick immediately so a server that came up after a long
-  // outage starts retrying without waiting a full interval.
-  void tick();
+  });
 }
 
 export function stopPaymentSyncRetrySweep(): void {
-  if (sweepInterval !== null) {
-    clearInterval(sweepInterval);
-    sweepInterval = null;
-    log.info('Payment-sync retry sweep stopped');
-  }
+  stopPaymentSyncRetryScheduler();
 }

@@ -57,6 +57,7 @@ const PENDING_BOWLER = {
   paymentSyncPendingAt: '2026-04-26T12:00:00.000Z',
   paymentSyncAttempts: 1,
   paymentSyncLastAttemptAt: '2026-04-26T12:05:00.000Z',
+  paymentSyncNextRetryAt: '2026-04-26T12:07:00.000Z',
 };
 
 function renderRetry() {

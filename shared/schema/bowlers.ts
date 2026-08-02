@@ -1,4 +1,5 @@
 import { pgTable, text, serial, integer, boolean, timestamp, index } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { nameSchema, emailSchema, positiveIntSchema } from "./constants";
@@ -44,17 +45,22 @@ export const bowlers = pgTable("bowlers", {
   // `paymentSyncAttempts` counts consecutive failed retries since the
   // flag was set; once it hits the cap the background sweep stops
   // touching the bowler and ops must handle it manually. Reset to 0 on
-  // a successful sync. `paymentSyncLastAttemptAt` is the timestamp of
-  // the most recent retry attempt and drives exponential backoff
-  // between sweep ticks.
+  // a successful sync. `paymentSyncLastAttemptAt` records observability,
+  // while `paymentSyncNextRetryAt` below is the scheduler's source of truth.
   paymentSyncAttempts: integer("payment_sync_attempts").notNull().default(0),
   paymentSyncLastAttemptAt: timestamp("payment_sync_last_attempt_at", { mode: "string" }),
-});
+  // Explicit queue timestamp for the event-driven retry scheduler. NULL
+  // means there is no automatic retry to arm (successful, given up, or
+  // manually parked); non-NULL rows are ordered by the partial index below.
+  paymentSyncNextRetryAt: timestamp("payment_sync_next_retry_at", { mode: "string" }),
+}, (table) => ({
+  paymentSyncNextRetryIdx: index("bowlers_payment_sync_next_retry_idx")
+    .on(table.paymentSyncNextRetryAt)
+    .where(sql`${table.paymentSyncPendingAt} IS NOT NULL AND ${table.paymentSyncNextRetryAt} IS NOT NULL`),
+}));
 
-// Mirror of `PAYMENT_SYNC_MAX_ATTEMPTS` in
-// server/services/payment-customer-sync.ts. Re-exported from a `shared/`
-// module so the admin UI can render "attempt N/MAX" without round-tripping
-// to the server. Both values must stay in lockstep — see task #320.
+// Shared retry ceiling used by the server policy and the admin UI so it can
+// render "attempt N/MAX" without round-tripping to the server.
 export const PAYMENT_SYNC_MAX_ATTEMPTS = 5;
 
 // Single source of truth for the payment-sync status union returned by
@@ -134,6 +140,7 @@ export const insertBowlerSchema = baseBowlerSchema.extend({
   paymentSyncPendingAt: z.string().nullable().optional(),
   paymentSyncAttempts: z.number().int().min(0).optional(),
   paymentSyncLastAttemptAt: z.string().nullable().optional(),
+  paymentSyncNextRetryAt: z.string().nullable().optional(),
 }).omit({ id: true });
 
 export const insertBowlerLeagueSchema = baseBowlerLeagueSchema.extend({
@@ -155,6 +162,7 @@ export const updateBowlerSchema = z.object({
   paymentSyncPendingAt: z.string().nullable(),
   paymentSyncAttempts: z.number().int().min(0),
   paymentSyncLastAttemptAt: z.string().nullable(),
+  paymentSyncNextRetryAt: z.string().nullable(),
 }).partial();
 
 export const updateBowlerLeagueSchema = z.object({

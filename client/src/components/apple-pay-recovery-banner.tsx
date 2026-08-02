@@ -71,7 +71,7 @@ export function ApplePayRecoveryBanner() {
     queryKey: ['/api/payments-provider/apple-pay/recovery-alerts/recent'],
     enabled: isSystemAdmin,
     staleTime: 60_000,
-    refetchInterval: 5 * 60_000,
+    refetchOnWindowFocus: true,
     retry: false,
   });
 

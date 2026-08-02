@@ -15,6 +15,11 @@ import { isDev } from '../config';
 import type { PaymentProvider } from './payment-provider';
 import { syncBowlerLeagueAttributesToProvider } from './bowler-attributes';
 import type { Bowler, PaymentSyncStatus } from '@shared/schema';
+import {
+  PAYMENT_SYNC_MAX_ATTEMPTS,
+  paymentSyncNextRetryAt,
+} from './payment-sync-retry-policy';
+import { notifyPaymentSyncRetryChanged } from './payment-sync-retry-scheduler';
 
 const log = createLogger('PaymentCustomerSync');
 
@@ -27,7 +32,7 @@ export type { PaymentSyncStatus };
 // Background retry sweep gives up after this many consecutive failed
 // attempts (task #284). Surfaced here so the sweep service and the
 // helper agree on when to log the structured "given up" error.
-export const PAYMENT_SYNC_MAX_ATTEMPTS = 5;
+export { PAYMENT_SYNC_MAX_ATTEMPTS } from './payment-sync-retry-policy';
 
 export interface SyncableUser {
   id: number;
@@ -112,8 +117,10 @@ export async function syncBowlerForUser(
       errorName: e instanceof Error ? e.name : 'unknown',
       errorMessage: e instanceof Error ? e.message : String(e),
     });
-    const nowIso = new Date().toISOString();
+    const attemptedAt = new Date();
+    const nowIso = attemptedAt.toISOString();
     const nextAttempts = (bowler.paymentSyncAttempts ?? 0) + 1;
+    let retryStatePersisted = false;
     try {
       await storage.updateBowler(bowler.id, {
         ...bowler,
@@ -123,10 +130,13 @@ export async function syncBowlerForUser(
         paymentSyncPendingAt: bowler.paymentSyncPendingAt ?? nowIso,
         paymentSyncAttempts: nextAttempts,
         paymentSyncLastAttemptAt: nowIso,
+        paymentSyncNextRetryAt: paymentSyncNextRetryAt(nextAttempts, attemptedAt),
       });
+      retryStatePersisted = true;
     } catch (markErr) {
       log.error('Failed to flag bowler for payment-sync retry:', markErr);
     }
+    if (retryStatePersisted) notifyPaymentSyncRetryChanged();
     if (nextAttempts >= PAYMENT_SYNC_MAX_ATTEMPTS) {
       log.error('Payment-customer sync gave up after max retry attempts', {
         userId: user.id,
@@ -158,6 +168,7 @@ export async function syncBowlerForUser(
 
   const updates: Record<string, unknown> = { ...bowlerUpdate };
   let needsWrite = false;
+  let retryQueueChanged = false;
   if (providerCustomer && providerCustomer.id !== bowler.paymentCustomerId) {
     updates.paymentCustomerId = providerCustomer.id;
     // Stamp the originating location so account-deletion can target
@@ -170,14 +181,22 @@ export async function syncBowlerForUser(
     if (bowler.paymentSyncPendingAt !== null) {
       updates.paymentSyncPendingAt = null;
       needsWrite = true;
+      retryQueueChanged = true;
     }
     if ((bowler.paymentSyncAttempts ?? 0) > 0) {
       updates.paymentSyncAttempts = 0;
       needsWrite = true;
+      retryQueueChanged = true;
     }
     if (bowler.paymentSyncLastAttemptAt != null) {
       updates.paymentSyncLastAttemptAt = null;
       needsWrite = true;
+      retryQueueChanged = true;
+    }
+    if (bowler.paymentSyncNextRetryAt != null) {
+      updates.paymentSyncNextRetryAt = null;
+      needsWrite = true;
+      retryQueueChanged = true;
     }
   } else {
     // Attribute writes failed: keep the bowler flagged so the retry
@@ -191,7 +210,8 @@ export async function syncBowlerForUser(
     // "given up" line. Preserve the original `paymentSyncPendingAt`
     // so the admin "pending since" surface still reflects how long
     // the bowler has actually been stuck.
-    const nowIso = new Date().toISOString();
+    const attemptedAt = new Date();
+    const nowIso = attemptedAt.toISOString();
     const nextAttempts = (bowler.paymentSyncAttempts ?? 0) + 1;
     if (bowler.paymentSyncPendingAt == null) {
       updates.paymentSyncPendingAt = nowIso;
@@ -199,7 +219,9 @@ export async function syncBowlerForUser(
     }
     updates.paymentSyncAttempts = nextAttempts;
     updates.paymentSyncLastAttemptAt = nowIso;
+    updates.paymentSyncNextRetryAt = paymentSyncNextRetryAt(nextAttempts, attemptedAt);
     needsWrite = true;
+    retryQueueChanged = true;
     if (nextAttempts >= PAYMENT_SYNC_MAX_ATTEMPTS) {
       log.error('Payment-customer sync gave up after max retry attempts', {
         userId: user.id,
@@ -215,6 +237,7 @@ export async function syncBowlerForUser(
   if (needsWrite) {
     try {
       await storage.updateBowler(bowler.id, { ...bowler, ...updates });
+      if (retryQueueChanged) notifyPaymentSyncRetryChanged();
     } catch (e) {
       log.error('Failed to persist post-sync bowler updates:', e);
       return 'pending_retry';
@@ -297,18 +320,23 @@ async function syncUnclaimedBowlerRow(bowler: Bowler): Promise<PaymentSyncStatus
       errorName: e instanceof Error ? e.name : 'unknown',
       errorMessage: e instanceof Error ? e.message : String(e),
     });
-    const nowIso = new Date().toISOString();
+    const attemptedAt = new Date();
+    const nowIso = attemptedAt.toISOString();
     const nextAttempts = (bowler.paymentSyncAttempts ?? 0) + 1;
+    let retryStatePersisted = false;
     try {
       await storage.updateBowler(bowler.id, {
         ...bowler,
         paymentSyncPendingAt: bowler.paymentSyncPendingAt ?? nowIso,
         paymentSyncAttempts: nextAttempts,
         paymentSyncLastAttemptAt: nowIso,
+        paymentSyncNextRetryAt: paymentSyncNextRetryAt(nextAttempts, attemptedAt),
       });
+      retryStatePersisted = true;
     } catch (markErr) {
       log.error('Failed to flag unclaimed bowler for payment-sync retry:', markErr);
     }
+    if (retryStatePersisted) notifyPaymentSyncRetryChanged();
     if (nextAttempts >= PAYMENT_SYNC_MAX_ATTEMPTS) {
       log.error('Unclaimed bowler payment-sync gave up after max retry attempts', {
         bowlerId: bowler.id,
@@ -335,6 +363,7 @@ async function syncUnclaimedBowlerRow(bowler: Bowler): Promise<PaymentSyncStatus
 
   const updates: Record<string, unknown> = {};
   let needsWrite = false;
+  let retryQueueChanged = false;
   if (providerCustomer && providerCustomer.id !== bowler.paymentCustomerId) {
     updates.paymentCustomerId = providerCustomer.id;
     updates.paymentProviderLocationId = resolvedSquareLocationId;
@@ -345,17 +374,26 @@ async function syncUnclaimedBowlerRow(bowler: Bowler): Promise<PaymentSyncStatus
     if (bowler.paymentSyncPendingAt !== null) {
       updates.paymentSyncPendingAt = null;
       needsWrite = true;
+      retryQueueChanged = true;
     }
     if ((bowler.paymentSyncAttempts ?? 0) > 0) {
       updates.paymentSyncAttempts = 0;
       needsWrite = true;
+      retryQueueChanged = true;
     }
     if (bowler.paymentSyncLastAttemptAt != null) {
       updates.paymentSyncLastAttemptAt = null;
       needsWrite = true;
+      retryQueueChanged = true;
+    }
+    if (bowler.paymentSyncNextRetryAt != null) {
+      updates.paymentSyncNextRetryAt = null;
+      needsWrite = true;
+      retryQueueChanged = true;
     }
   } else {
-    const nowIso = new Date().toISOString();
+    const attemptedAt = new Date();
+    const nowIso = attemptedAt.toISOString();
     const nextAttempts = (bowler.paymentSyncAttempts ?? 0) + 1;
     if (bowler.paymentSyncPendingAt == null) {
       updates.paymentSyncPendingAt = nowIso;
@@ -363,7 +401,9 @@ async function syncUnclaimedBowlerRow(bowler: Bowler): Promise<PaymentSyncStatus
     }
     updates.paymentSyncAttempts = nextAttempts;
     updates.paymentSyncLastAttemptAt = nowIso;
+    updates.paymentSyncNextRetryAt = paymentSyncNextRetryAt(nextAttempts, attemptedAt);
     needsWrite = true;
+    retryQueueChanged = true;
     if (nextAttempts >= PAYMENT_SYNC_MAX_ATTEMPTS) {
       log.error('Unclaimed bowler payment-sync gave up after max retry attempts', {
         bowlerId: bowler.id,
@@ -378,6 +418,7 @@ async function syncUnclaimedBowlerRow(bowler: Bowler): Promise<PaymentSyncStatus
   if (needsWrite) {
     try {
       await storage.updateBowler(bowler.id, { ...bowler, ...updates });
+      if (retryQueueChanged) notifyPaymentSyncRetryChanged();
     } catch (e) {
       log.error('Failed to persist post-sync unclaimed bowler updates:', e);
       return 'pending_retry';

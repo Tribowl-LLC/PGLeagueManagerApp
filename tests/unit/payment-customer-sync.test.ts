@@ -20,6 +20,7 @@ const mockGetBowler = vi.fn();
 const mockUpdateBowler = vi.fn();
 const mockGetLocationSquareConfig = vi.fn();
 const mockGetFirstSquareConfiguredLocation = vi.fn();
+const mockNotifyPaymentSyncRetryChanged = vi.fn();
 
 vi.mock('../../server/storage', () => ({
   storage: {
@@ -28,6 +29,10 @@ vi.mock('../../server/storage', () => ({
     getLocationSquareConfig: (...args: unknown[]) => mockGetLocationSquareConfig(...args),
     getFirstSquareConfiguredLocation: (...args: unknown[]) => mockGetFirstSquareConfiguredLocation(...args),
   },
+}));
+
+vi.mock('../../server/services/payment-sync-retry-scheduler', () => ({
+  notifyPaymentSyncRetryChanged: () => mockNotifyPaymentSyncRetryChanged(),
 }));
 
 const mockGetPaymentProvider = vi.fn();
@@ -70,6 +75,9 @@ const baseBowler = {
   order: 0,
   paymentCustomerId: null as string | null,
   paymentSyncPendingAt: null as string | null,
+  paymentSyncAttempts: 0,
+  paymentSyncLastAttemptAt: null as string | null,
+  paymentSyncNextRetryAt: null as string | null,
 };
 
 const allChanged = { nameChanged: true, emailChanged: true, phoneChanged: true };
@@ -81,6 +89,7 @@ beforeEach(() => {
   mockGetFirstSquareConfiguredLocation.mockReset();
   mockGetPaymentProvider.mockReset();
   mockSyncBowlerLeagueAttributesToProvider.mockReset();
+  mockNotifyPaymentSyncRetryChanged.mockReset();
   // Default attribute sync to ok so existing tests are unaffected.
   mockSyncBowlerLeagueAttributesToProvider.mockResolvedValue({ ok: true });
 });
@@ -131,12 +140,15 @@ describe('syncBowlerForUser', () => {
     if (!lastCall) throw new Error('expected updateBowler to have been called');
     expect(lastCall[0]).toBe(42);
     expect(lastCall[1].paymentSyncPendingAt).toEqual(expect.any(String));
+    expect(lastCall[1].paymentSyncNextRetryAt).toEqual(expect.any(String));
+    expect(mockNotifyPaymentSyncRetryChanged).toHaveBeenCalledTimes(1);
   });
 
   it('clears paymentSyncPendingAt and returns synced on a successful sync', async () => {
     const previouslyFailedBowler = {
       ...baseBowler,
       paymentSyncPendingAt: '2026-04-20T12:00:00.000Z',
+      paymentSyncNextRetryAt: '2026-04-20T12:02:00.000Z',
     };
     mockGetBowler.mockResolvedValue(previouslyFailedBowler);
     mockGetLocationSquareConfig.mockResolvedValue({ accessToken: 'live-token' });
@@ -152,7 +164,9 @@ describe('syncBowlerForUser', () => {
     const lastCall = mockUpdateBowler.mock.calls.at(-1);
     if (!lastCall) throw new Error('expected updateBowler to have been called');
     expect(lastCall[1].paymentSyncPendingAt).toBeNull();
+    expect(lastCall[1].paymentSyncNextRetryAt).toBeNull();
     expect(lastCall[1].paymentCustomerId).toBe('cust_123');
+    expect(mockNotifyPaymentSyncRetryChanged).toHaveBeenCalledTimes(1);
   });
 
   it('bumps paymentSyncAttempts and stamps last-attempt when the attribute-write step fails (task #680)', async () => {
@@ -186,6 +200,7 @@ describe('syncBowlerForUser', () => {
     expect(lastCall[0]).toBe(42);
     expect(lastCall[1].paymentSyncAttempts).toBe(3);
     expect(lastCall[1].paymentSyncLastAttemptAt).toEqual(expect.any(String));
+    expect(lastCall[1].paymentSyncNextRetryAt).toEqual(expect.any(String));
     // Original pending-since timestamp is preserved for the admin
     // surface; we don't restamp it on every failed retry.
     expect(lastCall[1].paymentSyncPendingAt).toBe('2026-04-20T12:00:00.000Z');

@@ -161,6 +161,7 @@ const BOWLERS: Bowler[] = [
     paymentSyncPendingAt: null,
     paymentSyncAttempts: 0,
     paymentSyncLastAttemptAt: null,
+    paymentSyncNextRetryAt: null,
   },
 ];
 
