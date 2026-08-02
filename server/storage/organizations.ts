@@ -8,6 +8,7 @@ import {
   alerterState,
   applePayJobItems,
   applePayJobs,
+  autopaySetupRequests,
   bowlerPaymentLinks,
   bowlers,
   deletionRequests,
@@ -218,6 +219,10 @@ export async function deleteOrganization(id: number): Promise<void> {
         .set({ organizationId: null })
         .where(inArray(users.id, systemAdminIds));
     }
+
+    // Setup workflows retain restrictive operation/schedule references, so
+    // explicit tenant teardown removes them before either referenced table.
+    await tx.delete(autopaySetupRequests).where(eq(autopaySetupRequests.organizationId, id));
 
     // Payment operations intentionally retain a restrictive schedule FK so
     // ordinary schedule deletion cannot erase the durable provider audit.

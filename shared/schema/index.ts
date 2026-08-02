@@ -20,6 +20,18 @@ export { payments, paymentSchedules, insertPaymentSchema, insertPaymentScheduleS
 export type { Payment, InsertPaymentInput, InsertPayment, UpdatePayment, PaymentSchedule, InsertPaymentSchedule, UpdatePaymentSchedule } from "./payments";
 
 export {
+  autopaySetupRequests,
+  AUTOPAY_SETUP_SNAPSHOT_VERSION,
+  AUTOPAY_SETUP_WORKFLOW_STATUSES,
+} from "./autopay-setup";
+export type {
+  AutopaySetupRequest,
+  AutopaySetupSnapshot,
+  AutopaySetupSnapshotAllocation,
+  AutopaySetupWorkflowStatus,
+} from "./autopay-setup";
+
+export {
   paymentOperations,
   scheduledPaymentOperationSnapshots,
   scheduledPaymentOperationAllocations,

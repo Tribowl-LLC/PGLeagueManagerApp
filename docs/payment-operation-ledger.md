@@ -296,6 +296,47 @@ Interactive charges and refunds should adopt the same create/lease/call/finalize
 shape in later scoped changes. They are not part of the Phase 2B scheduled
 cutover unless that PR explicitly includes and tests them.
 
+## Dormant weekly auto-pay setup foundation
+
+Migration `0010_autopay_setup_foundation` adds a dormant setup workflow for a
+later interactive-charge cutover. The schema release does not add a route,
+change a client, create a setup row, acquire an operation lease, or call
+Square. Existing interactive, scheduled, refund, receipt, and display behavior
+remains on its pre-0010 paths.
+
+`autopay_setup_requests` is not a second provider ledger. It owns only:
+
+- the setup workflow state (`pending`, `completed`, or `canceled`);
+- the immutable ordered per-occurrence allocation snapshot;
+- the first future automatic occurrence and recurring setup parameters; and
+- links to the one immediate charge operation, when needed, and the resulting
+  schedule after workflow completion.
+
+When the immutable snapshot has a positive immediate amount, the setup request
+links to exactly one `payment_operations` row with
+`operation_type = 'interactive_charge'`. `payment_operations` remains the sole
+owner of the provider request fingerprint/key, leases, fencing, attempts,
+retries, provider-unknown recovery, provider payment/order IDs, error
+classification, and terminal outcome. A zero-dollar setup has no payment
+operation. Later success finalization will use the existing
+`payments.payment_operation_id` and allocation index; no setup-specific
+payment lineage columns exist.
+
+The dormant storage primitives can atomically create or verify immutable setup
+and operation intent, but no production caller invokes them in this release.
+The scheduled operation executor is unchanged. The later behavior PR must add
+explicit operation-type dispatch before any interactive operation becomes
+reachable, and must preserve the established lease/call/fenced-finalize
+boundary.
+
+Migration 0010 also adds a partial unique index permitting only one active
+payment schedule per bowler and league. This changes database enforcement for
+concurrent legacy schedule inserts: a second active insert that previously
+could succeed will now fail with a unique violation. The migration preflight
+aborts if duplicate active schedules already exist. This enforcement change is
+intentional, but it must be reviewed and deployed while the application is
+drained as described in the production runbook.
+
 ## Phase 2B-2 verification matrix
 
 The cutover is not activation-ready unless deterministic fake-provider tests

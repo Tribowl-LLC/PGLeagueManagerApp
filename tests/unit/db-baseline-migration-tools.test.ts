@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(10);
+    expect(migrations).toHaveLength(11);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -194,6 +194,16 @@ describe('normalized migration baseline tools', () => {
     expect(migrations[9]?.sql).toContain("'reconciliation_required'");
     expect(migrations[9]?.sql).toContain('payment_schedules_active_next_payment_idx');
     expect(migrations[9]?.sql).not.toMatch(/(?:^|\n)\s*(?:UPDATE|DELETE|INSERT)\b/);
+    expect(migrations[10]).toMatchObject({
+      idx: 10,
+      tag: '0010_autopay_setup_foundation',
+      createdAt: 1785695299184,
+      hash: 'ed9956a9d32d3d2cf0f5e2d0f584cf24397514d27f234b274b34624c74710c61',
+    });
+    expect(migrations[10]?.sql).toContain('CREATE TABLE "autopay_setup_requests"');
+    expect(migrations[10]?.sql).toContain('payment_operations_interactive_target_unique');
+    expect(migrations[10]?.sql).toContain('payment_schedules_active_bowler_league_unique');
+    expect(migrations[10]?.sql).not.toMatch(/(?:^|\n)\s*(?:DROP|UPDATE|DELETE|INSERT)\b/);
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 

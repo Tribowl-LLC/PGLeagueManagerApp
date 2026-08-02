@@ -11,6 +11,7 @@ import type {
   Location, InsertLocation, UpdateLocation,
   PaymentSchedule, InsertPaymentSchedule, UpdatePaymentSchedule,
   PaymentOperation, PaymentOperationErrorClassification,
+  AutopaySetupRequest,
   UserRole,
   LocationSquareCredentials,
   PaginatedResult,
@@ -107,6 +108,10 @@ export interface IPaymentStorage {
 }
 
 export interface IPaymentOperationStorage {
+  createOrGetInteractivePaymentOperation(
+    input: import("./payment-operations").CreateOrGetInteractivePaymentOperationInput,
+    existingTransaction?: import("./payment-operations").PaymentOperationTransaction,
+  ): Promise<PaymentOperation>;
   createOrGetScheduledPaymentOperation(
     input: import("./payment-operations").CreateOrGetScheduledPaymentOperationInput,
     existingTransaction?: import("./payment-operations").PaymentOperationTransaction,
@@ -189,6 +194,31 @@ export interface IPaymentOperationStorage {
       leaseToken?: string;
     },
   ): Promise<PaymentOperation>;
+}
+
+export interface IAutopaySetupRequestStorage {
+  createOrGetAutopaySetupRequest(
+    input: import("./autopay-setup-requests").CreateOrGetAutopaySetupRequestInput,
+  ): Promise<import("./autopay-setup-requests").AutopaySetupRequestWithOperation>;
+  getAutopaySetupRequestForOrganization(
+    organizationId: number,
+    requestId: string,
+  ): Promise<import("./autopay-setup-requests").AutopaySetupRequestWithOperation | undefined>;
+  getAutopaySetupRequestByOperationForOrganization(
+    organizationId: number,
+    operationId: string,
+  ): Promise<AutopaySetupRequest | undefined>;
+  completeAutopaySetupRequest(input: {
+    organizationId: number;
+    requestId: string;
+    paymentScheduleId?: number | null;
+    now?: Date;
+  }): Promise<AutopaySetupRequest>;
+  cancelAutopaySetupRequest(input: {
+    organizationId: number;
+    requestId: string;
+    now?: Date;
+  }): Promise<AutopaySetupRequest>;
 }
 
 export interface IGameScoreStorage {
@@ -399,6 +429,7 @@ export interface IStorage extends
   IBowlerStorage,
   IPaymentStorage,
   IPaymentOperationStorage,
+  IAutopaySetupRequestStorage,
   IGameScoreStorage,
   IUserStorage,
   IOrganizationStorage,

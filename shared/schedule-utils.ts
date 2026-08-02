@@ -1,4 +1,6 @@
-import { addWeeks } from "date-fns";
+import { addWeeks, differenceInCalendarWeeks } from "date-fns";
+import { fromZonedTime } from "date-fns-tz";
+import { DEFAULT_TIMEZONE } from "./schema/constants";
 
 const WEEKDAY_MAP: Record<string, number> = {
   Sunday: 0, Monday: 1, Tuesday: 2, Wednesday: 3,
@@ -31,6 +33,30 @@ export type ScheduleWeek = {
   type: ScheduleWeekType;
   bowlingWeekNumber: number | null;
 };
+
+export const WEEKLY_BILLING_GRACE_PERIOD_MS = 3 * 60 * 60 * 1000;
+
+export interface WeeklyBillingOccurrenceInput {
+  seasonStart: string | Date;
+  seasonEnd: string | Date;
+  weekDay: string;
+  competitionStartTime?: string | null;
+  timezone?: string | null;
+  weeklyFee: number;
+  totalBowlingWeeks?: number | null;
+  skipDates?: string[] | null;
+  cancelledDates?: string[] | null;
+  doublePayDates?: string[] | null;
+}
+
+export interface WeeklyBillingOccurrence {
+  occurrenceAt: string;
+  graceDeadlineAt: string;
+  localDate: string;
+  bowlingWeekNumber: number;
+  amountMinor: number;
+  isDoublePay: boolean;
+}
 
 export function getEffectiveBowlingWeeks(
   totalBowlingWeeks: number,
@@ -149,6 +175,89 @@ export function getAllBowlingDates(
   }
 
   return result;
+}
+
+function billingDateOnly(value: string | Date): string {
+  if (typeof value === "string") {
+    const match = value.match(/^\d{4}-\d{2}-\d{2}/);
+    if (match) return match[0];
+  }
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) {
+    throw new Error("league season dates are invalid");
+  }
+  return parsed.toISOString().slice(0, 10);
+}
+
+function billingStartTime(value: string | null | undefined): string {
+  const match = value?.match(/^([01]\d|2[0-3]):([0-5]\d)/);
+  if (!match) throw new Error("league competition start time is not configured");
+  return `${match[1]}:${match[2]}`;
+}
+
+/**
+ * Authoritative weekly money-occurrence model for future payment paths.
+ * League dates/times are converted to exact UTC instants, including DST.
+ * This additive helper is deliberately dormant until a payment path opts in.
+ */
+export function getWeeklyBillingOccurrences(
+  input: WeeklyBillingOccurrenceInput,
+): WeeklyBillingOccurrence[] {
+  if (!Number.isSafeInteger(input.weeklyFee) || input.weeklyFee <= 0 || !input.weekDay) {
+    throw new Error("league weekly billing configuration is incomplete");
+  }
+  const timezone = input.timezone ?? DEFAULT_TIMEZONE;
+  const competitionStartTime = billingStartTime(input.competitionStartTime);
+  const seasonStart = billingDateOnly(input.seasonStart);
+  const seasonEnd = billingDateOnly(input.seasonEnd);
+  const fallbackWeeks = Math.max(
+    1,
+    differenceInCalendarWeeks(
+      new Date(`${seasonEnd}T12:00:00Z`),
+      new Date(`${seasonStart}T12:00:00Z`),
+      { weekStartsOn: 0 },
+    ) + 1,
+  );
+  const totalBowlingWeeks = input.totalBowlingWeeks ?? fallbackWeeks;
+  const generated = getAllBowlingDates(
+    seasonStart,
+    input.weekDay,
+    totalBowlingWeeks,
+    input.skipDates ?? [],
+    input.cancelledDates ?? [],
+    input.doublePayDates ?? [],
+  ).filter((week) => (
+    week.bowlingWeekNumber !== null
+    && week.isoDate >= seasonStart
+    && week.isoDate <= seasonEnd
+  ));
+  const fullSeasonAmountMinor = input.weeklyFee * generated.length;
+  let amountAssignedMinor = 0;
+  return generated.map((week) => {
+    const requestedAmount = week.type === "double-pay" ? input.weeklyFee * 2 : input.weeklyFee;
+    const amountMinor = Math.max(
+      0,
+      Math.min(requestedAmount, fullSeasonAmountMinor - amountAssignedMinor),
+    );
+    amountAssignedMinor += amountMinor;
+    const occurrenceAt = fromZonedTime(
+      `${week.isoDate}T${competitionStartTime}:00`,
+      timezone,
+    );
+    if (!Number.isFinite(occurrenceAt.getTime())) {
+      throw new Error("league billing occurrence could not be converted to UTC");
+    }
+    return {
+      occurrenceAt: occurrenceAt.toISOString(),
+      graceDeadlineAt: new Date(
+        occurrenceAt.getTime() + WEEKLY_BILLING_GRACE_PERIOD_MS,
+      ).toISOString(),
+      localDate: week.isoDate,
+      bowlingWeekNumber: week.bowlingWeekNumber as number,
+      amountMinor,
+      isDoublePay: week.type === "double-pay",
+    };
+  });
 }
 
 export function getBowlingWeekNumber(

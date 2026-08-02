@@ -4,6 +4,7 @@ import {
   bowlers,
   leagues,
   locations,
+  organizations,
   paymentOperations,
   paymentSchedules,
   payments,
@@ -62,6 +63,15 @@ export interface CreateOrGetScheduledPaymentOperationInput {
   amountMinor: number;
   currency: string;
   providerName: string;
+}
+
+export interface CreateOrGetInteractivePaymentOperationInput {
+  organizationId: number;
+  targetKey: string;
+  amountMinor: number;
+  currency: string;
+  providerName: string;
+  now?: Date;
 }
 
 export type PaymentOperationTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -352,6 +362,94 @@ function immutableScheduledOperationMatches(
     && operation.providerName === request.providerName
     && operation.requestFingerprint === expected.requestFingerprint
     && operation.providerIdempotencyKey === expected.providerIdempotencyKey;
+}
+
+function immutableInteractiveOperationMatches(
+  operation: PaymentOperation,
+  expected: ReturnType<typeof buildPaymentOperationIdentity>,
+): boolean {
+  const request = expected.normalizedRequest;
+  return operation.organizationId === request.organizationId
+    && operation.operationType === "interactive_charge"
+    && operation.targetKey === request.targetKey
+    && operation.paymentScheduleId === null
+    && operation.billingCycleAt === null
+    && operation.amountMinor === request.amountMinor
+    && operation.currency === request.currency
+    && operation.providerName === request.providerName
+    && operation.requestFingerprint === expected.requestFingerprint
+    && operation.providerIdempotencyKey === expected.providerIdempotencyKey;
+}
+
+/**
+ * Creates dormant durable intent for one interactive charge. This primitive
+ * does not acquire a lease or call a provider; an explicit executor must do
+ * both in a later behavior-cutover release.
+ */
+export async function createOrGetInteractivePaymentOperation(
+  input: CreateOrGetInteractivePaymentOperationInput,
+  existingTransaction?: PaymentOperationTransaction,
+): Promise<PaymentOperation> {
+  const identity = buildPaymentOperationIdentity({
+    organizationId: input.organizationId,
+    operationType: "interactive_charge",
+    targetKey: input.targetKey,
+    amountMinor: input.amountMinor,
+    currency: input.currency,
+    providerName: input.providerName,
+  });
+  const request = identity.normalizedRequest;
+  const nowDate = input.now ?? new Date();
+  if (!Number.isFinite(nowDate.getTime())) {
+    throw new PaymentOperationValidationError("now must be a valid timestamp");
+  }
+  const now = nowDate.toISOString();
+
+  const run = async (tx: PaymentOperationTransaction): Promise<PaymentOperation> => {
+    const [ownedOrganization] = await tx
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(eq(organizations.id, input.organizationId))
+      .limit(1)
+      .for("share");
+    if (!ownedOrganization) throw new PaymentOperationNotFoundError();
+
+    const [created] = await tx
+      .insert(paymentOperations)
+      .values({
+        organizationId: request.organizationId,
+        operationType: "interactive_charge",
+        targetKey: request.targetKey,
+        amountMinor: request.amountMinor,
+        currency: request.currency,
+        requestFingerprint: identity.requestFingerprint,
+        providerIdempotencyKey: identity.providerIdempotencyKey,
+        providerName: request.providerName,
+        status: "pending",
+        nextAttemptAt: now,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoNothing()
+      .returning();
+    if (created) return created;
+
+    const [existing] = await tx
+      .select()
+      .from(paymentOperations)
+      .where(and(
+        eq(paymentOperations.organizationId, input.organizationId),
+        eq(paymentOperations.operationType, "interactive_charge"),
+        eq(paymentOperations.targetKey, request.targetKey),
+      ))
+      .limit(1);
+    if (!existing || !immutableInteractiveOperationMatches(existing, identity)) {
+      throw new PaymentOperationImmutableMismatchError();
+    }
+    return existing;
+  };
+
+  return existingTransaction ? run(existingTransaction) : db.transaction(run);
 }
 
 /**
