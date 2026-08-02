@@ -19,6 +19,23 @@ export type { Bowler, InsertBowlerInput, InsertBowler, UpdateBowler, BowlerLeagu
 export { payments, paymentSchedules, insertPaymentSchema, insertPaymentScheduleSchema, updatePaymentSchema, updatePaymentScheduleSchema } from "./payments";
 export type { Payment, InsertPaymentInput, InsertPayment, UpdatePayment, PaymentSchedule, InsertPaymentSchedule, UpdatePaymentSchedule } from "./payments";
 
+export {
+  paymentOperations,
+  PAYMENT_OPERATION_TYPES,
+  PAYMENT_OPERATION_STATUSES,
+  PAYMENT_OPERATION_ERROR_CLASSIFICATIONS,
+  PAYMENT_OPERATION_MAX_ATTEMPTS,
+  PAYMENT_OPERATION_MAX_LEASE_MS,
+  PAYMENT_OPERATION_MAX_RETRY_DELAY_MS,
+} from "./payment-operations";
+export type {
+  PaymentOperation,
+  InsertPaymentOperation,
+  PaymentOperationType,
+  PaymentOperationStatus,
+  PaymentOperationErrorClassification,
+} from "./payment-operations";
+
 export { users, insertUserSchema, updateUserSchema, updateUserSchemaBase } from "./users";
 export type { User, InsertUser, UpdateUser } from "./users";
 

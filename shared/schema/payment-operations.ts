@@ -1,0 +1,209 @@
+import { sql } from "drizzle-orm";
+import {
+  check,
+  index,
+  integer,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+  varchar,
+} from "drizzle-orm/pg-core";
+import { organizations } from "./organizations";
+import { paymentSchedules } from "./payments";
+
+export const PAYMENT_OPERATION_TYPES = [
+  "scheduled_charge",
+  "interactive_charge",
+  "refund",
+] as const;
+export type PaymentOperationType = (typeof PAYMENT_OPERATION_TYPES)[number];
+
+export const PAYMENT_OPERATION_STATUSES = [
+  "pending",
+  "leased",
+  "provider_unknown",
+  "retry_scheduled",
+  "succeeded",
+  "action_required",
+  "failed_terminal",
+  "canceled",
+] as const;
+export type PaymentOperationStatus = (typeof PAYMENT_OPERATION_STATUSES)[number];
+
+export const PAYMENT_OPERATION_ERROR_CLASSIFICATIONS = [
+  "provider_unknown",
+  "transient",
+  "hard_decline",
+  "configuration",
+  "invalid_request",
+  "internal",
+] as const;
+export type PaymentOperationErrorClassification =
+  (typeof PAYMENT_OPERATION_ERROR_CLASSIFICATIONS)[number];
+
+export const PAYMENT_OPERATION_MAX_ATTEMPTS = 8;
+export const PAYMENT_OPERATION_MAX_LEASE_MS = 15 * 60 * 1000;
+export const PAYMENT_OPERATION_MAX_RETRY_DELAY_MS = 30 * 24 * 60 * 60 * 1000;
+
+const terminalStatuses = sql.raw("'succeeded', 'action_required', 'failed_terminal', 'canceled'");
+const dueStatuses = sql.raw("'pending', 'provider_unknown', 'retry_scheduled'");
+const errorStatuses = sql.raw("'provider_unknown', 'retry_scheduled', 'action_required', 'failed_terminal'");
+
+/**
+ * Durable identity and state for one logical provider-side money movement.
+ *
+ * Phase 2A intentionally leaves this table dormant. Existing charge and
+ * refund paths continue writing only `payments`; later phases will create a
+ * row here before any provider request and use its stable idempotency key on
+ * every attempt.
+ */
+export const paymentOperations = pgTable("payment_operations", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  organizationId: integer("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  operationType: text("operation_type", { enum: PAYMENT_OPERATION_TYPES }).notNull(),
+  targetKey: varchar("target_key", { length: 128 }).notNull(),
+  paymentScheduleId: integer("payment_schedule_id")
+    .references(() => paymentSchedules.id, { onDelete: "restrict" }),
+  billingCycleAt: timestamp("billing_cycle_at", { mode: "string" }),
+  amountMinor: integer("amount_minor").notNull(),
+  currency: varchar("currency", { length: 3 }).notNull(),
+  requestFingerprint: varchar("request_fingerprint", { length: 76 }).notNull(),
+  providerIdempotencyKey: varchar("provider_idempotency_key", { length: 45 }).notNull(),
+  providerName: varchar("provider_name", { length: 32 }).notNull(),
+  providerObjectId: varchar("provider_object_id", { length: 255 }),
+  status: text("status", { enum: PAYMENT_OPERATION_STATUSES }).notNull().default("pending"),
+  attemptCount: integer("attempt_count").notNull().default(0),
+  nextAttemptAt: timestamp("next_attempt_at", { mode: "string" }).defaultNow(),
+  leaseOwner: varchar("lease_owner", { length: 128 }),
+  leaseToken: uuid("lease_token"),
+  leaseExpiresAt: timestamp("lease_expires_at", { mode: "string" }),
+  errorClassification: text("error_classification", {
+    enum: PAYMENT_OPERATION_ERROR_CLASSIFICATIONS,
+  }),
+  errorCode: varchar("error_code", { length: 128 }),
+  createdAt: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { mode: "string" }).notNull().defaultNow(),
+  startedAt: timestamp("started_at", { mode: "string" }),
+  completedAt: timestamp("completed_at", { mode: "string" }),
+}, (table) => ({
+  providerIdempotencyUnique: uniqueIndex("payment_operations_provider_idempotency_key_unique")
+    .on(table.providerIdempotencyKey),
+  recurringCycleUnique: uniqueIndex("payment_operations_recurring_cycle_unique")
+    .on(table.paymentScheduleId, table.billingCycleAt)
+    .where(sql`${table.operationType} = 'scheduled_charge'`),
+  tenantLookupIdx: index("payment_operations_tenant_created_idx")
+    .on(table.organizationId, table.createdAt.desc()),
+  providerObjectLookupIdx: index("payment_operations_provider_object_idx")
+    .on(table.providerName, table.providerObjectId)
+    .where(sql`${table.providerObjectId} IS NOT NULL`),
+  dueRetryIdx: index("payment_operations_due_retry_idx")
+    .on(table.nextAttemptAt)
+    .where(sql`${table.status} IN (${dueStatuses})`),
+  expiredLeaseIdx: index("payment_operations_expired_lease_idx")
+    .on(table.leaseExpiresAt)
+    .where(sql`${table.status} = 'leased'`),
+  operationTypeCheck: check(
+    "payment_operations_operation_type_check",
+    sql`${table.operationType} IN ('scheduled_charge', 'interactive_charge', 'refund')`,
+  ),
+  statusCheck: check(
+    "payment_operations_status_check",
+    sql`${table.status} IN ('pending', 'leased', 'provider_unknown', 'retry_scheduled', 'succeeded', 'action_required', 'failed_terminal', 'canceled')`,
+  ),
+  amountCheck: check("payment_operations_amount_minor_check", sql`${table.amountMinor} > 0`),
+  currencyCheck: check("payment_operations_currency_check", sql`${table.currency} ~ '^[A-Z]{3}$'`),
+  targetKeyCheck: check("payment_operations_target_key_check", sql`length(${table.targetKey}) > 0`),
+  providerNameCheck: check(
+    "payment_operations_provider_name_check",
+    sql`${table.providerName} ~ '^[a-z0-9][a-z0-9_-]{0,31}$'`,
+  ),
+  requestFingerprintCheck: check(
+    "payment_operations_request_fingerprint_check",
+    sql`${table.requestFingerprint} ~ '^lvpayreq:v1:[0-9a-f]{64}$'`,
+  ),
+  providerKeyCheck: check(
+    "payment_operations_provider_key_check",
+    sql`length(${table.providerIdempotencyKey}) BETWEEN 1 AND 45`,
+  ),
+  attemptCountCheck: check(
+    "payment_operations_attempt_count_check",
+    sql`${table.attemptCount} BETWEEN 0 AND ${sql.raw(String(PAYMENT_OPERATION_MAX_ATTEMPTS))}`,
+  ),
+  scheduledCycleCheck: check(
+    "payment_operations_scheduled_cycle_check",
+    sql`(
+      ${table.operationType} = 'scheduled_charge'
+      AND ${table.paymentScheduleId} IS NOT NULL
+      AND ${table.billingCycleAt} IS NOT NULL
+    ) OR (
+      ${table.operationType} <> 'scheduled_charge'
+      AND ${table.billingCycleAt} IS NULL
+    )`,
+  ),
+  dueStateCheck: check(
+    "payment_operations_due_state_check",
+    sql`(${table.status} IN (${dueStatuses})) = (${table.nextAttemptAt} IS NOT NULL)`,
+  ),
+  leaseStateCheck: check(
+    "payment_operations_lease_state_check",
+    sql`(
+      ${table.status} = 'leased'
+      AND ${table.leaseOwner} IS NOT NULL
+      AND ${table.leaseToken} IS NOT NULL
+      AND ${table.leaseExpiresAt} IS NOT NULL
+    ) OR (
+      ${table.status} <> 'leased'
+      AND ${table.leaseOwner} IS NULL
+      AND ${table.leaseExpiresAt} IS NULL
+    )`,
+  ),
+  nonterminalLeaseTokenCheck: check(
+    "payment_operations_nonterminal_lease_token_check",
+    sql`${table.status} IN ('leased', 'succeeded', 'action_required', 'failed_terminal', 'canceled') OR ${table.leaseToken} IS NULL`,
+  ),
+  completionStateCheck: check(
+    "payment_operations_completion_state_check",
+    sql`(${table.status} IN (${terminalStatuses})) = (${table.completedAt} IS NOT NULL)`,
+  ),
+  errorStateCheck: check(
+    "payment_operations_error_state_check",
+    sql`(
+      ${table.status} IN (${errorStatuses})
+      AND ${table.errorClassification} IS NOT NULL
+    ) OR (
+      ${table.status} NOT IN (${errorStatuses})
+      AND ${table.errorClassification} IS NULL
+      AND ${table.errorCode} IS NULL
+    )`,
+  ),
+  errorClassificationCheck: check(
+    "payment_operations_error_classification_check",
+    sql`${table.errorClassification} IS NULL OR ${table.errorClassification} IN ('provider_unknown', 'transient', 'hard_decline', 'configuration', 'invalid_request', 'internal')`,
+  ),
+  errorCodeCheck: check(
+    "payment_operations_error_code_check",
+    sql`${table.errorCode} IS NULL OR ${table.errorCode} ~ '^[A-Z0-9][A-Z0-9_.:-]{0,127}$'`,
+  ),
+  startedAttemptCheck: check(
+    "payment_operations_started_attempt_check",
+    sql`(${table.attemptCount} = 0 AND ${table.startedAt} IS NULL) OR (${table.attemptCount} > 0 AND ${table.startedAt} IS NOT NULL)`,
+  ),
+  successProviderObjectCheck: check(
+    "payment_operations_success_provider_object_check",
+    sql`${table.status} <> 'succeeded' OR ${table.providerObjectId} IS NOT NULL`,
+  ),
+  timestampOrderCheck: check(
+    "payment_operations_timestamp_order_check",
+    sql`${table.updatedAt} >= ${table.createdAt}
+      AND (${table.startedAt} IS NULL OR ${table.startedAt} >= ${table.createdAt})
+      AND (${table.completedAt} IS NULL OR ${table.startedAt} IS NULL OR ${table.completedAt} >= ${table.startedAt})
+      AND (${table.leaseExpiresAt} IS NULL OR ${table.leaseExpiresAt} > ${table.updatedAt})`,
+  ),
+}));
+
+export type PaymentOperation = typeof paymentOperations.$inferSelect;
+export type InsertPaymentOperation = typeof paymentOperations.$inferInsert;

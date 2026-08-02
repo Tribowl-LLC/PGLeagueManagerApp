@@ -4,6 +4,7 @@ import * as leagueStorage from "./leagues";
 import * as teamStorage from "./teams";
 import * as bowlerStorage from "./bowlers";
 import * as paymentStorage from "./payments";
+import * as paymentOperationStorage from "./payment-operations";
 import * as gameScoreStorage from "./games-scores";
 import * as userStorage from "./users";
 import * as orgStorage from "./organizations";
@@ -84,6 +85,16 @@ export class DatabaseStorage implements IStorage {
   deactivatePaymentSchedule!: IStorage["deactivatePaymentSchedule"];
   updatePaymentScheduleFields!: IStorage["updatePaymentScheduleFields"];
   updatePaymentScheduleCard!: IStorage["updatePaymentScheduleCard"];
+
+  createOrGetScheduledPaymentOperation!: IStorage["createOrGetScheduledPaymentOperation"];
+  getPaymentOperationForOrganization!: IStorage["getPaymentOperationForOrganization"];
+  acquirePaymentOperationLease!: IStorage["acquirePaymentOperationLease"];
+  schedulePaymentOperationRetry!: IStorage["schedulePaymentOperationRetry"];
+  recordPaymentOperationProviderUnknown!: IStorage["recordPaymentOperationProviderUnknown"];
+  recordPaymentOperationActionRequired!: IStorage["recordPaymentOperationActionRequired"];
+  recordPaymentOperationFailedTerminal!: IStorage["recordPaymentOperationFailedTerminal"];
+  finalizePaymentOperationSuccess!: IStorage["finalizePaymentOperationSuccess"];
+  cancelPaymentOperation!: IStorage["cancelPaymentOperation"];
 
   getGames!: IStorage["getGames"];
   getGame!: IStorage["getGame"];
@@ -207,6 +218,7 @@ export class DatabaseStorage implements IStorage {
       ...bowlerStorage,
       getBowlerLeagues: bowlerStorage.getBowlerLeaguesFiltered,
       ...paymentStorage,
+      ...paymentOperationStorage,
       ...gameScoreStorage,
       ...userStorage,
       ...orgStorage,

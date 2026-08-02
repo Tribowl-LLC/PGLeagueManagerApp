@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(7);
+    expect(migrations).toHaveLength(8);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -163,6 +163,16 @@ describe('normalized migration baseline tools', () => {
     });
     expect(migrations[6]?.sql).toContain('ADD COLUMN "payment_sync_next_retry_at"');
     expect(migrations[6]?.sql).toContain('CREATE INDEX "bowlers_payment_sync_next_retry_idx"');
+    expect(migrations[7]).toMatchObject({
+      idx: 7,
+      tag: '0007_payment_operation_ledger',
+      createdAt: 1785638674949,
+      hash: 'cea7a75a4dbe731941eab342466d83722a54fb451f8a1aa755e411614b09e39e',
+    });
+    expect(migrations[7]?.sql).toContain('CREATE TABLE "payment_operations"');
+    expect(migrations[7]?.sql).toContain('payment_operations_recurring_cycle_unique');
+    expect(migrations[7]?.sql).toContain('payment_operations_provider_idempotency_key_unique');
+    expect(migrations[7]?.sql).not.toMatch(/(?:^|\n)\s*(?:DROP|UPDATE|DELETE|INSERT)\b/);
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 

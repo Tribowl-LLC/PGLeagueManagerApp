@@ -50,6 +50,13 @@
       "when": 1785630087761,
       "tag": "0006_payment_sync_next_due",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1785638674949,
+      "tag": "0007_payment_operation_ledger",
+      "breakpoints": true
     }
   ]
 }
