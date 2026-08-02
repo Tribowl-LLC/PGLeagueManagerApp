@@ -54,7 +54,6 @@ interface UseBowlerPaymentSubmitOptions {
 export function useBowlerPaymentSubmit({
   league,
   bowler,
-  weeklyFee,
   card,
   cardMode,
   selectedSavedCardId,
@@ -365,7 +364,7 @@ export function useBowlerPaymentSubmit({
       setIsSubmitting(false);
     }
   }, [
-    card, cardMode, selectedSavedCardId, league, bowler, weeklyFee,
+    card, cardMode, selectedSavedCardId, league, bowler,
     selectedSchedule, storeCard,
     buyerEmail, chargeForBowlerId, additionalBowlerIds, financials, calculateTotalAmount, toast, navigate,
     setIsSubmitting, setShowPaymentSetup, autopayQuote,
