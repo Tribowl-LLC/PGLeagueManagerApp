@@ -4,11 +4,15 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { getTestDb } from "../setup/test-db";
 import {
   bowlers,
+  bowlerLeagues,
   leagues,
   organizations,
   paymentOperations,
   paymentSchedules,
   payments,
+  teams,
+  interactivePaymentOperationAllocations,
+  interactivePaymentOperationSnapshots,
 } from "@shared/schema";
 import { deleteOrganization } from "../../server/storage/organizations";
 import {
@@ -19,11 +23,14 @@ import {
   acquirePaymentOperationLease,
   cancelPaymentOperation,
   createOrGetScheduledPaymentOperation,
+  createOrGetGeneralInteractivePaymentOperation,
   finalizePaymentOperationSuccess,
   getPaymentOperationForOrganization,
   getScheduledPaymentOperationSnapshotForOrganization,
   hasNonterminalScheduledPaymentOperation,
   persistScheduledPaymentOperationSnapshot,
+  persistInteractivePaymentOperationSnapshot,
+  getInteractivePaymentOperationSnapshotForOrganization,
   recordPaymentOperationActionRequired,
   recordPaymentOperationFailedTerminal,
   recordPaymentOperationProviderUnknown,
@@ -35,6 +42,8 @@ import {
   deriveSquareOperationIdempotencyKey,
 } from "../../server/services/payment-operation-idempotency";
 import type { ScheduledPaymentSemanticSnapshot } from "../../server/services/scheduled-payment-operation-snapshot";
+import type { InteractivePaymentSemanticSnapshot } from "../../server/services/interactive-payment-operation-snapshot";
+import { encryptInteractivePaymentSnapshot } from "../../server/services/interactive-payment-operation-snapshot";
 
 const db = getTestDb();
 const poolSuffix = process.env.VITEST_POOL_ID ?? "0";
@@ -75,6 +84,18 @@ async function createFixtureSchedule(organizationId: number, label: string): Pro
     organizationId,
   }).returning({ id: bowlers.id });
   if (!bowler) throw new Error("fixture bowler was not created");
+
+  const [team] = await db.insert(teams).values({
+    name: `Payment Operations Team ${label}`,
+    number: 1,
+    leagueId: league.id,
+  }).returning({ id: teams.id });
+  if (!team) throw new Error("fixture team was not created");
+  await db.insert(bowlerLeagues).values({
+    bowlerId: bowler.id,
+    leagueId: league.id,
+    teamId: team.id,
+  });
 
   const [schedule] = await db.insert(paymentSchedules).values({
     bowlerId: bowler.id,
@@ -213,6 +234,236 @@ beforeAll(async () => {
   orgBId = foundB;
   scheduleAId = await createFixtureSchedule(orgAId, "A");
   scheduleBId = await createFixtureSchedule(orgBId, "B");
+});
+
+function buildInteractiveSnapshot(
+  operation: Awaited<ReturnType<typeof createOrGetGeneralInteractivePaymentOperation>>,
+  context: { bowlerId: number; leagueId: number },
+  overrides: Partial<InteractivePaymentSemanticSnapshot> = {},
+): InteractivePaymentSemanticSnapshot {
+  const weekOf = "2032-02-02T00:00:00.000Z";
+  return {
+    snapshotVersion: 1,
+    organizationId: operation.organizationId,
+    amountMinor: operation.amountMinor,
+    currency: operation.currency,
+    providerName: operation.providerName,
+    leagueId: context.leagueId,
+    locationId: null,
+    providerLocationId: null,
+    payerBowlerId: context.bowlerId,
+    requestKind: "direct",
+    squarePaymentIdempotencyKey: deriveSquareOperationIdempotencyKey(
+      operation.providerIdempotencyKey,
+      "payment",
+    ),
+    squareOrderIdempotencyKey: null,
+    sourceId: "cnon-interactive-test-source",
+    customerId: null,
+    buyerEmail: "interactive@example.test",
+    storeCard: false,
+    weekOf,
+    combinedChargeGroupId: null,
+    allocations: [{
+      allocationIndex: 0,
+      bowlerId: context.bowlerId,
+      amountMinor: operation.amountMinor,
+      lineageAmountMinor: 1_000,
+      prizeFundAmountMinor: 1_000,
+      weekOf,
+      notes: "Interactive test payment",
+      paidByUserId: null,
+    }],
+    lineItems: [],
+    ...overrides,
+  };
+}
+
+describe("general interactive payment operation foundation", () => {
+  it("uses a reserved target namespace and converges concurrent identical preparation", async () => {
+    const requestKey = `same-request-${randomUUID()}`;
+    const input = {
+      organizationId: orgAId,
+      requestKey,
+      amountMinor: 2_000,
+      currency: "USD",
+      providerName: "square",
+    };
+    const [first, second] = await Promise.all([
+      createOrGetGeneralInteractivePaymentOperation(input),
+      createOrGetGeneralInteractivePaymentOperation(input),
+    ]);
+    expect(first.id).toBe(second.id);
+    expect(first.targetKey).toBe(`interactive-charge:${requestKey}`);
+
+    const rows = await db.select({ id: paymentOperations.id })
+      .from(paymentOperations)
+      .where(eq(paymentOperations.targetKey, first.targetKey));
+    expect(rows).toHaveLength(1);
+  });
+
+  it("keeps genuinely new request identities separate", async () => {
+    const [first, second] = await Promise.all([
+      createOrGetGeneralInteractivePaymentOperation({
+        organizationId: orgAId,
+        requestKey: `new-request-a-${randomUUID()}`,
+        amountMinor: 2_000,
+        currency: "USD",
+        providerName: "square",
+      }),
+      createOrGetGeneralInteractivePaymentOperation({
+        organizationId: orgAId,
+        requestKey: `new-request-b-${randomUUID()}`,
+        amountMinor: 2_000,
+        currency: "USD",
+        providerName: "square",
+      }),
+    ]);
+    expect(first.id).not.toBe(second.id);
+    expect(first.providerIdempotencyKey).not.toBe(second.providerIdempotencyKey);
+  });
+
+  it("fails closed when the same logical identity has different immutable contents", async () => {
+    const requestKey = `mismatch-${randomUUID()}`;
+    await createOrGetGeneralInteractivePaymentOperation({
+      organizationId: orgAId,
+      requestKey,
+      amountMinor: 2_000,
+      currency: "USD",
+      providerName: "square",
+    });
+
+    await expect(createOrGetGeneralInteractivePaymentOperation({
+      organizationId: orgAId,
+      requestKey,
+      amountMinor: 2_500,
+      currency: "USD",
+      providerName: "square",
+    })).rejects.toBeInstanceOf(PaymentOperationImmutableMismatchError);
+  });
+
+  it("persists one encrypted, tenant-validated snapshot under concurrent duplicate preparation", async () => {
+    const operation = await createOrGetGeneralInteractivePaymentOperation({
+      organizationId: orgAId,
+      requestKey: `snapshot-${randomUUID()}`,
+      amountMinor: 2_000,
+      currency: "USD",
+      providerName: "square",
+    });
+    const context = await getScheduleContext(scheduleAId);
+    const snapshot = buildInteractiveSnapshot(operation, context);
+
+    const [first, second] = await Promise.all([
+      db.transaction((tx) => persistInteractivePaymentOperationSnapshot(operation, snapshot, tx)),
+      db.transaction((tx) => persistInteractivePaymentOperationSnapshot(operation, snapshot, tx)),
+    ]);
+    expect(first).toEqual(snapshot);
+    expect(second).toEqual(snapshot);
+    expect(await getInteractivePaymentOperationSnapshotForOrganization(orgAId, operation.id))
+      .toEqual(snapshot);
+    expect(await getInteractivePaymentOperationSnapshotForOrganization(orgBId, operation.id))
+      .toBeUndefined();
+  });
+
+  it("rejects a changed snapshot fingerprint instead of converging silently", async () => {
+    const operation = await createOrGetGeneralInteractivePaymentOperation({
+      organizationId: orgAId,
+      requestKey: `snapshot-mismatch-${randomUUID()}`,
+      amountMinor: 2_000,
+      currency: "USD",
+      providerName: "square",
+    });
+    const snapshot = buildInteractiveSnapshot(operation, await getScheduleContext(scheduleAId));
+    await db.transaction((tx) => persistInteractivePaymentOperationSnapshot(operation, snapshot, tx));
+
+    await expect(db.transaction((tx) => persistInteractivePaymentOperationSnapshot(
+      operation,
+      { ...snapshot, sourceId: "cnon-different-source" },
+      tx,
+    ))).rejects.toBeInstanceOf(PaymentOperationImmutableMismatchError);
+  });
+
+  it("returns a deterministic fingerprint mismatch to the losing concurrent preparer", async () => {
+    const operation = await createOrGetGeneralInteractivePaymentOperation({
+      organizationId: orgAId,
+      requestKey: `concurrent-mismatch-${randomUUID()}`,
+      amountMinor: 2_000,
+      currency: "USD",
+      providerName: "square",
+    });
+    const context = await getScheduleContext(scheduleAId);
+    const firstSnapshot = buildInteractiveSnapshot(operation, context);
+    const secondSnapshot = { ...firstSnapshot, buyerEmail: "different@example.test" };
+
+    const results = await Promise.allSettled([
+      db.transaction((tx) => persistInteractivePaymentOperationSnapshot(operation, firstSnapshot, tx)),
+      db.transaction((tx) => persistInteractivePaymentOperationSnapshot(operation, secondSnapshot, tx)),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const rejection = results.find((result) => result.status === "rejected");
+    expect(rejection?.status === "rejected" ? rejection.reason : undefined)
+      .toBeInstanceOf(PaymentOperationImmutableMismatchError);
+  });
+
+  it("rejects cross-tenant league, payer, and allocation references", async () => {
+    const operation = await createOrGetGeneralInteractivePaymentOperation({
+      organizationId: orgAId,
+      requestKey: `tenant-mismatch-${randomUUID()}`,
+      amountMinor: 2_000,
+      currency: "USD",
+      providerName: "square",
+    });
+    const tenantBContext = await getScheduleContext(scheduleBId);
+    const snapshot = buildInteractiveSnapshot(operation, {
+      bowlerId: tenantBContext.bowlerId,
+      leagueId: tenantBContext.leagueId,
+    });
+
+    await expect(db.transaction((tx) => persistInteractivePaymentOperationSnapshot(
+      operation,
+      snapshot,
+      tx,
+    ))).rejects.toBeInstanceOf(PaymentOperationValidationError);
+    expect(await getInteractivePaymentOperationSnapshotForOrganization(orgAId, operation.id))
+      .toBeUndefined();
+  });
+
+  it("enforces the allocation total at the PostgreSQL transaction boundary", async () => {
+    const operation = await createOrGetGeneralInteractivePaymentOperation({
+      organizationId: orgAId,
+      requestKey: `database-total-${randomUUID()}`,
+      amountMinor: 2_000,
+      currency: "USD",
+      providerName: "square",
+    });
+    const context = await getScheduleContext(scheduleAId);
+    const snapshot = buildInteractiveSnapshot(operation, context);
+    const stored = encryptInteractivePaymentSnapshot(snapshot);
+
+    try {
+      await db.transaction(async (tx) => {
+        await tx.insert(interactivePaymentOperationSnapshots).values({
+          operationId: operation.id,
+          ...stored,
+        });
+        await tx.insert(interactivePaymentOperationAllocations).values({
+          operationId: operation.id,
+          allocationIndex: 0,
+          bowlerId: context.bowlerId,
+          amountMinor: 1_999,
+          lineageAmountMinor: 1_000,
+          prizeFundAmountMinor: 999,
+          weekOf: snapshot.weekOf,
+          notes: null,
+          paidByUserId: null,
+        });
+      });
+      throw new Error("invalid allocation total was committed");
+    } catch (error) {
+      if (!(error instanceof Error) || !(error.cause instanceof Error)) throw error;
+      expect(error.cause.message).toMatch(/allocation total must equal operation amount/i);
+    }
+  });
 });
 
 afterAll(async () => {

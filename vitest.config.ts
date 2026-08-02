@@ -104,6 +104,7 @@ const UNIT_NO_DB = [
   'tests/unit/rate-limit-shared-store-coverage.test.ts',
   'tests/unit/subdomain-resolution-consistency.test.ts',
   'tests/unit/scheduled-payment-operation-snapshot.test.ts',
+  'tests/unit/interactive-payment-operation-snapshot.test.ts',
   'tests/unit/weekly-billing-occurrence-planner.test.ts',
   'tests/unit/test-template-migration-source.test.ts',
   'tests/unit/zod-v4-migration-contracts.test.ts',

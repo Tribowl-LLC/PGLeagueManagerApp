@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, asc, eq, gte, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
 import {
   bowlers,
+  bowlerLeagues,
   leagues,
   locations,
   organizations,
@@ -11,6 +12,9 @@ import {
   scheduledPaymentOperationAllocations,
   scheduledPaymentOperationLineItems,
   scheduledPaymentOperationSnapshots,
+  interactivePaymentOperationAllocations,
+  interactivePaymentOperationLineItems,
+  interactivePaymentOperationSnapshots,
   users,
   PAYMENT_OPERATION_ERROR_CLASSIFICATIONS,
   PAYMENT_OPERATION_MAX_ATTEMPTS,
@@ -27,6 +31,12 @@ import {
   reconstructScheduledPaymentSnapshot,
   type ScheduledPaymentSemanticSnapshot,
 } from "../services/scheduled-payment-operation-snapshot.js";
+import {
+  encryptInteractivePaymentSnapshot,
+  fingerprintInteractivePaymentSnapshot,
+  reconstructInteractivePaymentSnapshot,
+  type InteractivePaymentSemanticSnapshot,
+} from "../services/interactive-payment-operation-snapshot.js";
 
 export class PaymentOperationNotFoundError extends Error {
   constructor() {
@@ -74,6 +84,15 @@ export interface CreateOrGetInteractivePaymentOperationInput {
   now?: Date;
 }
 
+export interface CreateOrGetGeneralInteractivePaymentOperationInput {
+  organizationId: number;
+  requestKey: string;
+  amountMinor: number;
+  currency: string;
+  providerName: string;
+  now?: Date;
+}
+
 export type PaymentOperationTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 export interface PaymentOperationLinkedPaymentInput {
@@ -98,6 +117,8 @@ export interface LeasedPaymentOperationInput {
   leaseToken: string;
   now?: Date;
 }
+
+export const GENERAL_INTERACTIVE_TARGET_PREFIX = "interactive-charge:" as const;
 
 interface ErrorOutcomeInput extends LeasedPaymentOperationInput {
   errorCode?: string | null;
@@ -450,6 +471,37 @@ export async function createOrGetInteractivePaymentOperation(
   return existingTransaction ? run(existingTransaction) : db.transaction(run);
 }
 
+function buildGeneralInteractiveTargetKey(requestKey: string): string {
+  if (
+    requestKey.length === 0
+    || requestKey.length > 110
+    || requestKey.trim() !== requestKey
+    || !/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(requestKey)
+  ) {
+    throw new PaymentOperationValidationError("general interactive request key has an invalid format");
+  }
+  return `${GENERAL_INTERACTIVE_TARGET_PREFIX}${requestKey}`;
+}
+
+/**
+ * Creates dormant general interactive intent under a reserved target-key
+ * namespace. Auto-pay setup uses its own `autopay-setup:` namespace and is
+ * therefore unable to collide with a future regular checkout request.
+ */
+export async function createOrGetGeneralInteractivePaymentOperation(
+  input: CreateOrGetGeneralInteractivePaymentOperationInput,
+  existingTransaction?: PaymentOperationTransaction,
+): Promise<PaymentOperation> {
+  return createOrGetInteractivePaymentOperation({
+    organizationId: input.organizationId,
+    targetKey: buildGeneralInteractiveTargetKey(input.requestKey),
+    amountMinor: input.amountMinor,
+    currency: input.currency,
+    providerName: input.providerName,
+    now: input.now,
+  }, existingTransaction);
+}
+
 /**
  * Concurrent callers converge on the partial recurring-cycle uniqueness
  * constraint. A conflict is returned only when every immutable field still
@@ -626,6 +678,212 @@ export async function persistScheduledPaymentOperationSnapshot(
     throw new PaymentOperationImmutableMismatchError();
   }
   return stored;
+}
+
+async function validateInteractiveSnapshotTenantReferences(
+  executor: PaymentOperationTransaction,
+  snapshot: InteractivePaymentSemanticSnapshot,
+): Promise<void> {
+  const bowlerIds = [...new Set([
+    snapshot.payerBowlerId,
+    ...snapshot.allocations.map((row) => row.bowlerId),
+  ])];
+  const paidByUserIds = [...new Set(snapshot.allocations
+    .map((row) => row.paidByUserId)
+    .filter((id): id is number => id !== null))];
+
+  const [ownedLeague] = await executor
+    .select({ id: leagues.id })
+    .from(leagues)
+    .where(and(
+      eq(leagues.id, snapshot.leagueId),
+      eq(leagues.organizationId, snapshot.organizationId),
+    ))
+    .limit(1);
+  const ownedBowlers = await executor
+    .select({ id: bowlers.id })
+    .from(bowlers)
+    .where(and(
+      eq(bowlers.organizationId, snapshot.organizationId),
+      inArray(bowlers.id, bowlerIds),
+    ));
+  const rosteredBowlers = await executor
+    .select({ bowlerId: bowlerLeagues.bowlerId })
+    .from(bowlerLeagues)
+    .innerJoin(bowlers, eq(bowlers.id, bowlerLeagues.bowlerId))
+    .where(and(
+      eq(bowlerLeagues.leagueId, snapshot.leagueId),
+      eq(bowlerLeagues.active, true),
+      eq(bowlers.organizationId, snapshot.organizationId),
+      inArray(bowlerLeagues.bowlerId, snapshot.allocations.map((row) => row.bowlerId)),
+    ));
+  const ownedPaidByUsers = paidByUserIds.length === 0
+    ? []
+    : await executor
+      .select({ id: users.id })
+      .from(users)
+      .where(and(
+        eq(users.organizationId, snapshot.organizationId),
+        inArray(users.id, paidByUserIds),
+      ));
+  const ownedLocation = snapshot.locationId === null
+    ? []
+    : await executor
+      .select({ id: locations.id })
+      .from(locations)
+      .where(and(
+        eq(locations.organizationId, snapshot.organizationId),
+        eq(locations.id, snapshot.locationId),
+      ));
+
+  if (
+    !ownedLeague
+    || ownedBowlers.length !== bowlerIds.length
+    || rosteredBowlers.length !== snapshot.allocations.length
+    || ownedPaidByUsers.length !== paidByUserIds.length
+    || ownedLocation.length !== (snapshot.locationId === null ? 0 : 1)
+  ) {
+    throw new PaymentOperationValidationError(
+      "interactive payment snapshot references do not belong to the operation tenant",
+    );
+  }
+}
+
+async function loadInteractivePaymentOperationSnapshot(
+  executor: typeof db | PaymentOperationTransaction,
+  operation: PaymentOperation,
+): Promise<InteractivePaymentSemanticSnapshot | undefined> {
+  if (
+    operation.operationType !== "interactive_charge"
+    || operation.paymentScheduleId !== null
+    || operation.billingCycleAt !== null
+  ) return undefined;
+
+  const [stored] = await executor
+    .select()
+    .from(interactivePaymentOperationSnapshots)
+    .where(eq(interactivePaymentOperationSnapshots.operationId, operation.id))
+    .limit(1);
+  if (!stored) return undefined;
+  const allocationRows = await executor
+    .select()
+    .from(interactivePaymentOperationAllocations)
+    .where(eq(interactivePaymentOperationAllocations.operationId, operation.id))
+    .orderBy(asc(interactivePaymentOperationAllocations.allocationIndex));
+  const lineItemRows = await executor
+    .select()
+    .from(interactivePaymentOperationLineItems)
+    .where(eq(interactivePaymentOperationLineItems.operationId, operation.id))
+    .orderBy(asc(interactivePaymentOperationLineItems.lineItemIndex));
+
+  return reconstructInteractivePaymentSnapshot({
+    organizationId: operation.organizationId,
+    amountMinor: operation.amountMinor,
+    currency: operation.currency,
+    providerName: operation.providerName,
+    providerIdempotencyKey: operation.providerIdempotencyKey,
+    stored,
+    allocations: allocationRows.map((row) => ({
+      allocationIndex: row.allocationIndex,
+      bowlerId: row.bowlerId,
+      amountMinor: row.amountMinor,
+      lineageAmountMinor: row.lineageAmountMinor,
+      prizeFundAmountMinor: row.prizeFundAmountMinor,
+      weekOf: storedTimestampToIso(row.weekOf) ?? row.weekOf,
+      notes: row.notes,
+      paidByUserId: row.paidByUserId,
+    })),
+    lineItems: lineItemRows.map((row) => ({
+      lineItemIndex: row.lineItemIndex,
+      catalogObjectId: row.catalogObjectId,
+      quantity: row.quantity,
+    })),
+  });
+}
+
+export async function persistInteractivePaymentOperationSnapshot(
+  operation: PaymentOperation,
+  snapshot: InteractivePaymentSemanticSnapshot,
+  transaction: PaymentOperationTransaction,
+): Promise<InteractivePaymentSemanticSnapshot> {
+  if (
+    operation.operationType !== "interactive_charge"
+    || !operation.targetKey.startsWith(GENERAL_INTERACTIVE_TARGET_PREFIX)
+    || operation.paymentScheduleId !== null
+    || operation.billingCycleAt !== null
+    || snapshot.organizationId !== operation.organizationId
+    || snapshot.amountMinor !== operation.amountMinor
+    || snapshot.currency !== operation.currency
+    || snapshot.providerName !== operation.providerName
+  ) {
+    throw new PaymentOperationImmutableMismatchError();
+  }
+
+  // Re-read and lock the durable parent in the caller transaction. The
+  // operation object is normally returned by the preparation call, but the
+  // tenant and immutable-field check must not rely on an untrusted or stale
+  // in-memory copy when this primitive is reused by a future route.
+  const [storedOperation] = await transaction
+    .select()
+    .from(paymentOperations)
+    .where(and(
+      eq(paymentOperations.id, operation.id),
+      eq(paymentOperations.organizationId, operation.organizationId),
+    ))
+    .limit(1)
+    .for("share");
+  if (
+    !storedOperation
+    || storedOperation.operationType !== operation.operationType
+    || storedOperation.targetKey !== operation.targetKey
+    || storedOperation.paymentScheduleId !== operation.paymentScheduleId
+    || storedOperation.billingCycleAt !== operation.billingCycleAt
+    || storedOperation.amountMinor !== operation.amountMinor
+    || storedOperation.currency !== operation.currency
+    || storedOperation.providerName !== operation.providerName
+    || storedOperation.requestFingerprint !== operation.requestFingerprint
+    || storedOperation.providerIdempotencyKey !== operation.providerIdempotencyKey
+  ) {
+    throw new PaymentOperationImmutableMismatchError();
+  }
+
+  await validateInteractiveSnapshotTenantReferences(transaction, snapshot);
+  const encrypted = encryptInteractivePaymentSnapshot(snapshot);
+  const [created] = await transaction
+    .insert(interactivePaymentOperationSnapshots)
+    .values({ operationId: operation.id, ...encrypted })
+    .onConflictDoNothing()
+    .returning({ operationId: interactivePaymentOperationSnapshots.operationId });
+  if (created) {
+    await transaction.insert(interactivePaymentOperationAllocations).values(
+      snapshot.allocations.map((row) => ({ operationId: operation.id, ...row })),
+    );
+    if (snapshot.lineItems.length > 0) {
+      await transaction.insert(interactivePaymentOperationLineItems).values(
+        snapshot.lineItems.map((row) => ({ operationId: operation.id, ...row })),
+      );
+    }
+  }
+
+  let stored: InteractivePaymentSemanticSnapshot | undefined;
+  try {
+    stored = await loadInteractivePaymentOperationSnapshot(transaction, operation);
+  } catch (error) {
+    throw new PaymentOperationImmutableMismatchError({ cause: error });
+  }
+  if (!stored || encrypted.snapshotFingerprint !== fingerprintInteractivePaymentSnapshot(stored)) {
+    throw new PaymentOperationImmutableMismatchError();
+  }
+  return stored;
+}
+
+export async function getInteractivePaymentOperationSnapshotForOrganization(
+  organizationId: number,
+  operationId: string,
+): Promise<InteractivePaymentSemanticSnapshot | undefined> {
+  const operation = await getPaymentOperationForOrganization(organizationId, operationId);
+  if (!operation) return undefined;
+  return loadInteractivePaymentOperationSnapshot(db, operation);
 }
 
 export async function getScheduledPaymentOperationSnapshotForOrganization(

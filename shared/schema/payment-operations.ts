@@ -326,8 +326,114 @@ export const scheduledPaymentOperationLineItems = pgTable("scheduled_payment_ope
   ),
 }));
 
+export const INTERACTIVE_PAYMENT_SNAPSHOT_VERSION = 1;
+export const INTERACTIVE_PAYMENT_REQUEST_KINDS = ["direct", "order"] as const;
+export type InteractivePaymentRequestKind = (typeof INTERACTIVE_PAYMENT_REQUEST_KINDS)[number];
+
+/**
+ * Immutable, encrypted execution material for a general interactive charge.
+ * This is intentionally separate from scheduled snapshots and auto-pay setup
+ * requests: an interactive charge has no schedule cursor or setup workflow.
+ * The migration adds a deferred database constraint trigger so allocation
+ * rows must sum to the parent payment operation amount at commit time.
+ */
+export const interactivePaymentOperationSnapshots = pgTable("interactive_payment_operation_snapshots", {
+  operationId: uuid("operation_id")
+    .primaryKey()
+    .references(() => paymentOperations.id, { onDelete: "cascade" }),
+  snapshotVersion: integer("snapshot_version").notNull().default(INTERACTIVE_PAYMENT_SNAPSHOT_VERSION),
+  snapshotFingerprint: varchar("snapshot_fingerprint", { length: 80 }).notNull(),
+  leagueId: integer("league_id")
+    .notNull()
+    .references(() => leagues.id, { onDelete: "restrict" }),
+  locationId: integer("location_id").references(() => locations.id, { onDelete: "restrict" }),
+  providerLocationId: varchar("provider_location_id", { length: 255 }),
+  payerBowlerId: integer("payer_bowler_id")
+    .notNull()
+    .references(() => bowlers.id, { onDelete: "restrict" }),
+  requestKind: text("request_kind", { enum: INTERACTIVE_PAYMENT_REQUEST_KINDS }).notNull(),
+  encryptedSourceId: text("encrypted_source_id").notNull(),
+  encryptedCustomerId: text("encrypted_customer_id"),
+  encryptedBuyerEmail: text("encrypted_buyer_email"),
+  storeCard: boolean("store_card").notNull().default(false),
+  weekOf: timestamp("week_of", { mode: "string" }).notNull(),
+  combinedChargeGroupId: varchar("combined_charge_group_id", { length: 128 }),
+  createdAt: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
+}, (table) => ({
+  leagueIdx: index("interactive_payment_snapshots_league_idx").on(table.leagueId),
+  payerIdx: index("interactive_payment_snapshots_payer_idx").on(table.payerBowlerId),
+  snapshotVersionCheck: check(
+    "interactive_payment_snapshots_version_check",
+    sql`${table.snapshotVersion} = ${sql.raw(String(INTERACTIVE_PAYMENT_SNAPSHOT_VERSION))}`,
+  ),
+  snapshotFingerprintCheck: check(
+    "interactive_payment_snapshots_fingerprint_check",
+    sql`${table.snapshotFingerprint} ~ '^lvpayexecic:v1:[0-9a-f]{64}$'`,
+  ),
+  requestKindCheck: check(
+    "interactive_payment_snapshots_request_kind_check",
+    sql`${table.requestKind} IN ('direct', 'order')`,
+  ),
+  groupIdCheck: check(
+    "interactive_payment_snapshots_group_id_check",
+    sql`${table.combinedChargeGroupId} IS NULL OR length(${table.combinedChargeGroupId}) > 0`,
+  ),
+}));
+
+export const interactivePaymentOperationAllocations = pgTable("interactive_payment_operation_allocations", {
+  operationId: uuid("operation_id")
+    .notNull()
+    .references(() => paymentOperations.id, { onDelete: "cascade" }),
+  allocationIndex: integer("allocation_index").notNull(),
+  bowlerId: integer("bowler_id")
+    .notNull()
+    .references(() => bowlers.id, { onDelete: "restrict" }),
+  amountMinor: integer("amount_minor").notNull(),
+  lineageAmountMinor: integer("lineage_amount_minor"),
+  prizeFundAmountMinor: integer("prize_fund_amount_minor"),
+  weekOf: timestamp("week_of", { mode: "string" }).notNull(),
+  notes: text("notes"),
+  paidByUserId: integer("paid_by_user_id").references(() => users.id, { onDelete: "set null" }),
+}, (table) => ({
+  pk: primaryKey({
+    name: "interactive_payment_operation_allocations_pk",
+    columns: [table.operationId, table.allocationIndex],
+  }),
+  operationBowlerUnique: uniqueIndex("interactive_payment_operation_allocations_bowler_unique")
+    .on(table.operationId, table.bowlerId),
+  amountCheck: check(
+    "interactive_payment_operation_allocations_amount_check",
+    sql`${table.allocationIndex} >= 0 AND ${table.amountMinor} > 0
+      AND (${table.lineageAmountMinor} IS NULL OR ${table.lineageAmountMinor} >= 0)
+      AND (${table.prizeFundAmountMinor} IS NULL OR ${table.prizeFundAmountMinor} >= 0)`,
+  ),
+}));
+
+export const interactivePaymentOperationLineItems = pgTable("interactive_payment_operation_line_items", {
+  operationId: uuid("operation_id")
+    .notNull()
+    .references(() => paymentOperations.id, { onDelete: "cascade" }),
+  lineItemIndex: integer("line_item_index").notNull(),
+  catalogObjectId: varchar("catalog_object_id", { length: 255 }).notNull(),
+  quantity: varchar("quantity", { length: 32 }).notNull(),
+}, (table) => ({
+  pk: primaryKey({
+    name: "interactive_payment_operation_line_items_pk",
+    columns: [table.operationId, table.lineItemIndex],
+  }),
+  valueCheck: check(
+    "interactive_payment_operation_line_items_value_check",
+    sql`${table.lineItemIndex} >= 0
+      AND length(${table.catalogObjectId}) > 0
+      AND ${table.quantity} ~ '^[1-9][0-9]*$'`,
+  ),
+}));
+
 export type PaymentOperation = typeof paymentOperations.$inferSelect;
 export type InsertPaymentOperation = typeof paymentOperations.$inferInsert;
 export type ScheduledPaymentOperationSnapshot = typeof scheduledPaymentOperationSnapshots.$inferSelect;
 export type ScheduledPaymentOperationAllocation = typeof scheduledPaymentOperationAllocations.$inferSelect;
 export type ScheduledPaymentOperationLineItem = typeof scheduledPaymentOperationLineItems.$inferSelect;
+export type InteractivePaymentOperationSnapshot = typeof interactivePaymentOperationSnapshots.$inferSelect;
+export type InteractivePaymentOperationAllocation = typeof interactivePaymentOperationAllocations.$inferSelect;
+export type InteractivePaymentOperationLineItem = typeof interactivePaymentOperationLineItems.$inferSelect;

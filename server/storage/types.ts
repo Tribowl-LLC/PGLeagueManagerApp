@@ -112,6 +112,10 @@ export interface IPaymentOperationStorage {
     input: import("./payment-operations").CreateOrGetInteractivePaymentOperationInput,
     existingTransaction?: import("./payment-operations").PaymentOperationTransaction,
   ): Promise<PaymentOperation>;
+  createOrGetGeneralInteractivePaymentOperation(
+    input: import("./payment-operations").CreateOrGetGeneralInteractivePaymentOperationInput,
+    existingTransaction?: import("./payment-operations").PaymentOperationTransaction,
+  ): Promise<PaymentOperation>;
   createOrGetScheduledPaymentOperation(
     input: import("./payment-operations").CreateOrGetScheduledPaymentOperationInput,
     existingTransaction?: import("./payment-operations").PaymentOperationTransaction,
@@ -178,6 +182,15 @@ export interface IPaymentOperationStorage {
     organizationId: number,
     operationId: string,
   ): Promise<import("../services/scheduled-payment-operation-snapshot").ScheduledPaymentSemanticSnapshot | undefined>;
+  persistInteractivePaymentOperationSnapshot(
+    operation: PaymentOperation,
+    snapshot: import("../services/interactive-payment-operation-snapshot").InteractivePaymentSemanticSnapshot,
+    transaction: import("./payment-operations").PaymentOperationTransaction,
+  ): Promise<import("../services/interactive-payment-operation-snapshot").InteractivePaymentSemanticSnapshot>;
+  getInteractivePaymentOperationSnapshotForOrganization(
+    organizationId: number,
+    operationId: string,
+  ): Promise<import("../services/interactive-payment-operation-snapshot").InteractivePaymentSemanticSnapshot | undefined>;
   getNextPaymentOperationWake(): Promise<import("./payment-operations").PaymentOperationWake | undefined>;
   recordExpiredPaymentOperationAttemptExhausted(input: {
     organizationId: number;
