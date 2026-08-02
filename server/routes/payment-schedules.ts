@@ -13,30 +13,11 @@ import { getEffectiveBowlingWeeks } from '@shared/schedule-utils';
 import { createLogger } from '../logger';
 import { isTestKickSuppressed, PAYMENT_SCHEDULER_KICK_HEADER } from '../utils/test-suppression';
 import { getAcceptedPartnerBowlerIds } from '../storage/bowler-payment-links';
-import { calculateBowlerPastDue } from '@shared/financial-utils';
-import { payments as paymentsTable } from '@shared/schema';
-import { db } from '../db';
-import { and, eq, sql } from 'drizzle-orm';
 import {
   AutopaySetupError,
   getWeeklyAutopaySetupQuote,
   setupWeeklyAutopay,
 } from '../services/autopay-setup.js';
-
-async function getBowlerPaidAmountInLeague(
-  bowlerId: number,
-  leagueId: number,
-): Promise<number> {
-  const [row] = await db
-    .select({ total: sql<number>`COALESCE(SUM(${paymentsTable.amount}), 0)` })
-    .from(paymentsTable)
-    .where(and(
-      eq(paymentsTable.bowlerId, bowlerId),
-      eq(paymentsTable.leagueId, leagueId),
-      eq(paymentsTable.status, 'paid'),
-    ));
-  return Number(row?.total ?? 0);
-}
 
 /**
  * validate `additionalBowlerIds` (combined autopay).
@@ -256,26 +237,6 @@ router.post('/', adminWriteLimiter, async (req, res) => {
       );
       if (!v.ok) return sendError(res, v.message, 400, 'INVALID_PARTNER');
       cleanedAdditional = v.ids;
-    }
-
-    // Task #715: weekly auto-pay setup must clear every included bowler's
-    // past-due balance up front. The client charges catch-up + this week
-    // immediately and only POSTs here on success; this guard makes the
-    // rule real even when a non-UI client bypasses that step.
-    if (!isUpfrontFrequency) {
-      const bowlerIdsToCheck = [req.body.bowlerId, ...cleanedAdditional];
-      for (const checkBowlerId of bowlerIdsToCheck) {
-        const paid = await getBowlerPaidAmountInLeague(checkBowlerId, league.id);
-        const pastDue = calculateBowlerPastDue(league, paid);
-        if (pastDue > 0) {
-          return sendError(
-            res,
-            'Past-due balance must be paid before starting auto-pay',
-            400,
-            'PAST_DUE_BALANCE',
-          );
-        }
-      }
     }
 
     const validationResult = insertPaymentScheduleSchema.safeParse({
