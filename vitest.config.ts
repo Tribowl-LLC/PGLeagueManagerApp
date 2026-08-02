@@ -150,6 +150,7 @@ const PARALLEL_ISOLATED = [
   'tests/unit/password-changed-i18n.test.ts',
   'tests/unit/payment-customer-sync.test.ts',
   'tests/unit/autopay-setup-request-store-postgres.test.ts',
+  'tests/unit/autopay-setup-execution-postgres.test.ts',
   'tests/unit/payment-execution-double-pay.test.ts',
   'tests/unit/payment-execution-error-mapping.test.ts',
   'tests/unit/payment-execution-receipt-warn.test.ts',

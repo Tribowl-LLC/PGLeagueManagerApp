@@ -17,6 +17,11 @@ import { calculateBowlerPastDue } from '@shared/financial-utils';
 import { payments as paymentsTable } from '@shared/schema';
 import { db } from '../db';
 import { and, eq, sql } from 'drizzle-orm';
+import {
+  AutopaySetupError,
+  getWeeklyAutopaySetupQuote,
+  setupWeeklyAutopay,
+} from '../services/autopay-setup.js';
 
 async function getBowlerPaidAmountInLeague(
   bowlerId: number,
@@ -67,6 +72,110 @@ const log = createLogger("PaymentSchedules");
 
 const router = Router();
 
+function handleAutopaySetupError(res: Parameters<typeof sendError>[0], error: unknown) {
+  if (error instanceof AutopaySetupError) {
+    return sendError(res, error.message, error.statusCode, error.code);
+  }
+  throw error;
+}
+
+router.get('/setup-quote/:bowlerId/:leagueId', async (req, res) => {
+  try {
+    if (!req.isAuthenticated()) {
+      return sendError(res, 'Authentication required', 401, 'AUTH_REQUIRED');
+    }
+    const bowlerId = Number(singleRouteParam(req.params.bowlerId));
+    const leagueId = Number(singleRouteParam(req.params.leagueId));
+    if (!Number.isSafeInteger(bowlerId) || bowlerId <= 0 || !Number.isSafeInteger(leagueId) || leagueId <= 0) {
+      return sendError(res, 'Invalid bowler or league ID', 400, 'INVALID_ID');
+    }
+    if (!await hasAccessToLeague(req, leagueId)) {
+      return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
+    }
+    if (!await hasSelfOrAdminAccessToBowler(req, bowlerId)) {
+      return sendError(res, "You don't have access to this bowler", 403, 'FORBIDDEN');
+    }
+    const rawAdditional = typeof req.query.additionalBowlerIds === 'string'
+      ? req.query.additionalBowlerIds.split(',').filter(Boolean).map(Number)
+      : [];
+    if (rawAdditional.some((id) => !Number.isSafeInteger(id) || id <= 0)) {
+      return sendError(res, 'Invalid linked bowler IDs', 400, 'INVALID_PARTNER');
+    }
+    const quote = await getWeeklyAutopaySetupQuote({
+      payerBowlerId: bowlerId,
+      leagueId,
+      additionalBowlerIds: rawAdditional,
+    });
+    return sendSuccess(res, quote);
+  } catch (error) {
+    try {
+      return handleAutopaySetupError(res, error);
+    } catch (unexpected) {
+      log.error('Error quoting weekly auto-pay setup:', unexpected);
+      return sendError(res, 'Internal server error', 500, 'SERVER_ERROR');
+    }
+  }
+});
+
+router.post('/setup', adminWriteLimiter, async (req, res) => {
+  try {
+    if (!req.isAuthenticated()) {
+      return sendError(res, 'Authentication required', 401, 'AUTH_REQUIRED');
+    }
+    const bowlerId = Number(req.body.bowlerId);
+    const leagueId = Number(req.body.leagueId);
+    if (!Number.isSafeInteger(bowlerId) || bowlerId <= 0 || !Number.isSafeInteger(leagueId) || leagueId <= 0) {
+      return sendError(res, 'Invalid bowler or league ID', 400, 'INVALID_ID');
+    }
+    if (!await hasAccessToLeague(req, leagueId)) {
+      return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
+    }
+    if (!await hasSelfOrAdminAccessToBowler(req, bowlerId)) {
+      return sendError(res, "You don't have access to this bowler", 403, 'FORBIDDEN');
+    }
+    if (typeof req.body.sourceId !== 'string' || req.body.sourceId.length === 0) {
+      return sendError(res, 'A saved payment card is required', 400, 'INVALID_PAYMENT_SOURCE');
+    }
+    if (typeof req.body.quoteFingerprint !== 'string') {
+      return sendError(res, 'An auto-pay quote is required', 400, 'QUOTE_REQUIRED');
+    }
+    const additionalBowlerIds = req.body.additionalBowlerIds == null
+      ? []
+      : req.body.additionalBowlerIds;
+    if (!Array.isArray(additionalBowlerIds)) {
+      return sendError(res, 'additionalBowlerIds must be an array', 400, 'INVALID_PARTNER');
+    }
+    const result = await setupWeeklyAutopay({
+      payerBowlerId: bowlerId,
+      leagueId,
+      additionalBowlerIds,
+      quoteFingerprint: req.body.quoteFingerprint,
+      sourceId: req.body.sourceId,
+      buyerEmail: typeof req.body.buyerEmail === 'string' ? req.body.buyerEmail : undefined,
+    });
+    if (result.schedule && !isTestKickSuppressed(req, PAYMENT_SCHEDULER_KICK_HEADER)) {
+      const league = await storage.getLeague(leagueId);
+      await paymentScheduler.addSchedule(result.schedule, league?.organizationId ?? undefined);
+    }
+    return sendSuccess(res, {
+      setupRequestId: result.request.id,
+      immediateAmountMinor: result.quote.immediateAmountMinor,
+      coveredOccurrences: result.quote.coveredOccurrences,
+      firstAutomaticAt: result.quote.firstAutomaticAt,
+      firstAutomaticAmountMinor: result.quote.firstAutomaticAmountMinor,
+      recurringAmountMinor: result.quote.recurringAmountMinor,
+      schedule: result.schedule,
+    }, 201);
+  } catch (error) {
+    try {
+      return handleAutopaySetupError(res, error);
+    } catch (unexpected) {
+      log.error('Error setting up weekly auto-pay:', unexpected);
+      return sendError(res, 'Internal server error', 500, 'SERVER_ERROR');
+    }
+  }
+});
+
 router.post('/', adminWriteLimiter, async (req, res) => {
   try {
     if (!req.isAuthenticated()) {
@@ -114,6 +223,13 @@ router.post('/', adminWriteLimiter, async (req, res) => {
       }
     } else if (isUpfrontFrequency) {
       return sendError(res, 'Frequency "upfront" is only valid for upfront-mode leagues', 400, 'INVALID_FREQUENCY');
+    } else {
+      return sendError(
+        res,
+        'Weekly auto-pay must be created through the server-authoritative setup flow',
+        409,
+        'AUTOPAY_SETUP_REQUIRED',
+      );
     }
 
     // Upfront schedules charge immediately; all others fire on the next league night.

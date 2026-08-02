@@ -263,7 +263,10 @@ export function planWeeklyAutopaySetup(input: {
     allocations,
     firstAutomaticOccurrence,
     firstAutomaticAmountMinor,
-    recurringAmountMinor: input.league.weeklyFee * input.payees.length,
+    // payment_schedules.amount is the per-bowler base. The scheduled
+    // executor multiplies it by the payer plus additionalBowlerIds, so
+    // storing the combined total here would multiply combined auto-pay twice.
+    recurringAmountMinor: input.league.weeklyFee,
     timezone,
     competitionStartTime,
   };

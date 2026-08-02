@@ -7,6 +7,7 @@ import { PaymentSubmitSection } from "@/components/payment-submit-section";
 import { PaymentSetupRecipientPicker } from "@/components/payment-setup-recipient-picker";
 import { PaymentSetupSummaryCard } from "@/components/payment-setup-summary-card";
 import { PaymentSetupCombinedPay } from "@/components/payment-setup-combined-pay";
+import type { AutopaySetupQuote } from "@/lib/autopay-setup";
 
 type RefDiv = React.RefObject<HTMLDivElement | null>;
 
@@ -81,14 +82,14 @@ interface PaymentSetupFormProps {
   // When weekly auto-pay is being set up and any included bowler has
   // a past-due balance, the immediate charge is Σ(pastDue+weeklyFee)
   // per included bowler — surfaced here as a "Total due today" line.
-  partnerPastDueByBowlerId?: Record<number, number>;
+  autopayQuote?: AutopaySetupQuote;
+  autopayQuoteLoading: boolean;
+  autopayQuoteError: string | null;
 }
 
 // Stable default references so optional props don't create a fresh array /
 // object on every render (which would defeat memoized children / deps).
 const EMPTY_PARTNER_OPTIONS: { id: number; name: string }[] = [];
-const EMPTY_PARTNER_PAST_DUE: Record<number, number> = {};
-
 export const PaymentSetupForm: FC<PaymentSetupFormProps> = ({
   league,
   weeklyFee,
@@ -134,7 +135,9 @@ export const PaymentSetupForm: FC<PaymentSetupFormProps> = ({
   allowPartnerSelection,
   additionalBowlerIds,
   setAdditionalBowlerIds,
-  partnerPastDueByBowlerId = EMPTY_PARTNER_PAST_DUE,
+  autopayQuote,
+  autopayQuoteLoading,
+  autopayQuoteError,
 }) => {
   // Task #706: combined-pay (multi-select) is now offered for ALL
   // payment modes — autopay, one-time, and upfront — whenever the
@@ -164,25 +167,16 @@ export const PaymentSetupForm: FC<PaymentSetupFormProps> = ({
   const baseAmount = calculateTotalAmount();
   const combinedTotal = baseAmount * (1 + additionalBowlerIds.length);
 
-  // Task #715: weekly auto-pay setup must clear past-due up front. When
-  // any included bowler has a past-due balance, the immediate charge is
-  // Σ(amountPastDue + weeklyFee) for the payer + each combined partner.
-  // The recurring weekly amount is unchanged.
+  // Weekly auto-pay amounts come only from the server occurrence quote.
   const isAutopayMode = paymentMode === 'autopay' && league.paymentMode !== 'upfront';
-  const selfPastDue = financials.amountPastDue;
-  const partnerPastDueSum = additionalBowlerIds.reduce(
-    (sum, id) => sum + (partnerPastDueByBowlerId[id] ?? 0),
-    0,
-  );
-  const anyAutopayPastDue =
-    isAutopayMode &&
-    (selfPastDue > 0 ||
-      additionalBowlerIds.some((id) => (partnerPastDueByBowlerId[id] ?? 0) > 0));
-  const autopayDueTodayTotal = isAutopayMode
-    ? selfPastDue + weeklyFee * (1 + additionalBowlerIds.length) + partnerPastDueSum
-    : 0;
-  const selfDueToday = selfPastDue + weeklyFee;
-  const partnerDueToday = (id: number) => (partnerPastDueByBowlerId[id] ?? 0) + weeklyFee;
+  const anyAutopayPastDue = isAutopayMode && (autopayQuote?.immediateAmountMinor ?? 0) > 0;
+  const autopayDueTodayTotal = isAutopayMode ? autopayQuote?.immediateAmountMinor ?? 0 : 0;
+  const immediateAmountForBowler = (bowlerId: number) =>
+    autopayQuote?.coveredOccurrences
+      .filter((row) => row.bowlerId === bowlerId)
+      .reduce((sum, row) => sum + row.amountMinor, 0) ?? 0;
+  const selfDueToday = immediateAmountForBowler(selfBowler.id);
+  const partnerDueToday = immediateAmountForBowler;
   const togglePartner = (id: number, on: boolean) => {
     if (on) {
       if (!additionalBowlerIds.includes(id)) {
@@ -223,6 +217,9 @@ export const PaymentSetupForm: FC<PaymentSetupFormProps> = ({
             additionalBowlerCount={additionalBowlerIds.length}
             anyAutopayPastDue={anyAutopayPastDue}
             autopayDueTodayTotal={autopayDueTodayTotal}
+            autopayQuote={autopayQuote}
+            autopayQuoteLoading={autopayQuoteLoading}
+            autopayQuoteError={autopayQuoteError}
           />
 
           {showCombinedPay && (
@@ -293,7 +290,9 @@ export const PaymentSetupForm: FC<PaymentSetupFormProps> = ({
             isInitialized={isInitialized}
             selectedSavedCardId={selectedSavedCardId}
             additionalBowlerCount={additionalBowlerIds.length}
-            autopayDueTodayOverride={anyAutopayPastDue ? autopayDueTodayTotal : null}
+            autopayDueTodayOverride={isAutopayMode && autopayQuote ? autopayDueTodayTotal : null}
+            autopayQuoteLoading={isAutopayMode && autopayQuoteLoading}
+            autopayQuoteError={isAutopayMode ? autopayQuoteError : null}
             onSubmit={onSubmit}
             onCancel={onCancel}
           />

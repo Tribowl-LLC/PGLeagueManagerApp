@@ -296,13 +296,14 @@ Interactive charges and refunds should adopt the same create/lease/call/finalize
 shape in later scoped changes. They are not part of the Phase 2B scheduled
 cutover unless that PR explicitly includes and tests them.
 
-## Dormant weekly auto-pay setup foundation
+## Weekly auto-pay setup foundation and activation
 
 Migration `0010_autopay_setup_foundation` adds a dormant setup workflow for a
-later interactive-charge cutover. The schema release does not add a route,
-change a client, create a setup row, acquire an operation lease, or call
-Square. Existing interactive, scheduled, refund, receipt, and display behavior
-remains on its pre-0010 paths.
+later interactive-charge cutover. The migration-only release did not add a
+route, change a client, create a setup row, acquire an operation lease, or call
+Square. The following behavior release activates that already-migrated
+foundation only for weekly auto-pay setup; one-time/upfront charges, general
+interactive payments, refunds, and webhooks remain on their prior paths.
 
 `autopay_setup_requests` is not a second provider ledger. It owns only:
 
@@ -322,12 +323,28 @@ operation. Later success finalization will use the existing
 `payments.payment_operation_id` and allocation index; no setup-specific
 payment lineage columns exist.
 
-The dormant storage primitives can atomically create or verify immutable setup
-and operation intent, but no production caller invokes them in this release.
-The scheduled operation executor is unchanged. The later behavior PR must add
-explicit operation-type dispatch before any interactive operation becomes
-reachable, and must preserve the established lease/call/fenced-finalize
-boundary.
+The activated setup flow obtains a server-authoritative occurrence quote before
+confirmation. The quote assigns paid money to exact `week_of` occurrences,
+classifies the current bowling-day amount as `due_today` until three hours
+after the league-local start time, requires all older occurrences to be
+settled, and identifies the first unpaid future automatic occurrence. The
+client sends no amount or next-payment timestamp.
+
+A zero-dollar pre-start setup creates the future weekly schedule without a
+payment operation or provider charge. A positive setup creates one
+`interactive_charge` operation, acquires an expiring fenced lease, calls
+Square outside every database transaction with the operation's stable order
+and payment keys, and atomically commits the operation success, one local
+payment row per covered occurrence, the future schedule, and setup completion.
+Unknown outcomes and transient failures use the existing durable retry wake;
+hard declines require another saved card. The wake dispatcher branches on
+operation type so an interactive setup can never be interpreted as a scheduled
+snapshot.
+
+`payment_schedules.amount` remains the per-bowler weekly base. Combined
+auto-pay stores selected partners in `additional_bowler_ids`; the scheduled
+executor performs the existing payer-plus-partners multiplication exactly once.
+No new migration is required for this activation release.
 
 Migration 0010 also adds a partial unique index permitting only one active
 payment schedule per bowler and league. This changes database enforcement for

@@ -160,6 +160,19 @@ describe("weekly billing occurrence planner", () => {
     ]);
   });
 
+  it("keeps the recurring schedule amount per bowler for combined auto-pay", () => {
+    const plan = planWeeklyAutopaySetup({
+      league: league(),
+      payees: [
+        { bowlerId: 7, payments: [] },
+        { bowlerId: 8, payments: [] },
+      ],
+      now: new Date("2026-08-02T16:35:00.000Z"),
+    });
+    expect(plan.firstAutomaticAmountMinor).toBe(200);
+    expect(plan.recurringAmountMinor).toBe(100);
+  });
+
   it("fails closed when combined payees have different future cursors", () => {
     const first = buildWeeklyBillingOccurrences(league())[0];
     expect(first).toBeDefined();

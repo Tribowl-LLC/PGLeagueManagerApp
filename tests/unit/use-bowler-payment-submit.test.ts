@@ -75,6 +75,7 @@ vi.mock('@/lib/provider-not-configured', async () => {
 });
 
 import { useBowlerPaymentSubmit } from '@/hooks/use-bowler-payment-submit';
+import type { AutopaySetupQuote } from '@/lib/autopay-setup';
 
 type SubmitOpts = Parameters<typeof useBowlerPaymentSubmit>[0];
 
@@ -101,6 +102,22 @@ function makeCard(): NonNullable<SubmitOpts['card']> {
   return { token: 'unused' } as unknown as NonNullable<SubmitOpts['card']>;
 }
 
+function makeAutopayQuote(immediateAmountMinor = 0): AutopaySetupQuote {
+  return {
+    quoteFingerprint: `lvautopayquote:v1:${'a'.repeat(64)}`,
+    generatedAt: '2026-08-02T16:35:00.000Z',
+    immediateAmountMinor,
+    coveredOccurrences: [],
+    firstAutomaticAt: '2026-08-02T16:40:00.000Z',
+    firstAutomaticLocalDate: '2026-08-02',
+    firstAutomaticAmountMinor: 2000,
+    recurringAmountMinor: 2000,
+    timezone: 'America/New_York',
+    competitionStartTime: '12:40',
+    resuming: false,
+  };
+}
+
 function makeOptions(overrides: Partial<SubmitOpts> = {}): SubmitOpts {
   const base: SubmitOpts = {
     league: makeLeague(),
@@ -111,6 +128,7 @@ function makeOptions(overrides: Partial<SubmitOpts> = {}): SubmitOpts {
     selectedSavedCardId: 'card-1',
     selectedSchedule: 'weekly',
     storeCard: false,
+    autopayQuote: makeAutopayQuote(),
     financials: {
       fullSeasonAmount: 30000,
       remainingBalance: 30000,
@@ -213,7 +231,7 @@ describe('useBowlerPaymentSubmit success toasts', () => {
   });
 
   it('shows the auto-pay no-balance toast that does not mention a charge today', async () => {
-    csrfFetchMock.mockResolvedValueOnce(await jsonResponse({ ok: true }));
+    csrfFetchMock.mockResolvedValueOnce(await jsonResponse({ data: { immediateAmountMinor: 0 } }));
 
     const submit = useBowlerPaymentSubmit(
       makeOptions({
@@ -232,23 +250,14 @@ describe('useBowlerPaymentSubmit success toasts', () => {
     expect(toastMock).toHaveBeenCalledTimes(1);
     const { title, description } = lastToast();
     expect(title).toBe('Auto-Pay Activated');
-    expect(description).toBe('Your card has been saved and weekly auto-pay is now active.');
+    expect(description).toBe('Your card has been saved and weekly auto-pay is now active for the next unpaid league occurrence.');
     expect(description).not.toMatch(/Paid \$/);
     expect(description).not.toMatch(/today/);
     expect(description).not.toMatch(/selectedSchedule/);
   });
 
-  // Task #715: combined weekly auto-pay setup must clear every
-  // included bowler's past-due balance up front. The immediate charge
-  // is Σ(amountPastDue + weeklyFee) per included bowler, routed
-  // through the combined-payments endpoint so one charge writes N+1
-  // per-bowler rows. Only on success does the schedule POST happen.
-  it('combined autopay with past-due charges Σ(pastDue+weeklyFee) via combined-payments before scheduling', async () => {
-    csrfFetchMock
-      // 1) immediate combined charge
-      .mockResolvedValueOnce(await jsonResponse({ data: { id: 'pmt-1' } }))
-      // 2) schedule create
-      .mockResolvedValueOnce(await jsonResponse({ ok: true }));
+  it('sends combined auto-pay only to the server-authoritative setup endpoint', async () => {
+    csrfFetchMock.mockResolvedValueOnce(await jsonResponse({ data: { immediateAmountMinor: 16000 } }));
 
     const submit = useBowlerPaymentSubmit(
       makeOptions({
@@ -257,7 +266,7 @@ describe('useBowlerPaymentSubmit success toasts', () => {
         selectedSavedCardId: 'card-1',
         weeklyFee: 2000,
         additionalBowlerIds: [42, 43],
-        partnerPastDueByBowlerId: { 42: 4000, 43: 0 },
+        autopayQuote: makeAutopayQuote(16000),
         financials: {
           fullSeasonAmount: 30000,
           remainingBalance: 30000,
@@ -269,39 +278,24 @@ describe('useBowlerPaymentSubmit success toasts', () => {
 
     await submit();
 
-    // First csrfFetch: combined-payments with per-bowler payees that
-    // each charge `amountPastDue + weeklyFee`. Self: 6000+2000,
-    // partner-42: 4000+2000, partner-43: 0+2000. Total 16000.
-    const [combinedUrl, combinedInit] = csrfFetchMock.mock.calls[0];
-    expect(combinedUrl).toBe('/api/payments-provider/combined-payments');
-    const combinedBody = JSON.parse((combinedInit as { body: string }).body);
-    expect(combinedBody.amount).toBe(16000);
-    expect(combinedBody.payees).toEqual([
-      { bowlerId: 'bowler-1', amount: 8000 },
-      { bowlerId: 42, amount: 6000 },
-      { bowlerId: 43, amount: 2000 },
-    ]);
-    expect(combinedBody.sourceId).toBe('card-1');
-
-    // Second csrfFetch: schedule create with the recurring weeklyFee
-    // (NOT the catch-up amount) and the combined partner ids.
-    const [scheduleUrl, scheduleInit] = csrfFetchMock.mock.calls[1];
-    expect(scheduleUrl).toBe('/api/payment-schedules');
-    const scheduleBody = JSON.parse((scheduleInit as { body: string }).body);
-    expect(scheduleBody.amount).toBe(2000);
-    expect(scheduleBody.additionalBowlerIds).toEqual([42, 43]);
+    expect(csrfFetchMock).toHaveBeenCalledTimes(1);
+    const [setupUrl, setupInit] = csrfFetchMock.mock.calls[0];
+    expect(setupUrl).toBe('/api/payment-schedules/setup');
+    const setupBody = JSON.parse((setupInit as { body: string }).body);
+    expect(setupBody).not.toHaveProperty('amount');
+    expect(setupBody).not.toHaveProperty('payees');
+    expect(setupBody).not.toHaveProperty('nextPaymentDate');
+    expect(setupBody.additionalBowlerIds).toEqual([42, 43]);
+    expect(setupBody.quoteFingerprint).toBe(makeAutopayQuote(16000).quoteFingerprint);
 
     const { title, description } = lastToast();
     expect(title).toBe('Auto-Pay Activated');
     expect(description).toBe(
-      'Paid $160.00 today and weekly auto-pay is now active for future weeks.',
+      'Paid $160.00 today and weekly auto-pay is now active for the next unpaid league occurrence.',
     );
   });
 
-  // Task #715: when the immediate catch-up charge fails, NO schedule
-  // is created. The hook surfaces a Payment Failed toast and the
-  // schedule POST never fires.
-  it('aborts schedule creation when the immediate past-due charge fails', async () => {
+  it('surfaces a setup failure without falling back to a client-orchestrated charge', async () => {
     csrfFetchMock.mockResolvedValueOnce(
       await jsonResponse({ error: { message: 'Card declined', code: 'CARD_DECLINED' } }, false),
     );
@@ -311,6 +305,7 @@ describe('useBowlerPaymentSubmit success toasts', () => {
         selectedSchedule: 'weekly',
         cardMode: 'saved',
         selectedSavedCardId: 'card-1',
+        autopayQuote: makeAutopayQuote(8000),
         financials: { fullSeasonAmount: 30000, remainingBalance: 30000, amountPastDue: 6000 },
         calculateTotalAmount: () => 2000,
       }),
@@ -318,22 +313,20 @@ describe('useBowlerPaymentSubmit success toasts', () => {
 
     await submit();
 
-    // Exactly one POST: the failed immediate charge. The schedule POST
-    // never fires because the throw aborts before it.
     expect(csrfFetchMock).toHaveBeenCalledTimes(1);
+    expect(csrfFetchMock.mock.calls[0]?.[0]).toBe('/api/payment-schedules/setup');
     const { title, variant } = lastToast();
     expect(variant).toBe('destructive');
     expect(title).toBe('Payment Failed');
   });
 
   it('shows the auto-pay with-balance toast that splits the past-due charge from the schedule', async () => {
-    csrfFetchMock
-      .mockResolvedValueOnce(await jsonResponse({ data: { id: 'pmt-1' } }))
-      .mockResolvedValueOnce(await jsonResponse({ ok: true }));
+    csrfFetchMock.mockResolvedValueOnce(await jsonResponse({ data: { immediateAmountMinor: 8000 } }));
 
     const submit = useBowlerPaymentSubmit(
       makeOptions({
         selectedSchedule: 'weekly',
+        autopayQuote: makeAutopayQuote(8000),
         financials: {
           fullSeasonAmount: 30000,
           remainingBalance: 30000,
@@ -349,9 +342,9 @@ describe('useBowlerPaymentSubmit success toasts', () => {
     const { title, description } = lastToast();
     expect(title).toBe('Auto-Pay Activated');
     expect(description).toBe(
-      'Paid $80.00 today and weekly auto-pay is now active for future weeks.',
+      'Paid $80.00 today and weekly auto-pay is now active for the next unpaid league occurrence.',
     );
-    expect(description).not.toBe('Your card has been saved and weekly auto-pay is now active.');
+    expect(description).not.toBe('Your card has been saved and weekly auto-pay is now active for the next unpaid league occurrence.');
   });
 });
 

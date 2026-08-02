@@ -65,8 +65,27 @@ describe('calculateFinancials — totalDueToDate is capped at fullSeasonAmount',
     expect(result.weeksPassed).toBe(8);
     expect(result.doublePay.dates).toEqual([]);
     expect(result.doublePay.totalExtra).toBe(0);
-    expect(result.totalDueToDate).toBe(8 * 3000);
-    expect(result.amountPastDue).toBe(8 * 3000);
+    // The current bowling day is due today, not past due, until three hours
+    // after the league start time.
+    expect(result.totalDueToDate).toBe(7 * 3000);
+    expect(result.amountPastDue).toBe(7 * 3000);
+  });
+
+  it('changes the current bowling-day payment from due-today to past-due at three hours', () => {
+    const league = makeLeague({
+      seasonStart: isoDate(2025, 9, 3),
+      seasonEnd: isoDate(2025, 9, 10),
+      totalBowlingWeeks: 2,
+      competitionStartTime: '12:00',
+      timezone: 'UTC',
+    });
+    vi.setSystemTime(new Date('2025-09-03T14:59:59.999Z'));
+    expect(calculateFinancials(league, []).amountPastDue).toBe(0);
+    expect(calculateBowlerPastDue(league, 0)).toBe(0);
+
+    vi.setSystemTime(new Date('2025-09-03T15:00:00.000Z'));
+    expect(calculateFinancials(league, []).amountPastDue).toBe(3000);
+    expect(calculateBowlerPastDue(league, 0)).toBe(3000);
   });
 
   it('two future double-pay dates do NOT inflate fullSeasonAmount (redistribution model)', () => {
@@ -85,7 +104,7 @@ describe('calculateFinancials — totalDueToDate is capped at fullSeasonAmount',
     expect(result.doublePay.totalExtra).toBe(6000); // shifted, not added
     expect(result.doublePay.perWeekExtra).toBe(3000);
     expect(result.doublePay.pastExtra).toBe(0);
-    expect(result.totalDueToDate).toBe(8 * 3000);
+    expect(result.totalDueToDate).toBe(7 * 3000);
   });
 
   it('past double-pay dates roll into pastExtra and totalDueToDate (still capped at fullSeasonAmount)', () => {
@@ -98,10 +117,11 @@ describe('calculateFinancials — totalDueToDate is capped at fullSeasonAmount',
 
     expect(result.weeksPassed).toBe(8);
     expect(result.doublePay.pastExtra).toBe(3000);
-    // 8 weeks of regular billing + $30 extra from the past double-pay date.
+    // Seven completed weeks plus the shifted $30 from the past double-pay
+    // date; the current bowling day remains due-today during its grace window.
     // Well below the season cap (32 × $30 = $960), so dueToDate matches raw.
-    expect(result.totalDueToDate).toBe(8 * 3000 + 3000);
-    expect(result.amountPastDue).toBe(8 * 3000 + 3000);
+    expect(result.totalDueToDate).toBe(7 * 3000 + 3000);
+    expect(result.amountPastDue).toBe(7 * 3000 + 3000);
     expect(result.totalDueToDate).toBeLessThanOrEqual(result.fullSeasonAmount);
   });
 

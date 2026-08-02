@@ -1,8 +1,7 @@
-import { startOfToday, isValid } from "date-fns";
+import { isValid } from "date-fns";
 import {
   getEffectiveBowlingWeeks,
-  countBowlingWeeksPassed,
-  toIsoDateStr,
+  getWeeklyBillingOccurrences,
 } from "./schedule-utils";
 
 export interface BowlerPastDueLeague {
@@ -15,6 +14,8 @@ export interface BowlerPastDueLeague {
   skipDates?: string[] | null;
   cancelledDates?: string[] | null;
   doublePayDates?: string[] | null;
+  competitionStartTime?: string | null;
+  timezone?: string | null;
 }
 
 function getSeasonLengthWeeks(league: {
@@ -56,12 +57,8 @@ function getSeasonLengthWeeks(league: {
 export function calculateBowlerPastDue(
   league: BowlerPastDueLeague,
   bowlerPaidAmount: number,
+  now: Date = new Date(),
 ): number {
-  const doublePayDates = (league.doublePayDates ?? [])
-    .map((d) => d.slice(0, 10))
-    .filter(Boolean);
-  const doublePayCount = doublePayDates.length;
-
   const totalWeeks = getSeasonLengthWeeks({
     seasonStart: league.seasonStart,
     seasonEnd: league.seasonEnd ?? league.seasonStart,
@@ -74,26 +71,22 @@ export function calculateBowlerPastDue(
     return Math.max(0, fullSeasonAmount - bowlerPaidAmount);
   }
 
-  const today = startOfToday();
-  const todayStr = toIsoDateStr(today);
-  const pastExtra =
-    doublePayDates.filter((d) => d <= todayStr).length * league.weeklyFee;
-  // Last N bowling weeks aren't billed (the double-pay redistribution
-  // shifted that money forward), so cap chargeable weeks accordingly.
-  const billableWeeks = Math.max(0, totalWeeks - doublePayCount);
-
-  if (league.totalBowlingWeeks != null && league.weekDay) {
-    const weeksPassedRaw = countBowlingWeeksPassed(
-      league.seasonStart,
-      league.weekDay,
-      league.skipDates ?? [],
-      league.cancelledDates ?? [],
-    );
-    const chargedWeeks = Math.min(weeksPassedRaw, billableWeeks);
-    const dueToDate = Math.min(
-      league.weeklyFee * chargedWeeks + pastExtra,
-      fullSeasonAmount,
-    );
+  if (league.weekDay) {
+    const occurrences = getWeeklyBillingOccurrences({
+      seasonStart: league.seasonStart,
+      seasonEnd: league.seasonEnd ?? league.seasonStart,
+      weekDay: league.weekDay,
+      competitionStartTime: league.competitionStartTime ?? "12:00",
+      timezone: league.timezone,
+      weeklyFee: league.weeklyFee,
+      totalBowlingWeeks: league.totalBowlingWeeks,
+      skipDates: league.skipDates,
+      cancelledDates: league.cancelledDates,
+      doublePayDates: league.doublePayDates,
+    });
+    const dueToDate = occurrences
+      .filter((occurrence) => new Date(occurrence.graceDeadlineAt).getTime() <= now.getTime())
+      .reduce((sum, occurrence) => sum + occurrence.amountMinor, 0);
     return Math.max(0, dueToDate - bowlerPaidAmount);
   }
 
@@ -102,12 +95,8 @@ export function calculateBowlerPastDue(
   const msPerWeek = 7 * 24 * 60 * 60 * 1000;
   const weeksPassedRaw = Math.max(
     0,
-    Math.round((today.getTime() - seasonStart.getTime()) / msPerWeek),
+    Math.round((now.getTime() - seasonStart.getTime()) / msPerWeek),
   );
-  const chargedWeeks = Math.min(weeksPassedRaw, billableWeeks);
-  const dueToDate = Math.min(
-    league.weeklyFee * chargedWeeks + pastExtra,
-    fullSeasonAmount,
-  );
+  const dueToDate = Math.min(league.weeklyFee * weeksPassedRaw, fullSeasonAmount);
   return Math.max(0, dueToDate - bowlerPaidAmount);
 }
