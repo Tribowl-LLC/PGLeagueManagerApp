@@ -100,21 +100,23 @@ describe("payment operation stable identity", () => {
   });
 });
 
-describe("Phase 2B-1 dormant boundary", () => {
+describe("Phase 2B-2 scheduled-only boundary", () => {
   it.each([
-    "server/services/payment-scheduler.ts",
-    "server/services/payment-lifecycle.ts",
     "server/services/payment-execution.ts",
     "server/routes/payments-provider/charges.ts",
     "server/routes/payments/payment-refunds.ts",
     "server/routes/payment-schedules.ts",
     "server/routes/index.ts",
-    "server/app.ts",
-    "server/lib/shutdown.ts",
     "server/index.ts",
-  ])("does not wire the ledger into %s", (path) => {
+  ])("does not wire interactive, refund, webhook, or route behavior into %s", (path) => {
     const source = readFileSync(resolve(path), "utf8");
     expect(source).not.toMatch(/payment-operation|paymentOperations/);
+  });
+
+  it("gates scheduled ledger startup on ledger_execute", () => {
+    const source = readFileSync(resolve("server/app.ts"), "utf8");
+    expect(source).toContain("scheduledPaymentOperationExecutor.start(scheduledPaymentExecutionMode)");
+    expect(source).toContain("scheduledPaymentExecutionMode !== 'ledger_execute'");
   });
 
   it("keeps transaction-capable finalization independent from provider refunds", () => {

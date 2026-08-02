@@ -2,6 +2,7 @@ import type { Server } from "http";
 import type { Request, Response, NextFunction } from "express";
 import { cleanup as dbCleanup } from "../db";
 import { paymentScheduler } from "../services/payment-scheduler";
+import { scheduledPaymentOperationExecutor } from "../services/scheduled-payment-operation-executor";
 import { stopPaymentSyncRetrySweep } from "../services/payment-sync-retry";
 import { createLogger } from "../logger";
 
@@ -35,6 +36,7 @@ export function registerShutdownHandlers(server: Server): void {
 
     try {
       paymentScheduler?.cancelAllJobs();
+      scheduledPaymentOperationExecutor.stop();
       stopPaymentSyncRetrySweep();
 
       await new Promise<void>((resolve) => {

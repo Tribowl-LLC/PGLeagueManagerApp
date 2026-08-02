@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(9);
+    expect(migrations).toHaveLength(10);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -185,6 +185,15 @@ describe('normalized migration baseline tools', () => {
     expect(migrations[8]?.sql).toContain('scheduled_payment_operation_snapshots_league_id_leagues_id_fk');
     expect(migrations[8]?.sql).toContain('payments_operation_allocation_unique');
     expect(migrations[8]?.sql).not.toMatch(/(?:^|\n)\s*(?:DROP|UPDATE|DELETE|INSERT)\b/);
+    expect(migrations[9]).toMatchObject({
+      idx: 9,
+      tag: '0009_payment_operation_reconciliation_required',
+      createdAt: 1785680310111,
+      hash: '74bf179555ff73656760c205375bc15ba1075691e49c6cfd6169de42f4372157',
+    });
+    expect(migrations[9]?.sql).toContain("'reconciliation_required'");
+    expect(migrations[9]?.sql).toContain('payment_schedules_active_next_payment_idx');
+    expect(migrations[9]?.sql).not.toMatch(/(?:^|\n)\s*(?:UPDATE|DELETE|INSERT)\b/);
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 

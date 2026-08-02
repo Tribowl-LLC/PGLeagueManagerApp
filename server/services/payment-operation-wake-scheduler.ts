@@ -11,7 +11,7 @@ type PaymentOperationClearTimeout = (timer: PaymentOperationTimer) => void;
 
 export interface PaymentOperationWakeSchedulerDependencies {
   loadNextWake: () => Promise<PaymentOperationWake | undefined>;
-  handleWake: (wake: PaymentOperationWake) => Promise<void>;
+  handleWake: (wake: PaymentOperationWake) => Promise<{ retryAfterMs?: number } | void>;
   now?: () => Date;
   setTimeoutFn?: PaymentOperationSetTimeout;
   clearTimeoutFn?: PaymentOperationClearTimeout;
@@ -21,11 +21,29 @@ export interface PaymentOperationWakeSchedulerDependencies {
   };
 }
 
-/**
- * Dormant Phase 2B-1 one-shot wake infrastructure. Nothing constructs or
- * starts this class in production yet. Phase 2B-2 will wire it only after the
- * schedule cutover and provider-call gate are reviewed.
- */
+function wakeContext(wake: PaymentOperationWake): Record<string, unknown> {
+  return wake.kind === "operation"
+    ? {
+      workKind: wake.kind,
+      organizationId: wake.organizationId,
+      operationId: wake.operationId,
+      status: wake.status,
+      attemptCount: wake.attemptCount,
+    }
+    : {
+      workKind: wake.kind,
+      organizationId: wake.organizationId,
+      paymentScheduleId: wake.paymentScheduleId,
+    };
+}
+
+function wakeSignature(wake: PaymentOperationWake, dueMs: number): string {
+  return wake.kind === "operation"
+    ? `operation:${wake.operationId}:${wake.status}:${wake.attemptCount}:${dueMs}`
+    : `schedule:${wake.paymentScheduleId}:${dueMs}`;
+}
+
+/** Exactly one wake for the earliest durable schedule or operation work. */
 export class PaymentOperationWakeScheduler {
   private readonly now: () => Date;
   private readonly setTimeoutFn: PaymentOperationSetTimeout;
@@ -70,7 +88,7 @@ export class PaymentOperationWakeScheduler {
     return this.armPromise;
   }
 
-  private async arm(previousDueSignature: string | undefined): Promise<void> {
+  private async arm(previousDueSignature: string | undefined, minimumDelayMs = 0): Promise<void> {
     if (this.mode !== "ledger_execute") return;
     const generation = ++this.generation;
     if (this.timer !== null) {
@@ -84,31 +102,34 @@ export class PaymentOperationWakeScheduler {
     const dueMs = new Date(wake.dueAt).getTime();
     if (!Number.isFinite(dueMs)) {
       this.dependencies.log?.error("Payment operation wake has an invalid due timestamp", {
-        operationId: wake.operationId,
+        ...wakeContext(wake),
       });
       return;
     }
-    const signature = `${wake.operationId}:${wake.status}:${wake.attemptCount}:${dueMs}`;
-    if (signature === previousDueSignature && dueMs <= this.now().getTime()) {
+    const signature = wakeSignature(wake, dueMs);
+    if (minimumDelayMs <= 0 && signature === previousDueSignature && dueMs <= this.now().getTime()) {
       // A handler must commit a state transition before returning. Refusing to
       // re-arm the identical overdue row prevents a malformed handler or a
       // paused executor from becoming a database hot loop.
       this.dependencies.log?.error("Payment operation wake made no durable progress; scheduler stopped", {
-        operationId: wake.operationId,
-        status: wake.status,
-        attemptCount: wake.attemptCount,
+        ...wakeContext(wake),
       });
       return;
     }
 
     const delayMs = Math.min(
       MAX_TIMER_DELAY_MS,
-      Math.max(0, dueMs - this.now().getTime()),
+      Math.max(minimumDelayMs, dueMs - this.now().getTime(), 0),
     );
     this.timer = this.setTimeoutFn(() => {
       this.timer = null;
       void this.fire(wake, signature, generation);
     }, delayMs);
+    this.dependencies.log?.info("Scheduled payment ledger wake armed", {
+      ...wakeContext(wake),
+      dueAt: wake.dueAt,
+      delayMs,
+    });
     if (this.timer && typeof this.timer === "object" && "unref" in this.timer) {
       this.timer.unref();
     }
@@ -120,15 +141,21 @@ export class PaymentOperationWakeScheduler {
     generation: number,
   ): Promise<void> {
     if (this.mode !== "ledger_execute" || generation !== this.generation) return;
+    let retryAfterMs = 0;
     try {
-      await this.dependencies.handleWake(wake);
+      const result = await this.dependencies.handleWake(wake);
+      retryAfterMs = Math.max(0, result?.retryAfterMs ?? 0);
     } catch (error) {
       this.dependencies.log?.error("Payment operation wake handler failed", {
-        operationId: wake.operationId,
+        ...wakeContext(wake),
         name: error instanceof Error ? error.name : "UnknownError",
       });
+      // A transient preparation or execution failure must not strand overdue
+      // work, but this is a one-shot retry only after real due work—not an
+      // empty database sweep.
+      retryAfterMs = 60_000;
     }
     if (this.mode !== "ledger_execute" || generation !== this.generation) return;
-    await this.arm(signature);
+    await this.arm(signature, retryAfterMs);
   }
 }

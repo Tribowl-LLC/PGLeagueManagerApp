@@ -23,7 +23,7 @@ import { createServer, type Server as HttpServer } from 'http';
 import path from 'path';
 import fs from 'fs';
 import type { AddressInfo } from 'net';
-import { env, isDev, isBetaEnv } from "./config";
+import { env, isDev, isBetaEnv, scheduledPaymentExecutionMode } from "./config";
 import { commitSha } from './utils/build-info';
 import { findLiveCredentials } from './utils/live-credential-check';
 import { registerRoutes } from "./routes/index";
@@ -37,6 +37,8 @@ import {
 import { installDbInvariants } from "./db-invariants";
 import { setupAuth } from "./auth";
 import { paymentScheduler } from './services/payment-scheduler';
+import { scheduledPaymentOperationExecutor } from './services/scheduled-payment-operation-executor';
+import { configureScheduledPaymentRuntime } from './services/scheduled-payment-runtime';
 import { startPaymentSyncRetrySweep } from './services/payment-sync-retry';
 import { bootstrapAllSquareCustomAttributeDefinitions } from './services/square-startup-bootstrap';
 import { verifySquareSdkVersion } from './services/square-provider';
@@ -126,6 +128,10 @@ export interface CreatedApp {
 
 export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp> {
   const suppress = opts.suppressBackgroundWorkers === true;
+  configureScheduledPaymentRuntime({
+    ledgerExecute: !suppress && scheduledPaymentExecutionMode === 'ledger_execute',
+    rearm: () => scheduledPaymentOperationExecutor.rearm(),
+  });
 
   // Refuse to start a beta deploy that has live payment credentials in
   // its env. See `server/utils/live-credential-check.ts` and Task #652.
@@ -454,9 +460,12 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
 
   if (!suppress) {
     try {
-      await paymentScheduler.initialize();
-      paymentScheduler.startSweepPoll();
-      log.info('Schedulers initialized with event-driven payment recovery');
+      await scheduledPaymentOperationExecutor.start(scheduledPaymentExecutionMode);
+      if (scheduledPaymentExecutionMode !== 'ledger_execute') {
+        await paymentScheduler.initialize();
+        paymentScheduler.startSweepPoll();
+      }
+      log.info('Scheduled payment execution initialized', { mode: scheduledPaymentExecutionMode });
 
       await startPaymentSyncRetrySweep();
 
@@ -488,6 +497,8 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
   }
 
   const close = async (): Promise<void> => {
+    scheduledPaymentOperationExecutor.stop();
+    paymentScheduler.cancelAllJobs();
     await new Promise<void>((resolve) => {
       server.close(() => resolve());
     });

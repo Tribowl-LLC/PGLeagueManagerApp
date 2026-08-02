@@ -157,6 +157,13 @@ export interface IPaymentOperationStorage {
       paymentRows?: import("./payment-operations").PaymentOperationLinkedPaymentInput[];
     },
   ): Promise<PaymentOperation>;
+  reconcilePaymentOperationSuccess(
+    input: import("./payment-operations").LeasedPaymentOperationInput & {
+      providerObjectId: string;
+      providerOrderId?: string | null;
+      paymentRows?: import("./payment-operations").PaymentOperationLinkedPaymentInput[];
+    },
+  ): Promise<PaymentOperation>;
   persistScheduledPaymentOperationSnapshot(
     operation: PaymentOperation,
     snapshot: import("../services/scheduled-payment-operation-snapshot").ScheduledPaymentSemanticSnapshot,

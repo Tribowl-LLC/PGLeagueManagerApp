@@ -96,6 +96,7 @@ export class DatabaseStorage implements IStorage {
   recordPaymentOperationActionRequired!: IStorage["recordPaymentOperationActionRequired"];
   recordPaymentOperationFailedTerminal!: IStorage["recordPaymentOperationFailedTerminal"];
   finalizePaymentOperationSuccess!: IStorage["finalizePaymentOperationSuccess"];
+  reconcilePaymentOperationSuccess!: IStorage["reconcilePaymentOperationSuccess"];
   getNextPaymentOperationWake!: IStorage["getNextPaymentOperationWake"];
   recordExpiredPaymentOperationAttemptExhausted!: IStorage["recordExpiredPaymentOperationAttemptExhausted"];
   hasNonterminalScheduledPaymentOperation!: IStorage["hasNonterminalScheduledPaymentOperation"];

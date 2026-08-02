@@ -35,8 +35,8 @@ export class PaymentOperationNotFoundError extends Error {
 }
 
 export class PaymentOperationImmutableMismatchError extends Error {
-  constructor() {
-    super("Existing payment operation does not match the immutable request");
+  constructor(options?: ErrorOptions) {
+    super("Existing payment operation does not match the immutable request", options);
     this.name = "PaymentOperationImmutableMismatchError";
   }
 }
@@ -255,6 +255,63 @@ async function insertLinkedPaymentRows(
   })));
 }
 
+async function deactivatePaidInFullSchedule(
+  executor: PaymentOperationTransaction,
+  operationId: string,
+  now: string,
+): Promise<void> {
+  const [context] = await executor
+    .select({
+      paymentScheduleId: paymentOperations.paymentScheduleId,
+      leagueId: scheduledPaymentOperationSnapshots.leagueId,
+      threshold: scheduledPaymentOperationSnapshots.paidInFullThresholdAmountMinor,
+      seasonStartAt: scheduledPaymentOperationSnapshots.seasonStartAt,
+      seasonEndAt: scheduledPaymentOperationSnapshots.seasonEndAt,
+      payerBowlerId: scheduledPaymentOperationAllocations.bowlerId,
+    })
+    .from(paymentOperations)
+    .innerJoin(
+      scheduledPaymentOperationSnapshots,
+      eq(scheduledPaymentOperationSnapshots.operationId, paymentOperations.id),
+    )
+    .innerJoin(
+      scheduledPaymentOperationAllocations,
+      and(
+        eq(scheduledPaymentOperationAllocations.operationId, paymentOperations.id),
+        eq(scheduledPaymentOperationAllocations.allocationIndex, 0),
+      ),
+    )
+    .where(eq(paymentOperations.id, operationId))
+    .limit(1);
+  if (
+    !context?.paymentScheduleId
+    || context.threshold === null
+    || context.seasonStartAt === null
+    || context.seasonEndAt === null
+  ) return;
+
+  const [paid] = await executor
+    .select({ total: sql<number>`COALESCE(SUM(${payments.amount}), 0)` })
+    .from(payments)
+    .where(and(
+      eq(payments.bowlerId, context.payerBowlerId),
+      eq(payments.leagueId, context.leagueId),
+      eq(payments.status, "paid"),
+      gte(payments.weekOf, context.seasonStartAt),
+      lte(payments.weekOf, context.seasonEndAt),
+    ));
+  if (Number(paid?.total ?? 0) < context.threshold) return;
+
+  await executor
+    .update(paymentSchedules)
+    .set({
+      active: false,
+      cancelledAt: now,
+      cancelReason: `paid_in_full:payment_operation=${operationId}`,
+    })
+    .where(eq(paymentSchedules.id, context.paymentScheduleId));
+}
+
 function validateErrorDetails(
   classification: PaymentOperationErrorClassification,
   code?: string | null,
@@ -466,8 +523,8 @@ export async function persistScheduledPaymentOperationSnapshot(
   let stored: ScheduledPaymentSemanticSnapshot | undefined;
   try {
     stored = await loadScheduledPaymentOperationSnapshot(transaction, operation);
-  } catch {
-    throw new PaymentOperationImmutableMismatchError();
+  } catch (error) {
+    throw new PaymentOperationImmutableMismatchError({ cause: error });
   }
   if (!stored || encrypted.snapshotFingerprint !== fingerprintScheduledPaymentSnapshot(stored)) {
     throw new PaymentOperationImmutableMismatchError();
@@ -661,7 +718,7 @@ export async function recordPaymentOperationProviderUnknown(
       .set({
         status: sql`CASE
           WHEN ${paymentOperations.attemptCount} >= ${PAYMENT_OPERATION_MAX_ATTEMPTS}
-          THEN 'failed_terminal'
+          THEN 'reconciliation_required'
           ELSE 'provider_unknown'
         END`,
         nextAttemptAt: sql`CASE
@@ -680,7 +737,7 @@ export async function recordPaymentOperationProviderUnknown(
         errorClassification: "provider_unknown",
         errorCode: sql`CASE
           WHEN ${paymentOperations.attemptCount} >= ${PAYMENT_OPERATION_MAX_ATTEMPTS}
-          THEN 'ATTEMPTS_EXHAUSTED'
+          THEN 'PROVIDER_OUTCOME_UNCERTAIN'
           ELSE ${errorCode}
         END`,
         completedAt: sql`CASE
@@ -703,14 +760,9 @@ export async function recordPaymentOperationProviderUnknown(
           ),
       ))
       .returning();
-    if (transitioned?.status === "failed_terminal") {
-      await insertLinkedPaymentRows(
-        tx,
-        input.organizationId,
-        input.operationId,
-        input.failedPaymentRows,
-      );
-    }
+    // An exhausted unknown result is not proof of failure. Keep the exact
+    // provider identity and fencing token for explicit reconciliation, and
+    // deliberately omit a failed payment-history row.
     return transitioned;
   });
   if (!updated) return throwInvalidTransition(input.organizationId, input.operationId);
@@ -845,6 +897,7 @@ export async function finalizePaymentOperationSuccess(
       input.operationId,
       input.paymentRows,
     );
+    await deactivatePaidInFullSchedule(tx, input.operationId, now);
     return transitioned;
   });
   if (updated) return updated;
@@ -862,48 +915,179 @@ export async function finalizePaymentOperationSuccess(
   throw new PaymentOperationInvalidTransitionError(existing.status);
 }
 
-export interface PaymentOperationWake {
+export type PaymentOperationWake = {
+  kind: "operation";
   organizationId: number;
   operationId: string;
   status: PaymentOperation["status"];
   attemptCount: number;
   dueAt: string;
+} | {
+  kind: "schedule";
+  organizationId: number;
+  paymentScheduleId: number;
+  dueAt: string;
+};
+
+/** Exported so PostgreSQL plan tests exercise the exact production query. */
+export function buildNextPaymentOperationWakeQuery() {
+  return sql`
+    WITH next_schedule AS (
+      SELECT
+        'schedule'::text AS kind,
+        ${leagues.organizationId} AS organization_id,
+        ${paymentSchedules.id}::text AS work_id,
+        NULL::text AS status,
+        NULL::integer AS attempt_count,
+        ${paymentSchedules.nextPaymentDate} AS due_at
+      FROM ${paymentSchedules}
+      INNER JOIN ${leagues} ON ${paymentSchedules.leagueId} = ${leagues.id}
+      WHERE ${paymentSchedules.active} = true
+        AND ${leagues.organizationId} IS NOT NULL
+      ORDER BY ${paymentSchedules.nextPaymentDate} ASC
+      LIMIT 1
+    ), next_operation AS (
+      SELECT
+        'operation'::text AS kind,
+        ${paymentOperations.organizationId} AS organization_id,
+        ${paymentOperations.id}::text AS work_id,
+        ${paymentOperations.status} AS status,
+        ${paymentOperations.attemptCount} AS attempt_count,
+        CASE
+          WHEN ${paymentOperations.status} = 'leased' THEN ${paymentOperations.leaseExpiresAt}
+          ELSE ${paymentOperations.nextAttemptAt}
+        END AS due_at
+      FROM ${paymentOperations}
+      WHERE (
+        ${paymentOperations.status} IN ('pending', 'provider_unknown', 'retry_scheduled')
+        AND ${paymentOperations.nextAttemptAt} IS NOT NULL
+      ) OR (
+        ${paymentOperations.status} = 'leased'
+        AND ${paymentOperations.leaseExpiresAt} IS NOT NULL
+      )
+      ORDER BY due_at ASC
+      LIMIT 1
+    )
+    SELECT
+      kind,
+      organization_id,
+      work_id,
+      status,
+      attempt_count,
+      (due_at AT TIME ZONE 'UTC')::text AS due_at
+    FROM (
+      SELECT * FROM next_schedule
+      UNION ALL
+      SELECT * FROM next_operation
+    ) AS scheduled_payment_work
+    ORDER BY scheduled_payment_work.due_at ASC
+    LIMIT 1
+  `;
 }
 
-/** One indexed query for the earliest retry or lease-recovery instant. */
+/** One indexed query for the earliest schedule preparation or operation work. */
 export async function getNextPaymentOperationWake(): Promise<PaymentOperationWake | undefined> {
-  const dueAt = sql<string>`CASE
-    WHEN ${paymentOperations.status} = 'leased' THEN ${paymentOperations.leaseExpiresAt}
-    ELSE ${paymentOperations.nextAttemptAt}
-  END`;
-  const [next] = await db
-    .select({
-      organizationId: paymentOperations.organizationId,
-      operationId: paymentOperations.id,
-      status: paymentOperations.status,
-      attemptCount: paymentOperations.attemptCount,
-      dueAt,
-    })
-    .from(paymentOperations)
-    .where(or(
-      and(
-        inArray(paymentOperations.status, ["pending", "provider_unknown", "retry_scheduled"]),
-        sql`${paymentOperations.nextAttemptAt} IS NOT NULL`,
-      ),
-      and(
-        eq(paymentOperations.status, "leased"),
-        sql`${paymentOperations.leaseExpiresAt} IS NOT NULL`,
-      ),
-    ))
-    .orderBy(asc(dueAt))
-    .limit(1);
-  return next;
+  const result = await db.execute<{
+    kind: "operation" | "schedule";
+    organization_id: number;
+    work_id: string;
+    status: PaymentOperation["status"] | null;
+    attempt_count: number | null;
+    due_at: string;
+  }>(buildNextPaymentOperationWakeQuery());
+  const row = result.rows[0];
+  if (!row) return undefined;
+  if (row.kind === "schedule") {
+    return {
+      kind: "schedule",
+      organizationId: Number(row.organization_id),
+      paymentScheduleId: Number(row.work_id),
+      dueAt: row.due_at,
+    };
+  }
+  if (row.status === null || row.attempt_count === null) {
+    throw new PaymentOperationValidationError("operation wake row is incomplete");
+  }
+  return {
+    kind: "operation",
+    organizationId: Number(row.organization_id),
+    operationId: row.work_id,
+    status: row.status,
+    attemptCount: Number(row.attempt_count),
+    dueAt: row.due_at,
+  };
+}
+
+/**
+ * Explicit operator reconciliation for a provider-unknown operation. This is
+ * never called by the automatic wake executor: a confirmed provider success
+ * must be supplied together with the exact retained fencing token.
+ */
+export async function reconcilePaymentOperationSuccess(
+  input: LeasedPaymentOperationInput & {
+    providerObjectId: string;
+    providerOrderId?: string | null;
+    paymentRows?: PaymentOperationLinkedPaymentInput[];
+  },
+): Promise<PaymentOperation> {
+  validateLeaseToken(input.leaseToken);
+  validateProviderObjectId(input.providerObjectId);
+  validateLinkedPaymentRows(input.paymentRows);
+  if (input.providerOrderId != null) validateProviderOrderId(input.providerOrderId);
+  const now = toIso(input.now ?? new Date(), "now");
+
+  const updated = await db.transaction(async (tx) => {
+    const [transitioned] = await tx
+      .update(paymentOperations)
+      .set({
+        status: "succeeded",
+        providerObjectId: input.providerObjectId,
+        providerOrderId: input.providerOrderId ?? undefined,
+        nextAttemptAt: null,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        errorClassification: null,
+        errorCode: null,
+        completedAt: now,
+        updatedAt: now,
+      })
+      .where(and(
+        eq(paymentOperations.organizationId, input.organizationId),
+        eq(paymentOperations.id, input.operationId),
+        eq(paymentOperations.status, "reconciliation_required"),
+        eq(paymentOperations.leaseToken, input.leaseToken),
+        input.providerOrderId == null
+          ? undefined
+          : or(
+            isNull(paymentOperations.providerOrderId),
+            eq(paymentOperations.providerOrderId, input.providerOrderId),
+          ),
+      ))
+      .returning();
+    if (!transitioned) return undefined;
+    await insertLinkedPaymentRows(tx, input.organizationId, input.operationId, input.paymentRows);
+    await deactivatePaidInFullSchedule(tx, input.operationId, now);
+    return transitioned;
+  });
+  if (updated) return updated;
+
+  const existing = await getPaymentOperationForOrganization(input.organizationId, input.operationId);
+  if (!existing) throw new PaymentOperationNotFoundError();
+  if (
+    existing.status === "succeeded"
+    && existing.leaseToken === input.leaseToken
+    && existing.providerObjectId === input.providerObjectId
+    && (input.providerOrderId == null || existing.providerOrderId === input.providerOrderId)
+  ) {
+    return existing;
+  }
+  throw new PaymentOperationInvalidTransitionError(existing.status);
 }
 
 /**
  * A lease that consumed attempt eight and then expired cannot be acquired
- * again. This single token-fencing update makes exhaustion terminal instead
- * of leaving an immortal leased row.
+ * again. Its provider outcome is uncertain, so automatic execution stops in
+ * reconciliation_required without asserting that payment failed.
  */
 export async function recordExpiredPaymentOperationAttemptExhausted(input: {
   organizationId: number;
@@ -917,12 +1101,12 @@ export async function recordExpiredPaymentOperationAttemptExhausted(input: {
     const [updated] = await tx
       .update(paymentOperations)
       .set({
-        status: "failed_terminal",
+        status: "reconciliation_required",
         nextAttemptAt: null,
         leaseOwner: null,
         leaseExpiresAt: null,
         errorClassification: "provider_unknown",
-        errorCode: "ATTEMPTS_EXHAUSTED",
+        errorCode: "PROVIDER_OUTCOME_UNCERTAIN",
         completedAt: now,
         updatedAt: now,
       })
@@ -934,13 +1118,6 @@ export async function recordExpiredPaymentOperationAttemptExhausted(input: {
         lte(paymentOperations.leaseExpiresAt, now),
       ))
       .returning();
-    if (!updated) return undefined;
-    await insertLinkedPaymentRows(
-      tx,
-      input.organizationId,
-      input.operationId,
-      input.failedPaymentRows,
-    );
     return updated;
   });
 }
@@ -957,10 +1134,69 @@ export async function hasNonterminalScheduledPaymentOperation(input: {
       eq(paymentOperations.organizationId, input.organizationId),
       eq(paymentOperations.operationType, "scheduled_charge"),
       eq(paymentOperations.paymentScheduleId, input.paymentScheduleId),
-      inArray(paymentOperations.status, ["pending", "leased", "provider_unknown", "retry_scheduled"]),
+      inArray(paymentOperations.status, [
+        "pending",
+        "leased",
+        "provider_unknown",
+        "retry_scheduled",
+        "reconciliation_required",
+      ]),
     ))
     .limit(1);
   return row !== undefined;
+}
+
+export interface LegacyScheduledPaymentCycleBlock {
+  operationId: string;
+  status: PaymentOperation["status"];
+  scope: "exact_cycle" | "in_flight" | "uncertain";
+}
+
+/**
+ * Called only while the exact-cycle PostgreSQL advisory lock is held. Exact
+ * identity always wins; a lease or uncertain older outcome also blocks a
+ * rollback-era legacy dispatch, while definite older outcomes do not.
+ */
+export async function getLegacyScheduledPaymentCycleBlock(input: {
+  organizationId: number;
+  paymentScheduleId: number;
+  billingCycleAt: string | Date;
+}): Promise<LegacyScheduledPaymentCycleBlock | undefined> {
+  const billingCycleAt = input.billingCycleAt instanceof Date
+    ? toIso(input.billingCycleAt, "billingCycleAt")
+    : storedTimestampToIso(input.billingCycleAt);
+  if (billingCycleAt === null) {
+    throw new PaymentOperationValidationError("billingCycleAt must be a valid timestamp");
+  }
+  const [row] = await db
+    .select({
+      operationId: paymentOperations.id,
+      status: paymentOperations.status,
+      exactCycle: sql<boolean>`${paymentOperations.billingCycleAt} = ${billingCycleAt}::timestamp`,
+    })
+    .from(paymentOperations)
+    .where(and(
+      eq(paymentOperations.organizationId, input.organizationId),
+      eq(paymentOperations.operationType, "scheduled_charge"),
+      eq(paymentOperations.paymentScheduleId, input.paymentScheduleId),
+      or(
+        sql`${paymentOperations.billingCycleAt} = ${billingCycleAt}::timestamp`,
+        eq(paymentOperations.status, "leased"),
+        inArray(paymentOperations.status, ["provider_unknown", "reconciliation_required"]),
+      ),
+    ))
+    .orderBy(asc(paymentOperations.createdAt))
+    .limit(1);
+  if (!row) return undefined;
+  return {
+    operationId: row.operationId,
+    status: row.status,
+    scope: row.exactCycle
+      ? "exact_cycle"
+      : row.status === "leased"
+        ? "in_flight"
+        : "uncertain",
+  };
 }
 
 export async function cancelPaymentOperation(

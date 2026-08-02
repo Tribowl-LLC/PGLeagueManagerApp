@@ -27,6 +27,10 @@ const mockStorage = {
 
 vi.mock('../../server/storage', () => ({ storage: mockStorage }));
 
+vi.mock('../../server/storage/payment-operations', () => ({
+  getLegacyScheduledPaymentCycleBlock: vi.fn().mockResolvedValue(undefined),
+}));
+
 const mockHasAccessToLeague = vi.fn();
 const mockHasAccessToBowler = vi.fn();
 const mockHasAccessToPayment = vi.fn();
@@ -107,6 +111,14 @@ const dbState: DbState = {
 vi.mock('../../server/db', async () => {
   const { leagues, bowlers } = await import('@shared/schema');
   return {
+    pool: {
+      connect: async () => ({
+        query: async (text: string) => ({
+          rows: [text.includes('pg_try_advisory_lock') ? { acquired: true } : { unlocked: true }],
+        }),
+        release: vi.fn(),
+      }),
+    },
     db: {
       update: () => ({
         set: () => ({
@@ -117,6 +129,20 @@ vi.mock('../../server/db', async () => {
       }),
       select: () => ({
         from: (table: unknown) => ({
+          innerJoin: () => ({
+            where: () => ({
+              limit: () => Promise.resolve([{
+                schedule: {
+                  id: 333, bowlerId: 42, leagueId: 11, amount: 2000,
+                  frequency: 'weekly', paymentCardId: 'card_token_123',
+                  nextPaymentDate: '2026-04-22T19:00:00.000Z', active: true,
+                  additionalBowlerIds: null, lastPaymentDate: null,
+                  createdAt: '2026-04-01T00:00:00.000Z', cancelledAt: null, cancelReason: null,
+                },
+                league: dbState.league,
+              }]),
+            }),
+          }),
           where: () => {
             const rows =
               table === leagues

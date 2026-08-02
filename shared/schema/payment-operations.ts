@@ -33,6 +33,7 @@ export const PAYMENT_OPERATION_STATUSES = [
   "retry_scheduled",
   "succeeded",
   "action_required",
+  "reconciliation_required",
   "failed_terminal",
   "canceled",
 ] as const;
@@ -53,9 +54,9 @@ export const PAYMENT_OPERATION_MAX_ATTEMPTS = 8;
 export const PAYMENT_OPERATION_MAX_LEASE_MS = 15 * 60 * 1000;
 export const PAYMENT_OPERATION_MAX_RETRY_DELAY_MS = 30 * 24 * 60 * 60 * 1000;
 
-const terminalStatuses = sql.raw("'succeeded', 'action_required', 'failed_terminal', 'canceled'");
+const terminalStatuses = sql.raw("'succeeded', 'action_required', 'reconciliation_required', 'failed_terminal', 'canceled'");
 const dueStatuses = sql.raw("'pending', 'provider_unknown', 'retry_scheduled'");
-const errorStatuses = sql.raw("'provider_unknown', 'retry_scheduled', 'action_required', 'failed_terminal'");
+const errorStatuses = sql.raw("'provider_unknown', 'retry_scheduled', 'action_required', 'reconciliation_required', 'failed_terminal'");
 
 /**
  * Durable identity and state for one logical provider-side money movement.
@@ -121,7 +122,7 @@ export const paymentOperations = pgTable("payment_operations", {
   ),
   statusCheck: check(
     "payment_operations_status_check",
-    sql`${table.status} IN ('pending', 'leased', 'provider_unknown', 'retry_scheduled', 'succeeded', 'action_required', 'failed_terminal', 'canceled')`,
+    sql`${table.status} IN ('pending', 'leased', 'provider_unknown', 'retry_scheduled', 'succeeded', 'action_required', 'reconciliation_required', 'failed_terminal', 'canceled')`,
   ),
   amountCheck: check("payment_operations_amount_minor_check", sql`${table.amountMinor} > 0`),
   currencyCheck: check("payment_operations_currency_check", sql`${table.currency} ~ '^[A-Z]{3}$'`),
@@ -176,7 +177,7 @@ export const paymentOperations = pgTable("payment_operations", {
   ),
   nonterminalLeaseTokenCheck: check(
     "payment_operations_nonterminal_lease_token_check",
-    sql`${table.status} IN ('leased', 'succeeded', 'action_required', 'failed_terminal', 'canceled') OR ${table.leaseToken} IS NULL`,
+    sql`${table.status} IN ('leased', 'succeeded', 'action_required', 'reconciliation_required', 'failed_terminal', 'canceled') OR ${table.leaseToken} IS NULL`,
   ),
   completionStateCheck: check(
     "payment_operations_completion_state_check",

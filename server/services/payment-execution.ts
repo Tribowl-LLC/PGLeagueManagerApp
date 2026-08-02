@@ -5,9 +5,18 @@ import { providerNameToPaymentType } from "@shared/schema/constants";
 import { toZonedTime } from "date-fns-tz";
 import { toIsoDateStr } from "@shared/schedule-utils";
 import { logger } from "../logger";
-import { getPaymentProvider, ProviderNotConfiguredError } from "./payment-provider-factory";
+import {
+  getPaymentProvider,
+  PaymentProviderError,
+  ProviderNotConfiguredError,
+} from "./payment-provider-factory";
 import { buildPaymentErrorResponse } from "../utils/payment-error-response";
-import type { PaymentProvider, OrderLineItem } from "./payment-provider";
+import type {
+  PaymentProvider,
+  OrderLineItem,
+  PaymentRequestIdentity,
+} from "./payment-provider";
+import type { PaymentProviderFailureDisposition } from "./payment-errors";
 
 export interface ChargeResult {
   status: 'success' | 'error';
@@ -32,6 +41,36 @@ export interface ChargeResult {
   // The lifecycle uses this to stamp the persisted payment row's
   // `notes` so admins can identify double-pay charges in the audit log.
   isDoublePay?: boolean;
+  failureDisposition?: PaymentProviderFailureDisposition;
+  providerCode?: string;
+  providerOrderId?: string;
+}
+
+export interface ScheduledChargePlan {
+  amountMinor: number;
+  allocationAmountMinor: number;
+  isDoublePay: boolean;
+  lineItems: OrderLineItem[];
+}
+
+function providerFailureMetadata(error: unknown): Pick<
+  ChargeResult,
+  "failureDisposition" | "providerCode" | "providerOrderId"
+> {
+  if (error instanceof PaymentProviderError) {
+    return {
+      failureDisposition: error.disposition,
+      providerCode: error.providerCode,
+      providerOrderId: error.providerOrderId,
+    };
+  }
+  if (error instanceof ProviderNotConfiguredError) {
+    return {
+      failureDisposition: error.disposition,
+      providerCode: error.providerCode,
+    };
+  }
+  return { failureDisposition: "provider_unknown", providerCode: "PROVIDER_UNKNOWN" };
 }
 
 async function fetchBowlerPaymentInfo(bowlerId: number) {
@@ -62,7 +101,8 @@ export async function executeCharge(
   amount: number,
   lineItems: OrderLineItem[],
   paymentCustomerId: string | undefined,
-  buyerEmail: string | undefined
+  buyerEmail: string | undefined,
+  requestIdentity?: PaymentRequestIdentity,
 ): Promise<ChargeResult> {
   // Square auto-emails its receipt only when buyerEmailAddress is set.
   const buyerEmailMissing = provider.providerName === 'square' && !buyerEmail;
@@ -81,10 +121,18 @@ export async function executeCharge(
         lineItems,
         false,
         paymentCustomerId,
-        buyerEmail
+        buyerEmail,
+        requestIdentity,
       );
       if (!orderResult.id) {
-        return { status: 'error', error: 'Order payment succeeded but no payment ID returned', providerName: provider.providerName };
+        return {
+          status: 'error',
+          error: 'Order payment succeeded but no payment ID returned',
+          providerName: provider.providerName,
+          failureDisposition: 'provider_unknown',
+          providerCode: 'MISSING_PAYMENT_ID',
+          providerOrderId: orderResult.orderId,
+        };
       }
       return {
         status: 'success',
@@ -107,7 +155,12 @@ export async function executeCharge(
         error instanceof Error ? error.message : 'Unknown error',
         'PAYMENT_ERROR',
       );
-      return { status: 'error', error: userMessage, providerName: provider.providerName };
+      return {
+        status: 'error',
+        error: userMessage,
+        providerName: provider.providerName,
+        ...providerFailureMetadata(error),
+      };
     }
   } else {
     try {
@@ -117,7 +170,7 @@ export async function executeCharge(
         false,
         paymentCustomerId,
         buyerEmail,
-        undefined,
+        requestIdentity,
       );
       if (processResult?.id) {
         return {
@@ -131,7 +184,13 @@ export async function executeCharge(
           chargedAmount: amount,
         };
       }
-      return { status: 'error', error: 'Payment processing failed', providerName: provider.providerName };
+      return {
+        status: 'error',
+        error: 'Payment processing failed',
+        providerName: provider.providerName,
+        failureDisposition: 'provider_unknown',
+        providerCode: 'MISSING_PAYMENT_ID',
+      };
     } catch (error) {
       // Mirror the createOrderWithPayment branch above so the
       // no-line-items processPayment path (autopay / scheduled
@@ -147,7 +206,12 @@ export async function executeCharge(
         error instanceof Error ? error.message : 'Unknown error',
         'PAYMENT_ERROR',
       );
-      return { status: 'error', error: userMessage, providerName: provider.providerName };
+      return {
+        status: 'error',
+        error: userMessage,
+        providerName: provider.providerName,
+        ...providerFailureMetadata(error),
+      };
     }
   }
 }
@@ -169,7 +233,7 @@ export async function executeChargeForLocation(
       // interpolating the raw `e.message` (which can include the
       // location id or processor name). Task #605.
       const { userMessage } = buildPaymentErrorResponse(e, '', 'PAYMENT_ERROR');
-      return { status: 'error', error: userMessage };
+      return { status: 'error', error: userMessage, ...providerFailureMetadata(e) };
     }
     throw e;
   }
@@ -184,6 +248,7 @@ export async function executeScheduledPayment(
   // base × (1 + extraPayeeCount); per-bowler payment rows are split
   // upstream in lifecycle. Defaults to 0 (legacy single-bowler).
   extraPayeeCount: number = 0,
+  requestIdentity?: PaymentRequestIdentity,
 ): Promise<ChargeResult> {
   const { buyerEmail, paymentCustomerId } = await fetchBowlerPaymentInfo(scheduleRecord.bowlerId);
 
@@ -197,7 +262,7 @@ export async function executeScheduledPayment(
       // the failed-payment row's `notes` should not embed internal
       // location ids. Task #605.
       const { userMessage } = buildPaymentErrorResponse(e, '', 'PAYMENT_ERROR');
-      return { status: 'error', error: userMessage };
+      return { status: 'error', error: userMessage, ...providerFailureMetadata(e) };
     }
     throw e;
   }
@@ -208,7 +273,7 @@ export async function executeScheduledPayment(
     });
   }
 
-  const weeklyFee = league?.weeklyFee || 0;
+  const plan = buildScheduledChargePlan(scheduleRecord, league, extraPayeeCount);
   // Task #646: if the firing date matches one of the league's
   // double-pay dates (compared in league-local timezone), the regular
   // weekly autopay charge becomes 2× the league's weekly fee
@@ -216,42 +281,61 @@ export async function executeScheduledPayment(
   // when weeklyFee is unset, so the contract still degrades gracefully.
   // The line-item quantity below tracks the resulting amount/weeklyFee
   // ratio automatically, so the catalog breakdown stays correct.
-  const tz = league?.timezone ?? DEFAULT_TIMEZONE;
-  const firingDateLocal = toZonedTime(new Date(scheduleRecord.nextPaymentDate), tz);
+  const firingDateLocal = toZonedTime(
+    new Date(scheduleRecord.nextPaymentDate),
+    league?.timezone ?? DEFAULT_TIMEZONE,
+  );
   const firingDateStr = toIsoDateStr(firingDateLocal);
-  const isDoublePayDate = (league?.doublePayDates ?? [])
-    .some(d => d.slice(0, 10) === firingDateStr);
-  const baseChargeAmount = isDoublePayDate
-    ? (weeklyFee > 0 ? weeklyFee * 2 : scheduleRecord.amount * 2)
-    : scheduleRecord.amount;
-  const totalPayees = 1 + Math.max(0, extraPayeeCount);
-  const chargeAmount = baseChargeAmount * totalPayees;
-
-  if (isDoublePayDate) {
+  if (plan.isDoublePay) {
     logger.info(`[PaymentExecution] Double-pay week — charging 2× for ${jobId}`, {
       firingDate: firingDateStr,
       scheduleAmount: scheduleRecord.amount,
-      chargeAmount,
+      chargeAmount: plan.amountMinor,
     });
   }
-
-  const scheduledQty = weeklyFee > 0 && chargeAmount % weeklyFee === 0
-    ? String(chargeAmount / weeklyFee)
-    : '1';
-  const lineItems = buildLineItems(league, scheduledQty);
 
   const result = await executeCharge(
     provider,
     scheduleRecord.paymentCardId!,
-    chargeAmount,
-    lineItems,
+    plan.amountMinor,
+    plan.lineItems,
     paymentCustomerId,
-    buyerEmail
+    buyerEmail,
+    requestIdentity,
   );
-  if (isDoublePayDate) {
+  if (plan.isDoublePay) {
     result.isDoublePay = true;
   }
   return result;
+}
+
+/** Pure scheduled-charge calculation shared by legacy and ledger preparation. */
+export function buildScheduledChargePlan(
+  scheduleRecord: PaymentSchedule,
+  league: typeof leagues.$inferSelect,
+  extraPayeeCount = 0,
+): ScheduledChargePlan {
+  const weeklyFee = league?.weeklyFee || 0;
+  const firingDateLocal = toZonedTime(
+    new Date(scheduleRecord.nextPaymentDate),
+    league?.timezone ?? DEFAULT_TIMEZONE,
+  );
+  const firingDateStr = toIsoDateStr(firingDateLocal);
+  const isDoublePay = (league?.doublePayDates ?? [])
+    .some((date) => date.slice(0, 10) === firingDateStr);
+  const allocationAmountMinor = isDoublePay
+    ? (weeklyFee > 0 ? weeklyFee * 2 : scheduleRecord.amount * 2)
+    : scheduleRecord.amount;
+  const amountMinor = allocationAmountMinor * (1 + Math.max(0, extraPayeeCount));
+  const scheduledQty = weeklyFee > 0 && amountMinor % weeklyFee === 0
+    ? String(amountMinor / weeklyFee)
+    : '1';
+  return {
+    amountMinor,
+    allocationAmountMinor,
+    isDoublePay,
+    lineItems: buildLineItems(league, scheduledQty),
+  };
 }
 
 export function computePaymentSplit(
