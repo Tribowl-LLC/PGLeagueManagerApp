@@ -556,7 +556,11 @@ The dormant executor demonstrates the Phase 3A-2 call boundary: commit the
 lease before provider HTTP, call Square outside PostgreSQL, and finalize local
 payment rows with the exact fenced operation. A local finalization failure
 retains the operation for same-key replay and never issues a compensation
-refund. No application import reaches this executor in Phase 3A-1.
+refund. Only a provider result with status `COMPLETED` may finalize local paid
+rows; pending, approved, failed, canceled, missing-status, or missing-ID
+results fail closed. Store-card execution is explicitly rejected until the
+Phase 3A-2 route cutover owns the vault-write behavior. No application import
+reaches this executor in Phase 3A-1.
 
 ### Phase 3 split and rollback
 

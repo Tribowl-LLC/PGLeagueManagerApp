@@ -119,6 +119,8 @@ export interface LeasedPaymentOperationInput {
 }
 
 export const GENERAL_INTERACTIVE_TARGET_PREFIX = "interactive-charge:" as const;
+export const GENERAL_INTERACTIVE_REQUEST_KEY_MAX_LENGTH =
+  128 - GENERAL_INTERACTIVE_TARGET_PREFIX.length;
 
 interface ErrorOutcomeInput extends LeasedPaymentOperationInput {
   errorCode?: string | null;
@@ -474,7 +476,7 @@ export async function createOrGetInteractivePaymentOperation(
 function buildGeneralInteractiveTargetKey(requestKey: string): string {
   if (
     requestKey.length === 0
-    || requestKey.length > 110
+    || requestKey.length > GENERAL_INTERACTIVE_REQUEST_KEY_MAX_LENGTH
     || requestKey.trim() !== requestKey
     || !/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(requestKey)
   ) {

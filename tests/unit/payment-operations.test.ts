@@ -20,6 +20,7 @@ import {
   PaymentOperationInvalidTransitionError,
   PaymentOperationNotFoundError,
   PaymentOperationValidationError,
+  GENERAL_INTERACTIVE_REQUEST_KEY_MAX_LENGTH,
   acquirePaymentOperationLease,
   cancelPaymentOperation,
   createOrGetScheduledPaymentOperation,
@@ -321,6 +322,26 @@ describe("general interactive payment operation foundation", () => {
     ]);
     expect(first.id).not.toBe(second.id);
     expect(first.providerIdempotencyKey).not.toBe(second.providerIdempotencyKey);
+  });
+
+  it("bounds the request key so the namespaced target fits the ledger column", async () => {
+    await expect(createOrGetGeneralInteractivePaymentOperation({
+      organizationId: orgAId,
+      requestKey: "a".repeat(GENERAL_INTERACTIVE_REQUEST_KEY_MAX_LENGTH),
+      amountMinor: 2_000,
+      currency: "USD",
+      providerName: "square",
+    })).resolves.toMatchObject({
+      targetKey: `interactive-charge:${"a".repeat(GENERAL_INTERACTIVE_REQUEST_KEY_MAX_LENGTH)}`,
+    });
+
+    await expect(createOrGetGeneralInteractivePaymentOperation({
+      organizationId: orgAId,
+      requestKey: "b".repeat(GENERAL_INTERACTIVE_REQUEST_KEY_MAX_LENGTH + 1),
+      amountMinor: 2_000,
+      currency: "USD",
+      providerName: "square",
+    })).rejects.toBeInstanceOf(PaymentOperationValidationError);
   });
 
   it("fails closed when the same logical identity has different immutable contents", async () => {

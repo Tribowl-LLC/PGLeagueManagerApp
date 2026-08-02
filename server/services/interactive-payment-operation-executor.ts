@@ -23,7 +23,6 @@ import {
   sanitizeProviderErrorCode,
   type PaymentProviderFailureDisposition,
 } from "./payment-errors.js";
-import { buildSquarePaymentRequestIdentity } from "./payment-operation-idempotency.js";
 import type { PaymentProvider, PaymentResult } from "./payment-provider.js";
 import { createLogger } from "../logger.js";
 
@@ -83,7 +82,9 @@ function paymentRows(
       receiptNumber: result.receiptNumber,
       receiptEmailMissing: snapshot.providerName === "square" && snapshot.buyerEmail === null,
       combinedChargeGroupId: snapshot.combinedChargeGroupId,
-      idempotencyKey: allocation.allocationIndex === 0 ? operation.targetKey : undefined,
+      // payments.idempotency_key is globally unique, while the logical
+      // target key is only unique inside an organization.
+      idempotencyKey: allocation.allocationIndex === 0 ? operation.id : undefined,
       notes: allocation.notes,
       paidByUserId: allocation.paidByUserId,
     },
@@ -97,6 +98,20 @@ function operationContext(operation: PaymentOperation): Record<string, unknown> 
     operationType: operation.operationType,
     attemptCount: operation.attemptCount,
   };
+}
+
+function nonCompletedPaymentResultError(result: PaymentResult): PaymentProviderError {
+  const definiteFailure = result.status === "FAILED" || result.status === "CANCELED";
+  return new PaymentProviderError(
+    "Payment outcome was not completed.",
+    "PAYMENT_NOT_COMPLETED",
+    undefined,
+    {
+      disposition: definiteFailure ? "action_required" : "provider_unknown",
+      providerCode: "PAYMENT_NOT_COMPLETED",
+      providerOrderId: result.orderId,
+    },
+  );
 }
 
 /**
@@ -180,6 +195,21 @@ export class InteractivePaymentOperationExecutor {
       });
     }
 
+    // Vault writes remain part of the separately reviewed Phase 3A-2 route
+    // cutover. A prematurely wired dormant executor must not save a card.
+    if (snapshot.storeCard) {
+      return this.recordFailure(
+        operation,
+        new PaymentProviderError(
+          "Saving a card is not available in this payment execution phase.",
+          "STORE_CARD_DEFERRED",
+          undefined,
+          { disposition: "invalid_request", providerCode: "STORE_CARD_DEFERRED" },
+        ),
+        false,
+      );
+    }
+
     let provider: PaymentProvider;
     try {
       provider = await this.getProvider(snapshot.locationId);
@@ -200,16 +230,16 @@ export class InteractivePaymentOperationExecutor {
 
     let result: PaymentResult;
     try {
-      const identity = buildSquarePaymentRequestIdentity({
-        providerIdempotencyKey: operation.providerIdempotencyKey,
-        requestKind: snapshot.requestKind,
-        providerLocationId: snapshot.providerLocationId,
-      });
+      const identity = {
+        paymentKey: snapshot.squarePaymentIdempotencyKey,
+        orderKey: snapshot.squareOrderIdempotencyKey ?? undefined,
+        providerLocationId: snapshot.providerLocationId ?? undefined,
+      };
       result = snapshot.requestKind === "order"
         ? await provider.createOrderWithPayment(
           snapshot.sourceId,
           snapshot.amountMinor,
-          snapshot.lineItems,
+          snapshot.lineItems.map(({ catalogObjectId, quantity }) => ({ catalogObjectId, quantity })),
           snapshot.storeCard,
           snapshot.customerId ?? undefined,
           snapshot.buyerEmail ?? undefined,
@@ -223,6 +253,9 @@ export class InteractivePaymentOperationExecutor {
           snapshot.buyerEmail ?? undefined,
           identity,
         );
+      if (result.status !== "COMPLETED") {
+        throw nonCompletedPaymentResultError(result);
+      }
       if (!result.id) {
         throw new PaymentProviderError(
           "Payment outcome could not be confirmed.",
