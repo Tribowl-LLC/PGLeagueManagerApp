@@ -110,6 +110,9 @@ export const paymentSchedules = pgTable("payment_schedules", {
   activeNextPaymentIdx: index("payment_schedules_active_next_payment_idx")
     .on(table.nextPaymentDate)
     .where(sql`${table.active} = true`),
+  activeBowlerLeagueUnique: uniqueIndex("payment_schedules_active_bowler_league_unique")
+    .on(table.bowlerId, table.leagueId)
+    .where(sql`${table.active} = true`),
   activeIdx: index("active_schedule_idx").on(table.active),
 }));
 

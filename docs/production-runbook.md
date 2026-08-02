@@ -254,6 +254,54 @@ exact verified URL plus a minimal environment, with no inherited target/config
 override. It has no remote-host allowlist or development bypass and is
 prohibited for production, Neon, and every durable database.
 
+### Migration 0010: dormant auto-pay setup foundation
+
+`0010_autopay_setup_foundation` is an additive, migration-first foundation.
+It adds an empty setup-workflow table, dormant interactive-operation identity
+support, and no reachable provider execution. The release does not activate
+weekly auto-pay setup changes; do not deploy any route or client cutover until
+this migration is merged, applied, and independently verified.
+
+The partial `payment_schedules_active_bowler_league_unique` index is the one
+database-enforcement change visible to legacy code. Concurrent legacy attempts
+to insert a second active schedule for the same bowler and league will fail
+after this migration. Before applying 0010, its SQL preflight requires no rows
+from:
+
+```sql
+SELECT bowler_id, league_id, count(*)
+FROM payment_schedules
+WHERE active = true
+GROUP BY bowler_id, league_id
+HAVING count(*) > 1;
+```
+
+Use this release sequence:
+
+1. Keep Render Auto-Deploy Off and record the exact CI-certified `main` SHA.
+2. Verify the Neon target and create the reviewed backup or restorable branch.
+3. Suspend and drain every application instance. This prevents a legacy
+   schedule insert from crossing the unique-index installation boundary.
+4. Run the read-only duplicate query above. Stop for any returned row; do not
+   delete, deactivate, or choose between schedules without an explicit data
+   remediation decision.
+5. Apply the checked-in migration once with `npm run db:migrate` and verify the
+   journal/checksum, `autopay_setup_requests`, its constraints/indexes, the
+   interactive-target unique index, and the active-schedule unique index.
+6. Deploy the exact certified foundation commit and resume one instance.
+7. Verify health, authentication, tenant isolation, legacy interactive and
+   scheduled payments, refunds, and receipts. Confirm that no
+   `autopay_setup_requests` or `interactive_charge` operation rows were created
+   and that no new operation wake or Square call occurred.
+8. Restore normal Auto-Deploy only after the dormant verification succeeds.
+
+The previous 2B-2 application is schema-compatible with the additive table and
+indexes, subject to the new active-schedule uniqueness enforcement. If the
+foundation application fails before any later behavior cutover, keep migration
+0010 in place and deploy a forward fix or the previous guarded application.
+Do not reverse the migration, delete setup/operation evidence, or enable the
+future client/server setup flow as a rollback technique.
+
 ## Post-Deployment Checks
 
 - Confirm the Render deploy is running the expected commit.

@@ -60,6 +60,12 @@
       "tag": "0009_payment_operation_reconciliation_required",
       "createdAt": 1785680310111,
       "hash": "74bf179555ff73656760c205375bc15ba1075691e49c6cfd6169de42f4372157"
+    },
+    {
+      "idx": 10,
+      "tag": "0010_autopay_setup_foundation",
+      "createdAt": 1785695299184,
+      "hash": "ed9956a9d32d3d2cf0f5e2d0f584cf24397514d27f234b274b34624c74710c61"
     }
   ]
 }

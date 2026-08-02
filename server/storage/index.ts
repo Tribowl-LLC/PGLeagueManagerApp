@@ -5,6 +5,7 @@ import * as teamStorage from "./teams";
 import * as bowlerStorage from "./bowlers";
 import * as paymentStorage from "./payments";
 import * as paymentOperationStorage from "./payment-operations";
+import * as autopaySetupRequestStorage from "./autopay-setup-requests";
 import * as gameScoreStorage from "./games-scores";
 import * as userStorage from "./users";
 import * as orgStorage from "./organizations";
@@ -86,6 +87,7 @@ export class DatabaseStorage implements IStorage {
   updatePaymentScheduleFields!: IStorage["updatePaymentScheduleFields"];
   updatePaymentScheduleCard!: IStorage["updatePaymentScheduleCard"];
 
+  createOrGetInteractivePaymentOperation!: IStorage["createOrGetInteractivePaymentOperation"];
   createOrGetScheduledPaymentOperation!: IStorage["createOrGetScheduledPaymentOperation"];
   persistScheduledPaymentOperationSnapshot!: IStorage["persistScheduledPaymentOperationSnapshot"];
   getScheduledPaymentOperationSnapshotForOrganization!: IStorage["getScheduledPaymentOperationSnapshotForOrganization"];
@@ -101,6 +103,12 @@ export class DatabaseStorage implements IStorage {
   recordExpiredPaymentOperationAttemptExhausted!: IStorage["recordExpiredPaymentOperationAttemptExhausted"];
   hasNonterminalScheduledPaymentOperation!: IStorage["hasNonterminalScheduledPaymentOperation"];
   cancelPaymentOperation!: IStorage["cancelPaymentOperation"];
+
+  createOrGetAutopaySetupRequest!: IStorage["createOrGetAutopaySetupRequest"];
+  getAutopaySetupRequestForOrganization!: IStorage["getAutopaySetupRequestForOrganization"];
+  getAutopaySetupRequestByOperationForOrganization!: IStorage["getAutopaySetupRequestByOperationForOrganization"];
+  completeAutopaySetupRequest!: IStorage["completeAutopaySetupRequest"];
+  cancelAutopaySetupRequest!: IStorage["cancelAutopaySetupRequest"];
 
   getGames!: IStorage["getGames"];
   getGame!: IStorage["getGame"];
@@ -225,6 +233,7 @@ export class DatabaseStorage implements IStorage {
       getBowlerLeagues: bowlerStorage.getBowlerLeaguesFiltered,
       ...paymentStorage,
       ...paymentOperationStorage,
+      ...autopaySetupRequestStorage,
       ...gameScoreStorage,
       ...userStorage,
       ...orgStorage,

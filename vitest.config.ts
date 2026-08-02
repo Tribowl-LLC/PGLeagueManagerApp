@@ -104,6 +104,7 @@ const UNIT_NO_DB = [
   'tests/unit/rate-limit-shared-store-coverage.test.ts',
   'tests/unit/subdomain-resolution-consistency.test.ts',
   'tests/unit/scheduled-payment-operation-snapshot.test.ts',
+  'tests/unit/weekly-billing-occurrence-planner.test.ts',
   'tests/unit/test-template-migration-source.test.ts',
   'tests/unit/zod-v4-migration-contracts.test.ts',
 ];
@@ -148,6 +149,7 @@ const PARALLEL_ISOLATED = [
   'tests/unit/locked-sweep.test.ts', // Task #720 moved to parallel as factory-safe; reverted defensively after sibling regressions (#722).
   'tests/unit/password-changed-i18n.test.ts',
   'tests/unit/payment-customer-sync.test.ts',
+  'tests/unit/autopay-setup-request-store-postgres.test.ts',
   'tests/unit/payment-execution-double-pay.test.ts',
   'tests/unit/payment-execution-error-mapping.test.ts',
   'tests/unit/payment-execution-receipt-warn.test.ts',

@@ -105,6 +105,9 @@ export const paymentOperations = pgTable("payment_operations", {
   recurringCycleUnique: uniqueIndex("payment_operations_recurring_cycle_unique")
     .on(table.paymentScheduleId, table.billingCycleAt)
     .where(sql`${table.operationType} = 'scheduled_charge'`),
+  interactiveTargetUnique: uniqueIndex("payment_operations_interactive_target_unique")
+    .on(table.organizationId, table.targetKey)
+    .where(sql`${table.operationType} = 'interactive_charge'`),
   tenantLookupIdx: index("payment_operations_tenant_created_idx")
     .on(table.organizationId, table.createdAt.desc()),
   providerObjectLookupIdx: index("payment_operations_provider_object_idx")
