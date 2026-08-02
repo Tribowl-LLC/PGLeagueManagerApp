@@ -37,6 +37,12 @@ export async function saveCardOnFile(
 
   try {
     if (isDev) log.info('Saving card on file for customer:', customerId.substring(0, 10) + '...');
+    // Square's CreateCard idempotency key can only deduplicate retries that
+    // reuse the same one-time source token. A customer who enters the same
+    // physical card again receives a new token, so compare Square's stable
+    // card fingerprint after creation and keep the already-active card.
+    const existingPage = await client.cards.list({ customerId, sortOrder: 'ASC' });
+    const existingCards = existingPage.data ?? [];
     const response = await client.cards.create({
       // Use the centralised builder so we can never silently
       // re-introduce the >45-char idempotency_key bug that broke
@@ -52,6 +58,28 @@ export async function saveCardOnFile(
 
     const card = response.card;
     if (card?.id) {
+      const existingMatch = card.fingerprint
+        ? existingCards.find(existing => (
+            existing.enabled
+            && existing.id !== card.id
+            && existing.fingerprint === card.fingerprint
+          ))
+        : undefined;
+
+      if (existingMatch?.id) {
+        // Disable only the card created by this request. Keeping the older ID
+        // preserves any schedules that already reference it. Disabled cards
+        // are excluded from Square's default ListCards response, so a card the
+        // customer removed can be saved again later.
+        await client.cards.disable({ cardId: card.id });
+        log.info('Prevented duplicate saved card:', { success: true });
+        return {
+          id: existingMatch.id,
+          last4: existingMatch.last4 ?? '',
+          brand: existingMatch.cardBrand ?? '',
+        };
+      }
+
       return { id: card.id, last4: card.last4 ?? '', brand: card.cardBrand ?? '' };
     }
     return null;

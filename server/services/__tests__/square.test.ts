@@ -123,16 +123,26 @@ describe('buildSquareIdempotencyKey (task #671)', () => {
   });
 });
 
-describe('saveCardOnFile idempotency key (task #671)', () => {
-  it('sends an idempotency_key ≤45 chars to Square so VALUE_TOO_LONG never fires', async () => {
+describe('saveCardOnFile', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
     mocks.getLocationSquareConfig.mockResolvedValue({
       accessToken: 'EAAAEv-test-token',
       appId: 'sq0idp-test',
       locationId: 'LOC123',
     });
-    mocks.cards.create.mockReset();
+    mocks.cards.list.mockResolvedValue({ data: [] });
+    mocks.cards.disable.mockResolvedValue({});
+  });
+
+  it('sends an idempotency_key ≤45 chars to Square so VALUE_TOO_LONG never fires', async () => {
     mocks.cards.create.mockResolvedValue({
-      card: { id: 'card_1', last4: '4242', cardBrand: 'VISA' },
+      card: {
+        id: 'card_1',
+        last4: '4242',
+        cardBrand: 'VISA',
+        fingerprint: 'fingerprint-4242',
+      },
     });
     const localProvider = new SquarePaymentProvider(1);
     const sourceId = 'cnon:CA4SEXAMPLEEXAMPLEEXAMPLE';
@@ -148,6 +158,97 @@ describe('saveCardOnFile idempotency key (task #671)', () => {
     await localProvider.saveCardOnFile(sourceId, customerId);
     const secondBody = mocks.cards.create.mock.calls[1]?.[0] as { idempotencyKey: string };
     expect(secondBody.idempotencyKey).toBe(firstBody.idempotencyKey);
+  });
+
+  it('disables a newly-created duplicate and returns the existing active card', async () => {
+    mocks.cards.list.mockResolvedValue({
+      data: [{
+        id: 'card_existing',
+        last4: '1530',
+        cardBrand: 'MASTERCARD',
+        fingerprint: 'fingerprint-1530',
+        enabled: true,
+      }],
+    });
+    mocks.cards.create.mockResolvedValue({
+      card: {
+        id: 'card_duplicate',
+        last4: '1530',
+        cardBrand: 'MASTERCARD',
+        fingerprint: 'fingerprint-1530',
+      },
+    });
+    const provider = new SquarePaymentProvider(1);
+
+    const result = await provider.saveCardOnFile('cnon:new-token', 'customer-1');
+
+    expect(result).toEqual({
+      id: 'card_existing',
+      last4: '1530',
+      brand: 'MASTERCARD',
+    });
+    expect(mocks.cards.list).toHaveBeenCalledWith({
+      customerId: 'customer-1',
+      sortOrder: 'ASC',
+    });
+    expect(mocks.cards.disable).toHaveBeenCalledOnce();
+    expect(mocks.cards.disable).toHaveBeenCalledWith({ cardId: 'card_duplicate' });
+  });
+
+  it('keeps a newly-created card when only a disabled match exists', async () => {
+    mocks.cards.list.mockResolvedValue({
+      data: [{
+        id: 'card_removed',
+        last4: '1530',
+        cardBrand: 'MASTERCARD',
+        fingerprint: 'fingerprint-1530',
+        enabled: false,
+      }],
+    });
+    mocks.cards.create.mockResolvedValue({
+      card: {
+        id: 'card_resaved',
+        last4: '1530',
+        cardBrand: 'MASTERCARD',
+        fingerprint: 'fingerprint-1530',
+      },
+    });
+    const provider = new SquarePaymentProvider(1);
+
+    const result = await provider.saveCardOnFile('cnon:replacement-token', 'customer-1');
+
+    expect(result).toEqual({
+      id: 'card_resaved',
+      last4: '1530',
+      brand: 'MASTERCARD',
+    });
+    expect(mocks.cards.disable).not.toHaveBeenCalled();
+  });
+
+  it('does not disable an idempotent retry that returns the existing card ID', async () => {
+    mocks.cards.list.mockResolvedValue({
+      data: [{
+        id: 'card_existing',
+        last4: '4242',
+        cardBrand: 'VISA',
+        fingerprint: 'fingerprint-4242',
+        enabled: true,
+      }],
+    });
+    mocks.cards.create.mockResolvedValue({
+      card: {
+        id: 'card_existing',
+        last4: '4242',
+        cardBrand: 'VISA',
+        fingerprint: 'fingerprint-4242',
+      },
+    });
+    const provider = new SquarePaymentProvider(1);
+
+    const result = await provider.saveCardOnFile('cnon:retry-token', 'customer-1');
+
+    expect(result?.id).toBe('card_existing');
+    expect(mocks.cards.disable).not.toHaveBeenCalled();
   });
 });
 
