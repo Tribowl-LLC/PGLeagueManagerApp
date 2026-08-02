@@ -10,6 +10,7 @@ import type {
   Organization, InsertOrganization, UpdateOrganization,
   Location, InsertLocation, UpdateLocation,
   PaymentSchedule, InsertPaymentSchedule, UpdatePaymentSchedule,
+  PaymentOperation, PaymentOperationErrorClassification,
   UserRole,
   LocationSquareCredentials,
   PaginatedResult,
@@ -103,6 +104,53 @@ export interface IPaymentStorage {
   deactivatePaymentSchedule(id: number, reason?: string): Promise<void>;
   updatePaymentScheduleFields(id: number, fields: UpdatePaymentSchedule): Promise<PaymentSchedule>;
   updatePaymentScheduleCard(bowlerId: number, leagueId: number, cardId: string): Promise<void>;
+}
+
+export interface IPaymentOperationStorage {
+  createOrGetScheduledPaymentOperation(
+    input: import("./payment-operations").CreateOrGetScheduledPaymentOperationInput,
+  ): Promise<PaymentOperation>;
+  getPaymentOperationForOrganization(
+    organizationId: number,
+    operationId: string,
+  ): Promise<PaymentOperation | undefined>;
+  acquirePaymentOperationLease(
+    input: import("./payment-operations").AcquirePaymentOperationLeaseInput,
+  ): Promise<PaymentOperation | undefined>;
+  schedulePaymentOperationRetry(
+    input: import("./payment-operations").LeasedPaymentOperationInput & {
+      nextAttemptAt: Date;
+      errorClassification: PaymentOperationErrorClassification;
+      errorCode?: string | null;
+    },
+  ): Promise<PaymentOperation>;
+  recordPaymentOperationProviderUnknown(
+    input: import("./payment-operations").LeasedPaymentOperationInput & {
+      recoveryAt: Date;
+      errorCode?: string | null;
+    },
+  ): Promise<PaymentOperation>;
+  recordPaymentOperationActionRequired(
+    input: import("./payment-operations").LeasedPaymentOperationInput & {
+      errorCode?: string | null;
+    },
+  ): Promise<PaymentOperation>;
+  recordPaymentOperationFailedTerminal(
+    input: import("./payment-operations").LeasedPaymentOperationInput & {
+      errorClassification: PaymentOperationErrorClassification;
+      errorCode?: string | null;
+    },
+  ): Promise<PaymentOperation>;
+  finalizePaymentOperationSuccess(
+    input: import("./payment-operations").LeasedPaymentOperationInput & {
+      providerObjectId: string;
+    },
+  ): Promise<PaymentOperation>;
+  cancelPaymentOperation(
+    input: Omit<import("./payment-operations").LeasedPaymentOperationInput, "leaseToken"> & {
+      leaseToken?: string;
+    },
+  ): Promise<PaymentOperation>;
 }
 
 export interface IGameScoreStorage {
@@ -312,6 +360,7 @@ export interface IStorage extends
   ITeamStorage,
   IBowlerStorage,
   IPaymentStorage,
+  IPaymentOperationStorage,
   IGameScoreStorage,
   IUserStorage,
   IOrganizationStorage,

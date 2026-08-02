@@ -15,6 +15,7 @@ import {
   locations,
   organizations,
   orphanCleanupAudits,
+  paymentOperations,
   users,
   type Organization, type InsertOrganization, type UpdateOrganization,
   type User,
@@ -217,6 +218,12 @@ export async function deleteOrganization(id: number): Promise<void> {
         .set({ organizationId: null })
         .where(inArray(users.id, systemAdminIds));
     }
+
+    // Payment operations intentionally retain a restrictive schedule FK so
+    // ordinary schedule deletion cannot erase the durable provider audit.
+    // Full tenant teardown is the explicit exception and removes these rows
+    // before deleting the organization's leagues/schedules.
+    await tx.delete(paymentOperations).where(eq(paymentOperations.organizationId, id));
 
     await tx.delete(leagues).where(eq(leagues.organizationId, id));
     await tx.delete(bowlers).where(eq(bowlers.organizationId, id));
