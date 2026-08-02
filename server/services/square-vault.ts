@@ -40,9 +40,7 @@ export async function saveCardOnFile(
     // Square's CreateCard idempotency key can only deduplicate retries that
     // reuse the same one-time source token. A customer who enters the same
     // physical card again receives a new token, so compare Square's stable
-    // card fingerprint after creation and keep the already-active card.
-    const existingPage = await client.cards.list({ customerId, sortOrder: 'ASC' });
-    const existingCards = existingPage.data ?? [];
+    // card fingerprint after creation.
     const response = await client.cards.create({
       // Use the centralised builder so we can never silently
       // re-introduce the >45-char idempotency_key bug that broke
@@ -58,25 +56,29 @@ export async function saveCardOnFile(
 
     const card = response.card;
     if (card?.id) {
-      const existingMatch = card.fingerprint
-        ? existingCards.find(existing => (
-            existing.enabled
-            && existing.id !== card.id
-            && existing.fingerprint === card.fingerprint
+      // List after creation so concurrent workers observe the same candidates.
+      // Square returns enabled cards by default and ASC orders them by creation
+      // time, making the first fingerprint match the deterministic survivor.
+      const activePage = await client.cards.list({ customerId, sortOrder: 'ASC' });
+      const fingerprintMatches = card.fingerprint
+        ? (activePage.data ?? []).filter(candidate => (
+            candidate.enabled
+            && candidate.id
+            && candidate.fingerprint === card.fingerprint
           ))
-        : undefined;
+        : [];
+      const survivor = fingerprintMatches[0];
 
-      if (existingMatch?.id) {
-        // Disable only the card created by this request. Keeping the older ID
-        // preserves any schedules that already reference it. Disabled cards
-        // are excluded from Square's default ListCards response, so a card the
-        // customer removed can be saved again later.
+      if (survivor?.id && survivor.id !== card.id) {
+        // Each worker may disable only the card it created. Keeping the oldest
+        // ID preserves schedules that already reference it, while disabled
+        // cards remain eligible to be saved again later.
         await client.cards.disable({ cardId: card.id });
         log.info('Prevented duplicate saved card:', { success: true });
         return {
-          id: existingMatch.id,
-          last4: existingMatch.last4 ?? '',
-          brand: existingMatch.cardBrand ?? '',
+          id: survivor.id,
+          last4: survivor.last4 ?? '',
+          brand: survivor.cardBrand ?? '',
         };
       }
 

@@ -162,13 +162,22 @@ describe('saveCardOnFile', () => {
 
   it('disables a newly-created duplicate and returns the existing active card', async () => {
     mocks.cards.list.mockResolvedValue({
-      data: [{
-        id: 'card_existing',
-        last4: '1530',
-        cardBrand: 'MASTERCARD',
-        fingerprint: 'fingerprint-1530',
-        enabled: true,
-      }],
+      data: [
+        {
+          id: 'card_existing',
+          last4: '1530',
+          cardBrand: 'MASTERCARD',
+          fingerprint: 'fingerprint-1530',
+          enabled: true,
+        },
+        {
+          id: 'card_duplicate',
+          last4: '1530',
+          cardBrand: 'MASTERCARD',
+          fingerprint: 'fingerprint-1530',
+          enabled: true,
+        },
+      ],
     });
     mocks.cards.create.mockResolvedValue({
       card: {
@@ -191,19 +200,31 @@ describe('saveCardOnFile', () => {
       customerId: 'customer-1',
       sortOrder: 'ASC',
     });
+    expect(mocks.cards.create.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.cards.list.mock.invocationCallOrder[0],
+    );
     expect(mocks.cards.disable).toHaveBeenCalledOnce();
     expect(mocks.cards.disable).toHaveBeenCalledWith({ cardId: 'card_duplicate' });
   });
 
   it('keeps a newly-created card when only a disabled match exists', async () => {
     mocks.cards.list.mockResolvedValue({
-      data: [{
-        id: 'card_removed',
-        last4: '1530',
-        cardBrand: 'MASTERCARD',
-        fingerprint: 'fingerprint-1530',
-        enabled: false,
-      }],
+      data: [
+        {
+          id: 'card_removed',
+          last4: '1530',
+          cardBrand: 'MASTERCARD',
+          fingerprint: 'fingerprint-1530',
+          enabled: false,
+        },
+        {
+          id: 'card_resaved',
+          last4: '1530',
+          cardBrand: 'MASTERCARD',
+          fingerprint: 'fingerprint-1530',
+          enabled: true,
+        },
+      ],
     });
     mocks.cards.create.mockResolvedValue({
       card: {
@@ -249,6 +270,39 @@ describe('saveCardOnFile', () => {
 
     expect(result?.id).toBe('card_existing');
     expect(mocks.cards.disable).not.toHaveBeenCalled();
+  });
+
+  it('concurrent saves converge on the same oldest fingerprint match', async () => {
+    const oldestCard = {
+      id: 'card_oldest',
+      last4: '1530',
+      cardBrand: 'MASTERCARD',
+      fingerprint: 'fingerprint-1530',
+      enabled: true,
+    };
+    const newerCard = {
+      id: 'card_newer',
+      last4: '1530',
+      cardBrand: 'MASTERCARD',
+      fingerprint: 'fingerprint-1530',
+      enabled: true,
+    };
+    mocks.cards.create
+      .mockResolvedValueOnce({ card: oldestCard })
+      .mockResolvedValueOnce({ card: newerCard });
+    // Both workers observe Square's same creation-ordered post-create list.
+    mocks.cards.list.mockResolvedValue({ data: [oldestCard, newerCard] });
+    const provider = new SquarePaymentProvider(1);
+
+    const results = await Promise.all([
+      provider.saveCardOnFile('cnon:concurrent-a', 'customer-1'),
+      provider.saveCardOnFile('cnon:concurrent-b', 'customer-1'),
+    ]);
+
+    expect(results.map(result => result?.id)).toEqual(['card_oldest', 'card_oldest']);
+    expect(mocks.cards.list).toHaveBeenCalledTimes(2);
+    expect(mocks.cards.disable).toHaveBeenCalledOnce();
+    expect(mocks.cards.disable).toHaveBeenCalledWith({ cardId: 'card_newer' });
   });
 });
 
