@@ -113,7 +113,10 @@ export async function listCardsOnFile(
     // interested in the first page (Square caps the response at 25
     // cards per the API docs, which is well below any single bowler's
     // realistic saved-card count).
-    const page = await client.cards.list({ customerId });
+    // square@44.2.0 serializes an omitted sortOrder as `sort_order=`.
+    // Square rejects that empty enum, so send the API's documented default
+    // explicitly until the SDK omits absent optional query parameters.
+    const page = await client.cards.list({ customerId, sortOrder: 'ASC' });
     const cards = page.data ?? [];
     return cards
       .filter(c => c.enabled)
@@ -145,7 +148,7 @@ export async function disableCard(
     );
   }
 
-  const listPage = await client.cards.list({ customerId });
+  const listPage = await client.cards.list({ customerId, sortOrder: 'ASC' });
   const cards = listPage.data ?? [];
   const cardBelongsToCustomer = cards.some(c => c.id === cardId);
   if (!cardBelongsToCustomer) {
