@@ -55,6 +55,20 @@ export {
   INTERACTIVE_PAYMENT_SOURCE_KINDS,
   REFUND_PAYMENT_SNAPSHOT_VERSION,
 } from "./payment-operations";
+
+export {
+  webhookEvents,
+  WEBHOOK_EVENT_STATUSES,
+  WEBHOOK_EVENT_ERROR_CLASSIFICATIONS,
+  WEBHOOK_EVENT_PAYLOAD_SCHEMA_VERSION,
+  WEBHOOK_EVENT_MAX_ATTEMPTS,
+  WEBHOOK_EVENT_MAX_LEASE_MS,
+} from "./webhook-events";
+export type {
+  WebhookEvent,
+  WebhookEventStatus,
+  WebhookEventErrorClassification,
+} from "./webhook-events";
 export type {
   PaymentOperation,
   InsertPaymentOperation,

@@ -348,6 +348,11 @@ setup, operation, payment, and provider evidence.
 - Check `/api/health` and the Render boot logs.
 - Confirm authentication and one representative affected workflow.
 - Review Sentry and Render logs for new errors.
+- For the dormant Phase 4A-1 Square inbox, follow the migration-first and
+  separate `disabled` -> `ingest_only` sequence in
+  [`square-webhook-inbox.md`](./square-webhook-inbox.md). Do not configure a
+  subscription, copy a signature key, send a test event, or activate processing
+  as part of the implementation PR.
 - Run the post-deploy trust-proxy workflow with its configured repository
   secrets: `DEPLOY_BASE_URL` and token-based `DEPLOY_PROBE_TOKEN` are preferred;
   `DEPLOY_ADMIN_COOKIE` is a legacy fallback. `DEPLOY_EXPECTED_RESOLVED_IP` is

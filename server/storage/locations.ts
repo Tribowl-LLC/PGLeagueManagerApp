@@ -3,6 +3,7 @@ import { db } from "../db.js";
 import {
   locations,
   leagues,
+  webhookEvents,
   locationSquareCredentialsSchema,
   type Location,
   type InsertLocation,
@@ -13,6 +14,13 @@ import { createLogger } from '../logger';
 import { encrypt, decrypt, isEncrypted } from '../utils/crypto';
 
 const log = createLogger("StorageLocations");
+
+export class LocationWebhookEvidenceExistsError extends Error {
+  constructor() {
+    super('Location has retained webhook evidence and must be archived instead');
+    this.name = 'LocationWebhookEvidenceExistsError';
+  }
+}
 
 function encryptSquareCreds(creds: LocationSquareCredentials | null | undefined): LocationSquareCredentials | null | undefined {
   if (!creds) return creds;
@@ -89,6 +97,12 @@ export async function updateLocation(id: number, data: UpdateLocation): Promise<
 export async function deleteLocation(id: number): Promise<void> {
   await db.transaction(async (tx) => {
     await tx.execute(sql`SELECT id FROM ${locations} WHERE id = ${id} FOR UPDATE`);
+    const [retainedEvent] = await tx
+      .select({ id: webhookEvents.id })
+      .from(webhookEvents)
+      .where(eq(webhookEvents.locationId, id))
+      .limit(1);
+    if (retainedEvent) throw new LocationWebhookEvidenceExistsError();
     await tx.update(leagues).set({ locationId: null }).where(eq(leagues.locationId, id));
     await tx.delete(locations).where(eq(locations.id, id));
   });

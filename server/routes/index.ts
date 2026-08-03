@@ -125,8 +125,8 @@ export function registerRoutes(app: Express): void {
   app.use('/api/payments', requireAuth, paymentsRouter);
   app.use('/api/scores', requireAuth, scoresRouter);
   app.use('/api/games', requireAuth, gamesRouter);
-  // The disabled Square tripwire is registered earlier in `server/app.ts`
-  // so it never enters tenant resolution or the global JSON parser.
+  // The disabled-by-default Square receiver is registered earlier in
+  // `server/app.ts` so it never enters tenant resolution or global JSON parsing.
   app.use('/api/payments-provider', requireAuth, paymentRoutesRouter);
   app.use('/api/admin', requireOrgAdmin, adminRouter);
   app.use('/api/organizations', requireAuth, organizationsRouter);
