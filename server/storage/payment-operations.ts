@@ -54,6 +54,7 @@ import {
   type RefundPaymentSemanticSnapshot,
 } from "../services/refund-payment-operation-snapshot.js";
 import { decrypt, encrypt } from "../utils/crypto.js";
+import { providerNameToPaymentType } from "@shared/schema/constants";
 
 export class PaymentOperationNotFoundError extends Error {
   constructor() {
@@ -1808,7 +1809,6 @@ export async function finalizeRefundPaymentOperationSuccess(input: LeasedPayment
 }): Promise<{ operation: PaymentOperation; payment: Payment }> {
   validateLeaseToken(input.leaseToken);
   validateProviderObjectId(input.providerObjectId);
-  const now = toIso(input.now ?? new Date(), "now");
   return db.transaction(async (tx) => {
     const [operation] = await tx.select().from(paymentOperations).where(and(
       eq(paymentOperations.organizationId, input.organizationId),
@@ -1817,55 +1817,268 @@ export async function finalizeRefundPaymentOperationSuccess(input: LeasedPayment
     if (!operation) throw new PaymentOperationNotFoundError();
     const snapshot = await loadRefundPaymentOperationSnapshot(tx, operation);
     if (!snapshot) throw new PaymentOperationImmutableMismatchError();
-
-    if (operation.status === "succeeded") {
-      const [payment] = await tx.select().from(payments).where(eq(payments.id, snapshot.paymentId)).limit(1);
-      if (
-        operation.leaseToken === input.leaseToken
-        && operation.providerObjectId === input.providerObjectId
-        && payment?.status === "refunded"
-        && payment.squareRefundId === input.providerObjectId
-      ) return { operation, payment };
+    if (
+      !["leased", "succeeded"].includes(operation.status)
+      || operation.leaseToken !== input.leaseToken
+    ) {
       throw new PaymentOperationInvalidTransitionError(operation.status);
     }
-    if (operation.status !== "leased" || operation.leaseToken !== input.leaseToken) {
-      throw new PaymentOperationInvalidTransitionError(operation.status);
-    }
-
-    const [payment] = await tx.update(payments).set({
-      status: "refunded",
-      squareRefundId: input.providerObjectId,
-      refundReason: snapshot.requestedReason,
-      refundedAt: now,
-    }).where(and(
-      eq(payments.id, snapshot.paymentId),
-      eq(payments.leagueId, snapshot.leagueId),
-      eq(payments.amount, snapshot.amountMinor),
-      eq(payments.providerPaymentId, snapshot.providerPaymentId),
-      eq(payments.status, "paid"),
-    )).returning();
-    if (!payment) throw new PaymentOperationImmutableMismatchError();
-
-    const [completed] = await tx.update(paymentOperations).set({
-      status: "succeeded",
+    return finalizeRefundFromWebhookEvidenceInTransaction(tx, {
+      organizationId: operation.organizationId,
+      operationId: operation.id,
+      locationId: snapshot.locationId,
       providerObjectId: input.providerObjectId,
+      providerPaymentId: snapshot.providerPaymentId,
+      amountMinor: operation.amountMinor,
+      currency: operation.currency,
+      now: input.now,
+    });
+  });
+}
+
+export interface ProviderWebhookCompletionEvidence {
+  organizationId: number;
+  operationId: string;
+  locationId: number;
+  providerLocationId?: string;
+  providerObjectId: string;
+  providerPaymentId: string;
+  providerOrderId?: string | null;
+  amountMinor: number;
+  currency: string;
+  receiptUrl?: string | null;
+  receiptNumber?: string | null;
+  now?: Date;
+}
+
+const webhookCompletableStatuses = new Set<PaymentOperation["status"]>([
+  "leased",
+  "provider_unknown",
+  "retry_scheduled",
+  "reconciliation_required",
+]);
+
+function scheduledWebhookPaymentRows(
+  operation: PaymentOperation,
+  snapshot: ScheduledPaymentSemanticSnapshot,
+  input: ProviderWebhookCompletionEvidence,
+): PaymentOperationLinkedPaymentInput[] {
+  const combinedChargeGroupId = snapshot.allocations.length > 1 ? operation.id : null;
+  return snapshot.allocations.map((allocation) => ({
+    allocationIndex: allocation.allocationIndex,
+    values: {
+      bowlerId: allocation.bowlerId,
+      leagueId: snapshot.leagueId,
+      amount: allocation.amountMinor,
+      lineageAmount: allocation.lineageAmountMinor,
+      prizeFundAmount: allocation.prizeFundAmountMinor,
+      weekOf: snapshot.billingCycleAt,
+      status: "paid" as const,
+      type: providerNameToPaymentType(snapshot.providerName),
+      providerPaymentId: input.providerPaymentId,
+      receiptUrl: input.receiptUrl ?? undefined,
+      receiptNumber: input.receiptNumber ?? undefined,
+      receiptEmailMissing: snapshot.buyerEmail === null,
+      notes: allocation.notes,
+      paidByUserId: allocation.paidByUserId,
+      combinedChargeGroupId,
+    },
+  }));
+}
+
+function interactiveWebhookPaymentRows(
+  operation: PaymentOperation,
+  snapshot: InteractivePaymentSemanticSnapshot,
+  input: ProviderWebhookCompletionEvidence,
+): PaymentOperationLinkedPaymentInput[] {
+  return snapshot.allocations.map((allocation) => ({
+    allocationIndex: allocation.allocationIndex,
+    values: {
+      bowlerId: allocation.bowlerId,
+      leagueId: snapshot.leagueId,
+      amount: allocation.amountMinor,
+      lineageAmount: allocation.lineageAmountMinor,
+      prizeFundAmount: allocation.prizeFundAmountMinor,
+      weekOf: allocation.weekOf,
+      status: "paid" as const,
+      type: providerNameToPaymentType(snapshot.providerName),
+      providerPaymentId: input.providerPaymentId,
+      receiptUrl: input.receiptUrl ?? undefined,
+      receiptNumber: input.receiptNumber ?? undefined,
+      receiptEmailMissing: snapshot.buyerEmail === null,
+      combinedChargeGroupId: snapshot.combinedChargeGroupId,
+      idempotencyKey: allocation.allocationIndex === 0 ? operation.id : undefined,
+      notes: allocation.notes,
+      paidByUserId: allocation.paidByUserId,
+    },
+  }));
+}
+
+/**
+ * Conclusive signed provider evidence uses the same local invariants and row
+ * insertion primitive as executor finalization, but never calls a provider.
+ * The caller must already hold the inbox event row lock in this transaction.
+ */
+export async function finalizeChargeFromWebhookEvidenceInTransaction(
+  tx: PaymentOperationTransaction,
+  input: ProviderWebhookCompletionEvidence,
+): Promise<PaymentOperation> {
+  validateProviderObjectId(input.providerObjectId);
+  if (input.providerObjectId !== input.providerPaymentId) {
+    throw new PaymentOperationImmutableMismatchError();
+  }
+  if (input.providerOrderId != null) validateProviderOrderId(input.providerOrderId);
+  const now = toIso(input.now ?? new Date(), "now");
+  const [operation] = await tx.select().from(paymentOperations).where(and(
+    eq(paymentOperations.organizationId, input.organizationId),
+    eq(paymentOperations.id, input.operationId),
+  )).limit(1).for("update");
+  if (!operation || !["scheduled_charge", "interactive_charge"].includes(operation.operationType)) {
+    throw new PaymentOperationNotFoundError();
+  }
+  if (
+    operation.providerName !== "square"
+    || operation.amountMinor !== input.amountMinor
+    || operation.currency !== input.currency
+    || (operation.providerObjectId !== null && operation.providerObjectId !== input.providerObjectId)
+    || (operation.providerOrderId !== null && operation.providerOrderId !== input.providerOrderId)
+  ) throw new PaymentOperationImmutableMismatchError();
+
+  let rows: PaymentOperationLinkedPaymentInput[];
+  if (operation.operationType === "scheduled_charge") {
+    const snapshot = await loadScheduledPaymentOperationSnapshot(tx, operation);
+    if (
+      !snapshot
+      || snapshot.locationId !== input.locationId
+      || (snapshot.providerLocationId !== null
+        && snapshot.providerLocationId !== input.providerLocationId)
+    ) throw new PaymentOperationImmutableMismatchError();
+    rows = scheduledWebhookPaymentRows(operation, snapshot, input);
+  } else {
+    const snapshot = await loadInteractivePaymentOperationSnapshot(tx, operation);
+    if (
+      !snapshot
+      || snapshot.locationId !== input.locationId
+      || (snapshot.providerLocationId !== null
+        && snapshot.providerLocationId !== input.providerLocationId)
+    ) throw new PaymentOperationImmutableMismatchError();
+    rows = interactiveWebhookPaymentRows(operation, snapshot, input);
+  }
+
+  if (operation.status === "succeeded") {
+    if (operation.providerObjectId !== input.providerObjectId) {
+      throw new PaymentOperationImmutableMismatchError();
+    }
+    return operation;
+  }
+  if (!webhookCompletableStatuses.has(operation.status)) {
+    throw new PaymentOperationInvalidTransitionError(operation.status);
+  }
+  let leaseToken = operation.leaseToken;
+  if (operation.status !== "leased") {
+    leaseToken = randomUUID();
+    const [leased] = await tx.update(paymentOperations).set({
+      status: "leased",
       nextAttemptAt: null,
-      leaseOwner: null,
-      leaseExpiresAt: null,
+      leaseOwner: "square-webhook",
+      leaseToken,
+      leaseExpiresAt: new Date(new Date(now).getTime() + PAYMENT_OPERATION_MAX_LEASE_MS).toISOString(),
       errorClassification: null,
       errorCode: null,
-      completedAt: now,
+      completedAt: null,
       updatedAt: now,
     }).where(and(
-      eq(paymentOperations.organizationId, input.organizationId),
-      eq(paymentOperations.id, input.operationId),
-      eq(paymentOperations.status, "leased"),
-      eq(paymentOperations.leaseToken, input.leaseToken),
-      or(isNull(paymentOperations.providerObjectId), eq(paymentOperations.providerObjectId, input.providerObjectId)),
+      eq(paymentOperations.id, operation.id),
+      eq(paymentOperations.organizationId, operation.organizationId),
+      eq(paymentOperations.status, operation.status),
+      operation.leaseToken === null
+        ? isNull(paymentOperations.leaseToken)
+        : eq(paymentOperations.leaseToken, operation.leaseToken),
     )).returning();
-    if (!completed) throw new PaymentOperationInvalidTransitionError(operation.status);
-    return { operation: completed, payment };
+    if (!leased) throw new PaymentOperationInvalidTransitionError(operation.status);
+  }
+  if (!leaseToken) throw new PaymentOperationInvalidTransitionError(operation.status);
+  return finalizePaymentOperationSuccessInTransaction(tx, {
+    organizationId: input.organizationId,
+    operationId: operation.id,
+    leaseToken,
+    providerObjectId: input.providerObjectId,
+    providerOrderId: input.providerOrderId,
+    paymentRows: rows,
+    now: input.now,
   });
+}
+
+export async function finalizeRefundFromWebhookEvidenceInTransaction(
+  tx: PaymentOperationTransaction,
+  input: ProviderWebhookCompletionEvidence,
+): Promise<{ operation: PaymentOperation; payment: Payment }> {
+  validateProviderObjectId(input.providerObjectId);
+  const now = toIso(input.now ?? new Date(), "now");
+  const [operation] = await tx.select().from(paymentOperations).where(and(
+    eq(paymentOperations.organizationId, input.organizationId),
+    eq(paymentOperations.id, input.operationId),
+    eq(paymentOperations.operationType, "refund"),
+  )).limit(1).for("update");
+  if (!operation) throw new PaymentOperationNotFoundError();
+  const snapshot = await loadRefundPaymentOperationSnapshot(tx, operation);
+  if (
+    !snapshot
+    || operation.providerName !== "square"
+    || operation.amountMinor !== input.amountMinor
+    || operation.currency !== input.currency
+    || snapshot.locationId !== input.locationId
+    || snapshot.providerPaymentId !== input.providerPaymentId
+    || (operation.providerObjectId !== null && operation.providerObjectId !== input.providerObjectId)
+  ) throw new PaymentOperationImmutableMismatchError();
+
+  const [currentPayment] = await tx.select().from(payments)
+    .where(eq(payments.id, snapshot.paymentId)).limit(1).for("update");
+  if (operation.status === "succeeded") {
+    if (
+      operation.providerObjectId !== input.providerObjectId
+      || currentPayment?.status !== "refunded"
+      || currentPayment.squareRefundId !== input.providerObjectId
+    ) throw new PaymentOperationImmutableMismatchError();
+    return { operation, payment: currentPayment };
+  }
+  if (!webhookCompletableStatuses.has(operation.status) || currentPayment?.status !== "paid") {
+    throw new PaymentOperationInvalidTransitionError(operation.status);
+  }
+  const [payment] = await tx.update(payments).set({
+    status: "refunded",
+    squareRefundId: input.providerObjectId,
+    refundReason: snapshot.requestedReason,
+    refundedAt: now,
+  }).where(and(
+    eq(payments.id, snapshot.paymentId),
+    eq(payments.leagueId, snapshot.leagueId),
+    eq(payments.amount, snapshot.amountMinor),
+    eq(payments.providerPaymentId, snapshot.providerPaymentId),
+    eq(payments.status, "paid"),
+  )).returning();
+  if (!payment) throw new PaymentOperationImmutableMismatchError();
+  const [completed] = await tx.update(paymentOperations).set({
+    status: "succeeded",
+    providerObjectId: input.providerObjectId,
+    nextAttemptAt: null,
+    leaseOwner: null,
+    leaseExpiresAt: null,
+    errorClassification: null,
+    errorCode: null,
+    completedAt: now,
+    updatedAt: now,
+  }).where(and(
+    eq(paymentOperations.id, operation.id),
+    eq(paymentOperations.organizationId, input.organizationId),
+    eq(paymentOperations.status, operation.status),
+    operation.leaseToken === null
+      ? isNull(paymentOperations.leaseToken)
+      : eq(paymentOperations.leaseToken, operation.leaseToken),
+    or(isNull(paymentOperations.providerObjectId), eq(paymentOperations.providerObjectId, input.providerObjectId)),
+  )).returning();
+  if (!completed) throw new PaymentOperationInvalidTransitionError(operation.status);
+  return { operation: completed, payment };
 }
 
 export type PaymentOperationWake = {

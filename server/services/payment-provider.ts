@@ -55,6 +55,8 @@ export interface PaymentRequestIdentity {
   paymentKey: string;
   orderKey?: string;
   providerLocationId?: string;
+  /** Durable local operation identity, written to Square Payment.reference_id. */
+  referenceId?: string;
 }
 
 export type PaymentIdempotencyInput = string | PaymentRequestIdentity;

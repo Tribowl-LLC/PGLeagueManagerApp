@@ -1,0 +1,1 @@
+CREATE INDEX "webhook_events_object_freshness_idx" ON "webhook_events" USING btree ("provider","provider_application_id","provider_object_type","provider_object_id","provider_object_version","provider_object_updated_at");

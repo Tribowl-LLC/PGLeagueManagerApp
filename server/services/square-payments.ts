@@ -73,14 +73,32 @@ function paymentIdentity(input: PaymentIdempotencyInput | undefined): {
   paymentKey: string;
   orderKey?: string;
   providerLocationId?: string;
+  referenceId?: string;
 } {
   if (typeof input === 'object') {
+    if (
+      input.referenceId !== undefined
+      && (
+        input.referenceId.length === 0
+        || input.referenceId.length > 40
+        || input.referenceId.trim() !== input.referenceId
+        || /[\u0000-\u001f\u007f]/.test(input.referenceId)
+      )
+    ) {
+      throw new PaymentProviderError(
+        'Payment reference ID is invalid',
+        'INVALID_REFERENCE_ID',
+        undefined,
+        { disposition: 'invalid_request' },
+      );
+    }
     return {
       paymentKey: assertSquareIdempotencyKey(input.paymentKey, 'Payment'),
       orderKey: input.orderKey === undefined
         ? undefined
         : assertSquareIdempotencyKey(input.orderKey, 'Order'),
       providerLocationId: input.providerLocationId,
+      referenceId: input.referenceId,
     };
   }
   return {
@@ -170,6 +188,8 @@ export async function processPayment(
       },
       autocomplete: true
     };
+
+    if (identity.referenceId) paymentRequest.referenceId = identity.referenceId;
 
     if (identity.providerLocationId) {
       paymentRequest.locationId = identity.providerLocationId;
@@ -350,6 +370,8 @@ export async function createOrderWithPayment(
       locationId,
       autocomplete: true,
     };
+
+    if (identity.referenceId) paymentRequest.referenceId = identity.referenceId;
 
     if (customerId) {
       paymentRequest.customerId = customerId;

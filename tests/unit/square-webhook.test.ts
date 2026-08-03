@@ -20,7 +20,7 @@ process.env.SESSION_SECRET ??= "square-webhook-unit-session-secret";
 process.env.FIELD_ENCRYPTION_KEY ??=
   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
-const { fakeLogger, ingest, downstreamTenantResolver } = vi.hoisted(() => ({
+const { fakeLogger, ingest, processEvent, rearm, downstreamTenantResolver } = vi.hoisted(() => ({
   fakeLogger: {
     info: vi.fn(),
     warn: vi.fn(),
@@ -28,6 +28,8 @@ const { fakeLogger, ingest, downstreamTenantResolver } = vi.hoisted(() => ({
     debug: vi.fn(),
   },
   ingest: vi.fn(),
+  processEvent: vi.fn(),
+  rearm: vi.fn(),
   downstreamTenantResolver: vi.fn(),
 }));
 
@@ -39,6 +41,9 @@ vi.mock("../../server/storage/webhook-events", () => ({
   WebhookDuplicateMismatchError: class WebhookDuplicateMismatchError extends Error {},
   WebhookLocationMappingError: class WebhookLocationMappingError extends Error {},
   ingestSquareWebhookEvent: vi.fn(),
+}));
+vi.mock("../../server/storage/square-webhook-processing", () => ({
+  processSquareWebhookEvent: vi.fn(),
 }));
 
 const {
@@ -159,6 +164,16 @@ beforeEach(() => {
     event: webhookEventFixture("pending"),
     duplicate: false,
   });
+  processEvent.mockReset();
+  processEvent.mockResolvedValue({
+    acknowledged: true,
+    terminal: true,
+    businessStateChanged: true,
+    status: "processed",
+    code: null,
+  });
+  rearm.mockReset();
+  rearm.mockResolvedValue(undefined);
   downstreamTenantResolver.mockReset();
 });
 
@@ -337,6 +352,92 @@ describe("Square webhook parsing and log safety", () => {
   });
 });
 
+describe("Square webhook reconciliation activation", () => {
+  it("keeps ingest_only behavior dormant", async () => {
+    const response = await post(JSON.stringify(paymentEvent()));
+    expect(response.status).toBe(200);
+    expect(processEvent).not.toHaveBeenCalled();
+    expect(rearm).not.toHaveBeenCalled();
+  });
+
+  it("processes only after durable ingestion and rearms a committed mutation", async () => {
+    const reconcileConfig: SquareWebhookConfig = { ...config, mode: "reconcile_payments" };
+    const reconcileApp = express();
+    registerSquareWebhookReceiver(reconcileApp, {
+      config: reconcileConfig,
+      ingest,
+      process: processEvent,
+      rearm,
+    });
+    const listener = await new Promise<Server>((resolve) => {
+      const value = reconcileApp.listen(0, "127.0.0.1", () => resolve(value));
+    });
+    try {
+      const body = JSON.stringify(paymentEvent());
+      const response = await fetch(
+        `http://127.0.0.1:${(listener.address() as AddressInfo).port}${SQUARE_WEBHOOK_PATH}`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            [SQUARE_WEBHOOK_SIGNATURE_HEADER]: sign(body),
+            "x-forwarded-for": "203.0.113.240",
+          },
+          body,
+        },
+      );
+      expect(response.status).toBe(200);
+      expect(ingest.mock.invocationCallOrder[0]).toBeLessThan(processEvent.mock.invocationCallOrder[0]);
+      expect(processEvent).toHaveBeenCalledWith(expect.objectContaining({
+        eventId: webhookEventFixture("pending").id,
+        organizationId: 1,
+      }));
+      expect(rearm).toHaveBeenCalledTimes(1);
+    } finally {
+      await new Promise<void>((resolve, reject) => listener.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
+  it("returns non-2xx for a durable nonterminal processing outcome", async () => {
+    processEvent.mockResolvedValueOnce({
+      acknowledged: false,
+      terminal: false,
+      businessStateChanged: false,
+      status: "retry_scheduled",
+      code: "OPERATION_NOT_FOUND",
+    });
+    const reconcileApp = express();
+    registerSquareWebhookReceiver(reconcileApp, {
+      config: { ...config, mode: "reconcile_payments" },
+      ingest,
+      process: processEvent,
+      rearm,
+    });
+    const listener = await new Promise<Server>((resolve) => {
+      const value = reconcileApp.listen(0, "127.0.0.1", () => resolve(value));
+    });
+    try {
+      const body = JSON.stringify(paymentEvent());
+      const response = await fetch(
+        `http://127.0.0.1:${(listener.address() as AddressInfo).port}${SQUARE_WEBHOOK_PATH}`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            [SQUARE_WEBHOOK_SIGNATURE_HEADER]: sign(body),
+            "x-forwarded-for": "203.0.113.241",
+          },
+          body,
+        },
+      );
+      expect(response.status).toBe(503);
+      expect(rearm).not.toHaveBeenCalled();
+    } finally {
+      await new Promise<void>((resolve, reject) => listener.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+});
+
 describe("Square webhook configuration", () => {
   it("defaults dormant and rejects unsafe ingest-only configuration", () => {
     expect(resolveSquareWebhookConfig({ appDomain: "leaguevault.app", appEnv: "prod" })).toEqual({
@@ -353,5 +454,16 @@ describe("Square webhook configuration", () => {
       appDomain: "leaguevault.app",
       appEnv: "prod",
     })).toThrow("must use APP_DOMAIN");
+  });
+
+  it("accepts explicit reconciliation mode with the same signature boundary", () => {
+    expect(resolveSquareWebhookConfig({
+      mode: "reconcile_payments",
+      notificationUrl,
+      providerApiVersion: SQUARE_WEBHOOK_SUPPORTED_API_VERSION,
+      signatureKeysJson: JSON.stringify([{ applicationId, signatureKey }]),
+      appDomain: "hooks.example.test",
+      appEnv: "dev",
+    }).mode).toBe("reconcile_payments");
   });
 });

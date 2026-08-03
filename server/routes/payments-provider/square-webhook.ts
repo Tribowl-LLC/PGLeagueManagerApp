@@ -27,6 +27,11 @@ import {
   SquareWebhookPayloadError,
 } from "../../services/square-webhook-event.js";
 import { sendError, sendSuccess } from "../../utils/api.js";
+import {
+  processSquareWebhookEvent,
+  type SquareWebhookProcessingResult,
+} from "../../storage/square-webhook-processing.js";
+import { notifyScheduledPaymentMutation } from "../../services/scheduled-payment-runtime.js";
 
 const log = createLogger("SquareWebhook");
 
@@ -74,7 +79,7 @@ export function verifySquareWebhookSignature(
   signatureHeader: string,
   config: SquareWebhookConfig,
 ): string | null {
-  if (config.mode !== "ingest_only" || !config.notificationUrl) return null;
+  if (config.mode === "disabled" || !config.notificationUrl) return null;
   const presented = decodePresentedSignature(signatureHeader);
   if (!presented) return null;
   const matches: string[] = [];
@@ -91,6 +96,12 @@ export function verifySquareWebhookSignature(
 interface RegisterSquareWebhookOptions {
   config?: SquareWebhookConfig;
   ingest?: (input: IngestSquareWebhookEventInput) => Promise<IngestSquareWebhookEventResult>;
+  process?: (input: {
+    organizationId: number;
+    eventId: string;
+    event: ReturnType<typeof normalizeSquareWebhookEvent>;
+  }) => Promise<SquareWebhookProcessingResult>;
+  rearm?: () => Promise<void>;
 }
 
 const rawBodyParser = express.raw({
@@ -128,7 +139,7 @@ function rawBodyText(body: Buffer): string | null {
 function signatureGate(config: SquareWebhookConfig) {
   return (req: Request, res: Response, next: NextFunction): void => {
     const correlationId = requestId(res);
-    if (config.mode !== "ingest_only") {
+    if (config.mode === "disabled") {
       sendError(res, "Square webhook ingestion is disabled", 503, "SQUARE_WEBHOOK_DISABLED");
       return;
     }
@@ -160,8 +171,8 @@ function signatureGate(config: SquareWebhookConfig) {
 
 /**
  * Registers the one canonical public Square route before tenant resolution and
- * global JSON parsing. Phase 4A-1 can ingest encrypted evidence only; no event
- * processing code is imported or invoked here.
+ * global JSON parsing. Processing remains inline, provider-I/O-free, and
+ * explicitly gated by reconcile_payments mode.
  */
 export function registerSquareWebhookReceiver(
   app: Express,
@@ -169,6 +180,8 @@ export function registerSquareWebhookReceiver(
 ): void {
   const config = options.config ?? defaultConfig();
   const ingest = options.ingest ?? ingestSquareWebhookEvent;
+  const process = options.process ?? processSquareWebhookEvent;
+  const rearm = options.rearm ?? notifyScheduledPaymentMutation;
 
   app.post(
     SQUARE_WEBHOOK_PATH,
@@ -228,6 +241,35 @@ export function registerSquareWebhookReceiver(
           duplicate: result.duplicate,
           status: result.event.status,
         });
+        if (config.mode === "reconcile_payments" && !normalized.ignored) {
+          const processed = await process({
+            organizationId: result.event.organizationId,
+            eventId: result.event.id,
+            event: normalized,
+          });
+          if (!processed.acknowledged) {
+            sendError(res, "Webhook event processing will be retried", 503, "SQUARE_WEBHOOK_PROCESSING_RETRY");
+            return;
+          }
+          if (processed.businessStateChanged) {
+            try {
+              await rearm();
+            } catch (error) {
+              log.error("Square webhook scheduler rearm failed", {
+                event: "square_webhook_rearm_failed",
+                requestId: correlationId,
+                eventType: normalized.eventType,
+                errorName: error instanceof Error ? error.name : "UnknownError",
+              });
+            }
+          }
+          sendSuccess(res, {
+            received: true,
+            duplicate: result.duplicate,
+            status: processed.status,
+          });
+          return;
+        }
         sendSuccess(res, {
           received: true,
           duplicate: result.duplicate,

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const SQUARE_WEBHOOK_MODES = ["disabled", "ingest_only"] as const;
+export const SQUARE_WEBHOOK_MODES = ["disabled", "ingest_only", "reconcile_payments"] as const;
 export type SquareWebhookMode = (typeof SQUARE_WEBHOOK_MODES)[number];
 
 export const SQUARE_WEBHOOK_SUPPORTED_API_VERSION = "2026-05-20" as const;
@@ -58,7 +58,7 @@ function validateNotificationUrl(
   value: string | undefined,
   input: Pick<SquareWebhookConfigInput, "appDomain" | "appEnv">,
 ): string {
-  if (!value) throw new Error("SQUARE_WEBHOOK_NOTIFICATION_URL is required in ingest_only mode");
+  if (!value) throw new Error("SQUARE_WEBHOOK_NOTIFICATION_URL is required in an enabled mode");
   let parsed: URL;
   try {
     parsed = new URL(value);
@@ -90,7 +90,9 @@ function validateNotificationUrl(
  */
 export function resolveSquareWebhookConfig(input: SquareWebhookConfigInput): SquareWebhookConfig {
   const modeResult = z.enum(SQUARE_WEBHOOK_MODES).safeParse(input.mode ?? "disabled");
-  if (!modeResult.success) throw new Error("SQUARE_WEBHOOK_MODE must be disabled or ingest_only");
+  if (!modeResult.success) {
+    throw new Error("SQUARE_WEBHOOK_MODE must be disabled, ingest_only, or reconcile_payments");
+  }
   if (modeResult.data === "disabled") {
     return {
       mode: "disabled",
@@ -101,15 +103,15 @@ export function resolveSquareWebhookConfig(input: SquareWebhookConfigInput): Squ
   }
   if (input.providerApiVersion !== SQUARE_WEBHOOK_SUPPORTED_API_VERSION) {
     throw new Error(
-      `SQUARE_WEBHOOK_API_VERSION must be ${SQUARE_WEBHOOK_SUPPORTED_API_VERSION} in ingest_only mode`,
+      `SQUARE_WEBHOOK_API_VERSION must be ${SQUARE_WEBHOOK_SUPPORTED_API_VERSION} in an enabled mode`,
     );
   }
   const subscriptions = parseSubscriptions(input.signatureKeysJson);
   if (subscriptions.length === 0) {
-    throw new Error("SQUARE_WEBHOOK_SIGNATURE_KEYS_JSON is required in ingest_only mode");
+    throw new Error("SQUARE_WEBHOOK_SIGNATURE_KEYS_JSON is required in an enabled mode");
   }
   return {
-    mode: "ingest_only",
+    mode: modeResult.data,
     notificationUrl: validateNotificationUrl(input.notificationUrl, input),
     providerApiVersion: SQUARE_WEBHOOK_SUPPORTED_API_VERSION,
     subscriptions,
