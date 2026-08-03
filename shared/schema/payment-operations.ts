@@ -512,7 +512,9 @@ export const refundPaymentOperationSnapshots = pgTable("refund_payment_operation
   leagueId: integer("league_id")
     .notNull()
     .references(() => leagues.id, { onDelete: "restrict" }),
-  locationId: integer("location_id").references(() => locations.id, { onDelete: "restrict" }),
+  locationId: integer("location_id")
+    .notNull()
+    .references(() => locations.id, { onDelete: "restrict" }),
   encryptedProviderPaymentId: text("encrypted_provider_payment_id").notNull(),
   reason: varchar("reason", { length: 192 }).notNull(),
   requestedReason: varchar("requested_reason", { length: 192 }),

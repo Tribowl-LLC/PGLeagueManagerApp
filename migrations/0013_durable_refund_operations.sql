@@ -4,7 +4,7 @@ CREATE TABLE "refund_payment_operation_snapshots" (
 	"snapshot_fingerprint" varchar(80) NOT NULL,
 	"payment_id" integer NOT NULL,
 	"league_id" integer NOT NULL,
-	"location_id" integer,
+	"location_id" integer NOT NULL,
 	"encrypted_provider_payment_id" text NOT NULL,
 	"reason" varchar(192) NOT NULL,
 	"requested_reason" varchar(192),

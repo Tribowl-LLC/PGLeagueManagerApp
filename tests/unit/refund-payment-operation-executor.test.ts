@@ -6,6 +6,7 @@ import {
   leagues,
   locations,
   organizations,
+  paymentOperations,
   payments,
   refundPaymentOperationSnapshots,
   users,
@@ -19,6 +20,7 @@ import {
   getPaymentOperationForOrganization,
   PaymentOperationImmutableMismatchError,
   PaymentOperationInvalidTransitionError,
+  REFUND_TARGET_PREFIX,
 } from "../../server/storage/payment-operations";
 import {
   prepareRefundPaymentOperation,
@@ -220,6 +222,32 @@ describe("durable refund payment operations", () => {
 
     await expect(prepare(fixture, payment.id, "Different request"))
       .rejects.toBeInstanceOf(PaymentOperationImmutableMismatchError);
+  });
+
+  it("rejects a league without a location before creating an immutable refund operation", async () => {
+    const fixture = fixtures[0];
+    const [league] = await db.insert(leagues).values({
+      name: "Refund Operation League Without Location",
+      seasonStart: "2033-01-01T00:00:00.000Z",
+      seasonEnd: "2033-12-31T23:59:59.000Z",
+      weekDay: "Monday",
+      weeklyFee: 2_000,
+      organizationId: fixture.organizationId,
+      locationId: null,
+    }).returning({ id: leagues.id });
+    const payment = await createPaidPayment(fixture, { leagueId: league.id });
+
+    await expect(prepare(fixture, payment.id)).rejects.toMatchObject({
+      statusCode: 422,
+      code: "PROVIDER_NOT_CONFIGURED",
+    });
+
+    const operations = await db.select().from(paymentOperations)
+      .where(eq(paymentOperations.targetKey, `${REFUND_TARGET_PREFIX}${payment.id}`));
+    const snapshots = await db.select().from(refundPaymentOperationSnapshots)
+      .where(eq(refundPaymentOperationSnapshots.paymentId, payment.id));
+    expect(operations).toHaveLength(0);
+    expect(snapshots).toHaveLength(0);
   });
 
   it("fails closed for cross-tenant preparation and operation execution", async () => {

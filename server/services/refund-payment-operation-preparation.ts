@@ -59,6 +59,7 @@ export async function prepareRefundPaymentOperation(input: PrepareRefundPaymentO
       .for("update");
     if (!owned) throw new RefundPreparationError("Payment not found", 404, "NOT_FOUND");
     const organizationId = owned.league.organizationId;
+    const locationId = owned.league.locationId;
     if (organizationId === null) throw new RefundPreparationError("You don't have access to refund this payment", 403, "FORBIDDEN");
     if (input.requestedByRole === "org_admin" && input.requestedByOrganizationId !== organizationId) {
       throw new RefundPreparationError("You don't have access to refund this payment", 403, "FORBIDDEN");
@@ -82,9 +83,9 @@ export async function prepareRefundPaymentOperation(input: PrepareRefundPaymentO
     if (!ownedBowler) {
       throw new RefundPreparationError("You don't have access to refund this payment", 403, "FORBIDDEN");
     }
-    if (owned.league.locationId !== null) {
+    if (locationId !== null) {
       const [ownedLocation] = await tx.select({ id: locations.id }).from(locations).where(and(
-        eq(locations.id, owned.league.locationId),
+        eq(locations.id, locationId),
         eq(locations.organizationId, organizationId),
       )).limit(1);
       if (!ownedLocation) {
@@ -97,7 +98,6 @@ export async function prepareRefundPaymentOperation(input: PrepareRefundPaymentO
     if (!owned.payment.providerPaymentId) {
       throw new RefundPreparationError("Payment has no provider charge to refund", 400, "INVALID_PROVIDER_PAYMENT");
     }
-
     const [existing] = await tx.select().from(paymentOperations).where(and(
       eq(paymentOperations.organizationId, organizationId),
       eq(paymentOperations.operationType, "refund"),
@@ -114,6 +114,13 @@ export async function prepareRefundPaymentOperation(input: PrepareRefundPaymentO
       throw new RefundPreparationError("Refund state requires reconciliation", 409, "REFUND_STATE_CONFLICT");
     } else if (existing.status !== "succeeded" && owned.payment.status !== "paid") {
       throw new RefundPreparationError("Refund state requires reconciliation", 409, "REFUND_STATE_CONFLICT");
+    }
+    if (locationId === null) {
+      throw new RefundPreparationError(
+        "Assign a location with Square configured before refunding this payment",
+        422,
+        "PROVIDER_NOT_CONFIGURED",
+      );
     }
 
     const operation = await createOrGetRefundPaymentOperation({
@@ -133,7 +140,7 @@ export async function prepareRefundPaymentOperation(input: PrepareRefundPaymentO
       providerName: "square",
       paymentId: input.paymentId,
       leagueId: owned.payment.leagueId,
-      locationId: owned.league.locationId,
+      locationId,
       providerPaymentId: owned.payment.providerPaymentId,
       reason: normalizedReason.reason,
       requestedReason: normalizedReason.requestedReason,

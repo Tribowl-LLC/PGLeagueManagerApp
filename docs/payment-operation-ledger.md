@@ -741,9 +741,11 @@ existing payment refund fail closed rather than adopting the first request.
 Preparation locks and reconstructs the payment through its league, rejects
 organization-less or cross-tenant rows, and permits only an organization admin
 from that exact organization or a system admin. Only paid Square/card rows with
-a provider payment identity may create an operation. Cash, check, pending,
-failed, disputed, and already-refunded rows retain the prior policy and create
-no provider operation.
+a provider payment identity and a tenant-owned non-null location may create an
+operation. A league without a location receives an actionable configuration
+response before any operation or immutable snapshot exists. Cash, check,
+pending, failed, disputed, and already-refunded rows retain the prior policy
+and create no provider operation.
 
 The executor acquires and commits an expiring token-fenced lease before calling
 Square. `RefundPayment` and `GetPaymentRefund` always run outside database
@@ -759,7 +761,10 @@ configuration failures become a due `retry_scheduled` state, do not consume
 the provider-attempt budget while configuration is repaired, and retain the
 same operation/key. A legacy configuration row already marked
 `failed_terminal` can be explicitly re-opened by resubmitting its same
-immutable refund request; other terminal outcomes remain terminal.
+immutable refund request; other terminal outcomes remain terminal. The refund
+route reports current configuration retries as HTTP 422 with
+`PROVIDER_NOT_CONFIGURED`, including operation status/retry details, so the
+administrator is sent to Square settings instead of seeing generic processing.
 
 Migration 0013 is forward-only and additive. It creates
 `refund_payment_operation_snapshots` plus the tenant-scoped partial unique

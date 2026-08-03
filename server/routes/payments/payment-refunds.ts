@@ -65,6 +65,16 @@ async function respondWithRefundOperation(
     sendSuccess(res, sanitizePayment(payment));
     return;
   }
+  if (current.errorClassification === "configuration") {
+    sendError(
+      res,
+      "Square configuration needs attention for this location. Update it in Settings before the refund can continue.",
+      422,
+      "PROVIDER_NOT_CONFIGURED",
+      operationStatus(current),
+    );
+    return;
+  }
   if (current.status === "action_required") {
     sendError(
       res,
@@ -76,10 +86,6 @@ async function respondWithRefundOperation(
     return;
   }
   if (current.status === "failed_terminal") {
-    if (current.errorClassification === "configuration") {
-      sendError(res, "Payment provider is not configured for this location", 422, "PROVIDER_NOT_CONFIGURED", operationStatus(current));
-      return;
-    }
     const invalid = current.errorClassification === "invalid_request";
     sendError(
       res,

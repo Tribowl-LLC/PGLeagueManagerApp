@@ -14,7 +14,7 @@ const semanticSnapshotSchema = z.object({
   providerName: z.literal("square"),
   paymentId: z.number().int().positive(),
   leagueId: z.number().int().positive(),
-  locationId: z.number().int().positive().nullable(),
+  locationId: z.number().int().positive(),
   providerPaymentId: z.string().min(1).max(255),
   reason: z.string().trim().min(1).max(192),
   requestedReason: z.string().trim().min(1).max(192).nullable(),
@@ -30,7 +30,7 @@ export interface StoredRefundPaymentSnapshot {
   snapshotFingerprint: string;
   paymentId: number;
   leagueId: number;
-  locationId: number | null;
+  locationId: number;
   encryptedProviderPaymentId: string;
   reason: string;
   requestedReason: string | null;

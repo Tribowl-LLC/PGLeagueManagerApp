@@ -557,7 +557,34 @@ describe('POST /api/payments/:id/refund', () => {
     expect((await res.json()).error.code).toBe('INVALID_TYPE');
   });
 
-  it('returns 422 when the payment provider is not configured', async () => {
+  it('returns an actionable 422 for a current configuration retry', async () => {
+    mockExecuteRefund.mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      status: 'retry_scheduled',
+      providerObjectId: null,
+      nextAttemptAt: '2026-01-01T00:15:00.000Z',
+      leaseExpiresAt: null,
+      attemptCount: 1,
+      errorClassification: 'configuration',
+      errorCode: 'UNAUTHORIZED',
+    });
+
+    const res = await post('/api/payments/50/refund', {});
+    expect(res.status).toBe(422);
+    expect(await res.json()).toMatchObject({
+      error: {
+        code: 'PROVIDER_NOT_CONFIGURED',
+        message: expect.stringMatching(/configuration.*Settings/i),
+        details: {
+          status: 'retry_scheduled',
+          retryAt: '2026-01-01T00:15:00.000Z',
+        },
+      },
+    });
+    expect(mockRetryRefundAfterConfiguration).not.toHaveBeenCalled();
+  });
+
+  it('reopens a legacy terminal configuration failure and returns 422', async () => {
     mockPrepareRefund.mockResolvedValueOnce({
       operation: {
         id: '11111111-1111-4111-8111-111111111111',
