@@ -391,6 +391,48 @@ describe('card-list query compatibility', () => {
     });
   });
 
+  it('uses a strict successful card-list response for payment ownership', async () => {
+    mocks.cards.list.mockResolvedValue({
+      data: [{ id: 'ccof:owned-card', enabled: true }],
+    });
+    const provider = new SquarePaymentProvider(1);
+
+    await expect(provider.hasCardOnFile('customer-1', 'ccof:owned-card')).resolves.toBe(true);
+    await expect(provider.hasCardOnFile('customer-1', 'ccof:other-card')).resolves.toBe(false);
+  });
+
+  it.each([
+    [429, 'TEMPORARY_ERROR', 'transient'],
+    [500, 'INTERNAL_SERVER_ERROR', 'provider_unknown'],
+    [401, 'UNAUTHORIZED', 'configuration'],
+  ] as const)(
+    'propagates strict ownership HTTP %s / %s failures as %s',
+    async (statusCode, providerCode, disposition) => {
+      mocks.cards.list.mockRejectedValue(new SquareError({
+        statusCode,
+        body: { errors: [{ code: providerCode, detail: 'deterministic ownership failure' }] },
+      }));
+      const provider = new SquarePaymentProvider(1);
+
+      await expect(provider.hasCardOnFile('customer-1', 'ccof:owned-card')).rejects.toMatchObject({
+        name: 'PaymentProviderError',
+        code: 'CARD_OWNERSHIP_CHECK_FAILED',
+        disposition,
+        providerCode,
+      });
+    },
+  );
+
+  it('keeps the UI card list best effort during the same provider outage', async () => {
+    mocks.cards.list.mockRejectedValue(new SquareError({
+      statusCode: 500,
+      body: { errors: [{ code: 'INTERNAL_SERVER_ERROR' }] },
+    }));
+    const provider = new SquarePaymentProvider(1);
+
+    await expect(provider.listCardsOnFile('customer-1')).resolves.toEqual([]);
+  });
+
   it('sends an explicit sort order for the disable-card ownership check', async () => {
     mocks.cards.list.mockResolvedValue({
       data: [{ id: 'card-1', enabled: true }],
@@ -566,7 +608,8 @@ describe('Square Service', () => {
   // ProviderNotConfiguredError, so the routes can map it to a
   // uniform 422 PROVIDER_NOT_CONFIGURED. The four read-only
   // methods (listCardsOnFile, getPayment, listCatalogCategories,
-  // listCatalogItems) intentionally stay degraded — pinned below.
+  // listCatalogItems) intentionally stay degraded — pinned below. The strict
+  // payment-authorization ownership lookup must still throw.
   describe('ProviderNotConfiguredError contract (task #332)', () => {
     let noCredsProvider: InstanceType<typeof SquarePaymentProvider>;
 
@@ -596,6 +639,10 @@ describe('Square Service', () => {
 
     it('saveCardOnFile throws PNCE', async () => {
       await expectsPnce(noCredsProvider.saveCardOnFile('src', 'cust'));
+    });
+
+    it('hasCardOnFile throws PNCE for strict payment authorization', async () => {
+      await expectsPnce(noCredsProvider.hasCardOnFile('cust', 'ccof:card-id'));
     });
 
     it('disableCard throws PNCE', async () => {

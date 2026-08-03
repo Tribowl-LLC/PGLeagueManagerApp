@@ -203,6 +203,29 @@ export class InteractivePaymentOperationExecutor {
       });
     }
 
+    if (snapshot.sourceKind === "legacy" && previousStatus !== "pending") {
+      return recordPaymentOperationReconciliationRequired({
+        organizationId: operation.organizationId,
+        operationId: operation.id,
+        leaseToken,
+        now,
+        errorCode: "LEGACY_PAYMENT_OUTCOME_UNCERTAIN",
+      });
+    }
+
+    if (snapshot.sourceKind === "legacy" && snapshot.storeCard) {
+      return this.recordFailure(
+        operation,
+        new PaymentProviderError(
+          "This payment must be submitted again from an updated payment app.",
+          "LEGACY_CARD_SAVE_UNSUPPORTED",
+          undefined,
+          { disposition: "invalid_request", providerCode: "LEGACY_CARD_SAVE_UNSUPPORTED" },
+        ),
+        false,
+      );
+    }
+
     let provider: PaymentProvider;
     try {
       provider = await this.getProvider(snapshot.locationId);
@@ -224,28 +247,6 @@ export class InteractivePaymentOperationExecutor {
     let result: PaymentResult;
     let paymentSourceId = snapshot.sourceId;
     let paymentStoreCard = snapshot.storeCard;
-
-    if (snapshot.sourceKind === "legacy" && snapshot.storeCard) {
-      if (previousStatus !== "pending") {
-        return recordPaymentOperationReconciliationRequired({
-          organizationId: operation.organizationId,
-          operationId: operation.id,
-          leaseToken,
-          now,
-          errorCode: "LEGACY_PAYMENT_OUTCOME_UNCERTAIN",
-        });
-      }
-      return this.recordFailure(
-        operation,
-        new PaymentProviderError(
-          "This payment must be submitted again from an updated payment app.",
-          "LEGACY_CARD_SAVE_UNSUPPORTED",
-          undefined,
-          { disposition: "invalid_request", providerCode: "LEGACY_CARD_SAVE_UNSUPPORTED" },
-        ),
-        false,
-      );
-    }
 
     const sourceIsProviderCard = provider.validateCardId(snapshot.sourceId);
     if (
@@ -293,8 +294,31 @@ export class InteractivePaymentOperationExecutor {
     }
 
     if (requiresSavedCardOwnership) {
-      const cards = await provider.listCardsOnFile(snapshot.customerId ?? "");
-      if (!cards.some((card) => card.id === snapshot.sourceId)) {
+      if (!provider.hasCardOnFile) {
+        return this.recordFailure(
+          operation,
+          new PaymentProviderError(
+            "The saved payment method could not be verified.",
+            "STRICT_CARD_OWNERSHIP_UNAVAILABLE",
+            undefined,
+            {
+              disposition: "internal",
+              providerCode: "STRICT_CARD_OWNERSHIP_UNAVAILABLE",
+            },
+          ),
+          false,
+        );
+      }
+      let cardBelongsToCustomer: boolean;
+      try {
+        cardBelongsToCustomer = await provider.hasCardOnFile(
+          snapshot.customerId ?? "",
+          snapshot.sourceId,
+        );
+      } catch (error) {
+        return this.recordFailure(operation, error, true);
+      }
+      if (!cardBelongsToCustomer) {
         return this.recordFailure(
           operation,
           new PaymentProviderError(

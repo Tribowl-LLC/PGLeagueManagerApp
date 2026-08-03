@@ -650,7 +650,12 @@ ID and the operation's existing stable payment/order keys. A saved-card source
 never calls `CreateCard`; wallet sources are never vaulted. A Square card ID
 is accepted only as `saved_card` and must pass the customer ownership lookup;
 labeling a card ID as `new_card` or `wallet` fails closed before provider money
-movement. Missing or unsupported source kinds also fail closed.
+movement. The payment-authorization ownership lookup is strict: a successful
+empty provider response proves mismatch, while configuration, rate-limit,
+transport, and Square failures retain their classified operation outcome
+instead of masquerading as missing ownership. The best-effort card-management
+UI list remains unchanged. Missing or unsupported source kinds also fail
+closed.
 
 Card-save state is stored on `payment_operations` itself: `pending` means the
 exact CreateCard request may be replayed, `saved` includes the encrypted
@@ -690,11 +695,14 @@ upgrade-required response.
 Existing v1 operations remain readable and successful responses never replay
 their old post-charge vault side effect. A pending v1 save-card request that
 provably has never acquired a provider-attempt lease fails closed as an
-upgrade-required request. Any v1 save-card operation recovered from
-`provider_unknown`, retry, or an expired lease moves directly to
+upgrade-required request. Any v1 operation recovered from `provider_unknown`,
+retry, or an expired lease moves directly to
 `reconciliation_required`; it is never presented as a confirmed failure and
-never receives a new provider identity. New v2 operations require explicit
-source kind and durable pre-charge vaulting. Once a v2 general interactive
+never receives a new provider identity. This legacy decision occurs immediately
+after snapshot validation and before provider construction, so missing or
+temporarily unavailable provider configuration cannot terminalize an already
+uncertain payment. New v2 operations require explicit source kind and durable
+pre-charge vaulting. Once a v2 general interactive
 operation exists, a pre-fix application is no longer an approved rollback
 target for payment traffic. Rollback requires the compatible schema and
 application revision to preserve operation leases, saved-card state, and

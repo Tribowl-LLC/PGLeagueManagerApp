@@ -130,17 +130,19 @@ export async function saveCardOnFile(
   }
 }
 
-export async function listCardsOnFile(
+async function fetchCardsOnFile(
   ctx: SquareProviderContext,
   customerId: string,
+  strict: boolean,
 ): Promise<SavedCard[]> {
   const client = await ctx.getClient();
   if (!client) {
-    // Intentionally degraded: GET /cards/:bowlerId is a read
-    // path that already treats "no provider configured" as
-    // "no saved cards" and returns []. Throwing here would
-    // turn a benign empty list into a 500 in the route's
-    // outer catch. Task #332 — kept silent on purpose.
+    if (strict) {
+      throw new ProviderNotConfiguredError(
+        'Square client not configured for this location',
+        ctx.locationId,
+      );
+    }
     return [];
   }
 
@@ -165,8 +167,40 @@ export async function listCardsOnFile(
       }));
   } catch (error) {
     log.error('Failed to list cards on file:', error instanceof Error ? error.message : error);
-    return [];
+    if (!strict) return [];
+    if (
+      error instanceof PaymentProviderError
+      || error instanceof ProviderNotConfiguredError
+    ) {
+      throw error;
+    }
+    const failure = classifySquareFailure(error);
+    throw new PaymentProviderError(
+      'Could not verify the saved payment method. Please try again.',
+      'CARD_OWNERSHIP_CHECK_FAILED',
+      failure.detail,
+      failure,
+    );
   }
+}
+
+export async function listCardsOnFile(
+  ctx: SquareProviderContext,
+  customerId: string,
+): Promise<SavedCard[]> {
+  // Intentionally degraded for card-management UI reads: a missing provider
+  // or provider outage remains an empty list. Payment authorization must use
+  // hasCardOnFile(), whose strict path propagates those failures.
+  return fetchCardsOnFile(ctx, customerId, false);
+}
+
+export async function hasCardOnFile(
+  ctx: SquareProviderContext,
+  customerId: string,
+  cardId: string,
+): Promise<boolean> {
+  const cards = await fetchCardsOnFile(ctx, customerId, true);
+  return cards.some(card => card.id === cardId);
 }
 
 export async function disableCard(
