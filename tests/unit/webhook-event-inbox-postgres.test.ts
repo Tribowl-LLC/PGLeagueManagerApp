@@ -9,14 +9,23 @@ import {
   completeWebhookEvent,
   getWebhookEventForOrganization,
   ingestSquareWebhookEvent,
+  scheduleWebhookEventRetry,
   type IngestSquareWebhookEventInput,
 } from "../../server/storage/webhook-events";
+import {
+  deleteLocation,
+  LocationWebhookEvidenceExistsError,
+} from "../../server/storage/locations";
 import { decrypt } from "../../server/utils/crypto";
 import { getTestDb } from "../setup/test-db";
 
 const db = getTestDb();
 const suffix = process.env.VITEST_POOL_ID ?? "0";
-const slugs = [`webhook-inbox-a-${suffix}`, `webhook-inbox-b-${suffix}`] as const;
+const slugs = [
+  `webhook-inbox-a-${suffix}`,
+  `webhook-inbox-b-${suffix}`,
+  `webhook-inbox-teardown-${suffix}`,
+] as const;
 let organizationAId: number;
 let organizationBId: number;
 let locationAId: number;
@@ -52,7 +61,6 @@ beforeAll(async () => {
     .from(organizations)
     .where(inArray(organizations.slug, [...slugs]));
   for (const leftover of leftovers) {
-    await db.delete(webhookEvents).where(eq(webhookEvents.organizationId, leftover.id));
     await deleteOrganization(leftover.id);
   }
   const [organizationA, organizationB] = await db.insert(organizations).values([
@@ -84,11 +92,9 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (organizationAId) {
-    await db.delete(webhookEvents).where(eq(webhookEvents.organizationId, organizationAId));
     await deleteOrganization(organizationAId);
   }
   if (organizationBId) {
-    await db.delete(webhookEvents).where(eq(webhookEvents.organizationId, organizationBId));
     await deleteOrganization(organizationBId);
   }
 });
@@ -182,6 +188,51 @@ describe("durable webhook inbox PostgreSQL boundaries", () => {
     }
   });
 
+  it("retains webhook evidence and rejects ordinary location deletion cleanly", async () => {
+    const retained = await ingestSquareWebhookEvent(input({
+      providerEventId: "event-location-retention-fixture",
+    }));
+
+    await expect(deleteLocation(locationAId))
+      .rejects.toBeInstanceOf(LocationWebhookEvidenceExistsError);
+    expect((await db.select({ id: locations.id }).from(locations)
+      .where(eq(locations.id, locationAId)))[0]?.id).toBe(locationAId);
+    expect((await db.select({ id: webhookEvents.id }).from(webhookEvents)
+      .where(eq(webhookEvents.id, retained.event.id)))[0]?.id).toBe(retained.event.id);
+  });
+
+  it("removes retained webhook evidence during atomic full-tenant teardown", async () => {
+    const [organization] = await db.insert(organizations).values({
+      name: "Webhook Inbox Teardown",
+      slug: slugs[2],
+    }).returning({ id: organizations.id });
+    if (!organization) throw new Error("teardown organization was not created");
+    const [location] = await db.insert(locations).values({
+      name: "Webhook Inbox Teardown Location",
+      organizationId: organization.id,
+      squareCredentials: {
+        appId: "app-inbox-teardown",
+        locationId: "provider-location-inbox-teardown",
+      },
+    }).returning({ id: locations.id });
+    if (!location) throw new Error("teardown location was not created");
+    const ingested = await ingestSquareWebhookEvent(input({
+      providerEventId: "event-organization-teardown-fixture",
+      providerApplicationId: "app-inbox-teardown",
+      providerMerchantId: "merchant-inbox-teardown",
+      providerLocationId: "provider-location-inbox-teardown",
+    }));
+
+    await deleteOrganization(organization.id);
+
+    expect((await db.select({ id: organizations.id }).from(organizations)
+      .where(eq(organizations.id, organization.id)))[0]).toBeUndefined();
+    expect((await db.select({ id: locations.id }).from(locations)
+      .where(eq(locations.id, location.id)))[0]).toBeUndefined();
+    expect((await db.select({ id: webhookEvents.id }).from(webhookEvents)
+      .where(eq(webhookEvents.id, ingested.event.id)))[0]).toBeUndefined();
+  });
+
   it("survives a crash after ingestion and fences an expired claim from stale completion", async () => {
     const ingested = await ingestSquareWebhookEvent(input({
       providerEventId: "event-claim-expiry-fixture",
@@ -240,6 +291,108 @@ describe("durable webhook inbox PostgreSQL boundaries", () => {
     });
     expect(completed).toMatchObject({ status: "processed", attemptCount: 2 });
     expect(completed?.completedAt).not.toBeNull();
+  });
+
+  it("atomically exhausts an expired final-attempt claim", async () => {
+    const ingested = await ingestSquareWebhookEvent(input({
+      providerEventId: "event-final-claim-expiry-fixture",
+    }));
+    await db.update(webhookEvents).set({ attemptCount: 19 }).where(eq(
+      webhookEvents.id,
+      ingested.event.id,
+    ));
+    const finalClaim = await claimWebhookEvent({
+      organizationId: organizationAId,
+      eventId: ingested.event.id,
+      leaseOwner: "final-attempt-worker",
+      leaseDurationMs: 60_000,
+      now: new Date("2026-08-03T12:20:00.000Z"),
+    });
+    expect(finalClaim).toMatchObject({ status: "processing", attemptCount: 20 });
+
+    expect(await claimWebhookEvent({
+      organizationId: organizationAId,
+      eventId: ingested.event.id,
+      leaseOwner: "too-early-worker",
+      leaseDurationMs: 60_000,
+      now: new Date("2026-08-03T12:20:30.000Z"),
+    })).toBeUndefined();
+    expect(await claimWebhookEvent({
+      organizationId: organizationBId,
+      eventId: ingested.event.id,
+      leaseOwner: "wrong-tenant-exhaustion-worker",
+      leaseDurationMs: 60_000,
+      now: new Date("2026-08-03T12:21:01.000Z"),
+    })).toBeUndefined();
+    expect((await getWebhookEventForOrganization(organizationAId, ingested.event.id))?.status)
+      .toBe("processing");
+    expect(await claimWebhookEvent({
+      organizationId: organizationAId,
+      eventId: ingested.event.id,
+      leaseOwner: "exhaustion-worker",
+      leaseDurationMs: 60_000,
+      now: new Date("2026-08-03T12:21:01.000Z"),
+    })).toBeUndefined();
+
+    const exhausted = await getWebhookEventForOrganization(organizationAId, ingested.event.id);
+    expect(exhausted).toMatchObject({
+      status: "failed",
+      attemptCount: 20,
+      errorClassification: "processing",
+      errorCode: "ATTEMPTS_EXHAUSTED",
+      leaseOwner: null,
+      leaseToken: null,
+      leaseExpiresAt: null,
+    });
+    expect(exhausted?.completedAt).not.toBeNull();
+    expect(await completeWebhookEvent({
+      organizationId: organizationAId,
+      eventId: ingested.event.id,
+      leaseToken: finalClaim?.leaseToken ?? "00000000-0000-0000-0000-000000000000",
+      outcome: "processed",
+      now: new Date("2026-08-03T12:21:02.000Z"),
+    })).toBeUndefined();
+  });
+
+  it("terminalizes rather than scheduling a retry at the attempt ceiling", async () => {
+    const ingested = await ingestSquareWebhookEvent(input({
+      providerEventId: "event-final-retry-fixture",
+    }));
+    await db.update(webhookEvents).set({ attemptCount: 19 }).where(eq(
+      webhookEvents.id,
+      ingested.event.id,
+    ));
+    const finalClaim = await claimWebhookEvent({
+      organizationId: organizationAId,
+      eventId: ingested.event.id,
+      leaseOwner: "final-retry-worker",
+      leaseDurationMs: 60_000,
+      now: new Date("2026-08-03T12:30:00.000Z"),
+    });
+    const result = await scheduleWebhookEventRetry({
+      organizationId: organizationAId,
+      eventId: ingested.event.id,
+      leaseToken: finalClaim?.leaseToken ?? "00000000-0000-0000-0000-000000000000",
+      nextAttemptAt: new Date("2026-08-03T12:35:00.000Z"),
+      errorClassification: "processing",
+      errorCode: "PROVIDER_TEMPORARY_ERROR",
+      now: new Date("2026-08-03T12:30:01.000Z"),
+    });
+
+    expect(result).toMatchObject({
+      status: "failed",
+      attemptCount: 20,
+      nextAttemptAt: null,
+      errorCode: "ATTEMPTS_EXHAUSTED",
+    });
+    expect(result?.completedAt).not.toBeNull();
+    expect(await claimWebhookEvent({
+      organizationId: organizationAId,
+      eventId: ingested.event.id,
+      leaseOwner: "never-claim-final-retry",
+      leaseDurationMs: 60_000,
+      now: new Date("2026-08-03T12:35:01.000Z"),
+    })).toBeUndefined();
   });
 
   it("durably marks an unsupported event ignored and retains out-of-order versions as evidence", async () => {

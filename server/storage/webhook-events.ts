@@ -201,6 +201,12 @@ export async function claimWebhookEvent(
   }
   const now = input.now ?? new Date();
   const nowIso = now.toISOString();
+  const exhausted = await exhaustWebhookEventIfDue({
+    organizationId: input.organizationId,
+    eventId: input.eventId,
+    now,
+  });
+  if (exhausted) return undefined;
   const leaseToken = randomUUID();
   const leaseExpiresAt = new Date(now.getTime() + input.leaseDurationMs).toISOString();
   const [claimed] = await db
@@ -242,6 +248,53 @@ interface LeasedWebhookEventInput {
   eventId: string;
   leaseToken: string;
   now?: Date;
+}
+
+export interface ExhaustWebhookEventInput {
+  organizationId: number;
+  eventId: string;
+  now?: Date;
+}
+
+/**
+ * Atomically terminalizes final-attempt work only after its lease/due time.
+ * This remains an explicit event-ID operation; Phase 4A-1 adds no sweep.
+ */
+export async function exhaustWebhookEventIfDue(
+  input: ExhaustWebhookEventInput,
+): Promise<WebhookEvent | undefined> {
+  const now = (input.now ?? new Date()).toISOString();
+  const [exhausted] = await db
+    .update(webhookEvents)
+    .set({
+      status: "failed",
+      nextAttemptAt: null,
+      leaseOwner: null,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      errorClassification: "processing",
+      errorCode: "ATTEMPTS_EXHAUSTED",
+      processedAt: now,
+      completedAt: now,
+      updatedAt: now,
+    })
+    .where(and(
+      eq(webhookEvents.id, input.eventId),
+      eq(webhookEvents.organizationId, input.organizationId),
+      sql`${webhookEvents.attemptCount} >= ${WEBHOOK_EVENT_MAX_ATTEMPTS}`,
+      or(
+        and(
+          eq(webhookEvents.status, "processing"),
+          sql`${webhookEvents.leaseExpiresAt} <= ${now}`,
+        ),
+        and(
+          eq(webhookEvents.status, "retry_scheduled"),
+          sql`${webhookEvents.nextAttemptAt} <= ${now}`,
+        ),
+      ),
+    ))
+    .returning();
+  return exhausted;
 }
 
 function assertSanitizedErrorCode(value: string): void {
@@ -305,27 +358,58 @@ export async function scheduleWebhookEventRetry(
   }
   assertSanitizedErrorCode(input.errorCode);
   const nowIso = now.toISOString();
-  const [scheduled] = await db
-    .update(webhookEvents)
-    .set({
-      status: "retry_scheduled",
-      nextAttemptAt: input.nextAttemptAt.toISOString(),
-      leaseOwner: null,
-      leaseToken: null,
-      leaseExpiresAt: null,
-      errorClassification: input.errorClassification,
-      errorCode: input.errorCode,
-      processedAt: nowIso,
-      updatedAt: nowIso,
-    })
-    .where(and(
-      eq(webhookEvents.id, input.eventId),
-      eq(webhookEvents.organizationId, input.organizationId),
-      eq(webhookEvents.status, "processing"),
-      eq(webhookEvents.leaseToken, input.leaseToken),
-    ))
-    .returning();
-  return scheduled;
+  return db.transaction(async (tx) => {
+    const [scheduled] = await tx
+      .update(webhookEvents)
+      .set({
+        status: "retry_scheduled",
+        nextAttemptAt: input.nextAttemptAt.toISOString(),
+        leaseOwner: null,
+        leaseToken: null,
+        leaseExpiresAt: null,
+        errorClassification: input.errorClassification,
+        errorCode: input.errorCode,
+        processedAt: nowIso,
+        updatedAt: nowIso,
+      })
+      .where(and(
+        eq(webhookEvents.id, input.eventId),
+        eq(webhookEvents.organizationId, input.organizationId),
+        eq(webhookEvents.status, "processing"),
+        eq(webhookEvents.leaseToken, input.leaseToken),
+        sql`${webhookEvents.attemptCount} < ${WEBHOOK_EVENT_MAX_ATTEMPTS}`,
+      ))
+      .returning();
+    if (scheduled) return scheduled;
+
+    // A valid final-attempt worker may report a retryable provider outcome,
+    // but persisting retry_scheduled here would create unclaimable work.
+    // Token-fence the terminal transition so a stale worker cannot fail a
+    // newer claim.
+    const [exhausted] = await tx
+      .update(webhookEvents)
+      .set({
+        status: "failed",
+        nextAttemptAt: null,
+        leaseOwner: null,
+        leaseToken: null,
+        leaseExpiresAt: null,
+        errorClassification: "processing",
+        errorCode: "ATTEMPTS_EXHAUSTED",
+        processedAt: nowIso,
+        completedAt: nowIso,
+        updatedAt: nowIso,
+      })
+      .where(and(
+        eq(webhookEvents.id, input.eventId),
+        eq(webhookEvents.organizationId, input.organizationId),
+        eq(webhookEvents.status, "processing"),
+        eq(webhookEvents.leaseToken, input.leaseToken),
+        sql`${webhookEvents.attemptCount} >= ${WEBHOOK_EVENT_MAX_ATTEMPTS}`,
+      ))
+      .returning();
+    return exhausted;
+  });
 }
 
 export async function getWebhookEventForOrganization(

@@ -879,6 +879,10 @@ The inbox has provider/event uniqueness, immutable payload hashes, encrypted
 exact payloads, provider version/update evidence, tenant/location indexes, and
 expiring token-fenced claim fields. Claims are explicit by event ID; there is
 no startup scan, next-row query, poll, empty sweep, provider call, or new wake.
+Final-attempt retry or expired-lease recovery atomically terminalizes the inbox
+row instead of leaving unclaimable work. Ordinary location deletion preserves
+evidence and returns a conflict; atomic full-tenant teardown explicitly removes
+the tenant's inbox rows before its locked locations.
 See [`square-webhook-inbox.md`](./square-webhook-inbox.md) for the event
 inventory, Square contract links, crash/replay/out-of-order rules, future
 reconciliation invariants, activation sequence, rollback, and CU analysis.

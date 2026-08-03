@@ -153,6 +153,14 @@ Crash windows are:
   write requires tenant, event ID, `processing` state, and the exact token, so
   the stale worker is fenced.
 
+Attempt 20 is the final claim. A retry request from its token atomically
+terminalizes the event as `failed` with sanitized `ATTEMPTS_EXHAUSTED` evidence
+instead of creating unclaimable `retry_scheduled` work. If the final worker
+crashes, an explicit claim of that event ID after lease expiry first performs
+the same atomic exhaustion transition and returns no lease. The transition
+also repairs a due final-attempt retry row if one is encountered. It is
+tenant-scoped and time-gated; there is still no exhaustion sweep.
+
 Claims are explicit by event ID. Phase 4A-1 has no "next event" query. A later
 processor must not acknowledge and then start an untracked process-local task;
 it must process inline from the committed event ID or use a deliberate durable
@@ -205,6 +213,14 @@ table. The Phase 4A-1 application is also safe with the migration present while
 all inbox evidence; do not reverse the migration or delete events. Since 4A-1
 never changes business state, the existing Phase 3B application remains an
 application rollback target if the receiver itself regresses.
+
+The restrictive organization/location foreign keys express the normal
+retention policy. Ordinary location deletion is rejected with
+`409 LOCATION_WEBHOOK_EVIDENCE_EXISTS` once evidence exists; archive the
+location instead. The system-admin full-organization teardown is the deliberate
+exception: it locks tenant locations and deletes tenant webhook evidence inside
+the same atomic teardown before deleting locations and the organization. A
+failure rolls the entire teardown back.
 
 Each valid delivery first performs an indexed event-ID lookup and uses the
 existing shared production rate-limit counter. A unique delivery then performs

@@ -18,6 +18,7 @@ import {
   orphanCleanupAudits,
   paymentOperations,
   users,
+  webhookEvents,
   type Organization, type InsertOrganization, type UpdateOrganization,
   type User,
 } from "@shared/schema";
@@ -102,7 +103,12 @@ export async function restoreOrganization(id: number): Promise<Organization> {
 export async function deleteOrganization(id: number): Promise<void> {
   let affectedUserIds: number[] = [];
   await db.transaction(async (tx) => {
-    await tx.execute(sql`SELECT id FROM ${organizations} WHERE id = ${id} FOR UPDATE`);
+    // Keep tenant mutation serialized while remaining compatible with the
+    // KEY SHARE lock PostgreSQL takes to validate a concurrent webhook's
+    // organization FK. Locations are locked below before evidence deletion,
+    // so a new ingestion either commits first and is deleted here or observes
+    // the completed teardown and fails mapping, without a lock-order deadlock.
+    await tx.execute(sql`SELECT id FROM ${organizations} WHERE id = ${id} FOR NO KEY UPDATE`);
 
     // The system-admin-only delete route is an intentional full teardown.
     // Clear restrictive audit FKs and organization-owned join rows first,
@@ -133,7 +139,8 @@ export async function deleteOrganization(id: number): Promise<void> {
     const orgLocations = await tx
       .select({ id: locations.id })
       .from(locations)
-      .where(eq(locations.organizationId, id));
+      .where(eq(locations.organizationId, id))
+      .for('update');
     const locationIds = orgLocations.map((location) => location.id);
 
     const organizationAlertKinds = [
@@ -229,6 +236,12 @@ export async function deleteOrganization(id: number): Promise<void> {
     // Full tenant teardown is the explicit exception and removes these rows
     // before deleting the organization's leagues/schedules.
     await tx.delete(paymentOperations).where(eq(paymentOperations.organizationId, id));
+
+    // Ordinary location deletion retains webhook evidence and is rejected.
+    // Full tenant teardown is the explicit retention-policy exception: remove
+    // the tenant's encrypted inbox evidence inside this same transaction before
+    // deleting the locked locations and organization.
+    await tx.delete(webhookEvents).where(eq(webhookEvents.organizationId, id));
 
     await tx.delete(leagues).where(eq(leagues.organizationId, id));
     await tx.delete(bowlers).where(eq(bowlers.organizationId, id));
