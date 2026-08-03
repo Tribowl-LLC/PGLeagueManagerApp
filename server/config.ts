@@ -41,7 +41,12 @@ export const envSchema = z.object({
   // Phase 4A-1 defaults disabled. Signature keys are application-owned
   // subscription secrets and are parsed only by the webhook receiver; they
   // must never be exposed through a location or browser-facing config route.
-  SQUARE_WEBHOOK_MODE: z.enum(["disabled", "ingest_only", "reconcile_payments"]).optional(),
+  SQUARE_WEBHOOK_MODE: z.enum([
+    "disabled",
+    "ingest_only",
+    "reconcile_payments",
+    "reconcile_payments_and_disputes",
+  ]).optional(),
   SQUARE_WEBHOOK_NOTIFICATION_URL: z.string().min(1).optional(),
   SQUARE_WEBHOOK_API_VERSION: z.string().min(1).optional(),
   SQUARE_WEBHOOK_SIGNATURE_KEYS_JSON: z.string().min(1).optional(),

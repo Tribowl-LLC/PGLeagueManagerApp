@@ -1,6 +1,11 @@
 import { z } from "zod";
 
-export const SQUARE_WEBHOOK_MODES = ["disabled", "ingest_only", "reconcile_payments"] as const;
+export const SQUARE_WEBHOOK_MODES = [
+  "disabled",
+  "ingest_only",
+  "reconcile_payments",
+  "reconcile_payments_and_disputes",
+] as const;
 export type SquareWebhookMode = (typeof SQUARE_WEBHOOK_MODES)[number];
 
 export const SQUARE_WEBHOOK_SUPPORTED_API_VERSION = "2026-05-20" as const;
@@ -91,7 +96,9 @@ function validateNotificationUrl(
 export function resolveSquareWebhookConfig(input: SquareWebhookConfigInput): SquareWebhookConfig {
   const modeResult = z.enum(SQUARE_WEBHOOK_MODES).safeParse(input.mode ?? "disabled");
   if (!modeResult.success) {
-    throw new Error("SQUARE_WEBHOOK_MODE must be disabled, ingest_only, or reconcile_payments");
+    throw new Error(
+      "SQUARE_WEBHOOK_MODE must be disabled, ingest_only, reconcile_payments, or reconcile_payments_and_disputes",
+    );
   }
   if (modeResult.data === "disabled") {
     return {

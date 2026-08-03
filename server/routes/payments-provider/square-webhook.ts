@@ -100,6 +100,7 @@ interface RegisterSquareWebhookOptions {
     organizationId: number;
     eventId: string;
     event: ReturnType<typeof normalizeSquareWebhookEvent>;
+    processDisputes?: boolean;
   }) => Promise<SquareWebhookProcessingResult>;
   rearm?: () => Promise<void>;
 }
@@ -172,7 +173,7 @@ function signatureGate(config: SquareWebhookConfig) {
 /**
  * Registers the one canonical public Square route before tenant resolution and
  * global JSON parsing. Processing remains inline, provider-I/O-free, and
- * explicitly gated by reconcile_payments mode.
+ * explicitly gated by one of the reconciliation modes.
  */
 export function registerSquareWebhookReceiver(
   app: Express,
@@ -241,17 +242,22 @@ export function registerSquareWebhookReceiver(
           duplicate: result.duplicate,
           status: result.event.status,
         });
-        if (config.mode === "reconcile_payments" && !normalized.ignored) {
+        if (
+          (config.mode === "reconcile_payments"
+            || config.mode === "reconcile_payments_and_disputes")
+          && !normalized.ignored
+        ) {
           const processed = await process({
             organizationId: result.event.organizationId,
             eventId: result.event.id,
             event: normalized,
+            processDisputes: config.mode === "reconcile_payments_and_disputes",
           });
           if (!processed.acknowledged) {
             sendError(res, "Webhook event processing will be retried", 503, "SQUARE_WEBHOOK_PROCESSING_RETRY");
             return;
           }
-          if (processed.businessStateChanged) {
+          if (processed.scheduledPaymentWakeRequired === true) {
             try {
               await rearm();
             } catch (error) {

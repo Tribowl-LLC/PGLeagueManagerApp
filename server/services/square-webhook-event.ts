@@ -64,10 +64,25 @@ const disputeSchema = z.object({
   location_id: safeProviderString,
   amount_money: moneySchema,
   disputed_payment: z.object({ payment_id: safeProviderString }),
+  reason: safeProviderString,
   state: z.string().trim().min(1).max(50),
-  updated_at: timestampSchema.optional(),
-  version: z.number().int().positive().optional(),
+  due_at: timestampSchema.nullish(),
+  card_brand: safeProviderString.nullish(),
+  brand_dispute_id: safeProviderString.nullish(),
+  created_at: timestampSchema,
+  reported_at: timestampSchema.nullish(),
+  updated_at: timestampSchema,
+  version: z.number().int().positive(),
 });
+
+export interface NormalizedSquareDisputeEvidence {
+  reason: string;
+  dueAt: string | null;
+  cardBrand: string | null;
+  brandDisputeId: string | null;
+  createdAt: string;
+  reportedAt: string | null;
+}
 
 export interface NormalizedSquareWebhookEvent {
   providerEventId: string;
@@ -88,6 +103,7 @@ export interface NormalizedSquareWebhookEvent {
   providerReferenceId: string | null;
   receiptUrl: string | null;
   receiptNumber: string | null;
+  dispute: NormalizedSquareDisputeEvidence | null;
 }
 
 export class SquareWebhookPayloadError extends Error {
@@ -162,6 +178,7 @@ export function normalizeSquareWebhookEvent(rawBody: string): NormalizedSquareWe
       providerReferenceId: null,
       receiptUrl: null,
       receiptNumber: null,
+      dispute: null,
     };
   }
 
@@ -188,6 +205,7 @@ export function normalizeSquareWebhookEvent(rawBody: string): NormalizedSquareWe
       providerReferenceId: result.data.reference_id ?? null,
       receiptUrl: result.data.receipt_url ?? null,
       receiptNumber: result.data.receipt_number ?? null,
+      dispute: null,
     };
   }
 
@@ -214,6 +232,14 @@ export function normalizeSquareWebhookEvent(rawBody: string): NormalizedSquareWe
       providerReferenceId: null,
       receiptUrl: null,
       receiptNumber: null,
+      dispute: {
+        reason: result.data.reason,
+        dueAt: result.data.due_at ? iso(result.data.due_at) : null,
+        cardBrand: result.data.card_brand ?? null,
+        brandDisputeId: result.data.brand_dispute_id ?? null,
+        createdAt: iso(result.data.created_at),
+        reportedAt: result.data.reported_at ? iso(result.data.reported_at) : null,
+      },
     };
   }
 
@@ -238,5 +264,6 @@ export function normalizeSquareWebhookEvent(rawBody: string): NormalizedSquareWe
     providerReferenceId: null,
     receiptUrl: null,
     receiptNumber: null,
+    dispute: null,
   };
 }
