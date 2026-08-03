@@ -23,8 +23,6 @@ import type { Server } from 'node:http';
 
 const mockStorage = {
   getPaymentById: vi.fn(),
-  getLeague: vi.fn(),
-  refundPayment: vi.fn(),
 };
 vi.mock('../../server/storage', () => ({ storage: mockStorage }));
 
@@ -44,17 +42,17 @@ vi.mock('../../server/middleware/rate-limit', () => ({
   paymentWriteLimiter: (_req: unknown, _res: unknown, next: () => void) => next(),
 }));
 
-const mockProvider = {
-  providerName: 'square' as const,
-  refundPayment: vi.fn(),
-};
-const mockGetPaymentProvider = vi.fn();
-class FakeProviderNotConfigured extends Error {
-  constructor(m: string) { super(m); this.name = 'ProviderNotConfiguredError'; }
-}
-vi.mock('../../server/services/payment-provider-factory', () => ({
-  getPaymentProvider: (...a: unknown[]) => mockGetPaymentProvider(...a),
-  ProviderNotConfiguredError: FakeProviderNotConfigured,
+const mockPrepareRefund = vi.fn();
+const mockExecuteRefund = vi.fn();
+vi.mock('../../server/services/refund-payment-operation-preparation', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../server/services/refund-payment-operation-preparation')>();
+  return { ...actual, prepareRefundPaymentOperation: (...a: unknown[]) => mockPrepareRefund(...a) };
+});
+vi.mock('../../server/services/refund-payment-operation-executor', () => ({
+  refundPaymentOperationExecutor: { execute: (...a: unknown[]) => mockExecuteRefund(...a) },
+}));
+vi.mock('../../server/services/scheduled-payment-operation-executor', () => ({
+  scheduledPaymentOperationExecutor: { rearm: vi.fn().mockResolvedValue(undefined) },
 }));
 
 // eslint-disable-next-line local/factory-must-use-schema -- mocked logger, not a schema row
@@ -90,13 +88,17 @@ afterAll(async () => {
 beforeEach(() => {
   for (const fn of Object.values(mockStorage)) (fn as ReturnType<typeof vi.fn>).mockReset();
   mockHasAccessToPayment.mockReset();
-  mockGetPaymentProvider.mockReset();
-  (mockProvider.refundPayment as ReturnType<typeof vi.fn>).mockReset();
+  mockPrepareRefund.mockReset();
+  mockExecuteRefund.mockReset();
 
   mockHasAccessToPayment.mockResolvedValue(true);
-  mockGetPaymentProvider.mockResolvedValue(mockProvider);
-  mockStorage.getLeague.mockResolvedValue({ id: 11, locationId: 99 });
-  mockProvider.refundPayment.mockResolvedValue({ refundId: 'sq_rfnd_1', status: 'COMPLETED' });
+  const operation = {
+    id: '11111111-1111-4111-8111-111111111111', status: 'pending',
+    providerObjectId: null, nextAttemptAt: '2026-01-01T00:00:00.000Z',
+    leaseExpiresAt: null, attemptCount: 0, errorClassification: null, errorCode: null,
+  };
+  mockPrepareRefund.mockResolvedValue({ operation, snapshot: { organizationId: 1 } });
+  mockExecuteRefund.mockResolvedValue({ ...operation, status: 'succeeded', providerObjectId: 'sq_rfnd_1' });
 });
 
 afterEach(() => vi.clearAllMocks());
@@ -120,18 +122,20 @@ describe('POST /api/payments/:id/refund — receipt-email dependency (Task #503)
       id: 555, status: 'paid', type: 'square', leagueId: 11, amount: 2000,
       providerPaymentId: 'sq_pay_no_email', receiptEmailMissing: true, receiptUrl: null,
     });
-    mockStorage.refundPayment.mockResolvedValue({ id: 555, status: 'refunded', refundId: 'sq_rfnd_1' });
+    mockStorage.getPaymentById.mockResolvedValue({
+      id: 555, status: 'refunded', squareRefundId: 'sq_rfnd_1',
+      receiptEmailMissing: true, receiptUrl: null,
+    });
 
     const res = await postRefund(555, { reason: 'Customer request' });
 
     expect(res.status).toBe(200);
-    expect(mockProvider.refundPayment).toHaveBeenCalledWith('sq_pay_no_email', 2000, 'Customer request');
-    // The refund route must not pass a buyer email to the provider
-    // (the provider signature has no email param) — this assertion
-    // also locks the contract for future contributors.
-    expect(mockProvider.refundPayment).toHaveBeenCalledTimes(1);
-    expect(mockProvider.refundPayment.mock.calls[0]).toHaveLength(3);
-    expect(mockStorage.refundPayment).toHaveBeenCalledWith(555, 'sq_rfnd_1', 'Customer request');
+    expect(mockPrepareRefund).toHaveBeenCalledWith(expect.objectContaining({
+      paymentId: 555,
+      reason: 'Customer request',
+    }));
+    expect(mockExecuteRefund).toHaveBeenCalledTimes(1);
+    expect(res.status).toBe(200);
   });
 
   it('refunds a Square charge that had a buyer email (receiptEmailMissing=false) using the same provider call', async () => {
@@ -140,12 +144,24 @@ describe('POST /api/payments/:id/refund — receipt-email dependency (Task #503)
       providerPaymentId: 'sq_pay_with_email', receiptEmailMissing: false,
       receiptUrl: 'https://squareup.com/receipt/preview/sq_pay_with_email',
     });
-    mockStorage.refundPayment.mockResolvedValue({ id: 556, status: 'refunded', refundId: 'sq_rfnd_2' });
-    mockProvider.refundPayment.mockResolvedValue({ refundId: 'sq_rfnd_2', status: 'COMPLETED' });
+    mockExecuteRefund.mockResolvedValue({
+      id: '22222222-2222-4222-8222-222222222222', status: 'succeeded',
+      providerObjectId: 'sq_rfnd_2', nextAttemptAt: null, leaseExpiresAt: null,
+      attemptCount: 1, errorClassification: null, errorCode: null,
+    });
+    mockStorage.getPaymentById.mockResolvedValue({
+      id: 556, status: 'refunded', squareRefundId: 'sq_rfnd_2',
+      receiptEmailMissing: false,
+      receiptUrl: 'https://squareup.com/receipt/preview/sq_pay_with_email',
+    });
 
     const res = await postRefund(556, { reason: 'Duplicate charge' });
 
     expect(res.status).toBe(200);
-    expect(mockProvider.refundPayment).toHaveBeenCalledWith('sq_pay_with_email', 1500, 'Duplicate charge');
+    expect(mockPrepareRefund).toHaveBeenCalledWith(expect.objectContaining({
+      paymentId: 556,
+      reason: 'Duplicate charge',
+    }));
+    expect(res.status).toBe(200);
   });
 });

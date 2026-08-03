@@ -27,15 +27,32 @@ const mockStorage = {
 
 vi.mock('../../server/storage', () => ({ storage: mockStorage }));
 
-vi.mock('../../server/storage/payment-operations', () => ({
-  getLegacyScheduledPaymentCycleBlock: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock('../../server/storage/payment-operations', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../server/storage/payment-operations')>();
+  return {
+    ...actual,
+    getLegacyScheduledPaymentCycleBlock: vi.fn().mockResolvedValue(undefined),
+  };
+});
 
 // The general interactive charge route is now durable and is covered by its
 // own operation/executor tests. Keep this provider-contract suite focused on
 // the legacy-client fail-closed boundary and provider adapter mappings.
 vi.mock('../../server/services/interactive-payment-operation-executor', () => ({
   interactivePaymentOperationExecutor: { execute: vi.fn() },
+}));
+
+const mockPrepareRefund = vi.fn();
+const mockExecuteRefund = vi.fn();
+vi.mock('../../server/services/refund-payment-operation-preparation', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../server/services/refund-payment-operation-preparation')>();
+  return { ...actual, prepareRefundPaymentOperation: (...a: unknown[]) => mockPrepareRefund(...a) };
+});
+vi.mock('../../server/services/refund-payment-operation-executor', () => ({
+  refundPaymentOperationExecutor: { execute: (...a: unknown[]) => mockExecuteRefund(...a) },
+}));
+vi.mock('../../server/services/scheduled-payment-operation-executor', () => ({
+  scheduledPaymentOperationExecutor: { rearm: vi.fn().mockResolvedValue(undefined) },
 }));
 
 const mockHasAccessToLeague = vi.fn();
@@ -89,12 +106,16 @@ vi.mock('../../server/routes/payments-provider/shared', () => ({
 const mockPaymentsCreate = vi.fn();
 const mockOrdersCreate = vi.fn();
 const mockRefundsCreate = vi.fn();
+const mockRefundsGet = vi.fn();
 vi.mock('square', async () => {
   const actual = await vi.importActual<typeof import('square')>('square');
   class FakeSquareClient {
     payments = { create: (...a: unknown[]) => mockPaymentsCreate(...a) };
     orders = { create: (...a: unknown[]) => mockOrdersCreate(...a) };
-    refunds = { refundPayment: (...a: unknown[]) => mockRefundsCreate(...a) };
+    refunds = {
+      refundPayment: (...a: unknown[]) => mockRefundsCreate(...a),
+      get: (...a: unknown[]) => mockRefundsGet(...a),
+    };
   }
   return {
     ...actual,
@@ -250,9 +271,12 @@ beforeEach(() => {
   mockHasAccessToBowler.mockReset().mockResolvedValue(true);
   mockHasAccessToPayment.mockReset().mockResolvedValue(true);
   mockGetPaymentProvider.mockReset();
+  mockPrepareRefund.mockReset();
+  mockExecuteRefund.mockReset();
   mockPaymentsCreate.mockReset();
   mockOrdersCreate.mockReset();
   mockRefundsCreate.mockReset();
+  mockRefundsGet.mockReset();
   for (const p of [mockSquareProvider]) {
     p.processPayment.mockReset();
     p.createOrderWithPayment.mockReset();
@@ -286,6 +310,19 @@ beforeEach(() => {
   }));
   mockStorage.getLocationSquareConfig.mockResolvedValue({
     accessToken: 'EAAAEsandboxtoken', appId: 'sandbox-sq0idp-abc', locationId: 'L_TEST_123', environment: 'sandbox',
+  });
+  const refundOperation = {
+    id: '11111111-1111-4111-8111-111111111111', status: 'pending',
+    providerObjectId: null, nextAttemptAt: '2026-01-01T00:00:00.000Z',
+    leaseExpiresAt: null, attemptCount: 0, errorClassification: null, errorCode: null,
+  };
+  mockPrepareRefund.mockResolvedValue({ operation: refundOperation, snapshot: { organizationId: 1 } });
+  mockExecuteRefund.mockResolvedValue({
+    ...refundOperation,
+    status: 'failed_terminal',
+    errorClassification: 'invalid_request',
+    errorCode: 'INVALID_REQUEST',
+    nextAttemptAt: null,
   });
 
   vi.mocked(buildLineItems).mockReturnValue([]);
@@ -398,11 +435,31 @@ describe.each<[string, typeof mockSquareProvider, ProviderFactory]>([
       await expect(provider.refundPayment('pay_id', 2000))
         .rejects.toMatchObject({
           code: 'REFUND_FAILED',
+          disposition: 'provider_unknown',
         });
+    });
+
+    it('passes the durable refund key unchanged and reads retained refund status by ID', async () => {
+      mockRefundsCreate.mockResolvedValue({ refund: { id: 'sq_refund_1', status: 'PENDING' } });
+      mockRefundsGet.mockResolvedValue({ refund: { id: 'sq_refund_1', status: 'COMPLETED' } });
+      const provider = ProviderClass(99);
+
+      await expect(provider.refundPayment('sq_payment_1', 2000, 'Customer request', 'lv-op1-rf-stable'))
+        .resolves.toEqual({ refundId: 'sq_refund_1', status: 'PENDING' });
+      expect(mockRefundsCreate).toHaveBeenCalledWith({
+        idempotencyKey: 'lv-op1-rf-stable',
+        paymentId: 'sq_payment_1',
+        amountMoney: { amount: 2000n, currency: 'USD' },
+        reason: 'Customer request',
+      });
+      await expect(provider.getRefund('sq_refund_1'))
+        .resolves.toEqual({ refundId: 'sq_refund_1', status: 'COMPLETED' });
+      expect(mockRefundsGet).toHaveBeenCalledWith({ refundId: 'sq_refund_1' });
     });
 
     it('classifies Square rate limiting as a definite transient result', async () => {
       mockPaymentsCreate.mockRejectedValue(squareErr(429, 'slow down', 'RATE_LIMITED'));
+      mockRefundsCreate.mockRejectedValue(squareErr(429, 'slow down', 'RATE_LIMITED'));
 
       const provider = ProviderClass(99);
       await expect(provider.processPayment('tok', 2000, false, 'cust', 'pat@example.com', 'idem'))
@@ -411,6 +468,24 @@ describe.each<[string, typeof mockSquareProvider, ProviderFactory]>([
           disposition: 'transient',
           providerCode: 'RATE_LIMITED',
         });
+      await expect(provider.refundPayment('pay_id', 2000, undefined, 'lv-op1-rf-rate'))
+        .rejects.toMatchObject({
+          code: 'REFUND_FAILED',
+          disposition: 'transient',
+          providerCode: 'RATE_LIMITED',
+        });
+    });
+
+    it.each([
+      [401, 'UNAUTHORIZED', 'configuration', 'SYSTEM_ERROR'],
+      [400, 'BAD_REQUEST', 'invalid_request', 'INVALID_REQUEST'],
+      [400, 'REFUND_DECLINED', 'action_required', 'REFUND_DECLINED'],
+      [500, 'INTERNAL_SERVER_ERROR', 'provider_unknown', 'REFUND_FAILED'],
+    ] as const)('classifies refund HTTP %s/%s as %s', async (status, code, disposition, publicCode) => {
+      mockRefundsCreate.mockRejectedValue(squareErr(status, 'safe test detail', code));
+      const provider = ProviderClass(99);
+      await expect(provider.refundPayment('pay_id', 2000, undefined, 'lv-op1-rf-classify'))
+        .rejects.toMatchObject({ code: publicCode, disposition, providerCode: code });
     });
 
     it('classifies documented 400 card failures without changing the interactive code', async () => {
@@ -529,21 +604,14 @@ describe.each<[string, typeof mockSquareProvider, ProviderFactory]>([
     });
 
     it('POST /api/payments/:id/refund: surfaces failure and does NOT mark row refunded', async () => {
-      mockStorage.getPaymentById.mockResolvedValue({
-        id: 777,
-        amount: 2000,
-        status: 'paid',
-        type: providerName,
-        leagueId: 11,
-        providerPaymentId: providerName === 'square' ? 'sq_pay_777' : undefined,
-      });
       mockStorage.refundPayment.mockClear();
-      mockProvider.refundPayment.mockRejectedValue(new PaymentProviderError('failed', 'INVALID_REQUEST'));
 
       const res = await postRefund(777);
-      expect(res.status).toBe(500);
+      expect(res.status).toBe(400);
       const body = await res.json();
-      expect(body.error.code).toBeDefined();
+      expect(body.error.code).toBe('INVALID_REQUEST');
+      expect(mockPrepareRefund).toHaveBeenCalledTimes(1);
+      expect(mockExecuteRefund).toHaveBeenCalledTimes(1);
       expect(mockStorage.refundPayment).not.toHaveBeenCalled();
     });
 

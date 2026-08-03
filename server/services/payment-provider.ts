@@ -110,7 +110,10 @@ export interface PaymentProvider {
     paymentId: string,
     amountInCents: number,
     reason?: string,
+    idempotencyKey?: string,
   ): Promise<RefundResult>;
+
+  getRefund?(refundId: string): Promise<RefundResult>;
 
   saveCardOnFile(
     sourceId: string,

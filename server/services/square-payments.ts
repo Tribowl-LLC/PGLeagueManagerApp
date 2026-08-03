@@ -42,6 +42,8 @@ const HARD_CARD_CODES = new Set([
   'MANUALLY_ENTERED_PAYMENT_NOT_SUPPORTED',
   'PAN_FAILURE',
   'PAYMENT_LIMIT_EXCEEDED',
+  'REFUND_DECLINED',
+  'RESERVATION_DECLINED',
   'TRANSACTION_LIMIT',
   'VERIFY_CVV_FAILURE',
   'VERIFY_AVS_FAILURE',
@@ -454,6 +456,7 @@ export async function refundPayment(
   paymentId: string,
   amountInCents: number,
   reason?: string,
+  idempotencyKey?: string,
 ): Promise<RefundResult> {
   const client = await ctx.getClient();
   if (!client) {
@@ -467,10 +470,12 @@ export async function refundPayment(
   }
 
   try {
-    const idempotencyKey = `refund-${paymentId}-${Date.now()}`;
+    const refundKey = idempotencyKey === undefined
+      ? `refund-${paymentId}-${Date.now()}`
+      : assertSquareIdempotencyKey(idempotencyKey, 'Refund');
 
     const response = await client.refunds.refundPayment({
-      idempotencyKey,
+      idempotencyKey: refundKey,
       paymentId,
       amountMoney: {
         amount: BigInt(amountInCents),
@@ -510,33 +515,77 @@ export async function refundPayment(
     // `.result.errors[]` wrapper is gone. Raw Square `detail` is
     // captured for logs only — never forwarded as the user-facing
     // `userMessage` (task #514).
-    const apiErr = error instanceof getSquareErrorCtor() ? error : null;
-    const detail = apiErr?.errors?.[0]?.detail;
-    if (apiErr?.statusCode === 401 || apiErr?.statusCode === 403) {
+    const failure = classifySquareFailure(error);
+    if (failure.providerCode === 'REFUND_ALREADY_PENDING') {
+      throw new PaymentProviderError(
+        'The refund outcome must be reconciled before another attempt.',
+        'REFUND_ALREADY_PENDING',
+        failure.detail,
+        { disposition: 'provider_unknown', providerCode: failure.providerCode },
+      );
+    }
+    if (failure.disposition === 'configuration') {
       throw new PaymentProviderError(
         'Payment system is temporarily unavailable. Please try again later.',
         'SYSTEM_ERROR',
-        detail,
+        failure.detail,
+        { disposition: failure.disposition, providerCode: failure.providerCode },
       );
     }
-    if (apiErr?.statusCode === 402) {
+    if (failure.disposition === 'action_required') {
       throw new PaymentProviderError(
-        'Your payment was declined. Please try a different card.',
-        'PAYMENT_DECLINED',
-        detail,
+        'The refund was declined by the payment provider.',
+        'REFUND_DECLINED',
+        failure.detail,
+        { disposition: failure.disposition, providerCode: failure.providerCode },
       );
     }
-    if (typeof apiErr?.statusCode === 'number' && apiErr.statusCode >= 400 && apiErr.statusCode < 500) {
+    if (failure.disposition === 'invalid_request') {
       throw new PaymentProviderError(
-        'Invalid payment information. Please check your card details.',
+        'The refund request is not valid for this payment.',
         'INVALID_REQUEST',
-        detail,
+        failure.detail,
+        { disposition: failure.disposition, providerCode: failure.providerCode },
       );
     }
     throw new PaymentProviderError(
       'Refund could not be processed.',
       'REFUND_FAILED',
-      detail,
+      failure.detail,
+      { disposition: failure.disposition, providerCode: failure.providerCode },
+    );
+  }
+}
+
+export async function getRefund(
+  ctx: SquareProviderContext,
+  refundId: string,
+): Promise<RefundResult> {
+  const client = await ctx.getClient();
+  if (!client) throw new ProviderNotConfiguredError('Square client not configured for this location', ctx.locationId);
+  try {
+    const response = await client.refunds.get({ refundId });
+    const refund = response.refund;
+    if (!refund?.id || refund.id !== refundId || !refund.status) {
+      throw new PaymentProviderError(
+        'Refund status could not be confirmed.',
+        'REFUND_STATUS_UNKNOWN',
+        undefined,
+        { disposition: 'provider_unknown', providerCode: 'INVALID_RESPONSE' },
+      );
+    }
+    return { refundId: refund.id, status: refund.status };
+  } catch (error) {
+    if (error instanceof PaymentProviderError || error instanceof ProviderNotConfiguredError) throw error;
+    const failure = classifySquareFailure(error);
+    throw new PaymentProviderError(
+      'Refund status could not be confirmed.',
+      'REFUND_STATUS_UNKNOWN',
+      failure.detail,
+      {
+        disposition: failure.disposition === 'transient' ? 'transient' : 'provider_unknown',
+        providerCode: failure.providerCode,
+      },
     );
   }
 }
