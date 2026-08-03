@@ -386,6 +386,10 @@ describe("durable refund payment operations", () => {
       disposition: "transient",
       providerCode: "RATE_LIMITED",
     }), "retry_scheduled", "transient"],
+    ["configuration", new PaymentProviderError("temporarily unavailable", "SYSTEM_ERROR", undefined, {
+      disposition: "configuration",
+      providerCode: "UNAUTHORIZED",
+    }), "retry_scheduled", "configuration"],
     ["decline", new PaymentProviderError("declined", "REFUND_DECLINED", undefined, {
       disposition: "action_required",
       providerCode: "REFUND_DECLINED",
@@ -409,17 +413,33 @@ describe("durable refund payment operations", () => {
     expect((await db.select().from(payments).where(eq(payments.id, payment.id)))[0]?.status).toBe("paid");
   });
 
-  it("fails terminally when provider configuration is absent before any refund dispatch", async () => {
+  it("keeps a missing provider configuration resumable and retries the same key after repair", async () => {
     const fixture = fixtures[0];
     const payment = await createPaidPayment(fixture);
     const { operation } = await prepare(fixture, payment.id);
     const provider = new ScriptedRefundProvider(fixture.locationId);
-    const result = await executor(fixture, provider, {
-      getProvider: async () => { throw new ProviderNotConfiguredError("not configured", fixture.locationId); },
+    let configured = false;
+    const first = await executor(fixture, provider, {
+      getProvider: async () => {
+        if (!configured) throw new ProviderNotConfiguredError("not configured", fixture.locationId);
+        return provider;
+      },
     }).execute({ organizationId: fixture.organizationId, operationId: operation.id, now: fixedNow });
-    expect(result).toMatchObject({ status: "failed_terminal", errorClassification: "configuration" });
+    expect(first).toMatchObject({ status: "retry_scheduled", errorClassification: "configuration" });
     expect(provider.refundCalls).toHaveLength(0);
-    expect((await db.select().from(payments).where(eq(payments.id, payment.id)))[0]?.status).toBe("paid");
+
+    configured = true;
+    if (!first?.nextAttemptAt) throw new Error("configuration retry was not scheduled");
+    const recovered = await executor(fixture, provider).execute({
+      organizationId: fixture.organizationId,
+      operationId: operation.id,
+      now: new Date(storedDate(first.nextAttemptAt).getTime() + 1),
+    });
+    expect(recovered).toMatchObject({ status: "succeeded" });
+    expect(provider.refundCalls.map(call => call.idempotencyKey)).toEqual([
+      operation.providerIdempotencyKey,
+    ]);
+    expect((await db.select().from(payments).where(eq(payments.id, payment.id)))[0]?.status).toBe("refunded");
   });
 
   it("rejects stale fencing and preserves distinct combined-payment allocations", async () => {

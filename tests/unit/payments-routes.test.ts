@@ -109,6 +109,14 @@ vi.mock('../../server/services/payment-provider-factory', async () => {
 const mockPrepareRefund = vi.fn();
 const mockExecuteRefund = vi.fn();
 const mockRearmOperations = vi.fn();
+const mockRetryRefundAfterConfiguration = vi.fn();
+vi.mock('../../server/storage/payment-operations', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../server/storage/payment-operations')>();
+  return {
+    ...actual,
+    retryRefundPaymentOperationAfterConfigurationFailure: (...a: unknown[]) => mockRetryRefundAfterConfiguration(...a),
+  };
+});
 vi.mock('../../server/services/refund-payment-operation-preparation', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../server/services/refund-payment-operation-preparation')>();
   return { ...actual, prepareRefundPaymentOperation: (...a: unknown[]) => mockPrepareRefund(...a) };
@@ -183,6 +191,7 @@ beforeEach(() => {
   mockPrepareRefund.mockReset();
   mockExecuteRefund.mockReset();
   mockRearmOperations.mockReset();
+  mockRetryRefundAfterConfiguration.mockReset();
   mockSumQuery.mockReset();
   // Sensible defaults; individual tests override.
   mockRequireOrgAccess.mockReturnValue(true);
@@ -213,6 +222,7 @@ beforeEach(() => {
   mockPrepareRefund.mockResolvedValue({ operation, snapshot: { organizationId: 1 } });
   mockExecuteRefund.mockResolvedValue({ ...operation, status: 'succeeded', providerObjectId: 'RF_1' });
   mockRearmOperations.mockResolvedValue(undefined);
+  mockRetryRefundAfterConfiguration.mockResolvedValue(undefined);
 });
 
 afterEach(() => vi.clearAllMocks());
@@ -548,6 +558,19 @@ describe('POST /api/payments/:id/refund', () => {
   });
 
   it('returns 422 when the payment provider is not configured', async () => {
+    mockPrepareRefund.mockResolvedValueOnce({
+      operation: {
+        id: '11111111-1111-4111-8111-111111111111',
+        status: 'failed_terminal',
+        providerObjectId: null,
+        nextAttemptAt: null,
+        leaseExpiresAt: null,
+        attemptCount: 1,
+        errorClassification: 'configuration',
+        errorCode: 'PROVIDER_NOT_CONFIGURED',
+      },
+      snapshot: { organizationId: 1 },
+    });
     mockExecuteRefund.mockResolvedValue({
       id: '11111111-1111-4111-8111-111111111111',
       status: 'failed_terminal',
@@ -562,7 +585,34 @@ describe('POST /api/payments/:id/refund', () => {
     const res = await post('/api/payments/50/refund', {});
     expect(res.status).toBe(422);
     expect((await res.json()).error.code).toBe('PROVIDER_NOT_CONFIGURED');
+    expect(mockRetryRefundAfterConfiguration).toHaveBeenCalledWith({
+      organizationId: 1,
+      operationId: '11111111-1111-4111-8111-111111111111',
+    });
     expect(mockStorage.refundPayment).not.toHaveBeenCalled();
+  });
+
+  it('returns an actionable 4xx for a hard refund decline', async () => {
+    mockExecuteRefund.mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      status: 'action_required',
+      providerObjectId: null,
+      nextAttemptAt: null,
+      leaseExpiresAt: null,
+      attemptCount: 1,
+      errorClassification: 'hard_decline',
+      errorCode: 'REFUND_DECLINED',
+    });
+
+    const res = await post('/api/payments/50/refund', {});
+    expect(res.status).toBe(422);
+    expect(await res.json()).toMatchObject({
+      error: {
+        code: 'REFUND_DECLINED',
+        message: expect.stringMatching(/declined.*Square/i),
+        details: { status: 'action_required' },
+      },
+    });
   });
 
   it('returns 202 without claiming success while the retained refund is unresolved', async () => {

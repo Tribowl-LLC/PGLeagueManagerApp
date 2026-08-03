@@ -1304,6 +1304,34 @@ export async function getRefundPaymentOperationForOrganization(
   return operation;
 }
 
+/** Re-open only a refund that was terminalized by the old config-failure path. */
+export async function retryRefundPaymentOperationAfterConfigurationFailure(
+  input: { organizationId: number; operationId: string; now?: Date },
+): Promise<PaymentOperation | undefined> {
+  const nowDate = input.now ?? new Date();
+  const now = toIso(nowDate, "now");
+  const [retry] = await db
+    .update(paymentOperations)
+    .set({
+      status: "retry_scheduled",
+      nextAttemptAt: now,
+      leaseOwner: null,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      completedAt: null,
+      updatedAt: now,
+    })
+    .where(and(
+      eq(paymentOperations.organizationId, input.organizationId),
+      eq(paymentOperations.id, input.operationId),
+      eq(paymentOperations.operationType, "refund"),
+      eq(paymentOperations.status, "failed_terminal"),
+      eq(paymentOperations.errorClassification, "configuration"),
+    ))
+    .returning();
+  return retry;
+}
+
 async function throwInvalidTransition(
   organizationId: number,
   operationId: string,
@@ -1335,7 +1363,17 @@ export async function acquirePaymentOperationLease(
     .update(paymentOperations)
     .set({
       status: "leased",
-      attemptCount: sql`${paymentOperations.attemptCount} + 1`,
+      // A provider configuration outage is not a provider-attempt budget
+      // failure. Keep the bounded attempt count unchanged while the same
+      // immutable operation waits for credentials/configuration to be
+      // repaired; the operation must remain leaseable with its original
+      // provider identity.
+      attemptCount: sql`CASE
+        WHEN ${paymentOperations.status} = 'retry_scheduled'
+          AND ${paymentOperations.errorClassification} = 'configuration'
+        THEN ${paymentOperations.attemptCount}
+        ELSE ${paymentOperations.attemptCount} + 1
+      END`,
       nextAttemptAt: null,
       leaseOwner: input.leaseOwner,
       leaseToken,
@@ -1357,7 +1395,13 @@ export async function acquirePaymentOperationLease(
     .where(and(
       eq(paymentOperations.organizationId, input.organizationId),
       eq(paymentOperations.id, input.operationId),
-      lt(paymentOperations.attemptCount, PAYMENT_OPERATION_MAX_ATTEMPTS),
+      or(
+        lt(paymentOperations.attemptCount, PAYMENT_OPERATION_MAX_ATTEMPTS),
+        and(
+          eq(paymentOperations.status, "retry_scheduled"),
+          eq(paymentOperations.errorClassification, "configuration"),
+        ),
+      ),
       or(
         and(
           inArray(paymentOperations.status, ["pending", "provider_unknown", "retry_scheduled"]),
@@ -1525,6 +1569,57 @@ export async function recordPaymentOperationProviderUnknown(
   });
   if (!updated) return throwInvalidTransition(input.organizationId, input.operationId);
   return updated;
+}
+
+/**
+ * Configuration/authentication failures are recoverable operator state, not
+ * proof that the refund failed. Keep the operation due and preserve its
+ * immutable provider idempotency key. Configuration retries do not consume
+ * the provider-attempt budget, so repairing credentials can recover even
+ * after repeated checks while the outage is active.
+ */
+export async function recordPaymentOperationConfigurationRetry(
+  input: ErrorOutcomeInput & { recoveryAt: Date },
+): Promise<PaymentOperation> {
+  validateLeaseToken(input.leaseToken);
+  validateFailedPaymentRows(input.failedPaymentRows);
+  if (input.providerObjectId != null) validateProviderObjectId(input.providerObjectId);
+  if (input.providerOrderId != null) validateProviderOrderId(input.providerOrderId);
+  const nowDate = input.now ?? new Date();
+  const now = toIso(nowDate, "now");
+  const recoveryAt = validateFutureDueAt(input.recoveryAt, nowDate, "recoveryAt");
+  const errorCode = validateErrorDetails("configuration", input.errorCode);
+
+  const [transitioned] = await db
+    .update(paymentOperations)
+    .set({
+      status: "retry_scheduled",
+      nextAttemptAt: recoveryAt,
+      leaseOwner: null,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      providerObjectId: input.providerObjectId ?? undefined,
+      providerOrderId: input.providerOrderId ?? undefined,
+      errorClassification: "configuration",
+      errorCode,
+      completedAt: null,
+      updatedAt: now,
+    })
+    .where(and(
+      eq(paymentOperations.organizationId, input.organizationId),
+      eq(paymentOperations.id, input.operationId),
+      eq(paymentOperations.status, "leased"),
+      eq(paymentOperations.leaseToken, input.leaseToken),
+      input.providerObjectId == null
+        ? undefined
+        : or(isNull(paymentOperations.providerObjectId), eq(paymentOperations.providerObjectId, input.providerObjectId)),
+      input.providerOrderId == null
+        ? undefined
+        : or(isNull(paymentOperations.providerOrderId), eq(paymentOperations.providerOrderId, input.providerOrderId)),
+    ))
+    .returning();
+  if (!transitioned) return throwInvalidTransition(input.organizationId, input.operationId);
+  return transitioned;
 }
 
 async function recordTerminalErrorOutcome(

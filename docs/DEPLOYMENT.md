@@ -248,6 +248,14 @@ When a release combines categories, use the strictest applicable controls. Do
 not classify a schema or data change as code-only because its SQL runs from a
 separate operator command.
 
+Phase 3B durable-refund cutover has an additional mandatory control: enter
+Maintenance Mode and suspend/drain every old application instance before
+migration 0013 or the new refund route is deployed. The old route uses
+timestamp-based Square keys without a ledger guard, so a rolling deployment
+could refund one payment twice under different keys. Follow the complete
+[Phase 3B Maintenance Mode and old-instance drain procedure](payment-operation-ledger.md#phase-3b-deployment-mandatory-maintenance-mode-and-old-instance-drain),
+which carries forward the Migration 0012 release boundary.
+
 Use this order for every release:
 
 1. Determine whether the reviewed release contains a schema migration. For a

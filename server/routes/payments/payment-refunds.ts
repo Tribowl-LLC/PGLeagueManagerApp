@@ -9,6 +9,7 @@ import { createLogger } from "../../logger.js";
 import {
   PaymentOperationImmutableMismatchError,
   PaymentOperationValidationError,
+  retryRefundPaymentOperationAfterConfigurationFailure,
 } from "../../storage/payment-operations.js";
 import {
   prepareRefundPaymentOperation,
@@ -44,6 +45,12 @@ async function respondWithRefundOperation(
   operation: PaymentOperation,
 ): Promise<void> {
   let current = operation;
+  if (current.status === "failed_terminal" && current.errorClassification === "configuration") {
+    current = await retryRefundPaymentOperationAfterConfigurationFailure({
+      organizationId,
+      operationId: current.id,
+    }) ?? current;
+  }
   if (operationIsDue(current)) {
     current = await refundPaymentOperationExecutor.execute({
       organizationId,
@@ -58,7 +65,17 @@ async function respondWithRefundOperation(
     sendSuccess(res, sanitizePayment(payment));
     return;
   }
-  if (current.status === "action_required" || current.status === "failed_terminal") {
+  if (current.status === "action_required") {
+    sendError(
+      res,
+      "The refund was declined by the payment provider. Review the decline in Square before trying again.",
+      422,
+      current.errorCode ?? "REFUND_DECLINED",
+      operationStatus(current),
+    );
+    return;
+  }
+  if (current.status === "failed_terminal") {
     if (current.errorClassification === "configuration") {
       sendError(res, "Payment provider is not configured for this location", 422, "PROVIDER_NOT_CONFIGURED", operationStatus(current));
       return;

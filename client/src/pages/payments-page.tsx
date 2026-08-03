@@ -15,6 +15,7 @@ import {
   providerNotConfiguredToast,
 } from "@/lib/provider-not-configured";
 import { sanitizePaymentErrorMessage } from "@/lib/payment-user-error";
+import { refundOperationToast } from "@/lib/refund-operation";
 import { useToast } from "@/hooks/use-toast";
 import {
   Dialog,
@@ -113,18 +114,7 @@ export default function PaymentsPage() {
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
-      const operationResponse = data !== null
-        && typeof data === "object"
-        && "operationId" in data;
-      toast(operationResponse
-        ? {
-          title: "Refund Processing",
-          description: "The refund is still being confirmed. Do not submit another refund.",
-        }
-        : {
-          title: "Refund Processed",
-          description: "The payment has been successfully refunded.",
-        });
+      toast(refundOperationToast(data));
       setPaymentToRefund(null);
     },
     onError: (error: Error) => {

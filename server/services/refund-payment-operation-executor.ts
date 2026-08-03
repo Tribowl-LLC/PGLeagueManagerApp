@@ -7,6 +7,7 @@ import {
   getPaymentOperationForOrganization,
   getRefundPaymentOperationSnapshotForOrganization,
   recordPaymentOperationActionRequired,
+  recordPaymentOperationConfigurationRetry,
   recordPaymentOperationFailedTerminal,
   recordPaymentOperationProviderUnknown,
   recordPaymentOperationReconciliationRequired,
@@ -26,6 +27,7 @@ const log = createLogger("RefundPaymentLedger");
 const LEASE_MS = Math.min(2 * 60_000, PAYMENT_OPERATION_MAX_LEASE_MS);
 const DEFAULT_LEASE_OWNER = (`refund:${hostname()}:${process.pid}:${randomUUID()}`).replace(/[^A-Za-z0-9_.:-]/g, "-").slice(0, 128);
 const PENDING_DELAYS_MS = [5 * 60_000, 30 * 60_000, 2 * 3_600_000, 6 * 3_600_000, 24 * 3_600_000, 3 * 86_400_000, 10 * 86_400_000];
+const CONFIGURATION_RETRY_DELAY_MS = 15 * 60_000;
 
 function retryAt(attemptCount: number, now: Date): Date {
   const delay = Math.min(6 * 3_600_000, 60_000 * (2 ** Math.max(0, attemptCount - 1)));
@@ -35,6 +37,10 @@ function retryAt(attemptCount: number, now: Date): Date {
 function pendingCheckAt(attemptCount: number, now: Date): Date {
   const index = Math.min(Math.max(0, attemptCount - 1), PENDING_DELAYS_MS.length - 1);
   return new Date(now.getTime() + (PENDING_DELAYS_MS[index] ?? PENDING_DELAYS_MS[0]));
+}
+
+function configurationRetryAt(now: Date): Date {
+  return new Date(now.getTime() + CONFIGURATION_RETRY_DELAY_MS);
 }
 
 function disposition(error: unknown, dispatched: boolean): PaymentProviderFailureDisposition {
@@ -256,6 +262,10 @@ export class RefundPaymentOperationExecutor {
     if (kind === "provider_unknown") return recordPaymentOperationProviderUnknown({
       ...common,
       recoveryAt: retryAt(operation.attemptCount, common.now),
+    });
+    if (kind === "configuration") return recordPaymentOperationConfigurationRetry({
+      ...common,
+      recoveryAt: configurationRetryAt(common.now),
     });
     if (kind === "transient") return schedulePaymentOperationRetry({
       ...common,

@@ -754,7 +754,12 @@ and uses sparse checks through the existing one-shot wake dispatcher. Definite
 reuse the exact immutable request and key; exhausted uncertainty becomes
 `reconciliation_required`, never a confirmed failure. A local finalization
 failure retains the lease for same-key recovery and never invents another
-refund identity.
+refund identity. Provider-not-configured and Square authentication/
+configuration failures become a due `retry_scheduled` state, do not consume
+the provider-attempt budget while configuration is repaired, and retain the
+same operation/key. A legacy configuration row already marked
+`failed_terminal` can be explicitly re-opened by resubmitting its same
+immutable refund request; other terminal outcomes remain terminal.
 
 Migration 0013 is forward-only and additive. It creates
 `refund_payment_operation_snapshots` plus the tenant-scoped partial unique
@@ -765,6 +770,55 @@ pre-Phase-3B code is no longer an approved rollback target for refund traffic;
 rollback must use a ledger-aware application or stop refund traffic and roll
 forward. No backfill, startup schema mutation, environment-variable change,
 periodic sweep, webhook, or production-data update is included.
+
+### Phase 3B deployment: mandatory Maintenance Mode and old-instance drain
+
+This is a migration-first cutover with a mandatory old-instance drain. The
+pre-Phase-3B refund route uses a timestamp-based Square idempotency key and has
+no ledger guard. An old instance and this ledger-aware route must therefore
+never serve refund traffic at the same time: a rolling deployment could issue
+two refunds for one payment under two different keys.
+
+Use the same **Maintenance Mode** and suspend/drain procedure used for the
+Migration 0012 release. Do not use a rolling deployment for Phase 3B:
+
+1. Leave the PR unmerged until CI and the migration artifacts are reviewed.
+   Record the exact CI-certified `main` SHA and set Render Auto-Deploy to
+   **Off before merging**. Verify that the setting remains Off.
+2. Confirm the currently deployed SHA, `/healthz`, `/api/health`, tenant
+   access, and normal payment/refund smoke checks. Create or verify the
+   intended Neon backup or restorable branch and record the exact target.
+3. Enter the existing production **Maintenance Mode** before stopping the
+   service. Stop accepting new refund requests and record the maintenance
+   start time; do not begin a refund while the release is crossing the
+   migration boundary.
+4. Suspend the single Render web service and drain it completely. Wait for
+   active HTTP requests and in-flight legacy Square calls to finish, then
+   verify that no old application instance, process-local refund job, or
+   rolling replacement remains. A disappearing local job list is not proof
+   while another instance is alive.
+5. While the service remains suspended and Maintenance Mode remains active,
+   apply migration `0013_durable_refund_operations` once from the exact
+   certified revision. Verify the migration journal/checksum, snapshot table,
+   foreign keys, checks, and tenant-scoped refund-target unique index.
+6. Deploy that same exact SHA and resume one ledger-aware instance. Keep
+   Auto-Deploy Off and Maintenance Mode active until the runtime SHA,
+   `/healthz`, `/api/health`, authentication, tenant isolation, and startup
+   logs are verified. Confirm no pre-Phase-3B instance is serving traffic.
+7. Run the approved small refund smoke check and verify one operation,
+   snapshot, stable Square key, provider outcome, and atomic local finalization.
+   Confirm retries use the same operation/key and that a `202` unresolved
+   response is not reported as success or confirmed failure.
+8. End Maintenance Mode only after the new instance and migration checks pass.
+   Restore normal Render Auto-Deploy and verify the persisted setting. If the
+   release stops or fails, leave Auto-Deploy Off and Maintenance Mode active;
+   resume only a ledger-aware revision after preserving all operation and
+   provider evidence.
+
+After the first Phase 3B operation is created, the old timestamp-keyed
+application is not an approved rollback target. Stop refund traffic and roll
+forward or use another ledger-aware revision; never resume the old route beside
+the ledger route.
 
 The refund wake is part of the existing next-due operation query. With no due
 operation there is no timer or database polling. Expected Neon cost is one
@@ -796,8 +850,11 @@ this implementation PR. The 78f54468 application can safely ignore its
 nullable additions while the path remains disabled, but after this release
 creates a v2 operation, the 78f54468 application is no longer an approved
 rollback target for payment traffic; rollback must preserve operation rows
-and use a compatible application or forward recovery. No production migration
-or deployment is performed as part of this PR.
+and use a compatible application or forward recovery. The Migration 0012
+release used the mandatory Maintenance Mode and suspend/drain boundary; Phase
+3B must use that same boundary before migration 0013 and before any refund
+traffic reaches the new route. No production migration or deployment is
+performed as part of this PR.
 
 Phase 3 remains separate from Phase 4's broader reconciliation tooling,
 notifications, disputes, webhooks, and operator UX.

@@ -3,6 +3,11 @@
 Payment-operation schema releases additionally follow the exact old-instance
 drain, `ledger_paused` deploy, verification, activation, and rollback sequence
 in [Payment operation ledger](payment-operation-ledger.md#phase-2b-2-deployment-activation-and-rollback).
+Phase 3B durable refunds additionally require the
+[Maintenance Mode and old-instance drain procedure](payment-operation-ledger.md#phase-3b-deployment-mandatory-maintenance-mode-and-old-instance-drain)
+before migration 0013 or the new refund route is deployed. Do not use a
+rolling deployment: the pre-Phase-3B route has timestamp-based Square keys and
+no ledger guard.
 Production must set `SCHEDULED_PAYMENT_EXECUTION_MODE` explicitly; a missing
 value fails startup. Render Auto-Deploy must be Off before merging migration
 0008 or any later payment-operation schema release.
