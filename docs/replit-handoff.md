@@ -134,8 +134,10 @@ should include `"appEnv":"beta"` and a short commit SHA.
 Square sandbox webhooks must be aimed at the beta domain, not prod.
 In the Square Developer Dashboard → your sandbox app → Webhooks:
 
-- Notification URL: `https://beta.leaguevault.app/api/webhooks/square`
-  (or whichever path you use for Square webhooks today).
+- Notification URL:
+  `https://beta.leaguevault.app/api/payments-provider/webhooks/square`.
+  The configured signature URL must match this exact value with no trailing
+  slash, query, or alternate host.
 - Subscribe to the same event topics as production.
 
 ### 7. Seed test data

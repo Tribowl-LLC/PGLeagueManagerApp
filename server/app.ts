@@ -60,7 +60,7 @@ import manifestRouter from './routes/manifest';
 import { assertTrustProxyAtBoot } from './lib/trust-proxy-check';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import * as schema from '@shared/schema';
-import { registerSquareWebhookTripwire } from './routes/payments-provider/square-webhook-tripwire';
+import { registerSquareWebhookReceiver } from './routes/payments-provider/square-webhook';
 
 const log = createLogger("Server");
 
@@ -185,10 +185,10 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
   app.get('/healthz', (_req, res) => {
     res.set('Cache-Control', 'no-store').type('text/plain').send('ok');
   });
-  // Register the disabled endpoint before tenant resolution and the global
-  // raw-body-capturing JSON parser. The exact route supplies its own security
-  // headers, rate limiter, 12 KB parser, safe parser-error handling, and 501.
-  registerSquareWebhookTripwire(app);
+  // Register Square before tenant resolution and the global JSON parser. The
+  // exact route owns raw-byte signature validation and remains disabled unless
+  // the explicit Phase 4A-1 ingest-only mode is configured.
+  registerSquareWebhookReceiver(app);
   app.use(subdomainDetection);
   app.use(compression());
   app.use(securityHeaders);

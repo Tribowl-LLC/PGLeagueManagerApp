@@ -38,6 +38,14 @@ export const envSchema = z.object({
   SQUARE_APP_ID: z.string().min(1).optional(),
   SQUARE_LOCATION_ID: z.string().min(1).optional(),
 
+  // Phase 4A-1 defaults disabled. Signature keys are application-owned
+  // subscription secrets and are parsed only by the webhook receiver; they
+  // must never be exposed through a location or browser-facing config route.
+  SQUARE_WEBHOOK_MODE: z.enum(["disabled", "ingest_only"]).optional(),
+  SQUARE_WEBHOOK_NOTIFICATION_URL: z.string().min(1).optional(),
+  SQUARE_WEBHOOK_API_VERSION: z.string().min(1).optional(),
+  SQUARE_WEBHOOK_SIGNATURE_KEYS_JSON: z.string().min(1).optional(),
+
   // Hostnames are case-insensitive but JS string comparisons aren't.
   // `isAllowedOrigin` and `extractSubdomain` already lowercase the
   // *incoming* request hostname before comparing, but env.APP_DOMAIN

@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(14);
+    expect(migrations).toHaveLength(15);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -232,6 +232,15 @@ describe('normalized migration baseline tools', () => {
     expect(migrations[13]?.sql).toContain('CREATE TABLE "refund_payment_operation_snapshots"');
     expect(migrations[13]?.sql).toContain('payment_operations_refund_target_unique');
     expect(migrations[13]?.sql).not.toMatch(/(?:^|\n)\s*(?:DROP|UPDATE|DELETE|INSERT)\b/);
+    expect(migrations[14]).toMatchObject({
+      idx: 14,
+      tag: '0014_square_webhook_inbox',
+      createdAt: 1785761770500,
+      hash: 'd5ae353d76e329c985710f34998130e1deb842f7269a9812c936e54fa364c2fd',
+    });
+    expect(migrations[14]?.sql).toContain('CREATE TABLE "webhook_events"');
+    expect(migrations[14]?.sql).toContain('webhook_events_provider_event_unique');
+    expect(migrations[14]?.sql).not.toMatch(/(?:^|\n)\s*(?:DROP|UPDATE|DELETE|INSERT)\b/);
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 

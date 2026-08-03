@@ -126,18 +126,18 @@ export const inviteLimiter = rateLimit({
   skip: testBypassSkip,
 });
 
-// The Square webhook receiver is intentionally disabled, so production has
-// no legitimate steady-state traffic. Keep a small per-IP allowance for an
-// operator probe or an accidentally configured provider retry without letting
-// an anonymous caller create unbounded warning/log volume.
-export const SQUARE_WEBHOOK_TRIPWIRE_MAX_REQUESTS = 10;
+// Square deliveries originate from a small provider IP set, so a tiny per-IP
+// allowance would combine unrelated tenant events and reject legitimate
+// bursts. This limiter runs only after signature verification: the raw-body
+// limit bounds anonymous work, while this ceiling bounds valid delivery bursts.
+export const SQUARE_WEBHOOK_MAX_REQUESTS = 600;
 
-export const squareWebhookTripwireLimiter = rateLimit({
+export const squareWebhookLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: SQUARE_WEBHOOK_TRIPWIRE_MAX_REQUESTS,
+  max: SQUARE_WEBHOOK_MAX_REQUESTS,
   standardHeaders: true,
   legacyHeaders: false,
-  store: createSharedRateLimitStore('square-webhook-tripwire'),
+  store: createSharedRateLimitStore('square-webhook'),
   message: rateLimitMessage("Too many requests, please try again later"),
   skip: testBypassSkip,
 });

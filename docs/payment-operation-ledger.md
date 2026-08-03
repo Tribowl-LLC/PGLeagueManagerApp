@@ -863,3 +863,22 @@ performed as part of this PR.
 
 Phase 3 remains separate from Phase 4's broader reconciliation tooling,
 notifications, disputes, webhooks, and operator UX.
+
+## Phase 4A-1 dormant Square webhook inbox
+
+Migration `0014_square_webhook_inbox` adds a signature-validated, encrypted
+event inbox at the pre-existing canonical Square path. The receiver defaults
+to `disabled`; explicit `ingest_only` can authenticate and durably record
+events but imports no processor and cannot change a payment, refund, dispute,
+operation, schedule, receipt, or UI state. Signature keys are application-owned
+subscription secrets in server configuration, while provider location plus the
+verified application ID must resolve exactly one tenant location before an
+insert. Invalid signatures perform no database work.
+
+The inbox has provider/event uniqueness, immutable payload hashes, encrypted
+exact payloads, provider version/update evidence, tenant/location indexes, and
+expiring token-fenced claim fields. Claims are explicit by event ID; there is
+no startup scan, next-row query, poll, empty sweep, provider call, or new wake.
+See [`square-webhook-inbox.md`](./square-webhook-inbox.md) for the event
+inventory, Square contract links, crash/replay/out-of-order rules, future
+reconciliation invariants, activation sequence, rollback, and CU analysis.

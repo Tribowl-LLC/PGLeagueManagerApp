@@ -7,6 +7,13 @@
 on whether it is safe to bump the **Square Developer Dashboard** API
 version pin from `2025-01-23` to a current version.
 
+> **Phase 4A-1 addendum (2026-08-03):** The historical webhook-tripwire
+> findings below are superseded by the dormant, signature-validated inbox in
+> `server/routes/payments-provider/square-webhook.ts`. Its exact public path is
+> `/api/payments-provider/webhooks/square`; it defaults to `disabled` and can
+> only durably ingest encrypted evidence in `ingest_only`. See
+> [square-webhook-inbox.md](./square-webhook-inbox.md).
+
 ---
 
 ## TL;DR
@@ -16,9 +23,11 @@ version pin from `2025-01-23` to a current version.
   outbound request — independently of the dashboard pin.
 - We make **zero raw HTTP** calls to Square. 100% of our wire goes
   through the SDK client.
-- We have **no real Square webhook receiver**. `app.ts` registers the disabled
-  `POST /webhooks/square` tripwire before tenant resolution and the
-  global JSON parser. The tripwire returns 501 and logs bounded metadata only.
+- We have a dormant Square webhook receiver at
+  `POST /api/payments-provider/webhooks/square`, registered before tenant
+  resolution and the global JSON parser. It defaults to disabled. Its only
+  activatable Phase 4A-1 mode verifies the signature over exact raw bytes and
+  durably stores encrypted evidence; it cannot process business state.
 - Our SDK call surface is small and already on the v40+ flat-client
   shape (no `.result.errors[]` wrapper, structured errors directly on
   `SquareError`). All response field reads in our code are on fields
@@ -65,11 +74,10 @@ controls two things:
    `Square-Version` header** — i.e. raw HTTP calls bypassing the SDK.
 2. The schema version of webhook event payloads Square sends to **us**.
 
-Neither of those applies to us today: we have no raw HTTP calls (§3)
-and no Square webhook handler (§4). So the header value already on
-the wire is `2026-05-20`. The dashboard pin is, in practice, dead
-weight — but a stale pin is still a footgun the day someone adds a
-raw call or registers a webhook subscription.
+The first does not apply: we have no raw HTTP calls (§3). Phase 4A-1 now pins
+the inbound subscription version to `2026-05-20` and refuses `ingest_only`
+startup with any other configured version (§4). The outbound header value and
+intended inbound subscription version are therefore deliberately aligned.
 
 ---
 
@@ -228,35 +236,30 @@ client. No raw HTTP.**
 
 ### Receivers in this repo
 
-- `server/routes/payments-provider/square-webhook-tripwire.ts` — **disabled
-  Square tripwire**.
-  - `POST /webhooks/square` is a tripwire stub added in task #612.
-    It answers `501 Not Implemented`, enforces a 12 KB body limit and
-    dedicated shared production rate limit, and emits one warning with a
-    server-generated request id plus fixed, bounded request metadata. It does
-    not log headers, query strings, bodies, or raw bytes. We do not subscribe
-    to any Square webhook events today, so the tripwire exists only to make an
-    accidental subscription visible without processing it. There is no HMAC
-    verification because the endpoint does not accept Square events.
-- The exact Square tripwire returns earlier in the stack, before session and
-  CSRF middleware, because provider callbacks cannot use browser sessions.
+- `server/routes/payments-provider/square-webhook.ts` — dormant Phase 4A-1
+  receiver at `POST /api/payments-provider/webhooks/square`.
+  - `disabled` is the default and returns 503 without database work.
+  - `ingest_only` enforces a 12 KB raw-body limit, verifies Square's HMAC over
+    the configured exact notification URL plus exact bytes, resolves one
+    tenant/location, and commits encrypted evidence before returning 2xx.
+  - It logs bounded classifications and provider event type only; never a
+    signature, secret, credential, header set, query string, body, raw byte,
+    provider identifier, or payload field.
+  - It cannot claim or process events and cannot mutate payments, refunds,
+    disputes, operations, schedules, receipts, or UI state.
+- The route returns earlier in the stack, before session and CSRF middleware,
+  because provider callbacks cannot use browser sessions. Full contracts and
+  activation safeguards are in [square-webhook-inbox.md](./square-webhook-inbox.md).
 
 ### Subscriptions on Square's side
 
 This repo cannot see what's configured on the Developer Dashboard.
-**The operator must confirm before flipping the version pin** that
-no Square webhook subscriptions exist on either the production or
-sandbox application. If any exist, Square will start delivering
-events to whatever URL was registered, and:
-
-1. We still have no signed-receiver code, so a real subscription's
-   events would hit the task #612 tripwire stub and return 501.
-   The correlated metadata warning makes delivery visible, but it is not a
-   substitute for a real handler — money-relevant events
-   (refunds, disputes, chargebacks) would still go unprocessed.
-2. The dashboard version pin would dictate the payload schema. Today
-   that schema is `2025-01-23`; bumping to `2026-05-20` could change
-   the event shape without us noticing because no handler reads it.
+Phase 4A-1 does not change any Square configuration. Before a future
+subscription is enabled, the operator must verify its application ownership,
+exact notification URL, signature key, four selected event types, and pinned
+`2026-05-20` API version. Unexpected delivery while the receiver is disabled
+gets a non-2xx response. `ingest_only` accepts only verified, uniquely mapped
+evidence and still leaves money-relevant events unprocessed by design.
 
 **Pre-bump check (operator):** in the Square Developer Dashboard,
 open each application → Webhooks → Subscriptions. Confirm the
@@ -483,14 +486,10 @@ written for the dashboard-pin flip, not for SDK upgrades.
 None of these block the version bump. They were filed as separate
 project tasks so the bump itself (Task #600) can ship independently.
 
-1. **Task #612 — Stub a Square webhook receiver. ✅ DONE.**
-   Implemented in `server/routes/payments-provider/square-webhook-tripwire.ts` as
-   a `POST /webhooks/square` handler that returns
-   `501 SQUARE_WEBHOOK_NOT_IMPLEMENTED` after a small body limit and
-   dedicated rate limit, then emits one metadata-only warning correlated by a
-   server-generated request id.
-   Closes the "what if someone registers a subscription
-   out-of-band" risk surfaced in §4.
+1. **Task #612 — Stub a Square webhook receiver. ✅ SUPERSEDED.**
+   The original tripwire was replaced by the Phase 4A-1 receiver at the same
+   canonical public path. It remains disabled by default and adds verified,
+   encrypted, durable ingest without enabling event processing. See §4.
 2. **Task #613 — Capture catalog pagination in `listCatalogItems`.**
    Today the unfiltered branch (`server/services/square-provider.ts`
    `catalog.list`/`catalog.searchItems`) only fetches the first
@@ -544,8 +543,9 @@ Rationale:
   only deprecations in the window (Catalog Modifier fields in
   `2025-05-21` and `Payment.offline_payment_details` in
   `2025-08-20`) touch code paths we don't exercise.
-- We have no Square webhook handler (§4), so changing the dashboard
-  version cannot break inbound payload parsing.
+- The dormant Square webhook receiver (§4) requires the intended inbound
+  subscription version to equal `2026-05-20`; no dashboard-version change is
+  assumed or performed by Phase 4A-1.
 - All v40+ flat-client SDK semantics (no `.result` wrapper,
   `SquareError.errors[].detail`, `SquareEnvironment` URLs, `token`
   option) are already in place — see the inline comments at

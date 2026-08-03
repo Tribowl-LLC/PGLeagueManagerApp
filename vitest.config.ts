@@ -100,6 +100,7 @@ const UNIT_NO_DB = [
   'tests/unit/passive-database-polling.test.ts',
   'tests/unit/payment-operation-idempotency.test.ts',
   'tests/unit/payment-operation-wake-scheduler.test.ts',
+  'tests/unit/square-webhook.test.ts',
   'tests/unit/rate-limit-environment.test.ts',
   'tests/unit/rate-limit-shared-store-coverage.test.ts',
   'tests/unit/subdomain-resolution-consistency.test.ts',
@@ -179,7 +180,7 @@ const PARALLEL_ISOLATED = [
   'tests/unit/setup-secret-no-token-leak.test.ts',
   'tests/unit/square-error-contract.test.ts',
   'tests/unit/square-provider-not-configured-422.test.ts',
-  'tests/unit/square-webhook-stub.test.ts', // Task #720 hoist preserved as precaution after sibling regressions (#722). Reverted.
+  'tests/unit/webhook-event-inbox-postgres.test.ts',
   'tests/unit/use-bowler-payment-submit.test.ts',
 ];
 
