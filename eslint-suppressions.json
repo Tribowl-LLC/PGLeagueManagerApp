@@ -125,7 +125,7 @@
   },
   "client/src/pages/payment-history-page.tsx": {
     "@typescript-eslint/no-non-null-assertion": {
-      "count": 2
+      "count": 1
     },
     "@typescript-eslint/no-unnecessary-type-assertion": {
       "count": 1

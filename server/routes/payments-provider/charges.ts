@@ -5,9 +5,10 @@
  *  - POST /payments
  *  - GET  /payments/:paymentId/verify
  */
-import { Router } from 'express';
-import crypto from 'crypto';
+import { Router, type Request, type Response } from 'express';
+import { fromZonedTime, toZonedTime } from 'date-fns-tz';
 import { getEffectiveBowlingWeeks } from '@shared/schedule-utils';
+import { DEFAULT_TIMEZONE, type PaymentOperation } from '@shared/schema';
 import { storage } from '../../storage';
 import { sendError } from '../../utils/api.js';
 import { hasAccessToLeague, hasAccessToBowler, hasAccessToPayment, isOrgOrHigher } from '../../utils/access-control.js';
@@ -23,13 +24,269 @@ import {
 import { buildPaymentErrorResponse } from '../../utils/payment-error-response.js';
 import { computePaymentSplit, buildLineItems } from '../../services/payment-execution';
 import { getProviderCustomerId, ensureProviderCustomer } from '../../services/payment-utils';
-import { providerNameToPaymentType } from '@shared/schema/constants';
 import { isDev } from '../../config';
 import { getProviderForLeague } from './shared.js';
+import type { PaymentProvider } from '../../services/payment-provider.js';
+import {
+  getGeneralInteractiveTargetKey,
+  PaymentOperationImmutableMismatchError,
+  PaymentOperationValidationError,
+} from '../../storage/payment-operations.js';
+import { validateInteractiveRequestKey } from '../../services/payment-operation-idempotency.js';
+import { prepareInteractivePaymentOperation } from '../../services/interactive-payment-operation-preparation.js';
+import { interactivePaymentOperationExecutor } from '../../services/interactive-payment-operation-executor.js';
+import type { InteractivePaymentSemanticSnapshot } from '../../services/interactive-payment-operation-snapshot.js';
 
 const log = createLogger('Payments');
 
 const router = Router();
+
+type InteractiveChargeResponse = {
+  status: 'COMPLETED';
+  id: string;
+  orderId?: string;
+  dbPaymentId?: number;
+  combinedChargeGroupId?: string;
+  rows?: Array<{ id: number; bowlerId: number; amount: number }>;
+  receiptUrl?: string | null;
+  receiptNumber?: string | null;
+  savedCardId?: string | null;
+  cardSaveStatus?: 'not_requested' | 'saved' | 'failed' | 'not_available';
+};
+
+function requireInteractiveRequestKey(
+  req: Request,
+  res: Response,
+): string | undefined {
+  const raw = req.get('Idempotency-Key');
+  if (raw === undefined) {
+    sendError(
+      res,
+      'This payment app is out of date. Update it before submitting a payment.',
+      428,
+      'IDEMPOTENCY_KEY_REQUIRED',
+      { upgradeRequired: true },
+    );
+    return undefined;
+  }
+  try {
+    return validateInteractiveRequestKey(raw);
+  } catch (error) {
+    sendError(
+      res,
+      error instanceof Error ? error.message : 'Idempotency-Key is invalid',
+      400,
+      'INVALID_IDEMPOTENCY_KEY',
+    );
+    return undefined;
+  }
+}
+
+function leagueDayStart(league: { timezone?: string | null }, now = new Date()): string {
+  const timezone = league.timezone ?? DEFAULT_TIMEZONE;
+  const local = toZonedTime(now, timezone);
+  local.setHours(0, 0, 0, 0);
+  return fromZonedTime(local, timezone).toISOString();
+}
+
+function operationIsDue(operation: PaymentOperation, now = new Date()): boolean {
+  return operation.status === 'pending'
+    || (operation.nextAttemptAt !== null && new Date(operation.nextAttemptAt).getTime() <= now.getTime())
+    || (
+      operation.status === 'leased'
+      && operation.leaseExpiresAt !== null
+      && new Date(operation.leaseExpiresAt).getTime() <= now.getTime()
+    );
+}
+
+function operationStatusResponse(operation: PaymentOperation): Record<string, unknown> {
+  return {
+    operationId: operation.id,
+    status: operation.status,
+    attemptCount: operation.attemptCount,
+    retryAt: operation.nextAttemptAt,
+    providerPaymentId: operation.providerObjectId,
+    providerOrderId: operation.providerOrderId,
+  };
+}
+
+async function reconstructInteractiveChargeResponse(
+  organizationId: number,
+  operation: PaymentOperation,
+): Promise<InteractiveChargeResponse> {
+  if (operation.status !== 'succeeded' || !operation.providerObjectId) {
+    throw new Error('interactive payment operation is not successful');
+  }
+  const rows = await storage.getPaymentsByPaymentOperationId(organizationId, operation.id);
+  const first = rows[0];
+  return {
+    status: 'COMPLETED',
+    id: operation.providerObjectId,
+    ...(operation.providerOrderId ? { orderId: operation.providerOrderId } : {}),
+    ...(first ? {
+      dbPaymentId: first.id,
+      receiptUrl: first.receiptUrl,
+      receiptNumber: first.receiptNumber,
+    } : {}),
+    ...(first?.combinedChargeGroupId ? {
+      combinedChargeGroupId: first.combinedChargeGroupId,
+      rows: rows.map((row) => ({ id: row.id, bowlerId: row.bowlerId, amount: row.amount })),
+    } : {}),
+    savedCardId: null,
+    cardSaveStatus: 'not_requested',
+  };
+}
+
+async function saveInteractiveCardAfterSuccess(
+  organizationId: number,
+  operation: PaymentOperation,
+  snapshot: InteractivePaymentSemanticSnapshot,
+): Promise<{ savedCardId: string | null; cardSaveStatus: InteractiveChargeResponse['cardSaveStatus'] }> {
+  if (!snapshot.storeCard) return { savedCardId: null, cardSaveStatus: 'not_requested' };
+  if (!snapshot.customerId || !snapshot.sourceId) {
+    return { savedCardId: null, cardSaveStatus: 'not_available' };
+  }
+  let provider: PaymentProvider;
+  try {
+    provider = await getPaymentProvider(snapshot.locationId);
+  } catch {
+    return { savedCardId: null, cardSaveStatus: 'failed' };
+  }
+  if (provider.validateCardId(snapshot.sourceId)) {
+    return { savedCardId: null, cardSaveStatus: 'not_available' };
+  }
+  try {
+    const savedCard = await provider.saveCardOnFile(snapshot.sourceId, snapshot.customerId);
+    if (!savedCard?.id) return { savedCardId: null, cardSaveStatus: 'failed' };
+    try {
+      await storage.updatePaymentScheduleCard(
+        snapshot.payerBowlerId,
+        snapshot.leagueId,
+        savedCard.id,
+      );
+    } catch {
+      // A one-time charge may not have a schedule. The durable charge remains
+      // successful even when this optional schedule update is absent.
+    }
+    return { savedCardId: savedCard.id, cardSaveStatus: 'saved' };
+  } catch (error) {
+    log.error('Interactive payment card-vault side effect failed', {
+      organizationId,
+      operationId: operation.id,
+      errorName: error instanceof Error ? error.name : 'UnknownError',
+    });
+    return { savedCardId: null, cardSaveStatus: 'failed' };
+  }
+}
+
+function terminalOperationError(operation: PaymentOperation): {
+  status: number;
+  message: string;
+  code: string;
+} {
+  if (operation.errorClassification === 'configuration') {
+    return {
+      status: 422,
+      message: 'Payment provider is not configured for this location',
+      code: 'PROVIDER_NOT_CONFIGURED',
+    };
+  }
+  if (operation.errorClassification === 'hard_decline' || operation.status === 'action_required') {
+    return { status: 500, message: 'Your payment was declined. Please try a different payment method.', code: 'PAYMENT_DECLINED' };
+  }
+  if (operation.errorClassification === 'invalid_request') {
+    return { status: 400, message: 'The payment information is invalid. Please review it and try again.', code: 'INVALID_REQUEST' };
+  }
+  return { status: 500, message: GENERIC_PAYMENT_USER_MESSAGE, code: operation.errorCode ?? 'PAYMENT_ERROR' };
+}
+
+async function respondWithInteractiveOperation(
+  res: Response,
+  organizationId: number,
+  operation: PaymentOperation,
+  allowDueRecovery: boolean,
+): Promise<void> {
+  let current = operation;
+  if (allowDueRecovery && operationIsDue(current)) {
+    current = await interactivePaymentOperationExecutor.execute({
+      organizationId,
+      operationId: current.id,
+    }) ?? current;
+  }
+  if (current.status === 'succeeded') {
+    const response = await reconstructInteractiveChargeResponse(organizationId, current);
+    const snapshot = await storage.getInteractivePaymentOperationSnapshotForOrganization(organizationId, current.id);
+    if (snapshot) {
+      const vault = await saveInteractiveCardAfterSuccess(organizationId, current, snapshot);
+      response.savedCardId = vault.savedCardId;
+      response.cardSaveStatus = vault.cardSaveStatus;
+    }
+    res.json(response);
+    return;
+  }
+  if (current.status === 'action_required' || current.status === 'failed_terminal') {
+    const failure = terminalOperationError(current);
+    sendError(res, failure.message, failure.status, failure.code, operationStatusResponse(current));
+    return;
+  }
+  // provider_unknown and reconciliation_required are deliberately reported as
+  // unresolved. Neither is a confirmed payment failure.
+  res.status(202).json({ success: true, ...operationStatusResponse(current) });
+}
+
+router.get('/payment-operations/status', async (req, res) => {
+  try {
+    const requestKey = requireInteractiveRequestKey(req, res);
+    if (!requestKey) return;
+    const organizationId = req.user?.organizationId;
+    if (!organizationId) {
+      return sendError(res, 'Organization context is required for payment recovery', 403, 'FORBIDDEN');
+    }
+    const operation = await storage.getGeneralInteractivePaymentOperationForOrganization(
+      organizationId,
+      requestKey,
+    );
+    if (!operation) return sendError(res, 'Payment operation not found', 404, 'NOT_FOUND');
+    if (operation.targetKey !== getGeneralInteractiveTargetKey(requestKey)) {
+      return sendError(res, 'Payment operation not found', 404, 'NOT_FOUND');
+    }
+    if (operation.status === 'succeeded') {
+      return res.json(await reconstructInteractiveChargeResponse(organizationId, operation));
+    }
+    if (operation.status === 'action_required' || operation.status === 'failed_terminal') {
+      const failure = terminalOperationError(operation);
+      return sendError(res, failure.message, failure.status, failure.code, operationStatusResponse(operation));
+    }
+    return res.status(202).json({ success: true, ...operationStatusResponse(operation) });
+  } catch (error) {
+    log.error('Interactive payment status lookup failed', {
+      errorName: error instanceof Error ? error.name : 'UnknownError',
+    });
+    return sendError(res, GENERIC_PAYMENT_USER_MESSAGE, 500, 'PAYMENT_ERROR');
+  }
+});
+
+router.post('/payment-operations/recover', paymentLimiter, async (req, res) => {
+  try {
+    const requestKey = requireInteractiveRequestKey(req, res);
+    if (!requestKey) return;
+    const organizationId = req.user?.organizationId;
+    if (!organizationId) {
+      return sendError(res, 'Organization context is required for payment recovery', 403, 'FORBIDDEN');
+    }
+    const operation = await storage.getGeneralInteractivePaymentOperationForOrganization(
+      organizationId,
+      requestKey,
+    );
+    if (!operation) return sendError(res, 'Payment operation not found', 404, 'NOT_FOUND');
+    return respondWithInteractiveOperation(res, organizationId, operation, true);
+  } catch (error) {
+    log.error('Interactive payment recovery failed', {
+      errorName: error instanceof Error ? error.name : 'UnknownError',
+    });
+    return sendError(res, GENERIC_PAYMENT_USER_MESSAGE, 500, 'PAYMENT_ERROR');
+  }
+});
 
 router.get('/payments/:paymentId/verify', async (req, res) => {
   try {
@@ -123,6 +380,8 @@ router.get('/payments/:paymentId/verify', async (req, res) => {
  */
 router.post('/combined-payments', paymentLimiter, async (req, res) => {
   try {
+    const requestKey = requireInteractiveRequestKey(req, res);
+    if (!requestKey) return;
     const { sourceId, amount, leagueId, payees } = req.body as {
       sourceId?: string;
       amount?: number;
@@ -261,6 +520,9 @@ router.post('/combined-payments', paymentLimiter, async (req, res) => {
       ? req.body.buyerEmail.trim()
       : '';
     const buyerEmail = payerBowler.email || trimmedBuyerEmail || undefined;
+    if (buyerEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(buyerEmail)) {
+      return sendError(res, 'Buyer email is invalid', 400, 'VALIDATION_ERROR');
+    }
     if (provider.providerName === 'square' && !buyerEmail) {
       return sendError(
         res,
@@ -277,129 +539,76 @@ router.post('/combined-payments', paymentLimiter, async (req, res) => {
       if (bootstrapped) customerId = bootstrapped;
     }
 
-    const idempotencyKey = crypto
-      .createHash('sha256')
-      .update(`combined:${payerBowlerId}:${leagueId}:${amount}:${sourceId}:${cleanPayees.map((p) => `${p.bowlerId}=${p.amount}`).join(',')}`)
-      .digest('hex');
-    const truncatedIdempotencyKey = idempotencyKey.substring(0, 39);
-
-    const existingFirst = await storage.getPaymentByIdempotencyKey(idempotencyKey);
-    if (existingFirst && existingFirst.combinedChargeGroupId) {
-      const groupRows = await storage.getPaymentsByCombinedGroupId(existingFirst.combinedChargeGroupId);
-      return res.json({
-        deduplicated: true,
-        status: 'COMPLETED',
-        id: existingFirst.providerPaymentId,
-        combinedChargeGroupId: existingFirst.combinedChargeGroupId,
-        rows: groupRows.map((r) => ({ id: r.id, bowlerId: r.bowlerId, amount: r.amount })),
-      });
-    }
-
     // ONE provider charge for the full total.
     const weeklyFee = league.weeklyFee || 0;
     const quantity = weeklyFee > 0 && amount % weeklyFee === 0 ? String(amount / weeklyFee) : '1';
     const lineItems = buildLineItems(league, quantity);
-
-    let payment;
-    if (lineItems.length > 0) {
-      payment = await provider.createOrderWithPayment(
-        sourceId,
-        amount,
-        lineItems,
-        req.body.storeCard,
-        customerId,
-        buyerEmail,
-        truncatedIdempotencyKey,
-      );
-    } else {
-      payment = await provider.processPayment(
-        sourceId,
-        amount,
-        req.body.storeCard,
-        customerId,
-        buyerEmail,
-        truncatedIdempotencyKey,
-      );
-    }
-    if (!payment?.id) {
-      return sendError(res, 'Combined charge failed to return a payment id', 500, 'PAYMENT_ERROR');
-    }
-
-    let storedCardId: string | undefined;
-    if (req.body.storeCard && customerId && sourceId && !provider.validateCardId(sourceId)) {
-      try {
-        const savedCard = await provider.saveCardOnFile(sourceId, customerId);
-        if (savedCard?.id) {
-          storedCardId = savedCard.id;
-          try {
-            await storage.updatePaymentScheduleCard(payerBowlerId, leagueId, savedCard.id);
-          } catch {
-            /* no schedule yet — fine */
-          }
-        }
-      } catch (err) {
-        log.error('combined-pay: failed to save card on file', err);
-      }
-    }
-
-    // Insert N rows in a single DB transaction with the shared group id.
-    const groupId = crypto.randomUUID();
-    const weekOf = new Date();
-    weekOf.setHours(0, 0, 0, 0);
-
-    let createdRows: Array<{ id: number; bowlerId: number; amount: number }> = [];
-    try {
-      createdRows = await storage.createCombinedPayments(
-        cleanPayees.map((p, idx) => {
-          const { lineageAmount, prizeFundAmount } = computePaymentSplit(p.amount, league);
-          return {
-            bowlerId: p.bowlerId,
-            leagueId,
-            amount: p.amount,
-            lineageAmount,
-            prizeFundAmount,
-            weekOf: weekOf.toISOString(),
-            status: 'paid' as const,
-            type: providerNameToPaymentType(provider.providerName),
-            providerPaymentId: payment.id,
-            receiptUrl: payment.receiptUrl,
-            receiptNumber: payment.receiptNumber,
-            receiptEmailMissing: false,
-            // Only the first row carries the idempotency key (UNIQUE column).
-            idempotencyKey: idx === 0 ? idempotencyKey : undefined,
-            combinedChargeGroupId: groupId,
-            paidByUserId: req.user?.id ?? null,
-            notes: p.bowlerId === payerBowlerId
-              ? 'Combined payment (self + partners)'
-              : 'Combined payment (paid by partner)',
-          };
-        }),
-      );
-    } catch (insertErr) {
-      // Best-effort refund the provider charge and bail.
-      log.error('combined-pay: per-bowler insert failed, refunding provider charge', {
-        groupId,
-        providerPaymentId: payment.id,
-        error: insertErr instanceof Error ? { name: insertErr.name, message: insertErr.message } : insertErr,
-      });
-      try {
-        await provider.refundPayment(payment.id, amount);
-      } catch (refundErr) {
-        log.error('combined-pay: refund after insert-failure ALSO failed', {
-          providerPaymentId: payment.id,
-          error: refundErr instanceof Error ? { name: refundErr.name, message: refundErr.message } : refundErr,
-        });
-      }
-      return sendError(res, 'Combined payment could not be recorded — the charge has been refunded.', 500, 'PAYMENT_RECORD_FAILED');
-    }
-
-    res.json({
-      ...payment,
-      combinedChargeGroupId: groupId,
-      rows: createdRows,
-      savedCardId: storedCardId ?? null,
+    const organizationId = league.organizationId;
+    const paidByUserId = req.user?.organizationId === organizationId
+      ? req.user.id
+      : null;
+    const existingOperation = await storage.getGeneralInteractivePaymentOperationForOrganization(
+      organizationId,
+      requestKey,
+    );
+    const existingSnapshot = existingOperation
+      ? await storage.getInteractivePaymentOperationSnapshotForOrganization(organizationId, existingOperation.id)
+      : undefined;
+    const weekOf = existingSnapshot?.weekOf ?? leagueDayStart(league);
+    const squareConfig = league.locationId === null
+      ? null
+      : await storage.getLocationSquareConfig(league.locationId);
+    const operation = await prepareInteractivePaymentOperation({
+      organizationId,
+      requestKey,
+      amountMinor: amount,
+      currency: 'USD',
+      providerName: provider.providerName,
+      leagueId,
+      locationId: league.locationId,
+      providerLocationId: squareConfig?.locationId?.trim() || null,
+      payerBowlerId,
+      requestKind: lineItems.length > 0 ? 'order' : 'direct',
+      sourceId,
+      customerId: customerId ?? null,
+      buyerEmail: buyerEmail ?? null,
+      storeCard: req.body.storeCard === true,
+      weekOf,
+      combined: true,
+      allocations: cleanPayees.map((p, idx) => {
+        const { lineageAmount, prizeFundAmount } = computePaymentSplit(p.amount, league);
+        return {
+          allocationIndex: idx,
+          bowlerId: p.bowlerId,
+          amountMinor: p.amount,
+          lineageAmountMinor: lineageAmount ?? null,
+          prizeFundAmountMinor: prizeFundAmount ?? null,
+          weekOf,
+          paidByUserId,
+          notes: p.bowlerId === payerBowlerId
+            ? 'Combined payment (self + partners)'
+            : 'Combined payment (paid by partner)',
+        };
+      }),
+      lineItems: lineItems.map((item, index) => ({
+        lineItemIndex: index,
+        catalogObjectId: item.catalogObjectId,
+        quantity: item.quantity,
+      })),
     });
+    return respondWithInteractiveOperation(
+      res,
+      organizationId,
+      operation,
+      operation.status === 'pending' && operation.attemptCount === 0,
+    );
   } catch (error) {
+    if (error instanceof PaymentOperationImmutableMismatchError) {
+      return sendError(res, 'This Idempotency-Key was already used for different payment details.', 409, 'IDEMPOTENCY_CONFLICT');
+    }
+    if (error instanceof PaymentOperationValidationError) {
+      return sendError(res, 'The payment request could not be prepared.', 400, 'VALIDATION_ERROR');
+    }
     const errDetail = error instanceof Error
       ? { name: error.name, message: error.message, stack: error.stack?.split('\n').slice(0, 5).join('\n') }
       : error;
@@ -415,6 +624,8 @@ router.post('/combined-payments', paymentLimiter, async (req, res) => {
 
 router.post('/payments', paymentLimiter, async (req, res) => {
   try {
+    const requestKey = requireInteractiveRequestKey(req, res);
+    if (!requestKey) return;
     const { sourceId, amount, bowlerId, leagueId } = req.body;
 
     if (isDev) log.info('Payment request received:', {
@@ -429,8 +640,8 @@ router.post('/payments', paymentLimiter, async (req, res) => {
       return sendError(res, 'Missing required payment fields', 400, 'VALIDATION_ERROR');
     }
 
-    if (typeof amount !== 'number' || amount <= 0) {
-      return sendError(res, 'Amount must be a positive number', 400, 'VALIDATION_ERROR');
+    if (typeof amount !== 'number' || amount <= 0 || !Number.isInteger(amount)) {
+      return sendError(res, 'Amount must be a positive integer', 400, 'VALIDATION_ERROR');
     }
 
     if (!await hasAccessToLeague(req, leagueId)) {
@@ -522,21 +733,6 @@ router.post('/payments', paymentLimiter, async (req, res) => {
       return sendError(res, `Amount ($${(amount / 100).toFixed(2)}) exceeds remaining balance ($${(remainingBalance / 100).toFixed(2)})`, 400, 'AMOUNT_EXCEEDS_BALANCE');
     }
 
-    const weekOf = new Date();
-    weekOf.setHours(0, 0, 0, 0);
-
-    const idempotencyKey = crypto
-      .createHash('sha256')
-      .update(`${bowlerId}:${leagueId}:${amount}:${sourceId}`)
-      .digest('hex');
-
-    const existingPayment = await storage.getPaymentByIdempotencyKey(idempotencyKey);
-    const truncatedIdempotencyKey = idempotencyKey.substring(0, 39);
-    if (existingPayment) {
-      log.info('Payment deduplicated (same token resubmitted):', { dbPaymentId: existingPayment.id, providerPaymentId: existingPayment.providerPaymentId, bowlerId, leagueId, amount });
-      return res.json({ dbPaymentId: existingPayment.id, id: existingPayment.providerPaymentId, status: 'COMPLETED', deduplicated: true });
-    }
-
     const provider = await getPaymentProvider(league.locationId ?? null);
 
     // For partner-pay the saved-card / wallet customer id comes from
@@ -577,6 +773,9 @@ router.post('/payments', paymentLimiter, async (req, res) => {
       ? req.body.buyerEmail.trim()
       : '';
     const buyerEmail = bowler.email || requestBuyerEmail || undefined;
+    if (buyerEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(buyerEmail)) {
+      return sendError(res, 'Buyer email is invalid', 400, 'VALIDATION_ERROR');
+    }
 
     // HARD-ENFORCE buyer email for interactive Square charges.
     // This route only handles user-driven checkouts (a sourceId from a card
@@ -620,102 +819,71 @@ router.post('/payments', paymentLimiter, async (req, res) => {
       hasCustomerId: !!customerId,
     });
 
-    let payment;
-    let storedCardId: string | undefined;
-
-    if (lineItems.length > 0) {
-      payment = await provider.createOrderWithPayment(
-        sourceId,
-        amount,
-        lineItems,
-        req.body.storeCard,
-        customerId,
-        buyerEmail,
-        truncatedIdempotencyKey
-      );
-    } else {
-      payment = await provider.processPayment(
-        sourceId,
-        amount,
-        req.body.storeCard,
-        customerId,
-        buyerEmail,
-        truncatedIdempotencyKey,
-      );
-    }
-
-    log.info('Payment completed:', {
-      paymentId: payment.id,
-      paymentStatus: payment.status,
-      bowlerId, leagueId, amount,
-    });
-
-    if (req.body.storeCard && customerId && sourceId && !provider.validateCardId(sourceId)) {
-      const cid = customerId;
-      try {
-        const savedCard = await provider.saveCardOnFile(sourceId, cid);
-        if (savedCard?.id) {
-          log.info('Card saved on file:', { success: true });
-          storedCardId = savedCard.id;
-          try {
-            // Card saved against payer vault — schedule belongs to vault owner.
-            await storage.updatePaymentScheduleCard(
-              vaultBowler.id,
-              leagueId,
-              savedCard.id
-            );
-          } catch (schedError) {
-            if (isDev) log.info('No payment schedule to update (normal for one-time payments)');
-          }
-        }
-      } catch (error) {
-        log.error('Failed to save card on file:', error);
-      }
-    }
-
     const { lineageAmount, prizeFundAmount } = computePaymentSplit(amount, league);
-
-    // Capture Square's hosted-receipt fields. Interactive Square
-    // charges are gated by BUYER_EMAIL_REQUIRED above, so by the
-    // time we reach this insert `buyerEmail` is always present for
-    // Square — receiptEmailMissing therefore stays false here and
-    // is only set true on the unattended/autopay path.
-    const dbPayment = await storage.createPayment({
-      bowlerId,
+    const organizationId = league.organizationId;
+    const paidByUserId = req.user?.organizationId === organizationId
+      ? req.user.id
+      : null;
+    const existingOperation = await storage.getGeneralInteractivePaymentOperationForOrganization(
+      organizationId,
+      requestKey,
+    );
+    const existingSnapshot = existingOperation
+      ? await storage.getInteractivePaymentOperationSnapshotForOrganization(organizationId, existingOperation.id)
+      : undefined;
+    const weekOf = existingSnapshot?.weekOf ?? leagueDayStart(league);
+    const squareConfig = league.locationId === null
+      ? null
+      : await storage.getLocationSquareConfig(league.locationId);
+    const operation = await prepareInteractivePaymentOperation({
+      organizationId,
+      requestKey,
+      amountMinor: amount,
+      currency: 'USD',
+      providerName: provider.providerName,
       leagueId,
-      amount,
-      lineageAmount,
-      prizeFundAmount,
-      weekOf: weekOf.toISOString(),
-      status: 'paid',
-      type: providerNameToPaymentType(provider.providerName),
-      providerPaymentId: payment.id,
-      receiptUrl: payment.receiptUrl,
-      receiptNumber: payment.receiptNumber,
-      receiptEmailMissing: false,
-      idempotencyKey,
-      // only stamp paidByUserId when the actor is paying for
-      // SOMEONE ELSE'S bowler (partner pay or admin-on-behalf). Self-pay
-      // leaves it null because attribution would be redundant with the
-      // bowler's own owning user.
-      paidByUserId:
-        isPartnerPay || (isAdminFallback && req.user?.bowlerId !== bowlerId)
-          ? req.user?.id ?? null
-          : null,
+      locationId: league.locationId,
+      providerLocationId: squareConfig?.locationId?.trim() || null,
+      payerBowlerId: isPartnerPay && payerBowler ? payerBowler.id : bowlerId,
+      requestKind: lineItems.length > 0 ? 'order' : 'direct',
+      sourceId,
+      customerId: customerId ?? null,
+      buyerEmail: buyerEmail ?? null,
+      storeCard: req.body.storeCard === true,
+      weekOf,
+      combined: false,
+      allocations: [{
+        allocationIndex: 0,
+        bowlerId,
+        amountMinor: amount,
+        lineageAmountMinor: lineageAmount ?? null,
+        prizeFundAmountMinor: prizeFundAmount ?? null,
+        weekOf,
+        paidByUserId:
+          isPartnerPay || (isAdminFallback && req.user?.bowlerId !== bowlerId)
+            ? paidByUserId
+            : null,
+        notes: null,
+      }],
+      lineItems: lineItems.map((item, index) => ({
+        lineItemIndex: index,
+        catalogObjectId: item.catalogObjectId,
+        quantity: item.quantity,
+      })),
     });
-
-    if (isDev) log.info('Payment recorded in DB:', {
-      dbPaymentId: dbPayment.id,
-      paymentId: payment.id,
-      bowlerId, leagueId, amount,
-    });
-
-    res.json({
-      ...payment,
-      dbPaymentId: dbPayment.id,
-      savedCardId: storedCardId ?? null,
-    });
+    return respondWithInteractiveOperation(
+      res,
+      organizationId,
+      operation,
+      operation.status === 'pending' && operation.attemptCount === 0,
+    );
   } catch (error) {
+    if (error instanceof PaymentOperationImmutableMismatchError) {
+      return sendError(res, 'This Idempotency-Key was already used for different payment details.', 409, 'IDEMPOTENCY_CONFLICT');
+    }
+    if (error instanceof PaymentOperationValidationError) {
+      return sendError(res, 'The payment request could not be prepared.', 400, 'VALIDATION_ERROR');
+    }
     // Always log the full technical detail server-side, regardless of
     // which user-facing branch we take below. Includes the typed
     // `detail` (Square's raw `errors[0].detail`) when present, plus

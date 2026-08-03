@@ -115,8 +115,9 @@ function nonCompletedPaymentResultError(result: PaymentResult): PaymentProviderE
 }
 
 /**
- * Dormant Phase 3A-1 primitive. No route, startup hook, or wake dispatcher
- * imports this executor until the separately reviewed route cutover.
+ * Durable executor for general interactive charges. The route performs
+ * immutable preparation, while this class owns lease-fenced provider
+ * dispatch and atomic local finalization.
  */
 export class InteractivePaymentOperationExecutor {
   private readonly now: () => Date;
@@ -193,21 +194,6 @@ export class InteractivePaymentOperationExecutor {
         errorClassification: "internal",
         errorCode: "SNAPSHOT_INVALID",
       });
-    }
-
-    // Vault writes remain part of the separately reviewed Phase 3A-2 route
-    // cutover. A prematurely wired dormant executor must not save a card.
-    if (snapshot.storeCard) {
-      return this.recordFailure(
-        operation,
-        new PaymentProviderError(
-          "Saving a card is not available in this payment execution phase.",
-          "STORE_CARD_DEFERRED",
-          undefined,
-          { disposition: "invalid_request", providerCode: "STORE_CARD_DEFERRED" },
-        ),
-        false,
-      );
     }
 
     let provider: PaymentProvider;

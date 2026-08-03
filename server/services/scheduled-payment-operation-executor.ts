@@ -12,6 +12,7 @@ import {
   acquirePaymentOperationLease,
   finalizePaymentOperationSuccess,
   getNextPaymentOperationWake,
+  getPaymentOperationForOrganization,
   getScheduledPaymentOperationSnapshotForOrganization,
   recordExpiredPaymentOperationAttemptExhausted,
   recordPaymentOperationActionRequired,
@@ -33,6 +34,8 @@ import type { PaymentProvider, PaymentResult } from "./payment-provider";
 import { PaymentOperationWakeScheduler } from "./payment-operation-wake-scheduler";
 import { prepareScheduledPaymentCycle } from "./scheduled-payment-operation-preparation";
 import { autopaySetupOperationExecutor } from "./autopay-setup-operation-executor";
+import { interactivePaymentOperationExecutor } from "./interactive-payment-operation-executor";
+import { GENERAL_INTERACTIVE_TARGET_PREFIX } from "../storage/payment-operations";
 
 const log = createLogger("ScheduledPaymentLedger");
 const LEASE_DURATION_MS = PAYMENT_OPERATION_MAX_LEASE_MS;
@@ -195,10 +198,22 @@ export class ScheduledPaymentOperationExecutor {
     }
 
     if (wake.operationType === "interactive_charge") {
-      await autopaySetupOperationExecutor.execute({
-        organizationId: wake.organizationId,
-        operationId: wake.operationId,
-      });
+      const operation = await getPaymentOperationForOrganization(
+        wake.organizationId,
+        wake.operationId,
+      );
+      if (operation?.targetKey.startsWith(GENERAL_INTERACTIVE_TARGET_PREFIX)) {
+        await interactivePaymentOperationExecutor.execute({
+          organizationId: wake.organizationId,
+          operationId: wake.operationId,
+          now: this.now(),
+        });
+      } else {
+        await autopaySetupOperationExecutor.execute({
+          organizationId: wake.organizationId,
+          operationId: wake.operationId,
+        });
+      }
       return;
     }
     if (wake.operationType !== "scheduled_charge") {

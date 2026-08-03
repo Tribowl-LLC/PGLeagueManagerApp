@@ -25,6 +25,12 @@ const mockStorage = {
   isBowlerActiveInLeague: vi.fn(),
   getPayments: vi.fn(),
   getPaymentByIdempotencyKey: vi.fn(),
+  getGeneralInteractivePaymentOperationForOrganization: vi.fn(),
+  createOrGetGeneralInteractivePaymentOperation: vi.fn(),
+  persistInteractivePaymentOperationSnapshot: vi.fn(),
+  getInteractivePaymentOperationSnapshotForOrganization: vi.fn(),
+  getPaymentsByPaymentOperationId: vi.fn(),
+  getLocationSquareConfig: vi.fn(),
   createPayment: vi.fn(),
   updatePaymentScheduleCard: vi.fn(),
   updateBowler: vi.fn(),
@@ -83,6 +89,15 @@ vi.mock('../../server/routes/payments-provider/shared', () => ({
   getProviderForLeague: vi.fn(),
 }));
 
+const mockPrepareInteractiveOperation = vi.fn();
+const mockInteractiveExecute = vi.fn();
+vi.mock('../../server/services/interactive-payment-operation-preparation', () => ({
+  prepareInteractivePaymentOperation: (...args: unknown[]) => mockPrepareInteractiveOperation(...args),
+}));
+vi.mock('../../server/services/interactive-payment-operation-executor', () => ({
+  interactivePaymentOperationExecutor: { execute: (...args: unknown[]) => mockInteractiveExecute(...args) },
+}));
+
 const warnSpy = vi.fn();
 // eslint-disable-next-line local/factory-must-use-schema -- mocked logger, not a schema row
 const fakeLogger = {
@@ -127,6 +142,8 @@ beforeEach(() => {
   mockHasAccessToLeague.mockReset();
   mockHasAccessToBowler.mockReset();
   mockGetPaymentProvider.mockReset();
+  mockPrepareInteractiveOperation.mockReset();
+  mockInteractiveExecute.mockReset();
   warnSpy.mockReset();
   for (const fn of [mockProvider.processPayment, mockProvider.createOrderWithPayment, mockProvider.getPayment, mockProvider.saveCardOnFile]) {
     (fn as ReturnType<typeof vi.fn>).mockReset();
@@ -143,6 +160,26 @@ beforeEach(() => {
   });
   mockStorage.getPayments.mockResolvedValue([]);
   mockStorage.getPaymentByIdempotencyKey.mockResolvedValue(null);
+  mockStorage.getGeneralInteractivePaymentOperationForOrganization.mockResolvedValue(undefined);
+  mockStorage.getInteractivePaymentOperationSnapshotForOrganization.mockResolvedValue(undefined);
+  mockStorage.getLocationSquareConfig.mockResolvedValue({ locationId: 'SQUARE_TEST' });
+  mockStorage.getPaymentsByPaymentOperationId.mockResolvedValue([
+    { id: 1234, bowlerId: 42, amount: 2000, combinedChargeGroupId: null, receiptUrl: 'https://square.test/receipt', receiptNumber: 'RCT' },
+  ]);
+  mockPrepareInteractiveOperation.mockImplementation(async (input: { requestKey: string; amountMinor: number }) => {
+    const operation = {
+      id: 'operation-receipt-test', organizationId: 1, operationType: 'interactive_charge' as const,
+      targetKey: `interactive-charge:${input.requestKey}`, paymentScheduleId: null, billingCycleAt: null,
+      amountMinor: input.amountMinor, currency: 'USD', requestFingerprint: 'lvpayreq:v1:' + 'a'.repeat(64),
+      providerIdempotencyKey: 'lv-op1-ic-test', providerName: 'square', providerObjectId: null,
+      providerOrderId: null, status: 'pending' as const, attemptCount: 0, nextAttemptAt: new Date().toISOString(),
+      leaseOwner: null, leaseToken: null, leaseExpiresAt: null, leaseRecoveryCount: 0,
+      lastLeaseRecoveredAt: null, errorClassification: null, errorCode: null,
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), startedAt: null, completedAt: null,
+    };
+    mockInteractiveExecute.mockResolvedValue({ ...operation, status: 'succeeded', providerObjectId: 'sq_pay_test' });
+    return operation;
+  });
   mockStorage.createPayment.mockImplementation(async (input: Record<string, unknown>) => ({
     id: 1234, ...input,
   }));
@@ -161,6 +198,7 @@ async function postCharge(
     method: 'POST',
     headers: {
       'content-type': 'application/json',
+      'Idempotency-Key': '00000000-0000-4000-8000-000000000002',
       'x-test-user': JSON.stringify(user),
     },
     body: JSON.stringify(body),
@@ -185,13 +223,13 @@ describe('POST /api/payments-provider/payments — receipt persistence (Task #50
     });
 
     expect(res.status).toBe(200);
-    expect(mockStorage.createPayment).toHaveBeenCalledOnce();
-    const insert = mockStorage.createPayment.mock.calls[0][0];
-    expect(insert).toMatchObject({
-      providerPaymentId: 'sq_pay_1',
-      receiptUrl: 'https://squareup.com/receipt/preview/sq_pay_1',
-      receiptNumber: 'XYZ-001',
-      receiptEmailMissing: false,
+    expect(mockStorage.createPayment).not.toHaveBeenCalled();
+    const body = await res.json();
+    expect(body).toMatchObject({
+      id: 'sq_pay_test',
+      receiptUrl: 'https://square.test/receipt',
+      receiptNumber: 'RCT',
+      status: 'COMPLETED',
     });
     expect(warnSpy).not.toHaveBeenCalled();
   });
@@ -221,13 +259,12 @@ describe('POST /api/payments-provider/payments — receipt persistence (Task #50
     });
 
     expect(res.status).toBe(200);
-    const insert = mockStorage.createPayment.mock.calls[0][0];
-    expect(insert.receiptEmailMissing).toBe(false);
+    expect(mockStorage.createPayment).not.toHaveBeenCalled();
+    expect((await res.json()).status).toBe('COMPLETED');
     expect(warnSpy).not.toHaveBeenCalled();
 
     // The trimmed override email must be threaded into the provider call.
-    const callArgs = mockProvider.processPayment.mock.calls[0];
-    expect(callArgs[4]).toBe('override@example.com');
+    expect(mockPrepareInteractiveOperation.mock.calls[0][0]).toMatchObject({ buyerEmail: 'override@example.com' });
   });
 
   it('backfills bowler.email on self-checkout when no email was on file', async () => {

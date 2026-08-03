@@ -3,6 +3,7 @@ import { logger } from "@/lib/logger";
 import { csrfFetch } from '@/lib/queryClient';
 import { makeApiError, type ApiErrorLike } from "@/lib/provider-not-configured";
 import type { SquareCard as SquareCardHook } from "@/hooks/use-square-payment";
+import { beginPaymentIntent, paymentRequestHeaders, recoverPaymentIntent } from "@/lib/payment-request-identity";
 
 const SDK_LOAD_MAX_ATTEMPTS = 3;
 const SDK_LOAD_RETRY_DELAY_MS = 1000;
@@ -321,7 +322,15 @@ function cleanPaymentMessage(message: string): string {
     .replace(/\bLY5C3TE48WEXX\b/, 'configuration');
 }
 
-export async function createPayment(amount: number, cardInstance: SquareCardHook, bowlerId: number, leagueId: number, storeCard: boolean = false, buyerEmail?: string): Promise<PaymentResult> {
+export async function createPayment(
+  amount: number,
+  cardInstance: SquareCardHook,
+  bowlerId: number,
+  leagueId: number,
+  storeCard = false,
+  buyerEmail?: string,
+  requestKey?: string,
+): Promise<PaymentResult> {
   try {
     if (!cardInstance) {
       throw makePaymentError(
@@ -337,6 +346,11 @@ export async function createPayment(amount: number, cardInstance: SquareCardHook
       );
     }
 
+    const effectiveRequestKey = requestKey ?? (
+      typeof window === 'undefined'
+        ? crypto.randomUUID()
+        : beginPaymentIntent(`square:${leagueId}:${bowlerId}:${amount}:new:${storeCard}`)
+    );
     let result;
 
     try {
@@ -387,13 +401,21 @@ export async function createPayment(amount: number, cardInstance: SquareCardHook
         ...(buyerEmail ? { buyerEmail } : {}),
       };
 
-      const response = await csrfFetch('/api/payments-provider/payments', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(paymentData),
-      });
+      let response: Response;
+      try {
+        response = await csrfFetch('/api/payments-provider/payments', {
+          method: 'POST',
+          headers: paymentRequestHeaders(effectiveRequestKey),
+          body: JSON.stringify(paymentData),
+        });
+      } catch (networkError) {
+        // The token is intentionally not persisted. Recover the durable
+        // operation by key before surfacing a retry prompt, so the caller
+        // never retokenizes a new source for an unknown provider outcome.
+        const recovered = await recoverPaymentIntent(effectiveRequestKey).catch(() => null);
+        if (!recovered) throw networkError;
+        response = recovered;
+      }
 
       // task #511: parse the body defensively so a non-JSON error
       // response (e.g. an upstream proxy returning HTML) can't bubble
@@ -531,4 +553,3 @@ export async function createSquareCustomer(name: string, email: string, teamId: 
 export function getSquareCustomerUrl(customerId: string): string {
   return `https://app.squareup.com/dashboard/customers/directory/customer/${customerId}`;
 }
-

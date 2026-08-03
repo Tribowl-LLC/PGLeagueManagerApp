@@ -9,6 +9,11 @@ import {
   makeApiError,
 } from "@/lib/provider-not-configured";
 import { sanitizePaymentErrorMessage } from "@/lib/payment-user-error";
+import {
+  beginPaymentIntent,
+  clearPaymentIntent,
+  paymentRequestHeaders,
+} from "@/lib/payment-request-identity";
 import type { InsertPaymentInput, InsertPayment } from "@shared/schema";
 import type { SquareCard } from "@/hooks/use-square-payment";
 type PaymentCard = SquareCard | null;
@@ -50,10 +55,12 @@ export function usePaymentFormSubmit({
       const buyerEmailField = trimmedBuyerEmail ? { buyerEmail: trimmedBuyerEmail } : {};
 
       if (data.type === 'credit_card') {
+        const paymentScope = `admin:${data.bowlerId}:${data.leagueId}:${data.amount}:${cardMode}:${data.storeCard === true}`;
+        const requestKey = beginPaymentIntent(paymentScope);
         if (cardMode === 'saved' && selectedSavedCardId) {
           const response = await csrfFetch('/api/payments-provider/payments', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: paymentRequestHeaders(requestKey),
             body: JSON.stringify({
               sourceId: selectedSavedCardId,
               amount: data.amount,
@@ -68,7 +75,11 @@ export function usePaymentFormSubmit({
           if (!response.ok) {
             throw makeApiError(responseData, response.status, 'Failed to process payment');
           }
+          if (responseData.status !== 'COMPLETED') {
+            throw new Error('Your payment is still processing. You can safely retry this payment.');
+          }
 
+          clearPaymentIntent(paymentScope);
           toast({ title: "Success", description: "Payment processed with saved card" });
           queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
           onClose();
@@ -102,7 +113,7 @@ export function usePaymentFormSubmit({
 
         const response = await csrfFetch('/api/payments-provider/payments', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: paymentRequestHeaders(requestKey),
           body: JSON.stringify({
             sourceId: sourceToken,
             amount: data.amount,
@@ -118,6 +129,10 @@ export function usePaymentFormSubmit({
           throw makeApiError(responseData, response.status, 'Failed to process payment');
         }
 
+        if (responseData.status !== 'COMPLETED') {
+          throw new Error('Your payment is still processing. Use payment recovery before entering card details again.');
+        }
+        clearPaymentIntent(paymentScope);
         toast({ title: "Success", description: "Payment processed successfully" });
         if (data.storeCard) {
           queryClient.invalidateQueries({ queryKey: [`/api/payments-provider/cards/${data.bowlerId}`] });

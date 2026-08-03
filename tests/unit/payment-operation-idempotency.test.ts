@@ -100,17 +100,23 @@ describe("payment operation stable identity", () => {
   });
 });
 
-describe("Phase 2B-2 scheduled-only boundary", () => {
+describe("payment operation routing boundaries", () => {
   it.each([
     "server/services/payment-execution.ts",
-    "server/routes/payments-provider/charges.ts",
     "server/routes/payments/payment-refunds.ts",
     "server/routes/payment-schedules.ts",
     "server/routes/index.ts",
     "server/index.ts",
-  ])("does not wire interactive, refund, webhook, or route behavior into %s", (path) => {
+  ])("does not wire general interactive or refund behavior into %s", (path) => {
     const source = readFileSync(resolve(path), "utf8");
     expect(source).not.toMatch(/payment-operation|paymentOperations/);
+  });
+
+  it("wires general interactive charges through the durable executor", () => {
+    const source = readFileSync(resolve("server/routes/payments-provider/charges.ts"), "utf8");
+    expect(source).toContain("prepareInteractivePaymentOperation");
+    expect(source).toContain("interactivePaymentOperationExecutor");
+    expect(source).not.toContain("refundPayment(");
   });
 
   it("gates scheduled ledger startup on ledger_execute", () => {

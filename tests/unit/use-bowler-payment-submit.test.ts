@@ -85,7 +85,10 @@ interface FakeResponse {
 }
 
 function jsonResponse(body: unknown, ok = true): Promise<FakeResponse> {
-  return Promise.resolve({ ok, json: () => Promise.resolve(body) });
+  const responseBody = ok && body && typeof body === 'object' && !('status' in body)
+    ? { status: 'COMPLETED', ...body }
+    : body;
+  return Promise.resolve({ ok, json: () => Promise.resolve(responseBody) });
 }
 
 function makeLeague(paymentMode: 'pay-as-you-go' | 'upfront' = 'pay-as-you-go'): League {
