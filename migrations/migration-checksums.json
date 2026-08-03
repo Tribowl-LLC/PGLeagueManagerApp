@@ -72,6 +72,12 @@
       "tag": "0011_interactive_payment_operation_foundation",
       "createdAt": 1785707848197,
       "hash": "57f5e65bb0a88423d0ac9e8c516d4ee9e346b1216a0212905df21feb6b9203ae"
+    },
+    {
+      "idx": 12,
+      "tag": "0012_interactive_card_vault_before_charge",
+      "createdAt": 1785720810804,
+      "hash": "1b1c30693936436cacaffebda5765a486c256901888137bb3d381c0682631ae2"
     }
   ]
 }

@@ -67,6 +67,7 @@ export function usePaymentFormSubmit({
               bowlerId: data.bowlerId,
               leagueId: data.leagueId,
               storeCard: false,
+              sourceKind: 'saved_card',
               ...buyerEmailField,
             }),
           });
@@ -120,6 +121,7 @@ export function usePaymentFormSubmit({
             bowlerId: data.bowlerId,
             leagueId: data.leagueId,
             storeCard: data.storeCard || false,
+            sourceKind: 'new_card',
             ...buyerEmailField,
           }),
         });

@@ -8,7 +8,7 @@
 import { Router, type Request, type Response } from 'express';
 import { fromZonedTime, toZonedTime } from 'date-fns-tz';
 import { getEffectiveBowlingWeeks } from '@shared/schedule-utils';
-import { DEFAULT_TIMEZONE, type PaymentOperation } from '@shared/schema';
+import { DEFAULT_TIMEZONE, type InteractivePaymentSourceKind, type PaymentOperation } from '@shared/schema';
 import { storage } from '../../storage';
 import { sendError } from '../../utils/api.js';
 import { hasAccessToLeague, hasAccessToBowler, hasAccessToPayment, isOrgOrHigher } from '../../utils/access-control.js';
@@ -26,16 +26,15 @@ import { computePaymentSplit, buildLineItems } from '../../services/payment-exec
 import { getProviderCustomerId, ensureProviderCustomer } from '../../services/payment-utils';
 import { isDev } from '../../config';
 import { getProviderForLeague } from './shared.js';
-import type { PaymentProvider } from '../../services/payment-provider.js';
 import {
   getGeneralInteractiveTargetKey,
   PaymentOperationImmutableMismatchError,
   PaymentOperationValidationError,
+  getInteractiveCardSaveResponse,
 } from '../../storage/payment-operations.js';
 import { validateInteractiveRequestKey } from '../../services/payment-operation-idempotency.js';
 import { prepareInteractivePaymentOperation } from '../../services/interactive-payment-operation-preparation.js';
 import { interactivePaymentOperationExecutor } from '../../services/interactive-payment-operation-executor.js';
-import type { InteractivePaymentSemanticSnapshot } from '../../services/interactive-payment-operation-snapshot.js';
 
 const log = createLogger('Payments');
 
@@ -82,6 +81,33 @@ function requireInteractiveRequestKey(
   }
 }
 
+function requireInteractiveSourceKind(
+  req: Request,
+  res: Response,
+): InteractivePaymentSourceKind | undefined {
+  const sourceKind = req.body?.sourceKind;
+  if (sourceKind !== 'new_card' && sourceKind !== 'saved_card' && sourceKind !== 'wallet') {
+    sendError(
+      res,
+      'This payment app is out of date. Update it before submitting a payment.',
+      428,
+      'PAYMENT_APP_UPGRADE_REQUIRED',
+      { upgradeRequired: true },
+    );
+    return undefined;
+  }
+  if (req.body?.storeCard === true && sourceKind === 'wallet') {
+    sendError(
+      res,
+      'Wallet payment methods cannot be saved for future payments.',
+      400,
+      'CARD_SAVE_UNSUPPORTED',
+    );
+    return undefined;
+  }
+  return sourceKind;
+}
+
 function leagueDayStart(league: { timezone?: string | null }, now = new Date()): string {
   const timezone = league.timezone ?? DEFAULT_TIMEZONE;
   const local = toZonedTime(now, timezone);
@@ -118,7 +144,15 @@ async function reconstructInteractiveChargeResponse(
     throw new Error('interactive payment operation is not successful');
   }
   const rows = await storage.getPaymentsByPaymentOperationId(organizationId, operation.id);
+  const snapshot = await storage.getInteractivePaymentOperationSnapshotForOrganization(organizationId, operation.id);
   const first = rows[0];
+  const cardSave = getInteractiveCardSaveResponse(operation);
+  // v1 snapshots predate durable card-save state. They must never trigger a
+  // replay of the old post-charge vault call; report the result as unavailable
+  // rather than claiming that a card was saved.
+  const legacyCardSave = snapshot?.storeCard && snapshot.sourceKind === 'legacy'
+    ? { savedCardId: null, cardSaveStatus: 'not_available' as const }
+    : cardSave;
   return {
     status: 'COMPLETED',
     id: operation.providerObjectId,
@@ -132,51 +166,9 @@ async function reconstructInteractiveChargeResponse(
       combinedChargeGroupId: first.combinedChargeGroupId,
       rows: rows.map((row) => ({ id: row.id, bowlerId: row.bowlerId, amount: row.amount })),
     } : {}),
-    savedCardId: null,
-    cardSaveStatus: 'not_requested',
+    savedCardId: legacyCardSave.savedCardId,
+    cardSaveStatus: legacyCardSave.cardSaveStatus,
   };
-}
-
-async function saveInteractiveCardAfterSuccess(
-  organizationId: number,
-  operation: PaymentOperation,
-  snapshot: InteractivePaymentSemanticSnapshot,
-): Promise<{ savedCardId: string | null; cardSaveStatus: InteractiveChargeResponse['cardSaveStatus'] }> {
-  if (!snapshot.storeCard) return { savedCardId: null, cardSaveStatus: 'not_requested' };
-  if (!snapshot.customerId || !snapshot.sourceId) {
-    return { savedCardId: null, cardSaveStatus: 'not_available' };
-  }
-  let provider: PaymentProvider;
-  try {
-    provider = await getPaymentProvider(snapshot.locationId);
-  } catch {
-    return { savedCardId: null, cardSaveStatus: 'failed' };
-  }
-  if (provider.validateCardId(snapshot.sourceId)) {
-    return { savedCardId: null, cardSaveStatus: 'not_available' };
-  }
-  try {
-    const savedCard = await provider.saveCardOnFile(snapshot.sourceId, snapshot.customerId);
-    if (!savedCard?.id) return { savedCardId: null, cardSaveStatus: 'failed' };
-    try {
-      await storage.updatePaymentScheduleCard(
-        snapshot.payerBowlerId,
-        snapshot.leagueId,
-        savedCard.id,
-      );
-    } catch {
-      // A one-time charge may not have a schedule. The durable charge remains
-      // successful even when this optional schedule update is absent.
-    }
-    return { savedCardId: savedCard.id, cardSaveStatus: 'saved' };
-  } catch (error) {
-    log.error('Interactive payment card-vault side effect failed', {
-      organizationId,
-      operationId: operation.id,
-      errorName: error instanceof Error ? error.name : 'UnknownError',
-    });
-    return { savedCardId: null, cardSaveStatus: 'failed' };
-  }
 }
 
 function terminalOperationError(operation: PaymentOperation): {
@@ -215,11 +207,20 @@ async function respondWithInteractiveOperation(
   }
   if (current.status === 'succeeded') {
     const response = await reconstructInteractiveChargeResponse(organizationId, current);
-    const snapshot = await storage.getInteractivePaymentOperationSnapshotForOrganization(organizationId, current.id);
-    if (snapshot) {
-      const vault = await saveInteractiveCardAfterSuccess(organizationId, current, snapshot);
-      response.savedCardId = vault.savedCardId;
-      response.cardSaveStatus = vault.cardSaveStatus;
+    if (response.cardSaveStatus === 'saved' && response.savedCardId) {
+      const snapshot = await storage.getInteractivePaymentOperationSnapshotForOrganization(organizationId, current.id);
+      if (snapshot) {
+        try {
+          await storage.updatePaymentScheduleCard(
+            snapshot.payerBowlerId,
+            snapshot.leagueId,
+            response.savedCardId,
+          );
+        } catch {
+          // Card vaulting and payment success are durable. A one-time charge
+          // may not have a schedule, and this optional update is retryable.
+        }
+      }
     }
     res.json(response);
     return;
@@ -371,6 +372,7 @@ router.get('/payments/:paymentId/verify', async (req, res) => {
  * Request body:
  *   {
  *     sourceId: string,                      // card token / saved card id / wallet token
+ *     sourceKind: 'new_card' | 'saved_card' | 'wallet',
  *     leagueId: number,
  *     payees: [{ bowlerId: number, amount: number }, ...],   // sum must equal `amount`
  *     amount: number,                        // total charged
@@ -382,6 +384,8 @@ router.post('/combined-payments', paymentLimiter, async (req, res) => {
   try {
     const requestKey = requireInteractiveRequestKey(req, res);
     if (!requestKey) return;
+    const sourceKind = requireInteractiveSourceKind(req, res);
+    if (!sourceKind) return;
     const { sourceId, amount, leagueId, payees } = req.body as {
       sourceId?: string;
       amount?: number;
@@ -573,6 +577,7 @@ router.post('/combined-payments', paymentLimiter, async (req, res) => {
       customerId: customerId ?? null,
       buyerEmail: buyerEmail ?? null,
       storeCard: req.body.storeCard === true,
+      sourceKind,
       weekOf,
       combined: true,
       allocations: cleanPayees.map((p, idx) => {
@@ -626,6 +631,8 @@ router.post('/payments', paymentLimiter, async (req, res) => {
   try {
     const requestKey = requireInteractiveRequestKey(req, res);
     if (!requestKey) return;
+    const sourceKind = requireInteractiveSourceKind(req, res);
+    if (!sourceKind) return;
     const { sourceId, amount, bowlerId, leagueId } = req.body;
 
     if (isDev) log.info('Payment request received:', {
@@ -850,6 +857,7 @@ router.post('/payments', paymentLimiter, async (req, res) => {
       customerId: customerId ?? null,
       buyerEmail: buyerEmail ?? null,
       storeCard: req.body.storeCard === true,
+      sourceKind,
       weekOf,
       combined: false,
       allocations: [{

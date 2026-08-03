@@ -21,6 +21,7 @@ export async function saveCardOnFile(
   ctx: SquareProviderContext,
   sourceId: string,
   customerId: string,
+  idempotencyKey?: string,
 ): Promise<SavedCard | null> {
   const client = await ctx.getClient();
   if (!client) {
@@ -47,7 +48,7 @@ export async function saveCardOnFile(
       // every save-card call after the v40 SDK migration (task
       // #671). The format is deterministic per (sourceId, customerId)
       // so post-deploy retries still dedupe inside Square's window.
-      idempotencyKey: buildSquareIdempotencyKey('lv-card', sourceId, customerId),
+      idempotencyKey: idempotencyKey ?? buildSquareIdempotencyKey('lv-card', sourceId, customerId),
       sourceId,
       card: {
         customerId,

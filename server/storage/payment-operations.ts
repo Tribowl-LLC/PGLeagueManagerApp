@@ -21,6 +21,7 @@ import {
   PAYMENT_OPERATION_MAX_LEASE_MS,
   PAYMENT_OPERATION_MAX_RETRY_DELAY_MS,
   type PaymentOperation,
+  type InteractiveCardSaveStatus,
   type PaymentOperationErrorClassification,
 } from "@shared/schema";
 import { db } from "../db.js";
@@ -38,9 +39,12 @@ import {
 import {
   encryptInteractivePaymentSnapshot,
   fingerprintInteractivePaymentSnapshot,
+  fingerprintInteractivePaymentSnapshotAsLegacy,
   reconstructInteractivePaymentSnapshot,
   type InteractivePaymentSemanticSnapshot,
 } from "../services/interactive-payment-operation-snapshot.js";
+import { deriveSquareCardSaveIdempotencyKey } from "../services/payment-operation-idempotency.js";
+import { decrypt, encrypt } from "../utils/crypto.js";
 
 export class PaymentOperationNotFoundError extends Error {
   constructor() {
@@ -105,6 +109,10 @@ export interface PaymentOperationLinkedPaymentInput {
     typeof payments.$inferInsert,
     "paymentOperationId" | "paymentOperationAllocationIndex"
   >;
+}
+
+export interface InteractiveCardSaveLeaseInput extends LeasedPaymentOperationInput {
+  savedCardId: string;
 }
 
 export interface AcquirePaymentOperationLeaseInput {
@@ -874,16 +882,217 @@ export async function persistInteractivePaymentOperationSnapshot(
     }
   }
 
+  if (snapshot.snapshotVersion === 2) {
+    await initializeInteractiveCardSaveState(transaction, operation, snapshot);
+  }
+
   let stored: InteractivePaymentSemanticSnapshot | undefined;
   try {
     stored = await loadInteractivePaymentOperationSnapshot(transaction, operation);
   } catch (error) {
     throw new PaymentOperationImmutableMismatchError({ cause: error });
   }
-  if (!stored || encrypted.snapshotFingerprint !== fingerprintInteractivePaymentSnapshot(stored)) {
+  const fingerprintsMatch = stored
+    && (
+      encrypted.snapshotFingerprint === fingerprintInteractivePaymentSnapshot(stored)
+      || (
+        stored.snapshotVersion === 1
+        && encrypted.snapshotFingerprint === fingerprintInteractivePaymentSnapshotAsLegacy(snapshot)
+      )
+    );
+  if (!stored || !fingerprintsMatch) {
     throw new PaymentOperationImmutableMismatchError();
   }
   return stored;
+}
+
+function validateSavedCardId(savedCardId: string): void {
+  if (
+    savedCardId.length === 0
+    || savedCardId.length > 255
+    || savedCardId.trim() !== savedCardId
+    || !/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(savedCardId)
+  ) {
+    throw new PaymentOperationValidationError("saved card id has an invalid format");
+  }
+}
+
+function validateCardSaveErrorCode(errorCode: string): void {
+  if (!/^[A-Z0-9][A-Z0-9_.:-]{0,127}$/.test(errorCode)) {
+    throw new PaymentOperationValidationError("card save error code has an invalid format");
+  }
+}
+
+/**
+ * Initializes the optional pre-charge vault state in the same transaction as
+ * the immutable interactive snapshot. The operation row remains the sole
+ * durable provider-operation ledger.
+ */
+async function initializeInteractiveCardSaveState(
+  transaction: PaymentOperationTransaction,
+  operation: PaymentOperation,
+  snapshot: InteractivePaymentSemanticSnapshot,
+): Promise<void> {
+  // Preparation callers may use a deterministic/future transaction clock in
+  // tests and recovery tooling. Keep the mutable side-effect timestamp at or
+  // after the operation's existing creation/update timestamp so the parent
+  // timestamp invariant remains true.
+  const now = operation.updatedAt;
+  const requestedStatus: InteractiveCardSaveStatus | null = snapshot.storeCard
+    && snapshot.sourceKind === "saved_card"
+    ? "not_available"
+    : snapshot.storeCard && snapshot.sourceKind === "new_card"
+      ? "pending"
+      : null;
+  const cardSaveProviderIdempotencyKey = requestedStatus === "pending"
+    ? deriveSquareCardSaveIdempotencyKey(operation.providerIdempotencyKey)
+    : null;
+
+  const [current] = await transaction
+    .select({
+      cardSaveStatus: paymentOperations.cardSaveStatus,
+      cardSaveProviderIdempotencyKey: paymentOperations.cardSaveProviderIdempotencyKey,
+      encryptedSavedCardId: paymentOperations.encryptedSavedCardId,
+      cardSaveCompletedAt: paymentOperations.cardSaveCompletedAt,
+    })
+    .from(paymentOperations)
+    .where(and(
+      eq(paymentOperations.organizationId, operation.organizationId),
+      eq(paymentOperations.id, operation.id),
+    ))
+    .limit(1)
+    .for("share");
+  if (!current) throw new PaymentOperationNotFoundError();
+
+  if (requestedStatus === null) {
+    if (current.cardSaveStatus !== null) throw new PaymentOperationImmutableMismatchError();
+    return;
+  }
+  if (current.cardSaveStatus !== null) {
+    if (requestedStatus === "pending") {
+      const validPersistedState = ["pending", "saved", "failed"].includes(current.cardSaveStatus)
+        && current.cardSaveProviderIdempotencyKey === cardSaveProviderIdempotencyKey;
+      if (!validPersistedState) throw new PaymentOperationImmutableMismatchError();
+      return;
+    }
+    if (
+      current.cardSaveStatus !== requestedStatus
+      || current.cardSaveProviderIdempotencyKey !== cardSaveProviderIdempotencyKey
+    ) {
+      throw new PaymentOperationImmutableMismatchError();
+    }
+    return;
+  }
+
+  await transaction
+    .update(paymentOperations)
+    .set({
+      cardSaveStatus: requestedStatus,
+      cardSaveProviderIdempotencyKey,
+      encryptedSavedCardId: null,
+      cardSaveErrorCode: null,
+      cardSaveCompletedAt: requestedStatus === "not_available" ? now : null,
+      updatedAt: now,
+    })
+    .where(and(
+      eq(paymentOperations.organizationId, operation.organizationId),
+      eq(paymentOperations.id, operation.id),
+      isNull(paymentOperations.cardSaveStatus),
+    ));
+}
+
+export async function finalizeInteractiveCardSave(
+  input: InteractiveCardSaveLeaseInput,
+): Promise<PaymentOperation> {
+  validateLeaseToken(input.leaseToken);
+  validateSavedCardId(input.savedCardId);
+  const now = toIso(input.now ?? new Date(), "now");
+  const encryptedSavedCardId = encrypt(input.savedCardId);
+
+  const updated = await db.transaction(async (tx) => {
+    const [transitioned] = await tx
+      .update(paymentOperations)
+      .set({
+        cardSaveStatus: "saved",
+        encryptedSavedCardId,
+        cardSaveErrorCode: null,
+        cardSaveCompletedAt: now,
+        updatedAt: now,
+      })
+      .where(and(
+        eq(paymentOperations.organizationId, input.organizationId),
+        eq(paymentOperations.id, input.operationId),
+        eq(paymentOperations.status, "leased"),
+        eq(paymentOperations.leaseToken, input.leaseToken),
+        eq(paymentOperations.cardSaveStatus, "pending"),
+      ))
+      .returning();
+    if (transitioned) return transitioned;
+
+    const [existing] = await tx
+      .select()
+      .from(paymentOperations)
+      .where(and(
+        eq(paymentOperations.organizationId, input.organizationId),
+        eq(paymentOperations.id, input.operationId),
+      ))
+      .limit(1);
+    if (!existing) throw new PaymentOperationNotFoundError();
+    if (
+      existing.cardSaveStatus === "saved"
+      && existing.encryptedSavedCardId !== null
+      && decrypt(existing.encryptedSavedCardId) === input.savedCardId
+    ) return existing;
+    throw new PaymentOperationInvalidTransitionError(existing.status);
+  });
+  return updated;
+}
+
+export async function recordInteractiveCardSaveFailure(
+  input: LeasedPaymentOperationInput & { errorCode: string },
+): Promise<PaymentOperation> {
+  validateLeaseToken(input.leaseToken);
+  validateCardSaveErrorCode(input.errorCode);
+  const now = toIso(input.now ?? new Date(), "now");
+  const [updated] = await db
+    .update(paymentOperations)
+    .set({
+      cardSaveStatus: "failed",
+      encryptedSavedCardId: null,
+      cardSaveErrorCode: input.errorCode,
+      cardSaveCompletedAt: now,
+      updatedAt: now,
+    })
+    .where(and(
+      eq(paymentOperations.organizationId, input.organizationId),
+      eq(paymentOperations.id, input.operationId),
+      eq(paymentOperations.status, "leased"),
+      eq(paymentOperations.leaseToken, input.leaseToken),
+      eq(paymentOperations.cardSaveStatus, "pending"),
+    ))
+    .returning();
+  if (updated) return updated;
+  const existing = await getPaymentOperationForOrganization(input.organizationId, input.operationId);
+  if (!existing) throw new PaymentOperationNotFoundError();
+  throw new PaymentOperationInvalidTransitionError(existing.status);
+}
+
+export function getInteractiveCardSaveResponse(operation: PaymentOperation): {
+  savedCardId: string | null;
+  cardSaveStatus: "not_requested" | "saved" | "failed" | "not_available";
+} {
+  if (operation.cardSaveStatus === "saved" && operation.encryptedSavedCardId) {
+    const savedCardId = decrypt(operation.encryptedSavedCardId);
+    if (savedCardId) return { savedCardId, cardSaveStatus: "saved" };
+    return { savedCardId: null, cardSaveStatus: "failed" };
+  }
+  if (operation.cardSaveStatus === "failed") {
+    return { savedCardId: null, cardSaveStatus: "failed" };
+  }
+  if (operation.cardSaveStatus === "not_available") {
+    return { savedCardId: null, cardSaveStatus: "not_available" };
+  }
+  return { savedCardId: null, cardSaveStatus: "not_requested" };
 }
 
 export async function getInteractivePaymentOperationSnapshotForOrganization(

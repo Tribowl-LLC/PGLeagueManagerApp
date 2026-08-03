@@ -207,6 +207,29 @@ describe('saveCardOnFile', () => {
     expect(mocks.cards.disable).toHaveBeenCalledWith({ cardId: 'card_duplicate' });
   });
 
+  it('retains a caller-provided durable operation key for CreateCard', async () => {
+    const callerProvidedKey = ['test', 'card', 'save', 'key'].join('-');
+    mocks.cards.create.mockResolvedValue({
+      card: {
+        id: 'card_operation_key',
+        last4: '4242',
+        cardBrand: 'VISA',
+        fingerprint: 'fingerprint-operation-key',
+      },
+    });
+    const localProvider = new SquarePaymentProvider(1);
+
+    await localProvider.saveCardOnFile(
+      'cnon:operation-source',
+      'CUSTOMER_OPERATION_KEY',
+      callerProvidedKey,
+    );
+
+    expect(mocks.cards.create).toHaveBeenCalledWith(expect.objectContaining({
+      idempotencyKey: callerProvidedKey,
+    }));
+  });
+
   it('keeps a newly-created card when only a disabled match exists', async () => {
     mocks.cards.list.mockResolvedValue({
       data: [

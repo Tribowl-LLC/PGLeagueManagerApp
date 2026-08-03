@@ -2,7 +2,9 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
   INTERACTIVE_PAYMENT_SNAPSHOT_VERSION,
+  INTERACTIVE_PAYMENT_SNAPSHOT_LEGACY_VERSION,
   type InteractivePaymentRequestKind,
+  type InteractivePaymentSourceKind,
 } from "@shared/schema";
 import { decrypt, encrypt } from "../utils/crypto.js";
 import {
@@ -11,6 +13,13 @@ import {
 } from "./payment-operation-idempotency.js";
 
 export const INTERACTIVE_PAYMENT_SNAPSHOT_FINGERPRINT_PREFIX = "lvpayexecic:v1:" as const;
+
+const interactivePaymentSourceKindSchema = z.enum([
+  "new_card",
+  "saved_card",
+  "wallet",
+  "legacy",
+]);
 
 const allocationSchema = z.object({
   allocationIndex: z.number().int().min(0),
@@ -30,7 +39,10 @@ const lineItemSchema = z.object({
 }).strict();
 
 const semanticSnapshotSchema = z.object({
-  snapshotVersion: z.literal(INTERACTIVE_PAYMENT_SNAPSHOT_VERSION),
+  snapshotVersion: z.union([
+    z.literal(INTERACTIVE_PAYMENT_SNAPSHOT_LEGACY_VERSION),
+    z.literal(INTERACTIVE_PAYMENT_SNAPSHOT_VERSION),
+  ]),
   organizationId: z.number().int().positive(),
   amountMinor: z.number().int().positive(),
   currency: z.string().regex(/^USD$/),
@@ -46,6 +58,7 @@ const semanticSnapshotSchema = z.object({
   customerId: z.string().min(1).max(255).nullable(),
   buyerEmail: z.string().email().max(255).nullable(),
   storeCard: z.boolean(),
+  sourceKind: interactivePaymentSourceKindSchema,
   weekOf: z.string().datetime(),
   combinedChargeGroupId: z.string().min(1).max(128).nullable(),
   allocations: z.array(allocationSchema).min(1).max(25),
@@ -77,6 +90,28 @@ const semanticSnapshotSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ["lineItems"],
       message: "direct requests cannot include line items",
+    });
+  }
+  if (snapshot.snapshotVersion === INTERACTIVE_PAYMENT_SNAPSHOT_LEGACY_VERSION) {
+    if (snapshot.sourceKind !== "legacy") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["sourceKind"],
+        message: "legacy interactive snapshots require the legacy source kind",
+      });
+    }
+  } else if (snapshot.sourceKind === "legacy") {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["sourceKind"],
+      message: "new interactive snapshots require an explicit source kind",
+    });
+  }
+  if (snapshot.sourceKind === "wallet" && snapshot.storeCard) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["storeCard"],
+      message: "wallet sources cannot be vaulted",
     });
   }
 
@@ -136,6 +171,7 @@ export interface StoredInteractivePaymentSnapshot {
   encryptedCustomerId: string | null;
   encryptedBuyerEmail: string | null;
   storeCard: boolean;
+  sourceKind: InteractivePaymentSourceKind | "legacy" | null;
   weekOf: string;
   combinedChargeGroupId: string | null;
 }
@@ -169,10 +205,31 @@ export function fingerprintInteractivePaymentSnapshot(
   snapshot: InteractivePaymentSemanticSnapshot,
 ): string {
   const normalized = normalize(snapshot);
+  const fingerprintInput = normalized.snapshotVersion === INTERACTIVE_PAYMENT_SNAPSHOT_LEGACY_VERSION
+    ? (({ sourceKind: _sourceKind, ...legacySnapshot }) => legacySnapshot)(normalized)
+    : normalized;
   const digest = createHash("sha256")
-    .update(canonicalizePaymentOperationInput(normalized))
+    .update(canonicalizePaymentOperationInput(fingerprintInput))
     .digest("hex");
-  return `${INTERACTIVE_PAYMENT_SNAPSHOT_FINGERPRINT_PREFIX}${digest}`;
+  const prefix = normalized.snapshotVersion === INTERACTIVE_PAYMENT_SNAPSHOT_LEGACY_VERSION
+    ? INTERACTIVE_PAYMENT_SNAPSHOT_FINGERPRINT_PREFIX
+    : "lvpayexecic:v2:";
+  return `${prefix}${digest}`;
+}
+
+/**
+ * Compares a new request with a v1 snapshot created before source-kind
+ * enforcement. V1 rows remain readable for successful/recovery lookups, but
+ * all newly prepared operations use the v2 fingerprint.
+ */
+export function fingerprintInteractivePaymentSnapshotAsLegacy(
+  snapshot: InteractivePaymentSemanticSnapshot,
+): string {
+  return fingerprintInteractivePaymentSnapshot({
+    ...snapshot,
+    snapshotVersion: INTERACTIVE_PAYMENT_SNAPSHOT_LEGACY_VERSION,
+    sourceKind: "legacy",
+  });
 }
 
 export function encryptInteractivePaymentSnapshot(
@@ -191,6 +248,9 @@ export function encryptInteractivePaymentSnapshot(
     encryptedCustomerId: normalized.customerId === null ? null : encrypt(normalized.customerId),
     encryptedBuyerEmail: normalized.buyerEmail === null ? null : encrypt(normalized.buyerEmail),
     storeCard: normalized.storeCard,
+    sourceKind: normalized.snapshotVersion === INTERACTIVE_PAYMENT_SNAPSHOT_LEGACY_VERSION
+      ? null
+      : normalized.sourceKind,
     weekOf: normalized.weekOf,
     combinedChargeGroupId: normalized.combinedChargeGroupId,
   };
@@ -226,7 +286,10 @@ export function reconstructInteractivePaymentSnapshot(input: {
   allocations: InteractivePaymentSemanticSnapshot["allocations"];
   lineItems: InteractivePaymentSemanticSnapshot["lineItems"];
 }): InteractivePaymentSemanticSnapshot {
-  if (input.stored.snapshotVersion !== INTERACTIVE_PAYMENT_SNAPSHOT_VERSION) {
+  if (
+    input.stored.snapshotVersion !== INTERACTIVE_PAYMENT_SNAPSHOT_LEGACY_VERSION
+    && input.stored.snapshotVersion !== INTERACTIVE_PAYMENT_SNAPSHOT_VERSION
+  ) {
     throw new InteractivePaymentSnapshotValidationError("interactive payment snapshot version is unsupported");
   }
   const squareIdentity = buildSquarePaymentRequestIdentity({
@@ -235,7 +298,7 @@ export function reconstructInteractivePaymentSnapshot(input: {
     providerLocationId: input.stored.providerLocationId,
   });
   const snapshot = normalize({
-    snapshotVersion: INTERACTIVE_PAYMENT_SNAPSHOT_VERSION,
+    snapshotVersion: input.stored.snapshotVersion,
     organizationId: input.organizationId,
     amountMinor: input.amountMinor,
     currency: input.currency,
@@ -253,6 +316,9 @@ export function reconstructInteractivePaymentSnapshot(input: {
     customerId: decryptOptional(input.stored.encryptedCustomerId, "provider customer reference"),
     buyerEmail: decryptOptional(input.stored.encryptedBuyerEmail, "buyer email"),
     storeCard: input.stored.storeCard,
+    sourceKind: input.stored.snapshotVersion === INTERACTIVE_PAYMENT_SNAPSHOT_LEGACY_VERSION
+      ? "legacy"
+      : input.stored.sourceKind ?? "legacy",
     weekOf: storedTimestampToIso(input.stored.weekOf),
     combinedChargeGroupId: input.stored.combinedChargeGroupId,
     allocations: input.allocations,

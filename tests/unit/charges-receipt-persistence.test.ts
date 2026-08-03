@@ -201,7 +201,7 @@ async function postCharge(
       'Idempotency-Key': '00000000-0000-4000-8000-000000000002',
       'x-test-user': JSON.stringify(user),
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify({ sourceKind: 'new_card', ...body }),
   });
 }
 

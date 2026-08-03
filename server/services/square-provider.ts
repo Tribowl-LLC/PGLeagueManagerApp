@@ -197,8 +197,8 @@ export class SquarePaymentProvider implements PaymentProvider, CatalogProvider, 
     return refundPayment(this.ctx, paymentId, amountInCents, reason);
   }
 
-  saveCardOnFile(sourceId: string, customerId: string): Promise<SavedCard | null> {
-    return saveCardOnFile(this.ctx, sourceId, customerId);
+  saveCardOnFile(sourceId: string, customerId: string, idempotencyKey?: string): Promise<SavedCard | null> {
+    return saveCardOnFile(this.ctx, sourceId, customerId, idempotencyKey);
   }
 
   listCardsOnFile(customerId: string): Promise<SavedCard[]> {

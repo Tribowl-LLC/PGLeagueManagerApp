@@ -244,7 +244,7 @@ function buildInteractiveSnapshot(
 ): InteractivePaymentSemanticSnapshot {
   const weekOf = "2032-02-02T00:00:00.000Z";
   return {
-    snapshotVersion: 1,
+    snapshotVersion: 2,
     organizationId: operation.organizationId,
     amountMinor: operation.amountMinor,
     currency: operation.currency,
@@ -263,6 +263,7 @@ function buildInteractiveSnapshot(
     customerId: null,
     buyerEmail: "interactive@example.test",
     storeCard: false,
+    sourceKind: "new_card",
     weekOf,
     combinedChargeGroupId: null,
     allocations: [{

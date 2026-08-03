@@ -115,6 +115,7 @@ export interface PaymentProvider {
   saveCardOnFile(
     sourceId: string,
     customerId: string,
+    idempotencyKey?: string,
   ): Promise<SavedCard | null>;
 
   listCardsOnFile(

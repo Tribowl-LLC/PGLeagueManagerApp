@@ -641,20 +641,53 @@ endpoint may retry only due work or an expired lease. `provider_unknown`,
 `reconciliation_required`, and in-flight work are never reported as confirmed
 payment failure.
 
-After a completed charge is finalized, card vaulting is an optional separate
-side effect. A vault failure does not reverse or retry the charge; a later
-same-key recovery may retry only that side effect. No compensation refund is
-issued for local charge-finalization failure. Weekly auto-pay setup continues
-to use `autopay_setup_requests` and its existing interactive setup operation,
-and scheduled billing continues to use scheduled snapshots.
+For a new-card request with `storeCard=true`, the executor first calls
+Square `CreateCard` outside PostgreSQL using a stable key derived from the
+durable operation identity. The selected new-card or fingerprint survivor is
+encrypted and persisted under the operation lease before `CreatePayment` or
+the order/payment sequence is dispatched. The charge then uses that saved-card
+ID and the operation's existing stable payment/order keys. A saved-card source
+never calls `CreateCard`; wallet sources are never vaulted. Missing or
+unsupported source kinds fail closed before snapshot creation/provider money
+movement.
 
-The 3A-2 release has no migration because migration 0011 already supplies the
-additive general interactive snapshot tables and constraints. Deploy the
-client and server together for web. Before enforcing the header for native
-clients, distribute a Capacitor version with key persistence and recovery;
-older native versions fail closed with the upgrade-required response. Once a
-general interactive operation exists, a pre-3A-2 application is no longer an
-approved rollback target.
+Card-save state is stored on `payment_operations` itself: `pending` means the
+exact CreateCard request may be replayed, `saved` includes the encrypted
+survivor ID, and terminal `failed`/`not_available` states are retained for
+response reconstruction. A database failure after CreateCard success retains
+the lease and retries the same CreateCard key; it does not issue a charge,
+refund, or new provider identity. A database failure after payment success
+retains the lease and retries the same payment key. No compensation refund is
+issued for local charge-finalization failure.
+
+If card creation succeeds and the payment is later declined, the saved card is
+retained as the user-authorized vault side effect. It is not disabled or
+compensated. The optional payer schedule-card update remains best effort and
+never changes the durable charge result. Responses and status/recovery
+reconstruction return the persisted `savedCardId` and card-save status without
+repeating provider calls.
+
+Migration 0012 is additive and must be applied before the new application
+code: it adds nullable vault-result fields to `payment_operations`, adds the
+nullable source-kind column, and broadens the interactive snapshot checks to
+read legacy v1 rows and write v2 rows. The deployed 78f54468-era application
+ignores these nullable fields, but code-before-migration is not safe because
+the new application selects and updates them. The new client and server must
+be cut over together for web. Before enforcing source-kind validation for
+native clients, distribute a Capacitor version that sends source kind and
+persists/reuses the request key; older native versions fail closed with an
+upgrade-required response.
+
+Existing v1 operations remain readable and successful responses never replay
+their old post-charge vault side effect. New v2 operations require explicit
+source kind and durable pre-charge vaulting. Once a v2 general interactive
+operation exists, a pre-fix application is no longer an approved rollback
+target for payment traffic. Rollback requires the compatible schema and
+application revision to preserve operation leases, saved-card state, and
+provider identities. The migration adds a few indexed-row columns but no
+polling or wake path, so the expected Neon CU impact is limited to the extra
+operation-row writes/reads during interactive checkout and one bounded card
+ownership read for saved-card charges.
 
 ### Phase 3 split and rollback
 
@@ -664,19 +697,22 @@ The remaining work is intentionally split into focused pull requests:
    migration, and concurrency/tenant/encryption foundation.
 2. Phase 3A-2: separately reviewed cutover of single and combined interactive
    charge routes, including the validated client logical-request identity.
-3. Phase 3B: durable refund operations, stable refund keys, provider-state
+3. Phase 3A-2 save-card safety fix: pre-charge CreateCard, durable survivor
+   persistence, stable card identity, and source-kind enforcement (this
+   release).
+4. Phase 3B: durable refund operations, stable refund keys, provider-state
    handling, and atomic local refund finalization. Refund statuses and policy
    are not changed here.
-4. Phase 4: webhook inbox, reconciliation tooling, disputes, and operator UX.
+5. Phase 4: webhook inbox, reconciliation tooling, disputes, and operator UX.
 
-Migration 0011 is additive and may be applied before the application release;
-the currently deployed application safely ignores its dormant tables. This
-PR has no live path that creates these rows, so the pre-Phase-3 application
-remains a valid rollback target. Once Phase 3A-2 creates the first general
-interactive operation, the pre-Phase-3 application is no longer an approved
-rollback target; rollback must preserve operation rows and use a compatible
-application or forward recovery. No production migration is applied as part
-of Phase 3A-1.
+Migration 0011 was the dormant foundation. Migration 0012 must be applied
+before this release's application code and is not applied to production by
+this implementation PR. The 78f54468 application can safely ignore its
+nullable additions while the path remains disabled, but after this release
+creates a v2 operation, the 78f54468 application is no longer an approved
+rollback target for payment traffic; rollback must preserve operation rows
+and use a compatible application or forward recovery. No production migration
+or deployment is performed as part of this PR.
 
 Phase 3 remains separate from Phase 4's broader reconciliation tooling,
 notifications, disputes, webhooks, and operator UX.

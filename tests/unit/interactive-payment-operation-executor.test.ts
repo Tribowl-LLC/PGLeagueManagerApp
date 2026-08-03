@@ -61,10 +61,18 @@ interface PaymentCall {
   idempotencyKey?: PaymentIdempotencyInput;
 }
 
+interface CardSaveCall {
+  sourceId: string;
+  customerId: string;
+  idempotencyKey?: string;
+}
+
 class ScriptedInteractiveProvider implements PaymentProvider {
   readonly providerName = "square";
   readonly processCalls: PaymentCall[] = [];
   readonly orderCalls: Array<PaymentCall & { lineItems: OrderLineItem[] }> = [];
+  readonly cardSaveCalls: CardSaveCall[] = [];
+  cardsOnFile: SavedCard[] = [];
   readonly refundCalls: string[] = [];
   outcome: PaymentResult | Error = {
     id: "square-payment-default",
@@ -72,6 +80,11 @@ class ScriptedInteractiveProvider implements PaymentProvider {
     orderId: "square-order-default",
     receiptUrl: "https://square.example.test/receipt",
     receiptNumber: "LV-EXECUTOR-TEST",
+  };
+  cardSaveOutcome: SavedCard | null | Error = {
+    id: "ccof:executor-saved-card",
+    last4: "1111",
+    brand: "VISA",
   };
   beforeCall: (() => Promise<void>) | undefined;
 
@@ -121,12 +134,21 @@ class ScriptedInteractiveProvider implements PaymentProvider {
     return { refundId: `refund-${paymentId}`, status: "COMPLETED" };
   }
 
-  async saveCardOnFile(): Promise<SavedCard | null> { return null; }
-  async listCardsOnFile(): Promise<SavedCard[]> { return []; }
+  async saveCardOnFile(
+    sourceId: string,
+    customerId: string,
+    idempotencyKey?: string,
+  ): Promise<SavedCard | null> {
+    this.cardSaveCalls.push({ sourceId, customerId, idempotencyKey });
+    await this.beforeCall?.();
+    if (this.cardSaveOutcome instanceof Error) throw this.cardSaveOutcome;
+    return this.cardSaveOutcome;
+  }
+  async listCardsOnFile(): Promise<SavedCard[]> { return this.cardsOnFile; }
   async disableCard(): Promise<void> {}
   async createOrUpdateCustomer(): Promise<PaymentCustomer | null> { return null; }
   async getPayment(): Promise<PaymentVerification | null> { return null; }
-  validateCardId(): boolean { return false; }
+  validateCardId(cardId: string | null): boolean { return cardId?.startsWith("ccof:") ?? false; }
 }
 
 const slugs = [
@@ -197,6 +219,7 @@ async function prepareOperation(
     requestKey?: string;
     requestKind?: "direct" | "order";
     storeCard?: boolean;
+    sourceKind?: "new_card" | "saved_card" | "wallet";
   } = {},
 ): Promise<{
   operation: Awaited<ReturnType<typeof createOrGetGeneralInteractivePaymentOperation>>;
@@ -212,7 +235,7 @@ async function prepareOperation(
     now: fixedNow,
   });
   const snapshot: InteractivePaymentSemanticSnapshot = {
-    snapshotVersion: 1,
+    snapshotVersion: 2,
     organizationId: fixture.organizationId,
     amountMinor: operation.amountMinor,
     currency: operation.currency,
@@ -229,10 +252,13 @@ async function prepareOperation(
     squareOrderIdempotencyKey: requestKind === "order"
       ? deriveSquareOperationIdempotencyKey(operation.providerIdempotencyKey, "order")
       : null,
-    sourceId: `cnon:executor-${randomUUID()}`,
+    sourceId: options.sourceKind === "saved_card"
+      ? "ccof:executor-existing-card"
+      : `cnon:executor-${randomUUID()}`,
     customerId: "CUSTOMER_EXECUTOR_TEST",
     buyerEmail: "executor@example.test",
     storeCard: options.storeCard ?? false,
+    sourceKind: options.sourceKind ?? "new_card",
     weekOf: "2032-02-02T00:00:00.000Z",
     combinedChargeGroupId: null,
     allocations: [{
@@ -497,7 +523,7 @@ describe("interactive payment operation executor", () => {
       .where(eq(payments.paymentOperationId, operation.id))).toHaveLength(1);
   });
 
-  it("charges store-card intents while leaving vault persistence to the route side effect", async () => {
+  it("vaults a new card before charging and then charges the saved-card ID", async () => {
     const fixture = fixtures[0];
     const { operation } = await prepareOperation(fixture, { storeCard: true });
     const provider = new ScriptedInteractiveProvider(fixture.locationId);
@@ -510,8 +536,103 @@ describe("interactive payment operation executor", () => {
     });
 
     expect(result).toMatchObject({ status: "succeeded" });
+    expect(provider.cardSaveCalls).toHaveLength(1);
+    expect(provider.cardSaveCalls[0]?.sourceId).toMatch(/^cnon:executor-/);
+    expect(provider.cardSaveCalls[0]?.idempotencyKey).toMatch(/^lv-sq1-c-/);
     expect(provider.processCalls).toHaveLength(1);
+    expect(provider.processCalls[0]?.sourceId).toBe("ccof:executor-saved-card");
+    expect(provider.processCalls[0]?.storeCard).toBe(false);
     expect(provider.orderCalls).toHaveLength(0);
+  });
+
+  it("charges an owned saved card without calling CreateCard", async () => {
+    const fixture = fixtures[0];
+    const { operation } = await prepareOperation(fixture, { sourceKind: "saved_card" });
+    const provider = new ScriptedInteractiveProvider(fixture.locationId);
+    provider.cardsOnFile = [{ id: "ccof:executor-existing-card", last4: "4242", brand: "VISA" }];
+    const result = await createExecutor(fixture, provider).execute({
+      organizationId: fixture.organizationId,
+      operationId: operation.id,
+      now: fixedNow,
+    });
+
+    expect(result?.status).toBe("succeeded");
+    expect(provider.cardSaveCalls).toHaveLength(0);
+    expect(provider.processCalls[0]?.sourceId).toBe("ccof:executor-existing-card");
+  });
+
+  it("does not charge when card creation fails", async () => {
+    const fixture = fixtures[0];
+    const { operation } = await prepareOperation(fixture, { storeCard: true });
+    const provider = new ScriptedInteractiveProvider(fixture.locationId);
+    provider.cardSaveOutcome = new PaymentProviderError("declined", "CARD_DECLINED", undefined, {
+      disposition: "action_required",
+      providerCode: "CARD_DECLINED",
+    });
+    const result = await createExecutor(fixture, provider).execute({
+      organizationId: fixture.organizationId,
+      operationId: operation.id,
+      now: fixedNow,
+    });
+
+    expect(result?.status).toBe("action_required");
+    expect(provider.processCalls).toHaveLength(0);
+    expect(provider.cardSaveCalls).toHaveLength(1);
+  });
+
+  it("retains a successfully-created card when the payment is declined", async () => {
+    const fixture = fixtures[0];
+    const { operation } = await prepareOperation(fixture, { storeCard: true });
+    const provider = new ScriptedInteractiveProvider(fixture.locationId);
+    provider.outcome = new PaymentProviderError("declined", "CARD_DECLINED", undefined, {
+      disposition: "action_required",
+      providerCode: "CARD_DECLINED",
+    });
+    const result = await createExecutor(fixture, provider).execute({
+      organizationId: fixture.organizationId,
+      operationId: operation.id,
+      now: fixedNow,
+    });
+
+    expect(result?.status).toBe("action_required");
+    expect(provider.cardSaveCalls).toHaveLength(1);
+    expect(provider.processCalls[0]?.sourceId).toBe("ccof:executor-saved-card");
+    const saved = await getPaymentOperationForOrganization(fixture.organizationId, operation.id);
+    expect(saved?.cardSaveStatus).toBe("saved");
+  });
+
+  it("recovers after a lost payment response without repeating CreateCard", async () => {
+    const fixture = fixtures[0];
+    const { operation } = await prepareOperation(fixture, { storeCard: true });
+    const provider = new ScriptedInteractiveProvider(fixture.locationId);
+    provider.outcome = new Error("payment response lost");
+    let clock = fixedNow;
+    const executor = createExecutor(fixture, provider, { now: () => clock });
+
+    const first = await executor.execute({
+      organizationId: fixture.organizationId,
+      operationId: operation.id,
+      now: clock,
+    });
+    expect(first?.status).toBe("provider_unknown");
+    const retryAt = first?.nextAttemptAt;
+    if (!retryAt) throw new Error("provider-unknown retry was not scheduled");
+    clock = new Date(parseStoredTimestamp(retryAt).getTime() + 1);
+    provider.outcome = {
+      id: "square-payment-after-card-recovery",
+      status: "COMPLETED",
+    };
+
+    await expect(executor.execute({
+      organizationId: fixture.organizationId,
+      operationId: operation.id,
+      now: clock,
+    })).resolves.toMatchObject({ status: "succeeded" });
+    expect(provider.cardSaveCalls).toHaveLength(1);
+    expect(provider.processCalls).toHaveLength(2);
+    expect(provider.processCalls[1]?.sourceId).toBe("ccof:executor-saved-card");
+    expect(provider.processCalls[1]?.idempotencyKey)
+      .toEqual(provider.processCalls[0]?.idempotencyKey);
   });
 
   it("uses globally safe operation UUIDs for local payment idempotency across tenants", async () => {
