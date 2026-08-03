@@ -227,7 +227,7 @@ describe('normalized migration baseline tools', () => {
       idx: 13,
       tag: '0013_durable_refund_operations',
       createdAt: 1785727730717,
-      hash: '4ea81888ee3dabef69c16723b657286ace43b61101219efb366c94b38c55aa6f',
+      hash: '1f84d902f0ef0c8051bce55c5bb99817c691ec81504b52aafda2fc6aa6159c72',
     });
     expect(migrations[13]?.sql).toContain('CREATE TABLE "refund_payment_operation_snapshots"');
     expect(migrations[13]?.sql).toContain('payment_operations_refund_target_unique');
