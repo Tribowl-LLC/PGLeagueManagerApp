@@ -497,7 +497,7 @@ describe("interactive payment operation executor", () => {
       .where(eq(payments.paymentOperationId, operation.id))).toHaveLength(1);
   });
 
-  it("fails closed for store-card intent until Phase 3A-2 owns vault writes", async () => {
+  it("charges store-card intents while leaving vault persistence to the route side effect", async () => {
     const fixture = fixtures[0];
     const { operation } = await prepareOperation(fixture, { storeCard: true });
     const provider = new ScriptedInteractiveProvider(fixture.locationId);
@@ -509,12 +509,8 @@ describe("interactive payment operation executor", () => {
       now: fixedNow,
     });
 
-    expect(result).toMatchObject({
-      status: "failed_terminal",
-      errorClassification: "invalid_request",
-      errorCode: "STORE_CARD_DEFERRED",
-    });
-    expect(provider.processCalls).toHaveLength(0);
+    expect(result).toMatchObject({ status: "succeeded" });
+    expect(provider.processCalls).toHaveLength(1);
     expect(provider.orderCalls).toHaveLength(0);
   });
 

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { League, Payment, User, SavedCard, ApiResponse, BowlerDetailsResponse } from "@shared/schema";
 import { BowlerLayout } from "@/components/bowler-layout";
@@ -26,6 +26,7 @@ import { BowlerErrorView } from "./payment-history-page/bowler-error-view";
 import { NoLeaguesView } from "./payment-history-page/no-leagues-view";
 import { NoLeagueView } from "./payment-history-page/no-league-view";
 import { PaymentHistoryContent } from "./payment-history-page/payment-history-content";
+import { beginPaymentIntent, clearPaymentIntent, paymentRequestHeaders } from "@/lib/payment-request-identity";
 
 export default function PaymentHistoryPage() {
   const { toast } = useToast();
@@ -42,6 +43,7 @@ export default function PaymentHistoryPage() {
   const [selectedSavedCardId, setSelectedSavedCardId] = useState<string>('');
   const [storeCard, setStoreCard] = useState(false);
   const [receiptEmail, setReceiptEmail] = useState('');
+  const walletRequestKeyRef = useRef<string | null>(null);
 
   const [isWalletProcessing, setIsWalletProcessing] = useState(false);
 
@@ -205,9 +207,11 @@ export default function PaymentHistoryPage() {
     const overrideEmail = !bowlerEmail && trimmedReceiptEmail ? trimmedReceiptEmail : undefined;
     try {
       setIsWalletProcessing(true);
+      const paymentScope = `history-wallet:${bowlerId}:${leagueId}:${dialogAmountCents}`;
+      const requestKey = walletRequestKeyRef.current ?? beginPaymentIntent(paymentScope);
       const response = await csrfFetch('/api/payments-provider/payments', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: paymentRequestHeaders(requestKey),
         body: JSON.stringify({
           sourceId: token,
           amount: dialogAmountCents,
@@ -221,6 +225,11 @@ export default function PaymentHistoryPage() {
       if (!response.ok) {
         throw makeApiError(data, response.status, `Payment failed (HTTP ${response.status})`);
       }
+      if (data.status !== 'COMPLETED') {
+        throw new Error('Your payment is still processing. Use payment recovery before entering card details again.');
+      }
+      clearPaymentIntent(paymentScope);
+      walletRequestKeyRef.current = null;
       const walletLabel = walletType === 'apple_pay' ? 'Apple Pay' : 'Google Pay';
       const dialogLabel = payDialogType === 'pastdue' ? 'past due amount' : 'remaining balance';
       if (data.deduplicated) {
@@ -247,6 +256,13 @@ export default function PaymentHistoryPage() {
     }
   }, [bowlerId, leagueId, dialogAmountCents, payDialogType, toast, bowlerEmail, receiptEmail, navigate, league?.locationId]);
 
+  const beginWalletPayment = useCallback(() => {
+    if (!bowlerId || !leagueId || !dialogAmountCents) return;
+    walletRequestKeyRef.current = beginPaymentIntent(
+      `history-wallet:${bowlerId}:${leagueId}:${dialogAmountCents}`,
+    );
+  }, [bowlerId, dialogAmountCents, leagueId]);
+
   const {
     applePayAvailable,
     googlePayAvailable,
@@ -262,6 +278,7 @@ export default function PaymentHistoryPage() {
     locationId: league?.locationId,
     amountCents: dialogAmountCents,
     enabled: !!payDialogType && !!league?.locationId && supportsWallets,
+    onPaymentStarted: beginWalletPayment,
     onTokenReceived: handleWalletPayment,
     onError: (error) => toast({ title: "Wallet Payment Error", description: error, variant: "destructive" }),
   });
@@ -300,9 +317,11 @@ export default function PaymentHistoryPage() {
       const overrideEmail = !bowlerEmail && trimmedReceiptEmail ? trimmedReceiptEmail : undefined;
 
       if (cardMode === 'saved' && selectedSavedCardId) {
+        const paymentScope = `history:${bowlerId}:${leagueId}:${dialogAmount}:saved`;
+        const requestKey = beginPaymentIntent(paymentScope);
         const response = await csrfFetch('/api/payments-provider/payments', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: paymentRequestHeaders(requestKey),
           body: JSON.stringify({
             sourceId: selectedSavedCardId,
             amount: dialogAmount,
@@ -316,8 +335,16 @@ export default function PaymentHistoryPage() {
         if (!response.ok) {
           throw makeApiError(responseData, response.status, 'Payment failed');
         }
+        if (responseData.status !== 'COMPLETED') {
+          throw new Error('Your payment is still processing. Use payment recovery before entering card details again.');
+        }
+        clearPaymentIntent(paymentScope);
       } else {
-        await createPayment(dialogAmount, card!, bowlerId, leagueId, storeCard, overrideEmail);
+        const paymentScope = `history:${bowlerId}:${leagueId}:${dialogAmount}:new:${storeCard}`;
+        const requestKey = beginPaymentIntent(paymentScope);
+        if (!card) throw new Error('Please enter your card details.');
+        await createPayment(dialogAmount, card, bowlerId, leagueId, storeCard, overrideEmail, requestKey);
+        clearPaymentIntent(paymentScope);
         if (storeCard) {
           queryClient.invalidateQueries({ queryKey: [`/api/payments-provider/cards/${bowlerId}`] });
         }

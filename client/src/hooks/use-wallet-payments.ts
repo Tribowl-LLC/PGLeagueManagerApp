@@ -62,6 +62,7 @@ interface UseWalletPaymentsOptions {
   locationId?: number | null;
   amountCents: number;
   enabled: boolean;
+  onPaymentStarted?: () => void;
   onTokenReceived: (token: string, walletType: 'apple_pay' | 'google_pay') => Promise<void>;
   onError: (error: string) => void;
 }
@@ -84,6 +85,7 @@ export function useWalletPayments({
   locationId,
   amountCents,
   enabled,
+  onPaymentStarted,
   onTokenReceived,
   onError,
 }: UseWalletPaymentsOptions): UseWalletPaymentsReturn {
@@ -285,6 +287,7 @@ export function useWalletPayments({
     }
     setIsProcessing(true);
     try {
+      onPaymentStarted?.();
       const result = await applePayInstanceRef.current.tokenize();
       if (result.status === 'OK' && result.token) {
         await onTokenReceivedRef.current(result.token, 'apple_pay');
@@ -303,7 +306,7 @@ export function useWalletPayments({
     } finally {
       if (mountedRef.current) setIsProcessing(false);
     }
-  }, [isProcessing, amountCents]);
+  }, [isProcessing, amountCents, onPaymentStarted]);
 
   const handleGooglePayClick = useCallback(async () => {
     if (!googlePayInstanceRef.current || isProcessing) return;
@@ -313,6 +316,7 @@ export function useWalletPayments({
     }
     setIsProcessing(true);
     try {
+      onPaymentStarted?.();
       const result = await googlePayInstanceRef.current.tokenize();
       if (result.status === 'OK' && result.token) {
         await onTokenReceivedRef.current(result.token, 'google_pay');
@@ -331,7 +335,7 @@ export function useWalletPayments({
     } finally {
       if (mountedRef.current) setIsProcessing(false);
     }
-  }, [isProcessing, amountCents]);
+  }, [isProcessing, amountCents, onPaymentStarted]);
 
   const cleanup = destroyInstances;
 

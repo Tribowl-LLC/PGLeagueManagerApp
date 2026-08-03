@@ -5,6 +5,27 @@ import type { PaymentRequestIdentity } from "./payment-provider";
 export const PAYMENT_OPERATION_REQUEST_VERSION = 1 as const;
 export const PAYMENT_OPERATION_FINGERPRINT_PREFIX = "lvpayreq:v1:" as const;
 export const SQUARE_OPERATION_IDEMPOTENCY_MAX_LENGTH = 45;
+export const INTERACTIVE_REQUEST_KEY_MIN_LENGTH = 16;
+export const INTERACTIVE_REQUEST_KEY_MAX_LENGTH = 109;
+
+/**
+ * Client-owned logical identities are deliberately narrower than the
+ * provider's key alphabet. UUIDs and URL-safe retry keys are accepted, while
+ * whitespace, control characters, and punctuation with ambiguous transport
+ * escaping are rejected before an operation snapshot can be created.
+ */
+export function validateInteractiveRequestKey(value: string): string {
+  if (
+    value.length < INTERACTIVE_REQUEST_KEY_MIN_LENGTH
+    || value.length > INTERACTIVE_REQUEST_KEY_MAX_LENGTH
+    || !/^[A-Za-z0-9_-]+$/.test(value)
+  ) {
+    throw new Error(
+      `Idempotency-Key must be ${INTERACTIVE_REQUEST_KEY_MIN_LENGTH}-${INTERACTIVE_REQUEST_KEY_MAX_LENGTH} URL-safe ASCII characters`,
+    );
+  }
+  return value;
+}
 
 export type SquareOperationIdempotencyDomain = "order" | "payment";
 

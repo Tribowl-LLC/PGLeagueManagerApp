@@ -24,7 +24,11 @@ import {
   type PaymentOperationErrorClassification,
 } from "@shared/schema";
 import { db } from "../db.js";
-import { buildPaymentOperationIdentity } from "../services/payment-operation-idempotency.js";
+import {
+  buildPaymentOperationIdentity,
+  INTERACTIVE_REQUEST_KEY_MAX_LENGTH,
+  validateInteractiveRequestKey,
+} from "../services/payment-operation-idempotency.js";
 import {
   encryptScheduledPaymentSnapshot,
   fingerprintScheduledPaymentSnapshot,
@@ -120,7 +124,7 @@ export interface LeasedPaymentOperationInput {
 
 export const GENERAL_INTERACTIVE_TARGET_PREFIX = "interactive-charge:" as const;
 export const GENERAL_INTERACTIVE_REQUEST_KEY_MAX_LENGTH =
-  128 - GENERAL_INTERACTIVE_TARGET_PREFIX.length;
+  INTERACTIVE_REQUEST_KEY_MAX_LENGTH;
 
 interface ErrorOutcomeInput extends LeasedPaymentOperationInput {
   errorCode?: string | null;
@@ -474,15 +478,18 @@ export async function createOrGetInteractivePaymentOperation(
 }
 
 function buildGeneralInteractiveTargetKey(requestKey: string): string {
-  if (
-    requestKey.length === 0
-    || requestKey.length > GENERAL_INTERACTIVE_REQUEST_KEY_MAX_LENGTH
-    || requestKey.trim() !== requestKey
-    || !/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(requestKey)
-  ) {
-    throw new PaymentOperationValidationError("general interactive request key has an invalid format");
+  try {
+    validateInteractiveRequestKey(requestKey);
+  } catch (error) {
+    throw new PaymentOperationValidationError(
+      error instanceof Error ? error.message : "general interactive request key has an invalid format",
+    );
   }
   return `${GENERAL_INTERACTIVE_TARGET_PREFIX}${requestKey}`;
+}
+
+export function getGeneralInteractiveTargetKey(requestKey: string): string {
+  return buildGeneralInteractiveTargetKey(requestKey);
 }
 
 /**
@@ -907,6 +914,22 @@ export async function getPaymentOperationForOrganization(
     .where(and(
       eq(paymentOperations.organizationId, organizationId),
       eq(paymentOperations.id, operationId),
+    ))
+    .limit(1);
+  return operation;
+}
+
+export async function getGeneralInteractivePaymentOperationForOrganization(
+  organizationId: number,
+  requestKey: string,
+): Promise<PaymentOperation | undefined> {
+  const [operation] = await db
+    .select()
+    .from(paymentOperations)
+    .where(and(
+      eq(paymentOperations.organizationId, organizationId),
+      eq(paymentOperations.operationType, "interactive_charge"),
+      eq(paymentOperations.targetKey, buildGeneralInteractiveTargetKey(requestKey)),
     ))
     .limit(1);
   return operation;

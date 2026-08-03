@@ -11,6 +11,11 @@ import {
   makeApiError,
 } from "@/lib/provider-not-configured";
 import { sanitizePaymentErrorMessage } from "@/lib/payment-user-error";
+import {
+  beginPaymentIntent,
+  clearPaymentIntent,
+  paymentRequestHeaders,
+} from "@/lib/payment-request-identity";
 import type { League, Bowler } from "@shared/schema";
 import type { SquareCard } from "@/hooks/use-square-payment";
 import type { AutopaySetupQuote } from "@/lib/autopay-setup";
@@ -129,6 +134,8 @@ export function useBowlerPaymentSubmit({
             { bowlerId: bowler.id, amount: upfrontAmount },
             ...partnerIds.map((id) => ({ bowlerId: id, amount: upfrontAmount })),
           ];
+          const paymentScope = `bowler:combined:${league.id}:${totalAmount}:${JSON.stringify(payees)}:${cardMode === 'new' && storeCard}`;
+          const requestKey = beginPaymentIntent(paymentScope);
           let sourceId = selectedSavedCardId;
           if (cardMode === 'new') {
             if (!newCard) throw new Error('Please enter your card details before proceeding.');
@@ -136,7 +143,7 @@ export function useBowlerPaymentSubmit({
           }
           const response = await csrfFetch('/api/payments-provider/combined-payments', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: paymentRequestHeaders(requestKey),
             body: JSON.stringify({
               sourceId,
               amount: totalAmount,
@@ -148,6 +155,10 @@ export function useBowlerPaymentSubmit({
           });
           const data = await response.json();
           await throwApiErrorIfNotOk(response, data, 'Payment failed');
+          if (data.status !== 'COMPLETED') {
+            throw new Error('Your payment is still processing. Use payment recovery before entering card details again.');
+          }
+          clearPaymentIntent(paymentScope);
           toast({
             title: "Payment Successful",
             description: `Combined payment of ${formatCurrency(totalAmount)} has been processed.`,
@@ -161,9 +172,11 @@ export function useBowlerPaymentSubmit({
         }
 
         if (cardMode === 'saved' && selectedSavedCardId) {
+          const paymentScope = `bowler:${league.id}:${chargeForBowlerId}:${upfrontAmount}:saved`;
+          const requestKey = beginPaymentIntent(paymentScope);
           const response = await csrfFetch('/api/payments-provider/payments', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: paymentRequestHeaders(requestKey),
             body: JSON.stringify({
               sourceId: selectedSavedCardId,
               amount: upfrontAmount,
@@ -178,10 +191,17 @@ export function useBowlerPaymentSubmit({
           });
           const responseData = await response.json();
           await throwApiErrorIfNotOk(response, responseData, 'Payment failed');
+          if (responseData.status !== 'COMPLETED') {
+            throw new Error('Your payment is still processing. Use payment recovery before entering card details again.');
+          }
+          clearPaymentIntent(paymentScope);
         } else {
           const overrideEmail = trimmedBuyerEmail && !bowler.email ? trimmedBuyerEmail : undefined;
           if (!newCard) throw new Error('Please enter your card details before proceeding.');
-          await createPayment(upfrontAmount, newCard, chargeForBowlerId, league.id, storeCard, overrideEmail);
+          const paymentScope = `bowler:${league.id}:${chargeForBowlerId}:${upfrontAmount}:new:${storeCard}`;
+          const requestKey = beginPaymentIntent(paymentScope);
+          await createPayment(upfrontAmount, newCard, chargeForBowlerId, league.id, storeCard, overrideEmail, requestKey);
+          clearPaymentIntent(paymentScope);
           if (storeCard) {
             // Vault belongs to the payer (logged-in bowler), not the
             // recipient — invalidate the payer's saved-card list.
@@ -213,6 +233,8 @@ export function useBowlerPaymentSubmit({
           { bowlerId: bowler.id, amount },
           ...partnerIds.map((id) => ({ bowlerId: id, amount })),
         ];
+        const paymentScope = `bowler:combined:${league.id}:${totalAmount}:${JSON.stringify(payees)}:${cardMode === 'new' && storeCard}`;
+        const requestKey = beginPaymentIntent(paymentScope);
         const trimmedBuyerEmail = (buyerEmail ?? '').trim();
         let sourceId = selectedSavedCardId;
         if (cardMode === 'new') {
@@ -221,7 +243,7 @@ export function useBowlerPaymentSubmit({
         }
         const response = await csrfFetch('/api/payments-provider/combined-payments', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: paymentRequestHeaders(requestKey),
           body: JSON.stringify({
             sourceId,
             amount: totalAmount,
@@ -233,6 +255,10 @@ export function useBowlerPaymentSubmit({
         });
         const data = await response.json();
         await throwApiErrorIfNotOk(response, data, 'Payment failed');
+        if (data.status !== 'COMPLETED') {
+          throw new Error('Your payment is still processing. Use payment recovery before entering card details again.');
+        }
+        clearPaymentIntent(paymentScope);
         if (cardMode === 'new' && storeCard) {
           queryClient.invalidateQueries({ queryKey: [`/api/payments-provider/cards/${bowler.id}`] });
         }
@@ -303,9 +329,11 @@ export function useBowlerPaymentSubmit({
       // One-time payments retain the established interactive charge path.
       if (cardMode === 'saved' && selectedSavedCardId) {
         const trimmedBuyerEmail = (buyerEmail ?? '').trim();
+        const paymentScope = `bowler:${league.id}:${chargeForBowlerId}:${amount}:saved`;
+        const requestKey = beginPaymentIntent(paymentScope);
         const response = await csrfFetch('/api/payments-provider/payments', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: paymentRequestHeaders(requestKey),
           body: JSON.stringify({
             sourceId: selectedSavedCardId,
             amount,
@@ -318,12 +346,19 @@ export function useBowlerPaymentSubmit({
         });
         const responseData = await response.json();
         await throwApiErrorIfNotOk(response, responseData, 'Payment failed');
+        if (responseData.status !== 'COMPLETED') {
+          throw new Error('Your payment is still processing. Use payment recovery before entering card details again.');
+        }
+        clearPaymentIntent(paymentScope);
       } else {
         const shouldStore = storeCard;
         const trimmedBuyerEmail = (buyerEmail ?? '').trim();
         const overrideEmail = trimmedBuyerEmail && !bowler.email ? trimmedBuyerEmail : undefined;
         if (!newCard) throw new Error('Please enter your card details before proceeding.');
-        await createPayment(amount, newCard, chargeForBowlerId, league.id, shouldStore, overrideEmail);
+        const paymentScope = `bowler:${league.id}:${chargeForBowlerId}:${amount}:new:${shouldStore}`;
+        const requestKey = beginPaymentIntent(paymentScope);
+        await createPayment(amount, newCard, chargeForBowlerId, league.id, shouldStore, overrideEmail, requestKey);
+        clearPaymentIntent(paymentScope);
         if (shouldStore) {
           queryClient.invalidateQueries({ queryKey: [`/api/payments-provider/cards/${bowler.id}`] });
         }

@@ -13,6 +13,7 @@ import type { League, Bowler, Payment, SavedCard, ApiResponse, BowlerDetailsResp
 import { PaymentStatusView } from "@/components/payment-status-view";
 import { useBowlerPaymentSubmit } from "@/hooks/use-bowler-payment-submit";
 import type { AutopaySetupQuote } from "@/lib/autopay-setup";
+import { beginPaymentIntent, clearPaymentIntent, paymentRequestHeaders } from "@/lib/payment-request-identity";
 
 interface BowlerLinkRow {
   id: number;
@@ -54,6 +55,7 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
 }) => {
   const { toast } = useToast();
   const cardContainerRef = useRef<HTMLDivElement>(null);
+  const walletRequestKeyRef = useRef<string | null>(null);
   const [showPaymentSetup, setShowPaymentSetup] = useState(false);
   const [paymentMode, setPaymentMode] = useState<'autopay' | 'onetime'>('autopay');
   const [selectedSchedule, setSelectedSchedule] = useState<PaymentSchedule>("weekly");
@@ -287,10 +289,14 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
       const isCombined = additionalBowlerIds.length > 0;
       const totalPayees = 1 + additionalBowlerIds.length;
       const totalAmount = perAmount * totalPayees;
+      const paymentScope = isCombined
+        ? `bowler-wallet:combined:${league.id}:${totalAmount}:${additionalBowlerIds.join(',')}`
+        : `bowler-wallet:${league.id}:${targetBowlerId}:${perAmount}`;
+      const requestKey = walletRequestKeyRef.current ?? beginPaymentIntent(paymentScope);
       const response = isCombined
         ? await csrfFetch('/api/payments-provider/combined-payments', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: paymentRequestHeaders(requestKey),
             body: JSON.stringify({
               sourceId: token,
               amount: totalAmount,
@@ -304,7 +310,7 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
           })
         : await csrfFetch('/api/payments-provider/payments', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: paymentRequestHeaders(requestKey),
             body: JSON.stringify({
               sourceId: token,
               amount: perAmount,
@@ -321,6 +327,8 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
       if (data.status && data.status !== 'COMPLETED') {
         throw new Error(`Payment not completed (status: ${data.status})`);
       }
+      clearPaymentIntent(paymentScope);
+      walletRequestKeyRef.current = null;
       const walletLabel = walletType === 'apple_pay' ? 'Apple Pay' : 'Google Pay';
       if (data.deduplicated) {
         toast({ title: "Already Processed", description: `This ${walletLabel} payment was already recorded.` });
@@ -357,6 +365,16 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
     }
   }, [bowler.id, league.id, targetBowlerId, additionalBowlerIds, calculateTotalAmount, toast, setIsSubmitting, setShowPaymentSetup]);
 
+  const beginWalletPayment = useCallback(() => {
+    const perAmount = calculateTotalAmount();
+    const isCombined = additionalBowlerIds.length > 0;
+    const totalAmount = perAmount * (1 + additionalBowlerIds.length);
+    const paymentScope = isCombined
+      ? `bowler-wallet:combined:${league.id}:${totalAmount}:${additionalBowlerIds.join(',')}`
+      : `bowler-wallet:${league.id}:${targetBowlerId}:${perAmount}`;
+    walletRequestKeyRef.current = beginPaymentIntent(paymentScope);
+  }, [additionalBowlerIds, calculateTotalAmount, league.id, targetBowlerId]);
+
   const {
     applePayAvailable,
     googlePayAvailable,
@@ -374,6 +392,7 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
     // are selected so the device-sheet amount matches the server charge.
     amountCents: calculateTotalAmount() * (1 + additionalBowlerIds.length),
     enabled: showPaymentSetup && supportsWallets && (selectedSchedule === 'custom' || league.paymentMode === 'upfront'),
+    onPaymentStarted: beginWalletPayment,
     onTokenReceived: handleWalletPayment,
     // task #514: route the wallet hook's `onError` string through the
     // shared sanitizer for parity with the other payment-failure

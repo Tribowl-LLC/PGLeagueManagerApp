@@ -69,6 +69,7 @@ export class DatabaseStorage implements IStorage {
   getPaymentsPaginated!: IStorage["getPaymentsPaginated"];
   getPaymentById!: IStorage["getPaymentById"];
   getPaymentByIdempotencyKey!: IStorage["getPaymentByIdempotencyKey"];
+  getPaymentsByPaymentOperationId!: IStorage["getPaymentsByPaymentOperationId"];
   getPaymentByDisputeId!: IStorage["getPaymentByDisputeId"];
   getPaymentByProviderPaymentId!: IStorage["getPaymentByProviderPaymentId"];
   createPayment!: IStorage["createPayment"];
@@ -95,6 +96,7 @@ export class DatabaseStorage implements IStorage {
   persistInteractivePaymentOperationSnapshot!: IStorage["persistInteractivePaymentOperationSnapshot"];
   getInteractivePaymentOperationSnapshotForOrganization!: IStorage["getInteractivePaymentOperationSnapshotForOrganization"];
   getPaymentOperationForOrganization!: IStorage["getPaymentOperationForOrganization"];
+  getGeneralInteractivePaymentOperationForOrganization!: IStorage["getGeneralInteractivePaymentOperationForOrganization"];
   acquirePaymentOperationLease!: IStorage["acquirePaymentOperationLease"];
   schedulePaymentOperationRetry!: IStorage["schedulePaymentOperationRetry"];
   recordPaymentOperationProviderUnknown!: IStorage["recordPaymentOperationProviderUnknown"];

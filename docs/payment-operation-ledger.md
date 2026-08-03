@@ -49,6 +49,58 @@ mode; it only replaces payment-operation checks forward and adds the index.
 
 Interactive charges, refunds, and webhooks remain outside this phase.
 
+## Phase 3A-2 general interactive charge cutover
+
+Phase 3A-2 activates the dormant general interactive snapshot and executor
+created by migration 0011 for the regular single-bowler and combined Square
+charge routes. Weekly auto-pay setup continues to use `autopay_setup_requests`
+and its own `autopay-setup:` operation namespace; scheduled billing continues
+to use scheduled snapshots. Refunds remain outside this phase.
+
+Every interactive charge requires an `Idempotency-Key` header containing 16–109
+URL-safe ASCII characters. The web and Capacitor clients generate a UUID when
+the user begins one exact payment intent, persist only that UUID locally, and
+reuse it for retries of that intent. New payments, including a new saved card
+choice or changed amount/allocation semantics, receive a new key. Missing or
+malformed keys fail with an upgrade/validation response before snapshot
+creation or Square money movement. The raw client key is never sent to
+Square; the tenant- and operation-scoped ledger identity derives bounded,
+domain-separated Square payment/order keys.
+
+The immutable encrypted snapshot covers tenant, league/location, payer,
+request kind, amount/currency, source/customer/email references, save-card
+intent, server-authoritative business-day `weekOf`, ordered allocations, and
+ordered Square line items. Same key plus the same fingerprint converges on one
+operation. A different fingerprint returns `409 IDEMPOTENCY_CONFLICT`; it can
+never silently adopt whichever concurrent request won the insert race.
+
+The charge operation is committed before the executor acquires its expiring
+fenced lease or calls Square. Provider calls occur outside PostgreSQL
+transactions. Only Square `COMPLETED` results finalize paid rows. Transient or
+ambiguous results retain the immutable request and key for durable recovery;
+`provider_unknown` and `reconciliation_required` are never presented as a
+confirmed failure. Local finalization failure never triggers a compensation
+refund. Payment rows and combined allocations finalize atomically and link to
+the operation UUID, which is globally safe even when two tenants use the same
+client key.
+
+Card vaulting is a separate post-charge, idempotent side effect. A vaulting
+failure leaves the charge successful and is reported as `cardSaveStatus`; it
+does not retry or reverse the charge. The status endpoint
+`GET /api/payments-provider/payment-operations/status` and recovery endpoint
+`POST /api/payments-provider/payment-operations/recover` accept the same key,
+are tenant-scoped, and let a restarted client recover an ephemeral-token
+intent without retokenization.
+
+This release requires no migration because 0011 is already additive and
+migrated before the route cutover. The safe deployment order is client support
+(including distributed native header/recovery support), then the server
+cutover. The pre-3A-2 application remains safe only while no general
+interactive operations exist. Once this release creates the first one, the
+pre-3A-2 application is not an approved rollback target; roll forward or
+restore the compatible application/database pair. No Render, Neon, Square, or
+environment-variable changes are part of the code release.
+
 Production must explicitly set `SCHEDULED_PAYMENT_EXECUTION_MODE`. Missing mode
 with either `NODE_ENV=production` or `APP_ENV=prod` fails startup. The modes are:
 
@@ -561,6 +613,48 @@ rows; pending, approved, failed, canceled, missing-status, or missing-ID
 results fail closed. Store-card execution is explicitly rejected until the
 Phase 3A-2 route cutover owns the vault-write behavior. No application import
 reaches this executor in Phase 3A-1.
+
+## Phase 3A-2 general interactive charge cutover
+
+The single-payment and combined-payment routes now require an
+`Idempotency-Key` header before snapshot creation or provider dispatch. The
+server accepts 16-109 URL-safe ASCII characters, scopes the durable target by
+organization and `interactive_charge`, and derives bounded Square payment and
+order keys from the immutable operation identity. The raw client key is never
+sent to Square and source tokens are never used as logical identities.
+
+The client creates and stores a UUID when a checkout intent begins, reuses it
+only for retries of that intent, and clears it after confirmed success. New
+card and wallet tokens are not stored client-side. Missing headers receive an
+explicit upgrade-required response so older web or Capacitor clients cannot
+fall back to the legacy charge behavior. The status and recovery endpoints are
+tenant-scoped by the authenticated organization and allow a restarted client
+to recover an ephemeral-token operation by key without retokenizing.
+
+Preparation reconstructs and persists the exact business-time-zone `weekOf`,
+allocation order, split amounts, paid-by attribution, receipt email, save-card
+intent, and ordered Square line items. Same key plus the same fingerprint
+converges on the existing operation; a fingerprint mismatch returns a
+conflict. Initial requests execute once after the preparation transaction
+commits. Duplicate requests observe the durable state, while the recovery
+endpoint may retry only due work or an expired lease. `provider_unknown`,
+`reconciliation_required`, and in-flight work are never reported as confirmed
+payment failure.
+
+After a completed charge is finalized, card vaulting is an optional separate
+side effect. A vault failure does not reverse or retry the charge; a later
+same-key recovery may retry only that side effect. No compensation refund is
+issued for local charge-finalization failure. Weekly auto-pay setup continues
+to use `autopay_setup_requests` and its existing interactive setup operation,
+and scheduled billing continues to use scheduled snapshots.
+
+The 3A-2 release has no migration because migration 0011 already supplies the
+additive general interactive snapshot tables and constraints. Deploy the
+client and server together for web. Before enforcing the header for native
+clients, distribute a Capacitor version with key persistence and recovery;
+older native versions fail closed with the upgrade-required response. Once a
+general interactive operation exists, a pre-3A-2 application is no longer an
+approved rollback target.
 
 ### Phase 3 split and rollback
 

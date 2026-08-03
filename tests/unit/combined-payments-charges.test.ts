@@ -25,6 +25,12 @@ const mockStorage = {
   getPayments: vi.fn(),
   getPaymentByIdempotencyKey: vi.fn(),
   getPaymentsByCombinedGroupId: vi.fn(),
+  getGeneralInteractivePaymentOperationForOrganization: vi.fn(),
+  createOrGetGeneralInteractivePaymentOperation: vi.fn(),
+  persistInteractivePaymentOperationSnapshot: vi.fn(),
+  getInteractivePaymentOperationSnapshotForOrganization: vi.fn(),
+  getPaymentsByPaymentOperationId: vi.fn(),
+  getLocationSquareConfig: vi.fn(),
   createPayment: vi.fn(),
   createCombinedPayments: vi.fn(),
   updatePaymentScheduleCard: vi.fn(),
@@ -84,6 +90,15 @@ vi.mock('../../server/routes/payments-provider/shared', () => ({
   getProviderForLeague: vi.fn(),
 }));
 
+const mockPrepareInteractiveOperation = vi.fn();
+const mockInteractiveExecute = vi.fn();
+vi.mock('../../server/services/interactive-payment-operation-preparation', () => ({
+  prepareInteractivePaymentOperation: (...args: unknown[]) => mockPrepareInteractiveOperation(...args),
+}));
+vi.mock('../../server/services/interactive-payment-operation-executor', () => ({
+  interactivePaymentOperationExecutor: { execute: (...args: unknown[]) => mockInteractiveExecute(...args) },
+}));
+
 // eslint-disable-next-line local/factory-must-use-schema -- mocked logger, not a schema row
 const fakeLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
 vi.mock('../../server/logger', () => ({ logger: fakeLogger, createLogger: () => fakeLogger }));
@@ -127,6 +142,8 @@ beforeEach(() => {
   mockSquareProvider.createOrderWithPayment.mockReset();
   mockSquareProvider.refundPayment.mockReset();
   mockSquareProvider.saveCardOnFile.mockReset();
+  mockPrepareInteractiveOperation.mockReset();
+  mockInteractiveExecute.mockReset();
 
   mockHasAccessToLeague.mockResolvedValue(true);
   mockHasAccessToBowler.mockResolvedValue(true);
@@ -138,6 +155,29 @@ beforeEach(() => {
   });
   mockStorage.getPayments.mockResolvedValue([]);
   mockStorage.getPaymentByIdempotencyKey.mockResolvedValue(null);
+  mockStorage.getGeneralInteractivePaymentOperationForOrganization.mockResolvedValue(undefined);
+  mockStorage.getInteractivePaymentOperationSnapshotForOrganization.mockResolvedValue(undefined);
+  mockStorage.getLocationSquareConfig.mockResolvedValue({ locationId: 'SQUARE_TEST' });
+  mockPrepareInteractiveOperation.mockImplementation(async (input: { requestKey: string; amountMinor: number; combined: boolean }) => {
+    const operation = {
+      id: 'operation-combined-test', organizationId: 1, operationType: 'interactive_charge' as const,
+      targetKey: `interactive-charge:${input.requestKey}`, paymentScheduleId: null, billingCycleAt: null,
+      amountMinor: input.amountMinor, currency: 'USD', requestFingerprint: 'lvpayreq:v1:' + 'a'.repeat(64),
+      providerIdempotencyKey: 'lv-op1-ic-test', providerName: 'square', providerObjectId: null,
+      providerOrderId: null, status: 'pending' as const, attemptCount: 0, nextAttemptAt: new Date().toISOString(),
+      leaseOwner: null, leaseToken: null, leaseExpiresAt: null, leaseRecoveryCount: 0,
+      lastLeaseRecoveredAt: null, errorClassification: null, errorCode: null,
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), startedAt: null, completedAt: null,
+    };
+    mockStorage.getPaymentsByPaymentOperationId.mockResolvedValue(input.combined
+      ? [
+        { id: 100, bowlerId: 7, amount: input.amountMinor / 2, combinedChargeGroupId: operation.id, receiptUrl: null, receiptNumber: null },
+        { id: 101, bowlerId: 8, amount: input.amountMinor / 2, combinedChargeGroupId: operation.id, receiptUrl: null, receiptNumber: null },
+      ]
+      : [{ id: 100, bowlerId: 7, amount: input.amountMinor, combinedChargeGroupId: null, receiptUrl: null, receiptNumber: null }]);
+    mockInteractiveExecute.mockResolvedValue({ ...operation, status: 'succeeded', providerObjectId: 'sq_pay_combo' });
+    return operation;
+  });
   // P1 (#737): payees must be actively rostered in the league. Default to
   // rostered; the "not rostered" test overrides with false.
   mockStorage.isBowlerActiveInLeague.mockResolvedValue(true);
@@ -164,6 +204,7 @@ async function postCombined(body: Record<string, unknown>) {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
+      'Idempotency-Key': '00000000-0000-4000-8000-000000000003',
       'x-test-user': JSON.stringify(PAYER),
     },
     body: JSON.stringify(body),
@@ -236,24 +277,16 @@ describe('POST /api/payments-provider/combined-payments', () => {
     });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(mockSquareProvider.processPayment).toHaveBeenCalledTimes(1);
-    expect(mockSquareProvider.processPayment.mock.calls[0][1]).toBe(4000);
-    expect(mockStorage.createCombinedPayments).toHaveBeenCalledTimes(1);
-    type InsertedRow = { combinedChargeGroupId: string; bowlerId: number; amount: number; idempotencyKey?: string };
-    const insertedRows: InsertedRow[] = mockStorage.createCombinedPayments.mock.calls[0][0];
-    expect(insertedRows).toHaveLength(2);
-    const groupIds = new Set(insertedRows.map((r) => r.combinedChargeGroupId));
-    expect(groupIds.size).toBe(1);
-    // Only the first row carries the idempotency key.
-    expect(insertedRows[0].idempotencyKey).toBeDefined();
-    expect(insertedRows[1].idempotencyKey).toBeUndefined();
-    expect(body.combinedChargeGroupId).toBe([...groupIds][0]);
+    expect(mockPrepareInteractiveOperation).toHaveBeenCalledTimes(1);
+    expect(mockInteractiveExecute).toHaveBeenCalledTimes(1);
+    expect(mockSquareProvider.processPayment).not.toHaveBeenCalled();
+    expect(mockStorage.createCombinedPayments).not.toHaveBeenCalled();
+    expect(body.combinedChargeGroupId).toBe('operation-combined-test');
     expect(body.rows).toHaveLength(2);
   });
 
-  it('refunds the provider charge if the per-row insert fails', async () => {
-    mockStorage.createCombinedPayments.mockRejectedValueOnce(new Error('db boom'));
-    mockSquareProvider.refundPayment.mockResolvedValue({ id: 'rfnd_1' });
+  it('does not issue a compensation refund after local finalization is owned by the ledger', async () => {
+    mockInteractiveExecute.mockRejectedValueOnce(new Error('db boom'));
     const res = await postCombined({
       sourceId: 'cnon:tok',
       leagueId: 11,
@@ -264,21 +297,10 @@ describe('POST /api/payments-provider/combined-payments', () => {
       ],
     });
     expect(res.status).toBe(500);
-    const body = await res.json();
-    expect(body.error?.code).toBe('PAYMENT_RECORD_FAILED');
-    expect(mockSquareProvider.refundPayment).toHaveBeenCalledWith('sq_pay_combo', 4000);
+    expect(mockSquareProvider.refundPayment).not.toHaveBeenCalled();
   });
 
   it('idempotency-key short-circuit returns the original group rows', async () => {
-    mockStorage.getPaymentByIdempotencyKey.mockResolvedValue({
-      id: 999,
-      providerPaymentId: 'sq_pay_combo',
-      combinedChargeGroupId: 'group-abc',
-    });
-    mockStorage.getPaymentsByCombinedGroupId.mockResolvedValue([
-      { id: 100, bowlerId: 7, amount: 2000 },
-      { id: 101, bowlerId: 8, amount: 2000 },
-    ]);
     const res = await postCombined({
       sourceId: 'cnon:tok',
       leagueId: 11,
@@ -290,10 +312,9 @@ describe('POST /api/payments-provider/combined-payments', () => {
     });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.deduplicated).toBe(true);
-    expect(body.combinedChargeGroupId).toBe('group-abc');
+    expect(body.combinedChargeGroupId).toBe('operation-combined-test');
     expect(body.rows).toHaveLength(2);
-    expect(mockSquareProvider.processPayment).not.toHaveBeenCalled();
+    expect(mockInteractiveExecute).toHaveBeenCalledTimes(1);
     expect(mockStorage.createCombinedPayments).not.toHaveBeenCalled();
   });
 });

@@ -29,6 +29,7 @@ import { useLocation } from "wouter";
 import { PaymentFormFields } from "@/components/payment-form-fields";
 import { PaymentMethodTabs } from "@/components/payment-method-tabs";
 import { usePaymentFormSubmit } from "@/hooks/use-payment-form-submit";
+import { beginPaymentIntent, clearPaymentIntent, paymentRequestHeaders } from "@/lib/payment-request-identity";
 import { PaymentFeeInfoAlert } from "@/components/payment-fee-info-alert";
 import { PaymentCheckNumberField } from "@/components/payment-check-number-field";
 import { PaymentReceiptEmailField } from "@/components/payment-receipt-email-field";
@@ -55,6 +56,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
   const queryClient = useQueryClient();
   const [, navigate] = useLocation();
   const cardContainerRef = useRef<HTMLDivElement>(null);
+  const walletRequestKeyRef = useRef<string | null>(null);
   const [isSquareReady, setIsSquareReady] = useState(false);
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [activePaymentMethod, setActivePaymentMethod] = useState<'credit' | 'cash' | 'check'>('credit');
@@ -269,9 +271,11 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
     }
     const overrideEmail = !selected?.email && trimmedReceiptEmail ? trimmedReceiptEmail : undefined;
     try {
+      const paymentScope = `admin-wallet:${bowlerId}:${currentLeagueId}:${amount}`;
+      const requestKey = walletRequestKeyRef.current ?? beginPaymentIntent(paymentScope);
       const response = await csrfFetch('/api/payments-provider/payments', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: paymentRequestHeaders(requestKey),
         body: JSON.stringify({
           sourceId: token,
           amount,
@@ -285,6 +289,11 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
       if (!response.ok) {
         throw makeApiError(responseData, response.status, 'Payment failed');
       }
+      if (responseData.status !== 'COMPLETED') {
+        throw new Error('Your payment is still processing. Use payment recovery before entering card details again.');
+      }
+      clearPaymentIntent(paymentScope);
+      walletRequestKeyRef.current = null;
       const label = walletType === 'apple_pay' ? 'Apple Pay' : 'Google Pay';
       if (responseData.deduplicated) {
         toast({ title: "Already Processed", description: `This ${label} payment was already recorded.` });
@@ -309,6 +318,14 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
     }
   }, [form, toast, queryClient, onClose, bowlers, receiptEmail, navigate, leagueInfo?.locationId]);
 
+  const beginWalletPayment = useCallback(() => {
+    const values = form.getValues();
+    if (!values.bowlerId || !values.leagueId || !values.amount) return;
+    walletRequestKeyRef.current = beginPaymentIntent(
+      `admin-wallet:${values.bowlerId}:${values.leagueId}:${values.amount}`,
+    );
+  }, [form]);
+
   const {
     applePayAvailable,
     googlePayAvailable,
@@ -324,6 +341,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
     locationId: leagueInfo?.locationId ?? null,
     amountCents: watchedAmount || 0,
     enabled: open && paymentType === 'credit_card' && supportsWallets,
+    onPaymentStarted: beginWalletPayment,
     onTokenReceived: handleWalletPayment,
     onError: (error) => setPaymentError(error),
   });

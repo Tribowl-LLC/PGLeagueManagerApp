@@ -31,6 +31,13 @@ vi.mock('../../server/storage/payment-operations', () => ({
   getLegacyScheduledPaymentCycleBlock: vi.fn().mockResolvedValue(undefined),
 }));
 
+// The general interactive charge route is now durable and is covered by its
+// own operation/executor tests. Keep this provider-contract suite focused on
+// the legacy-client fail-closed boundary and provider adapter mappings.
+vi.mock('../../server/services/interactive-payment-operation-executor', () => ({
+  interactivePaymentOperationExecutor: { execute: vi.fn() },
+}));
+
 const mockHasAccessToLeague = vi.fn();
 const mockHasAccessToBowler = vi.fn();
 const mockHasAccessToPayment = vi.fn();
@@ -511,13 +518,13 @@ describe.each<[string, typeof mockSquareProvider, ProviderFactory]>([
   });
 
   describe('Route Layer: Failure Handling', () => {
-    it('POST /payments-provider/payments: surfaces decline and does NOT persist row', async () => {
+    it('POST /payments-provider/payments: rejects legacy clients before provider dispatch', async () => {
       mockProvider.processPayment.mockRejectedValue(new PaymentProviderError('declined', 'PAYMENT_DECLINED'));
       
       const res = await postCharge({ sourceId: 'src', amount: 2000, bowlerId: 42, leagueId: 11 });
-      expect(res.status).toBe(500);
+      expect(res.status).toBe(428);
       const body = await res.json();
-      expect(body.error.code).toBe('PAYMENT_DECLINED');
+      expect(body.error.code).toBe('IDEMPOTENCY_KEY_REQUIRED');
       expect(mockStorage.createPayment).not.toHaveBeenCalled();
     });
 
@@ -540,12 +547,12 @@ describe.each<[string, typeof mockSquareProvider, ProviderFactory]>([
       expect(mockStorage.refundPayment).not.toHaveBeenCalled();
     });
 
-    it('falls back to generic message for untyped Error', async () => {
+    it('does not dispatch an unkeyed legacy charge even when the provider would fail', async () => {
       mockProvider.processPayment.mockRejectedValue(new Error('untyped boom'));
       const res = await postCharge({ sourceId: 'src', amount: 2000, bowlerId: 42, leagueId: 11 });
+      expect(res.status).toBe(428);
       const body = await res.json();
-      expect(body.error.message).toBe(GENERIC_PAYMENT_USER_MESSAGE);
-      expect(body.error.code).toBe('PAYMENT_ERROR');
+      expect(body.error.code).toBe('IDEMPOTENCY_KEY_REQUIRED');
     });
   });
 
@@ -581,7 +588,7 @@ describe.each<[string, typeof mockSquareProvider, ProviderFactory]>([
 });
 
 describe('Security: user-facing message scrubbing', () => {
-  it('scrubs JSON / multi-line userMessage via sanitizePaymentUserMessage', async () => {
+  it('fails closed before a legacy client can send an unsanitized provider outcome', async () => {
     mockSquareProvider.processPayment.mockRejectedValue(
       new PaymentProviderError('{"bad":"json"}\nstacktrace', 'PAYMENT_DECLINED')
     );
@@ -589,7 +596,7 @@ describe('Security: user-facing message scrubbing', () => {
 
     const res = await postCharge({ sourceId: 'src', amount: 2000, bowlerId: 42, leagueId: 11 });
     const body = await res.json();
-    expect(body.error.message).toBe(GENERIC_PAYMENT_USER_MESSAGE);
-    expect(body.error.code).toBe('PAYMENT_DECLINED');
+    expect(body.error.message).toContain('out of date');
+    expect(body.error.code).toBe('IDEMPOTENCY_KEY_REQUIRED');
   });
 });

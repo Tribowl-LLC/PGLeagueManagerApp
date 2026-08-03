@@ -2,6 +2,7 @@ import { eq, and, desc, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   payments, paymentSchedules, leagues, bowlerLeagues,
+  paymentOperations,
   type Payment, type InsertPayment, type UpdatePayment,
   type PaymentSchedule, type InsertPaymentSchedule, type UpdatePaymentSchedule,
   type PaginatedResult,
@@ -173,6 +174,24 @@ export async function getPaymentById(id: number): Promise<Payment | undefined> {
 export async function getPaymentByIdempotencyKey(key: string): Promise<Payment | undefined> {
   const [result] = await db.select().from(payments).where(eq(payments.idempotencyKey, key)).limit(1);
   return result;
+}
+
+export async function getPaymentsByPaymentOperationId(
+  organizationId: number,
+  operationId: string,
+): Promise<Payment[]> {
+  return db
+    .select({ payment: payments })
+    .from(payments)
+    .innerJoin(
+      paymentOperations,
+      eq(paymentOperations.id, payments.paymentOperationId),
+    )
+    .where(and(
+      eq(paymentOperations.organizationId, organizationId),
+      eq(paymentOperations.id, operationId),
+    ))
+    .then((rows) => rows.map(({ payment }) => payment));
 }
 
 export async function getPaymentByDisputeId(disputeId: string): Promise<Payment | undefined> {
