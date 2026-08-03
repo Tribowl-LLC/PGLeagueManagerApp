@@ -398,6 +398,7 @@ export async function createPayment(
         bowlerId,
         leagueId,
         storeCard,
+        sourceKind: 'new_card',
         ...(buyerEmail ? { buyerEmail } : {}),
       };
 

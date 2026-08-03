@@ -6,10 +6,10 @@ import {
   CardOwnershipMismatchError,
 } from './payment-errors';
 import {
-  getSquareErrorCtor,
   buildSquareIdempotencyKey,
   type SquareProviderContext,
 } from './square-client';
+import { classifySquareFailure } from './square-payments';
 import type {
   SavedCard,
   PaymentCustomer,
@@ -21,14 +21,14 @@ export async function saveCardOnFile(
   ctx: SquareProviderContext,
   sourceId: string,
   customerId: string,
+  idempotencyKey?: string,
 ): Promise<SavedCard | null> {
   const client = await ctx.getClient();
   if (!client) {
     // Throw the structured "not configured" error so the
     // POST /cards/:bowlerId route surfaces 422
-    // PROVIDER_NOT_CONFIGURED. The opportunistic save-card
-    // call inside POST /payments wraps this in a try/catch
-    // that just logs, so it stays non-fatal there. Task #332.
+    // PROVIDER_NOT_CONFIGURED and the durable interactive executor can
+    // classify the pre-charge vault attempt without dispatching payment.
     throw new ProviderNotConfiguredError(
       'Square client not configured for this location',
       ctx.locationId,
@@ -47,7 +47,7 @@ export async function saveCardOnFile(
       // every save-card call after the v40 SDK migration (task
       // #671). The format is deterministic per (sourceId, customerId)
       // so post-deploy retries still dedupe inside Square's window.
-      idempotencyKey: buildSquareIdempotencyKey('lv-card', sourceId, customerId),
+      idempotencyKey: idempotencyKey ?? buildSquareIdempotencyKey('lv-card', sourceId, customerId),
       sourceId,
       card: {
         customerId,
@@ -87,54 +87,62 @@ export async function saveCardOnFile(
     return null;
   } catch (error) {
     log.error('Failed to save card on file:', error instanceof Error ? error.message : error);
-    // Re-throw as a typed PaymentProviderError so the standalone
-    // POST /api/cards/:bowlerId route surfaces a real `userMessage`
-    // / `code` via buildPaymentErrorResponse instead of the generic
-    // "Failed to save card on file" 500 (task #671). The opportunistic
-    // save-card call inside POST /payments wraps the throw in its own
-    // try/catch (charges.ts ~309) so it stays non-fatal there — the
-    // payment still completes; we just don't get a saved card.
+    // Re-throw as a typed PaymentProviderError so the standalone card route
+    // and durable interactive executor retain the same sanitized message,
+    // provider code, and retry/unknown/terminal disposition.
     if (
       error instanceof PaymentProviderError ||
       error instanceof ProviderNotConfiguredError
     ) {
       throw error;
     }
-    const apiErr = error instanceof getSquareErrorCtor() ? error : null;
-    const detail = apiErr?.errors?.[0]?.detail;
-    if (apiErr?.statusCode === 400) {
+    const failure = classifySquareFailure(error);
+    if (failure.statusCode === 400) {
       throw new PaymentProviderError(
         'Invalid payment information. Please check your card details and try again.',
         'INVALID_REQUEST',
-        detail,
+        failure.detail,
+        failure,
       );
     }
-    if (apiErr?.statusCode === 401) {
+    if (failure.disposition === 'configuration') {
       throw new PaymentProviderError(
         'Payment system is temporarily unavailable. Please try again later.',
         'SYSTEM_ERROR',
-        detail,
+        failure.detail,
+        failure,
+      );
+    }
+    if (failure.disposition === 'action_required') {
+      throw new PaymentProviderError(
+        'The card could not be saved. Please check the card details or use a different card.',
+        'CARD_SAVE_REQUIRES_ACTION',
+        failure.detail,
+        failure,
       );
     }
     throw new PaymentProviderError(
       'Could not save card on file. Please try again.',
       'SAVE_CARD_FAILED',
-      detail,
+      failure.detail,
+      failure,
     );
   }
 }
 
-export async function listCardsOnFile(
+async function fetchCardsOnFile(
   ctx: SquareProviderContext,
   customerId: string,
+  strict: boolean,
 ): Promise<SavedCard[]> {
   const client = await ctx.getClient();
   if (!client) {
-    // Intentionally degraded: GET /cards/:bowlerId is a read
-    // path that already treats "no provider configured" as
-    // "no saved cards" and returns []. Throwing here would
-    // turn a benign empty list into a 500 in the route's
-    // outer catch. Task #332 — kept silent on purpose.
+    if (strict) {
+      throw new ProviderNotConfiguredError(
+        'Square client not configured for this location',
+        ctx.locationId,
+      );
+    }
     return [];
   }
 
@@ -159,8 +167,40 @@ export async function listCardsOnFile(
       }));
   } catch (error) {
     log.error('Failed to list cards on file:', error instanceof Error ? error.message : error);
-    return [];
+    if (!strict) return [];
+    if (
+      error instanceof PaymentProviderError
+      || error instanceof ProviderNotConfiguredError
+    ) {
+      throw error;
+    }
+    const failure = classifySquareFailure(error);
+    throw new PaymentProviderError(
+      'Could not verify the saved payment method. Please try again.',
+      'CARD_OWNERSHIP_CHECK_FAILED',
+      failure.detail,
+      failure,
+    );
   }
+}
+
+export async function listCardsOnFile(
+  ctx: SquareProviderContext,
+  customerId: string,
+): Promise<SavedCard[]> {
+  // Intentionally degraded for card-management UI reads: a missing provider
+  // or provider outage remains an empty list. Payment authorization must use
+  // hasCardOnFile(), whose strict path propagates those failures.
+  return fetchCardsOnFile(ctx, customerId, false);
+}
+
+export async function hasCardOnFile(
+  ctx: SquareProviderContext,
+  customerId: string,
+  cardId: string,
+): Promise<boolean> {
+  const cards = await fetchCardsOnFile(ctx, customerId, true);
+  return cards.some(card => card.id === cardId);
 }
 
 export async function disableCard(

@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(12);
+    expect(migrations).toHaveLength(13);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -215,6 +215,14 @@ describe('normalized migration baseline tools', () => {
     expect(migrations[11]?.sql).toContain('CREATE TABLE "interactive_payment_operation_line_items"');
     expect(migrations[11]?.sql).toContain('interactive_payment_allocations_total');
     expect(migrations[11]?.sql).not.toMatch(/(?:^|\n)\s*(?:DROP|UPDATE|DELETE|INSERT)\b/);
+    expect(migrations[12]).toMatchObject({
+      idx: 12,
+      tag: '0012_interactive_card_vault_before_charge',
+      createdAt: 1785720810804,
+    });
+    expect(migrations[12]?.sql).toContain('ADD COLUMN "source_kind"');
+    expect(migrations[12]?.sql).toContain('ADD COLUMN "encrypted_saved_card_id"');
+    expect(migrations[12]?.sql).not.toMatch(/(?:^|\n)\s*(?:UPDATE|DELETE|INSERT)\b/);
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 

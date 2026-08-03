@@ -50,6 +50,14 @@ export const PAYMENT_OPERATION_ERROR_CLASSIFICATIONS = [
 export type PaymentOperationErrorClassification =
   (typeof PAYMENT_OPERATION_ERROR_CLASSIFICATIONS)[number];
 
+export const INTERACTIVE_CARD_SAVE_STATUSES = [
+  "pending",
+  "saved",
+  "failed",
+  "not_available",
+] as const;
+export type InteractiveCardSaveStatus = (typeof INTERACTIVE_CARD_SAVE_STATUSES)[number];
+
 export const PAYMENT_OPERATION_MAX_ATTEMPTS = 8;
 export const PAYMENT_OPERATION_MAX_LEASE_MS = 15 * 60 * 1000;
 export const PAYMENT_OPERATION_MAX_RETRY_DELAY_MS = 30 * 24 * 60 * 60 * 1000;
@@ -83,6 +91,14 @@ export const paymentOperations = pgTable("payment_operations", {
   providerName: varchar("provider_name", { length: 32 }).notNull(),
   providerObjectId: varchar("provider_object_id", { length: 255 }),
   providerOrderId: varchar("provider_order_id", { length: 255 }),
+  // These fields record the optional pre-charge card-vault side effect for a
+  // general interactive charge. They are deliberately on the sole provider
+  // operation ledger rather than in a second vault ledger.
+  cardSaveStatus: text("card_save_status", { enum: INTERACTIVE_CARD_SAVE_STATUSES }),
+  cardSaveProviderIdempotencyKey: varchar("card_save_provider_idempotency_key", { length: 45 }),
+  encryptedSavedCardId: text("encrypted_saved_card_id"),
+  cardSaveErrorCode: varchar("card_save_error_code", { length: 128 }),
+  cardSaveCompletedAt: timestamp("card_save_completed_at", { mode: "string" }),
   status: text("status", { enum: PAYMENT_OPERATION_STATUSES }).notNull().default("pending"),
   attemptCount: integer("attempt_count").notNull().default(0),
   nextAttemptAt: timestamp("next_attempt_at", { mode: "string" }).defaultNow(),
@@ -141,6 +157,46 @@ export const paymentOperations = pgTable("payment_operations", {
   providerKeyCheck: check(
     "payment_operations_provider_key_check",
     sql`length(${table.providerIdempotencyKey}) BETWEEN 1 AND 45`,
+  ),
+  cardSaveStatusCheck: check(
+    "payment_operations_card_save_status_check",
+    sql`${table.cardSaveStatus} IS NULL OR ${table.cardSaveStatus} IN ('pending', 'saved', 'failed', 'not_available')`,
+  ),
+  cardSaveProviderKeyCheck: check(
+    "payment_operations_card_save_provider_key_check",
+    sql`${table.cardSaveProviderIdempotencyKey} IS NULL OR length(${table.cardSaveProviderIdempotencyKey}) BETWEEN 1 AND 45`,
+  ),
+  cardSaveStateCheck: check(
+    "payment_operations_card_save_state_check",
+    sql`(
+      ${table.cardSaveStatus} IS NULL
+      AND ${table.cardSaveProviderIdempotencyKey} IS NULL
+      AND ${table.encryptedSavedCardId} IS NULL
+      AND ${table.cardSaveErrorCode} IS NULL
+      AND ${table.cardSaveCompletedAt} IS NULL
+    ) OR (
+      ${table.cardSaveStatus} = 'pending'
+      AND ${table.cardSaveProviderIdempotencyKey} IS NOT NULL
+      AND ${table.encryptedSavedCardId} IS NULL
+      AND ${table.cardSaveCompletedAt} IS NULL
+    ) OR (
+      ${table.cardSaveStatus} = 'saved'
+      AND ${table.cardSaveProviderIdempotencyKey} IS NOT NULL
+      AND ${table.encryptedSavedCardId} IS NOT NULL
+      AND ${table.cardSaveCompletedAt} IS NOT NULL
+    ) OR (
+      ${table.cardSaveStatus} IN ('failed', 'not_available')
+      AND (
+        (${table.cardSaveStatus} = 'failed' AND ${table.cardSaveProviderIdempotencyKey} IS NOT NULL)
+        OR (${table.cardSaveStatus} = 'not_available' AND ${table.cardSaveProviderIdempotencyKey} IS NULL)
+      )
+      AND ${table.encryptedSavedCardId} IS NULL
+      AND ${table.cardSaveCompletedAt} IS NOT NULL
+    )`,
+  ),
+  cardSaveErrorCodeCheck: check(
+    "payment_operations_card_save_error_code_check",
+    sql`${table.cardSaveErrorCode} IS NULL OR ${table.cardSaveErrorCode} ~ '^[A-Z0-9][A-Z0-9_.:-]{0,127}$'`,
   ),
   attemptCountCheck: check(
     "payment_operations_attempt_count_check",
@@ -326,9 +382,12 @@ export const scheduledPaymentOperationLineItems = pgTable("scheduled_payment_ope
   ),
 }));
 
-export const INTERACTIVE_PAYMENT_SNAPSHOT_VERSION = 1;
+export const INTERACTIVE_PAYMENT_SNAPSHOT_VERSION = 2;
+export const INTERACTIVE_PAYMENT_SNAPSHOT_LEGACY_VERSION = 1;
 export const INTERACTIVE_PAYMENT_REQUEST_KINDS = ["direct", "order"] as const;
 export type InteractivePaymentRequestKind = (typeof INTERACTIVE_PAYMENT_REQUEST_KINDS)[number];
+export const INTERACTIVE_PAYMENT_SOURCE_KINDS = ["new_card", "saved_card", "wallet"] as const;
+export type InteractivePaymentSourceKind = (typeof INTERACTIVE_PAYMENT_SOURCE_KINDS)[number];
 
 /**
  * Immutable, encrypted execution material for a general interactive charge.
@@ -356,6 +415,8 @@ export const interactivePaymentOperationSnapshots = pgTable("interactive_payment
   encryptedCustomerId: text("encrypted_customer_id"),
   encryptedBuyerEmail: text("encrypted_buyer_email"),
   storeCard: boolean("store_card").notNull().default(false),
+  // Null is retained for v1 rows created before source-kind enforcement.
+  sourceKind: text("source_kind", { enum: [...INTERACTIVE_PAYMENT_SOURCE_KINDS, "legacy"] as const }),
   weekOf: timestamp("week_of", { mode: "string" }).notNull(),
   combinedChargeGroupId: varchar("combined_charge_group_id", { length: 128 }),
   createdAt: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
@@ -364,11 +425,11 @@ export const interactivePaymentOperationSnapshots = pgTable("interactive_payment
   payerIdx: index("interactive_payment_snapshots_payer_idx").on(table.payerBowlerId),
   snapshotVersionCheck: check(
     "interactive_payment_snapshots_version_check",
-    sql`${table.snapshotVersion} = ${sql.raw(String(INTERACTIVE_PAYMENT_SNAPSHOT_VERSION))}`,
+    sql`${table.snapshotVersion} IN (${sql.raw(String(INTERACTIVE_PAYMENT_SNAPSHOT_LEGACY_VERSION))}, ${sql.raw(String(INTERACTIVE_PAYMENT_SNAPSHOT_VERSION))})`,
   ),
   snapshotFingerprintCheck: check(
     "interactive_payment_snapshots_fingerprint_check",
-    sql`${table.snapshotFingerprint} ~ '^lvpayexecic:v1:[0-9a-f]{64}$'`,
+    sql`${table.snapshotFingerprint} ~ '^lvpayexecic:v(1|2):[0-9a-f]{64}$'`,
   ),
   requestKindCheck: check(
     "interactive_payment_snapshots_request_kind_check",
@@ -377,6 +438,10 @@ export const interactivePaymentOperationSnapshots = pgTable("interactive_payment
   groupIdCheck: check(
     "interactive_payment_snapshots_group_id_check",
     sql`${table.combinedChargeGroupId} IS NULL OR length(${table.combinedChargeGroupId}) > 0`,
+  ),
+  sourceKindCheck: check(
+    "interactive_payment_snapshots_source_kind_check",
+    sql`${table.snapshotVersion} = ${sql.raw(String(INTERACTIVE_PAYMENT_SNAPSHOT_LEGACY_VERSION))} OR ${table.sourceKind} IN ('new_card', 'saved_card', 'wallet')`,
   ),
 }));
 

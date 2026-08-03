@@ -190,11 +190,43 @@ async function postCharge(body: Record<string, unknown>) {
       'Idempotency-Key': '00000000-0000-4000-8000-000000000001',
       'x-test-user': JSON.stringify(ADMIN),
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify({ sourceKind: 'new_card', ...body }),
   });
 }
 
 describe('POST /api/payments-provider/payments — buyer email enforcement (Task #503)', () => {
+  it('rejects clients without an explicit source kind before preparation', async () => {
+    const res = await postCharge({
+      sourceKind: undefined,
+      sourceId: 'cnon:tok',
+      amount: 2000,
+      bowlerId: 7,
+      leagueId: 11,
+      storeCard: false,
+    });
+
+    expect(res.status).toBe(428);
+    expect((await res.json()).error?.code).toBe('PAYMENT_APP_UPGRADE_REQUIRED');
+    expect(mockPrepareInteractiveOperation).not.toHaveBeenCalled();
+    expect(mockGetPaymentProvider).not.toHaveBeenCalled();
+  });
+
+  it('rejects unsupported wallet vaulting before preparation', async () => {
+    const res = await postCharge({
+      sourceKind: 'wallet',
+      sourceId: 'wallet-token',
+      amount: 2000,
+      bowlerId: 7,
+      leagueId: 11,
+      storeCard: true,
+    });
+
+    expect(res.status).toBe(400);
+    expect((await res.json()).error?.code).toBe('CARD_SAVE_UNSUPPORTED');
+    expect(mockPrepareInteractiveOperation).not.toHaveBeenCalled();
+    expect(mockGetPaymentProvider).not.toHaveBeenCalled();
+  });
+
   it('Square + bowler email on file -> 200, no enforcement triggered', async () => {
     mockGetPaymentProvider.mockResolvedValue(mockSquareProvider);
     mockStorage.getBowler.mockResolvedValue({

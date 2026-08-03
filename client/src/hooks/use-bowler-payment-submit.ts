@@ -149,6 +149,7 @@ export function useBowlerPaymentSubmit({
               amount: totalAmount,
               leagueId: league.id,
               storeCard: cardMode === 'new' ? storeCard : false,
+              sourceKind: cardMode === 'new' ? 'new_card' : 'saved_card',
               payees,
               ...(trimmedBuyerEmail && !bowler.email ? { buyerEmail: trimmedBuyerEmail } : {}),
             }),
@@ -186,6 +187,7 @@ export function useBowlerPaymentSubmit({
               bowlerId: chargeForBowlerId,
               leagueId: league.id,
               storeCard: false,
+              sourceKind: 'saved_card',
               ...(trimmedBuyerEmail && !bowler.email ? { buyerEmail: trimmedBuyerEmail } : {}),
             }),
           });
@@ -249,6 +251,7 @@ export function useBowlerPaymentSubmit({
             amount: totalAmount,
             leagueId: league.id,
             storeCard: cardMode === 'new' ? storeCard : false,
+            sourceKind: cardMode === 'new' ? 'new_card' : 'saved_card',
             payees,
             ...(trimmedBuyerEmail && !bowler.email ? { buyerEmail: trimmedBuyerEmail } : {}),
           }),
@@ -341,6 +344,7 @@ export function useBowlerPaymentSubmit({
             bowlerId: chargeForBowlerId,
             leagueId: league.id,
             storeCard: false,
+            sourceKind: 'saved_card',
             ...(trimmedBuyerEmail && !bowler.email ? { buyerEmail: trimmedBuyerEmail } : {}),
           }),
         });

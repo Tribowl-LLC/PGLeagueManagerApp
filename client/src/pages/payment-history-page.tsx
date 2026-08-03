@@ -217,7 +217,8 @@ export default function PaymentHistoryPage() {
           amount: dialogAmountCents,
           bowlerId,
           leagueId,
-          storeCard: true,
+          storeCard: false,
+          sourceKind: 'wallet',
           ...(overrideEmail ? { buyerEmail: overrideEmail } : {}),
         }),
       });
@@ -328,6 +329,7 @@ export default function PaymentHistoryPage() {
             bowlerId,
             leagueId,
             storeCard: false,
+            sourceKind: 'saved_card',
             ...(overrideEmail ? { buyerEmail: overrideEmail } : {}),
           }),
         });

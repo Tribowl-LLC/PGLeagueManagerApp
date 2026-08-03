@@ -4,7 +4,11 @@ import type { PaymentOperationTransaction } from "../storage/payment-operations.
 import {
   buildSquarePaymentRequestIdentity,
 } from "./payment-operation-idempotency.js";
-import { INTERACTIVE_PAYMENT_SNAPSHOT_VERSION, type PaymentOperation } from "@shared/schema";
+import {
+  INTERACTIVE_PAYMENT_SNAPSHOT_VERSION,
+  type InteractivePaymentSourceKind,
+  type PaymentOperation,
+} from "@shared/schema";
 import type { InteractivePaymentSemanticSnapshot } from "./interactive-payment-operation-snapshot.js";
 
 export interface InteractivePaymentAllocationInput {
@@ -33,6 +37,7 @@ export interface InteractivePaymentOperationPreparationInput {
   customerId: string | null;
   buyerEmail: string | null;
   storeCard: boolean;
+  sourceKind: InteractivePaymentSourceKind;
   weekOf: string;
   combined: boolean;
   now?: Date;
@@ -70,6 +75,7 @@ export function buildInteractivePaymentSnapshot(
     customerId: input.customerId,
     buyerEmail: input.buyerEmail,
     storeCard: input.storeCard,
+    sourceKind: input.sourceKind,
     weekOf: input.weekOf,
     combinedChargeGroupId: input.combined ? operation.id : null,
     allocations: input.allocations,

@@ -301,7 +301,8 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
               sourceId: token,
               amount: totalAmount,
               leagueId: league.id,
-              storeCard: true,
+              storeCard: false,
+              sourceKind: 'wallet',
               payees: [
                 { bowlerId: bowler.id, amount: perAmount },
                 ...additionalBowlerIds.map((id) => ({ bowlerId: id, amount: perAmount })),
@@ -316,7 +317,8 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
               amount: perAmount,
               bowlerId: targetBowlerId,
               leagueId: league.id,
-              storeCard: true,
+              storeCard: false,
+              sourceKind: 'wallet',
             }),
           });
       const amount = isCombined ? totalAmount : perAmount;
@@ -333,7 +335,7 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
       if (data.deduplicated) {
         toast({ title: "Already Processed", description: `This ${walletLabel} payment was already recorded.` });
       } else {
-        toast({ title: "Payment Successful", description: `${walletLabel} payment of $${(amount / 100).toFixed(2)} completed. Your card has been saved for future payments.` });
+        toast({ title: "Payment Successful", description: `${walletLabel} payment of $${(amount / 100).toFixed(2)} completed.` });
       }
       queryClient.invalidateQueries({ queryKey: ['/api/payments'] });
       queryClient.invalidateQueries({ queryKey: [`/api/payment-schedules/${bowler.id}/${league.id}`] });

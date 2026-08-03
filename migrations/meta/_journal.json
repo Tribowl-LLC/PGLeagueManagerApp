@@ -85,6 +85,13 @@
       "when": 1785707848197,
       "tag": "0011_interactive_payment_operation_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1785720810804,
+      "tag": "0012_interactive_card_vault_before_charge",
+      "breakpoints": true
     }
   ]
 }

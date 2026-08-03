@@ -282,6 +282,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
           bowlerId,
           leagueId: currentLeagueId,
           storeCard: false,
+          sourceKind: 'wallet',
           ...(overrideEmail ? { buyerEmail: overrideEmail } : {}),
         }),
       });

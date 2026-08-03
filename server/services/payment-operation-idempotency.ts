@@ -214,6 +214,31 @@ export function deriveSquareOperationIdempotencyKey(
   return key;
 }
 
+/**
+ * Stable Square CreateCard identity for the optional pre-charge vault step.
+ * It is derived from the durable operation identity, never from a one-time
+ * source token, and remains within Square's 45-character limit.
+ */
+export function deriveSquareCardSaveIdempotencyKey(providerIdempotencyKey: string): string {
+  if (
+    providerIdempotencyKey.length === 0
+    || providerIdempotencyKey.length > SQUARE_OPERATION_IDEMPOTENCY_MAX_LENGTH
+    || providerIdempotencyKey.trim() !== providerIdempotencyKey
+  ) {
+    throw new Error("provider idempotency key has an invalid format");
+  }
+  const digest = createHash("sha256")
+    .update(`lv-square-request:v1\0card\0${providerIdempotencyKey}`)
+    .digest()
+    .subarray(0, 24)
+    .toString("base64url");
+  const key = `lv-sq1-c-${digest}`;
+  if (key.length > SQUARE_OPERATION_IDEMPOTENCY_MAX_LENGTH) {
+    throw new Error("Square card idempotency key exceeds the provider limit");
+  }
+  return key;
+}
+
 /** Single versioned Square identity constructor used by legacy and ledger. */
 export function buildSquarePaymentRequestIdentity(input: {
   providerIdempotencyKey: string;

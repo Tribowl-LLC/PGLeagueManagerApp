@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { SquareError } from 'square';
 
 // v40+ flat-client SDK shape (task #603 / Phase 2 of #600). Resources
 // live under singular lowercase getters (`customers`, `payments`, ...)
@@ -64,7 +65,9 @@ vi.mock('square', () => ({
       this.name = 'SquareError';
       this.statusCode = args.statusCode;
       this.body = args.body;
-      this.errors = args.errors;
+      this.errors = args.errors ?? (
+        args.body as { errors?: Array<{ category?: string; code?: string; detail?: string; field?: string }> }
+      )?.errors;
     }
   },
 }));
@@ -207,6 +210,65 @@ describe('saveCardOnFile', () => {
     expect(mocks.cards.disable).toHaveBeenCalledWith({ cardId: 'card_duplicate' });
   });
 
+  it('retains a caller-provided durable operation key for CreateCard', async () => {
+    const callerProvidedKey = ['test', 'card', 'save', 'key'].join('-');
+    mocks.cards.create.mockResolvedValue({
+      card: {
+        id: 'card_operation_key',
+        last4: '4242',
+        cardBrand: 'VISA',
+        fingerprint: 'fingerprint-operation-key',
+      },
+    });
+    const localProvider = new SquarePaymentProvider(1);
+
+    await localProvider.saveCardOnFile(
+      'cnon:operation-source',
+      'CUSTOMER_OPERATION_KEY',
+      callerProvidedKey,
+    );
+
+    expect(mocks.cards.create).toHaveBeenCalledWith(expect.objectContaining({
+      idempotencyKey: callerProvidedKey,
+    }));
+  });
+
+  it.each([
+    [429, 'TEMPORARY_ERROR', 'transient'],
+    [500, 'INTERNAL_SERVER_ERROR', 'provider_unknown'],
+    [401, 'UNAUTHORIZED', 'configuration'],
+    [403, 'FORBIDDEN', 'configuration'],
+    [400, 'BAD_REQUEST', 'invalid_request'],
+    [402, 'CARD_DECLINED', 'action_required'],
+  ] as const)(
+    'classifies CreateCard HTTP %s / %s failures as %s',
+    async (statusCode, providerCode, disposition) => {
+      mocks.cards.create.mockRejectedValue(new SquareError({
+        statusCode,
+        body: { errors: [{ code: providerCode, detail: 'deterministic provider detail' }] },
+      }));
+      const provider = new SquarePaymentProvider(1);
+
+      const result = provider.saveCardOnFile('cnon:classified-token', 'customer-1');
+
+      await expect(result).rejects.toMatchObject({
+        name: 'PaymentProviderError',
+        disposition,
+        providerCode,
+      });
+    },
+  );
+
+  it('classifies an unstructured CreateCard timeout as provider_unknown', async () => {
+    mocks.cards.create.mockRejectedValue(new Error('deterministic transport timeout'));
+    const provider = new SquarePaymentProvider(1);
+
+    await expect(provider.saveCardOnFile('cnon:timeout-token', 'customer-1')).rejects.toMatchObject({
+      disposition: 'provider_unknown',
+      providerCode: 'SQUARE_TRANSPORT_UNKNOWN',
+    });
+  });
+
   it('keeps a newly-created card when only a disabled match exists', async () => {
     mocks.cards.list.mockResolvedValue({
       data: [
@@ -327,6 +389,48 @@ describe('card-list query compatibility', () => {
       customerId: 'customer-1',
       sortOrder: 'ASC',
     });
+  });
+
+  it('uses a strict successful card-list response for payment ownership', async () => {
+    mocks.cards.list.mockResolvedValue({
+      data: [{ id: 'ccof:owned-card', enabled: true }],
+    });
+    const provider = new SquarePaymentProvider(1);
+
+    await expect(provider.hasCardOnFile('customer-1', 'ccof:owned-card')).resolves.toBe(true);
+    await expect(provider.hasCardOnFile('customer-1', 'ccof:other-card')).resolves.toBe(false);
+  });
+
+  it.each([
+    [429, 'TEMPORARY_ERROR', 'transient'],
+    [500, 'INTERNAL_SERVER_ERROR', 'provider_unknown'],
+    [401, 'UNAUTHORIZED', 'configuration'],
+  ] as const)(
+    'propagates strict ownership HTTP %s / %s failures as %s',
+    async (statusCode, providerCode, disposition) => {
+      mocks.cards.list.mockRejectedValue(new SquareError({
+        statusCode,
+        body: { errors: [{ code: providerCode, detail: 'deterministic ownership failure' }] },
+      }));
+      const provider = new SquarePaymentProvider(1);
+
+      await expect(provider.hasCardOnFile('customer-1', 'ccof:owned-card')).rejects.toMatchObject({
+        name: 'PaymentProviderError',
+        code: 'CARD_OWNERSHIP_CHECK_FAILED',
+        disposition,
+        providerCode,
+      });
+    },
+  );
+
+  it('keeps the UI card list best effort during the same provider outage', async () => {
+    mocks.cards.list.mockRejectedValue(new SquareError({
+      statusCode: 500,
+      body: { errors: [{ code: 'INTERNAL_SERVER_ERROR' }] },
+    }));
+    const provider = new SquarePaymentProvider(1);
+
+    await expect(provider.listCardsOnFile('customer-1')).resolves.toEqual([]);
   });
 
   it('sends an explicit sort order for the disable-card ownership check', async () => {
@@ -504,7 +608,8 @@ describe('Square Service', () => {
   // ProviderNotConfiguredError, so the routes can map it to a
   // uniform 422 PROVIDER_NOT_CONFIGURED. The four read-only
   // methods (listCardsOnFile, getPayment, listCatalogCategories,
-  // listCatalogItems) intentionally stay degraded — pinned below.
+  // listCatalogItems) intentionally stay degraded — pinned below. The strict
+  // payment-authorization ownership lookup must still throw.
   describe('ProviderNotConfiguredError contract (task #332)', () => {
     let noCredsProvider: InstanceType<typeof SquarePaymentProvider>;
 
@@ -534,6 +639,10 @@ describe('Square Service', () => {
 
     it('saveCardOnFile throws PNCE', async () => {
       await expectsPnce(noCredsProvider.saveCardOnFile('src', 'cust'));
+    });
+
+    it('hasCardOnFile throws PNCE for strict payment authorization', async () => {
+      await expectsPnce(noCredsProvider.hasCardOnFile('cust', 'ccof:card-id'));
     });
 
     it('disableCard throws PNCE', async () => {

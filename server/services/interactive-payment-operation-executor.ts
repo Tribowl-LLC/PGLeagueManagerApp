@@ -7,12 +7,16 @@ import {
 import { providerNameToPaymentType } from "@shared/schema/constants";
 import {
   acquirePaymentOperationLease,
+  finalizeInteractiveCardSave,
   finalizePaymentOperationSuccess,
   getInteractivePaymentOperationSnapshotForOrganization,
+  getInteractiveCardSaveResponse,
   getPaymentOperationForOrganization,
+  recordInteractiveCardSaveFailure,
   recordPaymentOperationActionRequired,
   recordPaymentOperationFailedTerminal,
   recordPaymentOperationProviderUnknown,
+  recordPaymentOperationReconciliationRequired,
   schedulePaymentOperationRetry,
   type PaymentOperationLinkedPaymentInput,
 } from "../storage/payment-operations.js";
@@ -158,10 +162,13 @@ export class InteractivePaymentOperationExecutor {
     if (!operation?.leaseToken) {
       return getPaymentOperationForOrganization(input.organizationId, input.operationId);
     }
-    return this.executeLeased(operation);
+    return this.executeLeased(operation, current.status);
   }
 
-  private async executeLeased(operation: PaymentOperation): Promise<PaymentOperation> {
+  private async executeLeased(
+    operation: PaymentOperation,
+    previousStatus: PaymentOperation["status"],
+  ): Promise<PaymentOperation> {
     const leaseToken = operation.leaseToken;
     if (!leaseToken) throw new Error("leased interactive operation has no fencing token");
     const now = this.now();
@@ -196,6 +203,29 @@ export class InteractivePaymentOperationExecutor {
       });
     }
 
+    if (snapshot.sourceKind === "legacy" && previousStatus !== "pending") {
+      return recordPaymentOperationReconciliationRequired({
+        organizationId: operation.organizationId,
+        operationId: operation.id,
+        leaseToken,
+        now,
+        errorCode: "LEGACY_PAYMENT_OUTCOME_UNCERTAIN",
+      });
+    }
+
+    if (snapshot.sourceKind === "legacy" && snapshot.storeCard) {
+      return this.recordFailure(
+        operation,
+        new PaymentProviderError(
+          "This payment must be submitted again from an updated payment app.",
+          "LEGACY_CARD_SAVE_UNSUPPORTED",
+          undefined,
+          { disposition: "invalid_request", providerCode: "LEGACY_CARD_SAVE_UNSUPPORTED" },
+        ),
+        false,
+      );
+    }
+
     let provider: PaymentProvider;
     try {
       provider = await this.getProvider(snapshot.locationId);
@@ -215,6 +245,177 @@ export class InteractivePaymentOperationExecutor {
     }
 
     let result: PaymentResult;
+    let paymentSourceId = snapshot.sourceId;
+    let paymentStoreCard = snapshot.storeCard;
+
+    const sourceIsProviderCard = provider.validateCardId(snapshot.sourceId);
+    if (
+      (snapshot.sourceKind === "new_card" || snapshot.sourceKind === "wallet")
+      && sourceIsProviderCard
+    ) {
+      const error = new PaymentProviderError(
+        "The payment source does not match the selected payment method.",
+        "PAYMENT_SOURCE_KIND_MISMATCH",
+        undefined,
+        { disposition: "invalid_request", providerCode: "PAYMENT_SOURCE_KIND_MISMATCH" },
+      );
+      return snapshot.sourceKind === "new_card" && snapshot.storeCard
+        ? this.recordCardSaveFailureAndPaymentFailure(operation, error, false)
+        : this.recordFailure(operation, error, false);
+    }
+
+    const requiresSavedCardOwnership = snapshot.sourceKind === "saved_card"
+      || (snapshot.sourceKind === "legacy" && sourceIsProviderCard);
+
+    if (requiresSavedCardOwnership && !snapshot.customerId) {
+      return this.recordFailure(
+        operation,
+        new PaymentProviderError(
+          "The saved payment method is not available for this payer.",
+          "SAVED_CARD_CUSTOMER_REQUIRED",
+          undefined,
+          { disposition: "invalid_request", providerCode: "SAVED_CARD_CUSTOMER_REQUIRED" },
+        ),
+        false,
+      );
+    }
+
+    if (snapshot.sourceKind === "saved_card" && !sourceIsProviderCard) {
+      return this.recordFailure(
+        operation,
+        new PaymentProviderError(
+          "The saved payment method is invalid.",
+          "INVALID_SAVED_CARD",
+          undefined,
+          { disposition: "invalid_request", providerCode: "INVALID_SAVED_CARD" },
+        ),
+        false,
+      );
+    }
+
+    if (requiresSavedCardOwnership) {
+      if (!provider.hasCardOnFile) {
+        return this.recordFailure(
+          operation,
+          new PaymentProviderError(
+            "The saved payment method could not be verified.",
+            "STRICT_CARD_OWNERSHIP_UNAVAILABLE",
+            undefined,
+            {
+              disposition: "internal",
+              providerCode: "STRICT_CARD_OWNERSHIP_UNAVAILABLE",
+            },
+          ),
+          false,
+        );
+      }
+      let cardBelongsToCustomer: boolean;
+      try {
+        cardBelongsToCustomer = await provider.hasCardOnFile(
+          snapshot.customerId ?? "",
+          snapshot.sourceId,
+        );
+      } catch (error) {
+        return this.recordFailure(operation, error, true);
+      }
+      if (!cardBelongsToCustomer) {
+        return this.recordFailure(
+          operation,
+          new PaymentProviderError(
+            "The saved payment method is not available for this payer.",
+            "SAVED_CARD_OWNERSHIP_MISMATCH",
+            undefined,
+            { disposition: "invalid_request", providerCode: "SAVED_CARD_OWNERSHIP_MISMATCH" },
+          ),
+          false,
+        );
+      }
+      // A saved-card source is already vaulted; never pass the historical
+      // save-card intent through to the charge provider.
+      paymentStoreCard = false;
+    }
+
+    if (snapshot.storeCard && snapshot.sourceKind === "new_card") {
+      if (!snapshot.customerId) {
+        return this.recordCardSaveFailureAndPaymentFailure(
+          operation,
+          new PaymentProviderError(
+            "The card could not be prepared for payment.",
+            "CARD_CUSTOMER_REQUIRED",
+            undefined,
+            { disposition: "invalid_request", providerCode: "CARD_CUSTOMER_REQUIRED" },
+          ),
+          false,
+        );
+      }
+
+      if (operation.cardSaveStatus === "saved") {
+        const saved = getInteractiveCardSaveResponse(operation);
+        if (!saved.savedCardId) {
+          return this.recordFailure(
+            operation,
+            new PaymentProviderError(
+              "The saved card could not be recovered.",
+              "CARD_SAVE_RESULT_UNAVAILABLE",
+              undefined,
+              { disposition: "provider_unknown", providerCode: "CARD_SAVE_RESULT_UNAVAILABLE" },
+            ),
+            false,
+          );
+        }
+        paymentSourceId = saved.savedCardId;
+      } else {
+        if (operation.cardSaveStatus !== "pending" || !operation.cardSaveProviderIdempotencyKey) {
+          return this.recordFailure(
+            operation,
+            new PaymentProviderError(
+              "The card could not be prepared for payment.",
+              "CARD_SAVE_STATE_INVALID",
+              undefined,
+              { disposition: "internal", providerCode: "CARD_SAVE_STATE_INVALID" },
+            ),
+            false,
+          );
+        }
+        let savedCard: Awaited<ReturnType<PaymentProvider["saveCardOnFile"]>>;
+        try {
+          savedCard = await provider.saveCardOnFile(
+            snapshot.sourceId,
+            snapshot.customerId,
+            operation.cardSaveProviderIdempotencyKey,
+          );
+          if (!savedCard?.id) {
+            throw new PaymentProviderError(
+              "The card could not be saved before payment.",
+              "CARD_SAVE_RESULT_UNKNOWN",
+              undefined,
+              { disposition: "provider_unknown", providerCode: "CARD_SAVE_RESULT_UNKNOWN" },
+            );
+          }
+        } catch (error) {
+          const disposition = failureDisposition(error, true);
+          if (!["provider_unknown", "transient"].includes(disposition)) {
+            return this.recordCardSaveFailureAndPaymentFailure(operation, error);
+          }
+          return this.recordFailure(operation, error, true);
+        }
+        // A database failure here is intentionally allowed to escape with the
+        // lease retained. Recovery retries the exact CreateCard key and no
+        // payment request is dispatched until the selected ID is persisted.
+        await finalizeInteractiveCardSave({
+          organizationId: operation.organizationId,
+          operationId: operation.id,
+          leaseToken,
+          savedCardId: savedCard.id,
+          now: this.now(),
+        });
+        paymentSourceId = savedCard.id;
+      }
+      // CreatePayment must consume the saved-card ID. The historical boolean
+      // parameter is intentionally false because vaulting is complete.
+      paymentStoreCard = false;
+    }
+
     try {
       const identity = {
         paymentKey: snapshot.squarePaymentIdempotencyKey,
@@ -223,18 +424,18 @@ export class InteractivePaymentOperationExecutor {
       };
       result = snapshot.requestKind === "order"
         ? await provider.createOrderWithPayment(
-          snapshot.sourceId,
+          paymentSourceId,
           snapshot.amountMinor,
           snapshot.lineItems.map(({ catalogObjectId, quantity }) => ({ catalogObjectId, quantity })),
-          snapshot.storeCard,
+          paymentStoreCard,
           snapshot.customerId ?? undefined,
           snapshot.buyerEmail ?? undefined,
           identity,
         )
         : await provider.processPayment(
-          snapshot.sourceId,
+          paymentSourceId,
           snapshot.amountMinor,
-          snapshot.storeCard,
+          paymentStoreCard,
           snapshot.customerId ?? undefined,
           snapshot.buyerEmail ?? undefined,
           identity,
@@ -279,6 +480,24 @@ export class InteractivePaymentOperationExecutor {
       });
       throw error;
     }
+  }
+
+  private async recordCardSaveFailureAndPaymentFailure(
+    operation: PaymentOperation,
+    error: unknown,
+    providerDispatchStarted = true,
+  ): Promise<PaymentOperation> {
+    const leaseToken = operation.leaseToken;
+    if (!leaseToken) throw new Error("leased interactive operation has no fencing token");
+    const errorCode = sanitizeProviderErrorCode(safeErrorCode(error), "CARD_SAVE_FAILED");
+    await recordInteractiveCardSaveFailure({
+      organizationId: operation.organizationId,
+      operationId: operation.id,
+      leaseToken,
+      errorCode,
+      now: this.now(),
+    });
+    return this.recordFailure(operation, error, providerDispatchStarted);
   }
 
   private async recordFailure(

@@ -207,7 +207,7 @@ async function postCombined(body: Record<string, unknown>) {
       'Idempotency-Key': '00000000-0000-4000-8000-000000000003',
       'x-test-user': JSON.stringify(PAYER),
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify({ sourceKind: 'new_card', ...body }),
   });
 }
 

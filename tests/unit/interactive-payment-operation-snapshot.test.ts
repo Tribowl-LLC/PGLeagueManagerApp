@@ -30,7 +30,7 @@ function makeSnapshot(): {
   return {
     providerIdempotencyKey: identity.providerIdempotencyKey,
     snapshot: {
-      snapshotVersion: 1,
+      snapshotVersion: 2,
       organizationId: 41,
       amountMinor: 8_000,
       currency: "USD",
@@ -52,6 +52,7 @@ function makeSnapshot(): {
       customerId: "CUSTOMER_REFERENCE_A",
       buyerEmail: "buyer@example.test",
       storeCard: true,
+      sourceKind: "saved_card",
       weekOf: "2026-11-01T00:00:00.000Z",
       combinedChargeGroupId: "combined-operation-group",
       allocations: [
@@ -121,6 +122,30 @@ describe("interactive payment immutable execution snapshots", () => {
     const second = encryptInteractivePaymentSnapshot(snapshot);
     expect(second.encryptedSourceId).not.toBe(first.encryptedSourceId);
     expect(second.snapshotFingerprint).toBe(first.snapshotFingerprint);
+  });
+
+  it("reads legacy v1 snapshots without replaying their post-charge vault side effect", () => {
+    const { snapshot, providerIdempotencyKey } = makeSnapshot();
+    const legacy = {
+      ...snapshot,
+      snapshotVersion: 1 as const,
+      sourceKind: "legacy" as const,
+    };
+    const stored = encryptInteractivePaymentSnapshot(legacy);
+    expect(stored.sourceKind).toBeNull();
+    const reconstructed = reconstructInteractivePaymentSnapshot({
+      organizationId: legacy.organizationId,
+      amountMinor: legacy.amountMinor,
+      currency: legacy.currency,
+      providerName: legacy.providerName,
+      providerIdempotencyKey,
+      stored,
+      allocations: legacy.allocations,
+      lineItems: legacy.lineItems,
+    });
+    expect(reconstructed.snapshotVersion).toBe(1);
+    expect(reconstructed.sourceKind).toBe("legacy");
+    expect(reconstructed.storeCard).toBe(true);
   });
 
   it.each([

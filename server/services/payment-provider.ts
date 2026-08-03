@@ -115,11 +115,22 @@ export interface PaymentProvider {
   saveCardOnFile(
     sourceId: string,
     customerId: string,
+    idempotencyKey?: string,
   ): Promise<SavedCard | null>;
 
   listCardsOnFile(
     customerId: string,
   ): Promise<SavedCard[]>;
+
+  /**
+   * Strict payment-authorization lookup. Unlike the best-effort card-list UI
+   * method, provider/configuration failures must reject rather than appear as
+   * an empty vault.
+   */
+  hasCardOnFile?(
+    customerId: string,
+    cardId: string,
+  ): Promise<boolean>;
 
   disableCard(
     cardId: string,

@@ -16,6 +16,7 @@ import {
 import {
   saveCardOnFile,
   listCardsOnFile,
+  hasCardOnFile,
   disableCard,
   createOrUpdateCustomer,
   deleteCustomer,
@@ -197,12 +198,16 @@ export class SquarePaymentProvider implements PaymentProvider, CatalogProvider, 
     return refundPayment(this.ctx, paymentId, amountInCents, reason);
   }
 
-  saveCardOnFile(sourceId: string, customerId: string): Promise<SavedCard | null> {
-    return saveCardOnFile(this.ctx, sourceId, customerId);
+  saveCardOnFile(sourceId: string, customerId: string, idempotencyKey?: string): Promise<SavedCard | null> {
+    return saveCardOnFile(this.ctx, sourceId, customerId, idempotencyKey);
   }
 
   listCardsOnFile(customerId: string): Promise<SavedCard[]> {
     return listCardsOnFile(this.ctx, customerId);
+  }
+
+  hasCardOnFile(customerId: string, cardId: string): Promise<boolean> {
+    return hasCardOnFile(this.ctx, customerId, cardId);
   }
 
   disableCard(cardId: string, customerId: string): Promise<void> {
