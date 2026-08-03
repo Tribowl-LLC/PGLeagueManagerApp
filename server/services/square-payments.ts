@@ -88,7 +88,7 @@ function paymentIdentity(input: PaymentIdempotencyInput | undefined): {
   };
 }
 
-function classifySquareFailure(error: unknown): {
+export function classifySquareFailure(error: unknown): {
   detail?: string;
   disposition: PaymentProviderFailureDisposition;
   providerCode: string;

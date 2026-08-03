@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { SquareError } from 'square';
 
 // v40+ flat-client SDK shape (task #603 / Phase 2 of #600). Resources
 // live under singular lowercase getters (`customers`, `payments`, ...)
@@ -64,7 +65,9 @@ vi.mock('square', () => ({
       this.name = 'SquareError';
       this.statusCode = args.statusCode;
       this.body = args.body;
-      this.errors = args.errors;
+      this.errors = args.errors ?? (
+        args.body as { errors?: Array<{ category?: string; code?: string; detail?: string; field?: string }> }
+      )?.errors;
     }
   },
 }));
@@ -228,6 +231,42 @@ describe('saveCardOnFile', () => {
     expect(mocks.cards.create).toHaveBeenCalledWith(expect.objectContaining({
       idempotencyKey: callerProvidedKey,
     }));
+  });
+
+  it.each([
+    [429, 'TEMPORARY_ERROR', 'transient'],
+    [500, 'INTERNAL_SERVER_ERROR', 'provider_unknown'],
+    [401, 'UNAUTHORIZED', 'configuration'],
+    [403, 'FORBIDDEN', 'configuration'],
+    [400, 'BAD_REQUEST', 'invalid_request'],
+    [402, 'CARD_DECLINED', 'action_required'],
+  ] as const)(
+    'classifies CreateCard HTTP %s / %s failures as %s',
+    async (statusCode, providerCode, disposition) => {
+      mocks.cards.create.mockRejectedValue(new SquareError({
+        statusCode,
+        body: { errors: [{ code: providerCode, detail: 'deterministic provider detail' }] },
+      }));
+      const provider = new SquarePaymentProvider(1);
+
+      const result = provider.saveCardOnFile('cnon:classified-token', 'customer-1');
+
+      await expect(result).rejects.toMatchObject({
+        name: 'PaymentProviderError',
+        disposition,
+        providerCode,
+      });
+    },
+  );
+
+  it('classifies an unstructured CreateCard timeout as provider_unknown', async () => {
+    mocks.cards.create.mockRejectedValue(new Error('deterministic transport timeout'));
+    const provider = new SquarePaymentProvider(1);
+
+    await expect(provider.saveCardOnFile('cnon:timeout-token', 'customer-1')).rejects.toMatchObject({
+      disposition: 'provider_unknown',
+      providerCode: 'SQUARE_TRANSPORT_UNKNOWN',
+    });
   });
 
   it('keeps a newly-created card when only a disabled match exists', async () => {

@@ -14,11 +14,13 @@ import { getTestDb } from "../setup/test-db";
 import { expectErrorLog } from "../helpers/expected-error-logs";
 import { deleteOrganization } from "../../server/storage/organizations";
 import {
+  acquirePaymentOperationLease,
   createOrGetGeneralInteractivePaymentOperation,
   finalizePaymentOperationSuccess,
   getPaymentOperationForOrganization,
   persistInteractivePaymentOperationSnapshot,
   PaymentOperationInvalidTransitionError,
+  recordPaymentOperationProviderUnknown,
 } from "../../server/storage/payment-operations";
 import { InteractivePaymentOperationExecutor } from "../../server/services/interactive-payment-operation-executor";
 import {
@@ -220,12 +222,18 @@ async function prepareOperation(
     requestKind?: "direct" | "order";
     storeCard?: boolean;
     sourceKind?: "new_card" | "saved_card" | "wallet";
+    sourceId?: string;
+    snapshotVersion?: 1 | 2;
   } = {},
 ): Promise<{
   operation: Awaited<ReturnType<typeof createOrGetGeneralInteractivePaymentOperation>>;
   snapshot: InteractivePaymentSemanticSnapshot;
 }> {
   const requestKind = options.requestKind ?? "direct";
+  const snapshotVersion = options.snapshotVersion ?? 2;
+  const sourceKind = snapshotVersion === 1
+    ? "legacy"
+    : options.sourceKind ?? "new_card";
   const operation = await createOrGetGeneralInteractivePaymentOperation({
     organizationId: fixture.organizationId,
     requestKey: options.requestKey ?? `executor-${randomUUID()}`,
@@ -235,7 +243,7 @@ async function prepareOperation(
     now: fixedNow,
   });
   const snapshot: InteractivePaymentSemanticSnapshot = {
-    snapshotVersion: 2,
+    snapshotVersion,
     organizationId: fixture.organizationId,
     amountMinor: operation.amountMinor,
     currency: operation.currency,
@@ -252,13 +260,13 @@ async function prepareOperation(
     squareOrderIdempotencyKey: requestKind === "order"
       ? deriveSquareOperationIdempotencyKey(operation.providerIdempotencyKey, "order")
       : null,
-    sourceId: options.sourceKind === "saved_card"
+    sourceId: options.sourceId ?? (sourceKind === "saved_card"
       ? "ccof:executor-existing-card"
-      : `cnon:executor-${randomUUID()}`,
+      : `cnon:executor-${randomUUID()}`),
     customerId: "CUSTOMER_EXECUTOR_TEST",
     buyerEmail: "executor@example.test",
     storeCard: options.storeCard ?? false,
-    sourceKind: options.sourceKind ?? "new_card",
+    sourceKind,
     weekOf: "2032-02-02T00:00:00.000Z",
     combinedChargeGroupId: null,
     allocations: [{
@@ -561,6 +569,38 @@ describe("interactive payment operation executor", () => {
     expect(provider.processCalls[0]?.sourceId).toBe("ccof:executor-existing-card");
   });
 
+  it.each(["new_card", "wallet"] as const)(
+    "rejects a saved-card ID labeled as %s before any provider money movement",
+    async (sourceKind) => {
+      const fixture = fixtures[0];
+      const { operation } = await prepareOperation(fixture, {
+        sourceKind,
+        sourceId: "ccof:executor-cross-payer-card",
+      });
+      const provider = new ScriptedInteractiveProvider(fixture.locationId);
+      provider.cardsOnFile = [{
+        id: "ccof:executor-cross-payer-card",
+        last4: "9999",
+        brand: "VISA",
+      }];
+
+      const result = await createExecutor(fixture, provider).execute({
+        organizationId: fixture.organizationId,
+        operationId: operation.id,
+        now: fixedNow,
+      });
+
+      expect(result).toMatchObject({
+        status: "failed_terminal",
+        errorClassification: "invalid_request",
+        errorCode: "PAYMENT_SOURCE_KIND_MISMATCH",
+      });
+      expect(provider.cardSaveCalls).toHaveLength(0);
+      expect(provider.processCalls).toHaveLength(0);
+      expect(provider.orderCalls).toHaveLength(0);
+    },
+  );
+
   it("does not charge when card creation fails", async () => {
     const fixture = fixtures[0];
     const { operation } = await prepareOperation(fixture, { storeCard: true });
@@ -578,6 +618,122 @@ describe("interactive payment operation executor", () => {
     expect(result?.status).toBe("action_required");
     expect(provider.processCalls).toHaveLength(0);
     expect(provider.cardSaveCalls).toHaveLength(1);
+  });
+
+  it.each([
+    ["transient", new PaymentProviderError("temporary", "TEMPORARY_ERROR", undefined, {
+      disposition: "transient",
+      providerCode: "TEMPORARY_ERROR",
+    }), "retry_scheduled"],
+    ["ambiguous", new PaymentProviderError("unknown", "SAVE_CARD_FAILED", undefined, {
+      disposition: "provider_unknown",
+      providerCode: "SQUARE_TRANSPORT_UNKNOWN",
+    }), "provider_unknown"],
+  ] as const)(
+    "keeps card creation %s outcomes recoverable without charging",
+    async (_label, error, expectedStatus) => {
+      const fixture = fixtures[0];
+      const { operation } = await prepareOperation(fixture, { storeCard: true });
+      const provider = new ScriptedInteractiveProvider(fixture.locationId);
+      provider.cardSaveOutcome = error;
+
+      const result = await createExecutor(fixture, provider).execute({
+        organizationId: fixture.organizationId,
+        operationId: operation.id,
+        now: fixedNow,
+      });
+
+      expect(result?.status).toBe(expectedStatus);
+      expect(result?.cardSaveStatus).toBe("pending");
+      expect(provider.cardSaveCalls).toHaveLength(1);
+      expect(provider.processCalls).toHaveLength(0);
+    },
+  );
+
+  it("retries an ambiguous CreateCard outcome with the exact same key before charging", async () => {
+    const fixture = fixtures[0];
+    const { operation } = await prepareOperation(fixture, { storeCard: true });
+    const provider = new ScriptedInteractiveProvider(fixture.locationId);
+    provider.cardSaveOutcome = new PaymentProviderError(
+      "unknown",
+      "SAVE_CARD_FAILED",
+      undefined,
+      {
+        disposition: "provider_unknown",
+        providerCode: "SQUARE_TRANSPORT_UNKNOWN",
+      },
+    );
+    let clock = fixedNow;
+    const executor = createExecutor(fixture, provider, { now: () => clock });
+
+    const first = await executor.execute({
+      organizationId: fixture.organizationId,
+      operationId: operation.id,
+      now: clock,
+    });
+    expect(first?.status).toBe("provider_unknown");
+    if (!first?.nextAttemptAt) throw new Error("ambiguous card save did not schedule recovery");
+    clock = new Date(parseStoredTimestamp(first.nextAttemptAt).getTime() + 1);
+    provider.cardSaveOutcome = {
+      id: "ccof:executor-card-after-unknown",
+      last4: "1111",
+      brand: "VISA",
+    };
+
+    await expect(executor.execute({
+      organizationId: fixture.organizationId,
+      operationId: operation.id,
+      now: clock,
+    })).resolves.toMatchObject({ status: "succeeded", cardSaveStatus: "saved" });
+    expect(provider.cardSaveCalls).toHaveLength(2);
+    expect(provider.cardSaveCalls[1]?.idempotencyKey)
+      .toBe(provider.cardSaveCalls[0]?.idempotencyKey);
+    expect(provider.processCalls).toHaveLength(1);
+    expect(provider.processCalls[0]?.sourceId).toBe("ccof:executor-card-after-unknown");
+  });
+
+  it("moves an unresolved legacy save-card operation to reconciliation without provider calls", async () => {
+    const fixture = fixtures[0];
+    const { operation } = await prepareOperation(fixture, {
+      storeCard: true,
+      snapshotVersion: 1,
+    });
+    const leased = await acquirePaymentOperationLease({
+      organizationId: fixture.organizationId,
+      operationId: operation.id,
+      leaseOwner: `legacy-uncertain-${randomUUID()}`,
+      leaseDurationMs: 60_000,
+      now: fixedNow,
+    });
+    if (!leased?.leaseToken) throw new Error("legacy operation was not leased");
+    const recoveryAt = new Date(fixedNow.getTime() + 60_000);
+    await recordPaymentOperationProviderUnknown({
+      organizationId: fixture.organizationId,
+      operationId: operation.id,
+      leaseToken: leased.leaseToken,
+      recoveryAt,
+      errorCode: "PAYMENT_RESPONSE_UNKNOWN",
+      now: fixedNow,
+    });
+    const retryNow = new Date(recoveryAt.getTime() + 1);
+    const provider = new ScriptedInteractiveProvider(fixture.locationId);
+
+    const result = await createExecutor(fixture, provider, { now: () => retryNow }).execute({
+      organizationId: fixture.organizationId,
+      operationId: operation.id,
+      now: retryNow,
+    });
+
+    expect(result).toMatchObject({
+      status: "reconciliation_required",
+      errorClassification: "provider_unknown",
+      errorCode: "LEGACY_PAYMENT_OUTCOME_UNCERTAIN",
+    });
+    expect(provider.cardSaveCalls).toHaveLength(0);
+    expect(provider.processCalls).toHaveLength(0);
+    expect(provider.orderCalls).toHaveLength(0);
+    expect(await db.select().from(payments)
+      .where(eq(payments.paymentOperationId, operation.id))).toHaveLength(0);
   });
 
   it("retains a successfully-created card when the payment is declined", async () => {

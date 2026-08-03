@@ -1359,7 +1359,7 @@ export async function recordPaymentOperationProviderUnknown(
 
 async function recordTerminalErrorOutcome(
   input: ErrorOutcomeInput & {
-    status: "action_required" | "failed_terminal";
+    status: "action_required" | "reconciliation_required" | "failed_terminal";
     errorClassification: PaymentOperationErrorClassification;
   },
 ): Promise<PaymentOperation> {
@@ -1428,6 +1428,19 @@ export async function recordPaymentOperationActionRequired(
     ...input,
     status: "action_required",
     errorClassification: "hard_decline",
+  });
+}
+
+export async function recordPaymentOperationReconciliationRequired(
+  input: LeasedPaymentOperationInput & {
+    errorCode?: string | null;
+    providerOrderId?: string | null;
+  },
+): Promise<PaymentOperation> {
+  return recordTerminalErrorOutcome({
+    ...input,
+    status: "reconciliation_required",
+    errorClassification: "provider_unknown",
   });
 }
 

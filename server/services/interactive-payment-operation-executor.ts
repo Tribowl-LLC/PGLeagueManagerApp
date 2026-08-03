@@ -16,6 +16,7 @@ import {
   recordPaymentOperationActionRequired,
   recordPaymentOperationFailedTerminal,
   recordPaymentOperationProviderUnknown,
+  recordPaymentOperationReconciliationRequired,
   schedulePaymentOperationRetry,
   type PaymentOperationLinkedPaymentInput,
 } from "../storage/payment-operations.js";
@@ -161,10 +162,13 @@ export class InteractivePaymentOperationExecutor {
     if (!operation?.leaseToken) {
       return getPaymentOperationForOrganization(input.organizationId, input.operationId);
     }
-    return this.executeLeased(operation);
+    return this.executeLeased(operation, current.status);
   }
 
-  private async executeLeased(operation: PaymentOperation): Promise<PaymentOperation> {
+  private async executeLeased(
+    operation: PaymentOperation,
+    previousStatus: PaymentOperation["status"],
+  ): Promise<PaymentOperation> {
     const leaseToken = operation.leaseToken;
     if (!leaseToken) throw new Error("leased interactive operation has no fencing token");
     const now = this.now();
@@ -222,6 +226,15 @@ export class InteractivePaymentOperationExecutor {
     let paymentStoreCard = snapshot.storeCard;
 
     if (snapshot.sourceKind === "legacy" && snapshot.storeCard) {
+      if (previousStatus !== "pending") {
+        return recordPaymentOperationReconciliationRequired({
+          organizationId: operation.organizationId,
+          operationId: operation.id,
+          leaseToken,
+          now,
+          errorCode: "LEGACY_PAYMENT_OUTCOME_UNCERTAIN",
+        });
+      }
       return this.recordFailure(
         operation,
         new PaymentProviderError(
@@ -234,7 +247,26 @@ export class InteractivePaymentOperationExecutor {
       );
     }
 
-    if (snapshot.sourceKind === "saved_card" && !snapshot.customerId) {
+    const sourceIsProviderCard = provider.validateCardId(snapshot.sourceId);
+    if (
+      (snapshot.sourceKind === "new_card" || snapshot.sourceKind === "wallet")
+      && sourceIsProviderCard
+    ) {
+      const error = new PaymentProviderError(
+        "The payment source does not match the selected payment method.",
+        "PAYMENT_SOURCE_KIND_MISMATCH",
+        undefined,
+        { disposition: "invalid_request", providerCode: "PAYMENT_SOURCE_KIND_MISMATCH" },
+      );
+      return snapshot.sourceKind === "new_card" && snapshot.storeCard
+        ? this.recordCardSaveFailureAndPaymentFailure(operation, error, false)
+        : this.recordFailure(operation, error, false);
+    }
+
+    const requiresSavedCardOwnership = snapshot.sourceKind === "saved_card"
+      || (snapshot.sourceKind === "legacy" && sourceIsProviderCard);
+
+    if (requiresSavedCardOwnership && !snapshot.customerId) {
       return this.recordFailure(
         operation,
         new PaymentProviderError(
@@ -247,7 +279,7 @@ export class InteractivePaymentOperationExecutor {
       );
     }
 
-    if (snapshot.sourceKind === "saved_card" && !provider.validateCardId(snapshot.sourceId)) {
+    if (snapshot.sourceKind === "saved_card" && !sourceIsProviderCard) {
       return this.recordFailure(
         operation,
         new PaymentProviderError(
@@ -260,7 +292,7 @@ export class InteractivePaymentOperationExecutor {
       );
     }
 
-    if (snapshot.sourceKind === "saved_card") {
+    if (requiresSavedCardOwnership) {
       const cards = await provider.listCardsOnFile(snapshot.customerId ?? "");
       if (!cards.some((card) => card.id === snapshot.sourceId)) {
         return this.recordFailure(
@@ -289,17 +321,7 @@ export class InteractivePaymentOperationExecutor {
             undefined,
             { disposition: "invalid_request", providerCode: "CARD_CUSTOMER_REQUIRED" },
           ),
-        );
-      }
-      if (provider.validateCardId(snapshot.sourceId)) {
-        return this.recordCardSaveFailureAndPaymentFailure(
-          operation,
-          new PaymentProviderError(
-            "The new card source is invalid.",
-            "INVALID_CARD_SOURCE",
-            undefined,
-            { disposition: "invalid_request", providerCode: "INVALID_CARD_SOURCE" },
-          ),
+          false,
         );
       }
 
@@ -439,6 +461,7 @@ export class InteractivePaymentOperationExecutor {
   private async recordCardSaveFailureAndPaymentFailure(
     operation: PaymentOperation,
     error: unknown,
+    providerDispatchStarted = true,
   ): Promise<PaymentOperation> {
     const leaseToken = operation.leaseToken;
     if (!leaseToken) throw new Error("leased interactive operation has no fencing token");
@@ -450,7 +473,7 @@ export class InteractivePaymentOperationExecutor {
       errorCode,
       now: this.now(),
     });
-    return this.recordFailure(operation, error, true);
+    return this.recordFailure(operation, error, providerDispatchStarted);
   }
 
   private async recordFailure(

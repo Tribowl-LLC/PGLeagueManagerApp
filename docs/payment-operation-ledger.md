@@ -647,9 +647,10 @@ durable operation identity. The selected new-card or fingerprint survivor is
 encrypted and persisted under the operation lease before `CreatePayment` or
 the order/payment sequence is dispatched. The charge then uses that saved-card
 ID and the operation's existing stable payment/order keys. A saved-card source
-never calls `CreateCard`; wallet sources are never vaulted. Missing or
-unsupported source kinds fail closed before snapshot creation/provider money
-movement.
+never calls `CreateCard`; wallet sources are never vaulted. A Square card ID
+is accepted only as `saved_card` and must pass the customer ownership lookup;
+labeling a card ID as `new_card` or `wallet` fails closed before provider money
+movement. Missing or unsupported source kinds also fail closed.
 
 Card-save state is stored on `payment_operations` itself: `pending` means the
 exact CreateCard request may be replayed, `saved` includes the encrypted
@@ -659,6 +660,14 @@ the lease and retries the same CreateCard key; it does not issue a charge,
 refund, or new provider identity. A database failure after payment success
 retains the lease and retries the same payment key. No compensation refund is
 issued for local charge-finalization failure.
+
+CreateCard error classification preserves Square's structured outcome:
+rate limits and explicit temporary errors schedule a same-key retry;
+timeouts, transport failures, 5xx responses, and otherwise unknown outcomes
+remain `provider_unknown`; authentication/authorization failures are
+configuration errors; and definite 4xx/card failures are terminal invalid or
+action-required outcomes. Ambiguous card creation never marks the card-save
+state failed and never dispatches the charge.
 
 If card creation succeeds and the payment is later declined, the saved card is
 retained as the user-authorized vault side effect. It is not disabled or
@@ -679,7 +688,12 @@ persists/reuses the request key; older native versions fail closed with an
 upgrade-required response.
 
 Existing v1 operations remain readable and successful responses never replay
-their old post-charge vault side effect. New v2 operations require explicit
+their old post-charge vault side effect. A pending v1 save-card request that
+provably has never acquired a provider-attempt lease fails closed as an
+upgrade-required request. Any v1 save-card operation recovered from
+`provider_unknown`, retry, or an expired lease moves directly to
+`reconciliation_required`; it is never presented as a confirmed failure and
+never receives a new provider identity. New v2 operations require explicit
 source kind and durable pre-charge vaulting. Once a v2 general interactive
 operation exists, a pre-fix application is no longer an approved rollback
 target for payment traffic. Rollback requires the compatible schema and
@@ -688,6 +702,13 @@ provider identities. The migration adds a few indexed-row columns but no
 polling or wake path, so the expected Neon CU impact is limited to the extra
 operation-row writes/reads during interactive checkout and one bounded card
 ownership read for saved-card charges.
+
+Immediately before application activation, operators should perform a
+read-only preflight count of nonterminal v1 interactive snapshots with
+`store_card=true`. Zero is the expected drained state. A nonzero count blocks
+cutover until each operation is understood; uncertain rows must remain on
+their existing provider identity and be reconciled, never replayed as a new
+payment intent. This preflight does not modify production data.
 
 ### Phase 3 split and rollback
 

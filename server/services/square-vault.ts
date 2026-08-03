@@ -6,10 +6,10 @@ import {
   CardOwnershipMismatchError,
 } from './payment-errors';
 import {
-  getSquareErrorCtor,
   buildSquareIdempotencyKey,
   type SquareProviderContext,
 } from './square-client';
+import { classifySquareFailure } from './square-payments';
 import type {
   SavedCard,
   PaymentCustomer,
@@ -27,9 +27,8 @@ export async function saveCardOnFile(
   if (!client) {
     // Throw the structured "not configured" error so the
     // POST /cards/:bowlerId route surfaces 422
-    // PROVIDER_NOT_CONFIGURED. The opportunistic save-card
-    // call inside POST /payments wraps this in a try/catch
-    // that just logs, so it stays non-fatal there. Task #332.
+    // PROVIDER_NOT_CONFIGURED and the durable interactive executor can
+    // classify the pre-charge vault attempt without dispatching payment.
     throw new ProviderNotConfiguredError(
       'Square client not configured for this location',
       ctx.locationId,
@@ -88,39 +87,45 @@ export async function saveCardOnFile(
     return null;
   } catch (error) {
     log.error('Failed to save card on file:', error instanceof Error ? error.message : error);
-    // Re-throw as a typed PaymentProviderError so the standalone
-    // POST /api/cards/:bowlerId route surfaces a real `userMessage`
-    // / `code` via buildPaymentErrorResponse instead of the generic
-    // "Failed to save card on file" 500 (task #671). The opportunistic
-    // save-card call inside POST /payments wraps the throw in its own
-    // try/catch (charges.ts ~309) so it stays non-fatal there — the
-    // payment still completes; we just don't get a saved card.
+    // Re-throw as a typed PaymentProviderError so the standalone card route
+    // and durable interactive executor retain the same sanitized message,
+    // provider code, and retry/unknown/terminal disposition.
     if (
       error instanceof PaymentProviderError ||
       error instanceof ProviderNotConfiguredError
     ) {
       throw error;
     }
-    const apiErr = error instanceof getSquareErrorCtor() ? error : null;
-    const detail = apiErr?.errors?.[0]?.detail;
-    if (apiErr?.statusCode === 400) {
+    const failure = classifySquareFailure(error);
+    if (failure.statusCode === 400) {
       throw new PaymentProviderError(
         'Invalid payment information. Please check your card details and try again.',
         'INVALID_REQUEST',
-        detail,
+        failure.detail,
+        failure,
       );
     }
-    if (apiErr?.statusCode === 401) {
+    if (failure.disposition === 'configuration') {
       throw new PaymentProviderError(
         'Payment system is temporarily unavailable. Please try again later.',
         'SYSTEM_ERROR',
-        detail,
+        failure.detail,
+        failure,
+      );
+    }
+    if (failure.disposition === 'action_required') {
+      throw new PaymentProviderError(
+        'The card could not be saved. Please check the card details or use a different card.',
+        'CARD_SAVE_REQUIRES_ACTION',
+        failure.detail,
+        failure,
       );
     }
     throw new PaymentProviderError(
       'Could not save card on file. Please try again.',
       'SAVE_CARD_FAILED',
-      detail,
+      failure.detail,
+      failure,
     );
   }
 }
