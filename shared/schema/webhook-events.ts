@@ -90,6 +90,15 @@ export const webhookEvents = pgTable("webhook_events", {
     .on(table.organizationId, table.receivedAt),
   locationReceivedIdx: index("webhook_events_location_received_idx")
     .on(table.locationId, table.receivedAt),
+  objectFreshnessIdx: index("webhook_events_object_freshness_idx")
+    .on(
+      table.provider,
+      table.providerApplicationId,
+      table.providerObjectType,
+      table.providerObjectId,
+      table.providerObjectVersion,
+      table.providerObjectUpdatedAt,
+    ),
   statusCheck: check(
     "webhook_events_status_check",
     sql`${table.status} IN (${statusValues})`,

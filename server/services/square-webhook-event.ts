@@ -33,7 +33,7 @@ const envelopeSchema = z.object({
 });
 
 const moneySchema = z.object({
-  amount: z.union([z.number().int(), z.bigint()]),
+  amount: z.number().int().positive().max(2_147_483_647),
   currency: z.string().trim().regex(/^[A-Z]{3}$/),
 });
 
@@ -53,6 +53,10 @@ const paymentSchema = z.object({
   status: z.string().trim().min(1).max(50),
   amount_money: moneySchema,
   updated_at: timestampSchema.optional(),
+  order_id: safeProviderString.optional(),
+  reference_id: z.string().trim().min(1).max(40).optional(),
+  receipt_url: z.string().url().max(2048).optional(),
+  receipt_number: z.string().trim().min(1).max(32).optional(),
 });
 
 const disputeSchema = z.object({
@@ -77,6 +81,13 @@ export interface NormalizedSquareWebhookEvent {
   providerObjectVersion: number | null;
   providerObjectUpdatedAt: string | null;
   ignored: boolean;
+  providerStatus: string | null;
+  amountMinor: number | null;
+  currency: string | null;
+  providerOrderId: string | null;
+  providerReferenceId: string | null;
+  receiptUrl: string | null;
+  receiptNumber: string | null;
 }
 
 export class SquareWebhookPayloadError extends Error {
@@ -144,6 +155,13 @@ export function normalizeSquareWebhookEvent(rawBody: string): NormalizedSquareWe
       providerObjectVersion: result.data.version ?? null,
       providerObjectUpdatedAt: result.data.updated_at ? iso(result.data.updated_at) : null,
       ignored: false,
+      providerStatus: result.data.status,
+      amountMinor: Number(result.data.amount_money.amount),
+      currency: result.data.amount_money.currency,
+      providerOrderId: null,
+      providerReferenceId: null,
+      receiptUrl: null,
+      receiptNumber: null,
     };
   }
 
@@ -163,6 +181,13 @@ export function normalizeSquareWebhookEvent(rawBody: string): NormalizedSquareWe
       providerObjectVersion: null,
       providerObjectUpdatedAt: result.data.updated_at ? iso(result.data.updated_at) : null,
       ignored: false,
+      providerStatus: result.data.status,
+      amountMinor: Number(result.data.amount_money.amount),
+      currency: result.data.amount_money.currency,
+      providerOrderId: result.data.order_id ?? null,
+      providerReferenceId: result.data.reference_id ?? null,
+      receiptUrl: result.data.receipt_url ?? null,
+      receiptNumber: result.data.receipt_number ?? null,
     };
   }
 
@@ -182,6 +207,13 @@ export function normalizeSquareWebhookEvent(rawBody: string): NormalizedSquareWe
       providerObjectVersion: result.data.version ?? null,
       providerObjectUpdatedAt: result.data.updated_at ? iso(result.data.updated_at) : null,
       ignored: false,
+      providerStatus: result.data.state,
+      amountMinor: Number(result.data.amount_money.amount),
+      currency: result.data.amount_money.currency,
+      providerOrderId: null,
+      providerReferenceId: null,
+      receiptUrl: null,
+      receiptNumber: null,
     };
   }
 
@@ -199,5 +231,12 @@ export function normalizeSquareWebhookEvent(rawBody: string): NormalizedSquareWe
     providerObjectVersion: null,
     providerObjectUpdatedAt: null,
     ignored: true,
+    providerStatus: null,
+    amountMinor: null,
+    currency: null,
+    providerOrderId: null,
+    providerReferenceId: null,
+    receiptUrl: null,
+    receiptNumber: null,
   };
 }

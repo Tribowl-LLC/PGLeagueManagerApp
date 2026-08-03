@@ -357,6 +357,7 @@ describe("interactive payment operation executor", () => {
       paymentKey: snapshot.squarePaymentIdempotencyKey,
       orderKey: undefined,
       providerLocationId: snapshot.providerLocationId,
+      referenceId: operation.id,
     });
     const [payment] = await db.select().from(payments)
       .where(eq(payments.paymentOperationId, operation.id));
@@ -389,6 +390,7 @@ describe("interactive payment operation executor", () => {
       paymentKey: snapshot.squarePaymentIdempotencyKey,
       orderKey: snapshot.squareOrderIdempotencyKey,
       providerLocationId: snapshot.providerLocationId,
+      referenceId: operation.id,
     });
   });
 

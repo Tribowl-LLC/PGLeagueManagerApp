@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(15);
+    expect(migrations).toHaveLength(16);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -241,6 +241,14 @@ describe('normalized migration baseline tools', () => {
     expect(migrations[14]?.sql).toContain('CREATE TABLE "webhook_events"');
     expect(migrations[14]?.sql).toContain('webhook_events_provider_event_unique');
     expect(migrations[14]?.sql).not.toMatch(/(?:^|\n)\s*(?:DROP|UPDATE|DELETE|INSERT)\b/);
+    expect(migrations[15]).toMatchObject({
+      idx: 15,
+      tag: '0015_square_webhook_object_freshness',
+      createdAt: 1785786401297,
+      hash: '97b535f271c856e26d6d431327af35b13ee6e8cdf5ad27c5a3921e434430f406',
+    });
+    expect(migrations[15]?.sql).toContain('CREATE INDEX "webhook_events_object_freshness_idx"');
+    expect(migrations[15]?.sql).not.toMatch(/(?:^|\n)\s*(?:DROP|ALTER|UPDATE|DELETE|INSERT)\b/);
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 

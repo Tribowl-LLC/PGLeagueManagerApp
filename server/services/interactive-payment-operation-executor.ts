@@ -421,6 +421,7 @@ export class InteractivePaymentOperationExecutor {
         paymentKey: snapshot.squarePaymentIdempotencyKey,
         orderKey: snapshot.squareOrderIdempotencyKey ?? undefined,
         providerLocationId: snapshot.providerLocationId ?? undefined,
+        referenceId: operation.id,
       };
       result = snapshot.requestKind === "order"
         ? await provider.createOrderWithPayment(

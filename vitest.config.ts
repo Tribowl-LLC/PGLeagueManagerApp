@@ -182,6 +182,7 @@ const PARALLEL_ISOLATED = [
   'tests/unit/square-error-contract.test.ts',
   'tests/unit/square-provider-not-configured-422.test.ts',
   'tests/unit/webhook-event-inbox-postgres.test.ts',
+  'tests/unit/square-webhook-processing-postgres.test.ts',
   'tests/unit/use-bowler-payment-submit.test.ts',
 ];
 

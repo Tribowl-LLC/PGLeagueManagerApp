@@ -90,6 +90,12 @@
       "tag": "0014_square_webhook_inbox",
       "createdAt": 1785761770500,
       "hash": "d5ae353d76e329c985710f34998130e1deb842f7269a9812c936e54fa364c2fd"
+    },
+    {
+      "idx": 15,
+      "tag": "0015_square_webhook_object_freshness",
+      "createdAt": 1785786401297,
+      "hash": "97b535f271c856e26d6d431327af35b13ee6e8cdf5ad27c5a3921e434430f406"
     }
   ]
 }

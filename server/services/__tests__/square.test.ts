@@ -567,7 +567,18 @@ describe('Square Service', () => {
         },
       });
 
-      const result = await provider.processPayment('source-id', 1000, false);
+      const result = await provider.processPayment(
+        'source-id',
+        1000,
+        false,
+        undefined,
+        undefined,
+        {
+          paymentKey: 'payment-operation-key',
+          providerLocationId: 'LOC_123',
+          referenceId: '00000000-0000-4000-8000-000000000001',
+        },
+      );
 
       expect(result).toEqual({
         id: 'payment-id',
@@ -585,6 +596,8 @@ describe('Square Service', () => {
             amount: BigInt(1000),
             currency: 'USD',
           },
+          locationId: 'LOC_123',
+          referenceId: '00000000-0000-4000-8000-000000000001',
         }),
       );
     });

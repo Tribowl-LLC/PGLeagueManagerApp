@@ -10,11 +10,67 @@ signature-validated durable inbox. The only active modes are:
 | --- | --- |
 | `disabled` | Returns `503 SQUARE_WEBHOOK_DISABLED`; no signature configuration, database read, inbox write, claim, provider call, or business mutation occurs. This is the default. |
 | `ingest_only` | Verifies exact raw bytes, parses a bounded event, resolves one tenant/location, and commits encrypted evidence before returning 2xx. No event is processed. |
+| `reconcile_payments` | Preserves the signature and durable-ingestion boundary, then processes that exact event inline. Only conclusive known payment/refund completion can mutate business state. |
 
 No Phase 4A-1 code can finalize or otherwise change a payment, refund,
 dispute, payment operation, schedule, receipt, or UI state. No startup scan,
 polling loop, fixed-cadence query, empty sweep, provider API call, or scheduler
 integration is added.
+
+## Phase 4A-2 activation boundary
+
+Phase 4A-2 adds `reconcile_payments` but leaves the default `disabled` and
+leaves `ingest_only` unchanged. Processing begins only after the verified event
+has committed to the inbox. It makes no Square API call and cannot create a
+charge, refund, dispute, receipt delivery, or schedule. It consumes only the
+provider object embedded in the signed notification.
+
+For `refund.updated`, only `COMPLETED` can finalize. The event must match the
+Square application and merchant evidence, tenant, local and provider location,
+refund ID, original payment ID, amount, currency, and exactly one immutable
+refund operation/snapshot. `PENDING`, `FAILED`, and `REJECTED` never change
+payment or operation success state and leave sparse recovery intact.
+
+For `payment.updated`, only `COMPLETED` can finalize. New LeagueVault charges
+write the operation UUID to Square `Payment.reference_id`; older operations
+can be found only when their Square payment ID was already persisted. The
+matched operation and immutable scheduled/interactive snapshot must agree on
+tenant, location, provider, amount, currency, provider payment/order identity,
+and allocation semantics. The existing transaction-scoped finalizer inserts
+allocation rows, applies receipt metadata, and updates the operation once.
+
+`dispute.created` and `dispute.state.updated` are acknowledged but deliberately
+remain nonterminal `pending` events in this mode. Their attempt, lease, error,
+processed, and completed fields are not changed, so Phase 4B can claim and
+process the original retained evidence without a replay backfill. No dispute
+or refund state is conflated. Phase 4B still owns dispute storage, status
+precedence, visibility, notifications, and operator actions.
+
+The processor locks the inbox row and performs local reconciliation plus inbox
+completion in one PostgreSQL transaction. Concurrent duplicates wait for that
+short, provider-I/O-free transaction and then return the terminal result. A
+crash before commit rolls back both changes and receives no 2xx; a crash after
+commit is an idempotent terminal duplicate. A completed payment/refund with no
+LeagueVault operation reference or persisted provider identity is retained as
+terminal `ignored` evidence with `OPERATION_NOT_OWNED` and receives 2xx. The
+operation is committed before LeagueVault calls Square, so this is not treated
+as a transient mapping race; sparse recovery remains available for a lost
+provider response. There is no detached process-local task, inbox retry timer,
+poller, sweep, or startup scan.
+
+Events acknowledged while the service is deliberately in `ingest_only` remain
+durable evidence; changing the mode does not scan or auto-process that backlog.
+Sparse recovery remains the business-state backstop for those events. Phase 4B
+operator tooling may later expose deliberate, tenant-scoped replay by event ID.
+
+Refund numeric versions and payment `updated_at` timestamps are compared with
+newer durable inbox evidence. Stale or equal/ambiguous freshness never mutates
+business state. A webhook racing the sparse executor uses the same locked,
+tenant-scoped finalization invariants; the losing executor observes succeeded
+state and cannot create duplicate allocation rows or regress the operation.
+After a committed completion, the existing one-shot ledger wake is rearmed so
+obsolete sparse checks fall out while recovery remains available as a safety
+backstop.
 
 ## Provider contract and event inventory
 
@@ -44,7 +100,7 @@ and [Disputes webhooks](https://developer.squareup.com/reference/square/disputes
 
 The subscription API version is pinned to `2026-05-20`, matching the installed
 Square SDK's audited wire version. A different configured version prevents
-`ingest_only` startup; it is never guessed from an event body because Square
+either enabled mode from starting; it is never guessed from an event body because Square
 does not put the subscription API version in the event envelope.
 
 ## Signature-key ownership and exact notification URL
@@ -169,7 +225,7 @@ reclaim expired work without a polling loop.
 
 ## Phase 4A-2 reconciliation invariants
 
-Phase 4A-2 must preserve all of the following:
+Phase 4A-2 preserves all of the following:
 
 - `refund.updated` can finalize only `COMPLETED`, after provider, tenant,
   application, merchant, location, payment, refund ID, amount, currency, and
@@ -207,12 +263,22 @@ inbox table, constraints, two foreign keys, provider/event uniqueness, and
 tenant/location visibility indexes. It has no `ALTER` of an existing table,
 backfill, data mutation, destructive statement, or startup schema mutation.
 
+Migration `0015_square_webhook_object_freshness` adds one btree index over the
+provider application/object freshness lookup used by out-of-order checks. It
+has no table rewrite, backfill, destructive statement, or data mutation.
+
 Migration-first is compatible: the Phase 3B application ignores the new
 table. The Phase 4A-1 application is also safe with the migration present while
-`SQUARE_WEBHOOK_MODE=disabled`. Application rollback keeps migration 0014 and
+`SQUARE_WEBHOOK_MODE=disabled`. Application rollback keeps migrations 0014 and 0015 and
 all inbox evidence; do not reverse the migration or delete events. Since 4A-1
 never changes business state, the existing Phase 3B application remains an
 application rollback target if the receiver itself regresses.
+
+After `reconcile_payments` has been activated, disable processing before an
+application rollback. Already committed payment/refund completions remain
+valid durable ledger state; an older worker observes those operations as
+terminal and must not replay provider effects. Rollback does not mean reversing
+migration 0015 or deleting inbox evidence.
 
 The restrictive organization/location foreign keys express the normal
 retention policy. Ordinary location deletion is rejected with
@@ -232,11 +298,19 @@ event but no background CU. Phase 4A-2 is expected to reduce Square polling and
 Neon/provider work by promptly removing completed refunds from the existing
 sparse one-shot recovery schedule.
 
+In `reconcile_payments`, each actual delivery adds only bounded indexed
+lookups and one short transaction; there is still no idle query. Prompt
+completion avoids later refund `GetRefund` calls and their associated ledger
+wake transactions. Square Dashboard, POS, or other application payments that
+share a configured location but carry no LeagueVault identity are retained and
+acknowledged once, preventing provider redelivery from creating repeated Neon
+wakes.
+
 ## Future production sequence (not performed by this PR)
 
 1. Keep Render Auto-Deploy Off.
 2. Back up the intended Neon production database.
-3. Apply migration 0014 from the exact CI-certified commit and verify its
+3. Apply migrations through 0015 from the exact CI-certified commit and verify their
    journal/checksum/schema.
 4. Deploy that exact commit with `SQUARE_WEBHOOK_MODE=disabled`; verify health,
    authentication, tenant isolation, existing payments/refunds/schedules, and
@@ -245,8 +319,8 @@ sparse one-shot recovery schedule.
    notification URL, `2026-05-20`, and the four reviewed event types; store the
    matching signature keys in Render, then deploy `ingest_only` separately.
 6. Send controlled Square test events with synthetic/nonproduction identities.
-7. Activate Phase 4A-2 processing only in a separate reviewed release and
-   operator action.
+7. Activate `reconcile_payments` only in a separate reviewed release and
+   deliberate operator action.
 8. Verify deduplication, app/tenant/location mapping, eventual refund
    completion, sanitized logs, sparse-backstop rearming, and a complete Neon
    autosuspension window.
