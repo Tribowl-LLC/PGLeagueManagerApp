@@ -403,8 +403,8 @@ describe("Square webhook reconciliation activation", () => {
       acknowledged: false,
       terminal: false,
       businessStateChanged: false,
-      status: "retry_scheduled",
-      code: "OPERATION_NOT_FOUND",
+      status: "processing",
+      code: "EVENT_NOT_DUE",
     });
     const reconcileApp = express();
     registerSquareWebhookReceiver(reconcileApp, {
@@ -431,6 +431,51 @@ describe("Square webhook reconciliation activation", () => {
         },
       );
       expect(response.status).toBe(503);
+      expect(rearm).not.toHaveBeenCalled();
+    } finally {
+      await new Promise<void>((resolve, reject) => listener.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
+  it("acknowledges a valid signed Square payment that is not owned by LeagueVault", async () => {
+    processEvent.mockResolvedValueOnce({
+      acknowledged: true,
+      terminal: true,
+      businessStateChanged: false,
+      status: "ignored",
+      code: "OPERATION_NOT_OWNED",
+    });
+    const reconcileApp = express();
+    registerSquareWebhookReceiver(reconcileApp, {
+      config: { ...config, mode: "reconcile_payments" },
+      ingest,
+      process: processEvent,
+      rearm,
+    });
+    const listener = await new Promise<Server>((resolve) => {
+      const value = reconcileApp.listen(0, "127.0.0.1", () => resolve(value));
+    });
+    try {
+      const body = JSON.stringify(paymentEvent("event-unowned-payment"));
+      const response = await fetch(
+        `http://127.0.0.1:${(listener.address() as AddressInfo).port}${SQUARE_WEBHOOK_PATH}`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            [SQUARE_WEBHOOK_SIGNATURE_HEADER]: sign(body),
+            "x-forwarded-for": "203.0.113.242",
+          },
+          body,
+        },
+      );
+      expect(response.status).toBe(200);
+      expect(processEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: expect.objectContaining({
+          eventType: "payment.updated",
+          providerReferenceId: null,
+        }),
+      }));
       expect(rearm).not.toHaveBeenCalled();
     } finally {
       await new Promise<void>((resolve, reject) => listener.close((error) => error ? reject(error) : resolve()));

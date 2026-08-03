@@ -39,18 +39,24 @@ tenant, location, provider, amount, currency, provider payment/order identity,
 and allocation semantics. The existing transaction-scoped finalizer inserts
 allocation rows, applies receipt metadata, and updates the operation once.
 
-`dispute.created` and `dispute.state.updated` are durably marked deferred in
-this mode. No dispute or refund state is conflated. Phase 4B still owns dispute
-storage, status precedence, visibility, notifications, and operator actions.
+`dispute.created` and `dispute.state.updated` are acknowledged but deliberately
+remain nonterminal `pending` events in this mode. Their attempt, lease, error,
+processed, and completed fields are not changed, so Phase 4B can claim and
+process the original retained evidence without a replay backfill. No dispute
+or refund state is conflated. Phase 4B still owns dispute storage, status
+precedence, visibility, notifications, and operator actions.
 
 The processor locks the inbox row and performs local reconciliation plus inbox
 completion in one PostgreSQL transaction. Concurrent duplicates wait for that
 short, provider-I/O-free transaction and then return the terminal result. A
 crash before commit rolls back both changes and receives no 2xx; a crash after
-commit is an idempotent terminal duplicate. A missing completion mapping is
-scheduled for explicit retry and returned non-2xx so Square can redeliver.
-There is no detached process-local task, inbox timer, poller, sweep, or startup
-scan.
+commit is an idempotent terminal duplicate. A completed payment/refund with no
+LeagueVault operation reference or persisted provider identity is retained as
+terminal `ignored` evidence with `OPERATION_NOT_OWNED` and receives 2xx. The
+operation is committed before LeagueVault calls Square, so this is not treated
+as a transient mapping race; sparse recovery remains available for a lost
+provider response. There is no detached process-local task, inbox retry timer,
+poller, sweep, or startup scan.
 
 Events acknowledged while the service is deliberately in `ingest_only` remain
 durable evidence; changing the mode does not scan or auto-process that backlog.
@@ -295,7 +301,10 @@ sparse one-shot recovery schedule.
 In `reconcile_payments`, each actual delivery adds only bounded indexed
 lookups and one short transaction; there is still no idle query. Prompt
 completion avoids later refund `GetRefund` calls and their associated ledger
-wake transactions.
+wake transactions. Square Dashboard, POS, or other application payments that
+share a configured location but carry no LeagueVault identity are retained and
+acknowledged once, preventing provider redelivery from creating repeated Neon
+wakes.
 
 ## Future production sequence (not performed by this PR)
 

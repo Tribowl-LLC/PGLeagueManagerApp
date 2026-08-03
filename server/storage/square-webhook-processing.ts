@@ -18,8 +18,6 @@ import {
   type PaymentOperationTransaction,
 } from "./payment-operations.js";
 
-const RETRY_DELAY_MS = 30_000;
-
 export interface SquareWebhookProcessingResult {
   acknowledged: boolean;
   terminal: boolean;
@@ -52,7 +50,12 @@ function eventEvidenceMatches(row: WebhookEvent, event: NormalizedSquareWebhookE
 async function finish(
   tx: PaymentOperationTransaction,
   row: WebhookEvent,
-  input: { status: "processed" | "ignored" | "failed"; code?: string; now: string },
+  input: {
+    status: "processed" | "ignored" | "failed";
+    code?: string;
+    classification?: "mapping" | "processing";
+    now: string;
+  },
 ): Promise<void> {
   await tx.update(webhookEvents).set({
     status: input.status,
@@ -61,7 +64,7 @@ async function finish(
     leaseOwner: null,
     leaseToken: null,
     leaseExpiresAt: null,
-    errorClassification: input.code ? "processing" : null,
+    errorClassification: input.code ? (input.classification ?? "processing") : null,
     errorCode: input.code ?? null,
     processedAt: input.now,
     completedAt: input.now,
@@ -70,45 +73,6 @@ async function finish(
     eq(webhookEvents.id, row.id),
     eq(webhookEvents.organizationId, row.organizationId),
   ));
-}
-
-async function retry(
-  tx: PaymentOperationTransaction,
-  row: WebhookEvent,
-  code: string,
-  now: Date,
-): Promise<SquareWebhookProcessingResult> {
-  const attemptCount = row.attemptCount + 1;
-  if (attemptCount >= WEBHOOK_EVENT_MAX_ATTEMPTS) {
-    await finish(tx, row, { status: "failed", code: "ATTEMPTS_EXHAUSTED", now: now.toISOString() });
-    return {
-      acknowledged: true,
-      terminal: true,
-      businessStateChanged: false,
-      status: "failed",
-      code: "ATTEMPTS_EXHAUSTED",
-    };
-  }
-  await tx.update(webhookEvents).set({
-    status: "retry_scheduled",
-    attemptCount,
-    nextAttemptAt: new Date(now.getTime() + RETRY_DELAY_MS).toISOString(),
-    leaseOwner: null,
-    leaseToken: null,
-    leaseExpiresAt: null,
-    errorClassification: "mapping",
-    errorCode: code,
-    processedAt: now.toISOString(),
-    completedAt: null,
-    updatedAt: now.toISOString(),
-  }).where(and(eq(webhookEvents.id, row.id), eq(webhookEvents.organizationId, row.organizationId)));
-  return {
-    acknowledged: false,
-    terminal: false,
-    businessStateChanged: false,
-    status: "retry_scheduled",
-    code,
-  };
 }
 
 async function freshness(
@@ -192,18 +156,19 @@ async function findChargeOperationId(
   tx: PaymentOperationTransaction,
   row: WebhookEvent,
   event: NormalizedSquareWebhookEvent,
-): Promise<string | null | "ambiguous" | "invalid"> {
+): Promise<string | null | "ambiguous"> {
   const base = and(
     eq(paymentOperations.organizationId, row.organizationId),
     inArray(paymentOperations.operationType, ["scheduled_charge", "interactive_charge"]),
     eq(paymentOperations.providerName, "square"),
   );
-  if (event.providerReferenceId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(event.providerReferenceId)) {
-    return "invalid";
+  const referenceId = event.providerReferenceId;
+  if (referenceId !== null && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(referenceId)) {
+    return null;
   }
-  const candidates = event.providerReferenceId
+  const candidates = referenceId !== null
     ? await tx.select({ id: paymentOperations.id }).from(paymentOperations)
-      .where(and(base, eq(paymentOperations.id, event.providerReferenceId))).limit(2)
+      .where(and(base, eq(paymentOperations.id, referenceId))).limit(2)
     : await tx.select({ id: paymentOperations.id }).from(paymentOperations)
       .where(and(base, eq(paymentOperations.providerObjectId, event.providerObjectId))).limit(2);
   if (candidates.length > 1) return "ambiguous";
@@ -229,16 +194,17 @@ export async function processSquareWebhookEvent(input: {
     if (["processed", "ignored", "failed"].includes(row.status)) {
       return { acknowledged: true, terminal: true, businessStateChanged: false, status: row.status, code: row.errorCode };
     }
-    if (row.status === "processing" || (
-      row.status === "retry_scheduled"
-      && row.nextAttemptAt !== null
-      && new Date(row.nextAttemptAt).getTime() > now.getTime()
-    )) {
+    if (row.status === "processing") {
       return { acknowledged: false, terminal: false, businessStateChanged: false, status: row.status, code: "EVENT_NOT_DUE" };
     }
     if (input.event.eventType === "dispute.created" || input.event.eventType === "dispute.state.updated") {
-      await finish(tx, row, { status: "ignored", code: "DISPUTE_PROCESSING_DEFERRED", now: now.toISOString() });
-      return { acknowledged: true, terminal: true, businessStateChanged: false, status: "ignored", code: "DISPUTE_PROCESSING_DEFERRED" };
+      return {
+        acknowledged: true,
+        terminal: false,
+        businessStateChanged: false,
+        status: row.status,
+        code: "DISPUTE_PROCESSING_DEFERRED",
+      };
     }
     if (input.event.providerStatus !== "COMPLETED") {
       const code = input.event.eventType === "refund.updated"
@@ -265,16 +231,25 @@ export async function processSquareWebhookEvent(input: {
     const operationId = input.event.eventType === "refund.updated"
       ? await findRefundOperationId(tx, row, input.event)
       : await findChargeOperationId(tx, row, input.event);
-    if (operationId === null) return retry(tx, row, "OPERATION_NOT_FOUND", now);
+    if (operationId === null) {
+      await finish(tx, row, {
+        status: "ignored",
+        code: "OPERATION_NOT_OWNED",
+        classification: "mapping",
+        now: now.toISOString(),
+      });
+      return {
+        acknowledged: true,
+        terminal: true,
+        businessStateChanged: false,
+        status: "ignored",
+        code: "OPERATION_NOT_OWNED",
+      };
+    }
     if (operationId === "ambiguous") {
       await finish(tx, row, { status: "failed", code: "OPERATION_AMBIGUOUS", now: now.toISOString() });
       return { acknowledged: true, terminal: true, businessStateChanged: false, status: "failed", code: "OPERATION_AMBIGUOUS" };
     }
-    if (operationId === "invalid") {
-      await finish(tx, row, { status: "failed", code: "OPERATION_REFERENCE_INVALID", now: now.toISOString() });
-      return { acknowledged: true, terminal: true, businessStateChanged: false, status: "failed", code: "OPERATION_REFERENCE_INVALID" };
-    }
-
     try {
       const evidence = {
         organizationId: row.organizationId,

@@ -15,7 +15,10 @@ import {
 } from "@shared/schema";
 import { getTestDb } from "../setup/test-db";
 import { deleteOrganization } from "../../server/storage/organizations";
-import { ingestSquareWebhookEvent } from "../../server/storage/webhook-events";
+import {
+  claimWebhookEvent,
+  ingestSquareWebhookEvent,
+} from "../../server/storage/webhook-events";
 import { processSquareWebhookEvent } from "../../server/storage/square-webhook-processing";
 import { normalizeSquareWebhookEvent } from "../../server/services/square-webhook-event";
 import { prepareRefundPaymentOperation } from "../../server/services/refund-payment-operation-preparation";
@@ -205,7 +208,7 @@ function refundBody(input: {
   });
 }
 
-function paymentBody(input: { eventId: string; paymentId: string; operationId: string }) {
+function paymentBody(input: { eventId: string; paymentId: string; operationId?: string }) {
   return JSON.stringify({
     merchant_id: merchantId,
     type: "payment.updated",
@@ -220,9 +223,31 @@ function paymentBody(input: { eventId: string; paymentId: string; operationId: s
         status: "COMPLETED",
         amount_money: { amount: 2_000, currency: "USD" },
         updated_at: "2034-03-05T00:01:00.000Z",
-        reference_id: input.operationId,
+        ...(input.operationId ? { reference_id: input.operationId } : {}),
         receipt_url: "https://squareup.com/receipt/preview/synthetic-fixture",
         receipt_number: "FIX1",
+      } },
+    },
+  });
+}
+
+function disputeBody(input: { eventId: string; disputeId: string; paymentId: string }) {
+  return JSON.stringify({
+    merchant_id: merchantId,
+    type: "dispute.created",
+    event_id: input.eventId,
+    created_at: "2034-03-06T00:01:00.000Z",
+    data: {
+      type: "dispute",
+      id: input.disputeId,
+      object: { dispute: {
+        id: input.disputeId,
+        location_id: providerLocationId,
+        state: "EVIDENCE_REQUIRED",
+        amount_money: { amount: 2_000, currency: "USD" },
+        disputed_payment: { payment_id: input.paymentId },
+        updated_at: "2034-03-06T00:01:00.000Z",
+        version: 1,
       } },
     },
   });
@@ -372,15 +397,10 @@ describe("Square webhook payment/refund PostgreSQL reconciliation", () => {
     expect(operation.status).toBe("leased");
   });
 
-  it("fails closed when conclusive evidence belongs to no operation in the mapped tenant", async () => {
-    const { event, recorded } = await ingest(refundBody({
+  it("retains a valid Square payment unrelated to any LeagueVault operation without retrying it", async () => {
+    const { event, recorded } = await ingest(paymentBody({
       eventId: `event-${randomUUID()}`,
-      refundId: `refund-${randomUUID()}`,
-      paymentId: `unmapped-payment-${randomUUID()}`,
-      amount: 2_000,
-      status: "COMPLETED",
-      version: 1,
-      updatedAt: "2034-03-04T00:01:00.000Z",
+      paymentId: `unowned-payment-${randomUUID()}`,
     }));
     const result = await processSquareWebhookEvent({
       organizationId,
@@ -389,9 +409,85 @@ describe("Square webhook payment/refund PostgreSQL reconciliation", () => {
       now: new Date("2034-03-04T00:01:01.000Z"),
     });
     expect(result).toMatchObject({
-      acknowledged: false,
-      status: "retry_scheduled",
-      code: "OPERATION_NOT_FOUND",
+      acknowledged: true,
+      terminal: true,
+      businessStateChanged: false,
+      status: "ignored",
+      code: "OPERATION_NOT_OWNED",
     });
+    const [stored] = await db.select().from(webhookEvents)
+      .where(eq(webhookEvents.id, recorded.event.id));
+    expect(stored).toMatchObject({
+      status: "ignored",
+      attemptCount: 1,
+      nextAttemptAt: null,
+      errorClassification: "mapping",
+      errorCode: "OPERATION_NOT_OWNED",
+    });
+
+    const duplicate = await processSquareWebhookEvent({
+      organizationId,
+      eventId: recorded.event.id,
+      event,
+      now: new Date("2034-03-04T00:02:01.000Z"),
+    });
+    expect(duplicate).toMatchObject({
+      acknowledged: true,
+      terminal: true,
+      status: "ignored",
+      code: "OPERATION_NOT_OWNED",
+    });
+    const [afterDuplicate] = await db.select().from(webhookEvents)
+      .where(eq(webhookEvents.id, recorded.event.id));
+    expect(afterDuplicate.attemptCount).toBe(1);
+  });
+
+  it("acknowledges a dispute while keeping it nonterminal and claimable for Phase 4B", async () => {
+    const { event, recorded } = await ingest(disputeBody({
+      eventId: `event-${randomUUID()}`,
+      disputeId: `dispute-${randomUUID()}`,
+      paymentId: `payment-${randomUUID()}`,
+    }));
+    const first = await processSquareWebhookEvent({
+      organizationId,
+      eventId: recorded.event.id,
+      event,
+      now: new Date("2034-03-06T00:01:01.000Z"),
+    });
+    const duplicate = await processSquareWebhookEvent({
+      organizationId,
+      eventId: recorded.event.id,
+      event,
+      now: new Date("2034-03-06T00:01:02.000Z"),
+    });
+    expect(first).toMatchObject({
+      acknowledged: true,
+      terminal: false,
+      businessStateChanged: false,
+      status: "pending",
+      code: "DISPUTE_PROCESSING_DEFERRED",
+    });
+    expect(duplicate).toMatchObject(first);
+
+    const [stored] = await db.select().from(webhookEvents)
+      .where(eq(webhookEvents.id, recorded.event.id));
+    expect(stored).toMatchObject({
+      status: "pending",
+      attemptCount: 0,
+      nextAttemptAt: null,
+      errorClassification: null,
+      errorCode: null,
+      processedAt: null,
+      completedAt: null,
+    });
+
+    const claim = await claimWebhookEvent({
+      organizationId,
+      eventId: recorded.event.id,
+      leaseOwner: "phase-4b-eligibility-fixture",
+      leaseDurationMs: 60_000,
+      now: new Date("2034-03-06T00:01:03.000Z"),
+    });
+    expect(claim).toMatchObject({ status: "processing", attemptCount: 1 });
   });
 });
