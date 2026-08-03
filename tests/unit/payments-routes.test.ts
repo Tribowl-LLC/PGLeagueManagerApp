@@ -50,11 +50,9 @@ import {
   it,
   vi,
 } from 'vitest';
-import { expectErrorLog } from '../helpers/expected-error-logs';
 import express from 'express';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
-import { ProviderNotConfiguredError } from '../../server/services/payment-errors';
 
 const mockStorage = {
   getLeague: vi.fn(),
@@ -107,6 +105,20 @@ vi.mock('../../server/services/payment-provider-factory', async () => {
     PaymentProviderError: errs.PaymentProviderError,
   };
 });
+
+const mockPrepareRefund = vi.fn();
+const mockExecuteRefund = vi.fn();
+const mockRearmOperations = vi.fn();
+vi.mock('../../server/services/refund-payment-operation-preparation', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../server/services/refund-payment-operation-preparation')>();
+  return { ...actual, prepareRefundPaymentOperation: (...a: unknown[]) => mockPrepareRefund(...a) };
+});
+vi.mock('../../server/services/refund-payment-operation-executor', () => ({
+  refundPaymentOperationExecutor: { execute: (...a: unknown[]) => mockExecuteRefund(...a) },
+}));
+vi.mock('../../server/services/scheduled-payment-operation-executor', () => ({
+  scheduledPaymentOperationExecutor: { rearm: (...a: unknown[]) => mockRearmOperations(...a) },
+}));
 
 const mockSumQuery = vi.fn();
 vi.mock('../../server/db', () => ({
@@ -168,6 +180,9 @@ beforeEach(() => {
   mockHasAdminAccessToLeague.mockReset();
   mockRemoveSchedule.mockReset();
   mockGetPaymentProvider.mockReset();
+  mockPrepareRefund.mockReset();
+  mockExecuteRefund.mockReset();
+  mockRearmOperations.mockReset();
   mockSumQuery.mockReset();
   // Sensible defaults; individual tests override.
   mockRequireOrgAccess.mockReturnValue(true);
@@ -185,6 +200,19 @@ beforeEach(() => {
   // P1 (#737): payment creation requires an active roster row. Default to
   // rostered; the "not rostered" test overrides with false.
   mockStorage.isBowlerActiveInLeague.mockResolvedValue(true);
+  const operation = {
+    id: '11111111-1111-4111-8111-111111111111',
+    status: 'pending',
+    providerObjectId: null,
+    nextAttemptAt: '2026-01-01T00:00:00.000Z',
+    leaseExpiresAt: null,
+    attemptCount: 0,
+    errorClassification: null,
+    errorCode: null,
+  };
+  mockPrepareRefund.mockResolvedValue({ operation, snapshot: { organizationId: 1 } });
+  mockExecuteRefund.mockResolvedValue({ ...operation, status: 'succeeded', providerObjectId: 'RF_1' });
+  mockRearmOperations.mockResolvedValue(undefined);
 });
 
 afterEach(() => vi.clearAllMocks());
@@ -473,65 +501,88 @@ describe('POST /api/payments/:id/refund', () => {
     providerPaymentId: 'CHARGE-XYZ',
   };
 
-  it('happy path: delegates to provider then refunds in storage → 200', async () => {
-    mockStorage.getPaymentById.mockResolvedValue(cardPayment);
-    mockStorage.getLeague.mockResolvedValue(LEAGUE_OK);
-    const refundPayment = vi.fn().mockResolvedValue({ refundId: 'RF_1' });
-    mockGetPaymentProvider.mockResolvedValue({ refundPayment });
-    mockStorage.refundPayment.mockResolvedValue({ ...cardPayment, status: 'refunded' });
+  it('happy path: prepares and executes one durable refund → 200', async () => {
+    mockStorage.getPaymentById.mockResolvedValue({ ...cardPayment, status: 'refunded', squareRefundId: 'RF_1' });
 
     const res = await post('/api/payments/50/refund', { reason: 'cust' }, ORG_A_USER);
     expect(res.status).toBe(200);
-    expect(mockGetPaymentProvider).toHaveBeenCalledWith(LEAGUE_OK.locationId);
-    expect(refundPayment).toHaveBeenCalledWith('CHARGE-XYZ', 2500, 'cust');
-    expect(mockStorage.refundPayment).toHaveBeenCalledWith(50, 'RF_1', 'cust');
+    expect(mockPrepareRefund).toHaveBeenCalledWith(expect.objectContaining({
+      paymentId: 50,
+      reason: 'cust',
+      requestedByOrganizationId: 1,
+    }));
+    expect(mockExecuteRefund).toHaveBeenCalledTimes(1);
+    expect(mockRearmOperations).toHaveBeenCalledTimes(1);
     expect((await res.json()).data.status).toBe('refunded');
   });
 
   it('rejects non-admins → 403', async () => {
-    // Refund access is evaluated after the payment is fetched; a plain user is denied.
-    mockStorage.getPaymentById.mockResolvedValue(cardPayment);
-    mockHasAdminAccessToLeague.mockResolvedValue(false);
     const res = await post('/api/payments/50/refund', {}, REGULAR_USER);
     expect(res.status).toBe(403);
     expect((await res.json()).error.message).toMatch(/admins/i);
-    expect(mockStorage.refundPayment).not.toHaveBeenCalled();
+    expect(mockPrepareRefund).not.toHaveBeenCalled();
   });
 
   it('returns 400 when the payment is already refunded', async () => {
-    mockStorage.getPaymentById.mockResolvedValue({ ...cardPayment, status: 'refunded' });
+    const { RefundPreparationError } = await import('../../server/services/refund-payment-operation-preparation');
+    mockPrepareRefund.mockRejectedValue(new RefundPreparationError('Payment has already been refunded', 400, 'ALREADY_REFUNDED'));
     const res = await post('/api/payments/50/refund', {});
     expect(res.status).toBe(400);
     expect((await res.json()).error.code).toBe('ALREADY_REFUNDED');
   });
 
   it('returns 400 when the payment status is not paid', async () => {
-    mockStorage.getPaymentById.mockResolvedValue({ ...cardPayment, status: 'pending' });
+    const { RefundPreparationError } = await import('../../server/services/refund-payment-operation-preparation');
+    mockPrepareRefund.mockRejectedValue(new RefundPreparationError('Only paid payments can be refunded', 400, 'INVALID_STATUS'));
     const res = await post('/api/payments/50/refund', {});
     expect(res.status).toBe(400);
     expect((await res.json()).error.code).toBe('INVALID_STATUS');
   });
 
   it('returns 400 for non-card payment types (e.g. cash)', async () => {
-    mockStorage.getPaymentById.mockResolvedValue({ ...cardPayment, type: 'cash' });
+    const { RefundPreparationError } = await import('../../server/services/refund-payment-operation-preparation');
+    mockPrepareRefund.mockRejectedValue(new RefundPreparationError('Only card payments can be refunded', 400, 'INVALID_TYPE'));
     const res = await post('/api/payments/50/refund', {});
     expect(res.status).toBe(400);
     expect((await res.json()).error.code).toBe('INVALID_TYPE');
   });
 
   it('returns 422 when the payment provider is not configured', async () => {
-    // The refund handler logs the provider error at [ERROR] before mapping to 422.
-    expectErrorLog(/\[Payments\] Refund error:/);
-    mockStorage.getPaymentById.mockResolvedValue(cardPayment);
-    mockStorage.getLeague.mockResolvedValue(LEAGUE_OK);
-    mockGetPaymentProvider.mockRejectedValue(
-      new ProviderNotConfiguredError('no provider', null),
-    );
+    mockExecuteRefund.mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      status: 'failed_terminal',
+      providerObjectId: null,
+      nextAttemptAt: null,
+      leaseExpiresAt: null,
+      attemptCount: 1,
+      errorClassification: 'configuration',
+      errorCode: 'PROVIDER_NOT_CONFIGURED',
+    });
 
     const res = await post('/api/payments/50/refund', {});
     expect(res.status).toBe(422);
     expect((await res.json()).error.code).toBe('PROVIDER_NOT_CONFIGURED');
     expect(mockStorage.refundPayment).not.toHaveBeenCalled();
+  });
+
+  it('returns 202 without claiming success while the retained refund is unresolved', async () => {
+    mockExecuteRefund.mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      status: 'provider_unknown',
+      providerObjectId: null,
+      nextAttemptAt: '2026-01-01T00:01:00.000Z',
+      leaseExpiresAt: null,
+      attemptCount: 1,
+      errorClassification: 'provider_unknown',
+      errorCode: 'TRANSPORT_UNKNOWN',
+    });
+    const res = await post('/api/payments/50/refund', {});
+    expect(res.status).toBe(202);
+    expect(await res.json()).toMatchObject({
+      success: true,
+      data: { status: 'provider_unknown', attemptCount: 1 },
+    });
+    expect(mockStorage.getPaymentById).not.toHaveBeenCalled();
   });
 
   it('returns 400 with INVALID_ID for a non-numeric :id', async () => {

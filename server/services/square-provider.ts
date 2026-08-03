@@ -11,6 +11,7 @@ import {
   processPayment,
   createOrderWithPayment,
   refundPayment,
+  getRefund,
   getPayment,
 } from './square-payments';
 import {
@@ -194,8 +195,13 @@ export class SquarePaymentProvider implements PaymentProvider, CatalogProvider, 
     paymentId: string,
     amountInCents: number,
     reason?: string,
+    idempotencyKey?: string,
   ): Promise<RefundResult> {
-    return refundPayment(this.ctx, paymentId, amountInCents, reason);
+    return refundPayment(this.ctx, paymentId, amountInCents, reason, idempotencyKey);
+  }
+
+  getRefund(refundId: string): Promise<RefundResult> {
+    return getRefund(this.ctx, refundId);
   }
 
   saveCardOnFile(sourceId: string, customerId: string, idempotencyKey?: string): Promise<SavedCard | null> {

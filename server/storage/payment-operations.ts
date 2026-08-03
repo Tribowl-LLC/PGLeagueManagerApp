@@ -15,12 +15,14 @@ import {
   interactivePaymentOperationAllocations,
   interactivePaymentOperationLineItems,
   interactivePaymentOperationSnapshots,
+  refundPaymentOperationSnapshots,
   users,
   PAYMENT_OPERATION_ERROR_CLASSIFICATIONS,
   PAYMENT_OPERATION_MAX_ATTEMPTS,
   PAYMENT_OPERATION_MAX_LEASE_MS,
   PAYMENT_OPERATION_MAX_RETRY_DELAY_MS,
   type PaymentOperation,
+  type Payment,
   type InteractiveCardSaveStatus,
   type PaymentOperationErrorClassification,
 } from "@shared/schema";
@@ -44,6 +46,13 @@ import {
   type InteractivePaymentSemanticSnapshot,
 } from "../services/interactive-payment-operation-snapshot.js";
 import { deriveSquareCardSaveIdempotencyKey } from "../services/payment-operation-idempotency.js";
+import {
+  encryptRefundPaymentSnapshot,
+  fingerprintRefundPaymentSnapshot,
+  reconstructRefundPaymentSnapshot,
+  refundReplaySemanticsMatch,
+  type RefundPaymentSemanticSnapshot,
+} from "../services/refund-payment-operation-snapshot.js";
 import { decrypt, encrypt } from "../utils/crypto.js";
 
 export class PaymentOperationNotFoundError extends Error {
@@ -101,6 +110,15 @@ export interface CreateOrGetGeneralInteractivePaymentOperationInput {
   now?: Date;
 }
 
+export interface CreateOrGetRefundPaymentOperationInput {
+  organizationId: number;
+  paymentId: number;
+  amountMinor: number;
+  currency: string;
+  providerName: string;
+  now?: Date;
+}
+
 export type PaymentOperationTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 export interface PaymentOperationLinkedPaymentInput {
@@ -131,11 +149,13 @@ export interface LeasedPaymentOperationInput {
 }
 
 export const GENERAL_INTERACTIVE_TARGET_PREFIX = "interactive-charge:" as const;
+export const REFUND_TARGET_PREFIX = "payment-refund:" as const;
 export const GENERAL_INTERACTIVE_REQUEST_KEY_MAX_LENGTH =
   INTERACTIVE_REQUEST_KEY_MAX_LENGTH;
 
 interface ErrorOutcomeInput extends LeasedPaymentOperationInput {
   errorCode?: string | null;
+  providerObjectId?: string | null;
   providerOrderId?: string | null;
   failedPaymentRows?: PaymentOperationLinkedPaymentInput[];
 }
@@ -414,6 +434,30 @@ function immutableInteractiveOperationMatches(
     && operation.providerIdempotencyKey === expected.providerIdempotencyKey;
 }
 
+function refundTargetKey(paymentId: number): string {
+  if (!Number.isSafeInteger(paymentId) || paymentId <= 0) {
+    throw new PaymentOperationValidationError("paymentId must be a positive integer");
+  }
+  return `${REFUND_TARGET_PREFIX}${paymentId}`;
+}
+
+function immutableRefundOperationMatches(
+  operation: PaymentOperation,
+  expected: ReturnType<typeof buildPaymentOperationIdentity>,
+): boolean {
+  const request = expected.normalizedRequest;
+  return operation.organizationId === request.organizationId
+    && operation.operationType === "refund"
+    && operation.targetKey === request.targetKey
+    && operation.paymentScheduleId === null
+    && operation.billingCycleAt === null
+    && operation.amountMinor === request.amountMinor
+    && operation.currency === request.currency
+    && operation.providerName === request.providerName
+    && operation.requestFingerprint === expected.requestFingerprint
+    && operation.providerIdempotencyKey === expected.providerIdempotencyKey;
+}
+
 /**
  * Creates dormant durable intent for one interactive charge. This primitive
  * does not acquire a lease or call a provider; an explicit executor must do
@@ -517,6 +561,50 @@ export async function createOrGetGeneralInteractivePaymentOperation(
     providerName: input.providerName,
     now: input.now,
   }, existingTransaction);
+}
+
+export async function createOrGetRefundPaymentOperation(
+  input: CreateOrGetRefundPaymentOperationInput,
+  existingTransaction?: PaymentOperationTransaction,
+): Promise<PaymentOperation> {
+  const targetKey = refundTargetKey(input.paymentId);
+  const identity = buildPaymentOperationIdentity({
+    organizationId: input.organizationId,
+    operationType: "refund",
+    targetKey,
+    amountMinor: input.amountMinor,
+    currency: input.currency,
+    providerName: input.providerName,
+  });
+  const request = identity.normalizedRequest;
+  const now = toIso(input.now ?? new Date(), "now");
+  const run = async (tx: PaymentOperationTransaction): Promise<PaymentOperation> => {
+    const [created] = await tx.insert(paymentOperations).values({
+      organizationId: request.organizationId,
+      operationType: "refund",
+      targetKey,
+      amountMinor: request.amountMinor,
+      currency: request.currency,
+      requestFingerprint: identity.requestFingerprint,
+      providerIdempotencyKey: identity.providerIdempotencyKey,
+      providerName: request.providerName,
+      status: "pending",
+      nextAttemptAt: now,
+      createdAt: now,
+      updatedAt: now,
+    }).onConflictDoNothing().returning();
+    if (created) return created;
+    const [existing] = await tx.select().from(paymentOperations).where(and(
+      eq(paymentOperations.organizationId, input.organizationId),
+      eq(paymentOperations.operationType, "refund"),
+      eq(paymentOperations.targetKey, targetKey),
+    )).limit(1);
+    if (!existing || !immutableRefundOperationMatches(existing, identity)) {
+      throw new PaymentOperationImmutableMismatchError();
+    }
+    return existing;
+  };
+  return existingTransaction ? run(existingTransaction) : db.transaction(run);
 }
 
 /**
@@ -1095,6 +1183,66 @@ export function getInteractiveCardSaveResponse(operation: PaymentOperation): {
   return { savedCardId: null, cardSaveStatus: "not_requested" };
 }
 
+async function loadRefundPaymentOperationSnapshot(
+  executor: typeof db | PaymentOperationTransaction,
+  operation: PaymentOperation,
+): Promise<RefundPaymentSemanticSnapshot | undefined> {
+  if (operation.operationType !== "refund") return undefined;
+  const [stored] = await executor.select().from(refundPaymentOperationSnapshots).where(
+    eq(refundPaymentOperationSnapshots.operationId, operation.id),
+  ).limit(1);
+  if (!stored) return undefined;
+  return reconstructRefundPaymentSnapshot({
+    organizationId: operation.organizationId,
+    amountMinor: operation.amountMinor,
+    currency: operation.currency,
+    providerName: operation.providerName,
+    stored,
+  });
+}
+
+export async function persistRefundPaymentOperationSnapshot(
+  operation: PaymentOperation,
+  snapshot: RefundPaymentSemanticSnapshot,
+  transaction: PaymentOperationTransaction,
+): Promise<RefundPaymentSemanticSnapshot> {
+  if (
+    operation.operationType !== "refund"
+    || operation.targetKey !== refundTargetKey(snapshot.paymentId)
+    || snapshot.organizationId !== operation.organizationId
+    || snapshot.amountMinor !== operation.amountMinor
+    || snapshot.currency !== operation.currency
+    || snapshot.providerName !== operation.providerName
+  ) throw new PaymentOperationImmutableMismatchError();
+
+  const encrypted = encryptRefundPaymentSnapshot(snapshot);
+  const [created] = await transaction.insert(refundPaymentOperationSnapshots).values({
+    operationId: operation.id,
+    ...encrypted,
+  }).onConflictDoNothing().returning({ operationId: refundPaymentOperationSnapshots.operationId });
+  const stored = await loadRefundPaymentOperationSnapshot(transaction, operation);
+  if (!stored) throw new PaymentOperationImmutableMismatchError();
+  if (created) {
+    if (encrypted.snapshotFingerprint !== fingerprintRefundPaymentSnapshot(stored)) {
+      throw new PaymentOperationImmutableMismatchError();
+    }
+    return stored;
+  }
+  if (!refundReplaySemanticsMatch(stored, snapshot)) {
+    throw new PaymentOperationImmutableMismatchError();
+  }
+  return stored;
+}
+
+export async function getRefundPaymentOperationSnapshotForOrganization(
+  organizationId: number,
+  operationId: string,
+): Promise<RefundPaymentSemanticSnapshot | undefined> {
+  const operation = await getPaymentOperationForOrganization(organizationId, operationId);
+  if (!operation) return undefined;
+  return loadRefundPaymentOperationSnapshot(db, operation);
+}
+
 export async function getInteractivePaymentOperationSnapshotForOrganization(
   organizationId: number,
   operationId: string,
@@ -1141,6 +1289,18 @@ export async function getGeneralInteractivePaymentOperationForOrganization(
       eq(paymentOperations.targetKey, buildGeneralInteractiveTargetKey(requestKey)),
     ))
     .limit(1);
+  return operation;
+}
+
+export async function getRefundPaymentOperationForOrganization(
+  organizationId: number,
+  paymentId: number,
+): Promise<PaymentOperation | undefined> {
+  const [operation] = await db.select().from(paymentOperations).where(and(
+    eq(paymentOperations.organizationId, organizationId),
+    eq(paymentOperations.operationType, "refund"),
+    eq(paymentOperations.targetKey, refundTargetKey(paymentId)),
+  )).limit(1);
   return operation;
 }
 
@@ -1221,6 +1381,7 @@ export async function schedulePaymentOperationRetry(
 ): Promise<PaymentOperation> {
   validateLeaseToken(input.leaseToken);
   validateFailedPaymentRows(input.failedPaymentRows);
+  if (input.providerObjectId != null) validateProviderObjectId(input.providerObjectId);
   if (input.providerOrderId != null) validateProviderOrderId(input.providerOrderId);
   const nowDate = input.now ?? new Date();
   const now = toIso(nowDate, "now");
@@ -1248,6 +1409,7 @@ export async function schedulePaymentOperationRetry(
           ELSE NULL
         END`,
         leaseExpiresAt: null,
+        providerObjectId: input.providerObjectId ?? undefined,
         providerOrderId: input.providerOrderId ?? undefined,
         errorClassification: input.errorClassification,
         errorCode: sql`CASE
@@ -1267,6 +1429,9 @@ export async function schedulePaymentOperationRetry(
         eq(paymentOperations.id, input.operationId),
         eq(paymentOperations.status, "leased"),
         eq(paymentOperations.leaseToken, input.leaseToken),
+        input.providerObjectId == null
+          ? undefined
+          : or(isNull(paymentOperations.providerObjectId), eq(paymentOperations.providerObjectId, input.providerObjectId)),
         input.providerOrderId == null
           ? undefined
           : or(
@@ -1294,6 +1459,7 @@ export async function recordPaymentOperationProviderUnknown(
 ): Promise<PaymentOperation> {
   validateLeaseToken(input.leaseToken);
   validateFailedPaymentRows(input.failedPaymentRows);
+  if (input.providerObjectId != null) validateProviderObjectId(input.providerObjectId);
   if (input.providerOrderId != null) validateProviderOrderId(input.providerOrderId);
   const nowDate = input.now ?? new Date();
   const now = toIso(nowDate, "now");
@@ -1321,6 +1487,7 @@ export async function recordPaymentOperationProviderUnknown(
           ELSE NULL
         END`,
         leaseExpiresAt: null,
+        providerObjectId: input.providerObjectId ?? undefined,
         providerOrderId: input.providerOrderId ?? undefined,
         errorClassification: "provider_unknown",
         errorCode: sql`CASE
@@ -1340,6 +1507,9 @@ export async function recordPaymentOperationProviderUnknown(
         eq(paymentOperations.id, input.operationId),
         eq(paymentOperations.status, "leased"),
         eq(paymentOperations.leaseToken, input.leaseToken),
+        input.providerObjectId == null
+          ? undefined
+          : or(isNull(paymentOperations.providerObjectId), eq(paymentOperations.providerObjectId, input.providerObjectId)),
         input.providerOrderId == null
           ? undefined
           : or(
@@ -1365,6 +1535,7 @@ async function recordTerminalErrorOutcome(
 ): Promise<PaymentOperation> {
   validateLeaseToken(input.leaseToken);
   validateFailedPaymentRows(input.failedPaymentRows);
+  if (input.providerObjectId != null) validateProviderObjectId(input.providerObjectId);
   if (input.providerOrderId != null) validateProviderOrderId(input.providerOrderId);
   const now = toIso(input.now ?? new Date(), "now");
   const errorCode = validateErrorDetails(input.errorClassification, input.errorCode);
@@ -1377,6 +1548,7 @@ async function recordTerminalErrorOutcome(
         nextAttemptAt: null,
         leaseOwner: null,
         leaseExpiresAt: null,
+        providerObjectId: input.providerObjectId ?? undefined,
         providerOrderId: input.providerOrderId ?? undefined,
         errorClassification: input.errorClassification,
         errorCode,
@@ -1388,6 +1560,9 @@ async function recordTerminalErrorOutcome(
         eq(paymentOperations.id, input.operationId),
         eq(paymentOperations.status, "leased"),
         eq(paymentOperations.leaseToken, input.leaseToken),
+        input.providerObjectId == null
+          ? undefined
+          : or(isNull(paymentOperations.providerObjectId), eq(paymentOperations.providerObjectId, input.providerObjectId)),
         input.providerOrderId == null
           ? undefined
           : or(
@@ -1414,6 +1589,7 @@ async function recordTerminalErrorOutcome(
     && existing.leaseToken === input.leaseToken
     && existing.errorClassification === input.errorClassification
     && existing.errorCode === errorCode
+    && (input.providerObjectId == null || existing.providerObjectId === input.providerObjectId)
     && (input.providerOrderId == null || existing.providerOrderId === input.providerOrderId)
   ) {
     return existing;
@@ -1434,6 +1610,7 @@ export async function recordPaymentOperationActionRequired(
 export async function recordPaymentOperationReconciliationRequired(
   input: LeasedPaymentOperationInput & {
     errorCode?: string | null;
+    providerObjectId?: string | null;
     providerOrderId?: string | null;
   },
 ): Promise<PaymentOperation> {
@@ -1529,6 +1706,71 @@ export async function finalizePaymentOperationSuccess(
   input: FinalizePaymentOperationSuccessInput,
 ): Promise<PaymentOperation> {
   return db.transaction((tx) => finalizePaymentOperationSuccessInTransaction(tx, input));
+}
+
+export async function finalizeRefundPaymentOperationSuccess(input: LeasedPaymentOperationInput & {
+  providerObjectId: string;
+}): Promise<{ operation: PaymentOperation; payment: Payment }> {
+  validateLeaseToken(input.leaseToken);
+  validateProviderObjectId(input.providerObjectId);
+  const now = toIso(input.now ?? new Date(), "now");
+  return db.transaction(async (tx) => {
+    const [operation] = await tx.select().from(paymentOperations).where(and(
+      eq(paymentOperations.organizationId, input.organizationId),
+      eq(paymentOperations.id, input.operationId),
+    )).limit(1).for("update");
+    if (!operation) throw new PaymentOperationNotFoundError();
+    const snapshot = await loadRefundPaymentOperationSnapshot(tx, operation);
+    if (!snapshot) throw new PaymentOperationImmutableMismatchError();
+
+    if (operation.status === "succeeded") {
+      const [payment] = await tx.select().from(payments).where(eq(payments.id, snapshot.paymentId)).limit(1);
+      if (
+        operation.leaseToken === input.leaseToken
+        && operation.providerObjectId === input.providerObjectId
+        && payment?.status === "refunded"
+        && payment.squareRefundId === input.providerObjectId
+      ) return { operation, payment };
+      throw new PaymentOperationInvalidTransitionError(operation.status);
+    }
+    if (operation.status !== "leased" || operation.leaseToken !== input.leaseToken) {
+      throw new PaymentOperationInvalidTransitionError(operation.status);
+    }
+
+    const [payment] = await tx.update(payments).set({
+      status: "refunded",
+      squareRefundId: input.providerObjectId,
+      refundReason: snapshot.requestedReason,
+      refundedAt: now,
+    }).where(and(
+      eq(payments.id, snapshot.paymentId),
+      eq(payments.leagueId, snapshot.leagueId),
+      eq(payments.amount, snapshot.amountMinor),
+      eq(payments.providerPaymentId, snapshot.providerPaymentId),
+      eq(payments.status, "paid"),
+    )).returning();
+    if (!payment) throw new PaymentOperationImmutableMismatchError();
+
+    const [completed] = await tx.update(paymentOperations).set({
+      status: "succeeded",
+      providerObjectId: input.providerObjectId,
+      nextAttemptAt: null,
+      leaseOwner: null,
+      leaseExpiresAt: null,
+      errorClassification: null,
+      errorCode: null,
+      completedAt: now,
+      updatedAt: now,
+    }).where(and(
+      eq(paymentOperations.organizationId, input.organizationId),
+      eq(paymentOperations.id, input.operationId),
+      eq(paymentOperations.status, "leased"),
+      eq(paymentOperations.leaseToken, input.leaseToken),
+      or(isNull(paymentOperations.providerObjectId), eq(paymentOperations.providerObjectId, input.providerObjectId)),
+    )).returning();
+    if (!completed) throw new PaymentOperationInvalidTransitionError(operation.status);
+    return { operation: completed, payment };
+  });
 }
 
 export type PaymentOperationWake = {

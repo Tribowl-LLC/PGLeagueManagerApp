@@ -90,19 +90,24 @@ export class DatabaseStorage implements IStorage {
 
   createOrGetInteractivePaymentOperation!: IStorage["createOrGetInteractivePaymentOperation"];
   createOrGetGeneralInteractivePaymentOperation!: IStorage["createOrGetGeneralInteractivePaymentOperation"];
+  createOrGetRefundPaymentOperation!: IStorage["createOrGetRefundPaymentOperation"];
   createOrGetScheduledPaymentOperation!: IStorage["createOrGetScheduledPaymentOperation"];
   persistScheduledPaymentOperationSnapshot!: IStorage["persistScheduledPaymentOperationSnapshot"];
   getScheduledPaymentOperationSnapshotForOrganization!: IStorage["getScheduledPaymentOperationSnapshotForOrganization"];
   persistInteractivePaymentOperationSnapshot!: IStorage["persistInteractivePaymentOperationSnapshot"];
   getInteractivePaymentOperationSnapshotForOrganization!: IStorage["getInteractivePaymentOperationSnapshotForOrganization"];
+  persistRefundPaymentOperationSnapshot!: IStorage["persistRefundPaymentOperationSnapshot"];
+  getRefundPaymentOperationSnapshotForOrganization!: IStorage["getRefundPaymentOperationSnapshotForOrganization"];
   getPaymentOperationForOrganization!: IStorage["getPaymentOperationForOrganization"];
   getGeneralInteractivePaymentOperationForOrganization!: IStorage["getGeneralInteractivePaymentOperationForOrganization"];
+  getRefundPaymentOperationForOrganization!: IStorage["getRefundPaymentOperationForOrganization"];
   acquirePaymentOperationLease!: IStorage["acquirePaymentOperationLease"];
   schedulePaymentOperationRetry!: IStorage["schedulePaymentOperationRetry"];
   recordPaymentOperationProviderUnknown!: IStorage["recordPaymentOperationProviderUnknown"];
   recordPaymentOperationActionRequired!: IStorage["recordPaymentOperationActionRequired"];
   recordPaymentOperationFailedTerminal!: IStorage["recordPaymentOperationFailedTerminal"];
   finalizePaymentOperationSuccess!: IStorage["finalizePaymentOperationSuccess"];
+  finalizeRefundPaymentOperationSuccess!: IStorage["finalizeRefundPaymentOperationSuccess"];
   reconcilePaymentOperationSuccess!: IStorage["reconcilePaymentOperationSuccess"];
   getNextPaymentOperationWake!: IStorage["getNextPaymentOperationWake"];
   recordExpiredPaymentOperationAttemptExhausted!: IStorage["recordExpiredPaymentOperationAttemptExhausted"];

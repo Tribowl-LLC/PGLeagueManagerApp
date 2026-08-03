@@ -117,6 +117,10 @@ export interface IPaymentOperationStorage {
     input: import("./payment-operations").CreateOrGetGeneralInteractivePaymentOperationInput,
     existingTransaction?: import("./payment-operations").PaymentOperationTransaction,
   ): Promise<PaymentOperation>;
+  createOrGetRefundPaymentOperation(
+    input: import("./payment-operations").CreateOrGetRefundPaymentOperationInput,
+    existingTransaction?: import("./payment-operations").PaymentOperationTransaction,
+  ): Promise<PaymentOperation>;
   createOrGetScheduledPaymentOperation(
     input: import("./payment-operations").CreateOrGetScheduledPaymentOperationInput,
     existingTransaction?: import("./payment-operations").PaymentOperationTransaction,
@@ -129,6 +133,10 @@ export interface IPaymentOperationStorage {
     organizationId: number,
     requestKey: string,
   ): Promise<PaymentOperation | undefined>;
+  getRefundPaymentOperationForOrganization(
+    organizationId: number,
+    paymentId: number,
+  ): Promise<PaymentOperation | undefined>;
   acquirePaymentOperationLease(
     input: import("./payment-operations").AcquirePaymentOperationLeaseInput,
   ): Promise<PaymentOperation | undefined>;
@@ -137,6 +145,7 @@ export interface IPaymentOperationStorage {
       nextAttemptAt: Date;
       errorClassification: PaymentOperationErrorClassification;
       errorCode?: string | null;
+      providerObjectId?: string | null;
       providerOrderId?: string | null;
       failedPaymentRows?: import("./payment-operations").PaymentOperationLinkedPaymentInput[];
     },
@@ -145,6 +154,7 @@ export interface IPaymentOperationStorage {
     input: import("./payment-operations").LeasedPaymentOperationInput & {
       recoveryAt: Date;
       errorCode?: string | null;
+      providerObjectId?: string | null;
       providerOrderId?: string | null;
       failedPaymentRows?: import("./payment-operations").PaymentOperationLinkedPaymentInput[];
     },
@@ -152,6 +162,7 @@ export interface IPaymentOperationStorage {
   recordPaymentOperationActionRequired(
     input: import("./payment-operations").LeasedPaymentOperationInput & {
       errorCode?: string | null;
+      providerObjectId?: string | null;
       providerOrderId?: string | null;
       failedPaymentRows?: import("./payment-operations").PaymentOperationLinkedPaymentInput[];
     },
@@ -160,6 +171,7 @@ export interface IPaymentOperationStorage {
     input: import("./payment-operations").LeasedPaymentOperationInput & {
       errorClassification: PaymentOperationErrorClassification;
       errorCode?: string | null;
+      providerObjectId?: string | null;
       providerOrderId?: string | null;
       failedPaymentRows?: import("./payment-operations").PaymentOperationLinkedPaymentInput[];
     },
@@ -196,6 +208,18 @@ export interface IPaymentOperationStorage {
     organizationId: number,
     operationId: string,
   ): Promise<import("../services/interactive-payment-operation-snapshot").InteractivePaymentSemanticSnapshot | undefined>;
+  persistRefundPaymentOperationSnapshot(
+    operation: PaymentOperation,
+    snapshot: import("../services/refund-payment-operation-snapshot").RefundPaymentSemanticSnapshot,
+    transaction: import("./payment-operations").PaymentOperationTransaction,
+  ): Promise<import("../services/refund-payment-operation-snapshot").RefundPaymentSemanticSnapshot>;
+  getRefundPaymentOperationSnapshotForOrganization(
+    organizationId: number,
+    operationId: string,
+  ): Promise<import("../services/refund-payment-operation-snapshot").RefundPaymentSemanticSnapshot | undefined>;
+  finalizeRefundPaymentOperationSuccess(
+    input: import("./payment-operations").LeasedPaymentOperationInput & { providerObjectId: string },
+  ): Promise<{ operation: PaymentOperation; payment: Payment }>;
   getNextPaymentOperationWake(): Promise<import("./payment-operations").PaymentOperationWake | undefined>;
   recordExpiredPaymentOperationAttemptExhausted(input: {
     organizationId: number;

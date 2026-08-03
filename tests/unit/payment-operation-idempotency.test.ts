@@ -103,11 +103,10 @@ describe("payment operation stable identity", () => {
 describe("payment operation routing boundaries", () => {
   it.each([
     "server/services/payment-execution.ts",
-    "server/routes/payments/payment-refunds.ts",
     "server/routes/payment-schedules.ts",
     "server/routes/index.ts",
     "server/index.ts",
-  ])("does not wire general interactive or refund behavior into %s", (path) => {
+  ])("does not wire payment-operation execution into %s", (path) => {
     const source = readFileSync(resolve(path), "utf8");
     expect(source).not.toMatch(/payment-operation|paymentOperations/);
   });
@@ -119,6 +118,19 @@ describe("payment operation routing boundaries", () => {
     expect(source).not.toContain("refundPayment(");
   });
 
+  it("wires refunds through durable preparation and execution", () => {
+    const source = readFileSync(resolve("server/routes/payments/payment-refunds.ts"), "utf8");
+    expect(source).toContain("prepareRefundPaymentOperation");
+    expect(source).toContain("refundPaymentOperationExecutor");
+    expect(source).not.toContain(".refundPayment(");
+  });
+
+  it("dispatches refund recovery through the existing one-shot operation wake", () => {
+    const source = readFileSync(resolve("server/services/scheduled-payment-operation-executor.ts"), "utf8");
+    expect(source).toContain('wake.operationType === "refund"');
+    expect(source).toContain("refundPaymentOperationExecutor.execute");
+  });
+
   it("gates scheduled ledger startup on ledger_execute", () => {
     const source = readFileSync(resolve("server/app.ts"), "utf8");
     expect(source).toContain("scheduledPaymentOperationExecutor.start(scheduledPaymentExecutionMode)");
@@ -127,6 +139,6 @@ describe("payment operation routing boundaries", () => {
 
   it("keeps transaction-capable finalization independent from provider refunds", () => {
     const source = readFileSync(resolve("server/storage/payment-operations.ts"), "utf8");
-    expect(source).not.toMatch(/refundPayment|payment-provider|square-payments/);
+    expect(source).not.toMatch(/\.refundPayment\(|payment-provider|square-payments/);
   });
 });

@@ -160,6 +160,7 @@ const PARALLEL_ISOLATED = [
   // spawned Express process or mutable application singleton state.
   'tests/unit/payment-operations.test.ts',
   'tests/unit/interactive-payment-operation-executor.test.ts',
+  'tests/unit/refund-payment-operation-executor.test.ts',
   'tests/unit/scheduled-payment-ledger-cutover.test.ts',
   'tests/unit/payment-provider-error-mapping.test.ts',
   'tests/unit/payment-refunds-receipt-dependency.test.ts',

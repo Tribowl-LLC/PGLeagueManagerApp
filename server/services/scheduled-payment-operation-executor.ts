@@ -35,6 +35,7 @@ import { PaymentOperationWakeScheduler } from "./payment-operation-wake-schedule
 import { prepareScheduledPaymentCycle } from "./scheduled-payment-operation-preparation";
 import { autopaySetupOperationExecutor } from "./autopay-setup-operation-executor";
 import { interactivePaymentOperationExecutor } from "./interactive-payment-operation-executor";
+import { refundPaymentOperationExecutor } from "./refund-payment-operation-executor";
 import { GENERAL_INTERACTIVE_TARGET_PREFIX } from "../storage/payment-operations";
 
 const log = createLogger("ScheduledPaymentLedger");
@@ -214,6 +215,14 @@ export class ScheduledPaymentOperationExecutor {
           operationId: wake.operationId,
         });
       }
+      return;
+    }
+    if (wake.operationType === "refund") {
+      await refundPaymentOperationExecutor.execute({
+        organizationId: wake.organizationId,
+        operationId: wake.operationId,
+        now: this.now(),
+      });
       return;
     }
     if (wake.operationType !== "scheduled_charge") {

@@ -16,7 +16,7 @@ import { organizations } from "./organizations";
 import { bowlers } from "./bowlers";
 import { leagues } from "./leagues";
 import { locations } from "./locations";
-import { paymentSchedules } from "./payments";
+import { payments, paymentSchedules } from "./payments";
 import { users } from "./users";
 
 export const PAYMENT_OPERATION_TYPES = [
@@ -124,6 +124,9 @@ export const paymentOperations = pgTable("payment_operations", {
   interactiveTargetUnique: uniqueIndex("payment_operations_interactive_target_unique")
     .on(table.organizationId, table.targetKey)
     .where(sql`${table.operationType} = 'interactive_charge'`),
+  refundTargetUnique: uniqueIndex("payment_operations_refund_target_unique")
+    .on(table.organizationId, table.targetKey)
+    .where(sql`${table.operationType} = 'refund'`),
   tenantLookupIdx: index("payment_operations_tenant_created_idx")
     .on(table.organizationId, table.createdAt.desc()),
   providerObjectLookupIdx: index("payment_operations_provider_object_idx")
@@ -494,6 +497,59 @@ export const interactivePaymentOperationLineItems = pgTable("interactive_payment
   ),
 }));
 
+export const REFUND_PAYMENT_SNAPSHOT_VERSION = 1;
+
+/** Immutable authorization and exact Square request for one full local-row refund. */
+export const refundPaymentOperationSnapshots = pgTable("refund_payment_operation_snapshots", {
+  operationId: uuid("operation_id")
+    .primaryKey()
+    .references(() => paymentOperations.id, { onDelete: "cascade" }),
+  snapshotVersion: integer("snapshot_version").notNull().default(REFUND_PAYMENT_SNAPSHOT_VERSION),
+  snapshotFingerprint: varchar("snapshot_fingerprint", { length: 80 }).notNull(),
+  paymentId: integer("payment_id")
+    .notNull()
+    .references(() => payments.id, { onDelete: "restrict" }),
+  leagueId: integer("league_id")
+    .notNull()
+    .references(() => leagues.id, { onDelete: "restrict" }),
+  locationId: integer("location_id").references(() => locations.id, { onDelete: "restrict" }),
+  encryptedProviderPaymentId: text("encrypted_provider_payment_id").notNull(),
+  reason: varchar("reason", { length: 192 }).notNull(),
+  requestedReason: varchar("requested_reason", { length: 192 }),
+  requestedByUserId: integer("requested_by_user_id").notNull(),
+  requestedByRole: varchar("requested_by_role", { length: 32 }).notNull(),
+  requestedByOrganizationId: integer("requested_by_organization_id"),
+  createdAt: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
+}, (table) => ({
+  paymentUnique: uniqueIndex("refund_payment_operation_snapshots_payment_unique").on(table.paymentId),
+  leagueIdx: index("refund_payment_operation_snapshots_league_idx").on(table.leagueId),
+  versionCheck: check(
+    "refund_payment_operation_snapshots_version_check",
+    sql`${table.snapshotVersion} = ${sql.raw(String(REFUND_PAYMENT_SNAPSHOT_VERSION))}`,
+  ),
+  fingerprintCheck: check(
+    "refund_payment_operation_snapshots_fingerprint_check",
+    sql`${table.snapshotFingerprint} ~ '^lvpayexecrf:v1:[0-9a-f]{64}$'`,
+  ),
+  actorCheck: check(
+    "refund_payment_operation_snapshots_actor_check",
+    sql`${table.requestedByUserId} > 0
+      AND ${table.requestedByRole} IN ('org_admin', 'system_admin')
+      AND (${table.requestedByOrganizationId} IS NULL OR ${table.requestedByOrganizationId} > 0)`,
+  ),
+  reasonCheck: check(
+    "refund_payment_operation_snapshots_reason_check",
+    sql`length(${table.reason}) BETWEEN 1 AND 192 AND btrim(${table.reason}) = ${table.reason}`,
+  ),
+  requestedReasonCheck: check(
+    "refund_payment_operation_snapshots_requested_reason_check",
+    sql`${table.requestedReason} IS NULL OR (
+      length(${table.requestedReason}) BETWEEN 1 AND 192
+      AND btrim(${table.requestedReason}) = ${table.requestedReason}
+    )`,
+  ),
+}));
+
 export type PaymentOperation = typeof paymentOperations.$inferSelect;
 export type InsertPaymentOperation = typeof paymentOperations.$inferInsert;
 export type ScheduledPaymentOperationSnapshot = typeof scheduledPaymentOperationSnapshots.$inferSelect;
@@ -502,3 +558,4 @@ export type ScheduledPaymentOperationLineItem = typeof scheduledPaymentOperation
 export type InteractivePaymentOperationSnapshot = typeof interactivePaymentOperationSnapshots.$inferSelect;
 export type InteractivePaymentOperationAllocation = typeof interactivePaymentOperationAllocations.$inferSelect;
 export type InteractivePaymentOperationLineItem = typeof interactivePaymentOperationLineItems.$inferSelect;
+export type RefundPaymentOperationSnapshot = typeof refundPaymentOperationSnapshots.$inferSelect;

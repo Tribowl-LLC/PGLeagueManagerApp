@@ -1,96 +1,128 @@
-/**
- * Payment refund endpoints (mounted under /api/payments). Square only
- * auto-emails a refund receipt when the original payment carried a
- * buyerEmailAddress, so rows with `receiptEmailMissing: true` get a
- * UI notice (refund-payment-dialog.tsx) prompting an admin resend.
- */
-import { Router } from 'express';
-import { storage } from '../../storage';
-import { isCardPaymentType } from "@shared/schema/constants";
-import { sendSuccess, sendError, sanitizePayment } from '../../utils/api.js';
-import { singleRouteParam } from '../../utils/route-params';
-import { getPaymentProvider } from '../../services/payment-provider-factory';
-import { buildPaymentErrorResponse } from '../../utils/payment-error-response.js';
-import { hasAccessToPayment, isSystemAdmin, isOrgOrHigher } from '../../utils/access-control.js';
-import { paymentWriteLimiter } from '../../middleware/rate-limit.js';
-import { createLogger } from '../../logger';
+/** Durable, tenant-scoped full refunds for paid provider card rows. */
+import { Router, type Response } from "express";
+import type { PaymentOperation } from "@shared/schema";
+import { storage } from "../../storage";
+import { sendSuccess, sendError, sanitizePayment } from "../../utils/api.js";
+import { singleRouteParam } from "../../utils/route-params.js";
+import { paymentWriteLimiter } from "../../middleware/rate-limit.js";
+import { createLogger } from "../../logger.js";
+import {
+  PaymentOperationImmutableMismatchError,
+  PaymentOperationValidationError,
+} from "../../storage/payment-operations.js";
+import {
+  prepareRefundPaymentOperation,
+  RefundPreparationError,
+} from "../../services/refund-payment-operation-preparation.js";
+import { refundPaymentOperationExecutor } from "../../services/refund-payment-operation-executor.js";
+import { scheduledPaymentOperationExecutor } from "../../services/scheduled-payment-operation-executor.js";
 
 const log = createLogger("Payments");
-
 const router = Router();
 
-router.post("/:id/refund", paymentWriteLimiter, async (req, res) => {
-  try {
-    const id = parseInt(singleRouteParam(req.params.id));
-    if (isNaN(id)) {
-      return sendError(res, "Invalid payment ID", 400, "INVALID_ID");
+function operationIsDue(operation: PaymentOperation, now = new Date()): boolean {
+  return operation.status === "pending"
+    || (operation.nextAttemptAt !== null && new Date(operation.nextAttemptAt).getTime() <= now.getTime())
+    || (operation.status === "leased" && operation.leaseExpiresAt !== null
+      && new Date(operation.leaseExpiresAt).getTime() <= now.getTime());
+}
+
+function operationStatus(operation: PaymentOperation) {
+  return {
+    operationId: operation.id,
+    status: operation.status,
+    providerRefundId: operation.providerObjectId,
+    retryAt: operation.nextAttemptAt,
+    attemptCount: operation.attemptCount,
+  };
+}
+
+async function respondWithRefundOperation(
+  res: Response,
+  organizationId: number,
+  paymentId: number,
+  operation: PaymentOperation,
+): Promise<void> {
+  let current = operation;
+  if (operationIsDue(current)) {
+    current = await refundPaymentOperationExecutor.execute({
+      organizationId,
+      operationId: current.id,
+    }) ?? current;
+  }
+  if (current.status === "succeeded") {
+    const payment = await storage.getPaymentById(paymentId);
+    if (!payment || payment.status !== "refunded" || payment.squareRefundId !== current.providerObjectId) {
+      throw new Error("completed refund operation is missing its local payment result");
     }
-
-    if (!req.user) {
-      return sendError(res, "Authentication required", 401, "AUTH_REQUIRED");
+    sendSuccess(res, sanitizePayment(payment));
+    return;
+  }
+  if (current.status === "action_required" || current.status === "failed_terminal") {
+    if (current.errorClassification === "configuration") {
+      sendError(res, "Payment provider is not configured for this location", 422, "PROVIDER_NOT_CONFIGURED", operationStatus(current));
+      return;
     }
-
-    const payment = await storage.getPaymentById(id);
-    if (!payment) {
-      return sendError(res, "Payment not found", 404, "NOT_FOUND");
-    }
-
-    if (payment.status === 'refunded') {
-      return sendError(res, "Payment has already been refunded", 400, "ALREADY_REFUNDED");
-    }
-
-    if (payment.status !== 'paid') {
-      return sendError(res, "Only paid payments can be refunded", 400, "INVALID_STATUS");
-    }
-
-    if (!isCardPaymentType(payment.type)) {
-      return sendError(res, "Only card payments can be refunded", 400, "INVALID_TYPE");
-    }
-
-    // Refunds are limited to system administrators and authorized
-    // organization administrators. Plain users remain denied.
-    if (isSystemAdmin(req.user)) {
-      // ok — system_admin bypasses payment-level access check (legacy behaviour)
-    } else if (isOrgOrHigher(req.user)) {
-      const hasAccess = await hasAccessToPayment(req, id);
-      if (!hasAccess) {
-        return sendError(res, "You don't have access to refund this payment", 403, "FORBIDDEN");
-      }
-    } else {
-      return sendError(res, "Only admins can process refunds", 403, "FORBIDDEN");
-    }
-
-    const { reason } = req.body || {};
-    let providerRefundId: string | undefined;
-
-    const providerPaymentRef = payment.providerPaymentId;
-    if (providerPaymentRef && isCardPaymentType(payment.type)) {
-      const league = await storage.getLeague(payment.leagueId);
-      const locationId = league?.locationId ?? null;
-      const provider = await getPaymentProvider(locationId);
-      const refundResult = await provider.refundPayment(providerPaymentRef, payment.amount, reason);
-      providerRefundId = refundResult.refundId;
-    }
-
-    const refunded = await storage.refundPayment(id, providerRefundId, reason);
-    sendSuccess(res, sanitizePayment(refunded));
-  } catch (error) {
-    log.error('Refund error:', error);
-
-    // Mirror the charge route (server/routes/payments-provider/charges.ts):
-    // surface the provider's typed `userMessage` + `code` so admins see
-    // the actionable reason ("Your payment was declined…", "Refund could
-    // not be processed.", etc.) instead of the generic "Failed to process
-    // refund" wall. The shared helper pins the three-branch shape
-    // (ProviderNotConfiguredError → 422, PaymentProviderError → 500
-    // with typed message + code, anything else → 500 with the
-    // sanitized fallback) — see server/utils/payment-error-response.ts.
-    const { status, userMessage, code } = buildPaymentErrorResponse(
-      error,
-      'Failed to process refund',
-      'REFUND_ERROR',
+    const invalid = current.errorClassification === "invalid_request";
+    sendError(
+      res,
+      invalid ? "The refund could not be completed for this payment." : "Failed to process refund",
+      invalid ? 400 : 500,
+      current.errorCode ?? "REFUND_ERROR",
+      operationStatus(current),
     );
-    sendError(res, userMessage, status, code);
+    return;
+  }
+  res.status(202).json({
+    success: true,
+    data: {
+      ...operationStatus(current),
+      message: current.status === "reconciliation_required"
+        ? "The refund outcome is unresolved and requires reconciliation."
+        : "The refund is processing. Do not submit a new refund.",
+    },
+  });
+}
+
+router.post("/:id/refund", paymentWriteLimiter, async (req, res) => {
+  const id = Number.parseInt(singleRouteParam(req.params.id), 10);
+  if (!Number.isSafeInteger(id) || id <= 0) return sendError(res, "Invalid payment ID", 400, "INVALID_ID");
+  if (!req.user) return sendError(res, "Authentication required", 401, "AUTH_REQUIRED");
+  if (req.user.role !== "org_admin" && req.user.role !== "system_admin") {
+    return sendError(res, "Only admins can process refunds", 403, "FORBIDDEN");
+  }
+
+  let prepared = false;
+  try {
+    const { operation, snapshot } = await prepareRefundPaymentOperation({
+      paymentId: id,
+      reason: req.body?.reason,
+      requestedByUserId: req.user.id,
+      requestedByRole: req.user.role,
+      requestedByOrganizationId: req.user.organizationId ?? null,
+    });
+    prepared = true;
+    await respondWithRefundOperation(res, snapshot.organizationId, id, operation);
+  } catch (error) {
+    if (error instanceof RefundPreparationError) {
+      return sendError(res, error.message, error.statusCode, error.code);
+    }
+    if (error instanceof PaymentOperationImmutableMismatchError) {
+      return sendError(res, "This payment already has a refund request with different details.", 409, "REFUND_CONFLICT");
+    }
+    if (error instanceof PaymentOperationValidationError) {
+      return sendError(res, "The refund request could not be prepared.", 400, "VALIDATION_ERROR");
+    }
+    log.error("Refund operation failed", { errorName: error instanceof Error ? error.name : "UnknownError" });
+    return sendError(res, "Failed to process refund", 500, "REFUND_ERROR");
+  } finally {
+    if (prepared) {
+      try {
+        await scheduledPaymentOperationExecutor.rearm();
+      } catch (error) {
+        log.error("Refund operation wake rearm failed", { errorName: error instanceof Error ? error.name : "UnknownError" });
+      }
+    }
   }
 });
 

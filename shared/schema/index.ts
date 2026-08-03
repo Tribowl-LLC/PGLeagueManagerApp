@@ -39,6 +39,7 @@ export {
   interactivePaymentOperationSnapshots,
   interactivePaymentOperationAllocations,
   interactivePaymentOperationLineItems,
+  refundPaymentOperationSnapshots,
   PAYMENT_OPERATION_TYPES,
   PAYMENT_OPERATION_STATUSES,
   PAYMENT_OPERATION_ERROR_CLASSIFICATIONS,
@@ -52,6 +53,7 @@ export {
   INTERACTIVE_PAYMENT_SNAPSHOT_LEGACY_VERSION,
   INTERACTIVE_PAYMENT_REQUEST_KINDS,
   INTERACTIVE_PAYMENT_SOURCE_KINDS,
+  REFUND_PAYMENT_SNAPSHOT_VERSION,
 } from "./payment-operations";
 export type {
   PaymentOperation,
@@ -69,6 +71,7 @@ export type {
   InteractivePaymentOperationSnapshot,
   InteractivePaymentOperationAllocation,
   InteractivePaymentOperationLineItem,
+  RefundPaymentOperationSnapshot,
 } from "./payment-operations";
 
 export { users, insertUserSchema, updateUserSchema, updateUserSchemaBase } from "./users";

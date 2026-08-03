@@ -718,6 +718,63 @@ cutover until each operation is understood; uncertain rows must remain on
 their existing provider identity and be reconciled, never replayed as a new
 payment intent. This preflight does not modify production data.
 
+## Phase 3B durable refunds
+
+Phase 3B replaces the direct `POST /api/payments/:id/refund` Square call with
+the existing at-least-once payment-operation ledger. The logical identity is
+`payment-refund:<local payment id>`, scoped by organization and operation
+type. This matches the existing full-refund-per-payment-row policy: retries and
+concurrent administrators converge on one operation, while two allocations
+from one combined provider charge remain distinct authorized partial refunds.
+The raw target is never used as the Square key. The existing operation identity
+derives a bounded, domain-separated `lv-op1-rf-...` key and stores it before
+any provider call.
+
+The versioned immutable refund snapshot records the tenant-owned payment,
+league and location, integer USD amount, encrypted provider payment identity,
+effective provider reason, optional administrator-entered reason, and the
+authorized actor context. Provider payment IDs are encrypted with the existing
+field-encryption boundary; PAN, CVV, source tokens, raw Square payloads, and
+provider responses are never stored. Different immutable semantics for an
+existing payment refund fail closed rather than adopting the first request.
+
+Preparation locks and reconstructs the payment through its league, rejects
+organization-less or cross-tenant rows, and permits only an organization admin
+from that exact organization or a system admin. Only paid Square/card rows with
+a provider payment identity may create an operation. Cash, check, pending,
+failed, disputed, and already-refunded rows retain the prior policy and create
+no provider operation.
+
+The executor acquires and commits an expiring token-fenced lease before calling
+Square. `RefundPayment` and `GetPaymentRefund` always run outside database
+transactions. Only Square `COMPLETED` atomically updates the local payment to
+`refunded` and completes the operation. `PENDING` retains the Square refund ID
+and uses sparse checks through the existing one-shot wake dispatcher. Definite
+`FAILED` and `REJECTED` results are terminal. Transient or ambiguous outcomes
+reuse the exact immutable request and key; exhausted uncertainty becomes
+`reconciliation_required`, never a confirmed failure. A local finalization
+failure retains the lease for same-key recovery and never invents another
+refund identity.
+
+Migration 0013 is forward-only and additive. It creates
+`refund_payment_operation_snapshots` plus the tenant-scoped partial unique
+refund target index. Apply the migration before deploying the Phase 3B code.
+The pre-Phase-3B application safely ignores the dormant table and index, so
+migration-first is safe. Once the new route creates the first refund operation,
+pre-Phase-3B code is no longer an approved rollback target for refund traffic;
+rollback must use a ledger-aware application or stop refund traffic and roll
+forward. No backfill, startup schema mutation, environment-variable change,
+periodic sweep, webhook, or production-data update is included.
+
+The refund wake is part of the existing next-due operation query. With no due
+operation there is no timer or database polling. Expected Neon cost is one
+small operation/snapshot write for a refund, lease/finalization writes, and
+only sparse provider-status reads for Square `PENDING` results. The existing
+payment receipt fields and Square's original-payment receipt-email behavior are
+unchanged. A `202` response means processing or reconciliation, not success or
+failure; the admin client displays that distinction and must not submit a new
+refund.
+
 ### Phase 3 split and rollback
 
 The remaining work is intentionally split into focused pull requests:
@@ -730,8 +787,7 @@ The remaining work is intentionally split into focused pull requests:
    persistence, stable card identity, and source-kind enforcement (this
    release).
 4. Phase 3B: durable refund operations, stable refund keys, provider-state
-   handling, and atomic local refund finalization. Refund statuses and policy
-   are not changed here.
+   handling, and atomic local refund finalization (this release).
 5. Phase 4: webhook inbox, reconciliation tooling, disputes, and operator UX.
 
 Migration 0011 was the dormant foundation. Migration 0012 must be applied

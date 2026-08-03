@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(13);
+    expect(migrations).toHaveLength(14);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -223,6 +223,15 @@ describe('normalized migration baseline tools', () => {
     expect(migrations[12]?.sql).toContain('ADD COLUMN "source_kind"');
     expect(migrations[12]?.sql).toContain('ADD COLUMN "encrypted_saved_card_id"');
     expect(migrations[12]?.sql).not.toMatch(/(?:^|\n)\s*(?:UPDATE|DELETE|INSERT)\b/);
+    expect(migrations[13]).toMatchObject({
+      idx: 13,
+      tag: '0013_durable_refund_operations',
+      createdAt: 1785727730717,
+      hash: '4ea81888ee3dabef69c16723b657286ace43b61101219efb366c94b38c55aa6f',
+    });
+    expect(migrations[13]?.sql).toContain('CREATE TABLE "refund_payment_operation_snapshots"');
+    expect(migrations[13]?.sql).toContain('payment_operations_refund_target_unique');
+    expect(migrations[13]?.sql).not.toMatch(/(?:^|\n)\s*(?:DROP|UPDATE|DELETE|INSERT)\b/);
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 
