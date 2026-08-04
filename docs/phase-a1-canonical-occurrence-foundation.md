@@ -25,7 +25,7 @@ reporting behavior reads or writes these tables in A1.
   coherent supersession metadata, typed revision FKs, and revision uniqueness
   are the A1 structural support. A cross-table CHECK is not an atomicity
   mechanism; A2 owns the transaction service.
-- Discarded drafts retain their UUID and globally unique generation key while
+- Discarded drafts retain their UUID and league-scoped generation key while
   their current ordinals are cleared; their former values remain in revisions.
   A2 mutation enforcement must treat that state as terminal and reject revival.
 - Occurrence rows contain physical-session identity and structural local/UTC
