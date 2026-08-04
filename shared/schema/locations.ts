@@ -1,4 +1,4 @@
-import { pgTable, text, serial, integer, boolean, index, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, integer, boolean, index, jsonb, uniqueIndex } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { nameSchema } from "./constants";
@@ -92,6 +92,9 @@ export const locations = pgTable("locations", {
   squareCredentials: jsonb("square_credentials").$type<LocationSquareCredentials>(),
 }, (table) => ({
   organizationIdx: index("locations_organization_idx").on(table.organizationId),
+  // Canonical occurrence rows reference a location together with their
+  // organization ID, so the parent must expose the tenant-safe key.
+  idOrganizationUnique: uniqueIndex("locations_id_organization_unique").on(table.id, table.organizationId),
 }));
 
 const baseLocationSchema = createInsertSchema(locations);

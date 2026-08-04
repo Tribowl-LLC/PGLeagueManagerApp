@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(18);
+    expect(migrations).toHaveLength(19);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -268,6 +268,29 @@ describe('normalized migration baseline tools', () => {
     expect(migrations[17]?.sql).toContain('CREATE TABLE "payment_dispute_replay_audits"');
     expect(migrations[17]?.sql).toContain('webhook_events_tenant_status_type_received_idx');
     expect(migrations[17]?.sql).not.toMatch(/(?:^|\n)\s*(?:DROP|UPDATE|DELETE|INSERT)\b/);
+    expect(migrations[18]).toMatchObject({
+      idx: 18,
+      tag: '0018_canonical_league_occurrence_foundation',
+      hash: 'b95243411f1c76addd930d60bff21a6262739bbc70e09cf6dca46c23fa580074',
+    });
+    for (const table of [
+      'league_schedule_commands',
+      'league_occurrence_generation_runs',
+      'league_schedule_exceptions',
+      'league_occurrences',
+      'league_occurrence_billing_terms',
+      'league_occurrence_relationships',
+      'league_occurrence_revisions',
+      'league_schedule_exception_revisions',
+      'league_occurrence_relationship_revisions',
+      'league_occurrence_billing_term_revisions',
+      'league_occurrence_generation_discrepancies',
+    ]) {
+      expect(migrations[18]?.sql).toContain(`CREATE TABLE "${table}"`);
+    }
+    expect(migrations[18]?.sql).toContain('leagues_id_organization_unique');
+    expect(migrations[18]?.sql).toContain('locations_id_organization_unique');
+    expect(migrations[18]?.sql).not.toMatch(/(?:^|\n)\s*(?:DROP|RENAME|UPDATE|DELETE|INSERT)\b/);
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 

@@ -1,4 +1,4 @@
-import { pgTable, text, serial, integer, boolean, timestamp, index, type AnyPgColumn } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, integer, boolean, timestamp, index, uniqueIndex, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -120,7 +120,11 @@ export const leagues = pgTable("leagues", {
   activeNameIdx: index("leagues_active_name_idx").on(table.active, table.name),
   seasonIdx: index("leagues_season_idx").on(table.seasonStart, table.seasonEnd),
   organizationIdx: index("leagues_organization_idx").on(table.organizationId),
-  locationIdx: index("leagues_location_idx").on(table.locationId)
+  locationIdx: index("leagues_location_idx").on(table.locationId),
+  // Canonical occurrence rows carry both the league and organization IDs.
+  // This parent key lets PostgreSQL enforce that the pair came from the same
+  // tenant even though legacy leagues.organization_id remains nullable.
+  idOrganizationUnique: uniqueIndex("leagues_id_organization_unique").on(table.id, table.organizationId),
 }));
 
 const baseLeagueSchema = createInsertSchema(leagues);
