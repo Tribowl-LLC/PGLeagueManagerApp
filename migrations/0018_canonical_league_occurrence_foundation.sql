@@ -25,6 +25,8 @@ CREATE TABLE "league_occurrence_billing_terms" (
 	"billing_ordinal" integer,
 	"version" integer NOT NULL,
 	"state" text DEFAULT 'draft' NOT NULL,
+	"current_revision" integer DEFAULT 1 NOT NULL,
+	"last_command_id" uuid,
 	"published_at" timestamp with time zone,
 	"published_by_user_id" integer,
 	"publication_command_id" uuid,
@@ -39,6 +41,7 @@ CREATE TABLE "league_occurrence_billing_terms" (
       OR ("league_occurrence_billing_terms"."obligation_policy" = 'eligible_bowlers' AND "league_occurrence_billing_terms"."default_amount_minor" > 0 AND "league_occurrence_billing_terms"."billing_ordinal" > 0)),
 	CONSTRAINT "billing_terms_currency_check" CHECK ("league_occurrence_billing_terms"."currency" ~ '^[A-Z]{3}$'),
 	CONSTRAINT "billing_terms_version_check" CHECK ("league_occurrence_billing_terms"."version" > 0),
+	CONSTRAINT "billing_terms_revision_check" CHECK ("league_occurrence_billing_terms"."current_revision" > 0),
 	CONSTRAINT "billing_terms_lifecycle_metadata_check" CHECK ((
       "league_occurrence_billing_terms"."state" = 'draft'
       AND "league_occurrence_billing_terms"."published_at" IS NULL AND "league_occurrence_billing_terms"."published_by_user_id" IS NULL AND "league_occurrence_billing_terms"."publication_command_id" IS NULL
@@ -109,6 +112,8 @@ CREATE TABLE "league_occurrence_generation_runs" (
       AND "league_occurrence_generation_runs"."skipped_date_count" >= 0 AND "league_occurrence_generation_runs"."discrepancy_count" >= 0),
 	CONSTRAINT "generation_runs_version_check" CHECK (length("league_occurrence_generation_runs"."generator_version") > 0 AND btrim("league_occurrence_generation_runs"."generator_version") = "league_occurrence_generation_runs"."generator_version"
       AND length("league_occurrence_generation_runs"."input_fingerprint") > 0 AND btrim("league_occurrence_generation_runs"."input_fingerprint") = "league_occurrence_generation_runs"."input_fingerprint"),
+	CONSTRAINT "generation_runs_approval_metadata_check" CHECK (("league_occurrence_generation_runs"."approved_at" IS NULL AND "league_occurrence_generation_runs"."approved_by_user_id" IS NULL AND "league_occurrence_generation_runs"."approval_command_id" IS NULL)
+      OR ("league_occurrence_generation_runs"."approved_at" IS NOT NULL AND "league_occurrence_generation_runs"."approved_by_user_id" IS NOT NULL AND "league_occurrence_generation_runs"."approval_command_id" IS NOT NULL)),
 	CONSTRAINT "generation_runs_metadata_check" CHECK ((
       "league_occurrence_generation_runs"."state" = 'generated'
       AND "league_occurrence_generation_runs"."approved_at" IS NULL AND "league_occurrence_generation_runs"."approved_by_user_id" IS NULL AND "league_occurrence_generation_runs"."approval_command_id" IS NULL
@@ -158,6 +163,8 @@ CREATE TABLE "league_occurrence_relationships" (
 	"source_occurrence_id" uuid NOT NULL,
 	"target_occurrence_id" uuid NOT NULL,
 	"state" text DEFAULT 'draft' NOT NULL,
+	"current_revision" integer DEFAULT 1 NOT NULL,
+	"last_command_id" uuid,
 	"published_at" timestamp with time zone,
 	"published_by_user_id" integer,
 	"publication_command_id" uuid,
@@ -168,6 +175,7 @@ CREATE TABLE "league_occurrence_relationships" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "relationships_kind_check" CHECK ("league_occurrence_relationships"."kind" IN ('makeup_for')),
 	CONSTRAINT "relationships_different_occurrences_check" CHECK ("league_occurrence_relationships"."source_occurrence_id" <> "league_occurrence_relationships"."target_occurrence_id"),
+	CONSTRAINT "relationships_revision_check" CHECK ("league_occurrence_relationships"."current_revision" > 0),
 	CONSTRAINT "relationships_state_check" CHECK (("league_occurrence_relationships"."state" = 'draft' AND "league_occurrence_relationships"."published_at" IS NULL AND "league_occurrence_relationships"."published_by_user_id" IS NULL AND "league_occurrence_relationships"."publication_command_id" IS NULL AND "league_occurrence_relationships"."revoked_at" IS NULL AND "league_occurrence_relationships"."revoked_by_user_id" IS NULL AND "league_occurrence_relationships"."revocation_command_id" IS NULL)
       OR ("league_occurrence_relationships"."state" = 'published' AND "league_occurrence_relationships"."published_at" IS NOT NULL AND "league_occurrence_relationships"."published_by_user_id" IS NOT NULL AND "league_occurrence_relationships"."publication_command_id" IS NOT NULL AND "league_occurrence_relationships"."revoked_at" IS NULL AND "league_occurrence_relationships"."revoked_by_user_id" IS NULL AND "league_occurrence_relationships"."revocation_command_id" IS NULL)
       OR ("league_occurrence_relationships"."state" = 'revoked' AND "league_occurrence_relationships"."published_at" IS NOT NULL AND "league_occurrence_relationships"."published_by_user_id" IS NOT NULL AND "league_occurrence_relationships"."publication_command_id" IS NOT NULL AND "league_occurrence_relationships"."revoked_at" IS NOT NULL AND "league_occurrence_relationships"."revoked_by_user_id" IS NOT NULL AND "league_occurrence_relationships"."revocation_command_id" IS NOT NULL))
@@ -241,7 +249,7 @@ CREATE TABLE "league_occurrences" (
       AND ("league_occurrences"."competition_number" IS NULL OR "league_occurrences"."competition_number" > 0)
       AND ("league_occurrences"."lifecycle" NOT IN ('published', 'locked') OR "league_occurrences"."planned_ordinal" IS NOT NULL)
       AND ("league_occurrences"."lifecycle" NOT IN ('published', 'locked') OR NOT "league_occurrences"."competitive" OR "league_occurrences"."competition_number" IS NOT NULL)
-      AND ("league_occurrences"."lifecycle" IN ('draft') OR "league_occurrences"."competitive" OR "league_occurrences"."competition_number" IS NULL)),
+      AND ("league_occurrences"."competitive" OR "league_occurrences"."competition_number" IS NULL)),
 	CONSTRAINT "occurrences_standings_check" CHECK (NOT "league_occurrences"."counts_in_standings" OR "league_occurrences"."competitive"),
 	CONSTRAINT "occurrences_lifecycle_status_check" CHECK (("league_occurrences"."lifecycle" = 'draft' AND "league_occurrences"."status" IN ('scheduled', 'discarded'))
       OR ("league_occurrences"."lifecycle" = 'published' AND "league_occurrences"."status" IN ('scheduled', 'cancelled'))
@@ -356,8 +364,8 @@ CREATE TABLE "league_schedule_exceptions" (
     ))
 );
 --> statement-breakpoint
--- Drizzle emits these unique parent keys after foreign keys. They must exist
--- first because PostgreSQL requires a referenced composite key at FK creation.
+-- These supporting composite keys must exist before PostgreSQL creates the
+-- tenant-safe foreign keys that reference them.
 CREATE UNIQUE INDEX "billing_terms_tenant_identity_unique" ON "league_occurrence_billing_terms" USING btree ("id","organization_id","league_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "generation_runs_tenant_identity_unique" ON "league_occurrence_generation_runs" USING btree ("id","organization_id","league_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "relationships_tenant_identity_unique" ON "league_occurrence_relationships" USING btree ("id","organization_id","league_id");--> statement-breakpoint
@@ -373,6 +381,7 @@ ALTER TABLE "league_occurrence_billing_terms" ADD CONSTRAINT "league_occurrence_
 ALTER TABLE "league_occurrence_billing_terms" ADD CONSTRAINT "league_occurrence_billing_terms_published_by_user_id_users_id_fk" FOREIGN KEY ("published_by_user_id") REFERENCES "public"."users"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "league_occurrence_billing_terms" ADD CONSTRAINT "billing_terms_occurrence_tenant_fk" FOREIGN KEY ("occurrence_id","organization_id","league_id") REFERENCES "public"."league_occurrences"("id","organization_id","league_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "league_occurrence_billing_terms" ADD CONSTRAINT "billing_terms_publication_command_fk" FOREIGN KEY ("publication_command_id","organization_id","league_id") REFERENCES "public"."league_schedule_commands"("id","organization_id","league_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "league_occurrence_billing_terms" ADD CONSTRAINT "billing_terms_last_command_fk" FOREIGN KEY ("last_command_id","organization_id","league_id") REFERENCES "public"."league_schedule_commands"("id","organization_id","league_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "league_occurrence_billing_terms" ADD CONSTRAINT "billing_terms_superseded_command_fk" FOREIGN KEY ("superseded_by_command_id","organization_id","league_id") REFERENCES "public"."league_schedule_commands"("id","organization_id","league_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "league_occurrence_generation_discrepancies" ADD CONSTRAINT "league_occurrence_generation_discrepancies_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "league_occurrence_generation_discrepancies" ADD CONSTRAINT "generation_discrepancies_generation_run_fk" FOREIGN KEY ("generation_run_id","organization_id","league_id") REFERENCES "public"."league_occurrence_generation_runs"("id","organization_id","league_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
@@ -395,6 +404,7 @@ ALTER TABLE "league_occurrence_relationships" ADD CONSTRAINT "relationships_sour
 ALTER TABLE "league_occurrence_relationships" ADD CONSTRAINT "relationships_target_occurrence_fk" FOREIGN KEY ("target_occurrence_id","organization_id","league_id") REFERENCES "public"."league_occurrences"("id","organization_id","league_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "league_occurrence_relationships" ADD CONSTRAINT "relationships_publication_command_fk" FOREIGN KEY ("publication_command_id","organization_id","league_id") REFERENCES "public"."league_schedule_commands"("id","organization_id","league_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "league_occurrence_relationships" ADD CONSTRAINT "relationships_revocation_command_fk" FOREIGN KEY ("revocation_command_id","organization_id","league_id") REFERENCES "public"."league_schedule_commands"("id","organization_id","league_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "league_occurrence_relationships" ADD CONSTRAINT "relationships_last_command_fk" FOREIGN KEY ("last_command_id","organization_id","league_id") REFERENCES "public"."league_schedule_commands"("id","organization_id","league_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "league_occurrence_revisions" ADD CONSTRAINT "league_occurrence_revisions_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "league_occurrence_revisions" ADD CONSTRAINT "occurrence_revisions_occurrence_fk" FOREIGN KEY ("occurrence_id","organization_id","league_id") REFERENCES "public"."league_occurrences"("id","organization_id","league_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "league_occurrence_revisions" ADD CONSTRAINT "occurrence_revisions_command_fk" FOREIGN KEY ("command_id","organization_id","league_id") REFERENCES "public"."league_schedule_commands"("id","organization_id","league_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
@@ -440,9 +450,10 @@ CREATE UNIQUE INDEX "relationships_active_source_unique" ON "league_occurrence_r
 CREATE UNIQUE INDEX "relationships_active_target_unique" ON "league_occurrence_relationships" USING btree ("organization_id","league_id","target_occurrence_id") WHERE "league_occurrence_relationships"."state" <> 'revoked';--> statement-breakpoint
 CREATE INDEX "relationships_tenant_created_idx" ON "league_occurrence_relationships" USING btree ("organization_id","created_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE UNIQUE INDEX "occurrence_revisions_entity_revision_unique" ON "league_occurrence_revisions" USING btree ("organization_id","league_id","occurrence_id","revision_number");--> statement-breakpoint
-CREATE UNIQUE INDEX "occurrences_generation_key_unique" ON "league_occurrences" USING btree ("generation_key");--> statement-breakpoint
-CREATE UNIQUE INDEX "occurrences_active_start_unique" ON "league_occurrences" USING btree ("start_at") WHERE "league_occurrences"."lifecycle" IN ('published', 'locked') AND "league_occurrences"."status" <> 'cancelled';--> statement-breakpoint
+CREATE UNIQUE INDEX "occurrences_generation_key_unique" ON "league_occurrences" USING btree ("organization_id","league_id","generation_key");--> statement-breakpoint
+CREATE UNIQUE INDEX "occurrences_active_start_unique" ON "league_occurrences" USING btree ("organization_id","league_id","start_at") WHERE "league_occurrences"."lifecycle" IN ('published', 'locked') AND "league_occurrences"."status" <> 'cancelled';--> statement-breakpoint
 CREATE UNIQUE INDEX "occurrences_published_ordinal_unique" ON "league_occurrences" USING btree ("organization_id","league_id","planned_ordinal") WHERE "league_occurrences"."lifecycle" IN ('published', 'locked') AND "league_occurrences"."planned_ordinal" IS NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "occurrences_published_competition_unique" ON "league_occurrences" USING btree ("organization_id","league_id","competition_number") WHERE "league_occurrences"."lifecycle" IN ('published', 'locked') AND "league_occurrences"."competition_number" IS NOT NULL;--> statement-breakpoint
 CREATE INDEX "occurrences_tenant_date_idx" ON "league_occurrences" USING btree ("organization_id","authoritative_local_date");--> statement-breakpoint
 CREATE INDEX "occurrences_generation_run_idx" ON "league_occurrences" USING btree ("generation_run_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "schedule_commands_org_idempotency_unique" ON "league_schedule_commands" USING btree ("organization_id","idempotency_key");--> statement-breakpoint
@@ -450,4 +461,4 @@ CREATE INDEX "schedule_commands_tenant_created_idx" ON "league_schedule_commands
 CREATE INDEX "schedule_commands_league_created_idx" ON "league_schedule_commands" USING btree ("league_id","created_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE UNIQUE INDEX "exception_revisions_entity_revision_unique" ON "league_schedule_exception_revisions" USING btree ("organization_id","league_id","exception_id","revision_number");--> statement-breakpoint
 CREATE UNIQUE INDEX "schedule_exceptions_active_unique" ON "league_schedule_exceptions" USING btree ("organization_id","league_id","kind","local_date") WHERE "league_schedule_exceptions"."lifecycle" <> 'revoked';--> statement-breakpoint
-CREATE INDEX "schedule_exceptions_tenant_date_idx" ON "league_schedule_exceptions" USING btree ("organization_id","local_date");--> statement-breakpoint
+CREATE INDEX "schedule_exceptions_tenant_date_idx" ON "league_schedule_exceptions" USING btree ("organization_id","local_date");

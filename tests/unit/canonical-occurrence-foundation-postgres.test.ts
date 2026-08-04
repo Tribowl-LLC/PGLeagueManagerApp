@@ -81,6 +81,35 @@ async function createFixture(label: string): Promise<Fixture> {
   };
 }
 
+async function createLeagueInOrganization(fixture: Fixture, label: string): Promise<Fixture> {
+  const [location] = await db
+    .insert(locations)
+    .values({ name: `A1 ${label} location`, organizationId: fixture.organizationId })
+    .returning({ id: locations.id });
+  if (!location) throw new Error("A1 secondary location fixture was not created");
+
+  const [league] = await db
+    .insert(leagues)
+    .values({
+      name: `A1 ${label} league`,
+      organizationId: fixture.organizationId,
+      locationId: location.id,
+      seasonStart: "2032-01-01",
+      seasonEnd: "2032-12-31",
+      weekDay: "Sunday",
+      timezone: "America/New_York",
+    })
+    .returning({ id: leagues.id });
+  if (!league) throw new Error("A1 secondary league fixture was not created");
+
+  return {
+    organizationId: fixture.organizationId,
+    leagueId: league.id,
+    locationId: location.id,
+    actorUserId: fixture.actorUserId,
+  };
+}
+
 async function createCommand(
   fixture: Fixture,
   commandType: "generate" | "discard_draft" | "publish" | "cancel" | "create_exception" | "create_makeup_relationship" | "revise_billing_terms",
@@ -235,6 +264,8 @@ describe("canonical occurrence A1 PostgreSQL contract", () => {
         .update(leagueOccurrenceBillingTerms)
         .set({
           state: "superseded",
+          currentRevision: 2,
+          lastCommandId: discardCommand.id,
           supersededAt: "2032-01-02T12:00:00.000Z",
           supersededByCommandId: discardCommand.id,
         })
@@ -281,6 +312,8 @@ describe("canonical occurrence A1 PostgreSQL contract", () => {
     expect(occurrenceAfter.status).toBe("scheduled");
     expect(occurrenceAfter.currentRevision).toBe(1);
     expect(termAfter.state).toBe("draft");
+    expect(termAfter.currentRevision).toBe(1);
+    expect(termAfter.lastCommandId).toBeNull();
     expect(occurrenceRevisions).toHaveLength(1);
     expect(termRevisions).toHaveLength(1);
 
@@ -315,7 +348,7 @@ describe("canonical occurrence A1 PostgreSQL contract", () => {
     expect(row.startAt).toContain("2032-03-14");
   });
 
-  it("rejects noncompetitive standings rows and cross-tenant composite references", async () => {
+  it("rejects noncompetitive ordinal rows and cross-tenant composite references", async () => {
     const fixture = fixtureA;
     const other = fixtureB;
     if (!fixture || !other) throw new Error("tenant fixtures are missing");
@@ -327,6 +360,13 @@ describe("canonical occurrence A1 PostgreSQL contract", () => {
       countsInStandings: true,
     })).rejects.toThrow();
 
+    await expect(db.insert(leagueOccurrences).values({
+      ...occurrenceValues(fixture, "invalid-competition", run.id, command.id),
+      competitive: false,
+      countsInStandings: false,
+      competitionNumber: 99,
+    })).rejects.toThrow();
+
     await expect(db.insert(leagueScheduleCommands).values({
       organizationId: other.organizationId,
       leagueId: fixture.leagueId,
@@ -334,6 +374,78 @@ describe("canonical occurrence A1 PostgreSQL contract", () => {
       commandType: "generate",
       idempotencyKey: `cross-tenant-${suffix}`,
       requestFingerprint: `cross-tenant:${suffix}`,
+    })).rejects.toThrow();
+  });
+
+  it("scopes simultaneous starts, generation keys, and competition numbers to a league", async () => {
+    const fixture = fixtureA;
+    if (!fixture) throw new Error("foundation fixture is missing");
+    const otherLeague = await createLeagueInOrganization(fixture, "Parallel");
+    const command = await createCommand(fixture, "publish", "parallel-publish");
+    const otherCommand = await createCommand(otherLeague, "publish", "parallel-other-publish");
+    const run = await createRun(fixture, command.id, "parallel-input", 6);
+    const otherRun = await createRun(otherLeague, otherCommand.id, "parallel-input", 6);
+    const publishedMetadata = {
+      lifecycle: "published" as const,
+      plannedOrdinal: 1,
+      competitionNumber: 1,
+      publishedAt: "2032-01-02T12:00:00.000Z",
+      publishedByUserId: fixture.actorUserId,
+    };
+    const [first] = await db.insert(leagueOccurrences).values({
+      ...occurrenceValues(fixture, "shared-generation-key", run.id, command.id),
+      ...publishedMetadata,
+      publicationCommandId: command.id,
+      startAt: "2032-05-02T16:00:00.000Z",
+    }).returning();
+    const [parallel] = await db.insert(leagueOccurrences).values({
+      ...occurrenceValues(otherLeague, "shared-generation-key", otherRun.id, otherCommand.id),
+      ...publishedMetadata,
+      publicationCommandId: otherCommand.id,
+      startAt: "2032-05-02T16:00:00.000Z",
+    }).returning();
+    if (!first || !parallel) throw new Error("parallel league occurrences were not created");
+    expect(parallel.startAt).toBe(first.startAt);
+    expect(parallel.generationKey).toBe(first.generationKey);
+
+    await expect(db.insert(leagueOccurrences).values({
+      ...occurrenceValues(fixture, "shared-generation-key", run.id, command.id),
+      ...publishedMetadata,
+      plannedOrdinal: 2,
+      competitionNumber: 2,
+      publicationCommandId: command.id,
+      startAt: "2032-05-02T17:00:00.000Z",
+    })).rejects.toThrow();
+
+    await expect(db.insert(leagueOccurrences).values({
+      ...occurrenceValues(fixture, "distinct-generation-key", run.id, command.id),
+      ...publishedMetadata,
+      plannedOrdinal: 2,
+      competitionNumber: 1,
+      publicationCommandId: command.id,
+      startAt: "2032-05-02T18:00:00.000Z",
+    })).rejects.toThrow();
+  });
+
+  it("requires an all-null or all-populated generation approval tuple", async () => {
+    const fixture = fixtureA;
+    if (!fixture) throw new Error("foundation fixture is missing");
+    const command = await createCommand(fixture, "generate", "partial-approval");
+    const supersedingCommand = await createCommand(fixture, "generate", "partial-approval-superseding");
+    await expect(db.insert(leagueOccurrenceGenerationRuns).values({
+      organizationId: fixture.organizationId,
+      leagueId: fixture.leagueId,
+      originatingCommandId: command.id,
+      generatorVersion: "a1-test-generator",
+      inputFingerprint: "partial-approval-input",
+      sourceScheduleRevision: 7,
+      normalizedInputSnapshot: { partial: true },
+      rangeStartDate: "2032-01-01",
+      rangeEndDate: "2032-12-31",
+      state: "superseded",
+      approvedAt: "2032-01-02T12:00:00.000Z",
+      supersededAt: "2032-01-03T12:00:00.000Z",
+      supersededByCommandId: supersedingCommand.id,
     })).rejects.toThrow();
   });
 });
@@ -406,6 +518,8 @@ describe("A1 organization teardown and parent deletion", () => {
       currency: "USD",
       version: 1,
       state: "published",
+      currentRevision: 1,
+      lastCommandId: billingCommand.id,
       publishedAt: "2032-01-02T12:00:00.000Z",
       publishedByUserId: fixture.actorUserId,
       publicationCommandId: billingCommand.id,
@@ -421,6 +535,8 @@ describe("A1 organization teardown and parent deletion", () => {
       billingOrdinal: 1,
       version: 1,
       state: "published",
+      currentRevision: 1,
+      lastCommandId: billingCommand.id,
       publishedAt: "2032-01-02T12:00:00.000Z",
       publishedByUserId: fixture.actorUserId,
       publicationCommandId: billingCommand.id,
@@ -434,6 +550,8 @@ describe("A1 organization teardown and parent deletion", () => {
       sourceOccurrenceId: source.id,
       targetOccurrenceId: target.id,
       state: "published",
+      currentRevision: 1,
+      lastCommandId: relationshipCommand.id,
       publishedAt: "2032-01-02T12:00:00.000Z",
       publishedByUserId: fixture.actorUserId,
       publicationCommandId: relationshipCommand.id,

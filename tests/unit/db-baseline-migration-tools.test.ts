@@ -271,7 +271,7 @@ describe('normalized migration baseline tools', () => {
     expect(migrations[18]).toMatchObject({
       idx: 18,
       tag: '0018_canonical_league_occurrence_foundation',
-      hash: 'b95243411f1c76addd930d60bff21a6262739bbc70e09cf6dca46c23fa580074',
+      hash: 'f1d25208ccde355ae8ba194410254bfa5e2c86bd2916d04966fce150c36b77c5',
     });
     for (const table of [
       'league_schedule_commands',
@@ -290,6 +290,12 @@ describe('normalized migration baseline tools', () => {
     }
     expect(migrations[18]?.sql).toContain('leagues_id_organization_unique');
     expect(migrations[18]?.sql).toContain('locations_id_organization_unique');
+    expect(migrations[18]?.sql).toContain('"organization_id","league_id","generation_key"');
+    expect(migrations[18]?.sql).toContain('"organization_id","league_id","start_at"');
+    expect(migrations[18]?.sql).toContain('occurrences_published_competition_unique');
+    expect(migrations[18]?.sql).toContain('billing_terms_last_command_fk');
+    expect(migrations[18]?.sql).toContain('relationships_last_command_fk');
+    expect(migrations[18]?.sql).toContain('generation_runs_approval_metadata_check');
     expect(migrations[18]?.sql).not.toMatch(/(?:^|\n)\s*(?:DROP|RENAME|UPDATE|DELETE|INSERT)\b/);
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });

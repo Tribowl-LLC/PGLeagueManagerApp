@@ -246,6 +246,11 @@ export const leagueOccurrenceGenerationRuns = pgTable("league_occurrence_generat
     sql`length(${table.generatorVersion}) > 0 AND btrim(${table.generatorVersion}) = ${table.generatorVersion}
       AND length(${table.inputFingerprint}) > 0 AND btrim(${table.inputFingerprint}) = ${table.inputFingerprint}`,
   ),
+  approvalMetadataCheck: check(
+    "generation_runs_approval_metadata_check",
+    sql`(${table.approvedAt} IS NULL AND ${table.approvedByUserId} IS NULL AND ${table.approvalCommandId} IS NULL)
+      OR (${table.approvedAt} IS NOT NULL AND ${table.approvedByUserId} IS NOT NULL AND ${table.approvalCommandId} IS NOT NULL)`,
+  ),
   metadataCheck: check(
     "generation_runs_metadata_check",
     sql`(
@@ -449,13 +454,17 @@ export const leagueOccurrences = pgTable("league_occurrences", {
     columns: [table.discardCommandId, table.organizationId, table.leagueId],
     foreignColumns: [leagueScheduleCommands.id, leagueScheduleCommands.organizationId, leagueScheduleCommands.leagueId],
   }).onDelete("restrict"),
-  generationKeyUnique: uniqueIndex("occurrences_generation_key_unique").on(table.generationKey),
+  generationKeyUnique: uniqueIndex("occurrences_generation_key_unique")
+    .on(table.organizationId, table.leagueId, table.generationKey),
   activeStartUnique: uniqueIndex("occurrences_active_start_unique")
-    .on(table.startAt)
+    .on(table.organizationId, table.leagueId, table.startAt)
     .where(sql`${table.lifecycle} IN ('published', 'locked') AND ${table.status} <> 'cancelled'`),
   publishedOrdinalUnique: uniqueIndex("occurrences_published_ordinal_unique")
     .on(table.organizationId, table.leagueId, table.plannedOrdinal)
     .where(sql`${table.lifecycle} IN ('published', 'locked') AND ${table.plannedOrdinal} IS NOT NULL`),
+  publishedCompetitionUnique: uniqueIndex("occurrences_published_competition_unique")
+    .on(table.organizationId, table.leagueId, table.competitionNumber)
+    .where(sql`${table.lifecycle} IN ('published', 'locked') AND ${table.competitionNumber} IS NOT NULL`),
   tenantDateIdx: index("occurrences_tenant_date_idx").on(table.organizationId, table.authoritativeLocalDate),
   generationRunIdx: index("occurrences_generation_run_idx").on(table.generationRunId),
   kindCheck: check("occurrences_kind_check", sql`${table.kind} IN (${occurrenceKinds})`),
@@ -478,7 +487,7 @@ export const leagueOccurrences = pgTable("league_occurrences", {
       AND (${table.competitionNumber} IS NULL OR ${table.competitionNumber} > 0)
       AND (${table.lifecycle} NOT IN ('published', 'locked') OR ${table.plannedOrdinal} IS NOT NULL)
       AND (${table.lifecycle} NOT IN ('published', 'locked') OR NOT ${table.competitive} OR ${table.competitionNumber} IS NOT NULL)
-      AND (${table.lifecycle} IN ('draft') OR ${table.competitive} OR ${table.competitionNumber} IS NULL)`,
+      AND (${table.competitive} OR ${table.competitionNumber} IS NULL)`,
   ),
   standingsCheck: check("occurrences_standings_check", sql`NOT ${table.countsInStandings} OR ${table.competitive}`),
   lifecycleStatusCheck: check(
@@ -536,6 +545,8 @@ export const leagueOccurrenceBillingTerms = pgTable("league_occurrence_billing_t
   billingOrdinal: integer("billing_ordinal"),
   version: integer("version").notNull(),
   state: text("state", { enum: LEAGUE_OCCURRENCE_BILLING_STATES }).notNull().default("draft"),
+  currentRevision: integer("current_revision").notNull().default(1),
+  lastCommandId: uuid("last_command_id"),
   publishedAt: timestamp("published_at", { withTimezone: true, mode: "string" }),
   publishedByUserId: integer("published_by_user_id").references(() => users.id, { onDelete: "restrict" }),
   publicationCommandId: uuid("publication_command_id"),
@@ -556,6 +567,11 @@ export const leagueOccurrenceBillingTerms = pgTable("league_occurrence_billing_t
     columns: [table.publicationCommandId, table.organizationId, table.leagueId],
     foreignColumns: [leagueScheduleCommands.id, leagueScheduleCommands.organizationId, leagueScheduleCommands.leagueId],
   }).onDelete("restrict"),
+  lastCommandFk: foreignKey({
+    name: "billing_terms_last_command_fk",
+    columns: [table.lastCommandId, table.organizationId, table.leagueId],
+    foreignColumns: [leagueScheduleCommands.id, leagueScheduleCommands.organizationId, leagueScheduleCommands.leagueId],
+  }).onDelete("restrict"),
   supersededCommandFk: foreignKey({
     name: "billing_terms_superseded_command_fk",
     columns: [table.supersededByCommandId, table.organizationId, table.leagueId],
@@ -571,6 +587,7 @@ export const leagueOccurrenceBillingTerms = pgTable("league_occurrence_billing_t
   ),
   currencyCheck: check("billing_terms_currency_check", sql`${table.currency} ~ '^[A-Z]{3}$'`),
   versionCheck: check("billing_terms_version_check", sql`${table.version} > 0`),
+  revisionCheck: check("billing_terms_revision_check", sql`${table.currentRevision} > 0`),
   lifecycleMetadataCheck: check(
     "billing_terms_lifecycle_metadata_check",
     sql`(
@@ -605,6 +622,8 @@ export const leagueOccurrenceRelationships = pgTable("league_occurrence_relation
   sourceOccurrenceId: uuid("source_occurrence_id").notNull(),
   targetOccurrenceId: uuid("target_occurrence_id").notNull(),
   state: text("state", { enum: LEAGUE_OCCURRENCE_RELATIONSHIP_STATES }).notNull().default("draft"),
+  currentRevision: integer("current_revision").notNull().default(1),
+  lastCommandId: uuid("last_command_id"),
   publishedAt: timestamp("published_at", { withTimezone: true, mode: "string" }),
   publishedByUserId: integer("published_by_user_id").references(() => users.id, { onDelete: "restrict" }),
   publicationCommandId: uuid("publication_command_id"),
@@ -634,10 +653,16 @@ export const leagueOccurrenceRelationships = pgTable("league_occurrence_relation
     columns: [table.revocationCommandId, table.organizationId, table.leagueId],
     foreignColumns: [leagueScheduleCommands.id, leagueScheduleCommands.organizationId, leagueScheduleCommands.leagueId],
   }).onDelete("restrict"),
+  lastCommandFk: foreignKey({
+    name: "relationships_last_command_fk",
+    columns: [table.lastCommandId, table.organizationId, table.leagueId],
+    foreignColumns: [leagueScheduleCommands.id, leagueScheduleCommands.organizationId, leagueScheduleCommands.leagueId],
+  }).onDelete("restrict"),
   tenantIdentityUnique: uniqueIndex("relationships_tenant_identity_unique")
     .on(table.id, table.organizationId, table.leagueId),
   kindCheck: check("relationships_kind_check", sql`${table.kind} IN (${relationshipKinds})`),
   differentOccurrencesCheck: check("relationships_different_occurrences_check", sql`${table.sourceOccurrenceId} <> ${table.targetOccurrenceId}`),
+  revisionCheck: check("relationships_revision_check", sql`${table.currentRevision} > 0`),
   stateCheck: check(
     "relationships_state_check",
     sql`(${table.state} = 'draft' AND ${table.publishedAt} IS NULL AND ${table.publishedByUserId} IS NULL AND ${table.publicationCommandId} IS NULL AND ${table.revokedAt} IS NULL AND ${table.revokedByUserId} IS NULL AND ${table.revocationCommandId} IS NULL)

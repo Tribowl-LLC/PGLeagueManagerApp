@@ -1,5 +1,5 @@
 {
-  "id": "1494d899-0cff-45e4-af27-1987e15d06c7",
+  "id": "f6cd43bc-3f0f-4a01-9a51-f3b595918b56",
   "prevId": "429a4287-7d22-4dbb-8fbe-f4f984941699",
   "version": "7",
   "dialect": "postgresql",
@@ -2834,6 +2834,19 @@
           "notNull": true,
           "default": "'draft'"
         },
+        "current_revision": {
+          "name": "current_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "last_command_id": {
+          "name": "last_command_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "published_at": {
           "name": "published_at",
           "type": "timestamp with time zone",
@@ -3064,6 +3077,23 @@
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
+        "billing_terms_last_command_fk": {
+          "name": "billing_terms_last_command_fk",
+          "tableFrom": "league_occurrence_billing_terms",
+          "tableTo": "league_schedule_commands",
+          "columnsFrom": [
+            "last_command_id",
+            "organization_id",
+            "league_id"
+          ],
+          "columnsTo": [
+            "id",
+            "organization_id",
+            "league_id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
         "billing_terms_superseded_command_fk": {
           "name": "billing_terms_superseded_command_fk",
           "tableFrom": "league_occurrence_billing_terms",
@@ -3109,6 +3139,10 @@
         "billing_terms_version_check": {
           "name": "billing_terms_version_check",
           "value": "\"league_occurrence_billing_terms\".\"version\" > 0"
+        },
+        "billing_terms_revision_check": {
+          "name": "billing_terms_revision_check",
+          "value": "\"league_occurrence_billing_terms\".\"current_revision\" > 0"
         },
         "billing_terms_lifecycle_metadata_check": {
           "name": "billing_terms_lifecycle_metadata_check",
@@ -3716,6 +3750,10 @@
           "name": "generation_runs_version_check",
           "value": "length(\"league_occurrence_generation_runs\".\"generator_version\") > 0 AND btrim(\"league_occurrence_generation_runs\".\"generator_version\") = \"league_occurrence_generation_runs\".\"generator_version\"\n      AND length(\"league_occurrence_generation_runs\".\"input_fingerprint\") > 0 AND btrim(\"league_occurrence_generation_runs\".\"input_fingerprint\") = \"league_occurrence_generation_runs\".\"input_fingerprint\""
         },
+        "generation_runs_approval_metadata_check": {
+          "name": "generation_runs_approval_metadata_check",
+          "value": "(\"league_occurrence_generation_runs\".\"approved_at\" IS NULL AND \"league_occurrence_generation_runs\".\"approved_by_user_id\" IS NULL AND \"league_occurrence_generation_runs\".\"approval_command_id\" IS NULL)\n      OR (\"league_occurrence_generation_runs\".\"approved_at\" IS NOT NULL AND \"league_occurrence_generation_runs\".\"approved_by_user_id\" IS NOT NULL AND \"league_occurrence_generation_runs\".\"approval_command_id\" IS NOT NULL)"
+        },
         "generation_runs_metadata_check": {
           "name": "generation_runs_metadata_check",
           "value": "(\n      \"league_occurrence_generation_runs\".\"state\" = 'generated'\n      AND \"league_occurrence_generation_runs\".\"approved_at\" IS NULL AND \"league_occurrence_generation_runs\".\"approved_by_user_id\" IS NULL AND \"league_occurrence_generation_runs\".\"approval_command_id\" IS NULL\n      AND \"league_occurrence_generation_runs\".\"rejected_at\" IS NULL AND \"league_occurrence_generation_runs\".\"rejected_by_user_id\" IS NULL AND \"league_occurrence_generation_runs\".\"rejection_reason\" IS NULL AND \"league_occurrence_generation_runs\".\"rejection_command_id\" IS NULL\n      AND \"league_occurrence_generation_runs\".\"superseded_at\" IS NULL AND \"league_occurrence_generation_runs\".\"superseded_by_command_id\" IS NULL\n    ) OR (\n      \"league_occurrence_generation_runs\".\"state\" IN ('approved', 'applied')\n      AND \"league_occurrence_generation_runs\".\"approved_at\" IS NOT NULL AND \"league_occurrence_generation_runs\".\"approved_by_user_id\" IS NOT NULL AND \"league_occurrence_generation_runs\".\"approval_command_id\" IS NOT NULL\n      AND \"league_occurrence_generation_runs\".\"rejected_at\" IS NULL AND \"league_occurrence_generation_runs\".\"rejected_by_user_id\" IS NULL AND \"league_occurrence_generation_runs\".\"rejection_reason\" IS NULL AND \"league_occurrence_generation_runs\".\"rejection_command_id\" IS NULL\n      AND \"league_occurrence_generation_runs\".\"superseded_at\" IS NULL AND \"league_occurrence_generation_runs\".\"superseded_by_command_id\" IS NULL\n    ) OR (\n      \"league_occurrence_generation_runs\".\"state\" = 'rejected'\n      AND \"league_occurrence_generation_runs\".\"rejected_at\" IS NOT NULL AND \"league_occurrence_generation_runs\".\"rejected_by_user_id\" IS NOT NULL\n      AND \"league_occurrence_generation_runs\".\"rejection_reason\" IS NOT NULL AND length(\"league_occurrence_generation_runs\".\"rejection_reason\") > 0\n      AND \"league_occurrence_generation_runs\".\"rejection_command_id\" IS NOT NULL\n      AND \"league_occurrence_generation_runs\".\"approved_at\" IS NULL AND \"league_occurrence_generation_runs\".\"approved_by_user_id\" IS NULL AND \"league_occurrence_generation_runs\".\"approval_command_id\" IS NULL\n      AND \"league_occurrence_generation_runs\".\"superseded_at\" IS NULL AND \"league_occurrence_generation_runs\".\"superseded_by_command_id\" IS NULL\n    ) OR (\n      \"league_occurrence_generation_runs\".\"state\" = 'superseded'\n      AND \"league_occurrence_generation_runs\".\"superseded_at\" IS NOT NULL AND \"league_occurrence_generation_runs\".\"superseded_by_command_id\" IS NOT NULL\n      AND \"league_occurrence_generation_runs\".\"rejected_at\" IS NULL AND \"league_occurrence_generation_runs\".\"rejected_by_user_id\" IS NULL AND \"league_occurrence_generation_runs\".\"rejection_reason\" IS NULL AND \"league_occurrence_generation_runs\".\"rejection_command_id\" IS NULL\n    )\n    AND (\"league_occurrence_generation_runs\".\"rejected_at\" IS NULL OR \"league_occurrence_generation_runs\".\"rejected_by_user_id\" IS NOT NULL)\n    AND (\"league_occurrence_generation_runs\".\"superseded_at\" IS NULL OR \"league_occurrence_generation_runs\".\"superseded_by_command_id\" IS NOT NULL)"
@@ -3936,6 +3974,19 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'draft'"
+        },
+        "current_revision": {
+          "name": "current_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "last_command_id": {
+          "name": "last_command_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
         },
         "published_at": {
           "name": "published_at",
@@ -4201,6 +4252,23 @@
           ],
           "onDelete": "restrict",
           "onUpdate": "no action"
+        },
+        "relationships_last_command_fk": {
+          "name": "relationships_last_command_fk",
+          "tableFrom": "league_occurrence_relationships",
+          "tableTo": "league_schedule_commands",
+          "columnsFrom": [
+            "last_command_id",
+            "organization_id",
+            "league_id"
+          ],
+          "columnsTo": [
+            "id",
+            "organization_id",
+            "league_id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -4214,6 +4282,10 @@
         "relationships_different_occurrences_check": {
           "name": "relationships_different_occurrences_check",
           "value": "\"league_occurrence_relationships\".\"source_occurrence_id\" <> \"league_occurrence_relationships\".\"target_occurrence_id\""
+        },
+        "relationships_revision_check": {
+          "name": "relationships_revision_check",
+          "value": "\"league_occurrence_relationships\".\"current_revision\" > 0"
         },
         "relationships_state_check": {
           "name": "relationships_state_check",
@@ -4673,6 +4745,18 @@
           "name": "occurrences_generation_key_unique",
           "columns": [
             {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "league_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
               "expression": "generation_key",
               "isExpression": false,
               "asc": true,
@@ -4687,6 +4771,18 @@
         "occurrences_active_start_unique": {
           "name": "occurrences_active_start_unique",
           "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "league_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
             {
               "expression": "start_at",
               "isExpression": false,
@@ -4724,6 +4820,34 @@
           ],
           "isUnique": true,
           "where": "\"league_occurrences\".\"lifecycle\" IN ('published', 'locked') AND \"league_occurrences\".\"planned_ordinal\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "occurrences_published_competition_unique": {
+          "name": "occurrences_published_competition_unique",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "league_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "competition_number",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"league_occurrences\".\"lifecycle\" IN ('published', 'locked') AND \"league_occurrences\".\"competition_number\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -5032,7 +5156,7 @@
         },
         "occurrences_ordinal_check": {
           "name": "occurrences_ordinal_check",
-          "value": "(\"league_occurrences\".\"planned_ordinal\" IS NULL OR \"league_occurrences\".\"planned_ordinal\" > 0)\n      AND (\"league_occurrences\".\"competition_number\" IS NULL OR \"league_occurrences\".\"competition_number\" > 0)\n      AND (\"league_occurrences\".\"lifecycle\" NOT IN ('published', 'locked') OR \"league_occurrences\".\"planned_ordinal\" IS NOT NULL)\n      AND (\"league_occurrences\".\"lifecycle\" NOT IN ('published', 'locked') OR NOT \"league_occurrences\".\"competitive\" OR \"league_occurrences\".\"competition_number\" IS NOT NULL)\n      AND (\"league_occurrences\".\"lifecycle\" IN ('draft') OR \"league_occurrences\".\"competitive\" OR \"league_occurrences\".\"competition_number\" IS NULL)"
+          "value": "(\"league_occurrences\".\"planned_ordinal\" IS NULL OR \"league_occurrences\".\"planned_ordinal\" > 0)\n      AND (\"league_occurrences\".\"competition_number\" IS NULL OR \"league_occurrences\".\"competition_number\" > 0)\n      AND (\"league_occurrences\".\"lifecycle\" NOT IN ('published', 'locked') OR \"league_occurrences\".\"planned_ordinal\" IS NOT NULL)\n      AND (\"league_occurrences\".\"lifecycle\" NOT IN ('published', 'locked') OR NOT \"league_occurrences\".\"competitive\" OR \"league_occurrences\".\"competition_number\" IS NOT NULL)\n      AND (\"league_occurrences\".\"competitive\" OR \"league_occurrences\".\"competition_number\" IS NULL)"
         },
         "occurrences_standings_check": {
           "name": "occurrences_standings_check",
