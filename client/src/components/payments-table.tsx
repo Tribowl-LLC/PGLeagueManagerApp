@@ -105,6 +105,7 @@ export function PaymentsTable({
                 && payment.status === 'paid'
                 && (payment.type === 'square' || payment.type === 'credit_card');
               const disputes = payment.disputes ?? [];
+              const deleteBlockedByDispute = disputes.length > 0;
               const expanded = expandedPaymentIds.has(payment.id);
               return (
                 <Fragment key={payment.id}>
@@ -182,9 +183,16 @@ export function PaymentsTable({
                         <Button
                           size="icon"
                           variant="ghost"
-                          title="Delete payment"
-                          onClick={() => onDelete(payment.id)}
-                          disabled={isDeletePending}
+                          title={deleteBlockedByDispute
+                            ? "Payment deletion disabled while dispute evidence is retained"
+                            : "Delete payment"}
+                          aria-label={deleteBlockedByDispute
+                            ? "Payment deletion disabled while dispute evidence is retained"
+                            : "Delete payment"}
+                          onClick={() => {
+                            if (!deleteBlockedByDispute) onDelete(payment.id);
+                          }}
+                          disabled={isDeletePending || deleteBlockedByDispute}
                         >
                           {isDeletePending ? (
                             <Loader2 className="size-4 animate-spin" />

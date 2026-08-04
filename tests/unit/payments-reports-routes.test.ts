@@ -196,6 +196,27 @@ describe('GET /api/payments — caller scope', () => {
     expect(mockListPaymentDisputeSummariesForPayments).not.toHaveBeenCalled();
   });
 
+  it('rejects an unpaginated dispute projection before payment or dispute storage access', async () => {
+    const res = await get('/api/payments?includeDisputes=true', ORG_A_USER);
+    expect(res.status).toBe(400);
+    expect((await res.json()).error.code).toBe('INVALID_QUERY');
+    expect(mockStorage.getPayments).not.toHaveBeenCalled();
+    expect(mockStorage.getPaymentsPaginated).not.toHaveBeenCalled();
+    expect(mockListPaymentDisputeSummariesForPayments).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    '/api/payments?page=1&includeDisputes=true',
+    '/api/payments?limit=25&includeDisputes=true',
+    '/api/payments?page=zero&limit=25&includeDisputes=true',
+    '/api/payments?page=1&limit=0&includeDisputes=true',
+  ])('rejects incomplete or invalid dispute pagination before storage access: %s', async (path) => {
+    const res = await get(path, ORG_A_USER);
+    expect(res.status).toBe(400);
+    expect(mockStorage.getPaymentsPaginated).not.toHaveBeenCalled();
+    expect(mockListPaymentDisputeSummariesForPayments).not.toHaveBeenCalled();
+  });
+
   it('rejects malformed dispute projection flags before storage access', async () => {
     const res = await get('/api/payments?includeDisputes=yes', ORG_A_USER);
     expect(res.status).toBe(400);

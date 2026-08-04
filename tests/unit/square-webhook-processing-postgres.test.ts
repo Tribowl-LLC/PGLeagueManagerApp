@@ -32,6 +32,10 @@ import {
   listPendingPaymentDisputeEvents,
   replayPendingPaymentDisputeEvent,
 } from "../../server/storage/payment-dispute-operations";
+import {
+  deletePayment,
+  PaymentDisputeEvidenceExistsError,
+} from "../../server/storage/payments";
 import { normalizeSquareWebhookEvent } from "../../server/services/square-webhook-event";
 import { prepareRefundPaymentOperation } from "../../server/services/refund-payment-operation-preparation";
 import {
@@ -863,36 +867,56 @@ describe("Square webhook payment/refund PostgreSQL reconciliation", () => {
       .where(eq(payments.paymentOperationId, charge.operation.id));
     expect(allocations).toHaveLength(2);
 
-    const input = { paymentRows: allocations, organizationId };
-    const [left, right] = await Promise.all([
-      listPaymentDisputeSummariesForPayments(input),
-      listPaymentDisputeSummariesForPayments(input),
-    ]);
-    for (const allocation of allocations) {
-      expect(left.get(allocation.id)).toEqual(right.get(allocation.id));
-      expect(left.get(allocation.id)?.[0]).toMatchObject({
-        providerDisputeId: disputeId,
-        state: "PROCESSING",
-        providerVersion: 2,
-        sharedTransaction: true,
-      });
-      expect(left.get(allocation.id)?.[0]?.history.map((row) => ({
-        state: row.state,
-        version: row.providerVersion,
-      }))).toEqual([
-        { state: "PROCESSING", version: 2 },
-        { state: "EVIDENCE_REQUIRED", version: 1 },
-      ]);
-      expect(left.get(allocation.id)?.[0]).not.toHaveProperty("providerPaymentId");
-      expect(left.get(allocation.id)?.[0]).not.toHaveProperty("encryptedPayload");
-      expect(left.get(allocation.id)?.[0]).not.toHaveProperty("payloadHash");
-    }
+    const [relocated] = await db.insert(locations).values({
+      organizationId,
+      name: `Relocated Webhook Processing Location ${randomUUID()}`,
+      squareCredentials: {
+        appId: `${applicationId}-relocated`,
+        locationId: `${providerLocationId}-relocated`,
+      },
+    }).returning({ id: locations.id });
+    await db.update(leagues).set({ locationId: relocated.id }).where(eq(leagues.id, leagueId));
 
-    const crossTenant = await listPaymentDisputeSummariesForPayments({
-      paymentRows: allocations,
-      organizationId: organizationId + 1_000_000,
-    });
-    expect(crossTenant.size).toBe(0);
+    try {
+      const input = { paymentRows: allocations, organizationId };
+      const [left, right] = await Promise.all([
+        listPaymentDisputeSummariesForPayments(input),
+        listPaymentDisputeSummariesForPayments(input),
+      ]);
+      for (const allocation of allocations) {
+        expect(left.get(allocation.id)).toEqual(right.get(allocation.id));
+        expect(left.get(allocation.id)?.[0]).toMatchObject({
+          providerDisputeId: disputeId,
+          state: "PROCESSING",
+          providerVersion: 2,
+          sharedTransaction: true,
+        });
+        expect(left.get(allocation.id)?.[0]?.history.map((row) => ({
+          state: row.state,
+          version: row.providerVersion,
+        }))).toEqual([
+          { state: "PROCESSING", version: 2 },
+          { state: "EVIDENCE_REQUIRED", version: 1 },
+        ]);
+        expect(left.get(allocation.id)?.[0]).not.toHaveProperty("providerPaymentId");
+        expect(left.get(allocation.id)?.[0]).not.toHaveProperty("encryptedPayload");
+        expect(left.get(allocation.id)?.[0]).not.toHaveProperty("payloadHash");
+      }
+
+      const crossTenant = await listPaymentDisputeSummariesForPayments({
+        paymentRows: allocations,
+        organizationId: organizationId + 1_000_000,
+      });
+      expect(crossTenant.size).toBe(0);
+
+      await expect(deletePayment(allocations[0].id))
+        .rejects.toBeInstanceOf(PaymentDisputeEvidenceExistsError);
+      expect(await db.select({ id: payments.id }).from(payments)
+        .where(eq(payments.id, allocations[0].id))).toHaveLength(1);
+    } finally {
+      await db.update(leagues).set({ locationId }).where(eq(leagues.id, leagueId));
+      await db.delete(locations).where(eq(locations.id, relocated.id));
+    }
   });
 
   it("replays one retained pending dispute event with atomic notification and operator audit", async () => {

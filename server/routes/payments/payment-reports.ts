@@ -104,6 +104,23 @@ router.get("/", async (req, res) => {
     ) {
       return sendError(res, "Administrator access is required", 403, 'FORBIDDEN');
     }
+    const paginationParams = parsePaginationParams(req.query);
+    const hasRequiredDisputePagination = (
+      typeof req.query.page === 'string'
+      && /^[1-9]\d*$/.test(req.query.page)
+      && Number.isSafeInteger(Number(req.query.page))
+      && typeof req.query.limit === 'string'
+      && /^[1-9]\d*$/.test(req.query.limit)
+      && Number.isSafeInteger(Number(req.query.limit))
+    );
+    if (includeDisputes && !hasRequiredDisputePagination) {
+      return sendError(
+        res,
+        "Valid page and limit are required when including disputes",
+        400,
+        'INVALID_QUERY',
+      );
+    }
 
     const rawQueryOrgId = parseOptionalIntParam(req.query.organizationId);
     if (rawQueryOrgId === null) {
@@ -166,8 +183,6 @@ router.get("/", async (req, res) => {
       teamId,
       weekOf,
     };
-
-    const paginationParams = parsePaginationParams(req.query);
 
     const preparePayments = async (
       rows: Payment[],

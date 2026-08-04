@@ -3,10 +3,10 @@ import { and, desc, eq, inArray, lt, or, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import {
   PAYMENT_DISPUTE_STATES,
-  leagues,
   paymentDisputeNotifications,
   paymentDisputeReplayAudits,
   paymentDisputes,
+  paymentOperations,
   payments,
   webhookEvents,
   type Payment,
@@ -158,8 +158,11 @@ export async function listPaymentDisputeNotifications(input: TenantPageInput) {
 /**
  * Batch-load current dispute state and immutable sanitized history for the
  * payment allocations already authorized by the Payments route. The joins
- * require payment, dispute, organization, and location identities to agree;
- * stale or cross-tenant operation links therefore fail closed.
+ * require payment, dispute, and immutable operation organization identities
+ * to agree; stale or cross-tenant operation links therefore fail closed.
+ * Location ownership was already validated against the operation snapshot
+ * during reconciliation and is deliberately not compared with the mutable
+ * current league location here.
  */
 export async function listPaymentDisputeSummariesForPayments(input: {
   paymentRows: Array<Pick<Payment, "id" | "paymentOperationId" | "combinedChargeGroupId">>;
@@ -182,17 +185,16 @@ export async function listPaymentDisputeSummariesForPayments(input: {
     providerUpdatedAt: paymentDisputes.providerUpdatedAt,
     providerVersion: paymentDisputes.providerVersion,
   }).from(payments)
-    .innerJoin(leagues, eq(leagues.id, payments.leagueId))
+    .innerJoin(paymentOperations, eq(paymentOperations.id, payments.paymentOperationId))
     .innerJoin(paymentDisputes, and(
-      eq(paymentDisputes.paymentOperationId, payments.paymentOperationId),
-      eq(paymentDisputes.organizationId, leagues.organizationId),
-      eq(paymentDisputes.locationId, leagues.locationId),
+      eq(paymentDisputes.paymentOperationId, paymentOperations.id),
+      eq(paymentDisputes.organizationId, paymentOperations.organizationId),
     ))
     .where(and(
       inArray(payments.id, eligibleRows.map((row) => row.id)),
       input.organizationId === null
         ? undefined
-        : eq(leagues.organizationId, input.organizationId),
+        : eq(paymentOperations.organizationId, input.organizationId),
     ));
 
   if (disputeRows.length === 0) return new Map();

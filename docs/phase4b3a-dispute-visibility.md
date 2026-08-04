@@ -28,8 +28,11 @@ LeagueVault indefinitely. No Phase 4B-3B implementation remains planned.
 ## Payment-row projection
 
 The Payments page requests `includeDisputes=true` on its existing paginated
-payment-list request. Only organization and system administrators can request
-that projection. Ordinary payment-list callers do not incur dispute queries.
+payment-list request. Both a valid positive `page` and `limit` are mandatory
+for this opt-in projection, and the existing 100-row maximum remains in force.
+Unpaginated or malformed opt-in requests are rejected before payment or
+dispute storage runs. Only organization and system administrators can request
+the projection. Ordinary payment-list callers do not incur dispute queries.
 
 The server batch-loads current dispute summaries for the payment IDs already
 authorized by the Payments route. A dispute is returned only when all of these
@@ -37,13 +40,18 @@ durable relationships agree:
 
 - the payment is on the already authorized page;
 - the payment and dispute reference the same payment operation;
-- the payment's league organization matches the dispute organization;
-- the payment's league location matches the dispute location; and
+- the immutable payment-operation organization matches the dispute
+  organization; and
 - an organization-scoped request matches the authenticated tenant.
 
-Missing, stale, or cross-tenant/cross-location relationships fail closed. A
-system administrator's all-organization view is still limited to payment IDs
-selected by the existing system-admin payment query.
+Webhook reconciliation already validates the dispute location against the
+immutable scheduled or interactive operation snapshot before storing the
+operation link. Projection deliberately does not compare that historical
+location with the league's editable current location, so moving a league
+within its tenant cannot hide a legitimate dispute. Missing, stale, or
+cross-tenant operation relationships fail closed. A system administrator's
+all-organization view is still limited to payment IDs selected by the existing
+system-admin payment query.
 
 For all matching disputes on a page, current summaries are fetched in one
 query and their immutable state histories in one query. There is no query per
@@ -75,6 +83,13 @@ UI states that the disputed amount applies to the shared Square transaction
 and is not assigned to the displayed bowler. LeagueVault never divides or
 attributes a transaction-level dispute amount between allocations.
 
+Ordinary payment deletion is disabled for every row whose operation has any
+retained dispute evidence, including terminal disputes. The server enforces
+the same rule atomically with dispute reconciliation and returns HTTP 409 with
+`PAYMENT_DISPUTE_EVIDENCE_EXISTS`; hiding the button is not the security
+boundary. Full organization teardown remains the deliberate retention
+exception and deletes dispute evidence in its existing dependency order.
+
 ## Refresh and Neon CU behavior
 
 Dispute data loads only with the existing Payments page request and refreshes
@@ -82,11 +97,11 @@ through the page's normal browser-window-focus behavior. This slice adds no
 polling interval, timer, navigation badge query, background worker, startup
 scan, inbox sweep, provider query, automatic replay, or recurring Neon work.
 
-The expected CU cost is at most two indexed batch reads when an administrator
-loads or focuses the Payments page and its current page contains durable
-operation-linked payments. All other pages and ordinary payment API callers
-retain their existing database behavior. Idle clients create no dispute read
-activity, so Neon can autosuspend normally.
+The expected CU cost is at most two indexed batch reads for no more than 100
+payment rows when an administrator loads or focuses the Payments page and its
+current page contains durable operation-linked payments. All other pages and
+ordinary payment API callers retain their existing database behavior. Idle
+clients create no dispute read activity, so Neon can autosuspend normally.
 
 ## Schema, deployment, verification, and rollback
 
