@@ -233,6 +233,7 @@ export class AutopaySetupOperationExecutor {
         providerIdempotencyKey: operation.providerIdempotencyKey,
         requestKind: request.snapshot.requestKind,
       });
+      identity.referenceId = operation.id;
       result = request.snapshot.requestKind === "order"
         ? await provider.createOrderWithPayment(
           fields.sourceId,

@@ -59,6 +59,34 @@ const paymentSchema = z.object({
   receipt_number: z.string().trim().min(1).max(32).optional(),
 });
 
+const paymentOriginSchema = z.object({
+  id: safeProviderString,
+  location_id: safeProviderString,
+  reference_id: z.string().trim().min(1).max(40).nullish(),
+  application_details: z.object({
+    application_id: safeProviderString.nullish(),
+    square_product: safeProviderString.nullish(),
+  }).nullish(),
+});
+
+// LeagueVault creates Payments through the e-commerce API. These named
+// first-party Square surfaces are therefore affirmative foreign-origin
+// evidence when both LeagueVault markers are absent. OTHER, ECOMMERCE_API,
+// and future values stay ambiguous and take the durable path.
+const DEFINITELY_UNRELATED_SQUARE_PRODUCTS = new Set([
+  "APPOINTMENTS",
+  "INVOICES",
+  "ONLINE_STORE",
+  "RESTAURANTS",
+  "RETAIL",
+  "SQUARE_POS",
+  "TERMINAL_API",
+  "VIRTUAL_TERMINAL",
+]);
+
+const PAYMENT_OPERATION_UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 const disputeSchema = z.object({
   id: safeProviderString,
   location_id: safeProviderString,
@@ -113,6 +141,12 @@ export class SquareWebhookPayloadError extends Error {
   }
 }
 
+export type SquarePaymentWebhookOrigin =
+  | "not_payment"
+  | "potentially_owned"
+  | "ambiguous"
+  | "definitely_unrelated";
+
 function iso(value: string): string {
   return new Date(value).toISOString();
 }
@@ -137,8 +171,7 @@ function findUnknownLocation(
   return distinct.size === 1 ? [...distinct][0] : undefined;
 }
 
-/** Parses a signature-verified Square body into non-sensitive inbox metadata. */
-export function normalizeSquareWebhookEvent(rawBody: string): NormalizedSquareWebhookEvent {
+function parseEnvelope(rawBody: string): z.infer<typeof envelopeSchema> {
   let decoded: unknown;
   try {
     decoded = JSON.parse(rawBody);
@@ -147,7 +180,54 @@ export function normalizeSquareWebhookEvent(rawBody: string): NormalizedSquareWe
   }
   const envelopeResult = envelopeSchema.safeParse(decoded);
   if (!envelopeResult.success) throw new SquareWebhookPayloadError("INVALID_ENVELOPE");
-  const envelope = envelopeResult.data;
+  return envelopeResult.data;
+}
+
+export function isPaymentOperationReference(value: string): boolean {
+  return PAYMENT_OPERATION_UUID.test(value);
+}
+
+/**
+ * Uses only bounded, signature-verified origin evidence. It deliberately does
+ * not inspect status or money, so a foreign zero-dollar POS payment can be
+ * acknowledged without invoking database-backed middleware.
+ */
+export function classifySquarePaymentWebhookOrigin(
+  rawBody: string,
+  leagueVaultApplicationId: string,
+): SquarePaymentWebhookOrigin {
+  const envelope = parseEnvelope(rawBody);
+  if (envelope.type !== "payment.updated") return "not_payment";
+  if (envelope.data.type !== "payment") {
+    throw new SquareWebhookPayloadError("INVALID_EVENT_OBJECT");
+  }
+  const result = paymentOriginSchema.safeParse(envelope.data.object.payment);
+  if (!result.success || result.data.id !== envelope.data.id) {
+    throw new SquareWebhookPayloadError("INVALID_EVENT_OBJECT");
+  }
+  assertEnvelopeLocation(envelope.location_id, result.data.location_id);
+
+  const applicationId = result.data.application_details?.application_id ?? null;
+  const squareProduct = result.data.application_details?.square_product ?? null;
+  const referenceId = result.data.reference_id ?? null;
+  const hasOperationReference = referenceId !== null && isPaymentOperationReference(referenceId);
+
+  if (applicationId === leagueVaultApplicationId || hasOperationReference) {
+    return "potentially_owned";
+  }
+  if (applicationId !== null) return "definitely_unrelated";
+  if (
+    squareProduct !== null
+    && DEFINITELY_UNRELATED_SQUARE_PRODUCTS.has(squareProduct)
+  ) {
+    return "definitely_unrelated";
+  }
+  return "ambiguous";
+}
+
+/** Parses a signature-verified Square body into non-sensitive inbox metadata. */
+export function normalizeSquareWebhookEvent(rawBody: string): NormalizedSquareWebhookEvent {
+  const envelope = parseEnvelope(rawBody);
   const common = {
     providerEventId: envelope.event_id,
     eventType: envelope.type,
