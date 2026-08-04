@@ -90,3 +90,9 @@ The safe PR sequence is:
    operator acknowledgement. Accepting a dispute or submitting evidence to
    Square is a new provider effect and requires a separate explicit product
    and security decision.
+
+Phase 4B-2 is implemented as the provider-effect-free operational slice
+described in [Phase 4B-2 dispute operations](./phase4b2-dispute-operations.md).
+It adds bounded tenant reads, transactionally durable in-app notifications,
+and audited replay of one explicit retained pending dispute event ID. It adds
+no email, UI, provider call, timer, sweep, or polling path.

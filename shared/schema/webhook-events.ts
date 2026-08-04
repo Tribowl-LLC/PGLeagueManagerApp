@@ -88,6 +88,8 @@ export const webhookEvents = pgTable("webhook_events", {
     .on(table.provider, table.providerEventId),
   organizationReceivedIdx: index("webhook_events_organization_received_idx")
     .on(table.organizationId, table.receivedAt),
+  tenantStatusTypeReceivedIdx: index("webhook_events_tenant_status_type_received_idx")
+    .on(table.organizationId, table.status, table.eventType, table.receivedAt.desc(), table.id.desc()),
   locationReceivedIdx: index("webhook_events_location_received_idx")
     .on(table.locationId, table.receivedAt),
   objectFreshnessIdx: index("webhook_events_object_freshness_idx")

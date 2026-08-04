@@ -16,6 +16,8 @@ import {
   locations,
   organizations,
   orphanCleanupAudits,
+  paymentDisputeNotifications,
+  paymentDisputeReplayAudits,
   paymentDisputes,
   paymentOperations,
   users,
@@ -231,6 +233,12 @@ export async function deleteOrganization(id: number): Promise<void> {
     // Setup workflows retain restrictive operation/schedule references, so
     // explicit tenant teardown removes them before either referenced table.
     await tx.delete(autopaySetupRequests).where(eq(autopaySetupRequests.organizationId, id));
+
+    // Replay audits and in-app notifications retain restrictive user,
+    // dispute, and webhook-evidence references. Full tenant teardown is the
+    // explicit retention-policy exception and removes them first.
+    await tx.delete(paymentDisputeReplayAudits).where(eq(paymentDisputeReplayAudits.organizationId, id));
+    await tx.delete(paymentDisputeNotifications).where(eq(paymentDisputeNotifications.organizationId, id));
 
     // Disputes retain restrictive operation and webhook-evidence references.
     // Ordinary location deletion therefore remains rejected, while explicit

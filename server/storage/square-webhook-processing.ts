@@ -3,6 +3,8 @@ import {
   PAYMENT_DISPUTE_REASONS,
   PAYMENT_DISPUTE_STATES,
   interactivePaymentOperationSnapshots,
+  paymentDisputeNotifications,
+  paymentDisputeReplayAudits,
   paymentDisputes,
   paymentOperations,
   payments,
@@ -30,6 +32,33 @@ export interface SquareWebhookProcessingResult {
   status: WebhookEvent["status"];
   code: string | null;
   scheduledPaymentWakeRequired?: boolean;
+}
+
+export interface SquareWebhookReplayActor {
+  userId: number;
+  role: "org_admin" | "system_admin";
+}
+
+async function recordReplayAudit(
+  tx: PaymentOperationTransaction,
+  row: WebhookEvent,
+  actor: SquareWebhookReplayActor | undefined,
+  result: SquareWebhookProcessingResult,
+  now: Date,
+): Promise<SquareWebhookProcessingResult> {
+  if (!actor) return result;
+  await tx.insert(paymentDisputeReplayAudits).values({
+    organizationId: row.organizationId,
+    webhookEventId: row.id,
+    actorUserId: actor.userId,
+    actorRole: actor.role,
+    initialStatus: row.status,
+    resultStatus: result.status,
+    resultCode: result.code,
+    businessStateChanged: result.businessStateChanged,
+    createdAt: now.toISOString(),
+  });
+  return result;
 }
 
 function eventEvidenceMatches(row: WebhookEvent, event: NormalizedSquareWebhookEvent): boolean {
@@ -419,12 +448,17 @@ async function reconcileDispute(
     .onConflictDoNothing({
       target: [paymentDisputes.provider, paymentDisputes.providerDisputeId],
     }).returning();
+  let notificationDisputeId = created?.id ?? null;
+  const notificationKind = event.eventType === "dispute.created"
+    ? "DISPUTE_CREATED"
+    : "DISPUTE_STATE_UPDATED";
   if (!created) {
     const [existing] = await tx.select().from(paymentDisputes).where(and(
       eq(paymentDisputes.provider, "square"),
       eq(paymentDisputes.providerDisputeId, event.providerObjectId),
     )).limit(1).for("update");
     if (!existing) throw new Error("dispute upsert conflict did not converge");
+    notificationDisputeId = existing.id;
     const immutableMatches = existing.organizationId === row.organizationId
       && existing.locationId === row.locationId
       && existing.paymentOperationId === mapping.operationId
@@ -498,6 +532,19 @@ async function reconcileDispute(
       eq(paymentDisputes.providerVersion, existing.providerVersion),
     ));
   }
+  if (!notificationDisputeId) throw new Error("dispute notification identity missing");
+  await tx.insert(paymentDisputeNotifications).values({
+    organizationId: row.organizationId,
+    locationId: row.locationId,
+    paymentDisputeId: notificationDisputeId,
+    webhookEventId: row.id,
+    kind: notificationKind,
+    disputeState: event.providerStatus,
+    providerVersion: event.providerObjectVersion,
+    createdAt: now.toISOString(),
+  }).onConflictDoNothing({
+    target: [paymentDisputeNotifications.paymentDisputeId, paymentDisputeNotifications.providerVersion],
+  });
   await finish(tx, row, { status: "processed", now: now.toISOString() });
   return {
     acknowledged: true,
@@ -515,6 +562,7 @@ export async function processSquareWebhookEvent(input: {
   eventId: string;
   event: NormalizedSquareWebhookEvent;
   processDisputes?: boolean;
+  replayActor?: SquareWebhookReplayActor;
   now?: Date;
 }): Promise<SquareWebhookProcessingResult> {
   const now = input.now ?? new Date();
@@ -523,26 +571,48 @@ export async function processSquareWebhookEvent(input: {
       eq(webhookEvents.id, input.eventId),
       eq(webhookEvents.organizationId, input.organizationId),
     )).limit(1).for("update");
-    if (!row || !eventEvidenceMatches(row, input.event)) {
+    if (!row) {
       return { acknowledged: false, terminal: false, businessStateChanged: false, status: "pending", code: "EVENT_EVIDENCE_MISMATCH" };
     }
+    if (!eventEvidenceMatches(row, input.event)) {
+      return recordReplayAudit(tx, row, input.replayActor, {
+        acknowledged: false,
+        terminal: false,
+        businessStateChanged: false,
+        status: row.status,
+        code: "EVENT_EVIDENCE_MISMATCH",
+      }, now);
+    }
     if (["processed", "ignored", "failed"].includes(row.status)) {
-      return { acknowledged: true, terminal: true, businessStateChanged: false, status: row.status, code: row.errorCode };
+      return recordReplayAudit(tx, row, input.replayActor, {
+        acknowledged: true,
+        terminal: true,
+        businessStateChanged: false,
+        status: row.status,
+        code: row.errorCode,
+      }, now);
     }
     if (row.status === "processing") {
-      return { acknowledged: false, terminal: false, businessStateChanged: false, status: row.status, code: "EVENT_NOT_DUE" };
+      return recordReplayAudit(tx, row, input.replayActor, {
+        acknowledged: false,
+        terminal: false,
+        businessStateChanged: false,
+        status: row.status,
+        code: "EVENT_NOT_DUE",
+      }, now);
     }
     if (input.event.eventType === "dispute.created" || input.event.eventType === "dispute.state.updated") {
       if (input.processDisputes) {
-        return reconcileDispute(tx, row, input.event, now);
+        const result = await reconcileDispute(tx, row, input.event, now);
+        return recordReplayAudit(tx, row, input.replayActor, result, now);
       }
-      return {
+      return recordReplayAudit(tx, row, input.replayActor, {
         acknowledged: true,
         terminal: false,
         businessStateChanged: false,
         status: row.status,
         code: "DISPUTE_PROCESSING_DEFERRED",
-      };
+      }, now);
     }
     if (input.event.providerStatus !== "COMPLETED") {
       const code = input.event.eventType === "refund.updated"

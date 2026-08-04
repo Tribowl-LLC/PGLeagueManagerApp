@@ -25,6 +25,7 @@ import { registerAuthRoutes } from './auth.js';
 import searchRouter from './search.js';
 import bowlerLinksRouter from './bowler-links.js';
 import bowlerLinkRespondRouter from './bowler-link-respond.js';
+import paymentDisputesRouter from './payment-disputes.js';
 import { requireAuth, requireOrgAdmin, requireSystemAdmin, requirePasswordRotated } from '../middleware/auth.js';
 import { createLogger } from '../logger';
 
@@ -137,6 +138,7 @@ export function registerRoutes(app: Express): void {
   app.use('/api/user', requireAuth, userAvatarRouter);
   app.use('/api/locations', requireAuth, locationsRouter);
   app.use('/api/payment-schedules', requireAuth, paymentSchedulesRouter);
+  app.use('/api/payment-disputes', requireOrgAdmin, paymentDisputesRouter);
   app.use('/api/account', accountRouter);
   app.use('/api/search', requireAuth, searchRouter);
   app.use('/api/bowler-links', requireAuth, bowlerLinksRouter);

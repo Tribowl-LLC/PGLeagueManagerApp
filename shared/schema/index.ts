@@ -80,6 +80,17 @@ export type {
   PaymentDisputeState,
   PaymentDisputeReason,
 } from "./payment-disputes";
+
+export {
+  paymentDisputeNotifications,
+  paymentDisputeReplayAudits,
+  PAYMENT_DISPUTE_NOTIFICATION_KINDS,
+} from "./payment-dispute-operations";
+export type {
+  PaymentDisputeNotification,
+  PaymentDisputeReplayAudit,
+  PaymentDisputeNotificationKind,
+} from "./payment-dispute-operations";
 export type {
   PaymentOperation,
   InsertPaymentOperation,

@@ -98,6 +98,7 @@ const UNIT_NO_DB = [
   'tests/unit/db-schema-inventory-tools.test.ts',
   'tests/unit/neon-rehearsal-verifier.test.ts',
   'tests/unit/passive-database-polling.test.ts',
+  'tests/unit/payment-disputes-routes.test.ts',
   'tests/unit/payment-operation-idempotency.test.ts',
   'tests/unit/payment-operation-wake-scheduler.test.ts',
   'tests/unit/square-webhook.test.ts',

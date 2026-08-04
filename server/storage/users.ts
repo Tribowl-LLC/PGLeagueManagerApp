@@ -5,6 +5,7 @@ import {
   applePayJobs,
   deletionRequests,
   orphanCleanupAudits,
+  paymentDisputeReplayAudits,
   type User,
   type InsertUser,
   type UpdateUser,
@@ -79,11 +80,9 @@ export class CannotDeleteAdminError extends Error {
 }
 
 /**
- * Thrown by `deleteUser` when the target user has rows in
- * `orphan_cleanup_audits` (FK is ON DELETE RESTRICT to preserve the
- * audit trail). In practice this should not happen for non-admin users
- * because only system_admins write audits today, but the typed error
- * keeps the route deterministic if that invariant ever changes.
+ * Thrown by `deleteUser` when the target user owns restrictive operational
+ * audit rows. Ordinary deletion preserves those trails; full organization
+ * teardown is the explicit retention exception.
  */
 export class UserHasAuditTrailError extends Error {
   constructor(public readonly auditCount: number) {
@@ -489,9 +488,8 @@ export async function setUserInviteToken(userId: number, token: string, expiry: 
 /**
  * Permanently delete a user account, in a single transaction:
  *   1. Refuse if the target is a `system_admin`.
- *   2. Refuse if the target has any `orphan_cleanup_audits` rows
- *      (the FK is RESTRICT, and admin audit trails are preserved
- *      forever — demote/transfer first if a delete is truly needed).
+ *   2. Refuse if the target has restrictive cleanup or dispute-replay audit
+ *      rows (admin audit trails are preserved until full tenant teardown).
  *   3. Null out audit-style FK references that we want to PRESERVE
  *      across the delete: `apple_pay_jobs.created_by` and
  *      `deletion_requests.reviewed_by`. Both columns are nullable.
@@ -519,11 +517,15 @@ export async function deleteUser(
       throw new CannotDeleteAdminError();
     }
 
-    const [auditRow] = await tx
+    const [cleanupAuditRow] = await tx
       .select({ count: count() })
       .from(orphanCleanupAudits)
       .where(eq(orphanCleanupAudits.adminUserId, userId));
-    const auditCount = Number(auditRow?.count ?? 0);
+    const [replayAuditRow] = await tx
+      .select({ count: count() })
+      .from(paymentDisputeReplayAudits)
+      .where(eq(paymentDisputeReplayAudits.actorUserId, userId));
+    const auditCount = Number(cleanupAuditRow?.count ?? 0) + Number(replayAuditRow?.count ?? 0);
     if (auditCount > 0) {
       throw new UserHasAuditTrailError(auditCount);
     }
