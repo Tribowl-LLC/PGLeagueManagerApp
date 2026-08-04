@@ -704,6 +704,15 @@ describe("Square webhook payment/refund PostgreSQL reconciliation", () => {
       responseDueAt: null,
       lastWebhookEventId: newer.recorded.event.id,
     });
+    const notices = await db.select().from(paymentDisputeNotifications)
+      .where(eq(paymentDisputeNotifications.paymentDisputeId, stored.id));
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatchObject({
+      webhookEventId: newer.recorded.event.id,
+      kind: "DISPUTE_STATE_UPDATED",
+      disputeState: "WON",
+      providerVersion: 3,
+    });
   });
 
   it("emits exactly one durable notification for each accepted dispute version", async () => {

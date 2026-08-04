@@ -449,7 +449,9 @@ async function reconcileDispute(
       target: [paymentDisputes.provider, paymentDisputes.providerDisputeId],
     }).returning();
   let notificationDisputeId = created?.id ?? null;
-  let notificationKind: "DISPUTE_CREATED" | "DISPUTE_STATE_UPDATED" = "DISPUTE_CREATED";
+  const notificationKind = event.eventType === "dispute.created"
+    ? "DISPUTE_CREATED"
+    : "DISPUTE_STATE_UPDATED";
   if (!created) {
     const [existing] = await tx.select().from(paymentDisputes).where(and(
       eq(paymentDisputes.provider, "square"),
@@ -457,7 +459,6 @@ async function reconcileDispute(
     )).limit(1).for("update");
     if (!existing) throw new Error("dispute upsert conflict did not converge");
     notificationDisputeId = existing.id;
-    notificationKind = "DISPUTE_STATE_UPDATED";
     const immutableMatches = existing.organizationId === row.organizationId
       && existing.locationId === row.locationId
       && existing.paymentOperationId === mapping.operationId
