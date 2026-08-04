@@ -7,6 +7,7 @@ import {
   leagues,
   locations,
   organizations,
+  paymentDisputes,
   paymentOperations,
   payments,
   teams,
@@ -231,23 +232,41 @@ function paymentBody(input: { eventId: string; paymentId: string; operationId?: 
   });
 }
 
-function disputeBody(input: { eventId: string; disputeId: string; paymentId: string }) {
+function disputeBody(input: {
+  eventId: string;
+  disputeId: string;
+  paymentId: string;
+  eventType?: "dispute.created" | "dispute.state.updated";
+  amount?: number;
+  state?: "EVIDENCE_REQUIRED" | "PROCESSING" | "WON" | "LOST" | "ACCEPTED";
+  reason?: "DUPLICATE" | "NO_KNOWLEDGE";
+  version?: number;
+  updatedAt?: string;
+  dueAt?: string | null;
+}) {
+  const updatedAt = input.updatedAt ?? "2034-03-06T00:01:00.000Z";
   return JSON.stringify({
     merchant_id: merchantId,
-    type: "dispute.created",
+    type: input.eventType ?? "dispute.created",
     event_id: input.eventId,
-    created_at: "2034-03-06T00:01:00.000Z",
+    created_at: updatedAt,
     data: {
       type: "dispute",
       id: input.disputeId,
       object: { dispute: {
         id: input.disputeId,
         location_id: providerLocationId,
-        state: "EVIDENCE_REQUIRED",
-        amount_money: { amount: 2_000, currency: "USD" },
+        state: input.state ?? "EVIDENCE_REQUIRED",
+        reason: input.reason ?? "DUPLICATE",
+        amount_money: { amount: input.amount ?? 2_000, currency: "USD" },
         disputed_payment: { payment_id: input.paymentId },
-        updated_at: "2034-03-06T00:01:00.000Z",
-        version: 1,
+        due_at: input.dueAt === undefined ? "2034-03-20T00:00:00.000Z" : input.dueAt,
+        card_brand: "VISA",
+        brand_dispute_id: `brand-${input.disputeId}`,
+        created_at: "2034-03-06T00:00:00.000Z",
+        reported_at: "2034-03-06T00:00:30.000Z",
+        updated_at: updatedAt,
+        version: input.version ?? 1,
       } },
     },
   });
@@ -264,6 +283,27 @@ async function ingest(body: string) {
     now: new Date("2034-03-02T00:00:02.000Z"),
   });
   return { event, recorded };
+}
+
+async function completedInteractiveCharge() {
+  const operation = await preparedInteractiveCharge();
+  const providerPaymentId = `payment-${randomUUID()}`;
+  const delivery = await ingest(paymentBody({
+    eventId: `event-${randomUUID()}`,
+    paymentId: providerPaymentId,
+    operationId: operation.id,
+  }));
+  const result = await processSquareWebhookEvent({
+    organizationId,
+    eventId: delivery.recorded.event.id,
+    event: delivery.event,
+    now: new Date("2034-03-05T00:01:01.000Z"),
+  });
+  if (!result.businessStateChanged) throw new Error("charge fixture was not finalized");
+  const [payment] = await db.select().from(payments)
+    .where(eq(payments.paymentOperationId, operation.id));
+  if (!payment) throw new Error("charge fixture payment was not created");
+  return { operation, providerPaymentId, payment };
 }
 
 describe("Square webhook payment/refund PostgreSQL reconciliation", () => {
@@ -489,5 +529,236 @@ describe("Square webhook payment/refund PostgreSQL reconciliation", () => {
       now: new Date("2034-03-06T00:01:03.000Z"),
     });
     expect(claim).toMatchObject({ status: "processing", attemptCount: 1 });
+  });
+
+  it("atomically records a partial dispute without changing payment or refund state", async () => {
+    const charge = await completedInteractiveCharge();
+    const disputeId = `dispute-${randomUUID()}`;
+    const delivery = await ingest(disputeBody({
+      eventId: `event-${randomUUID()}`,
+      disputeId,
+      paymentId: charge.providerPaymentId,
+      amount: 1_000,
+    }));
+    const denied = await processSquareWebhookEvent({
+      organizationId: organizationId + 1_000_000,
+      eventId: delivery.recorded.event.id,
+      event: delivery.event,
+      processDisputes: true,
+    });
+    expect(denied).toMatchObject({
+      acknowledged: false,
+      businessStateChanged: false,
+      code: "EVENT_EVIDENCE_MISMATCH",
+    });
+    expect(await db.select().from(paymentDisputes)
+      .where(eq(paymentDisputes.providerDisputeId, disputeId))).toHaveLength(0);
+
+    const [left, right] = await Promise.all([
+      processSquareWebhookEvent({
+        organizationId,
+        eventId: delivery.recorded.event.id,
+        event: delivery.event,
+        processDisputes: true,
+        now: new Date("2034-03-06T00:01:01.000Z"),
+      }),
+      processSquareWebhookEvent({
+        organizationId,
+        eventId: delivery.recorded.event.id,
+        event: delivery.event,
+        processDisputes: true,
+        now: new Date("2034-03-06T00:01:01.000Z"),
+      }),
+    ]);
+    expect(left.acknowledged).toBe(true);
+    expect(right.acknowledged).toBe(true);
+    expect([left.businessStateChanged, right.businessStateChanged].sort()).toEqual([false, true]);
+    expect([left.scheduledPaymentWakeRequired, right.scheduledPaymentWakeRequired])
+      .not.toContain(true);
+
+    const disputeRows = await db.select().from(paymentDisputes)
+      .where(eq(paymentDisputes.providerDisputeId, disputeId));
+    expect(disputeRows).toHaveLength(1);
+    expect(disputeRows[0]).toMatchObject({
+      organizationId,
+      locationId,
+      paymentOperationId: charge.operation.id,
+      provider: "square",
+      providerApplicationId: applicationId,
+      providerMerchantId: merchantId,
+      providerLocationId,
+      providerDisputeId: disputeId,
+      providerPaymentId: charge.providerPaymentId,
+      amountMinor: 1_000,
+      currency: "USD",
+      reason: "DUPLICATE",
+      state: "EVIDENCE_REQUIRED",
+      providerVersion: 1,
+      firstWebhookEventId: delivery.recorded.event.id,
+      lastWebhookEventId: delivery.recorded.event.id,
+    });
+    const [payment] = await db.select().from(payments).where(eq(payments.id, charge.payment.id));
+    expect(payment).toMatchObject({ status: "paid", squareRefundId: null, refundedAt: null });
+  });
+
+  it("converges distinct concurrent provider events for the same dispute version", async () => {
+    const charge = await completedInteractiveCharge();
+    const disputeId = `dispute-${randomUUID()}`;
+    const leftDelivery = await ingest(disputeBody({
+      eventId: `event-${randomUUID()}`,
+      disputeId,
+      paymentId: charge.providerPaymentId,
+      version: 4,
+    }));
+    const rightDelivery = await ingest(disputeBody({
+      eventId: `event-${randomUUID()}`,
+      disputeId,
+      paymentId: charge.providerPaymentId,
+      version: 4,
+    }));
+
+    const results = await Promise.all([
+      processSquareWebhookEvent({
+        organizationId,
+        eventId: leftDelivery.recorded.event.id,
+        event: leftDelivery.event,
+        processDisputes: true,
+      }),
+      processSquareWebhookEvent({
+        organizationId,
+        eventId: rightDelivery.recorded.event.id,
+        event: rightDelivery.event,
+        processDisputes: true,
+      }),
+    ]);
+    expect(results.map((result) => result.status).sort()).toEqual(["ignored", "processed"]);
+    expect(results.map((result) => result.businessStateChanged).sort()).toEqual([false, true]);
+    expect(results.find((result) => result.status === "ignored")?.code)
+      .toBe("DUPLICATE_DISPUTE_VERSION");
+    expect(await db.select().from(paymentDisputes)
+      .where(eq(paymentDisputes.providerDisputeId, disputeId))).toHaveLength(1);
+  });
+
+  it("does not regress dispute state when an older event is processed out of order", async () => {
+    const charge = await completedInteractiveCharge();
+    const disputeId = `dispute-${randomUUID()}`;
+    const older = await ingest(disputeBody({
+      eventId: `event-${randomUUID()}`,
+      disputeId,
+      paymentId: charge.providerPaymentId,
+      state: "EVIDENCE_REQUIRED",
+      version: 2,
+      updatedAt: "2034-03-06T00:02:00.000Z",
+    }));
+    const newer = await ingest(disputeBody({
+      eventId: `event-${randomUUID()}`,
+      disputeId,
+      paymentId: charge.providerPaymentId,
+      eventType: "dispute.state.updated",
+      state: "WON",
+      version: 3,
+      updatedAt: "2034-03-07T00:02:00.000Z",
+      dueAt: null,
+    }));
+
+    const current = await processSquareWebhookEvent({
+      organizationId,
+      eventId: newer.recorded.event.id,
+      event: newer.event,
+      processDisputes: true,
+    });
+    const stale = await processSquareWebhookEvent({
+      organizationId,
+      eventId: older.recorded.event.id,
+      event: older.event,
+      processDisputes: true,
+    });
+    expect(current).toMatchObject({ status: "processed", businessStateChanged: true });
+    expect(stale).toMatchObject({ status: "ignored", code: "STALE_PROVIDER_EVENT" });
+    const [stored] = await db.select().from(paymentDisputes)
+      .where(eq(paymentDisputes.providerDisputeId, disputeId));
+    expect(stored).toMatchObject({
+      state: "WON",
+      providerVersion: 3,
+      responseDueAt: null,
+      lastWebhookEventId: newer.recorded.event.id,
+    });
+  });
+
+  it("keeps a pre-existing refund state independent from a later dispute", async () => {
+    const charge = await completedInteractiveCharge();
+    const refundedAt = "2034-03-06T12:00:00.000Z";
+    await db.update(payments).set({
+      status: "refunded",
+      squareRefundId: `refund-${randomUUID()}`,
+      refundedAt,
+    }).where(eq(payments.id, charge.payment.id));
+    const disputeId = `dispute-${randomUUID()}`;
+    const delivery = await ingest(disputeBody({
+      eventId: `event-${randomUUID()}`,
+      disputeId,
+      paymentId: charge.providerPaymentId,
+      amount: 500,
+      reason: "NO_KNOWLEDGE",
+    }));
+    const result = await processSquareWebhookEvent({
+      organizationId,
+      eventId: delivery.recorded.event.id,
+      event: delivery.event,
+      processDisputes: true,
+    });
+    expect(result).toMatchObject({ status: "processed", businessStateChanged: true });
+    const [payment] = await db.select().from(payments).where(eq(payments.id, charge.payment.id));
+    expect(payment.status).toBe("refunded");
+    expect(new Date(payment.refundedAt ?? "").getTime()).toBe(new Date(refundedAt).getTime());
+    expect(payment.squareRefundId).not.toBeNull();
+    const [dispute] = await db.select().from(paymentDisputes)
+      .where(eq(paymentDisputes.providerDisputeId, disputeId));
+    expect(dispute).toMatchObject({ state: "EVIDENCE_REQUIRED", reason: "NO_KNOWLEDGE" });
+  });
+
+  it("terminally ignores a valid dispute unrelated to a LeagueVault charge", async () => {
+    const delivery = await ingest(disputeBody({
+      eventId: `event-${randomUUID()}`,
+      disputeId: `dispute-${randomUUID()}`,
+      paymentId: `unowned-payment-${randomUUID()}`,
+    }));
+    const result = await processSquareWebhookEvent({
+      organizationId,
+      eventId: delivery.recorded.event.id,
+      event: delivery.event,
+      processDisputes: true,
+    });
+    expect(result).toMatchObject({
+      acknowledged: true,
+      terminal: true,
+      businessStateChanged: false,
+      status: "ignored",
+      code: "DISPUTE_NOT_OWNED",
+    });
+    const [stored] = await db.select().from(webhookEvents)
+      .where(eq(webhookEvents.id, delivery.recorded.event.id));
+    expect(stored).toMatchObject({
+      status: "ignored",
+      errorClassification: "mapping",
+      errorCode: "DISPUTE_NOT_OWNED",
+    });
+  });
+
+  it("removes disputes with their retained operation and webhook evidence during full tenant teardown", async () => {
+    const existing = await db.select({ id: paymentDisputes.id }).from(paymentDisputes)
+      .where(eq(paymentDisputes.organizationId, organizationId));
+    expect(existing.length).toBeGreaterThan(0);
+
+    const deletedOrganizationId = organizationId;
+    await deleteOrganization(deletedOrganizationId);
+    organizationId = 0;
+
+    expect(await db.select().from(paymentDisputes)
+      .where(eq(paymentDisputes.organizationId, deletedOrganizationId))).toHaveLength(0);
+    expect(await db.select().from(webhookEvents)
+      .where(eq(webhookEvents.organizationId, deletedOrganizationId))).toHaveLength(0);
+    expect(await db.select().from(organizations)
+      .where(eq(organizations.id, deletedOrganizationId))).toHaveLength(0);
   });
 });

@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(16);
+    expect(migrations).toHaveLength(17);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -249,6 +249,15 @@ describe('normalized migration baseline tools', () => {
     });
     expect(migrations[15]?.sql).toContain('CREATE INDEX "webhook_events_object_freshness_idx"');
     expect(migrations[15]?.sql).not.toMatch(/(?:^|\n)\s*(?:DROP|ALTER|UPDATE|DELETE|INSERT)\b/);
+    expect(migrations[16]).toMatchObject({
+      idx: 16,
+      tag: '0016_payment_dispute_ledger',
+      createdAt: 1785798985587,
+      hash: 'b8e5f1c6ddea5f02eaa89a3c54d959f3addb802c4e01d81790e73f185c66f12f',
+    });
+    expect(migrations[16]?.sql).toContain('CREATE TABLE "payment_disputes"');
+    expect(migrations[16]?.sql).toContain('payment_disputes_provider_dispute_unique');
+    expect(migrations[16]?.sql).not.toMatch(/(?:^|\n)\s*(?:DROP|UPDATE|DELETE|INSERT)\b/);
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 

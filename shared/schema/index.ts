@@ -69,6 +69,17 @@ export type {
   WebhookEventStatus,
   WebhookEventErrorClassification,
 } from "./webhook-events";
+
+export {
+  paymentDisputes,
+  PAYMENT_DISPUTE_STATES,
+  PAYMENT_DISPUTE_REASONS,
+} from "./payment-disputes";
+export type {
+  PaymentDispute,
+  PaymentDisputeState,
+  PaymentDisputeReason,
+} from "./payment-disputes";
 export type {
   PaymentOperation,
   InsertPaymentOperation,

@@ -130,6 +130,36 @@ function paymentEvent(eventId = "event-fixture-1", locationId = "location-fixtur
   };
 }
 
+function disputeEvent(eventId = "event-dispute-fixture-1") {
+  return {
+    merchant_id: "merchant-fixture-1",
+    type: "dispute.state.updated",
+    event_id: eventId,
+    created_at: "2026-08-03T12:00:00.000Z",
+    data: {
+      type: "dispute",
+      id: "dispute-fixture-1",
+      object: {
+        dispute: {
+          id: "dispute-fixture-1",
+          location_id: "location-fixture-1",
+          amount_money: { amount: 1250, currency: "USD" },
+          disputed_payment: { payment_id: "payment-fixture-1" },
+          reason: "DUPLICATE",
+          state: "EVIDENCE_REQUIRED",
+          due_at: "2026-08-10T12:00:00.000Z",
+          card_brand: "VISA",
+          brand_dispute_id: "brand-dispute-fixture-1",
+          created_at: "2026-08-01T12:00:00.000Z",
+          reported_at: "2026-08-02T12:00:00.000Z",
+          updated_at: "2026-08-03T11:59:59.000Z",
+          version: 3,
+        },
+      },
+    },
+  };
+}
+
 function sign(body: string, key = signatureKey, url = notificationUrl): string {
   return createHmac("sha256", key).update(url, "utf8").update(body, "utf8").digest("base64");
 }
@@ -171,6 +201,7 @@ beforeEach(() => {
     businessStateChanged: true,
     status: "processed",
     code: null,
+    scheduledPaymentWakeRequired: true,
   });
   rearm.mockReset();
   rearm.mockResolvedValue(undefined);
@@ -285,6 +316,23 @@ describe("Square webhook parsing and log safety", () => {
       providerObjectVersion: 4,
       ignored: false,
     });
+    const dispute = normalizeSquareWebhookEvent(JSON.stringify(disputeEvent()));
+    expect(dispute).toMatchObject({
+      eventType: "dispute.state.updated",
+      providerObjectId: "dispute-fixture-1",
+      providerPaymentId: "payment-fixture-1",
+      providerObjectVersion: 3,
+      providerStatus: "EVIDENCE_REQUIRED",
+      amountMinor: 1250,
+      dispute: {
+        reason: "DUPLICATE",
+        dueAt: "2026-08-10T12:00:00.000Z",
+        cardBrand: "VISA",
+        brandDisputeId: "brand-dispute-fixture-1",
+        createdAt: "2026-08-01T12:00:00.000Z",
+        reportedAt: "2026-08-02T12:00:00.000Z",
+      },
+    });
   });
 
   it("marks an unexpected supported-version event ignored when it maps to one location", async () => {
@@ -391,8 +439,56 @@ describe("Square webhook reconciliation activation", () => {
       expect(processEvent).toHaveBeenCalledWith(expect.objectContaining({
         eventId: webhookEventFixture("pending").id,
         organizationId: 1,
+        processDisputes: false,
       }));
       expect(rearm).toHaveBeenCalledTimes(1);
+    } finally {
+      await new Promise<void>((resolve, reject) => listener.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
+  it("activates dispute reconciliation separately without waking payment recovery", async () => {
+    processEvent.mockResolvedValueOnce({
+      acknowledged: true,
+      terminal: true,
+      businessStateChanged: true,
+      status: "processed",
+      code: null,
+      scheduledPaymentWakeRequired: false,
+    });
+    const reconcileApp = express();
+    registerSquareWebhookReceiver(reconcileApp, {
+      config: { ...config, mode: "reconcile_payments_and_disputes" },
+      ingest,
+      process: processEvent,
+      rearm,
+    });
+    const listener = await new Promise<Server>((resolve) => {
+      const value = reconcileApp.listen(0, "127.0.0.1", () => resolve(value));
+    });
+    try {
+      const body = JSON.stringify(disputeEvent());
+      const response = await fetch(
+        `http://127.0.0.1:${(listener.address() as AddressInfo).port}${SQUARE_WEBHOOK_PATH}`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            [SQUARE_WEBHOOK_SIGNATURE_HEADER]: sign(body),
+            "x-forwarded-for": "203.0.113.243",
+          },
+          body,
+        },
+      );
+      expect(response.status).toBe(200);
+      expect(processEvent).toHaveBeenCalledWith(expect.objectContaining({
+        processDisputes: true,
+        event: expect.objectContaining({
+          eventType: "dispute.state.updated",
+          providerPaymentId: "payment-fixture-1",
+        }),
+      }));
+      expect(rearm).not.toHaveBeenCalled();
     } finally {
       await new Promise<void>((resolve, reject) => listener.close((error) => error ? reject(error) : resolve()));
     }
@@ -510,5 +606,13 @@ describe("Square webhook configuration", () => {
       appDomain: "hooks.example.test",
       appEnv: "dev",
     }).mode).toBe("reconcile_payments");
+    expect(resolveSquareWebhookConfig({
+      mode: "reconcile_payments_and_disputes",
+      notificationUrl,
+      providerApiVersion: SQUARE_WEBHOOK_SUPPORTED_API_VERSION,
+      signatureKeysJson: JSON.stringify([{ applicationId, signatureKey }]),
+      appDomain: "hooks.example.test",
+      appEnv: "dev",
+    }).mode).toBe("reconcile_payments_and_disputes");
   });
 });

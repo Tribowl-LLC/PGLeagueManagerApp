@@ -11,6 +11,7 @@ signature-validated durable inbox. The only active modes are:
 | `disabled` | Returns `503 SQUARE_WEBHOOK_DISABLED`; no signature configuration, database read, inbox write, claim, provider call, or business mutation occurs. This is the default. |
 | `ingest_only` | Verifies exact raw bytes, parses a bounded event, resolves one tenant/location, and commits encrypted evidence before returning 2xx. No event is processed. |
 | `reconcile_payments` | Preserves the signature and durable-ingestion boundary, then processes that exact event inline. Only conclusive known payment/refund completion can mutate business state. |
+| `reconcile_payments_and_disputes` | Adds independent dispute-ledger reconciliation for known LeagueVault charges. It never changes payment/refund status or calls Square. |
 
 No Phase 4A-1 code can finalize or otherwise change a payment, refund,
 dispute, payment operation, schedule, receipt, or UI state. No startup scan,
@@ -45,6 +46,29 @@ processed, and completed fields are not changed, so Phase 4B can claim and
 process the original retained evidence without a replay backfill. No dispute
 or refund state is conflated. Phase 4B still owns dispute storage, status
 precedence, visibility, notifications, and operator actions.
+
+## Phase 4B-1 activation boundary
+
+Phase 4B-1 adds `reconcile_payments_and_disputes` as a distinct opt-in mode.
+The deployed `reconcile_payments` behavior is unchanged, so applying the
+migration and deploying this code does not activate dispute processing.
+
+When separately activated, `dispute.created` and `dispute.state.updated` may
+insert or advance an independent `payment_disputes` record only after the
+provider application, merchant, tenant, local/provider location, Square
+payment, succeeded charge operation, complete local allocation amount,
+currency, partial disputed amount, reason, dispute identity, and numeric
+version all pass tenant-scoped validation. Older versions are ignored and an
+equal version with conflicting evidence fails closed. A valid dispute for a
+Square payment not owned by LeagueVault is retained as terminal ignored
+evidence with `DISPUTE_NOT_OWNED`.
+
+Dispute state never writes `payments.status`, `payments.dispute_id`, refund
+fields, or payment-operation status. Refund and dispute lifecycles can coexist
+without precedence loss. Dispute commits do not wake the scheduled-payment
+runtime. This slice adds no read API, notification, operator UI, provider
+effect, polling, backlog scan, or automatic replay; those remain later 4B
+work. See [the Phase 4B dispute design](./phase4b-dispute-design.md).
 
 The processor locks the inbox row and performs local reconciliation plus inbox
 completion in one PostgreSQL transaction. Concurrent duplicates wait for that
@@ -251,10 +275,10 @@ Phase 4A-2 preserves all of the following:
   independently representable from refund state. See the official
   [Dispute object](https://developer.squareup.com/reference/square/objects/Dispute).
 
-Phase 4B must make an explicit product/storage decision for combined-payment
-disputes and status precedence before activating dispute mutations. The
-existing single `payments.status` plus `dispute_id` fields are not sufficient
-to represent every refund/dispute combination without loss.
+Phase 4B-1 resolves the combined-payment and status-precedence constraint by
+linking each provider dispute to the succeeded charge operation, not an
+arbitrary allocation row, and keeping its lifecycle independent from the
+existing single `payments.status` plus `dispute_id` fields.
 
 ## Migration, rollback, and CU impact
 
@@ -267,18 +291,21 @@ Migration `0015_square_webhook_object_freshness` adds one btree index over the
 provider application/object freshness lookup used by out-of-order checks. It
 has no table rewrite, backfill, destructive statement, or data mutation.
 
-Migration-first is compatible: the Phase 3B application ignores the new
-table. The Phase 4A-1 application is also safe with the migration present while
-`SQUARE_WEBHOOK_MODE=disabled`. Application rollback keeps migrations 0014 and 0015 and
-all inbox evidence; do not reverse the migration or delete events. Since 4A-1
-never changes business state, the existing Phase 3B application remains an
-application rollback target if the receiver itself regresses.
+Migration `0016_payment_dispute_ledger` additively creates the empty
+`payment_disputes` table, restrictive identity/evidence foreign keys, provider
+dispute uniqueness, validation checks, and tenant/operation/provider indexes.
+It has no backfill, destructive statement, existing-table rewrite, or data
+mutation.
 
-After `reconcile_payments` has been activated, disable processing before an
-application rollback. Already committed payment/refund completions remain
-valid durable ledger state; an older worker observes those operations as
-terminal and must not replay provider effects. Rollback does not mean reversing
-migration 0015 or deleting inbox evidence.
+Migration-first is compatible: the deployed Phase 4A-2 application ignores
+the new table under every existing mode, including `reconcile_payments`.
+Application rollback keeps migrations 0014 through 0016 plus all inbox and
+dispute evidence; do not reverse the migrations or delete events. If the new
+mode has been activated, change it back to `reconcile_payments` before rolling
+the application back to Phase 4A-2 because that version does not recognize the
+new mode. Independently committed dispute records remain valid retained
+evidence; payment/refund processing continues under the older mode. Rollback
+does not mean reversing migration 0016 or deleting inbox/dispute evidence.
 
 The restrictive organization/location foreign keys express the normal
 retention policy. Ordinary location deletion is rejected with
@@ -306,23 +333,30 @@ share a configured location but carry no LeagueVault identity are retained and
 acknowledged once, preventing provider redelivery from creating repeated Neon
 wakes.
 
-## Future production sequence (not performed by this PR)
+In `reconcile_payments_and_disputes`, each dispute delivery adds bounded
+indexed operation/allocation lookups and one short transaction. It makes no
+Square request and does not rearm payment recovery. There remains no idle
+database query, so the new mode does not prevent Neon autosuspension.
+
+## Phase 4B-1 production sequence (not performed by this PR)
 
 1. Keep Render Auto-Deploy Off.
 2. Back up the intended Neon production database.
-3. Apply migrations through 0015 from the exact CI-certified commit and verify their
-   journal/checksum/schema.
-4. Deploy that exact commit with `SQUARE_WEBHOOK_MODE=disabled`; verify health,
-   authentication, tenant isolation, existing payments/refunds/schedules, and
-   zero inbox activity.
-5. Configure each application-owned Square subscription for the exact
-   notification URL, `2026-05-20`, and the four reviewed event types; store the
-   matching signature keys in Render, then deploy `ingest_only` separately.
-6. Send controlled Square test events with synthetic/nonproduction identities.
-7. Activate `reconcile_payments` only in a separate reviewed release and
-   deliberate operator action.
-8. Verify deduplication, app/tenant/location mapping, eventual refund
-   completion, sanitized logs, sparse-backstop rearming, and a complete Neon
-   autosuspension window.
+3. Apply migration 0016 from the exact CI-certified commit and verify its
+   journal, checksum, and schema.
+4. Deploy that exact commit while preserving the currently approved Phase
+   4A-2 mode (`reconcile_payments` when active); do not broaden the mode during
+   the code deployment.
+5. Verify health, authentication, tenant isolation, existing charges/refunds,
+   sparse recovery, schedules, webhook deduplication, and sanitized logs.
+6. Confirm the existing application-owned Square subscription still uses the
+   canonical URL, API version `2026-05-20`, reviewed signature key, and exact
+   event inventory. Do not rotate or reconfigure it merely for deployment.
+7. Activate `reconcile_payments_and_disputes` only in a separate reviewed
+   manual Render deployment.
+8. Send controlled synthetic/nonproduction dispute events and verify tenant,
+   location, operation, payment, amount/currency, version deduplication and
+   out-of-order behavior, independent refund state, zero payment-recovery
+   wake, sanitized logs, and a complete Neon autosuspension window.
 
 Do not use a real pending production refund as a test event or replay target.
