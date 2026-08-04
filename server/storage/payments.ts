@@ -2,7 +2,7 @@ import { eq, and, desc, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   payments, paymentSchedules, leagues, bowlerLeagues,
-  paymentOperations,
+  paymentDisputes, paymentOperations,
   type Payment, type InsertPayment, type UpdatePayment,
   type PaymentSchedule, type InsertPaymentSchedule, type UpdatePaymentSchedule,
   type PaginatedResult,
@@ -10,6 +10,13 @@ import {
 import { createLogger } from '../logger';
 
 const log = createLogger("StoragePayments");
+
+export class PaymentDisputeEvidenceExistsError extends Error {
+  constructor() {
+    super("Payment cannot be deleted while retained dispute evidence exists");
+    this.name = "PaymentDisputeEvidenceExistsError";
+  }
+}
 
 interface PaymentFilters {
   bowlerId?: number;
@@ -273,7 +280,32 @@ export async function openDispute(id: number, disputeId: string): Promise<Paymen
 }
 
 export async function deletePayment(id: number): Promise<void> {
-  await db.delete(payments).where(eq(payments.id, id));
+  await db.transaction(async (tx) => {
+    const [payment] = await tx.select({
+      id: payments.id,
+      paymentOperationId: payments.paymentOperationId,
+    }).from(payments).where(eq(payments.id, id)).limit(1).for("update");
+    if (!payment) return;
+
+    if (payment.paymentOperationId !== null) {
+      // The payment-operation row is the shared serialization fence with
+      // dispute reconciliation. Once held, no dispute can be attached between
+      // this evidence check and deletion, and reconciliation that wins first
+      // makes this delete fail closed.
+      await tx.select({ id: paymentOperations.id })
+        .from(paymentOperations)
+        .where(eq(paymentOperations.id, payment.paymentOperationId))
+        .limit(1)
+        .for("update");
+      const [retainedDispute] = await tx.select({ id: paymentDisputes.id })
+        .from(paymentDisputes)
+        .where(eq(paymentDisputes.paymentOperationId, payment.paymentOperationId))
+        .limit(1);
+      if (retainedDispute) throw new PaymentDisputeEvidenceExistsError();
+    }
+
+    await tx.delete(payments).where(eq(payments.id, id));
+  });
 }
 
 export async function createPaymentSchedule(schedule: InsertPaymentSchedule): Promise<PaymentSchedule> {

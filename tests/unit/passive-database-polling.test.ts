@@ -30,4 +30,11 @@ describe('passive database-backed UI queries', () => {
     expect(detailSource).toContain('refetchInterval: (query) =>');
     expect(detailSource).toContain('isActive(status)');
   });
+
+  it('refreshes payment-linked disputes only on Payments page load or focus', () => {
+    const source = readFileSync(resolve('client/src/pages/payments-page.tsx'), 'utf8');
+    expect(source).toContain('includeDisputes=true');
+    expect(source).toContain('refetchOnWindowFocus: "always"');
+    expect(source).not.toContain('refetchInterval:');
+  });
 });

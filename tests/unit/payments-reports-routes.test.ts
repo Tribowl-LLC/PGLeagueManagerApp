@@ -37,7 +37,12 @@ const mockStorage = {
   getAllPaymentsPaginatedSystemAdmin: vi.fn(),
 };
 
+const mockListPaymentDisputeSummariesForPayments = vi.hoisted(() => vi.fn());
+
 vi.mock('../../server/storage', () => ({ storage: mockStorage }));
+vi.mock('../../server/storage/payment-dispute-operations', () => ({
+  listPaymentDisputeSummariesForPayments: mockListPaymentDisputeSummariesForPayments,
+}));
 
 const mockRequireOrgAccess = vi.fn();
 const mockHasAdminAccessToLeague = vi.fn();
@@ -92,6 +97,8 @@ beforeEach(() => {
   mockRequireOrgAccess.mockReturnValue(true);
   mockHasAdminAccessToLeague.mockReset();
   mockHasAdminAccessToLeague.mockResolvedValue(true);
+  mockListPaymentDisputeSummariesForPayments.mockReset();
+  mockListPaymentDisputeSummariesForPayments.mockResolvedValue(new Map());
 });
 
 afterEach(() => vi.clearAllMocks());
@@ -120,6 +127,103 @@ async function get(path: string, user?: object) {
 }
 
 describe('GET /api/payments — caller scope', () => {
+  it('loads dispute summaries only when an administrator explicitly requests the Payments-page projection', async () => {
+    const row = {
+      id: 91,
+      leagueId: ORG_A_LEAGUE.id,
+      paymentOperationId: '11111111-1111-4111-8111-111111111111',
+      combinedChargeGroupId: null,
+    };
+    const dispute = {
+      id: '22222222-2222-4222-8222-222222222222',
+      providerDisputeId: 'safe-test-dispute-reference',
+      amountMinor: 2500,
+      currency: 'USD',
+      reason: 'NO_KNOWLEDGE',
+      state: 'EVIDENCE_REQUIRED',
+      responseDueAt: '2034-03-12T00:00:00.000Z',
+      providerUpdatedAt: '2034-03-08T00:00:00.000Z',
+      providerVersion: 2,
+      sharedTransaction: false,
+      history: [],
+    };
+    mockStorage.getPaymentsPaginated.mockResolvedValue({
+      items: [row],
+      pagination: { page: 1, limit: 25, total: 1, totalPages: 1 },
+    });
+    mockListPaymentDisputeSummariesForPayments.mockResolvedValue(new Map([[row.id, [dispute]]]));
+
+    const res = await get('/api/payments?page=1&limit=25&includeDisputes=true', ORG_A_USER);
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toEqual([{ id: row.id, leagueId: row.leagueId, disputes: [dispute] }]);
+    expect(mockListPaymentDisputeSummariesForPayments).toHaveBeenCalledWith({
+      paymentRows: [row],
+      organizationId: ORG_A_USER.organizationId,
+    });
+  });
+
+  it('does not query disputes for ordinary payment-list callers', async () => {
+    mockStorage.getPayments.mockResolvedValue([{ id: 92, leagueId: ORG_A_LEAGUE.id }]);
+    const res = await get('/api/payments', ORG_A_USER);
+    expect(res.status).toBe(200);
+    expect(mockListPaymentDisputeSummariesForPayments).not.toHaveBeenCalled();
+  });
+
+  it('limits a system-admin all-organization projection to the payment rows already selected', async () => {
+    const row = {
+      id: 93,
+      leagueId: ORG_B_LEAGUE.id,
+      paymentOperationId: '33333333-3333-4333-8333-333333333333',
+      combinedChargeGroupId: null,
+    };
+    mockStorage.getAllPaymentsPaginatedSystemAdmin.mockResolvedValue({
+      items: [row],
+      pagination: { page: 1, limit: 25, total: 1, totalPages: 1 },
+    });
+    const res = await get('/api/payments?page=1&limit=25&includeDisputes=true', SYSADMIN);
+    expect(res.status).toBe(200);
+    expect(mockListPaymentDisputeSummariesForPayments).toHaveBeenCalledWith({
+      paymentRows: [row],
+      organizationId: null,
+    });
+  });
+
+  it('denies dispute projection to non-administrators before storage access', async () => {
+    const user = { id: 12, role: 'user' as TestRole, organizationId: 1, bowlerId: 44 };
+    const res = await get('/api/payments?includeDisputes=true', user);
+    expect(res.status).toBe(403);
+    expect(mockStorage.getPayments).not.toHaveBeenCalled();
+    expect(mockListPaymentDisputeSummariesForPayments).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unpaginated dispute projection before payment or dispute storage access', async () => {
+    const res = await get('/api/payments?includeDisputes=true', ORG_A_USER);
+    expect(res.status).toBe(400);
+    expect((await res.json()).error.code).toBe('INVALID_QUERY');
+    expect(mockStorage.getPayments).not.toHaveBeenCalled();
+    expect(mockStorage.getPaymentsPaginated).not.toHaveBeenCalled();
+    expect(mockListPaymentDisputeSummariesForPayments).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    '/api/payments?page=1&includeDisputes=true',
+    '/api/payments?limit=25&includeDisputes=true',
+    '/api/payments?page=zero&limit=25&includeDisputes=true',
+    '/api/payments?page=1&limit=0&includeDisputes=true',
+  ])('rejects incomplete or invalid dispute pagination before storage access: %s', async (path) => {
+    const res = await get(path, ORG_A_USER);
+    expect(res.status).toBe(400);
+    expect(mockStorage.getPaymentsPaginated).not.toHaveBeenCalled();
+    expect(mockListPaymentDisputeSummariesForPayments).not.toHaveBeenCalled();
+  });
+
+  it('rejects malformed dispute projection flags before storage access', async () => {
+    const res = await get('/api/payments?includeDisputes=yes', ORG_A_USER);
+    expect(res.status).toBe(400);
+    expect(mockStorage.getPayments).not.toHaveBeenCalled();
+    expect(mockListPaymentDisputeSummariesForPayments).not.toHaveBeenCalled();
+  });
+
   it('returns an empty list for unauthenticated callers (200)', async () => {
     const res = await get('/api/payments');
     expect(res.status).toBe(200);

@@ -886,3 +886,41 @@ the tenant's inbox rows before its locked locations.
 See [`square-webhook-inbox.md`](./square-webhook-inbox.md) for the event
 inventory, Square contract links, crash/replay/out-of-order rules, future
 reconciliation invariants, activation sequence, rollback, and CU analysis.
+
+## Phase 4 completion: payment-linked dispute visibility
+
+Phase 4B keeps dispute state independent from `payments.status`: a refund and
+a dispute can coexist, and one Square transaction can fund multiple local
+payment allocations. Signed Square dispute events reconcile into the
+version-fenced `payment_disputes` ledger. Immutable
+`payment_dispute_notifications` rows provide sanitized state history.
+
+The existing Payments page opts into a bounded batch projection for its
+current page only; the API requires valid pagination and retains the 100-row
+maximum. The server maps current payment IDs to their durable payment-operation
+identity and requires immutable operation organization and dispute tenant
+identity to agree. Historical location was already validated against the
+immutable operation snapshot during reconciliation, so an editable current
+league location is not used to hide or authorize retained evidence. It then
+loads history for all matching disputes in one additional batch query. There
+is no query per row, decrypted payload response, provider call, polling
+interval, focus badge, startup scan, or background database work.
+
+Every allocation linked to a combined charge displays the same provider
+dispute and explicitly states that the disputed amount belongs to the shared
+Square transaction; LeagueVault does not assign that amount to one bowler.
+Operators use the Square Disputes dashboard for acceptance and evidence. Those
+irreversible provider effects are outside LeagueVault indefinitely.
+
+Every operation-linked payment with retained dispute evidence is protected
+from ordinary deletion by an operation-row serialization fence shared with
+dispute reconciliation. The API returns HTTP 409 with
+`PAYMENT_DISPUTE_EVIDENCE_EXISTS`; atomic full-organization teardown remains
+the explicit evidence-retention exception.
+
+Phase 4 implementation is complete when the final 4B-3A code PR is merged.
+Production rollout is a separate operational milestone and is complete only
+after the exact merged commit is deployed and Render, Neon, webhook,
+dispute-visibility, payment/refund, tenant-isolation, and POS-origin-prefilter
+audits pass. See
+[`phase4b3a-dispute-visibility.md`](./phase4b3a-dispute-visibility.md).

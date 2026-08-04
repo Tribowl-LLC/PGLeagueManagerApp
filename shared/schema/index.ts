@@ -77,8 +77,10 @@ export {
 } from "./payment-disputes";
 export type {
   PaymentDispute,
+  PaymentDisputeHistorySummary,
   PaymentDisputeState,
   PaymentDisputeReason,
+  PaymentRowDisputeSummary,
 } from "./payment-disputes";
 
 export {

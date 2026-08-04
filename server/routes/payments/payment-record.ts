@@ -21,6 +21,7 @@ import { eq, and, gte, lte, sql } from 'drizzle-orm';
 import { payments as paymentsTable } from '@shared/schema';
 import { createLogger } from '../../logger';
 import { getPgErrorCode } from '../../utils/db-errors';
+import { PaymentDisputeEvidenceExistsError } from '../../storage/payments.js';
 
 const log = createLogger("Payments");
 
@@ -234,6 +235,14 @@ router.delete("/:id", paymentWriteLimiter, async (req, res) => {
 
     sendSuccess(res, { message: "Payment deleted successfully" }, 200);
   } catch (error) {
+    if (error instanceof PaymentDisputeEvidenceExistsError) {
+      return sendError(
+        res,
+        error.message,
+        409,
+        'PAYMENT_DISPUTE_EVIDENCE_EXISTS',
+      );
+    }
     log.error('Delete error:', error);
     sendError(res, 'Failed to delete payment');
   }

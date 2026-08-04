@@ -6,7 +6,11 @@ import {
   paymentDisputeNotifications,
   paymentDisputeReplayAudits,
   paymentDisputes,
+  paymentOperations,
+  payments,
   webhookEvents,
+  type Payment,
+  type PaymentRowDisputeSummary,
   type PaymentDisputeState,
 } from "@shared/schema";
 import { db } from "../db.js";
@@ -149,6 +153,106 @@ export async function listPaymentDisputeNotifications(input: TenantPageInput) {
   )).orderBy(desc(paymentDisputeNotifications.createdAt), desc(paymentDisputeNotifications.id))
     .limit(input.limit + 1);
   return page(rows, input.limit, (row) => row.createdAt);
+}
+
+/**
+ * Batch-load current dispute state and immutable sanitized history for the
+ * payment allocations already authorized by the Payments route. The joins
+ * require payment, dispute, and immutable operation organization identities
+ * to agree; stale or cross-tenant operation links therefore fail closed.
+ * Location ownership was already validated against the operation snapshot
+ * during reconciliation and is deliberately not compared with the mutable
+ * current league location here.
+ */
+export async function listPaymentDisputeSummariesForPayments(input: {
+  paymentRows: Array<Pick<Payment, "id" | "paymentOperationId" | "combinedChargeGroupId">>;
+  organizationId: number | null;
+}): Promise<Map<number, PaymentRowDisputeSummary[]>> {
+  const eligibleRows = input.paymentRows.filter((row) => row.paymentOperationId !== null);
+  if (eligibleRows.length === 0) return new Map();
+
+  const disputeRows = await db.select({
+    paymentId: payments.id,
+    combinedChargeGroupId: payments.combinedChargeGroupId,
+    organizationId: paymentDisputes.organizationId,
+    id: paymentDisputes.id,
+    providerDisputeId: paymentDisputes.providerDisputeId,
+    amountMinor: paymentDisputes.amountMinor,
+    currency: paymentDisputes.currency,
+    reason: paymentDisputes.reason,
+    state: paymentDisputes.state,
+    responseDueAt: paymentDisputes.responseDueAt,
+    providerUpdatedAt: paymentDisputes.providerUpdatedAt,
+    providerVersion: paymentDisputes.providerVersion,
+  }).from(payments)
+    .innerJoin(paymentOperations, eq(paymentOperations.id, payments.paymentOperationId))
+    .innerJoin(paymentDisputes, and(
+      eq(paymentDisputes.paymentOperationId, paymentOperations.id),
+      eq(paymentDisputes.organizationId, paymentOperations.organizationId),
+    ))
+    .where(and(
+      inArray(payments.id, eligibleRows.map((row) => row.id)),
+      input.organizationId === null
+        ? undefined
+        : eq(paymentOperations.organizationId, input.organizationId),
+    ));
+
+  if (disputeRows.length === 0) return new Map();
+  const disputeOrganization = new Map(
+    disputeRows.map((row) => [row.id, row.organizationId] as const),
+  );
+  const historyRows = await db.select({
+    organizationId: paymentDisputeNotifications.organizationId,
+    paymentDisputeId: paymentDisputeNotifications.paymentDisputeId,
+    kind: paymentDisputeNotifications.kind,
+    state: paymentDisputeNotifications.disputeState,
+    providerVersion: paymentDisputeNotifications.providerVersion,
+    recordedAt: paymentDisputeNotifications.createdAt,
+  }).from(paymentDisputeNotifications).where(and(
+    inArray(
+      paymentDisputeNotifications.paymentDisputeId,
+      Array.from(disputeOrganization.keys()),
+    ),
+    input.organizationId === null
+      ? undefined
+      : eq(paymentDisputeNotifications.organizationId, input.organizationId),
+  )).orderBy(
+    desc(paymentDisputeNotifications.providerVersion),
+    desc(paymentDisputeNotifications.createdAt),
+  );
+
+  const historyByDispute = new Map<string, PaymentRowDisputeSummary["history"]>();
+  for (const row of historyRows) {
+    if (disputeOrganization.get(row.paymentDisputeId) !== row.organizationId) continue;
+    const history = historyByDispute.get(row.paymentDisputeId) ?? [];
+    history.push({
+      kind: row.kind as PaymentRowDisputeSummary["history"][number]["kind"],
+      state: row.state as PaymentRowDisputeSummary["history"][number]["state"],
+      providerVersion: row.providerVersion,
+      recordedAt: row.recordedAt,
+    });
+    historyByDispute.set(row.paymentDisputeId, history);
+  }
+
+  const result = new Map<number, PaymentRowDisputeSummary[]>();
+  for (const row of disputeRows) {
+    const summaries = result.get(row.paymentId) ?? [];
+    summaries.push({
+      id: row.id,
+      providerDisputeId: row.providerDisputeId,
+      amountMinor: row.amountMinor,
+      currency: row.currency,
+      reason: row.reason as PaymentRowDisputeSummary["reason"],
+      state: row.state as PaymentRowDisputeSummary["state"],
+      responseDueAt: row.responseDueAt,
+      providerUpdatedAt: row.providerUpdatedAt,
+      providerVersion: row.providerVersion,
+      sharedTransaction: row.combinedChargeGroupId !== null,
+      history: historyByDispute.get(row.id) ?? [],
+    });
+    result.set(row.paymentId, summaries);
+  }
+  return result;
 }
 
 export async function listPendingPaymentDisputeEvents(input: TenantPageInput) {

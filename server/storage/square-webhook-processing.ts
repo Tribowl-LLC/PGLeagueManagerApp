@@ -263,7 +263,7 @@ async function findDisputeOperation(
       inArray(paymentOperations.operationType, ["scheduled_charge", "interactive_charge"]),
       eq(paymentOperations.providerName, "square"),
       eq(paymentOperations.providerObjectId, event.providerPaymentId),
-    )).limit(2);
+    )).limit(2).for("update", { of: paymentOperations });
   if (candidates.length === 0) return { kind: "not_owned" };
   if (candidates.length !== 1) return { kind: "ambiguous" };
   const operation = candidates[0];

@@ -8,7 +8,15 @@ import { ErrorBoundary } from "@/components/error-boundary";
 import { Input } from "@/components/ui/input";
 import { Loader2, Plus, Search } from "lucide-react";
 import { PageLoadingState } from "@/components/page-states";
-import type { Payment, Bowler, League, PaginationMeta, ApiResponse, User } from "@shared/schema";
+import type {
+  Payment,
+  PaymentRowDisputeSummary,
+  Bowler,
+  League,
+  PaginationMeta,
+  ApiResponse,
+  User,
+} from "@shared/schema";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import {
   isProviderNotConfiguredError,
@@ -34,7 +42,7 @@ const DEFAULT_PAGE_SIZE = 50;
 
 interface PaginatedPaymentsResponse {
   success: boolean;
-  data: Payment[];
+  data: Array<Payment & { disputes: PaymentRowDisputeSummary[] }>;
   pagination: PaginationMeta;
 }
 
@@ -60,15 +68,19 @@ export default function PaymentsPage() {
   });
 
   const { data: paymentsResponse, isLoading: loadingPayments } = useQuery<PaginatedPaymentsResponse>({
-    queryKey: ["/api/payments", "paginated", page, pageSize],
+    queryKey: ["/api/payments", "paginated", "with-disputes", page, pageSize],
     queryFn: async () => {
-      const res = await fetch(`/api/payments?page=${page}&limit=${pageSize}`, {
+      const res = await fetch(
+        `/api/payments?page=${page}&limit=${pageSize}&includeDisputes=true`,
+        {
         credentials: "include",
         headers: { "Accept": "application/json" },
-      });
+        },
+      );
       if (!res.ok) throw new Error(`${res.status}: ${res.statusText}`);
       return res.json();
     },
+    refetchOnWindowFocus: "always",
     staleTime: 1000 * 60,
   });
 

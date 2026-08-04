@@ -60,7 +60,7 @@ deliveries serialize without provider I/O.
 
 Phase 4B adds no provider polling, inbox scan, startup sweep, fixed timer, or
 empty query. Dispute reconciliation does not rearm the payment recovery
-scheduler. Previously acknowledged dispute events remain pending until a
+scheduler. Previously received dispute events remain pending until a
 future deliberate event-ID replay action; changing modes never scans them.
 
 ## Activation and PR decomposition
@@ -86,13 +86,20 @@ The safe PR sequence is:
 2. **4B-2:** tenant-safe read APIs, durable notifications, and audited explicit
    replay of a pending event ID. Org admins remain confined to their tenant;
    system admins must select a tenant deliberately.
-3. **4B-3:** independent refund/dispute UX, deadline and state history, and
-   operator acknowledgement. Accepting a dispute or submitting evidence to
-   Square is a new provider effect and requires a separate explicit product
-   and security decision.
+3. **4B-3A:** project current dispute state and immutable sanitized history
+   onto every affected payment allocation in the existing Payments page.
+   Combined-charge rows share one transaction-level dispute and never split
+   its amount between bowlers. This provider-effect-free final slice is
+   specified in `docs/phase4b3a-dispute-visibility.md`.
+
+There is no planned 4B-3B implementation. Accepting a dispute or submitting
+evidence is intentionally managed in Square because both are irreversible
+provider effects. LeagueVault's `ACCEPTED` presentation is "Dispute accepted";
+it does not claim that Square performed the acceptance.
 
 Phase 4B-2 is implemented as the provider-effect-free operational slice
 described in [Phase 4B-2 dispute operations](./phase4b2-dispute-operations.md).
 It adds bounded tenant reads, transactionally durable in-app notifications,
-and audited replay of one explicit retained pending dispute event ID. It adds
-no email, UI, provider call, timer, sweep, or polling path.
+and audited replay of one explicit retained pending dispute event ID. Phase
+4B-3A consumes only the independent dispute ledger and those sanitized
+notification rows; it never returns decrypted webhook evidence to the browser.

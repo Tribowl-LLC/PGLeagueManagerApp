@@ -26,11 +26,16 @@ import {
 import { processSquareWebhookEvent } from "../../server/storage/square-webhook-processing";
 import {
   DisputeReplayError,
+  listPaymentDisputeSummariesForPayments,
   listPaymentDisputeNotifications,
   listPaymentDisputes,
   listPendingPaymentDisputeEvents,
   replayPendingPaymentDisputeEvent,
 } from "../../server/storage/payment-dispute-operations";
+import {
+  deletePayment,
+  PaymentDisputeEvidenceExistsError,
+} from "../../server/storage/payments";
 import { normalizeSquareWebhookEvent } from "../../server/services/square-webhook-event";
 import { prepareRefundPaymentOperation } from "../../server/services/refund-payment-operation-preparation";
 import {
@@ -51,6 +56,7 @@ let organizationId: number;
 let locationId: number;
 let leagueId: number;
 let bowlerId: number;
+let secondBowlerId: number;
 let actorUserId: number;
 
 beforeAll(async () => {
@@ -89,6 +95,16 @@ beforeAll(async () => {
     leagueId,
   }).returning({ id: teams.id });
   await db.insert(bowlerLeagues).values({ bowlerId, leagueId, teamId: team.id });
+  const [secondBowler] = await db.insert(bowlers).values({
+    name: "Webhook Processing Combined Bowler",
+    organizationId,
+  }).returning({ id: bowlers.id });
+  secondBowlerId = secondBowler.id;
+  await db.insert(bowlerLeagues).values({
+    bowlerId: secondBowlerId,
+    leagueId,
+    teamId: team.id,
+  });
   const [actor] = await db.insert(users).values({
     email: `webhook-processing-${suffix}@example.test`,
     password: "deterministic-test-password-hash",
@@ -133,7 +149,7 @@ async function preparedRefund(amount = 2_000) {
   return { payment, operation: leased, providerPaymentId };
 }
 
-async function preparedInteractiveCharge() {
+async function preparedInteractiveCharge(options: { combined?: boolean } = {}) {
   const operation = await createOrGetGeneralInteractivePaymentOperation({
     organizationId,
     requestKey: `webhook-${randomUUID()}`,
@@ -164,17 +180,38 @@ async function preparedInteractiveCharge() {
     storeCard: false,
     sourceKind: "new_card",
     weekOf: "2034-03-05T00:00:00.000Z",
-    combinedChargeGroupId: null,
-    allocations: [{
-      allocationIndex: 0,
-      bowlerId,
-      amountMinor: 2_000,
-      lineageAmountMinor: 1_000,
-      prizeFundAmountMinor: 1_000,
-      weekOf: "2034-03-05T00:00:00.000Z",
-      notes: "Synthetic webhook charge fixture",
-      paidByUserId: null,
-    }],
+    combinedChargeGroupId: options.combined ? operation.id : null,
+    allocations: options.combined ? [
+      {
+        allocationIndex: 0,
+        bowlerId: secondBowlerId,
+        amountMinor: 1_000,
+        lineageAmountMinor: 500,
+        prizeFundAmountMinor: 500,
+        weekOf: "2034-03-05T00:00:00.000Z",
+        notes: "Synthetic combined webhook allocation A",
+        paidByUserId: null,
+      },
+      {
+        allocationIndex: 1,
+        bowlerId,
+        amountMinor: 1_000,
+        lineageAmountMinor: 500,
+        prizeFundAmountMinor: 500,
+        weekOf: "2034-03-05T00:00:00.000Z",
+        notes: "Synthetic combined webhook allocation B",
+        paidByUserId: null,
+      },
+    ] : [{
+        allocationIndex: 0,
+        bowlerId,
+        amountMinor: 2_000,
+        lineageAmountMinor: 1_000,
+        prizeFundAmountMinor: 1_000,
+        weekOf: "2034-03-05T00:00:00.000Z",
+        notes: "Synthetic webhook charge fixture",
+        paidByUserId: null,
+      }],
     lineItems: [],
   };
   await db.transaction((tx) => persistInteractivePaymentOperationSnapshot(operation, snapshot, tx));
@@ -295,8 +332,8 @@ async function ingest(body: string) {
   return { event, recorded };
 }
 
-async function completedInteractiveCharge() {
-  const operation = await preparedInteractiveCharge();
+async function completedInteractiveCharge(options: { combined?: boolean } = {}) {
+  const operation = await preparedInteractiveCharge(options);
   const providerPaymentId = `payment-${randomUUID()}`;
   const delivery = await ingest(paymentBody({
     eventId: `event-${randomUUID()}`,
@@ -792,6 +829,94 @@ describe("Square webhook payment/refund PostgreSQL reconciliation", () => {
     const [dispute] = await db.select().from(paymentDisputes)
       .where(eq(paymentDisputes.providerDisputeId, disputeId));
     expect(dispute).toMatchObject({ state: "EVIDENCE_REQUIRED", reason: "NO_KNOWLEDGE" });
+  });
+
+  it("batch-projects sanitized dispute history onto every linked allocation with tenant isolation", async () => {
+    const charge = await completedInteractiveCharge({ combined: true });
+    const disputeId = `dispute-${randomUUID()}`;
+    const created = await ingest(disputeBody({
+      eventId: `event-${randomUUID()}`,
+      disputeId,
+      paymentId: charge.providerPaymentId,
+      version: 1,
+      state: "EVIDENCE_REQUIRED",
+      updatedAt: "2034-03-07T00:01:00.000Z",
+    }));
+    await processSquareWebhookEvent({
+      organizationId,
+      eventId: created.recorded.event.id,
+      event: created.event,
+      processDisputes: true,
+    });
+    const updated = await ingest(disputeBody({
+      eventId: `event-${randomUUID()}`,
+      disputeId,
+      paymentId: charge.providerPaymentId,
+      eventType: "dispute.state.updated",
+      version: 2,
+      state: "PROCESSING",
+      updatedAt: "2034-03-07T00:02:00.000Z",
+    }));
+    await processSquareWebhookEvent({
+      organizationId,
+      eventId: updated.recorded.event.id,
+      event: updated.event,
+      processDisputes: true,
+    });
+    const allocations = await db.select().from(payments)
+      .where(eq(payments.paymentOperationId, charge.operation.id));
+    expect(allocations).toHaveLength(2);
+
+    const [relocated] = await db.insert(locations).values({
+      organizationId,
+      name: `Relocated Webhook Processing Location ${randomUUID()}`,
+      squareCredentials: {
+        appId: `${applicationId}-relocated`,
+        locationId: `${providerLocationId}-relocated`,
+      },
+    }).returning({ id: locations.id });
+    await db.update(leagues).set({ locationId: relocated.id }).where(eq(leagues.id, leagueId));
+
+    try {
+      const input = { paymentRows: allocations, organizationId };
+      const [left, right] = await Promise.all([
+        listPaymentDisputeSummariesForPayments(input),
+        listPaymentDisputeSummariesForPayments(input),
+      ]);
+      for (const allocation of allocations) {
+        expect(left.get(allocation.id)).toEqual(right.get(allocation.id));
+        expect(left.get(allocation.id)?.[0]).toMatchObject({
+          providerDisputeId: disputeId,
+          state: "PROCESSING",
+          providerVersion: 2,
+          sharedTransaction: true,
+        });
+        expect(left.get(allocation.id)?.[0]?.history.map((row) => ({
+          state: row.state,
+          version: row.providerVersion,
+        }))).toEqual([
+          { state: "PROCESSING", version: 2 },
+          { state: "EVIDENCE_REQUIRED", version: 1 },
+        ]);
+        expect(left.get(allocation.id)?.[0]).not.toHaveProperty("providerPaymentId");
+        expect(left.get(allocation.id)?.[0]).not.toHaveProperty("encryptedPayload");
+        expect(left.get(allocation.id)?.[0]).not.toHaveProperty("payloadHash");
+      }
+
+      const crossTenant = await listPaymentDisputeSummariesForPayments({
+        paymentRows: allocations,
+        organizationId: organizationId + 1_000_000,
+      });
+      expect(crossTenant.size).toBe(0);
+
+      await expect(deletePayment(allocations[0].id))
+        .rejects.toBeInstanceOf(PaymentDisputeEvidenceExistsError);
+      expect(await db.select({ id: payments.id }).from(payments)
+        .where(eq(payments.id, allocations[0].id))).toHaveLength(1);
+    } finally {
+      await db.update(leagues).set({ locationId }).where(eq(leagues.id, leagueId));
+      await db.delete(locations).where(eq(locations.id, relocated.id));
+    }
   });
 
   it("replays one retained pending dispute event with atomic notification and operator audit", async () => {

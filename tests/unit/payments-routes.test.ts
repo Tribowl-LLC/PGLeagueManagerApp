@@ -499,6 +499,19 @@ describe('DELETE /api/payments/:id', () => {
     expect((await res.json()).error.code).toBe('FORBIDDEN');
     expect(mockStorage.deletePayment).not.toHaveBeenCalled();
   });
+
+  it('returns a clear 409 when retained dispute evidence blocks deletion', async () => {
+    const { PaymentDisputeEvidenceExistsError } = await import('../../server/storage/payments');
+    mockStorage.getPaymentById.mockResolvedValue({ id: 1, type: 'cash' });
+    mockStorage.deletePayment.mockRejectedValue(new PaymentDisputeEvidenceExistsError());
+
+    const res = await del('/api/payments/1');
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toMatchObject({
+      code: 'PAYMENT_DISPUTE_EVIDENCE_EXISTS',
+      message: 'Payment cannot be deleted while retained dispute evidence exists',
+    });
+  });
 });
 
 describe('POST /api/payments/:id/refund', () => {
