@@ -127,6 +127,13 @@
       "when": 1785808671598,
       "tag": "0017_phase4b2_dispute_operations",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1785849082385,
+      "tag": "0018_canonical_league_occurrence_foundation",
+      "breakpoints": true
     }
   ]
 }

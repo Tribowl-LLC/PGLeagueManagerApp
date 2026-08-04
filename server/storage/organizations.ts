@@ -11,6 +11,17 @@ import {
   autopaySetupRequests,
   bowlerPaymentLinks,
   bowlers,
+  leagueOccurrenceBillingTermRevisions,
+  leagueOccurrenceGenerationDiscrepancies,
+  leagueOccurrenceGenerationRuns,
+  leagueOccurrenceRelationshipRevisions,
+  leagueOccurrenceRelationships,
+  leagueOccurrenceRevisions,
+  leagueOccurrenceBillingTerms,
+  leagueScheduleExceptionRevisions,
+  leagueScheduleExceptions,
+  leagueScheduleCommands,
+  leagueOccurrences,
   deletionRequests,
   leagues,
   locations,
@@ -257,6 +268,22 @@ export async function deleteOrganization(id: number): Promise<void> {
     // the tenant's encrypted inbox evidence inside this same transaction before
     // deleting the locked locations and organization.
     await tx.delete(webhookEvents).where(eq(webhookEvents.organizationId, id));
+
+    // Phase A1 canonical occurrence data is durable and uses restrictive
+    // parent FKs. Full organization deletion is the explicit retention-policy
+    // exception, so remove child audit rows before current rows, then remove
+    // runs and immutable commands before tenant actors and parents.
+    await tx.delete(leagueOccurrenceGenerationDiscrepancies).where(eq(leagueOccurrenceGenerationDiscrepancies.organizationId, id));
+    await tx.delete(leagueOccurrenceRevisions).where(eq(leagueOccurrenceRevisions.organizationId, id));
+    await tx.delete(leagueScheduleExceptionRevisions).where(eq(leagueScheduleExceptionRevisions.organizationId, id));
+    await tx.delete(leagueOccurrenceRelationshipRevisions).where(eq(leagueOccurrenceRelationshipRevisions.organizationId, id));
+    await tx.delete(leagueOccurrenceBillingTermRevisions).where(eq(leagueOccurrenceBillingTermRevisions.organizationId, id));
+    await tx.delete(leagueOccurrenceRelationships).where(eq(leagueOccurrenceRelationships.organizationId, id));
+    await tx.delete(leagueOccurrenceBillingTerms).where(eq(leagueOccurrenceBillingTerms.organizationId, id));
+    await tx.delete(leagueScheduleExceptions).where(eq(leagueScheduleExceptions.organizationId, id));
+    await tx.delete(leagueOccurrences).where(eq(leagueOccurrences.organizationId, id));
+    await tx.delete(leagueOccurrenceGenerationRuns).where(eq(leagueOccurrenceGenerationRuns.organizationId, id));
+    await tx.delete(leagueScheduleCommands).where(eq(leagueScheduleCommands.organizationId, id));
 
     await tx.delete(leagues).where(eq(leagues.organizationId, id));
     await tx.delete(bowlers).where(eq(bowlers.organizationId, id));
