@@ -7,6 +7,8 @@ import {
   leagues,
   locations,
   organizations,
+  paymentDisputeNotifications,
+  paymentDisputeReplayAudits,
   paymentDisputes,
   paymentOperations,
   payments,
@@ -16,11 +18,19 @@ import {
 } from "@shared/schema";
 import { getTestDb } from "../setup/test-db";
 import { deleteOrganization } from "../../server/storage/organizations";
+import { deleteUser } from "../../server/storage/users";
 import {
   claimWebhookEvent,
   ingestSquareWebhookEvent,
 } from "../../server/storage/webhook-events";
 import { processSquareWebhookEvent } from "../../server/storage/square-webhook-processing";
+import {
+  DisputeReplayError,
+  listPaymentDisputeNotifications,
+  listPaymentDisputes,
+  listPendingPaymentDisputeEvents,
+  replayPendingPaymentDisputeEvent,
+} from "../../server/storage/payment-dispute-operations";
 import { normalizeSquareWebhookEvent } from "../../server/services/square-webhook-event";
 import { prepareRefundPaymentOperation } from "../../server/services/refund-payment-operation-preparation";
 import {
@@ -597,6 +607,17 @@ describe("Square webhook payment/refund PostgreSQL reconciliation", () => {
       firstWebhookEventId: delivery.recorded.event.id,
       lastWebhookEventId: delivery.recorded.event.id,
     });
+    const notices = await db.select().from(paymentDisputeNotifications)
+      .where(eq(paymentDisputeNotifications.paymentDisputeId, disputeRows[0].id));
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatchObject({
+      organizationId,
+      locationId,
+      webhookEventId: delivery.recorded.event.id,
+      kind: "DISPUTE_CREATED",
+      disputeState: "EVIDENCE_REQUIRED",
+      providerVersion: 1,
+    });
     const [payment] = await db.select().from(payments).where(eq(payments.id, charge.payment.id));
     expect(payment).toMatchObject({ status: "paid", squareRefundId: null, refundedAt: null });
   });
@@ -685,6 +706,53 @@ describe("Square webhook payment/refund PostgreSQL reconciliation", () => {
     });
   });
 
+  it("emits exactly one durable notification for each accepted dispute version", async () => {
+    const charge = await completedInteractiveCharge();
+    const disputeId = `dispute-${randomUUID()}`;
+    const created = await ingest(disputeBody({
+      eventId: `event-${randomUUID()}`,
+      disputeId,
+      paymentId: charge.providerPaymentId,
+      version: 1,
+      state: "EVIDENCE_REQUIRED",
+      updatedAt: "2034-03-06T00:01:00.000Z",
+    }));
+    await processSquareWebhookEvent({
+      organizationId,
+      eventId: created.recorded.event.id,
+      event: created.event,
+      processDisputes: true,
+    });
+    const updated = await ingest(disputeBody({
+      eventId: `event-${randomUUID()}`,
+      disputeId,
+      paymentId: charge.providerPaymentId,
+      eventType: "dispute.state.updated",
+      version: 2,
+      state: "PROCESSING",
+      updatedAt: "2034-03-06T00:02:00.000Z",
+    }));
+    await processSquareWebhookEvent({
+      organizationId,
+      eventId: updated.recorded.event.id,
+      event: updated.event,
+      processDisputes: true,
+    });
+
+    const [dispute] = await db.select().from(paymentDisputes)
+      .where(eq(paymentDisputes.providerDisputeId, disputeId));
+    const notices = await db.select().from(paymentDisputeNotifications)
+      .where(eq(paymentDisputeNotifications.paymentDisputeId, dispute.id));
+    expect(notices.map((row) => ({
+      kind: row.kind,
+      state: row.disputeState,
+      version: row.providerVersion,
+    })).sort((left, right) => left.version - right.version)).toEqual([
+      { kind: "DISPUTE_CREATED", state: "EVIDENCE_REQUIRED", version: 1 },
+      { kind: "DISPUTE_STATE_UPDATED", state: "PROCESSING", version: 2 },
+    ]);
+  });
+
   it("keeps a pre-existing refund state independent from a later dispute", async () => {
     const charge = await completedInteractiveCharge();
     const refundedAt = "2034-03-06T12:00:00.000Z";
@@ -715,6 +783,120 @@ describe("Square webhook payment/refund PostgreSQL reconciliation", () => {
     const [dispute] = await db.select().from(paymentDisputes)
       .where(eq(paymentDisputes.providerDisputeId, disputeId));
     expect(dispute).toMatchObject({ state: "EVIDENCE_REQUIRED", reason: "NO_KNOWLEDGE" });
+  });
+
+  it("replays one retained pending dispute event with atomic notification and operator audit", async () => {
+    const charge = await completedInteractiveCharge();
+    const disputeId = `dispute-${randomUUID()}`;
+    const delivery = await ingest(disputeBody({
+      eventId: `event-${randomUUID()}`,
+      disputeId,
+      paymentId: charge.providerPaymentId,
+    }));
+
+    const pending = await listPendingPaymentDisputeEvents({ organizationId, limit: 100 });
+    const pendingItem = pending.items.find((row) => row.id === delivery.recorded.event.id);
+    expect(pendingItem).toBeDefined();
+    expect(pendingItem).not.toHaveProperty("encryptedPayload");
+    expect(pendingItem).not.toHaveProperty("payloadHash");
+    expect(pendingItem).not.toHaveProperty("providerMerchantId");
+
+    await expect(replayPendingPaymentDisputeEvent({
+      organizationId: organizationId + 1_000_000,
+      eventId: delivery.recorded.event.id,
+      actor: { userId: actorUserId, role: "org_admin" },
+    })).rejects.toMatchObject({ code: "WEBHOOK_EVENT_NOT_FOUND" });
+    expect(await db.select().from(paymentDisputeReplayAudits)
+      .where(eq(paymentDisputeReplayAudits.webhookEventId, delivery.recorded.event.id))).toHaveLength(0);
+
+    const [left, right] = await Promise.all([
+      replayPendingPaymentDisputeEvent({
+        organizationId,
+        eventId: delivery.recorded.event.id,
+        actor: { userId: actorUserId, role: "org_admin" },
+      }),
+      replayPendingPaymentDisputeEvent({
+        organizationId,
+        eventId: delivery.recorded.event.id,
+        actor: { userId: actorUserId, role: "org_admin" },
+      }),
+    ]);
+    expect([left.businessStateChanged, right.businessStateChanged].sort()).toEqual([false, true]);
+    expect(left.acknowledged).toBe(true);
+    expect(right.acknowledged).toBe(true);
+
+    const [dispute] = await db.select().from(paymentDisputes)
+      .where(eq(paymentDisputes.providerDisputeId, disputeId));
+    expect(dispute).toBeDefined();
+    expect(await db.select().from(paymentDisputeNotifications)
+      .where(eq(paymentDisputeNotifications.paymentDisputeId, dispute.id))).toHaveLength(1);
+    const audits = await db.select().from(paymentDisputeReplayAudits)
+      .where(eq(paymentDisputeReplayAudits.webhookEventId, delivery.recorded.event.id));
+    expect(audits).toHaveLength(2);
+    expect(audits.map((row) => row.businessStateChanged).sort()).toEqual([false, true]);
+    expect(audits.every((row) => row.actorUserId === actorUserId && row.organizationId === organizationId)).toBe(true);
+    await expect(deleteUser(actorUserId)).rejects.toMatchObject({
+      name: "UserHasAuditTrailError",
+    });
+
+    const visibleDisputes = await listPaymentDisputes({ organizationId, limit: 100 });
+    expect(visibleDisputes.items.some((row) => row.id === dispute.id)).toBe(true);
+    const visibleNotices = await listPaymentDisputeNotifications({ organizationId, limit: 100 });
+    expect(visibleNotices.items.some((row) => row.paymentDisputeId === dispute.id)).toBe(true);
+    expect((await listPaymentDisputes({ organizationId: organizationId + 1_000_000, limit: 100 })).items)
+      .toHaveLength(0);
+    expect((await listPaymentDisputeNotifications({
+      organizationId: organizationId + 1_000_000,
+      limit: 100,
+    })).items).toHaveLength(0);
+  });
+
+  it("rolls back dispute, notification, inbox completion, and audit together", async () => {
+    const charge = await completedInteractiveCharge();
+    const disputeId = `dispute-${randomUUID()}`;
+    const delivery = await ingest(disputeBody({
+      eventId: `event-${randomUUID()}`,
+      disputeId,
+      paymentId: charge.providerPaymentId,
+    }));
+
+    await expect(replayPendingPaymentDisputeEvent({
+      organizationId,
+      eventId: delivery.recorded.event.id,
+      actor: { userId: actorUserId + 1_000_000, role: "org_admin" },
+    })).rejects.toBeDefined();
+
+    expect(await db.select().from(paymentDisputes)
+      .where(eq(paymentDisputes.providerDisputeId, disputeId))).toHaveLength(0);
+    expect(await db.select().from(paymentDisputeNotifications)
+      .where(eq(paymentDisputeNotifications.webhookEventId, delivery.recorded.event.id))).toHaveLength(0);
+    expect(await db.select().from(paymentDisputeReplayAudits)
+      .where(eq(paymentDisputeReplayAudits.webhookEventId, delivery.recorded.event.id))).toHaveLength(0);
+    const [inbox] = await db.select().from(webhookEvents)
+      .where(eq(webhookEvents.id, delivery.recorded.event.id));
+    expect(inbox).toMatchObject({ status: "pending", attemptCount: 0, completedAt: null });
+  });
+
+  it("fails closed when retained encrypted evidence does not match its immutable hash", async () => {
+    const charge = await completedInteractiveCharge();
+    const delivery = await ingest(disputeBody({
+      eventId: `event-${randomUUID()}`,
+      disputeId: `dispute-${randomUUID()}`,
+      paymentId: charge.providerPaymentId,
+    }));
+    await db.update(webhookEvents).set({ payloadHash: "0".repeat(64) })
+      .where(eq(webhookEvents.id, delivery.recorded.event.id));
+
+    await expect(replayPendingPaymentDisputeEvent({
+      organizationId,
+      eventId: delivery.recorded.event.id,
+      actor: { userId: actorUserId, role: "org_admin" },
+    })).rejects.toBeInstanceOf(DisputeReplayError);
+    const [stored] = await db.select().from(webhookEvents)
+      .where(eq(webhookEvents.id, delivery.recorded.event.id));
+    expect(stored).toMatchObject({ status: "pending", attemptCount: 0, completedAt: null });
+    expect(await db.select().from(paymentDisputeReplayAudits)
+      .where(eq(paymentDisputeReplayAudits.webhookEventId, delivery.recorded.event.id))).toHaveLength(0);
   });
 
   it("terminally ignores a valid dispute unrelated to a LeagueVault charge", async () => {
@@ -751,6 +933,12 @@ describe("Square webhook payment/refund PostgreSQL reconciliation", () => {
     expect(existing.length).toBeGreaterThan(0);
 
     const deletedOrganizationId = organizationId;
+    expect((await db.select().from(paymentDisputeNotifications)
+      .where(eq(paymentDisputeNotifications.organizationId, deletedOrganizationId))).length)
+      .toBeGreaterThan(0);
+    expect((await db.select().from(paymentDisputeReplayAudits)
+      .where(eq(paymentDisputeReplayAudits.organizationId, deletedOrganizationId))).length)
+      .toBeGreaterThan(0);
     await deleteOrganization(deletedOrganizationId);
     organizationId = 0;
 
@@ -758,6 +946,10 @@ describe("Square webhook payment/refund PostgreSQL reconciliation", () => {
       .where(eq(paymentDisputes.organizationId, deletedOrganizationId))).toHaveLength(0);
     expect(await db.select().from(webhookEvents)
       .where(eq(webhookEvents.organizationId, deletedOrganizationId))).toHaveLength(0);
+    expect(await db.select().from(paymentDisputeNotifications)
+      .where(eq(paymentDisputeNotifications.organizationId, deletedOrganizationId))).toHaveLength(0);
+    expect(await db.select().from(paymentDisputeReplayAudits)
+      .where(eq(paymentDisputeReplayAudits.organizationId, deletedOrganizationId))).toHaveLength(0);
     expect(await db.select().from(organizations)
       .where(eq(organizations.id, deletedOrganizationId))).toHaveLength(0);
   });

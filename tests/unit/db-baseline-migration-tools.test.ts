@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(17);
+    expect(migrations).toHaveLength(18);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -258,6 +258,16 @@ describe('normalized migration baseline tools', () => {
     expect(migrations[16]?.sql).toContain('CREATE TABLE "payment_disputes"');
     expect(migrations[16]?.sql).toContain('payment_disputes_provider_dispute_unique');
     expect(migrations[16]?.sql).not.toMatch(/(?:^|\n)\s*(?:DROP|UPDATE|DELETE|INSERT)\b/);
+    expect(migrations[17]).toMatchObject({
+      idx: 17,
+      tag: '0017_phase4b2_dispute_operations',
+      createdAt: 1785808671598,
+      hash: 'f95f4cefe1a14b2752b7896f753f85f5090f39883cec053a582ce114f0d52328',
+    });
+    expect(migrations[17]?.sql).toContain('CREATE TABLE "payment_dispute_notifications"');
+    expect(migrations[17]?.sql).toContain('CREATE TABLE "payment_dispute_replay_audits"');
+    expect(migrations[17]?.sql).toContain('webhook_events_tenant_status_type_received_idx');
+    expect(migrations[17]?.sql).not.toMatch(/(?:^|\n)\s*(?:DROP|UPDATE|DELETE|INSERT)\b/);
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 
