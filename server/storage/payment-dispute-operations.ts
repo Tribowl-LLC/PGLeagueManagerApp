@@ -1,13 +1,16 @@
 import { createHash } from "node:crypto";
-import { and, count, desc, eq, inArray, isNull, lt, or, type SQL } from "drizzle-orm";
+import { and, desc, eq, inArray, lt, or, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import {
   PAYMENT_DISPUTE_STATES,
-  paymentDisputeAcknowledgements,
+  leagues,
   paymentDisputeNotifications,
   paymentDisputeReplayAudits,
   paymentDisputes,
+  payments,
   webhookEvents,
+  type Payment,
+  type PaymentRowDisputeSummary,
   type PaymentDisputeState,
 } from "@shared/schema";
 import { db } from "../db.js";
@@ -38,10 +41,6 @@ export interface TenantPageInput {
   cursor?: string;
 }
 
-export interface DisputeNotificationPageInput extends TenantPageInput {
-  paymentDisputeId?: string;
-}
-
 export class InvalidDisputeCursorError extends Error {
   constructor() {
     super("Invalid dispute pagination cursor");
@@ -58,15 +57,6 @@ export class DisputeReplayError extends Error {
   ) {
     super(code);
     this.name = "DisputeReplayError";
-  }
-}
-
-export class DisputeAcknowledgementError extends Error {
-  constructor(
-    readonly code: "PAYMENT_DISPUTE_NOT_FOUND" | "DISPUTE_VERSION_CHANGED",
-  ) {
-    super(code);
-    this.name = "DisputeAcknowledgementError";
   }
 }
 
@@ -137,26 +127,16 @@ export async function listPaymentDisputes(input: DisputePageInput) {
     providerReportedAt: paymentDisputes.providerReportedAt,
     providerUpdatedAt: paymentDisputes.providerUpdatedAt,
     providerVersion: paymentDisputes.providerVersion,
-    acknowledgementId: paymentDisputeAcknowledgements.id,
-    acknowledgedProviderVersion: paymentDisputeAcknowledgements.providerVersion,
-    acknowledgedByUserId: paymentDisputeAcknowledgements.actorUserId,
-    acknowledgedByRole: paymentDisputeAcknowledgements.actorRole,
-    acknowledgedAt: paymentDisputeAcknowledgements.acknowledgedAt,
     createdAt: paymentDisputes.createdAt,
     updatedAt: paymentDisputes.updatedAt,
   }).from(paymentDisputes)
-    .leftJoin(paymentDisputeAcknowledgements, and(
-      eq(paymentDisputeAcknowledgements.organizationId, paymentDisputes.organizationId),
-      eq(paymentDisputeAcknowledgements.paymentDisputeId, paymentDisputes.id),
-      eq(paymentDisputeAcknowledgements.providerVersion, paymentDisputes.providerVersion),
-    ))
     .where(and(...filters))
     .orderBy(desc(paymentDisputes.updatedAt), desc(paymentDisputes.id))
     .limit(input.limit + 1);
   return page(rows, input.limit, (row) => row.updatedAt);
 }
 
-export async function listPaymentDisputeNotifications(input: DisputeNotificationPageInput) {
+export async function listPaymentDisputeNotifications(input: TenantPageInput) {
   const cursor = decodeCursor(input.cursor);
   const rows = await db.select({
     id: paymentDisputeNotifications.id,
@@ -166,119 +146,111 @@ export async function listPaymentDisputeNotifications(input: DisputeNotification
     kind: paymentDisputeNotifications.kind,
     disputeState: paymentDisputeNotifications.disputeState,
     providerVersion: paymentDisputeNotifications.providerVersion,
-    acknowledgementId: paymentDisputeAcknowledgements.id,
-    acknowledgedByUserId: paymentDisputeAcknowledgements.actorUserId,
-    acknowledgedByRole: paymentDisputeAcknowledgements.actorRole,
-    acknowledgedAt: paymentDisputeAcknowledgements.acknowledgedAt,
     createdAt: paymentDisputeNotifications.createdAt,
-  }).from(paymentDisputeNotifications)
-    .leftJoin(paymentDisputeAcknowledgements, and(
-      eq(paymentDisputeAcknowledgements.organizationId, paymentDisputeNotifications.organizationId),
-      eq(paymentDisputeAcknowledgements.paymentDisputeId, paymentDisputeNotifications.paymentDisputeId),
-      eq(paymentDisputeAcknowledgements.providerVersion, paymentDisputeNotifications.providerVersion),
-    ))
-    .where(and(
-      eq(paymentDisputeNotifications.organizationId, input.organizationId),
-      input.paymentDisputeId
-        ? eq(paymentDisputeNotifications.paymentDisputeId, input.paymentDisputeId)
-        : undefined,
-      olderThan(paymentDisputeNotifications.createdAt, paymentDisputeNotifications.id, cursor),
-    )).orderBy(desc(paymentDisputeNotifications.createdAt), desc(paymentDisputeNotifications.id))
+  }).from(paymentDisputeNotifications).where(and(
+    eq(paymentDisputeNotifications.organizationId, input.organizationId),
+    olderThan(paymentDisputeNotifications.createdAt, paymentDisputeNotifications.id, cursor),
+  )).orderBy(desc(paymentDisputeNotifications.createdAt), desc(paymentDisputeNotifications.id))
     .limit(input.limit + 1);
   return page(rows, input.limit, (row) => row.createdAt);
 }
 
-/** Counts current dispute versions lacking a tenant-wide acknowledgement. */
-export async function countUnacknowledgedPaymentDisputes(organizationId: number): Promise<number> {
-  const [row] = await db.select({ value: count() }).from(paymentDisputes)
-    .leftJoin(paymentDisputeAcknowledgements, and(
-      eq(paymentDisputeAcknowledgements.organizationId, paymentDisputes.organizationId),
-      eq(paymentDisputeAcknowledgements.paymentDisputeId, paymentDisputes.id),
-      eq(paymentDisputeAcknowledgements.providerVersion, paymentDisputes.providerVersion),
+/**
+ * Batch-load current dispute state and immutable sanitized history for the
+ * payment allocations already authorized by the Payments route. The joins
+ * require payment, dispute, organization, and location identities to agree;
+ * stale or cross-tenant operation links therefore fail closed.
+ */
+export async function listPaymentDisputeSummariesForPayments(input: {
+  paymentRows: Array<Pick<Payment, "id" | "paymentOperationId" | "combinedChargeGroupId">>;
+  organizationId: number | null;
+}): Promise<Map<number, PaymentRowDisputeSummary[]>> {
+  const eligibleRows = input.paymentRows.filter((row) => row.paymentOperationId !== null);
+  if (eligibleRows.length === 0) return new Map();
+
+  const disputeRows = await db.select({
+    paymentId: payments.id,
+    combinedChargeGroupId: payments.combinedChargeGroupId,
+    organizationId: paymentDisputes.organizationId,
+    id: paymentDisputes.id,
+    providerDisputeId: paymentDisputes.providerDisputeId,
+    amountMinor: paymentDisputes.amountMinor,
+    currency: paymentDisputes.currency,
+    reason: paymentDisputes.reason,
+    state: paymentDisputes.state,
+    responseDueAt: paymentDisputes.responseDueAt,
+    providerUpdatedAt: paymentDisputes.providerUpdatedAt,
+    providerVersion: paymentDisputes.providerVersion,
+  }).from(payments)
+    .innerJoin(leagues, eq(leagues.id, payments.leagueId))
+    .innerJoin(paymentDisputes, and(
+      eq(paymentDisputes.paymentOperationId, payments.paymentOperationId),
+      eq(paymentDisputes.organizationId, leagues.organizationId),
+      eq(paymentDisputes.locationId, leagues.locationId),
     ))
     .where(and(
-      eq(paymentDisputes.organizationId, organizationId),
-      isNull(paymentDisputeAcknowledgements.id),
+      inArray(payments.id, eligibleRows.map((row) => row.id)),
+      input.organizationId === null
+        ? undefined
+        : eq(leagues.organizationId, input.organizationId),
     ));
-  return row?.value ?? 0;
-}
 
-/**
- * Acknowledges only the tenant-scoped current provider version. Locking the
- * dispute row serializes this action with webhook reconciliation, while the
- * unique dispute/version constraint makes client retries idempotent.
- */
-export async function acknowledgePaymentDispute(input: {
-  organizationId: number;
-  paymentDisputeId: string;
-  providerVersion: number;
-  actor: { userId: number; role: "org_admin" | "system_admin" };
-  now?: Date;
-}) {
-  return db.transaction(async (tx) => {
-    const [dispute] = await tx.select({
-      id: paymentDisputes.id,
-      providerVersion: paymentDisputes.providerVersion,
-    }).from(paymentDisputes).where(and(
-      eq(paymentDisputes.id, input.paymentDisputeId),
-      eq(paymentDisputes.organizationId, input.organizationId),
-    )).limit(1).for("update");
-    if (!dispute) throw new DisputeAcknowledgementError("PAYMENT_DISPUTE_NOT_FOUND");
-    if (dispute.providerVersion !== input.providerVersion) {
-      // Preserve HTTP idempotency across a later webhook update: a retry of
-      // an acknowledgement that already committed returns that immutable old
-      // version, but a stale request that never committed cannot create one.
-      const [existing] = await tx.select().from(paymentDisputeAcknowledgements)
-        .where(and(
-          eq(paymentDisputeAcknowledgements.organizationId, input.organizationId),
-          eq(paymentDisputeAcknowledgements.paymentDisputeId, dispute.id),
-          eq(paymentDisputeAcknowledgements.providerVersion, input.providerVersion),
-        )).limit(1);
-      if (existing) {
-        return {
-          id: existing.id,
-          paymentDisputeId: existing.paymentDisputeId,
-          providerVersion: existing.providerVersion,
-          acknowledgedByUserId: existing.actorUserId,
-          acknowledgedByRole: existing.actorRole,
-          acknowledgedAt: existing.acknowledgedAt,
-          created: false,
-        };
-      }
-      throw new DisputeAcknowledgementError("DISPUTE_VERSION_CHANGED");
-    }
+  if (disputeRows.length === 0) return new Map();
+  const disputeOrganization = new Map(
+    disputeRows.map((row) => [row.id, row.organizationId] as const),
+  );
+  const historyRows = await db.select({
+    organizationId: paymentDisputeNotifications.organizationId,
+    paymentDisputeId: paymentDisputeNotifications.paymentDisputeId,
+    kind: paymentDisputeNotifications.kind,
+    state: paymentDisputeNotifications.disputeState,
+    providerVersion: paymentDisputeNotifications.providerVersion,
+    recordedAt: paymentDisputeNotifications.createdAt,
+  }).from(paymentDisputeNotifications).where(and(
+    inArray(
+      paymentDisputeNotifications.paymentDisputeId,
+      Array.from(disputeOrganization.keys()),
+    ),
+    input.organizationId === null
+      ? undefined
+      : eq(paymentDisputeNotifications.organizationId, input.organizationId),
+  )).orderBy(
+    desc(paymentDisputeNotifications.providerVersion),
+    desc(paymentDisputeNotifications.createdAt),
+  );
 
-    const [created] = await tx.insert(paymentDisputeAcknowledgements).values({
-      organizationId: input.organizationId,
-      paymentDisputeId: dispute.id,
-      providerVersion: dispute.providerVersion,
-      actorUserId: input.actor.userId,
-      actorRole: input.actor.role,
-      acknowledgedAt: (input.now ?? new Date()).toISOString(),
-    }).onConflictDoNothing({
-      target: [
-        paymentDisputeAcknowledgements.paymentDisputeId,
-        paymentDisputeAcknowledgements.providerVersion,
-      ],
-    }).returning();
+  const historyByDispute = new Map<string, PaymentRowDisputeSummary["history"]>();
+  for (const row of historyRows) {
+    if (disputeOrganization.get(row.paymentDisputeId) !== row.organizationId) continue;
+    const history = historyByDispute.get(row.paymentDisputeId) ?? [];
+    history.push({
+      kind: row.kind as PaymentRowDisputeSummary["history"][number]["kind"],
+      state: row.state as PaymentRowDisputeSummary["history"][number]["state"],
+      providerVersion: row.providerVersion,
+      recordedAt: row.recordedAt,
+    });
+    historyByDispute.set(row.paymentDisputeId, history);
+  }
 
-    const acknowledgement = created ?? (await tx.select().from(paymentDisputeAcknowledgements)
-      .where(and(
-        eq(paymentDisputeAcknowledgements.organizationId, input.organizationId),
-        eq(paymentDisputeAcknowledgements.paymentDisputeId, dispute.id),
-        eq(paymentDisputeAcknowledgements.providerVersion, dispute.providerVersion),
-      )).limit(1))[0];
-    if (!acknowledgement) throw new Error("dispute acknowledgement conflict did not converge");
-    return {
-      id: acknowledgement.id,
-      paymentDisputeId: acknowledgement.paymentDisputeId,
-      providerVersion: acknowledgement.providerVersion,
-      acknowledgedByUserId: acknowledgement.actorUserId,
-      acknowledgedByRole: acknowledgement.actorRole,
-      acknowledgedAt: acknowledgement.acknowledgedAt,
-      created: Boolean(created),
-    };
-  });
+  const result = new Map<number, PaymentRowDisputeSummary[]>();
+  for (const row of disputeRows) {
+    const summaries = result.get(row.paymentId) ?? [];
+    summaries.push({
+      id: row.id,
+      providerDisputeId: row.providerDisputeId,
+      amountMinor: row.amountMinor,
+      currency: row.currency,
+      reason: row.reason as PaymentRowDisputeSummary["reason"],
+      state: row.state as PaymentRowDisputeSummary["state"],
+      responseDueAt: row.responseDueAt,
+      providerUpdatedAt: row.providerUpdatedAt,
+      providerVersion: row.providerVersion,
+      sharedTransaction: row.combinedChargeGroupId !== null,
+      history: historyByDispute.get(row.id) ?? [],
+    });
+    result.set(row.paymentId, summaries);
+  }
+  return result;
 }
 
 export async function listPendingPaymentDisputeEvents(input: TenantPageInput) {

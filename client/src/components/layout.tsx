@@ -1,7 +1,7 @@
 import { Link, useLocation } from "wouter";
 import { cn } from "@/lib/utils";
 import { logger } from "@/lib/logger";
-import { Home, Users, CreditCard, ChevronLeft, ChevronRight, Trophy, ClipboardPlus, LayoutDashboard, Loader2, Building2, MapPin, Mail, Plug, Menu, ChevronDown, Settings, Trash2, Apple, ShieldAlert, ShieldCheck, MessageSquare, MailWarning, UserPlus, CircleAlert } from "lucide-react";
+import { Home, Users, CreditCard, ChevronLeft, ChevronRight, Trophy, ClipboardPlus, LayoutDashboard, Loader2, Building2, MapPin, Mail, Plug, Menu, ChevronDown, Settings, Trash2, Apple, ShieldAlert, ShieldCheck, MessageSquare, MailWarning, UserPlus } from "lucide-react";
 import { useState, useEffect, Suspense, useCallback, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { useQuery } from "@tanstack/react-query";
@@ -108,13 +108,6 @@ const navItems: NavItem[] = [
     orgAdminOnly: true
   },
   {
-    icon: CircleAlert,
-    label: "Disputes",
-    href: "/payment-disputes",
-    orgAdminOnly: true,
-    badgeQueryKey: ["/api/payment-disputes/unacknowledged-count"] as const,
-  },
-  {
     icon: ClipboardPlus,
     label: "Reports",
     href: "/reports"
@@ -200,7 +193,6 @@ const pageLabels: Record<string, string> = {
   "/leagues": "Leagues",
   "/bowlers": "Bowlers",
   "/payments": "Payments",
-  "/payment-disputes": "Payment Disputes",
   "/reports": "Reports",
   "/integrations": "Integrations",
   "/messaging": "Messaging",
@@ -693,25 +685,14 @@ export function Layout({ children }: { children: React.ReactNode }) {
     refetchOnWindowFocus: true,
     staleTime: 30_000,
   });
-  // Tenant-wide dispute acknowledgement is an operator-facing queue. Refresh
-  // only on mount/focus; there is deliberately no interval or background scan.
-  const { data: unacknowledgedDisputesResponse } = useQuery<ApiResponse<{ count: number }>>({
-    queryKey: ["/api/payment-disputes/unacknowledged-count"],
-    enabled: isOrgAdmin && !!userOrgId,
-    refetchOnWindowFocus: true,
-    staleTime: 30_000,
-  });
   const badgeCounts = useMemo<Record<string, number>>(() => ({
     [['/api/system-admin/deletion-requests/pending-count'].join('|')]:
       pendingDeletionResponse?.data?.count ?? 0,
     [['/api/payments-provider/apple-pay/jobs/pending-count'].join('|')]:
       pendingApplePayResponse?.data?.count ?? 0,
-    [["/api/payment-disputes/unacknowledged-count"].join('|')]:
-      unacknowledgedDisputesResponse?.data?.count ?? 0,
   }), [
     pendingDeletionResponse?.data?.count,
     pendingApplePayResponse?.data?.count,
-    unacknowledgedDisputesResponse?.data?.count,
   ]);
 
   const toggleSidebar = useCallback(() => {

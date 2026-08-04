@@ -2,9 +2,6 @@ import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import { adminWriteLimiter } from "../middleware/rate-limit.js";
 import {
-  acknowledgePaymentDispute,
-  countUnacknowledgedPaymentDisputes,
-  DisputeAcknowledgementError,
   DisputeReplayError,
   InvalidDisputeCursorError,
   isPaymentDisputeState,
@@ -24,10 +21,8 @@ const listQuerySchema = z.object({
   organizationId: z.coerce.number().int().positive().optional(),
   locationId: z.coerce.number().int().positive().optional(),
   state: z.string().max(64).optional(),
-  paymentDisputeId: z.string().uuid().optional(),
 });
 const eventIdSchema = z.string().uuid();
-const disputeIdSchema = z.string().uuid();
 
 function resolveOrganizationId(
   req: Request,
@@ -89,16 +84,6 @@ router.get("/", async (req, res) => {
   }
 });
 
-router.get("/unacknowledged-count", async (req, res) => {
-  const input = parseListRequest(req, res);
-  if (!input) return;
-  try {
-    sendSuccess(res, { count: await countUnacknowledgedPaymentDisputes(input.organizationId) });
-  } catch {
-    sendError(res, "Unable to load dispute acknowledgement count", 500, "SERVER_ERROR");
-  }
-});
-
 router.get("/notifications", async (req, res) => {
   const input = parseListRequest(req, res);
   if (!input) return;
@@ -157,42 +142,6 @@ router.post("/pending-events/:eventId/replay", adminWriteLimiter, async (req, re
       return sendError(res, "Webhook event is not replayable", status, error.code);
     }
     sendError(res, "Unable to replay webhook event", 500, "SERVER_ERROR");
-  }
-});
-
-router.post("/:disputeId/acknowledgements", adminWriteLimiter, async (req, res) => {
-  const parsedBody = z.object({
-    organizationId: z.coerce.number().int().positive().optional(),
-    providerVersion: z.coerce.number().int().positive(),
-  }).safeParse(req.body ?? {});
-  const disputeId = disputeIdSchema.safeParse(singleRouteParam(req.params.disputeId));
-  if (!parsedBody.success || !disputeId.success) {
-    return sendError(res, "Invalid dispute acknowledgement", 400, "INVALID_DISPUTE_ACKNOWLEDGEMENT");
-  }
-  const organizationId = resolveOrganizationId(req, parsedBody.data.organizationId);
-  if (!organizationId || !req.user || (req.user.role !== "org_admin" && req.user.role !== "system_admin")) {
-    return sendError(res, "Organization context is required", 400, "ORGANIZATION_REQUIRED");
-  }
-  try {
-    sendSuccess(res, await acknowledgePaymentDispute({
-      organizationId,
-      paymentDisputeId: disputeId.data,
-      providerVersion: parsedBody.data.providerVersion,
-      actor: { userId: req.user.id, role: req.user.role },
-    }));
-  } catch (error) {
-    if (error instanceof DisputeAcknowledgementError) {
-      const status = error.code === "PAYMENT_DISPUTE_NOT_FOUND" ? 404 : 409;
-      return sendError(
-        res,
-        error.code === "PAYMENT_DISPUTE_NOT_FOUND"
-          ? "Payment dispute not found"
-          : "The dispute has a newer provider version",
-        status,
-        error.code,
-      );
-    }
-    sendError(res, "Unable to acknowledge payment dispute", 500, "SERVER_ERROR");
   }
 });
 

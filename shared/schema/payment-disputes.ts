@@ -102,3 +102,26 @@ export const paymentDisputes = pgTable("payment_disputes", {
 export type PaymentDispute = typeof paymentDisputes.$inferSelect;
 export type PaymentDisputeState = (typeof PAYMENT_DISPUTE_STATES)[number];
 export type PaymentDisputeReason = (typeof PAYMENT_DISPUTE_REASONS)[number];
+
+/** Sanitized immutable state transition displayed beside a payment row. */
+export interface PaymentDisputeHistorySummary {
+  kind: "DISPUTE_CREATED" | "DISPUTE_STATE_UPDATED";
+  state: PaymentDisputeState;
+  providerVersion: number;
+  recordedAt: string;
+}
+
+/** Current Square dispute state projected onto each linked payment row. */
+export interface PaymentRowDisputeSummary {
+  id: string;
+  providerDisputeId: string;
+  amountMinor: number;
+  currency: string;
+  reason: PaymentDisputeReason;
+  state: PaymentDisputeState;
+  responseDueAt: string | null;
+  providerUpdatedAt: string;
+  providerVersion: number;
+  sharedTransaction: boolean;
+  history: PaymentDisputeHistorySummary[];
+}

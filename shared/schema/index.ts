@@ -77,18 +77,18 @@ export {
 } from "./payment-disputes";
 export type {
   PaymentDispute,
+  PaymentDisputeHistorySummary,
   PaymentDisputeState,
   PaymentDisputeReason,
+  PaymentRowDisputeSummary,
 } from "./payment-disputes";
 
 export {
-  paymentDisputeAcknowledgements,
   paymentDisputeNotifications,
   paymentDisputeReplayAudits,
   PAYMENT_DISPUTE_NOTIFICATION_KINDS,
 } from "./payment-dispute-operations";
 export type {
-  PaymentDisputeAcknowledgement,
   PaymentDisputeNotification,
   PaymentDisputeReplayAudit,
   PaymentDisputeNotificationKind,

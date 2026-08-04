@@ -29,8 +29,8 @@ const webhookStatuses = sql.raw(WEBHOOK_EVENT_STATUSES.map((value) => `'${value}
 
 /**
  * Durable, provider-effect-free operational notice for one accepted dispute
- * version. Delivery is the tenant-safe read API. Phase 4B-3A joins these
- * immutable history rows to separate tenant-wide acknowledgements.
+ * version. Delivery is the tenant-safe read API; email and acknowledgement
+ * policy remain deliberately outside Phase 4B-2.
  */
 export const paymentDisputeNotifications = pgTable("payment_dispute_notifications", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -60,43 +60,6 @@ export const paymentDisputeNotifications = pgTable("payment_dispute_notification
   kindCheck: check("payment_dispute_notifications_kind_check", sql`${table.kind} IN (${notificationKinds})`),
   stateCheck: check("payment_dispute_notifications_state_check", sql`${table.disputeState} IN (${disputeStates})`),
   versionCheck: check("payment_dispute_notifications_version_check", sql`${table.providerVersion} > 0`),
-}));
-
-/**
- * Immutable, tenant-wide acknowledgement of one exact provider dispute
- * version. A later provider version does not match this row and therefore
- * becomes unacknowledged automatically. Acknowledgement is operational
- * awareness only; it never represents a provider-side dispute action.
- */
-export const paymentDisputeAcknowledgements = pgTable("payment_dispute_acknowledgements", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  organizationId: integer("organization_id")
-    .notNull()
-    .references(() => organizations.id, { onDelete: "restrict" }),
-  paymentDisputeId: uuid("payment_dispute_id")
-    .notNull()
-    .references(() => paymentDisputes.id, { onDelete: "restrict" }),
-  providerVersion: integer("provider_version").notNull(),
-  actorUserId: integer("actor_user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "restrict" }),
-  actorRole: varchar("actor_role", { length: 32 }).notNull(),
-  acknowledgedAt: timestamp("acknowledged_at", { mode: "string" }).notNull().defaultNow(),
-}, (table) => ({
-  disputeVersionUnique: uniqueIndex("payment_dispute_acknowledgements_dispute_version_unique")
-    .on(table.paymentDisputeId, table.providerVersion),
-  tenantAcknowledgedIdx: index("payment_dispute_acknowledgements_tenant_acknowledged_idx")
-    .on(table.organizationId, table.acknowledgedAt.desc(), table.id.desc()),
-  actorAcknowledgedIdx: index("payment_dispute_acknowledgements_actor_acknowledged_idx")
-    .on(table.actorUserId, table.acknowledgedAt.desc()),
-  versionCheck: check(
-    "payment_dispute_acknowledgements_version_check",
-    sql`${table.providerVersion} > 0`,
-  ),
-  actorRoleCheck: check(
-    "payment_dispute_acknowledgements_actor_role_check",
-    sql`${table.actorRole} IN ('org_admin', 'system_admin')`,
-  ),
 }));
 
 /** One immutable audit row for each authorized explicit event-ID replay. */
@@ -143,6 +106,5 @@ export const paymentDisputeReplayAudits = pgTable("payment_dispute_replay_audits
 }));
 
 export type PaymentDisputeNotification = typeof paymentDisputeNotifications.$inferSelect;
-export type PaymentDisputeAcknowledgement = typeof paymentDisputeAcknowledgements.$inferSelect;
 export type PaymentDisputeReplayAudit = typeof paymentDisputeReplayAudits.$inferSelect;
 export type PaymentDisputeNotificationKind = (typeof PAYMENT_DISPUTE_NOTIFICATION_KINDS)[number];

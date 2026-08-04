@@ -20,6 +20,7 @@ import {
 } from '../../utils/api.js';
 import { hasAdminAccessToLeague } from '../../utils/access-control.js';
 import { createLogger } from '../../logger';
+import { listPaymentDisputeSummariesForPayments } from '../../storage/payment-dispute-operations.js';
 
 /**
  * build a Map<paidByUserId, displayName> for the rows in
@@ -87,6 +88,22 @@ router.get("/", async (req, res) => {
     // independently checked so the 400 message tells the caller
     // exactly which one was malformed.
     const isSystemAdmin = req.user?.role === 'system_admin';
+    const rawIncludeDisputes = req.query.includeDisputes;
+    if (
+      rawIncludeDisputes !== undefined
+      && rawIncludeDisputes !== 'true'
+      && rawIncludeDisputes !== 'false'
+    ) {
+      return sendError(res, "Invalid includeDisputes format", 400, 'INVALID_QUERY');
+    }
+    const includeDisputes = rawIncludeDisputes === 'true';
+    if (
+      includeDisputes
+      && req.user?.role !== 'org_admin'
+      && req.user?.role !== 'system_admin'
+    ) {
+      return sendError(res, "Administrator access is required", 403, 'FORBIDDEN');
+    }
 
     const rawQueryOrgId = parseOptionalIntParam(req.query.organizationId);
     if (rawQueryOrgId === null) {
@@ -152,15 +169,30 @@ router.get("/", async (req, res) => {
 
     const paginationParams = parsePaginationParams(req.query);
 
+    const preparePayments = async (
+      rows: Payment[],
+      organizationId: number | null,
+    ) => {
+      const nameMap = await buildPayerNameMap(rows, organizationId);
+      const sanitized = sanitizePayments(rows, nameMap);
+      if (!includeDisputes) return sanitized;
+      const disputesByPaymentId = await listPaymentDisputeSummariesForPayments({
+        paymentRows: rows,
+        organizationId,
+      });
+      return sanitized.map((payment) => ({
+        ...payment,
+        disputes: disputesByPaymentId.get(payment.id) ?? [],
+      }));
+    };
+
     if (isSystemAdmin && effectiveOrgId === null) {
       if (paginationParams) {
         const result = await storage.getAllPaymentsPaginatedSystemAdmin(baseFilters, paginationParams.page, paginationParams.limit);
-        const nameMap = await buildPayerNameMap(result.items, null);
-        return sendPaginatedSuccess(res, sanitizePayments(result.items, nameMap), result.pagination);
+        return sendPaginatedSuccess(res, await preparePayments(result.items, null), result.pagination);
       }
       const payments = await storage.getAllPaymentsSystemAdmin(baseFilters);
-      const nameMap = await buildPayerNameMap(payments, null);
-      return sendSuccess(res, sanitizePayments(payments, nameMap));
+      return sendSuccess(res, await preparePayments(payments, null));
     }
 
     const filters = {
@@ -170,14 +202,15 @@ router.get("/", async (req, res) => {
 
     if (paginationParams) {
       const result = await storage.getPaymentsPaginated(filters, paginationParams.page, paginationParams.limit);
-      const nameMap = await buildPayerNameMap(result.items, effectiveOrgId);
-      return sendPaginatedSuccess(res, sanitizePayments(result.items, nameMap), result.pagination);
+      return sendPaginatedSuccess(
+        res,
+        await preparePayments(result.items, effectiveOrgId),
+        result.pagination,
+      );
     }
 
     const payments = await storage.getPayments(filters);
-    const nameMap = await buildPayerNameMap(payments, effectiveOrgId);
-
-    sendSuccess(res, sanitizePayments(payments, nameMap));
+    sendSuccess(res, await preparePayments(payments, effectiveOrgId));
   } catch (error) {
     log.error('Get error:', error);
     sendError(res, 'Failed to fetch payments');

@@ -54,8 +54,9 @@ visible notification. Older, ambiguous, duplicate-version, unowned, or invalid
 events do not emit a notification.
 
 These records are durable in-app operational signals, not an email outbox.
-Choosing recipients, escalation timing, acknowledgement semantics, and the
-associated UI remains Phase 4B-3 product work.
+Phase 4B-3A uses them as the immutable, sanitized state history displayed on
+affected payment rows. LeagueVault intentionally adds no acknowledgement,
+recipient, escalation, or automatic-delivery workflow.
 
 ## Explicit replay and audit
 
@@ -124,8 +125,8 @@ required for 4B-2. Operators should verify own-tenant lists, a controlled
 retained pending-event replay if one exists, audit/notification deduplication,
 sanitized logs, and Neon autosuspension. This task does not perform those steps.
 
-Phase 4B-3A adds the provider-effect-free operator UI, provider-deadline and
-immutable-history presentation, and tenant-wide exact-version
-acknowledgement described in `docs/phase4b3a-dispute-acknowledgements.md`.
-LeagueVault continues to manage disputes in Square; provider-effect dispute
-actions are deferred indefinitely.
+Phase 4B-3A adds provider-effect-free dispute visibility directly to affected
+rows on the existing Payments page, including provider deadlines and immutable
+sanitized history, as described in `docs/phase4b3a-dispute-visibility.md`.
+LeagueVault continues to manage disputes in Square. A separate dispute-action
+or acknowledgement product is not planned.

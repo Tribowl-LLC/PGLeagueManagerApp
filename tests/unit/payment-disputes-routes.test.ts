@@ -3,8 +3,6 @@ import express, { type NextFunction, type Request, type Response } from "express
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  acknowledgePaymentDispute: vi.fn(),
-  countUnacknowledgedPaymentDisputes: vi.fn(),
   listPaymentDisputes: vi.fn(),
   listPaymentDisputeNotifications: vi.fn(),
   listPendingPaymentDisputeEvents: vi.fn(),
@@ -18,11 +16,6 @@ vi.mock("../../server/middleware/rate-limit", () => ({
 
 vi.mock("../../server/storage/payment-dispute-operations", () => ({
   ...mocks,
-  DisputeAcknowledgementError: class DisputeAcknowledgementError extends Error {
-    constructor(readonly code: string) {
-      super(code);
-    }
-  },
   DisputeReplayError: class DisputeReplayError extends Error {
     constructor(readonly code: string) {
       super(code);
@@ -75,16 +68,6 @@ beforeEach(() => {
   mocks.listPaymentDisputeNotifications.mockResolvedValue(empty);
   mocks.listPendingPaymentDisputeEvents.mockResolvedValue(empty);
   mocks.listPaymentDisputeReplayAudits.mockResolvedValue(empty);
-  mocks.countUnacknowledgedPaymentDisputes.mockResolvedValue(0);
-  mocks.acknowledgePaymentDispute.mockResolvedValue({
-    id: "22222222-2222-4222-8222-222222222222",
-    paymentDisputeId: "11111111-1111-4111-8111-111111111111",
-    providerVersion: 3,
-    acknowledgedByUserId: 7,
-    acknowledgedByRole: "org_admin",
-    acknowledgedAt: "2034-03-08T00:00:00.000Z",
-    created: true,
-  });
   mocks.replayPendingPaymentDisputeEvent.mockResolvedValue({
     acknowledged: true,
     terminal: true,
@@ -140,76 +123,6 @@ describe("payment dispute operator route tenant boundary", () => {
       organizationId: 11,
       eventId,
       actor: { userId: 7, role: "org_admin" },
-    });
-  });
-
-  it("counts only within the authenticated organization context", async () => {
-    currentUser = { id: 7, role: "org_admin", organizationId: 11 };
-    mocks.countUnacknowledgedPaymentDisputes.mockResolvedValue(4);
-    const response = await fetch(`${baseUrl}/api/payment-disputes/unacknowledged-count?organizationId=999`);
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ success: true, data: { count: 4 } });
-    expect(mocks.countUnacknowledgedPaymentDisputes).toHaveBeenCalledWith(11);
-  });
-
-  it("acknowledges an exact dispute version in the authenticated tenant", async () => {
-    currentUser = { id: 7, role: "org_admin", organizationId: 11 };
-    const disputeId = "11111111-1111-4111-8111-111111111111";
-    const response = await fetch(`${baseUrl}/api/payment-disputes/${disputeId}/acknowledgements`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ organizationId: 999, providerVersion: 3 }),
-    });
-    expect(response.status).toBe(200);
-    expect(mocks.acknowledgePaymentDispute).toHaveBeenCalledWith({
-      organizationId: 11,
-      paymentDisputeId: disputeId,
-      providerVersion: 3,
-      actor: { userId: 7, role: "org_admin" },
-    });
-  });
-
-  it("requires explicit tenant selection for system-admin acknowledgement", async () => {
-    currentUser = { id: 8, role: "system_admin", organizationId: null };
-    const disputeId = "11111111-1111-4111-8111-111111111111";
-    const missing = await fetch(`${baseUrl}/api/payment-disputes/${disputeId}/acknowledgements`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ providerVersion: 3 }),
-    });
-    expect(missing.status).toBe(400);
-    expect(mocks.acknowledgePaymentDispute).not.toHaveBeenCalled();
-
-    const selected = await fetch(`${baseUrl}/api/payment-disputes/${disputeId}/acknowledgements`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ organizationId: 22, providerVersion: 3 }),
-    });
-    expect(selected.status).toBe(200);
-    expect(mocks.acknowledgePaymentDispute).toHaveBeenCalledWith(expect.objectContaining({
-      organizationId: 22,
-      actor: { userId: 8, role: "system_admin" },
-    }));
-  });
-
-  it("returns a stale-version conflict without weakening the tenant boundary", async () => {
-    const { DisputeAcknowledgementError } = await import("../../server/storage/payment-dispute-operations");
-    currentUser = { id: 7, role: "org_admin", organizationId: 11 };
-    mocks.acknowledgePaymentDispute.mockRejectedValue(
-      new DisputeAcknowledgementError("DISPUTE_VERSION_CHANGED"),
-    );
-    const response = await fetch(
-      `${baseUrl}/api/payment-disputes/11111111-1111-4111-8111-111111111111/acknowledgements`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ providerVersion: 2 }),
-      },
-    );
-    expect(response.status).toBe(409);
-    expect(await response.json()).toMatchObject({
-      success: false,
-      error: { code: "DISPUTE_VERSION_CHANGED" },
     });
   });
 });
