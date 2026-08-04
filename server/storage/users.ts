@@ -5,6 +5,7 @@ import {
   applePayJobs,
   deletionRequests,
   orphanCleanupAudits,
+  paymentDisputeAcknowledgements,
   paymentDisputeReplayAudits,
   type User,
   type InsertUser,
@@ -87,7 +88,7 @@ export class CannotDeleteAdminError extends Error {
 export class UserHasAuditTrailError extends Error {
   constructor(public readonly auditCount: number) {
     super(
-      `User has ${auditCount} cleanup audit row(s) and cannot be deleted. Delete or reassign the audits first.`,
+      `User has ${auditCount} retained operational audit row(s) and cannot be deleted.`,
     );
     this.name = 'UserHasAuditTrailError';
   }
@@ -488,8 +489,8 @@ export async function setUserInviteToken(userId: number, token: string, expiry: 
 /**
  * Permanently delete a user account, in a single transaction:
  *   1. Refuse if the target is a `system_admin`.
- *   2. Refuse if the target has restrictive cleanup or dispute-replay audit
- *      rows (admin audit trails are preserved until full tenant teardown).
+ *   2. Refuse if the target has restrictive cleanup, dispute-replay, or
+ *      dispute-acknowledgement audit rows (preserved until full teardown).
  *   3. Null out audit-style FK references that we want to PRESERVE
  *      across the delete: `apple_pay_jobs.created_by` and
  *      `deletion_requests.reviewed_by`. Both columns are nullable.
@@ -525,7 +526,13 @@ export async function deleteUser(
       .select({ count: count() })
       .from(paymentDisputeReplayAudits)
       .where(eq(paymentDisputeReplayAudits.actorUserId, userId));
-    const auditCount = Number(cleanupAuditRow?.count ?? 0) + Number(replayAuditRow?.count ?? 0);
+    const [acknowledgementRow] = await tx
+      .select({ count: count() })
+      .from(paymentDisputeAcknowledgements)
+      .where(eq(paymentDisputeAcknowledgements.actorUserId, userId));
+    const auditCount = Number(cleanupAuditRow?.count ?? 0)
+      + Number(replayAuditRow?.count ?? 0)
+      + Number(acknowledgementRow?.count ?? 0);
     if (auditCount > 0) {
       throw new UserHasAuditTrailError(auditCount);
     }

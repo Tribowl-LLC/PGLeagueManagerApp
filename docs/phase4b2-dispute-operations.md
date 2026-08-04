@@ -124,7 +124,8 @@ required for 4B-2. Operators should verify own-tenant lists, a controlled
 retained pending-event replay if one exists, audit/notification deduplication,
 sanitized logs, and Neon autosuspension. This task does not perform those steps.
 
-Phase 4B-3 still owns notification acknowledgement and UI, deadline/state
-history presentation, and any escalation policy. Accepting a dispute or
-submitting evidence is a new irreversible provider effect and remains blocked
-on a separate product and security decision.
+Phase 4B-3A adds the provider-effect-free operator UI, provider-deadline and
+immutable-history presentation, and tenant-wide exact-version
+acknowledgement described in `docs/phase4b3a-dispute-acknowledgements.md`.
+LeagueVault continues to manage disputes in Square; provider-effect dispute
+actions are deferred indefinitely.

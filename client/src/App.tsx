@@ -24,6 +24,7 @@ const BowlerViewPage = lazy(() => import("@/pages/bowler-view-page"));
 const BowlerScoresPage = lazy(() => import("@/pages/bowler-scores-page"));
 const LeagueScoresPage = lazy(() => import("@/pages/league-scores-page"));
 const PaymentsPage = lazy(() => import("@/pages/payments-page"));
+const PaymentDisputesPage = lazy(() => import("@/pages/payment-disputes-page"));
 const PaymentHistoryPage = lazy(() => import("@/pages/payment-history-page"));
 const WeeklyPaymentsPage = lazy(() => import("@/pages/weekly-payments-page"));
 const ReportsPage = lazy(() => import("@/pages/reports-page"));
@@ -169,6 +170,7 @@ function Router() {
         {/* Organization Admin routes */}
         <Route path="/leagues/:leagueId/weekly-payments">{guard('orgAdmin', <WeeklyPaymentsPage />)}</Route>
         <Route path="/payments">{guard('orgAdmin', <PaymentsPage />)}</Route>
+        <Route path="/payment-disputes">{guard('orgAdmin', <PaymentDisputesPage />)}</Route>
         <Route path="/reports">{guard('orgAdmin', <ReportsPage />)}</Route>
         <Route path="/reports/leagues/:leagueId/past-due">{guard('orgAdmin', <LeaguePastDuePage />)}</Route>
         <Route path="/reports/past-due">{guard('orgAdmin', <PastDuePage />)}</Route>

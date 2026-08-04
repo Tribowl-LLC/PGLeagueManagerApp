@@ -7,6 +7,7 @@ import {
   leagues,
   locations,
   organizations,
+  paymentDisputeAcknowledgements,
   paymentDisputeNotifications,
   paymentDisputeReplayAudits,
   paymentDisputes,
@@ -25,6 +26,8 @@ import {
 } from "../../server/storage/webhook-events";
 import { processSquareWebhookEvent } from "../../server/storage/square-webhook-processing";
 import {
+  acknowledgePaymentDispute,
+  countUnacknowledgedPaymentDisputes,
   DisputeReplayError,
   listPaymentDisputeNotifications,
   listPaymentDisputes,
@@ -794,6 +797,224 @@ describe("Square webhook payment/refund PostgreSQL reconciliation", () => {
     expect(dispute).toMatchObject({ state: "EVIDENCE_REQUIRED", reason: "NO_KNOWLEDGE" });
   });
 
+  it("acknowledges one exact current version idempotently and reopens on a newer version", async () => {
+    const baseline = await countUnacknowledgedPaymentDisputes(organizationId);
+    const [acknowledgingActor] = await db.insert(users).values({
+      email: `dispute-ack-${randomUUID()}@example.test`,
+      password: "deterministic-test-password-hash",
+      name: "Dispute Acknowledgement Admin",
+      role: "org_admin",
+      organizationId,
+    }).returning({ id: users.id });
+    const charge = await completedInteractiveCharge();
+    const disputeId = `dispute-${randomUUID()}`;
+    const created = await ingest(disputeBody({
+      eventId: `event-${randomUUID()}`,
+      disputeId,
+      paymentId: charge.providerPaymentId,
+      version: 1,
+      state: "EVIDENCE_REQUIRED",
+      updatedAt: "2034-03-08T00:01:00.000Z",
+    }));
+    await processSquareWebhookEvent({
+      organizationId,
+      eventId: created.recorded.event.id,
+      event: created.event,
+      processDisputes: true,
+    });
+    const [dispute] = await db.select().from(paymentDisputes)
+      .where(eq(paymentDisputes.providerDisputeId, disputeId));
+    expect(await countUnacknowledgedPaymentDisputes(organizationId)).toBe(baseline + 1);
+
+    const acknowledgementInput = {
+      organizationId,
+      paymentDisputeId: dispute.id,
+      providerVersion: 1,
+      actor: { userId: acknowledgingActor.id, role: "org_admin" as const },
+      now: new Date("2034-03-08T00:02:00.000Z"),
+    };
+    const [left, right] = await Promise.all([
+      acknowledgePaymentDispute(acknowledgementInput),
+      acknowledgePaymentDispute(acknowledgementInput),
+    ]);
+    expect([left.created, right.created].sort()).toEqual([false, true]);
+    expect(left.id).toBe(right.id);
+    expect(await db.select().from(paymentDisputeAcknowledgements)
+      .where(eq(paymentDisputeAcknowledgements.paymentDisputeId, dispute.id))).toHaveLength(1);
+    expect(await countUnacknowledgedPaymentDisputes(organizationId)).toBe(baseline);
+    const acknowledgedDispute = (await listPaymentDisputes({ organizationId, limit: 100 })).items
+      .find((row) => row.id === dispute.id);
+    expect(acknowledgedDispute).toMatchObject({
+        acknowledgedProviderVersion: 1,
+        acknowledgedByUserId: acknowledgingActor.id,
+        acknowledgedByRole: "org_admin",
+      });
+    expect(new Date(acknowledgedDispute?.acknowledgedAt ?? "").toISOString())
+      .toBe("2034-03-08T00:02:00.000Z");
+
+    const updated = await ingest(disputeBody({
+      eventId: `event-${randomUUID()}`,
+      disputeId,
+      paymentId: charge.providerPaymentId,
+      eventType: "dispute.state.updated",
+      version: 2,
+      state: "PROCESSING",
+      updatedAt: "2034-03-08T00:03:00.000Z",
+    }));
+    await processSquareWebhookEvent({
+      organizationId,
+      eventId: updated.recorded.event.id,
+      event: updated.event,
+      processDisputes: true,
+    });
+    expect(await countUnacknowledgedPaymentDisputes(organizationId)).toBe(baseline + 1);
+    expect((await listPaymentDisputes({ organizationId, limit: 100 })).items
+      .find((row) => row.id === dispute.id)).toMatchObject({
+        providerVersion: 2,
+        acknowledgementId: null,
+        acknowledgedAt: null,
+      });
+    const history = await listPaymentDisputeNotifications({
+      organizationId,
+      paymentDisputeId: dispute.id,
+      limit: 100,
+    });
+    expect(history.items.map((row) => ({
+      version: row.providerVersion,
+      acknowledgedAt: row.acknowledgedAt
+        ? new Date(row.acknowledgedAt).toISOString()
+        : null,
+    })).sort((a, b) => a.version - b.version)).toEqual([
+      { version: 1, acknowledgedAt: "2034-03-08T00:02:00.000Z" },
+      { version: 2, acknowledgedAt: null },
+    ]);
+    for (const item of history.items) {
+      expect(item).not.toHaveProperty("encryptedPayload");
+      expect(item).not.toHaveProperty("payloadHash");
+      expect(item).not.toHaveProperty("providerMerchantId");
+      expect(item).not.toHaveProperty("providerApplicationId");
+    }
+    const delayedRetry = await acknowledgePaymentDispute(acknowledgementInput);
+    expect(delayedRetry).toMatchObject({
+      id: left.id,
+      providerVersion: 1,
+      created: false,
+    });
+    expect(await countUnacknowledgedPaymentDisputes(organizationId)).toBe(baseline + 1);
+    await expect(acknowledgePaymentDispute({
+      ...acknowledgementInput,
+      organizationId: organizationId + 1_000_000,
+      providerVersion: 2,
+    })).rejects.toMatchObject({ code: "PAYMENT_DISPUTE_NOT_FOUND" });
+    await expect(deleteUser(acknowledgingActor.id)).rejects.toMatchObject({
+      name: "UserHasAuditTrailError",
+      auditCount: 1,
+    });
+  });
+
+  it("never acknowledges a newer version during an acknowledgement/webhook race", async () => {
+    const baseline = await countUnacknowledgedPaymentDisputes(organizationId);
+    const charge = await completedInteractiveCharge();
+    const disputeId = `dispute-${randomUUID()}`;
+    const created = await ingest(disputeBody({
+      eventId: `event-${randomUUID()}`,
+      disputeId,
+      paymentId: charge.providerPaymentId,
+      version: 5,
+      state: "EVIDENCE_REQUIRED",
+      updatedAt: "2034-03-09T00:01:00.000Z",
+    }));
+    await processSquareWebhookEvent({
+      organizationId,
+      eventId: created.recorded.event.id,
+      event: created.event,
+      processDisputes: true,
+    });
+    const [dispute] = await db.select().from(paymentDisputes)
+      .where(eq(paymentDisputes.providerDisputeId, disputeId));
+    const updated = await ingest(disputeBody({
+      eventId: `event-${randomUUID()}`,
+      disputeId,
+      paymentId: charge.providerPaymentId,
+      eventType: "dispute.state.updated",
+      version: 6,
+      state: "PROCESSING",
+      updatedAt: "2034-03-09T00:02:00.000Z",
+    }));
+
+    const [ackResult, webhookResult] = await Promise.allSettled([
+      acknowledgePaymentDispute({
+        organizationId,
+        paymentDisputeId: dispute.id,
+        providerVersion: 5,
+        actor: { userId: actorUserId, role: "org_admin" },
+      }),
+      processSquareWebhookEvent({
+        organizationId,
+        eventId: updated.recorded.event.id,
+        event: updated.event,
+        processDisputes: true,
+      }),
+    ]);
+    expect(webhookResult.status).toBe("fulfilled");
+    expect(["fulfilled", "rejected"]).toContain(ackResult.status);
+    const [current] = await db.select().from(paymentDisputes)
+      .where(eq(paymentDisputes.id, dispute.id));
+    expect(current.providerVersion).toBe(6);
+    expect((await db.select().from(paymentDisputeAcknowledgements)
+      .where(eq(paymentDisputeAcknowledgements.paymentDisputeId, dispute.id)))
+      .some((row) => row.providerVersion === 6)).toBe(false);
+    expect(await countUnacknowledgedPaymentDisputes(organizationId)).toBe(baseline + 1);
+  });
+
+  it("counts one latest unacknowledged dispute instead of historical unacknowledged versions", async () => {
+    const baseline = await countUnacknowledgedPaymentDisputes(organizationId);
+    const charge = await completedInteractiveCharge();
+    const disputeId = `dispute-${randomUUID()}`;
+    const created = await ingest(disputeBody({
+      eventId: `event-${randomUUID()}`,
+      disputeId,
+      paymentId: charge.providerPaymentId,
+      version: 10,
+      state: "EVIDENCE_REQUIRED",
+      updatedAt: "2034-03-10T00:01:00.000Z",
+    }));
+    await processSquareWebhookEvent({
+      organizationId,
+      eventId: created.recorded.event.id,
+      event: created.event,
+      processDisputes: true,
+    });
+    const updated = await ingest(disputeBody({
+      eventId: `event-${randomUUID()}`,
+      disputeId,
+      paymentId: charge.providerPaymentId,
+      eventType: "dispute.state.updated",
+      version: 11,
+      state: "PROCESSING",
+      updatedAt: "2034-03-10T00:02:00.000Z",
+    }));
+    await processSquareWebhookEvent({
+      organizationId,
+      eventId: updated.recorded.event.id,
+      event: updated.event,
+      processDisputes: true,
+    });
+    const [dispute] = await db.select().from(paymentDisputes)
+      .where(eq(paymentDisputes.providerDisputeId, disputeId));
+    expect(await db.select().from(paymentDisputeNotifications)
+      .where(eq(paymentDisputeNotifications.paymentDisputeId, dispute.id))).toHaveLength(2);
+    expect(await db.select().from(paymentDisputeAcknowledgements)
+      .where(eq(paymentDisputeAcknowledgements.paymentDisputeId, dispute.id))).toHaveLength(0);
+    expect(await countUnacknowledgedPaymentDisputes(organizationId)).toBe(baseline + 1);
+    await expect(acknowledgePaymentDispute({
+      organizationId,
+      paymentDisputeId: dispute.id,
+      providerVersion: 10,
+      actor: { userId: actorUserId, role: "org_admin" },
+    })).rejects.toMatchObject({ code: "DISPUTE_VERSION_CHANGED" });
+  });
+
   it("replays one retained pending dispute event with atomic notification and operator audit", async () => {
     const charge = await completedInteractiveCharge();
     const disputeId = `dispute-${randomUUID()}`;
@@ -948,6 +1169,9 @@ describe("Square webhook payment/refund PostgreSQL reconciliation", () => {
     expect((await db.select().from(paymentDisputeReplayAudits)
       .where(eq(paymentDisputeReplayAudits.organizationId, deletedOrganizationId))).length)
       .toBeGreaterThan(0);
+    expect((await db.select().from(paymentDisputeAcknowledgements)
+      .where(eq(paymentDisputeAcknowledgements.organizationId, deletedOrganizationId))).length)
+      .toBeGreaterThan(0);
     await deleteOrganization(deletedOrganizationId);
     organizationId = 0;
 
@@ -959,6 +1183,8 @@ describe("Square webhook payment/refund PostgreSQL reconciliation", () => {
       .where(eq(paymentDisputeNotifications.organizationId, deletedOrganizationId))).toHaveLength(0);
     expect(await db.select().from(paymentDisputeReplayAudits)
       .where(eq(paymentDisputeReplayAudits.organizationId, deletedOrganizationId))).toHaveLength(0);
+    expect(await db.select().from(paymentDisputeAcknowledgements)
+      .where(eq(paymentDisputeAcknowledgements.organizationId, deletedOrganizationId))).toHaveLength(0);
     expect(await db.select().from(organizations)
       .where(eq(organizations.id, deletedOrganizationId))).toHaveLength(0);
   });

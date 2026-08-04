@@ -86,10 +86,13 @@ The safe PR sequence is:
 2. **4B-2:** tenant-safe read APIs, durable notifications, and audited explicit
    replay of a pending event ID. Org admins remain confined to their tenant;
    system admins must select a tenant deliberately.
-3. **4B-3:** independent refund/dispute UX, deadline and state history, and
-   operator acknowledgement. Accepting a dispute or submitting evidence to
-   Square is a new provider effect and requires a separate explicit product
-   and security decision.
+3. **4B-3A:** independent refund/dispute UX, provider-deadline and immutable
+   state-history presentation, and tenant-wide acknowledgement of one exact
+   provider version. This remains provider-effect-free and is specified in
+   `docs/phase4b3a-dispute-acknowledgements.md`.
+4. **4B-3B:** deferred indefinitely. Accepting a dispute or submitting
+   evidence to Square is an irreversible provider effect and is intentionally
+   not part of LeagueVault's dispute workflow.
 
 Phase 4B-2 is implemented as the provider-effect-free operational slice
 described in [Phase 4B-2 dispute operations](./phase4b2-dispute-operations.md).

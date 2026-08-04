@@ -82,11 +82,13 @@ export type {
 } from "./payment-disputes";
 
 export {
+  paymentDisputeAcknowledgements,
   paymentDisputeNotifications,
   paymentDisputeReplayAudits,
   PAYMENT_DISPUTE_NOTIFICATION_KINDS,
 } from "./payment-dispute-operations";
 export type {
+  PaymentDisputeAcknowledgement,
   PaymentDisputeNotification,
   PaymentDisputeReplayAudit,
   PaymentDisputeNotificationKind,

@@ -108,6 +108,12 @@
       "tag": "0017_phase4b2_dispute_operations",
       "createdAt": 1785808671598,
       "hash": "f95f4cefe1a14b2752b7896f753f85f5090f39883cec053a582ce114f0d52328"
+    },
+    {
+      "idx": 18,
+      "tag": "0018_phase4b3a_dispute_acknowledgements",
+      "createdAt": 1785814664373,
+      "hash": "cbf04d59cf3159577e866dd0d45ffbd1c10d5553e685cbd6d7b997f14b34a479"
     }
   ]
 }
