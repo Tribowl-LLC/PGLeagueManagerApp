@@ -4,6 +4,7 @@ import express, {
   type Express,
   type NextFunction,
   type Request,
+  type RequestHandler,
   type Response,
 } from "express";
 import { appEnv, env } from "../../config.js";
@@ -23,6 +24,7 @@ import {
   type SquareWebhookConfig,
 } from "../../services/square-webhook-config.js";
 import {
+  classifySquarePaymentWebhookOrigin,
   normalizeSquareWebhookEvent,
   SquareWebhookPayloadError,
 } from "../../services/square-webhook-event.js";
@@ -41,6 +43,7 @@ export const SQUARE_WEBHOOK_SIGNATURE_HEADER = "x-square-hmacsha256-signature";
 
 const REQUEST_ID_LOCAL = "squareWebhookRequestId";
 const APPLICATION_ID_LOCAL = "squareWebhookApplicationId";
+const RAW_BODY_TEXT_LOCAL = "squareWebhookRawBodyText";
 
 function requestId(res: Response): string {
   const existing = res.locals[REQUEST_ID_LOCAL];
@@ -95,6 +98,8 @@ export function verifySquareWebhookSignature(
 
 interface RegisterSquareWebhookOptions {
   config?: SquareWebhookConfig;
+  classifyOrigin?: typeof classifySquarePaymentWebhookOrigin;
+  limiter?: RequestHandler;
   ingest?: (input: IngestSquareWebhookEventInput) => Promise<IngestSquareWebhookEventResult>;
   process?: (input: {
     organizationId: number;
@@ -170,6 +175,56 @@ function signatureGate(config: SquareWebhookConfig) {
   };
 }
 
+function originGate(
+  classifyOrigin: typeof classifySquarePaymentWebhookOrigin,
+) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const correlationId = requestId(res);
+    const providerApplicationId = res.locals[APPLICATION_ID_LOCAL];
+    if (typeof providerApplicationId !== "string") {
+      sendError(res, "Invalid signature", 403, "SQUARE_WEBHOOK_SIGNATURE_INVALID");
+      return;
+    }
+    if (!req.is("application/json")) {
+      sendError(res, "Content-Type must be application/json", 415, "SQUARE_WEBHOOK_CONTENT_TYPE_INVALID");
+      return;
+    }
+    const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    const text = rawBodyText(body);
+    if (text === null) {
+      sendError(res, "Malformed JSON body", 400, "SQUARE_WEBHOOK_INVALID_JSON");
+      return;
+    }
+
+    try {
+      const origin = classifyOrigin(text, providerApplicationId);
+      if (origin === "definitely_unrelated") {
+        log.info("Square webhook payment ignored before database access", {
+          event: "square_webhook_origin_ignored",
+          requestId: correlationId,
+          eventType: "payment.updated",
+        });
+        sendSuccess(res, {
+          received: true,
+          duplicate: false,
+          status: "ignored",
+        });
+        return;
+      }
+      res.locals[RAW_BODY_TEXT_LOCAL] = text;
+      next();
+    } catch (error) {
+      const code = error instanceof SquareWebhookPayloadError ? error.code : "INVALID_ENVELOPE";
+      log.warn("Square webhook request rejected", {
+        event: "square_webhook_rejected",
+        requestId: correlationId,
+        outcome: code.toLowerCase(),
+      });
+      sendError(res, "Malformed webhook event", 400, "SQUARE_WEBHOOK_EVENT_INVALID");
+    }
+  };
+}
+
 /**
  * Registers the one canonical public Square route before tenant resolution and
  * global JSON parsing. Processing remains inline, provider-I/O-free, and
@@ -180,6 +235,8 @@ export function registerSquareWebhookReceiver(
   options: RegisterSquareWebhookOptions = {},
 ): void {
   const config = options.config ?? defaultConfig();
+  const classifyOrigin = options.classifyOrigin ?? classifySquarePaymentWebhookOrigin;
+  const limiter = options.limiter ?? squareWebhookLimiter;
   const ingest = options.ingest ?? ingestSquareWebhookEvent;
   const process = options.process ?? processSquareWebhookEvent;
   const rearm = options.rearm ?? notifyScheduledPaymentMutation;
@@ -192,9 +249,10 @@ export function registerSquareWebhookReceiver(
     rawBodyParser,
     rawBodyErrorHandler,
     signatureGate(config),
-    // The shared limiter can use PostgreSQL only after signature validation;
-    // missing/invalid signatures perform no database work.
-    squareWebhookLimiter,
+    // Minimal origin parsing is signature-first and process-local. Only owned
+    // or ambiguous evidence can reach the PostgreSQL-backed shared limiter.
+    originGate(classifyOrigin),
+    limiter,
     async (req: Request, res: Response) => {
       const correlationId = requestId(res);
       const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
@@ -203,13 +261,9 @@ export function registerSquareWebhookReceiver(
         sendError(res, "Invalid signature", 403, "SQUARE_WEBHOOK_SIGNATURE_INVALID");
         return;
       }
-      if (!req.is("application/json")) {
-        sendError(res, "Content-Type must be application/json", 415, "SQUARE_WEBHOOK_CONTENT_TYPE_INVALID");
-        return;
-      }
-      const text = rawBodyText(body);
-      if (text === null) {
-        sendError(res, "Malformed JSON body", 400, "SQUARE_WEBHOOK_INVALID_JSON");
+      const text = res.locals[RAW_BODY_TEXT_LOCAL];
+      if (typeof text !== "string") {
+        sendError(res, "Malformed webhook event", 400, "SQUARE_WEBHOOK_EVENT_INVALID");
         return;
       }
 

@@ -8,6 +8,7 @@ import {
   vi,
 } from "vitest";
 import express from "express";
+import type { NextFunction, Request, Response } from "express";
 import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
@@ -61,6 +62,12 @@ const {
 const { normalizeSquareWebhookEvent } = await import(
   "../../server/services/square-webhook-event"
 );
+const { classifySquarePaymentWebhookOrigin } = await import(
+  "../../server/services/square-webhook-event"
+);
+
+const originClassifier = vi.fn(classifySquarePaymentWebhookOrigin);
+const databaseLimiter = vi.fn((_req: Request, _res: Response, next: NextFunction) => next());
 
 const notificationUrl = `https://hooks.example.test${SQUARE_WEBHOOK_PATH}`;
 const applicationId = "sandbox-app-fixture";
@@ -108,7 +115,17 @@ function webhookEventFixture(status: "pending" | "ignored"): WebhookEvent {
   };
 }
 
-function paymentEvent(eventId = "event-fixture-1", locationId = "location-fixture-1") {
+function paymentEvent(
+  eventId = "event-fixture-1",
+  locationId = "location-fixture-1",
+  origin: {
+    amount?: number;
+    applicationId?: string;
+    referenceId?: string;
+    sourceType?: string;
+    squareProduct?: string;
+  } = {},
+) {
   return {
     merchant_id: "merchant-fixture-1",
     type: "payment.updated",
@@ -124,16 +141,30 @@ function paymentEvent(eventId = "event-fixture-1", locationId = "location-fixtur
           amount_money: { amount: 2500, currency: "USD" },
           status: "COMPLETED",
           location_id: locationId,
+          ...(origin.amount === undefined
+            ? {}
+            : { amount_money: { amount: origin.amount, currency: "USD" } }),
+          ...(origin.sourceType === undefined ? {} : { source_type: origin.sourceType }),
+          ...(origin.referenceId === undefined ? {} : { reference_id: origin.referenceId }),
+          ...(origin.applicationId === undefined && origin.squareProduct === undefined
+            ? {}
+            : { application_details: {
+              ...(origin.applicationId === undefined ? {} : { application_id: origin.applicationId }),
+              ...(origin.squareProduct === undefined ? {} : { square_product: origin.squareProduct }),
+            } }),
         },
       },
     },
   };
 }
 
-function disputeEvent(eventId = "event-dispute-fixture-1") {
+function disputeEvent(
+  eventId = "event-dispute-fixture-1",
+  eventType: "dispute.created" | "dispute.state.updated" = "dispute.state.updated",
+) {
   return {
     merchant_id: "merchant-fixture-1",
-    type: "dispute.state.updated",
+    type: eventType,
     event_id: eventId,
     created_at: "2026-08-03T12:00:00.000Z",
     data: {
@@ -160,6 +191,28 @@ function disputeEvent(eventId = "event-dispute-fixture-1") {
   };
 }
 
+function refundEvent(eventId = "event-refund-fixture-1") {
+  return {
+    merchant_id: "merchant-fixture-1",
+    type: "refund.updated",
+    event_id: eventId,
+    created_at: "2026-08-03T12:00:00.000Z",
+    data: {
+      type: "refund",
+      id: "refund-fixture-1",
+      object: { refund: {
+        id: "refund-fixture-1",
+        payment_id: "payment-fixture-1",
+        location_id: "location-fixture-1",
+        amount_money: { amount: 2500, currency: "USD" },
+        status: "PENDING",
+        updated_at: "2026-08-03T11:59:00.000Z",
+        version: 4,
+      } },
+    },
+  };
+}
+
 function sign(body: string, key = signatureKey, url = notificationUrl): string {
   return createHmac("sha256", key).update(url, "utf8").update(body, "utf8").digest("base64");
 }
@@ -170,7 +223,12 @@ let baseUrl: string;
 beforeAll(async () => {
   const app = express();
   app.set("trust proxy", 1);
-  registerSquareWebhookReceiver(app, { config, ingest });
+  registerSquareWebhookReceiver(app, {
+    config,
+    classifyOrigin: originClassifier,
+    limiter: databaseLimiter,
+    ingest,
+  });
   app.use((_req, res) => {
     downstreamTenantResolver();
     res.status(204).end();
@@ -206,6 +264,8 @@ beforeEach(() => {
   rearm.mockReset();
   rearm.mockResolvedValue(undefined);
   downstreamTenantResolver.mockReset();
+  originClassifier.mockClear();
+  databaseLimiter.mockClear();
 });
 
 async function post(body: string, options: {
@@ -253,13 +313,19 @@ describe("Square webhook signature and raw-body boundary", () => {
 
     expect(response.status).toBe(403);
     expect((await response.json()).error.code).toBe("SQUARE_WEBHOOK_SIGNATURE_INVALID");
+    expect(originClassifier).not.toHaveBeenCalled();
+    expect(databaseLimiter).not.toHaveBeenCalled();
     expect(ingest).not.toHaveBeenCalled();
+    expect(processEvent).not.toHaveBeenCalled();
+    expect(rearm).not.toHaveBeenCalled();
   });
 
   it("fails closed for a missing signature", async () => {
     const response = await post(JSON.stringify(paymentEvent()), { signature: null });
     expect(response.status).toBe(401);
     expect((await response.json()).error.code).toBe("SQUARE_WEBHOOK_SIGNATURE_MISSING");
+    expect(originClassifier).not.toHaveBeenCalled();
+    expect(databaseLimiter).not.toHaveBeenCalled();
     expect(ingest).not.toHaveBeenCalled();
   });
 
@@ -285,6 +351,165 @@ describe("Square webhook signature and raw-body boundary", () => {
     const response = await post(JSON.stringify(paymentEvent()));
     expect(response.status).toBe(200);
     expect((await response.json()).data.duplicate).toBe(true);
+  });
+});
+
+describe("Square webhook in-memory origin prefilter", () => {
+  const operationId = "00000000-0000-4000-8000-000000000123";
+
+  it("acknowledges a signed Square POS payment without database-backed middleware", async () => {
+    const body = JSON.stringify(paymentEvent(
+      "event-pos-fixture",
+      "location-fixture-1",
+      { squareProduct: "SQUARE_POS" },
+    ));
+    const response = await post(body);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      success: true,
+      data: { received: true, duplicate: false, status: "ignored" },
+    });
+    expect(originClassifier).toHaveBeenCalledTimes(1);
+    expect(databaseLimiter).not.toHaveBeenCalled();
+    expect(ingest).not.toHaveBeenCalled();
+    expect(processEvent).not.toHaveBeenCalled();
+    expect(rearm).not.toHaveBeenCalled();
+    expect(downstreamTenantResolver).not.toHaveBeenCalled();
+    const observations = JSON.stringify({
+      info: fakeLogger.info.mock.calls,
+      warn: fakeLogger.warn.mock.calls,
+      error: fakeLogger.error.mock.calls,
+    });
+    expect(observations).not.toContain("event-pos-fixture");
+    expect(observations).not.toContain("payment-fixture-1");
+    expect(observations).not.toContain(body);
+  });
+
+  it("acknowledges a signed zero-dollar cash POS payment without full money normalization", async () => {
+    const body = JSON.stringify(paymentEvent(
+      "event-pos-zero-cash-fixture",
+      "location-fixture-1",
+      { amount: 0, sourceType: "CASH", squareProduct: "SQUARE_POS" },
+    ));
+    const response = await post(body);
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).data.status).toBe("ignored");
+    expect(databaseLimiter).not.toHaveBeenCalled();
+    expect(ingest).not.toHaveBeenCalled();
+    expect(processEvent).not.toHaveBeenCalled();
+  });
+
+  it("uses the durable path when application and operation markers both match", async () => {
+    const response = await post(JSON.stringify(paymentEvent(
+      "event-owned-both-fixture",
+      "location-fixture-1",
+      { applicationId, referenceId: operationId, squareProduct: "ECOMMERCE_API" },
+    )));
+
+    expect(response.status).toBe(200);
+    expect(databaseLimiter).toHaveBeenCalledTimes(1);
+    expect(ingest).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps matching-application payments compatible when reference_id is missing", async () => {
+    const response = await post(JSON.stringify(paymentEvent(
+      "event-owned-app-only-fixture",
+      "location-fixture-1",
+      { applicationId, squareProduct: "ECOMMERCE_API" },
+    )));
+
+    expect(response.status).toBe(200);
+    expect(databaseLimiter).toHaveBeenCalledTimes(1);
+    expect(ingest).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the durable path for an operation UUID when application_id is missing", async () => {
+    const response = await post(JSON.stringify(paymentEvent(
+      "event-owned-reference-only-fixture",
+      "location-fixture-1",
+      { referenceId: operationId },
+    )));
+
+    expect(response.status).toBe(200);
+    expect(databaseLimiter).toHaveBeenCalledTimes(1);
+    expect(ingest).toHaveBeenCalledTimes(1);
+  });
+
+  it("acknowledges an explicitly foreign application when no operation UUID is present", async () => {
+    const response = await post(JSON.stringify(paymentEvent(
+      "event-foreign-app-fixture",
+      "location-fixture-1",
+      { applicationId: "foreign-square-application-fixture", squareProduct: "ECOMMERCE_API" },
+    )));
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).data.status).toBe("ignored");
+    expect(databaseLimiter).not.toHaveBeenCalled();
+    expect(ingest).not.toHaveBeenCalled();
+  });
+
+  it("fails safe through durability when foreign-looking evidence conflicts with an operation UUID", async () => {
+    const response = await post(JSON.stringify(paymentEvent(
+      "event-conflicting-origin-fixture",
+      "location-fixture-1",
+      {
+        applicationId: "foreign-square-application-fixture",
+        referenceId: operationId,
+        squareProduct: "SQUARE_POS",
+      },
+    )));
+
+    expect(response.status).toBe(200);
+    expect(databaseLimiter).toHaveBeenCalledTimes(1);
+    expect(ingest).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps marker-poor and unknown-origin historical payments ambiguous", async () => {
+    const bodies = [
+      paymentEvent("event-ambiguous-empty-fixture"),
+      paymentEvent("event-ambiguous-ecommerce-fixture", "location-fixture-1", {
+        squareProduct: "ECOMMERCE_API",
+      }),
+      paymentEvent("event-ambiguous-future-fixture", "location-fixture-1", {
+        squareProduct: "FUTURE_SQUARE_PRODUCT",
+      }),
+    ];
+
+    for (const event of bodies) {
+      const response = await post(JSON.stringify(event));
+      expect(response.status).toBe(200);
+    }
+    expect(databaseLimiter).toHaveBeenCalledTimes(3);
+    expect(ingest).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not apply the payment-origin filter to refunds or disputes", async () => {
+    const bodies = [
+      refundEvent(),
+      disputeEvent("event-dispute-created-fixture", "dispute.created"),
+      disputeEvent("event-dispute-updated-fixture", "dispute.state.updated"),
+    ];
+
+    for (const event of bodies) {
+      const response = await post(JSON.stringify(event));
+      expect(response.status).toBe(200);
+    }
+    expect(databaseLimiter).toHaveBeenCalledTimes(3);
+    expect(ingest).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps a potentially owned malformed payment fail-closed", async () => {
+    const response = await post(JSON.stringify(paymentEvent(
+      "event-owned-zero-fixture",
+      "location-fixture-1",
+      { amount: 0, applicationId, referenceId: operationId },
+    )));
+
+    expect(response.status).toBe(400);
+    expect(databaseLimiter).toHaveBeenCalledTimes(1);
+    expect(ingest).not.toHaveBeenCalled();
   });
 });
 
@@ -363,6 +588,7 @@ describe("Square webhook parsing and log safety", () => {
     const response = await post(body);
     expect(response.status).toBe(400);
     expect(ingest).not.toHaveBeenCalled();
+    expect(databaseLimiter).not.toHaveBeenCalled();
     const observations = JSON.stringify({
       info: fakeLogger.info.mock.calls,
       warn: fakeLogger.warn.mock.calls,
@@ -413,6 +639,7 @@ describe("Square webhook reconciliation activation", () => {
     const reconcileApp = express();
     registerSquareWebhookReceiver(reconcileApp, {
       config: reconcileConfig,
+      limiter: databaseLimiter,
       ingest,
       process: processEvent,
       rearm,
@@ -459,6 +686,7 @@ describe("Square webhook reconciliation activation", () => {
     const reconcileApp = express();
     registerSquareWebhookReceiver(reconcileApp, {
       config: { ...config, mode: "reconcile_payments_and_disputes" },
+      limiter: databaseLimiter,
       ingest,
       process: processEvent,
       rearm,
@@ -505,6 +733,7 @@ describe("Square webhook reconciliation activation", () => {
     const reconcileApp = express();
     registerSquareWebhookReceiver(reconcileApp, {
       config: { ...config, mode: "reconcile_payments" },
+      limiter: databaseLimiter,
       ingest,
       process: processEvent,
       rearm,
@@ -544,6 +773,7 @@ describe("Square webhook reconciliation activation", () => {
     const reconcileApp = express();
     registerSquareWebhookReceiver(reconcileApp, {
       config: { ...config, mode: "reconcile_payments" },
+      limiter: databaseLimiter,
       ingest,
       process: processEvent,
       rearm,

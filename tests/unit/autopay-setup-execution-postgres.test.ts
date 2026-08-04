@@ -65,6 +65,7 @@ class IdempotentSetupProvider implements PaymentProvider {
   readonly providerName = "square";
   readonly effects = new Map<string, PaymentResult>();
   readonly calls: string[] = [];
+  readonly identities: PaymentIdempotencyInput[] = [];
   declinedSourceId: string | null = null;
   unknownAfterFirstEffect = false;
 
@@ -78,6 +79,7 @@ class IdempotentSetupProvider implements PaymentProvider {
     _buyerEmail?: string,
     idempotencyKey?: PaymentIdempotencyInput,
   ): Promise<PaymentResult> {
+    if (idempotencyKey !== undefined) this.identities.push(idempotencyKey);
     return this.effect(sourceId, identityKey(idempotencyKey));
   }
 
@@ -90,6 +92,7 @@ class IdempotentSetupProvider implements PaymentProvider {
     _buyerEmail?: string,
     idempotencyKey?: PaymentIdempotencyInput,
   ): Promise<PaymentResult> {
+    if (idempotencyKey !== undefined) this.identities.push(idempotencyKey);
     return this.effect(sourceId, identityKey(idempotencyKey));
   }
 
@@ -303,6 +306,9 @@ describe("weekly auto-pay setup execution", () => {
     expect(new Date((result.schedule?.nextPaymentDate ?? "") + "Z").toISOString())
       .toBe("2032-01-11T17:40:00.000Z");
     expect(provider.effects.size).toBe(1);
+    expect(provider.identities[0]).toMatchObject({
+      referenceId: result.request.paymentOperationId,
+    });
   });
 
   it("converges duplicate submissions on one provider effect and one allocation", async () => {
@@ -413,6 +419,9 @@ describe("weekly auto-pay setup execution", () => {
     expect(recovered.request.workflowStatus).toBe("completed");
     expect(provider.calls).toHaveLength(2);
     expect(provider.calls[1]).toBe(provider.calls[0]);
+    expect(provider.identities).toHaveLength(2);
+    expect(provider.identities[0]).toEqual(provider.identities[1]);
+    expect(provider.identities[0]).toMatchObject({ referenceId: uncertain.id });
     expect(provider.effects.size).toBe(1);
   });
 

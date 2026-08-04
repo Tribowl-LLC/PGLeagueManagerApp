@@ -122,6 +122,14 @@ subscription must not use Select All. Official payload contracts are:
 [payment.updated](https://developer.squareup.com/reference/square/payments-api/webhooks/payment.updated),
 and [Disputes webhooks](https://developer.squareup.com/reference/square/disputes-api/webhooks).
 
+Square payment subscriptions are seller-wide: payment notifications can come
+from the Dashboard, Point of Sale, Terminal, Invoices, other Square products,
+or another API application connected to the seller. A subscription chooses
+event types but cannot filter `payment.updated` by originating application.
+See Square's official
+[Payments API webhook behavior](https://developer.squareup.com/docs/payments-api/webhooks)
+and [webhook overview](https://developer.squareup.com/docs/webhooks/overview).
+
 The subscription API version is pinned to `2026-05-20`, matching the installed
 Square SDK's audited wire version. A different configured version prevents
 either enabled mode from starting; it is never guessed from an event body because Square
@@ -178,15 +186,18 @@ JSON parser. The request order is deliberately:
 1. Apply response security headers and a server-generated request ID.
 2. Read at most 12 KiB as a raw `Buffer` without JSON parsing.
 3. Reject a missing or invalid signature using constant-time digest comparison.
-4. Apply the shared production rate limit; invalid signatures therefore cause
-   no PostgreSQL work.
-5. Require JSON content type, decode strict UTF-8, and parse the signed bytes.
-6. Require bounded provider event, merchant, location, object, and payment
-   identities plus a valid provider timestamp.
-7. Resolve `provider location ID -> exactly one LeagueVault location` while
+4. Require JSON content type, decode strict UTF-8, and minimally parse the
+   signed provider envelope plus payment origin fields in process memory.
+5. Acknowledge a conclusively unrelated `payment.updated` with 2xx, before any
+   PostgreSQL-backed middleware or storage code.
+6. Apply the shared production rate limit only to potentially owned or
+   ambiguous events.
+7. Fully parse the signed bytes and require bounded provider event, merchant,
+   location, object, and payment identities plus a valid provider timestamp.
+8. Resolve `provider location ID -> exactly one LeagueVault location` while
    holding a short shared row lock, then require that location's configured
    Square application ID to match the signature-winning application.
-8. Encrypt and insert the event in the same short transaction, then return 2xx.
+9. Encrypt and insert the event in the same short transaction, then return 2xx.
 
 Zero matches, multiple matches, cross-application matches, conflicting
 envelope/object locations, malformed known event objects, and event-ID reuse
@@ -197,6 +208,57 @@ Phase 4A-2 must resolve those links tenant-safely and uniquely before any
 reconciliation. In particular, a combined Square payment can legitimately map
 to multiple local allocation rows, and a dispute must not be forced onto one
 of them by guesswork.
+
+## Signed payment origin prefilter
+
+The prefilter is intentionally separate from full business-event
+normalization. It validates the bounded Square envelope, `payment.updated`
+object type, payment/object ID agreement, location identity, optional
+`application_details.application_id`, optional
+`application_details.square_product`, and optional `reference_id`. It does not
+require status, source, or a positive amount. This permits a structurally valid
+zero-dollar cash POS update to be acknowledged without turning a provider
+event that LeagueVault cannot own into a retry loop.
+
+The server-side LeagueVault application identity is the application whose
+configured webhook signature key uniquely verified the exact request. A
+payment is potentially owned when that application matches the payment's
+`application_id` or when `reference_id` is a valid payment-operation UUID.
+Either marker is sufficient. Conflicting markers also take the durable path;
+the prefilter never guesses which one is wrong.
+
+With no valid operation reference, an explicit different `application_id` is
+conclusive foreign evidence. If `application_id` is absent, the following
+first-party Square products are also conclusive because LeagueVault creates
+payments through the e-commerce API: Point of Sale, Terminal API, Invoices,
+Virtual Terminal, Retail, Restaurants, Online Store, and Appointments.
+`ECOMMERCE_API`, `OTHER`, a missing product, or an unknown future value remains
+ambiguous and proceeds to the durable tenant/location lookup. This preserves
+older LeagueVault payments that predate `reference_id` or whose
+`application_details` is incomplete.
+
+The prefilter applies only to `payment.updated`. `refund.updated`,
+`dispute.created`, and `dispute.state.updated` retain their existing durable
+mapping and reconciliation because they do not provide equivalent direct
+payment-origin evidence.
+
+Status policy is deliberate:
+
+- missing/invalid signatures are rejected before classification;
+- signed malformed JSON, envelopes, payment identity, or conflicting
+  envelope/object locations receive the existing 4xx response;
+- conclusively unrelated signed payments receive the existing successful
+  `ignored` response without an inbox row; and
+- potentially owned, ambiguous, refund, dispute, and other supported-version
+  events continue through the existing limiter and durable response policy.
+
+A conclusively unrelated payment has a zero-database invariant: it cannot run
+the PostgreSQL rate limiter, tenant/location mapping, inbox insertion,
+reconciliation, or scheduler rearm. It performs bounded HMAC and JSON work in
+Render memory only. This prevents ordinary non-LeagueVault seller activity
+from resetting Neon's autosuspend timer while preserving current CU for owned
+and ambiguous evidence. No provider request, poller, timer, sweep, or startup
+query is introduced.
 
 ## Durable inbox and replay rules
 
@@ -315,9 +377,10 @@ exception: it locks tenant locations and deletes tenant webhook evidence inside
 the same atomic teardown before deleting locations and the organization. A
 failure rolls the entire teardown back.
 
-Each valid delivery first performs an indexed event-ID lookup and uses the
-existing shared production rate-limit counter. A unique delivery then performs
-one bounded location lookup and one indexed insert; a concurrent duplicate
+Each potentially owned or ambiguous delivery uses the existing shared
+production rate-limit counter and performs an indexed event-ID lookup. A
+unique delivery then performs one bounded location lookup and one indexed
+insert; a concurrent duplicate
 uses the unique-conflict path and an indexed read. Invalid signatures perform
 no database work. There is no recurring query, so an unconfigured or idle
 receiver cannot keep Neon awake. Encrypted payloads add storage per received
@@ -325,13 +388,14 @@ event but no background CU. Phase 4A-2 is expected to reduce Square polling and
 Neon/provider work by promptly removing completed refunds from the existing
 sparse one-shot recovery schedule.
 
-In `reconcile_payments`, each actual delivery adds only bounded indexed
-lookups and one short transaction; there is still no idle query. Prompt
-completion avoids later refund `GetRefund` calls and their associated ledger
-wake transactions. Square Dashboard, POS, or other application payments that
-share a configured location but carry no LeagueVault identity are retained and
-acknowledged once, preventing provider redelivery from creating repeated Neon
-wakes.
+In `reconcile_payments`, each potentially owned or ambiguous delivery adds
+only bounded indexed lookups and one short transaction; there is still no idle
+query. Prompt completion avoids later refund `GetRefund` calls and their
+associated ledger wake transactions. Conclusively unrelated Square POS or
+other first-party product payments are acknowledged before PostgreSQL and are
+not retained.
+Marker-poor historical or unknown-origin payments remain durable rather than
+being silently discarded.
 
 In `reconcile_payments_and_disputes`, each dispute delivery adds bounded
 indexed operation/allocation lookups and one short transaction. It makes no
@@ -360,3 +424,28 @@ database query, so the new mode does not prevent Neon autosuspension.
    wake, sanitized logs, and a complete Neon autosuspension window.
 
 Do not use a real pending production refund as a test event or replay target.
+
+## Origin-prefilter deployment and rollback (not performed by this PR)
+
+This is an application-only change. It adds no migration or database state,
+and it does not change webhook mode or Square subscription configuration.
+
+1. Merge only after Phase 4B-2 and every required check are green.
+2. Keep Render Auto-Deploy Off.
+3. Deploy the exact verified `main` commit without running a migration.
+4. Preserve the currently approved `SQUARE_WEBHOOK_MODE`.
+5. Verify health, authentication, tenant isolation, and representative
+   scheduled, interactive, combined, and auto-pay setup payments.
+6. Send or observe one unrelated POS payment update, one LeagueVault payment
+   update, one safely available LeagueVault refund update, and a dispute only
+   through an approved safe test mechanism.
+7. Confirm the unrelated payment receives 200 and creates no inbox row.
+8. Confirm owned payment/refund/dispute events retain durable processing.
+9. Confirm no new scheduler, lease, reconciliation, Square, or signature
+   errors and no sensitive origin evidence in logs.
+10. Observe a complete Neon autosuspension window during ordinary
+    non-LeagueVault POS activity.
+
+Rollback is application-only: restore the previous exact verified application
+commit while leaving the database and migrations intact. No provider event,
+inbox row, dispute record, notification, or payment operation needs reversal.
