@@ -109,6 +109,8 @@ const UNIT_NO_DB = [
   'tests/unit/interactive-payment-operation-snapshot.test.ts',
   'tests/unit/location-webhook-retention-route.test.ts',
   'tests/unit/weekly-billing-occurrence-planner.test.ts',
+  'tests/unit/canonical-occurrence-generator.test.ts',
+  'tests/unit/canonical-occurrence-operator.test.ts',
   'tests/unit/test-template-migration-source.test.ts',
   'tests/unit/zod-v4-migration-contracts.test.ts',
 ];
