@@ -5,6 +5,7 @@ import { and, eq, sql } from "drizzle-orm";
 import {
   leagueOccurrenceBillingTermRevisions,
   leagueOccurrenceBillingTerms,
+  leagueOccurrenceRelationships,
   leagueOccurrenceRevisions,
   leagueOccurrences,
   leagueScheduleExceptions,
@@ -24,8 +25,10 @@ import {
   validateExceptionPlacement,
   validateMakeupRelationship,
   validateOccurrencePlacement,
+  withLockedExceptionPlacementMutation,
+  withLockedMakeupRelationshipMutation,
   withLockedOccurrencePlacementMutation,
-  type ScheduleCommandRequest,
+  type CanonicalScheduleCommandFingerprintRequest,
 } from "../../server/services/canonical-occurrence-transactions";
 import { getTestDb } from "../setup/test-db";
 
@@ -43,7 +46,7 @@ interface Fixture {
   leagueId: number;
 }
 
-function withFingerprint<T extends ScheduleCommandRequest>(request: T): Omit<T, "requestFingerprint"> & { requestFingerprint: string } {
+function withFingerprint<T extends CanonicalScheduleCommandFingerprintRequest>(request: T): Omit<T, "requestFingerprint"> & { requestFingerprint: string } {
   return {
     ...request,
     requestFingerprint: buildCanonicalScheduleCommandFingerprint(request),
@@ -113,7 +116,12 @@ async function fixture(label: string): Promise<Fixture> {
   };
 }
 
-async function command(f: Fixture, commandType: "generate" | "publish" | "cancel", label: string, reason?: string) {
+async function command(
+  f: Fixture,
+  commandType: "generate" | "publish" | "cancel" | "create_exception" | "create_makeup_relationship",
+  label: string,
+  reason?: string,
+) {
   const [row] = await db.insert(leagueScheduleCommands).values({
     organizationId: f.organizationId,
     leagueId: f.leagueId,
@@ -216,6 +224,32 @@ describe("A2 transactional occurrence invariants", () => {
     }))).rejects.toMatchObject({ code: "idempotency_conflict" });
   });
 
+  it("binds placement fingerprints to startAt and rejects reschedule as a placement command", async () => {
+    const f = await fixture("placement-contract");
+    const placement = {
+      organizationId: f.organizationId,
+      leagueId: f.leagueId,
+      actorUserId: f.actorUserId,
+      commandType: "generate" as const,
+      idempotencyKey: "placement-contract",
+      requestFingerprint: "",
+      authoritativeLocalDate: "2035-02-02",
+      startAt: "2035-02-03T00:00:00.000Z",
+    };
+    expect(buildCanonicalScheduleCommandFingerprint(placement)).not.toBe(
+      buildCanonicalScheduleCommandFingerprint({ ...placement, startAt: "2035-02-03T01:00:00.000Z" }),
+    );
+
+    const invalidPlacement = {
+      ...withFingerprint(placement),
+      commandType: "reschedule" as const,
+    };
+    await expect(
+      // @ts-expect-error Reschedules require OccurrenceRescheduleRequest and rescheduleOccurrence.
+      validateOccurrencePlacement(invalidPlacement),
+    ).rejects.toMatchObject({ code: "invalid_command" });
+  });
+
   it("rejects same-day collisions by default, allows distinct-time audited overrides, and always rejects exact starts", async () => {
     const f = await fixture("same-day");
     await occurrence(f, "same-day-existing", { localDate: "2035-02-02", startAt: "2035-02-03T00:00:00.000Z" });
@@ -277,6 +311,33 @@ describe("A2 transactional occurrence invariants", () => {
     }))).rejects.toMatchObject({ code: "exact_start_collision" });
   });
 
+  it("revalidates an existing placement preflight before a later locked mutation", async () => {
+    const f = await fixture("placement-preflight-revalidation");
+    const request = withFingerprint({
+      organizationId: f.organizationId,
+      leagueId: f.leagueId,
+      actorUserId: f.actorUserId,
+      commandType: "generate" as const,
+      requestFingerprint: "",
+      idempotencyKey: "placement-preflight-revalidation",
+      authoritativeLocalDate: "2035-02-09",
+      startAt: "2035-02-10T00:00:00.000Z",
+    });
+    await expect(validateOccurrencePlacement(request)).resolves.toBeDefined();
+    await occurrence(f, "placement-preflight-competitor", {
+      localDate: request.authoritativeLocalDate,
+      startAt: "2035-02-10T01:00:00.000Z",
+    });
+
+    let mutationCalled = false;
+    await expect(withLockedOccurrencePlacementMutation(request, async () => {
+      mutationCalled = true;
+      return undefined;
+    })).rejects.toMatchObject({ code: "same_day_collision" });
+    expect(mutationCalled).toBe(false);
+    await expect(validateOccurrencePlacement(request)).rejects.toMatchObject({ code: "same_day_collision" });
+  });
+
   it("fails closed for cross-tenant scope and serializes concurrent same-day attempts", async () => {
     const first = await fixture("tenant-a");
     const second = await fixture("tenant-b");
@@ -317,7 +378,15 @@ describe("A2 transactional occurrence invariants", () => {
     };
     const attempt = (label: string, startAt: string) => withLockedOccurrencePlacementMutation(
       withFingerprint({ ...base, idempotencyKey: `empty-race-${label}`, startAt }),
-      async ({ tx, command }) => {
+      async ({ tx, command, existing }) => {
+        if (existing) {
+          const [prior] = await tx.select({ id: leagueOccurrences.id }).from(leagueOccurrences).where(and(
+            eq(leagueOccurrences.organizationId, f.organizationId),
+            eq(leagueOccurrences.leagueId, f.leagueId),
+            eq(leagueOccurrences.lastCommandId, command.id),
+          )).for("update");
+          if (prior) return prior.id;
+        }
         const [inserted] = await tx.insert(leagueOccurrences).values({
           organizationId: f.organizationId,
           leagueId: f.leagueId,
@@ -340,14 +409,20 @@ describe("A2 transactional occurrence invariants", () => {
         return inserted?.id;
       },
     );
-    const outcomes = await Promise.allSettled([
-      attempt("one", "2035-02-10T00:00:00.000Z"),
-      attempt("two", "2035-02-10T01:00:00.000Z"),
-    ]);
+    const candidates = [
+      { label: "one", startAt: "2035-02-10T00:00:00.000Z" },
+      { label: "two", startAt: "2035-02-10T01:00:00.000Z" },
+    ];
+    const outcomes = await Promise.allSettled(candidates.map(({ label, startAt }) => attempt(label, startAt)));
     expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
     expect(outcomes.filter((outcome) => outcome.status === "rejected")).toHaveLength(1);
     const rejected = outcomes.find((outcome) => outcome.status === "rejected");
     expect(rejected).toMatchObject({ reason: { code: "same_day_collision" } });
+    const winnerIndex = outcomes.findIndex((outcome) => outcome.status === "fulfilled");
+    const winner = outcomes[winnerIndex];
+    const winningCandidate = candidates[winnerIndex];
+    if (!winner || winner.status !== "fulfilled" || !winningCandidate) throw new Error("concurrent mutation winner is missing");
+    await expect(attempt(winningCandidate.label, winningCandidate.startAt)).resolves.toBe(winner.value);
     expect(await db.select().from(leagueOccurrences).where(and(
       eq(leagueOccurrences.organizationId, f.organizationId),
       eq(leagueOccurrences.leagueId, f.leagueId),
@@ -430,6 +505,7 @@ describe("A2 transactional occurrence invariants", () => {
       reason: "A2 exception placement test",
       lastCommandId: exceptionCommand.id,
     });
+    await expect(validateExceptionPlacement(exceptionRequest)).resolves.toMatchObject({ id: exceptionCommand.id });
     await expect(validateExceptionPlacement(withFingerprint({
       ...exceptionRequest,
       idempotencyKey: "exception-placement-different-key",
@@ -449,11 +525,86 @@ describe("A2 transactional occurrence invariants", () => {
     });
     const makeupCommand = await validateMakeupRelationship(makeupRequest);
     await expect(validateMakeupRelationship(makeupRequest)).resolves.toMatchObject({ id: makeupCommand.id });
+    await db.insert(leagueOccurrenceRelationships).values({
+      organizationId: f.organizationId,
+      leagueId: f.leagueId,
+      kind: "makeup_for",
+      sourceOccurrenceId: source.id,
+      targetOccurrenceId: target.id,
+      state: "draft",
+      lastCommandId: makeupCommand.id,
+    });
+    await expect(validateMakeupRelationship(makeupRequest)).resolves.toMatchObject({ id: makeupCommand.id });
     await expect(validateMakeupRelationship(withFingerprint({
       ...makeupRequest,
       targetOccurrenceId: source.id,
       idempotencyKey: makeupRequest.idempotencyKey,
     }))).rejects.toMatchObject({ code: "idempotency_conflict" });
+  });
+
+  it("revalidates existing exception and makeup preflights against later competing state", async () => {
+    const f = await fixture("exception-makeup-preflight-revalidation");
+    const exceptionRequest = withFingerprint({
+      organizationId: f.organizationId,
+      leagueId: f.leagueId,
+      actorUserId: f.actorUserId,
+      commandType: "create_exception" as const,
+      idempotencyKey: "exception-preflight-revalidation",
+      requestFingerprint: "",
+      authoritativeLocalDate: "2035-03-09",
+      startAt: "2035-03-10T00:00:00.000Z",
+    });
+    await expect(validateExceptionPlacement(exceptionRequest)).resolves.toBeDefined();
+    const competingExceptionCommand = await command(f, "create_exception", "exception-preflight-competitor");
+    await db.insert(leagueScheduleExceptions).values({
+      organizationId: f.organizationId,
+      leagueId: f.leagueId,
+      kind: "skip",
+      localDate: exceptionRequest.authoritativeLocalDate,
+      timezone: "America/New_York",
+      source: "manual",
+      lifecycle: "draft",
+      reason: "A competing exception appeared after preflight",
+      lastCommandId: competingExceptionCommand.id,
+    });
+    let exceptionMutationCalled = false;
+    await expect(withLockedExceptionPlacementMutation(exceptionRequest, async () => {
+      exceptionMutationCalled = true;
+      return undefined;
+    })).rejects.toMatchObject({ code: "exception_collision" });
+    expect(exceptionMutationCalled).toBe(false);
+    await expect(validateExceptionPlacement(exceptionRequest)).rejects.toMatchObject({ code: "exception_collision" });
+
+    const source = await occurrence(f, "makeup-preflight-source", { kind: "makeup" });
+    const target = await occurrence(f, "makeup-preflight-target", { lifecycle: "published", status: "cancelled" });
+    const makeupRequest = withFingerprint({
+      organizationId: f.organizationId,
+      leagueId: f.leagueId,
+      actorUserId: f.actorUserId,
+      commandType: "create_makeup_relationship" as const,
+      idempotencyKey: "makeup-preflight-revalidation",
+      requestFingerprint: "",
+      sourceOccurrenceId: source.id,
+      targetOccurrenceId: target.id,
+    });
+    await expect(validateMakeupRelationship(makeupRequest)).resolves.toBeDefined();
+    const competingRelationshipCommand = await command(f, "create_makeup_relationship", "makeup-preflight-competitor");
+    await db.insert(leagueOccurrenceRelationships).values({
+      organizationId: f.organizationId,
+      leagueId: f.leagueId,
+      kind: "makeup_for",
+      sourceOccurrenceId: source.id,
+      targetOccurrenceId: target.id,
+      state: "draft",
+      lastCommandId: competingRelationshipCommand.id,
+    });
+    let makeupMutationCalled = false;
+    await expect(withLockedMakeupRelationshipMutation(makeupRequest, async () => {
+      makeupMutationCalled = true;
+      return undefined;
+    })).rejects.toMatchObject({ code: "invalid_command" });
+    expect(makeupMutationCalled).toBe(false);
+    await expect(validateMakeupRelationship(makeupRequest)).rejects.toMatchObject({ code: "invalid_command" });
   });
 
   it("discards a draft atomically, retains identity, supersedes terms, and records revisions", async () => {

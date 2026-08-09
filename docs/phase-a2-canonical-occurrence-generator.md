@@ -70,7 +70,12 @@ trusting a caller hash. Same-key/same-payload retries converge; a same-key
 payload change fails closed. The placement, exception, and makeup APIs also
 provide a transaction-scoped callback that holds the advisory lock through
 validation and the caller's eventual B2 mutation. Their standalone validators
-are explicitly preflight-only. Validation covers same-day and league-wide
+are explicitly preflight-only. A same-key retry always revalidates current
+state; only rows already attributed to that same command are excluded as its
+own atomic result, so a preflight command cannot hide later competing state.
+Occurrence placement accepts only generation and publication commands;
+rescheduling uses its dedicated complete local-date/time/timezone/fold
+contract. Validation covers same-day and league-wide
 exact-start collisions, audited distinct-time overrides, exception overlap,
 makeup source/target/cancelled-target rules, serialized source revisions,
 rescheduling, cancellation, and atomic draft discard. Rescheduling derives and
