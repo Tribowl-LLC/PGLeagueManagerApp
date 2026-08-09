@@ -162,11 +162,24 @@ describe("B1 Completed-Summer selection", () => {
 });
 
 describe("B1 deterministic legacy comparison", () => {
-  it("reports unique date/number matches while keeping legacy start instants unproven", () => {
+  it("does not emit exact matches when legacy start instants are unproven", () => {
     const report = comparison();
-    expect(report.matchResults.filter((finding) => finding.code === "exact_match")).toHaveLength(3);
+    expect(report.matchResults.filter((finding) => finding.code === "exact_match")).toHaveLength(0);
     expect(report.discrepancies.filter((finding) => finding.code === "legacy_start_time_unproven")).toHaveLength(3);
     expect(report.discrepancies.some((finding) => finding.code === "missing_expected_session")).toBe(false);
+    expect(report.summary.matchCount).toBe(0);
+  });
+
+  it("emits exact matches only for one-to-one date, number, and proven-start agreement", () => {
+    const generated = generateCanonicalOccurrences(generatorInput());
+    const rows = generated.occurrenceCandidates.flatMap((candidate) => session(
+      candidate.competitionNumber as number,
+      candidate.authoritativeLocalDate,
+    ).map((row) => ({ ...row, provenStartAt: candidate.startAt })));
+    const report = comparison({ generationResult: generated, legacyGameRows: rows });
+    expect(report.matchResults.filter((finding) => finding.code === "exact_match")).toHaveLength(3);
+    expect(report.discrepancies.some((finding) => finding.code === "legacy_start_time_unproven")).toBe(false);
+    expect(report.summary.matchCount).toBe(3);
   });
 
   it("surfaces missing, unexpected, date-hint, and numbering mismatches without arbitrary matching", () => {
@@ -193,6 +206,28 @@ describe("B1 deterministic legacy comparison", () => {
     expect(report.matchResults.some((finding) => finding.code === "exact_match")).toBe(false);
     expect(report.discrepancies.filter((finding) => finding.code === "unexpected_legacy_session")).toHaveLength(2);
     expect(report.discrepancies.map((finding) => finding.code)).toContain("missing_expected_session");
+  });
+
+  it("does not reuse one legacy session across colliding canonical candidates", () => {
+    const generated = generateCanonicalOccurrences(generatorInput());
+    const first = generated.occurrenceCandidates[0];
+    if (!first) throw new Error("canonical collision fixture is missing");
+    const colliding = {
+      ...generated,
+      occurrenceCandidates: [
+        ...generated.occurrenceCandidates,
+        { ...first, candidateReference: "canonical-collision", plannedOrdinal: 99 },
+      ],
+    };
+    const rows = session(1, first.authoritativeLocalDate).map((row) => ({ ...row, provenStartAt: first.startAt }));
+    const report = comparison({ generationResult: colliding, legacyGameRows: rows });
+    expect(report.matchResults.some((finding) => finding.code === "exact_match")).toBe(false);
+    expect(report.discrepancies.map((finding) => finding.code)).toEqual(expect.arrayContaining([
+      "same_day_collision",
+      "exact_start_collision",
+      "missing_expected_session",
+      "unexpected_legacy_session",
+    ]));
   });
 
   it("reports a proven start mismatch without overstating it as an exact match", () => {
@@ -257,6 +292,7 @@ describe("B1 deterministic legacy comparison", () => {
         mechanicalWeekOfDate: "2025-06-01",
         operationId: null,
         allocationIndex: null,
+        operationLinkProof: null,
         refunded: false,
         disputed: false,
       }, {
@@ -268,6 +304,7 @@ describe("B1 deterministic legacy comparison", () => {
         mechanicalWeekOfDate: "2025-06-08",
         operationId: "00000000-0000-4000-8000-000000000001",
         allocationIndex: 0,
+        operationLinkProof: "tenant_and_immutable_tuple",
         refunded: true,
         disputed: true,
       }],
@@ -307,6 +344,7 @@ describe("B1 deterministic legacy comparison", () => {
     expect(proven?.legacyPaymentIds).toEqual([502]);
     expect(proven?.canonicalCandidateReference).toBeNull();
     expect(report.paymentEvidence.operations[0]).toMatchObject({ refunded: true, disputed: true });
+    expect(report.summary.matchCount).toBe(0);
   });
 
   it("keeps double-pay outside generation and physical matching", () => {

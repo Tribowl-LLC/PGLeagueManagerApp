@@ -8,7 +8,7 @@ import {
 
 export const COMPLETED_SUMMER_SELECTION_CONTRACT_VERSION = "completed-summer-selection/1";
 export const CANONICAL_OCCURRENCE_COMPARISON_REPORT_VERSION = "canonical-occurrence-comparison-report/1";
-export const COMPLETED_SUMMER_COMPARATOR_VERSION = "completed-summer-comparator/1";
+export const COMPLETED_SUMMER_COMPARATOR_VERSION = "completed-summer-comparator/2";
 
 export interface CompletedSummerOperatorInputs {
   organizationId: number;
@@ -123,6 +123,7 @@ export interface LegacyPaymentEvidence {
   mechanicalWeekOfDate: string | null;
   operationId: string | null;
   allocationIndex: number | null;
+  operationLinkProof: "tenant_and_immutable_tuple" | null;
   refunded: boolean;
   disputed: boolean;
 }
@@ -614,6 +615,8 @@ export function compareCompletedSummerLeague(input: CompletedSummerLeagueCompari
     const comparableSessions = sessions.filter((session) => session.mechanicalLocalDate !== null);
     const sessionsByDate = new Map<string, LegacySessionEvidence[]>();
     const activitySessionsByDate = new Map<string, LegacySessionEvidence[]>();
+    const candidatesByDate = new Map<string, CanonicalOccurrenceCandidate[]>();
+    const candidatesByStart = new Map<string, CanonicalOccurrenceCandidate[]>();
     for (const session of comparableSessions) {
       const date = session.mechanicalLocalDate as string;
       const values = sessionsByDate.get(date) ?? [];
@@ -626,6 +629,14 @@ export function compareCompletedSummerLeague(input: CompletedSummerLeagueCompari
         values.push(session);
         activitySessionsByDate.set(date, values);
       }
+    }
+    for (const candidate of input.generationResult.occurrenceCandidates) {
+      const dateMembers = candidatesByDate.get(candidate.authoritativeLocalDate) ?? [];
+      dateMembers.push(candidate);
+      candidatesByDate.set(candidate.authoritativeLocalDate, dateMembers);
+      const startMembers = candidatesByStart.get(candidate.startAt) ?? [];
+      startMembers.push(candidate);
+      candidatesByStart.set(candidate.startAt, startMembers);
     }
     for (const exception of input.generationResult.exceptionCandidates) {
       const conflicts = activitySessionsByDate.get(exception.authoritativeLocalDate) ?? [];
@@ -663,11 +674,15 @@ export function compareCompletedSummerLeague(input: CompletedSummerLeagueCompari
         continue;
       }
       const exactDateSessions = sessionsByDate.get(candidate.authoritativeLocalDate) ?? [];
-      if (exactDateSessions.length === 1) {
+      const canonicalDateCandidates = candidatesByDate.get(candidate.authoritativeLocalDate) ?? [];
+      const canonicalStartCandidates = candidatesByStart.get(candidate.startAt) ?? [];
+      const uniqueCanonicalPhysicalCandidate = canonicalDateCandidates.length === 1
+        && canonicalStartCandidates.length === 1;
+      if (exactDateSessions.length === 1 && uniqueCanonicalPhysicalCandidate) {
         const session = exactDateSessions[0];
         matchedSessions.add(session.sessionReference);
         if (session.weekNumber === candidate.competitionNumber) {
-          if (session.provenStartAt === null || session.provenStartAt === candidate.startAt) {
+          if (session.provenStartAt === candidate.startAt) {
             matches.push(finding({
               referenceSeed: { code: "exact_match", candidate: candidate.candidateReference, session: session.sessionReference },
               severity: "info",
@@ -677,7 +692,7 @@ export function compareCompletedSummerLeague(input: CompletedSummerLeagueCompari
               legacyPaymentIds: [],
               paymentOperationIds: [],
               evidence: { localDate: candidate.authoritativeLocalDate, competitionNumber: candidate.competitionNumber },
-              explanation: "One legacy session uniquely matches the canonical local date and competition number.",
+              explanation: "One legacy session uniquely matches the canonical local date, competition number, and proven UTC start instant.",
             }));
           }
         } else {
@@ -748,6 +763,8 @@ export function compareCompletedSummerLeague(input: CompletedSummerLeagueCompari
         evidence: { canonicalLocalDate: candidate.authoritativeLocalDate, competitionNumber: candidate.competitionNumber },
         explanation: exactDateSessions.length > 1
           ? "Multiple legacy sessions share the canonical date, so no arbitrary match was selected."
+          : !uniqueCanonicalPhysicalCandidate
+            ? "The canonical date or start instant collides with another canonical candidate, so no one-to-one match was selected."
           : "No uniquely date-matched legacy session proves the expected canonical competition activity.",
       }));
     }
@@ -772,9 +789,13 @@ export function compareCompletedSummerLeague(input: CompletedSummerLeagueCompari
     allocations: [...operation.allocations].sort((left, right) => left.allocationIndex - right.allocationIndex),
     disputeEvidence: [...operation.disputeEvidence].sort((left, right) => compareStrings(left.disputeId, right.disputeId)),
   })).sort((left, right) => compareStrings(left.operationId, right.operationId));
-  const operationIds = new Set(sortedOperations.map((operation) => operation.operationId));
+  const operationAllocationKeys = new Set(sortedOperations.flatMap((operation) => operation.allocations
+    .map((allocation) => `${operation.operationId}:${allocation.allocationIndex}`)));
   for (const payment of sortedLegacyPayments) {
-    const proven = payment.operationId !== null && payment.allocationIndex !== null && operationIds.has(payment.operationId);
+    const proven = payment.operationLinkProof === "tenant_and_immutable_tuple"
+      && payment.operationId !== null
+      && payment.allocationIndex !== null
+      && operationAllocationKeys.has(`${payment.operationId}:${payment.allocationIndex}`);
     if (proven) continue;
     discrepancies.push(finding({
       referenceSeed: { code: "ambiguous_historical_payment", paymentId: payment.paymentId },
@@ -790,7 +811,8 @@ export function compareCompletedSummerLeague(input: CompletedSummerLeagueCompari
     }));
   }
   for (const operation of sortedOperations) {
-    const linkedPayments = sortedLegacyPayments.filter((payment) => payment.operationId === operation.operationId);
+    const linkedPayments = sortedLegacyPayments.filter((payment) => payment.operationId === operation.operationId
+      && payment.operationLinkProof === "tenant_and_immutable_tuple");
     matches.push(finding({
       referenceSeed: { code: "proven_payment_operation_evidence", operationId: operation.operationId },
       severity: operation.refunded || operation.disputed ? "warning" : "info",
@@ -847,7 +869,7 @@ export function compareCompletedSummerLeague(input: CompletedSummerLeagueCompari
     matchResults: matches,
     discrepancies,
     summary: {
-      matchCount: matches.length,
+      matchCount: matches.filter((item) => item.code === "exact_match").length,
       discrepancyCount: discrepancies.length,
       ...summaryCounts,
     },

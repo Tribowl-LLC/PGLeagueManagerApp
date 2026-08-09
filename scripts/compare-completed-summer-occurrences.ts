@@ -46,7 +46,11 @@ interface GameEvidenceRow {
 interface PaymentEvidenceRow {
   payment_id: number;
   league_id: number;
+  bowler_id: number;
+  bowler_organization_id: number;
   amount_minor: number;
+  lineage_amount_minor: number | null;
+  prize_fund_amount_minor: number | null;
   status: string;
   payment_type: string;
   week_of_raw: string;
@@ -68,6 +72,7 @@ interface OperationEvidenceRow {
   snapshot_version: number;
   payment_id: number | null;
   allocation_index: number | null;
+  allocation_bowler_id: number | null;
   allocation_amount_minor: number | null;
   lineage_amount_minor: number | null;
   prize_fund_amount_minor: number | null;
@@ -355,12 +360,21 @@ async function loadReport(client: pg.Client, inputs: CompletedSummerOperatorInpu
         g.game_number,
         to_char(g.date, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS raw_timestamp,
         to_char(g.date, 'YYYY-MM-DD') AS mechanical_date,
-        COALESCE(array_agg(s.id ORDER BY s.id) FILTER (WHERE s.id IS NOT NULL), ARRAY[]::integer[]) AS score_ids
+        COALESCE(
+          array_agg(s.id ORDER BY s.id) FILTER (WHERE sb.id IS NOT NULL AND st.id IS NOT NULL),
+          ARRAY[]::integer[]
+        ) AS score_ids
       FROM games AS g
       JOIN leagues AS l
         ON l.id = g.league_id
        AND l.organization_id = $1
       LEFT JOIN scores AS s ON s.game_id = g.id
+      LEFT JOIN bowlers AS sb
+        ON sb.id = s.bowler_id
+       AND sb.organization_id = $1
+      LEFT JOIN teams AS st
+        ON st.id = s.team_id
+       AND st.league_id = g.league_id
       WHERE g.league_id = ANY($2::integer[])
       GROUP BY g.id, g.league_id, g.week_number, g.game_number, g.date
       ORDER BY g.league_id, g.week_number, g.game_number, g.id
@@ -369,7 +383,11 @@ async function loadReport(client: pg.Client, inputs: CompletedSummerOperatorInpu
       SELECT
         p.id AS payment_id,
         p.league_id,
+        p.bowler_id,
+        pb.organization_id AS bowler_organization_id,
         p.amount AS amount_minor,
+        p.lineage_amount AS lineage_amount_minor,
+        p.prize_fund_amount AS prize_fund_amount_minor,
         p.status,
         p.type AS payment_type,
         to_char(p.week_of, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS week_of_raw,
@@ -381,6 +399,7 @@ async function loadReport(client: pg.Client, inputs: CompletedSummerOperatorInpu
       JOIN leagues AS l
         ON l.id = p.league_id
        AND l.organization_id = $1
+      JOIN bowlers AS pb ON pb.id = p.bowler_id
       WHERE p.league_id = ANY($2::integer[])
       ORDER BY p.league_id, p.id
     `, [inputs.organizationId, leagueIds]),
@@ -397,6 +416,7 @@ async function loadReport(client: pg.Client, inputs: CompletedSummerOperatorInpu
         ss.snapshot_version,
         NULL::integer AS payment_id,
         a.allocation_index,
+        a.bowler_id AS allocation_bowler_id,
         a.amount_minor AS allocation_amount_minor,
         a.lineage_amount_minor,
         a.prize_fund_amount_minor,
@@ -413,6 +433,9 @@ async function loadReport(client: pg.Client, inputs: CompletedSummerOperatorInpu
       JOIN payment_schedules AS ps
         ON ps.id = po.payment_schedule_id
        AND ps.league_id = ss.league_id
+      JOIN bowlers AS psb
+        ON psb.id = ps.bowler_id
+       AND psb.organization_id = $1
       JOIN leagues AS l
         ON l.id = ss.league_id
        AND l.organization_id = $1
@@ -422,6 +445,13 @@ async function loadReport(client: pg.Client, inputs: CompletedSummerOperatorInpu
       LEFT JOIN scheduled_payment_operation_allocations AS a ON a.operation_id = po.id
       WHERE ss.league_id = ANY($2::integer[])
         AND (ss.location_id IS NULL OR loc.id IS NOT NULL)
+        AND NOT EXISTS (
+          SELECT 1
+          FROM scheduled_payment_operation_allocations AS invalid_allocation
+          JOIN bowlers AS invalid_bowler ON invalid_bowler.id = invalid_allocation.bowler_id
+          WHERE invalid_allocation.operation_id = po.id
+            AND invalid_bowler.organization_id IS DISTINCT FROM $1
+        )
       ORDER BY ss.league_id, po.id, a.allocation_index
     `, [inputs.organizationId, leagueIds]),
     client.query<OperationEvidenceRow>(`
@@ -437,6 +467,7 @@ async function loadReport(client: pg.Client, inputs: CompletedSummerOperatorInpu
         ss.snapshot_version,
         NULL::integer AS payment_id,
         a.allocation_index,
+        a.bowler_id AS allocation_bowler_id,
         a.amount_minor AS allocation_amount_minor,
         a.lineage_amount_minor,
         a.prize_fund_amount_minor,
@@ -453,12 +484,22 @@ async function loadReport(client: pg.Client, inputs: CompletedSummerOperatorInpu
       JOIN leagues AS l
         ON l.id = ss.league_id
        AND l.organization_id = $1
+      JOIN bowlers AS payer
+        ON payer.id = ss.payer_bowler_id
+       AND payer.organization_id = $1
       LEFT JOIN locations AS loc
         ON loc.id = ss.location_id
        AND loc.organization_id = $1
       LEFT JOIN interactive_payment_operation_allocations AS a ON a.operation_id = po.id
       WHERE ss.league_id = ANY($2::integer[])
         AND (ss.location_id IS NULL OR loc.id IS NOT NULL)
+        AND NOT EXISTS (
+          SELECT 1
+          FROM interactive_payment_operation_allocations AS invalid_allocation
+          JOIN bowlers AS invalid_bowler ON invalid_bowler.id = invalid_allocation.bowler_id
+          WHERE invalid_allocation.operation_id = po.id
+            AND invalid_bowler.organization_id IS DISTINCT FROM $1
+        )
       ORDER BY ss.league_id, po.id, a.allocation_index
     `, [inputs.organizationId, leagueIds]),
     client.query<OperationEvidenceRow>(`
@@ -474,6 +515,7 @@ async function loadReport(client: pg.Client, inputs: CompletedSummerOperatorInpu
         ss.snapshot_version,
         ss.payment_id,
         NULL::integer AS allocation_index,
+        NULL::integer AS allocation_bowler_id,
         NULL::integer AS allocation_amount_minor,
         NULL::integer AS lineage_amount_minor,
         NULL::integer AS prize_fund_amount_minor,
@@ -487,6 +529,9 @@ async function loadReport(client: pg.Client, inputs: CompletedSummerOperatorInpu
       JOIN payments AS p
         ON p.id = ss.payment_id
        AND p.league_id = ss.league_id
+      JOIN bowlers AS pb
+        ON pb.id = p.bowler_id
+       AND pb.organization_id = $1
       JOIN leagues AS l
         ON l.id = ss.league_id
        AND l.organization_id = $1
@@ -517,23 +562,74 @@ async function loadReport(client: pg.Client, inputs: CompletedSummerOperatorInpu
         JOIN payment_operations AS po ON po.id = ss.operation_id
         LEFT JOIN payment_schedules AS ps ON ps.id = po.payment_schedule_id
         LEFT JOIN locations AS loc ON loc.id = ss.location_id
+        LEFT JOIN bowlers AS psb ON psb.id = ps.bowler_id
         WHERE ss.league_id = ANY($2::integer[])
-          AND (po.organization_id <> $1 OR ps.league_id IS DISTINCT FROM ss.league_id OR (ss.location_id IS NOT NULL AND loc.organization_id IS DISTINCT FROM $1))
+          AND (
+            po.organization_id <> $1
+            OR po.operation_type IS DISTINCT FROM 'scheduled_charge'
+            OR ps.league_id IS DISTINCT FROM ss.league_id
+            OR psb.organization_id IS DISTINCT FROM $1
+            OR (ss.location_id IS NOT NULL AND loc.organization_id IS DISTINCT FROM $1)
+            OR EXISTS (
+              SELECT 1
+              FROM scheduled_payment_operation_allocations AS invalid_allocation
+              JOIN bowlers AS invalid_bowler ON invalid_bowler.id = invalid_allocation.bowler_id
+              WHERE invalid_allocation.operation_id = po.id
+                AND invalid_bowler.organization_id IS DISTINCT FROM $1
+            )
+          )
         UNION ALL
         SELECT ss.league_id
         FROM interactive_payment_operation_snapshots AS ss
         JOIN payment_operations AS po ON po.id = ss.operation_id
         LEFT JOIN locations AS loc ON loc.id = ss.location_id
+        LEFT JOIN bowlers AS payer ON payer.id = ss.payer_bowler_id
         WHERE ss.league_id = ANY($2::integer[])
-          AND (po.organization_id <> $1 OR (ss.location_id IS NOT NULL AND loc.organization_id IS DISTINCT FROM $1))
+          AND (
+            po.organization_id <> $1
+            OR po.operation_type IS DISTINCT FROM 'interactive_charge'
+            OR payer.organization_id IS DISTINCT FROM $1
+            OR (ss.location_id IS NOT NULL AND loc.organization_id IS DISTINCT FROM $1)
+            OR EXISTS (
+              SELECT 1
+              FROM interactive_payment_operation_allocations AS invalid_allocation
+              JOIN bowlers AS invalid_bowler ON invalid_bowler.id = invalid_allocation.bowler_id
+              WHERE invalid_allocation.operation_id = po.id
+                AND invalid_bowler.organization_id IS DISTINCT FROM $1
+            )
+          )
         UNION ALL
         SELECT ss.league_id
         FROM refund_payment_operation_snapshots AS ss
         JOIN payment_operations AS po ON po.id = ss.operation_id
         LEFT JOIN payments AS p ON p.id = ss.payment_id
         LEFT JOIN locations AS loc ON loc.id = ss.location_id
+        LEFT JOIN bowlers AS pb ON pb.id = p.bowler_id
         WHERE ss.league_id = ANY($2::integer[])
-          AND (po.organization_id <> $1 OR p.league_id IS DISTINCT FROM ss.league_id OR loc.organization_id IS DISTINCT FROM $1)
+          AND (
+            po.organization_id <> $1
+            OR po.operation_type IS DISTINCT FROM 'refund'
+            OR p.league_id IS DISTINCT FROM ss.league_id
+            OR pb.organization_id IS DISTINCT FROM $1
+            OR loc.organization_id IS DISTINCT FROM $1
+          )
+        UNION ALL
+        SELECT g.league_id
+        FROM scores AS s
+        JOIN games AS g ON g.id = s.game_id
+        LEFT JOIN bowlers AS sb ON sb.id = s.bowler_id
+        LEFT JOIN teams AS st ON st.id = s.team_id
+        WHERE g.league_id = ANY($2::integer[])
+          AND (
+            sb.organization_id IS DISTINCT FROM $1
+            OR st.league_id IS DISTINCT FROM g.league_id
+          )
+        UNION ALL
+        SELECT p.league_id
+        FROM payments AS p
+        LEFT JOIN bowlers AS pb ON pb.id = p.bowler_id
+        WHERE p.league_id = ANY($2::integer[])
+          AND pb.organization_id IS DISTINCT FROM $1
       ) AS evidence
       GROUP BY evidence.league_id
       ORDER BY evidence.league_id
@@ -593,25 +689,45 @@ async function loadReport(client: pg.Client, inputs: CompletedSummerOperatorInpu
   }
   const leagueReports = selected.map(({ row, selection, generatorInput }) => {
     const leagueOperations = operationsByLeague.get(row.league_id) ?? [];
-    const validAllocationKeys = new Set(leagueOperations.flatMap((operation) => operation.allocations.map((allocation) => `${operation.operationId}:${allocation.allocationIndex}`)));
+    const validOperationIds = new Set(leagueOperations.map((operation) => operation.operationId));
+    const validAllocationRows = new Map(allOperationRows.flatMap((operation) => operation.league_id === row.league_id
+      && validOperationIds.has(operation.operation_id)
+      && operation.allocation_index !== null
+        ? [[`${operation.operation_id}:${operation.allocation_index}`, operation] as const]
+        : []));
     let tenantEvidenceValid = (invalidByLeague.get(row.league_id) ?? 0) === 0;
-    const leaguePayments: LegacyPaymentEvidence[] = paymentsQuery.rows.filter((payment) => payment.league_id === row.league_id).map((payment) => {
-      const operationLinkValid = payment.payment_operation_id === null
-        || (payment.allocation_index !== null && validAllocationKeys.has(`${payment.payment_operation_id}:${payment.allocation_index}`));
-      if (!operationLinkValid) tenantEvidenceValid = false;
-      return {
+    const leaguePayments: LegacyPaymentEvidence[] = paymentsQuery.rows
+      .filter((payment) => payment.league_id === row.league_id)
+      .flatMap((payment) => {
+        if (payment.bowler_organization_id !== inputs.organizationId) {
+          tenantEvidenceValid = false;
+          return [];
+        }
+        const operationLinkAbsent = payment.payment_operation_id === null && payment.allocation_index === null;
+        const allocation = payment.payment_operation_id === null || payment.allocation_index === null
+          ? undefined
+          : validAllocationRows.get(`${payment.payment_operation_id}:${payment.allocation_index}`);
+        const operationLinkValid = operationLinkAbsent || (allocation !== undefined
+          && allocation.allocation_bowler_id === payment.bowler_id
+          && allocation.allocation_amount_minor === payment.amount_minor
+          && allocation.lineage_amount_minor === payment.lineage_amount_minor
+          && allocation.prize_fund_amount_minor === payment.prize_fund_amount_minor
+          && allocation.week_of_raw === payment.week_of_raw);
+        if (!operationLinkValid) tenantEvidenceValid = false;
+        return [{
         paymentId: payment.payment_id,
         amountMinor: payment.amount_minor,
         status: payment.status,
         type: payment.payment_type,
         weekOfRaw: payment.week_of_raw,
         mechanicalWeekOfDate: legacyDate(payment.week_of_raw),
-        operationId: operationLinkValid ? payment.payment_operation_id : null,
-        allocationIndex: operationLinkValid ? payment.allocation_index : null,
+        operationId: !operationLinkAbsent && operationLinkValid ? payment.payment_operation_id : null,
+        allocationIndex: !operationLinkAbsent && operationLinkValid ? payment.allocation_index : null,
+        operationLinkProof: !operationLinkAbsent && operationLinkValid ? "tenant_and_immutable_tuple" as const : null,
         refunded: payment.refunded,
         disputed: payment.disputed,
-      };
-    });
+        }];
+      });
     const gameRows: LegacyGameRowEvidence[] = gamesQuery.rows.filter((game) => game.league_id === row.league_id).map((game) => ({
       gameId: game.game_id,
       leagueId: game.league_id,

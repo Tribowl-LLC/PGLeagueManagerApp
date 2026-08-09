@@ -63,7 +63,7 @@ league-to-generator input loader.
 ## Report and fingerprint
 
 The report contract is `canonical-occurrence-comparison-report/1`; the
-implementation version is `completed-summer-comparator/1`. The report records
+implementation version is `completed-summer-comparator/2`. The report records
 normalized operator inputs, A2 generator/result/resolver versions, selection
 counts, ordered league reports, aggregate classifications, and ordered fatal
 errors. Per-league output includes selection proof, raw and normalized legacy
@@ -89,15 +89,20 @@ The pure comparator uses these rules in order:
    multiple dates within one session are a conflict and cannot be selected by
    row ID or array order.
 2. A canonical candidate uses a legacy session only when exactly one session
-   has the same mechanically extracted date. A legacy timestamp can carry a
+   has the same mechanically extracted date and the canonical candidate is
+   itself unique by both local date and UTC start. Canonical collisions never
+   reuse a legacy session and remain unmatched. A legacy timestamp can carry a
    separately proven UTC start in the pure contract, but database game rows do
    not currently have that reviewed proof and are marked
    `mechanical_date_only`.
 3. The legacy week number is compared with the canonical competition number
    only after the unique date match. A unique week-number similarity on a
    different date is only a `local_date_mismatch` hint; it is not a match.
-4. Multiple plausible sessions remain unmatched. No lowest-ID, first-row, or
-   nearest-date winner is chosen.
+4. `exact_match` requires one-to-one local-date agreement, competition-number
+   agreement, and a separately proven UTC start equal to the canonical start.
+   Date/number agreement with an unproven start emits
+   `legacy_start_time_unproven`, not `exact_match`. Multiple plausible sessions
+   remain unmatched. No lowest-ID, first-row, or nearest-date winner is chosen.
 5. A cancelled occurrence preserves its planned ordinal and expects no game
    or score activity. A skip candidate creates no occurrence. Activity on
    either date is reported with the appropriate conflict code.
@@ -105,7 +110,9 @@ The pure comparator uses these rules in order:
    sessions are unexpected. Game numbers 1 through 3 are inspected, and
    missing numbers are reported without manufacturing rows.
 7. Payment evidence never participates in occurrence matching. A game or date
-   match cannot imply a payment allocation.
+   match cannot imply a payment allocation. `matchCount` counts only
+   `exact_match` occurrence classifications; payment-operation evidence remains
+   an independently counted classification.
 
 Implemented classifications are `exact_match`, `missing_expected_session`,
 `unexpected_legacy_session`, `local_date_mismatch`,
@@ -128,8 +135,11 @@ under `legacyCollectionEvidence` and are explicitly excluded from generator
 input, physical matching, fingerprints, and billing-term amounts.
 
 Game evidence includes game IDs, logical keys, week/game numbers, raw stored
-timestamp text, mechanical dates, score IDs/counts, and activity flags. It
-excludes bowler/team names, score values, frames, notes, and full score
+timestamp text, mechanical dates, tenant-proven score IDs/counts, and activity
+flags. A score is accepted only after its bowler organization equals the
+operator tenant and its team belongs to the selected game's league.
+Contradictory score references fail closed and their IDs are suppressed. The
+report excludes bowler/team names, score values, frames, notes, and full score
 payloads.
 
 Payment evidence includes payment IDs, safe status/type/amount/week fields,
@@ -138,8 +148,13 @@ and version, operation cycle/status/currency, and sanitized refund/dispute
 state. A direct legacy `payments.week_of` remains ambiguous. An immutable
 scheduled or interactive snapshot plus a same-tenant operation and allocation
 is proven path-specific operation evidence, not proof of an occurrence
-obligation. Refund snapshots and disputes retain operational state without
-creating a link.
+obligation. Snapshot kinds must agree with the operation type; wrong-type rows
+are counted as invalid rather than disappearing from valid evidence. A linked
+payment is proven only when the payment bowler and allocation bowler belong to
+the operation tenant and the immutable tuple agrees exactly on operation,
+allocation index, bowler, league, amount, lineage amount, prize-fund amount,
+and stored cycle/week value. Refund snapshots and disputes retain operational
+state without creating a link.
 
 The report excludes encrypted fields, source/card/customer IDs, provider
 object/order/location/application/merchant/payment/dispute IDs, idempotency
@@ -148,13 +163,14 @@ authorization data, provider payloads, notes, and payment/bowler identities
 that are unnecessary for this comparison. It never imports decryption or a
 provider adapter.
 
-Games and scores are reached only through selected leagues. Payments are
-reached through selected leagues. Payment operations are accepted only through
-a selected-league snapshot, a matching operation organization, and a
-tenant-proven location; scheduled paths additionally prove the schedule's
-league, refund paths prove the payment's league, and linked payment allocations
-must exist in the accepted operation evidence. Contradictions fail closed and
-foreign details are suppressed.
+Games and scores are reached only through selected leagues, with score bowler
+ownership and team-league membership proven independently. Payments are
+reached through selected leagues and their bowler ownership is proven. Payment
+operations are accepted only through a selected-league snapshot, a matching
+operation organization, and a tenant-proven location; scheduled paths
+additionally prove the schedule's league, refund paths prove the payment's
+league, and linked payment allocations must exist in the accepted operation
+evidence. Contradictions fail closed and foreign details are suppressed.
 
 Existing A1 commands, generation runs, exceptions, occurrences, billing
 terms, relationships, and discrepancies are reported as counts only. B1 does

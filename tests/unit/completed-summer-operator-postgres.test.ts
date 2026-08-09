@@ -20,6 +20,7 @@ import {
   paymentOperations,
   payments,
   scores,
+  teams,
 } from "@shared/schema";
 import { deleteOrganization } from "../../server/storage/organizations";
 import { getTestDb } from "../setup/test-db";
@@ -34,6 +35,9 @@ let foreignLeagueId: number;
 let excludedLeagueId: number;
 let orgLessLeagueId: number;
 let operationId: string;
+let ownLocationId: number;
+let paymentBowlerId: number;
+let linkedPaymentId: number;
 
 async function createLeague(input: {
   organizationId: number | null;
@@ -73,6 +77,7 @@ beforeAll(async () => {
   const [ownLocation] = await db.insert(locations).values({ name: "B1 own location", organizationId }).returning({ id: locations.id });
   const [foreignLocation] = await db.insert(locations).values({ name: "B1 foreign location", organizationId: foreignOrganizationId }).returning({ id: locations.id });
   if (!ownLocation || !foreignLocation) throw new Error("B1 locations were not created");
+  ownLocationId = ownLocation.id;
 
   activeLeagueId = await createLeague({
     organizationId,
@@ -134,6 +139,7 @@ beforeAll(async () => {
   ]);
   const [bowler] = await db.insert(bowlers).values({ name: "B1 Payment Bowler", organizationId }).returning({ id: bowlers.id });
   if (!bowler) throw new Error("B1 bowler was not created");
+  paymentBowlerId = bowler.id;
   const [operation] = await db.insert(paymentOperations).values({
     organizationId,
     operationType: "interactive_charge",
@@ -173,16 +179,20 @@ beforeAll(async () => {
       weekOf: "2025-06-01T19:00:00.000Z",
     });
   });
-  await db.insert(payments).values({
+  const [linkedPayment] = await db.insert(payments).values({
     bowlerId: bowler.id,
     leagueId: activeLeagueId,
     amount: 2_000,
+    lineageAmount: 500,
+    prizeFundAmount: 1_500,
     weekOf: "2025-06-01T19:00:00.000Z",
     status: "paid",
     type: "square",
     paymentOperationId: operationId,
     paymentOperationAllocationIndex: 0,
-  });
+  }).returning({ id: payments.id });
+  if (!linkedPayment) throw new Error("B1 linked payment was not created");
+  linkedPaymentId = linkedPayment.id;
 });
 
 afterAll(async () => {
@@ -242,7 +252,11 @@ describe("B1 Completed-Summer PostgreSQL operator", () => {
     const output = JSON.parse(first.stdout) as {
       selectionSummary: { selectedLeagueIds: number[]; activeSelectedLeagueCount: number; archivedSelectedLeagueCount: number };
       reportFingerprint: string;
-      leagues: Array<{ identity: { leagueId: number }; paymentEvidence: { confidence: string } }>;
+      leagues: Array<{
+        identity: { leagueId: number };
+        paymentEvidence: { confidence: string; legacyPayments: Array<{ operationLinkProof: string | null }> };
+        summary: { matchCount: number };
+      }>;
     };
     expect(output.selectionSummary).toMatchObject({
       selectedLeagueIds: [activeLeagueId, archivedLeagueId],
@@ -250,7 +264,10 @@ describe("B1 Completed-Summer PostgreSQL operator", () => {
       archivedSelectedLeagueCount: 1,
     });
     expect(output.reportFingerprint).toMatch(/^[0-9a-f]{64}$/);
-    expect(output.leagues.find((league) => league.identity.leagueId === activeLeagueId)?.paymentEvidence.confidence).toBe("mixed");
+    const activeLeague = output.leagues.find((league) => league.identity.leagueId === activeLeagueId);
+    expect(activeLeague?.paymentEvidence.confidence).toBe("mixed");
+    expect(activeLeague?.paymentEvidence.legacyPayments[0]?.operationLinkProof).toBe("tenant_and_immutable_tuple");
+    expect(activeLeague?.summary.matchCount).toBe(0);
     expect(first.stdout).not.toContain("ENCRYPTED_SOURCE_MUST_NOT_LEAK");
     expect(first.stdout).not.toContain("ENCRYPTED_CUSTOMER_MUST_NOT_LEAK");
     expect(first.stdout).not.toContain("ENCRYPTED_EMAIL_MUST_NOT_LEAK");
@@ -262,6 +279,156 @@ describe("B1 Completed-Summer PostgreSQL operator", () => {
       WHERE application_name = 'leaguevault-completed-summer-b1-readonly'
     `);
     expect(activeClients.rows).toEqual([{ count: 0 }]);
+  });
+
+  it("accepts score activity only after proving bowler ownership and the score team league", async () => {
+    const [selectedGame] = await db.select({ id: games.id }).from(games)
+      .where(eq(games.leagueId, activeLeagueId)).orderBy(asc(games.id)).limit(1);
+    const [ownTeam] = await db.insert(teams).values({
+      name: "B1 own score team",
+      number: 901,
+      leagueId: activeLeagueId,
+    }).returning({ id: teams.id });
+    const [foreignTeam] = await db.insert(teams).values({
+      name: "B1 foreign score team",
+      number: 901,
+      leagueId: foreignLeagueId,
+    }).returning({ id: teams.id });
+    const [foreignBowler] = await db.insert(bowlers).values({
+      name: "B1 foreign score bowler",
+      organizationId: foreignOrganizationId,
+    }).returning({ id: bowlers.id });
+    if (!selectedGame || !ownTeam || !foreignTeam || !foreignBowler) throw new Error("score ownership fixture is incomplete");
+    const insertedScores = await db.insert(scores).values([{
+      gameId: selectedGame.id,
+      bowlerId: foreignBowler.id,
+      teamId: ownTeam.id,
+      score: 100,
+      handicap: 0,
+      average: 100,
+      position: 1,
+      laneNumber: 1,
+    }, {
+      gameId: selectedGame.id,
+      bowlerId: paymentBowlerId,
+      teamId: foreignTeam.id,
+      score: 101,
+      handicap: 0,
+      average: 101,
+      position: 2,
+      laneNumber: 2,
+    }]).returning({ id: scores.id });
+    try {
+      const run = runOperator([`--leagueId=${activeLeagueId}`]);
+      expect(run.status).toBe(1);
+      const output = JSON.parse(run.stdout) as {
+        fatalErrors: Array<{ code: string }>;
+        leagues: Array<{ scoreActivityEvidence: { scoreCount: number; scoreIds: number[] } }>;
+      };
+      expect(output.fatalErrors.map((error) => error.code)).toContain("invalid_or_cross_tenant_evidence");
+      expect(output.leagues[0]?.scoreActivityEvidence).toEqual({ scoreCount: 0, scoredGameCount: 0, scoreIds: [] });
+    } finally {
+      await db.delete(scores).where(inArray(scores.id, insertedScores.map((score) => score.id)));
+      await db.delete(teams).where(inArray(teams.id, [ownTeam.id, foreignTeam.id]));
+      await db.delete(bowlers).where(eq(bowlers.id, foreignBowler.id));
+    }
+  });
+
+  it("counts a snapshot attached to the wrong operation type as invalid evidence", async () => {
+    const [wrongTypeOperation] = await db.insert(paymentOperations).values({
+      organizationId,
+      operationType: "refund",
+      targetKey: `b1-wrong-type-${suffix}`,
+      amountMinor: 2_100,
+      currency: "USD",
+      requestFingerprint: `lvpayreq:v1:${"e".repeat(64)}`,
+      providerIdempotencyKey: `b1-wrong-type-${suffix}`.slice(0, 45),
+      providerName: "square",
+    }).returning({ id: paymentOperations.id });
+    if (!wrongTypeOperation) throw new Error("wrong-type operation fixture was not created");
+    try {
+      await db.transaction(async (tx) => {
+        await tx.insert(interactivePaymentOperationSnapshots).values({
+          operationId: wrongTypeOperation.id,
+          snapshotVersion: 2,
+          snapshotFingerprint: `lvpayexecic:v2:${"f".repeat(64)}`,
+          leagueId: activeLeagueId,
+          locationId: ownLocationId,
+          payerBowlerId: paymentBowlerId,
+          requestKind: "direct",
+          encryptedSourceId: "WRONG_TYPE_ENCRYPTED_SOURCE_MUST_NOT_LEAK",
+          storeCard: false,
+          sourceKind: "new_card",
+          weekOf: "2025-06-01T19:00:00.000Z",
+        });
+        await tx.insert(interactivePaymentOperationAllocations).values({
+          operationId: wrongTypeOperation.id,
+          allocationIndex: 0,
+          bowlerId: paymentBowlerId,
+          amountMinor: 2_100,
+          weekOf: "2025-06-01T19:00:00.000Z",
+        });
+      });
+      const run = runOperator([`--leagueId=${activeLeagueId}`]);
+      expect(run.status).toBe(1);
+      const output = JSON.parse(run.stdout) as { fatalErrors: Array<{ code: string }> };
+      expect(output.fatalErrors.map((error) => error.code)).toContain("invalid_or_cross_tenant_evidence");
+      expect(run.stdout).not.toContain(wrongTypeOperation.id);
+      expect(run.stdout).not.toContain("WRONG_TYPE_ENCRYPTED_SOURCE_MUST_NOT_LEAK");
+    } finally {
+      await db.delete(paymentOperations).where(eq(paymentOperations.id, wrongTypeOperation.id));
+    }
+  });
+
+  it("proves payment allocation links by tenant ownership and exact immutable tuple agreement", async () => {
+    await db.update(payments).set({ amount: 2_001 }).where(eq(payments.id, linkedPaymentId));
+    try {
+      const mismatch = runOperator([`--leagueId=${activeLeagueId}`]);
+      expect(mismatch.status).toBe(1);
+      const output = JSON.parse(mismatch.stdout) as {
+        fatalErrors: Array<{ code: string }>;
+        leagues: Array<{ paymentEvidence: { legacyPayments: Array<{ operationId: string | null; operationLinkProof: string | null }> } }>;
+      };
+      expect(output.fatalErrors.map((error) => error.code)).toContain("invalid_or_cross_tenant_evidence");
+      expect(output.leagues[0]?.paymentEvidence.legacyPayments[0]).toMatchObject({
+        operationId: null,
+        operationLinkProof: null,
+      });
+    } finally {
+      await db.update(payments).set({ amount: 2_000 }).where(eq(payments.id, linkedPaymentId));
+    }
+
+    const [foreignBowler] = await db.insert(bowlers).values({
+      name: "B1 foreign linked-payment bowler",
+      organizationId: foreignOrganizationId,
+    }).returning({ id: bowlers.id });
+    if (!foreignBowler) throw new Error("foreign linked-payment bowler was not created");
+    await db.update(interactivePaymentOperationAllocations).set({ bowlerId: foreignBowler.id })
+      .where(eq(interactivePaymentOperationAllocations.operationId, operationId));
+    try {
+      const crossTenantAllocation = runOperator([`--leagueId=${activeLeagueId}`]);
+      expect(crossTenantAllocation.status).toBe(1);
+      expect((JSON.parse(crossTenantAllocation.stdout) as { fatalErrors: Array<{ code: string }> })
+        .fatalErrors.map((error) => error.code)).toContain("invalid_or_cross_tenant_evidence");
+      expect(crossTenantAllocation.stdout).not.toContain(operationId);
+    } finally {
+      await db.update(interactivePaymentOperationAllocations).set({ bowlerId: paymentBowlerId })
+        .where(eq(interactivePaymentOperationAllocations.operationId, operationId));
+    }
+    await db.update(payments).set({ bowlerId: foreignBowler.id }).where(eq(payments.id, linkedPaymentId));
+    try {
+      const crossTenant = runOperator([`--leagueId=${activeLeagueId}`]);
+      expect(crossTenant.status).toBe(1);
+      const output = JSON.parse(crossTenant.stdout) as {
+        fatalErrors: Array<{ code: string }>;
+        leagues: Array<{ paymentEvidence: { legacyPayments: unknown[] } }>;
+      };
+      expect(output.fatalErrors.map((error) => error.code)).toContain("invalid_or_cross_tenant_evidence");
+      expect(output.leagues[0]?.paymentEvidence.legacyPayments).toEqual([]);
+    } finally {
+      await db.update(payments).set({ bowlerId: paymentBowlerId }).where(eq(payments.id, linkedPaymentId));
+      await db.delete(bowlers).where(eq(bowlers.id, foreignBowler.id));
+    }
   });
 
   it("fails an explicit foreign league closed without exposing foreign row details", () => {
