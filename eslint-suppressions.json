@@ -184,7 +184,7 @@
   },
   "server/routes/leagues.ts": {
     "@typescript-eslint/no-non-null-assertion": {
-      "count": 3
+      "count": 2
     }
   },
   "server/routes/payments/payment-reports.ts": {
