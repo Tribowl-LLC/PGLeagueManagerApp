@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { and, desc, eq, isNull, ne } from "drizzle-orm";
 import {
   leagueOccurrenceBillingTermRevisions,
@@ -16,6 +17,15 @@ import {
 } from "@shared/schema";
 import { db } from "../db.js";
 import { lockLeagueSchedule, type LeagueScheduleLockExecutor } from "../storage/league-schedule-lock.js";
+import {
+  canonicalizeTimezone,
+  resolveCanonicalLocalDateTime,
+  type AmbiguousFoldPolicy,
+  type DstFoldResolution,
+} from "@shared/canonical-dst-resolver";
+
+export const CANONICAL_COMMAND_FINGERPRINT_VERSION = "canonical-occurrence-command/1";
+export const CANONICAL_COMMAND_FINGERPRINT_PREFIX = "lvcanoncmd:v1:";
 
 export type CanonicalOccurrenceTransactionErrorCode =
   | "invalid_scope"
@@ -34,7 +44,8 @@ export type CanonicalOccurrenceTransactionErrorCode =
   | "occurrence_effectively_locked"
   | "occurrence_terminal"
   | "activity_evidence"
-  | "invalid_command";
+  | "invalid_command"
+  | "invalid_dst_input";
 
 export class CanonicalOccurrenceTransactionError extends Error {
   readonly code: CanonicalOccurrenceTransactionErrorCode;
@@ -58,17 +69,26 @@ export interface ScheduleCommandRequest {
 }
 
 export interface OccurrencePlacementRequest extends ScheduleCommandRequest {
+  commandType: "generate" | "publish" | "reschedule";
   authoritativeLocalDate: string;
   startAt: string;
   existingOccurrenceId?: string;
 }
 
+export interface ExceptionPlacementRequest extends ScheduleCommandRequest {
+  commandType: "create_exception";
+  authoritativeLocalDate: string;
+  startAt: string;
+}
+
 export interface MakeupRelationshipRequest extends ScheduleCommandRequest {
+  commandType: "create_makeup_relationship";
   sourceOccurrenceId: string;
   targetOccurrenceId: string;
 }
 
 export interface GenerationRevisionRequest extends ScheduleCommandRequest {
+  commandType: "generate";
   generatorVersion: string;
   inputFingerprint: string;
   normalizedInputSnapshot: Record<string, unknown>;
@@ -101,10 +121,12 @@ export interface OccurrenceRescheduleRequest extends ScheduleCommandRequest {
   authoritativeLocalDate: string;
   authoritativeLocalStartTime: string;
   timezone: string;
-  startAt: string;
-  selectedUtcOffsetMinutes: number;
-  foldResolution: "unambiguous" | "earlier" | "later";
-  resolverVersion: string;
+  ambiguousFold: AmbiguousFoldPolicy;
+  /** Optional compatibility assertions; the resolver remains authoritative. */
+  startAt?: string;
+  selectedUtcOffsetMinutes?: number;
+  foldResolution?: DstFoldResolution;
+  resolverVersion?: string;
 }
 
 function assertPositiveScope(organizationId: number, leagueId: number): void {
@@ -114,8 +136,17 @@ function assertPositiveScope(organizationId: number, leagueId: number): void {
 }
 
 function assertValidFingerprint(value: string): void {
+  if (!new RegExp(`^${CANONICAL_COMMAND_FINGERPRINT_PREFIX}[0-9a-f]{64}$`).test(value)) {
+    throw new CanonicalOccurrenceTransactionError(
+      "invalid_idempotency",
+      `requestFingerprint must be ${CANONICAL_COMMAND_FINGERPRINT_PREFIX}<lowercase SHA-256>`,
+    );
+  }
+}
+
+function assertValidInputFingerprint(value: string): void {
   if (!/^[0-9a-f]{64}$/.test(value)) {
-    throw new CanonicalOccurrenceTransactionError("invalid_idempotency", "requestFingerprint must be lowercase hexadecimal SHA-256");
+    throw new CanonicalOccurrenceTransactionError("invalid_idempotency", "inputFingerprint must be lowercase hexadecimal SHA-256");
   }
 }
 
@@ -136,6 +167,186 @@ function assertValidReason(reason: string | undefined): string {
     throw new CanonicalOccurrenceTransactionError("invalid_command", "audited schedule mutation requires a nonempty trimmed reason");
   }
   return reason;
+}
+
+function canonicalizeCommandValue(value: unknown): string {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return JSON.stringify(value);
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error("canonical command payload cannot contain a non-finite number");
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) return `[${value.map(canonicalizeCommandValue).join(",")}]`;
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, entry]) => entry !== undefined)
+      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+    return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${canonicalizeCommandValue(entry)}`).join(",")}}`;
+  }
+  throw new Error("canonical command payload cannot contain an unsupported value");
+}
+
+function normalizeCommandTime(value: string): string {
+  const match = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(value);
+  if (!match) return value;
+  return `${match[1].padStart(2, "0")}:${match[2]}:${match[3] ?? "00"}`;
+}
+
+function resolveRescheduleRequest(request: OccurrenceRescheduleRequest): OccurrenceRescheduleRequest & {
+  startAt: string;
+  selectedUtcOffsetMinutes: number;
+  foldResolution: DstFoldResolution;
+  resolverVersion: string;
+} {
+  const authoritativeLocalStartTime = normalizeCommandTime(request.authoritativeLocalStartTime);
+  let resolution;
+  try {
+    resolution = resolveCanonicalLocalDateTime({
+      localDate: request.authoritativeLocalDate,
+      localTime: authoritativeLocalStartTime,
+      timezone: request.timezone,
+      ambiguousFold: request.ambiguousFold,
+    });
+  } catch (caught) {
+    const message = caught instanceof Error ? caught.message : String(caught);
+    throw new CanonicalOccurrenceTransactionError("invalid_dst_input", message);
+  }
+  if (request.startAt !== undefined && request.startAt !== resolution.startAt) {
+    throw new CanonicalOccurrenceTransactionError("invalid_dst_input", "caller-supplied startAt does not match canonical DST resolution");
+  }
+  if (request.selectedUtcOffsetMinutes !== undefined && request.selectedUtcOffsetMinutes !== resolution.selectedUtcOffsetMinutes) {
+    throw new CanonicalOccurrenceTransactionError("invalid_dst_input", "caller-supplied UTC offset does not match canonical DST resolution");
+  }
+  if (request.foldResolution !== undefined && request.foldResolution !== resolution.foldResolution) {
+    throw new CanonicalOccurrenceTransactionError("invalid_dst_input", "caller-supplied fold resolution does not match canonical DST resolution");
+  }
+  if (request.resolverVersion !== undefined && request.resolverVersion !== resolution.resolverVersion) {
+    throw new CanonicalOccurrenceTransactionError("invalid_dst_input", "caller-supplied resolver version is not authoritative");
+  }
+  return {
+    ...request,
+    authoritativeLocalStartTime,
+    timezone: resolution.canonicalTimezone,
+    startAt: resolution.startAt,
+    selectedUtcOffsetMinutes: resolution.selectedUtcOffsetMinutes,
+    foldResolution: resolution.foldResolution,
+    resolverVersion: resolution.resolverVersion,
+  };
+}
+
+function canonicalCommandTimezone(value: string): string {
+  try {
+    return canonicalizeTimezone(value);
+  } catch {
+    return value.trim();
+  }
+}
+
+function commandFingerprintPayload(request: ScheduleCommandRequest): Record<string, unknown> {
+  const common = {
+    organizationId: request.organizationId,
+    leagueId: request.leagueId,
+    actorUserId: request.actorUserId,
+    commandType: request.commandType,
+    sameDayOverride: request.sameDayOverride ?? false,
+    reason: request.reason ?? null,
+  };
+  switch (request.commandType) {
+    case "generate":
+      if ("generatorVersion" in request) {
+        const generation = request as GenerationRevisionRequest;
+        return {
+          ...common,
+          operation: "generation_revision",
+          generatorVersion: generation.generatorVersion,
+          inputFingerprint: generation.inputFingerprint,
+          normalizedInputSnapshot: generation.normalizedInputSnapshot,
+          rangeStartDate: generation.rangeStartDate,
+          rangeEndDate: generation.rangeEndDate,
+          candidateOccurrenceCount: generation.candidateOccurrenceCount,
+          generatedOccurrenceCount: generation.generatedOccurrenceCount,
+          skippedDateCount: generation.skippedDateCount,
+          discrepancyCount: generation.discrepancyCount,
+        };
+      }
+      return {
+        ...common,
+        operation: "occurrence_placement",
+        authoritativeLocalDate: (request as OccurrencePlacementRequest).authoritativeLocalDate,
+        startAt: (request as OccurrencePlacementRequest).startAt,
+        existingOccurrenceId: (request as OccurrencePlacementRequest).existingOccurrenceId ?? null,
+      };
+    case "publish":
+      return {
+        ...common,
+        operation: "occurrence_placement",
+        authoritativeLocalDate: (request as OccurrencePlacementRequest).authoritativeLocalDate,
+        startAt: (request as OccurrencePlacementRequest).startAt,
+        existingOccurrenceId: (request as OccurrencePlacementRequest).existingOccurrenceId ?? null,
+      };
+    case "create_exception":
+      return {
+        ...common,
+        operation: "exception_placement",
+        authoritativeLocalDate: (request as ExceptionPlacementRequest).authoritativeLocalDate,
+        startAt: (request as ExceptionPlacementRequest).startAt,
+      };
+    case "create_makeup_relationship":
+      return {
+        ...common,
+        operation: "makeup_relationship",
+        sourceOccurrenceId: (request as MakeupRelationshipRequest).sourceOccurrenceId,
+        targetOccurrenceId: (request as MakeupRelationshipRequest).targetOccurrenceId,
+      };
+    case "discard_draft":
+      return {
+        ...common,
+        operation: "discard_draft",
+        occurrenceId: (request as DraftDiscardRequest).occurrenceId,
+        now: (request as DraftDiscardRequest).now,
+        activityEvidence: [...((request as DraftDiscardRequest).activityEvidence ?? [])],
+      };
+    case "cancel":
+      return {
+        ...common,
+        operation: "cancel",
+        occurrenceId: (request as OccurrenceCancellationRequest).occurrenceId,
+        now: (request as OccurrenceCancellationRequest).now,
+        activityEvidence: [...((request as OccurrenceCancellationRequest).activityEvidence ?? [])],
+      };
+    case "reschedule": {
+      const reschedule = request as OccurrenceRescheduleRequest;
+      return {
+        ...common,
+        operation: "reschedule",
+        occurrenceId: reschedule.occurrenceId,
+        now: reschedule.now,
+        authoritativeLocalDate: reschedule.authoritativeLocalDate,
+        authoritativeLocalStartTime: normalizeCommandTime(reschedule.authoritativeLocalStartTime),
+        timezone: canonicalCommandTimezone(reschedule.timezone),
+        ambiguousFold: reschedule.ambiguousFold,
+      };
+    }
+    default:
+      return { ...common, operation: "schedule_command" };
+  }
+}
+
+/** Build the exact versioned fingerprint that the transaction service accepts. */
+export function buildCanonicalScheduleCommandFingerprint(request: ScheduleCommandRequest): string {
+  const canonical = canonicalizeCommandValue({
+    version: CANONICAL_COMMAND_FINGERPRINT_VERSION,
+    payload: commandFingerprintPayload(request),
+  });
+  return `${CANONICAL_COMMAND_FINGERPRINT_PREFIX}${createHash("sha256").update(canonical, "utf8").digest("hex")}`;
+}
+
+function assertExpectedCommandType(
+  request: ScheduleCommandRequest,
+  allowedCommandTypes: readonly LeagueScheduleCommand["commandType"][],
+): void {
+  if (!allowedCommandTypes.includes(request.commandType)) {
+    throw new CanonicalOccurrenceTransactionError("invalid_command", "command type is not valid for this schedule operation");
+  }
 }
 
 async function assertTenantAndActor(
@@ -159,7 +370,7 @@ async function assertTenantAndActor(
     .from(users)
     .where(eq(users.id, request.actorUserId))
     .for("update");
-  if (!actor || (actor.role !== "system_admin" && actor.organizationId !== request.organizationId)) {
+  if (!actor || (actor.role !== "system_admin" && (actor.role !== "org_admin" || actor.organizationId !== request.organizationId))) {
     throw new CanonicalOccurrenceTransactionError("unauthorized_actor", "actor is not authorized for the requested tenant");
   }
 }
@@ -177,9 +388,14 @@ function commandEquivalent(existing: LeagueScheduleCommand, request: ScheduleCom
 async function getOrCreateCommand(
   tx: LeagueScheduleLockExecutor,
   request: ScheduleCommandRequest,
+  allowedCommandTypes: readonly LeagueScheduleCommand["commandType"][],
 ): Promise<{ command: LeagueScheduleCommand; existing: boolean }> {
+  assertExpectedCommandType(request, allowedCommandTypes);
   assertValidIdempotencyKey(request.idempotencyKey);
   assertValidFingerprint(request.requestFingerprint);
+  if (request.requestFingerprint !== buildCanonicalScheduleCommandFingerprint(request)) {
+    throw new CanonicalOccurrenceTransactionError("invalid_idempotency", "requestFingerprint does not match the canonical schedule operation payload");
+  }
   if (request.sameDayOverride && !request.reason?.trim()) {
     throw new CanonicalOccurrenceTransactionError("invalid_command", "same-day override requires a nonempty reason");
   }
@@ -226,7 +442,6 @@ async function validatePlacementInTransaction(
     .where(and(
       eq(leagueOccurrences.organizationId, request.organizationId),
       eq(leagueOccurrences.leagueId, request.leagueId),
-      eq(leagueOccurrences.authoritativeLocalDate, request.authoritativeLocalDate),
       ne(leagueOccurrences.status, "discarded"),
       ne(leagueOccurrences.status, "cancelled"),
     ))
@@ -237,60 +452,104 @@ async function validatePlacementInTransaction(
   if (exactStart) {
     throw new CanonicalOccurrenceTransactionError("exact_start_collision", "two active occurrences cannot share the same start instant");
   }
-  if (collisions.length > 0 && !request.sameDayOverride) {
+  const sameDayCollisions = collisions.filter((row) => row.authoritativeLocalDate === request.authoritativeLocalDate);
+  if (sameDayCollisions.length > 0 && !request.sameDayOverride) {
     throw new CanonicalOccurrenceTransactionError("same_day_collision", "same-day occurrence requires an explicit audited override");
   }
   return collisions;
 }
 
-/** Validate an occurrence placement and record the audited command, without materializing a B2 occurrence. */
-export async function validateOccurrencePlacement(request: OccurrencePlacementRequest): Promise<LeagueScheduleCommand> {
+export interface LockedScheduleMutationContext {
+  tx: LeagueScheduleLockExecutor;
+  command: LeagueScheduleCommand;
+  existing: boolean;
+}
+
+async function withLockedScheduleCommand<T>(
+  request: ScheduleCommandRequest,
+  allowedCommandTypes: readonly LeagueScheduleCommand["commandType"][],
+  mutation: (context: LockedScheduleMutationContext) => Promise<T>,
+): Promise<T> {
   return db.transaction(async (tx) => {
     await lockLeagueSchedule(tx, request.organizationId, request.leagueId);
-    const { command } = await getOrCreateCommand(tx, request);
-    await validatePlacementInTransaction(tx, request);
-    return command;
+    const command = await getOrCreateCommand(tx, request, allowedCommandTypes);
+    return mutation({ tx, ...command });
   });
 }
 
-/** Validate an exception date against the tenant's active occurrence domain. */
-export async function validateExceptionPlacement(
+export interface LockedOccurrencePlacementContext extends LockedScheduleMutationContext {
+  collisions: LeagueOccurrence[];
+}
+
+/**
+ * Keep the league lock through validation and the caller's eventual mutation.
+ * The callback is the B2 boundary; it must use the supplied transaction and
+ * treat `existing` as an idempotent retry of its own atomic mutation.
+ */
+export async function withLockedOccurrencePlacementMutation<T>(
   request: OccurrencePlacementRequest,
-): Promise<LeagueScheduleCommand> {
-  return db.transaction(async (tx) => {
-    await lockLeagueSchedule(tx, request.organizationId, request.leagueId);
-    const { command } = await getOrCreateCommand(tx, request);
-    const [activeException] = await tx
-      .select({ id: leagueScheduleExceptions.id })
-      .from(leagueScheduleExceptions)
-      .where(and(
-        eq(leagueScheduleExceptions.organizationId, request.organizationId),
-        eq(leagueScheduleExceptions.leagueId, request.leagueId),
-        eq(leagueScheduleExceptions.localDate, request.authoritativeLocalDate),
-        ne(leagueScheduleExceptions.lifecycle, "revoked"),
-      ))
-      .for("update");
-    if (activeException) throw new CanonicalOccurrenceTransactionError("exception_collision", "an active exception already exists for this tenant and local date");
-    const [activeOccurrence] = await tx
-      .select({ id: leagueOccurrences.id })
-      .from(leagueOccurrences)
-      .where(and(
-        eq(leagueOccurrences.organizationId, request.organizationId),
-        eq(leagueOccurrences.leagueId, request.leagueId),
-        eq(leagueOccurrences.authoritativeLocalDate, request.authoritativeLocalDate),
-        ne(leagueOccurrences.status, "discarded"),
-      ))
-      .for("update");
-    if (activeOccurrence) throw new CanonicalOccurrenceTransactionError("exception_collision", "an active occurrence already exists for this exception date");
-    return command;
+  mutation: (context: LockedOccurrencePlacementContext) => Promise<T>,
+): Promise<T> {
+  return withLockedScheduleCommand(request, ["generate", "publish", "reschedule"], async (context) => {
+    const collisions = context.existing ? [] : await validatePlacementInTransaction(context.tx, request);
+    return mutation({ ...context, collisions });
   });
 }
 
-/** Validate a makeup relationship; B2 owns any later row materialization. */
-export async function validateMakeupRelationship(request: MakeupRelationshipRequest): Promise<LeagueScheduleCommand> {
-  return db.transaction(async (tx) => {
-    await lockLeagueSchedule(tx, request.organizationId, request.leagueId);
-    const { command } = await getOrCreateCommand(tx, request);
+/** Preflight only: the lock ends when this function returns; no later independent write is protected. */
+export async function validateOccurrencePlacement(request: OccurrencePlacementRequest): Promise<LeagueScheduleCommand> {
+  return withLockedOccurrencePlacementMutation(request, async ({ command }) => command);
+}
+
+async function validateExceptionPlacementInTransaction(
+  tx: LeagueScheduleLockExecutor,
+  request: ExceptionPlacementRequest,
+): Promise<void> {
+  const [activeException] = await tx
+    .select({ id: leagueScheduleExceptions.id })
+    .from(leagueScheduleExceptions)
+    .where(and(
+      eq(leagueScheduleExceptions.organizationId, request.organizationId),
+      eq(leagueScheduleExceptions.leagueId, request.leagueId),
+      eq(leagueScheduleExceptions.localDate, request.authoritativeLocalDate),
+      ne(leagueScheduleExceptions.lifecycle, "revoked"),
+    ))
+    .for("update");
+  if (activeException) throw new CanonicalOccurrenceTransactionError("exception_collision", "an active exception already exists for this tenant and local date");
+  const [activeOccurrence] = await tx
+    .select({ id: leagueOccurrences.id })
+    .from(leagueOccurrences)
+    .where(and(
+      eq(leagueOccurrences.organizationId, request.organizationId),
+      eq(leagueOccurrences.leagueId, request.leagueId),
+      eq(leagueOccurrences.authoritativeLocalDate, request.authoritativeLocalDate),
+      ne(leagueOccurrences.status, "discarded"),
+    ))
+    .for("update");
+  if (activeOccurrence) throw new CanonicalOccurrenceTransactionError("exception_collision", "an active occurrence already exists for this exception date");
+}
+
+export async function withLockedExceptionPlacementMutation<T>(
+  request: ExceptionPlacementRequest,
+  mutation: (context: LockedScheduleMutationContext) => Promise<T>,
+): Promise<T> {
+  return withLockedScheduleCommand(request, ["create_exception"], async (context) => {
+    if (!context.existing) await validateExceptionPlacementInTransaction(context.tx, request);
+    return mutation(context);
+  });
+}
+
+/** Preflight only: the lock ends when this function returns; no later independent write is protected. */
+export async function validateExceptionPlacement(
+  request: ExceptionPlacementRequest,
+): Promise<LeagueScheduleCommand> {
+  return withLockedExceptionPlacementMutation(request, async ({ command }) => command);
+}
+
+async function validateMakeupRelationshipInTransaction(
+  tx: LeagueScheduleLockExecutor,
+  request: MakeupRelationshipRequest,
+): Promise<void> {
     const ids = [request.sourceOccurrenceId, request.targetOccurrenceId];
     const rows = await tx
       .select()
@@ -322,8 +581,21 @@ export async function validateMakeupRelationship(request: MakeupRelationshipRequ
       ))
       .for("update");
     if (existingSource) throw new CanonicalOccurrenceTransactionError("invalid_command", "source occurrence already has an active makeup relationship");
-    return command;
+}
+
+export async function withLockedMakeupRelationshipMutation<T>(
+  request: MakeupRelationshipRequest,
+  mutation: (context: LockedScheduleMutationContext) => Promise<T>,
+): Promise<T> {
+  return withLockedScheduleCommand(request, ["create_makeup_relationship"], async (context) => {
+    if (!context.existing) await validateMakeupRelationshipInTransaction(context.tx, request);
+    return mutation(context);
   });
+}
+
+/** Preflight only: the lock ends when this function returns; no later independent write is protected. */
+export async function validateMakeupRelationship(request: MakeupRelationshipRequest): Promise<LeagueScheduleCommand> {
+  return withLockedMakeupRelationshipMutation(request, async ({ command }) => command);
 }
 
 async function allocateSourceScheduleRevisionInTransaction(
@@ -351,7 +623,7 @@ export async function createGenerationRevision(request: GenerationRevisionReques
 }> {
   return db.transaction(async (tx) => {
     await lockLeagueSchedule(tx, request.organizationId, request.leagueId);
-    const { command, existing } = await getOrCreateCommand(tx, request);
+    const { command, existing } = await getOrCreateCommand(tx, request, ["generate"]);
     const [existingRun] = await tx
       .select()
       .from(leagueOccurrenceGenerationRuns)
@@ -363,7 +635,7 @@ export async function createGenerationRevision(request: GenerationRevisionReques
     if (existing && existingRun) return { command, generationRun: existingRun };
     if (existing && !existingRun) throw new CanonicalOccurrenceTransactionError("idempotency_conflict", "generation command exists without its committed generation run");
     assertPositiveScope(request.organizationId, request.leagueId);
-    assertValidFingerprint(request.inputFingerprint);
+    assertValidInputFingerprint(request.inputFingerprint);
     if (!/^.{1,128}$/.test(request.generatorVersion) || request.generatorVersion.trim() !== request.generatorVersion) throw new CanonicalOccurrenceTransactionError("invalid_command", "generatorVersion must be nonempty and fit A1");
     const sourceScheduleRevision = await allocateSourceScheduleRevisionInTransaction(tx, request.organizationId, request.leagueId);
     const [generationRun] = await tx
@@ -450,7 +722,7 @@ export async function discardDraftOccurrence(request: DraftDiscardRequest): Prom
   assertValidReason(request.reason);
   return db.transaction(async (tx) => {
     await lockLeagueSchedule(tx, request.organizationId, request.leagueId);
-    const { command, existing } = await getOrCreateCommand(tx, request);
+    const { command, existing } = await getOrCreateCommand(tx, request, ["discard_draft"]);
     const [occurrence] = await tx
       .select()
       .from(leagueOccurrences)
@@ -557,7 +829,7 @@ export async function cancelOccurrence(request: OccurrenceCancellationRequest): 
   assertValidInstant(request.now, "now");
   return db.transaction(async (tx) => {
     await lockLeagueSchedule(tx, request.organizationId, request.leagueId);
-    const { command, existing } = await getOrCreateCommand(tx, request);
+    const { command, existing } = await getOrCreateCommand(tx, request, ["cancel"]);
     const [occurrence] = await tx.select().from(leagueOccurrences).where(and(
       eq(leagueOccurrences.id, request.occurrenceId),
       eq(leagueOccurrences.organizationId, request.organizationId),
@@ -633,42 +905,45 @@ export async function cancelOccurrence(request: OccurrenceCancellationRequest): 
 
 /** Reschedule an occurrence in place; UUID and generationKey are deliberately untouched. */
 export async function rescheduleOccurrence(request: OccurrenceRescheduleRequest): Promise<LeagueOccurrence> {
+  const canonicalRequest = resolveRescheduleRequest(request);
   assertValidReason(request.reason);
   assertValidInstant(request.now, "now");
-  assertValidInstant(request.startAt, "startAt");
   return db.transaction(async (tx) => {
-    await lockLeagueSchedule(tx, request.organizationId, request.leagueId);
-    const { command, existing } = await getOrCreateCommand(tx, request);
+    await lockLeagueSchedule(tx, canonicalRequest.organizationId, canonicalRequest.leagueId);
+    const { command, existing } = await getOrCreateCommand(tx, canonicalRequest, ["reschedule"]);
     const [occurrence] = await tx.select().from(leagueOccurrences).where(and(
-      eq(leagueOccurrences.id, request.occurrenceId),
-      eq(leagueOccurrences.organizationId, request.organizationId),
-      eq(leagueOccurrences.leagueId, request.leagueId),
+      eq(leagueOccurrences.id, canonicalRequest.occurrenceId),
+      eq(leagueOccurrences.organizationId, canonicalRequest.organizationId),
+      eq(leagueOccurrences.leagueId, canonicalRequest.leagueId),
     )).for("update");
     if (!occurrence) throw new CanonicalOccurrenceTransactionError("occurrence_not_found", "occurrence is missing or outside the requested tenant");
     if (existing && occurrence.lastCommandId === command.id) return occurrence;
     if (occurrence.status === "discarded" || occurrence.status === "cancelled") throw new CanonicalOccurrenceTransactionError("occurrence_terminal", "discarded or cancelled occurrences cannot be rescheduled");
-    assertNotEffectivelyLocked(occurrence, request.now);
-    await validatePlacementInTransaction(tx, request);
+    assertNotEffectivelyLocked(occurrence, canonicalRequest.now);
+    await validatePlacementInTransaction(tx, {
+      ...canonicalRequest,
+      existingOccurrenceId: occurrence.id,
+    });
     const nextRevision = occurrence.currentRevision + 1;
     const [rescheduled] = await tx.update(leagueOccurrences).set({
-      authoritativeLocalDate: request.authoritativeLocalDate,
-      authoritativeLocalStartTime: request.authoritativeLocalStartTime,
-      timezone: request.timezone,
-      startAt: request.startAt,
-      selectedUtcOffsetMinutes: request.selectedUtcOffsetMinutes,
-      foldResolution: request.foldResolution,
-      resolverVersion: request.resolverVersion,
+      authoritativeLocalDate: canonicalRequest.authoritativeLocalDate,
+      authoritativeLocalStartTime: canonicalRequest.authoritativeLocalStartTime,
+      timezone: canonicalRequest.timezone,
+      startAt: canonicalRequest.startAt,
+      selectedUtcOffsetMinutes: canonicalRequest.selectedUtcOffsetMinutes,
+      foldResolution: canonicalRequest.foldResolution,
+      resolverVersion: canonicalRequest.resolverVersion,
       currentRevision: nextRevision,
       lastCommandId: command.id,
     }).where(and(
       eq(leagueOccurrences.id, occurrence.id),
-      eq(leagueOccurrences.organizationId, request.organizationId),
-      eq(leagueOccurrences.leagueId, request.leagueId),
+      eq(leagueOccurrences.organizationId, canonicalRequest.organizationId),
+      eq(leagueOccurrences.leagueId, canonicalRequest.leagueId),
     )).returning();
     if (!rescheduled) throw new CanonicalOccurrenceTransactionError("invalid_command", "reschedule did not update its occurrence");
     await tx.insert(leagueOccurrenceRevisions).values({
-      organizationId: request.organizationId,
-      leagueId: request.leagueId,
+      organizationId: canonicalRequest.organizationId,
+      leagueId: canonicalRequest.leagueId,
       occurrenceId: occurrence.id,
       commandId: command.id,
       revisionNumber: nextRevision,

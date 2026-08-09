@@ -144,7 +144,9 @@ function createGeneratorInput(row: LeagueLocationRow, args: OperatorArguments): 
   const competitionStartTime = row.competition_start_time;
   const timezone = row.timezone;
   const plannedSlotCount = row.total_bowling_weeks;
-  const defaultWeeklyAmountMinor = row.weekly_fee;
+  const defaultWeeklyAmountMinor = args.regularSessionBillingPolicy === "none" && row.weekly_fee === null
+    ? 0
+    : row.weekly_fee;
   if (row.organization_id !== args.organizationId) missing.push("organizationId");
   if (locationId === null || row.location_organization_id !== args.organizationId) missing.push("tenant-scoped location");
   if (!seasonStart) missing.push("seasonStart");
@@ -153,7 +155,15 @@ function createGeneratorInput(row: LeagueLocationRow, args: OperatorArguments): 
   if (!competitionStartTime) missing.push("competitionStartTime");
   if (!timezone) missing.push("timezone");
   if (!Number.isSafeInteger(plannedSlotCount) || (plannedSlotCount ?? 0) <= 0) missing.push("totalBowlingWeeks");
-  if (!Number.isSafeInteger(defaultWeeklyAmountMinor) || (defaultWeeklyAmountMinor ?? 0) <= 0) missing.push("defaultWeeklyAmountMinor");
+  if (args.regularSessionBillingPolicy === "eligible_bowlers"
+    && (!Number.isSafeInteger(defaultWeeklyAmountMinor) || (defaultWeeklyAmountMinor ?? 0) <= 0)) {
+    missing.push("defaultWeeklyAmountMinor");
+  }
+  if (args.regularSessionBillingPolicy === "none"
+    && defaultWeeklyAmountMinor !== null
+    && (!Number.isSafeInteger(defaultWeeklyAmountMinor) || defaultWeeklyAmountMinor < 0)) {
+    missing.push("defaultWeeklyAmountMinor");
+  }
   if (!args.currency) missing.push("explicit currency flag");
   if (!args.regularSessionBillingPolicy) missing.push("explicit regularSessionBillingPolicy flag");
   if (!args.billingOrdinalPolicy) missing.push("explicit billingOrdinalPolicy flag");

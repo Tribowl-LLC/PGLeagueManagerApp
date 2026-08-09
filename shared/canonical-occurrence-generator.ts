@@ -8,6 +8,7 @@ import {
 export const CANONICAL_OCCURRENCE_GENERATOR_VERSION = "canonical-occurrence-generator/1";
 export const CANONICAL_OCCURRENCE_INPUT_CONTRACT_VERSION = "canonical-occurrence-input/1";
 export const CANONICAL_OCCURRENCE_RESULT_CONTRACT_VERSION = "canonical-occurrence-generation-result/1";
+export const CANONICAL_OCCURRENCE_PHYSICAL_KEY_VERSION = "canonical-occurrence-physical-key/1";
 
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"] as const;
 export type CanonicalWeekday = (typeof WEEKDAYS)[number];
@@ -147,6 +148,7 @@ export interface CanonicalGenerationResult {
   resolverVersion: string;
   normalizedInput: CanonicalNormalizedInput;
   inputFingerprint: string;
+  physicalScheduleFingerprint: string;
   generationRange: {
     startDate: string | null;
     endDate: string | null;
@@ -368,9 +370,6 @@ export function canonicalizeGenerationInput(input: CanonicalOccurrenceGeneratorI
   ] as const) {
     if (!Number.isSafeInteger(value) || value <= 0) fatalErrors.push(error("invalid_positive_integer", `${path} must be a positive safe integer`, path));
   }
-  if (!Number.isSafeInteger(input.defaultWeeklyAmountMinor) || input.defaultWeeklyAmountMinor <= 0 || input.defaultWeeklyAmountMinor > 2_147_483_647) {
-    fatalErrors.push(error("invalid_billing_amount", "defaultWeeklyAmountMinor must be a positive PostgreSQL-safe integer", "defaultWeeklyAmountMinor"));
-  }
   if (!WEEKDAYS.includes(input.weekday)) fatalErrors.push(error("invalid_weekday", "weekday is not recognized", "weekday"));
   const localCompetitionStartTime = normalizeTime(input.localCompetitionStartTime);
   if (!localCompetitionStartTime) fatalErrors.push(error("invalid_competition_start_time", "localCompetitionStartTime must be HH:MM or HH:MM:SS", "localCompetitionStartTime"));
@@ -381,6 +380,16 @@ export function canonicalizeGenerationInput(input: CanonicalOccurrenceGeneratorI
   }
   if (input.regularSessionBillingPolicy !== "none" && input.regularSessionBillingPolicy !== "eligible_bowlers") {
     fatalErrors.push(error("invalid_billing_policy", "regularSessionBillingPolicy is not recognized", "regularSessionBillingPolicy"));
+  }
+  if (input.regularSessionBillingPolicy === "none") {
+    if (input.defaultWeeklyAmountMinor !== 0) {
+      fatalErrors.push(error("invalid_nonbillable_amount", "defaultWeeklyAmountMinor must be zero when regularSessionBillingPolicy is none", "defaultWeeklyAmountMinor"));
+    }
+  } else if (input.regularSessionBillingPolicy === "eligible_bowlers"
+    && (!Number.isSafeInteger(input.defaultWeeklyAmountMinor)
+      || input.defaultWeeklyAmountMinor <= 0
+      || input.defaultWeeklyAmountMinor > 2_147_483_647)) {
+    fatalErrors.push(error("invalid_billing_amount", "defaultWeeklyAmountMinor must be a positive PostgreSQL-safe integer for eligible_bowlers", "defaultWeeklyAmountMinor"));
   }
   if (input.billingOrdinalPolicy !== "planned_slot" && input.billingOrdinalPolicy !== "dense_billable") {
     fatalErrors.push(error("invalid_billing_ordinal_policy", "billingOrdinalPolicy is not recognized", "billingOrdinalPolicy"));
@@ -470,11 +479,36 @@ export function canonicalGenerationInputFingerprint(normalizedInput: CanonicalNo
   return sha256Hex(canonicalObject(normalizedInput));
 }
 
+/**
+ * Fingerprint only the physical schedule identity. Billing metadata,
+ * sourceScheduleRevision, ambiguous-fold policy, and expected seasonEnd are
+ * deliberately excluded: they describe provenance or interpretation, not a
+ * new durable physical session identity. Skip candidate references remain on
+ * exception candidates, while occurrence keys depend only on the skip dates.
+ */
+export function canonicalPhysicalScheduleFingerprint(normalizedInput: CanonicalNormalizedInput): string {
+  return sha256Hex(canonicalObject({
+    contractVersion: CANONICAL_OCCURRENCE_PHYSICAL_KEY_VERSION,
+    organizationId: normalizedInput.organizationId,
+    leagueId: normalizedInput.leagueId,
+    locationId: normalizedInput.locationId,
+    seasonStart: normalizedInput.seasonStart,
+    weekday: normalizedInput.weekday,
+    localCompetitionStartTime: normalizedInput.localCompetitionStartTime,
+    timezone: normalizedInput.timezone,
+    plannedSlotCount: normalizedInput.plannedSlotCount,
+    skipDates: normalizedInput.skipExceptions.map((candidate) => candidate.localDate).sort(compareStrings),
+    cancelledDates: [...normalizedInput.cancelledDates].sort(compareStrings),
+    specialSessionBehavior: normalizedInput.specialSessionBehavior,
+  }));
+}
+
 function emptyResult(
   normalizedInput: CanonicalNormalizedInput,
   inputFingerprint: string,
   fatalErrors: CanonicalGenerationError[],
 ): CanonicalGenerationResult {
+  const physicalScheduleFingerprint = canonicalPhysicalScheduleFingerprint(normalizedInput);
   const counts = {
     generatedOccurrenceCount: 0,
     skippedDateCount: 0,
@@ -489,6 +523,7 @@ function emptyResult(
     resolverVersion: canonicalDstResolverVersion(),
     normalizedInput,
     inputFingerprint,
+    physicalScheduleFingerprint,
     generationRange: {
       startDate: null,
       endDate: null,
@@ -508,6 +543,7 @@ function emptyResult(
 export function generateCanonicalOccurrences(input: CanonicalOccurrenceGeneratorInput): CanonicalGenerationResult {
   const { normalizedInput, fatalErrors } = canonicalizeGenerationInput(input);
   const inputFingerprint = canonicalGenerationInputFingerprint(normalizedInput);
+  const physicalScheduleFingerprint = canonicalPhysicalScheduleFingerprint(normalizedInput);
   if (fatalErrors.length > 0) return emptyResult(normalizedInput, inputFingerprint, fatalErrors);
 
   const firstDate = parseDate(normalizedInput.seasonStart);
@@ -544,7 +580,7 @@ export function generateCanonicalOccurrences(input: CanonicalOccurrenceGenerator
     if (skip) {
       exceptionCandidates.push({
         candidateReference: skip.candidateReference,
-        candidateKey: `skip:v1:${normalizedInput.leagueId}:${inputFingerprint}:${localDate}:${skip.candidateReference}`,
+        candidateKey: `skip:v1:${normalizedInput.leagueId}:${physicalScheduleFingerprint}:${localDate}:${skip.candidateReference}`,
         kind: "skip",
         authoritativeLocalDate: localDate,
         timezone: normalizedInput.timezone,
@@ -571,8 +607,8 @@ export function generateCanonicalOccurrences(input: CanonicalOccurrenceGenerator
         generationErrors.push(error("invalid_dst_input", message, `occurrences[${plannedOrdinal}]`, plannedOrdinal - 1));
         break;
       }
-      const candidateReference = `occurrence:${normalizedInput.leagueId}:${inputFingerprint}:${localDate}:${plannedOrdinal}`;
-      const generationKey = `occurrence:v1:${normalizedInput.leagueId}:${inputFingerprint}:${localDate}:${plannedOrdinal}`;
+      const candidateReference = `occurrence:${normalizedInput.leagueId}:${physicalScheduleFingerprint}:${localDate}:${plannedOrdinal}`;
+      const generationKey = `occurrence:v1:${normalizedInput.leagueId}:${physicalScheduleFingerprint}:${localDate}:${plannedOrdinal}`;
       const occurrence: CanonicalOccurrenceCandidate = {
         candidateReference,
         generationKey,
@@ -661,6 +697,7 @@ export function generateCanonicalOccurrences(input: CanonicalOccurrenceGenerator
     resolverVersion: occurrenceCandidates[0]?.resolverVersion ?? canonicalDstResolverVersion(),
     normalizedInput,
     inputFingerprint,
+    physicalScheduleFingerprint,
     generationRange: {
       startDate: dateToString(firstDate),
       endDate: finalDate,

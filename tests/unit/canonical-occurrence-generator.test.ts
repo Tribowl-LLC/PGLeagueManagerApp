@@ -174,6 +174,82 @@ describe("A2 canonical occurrence generator", () => {
     ]);
     expect(result.occurrenceCandidates).toEqual([]);
   });
+
+  it("uses A1's zero/null nonbillable representation and rejects ambiguous amounts", () => {
+    const nonbillable = generateCanonicalOccurrences(input({
+      defaultWeeklyAmountMinor: 0,
+      regularSessionBillingPolicy: "none",
+    }));
+    expect(nonbillable.fatalErrors).toEqual([]);
+    expect(nonbillable.billingTermCandidates.every((term) => (
+      term.obligationPolicy === "none"
+      && term.defaultAmountMinor === 0
+      && term.billingOrdinal === null
+    ))).toBe(true);
+
+    const positiveNonbillable = generateCanonicalOccurrences(input({
+      defaultWeeklyAmountMinor: 1,
+      regularSessionBillingPolicy: "none",
+    }));
+    expect(positiveNonbillable.fatalErrors.map((issue) => issue.code)).toContain("invalid_nonbillable_amount");
+    expect(positiveNonbillable.occurrenceCandidates).toEqual([]);
+
+    expect(generateCanonicalOccurrences(input({ defaultWeeklyAmountMinor: 1 })).fatalErrors).toEqual([]);
+    expect(generateCanonicalOccurrences(input({ defaultWeeklyAmountMinor: 0 })).fatalErrors.map((issue) => issue.code)).toContain("invalid_billing_amount");
+  });
+
+  it("keeps physical keys stable across billing-only changes while covering billing in the full fingerprint", () => {
+    const physical = input({
+      skipExceptions: [{
+        kind: "skip",
+        localDate: "2026-01-11",
+        reason: "facility holiday",
+        source: "manual",
+        lifecycleIntent: "draft",
+        generationRunAssociationIntent: "associate",
+        candidateReference: "skip-facility-holiday",
+      }],
+      cancelledDates: ["2026-01-18"],
+    });
+    const amountChanged = generateCanonicalOccurrences({ ...physical, defaultWeeklyAmountMinor: 3000 });
+    const currencyChanged = generateCanonicalOccurrences({ ...physical, currency: "CAD" });
+    const policyChanged = generateCanonicalOccurrences({
+      ...physical,
+      defaultWeeklyAmountMinor: 0,
+      regularSessionBillingPolicy: "none",
+    });
+    const ordinalChanged = generateCanonicalOccurrences({ ...physical, billingOrdinalPolicy: "dense_billable" });
+    const sourceRevisionChanged = generateCanonicalOccurrences({ ...physical, sourceScheduleRevision: 99 });
+    const baseline = generateCanonicalOccurrences(physical);
+    const keys = (result: typeof baseline) => ({
+      occurrences: result.occurrenceCandidates.map((candidate) => candidate.generationKey),
+      exceptions: result.exceptionCandidates.map((candidate) => candidate.candidateKey),
+    });
+
+    expect(keys(amountChanged)).toEqual(keys(baseline));
+    expect(keys(currencyChanged)).toEqual(keys(baseline));
+    expect(keys(policyChanged)).toEqual(keys(baseline));
+    expect(keys(ordinalChanged)).toEqual(keys(baseline));
+    expect(keys(sourceRevisionChanged)).toEqual(keys(baseline));
+    expect(amountChanged.inputFingerprint).not.toBe(baseline.inputFingerprint);
+    expect(currencyChanged.inputFingerprint).not.toBe(baseline.inputFingerprint);
+    expect(policyChanged.inputFingerprint).not.toBe(baseline.inputFingerprint);
+    expect(ordinalChanged.inputFingerprint).not.toBe(baseline.inputFingerprint);
+    expect(amountChanged.billingTermCandidates[0]?.defaultAmountMinor).toBe(3000);
+    expect(currencyChanged.billingTermCandidates[0]?.currency).toBe("CAD");
+    expect(policyChanged.billingTermCandidates.every((term) => term.obligationPolicy === "none")).toBe(true);
+    expect(ordinalChanged.billingTermCandidates[2]?.billingOrdinal).toBe(2);
+
+    expect(generateCanonicalOccurrences({ ...physical, seasonStart: "2026-01-08" }).occurrenceCandidates[0]?.generationKey).not.toBe(baseline.occurrenceCandidates[0]?.generationKey);
+    expect(generateCanonicalOccurrences({ ...physical, localCompetitionStartTime: "20:00" }).occurrenceCandidates[0]?.generationKey).not.toBe(baseline.occurrenceCandidates[0]?.generationKey);
+    expect(generateCanonicalOccurrences({ ...physical, timezone: "Etc/UTC" }).occurrenceCandidates[0]?.generationKey).not.toBe(baseline.occurrenceCandidates[0]?.generationKey);
+    expect(generateCanonicalOccurrences({
+      ...physical,
+      skipExceptions: physical.skipExceptions.map((candidate) => ({ ...candidate, localDate: "2026-01-25" })),
+    }).occurrenceCandidates[0]?.generationKey).not.toBe(baseline.occurrenceCandidates[0]?.generationKey);
+    expect(generateCanonicalOccurrences({ ...physical, cancelledDates: ["2026-01-25"] }).occurrenceCandidates[0]?.generationKey).not.toBe(baseline.occurrenceCandidates[0]?.generationKey);
+    expect(generateCanonicalOccurrences({ ...physical, plannedSlotCount: 5 }).occurrenceCandidates[0]?.generationKey).not.toBe(baseline.occurrenceCandidates[0]?.generationKey);
+  });
 });
 
 describe("A2 canonical DST resolver", () => {

@@ -7,6 +7,7 @@ import {
   leagueOccurrenceBillingTerms,
   leagueOccurrenceRevisions,
   leagueOccurrences,
+  leagueScheduleExceptions,
   leagueScheduleCommands,
   locations,
   organizations,
@@ -15,23 +16,38 @@ import {
 } from "@shared/schema";
 import { deleteOrganization } from "../../server/storage/organizations";
 import {
+  buildCanonicalScheduleCommandFingerprint,
   cancelOccurrence,
   createGenerationRevision,
   discardDraftOccurrence,
+  rescheduleOccurrence,
+  validateExceptionPlacement,
   validateMakeupRelationship,
   validateOccurrencePlacement,
+  withLockedOccurrencePlacementMutation,
+  type ScheduleCommandRequest,
 } from "../../server/services/canonical-occurrence-transactions";
 import { getTestDb } from "../setup/test-db";
 
 const db = getTestDb();
 const organizationsToDelete: number[] = [];
+const systemAdminsToDelete: number[] = [];
 let sequence = 0;
 
 interface Fixture {
   organizationId: number;
   actorUserId: number;
+  regularUserId: number;
+  systemAdminUserId: number;
   locationId: number;
   leagueId: number;
+}
+
+function withFingerprint<T extends ScheduleCommandRequest>(request: T): Omit<T, "requestFingerprint"> & { requestFingerprint: string } {
+  return {
+    ...request,
+    requestFingerprint: buildCanonicalScheduleCommandFingerprint(request),
+  };
 }
 
 function fingerprint(seed: string): string {
@@ -55,6 +71,23 @@ async function fixture(label: string): Promise<Fixture> {
     organizationId: organization.id,
   }).returning({ id: users.id });
   if (!actor) throw new Error("A2 actor was not created");
+  const [regularUser] = await db.insert(users).values({
+    email: `a2-${unique}-user@example.test`,
+    password: "a2-test-password-hash",
+    name: `A2 ${unique} regular user`,
+    role: "user",
+    organizationId: organization.id,
+  }).returning({ id: users.id });
+  if (!regularUser) throw new Error("A2 regular user was not created");
+  const [systemAdmin] = await db.insert(users).values({
+    email: `a2-${unique}-system@example.test`,
+    password: "a2-test-password-hash",
+    name: `A2 ${unique} system admin`,
+    role: "system_admin",
+    organizationId: null,
+  }).returning({ id: users.id });
+  if (!systemAdmin) throw new Error("A2 system admin was not created");
+  systemAdminsToDelete.push(systemAdmin.id);
   const [location] = await db.insert(locations).values({ name: `A2 ${unique} location`, organizationId: organization.id }).returning({ id: locations.id });
   if (!location) throw new Error("A2 location was not created");
   const [league] = await db.insert(leagues).values({
@@ -70,7 +103,14 @@ async function fixture(label: string): Promise<Fixture> {
     doublePayDates: ["2035-01-05"],
   }).returning({ id: leagues.id });
   if (!league) throw new Error("A2 league was not created");
-  return { organizationId: organization.id, actorUserId: actor.id, locationId: location.id, leagueId: league.id };
+  return {
+    organizationId: organization.id,
+    actorUserId: actor.id,
+    regularUserId: regularUser.id,
+    systemAdminUserId: systemAdmin.id,
+    locationId: location.id,
+    leagueId: league.id,
+  };
 }
 
 async function command(f: Fixture, commandType: "generate" | "publish" | "cancel", label: string, reason?: string) {
@@ -88,12 +128,13 @@ async function command(f: Fixture, commandType: "generate" | "publish" | "cancel
 }
 
 async function occurrence(f: Fixture, label: string, options: {
-  lifecycle?: "draft" | "published";
+  lifecycle?: "draft" | "published" | "locked";
   status?: "scheduled" | "cancelled";
   kind?: "regular" | "makeup";
   localDate?: string;
   startAt?: string;
   commandId?: string;
+  plannedOrdinal?: number | null;
   competitionNumber?: number | null;
 } = {}) {
   const lifecycle = options.lifecycle ?? "draft";
@@ -101,7 +142,7 @@ async function occurrence(f: Fixture, label: string, options: {
   const createCommand = options.commandId ? null : await command(f, lifecycle === "published" ? "publish" : "generate", `${label}-occurrence`);
   const commandId = options.commandId ?? createCommand?.id;
   if (!commandId) throw new Error("occurrence command is missing");
-  const published = lifecycle === "published";
+  const published = lifecycle !== "draft";
   const [row] = await db.insert(leagueOccurrences).values({
     organizationId: f.organizationId,
     leagueId: f.leagueId,
@@ -117,14 +158,18 @@ async function occurrence(f: Fixture, label: string, options: {
     selectedUtcOffsetMinutes: -300,
     foldResolution: "unambiguous",
     resolverVersion: "a2-test-resolver",
-    plannedOrdinal: published ? 1 : null,
-    competitionNumber: published ? (options.competitionNumber ?? 1) : null,
+    plannedOrdinal: published ? (options.plannedOrdinal ?? 1) : null,
+    competitionNumber: published && status !== "cancelled" ? (options.competitionNumber ?? options.plannedOrdinal ?? 1) : null,
     competitive: status !== "cancelled",
     countsInStandings: status !== "cancelled",
     lastCommandId: commandId,
     publishedAt: published ? "2034-12-01T00:00:00.000Z" : null,
     publishedByUserId: published ? f.actorUserId : null,
     publicationCommandId: published ? commandId : null,
+    lockedAt: lifecycle === "locked" ? "2034-12-02T00:00:00.000Z" : null,
+    lockedByUserId: lifecycle === "locked" ? f.actorUserId : null,
+    lockReason: lifecycle === "locked" ? "A2 locked test occurrence" : null,
+    lockCommandId: lifecycle === "locked" ? commandId : null,
     cancelledAt: status === "cancelled" ? "2034-12-02T00:00:00.000Z" : null,
     cancelledByUserId: status === "cancelled" ? f.actorUserId : null,
     cancellationCommandId: status === "cancelled" ? commandId : null,
@@ -135,18 +180,19 @@ async function occurrence(f: Fixture, label: string, options: {
 
 afterAll(async () => {
   for (const organizationId of organizationsToDelete.splice(0)) await deleteOrganization(organizationId).catch(() => undefined);
+  for (const userId of systemAdminsToDelete.splice(0)) await db.delete(users).where(eq(users.id, userId)).catch(() => undefined);
 });
 
 describe("A2 transactional occurrence invariants", () => {
   it("serializes source revisions, converges idempotent retries, and rejects fingerprint reuse", async () => {
     const f = await fixture("revision");
-    const base = {
+    const base = withFingerprint({
       organizationId: f.organizationId,
       leagueId: f.leagueId,
       actorUserId: f.actorUserId,
       commandType: "generate" as const,
       idempotencyKey: "generation-revision-retry",
-      requestFingerprint: fingerprint("generation-revision-input"),
+      requestFingerprint: "",
       generatorVersion: "a2-test-generator",
       inputFingerprint: fingerprint("generation-input"),
       normalizedInputSnapshot: { fixture: "revision" },
@@ -156,40 +202,79 @@ describe("A2 transactional occurrence invariants", () => {
       generatedOccurrenceCount: 1,
       skippedDateCount: 0,
       discrepancyCount: 0,
-    };
+    });
     const [first, second] = await Promise.all([
-      createGenerationRevision({ ...base, idempotencyKey: "generation-one", requestFingerprint: fingerprint("one") }),
-      createGenerationRevision({ ...base, idempotencyKey: "generation-two", requestFingerprint: fingerprint("two") }),
+      createGenerationRevision(withFingerprint({ ...base, idempotencyKey: "generation-one" })),
+      createGenerationRevision(withFingerprint({ ...base, idempotencyKey: "generation-two" })),
     ]);
     expect(new Set([first.generationRun.sourceScheduleRevision, second.generationRun.sourceScheduleRevision])).toEqual(new Set([1, 2]));
     const retry = await createGenerationRevision(base);
     expect(retry.generationRun.id).toBe((await createGenerationRevision(base)).generationRun.id);
-    await expect(createGenerationRevision({ ...base, requestFingerprint: fingerprint("conflict") })).rejects.toMatchObject({ code: "idempotency_conflict" });
+    await expect(createGenerationRevision(withFingerprint({
+      ...base,
+      normalizedInputSnapshot: { fixture: "different" },
+    }))).rejects.toMatchObject({ code: "idempotency_conflict" });
   });
 
   it("rejects same-day collisions by default, allows distinct-time audited overrides, and always rejects exact starts", async () => {
     const f = await fixture("same-day");
     await occurrence(f, "same-day-existing", { localDate: "2035-02-02", startAt: "2035-02-03T00:00:00.000Z" });
-    const request = {
+    const request = withFingerprint({
       organizationId: f.organizationId,
       leagueId: f.leagueId,
       actorUserId: f.actorUserId,
       commandType: "generate" as const,
-      requestFingerprint: fingerprint("same-day-default"),
+      requestFingerprint: "",
       idempotencyKey: "same-day-default",
       authoritativeLocalDate: "2035-02-02",
       startAt: "2035-02-03T01:00:00.000Z",
-    };
+    });
     await expect(validateOccurrencePlacement(request)).rejects.toMatchObject({ code: "same_day_collision" });
-    await expect(validateOccurrencePlacement({ ...request, sameDayOverride: true, reason: "Audited distinct-time exception" })).resolves.toBeDefined();
-    await expect(validateOccurrencePlacement({
+    const overrideRequest = withFingerprint({ ...request, sameDayOverride: true, reason: "Audited distinct-time exception" });
+    await expect(validateOccurrencePlacement(overrideRequest)).resolves.toBeDefined();
+    await expect(validateOccurrencePlacement(overrideRequest)).resolves.toBeDefined();
+    await expect(validateOccurrencePlacement(withFingerprint({
+      ...overrideRequest,
+      startAt: "2035-02-03T02:00:00.000Z",
+    }))).rejects.toMatchObject({ code: "idempotency_conflict" });
+    await expect(validateOccurrencePlacement(withFingerprint({
       ...request,
       idempotencyKey: "same-day-exact",
-      requestFingerprint: fingerprint("same-day-exact"),
       sameDayOverride: true,
       reason: "Audited override cannot alter an exact start collision",
       startAt: "2035-02-03T00:00:00.000Z",
-    })).rejects.toMatchObject({ code: "exact_start_collision" });
+    }))).rejects.toMatchObject({ code: "exact_start_collision" });
+
+    await occurrence(f, "published-exact", {
+      lifecycle: "published",
+      localDate: "2035-02-16",
+      startAt: "2035-02-17T00:00:00.000Z",
+      plannedOrdinal: 2,
+      competitionNumber: 2,
+    });
+    await occurrence(f, "locked-exact", {
+      lifecycle: "locked",
+      localDate: "2035-02-23",
+      startAt: "2035-02-24T00:00:00.000Z",
+      plannedOrdinal: 3,
+      competitionNumber: 3,
+    });
+    await expect(validateOccurrencePlacement(withFingerprint({
+      ...request,
+      idempotencyKey: "published-exact",
+      authoritativeLocalDate: "2035-02-17",
+      startAt: "2035-02-17T00:00:00.000Z",
+      sameDayOverride: true,
+      reason: "Exact UTC start remains prohibited across local dates",
+    }))).rejects.toMatchObject({ code: "exact_start_collision" });
+    await expect(validateOccurrencePlacement(withFingerprint({
+      ...request,
+      idempotencyKey: "locked-exact",
+      authoritativeLocalDate: "2035-02-24",
+      startAt: "2035-02-24T00:00:00.000Z",
+      sameDayOverride: true,
+      reason: "Locked exact UTC start remains prohibited",
+    }))).rejects.toMatchObject({ code: "exact_start_collision" });
   });
 
   it("fails closed for cross-tenant scope and serializes concurrent same-day attempts", async () => {
@@ -201,38 +286,174 @@ describe("A2 transactional occurrence invariants", () => {
       leagueId: first.leagueId,
       actorUserId: first.actorUserId,
       commandType: "generate" as const,
+      requestFingerprint: "",
       authoritativeLocalDate: "2035-02-09",
       startAt: "2035-02-10T01:00:00.000Z",
     };
     const outcomes = await Promise.allSettled([
-      validateOccurrencePlacement({ ...request, idempotencyKey: "concurrent-one", requestFingerprint: fingerprint("concurrent-one") }),
-      validateOccurrencePlacement({ ...request, idempotencyKey: "concurrent-two", requestFingerprint: fingerprint("concurrent-two") }),
+      validateOccurrencePlacement(withFingerprint({ ...request, idempotencyKey: "concurrent-one" })),
+      validateOccurrencePlacement(withFingerprint({ ...request, idempotencyKey: "concurrent-two" })),
     ]);
     expect(outcomes.every((outcome) => outcome.status === "rejected")).toBe(true);
-    await expect(validateOccurrencePlacement({
+    await expect(validateOccurrencePlacement(withFingerprint({
       ...request,
       organizationId: second.organizationId,
       leagueId: first.leagueId,
       actorUserId: second.actorUserId,
       idempotencyKey: "cross-tenant",
-      requestFingerprint: fingerprint("cross-tenant"),
-    })).rejects.toMatchObject({ code: "league_not_found" });
+    }))).rejects.toMatchObject({ code: "league_not_found" });
+  });
+
+  it("keeps validation and a test mutation under one league lock", async () => {
+    const f = await fixture("empty-race");
+    const base = {
+      organizationId: f.organizationId,
+      leagueId: f.leagueId,
+      actorUserId: f.actorUserId,
+      commandType: "generate" as const,
+      requestFingerprint: "",
+      authoritativeLocalDate: "2035-02-09",
+      sameDayOverride: false,
+    };
+    const attempt = (label: string, startAt: string) => withLockedOccurrencePlacementMutation(
+      withFingerprint({ ...base, idempotencyKey: `empty-race-${label}`, startAt }),
+      async ({ tx, command }) => {
+        const [inserted] = await tx.insert(leagueOccurrences).values({
+          organizationId: f.organizationId,
+          leagueId: f.leagueId,
+          locationId: f.locationId,
+          generationKey: `a2-empty-race-${label}-${++sequence}`,
+          kind: "regular",
+          status: "scheduled",
+          lifecycle: "draft",
+          authoritativeLocalDate: "2035-02-09",
+          authoritativeLocalStartTime: "19:00:00",
+          timezone: "America/New_York",
+          startAt,
+          selectedUtcOffsetMinutes: -300,
+          foldResolution: "unambiguous",
+          resolverVersion: "a2-test-resolver",
+          competitive: true,
+          countsInStandings: true,
+          lastCommandId: command.id,
+        }).returning({ id: leagueOccurrences.id });
+        return inserted?.id;
+      },
+    );
+    const outcomes = await Promise.allSettled([
+      attempt("one", "2035-02-10T00:00:00.000Z"),
+      attempt("two", "2035-02-10T01:00:00.000Z"),
+    ]);
+    expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome.status === "rejected")).toHaveLength(1);
+    const rejected = outcomes.find((outcome) => outcome.status === "rejected");
+    expect(rejected).toMatchObject({ reason: { code: "same_day_collision" } });
+    expect(await db.select().from(leagueOccurrences).where(and(
+      eq(leagueOccurrences.organizationId, f.organizationId),
+      eq(leagueOccurrences.leagueId, f.leagueId),
+      eq(leagueOccurrences.authoritativeLocalDate, "2035-02-09"),
+    ))).toHaveLength(1);
+  });
+
+  it("allows only schedule administrators and preserves the platform-admin exception", async () => {
+    const f = await fixture("authorization");
+    const request = {
+      organizationId: f.organizationId,
+      leagueId: f.leagueId,
+      commandType: "generate" as const,
+      requestFingerprint: "",
+      authoritativeLocalDate: "2035-02-09",
+      startAt: "2035-02-10T00:00:00.000Z",
+    };
+    await expect(validateOccurrencePlacement(withFingerprint({
+      ...request,
+      actorUserId: f.regularUserId,
+      idempotencyKey: "authorization-user",
+    }))).rejects.toMatchObject({ code: "unauthorized_actor" });
+    await expect(validateOccurrencePlacement(withFingerprint({
+      ...request,
+      actorUserId: f.actorUserId,
+      idempotencyKey: "authorization-org-admin",
+    }))).resolves.toBeDefined();
+    await expect(validateOccurrencePlacement(withFingerprint({
+      ...request,
+      actorUserId: f.systemAdminUserId,
+      idempotencyKey: "authorization-system-admin",
+    }))).resolves.toBeDefined();
+
+    const other = await fixture("authorization-other");
+    await expect(validateOccurrencePlacement(withFingerprint({
+      ...request,
+      actorUserId: other.actorUserId,
+      idempotencyKey: "authorization-cross-tenant",
+    }))).rejects.toMatchObject({ code: "unauthorized_actor" });
   });
 
   it("enforces makeup source/target and explicit cancelled-target semantics", async () => {
     const f = await fixture("makeup");
     const source = await occurrence(f, "makeup-source", { kind: "makeup" });
     const regular = await occurrence(f, "makeup-regular", { lifecycle: "published", status: "scheduled" });
-    await expect(validateMakeupRelationship({
+    await expect(validateMakeupRelationship(withFingerprint({
       organizationId: f.organizationId,
       leagueId: f.leagueId,
       actorUserId: f.actorUserId,
       commandType: "create_makeup_relationship",
       idempotencyKey: "makeup-not-cancelled",
-      requestFingerprint: fingerprint("makeup-not-cancelled"),
+      requestFingerprint: "",
       sourceOccurrenceId: source.id,
       targetOccurrenceId: regular.id,
-    })).rejects.toMatchObject({ code: "cancelled_target_required" });
+    }))).rejects.toMatchObject({ code: "cancelled_target_required" });
+  });
+
+  it("covers exception and makeup idempotency payloads and collision boundaries", async () => {
+    const f = await fixture("exception-makeup");
+    const exceptionRequest = withFingerprint({
+      organizationId: f.organizationId,
+      leagueId: f.leagueId,
+      actorUserId: f.actorUserId,
+      commandType: "create_exception" as const,
+      idempotencyKey: "exception-placement",
+      requestFingerprint: "",
+      authoritativeLocalDate: "2035-02-16",
+      startAt: "2035-02-17T00:00:00.000Z",
+    });
+    const exceptionCommand = await validateExceptionPlacement(exceptionRequest);
+    await expect(validateExceptionPlacement(exceptionRequest)).resolves.toMatchObject({ id: exceptionCommand.id });
+    await db.insert(leagueScheduleExceptions).values({
+      organizationId: f.organizationId,
+      leagueId: f.leagueId,
+      kind: "skip",
+      localDate: exceptionRequest.authoritativeLocalDate,
+      timezone: "America/New_York",
+      source: "manual",
+      lifecycle: "draft",
+      reason: "A2 exception placement test",
+      lastCommandId: exceptionCommand.id,
+    });
+    await expect(validateExceptionPlacement(withFingerprint({
+      ...exceptionRequest,
+      idempotencyKey: "exception-placement-different-key",
+    }))).rejects.toMatchObject({ code: "exception_collision" });
+
+    const source = await occurrence(f, "exception-makeup-source", { kind: "makeup" });
+    const target = await occurrence(f, "exception-makeup-target", { lifecycle: "published", status: "cancelled" });
+    const makeupRequest = withFingerprint({
+      organizationId: f.organizationId,
+      leagueId: f.leagueId,
+      actorUserId: f.actorUserId,
+      commandType: "create_makeup_relationship" as const,
+      idempotencyKey: "makeup-placement",
+      requestFingerprint: "",
+      sourceOccurrenceId: source.id,
+      targetOccurrenceId: target.id,
+    });
+    const makeupCommand = await validateMakeupRelationship(makeupRequest);
+    await expect(validateMakeupRelationship(makeupRequest)).resolves.toMatchObject({ id: makeupCommand.id });
+    await expect(validateMakeupRelationship(withFingerprint({
+      ...makeupRequest,
+      targetOccurrenceId: source.id,
+      idempotencyKey: makeupRequest.idempotencyKey,
+    }))).rejects.toMatchObject({ code: "idempotency_conflict" });
   });
 
   it("discards a draft atomically, retains identity, supersedes terms, and records revisions", async () => {
@@ -270,17 +491,18 @@ describe("A2 transactional occurrence invariants", () => {
       snapshotSchemaVersion: 1,
       afterSnapshot: { state: "draft" },
     });
-    const discarded = await discardDraftOccurrence({
+    const discardRequest = withFingerprint({
       organizationId: f.organizationId,
       leagueId: f.leagueId,
       actorUserId: f.actorUserId,
       commandType: "discard_draft",
       idempotencyKey: "discard-draft-command",
-      requestFingerprint: fingerprint("discard-draft-command"),
+      requestFingerprint: "",
       reason: "The generated draft is intentionally discarded",
       occurrenceId: draft.id,
       now: "2034-12-01T00:00:00.000Z",
     });
+    const discarded = await discardDraftOccurrence(discardRequest);
     expect(discarded.occurrence.id).toBe(draft.id);
     expect(discarded.occurrence.generationKey).toBe(draft.generationKey);
     expect(discarded.occurrence.status).toBe("discarded");
@@ -290,17 +512,11 @@ describe("A2 transactional occurrence invariants", () => {
     expect(termAfter?.state).toBe("superseded");
     expect(await db.select().from(leagueOccurrenceRevisions).where(eq(leagueOccurrenceRevisions.occurrenceId, draft.id))).toHaveLength(2);
     expect(await db.select().from(leagueOccurrenceBillingTermRevisions).where(eq(leagueOccurrenceBillingTermRevisions.billingTermId, term.id))).toHaveLength(2);
-    await expect(discardDraftOccurrence({
-      organizationId: f.organizationId,
-      leagueId: f.leagueId,
-      actorUserId: f.actorUserId,
-      commandType: "discard_draft",
-      idempotencyKey: "discard-draft-command",
-      requestFingerprint: fingerprint("discard-draft-command"),
-      reason: "The generated draft is intentionally discarded",
-      occurrenceId: draft.id,
-      now: "2034-12-01T00:00:00.000Z",
-    })).resolves.toMatchObject({ occurrence: { id: draft.id, status: "discarded" } });
+    await expect(discardDraftOccurrence(discardRequest)).resolves.toMatchObject({ occurrence: { id: draft.id, status: "discarded" } });
+    await expect(discardDraftOccurrence(withFingerprint({
+      ...discardRequest,
+      reason: "A materially different discard request",
+    }))).rejects.toMatchObject({ code: "idempotency_conflict" });
   });
 
   it("rolls back discard work and refuses effectively locked or active rows", async () => {
@@ -322,17 +538,17 @@ describe("A2 transactional occurrence invariants", () => {
     await db.execute(sql.raw(`CREATE OR REPLACE FUNCTION ${functionName}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'A2 induced discard failure'; END; $$`));
     await db.execute(sql.raw(`CREATE TRIGGER ${triggerName} BEFORE UPDATE OF state ON league_occurrence_billing_terms FOR EACH ROW EXECUTE FUNCTION ${functionName}()`));
     try {
-      await expect(discardDraftOccurrence({
+      await expect(discardDraftOccurrence(withFingerprint({
         organizationId: f.organizationId,
         leagueId: f.leagueId,
         actorUserId: f.actorUserId,
         commandType: "discard_draft",
         idempotencyKey: "rollback-discard",
-        requestFingerprint: fingerprint("rollback-discard"),
+        requestFingerprint: "",
         reason: "Induced failure must roll back all discard work",
         occurrenceId: draft.id,
         now: "2034-12-01T00:00:00.000Z",
-      })).rejects.toThrow(/league_occurrence_billing_terms/);
+      }))).rejects.toThrow(/league_occurrence_billing_terms/);
     } finally {
       await db.execute(sql.raw(`DROP TRIGGER IF EXISTS ${triggerName} ON league_occurrence_billing_terms`));
       await db.execute(sql.raw(`DROP FUNCTION IF EXISTS ${functionName}()`));
@@ -340,17 +556,17 @@ describe("A2 transactional occurrence invariants", () => {
     const [afterRollback] = await db.select().from(leagueOccurrences).where(eq(leagueOccurrences.id, draft.id));
     expect(afterRollback?.status).toBe("scheduled");
     const locked = await occurrence(f, "locked-draft", { startAt: "2034-01-01T00:00:00.000Z" });
-    await expect(discardDraftOccurrence({
+    await expect(discardDraftOccurrence(withFingerprint({
       organizationId: f.organizationId,
       leagueId: f.leagueId,
       actorUserId: f.actorUserId,
       commandType: "discard_draft",
       idempotencyKey: "locked-discard",
-      requestFingerprint: fingerprint("locked-discard"),
+      requestFingerprint: "",
       reason: "Do not discard an effectively locked occurrence",
       occurrenceId: locked.id,
       now: "2034-01-02T00:00:00.000Z",
-    })).rejects.toMatchObject({ code: "occurrence_effectively_locked" });
+    }))).rejects.toMatchObject({ code: "occurrence_effectively_locked" });
   });
 
   it("cancels without renumbering history, clears current competition and billing, and refuses activity evidence", async () => {
@@ -374,29 +590,29 @@ describe("A2 transactional occurrence invariants", () => {
       publicationCommandId: publish,
     }).returning();
     if (!term) throw new Error("published billing term is missing");
-    await expect(cancelOccurrence({
+    await expect(cancelOccurrence(withFingerprint({
       organizationId: f.organizationId,
       leagueId: f.leagueId,
       actorUserId: f.actorUserId,
       commandType: "cancel",
       idempotencyKey: "cancel-with-evidence",
-      requestFingerprint: fingerprint("cancel-with-evidence"),
+      requestFingerprint: "",
       reason: "Evidence refusal",
       occurrenceId: target.id,
       now: "2035-01-01T00:00:00.000Z",
       activityEvidence: ["explicit-game:2035-03-02"],
-    })).rejects.toMatchObject({ code: "activity_evidence" });
-    const cancelled = await cancelOccurrence({
+    }))).rejects.toMatchObject({ code: "activity_evidence" });
+    const cancelled = await cancelOccurrence(withFingerprint({
       organizationId: f.organizationId,
       leagueId: f.leagueId,
       actorUserId: f.actorUserId,
       commandType: "cancel",
       idempotencyKey: "cancel-clean",
-      requestFingerprint: fingerprint("cancel-clean"),
+      requestFingerprint: "",
       reason: "The physical session is cancelled",
       occurrenceId: target.id,
       now: "2035-01-01T00:00:00.000Z",
-    });
+    }));
     expect(cancelled.plannedOrdinal).toBe(1);
     expect(cancelled.competitionNumber).toBeNull();
     expect(cancelled.competitive).toBe(false);
@@ -405,6 +621,113 @@ describe("A2 transactional occurrence invariants", () => {
     expect(termAfter).toMatchObject({ obligationPolicy: "none", defaultAmountMinor: 0, billingOrdinal: null });
     const revisions = await db.select().from(leagueOccurrenceRevisions).where(eq(leagueOccurrenceRevisions.occurrenceId, target.id));
     expect(revisions.at(-1)?.beforeSnapshot).toMatchObject({ competitionNumber: 7 });
+    await expect(cancelOccurrence(withFingerprint({
+      ...withFingerprint({
+        organizationId: f.organizationId,
+        leagueId: f.leagueId,
+        actorUserId: f.actorUserId,
+        commandType: "cancel" as const,
+        idempotencyKey: "cancel-clean",
+        requestFingerprint: "",
+        reason: "The physical session is cancelled",
+        occurrenceId: target.id,
+        now: "2035-01-01T00:00:00.000Z",
+      }),
+      activityEvidence: ["different-evidence"],
+    }))).rejects.toMatchObject({ code: "idempotency_conflict" });
+  });
+
+  it("derives coherent reschedule tuples through the canonical DST resolver", async () => {
+    const f = await fixture("reschedule");
+    const target = await occurrence(f, "reschedule-valid");
+    const validRequest = withFingerprint({
+      organizationId: f.organizationId,
+      leagueId: f.leagueId,
+      actorUserId: f.actorUserId,
+      commandType: "reschedule" as const,
+      idempotencyKey: "reschedule-valid",
+      requestFingerprint: "",
+      reason: "Move the draft to the next league date",
+      occurrenceId: target.id,
+      now: "2034-12-01T00:00:00.000Z",
+      authoritativeLocalDate: "2035-01-12",
+      authoritativeLocalStartTime: "19:00",
+      timezone: "US/Eastern",
+      ambiguousFold: "reject" as const,
+    });
+    const rescheduled = await rescheduleOccurrence(validRequest);
+    expect(rescheduled).toMatchObject({
+      id: target.id,
+      generationKey: target.generationKey,
+      authoritativeLocalDate: "2035-01-12",
+      authoritativeLocalStartTime: "19:00:00",
+      timezone: "America/New_York",
+      selectedUtcOffsetMinutes: -300,
+      foldResolution: "unambiguous",
+    });
+    expect(new Date(rescheduled.startAt).toISOString()).toBe("2035-01-13T00:00:00.000Z");
+    await expect(rescheduleOccurrence(validRequest)).resolves.toMatchObject({ id: target.id, currentRevision: rescheduled.currentRevision });
+    await expect(rescheduleOccurrence(withFingerprint({
+      ...validRequest,
+      authoritativeLocalDate: "2035-01-19",
+    }))).rejects.toMatchObject({ code: "idempotency_conflict" });
+
+    const gapRequest = withFingerprint({
+      ...validRequest,
+      idempotencyKey: "reschedule-gap",
+      authoritativeLocalDate: "2035-03-11",
+      authoritativeLocalStartTime: "02:30",
+    });
+    await expect(rescheduleOccurrence(gapRequest)).rejects.toMatchObject({ code: "invalid_dst_input" });
+
+    const foldReject = withFingerprint({
+      ...validRequest,
+      idempotencyKey: "reschedule-fold-reject",
+      authoritativeLocalDate: "2035-11-04",
+      authoritativeLocalStartTime: "01:30",
+    });
+    await expect(rescheduleOccurrence(foldReject)).rejects.toMatchObject({ code: "invalid_dst_input" });
+    const foldEarlier = await rescheduleOccurrence(withFingerprint({
+      ...validRequest,
+      idempotencyKey: "reschedule-fold-earlier",
+      authoritativeLocalDate: "2035-11-04",
+      authoritativeLocalStartTime: "01:30",
+      ambiguousFold: "earlier" as const,
+    }));
+    expect(foldEarlier.selectedUtcOffsetMinutes).toBe(-240);
+    expect(foldEarlier.foldResolution).toBe("earlier");
+    expect(new Date(foldEarlier.startAt).toISOString()).toBe("2035-11-04T05:30:00.000Z");
+    const foldLater = await rescheduleOccurrence(withFingerprint({
+      ...validRequest,
+      idempotencyKey: "reschedule-fold-later",
+      authoritativeLocalDate: "2035-11-04",
+      authoritativeLocalStartTime: "01:30",
+      ambiguousFold: "later" as const,
+    }));
+    expect(foldLater.selectedUtcOffsetMinutes).toBe(-300);
+    expect(foldLater.foldResolution).toBe("later");
+    expect(new Date(foldLater.startAt).toISOString()).toBe("2035-11-04T06:30:00.000Z");
+
+    const mismatched = occurrence(f, "reschedule-mismatch");
+    const mismatchTarget = await mismatched;
+    const ordinary = {
+      ...validRequest,
+      occurrenceId: mismatchTarget.id,
+      idempotencyKey: "reschedule-wrong-derived-fields",
+      authoritativeLocalDate: "2035-02-09",
+      authoritativeLocalStartTime: "19:00",
+      timezone: "America/New_York",
+      ambiguousFold: "reject" as const,
+    };
+    await expect(rescheduleOccurrence(withFingerprint({ ...ordinary, startAt: "2035-02-10T01:00:00.000Z" }))).rejects.toMatchObject({ code: "invalid_dst_input" });
+    await expect(rescheduleOccurrence(withFingerprint({ ...ordinary, idempotencyKey: "reschedule-wrong-offset", selectedUtcOffsetMinutes: -240 }))).rejects.toMatchObject({ code: "invalid_dst_input" });
+    await expect(rescheduleOccurrence(withFingerprint({ ...ordinary, idempotencyKey: "reschedule-wrong-fold", foldResolution: "later" as const }))).rejects.toMatchObject({ code: "invalid_dst_input" });
+    await expect(rescheduleOccurrence(withFingerprint({ ...ordinary, idempotencyKey: "reschedule-wrong-version", resolverVersion: "caller-version" }))).rejects.toMatchObject({ code: "invalid_dst_input" });
+    await expect(rescheduleOccurrence(withFingerprint({
+      ...ordinary,
+      idempotencyKey: "reschedule-local-mismatch",
+      startAt: "2035-02-16T00:00:00.000Z",
+    }))).rejects.toMatchObject({ code: "invalid_dst_input" });
   });
 
   it("proves the standalone operator is read-only and keeps legacy collection evidence separate", async () => {
@@ -452,5 +775,46 @@ describe("A2 transactional occurrence invariants", () => {
     expect(afterLeague).toEqual(beforeLeague);
     expect(afterOccurrences).toEqual(beforeOccurrences);
     expect(afterCommands).toEqual(beforeCommands);
+
+    await db.update(leagues).set({ weeklyFee: 0 }).where(eq(leagues.id, f.leagueId));
+    const beforeNonbillableLeague = await db.select().from(leagues).where(eq(leagues.id, f.leagueId));
+    const beforeNonbillableOccurrences = await db.select().from(leagueOccurrences).where(and(
+      eq(leagueOccurrences.organizationId, f.organizationId),
+      eq(leagueOccurrences.leagueId, f.leagueId),
+    ));
+    const beforeNonbillableCommands = await db.select().from(leagueScheduleCommands).where(eq(leagueScheduleCommands.organizationId, f.organizationId));
+    const nonbillableRun = spawnSync(process.execPath, [tsx, "scripts/generate-canonical-occurrences.ts",
+      `--organizationId=${f.organizationId}`,
+      `--leagueId=${f.leagueId}`,
+      "--sourceScheduleRevision=2",
+      "--ambiguousFold=reject",
+      "--currency=USD",
+      "--regularSessionBillingPolicy=none",
+      "--billingOrdinalPolicy=planned_slot",
+    ], {
+      encoding: "utf8",
+      env: { ...process.env, DATABASE_URL: databaseUrl },
+    });
+    expect(nonbillableRun.status).toBe(0);
+    const nonbillableOutput: unknown = JSON.parse(nonbillableRun.stdout);
+    expect(nonbillableOutput).toMatchObject({
+      generationResult: {
+        fatalErrorCount: 0,
+        normalizedInput: { defaultWeeklyAmountMinor: 0, regularSessionBillingPolicy: "none" },
+      },
+    });
+    const nonbillableTerms = (nonbillableOutput as {
+      generationResult: { billingTermCandidates: Array<{ obligationPolicy: string; defaultAmountMinor: number; billingOrdinal: number | null }> };
+    }).generationResult.billingTermCandidates;
+    expect(nonbillableTerms.every((term) => term.obligationPolicy === "none" && term.defaultAmountMinor === 0 && term.billingOrdinal === null)).toBe(true);
+    const afterNonbillableLeague = await db.select().from(leagues).where(eq(leagues.id, f.leagueId));
+    const afterNonbillableOccurrences = await db.select().from(leagueOccurrences).where(and(
+      eq(leagueOccurrences.organizationId, f.organizationId),
+      eq(leagueOccurrences.leagueId, f.leagueId),
+    ));
+    const afterNonbillableCommands = await db.select().from(leagueScheduleCommands).where(eq(leagueScheduleCommands.organizationId, f.organizationId));
+    expect(afterNonbillableLeague).toEqual(beforeNonbillableLeague);
+    expect(afterNonbillableOccurrences).toEqual(beforeNonbillableOccurrences);
+    expect(afterNonbillableCommands).toEqual(beforeNonbillableCommands);
   });
 });
