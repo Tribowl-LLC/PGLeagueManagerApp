@@ -24,6 +24,7 @@ import {
   fireLeagueBowlersExternalResync,
   fireBowlersExternalResync,
 } from '../services/bowler-resync';
+import { LeagueOccurrenceEvidenceExistsError } from '../storage/leagues';
 
 const log = createLogger("Leagues");
 
@@ -553,25 +554,10 @@ router.delete("/:id", async (req: Request, res) => {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
     
-    // Capture the bowler ids in this league BEFORE the destructive
-    // writes so the post-delete resync (task #429) can still find
-    // them. Doing it after delete would observe an empty roster.
-    const preDeleteBowlerLeagues = await storage.getBowlerLeagues({ leagueId: id });
-    const affectedBowlerIds = Array.from(
-      new Set(preDeleteBowlerLeagues.map((bl) => bl.bowlerId)),
-    );
-
-    const teams = await storage.getTeams(id);
-
-    for (const team of teams) {
-      const teamBowlers = await storage.getBowlers({ teamId: team.id, organizationId: league.organizationId! });
-      for (const bowler of teamBowlers) {
-        await storage.updateBowler(bowler.id, { active: false, order: 0 });
-      }
-      await storage.deleteTeam(team.id);
-    }
-
-    await storage.deleteLeague(id);
+    // Storage owns the transaction, evidence check, and shared schedule lock.
+    // It returns the pre-delete active roster so this post-commit-only
+    // external resync never has to query rows that the transaction removed.
+    const affectedBowlerIds = await storage.deleteLeague(id, league.organizationId);
 
     // Bowlers are now in zero leagues from this org's perspective
     // (assuming this was their only league). Push empty/updated
@@ -580,6 +566,14 @@ router.delete("/:id", async (req: Request, res) => {
 
     sendSuccess(res, null);
   } catch (error) {
+    if (error instanceof LeagueOccurrenceEvidenceExistsError) {
+      return sendError(
+        res,
+        'This league has retained canonical occurrence evidence. Archive the league instead of deleting it.',
+        409,
+        'LEAGUE_OCCURRENCE_EVIDENCE_EXISTS',
+      );
+    }
     log.error('Error deleting league:', error);
     sendError(res, 'Failed to delete league', 500);
   }

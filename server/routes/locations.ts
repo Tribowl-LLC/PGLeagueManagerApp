@@ -8,7 +8,10 @@ import { filterByOrganization } from '../middleware/organization.js';
 import { createLogger } from '../logger';
 import { clearProviderCache } from '../services/payment-provider-factory';
 import type { User } from '@shared/schema';
-import { LocationWebhookEvidenceExistsError } from '../storage/locations';
+import {
+  LocationOccurrenceEvidenceExistsError,
+  LocationWebhookEvidenceExistsError,
+} from '../storage/locations';
 
 const log = createLogger("Locations");
 
@@ -221,6 +224,14 @@ router.delete('/:id', async (req: Request, res) => {
         'This location has retained payment-provider webhook evidence. Archive it instead, or remove it through full organization teardown.',
         409,
         'LOCATION_WEBHOOK_EVIDENCE_EXISTS',
+      );
+    }
+    if (error instanceof LocationOccurrenceEvidenceExistsError) {
+      return sendError(
+        res,
+        'This location has retained canonical occurrence evidence. Archive the location instead of deleting it.',
+        409,
+        'LOCATION_OCCURRENCE_EVIDENCE_EXISTS',
       );
     }
     log.error(`Error deleting location with ID ${req.params.id}:`, error);
