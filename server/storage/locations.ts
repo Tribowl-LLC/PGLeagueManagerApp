@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   locations,
@@ -12,6 +12,7 @@ import {
 } from "@shared/schema";
 import { createLogger } from '../logger';
 import { encrypt, decrypt, isEncrypted } from '../utils/crypto';
+import { hasLocationOccurrenceEvidence } from './canonical-occurrence-evidence.js';
 
 const log = createLogger("StorageLocations");
 
@@ -19,6 +20,13 @@ export class LocationWebhookEvidenceExistsError extends Error {
   constructor() {
     super('Location has retained webhook evidence and must be archived instead');
     this.name = 'LocationWebhookEvidenceExistsError';
+  }
+}
+
+export class LocationOccurrenceEvidenceExistsError extends Error {
+  constructor() {
+    super('Location has retained canonical occurrence evidence and must be archived instead');
+    this.name = 'LocationOccurrenceEvidenceExistsError';
   }
 }
 
@@ -96,13 +104,24 @@ export async function updateLocation(id: number, data: UpdateLocation): Promise<
 
 export async function deleteLocation(id: number): Promise<void> {
   await db.transaction(async (tx) => {
-    await tx.execute(sql`SELECT id FROM ${locations} WHERE id = ${id} FOR UPDATE`);
+    const [location] = await tx
+      .select({ id: locations.id, organizationId: locations.organizationId })
+      .from(locations)
+      .where(eq(locations.id, id))
+      .for('update');
+    if (!location) return;
+
     const [retainedEvent] = await tx
       .select({ id: webhookEvents.id })
       .from(webhookEvents)
       .where(eq(webhookEvents.locationId, id))
       .limit(1);
     if (retainedEvent) throw new LocationWebhookEvidenceExistsError();
+
+    if (await hasLocationOccurrenceEvidence(tx, location.organizationId, id)) {
+      throw new LocationOccurrenceEvidenceExistsError();
+    }
+
     await tx.update(leagues).set({ locationId: null }).where(eq(leagues.locationId, id));
     await tx.delete(locations).where(eq(locations.id, id));
   });

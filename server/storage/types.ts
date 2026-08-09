@@ -38,7 +38,7 @@ export interface ILeagueStorage {
   getLeaguesByIds(ids: number[]): Promise<League[]>;
   createLeague(league: InsertLeague): Promise<League>;
   updateLeague(id: number, league: UpdateLeague): Promise<League>;
-  deleteLeague(id: number): Promise<void>;
+  deleteLeague(id: number, organizationId: number | null): Promise<number[]>;
   archiveLeague(id: number): Promise<League>;
   restoreLeague(id: number): Promise<League>;
 }

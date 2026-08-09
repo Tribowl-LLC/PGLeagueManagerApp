@@ -11,8 +11,9 @@ import express from "express";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 
-const { EvidenceError, mockStorage, fakeLogger } = vi.hoisted(() => ({
+const { EvidenceError, OccurrenceEvidenceError, mockStorage, fakeLogger } = vi.hoisted(() => ({
   EvidenceError: class LocationWebhookEvidenceExistsError extends Error {},
+  OccurrenceEvidenceError: class LocationOccurrenceEvidenceExistsError extends Error {},
   mockStorage: {
     getLocation: vi.fn(),
     deleteLocation: vi.fn(),
@@ -28,6 +29,7 @@ const { EvidenceError, mockStorage, fakeLogger } = vi.hoisted(() => ({
 vi.mock("../../server/storage", () => ({ storage: mockStorage }));
 vi.mock("../../server/storage/locations", () => ({
   LocationWebhookEvidenceExistsError: EvidenceError,
+  LocationOccurrenceEvidenceExistsError: OccurrenceEvidenceError,
 }));
 vi.mock("../../server/services/payment-provider-factory", () => ({
   clearProviderCache: vi.fn(),
@@ -82,6 +84,23 @@ describe("DELETE /api/locations/:id webhook evidence retention", () => {
       success: false,
       error: {
         code: "LOCATION_WEBHOOK_EVIDENCE_EXISTS",
+        message: expect.stringContaining("Archive"),
+      },
+    });
+    expect(fakeLogger.error).not.toHaveBeenCalled();
+  });
+
+  it("returns a clean conflict and recommends archival for occurrence evidence", async () => {
+    mockStorage.deleteLocation.mockRejectedValue(new OccurrenceEvidenceError());
+
+    const response = await fetch(`${baseUrl}/api/locations/9`, { method: "DELETE" });
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body).toMatchObject({
+      success: false,
+      error: {
+        code: "LOCATION_OCCURRENCE_EVIDENCE_EXISTS",
         message: expect.stringContaining("Archive"),
       },
     });

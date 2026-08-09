@@ -1,9 +1,15 @@
-import { eq, and, count, isNotNull, sql } from "drizzle-orm";
+import { eq, and, count, isNotNull, or, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   users,
   applePayJobs,
   deletionRequests,
+  leagueOccurrenceBillingTerms,
+  leagueOccurrenceGenerationRuns,
+  leagueOccurrenceRelationships,
+  leagueOccurrences,
+  leagueScheduleCommands,
+  leagueScheduleExceptions,
   orphanCleanupAudits,
   paymentDisputeReplayAudits,
   type User,
@@ -87,10 +93,64 @@ export class CannotDeleteAdminError extends Error {
 export class UserHasAuditTrailError extends Error {
   constructor(public readonly auditCount: number) {
     super(
-      `User has ${auditCount} cleanup audit row(s) and cannot be deleted. Delete or reassign the audits first.`,
+      `User has ${auditCount} retained audit row(s) and cannot be deleted. Delete or reassign the audits first.`,
     );
     this.name = 'UserHasAuditTrailError';
   }
+}
+
+async function countCanonicalOccurrenceActorReferences(
+  tx: UserDbExecutor,
+  userId: number,
+): Promise<number> {
+  const [commandRows] = await tx
+    .select({ count: count() })
+    .from(leagueScheduleCommands)
+    .where(eq(leagueScheduleCommands.actorUserId, userId));
+  const [generationRows] = await tx
+    .select({ count: count() })
+    .from(leagueOccurrenceGenerationRuns)
+    .where(or(
+      eq(leagueOccurrenceGenerationRuns.approvedByUserId, userId),
+      eq(leagueOccurrenceGenerationRuns.rejectedByUserId, userId),
+    ));
+  const [occurrenceRows] = await tx
+    .select({ count: count() })
+    .from(leagueOccurrences)
+    .where(or(
+      eq(leagueOccurrences.publishedByUserId, userId),
+      eq(leagueOccurrences.lockedByUserId, userId),
+      eq(leagueOccurrences.cancelledByUserId, userId),
+      eq(leagueOccurrences.completedByUserId, userId),
+      eq(leagueOccurrences.discardedByUserId, userId),
+    ));
+  const [exceptionRows] = await tx
+    .select({ count: count() })
+    .from(leagueScheduleExceptions)
+    .where(or(
+      eq(leagueScheduleExceptions.publishedByUserId, userId),
+      eq(leagueScheduleExceptions.revokedByUserId, userId),
+    ));
+  const [relationshipRows] = await tx
+    .select({ count: count() })
+    .from(leagueOccurrenceRelationships)
+    .where(or(
+      eq(leagueOccurrenceRelationships.publishedByUserId, userId),
+      eq(leagueOccurrenceRelationships.revokedByUserId, userId),
+    ));
+  const [billingTermRows] = await tx
+    .select({ count: count() })
+    .from(leagueOccurrenceBillingTerms)
+    .where(eq(leagueOccurrenceBillingTerms.publishedByUserId, userId));
+
+  return [
+    commandRows,
+    generationRows,
+    occurrenceRows,
+    exceptionRows,
+    relationshipRows,
+    billingTermRows,
+  ].reduce((total, row) => total + Number(row?.count ?? 0), 0);
 }
 
 // Stable advisory-lock key for the first-admin bootstrap critical section.
@@ -525,7 +585,10 @@ export async function deleteUser(
       .select({ count: count() })
       .from(paymentDisputeReplayAudits)
       .where(eq(paymentDisputeReplayAudits.actorUserId, userId));
-    const auditCount = Number(cleanupAuditRow?.count ?? 0) + Number(replayAuditRow?.count ?? 0);
+    const canonicalOccurrenceAuditCount = await countCanonicalOccurrenceActorReferences(tx, userId);
+    const auditCount = Number(cleanupAuditRow?.count ?? 0)
+      + Number(replayAuditRow?.count ?? 0)
+      + canonicalOccurrenceAuditCount;
     if (auditCount > 0) {
       throw new UserHasAuditTrailError(auditCount);
     }

@@ -24,7 +24,7 @@
  *   PATCH  /api/leagues/:id           — rename
  *   PATCH  /api/leagues/:id/archive   — archive
  *   PATCH  /api/leagues/:id/restore   — restore
- *   DELETE /api/leagues/:id           — delete (uses pre-captured ids)
+ *   DELETE /api/leagues/:id           — delete (uses transaction result ids)
  *   POST   /api/leagues/:id/new-season— season clone
  *   POST   /api/bowler-leagues        — bowler joins a league
  *   PATCH  /api/bowler-leagues/:id    — bowler-league mutation (e.g.
@@ -89,7 +89,13 @@ const mockStorage = {
   deleteBowlerLeague: vi.fn(),
   createBowlerLeagueIfBowlerFree: vi.fn(),
 };
+const { LeagueEvidenceError } = vi.hoisted(() => ({
+  LeagueEvidenceError: class LeagueOccurrenceEvidenceExistsError extends Error {},
+}));
 vi.mock('../../server/storage', () => ({ storage: mockStorage }));
+vi.mock('../../server/storage/leagues', () => ({
+  LeagueOccurrenceEvidenceExistsError: LeagueEvidenceError,
+}));
 
 // ---------------------------------------------------------------------------
 // Access-control / org-middleware mocks — let everything through. Auth is
@@ -599,9 +605,9 @@ describe('PATCH /api/leagues/:id/restore → fires resync so bowlers return to S
 });
 
 // ---------------------------------------------------------------------------
-// 4. League delete → resync uses pre-captured bowler ids (the join rows
-//    are gone by the time the helper runs, so the post-delete league-wide
-//    helper would observe an empty roster)
+// 4. League delete → resync uses the committed storage result ids (the join
+//    rows are gone by the time the helper runs, so a post-delete lookup would
+//    observe an empty roster)
 // ---------------------------------------------------------------------------
 describe('DELETE /api/leagues/:id → fires resync against the pre-captured bowler id list', () => {
   it('still upserts attributes for every formerly-affected bowler after the league + join rows are gone', async () => {
@@ -622,25 +628,17 @@ describe('DELETE /api/leagues/:id → fires resync against the pre-captured bowl
     mockStorage.getLeague.mockImplementation(async () => (leagueDeleted ? null : league));
     mockStorage.getBowlerLeagues.mockImplementation(
       async (f: { leagueId?: number; bowlerId?: number }) => {
-        if (f.leagueId === league.id) {
-          // The route's pre-capture happens BEFORE deleteLeague — it
-          // must see the rows. After delete, the resync helper looks
-          // up by bowlerId; those bowlers are now in 0 leagues.
-          if (blRowsCleared) return [];
-          return blRows;
-        }
+        if (f.leagueId === league.id) return blRowsCleared ? [] : blRows;
         if (f.bowlerId != null) {
           return blRowsCleared ? [] : blRows.filter((r) => r.bowlerId === f.bowlerId);
         }
         return [];
       },
     );
-    mockStorage.getTeams.mockResolvedValue([]);
-    mockStorage.getBowlers.mockResolvedValue([]);
     mockStorage.deleteLeague.mockImplementation(async () => {
       leagueDeleted = true;
       blRowsCleared = true;
-      return undefined;
+      return bowlers.map((bowler) => bowler.id);
     });
     const bowlerById = new Map(bowlers.map((b) => [b.id, b]));
     mockStorage.getBowler.mockImplementation(async (id: number) => bowlerById.get(id) ?? null);
@@ -660,6 +658,28 @@ describe('DELETE /api/leagues/:id → fires resync against the pre-captured bowl
       mockSyncCustomerLeagueAttributes.mock.calls.map((c) => c[1]),
     );
     expect(upsertedBowlerIds).toEqual(new Set(bowlers.map((b) => b.id)));
+  });
+
+  it('returns 409 for retained A1 evidence without mutating or resyncing', async () => {
+    const league = makeLeague({ id: 111 });
+    mockStorage.getLeague.mockResolvedValue(league);
+    mockStorage.deleteLeague.mockRejectedValue(new LeagueEvidenceError());
+
+    const res = await del(`/api/leagues/${league.id}`);
+    const body = await res.json();
+
+    expect(res.status).toBe(409);
+    expect(body).toMatchObject({
+      success: false,
+      error: {
+        code: 'LEAGUE_OCCURRENCE_EVIDENCE_EXISTS',
+        message: expect.stringContaining('Archive'),
+      },
+    });
+    expect(mockStorage.deleteLeague).toHaveBeenCalledWith(league.id, league.organizationId);
+    expect(mockStorage.updateBowler).not.toHaveBeenCalled();
+    expect(mockStorage.deleteTeam).not.toHaveBeenCalled();
+    expect(mockSyncCustomerLeagueAttributes).not.toHaveBeenCalled();
   });
 });
 
