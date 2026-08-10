@@ -458,11 +458,12 @@ describe("B2 atomic Completed-Summer materialization", () => {
     const f = await fixture(`fold-${ambiguousFold}`);
     await db.delete(games).where(eq(games.leagueId, f.leagueId));
     const dates = [
+      "2025-07-27", "2025-08-03", "2025-08-10", "2025-08-17",
       "2025-08-24", "2025-08-31", "2025-09-07", "2025-09-14", "2025-09-21", "2025-09-28",
       "2025-10-05", "2025-10-12", "2025-10-19", "2025-10-26", "2025-11-02",
     ];
     await db.update(leagues).set({
-      seasonStart: "2025-08-24T00:00:00.000Z",
+      seasonStart: "2025-07-27T00:00:00.000Z",
       seasonEnd: "2025-11-02T00:00:00.000Z",
       competitionStartTime: "01:30",
       totalBowlingWeeks: dates.length,

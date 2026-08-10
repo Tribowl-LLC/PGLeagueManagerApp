@@ -128,11 +128,12 @@ function comparison(overrides: Partial<CompletedSummerLeagueComparisonInput> = {
 
 describe("B1 Completed-Summer selection", () => {
   it.each([
+    ["2025-05-01 23:30:00", "2025-08-31 23:30:00", true],
     ["2025-06-01 23:30:00", "2025-08-31 23:30:00", true],
-    ["2025-08-01T00:00:00", "2025-08-31T00:00:00", true],
-    ["2025-05-31 00:00:00", "2025-08-31 00:00:00", false],
+    ["2025-07-01T00:00:00", "2025-08-31T00:00:00", true],
+    ["2025-04-30 00:00:00", "2025-08-31 00:00:00", false],
+    ["2025-08-01 00:00:00", "2025-11-30 00:00:00", false],
     ["2025-09-01 00:00:00", "2025-11-30 00:00:00", false],
-    ["2025-08-01 00:00:00", "2026-01-01 00:00:00", false],
   ])("applies the product Summer boundaries to %s through %s", (start, end, eligible) => {
     expect(evaluateCompletedSummerSelection({
       leagueId: 22,
@@ -143,6 +144,22 @@ describe("B1 Completed-Summer selection", () => {
       seasonStartRaw: start,
       seasonEndRaw: end,
     }, operatorInputs)).toMatchObject({ eligible, activeArchiveState: false });
+  });
+
+  it("allows a completed cross-year Summer league based on its May through July start month", () => {
+    expect(evaluateCompletedSummerSelection({
+      leagueId: 22,
+      organizationId: 11,
+      locationId: 33,
+      locationOrganizationId: 11,
+      active: false,
+      seasonStartRaw: "2025-05-01 00:00:00",
+      seasonEndRaw: "2026-04-30 00:00:00",
+    }, { ...operatorInputs, asOfDate: "2026-05-01" })).toMatchObject({
+      sameCalendarYear: false,
+      summerStartMonth: true,
+      eligible: true,
+    });
   });
 
   it("requires strict completion, explicit year, and tenant-proven location without host-time conversion", () => {

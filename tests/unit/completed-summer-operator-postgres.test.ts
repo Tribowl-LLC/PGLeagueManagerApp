@@ -92,8 +92,8 @@ beforeAll(async () => {
     locationId: ownLocation.id,
     name: "B1 Archived Summer",
     active: false,
-    seasonStart: "2025-08-03T00:00:00.000Z",
-    seasonEnd: "2025-08-03T00:00:00.000Z",
+    seasonStart: "2025-07-06T00:00:00.000Z",
+    seasonEnd: "2025-07-06T00:00:00.000Z",
     totalBowlingWeeks: 1,
   });
   foreignLeagueId = await createLeague({
@@ -107,15 +107,15 @@ beforeAll(async () => {
   excludedLeagueId = await createLeague({
     organizationId,
     locationId: ownLocation.id,
-    name: "B1 May exclusion",
-    seasonStart: "2025-05-04T00:00:00.000Z",
-    seasonEnd: "2025-05-04T00:00:00.000Z",
+    name: "B1 April exclusion",
+    seasonStart: "2025-04-06T00:00:00.000Z",
+    seasonEnd: "2025-04-06T00:00:00.000Z",
     totalBowlingWeeks: 1,
   });
   await createLeague({
     organizationId,
     locationId: ownLocation.id,
-    name: "B1 Cross-year exclusion",
+    name: "B1 Fall exclusion",
     seasonStart: "2025-08-03T00:00:00.000Z",
     seasonEnd: "2026-01-04T00:00:00.000Z",
     totalBowlingWeeks: 1,

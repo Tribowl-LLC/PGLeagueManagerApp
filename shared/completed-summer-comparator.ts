@@ -6,9 +6,9 @@ import {
   type CanonicalOccurrenceCandidate,
 } from "./canonical-occurrence-generator";
 
-export const COMPLETED_SUMMER_SELECTION_CONTRACT_VERSION = "completed-summer-selection/1";
+export const COMPLETED_SUMMER_SELECTION_CONTRACT_VERSION = "completed-summer-selection/2";
 export const CANONICAL_OCCURRENCE_COMPARISON_REPORT_VERSION = "canonical-occurrence-comparison-report/1";
-export const COMPLETED_SUMMER_COMPARATOR_VERSION = "completed-summer-comparator/3";
+export const COMPLETED_SUMMER_COMPARATOR_VERSION = "completed-summer-comparator/4";
 
 export interface CompletedSummerOperatorInputs {
   organizationId: number;
@@ -342,7 +342,7 @@ export function evaluateCompletedSummerSelection(
   const endYear = seasonEndDate === null ? null : Number(seasonEndDate.slice(0, 4));
   const startMonth = seasonStartDate === null ? null : Number(seasonStartDate.slice(5, 7));
   const sameCalendarYear = startYear !== null && startYear === endYear;
-  const summerStartMonth = startMonth !== null && startMonth >= 6 && startMonth <= 8;
+  const summerStartMonth = startMonth !== null && startMonth >= 5 && startMonth <= 7;
   const requestedSeasonYear = startYear === inputs.seasonYear;
   const completedBeforeAsOfDate = seasonEndDate !== null && seasonEndDate < inputs.asOfDate;
   const tenantAndLocationProven = candidate.organizationId === inputs.organizationId
@@ -357,7 +357,6 @@ export function evaluateCompletedSummerSelection(
     completedBeforeAsOfDate,
     activeArchiveState: candidate.active,
     eligible: tenantAndLocationProven
-      && sameCalendarYear
       && summerStartMonth
       && requestedSeasonYear
       && completedBeforeAsOfDate,

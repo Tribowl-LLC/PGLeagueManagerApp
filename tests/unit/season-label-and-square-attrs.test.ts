@@ -4,8 +4,8 @@
  *   1. `getSeasonLabel` (`shared/season-utils.ts`) — moved from the
  *      client into shared so the server-side Square custom-attribute
  *      sync produces the EXACT same string users see in-app. These
- *      tests pin the season-boundary cases (Dec/Jan/Feb → Winter,
- *      Mar–May → Spring, etc.) and the cross-year fall-back.
+ *      tests pin the season-boundary cases (Nov–Feb → Winter,
+ *      Mar–Apr → Spring, etc.) and cross-year labeling.
  *
  *   2. `isAlreadyExistsError` (`server/services/square-custom-
  *      attributes.ts`) — the duplicate-definition detector that
@@ -28,11 +28,7 @@ import {
 } from '../../server/services/square-custom-attributes';
 
 describe('getSeasonLabel', () => {
-  it('labels a same-year December start as Winter (current year suffix)', () => {
-    // December → Winter only triggers when start+end are the same
-    // calendar year (cross-year ranges fall into the YY/YY branch
-    // first — covered by its own test below). A short Dec→Dec mini-
-    // season is the realistic case.
+  it('labels a December start as Winter (current year suffix)', () => {
     expect(getSeasonLabel('2025-12-01', '2025-12-31')).toBe("Winter '25 Season");
   });
 
@@ -48,35 +44,40 @@ describe('getSeasonLabel', () => {
     expect(getSeasonLabel('2025-03-10', '2025-06-10')).toBe("Spring '25 Season");
   });
 
-  it('labels a May start as Spring (boundary at month index 4)', () => {
-    expect(getSeasonLabel('2025-05-31', '2025-08-31')).toBe("Spring '25 Season");
+  it('labels an April start as Spring', () => {
+    expect(getSeasonLabel('2025-04-30', '2025-07-31')).toBe("Spring '25 Season");
+  });
+
+  it('labels a May start as Summer', () => {
+    expect(getSeasonLabel('2025-05-31', '2025-08-31')).toBe("Summer '25 Season");
   });
 
   it('labels a June start as Summer', () => {
     expect(getSeasonLabel('2025-06-01', '2025-09-01')).toBe("Summer '25 Season");
   });
 
-  it('labels an August start as Summer (boundary at month index 7)', () => {
-    expect(getSeasonLabel('2025-08-15', '2025-11-15')).toBe("Summer '25 Season");
+  it('labels a July start as Summer', () => {
+    expect(getSeasonLabel('2025-07-31', '2025-10-31')).toBe("Summer '25 Season");
+  });
+
+  it('labels an August start as Fall', () => {
+    expect(getSeasonLabel('2025-08-15', '2025-11-15')).toBe("Fall '25 Season");
   });
 
   it('labels a September start as Fall', () => {
     expect(getSeasonLabel('2025-09-01', '2025-12-01')).toBe("Fall '25 Season");
   });
 
-  it('labels a same-year November start as Fall', () => {
-    // Same-year November end (short fall mini-season) hits the Fall
-    // branch. A typical Sept→May fall league straddles two years and
-    // is covered by the cross-year fallback test below instead.
-    expect(getSeasonLabel('2025-11-01', '2025-12-15')).toBe("Fall '25 Season");
+  it('labels an October start as Fall', () => {
+    expect(getSeasonLabel('2025-10-31', '2026-02-15')).toBe("Fall '25 Season");
   });
 
-  it('uses the cross-year `YY/YY Season` fallback when start and end span different years', () => {
-    // Cross-year leagues (typical fall-to-spring league) should NOT
-    // get a season name — the year-pair label is the only sensible
-    // way to disambiguate two leagues that started on the same
-    // calendar week one year apart.
-    expect(getSeasonLabel('2025-09-01', '2026-04-30')).toBe('25/26 Season');
+  it('labels a November start as Winter', () => {
+    expect(getSeasonLabel('2025-11-01', '2026-03-15')).toBe("Winter '25 Season");
+  });
+
+  it('uses the starting month label when the season spans calendar years', () => {
+    expect(getSeasonLabel('2025-09-01', '2026-04-30')).toBe("Fall '25 Season");
   });
 
   it('accepts Date objects as well as ISO strings', () => {
