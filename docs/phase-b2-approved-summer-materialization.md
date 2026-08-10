@@ -13,8 +13,8 @@ entry point.
 - command fingerprint envelope: `canonical-occurrence-command/1`, stored as
   `lvcanoncmd:v1:<lowercase-sha256>`
 - accepted B1 report: `canonical-occurrence-comparison-report/1`
-- accepted comparator: `completed-summer-comparator/3`
-- accepted selection: `completed-summer-selection/1`
+- accepted comparator: `completed-summer-comparator/4`
+- accepted selection: `completed-summer-selection/2`
 - accepted A2 result/generator/DST versions: the exact merged A2 versions
 
 The approval request contains an authorized actor, nonempty trimmed reason,

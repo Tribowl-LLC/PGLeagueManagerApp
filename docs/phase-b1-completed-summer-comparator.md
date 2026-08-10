@@ -38,7 +38,7 @@ file is written unless the operator redirects stdout.
 
 ## Selection contract
 
-The contract is `completed-summer-selection/1`.
+The contract is `completed-summer-selection/2`.
 
 A selected league must have `leagues.organization_id` equal to the explicit
 organization and a non-null location whose organization is equal to both the
@@ -49,10 +49,10 @@ the boundary.
 
 Summer follows the current `getSeasonLabel` product semantics exactly:
 
-- the start and end date are in the same calendar year;
-- the start month is June, July, or August;
+- the start month is May, June, or July;
 - the start year equals the explicit `seasonYear`; and
-- cross-year seasons are not Summer.
+- cross-year seasons remain Summer when their start month is May, June, or
+  July.
 
 Completed means `seasonEnd` is strictly earlier than `asOfDate`. Equality is
 not completed. `active` is reported as archive evidence and is not a filter;
@@ -63,7 +63,7 @@ league-to-generator input loader.
 ## Report and fingerprint
 
 The report contract is `canonical-occurrence-comparison-report/1`; the
-implementation version is `completed-summer-comparator/3`. The report records
+implementation version is `completed-summer-comparator/4`. The report records
 normalized operator inputs, A2 generator/result/resolver versions, selection
 counts, ordered league reports, aggregate classifications, and ordered fatal
 errors. Per-league output includes selection proof, raw and normalized legacy
