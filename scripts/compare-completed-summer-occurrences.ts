@@ -106,6 +106,10 @@ interface InvalidDisputeEvidenceRow {
   invalid_count: number;
 }
 
+export interface CompletedSummerReportQueryExecutor {
+  query<Row extends pg.QueryResultRow>(text: string, values?: unknown[]): Promise<pg.QueryResult<Row>>;
+}
+
 function usage(): string {
   return [
     "Usage: npx tsx scripts/compare-completed-summer-occurrences.ts",
@@ -252,7 +256,16 @@ function operationEvidence(rows: readonly OperationEvidenceRow[], disputes: read
   }).sort((left, right) => left.operationId < right.operationId ? -1 : left.operationId > right.operationId ? 1 : 0);
 }
 
-async function loadReport(client: pg.Client, inputs: CompletedSummerOperatorInputs): Promise<CompletedSummerComparisonReport> {
+/**
+ * Load and compare all B1 evidence through the caller-supplied PostgreSQL
+ * client. B1 owns transaction setup; B2 reuses this loader inside its already
+ * locked mutation transaction so stale approval evidence is checked before
+ * the first write.
+ */
+export async function loadCompletedSummerComparisonReport(
+  client: CompletedSummerReportQueryExecutor,
+  inputs: CompletedSummerOperatorInputs,
+): Promise<CompletedSummerComparisonReport> {
   const leagueQuery = await client.query<CompletedSummerLeagueRow>(`
     SELECT
       l.id AS league_id,
@@ -861,7 +874,7 @@ export async function runCompletedSummerComparator(
     await client.connect();
     await client.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
     transactionStarted = true;
-    report = await loadReport(client, inputs);
+    report = await loadCompletedSummerComparisonReport(client, inputs);
     exitCode = report.aggregateCounts.fatalErrorCount > 0 ? 1 : 0;
   } catch {
     report = genericFatalReport(
