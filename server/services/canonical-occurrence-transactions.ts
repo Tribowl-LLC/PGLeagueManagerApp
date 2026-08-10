@@ -139,6 +139,7 @@ export interface OccurrenceRescheduleRequest extends ScheduleCommandRequest {
  */
 export interface MaterializationScheduleCommandRequest extends ScheduleCommandRequest {
   commandType: "generate" | "approve_generation" | "publish" | "cancel" | "create_exception";
+  materializationOperation?: "approved_completed_summer_materialization" | "fall_draft_generation";
   materializationPayload: Record<string, unknown>;
 }
 
@@ -289,7 +290,7 @@ function commandFingerprintPayload(request: CanonicalScheduleCommandFingerprintR
   if ("materializationPayload" in request) {
     return {
       ...common,
-      operation: "approved_completed_summer_materialization",
+      operation: request.materializationOperation ?? "approved_completed_summer_materialization",
       materializationPayload: request.materializationPayload,
     };
   }

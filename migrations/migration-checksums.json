@@ -114,6 +114,12 @@
       "tag": "0018_canonical_league_occurrence_foundation",
       "createdAt": 1785849082385,
       "hash": "f1d25208ccde355ae8ba194410254bfa5e2c86bd2916d04966fce150c36b77c5"
+    },
+    {
+      "idx": 19,
+      "tag": "0019_phase_c1_cancelled_draft_occurrences",
+      "createdAt": 1786399141328,
+      "hash": "827dca651d26e840922a2cfefd6aff27d21b83a9e657a6fb6c16bbb2f228ffc9"
     }
   ]
 }

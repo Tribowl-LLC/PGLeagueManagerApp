@@ -492,7 +492,7 @@ export const leagueOccurrences = pgTable("league_occurrences", {
   standingsCheck: check("occurrences_standings_check", sql`NOT ${table.countsInStandings} OR ${table.competitive}`),
   lifecycleStatusCheck: check(
     "occurrences_lifecycle_status_check",
-    sql`(${table.lifecycle} = 'draft' AND ${table.status} IN ('scheduled', 'discarded'))
+    sql`(${table.lifecycle} = 'draft' AND ${table.status} IN ('scheduled', 'cancelled', 'discarded'))
       OR (${table.lifecycle} = 'published' AND ${table.status} IN ('scheduled', 'cancelled'))
       OR (${table.lifecycle} = 'locked' AND ${table.status} IN ('scheduled', 'cancelled', 'completed'))`,
   ),
@@ -505,6 +505,15 @@ export const leagueOccurrences = pgTable("league_occurrences", {
       AND ${table.cancelledAt} IS NULL AND ${table.cancelledByUserId} IS NULL AND ${table.cancellationCommandId} IS NULL
       AND ${table.completedAt} IS NULL AND ${table.completedByUserId} IS NULL AND ${table.completionCommandId} IS NULL
       AND ${table.discardedAt} IS NULL AND ${table.discardedByUserId} IS NULL AND ${table.discardCommandId} IS NULL
+    ) OR (
+      ${table.lifecycle} = 'draft' AND ${table.status} = 'cancelled'
+      AND ${table.publishedAt} IS NULL AND ${table.publishedByUserId} IS NULL AND ${table.publicationCommandId} IS NULL
+      AND ${table.lockedAt} IS NULL AND ${table.lockedByUserId} IS NULL AND ${table.lockReason} IS NULL AND ${table.lockCommandId} IS NULL
+      AND ${table.cancelledAt} IS NOT NULL AND ${table.cancelledByUserId} IS NOT NULL AND ${table.cancellationCommandId} IS NOT NULL
+      AND ${table.completedAt} IS NULL AND ${table.completedByUserId} IS NULL AND ${table.completionCommandId} IS NULL
+      AND ${table.discardedAt} IS NULL AND ${table.discardedByUserId} IS NULL AND ${table.discardCommandId} IS NULL
+      AND ${table.plannedOrdinal} IS NOT NULL AND ${table.competitionNumber} IS NULL
+      AND NOT ${table.competitive} AND NOT ${table.countsInStandings}
     ) OR (
       ${table.lifecycle} = 'draft' AND ${table.status} = 'discarded'
       AND ${table.publishedAt} IS NULL AND ${table.publishedByUserId} IS NULL AND ${table.publicationCommandId} IS NULL

@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(19);
+    expect(migrations).toHaveLength(20);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -297,6 +297,15 @@ describe('normalized migration baseline tools', () => {
     expect(migrations[18]?.sql).toContain('relationships_last_command_fk');
     expect(migrations[18]?.sql).toContain('generation_runs_approval_metadata_check');
     expect(migrations[18]?.sql).not.toMatch(/(?:^|\n)\s*(?:DROP|RENAME|UPDATE|DELETE|INSERT)\b/);
+    expect(migrations[19]).toMatchObject({
+      idx: 19,
+      tag: '0019_phase_c1_cancelled_draft_occurrences',
+      createdAt: 1786399141328,
+      hash: '827dca651d26e840922a2cfefd6aff27d21b83a9e657a6fb6c16bbb2f228ffc9',
+    });
+    expect(migrations[19]?.sql).toContain("'draft' AND \"league_occurrences\".\"status\" = 'cancelled'");
+    expect(migrations[19]?.sql).toContain('"league_occurrences"."cancellation_command_id" IS NOT NULL');
+    expect(migrations[19]?.sql).not.toMatch(/(?:^|\n)\s*(?:UPDATE|DELETE|INSERT)\b/);
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 
