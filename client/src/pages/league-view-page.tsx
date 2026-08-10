@@ -18,7 +18,7 @@ import {
 import { Loader2, Mail, RefreshCw } from "lucide-react";
 import { PageLoadingState, PageErrorState } from "@/components/page-states";
 
-import type { League } from "@shared/schema";
+import type { ApiResponse, League, User } from "@shared/schema";
 import { useParams, Link, useLocation } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -27,6 +27,7 @@ import { InviteResultCard } from "./league-view-page/invite-result-card";
 import { LeagueActionCards } from "./league-view-page/league-action-cards";
 import { SeasonHistoryCard } from "./league-view-page/season-history-card";
 import { NewSeasonDialog, type NewSeasonFormValues } from "./league-view-page/new-season-dialog";
+import { FallDraftGenerationCard } from "./league-view-page/fall-draft-generation-card";
 
 export default function LeagueViewPage() {
   const params = useParams();
@@ -49,6 +50,13 @@ export default function LeagueViewPage() {
   });
 
   const league = leagueResponse?.data;
+
+  const { data: currentUserResponse } = useQuery<ApiResponse<User>>({
+    queryKey: ['/api/user'],
+    staleTime: 5 * 60 * 1000,
+  });
+  const currentUser = currentUserResponse?.data;
+  const canGenerateFallDrafts = currentUser?.role === 'org_admin' || currentUser?.role === 'system_admin';
 
   const { data: seasonHistoryResponse } = useQuery<{ success: true; data: League[] }>({
     queryKey: ['/api/leagues', leagueId, 'season-history'],
@@ -187,6 +195,16 @@ export default function LeagueViewPage() {
         <ErrorBoundary level="section">
           <LeagueActionCards leagueId={leagueId} />
         </ErrorBoundary>
+
+        {canGenerateFallDrafts && league.organizationId && (
+          <ErrorBoundary level="section">
+            <FallDraftGenerationCard
+              leagueId={leagueId}
+              organizationId={league.organizationId}
+              isSystemAdmin={currentUser?.role === 'system_admin'}
+            />
+          </ErrorBoundary>
+        )}
 
         <ErrorBoundary level="section">
         {league.active && (

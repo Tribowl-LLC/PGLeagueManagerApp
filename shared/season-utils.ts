@@ -19,6 +19,27 @@ export function getSeasonYearRange(seasonStart: Date | string, seasonEnd: Date |
   return startYear === endYear ? startYY : `${startYY}/${endYY}`;
 }
 
+export type ProductSeason = "Winter" | "Spring" | "Summer" | "Fall";
+
+/** Classify a validated stored calendar date without consulting the host timezone. */
+export function getProductSeasonFromDateOnly(seasonStart: string): ProductSeason | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(seasonStart);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const probe = new Date(0);
+  probe.setUTCFullYear(year, month - 1, day);
+  probe.setUTCHours(12, 0, 0, 0);
+  if (year < 1 || probe.getUTCFullYear() !== year || probe.getUTCMonth() + 1 !== month || probe.getUTCDate() !== day) {
+    return null;
+  }
+  if (month === 11 || month === 12 || month === 1 || month === 2) return "Winter";
+  if (month === 3 || month === 4) return "Spring";
+  if (month >= 5 && month <= 7) return "Summer";
+  return "Fall";
+}
+
 export function getSeasonLabel(seasonStart: Date | string, _seasonEnd: Date | string): string {
   const start = new Date(seasonStart);
   const startYear = start.getFullYear();

@@ -134,6 +134,13 @@
       "when": 1785849082385,
       "tag": "0018_canonical_league_occurrence_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1786399141328,
+      "tag": "0019_phase_c1_cancelled_draft_occurrences",
+      "breakpoints": true
     }
   ]
 }
