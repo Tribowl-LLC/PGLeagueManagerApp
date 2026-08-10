@@ -10,12 +10,15 @@ import pg from "pg";
 import { pathToFileURL } from "node:url";
 import {
   generateCanonicalOccurrences,
-  type CanonicalOccurrenceGeneratorInput,
-  type CanonicalWeekday,
   type RegularSessionBillingPolicy,
   type BillingOrdinalPolicy,
 } from "@shared/canonical-occurrence-generator";
 import { type AmbiguousFoldPolicy } from "@shared/canonical-dst-resolver";
+import {
+  buildLegacyDoublePayEvidence,
+  createCanonicalGeneratorInputFromLegacyRow,
+  type CanonicalLegacyLeagueRow,
+} from "@shared/legacy-canonical-occurrence-input";
 
 const OPERATOR_CONTRACT_VERSION = "canonical-occurrence-readonly-operator/1";
 
@@ -27,23 +30,6 @@ interface OperatorArguments {
   currency: string | null;
   regularSessionBillingPolicy: RegularSessionBillingPolicy | null;
   billingOrdinalPolicy: BillingOrdinalPolicy | null;
-}
-
-interface LeagueLocationRow {
-  league_id: number;
-  organization_id: number | null;
-  location_id: number | null;
-  location_organization_id: number | null;
-  season_start: string | null;
-  season_end: string | null;
-  week_day: string | null;
-  competition_start_time: string | null;
-  timezone: string | null;
-  total_bowling_weeks: number | null;
-  weekly_fee: number | null;
-  skip_dates: string[] | null;
-  cancelled_dates: string[] | null;
-  double_pay_dates: string[] | null;
 }
 
 function usage(): string {
@@ -111,20 +97,6 @@ export function parseCanonicalOccurrenceOperatorArguments(args: readonly string[
   };
 }
 
-function dateOnly(value: string | null): string | null {
-  return value && /^\d{4}-\d{2}-\d{2}/.test(value) ? value.slice(0, 10) : null;
-}
-
-function isCanonicalWeekday(value: string | null): value is CanonicalWeekday {
-  return value === "Sunday"
-    || value === "Monday"
-    || value === "Tuesday"
-    || value === "Wednesday"
-    || value === "Thursday"
-    || value === "Friday"
-    || value === "Saturday";
-}
-
 function failureResult(args: OperatorArguments, code: string, message: string, legacyCollectionEvidence: Record<string, unknown> | null): Record<string, unknown> {
   return {
     operatorContractVersion: OPERATOR_CONTRACT_VERSION,
@@ -132,82 +104,6 @@ function failureResult(args: OperatorArguments, code: string, message: string, l
     legacyCollectionEvidence,
     fatalErrors: [{ code, message }],
     generationResult: null,
-  };
-}
-
-function createGeneratorInput(row: LeagueLocationRow, args: OperatorArguments): CanonicalOccurrenceGeneratorInput | { failure: string } {
-  const missing: string[] = [];
-  const locationId = row.location_id;
-  const seasonStart = dateOnly(row.season_start);
-  const seasonEnd = dateOnly(row.season_end);
-  const weekday = row.week_day;
-  const competitionStartTime = row.competition_start_time;
-  const timezone = row.timezone;
-  const plannedSlotCount = row.total_bowling_weeks;
-  const defaultWeeklyAmountMinor = args.regularSessionBillingPolicy === "none" && row.weekly_fee === null
-    ? 0
-    : row.weekly_fee;
-  if (row.organization_id !== args.organizationId) missing.push("organizationId");
-  if (locationId === null || row.location_organization_id !== args.organizationId) missing.push("tenant-scoped location");
-  if (!seasonStart) missing.push("seasonStart");
-  if (!seasonEnd) missing.push("seasonEnd");
-  if (!isCanonicalWeekday(weekday)) missing.push("weekday");
-  if (!competitionStartTime) missing.push("competitionStartTime");
-  if (!timezone) missing.push("timezone");
-  if (!Number.isSafeInteger(plannedSlotCount) || (plannedSlotCount ?? 0) <= 0) missing.push("totalBowlingWeeks");
-  if (args.regularSessionBillingPolicy === "eligible_bowlers"
-    && (!Number.isSafeInteger(defaultWeeklyAmountMinor) || (defaultWeeklyAmountMinor ?? 0) <= 0)) {
-    missing.push("defaultWeeklyAmountMinor");
-  }
-  if (args.regularSessionBillingPolicy === "none"
-    && defaultWeeklyAmountMinor !== null
-    && (!Number.isSafeInteger(defaultWeeklyAmountMinor) || defaultWeeklyAmountMinor < 0)) {
-    missing.push("defaultWeeklyAmountMinor");
-  }
-  if (!args.currency) missing.push("explicit currency flag");
-  if (!args.regularSessionBillingPolicy) missing.push("explicit regularSessionBillingPolicy flag");
-  if (!args.billingOrdinalPolicy) missing.push("explicit billingOrdinalPolicy flag");
-  if (missing.length > 0) return { failure: `incomplete authoritative input: ${missing.join(", ")}` };
-  if (locationId === null || !seasonStart || !seasonEnd || !isCanonicalWeekday(weekday) || !competitionStartTime || !timezone || plannedSlotCount === null || defaultWeeklyAmountMinor === null || args.currency === null || args.regularSessionBillingPolicy === null || args.billingOrdinalPolicy === null) {
-    return { failure: "incomplete authoritative input" };
-  }
-  const skipDates = row.skip_dates ?? [];
-  return {
-    organizationId: args.organizationId,
-    leagueId: args.leagueId,
-    locationId,
-    sourceScheduleRevision: args.sourceScheduleRevision,
-    seasonStart,
-    seasonEnd,
-    weekday,
-    localCompetitionStartTime: competitionStartTime,
-    timezone,
-    plannedSlotCount,
-    skipExceptions: skipDates.map((localDate, index) => ({
-      kind: "skip" as const,
-      localDate,
-      reason: "Legacy league skip date explicitly retained for canonical generation",
-      source: "legacy_import" as const,
-      lifecycleIntent: "draft" as const,
-      generationRunAssociationIntent: "associate" as const,
-      candidateReference: `legacy-skip-${index + 1}-${localDate}`,
-    })),
-    cancelledDates: row.cancelled_dates ?? [],
-    ambiguousFold: args.ambiguousFold,
-    defaultWeeklyAmountMinor,
-    currency: args.currency,
-    regularSessionBillingPolicy: args.regularSessionBillingPolicy,
-    billingOrdinalPolicy: args.billingOrdinalPolicy,
-    specialSessionBehavior: { mode: "regular_only", version: "1" },
-  };
-}
-
-function legacyEvidence(row: LeagueLocationRow): Record<string, unknown> {
-  return {
-    source: "leagues.double_pay_dates",
-    doublePayDates: [...(row.double_pay_dates ?? [])].sort(),
-    excludedFromGeneratorInput: true,
-    excludedFromFingerprintAndBillingCandidates: true,
   };
 }
 
@@ -238,7 +134,7 @@ export async function runCanonicalOccurrenceOperator(
     await client.connect();
     await client.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
     transactionStarted = true;
-    const query = await client.query<LeagueLocationRow>(`
+    const query = await client.query<CanonicalLegacyLeagueRow>(`
       SELECT
         l.id AS league_id,
         l.organization_id,
@@ -270,8 +166,8 @@ export async function runCanonicalOccurrenceOperator(
       process.stdout.write(`${JSON.stringify(result)}\n`);
       return 1;
     }
-    const evidence = legacyEvidence(row);
-    const input = createGeneratorInput(row, parsed);
+    const evidence = buildLegacyDoublePayEvidence(row);
+    const input = createCanonicalGeneratorInputFromLegacyRow(row, parsed);
     if ("failure" in input) {
       const result = failureResult(parsed, "incomplete_authoritative_input", input.failure, evidence);
       process.stdout.write(`${JSON.stringify(result)}\n`);
