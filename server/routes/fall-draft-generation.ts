@@ -4,6 +4,13 @@ import {
   fallDraftApplyRequestSchema,
   fallDraftPreviewRequestSchema,
 } from "@shared/fall-draft-generation";
+import {
+  fallDraftApproveRequestSchema,
+  fallDraftCancelRequestSchema,
+  fallDraftRejectRequestSchema,
+  fallDraftRescheduleRequestSchema,
+  fallDraftRestoreRequestSchema,
+} from "@shared/fall-draft-review";
 import { filterByOrganization } from "../middleware/organization.js";
 import { singleRouteParam } from "../utils/route-params.js";
 import { handleZodError, sendError, sendSuccess } from "../utils/api.js";
@@ -14,6 +21,15 @@ import {
   previewFallDraftGeneration,
 } from "../services/fall-draft-generation.js";
 import { createLogger } from "../logger.js";
+import {
+  approveAndPublishFallDraft,
+  cancelFallDraftOccurrence,
+  FallDraftReviewError,
+  loadFallDraftReview,
+  rejectFallDraft,
+  rescheduleFallDraftOccurrence,
+  restoreFallDraftOccurrence,
+} from "../services/fall-draft-review.js";
 
 const log = createLogger("FallDraftGenerationRoutes");
 const router = Router();
@@ -43,12 +59,14 @@ function authorizedScope(req: Request): { organizationId: number; leagueId: numb
 
 function sendFallDraftError(res: Parameters<typeof sendError>[0], caught: unknown): void {
   if (caught instanceof z.ZodError) return handleZodError(res, caught);
-  const code = caught instanceof FallDraftGenerationError
+  const code = caught instanceof FallDraftGenerationError || caught instanceof FallDraftReviewError
     ? caught.code
     : typeof caught === "object" && caught !== null && "code" in caught
       ? String(caught.code)
       : "transaction_failure";
-  const message = caught instanceof FallDraftGenerationError ? caught.message : "Fall draft generation could not be completed";
+  const message = caught instanceof FallDraftGenerationError || caught instanceof FallDraftReviewError
+    ? caught.message
+    : "Fall canonical administration could not be completed";
   const mapping: Record<string, { status: number; apiCode: string }> = {
     invalid_scope: { status: 400, apiCode: "INVALID_REQUEST" },
     unauthorized_actor: { status: 403, apiCode: "FORBIDDEN" },
@@ -66,6 +84,15 @@ function sendFallDraftError(res: Parameters<typeof sendError>[0], caught: unknow
     same_day_collision: { status: 409, apiCode: "FALL_DRAFT_COLLISION" },
     exact_start_collision: { status: 409, apiCode: "FALL_DRAFT_COLLISION" },
     exception_collision: { status: 409, apiCode: "FALL_DRAFT_COLLISION" },
+    c1_run_not_found: { status: 404, apiCode: "FALL_DRAFT_NOT_FOUND" },
+    stale_review: { status: 409, apiCode: "FALL_DRAFT_STALE_REVIEW" },
+    revision_conflict: { status: 409, apiCode: "FALL_DRAFT_REVISION_CONFLICT" },
+    effective_lock: { status: 409, apiCode: "FALL_DRAFT_EFFECTIVELY_LOCKED" },
+    terminal_state: { status: 409, apiCode: "FALL_DRAFT_TERMINAL_STATE" },
+    activity_evidence: { status: 409, apiCode: "FALL_DRAFT_ACTIVITY_EVIDENCE" },
+    invalid_dst_input: { status: 422, apiCode: "FALL_DRAFT_DST_ERROR" },
+    legacy_input_stale: { status: 409, apiCode: "FALL_DRAFT_LEGACY_INPUT_STALE" },
+    discrepancy_disposition_invalid: { status: 409, apiCode: "FALL_DRAFT_DISCREPANCY_DISPOSITION_INVALID" },
   };
   const selected = mapping[code] ?? { status: 500, apiCode: "FALL_DRAFT_ERROR" };
   if (selected.status >= 500) log.error("Fall draft generation failed", { code });
@@ -125,6 +152,76 @@ router.get("/:id/canonical-fall-drafts", async (req: Request, res) => {
   if (!scope) return;
   try {
     sendSuccess(res, await loadFallDraftPersistedView(scope));
+  } catch (caught) {
+    sendFallDraftError(res, caught);
+  }
+});
+
+router.get("/:id/canonical-fall-drafts/review", async (req: Request, res) => {
+  const scope = requireAdminScope(req, res);
+  if (!scope) return;
+  try {
+    sendSuccess(res, await loadFallDraftReview(scope));
+  } catch (caught) {
+    sendFallDraftError(res, caught);
+  }
+});
+
+router.post("/:id/canonical-fall-drafts/review/reschedule", async (req: Request, res) => {
+  const scope = requireAdminScope(req, res);
+  if (!scope) return;
+  try {
+    const request = fallDraftRescheduleRequestSchema.parse(req.body);
+    const result = await rescheduleFallDraftOccurrence({ ...scope, request });
+    sendSuccess(res, result, result.mode === "applied" ? 201 : 200);
+  } catch (caught) {
+    sendFallDraftError(res, caught);
+  }
+});
+
+router.post("/:id/canonical-fall-drafts/review/cancel", async (req: Request, res) => {
+  const scope = requireAdminScope(req, res);
+  if (!scope) return;
+  try {
+    const request = fallDraftCancelRequestSchema.parse(req.body);
+    const result = await cancelFallDraftOccurrence({ ...scope, request });
+    sendSuccess(res, result, result.mode === "applied" ? 201 : 200);
+  } catch (caught) {
+    sendFallDraftError(res, caught);
+  }
+});
+
+router.post("/:id/canonical-fall-drafts/review/restore", async (req: Request, res) => {
+  const scope = requireAdminScope(req, res);
+  if (!scope) return;
+  try {
+    const request = fallDraftRestoreRequestSchema.parse(req.body);
+    const result = await restoreFallDraftOccurrence({ ...scope, request });
+    sendSuccess(res, result, result.mode === "applied" ? 201 : 200);
+  } catch (caught) {
+    sendFallDraftError(res, caught);
+  }
+});
+
+router.post("/:id/canonical-fall-drafts/review/approve", async (req: Request, res) => {
+  const scope = requireAdminScope(req, res);
+  if (!scope) return;
+  try {
+    const request = fallDraftApproveRequestSchema.parse(req.body);
+    const result = await approveAndPublishFallDraft({ ...scope, request });
+    sendSuccess(res, result, result.mode === "applied" ? 201 : 200);
+  } catch (caught) {
+    sendFallDraftError(res, caught);
+  }
+});
+
+router.post("/:id/canonical-fall-drafts/review/reject", async (req: Request, res) => {
+  const scope = requireAdminScope(req, res);
+  if (!scope) return;
+  try {
+    const request = fallDraftRejectRequestSchema.parse(req.body);
+    const result = await rejectFallDraft({ ...scope, request });
+    sendSuccess(res, result, result.mode === "applied" ? 201 : 200);
   } catch (caught) {
     sendFallDraftError(res, caught);
   }

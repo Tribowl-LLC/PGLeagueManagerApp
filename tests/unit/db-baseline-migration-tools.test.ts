@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(20);
+    expect(migrations).toHaveLength(21);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -306,6 +306,17 @@ describe('normalized migration baseline tools', () => {
     expect(migrations[19]?.sql).toContain("'draft' AND \"league_occurrences\".\"status\" = 'cancelled'");
     expect(migrations[19]?.sql).toContain('"league_occurrences"."cancellation_command_id" IS NOT NULL');
     expect(migrations[19]?.sql).not.toMatch(/(?:^|\n)\s*(?:UPDATE|DELETE|INSERT)\b/);
+    expect(migrations[20]).toMatchObject({
+      idx: 20,
+      tag: '0020_phase_c2_fall_draft_review',
+      createdAt: 1786404198272,
+      hash: 'd52c091899a9ccb7dc25d640bd0274dd26754dc541ca994bcabf021b876d3f62',
+    });
+    expect(migrations[20]?.sql).toContain('CREATE TABLE "league_occurrence_generation_discrepancy_revisions"');
+    expect(migrations[20]?.sql).toContain("'reject_generation'");
+    expect(migrations[20]?.sql).toContain("'restore_cancelled_draft'");
+    expect(migrations[20]?.sql).toContain('generation_discrepancy_revisions_discrepancy_fk');
+    expect(migrations[20]?.sql).not.toMatch(/(?:^|\n)\s*(?:UPDATE|DELETE|INSERT)\b/);
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 

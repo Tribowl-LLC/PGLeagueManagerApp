@@ -138,8 +138,9 @@ export interface OccurrenceRescheduleRequest extends ScheduleCommandRequest {
  * The established lvcanoncmd:v1 envelope remains authoritative.
  */
 export interface MaterializationScheduleCommandRequest extends ScheduleCommandRequest {
-  commandType: "generate" | "approve_generation" | "publish" | "cancel" | "create_exception";
-  materializationOperation?: "approved_completed_summer_materialization" | "fall_draft_generation";
+  commandType: "generate" | "approve_generation" | "publish" | "cancel" | "create_exception"
+    | "reschedule" | "reject_generation" | "restore_cancelled_draft";
+  materializationOperation?: "approved_completed_summer_materialization" | "fall_draft_generation" | "fall_draft_review";
   materializationPayload: Record<string, unknown>;
 }
 

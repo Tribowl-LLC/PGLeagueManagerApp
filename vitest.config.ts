@@ -116,6 +116,7 @@ const UNIT_NO_DB = [
   'tests/unit/completed-summer-operator-lifecycle.test.ts',
   'tests/unit/completed-summer-materialization.test.ts',
   'tests/unit/fall-draft-generation.test.ts',
+  'tests/unit/fall-draft-review.test.ts',
   'tests/unit/test-template-migration-source.test.ts',
   'tests/unit/zod-v4-migration-contracts.test.ts',
 ];
