@@ -15,8 +15,11 @@ import {
   type LeagueOccurrenceBillingTerm,
   type LeagueScheduleCommand,
 } from "@shared/schema";
-import { db } from "../db.js";
-import { lockLeagueSchedule, type LeagueScheduleLockExecutor } from "../storage/league-schedule-lock.js";
+import {
+  lockLeagueSchedule,
+  type LeagueScheduleLockExecutor,
+  type LeagueScheduleTransaction,
+} from "../storage/league-schedule-lock.js";
 import {
   canonicalizeTimezone,
   resolveCanonicalLocalDateTime,
@@ -129,6 +132,16 @@ export interface OccurrenceRescheduleRequest extends ScheduleCommandRequest {
   resolverVersion?: string;
 }
 
+/**
+ * Narrow extension point for an atomic, versioned batch whose complete
+ * semantic payload is supplied by a reviewed materialization contract.
+ * The established lvcanoncmd:v1 envelope remains authoritative.
+ */
+export interface MaterializationScheduleCommandRequest extends ScheduleCommandRequest {
+  commandType: "generate" | "approve_generation" | "publish" | "cancel" | "create_exception";
+  materializationPayload: Record<string, unknown>;
+}
+
 export type CanonicalScheduleCommandFingerprintRequest =
   | OccurrencePlacementRequest
   | ExceptionPlacementRequest
@@ -136,7 +149,15 @@ export type CanonicalScheduleCommandFingerprintRequest =
   | GenerationRevisionRequest
   | DraftDiscardRequest
   | OccurrenceCancellationRequest
-  | OccurrenceRescheduleRequest;
+  | OccurrenceRescheduleRequest
+  | MaterializationScheduleCommandRequest;
+
+async function withDefaultCanonicalTransaction<T>(
+  transaction: (tx: LeagueScheduleTransaction) => Promise<T>,
+): Promise<T> {
+  const { db } = await import("../db.js");
+  return db.transaction(transaction);
+}
 
 function assertPositiveScope(organizationId: number, leagueId: number): void {
   if (!Number.isSafeInteger(organizationId) || organizationId <= 0 || !Number.isSafeInteger(leagueId) || leagueId <= 0) {
@@ -265,6 +286,13 @@ function commandFingerprintPayload(request: CanonicalScheduleCommandFingerprintR
     sameDayOverride: request.sameDayOverride ?? false,
     reason: request.reason ?? null,
   };
+  if ("materializationPayload" in request) {
+    return {
+      ...common,
+      operation: "approved_completed_summer_materialization",
+      materializationPayload: request.materializationPayload,
+    };
+  }
   switch (request.commandType) {
     case "generate":
       if ("generatorVersion" in request) {
@@ -362,7 +390,7 @@ function assertExpectedCommandType(
   }
 }
 
-async function assertTenantAndActor(
+export async function assertCanonicalScheduleTenantAndActor(
   tx: LeagueScheduleLockExecutor,
   request: ScheduleCommandRequest,
 ): Promise<void> {
@@ -398,7 +426,7 @@ function commandEquivalent(existing: LeagueScheduleCommand, request: ScheduleCom
 }
 
 /** Must be called after the shared league lock has been acquired. */
-async function getOrCreateCommand(
+export async function getOrCreateCanonicalScheduleCommandInTransaction(
   tx: LeagueScheduleLockExecutor,
   request: CanonicalScheduleCommandFingerprintRequest,
   allowedCommandTypes: readonly LeagueScheduleCommand["commandType"][],
@@ -412,7 +440,7 @@ async function getOrCreateCommand(
   if (request.sameDayOverride && !request.reason?.trim()) {
     throw new CanonicalOccurrenceTransactionError("invalid_command", "same-day override requires a nonempty reason");
   }
-  await assertTenantAndActor(tx, request);
+  await assertCanonicalScheduleTenantAndActor(tx, request);
   const [existing] = await tx
     .select()
     .from(leagueScheduleCommands)
@@ -444,7 +472,7 @@ async function getOrCreateCommand(
   return { command, existing: false };
 }
 
-async function validatePlacementInTransaction(
+export async function validateCanonicalOccurrencePlacementInTransaction(
   tx: LeagueScheduleLockExecutor,
   request: Pick<OccurrencePlacementRequest, "organizationId" | "leagueId" | "authoritativeLocalDate" | "startAt" | "existingOccurrenceId" | "sameDayOverride">,
   originatingCommandId?: string,
@@ -487,9 +515,9 @@ async function withLockedScheduleCommand<T>(
   allowedCommandTypes: readonly LeagueScheduleCommand["commandType"][],
   mutation: (context: LockedScheduleMutationContext) => Promise<T>,
 ): Promise<T> {
-  return db.transaction(async (tx) => {
+  return withDefaultCanonicalTransaction(async (tx) => {
     await lockLeagueSchedule(tx, request.organizationId, request.leagueId);
-    const command = await getOrCreateCommand(tx, request, allowedCommandTypes);
+    const command = await getOrCreateCanonicalScheduleCommandInTransaction(tx, request, allowedCommandTypes);
     return mutation({ tx, ...command });
   });
 }
@@ -509,7 +537,7 @@ export async function withLockedOccurrencePlacementMutation<T>(
   mutation: (context: LockedOccurrencePlacementContext) => Promise<T>,
 ): Promise<T> {
   return withLockedScheduleCommand(request, ["generate", "publish"], async (context) => {
-    const collisions = await validatePlacementInTransaction(context.tx, request, context.command.id);
+    const collisions = await validateCanonicalOccurrencePlacementInTransaction(context.tx, request, context.command.id);
     return mutation({ ...context, collisions });
   });
 }
@@ -519,7 +547,7 @@ export async function validateOccurrencePlacement(request: OccurrencePlacementRe
   return withLockedOccurrencePlacementMutation(request, async ({ command }) => command);
 }
 
-async function validateExceptionPlacementInTransaction(
+export async function validateCanonicalExceptionPlacementInTransaction(
   tx: LeagueScheduleLockExecutor,
   request: ExceptionPlacementRequest,
   originatingCommandId?: string,
@@ -555,7 +583,7 @@ export async function withLockedExceptionPlacementMutation<T>(
   mutation: (context: LockedScheduleMutationContext) => Promise<T>,
 ): Promise<T> {
   return withLockedScheduleCommand(request, ["create_exception"], async (context) => {
-    await validateExceptionPlacementInTransaction(context.tx, request, context.command.id);
+    await validateCanonicalExceptionPlacementInTransaction(context.tx, request, context.command.id);
     return mutation(context);
   });
 }
@@ -622,7 +650,7 @@ export async function validateMakeupRelationship(request: MakeupRelationshipRequ
   return withLockedMakeupRelationshipMutation(request, async ({ command }) => command);
 }
 
-async function allocateSourceScheduleRevisionInTransaction(
+export async function allocateCanonicalSourceScheduleRevisionInTransaction(
   tx: LeagueScheduleLockExecutor,
   organizationId: number,
   leagueId: number,
@@ -645,9 +673,9 @@ export async function createGenerationRevision(request: GenerationRevisionReques
   command: LeagueScheduleCommand;
   generationRun: typeof leagueOccurrenceGenerationRuns.$inferSelect;
 }> {
-  return db.transaction(async (tx) => {
+  return withDefaultCanonicalTransaction(async (tx) => {
     await lockLeagueSchedule(tx, request.organizationId, request.leagueId);
-    const { command, existing } = await getOrCreateCommand(tx, request, ["generate"]);
+    const { command, existing } = await getOrCreateCanonicalScheduleCommandInTransaction(tx, request, ["generate"]);
     const [existingRun] = await tx
       .select()
       .from(leagueOccurrenceGenerationRuns)
@@ -661,7 +689,7 @@ export async function createGenerationRevision(request: GenerationRevisionReques
     assertPositiveScope(request.organizationId, request.leagueId);
     assertValidInputFingerprint(request.inputFingerprint);
     if (!/^.{1,128}$/.test(request.generatorVersion) || request.generatorVersion.trim() !== request.generatorVersion) throw new CanonicalOccurrenceTransactionError("invalid_command", "generatorVersion must be nonempty and fit A1");
-    const sourceScheduleRevision = await allocateSourceScheduleRevisionInTransaction(tx, request.organizationId, request.leagueId);
+    const sourceScheduleRevision = await allocateCanonicalSourceScheduleRevisionInTransaction(tx, request.organizationId, request.leagueId);
     const [generationRun] = await tx
       .insert(leagueOccurrenceGenerationRuns)
       .values({
@@ -744,9 +772,9 @@ export async function discardDraftOccurrence(request: DraftDiscardRequest): Prom
   supersededBillingTermIds: string[];
 }> {
   assertValidReason(request.reason);
-  return db.transaction(async (tx) => {
+  return withDefaultCanonicalTransaction(async (tx) => {
     await lockLeagueSchedule(tx, request.organizationId, request.leagueId);
-    const { command, existing } = await getOrCreateCommand(tx, request, ["discard_draft"]);
+    const { command, existing } = await getOrCreateCanonicalScheduleCommandInTransaction(tx, request, ["discard_draft"]);
     const [occurrence] = await tx
       .select()
       .from(leagueOccurrences)
@@ -851,9 +879,9 @@ export async function discardDraftOccurrence(request: DraftDiscardRequest): Prom
 export async function cancelOccurrence(request: OccurrenceCancellationRequest): Promise<LeagueOccurrence> {
   assertValidReason(request.reason);
   assertValidInstant(request.now, "now");
-  return db.transaction(async (tx) => {
+  return withDefaultCanonicalTransaction(async (tx) => {
     await lockLeagueSchedule(tx, request.organizationId, request.leagueId);
-    const { command, existing } = await getOrCreateCommand(tx, request, ["cancel"]);
+    const { command, existing } = await getOrCreateCanonicalScheduleCommandInTransaction(tx, request, ["cancel"]);
     const [occurrence] = await tx.select().from(leagueOccurrences).where(and(
       eq(leagueOccurrences.id, request.occurrenceId),
       eq(leagueOccurrences.organizationId, request.organizationId),
@@ -932,9 +960,9 @@ export async function rescheduleOccurrence(request: OccurrenceRescheduleRequest)
   const canonicalRequest = resolveRescheduleRequest(request);
   assertValidReason(request.reason);
   assertValidInstant(request.now, "now");
-  return db.transaction(async (tx) => {
+  return withDefaultCanonicalTransaction(async (tx) => {
     await lockLeagueSchedule(tx, canonicalRequest.organizationId, canonicalRequest.leagueId);
-    const { command, existing } = await getOrCreateCommand(tx, canonicalRequest, ["reschedule"]);
+    const { command, existing } = await getOrCreateCanonicalScheduleCommandInTransaction(tx, canonicalRequest, ["reschedule"]);
     const [occurrence] = await tx.select().from(leagueOccurrences).where(and(
       eq(leagueOccurrences.id, canonicalRequest.occurrenceId),
       eq(leagueOccurrences.organizationId, canonicalRequest.organizationId),
@@ -944,7 +972,7 @@ export async function rescheduleOccurrence(request: OccurrenceRescheduleRequest)
     if (existing && occurrence.lastCommandId === command.id) return occurrence;
     if (occurrence.status === "discarded" || occurrence.status === "cancelled") throw new CanonicalOccurrenceTransactionError("occurrence_terminal", "discarded or cancelled occurrences cannot be rescheduled");
     assertNotEffectivelyLocked(occurrence, canonicalRequest.now);
-    await validatePlacementInTransaction(tx, {
+    await validateCanonicalOccurrencePlacementInTransaction(tx, {
       ...canonicalRequest,
       existingOccurrenceId: occurrence.id,
     });
