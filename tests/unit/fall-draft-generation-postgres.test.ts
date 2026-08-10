@@ -267,6 +267,20 @@ describe("C1 Fall draft preview", () => {
     expect(await caughtCode(() => previewFallDraftGeneration({ ...scope(partial), semantics }))).toBe("not_wholly_future");
   });
 
+  it("rejects a past opening skip even when every occurrence candidate is still future-facing", async () => {
+    const f = await fixture("past-opening-skip", {
+      seasonStart: "2026-08-09",
+      seasonEnd: "2026-08-30",
+      weekDay: "Sunday",
+      totalBowlingWeeks: 3,
+      skipDates: ["2026-08-09"],
+      cancelledDates: [],
+      doublePayDates: [],
+    });
+    expect(await caughtCode(() => previewFallDraftGeneration({ ...scope(f), semantics }))).toBe("not_wholly_future");
+    expect(Object.values(await canonicalCounts(f)).every((count) => count === 0)).toBe(true);
+  });
+
   it("fails closed for DST gaps and requires explicit fold selection", async () => {
     const gap = await fixture("dst-gap", {
       seasonStart: "2032-10-03", seasonEnd: "2033-03-13", weekDay: "Sunday", competitionStartTime: "02:30",
@@ -357,8 +371,25 @@ describe("C1 atomic draft creation", () => {
     expect(await caughtCode(() => applyFallDraftGeneration({ ...scope(conflict), apply: { ...request, reason: "Changed semantic reason" } }))).toBe("idempotency_conflict");
     expect(await caughtCode(() => applyFallDraftGeneration({ ...scope(conflict), apply: { ...request, idempotencyKey: "different-c1-key" } }))).toBe("stale_preview");
     expect((await loadFallDraftPersistedView(scope(conflict))).currentLegacyScheduleMatchesGenerationInput).toBe(true);
+    expect(await loadFallDraftPersistedView(scope(conflict, conflict.systemAdminUserId))).toMatchObject({
+      found: true,
+      currentLegacyScheduleMatchesGenerationInput: true,
+      result: { durableIds: { generationRunId: expect.any(String) } },
+    });
     await db.update(leagues).set({ skipDates: [] }).where(eq(leagues.id, conflict.leagueId));
     expect((await loadFallDraftPersistedView(scope(conflict))).currentLegacyScheduleMatchesGenerationInput).toBe(false);
+    await db.update(leagues).set({ locationId: null }).where(eq(leagues.id, conflict.leagueId));
+    expect(await loadFallDraftPersistedView(scope(conflict, conflict.systemAdminUserId))).toMatchObject({
+      found: true,
+      currentLegacyScheduleMatchesGenerationInput: false,
+    });
+
+    const unassigned = await fixture("unassigned-status", { locationId: null });
+    await expect(loadFallDraftPersistedView(scope(unassigned))).resolves.toEqual({
+      found: false,
+      result: null,
+      currentLegacyScheduleMatchesGenerationInput: null,
+    });
   });
 
   it("fails closed for exact-start, same-day, and exception collisions without a C1 write", async () => {

@@ -28,7 +28,11 @@ import {
   type CanonicalGenerationResult,
   type CanonicalNormalizedInput,
 } from "@shared/canonical-occurrence-generator";
-import { canonicalDstResolverVersion } from "@shared/canonical-dst-resolver";
+import {
+  canonicalDstResolverVersion,
+  resolveCanonicalLocalDateTime,
+  type AmbiguousFoldPolicy,
+} from "@shared/canonical-dst-resolver";
 import {
   buildLegacyDoublePayEvidence,
   createCanonicalGeneratorInputFromLegacyRow,
@@ -237,6 +241,16 @@ async function loadAuthoritativeLeague(tx: LeagueScheduleTransaction, scope: Fal
   };
 }
 
+async function assertTenantLeagueExists(tx: LeagueScheduleTransaction, scope: FallDraftScope): Promise<void> {
+  const [league] = await tx.select({ id: leagues.id }).from(leagues).where(and(
+    eq(leagues.id, scope.leagueId),
+    eq(leagues.organizationId, scope.organizationId),
+  ));
+  if (!league) {
+    throw new FallDraftGenerationError("league_not_found", "league was not found in the authorized organization");
+  }
+}
+
 function assertFallLeague(loaded: LoadedLeague): void {
   if (!loaded.active) {
     throw new FallDraftGenerationError("ineligible_league", "C1 requires an active, non-archived league");
@@ -258,11 +272,41 @@ async function databaseTransactionTime(tx: LeagueScheduleTransaction): Promise<s
 
 function assertWhollyFuture(generation: CanonicalGenerationResult, transactionTime: string): void {
   const now = Date.parse(transactionTime);
-  const started = generation.occurrenceCandidates.find((candidate) => Date.parse(candidate.startAt) <= now);
+  const scheduleSlots: Array<{
+    authoritativeLocalDate: string;
+    startAt: string;
+    kind: "occurrence" | "skip";
+  }> = generation.occurrenceCandidates.map((candidate) => ({
+    authoritativeLocalDate: candidate.authoritativeLocalDate,
+    startAt: candidate.startAt,
+    kind: "occurrence" as const,
+  }));
+  for (const candidate of generation.exceptionCandidates) {
+    try {
+      const resolution = resolveCanonicalLocalDateTime({
+        localDate: candidate.authoritativeLocalDate,
+        localTime: generation.normalizedInput.localCompetitionStartTime,
+        timezone: candidate.timezone,
+        ambiguousFold: generation.normalizedInput.ambiguousFold as AmbiguousFoldPolicy,
+      });
+      scheduleSlots.push({
+        authoritativeLocalDate: candidate.authoritativeLocalDate,
+        startAt: resolution.startAt,
+        kind: "skip",
+      });
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught);
+      throw new FallDraftGenerationError(
+        "generator_fatal_error",
+        `C1 could not resolve skipped slot ${candidate.authoritativeLocalDate}: ${message}`,
+      );
+    }
+  }
+  const started = scheduleSlots.find((candidate) => Date.parse(candidate.startAt) <= now);
   if (started) {
     throw new FallDraftGenerationError(
       "not_wholly_future",
-      `C1 requires every occurrence to remain future-facing; ${started.authoritativeLocalDate} has already started`,
+      `C1 requires every occurrence and skipped slot to remain future-facing; ${started.kind} ${started.authoritativeLocalDate} has already started`,
     );
   }
 }
@@ -1135,7 +1179,7 @@ export async function applyFallDraftGeneration(input: FallDraftScope & { apply: 
 export async function loadFallDraftPersistedView(scope: FallDraftScope): Promise<FallDraftPersistedView> {
   return db.transaction(async (tx) => {
     await authorizeReadOnly(tx, scope);
-    await loadAuthoritativeLeague(tx, scope);
+    await assertTenantLeagueExists(tx, scope);
     const rows = await loadExistingRows(tx, scope, false);
     const c1Runs = rows.runs.filter((run) => isInputSnapshot(run.normalizedInputSnapshot));
     if (c1Runs.length === 0) return { found: false, result: null, currentLegacyScheduleMatchesGenerationInput: null };
@@ -1157,7 +1201,7 @@ export async function loadFallDraftPersistedView(scope: FallDraftScope): Promise
       regularSessionBillingPolicy: preview.semantics.regularSessionBillingPolicy,
       billingOrdinalPolicy: preview.semantics.billingOrdinalPolicy,
     };
-    const result = await verifyExactRetry(tx, scope, apply, rows);
+    const result = await verifyExactRetry(tx, { ...scope, actorUserId: command.actorUserId }, apply, rows);
     return { found: true, result, currentLegacyScheduleMatchesGenerationInput: result.currentLegacyScheduleMatchesGenerationInput };
   }, { isolationLevel: "repeatable read", accessMode: "read only" });
 }

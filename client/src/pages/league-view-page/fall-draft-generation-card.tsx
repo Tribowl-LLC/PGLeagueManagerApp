@@ -39,6 +39,13 @@ interface FallDraftGenerationCardProps {
 const previewRequestVersion = "fall-draft-preview-request/1" as const;
 const applyRequestVersion = "fall-draft-apply-request/1" as const;
 
+interface FallDraftFormSemantics {
+  ambiguousFold: FallDraftGeneratorSemantics["ambiguousFold"];
+  currency: string;
+  regularSessionBillingPolicy: FallDraftGeneratorSemantics["regularSessionBillingPolicy"] | "";
+  billingOrdinalPolicy: FallDraftGeneratorSemantics["billingOrdinalPolicy"] | "";
+}
+
 function formatMoney(amountMinor: number, currency: string): string {
   try {
     return new Intl.NumberFormat(undefined, { style: "currency", currency }).format(amountMinor / 100);
@@ -51,12 +58,25 @@ function shortFingerprint(value: string): string {
   return `${value.slice(0, 12)}…${value.slice(-8)}`;
 }
 
+function secureRandomUuid(): string {
+  const cryptoApi = globalThis.crypto;
+  if (typeof cryptoApi?.randomUUID === "function") return cryptoApi.randomUUID();
+  if (typeof cryptoApi?.getRandomValues !== "function") {
+    throw new Error("Secure identifier generation is unavailable. Use a supported browser or update the app before retrying.");
+  }
+  const bytes = cryptoApi.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 export function FallDraftGenerationCard({ leagueId, organizationId, isSystemAdmin }: FallDraftGenerationCardProps) {
-  const [semantics, setSemantics] = useState<FallDraftGeneratorSemantics>({
+  const [semantics, setSemantics] = useState<FallDraftFormSemantics>({
     ambiguousFold: "reject",
-    currency: "USD",
-    regularSessionBillingPolicy: "eligible_bowlers",
-    billingOrdinalPolicy: "planned_slot",
+    currency: "",
+    regularSessionBillingPolicy: "",
+    billingOrdinalPolicy: "",
   });
   const [preview, setPreview] = useState<FallDraftPreview | null>(null);
   const [previewSemantics, setPreviewSemantics] = useState<string | null>(null);
@@ -64,11 +84,23 @@ export function FallDraftGenerationCard({ leagueId, organizationId, isSystemAdmi
   const [idempotencyKey, setIdempotencyKey] = useState("");
   const [lastApplyRequest, setLastApplyRequest] = useState<FallDraftApplyRequest | null>(null);
   const [applied, setApplied] = useState<FallDraftApplyResult | null>(null);
+  const [identityError, setIdentityError] = useState<string | null>(null);
   const previewHeadingRef = useRef<HTMLHeadingElement>(null);
   const querySuffix = isSystemAdmin ? `?organizationId=${organizationId}` : "";
   const basePath = `/api/leagues/${leagueId}/canonical-fall-drafts`;
 
   const currentSemantics = useMemo(() => JSON.stringify(semantics), [semantics]);
+  const selectedSemantics = useMemo<FallDraftGeneratorSemantics | null>(() => {
+    if (!/^[A-Z]{3}$/.test(semantics.currency)
+      || semantics.regularSessionBillingPolicy === ""
+      || semantics.billingOrdinalPolicy === "") return null;
+    return {
+      ambiguousFold: semantics.ambiguousFold,
+      currency: semantics.currency,
+      regularSessionBillingPolicy: semantics.regularSessionBillingPolicy,
+      billingOrdinalPolicy: semantics.billingOrdinalPolicy,
+    };
+  }, [semantics]);
   const previewIsStale = preview !== null && previewSemantics !== currentSemantics;
 
   const persistedQuery = useQuery<ApiResponse<FallDraftPersistedView>>({
@@ -78,16 +110,20 @@ export function FallDraftGenerationCard({ leagueId, organizationId, isSystemAdmi
   });
 
   const previewMutation = useMutation({
-    mutationFn: async () => apiRequest<FallDraftPreview>(`${basePath}/preview${querySuffix}`, "POST", {
-      contractVersion: previewRequestVersion,
-      ...semantics,
-    }),
+    mutationFn: async () => {
+      if (!selectedSemantics) throw new Error("Select currency, billing policy, and billing ordinal policy before previewing");
+      return apiRequest<FallDraftPreview>(`${basePath}/preview${querySuffix}`, "POST", {
+        contractVersion: previewRequestVersion,
+        ...selectedSemantics,
+      });
+    },
     onSuccess: (response) => {
       setPreview(response.data);
       setPreviewSemantics(currentSemantics);
       setApplied(null);
       setIdempotencyKey("");
       setLastApplyRequest(null);
+      setIdentityError(null);
       requestAnimationFrame(() => previewHeadingRef.current?.focus());
     },
   });
@@ -107,15 +143,24 @@ export function FallDraftGenerationCard({ leagueId, organizationId, isSystemAdmi
 
   const persisted = persistedQuery.data?.data;
   const persistedResult = persisted?.result;
-  const canConfirm = !!preview && !previewIsStale && preview.eligibility.eligibleForApply
+  const canConfirm = !!preview && !!selectedSemantics && !previewIsStale && preview.eligibility.eligibleForApply
     && reason.trim() === reason && reason.length > 0 && !applyMutation.isPending;
 
   const applyCurrentPreview = () => {
-    if (!preview) return;
-    const key = idempotencyKey || globalThis.crypto.randomUUID();
+    if (!preview || !selectedSemantics) return;
+    let key = idempotencyKey;
+    if (!key) {
+      try {
+        key = secureRandomUuid();
+      } catch (caught) {
+        setIdentityError(caught instanceof Error ? caught.message : "Secure identifier generation is unavailable");
+        return;
+      }
+    }
+    setIdentityError(null);
     const request: FallDraftApplyRequest = {
       contractVersion: applyRequestVersion,
-      ...semantics,
+      ...selectedSemantics,
       confirmedPreviewFingerprint: preview.previewFingerprint,
       reason,
       idempotencyKey: key,
@@ -196,13 +241,13 @@ export function FallDraftGenerationCard({ leagueId, organizationId, isSystemAdmi
             <Label htmlFor="fall-draft-currency">Currency</Label>
             <Input id="fall-draft-currency" value={semantics.currency} maxLength={3} inputMode="text"
               onChange={(event) => setSemantics((current) => ({ ...current, currency: event.target.value.toUpperCase() }))}
-              aria-describedby="fall-draft-currency-help" />
+              placeholder="USD" aria-describedby="fall-draft-currency-help" />
             <p id="fall-draft-currency-help" className="text-xs text-muted-foreground">Uppercase three-letter code; never inferred.</p>
           </div>
           <div className="space-y-2">
             <Label htmlFor="fall-draft-billing-policy">Regular-session billing policy</Label>
             <Select value={semantics.regularSessionBillingPolicy} onValueChange={(value: FallDraftGeneratorSemantics["regularSessionBillingPolicy"]) => setSemantics((current) => ({ ...current, regularSessionBillingPolicy: value }))}>
-              <SelectTrigger id="fall-draft-billing-policy"><SelectValue /></SelectTrigger>
+              <SelectTrigger id="fall-draft-billing-policy"><SelectValue placeholder="Select billing policy" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="eligible_bowlers">Eligible bowlers</SelectItem>
                 <SelectItem value="none">None</SelectItem>
@@ -212,7 +257,7 @@ export function FallDraftGenerationCard({ leagueId, organizationId, isSystemAdmi
           <div className="space-y-2">
             <Label htmlFor="fall-draft-ordinal-policy">Billing ordinal policy</Label>
             <Select value={semantics.billingOrdinalPolicy} onValueChange={(value: FallDraftGeneratorSemantics["billingOrdinalPolicy"]) => setSemantics((current) => ({ ...current, billingOrdinalPolicy: value }))}>
-              <SelectTrigger id="fall-draft-ordinal-policy"><SelectValue /></SelectTrigger>
+              <SelectTrigger id="fall-draft-ordinal-policy"><SelectValue placeholder="Select ordinal policy" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="planned_slot">Planned slot</SelectItem>
                 <SelectItem value="dense_billable">Dense billable</SelectItem>
@@ -221,7 +266,7 @@ export function FallDraftGenerationCard({ leagueId, organizationId, isSystemAdmi
           </div>
         </fieldset>
 
-        <Button onClick={() => previewMutation.mutate()} disabled={previewMutation.isPending || !/^[A-Z]{3}$/.test(semantics.currency)}>
+        <Button onClick={() => previewMutation.mutate()} disabled={previewMutation.isPending || selectedSemantics === null}>
           {previewMutation.isPending ? <Loader2 className="mr-2 size-4 animate-spin" /> : <RefreshCw className="mr-2 size-4" />}
           Generate zero-write preview
         </Button>
@@ -321,7 +366,7 @@ export function FallDraftGenerationCard({ leagueId, organizationId, isSystemAdmi
             <div className="rounded-md border border-dashed p-3 text-sm">
               <p className="font-medium">Excluded legacy collection evidence</p>
               <p className="text-muted-foreground">
-                Double-pay dates: {preview.legacyCollectionEvidence.doublePayDates.join(", ") || "none"}. These do not affect sessions, fingerprints, ordinals, terms, amounts, obligations, or allocations.
+                Double-pay dates: {preview.legacyCollectionEvidence.doublePayDates.join(", ") || "none"}. These do not affect A2 input, physical-schedule or candidate-set fingerprints, sessions, ordinals, terms, amounts, obligations, or allocations. The complete preview fingerprint includes this displayed evidence, so a change requires a new preview.
               </p>
             </div>
 
@@ -352,6 +397,13 @@ export function FallDraftGenerationCard({ leagueId, organizationId, isSystemAdmi
         )}
 
         {applyMutation.isPending && <p className="text-sm" aria-live="polite"><Loader2 className="mr-2 inline size-4 animate-spin" />Creating the complete draft set…</p>}
+        {identityError && (
+          <Alert variant="destructive">
+            <AlertCircle className="size-4" />
+            <AlertTitle>Draft creation is unavailable</AlertTitle>
+            <AlertDescription>{identityError}</AlertDescription>
+          </Alert>
+        )}
         {applyMutation.isError && (
           <Alert variant="destructive">
             <AlertCircle className="size-4" />

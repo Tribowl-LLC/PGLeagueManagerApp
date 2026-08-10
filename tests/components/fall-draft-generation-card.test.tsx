@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FallDraftGenerationCard } from "@/pages/league-view-page/fall-draft-generation-card";
 import * as queryModule from "@/lib/queryClient";
@@ -116,8 +116,17 @@ function renderCard(status: FallDraftPersistedView = { found: false, result: nul
   );
 }
 
+async function selectRequiredPolicies(user: UserEvent) {
+  await user.type(screen.getByLabelText("Currency"), "usd");
+  await user.click(screen.getByLabelText("Regular-session billing policy"));
+  await user.click(screen.getByRole("option", { name: "Eligible bowlers" }));
+  await user.click(screen.getByLabelText("Billing ordinal policy"));
+  await user.click(screen.getByRole("option", { name: "Planned slot" }));
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("FallDraftGenerationCard", () => {
@@ -129,17 +138,21 @@ describe("FallDraftGenerationCard", () => {
     renderCard();
 
     expect(screen.getByLabelText("Ambiguous DST fold policy")).toBeEnabled();
-    expect(screen.getByLabelText("Currency")).toHaveValue("USD");
+    expect(screen.getByLabelText("Currency")).toHaveValue("");
     expect(screen.getByLabelText("Regular-session billing policy")).toBeEnabled();
     expect(screen.getByLabelText("Billing ordinal policy")).toBeEnabled();
     expect(screen.getByText("No C1 canonical draft generation exists for this league.")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Generate zero-write preview" })).toBeDisabled();
 
+    await selectRequiredPolicies(user);
+    expect(screen.getByRole("button", { name: "Generate zero-write preview" })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: "Generate zero-write preview" }));
     const heading = await screen.findByRole("heading", { name: "Canonical preview" });
     await waitFor(() => expect(heading).toHaveFocus());
     expect(screen.getByText("cancelled")).toBeVisible();
     expect(screen.getByText(/2032-08-15: Holiday/)).toBeVisible();
     expect(screen.getByText("Excluded legacy collection evidence")).toBeVisible();
+    expect(screen.getByText(/complete preview fingerprint includes this displayed evidence/i)).toBeVisible();
     expect(screen.getByText(/total_week_mismatch/)).toBeVisible();
 
     await user.type(screen.getByLabelText("Reason for draft creation"), "Reviewed C1 draft generation");
@@ -160,6 +173,7 @@ describe("FallDraftGenerationCard", () => {
     const user = userEvent.setup();
     vi.spyOn(queryModule, "apiRequest").mockResolvedValue({ success: true, data: preview });
     renderCard();
+    await selectRequiredPolicies(user);
     await user.click(screen.getByRole("button", { name: "Generate zero-write preview" }));
     const previewHeading = await screen.findByRole("heading", { name: "Canonical preview" });
     await waitFor(() => expect(previewHeading).toHaveFocus());
@@ -174,7 +188,7 @@ describe("FallDraftGenerationCard", () => {
     renderCard({ found: true, result: { ...applyResult, currentLegacyScheduleMatchesGenerationInput: false }, currentLegacyScheduleMatchesGenerationInput: false });
     expect(screen.getByText("Canonical drafts already exist")).toBeVisible();
     expect(screen.getByText("Stale — preview again for review only")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Generate zero-write preview" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Generate zero-write preview" })).toBeDisabled();
   });
 
   it("exposes a disabled loading state while preview is in flight", async () => {
@@ -184,6 +198,7 @@ describe("FallDraftGenerationCard", () => {
       resolvePreview = resolve;
     }));
     renderCard();
+    await selectRequiredPolicies(user);
     const button = screen.getByRole("button", { name: "Generate zero-write preview" });
     await user.click(button);
     expect(button).toBeDisabled();
@@ -198,6 +213,7 @@ describe("FallDraftGenerationCard", () => {
       .mockRejectedValueOnce(new Error("temporary failure"))
       .mockResolvedValueOnce({ success: true, data: applyResult });
     renderCard();
+    await selectRequiredPolicies(user);
     await user.click(screen.getByRole("button", { name: "Generate zero-write preview" }));
     const previewHeading = await screen.findByRole("heading", { name: "Canonical preview" });
     await waitFor(() => expect(previewHeading).toHaveFocus());
@@ -216,5 +232,30 @@ describe("FallDraftGenerationCard", () => {
     await user.click(screen.getByRole("button", { name: "Retry exact request" }));
     expect(await screen.findByText("Canonical drafts created")).toBeVisible();
     expect(apiSpy.mock.calls[2][2]).toEqual(apiSpy.mock.calls[1][2]);
+  });
+
+  it("uses a secure getRandomValues UUID fallback when randomUUID is unavailable", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("crypto", {
+      getRandomValues: (bytes: Uint8Array) => {
+        bytes.forEach((_value, index) => { bytes[index] = index + 1; });
+        return bytes;
+      },
+    });
+    const apiSpy = vi.spyOn(queryModule, "apiRequest")
+      .mockResolvedValueOnce({ success: true, data: preview })
+      .mockResolvedValueOnce({ success: true, data: applyResult });
+    renderCard();
+    await selectRequiredPolicies(user);
+    await user.click(screen.getByRole("button", { name: "Generate zero-write preview" }));
+    const previewHeading = await screen.findByRole("heading", { name: "Canonical preview" });
+    await waitFor(() => expect(previewHeading).toHaveFocus());
+    await user.type(screen.getByLabelText("Reason for draft creation"), "Reviewed with iOS-compatible identity");
+    await user.click(screen.getByRole("button", { name: "Confirm and create canonical drafts" }));
+    await user.click(await screen.findByRole("button", { name: "Create drafts" }));
+    expect(await screen.findByText("Canonical drafts created")).toBeVisible();
+    expect(apiSpy.mock.calls[1][2]).toMatchObject({
+      idempotencyKey: "01020304-0506-4708-890a-0b0c0d0e0f10",
+    });
   });
 });

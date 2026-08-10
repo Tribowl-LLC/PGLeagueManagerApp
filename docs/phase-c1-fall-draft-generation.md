@@ -37,8 +37,10 @@ The service loads season boundaries, weekday, local competition time, timezone,
 location, planned slot count, weekly amount, skips, and cancellations from the
 tenant-proven league row. Date-only strings are validated and classified without
 host-local `Date` parsing. A2 resolves each local start through the shared DST
-resolver. Every generated UTC start must be strictly later than PostgreSQL
-`transaction_timestamp()`; one started candidate rejects the whole request.
+resolver. The future-only gate also resolves every skipped planned slot at the
+authoritative local competition time with the same timezone and fold policy.
+Every occurrence and skipped-slot UTC start must be strictly later than
+PostgreSQL `transaction_timestamp()`; one started slot rejects the whole request.
 Apply repeats all checks while holding the league lock because preview is not a
 reservation.
 
@@ -51,8 +53,10 @@ The administrator must explicitly choose:
 - billing ordinal policy: `planned_slot` or `dense_billable`.
 
 None is inferred from payment mode, weekly fee, organization, season, or another
-league. Billing terms are version-1 draft policy snapshots, not bowler debt or
-collection instructions.
+league. The UI leaves currency and both billing-policy controls unselected until
+the administrator makes an explicit choice; only the visible safe fold policy
+defaults to `reject`. Billing terms are version-1 draft policy snapshots, not
+bowler debt or collection instructions.
 
 ## Zero-write preview
 
@@ -147,9 +151,12 @@ converge; competing requests serialize and at most one can apply.
 
 `GET /api/leagues/:id/canonical-fall-drafts` returns the verified durable result
 and independently reports whether the current legacy schedule still matches its
-recorded normalized input. Later legacy edits do not rewrite or regenerate the
-drafts. An administrator may preview again for read-only review, but cannot
-create a second generation.
+recorded normalized input. The reader is authorized independently, while durable
+command attribution is verified against the actor who created the generation.
+If the current location or another required live input is missing, the persisted
+draft remains readable and reports `currentInputMatches: false`. Later legacy
+edits do not rewrite or regenerate the drafts. An administrator may preview again
+for read-only review, but cannot create a second generation.
 
 ## Authorization, UI, and errors
 
