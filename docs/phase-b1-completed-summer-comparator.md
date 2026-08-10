@@ -63,7 +63,7 @@ league-to-generator input loader.
 ## Report and fingerprint
 
 The report contract is `canonical-occurrence-comparison-report/1`; the
-implementation version is `completed-summer-comparator/2`. The report records
+implementation version is `completed-summer-comparator/3`. The report records
 normalized operator inputs, A2 generator/result/resolver versions, selection
 counts, ordered league reports, aggregate classifications, and ordered fatal
 errors. Per-league output includes selection proof, raw and normalized legacy
@@ -131,8 +131,10 @@ visible inside `generator_discrepancy` evidence.
 Schedule evidence includes IDs, archive state, season lineage, raw/date-only
 season bounds, weekday, weeks, local start time, timezone, skips,
 cancellations, weekly fee, and payment mode. Legacy double-pay dates live only
-under `legacyCollectionEvidence` and are explicitly excluded from generator
-input, physical matching, fingerprints, and billing-term amounts.
+under `legacyCollectionEvidence` and are explicitly excluded from A2 generator
+input, A2 input and physical-schedule fingerprints, physical matching, and
+billing-term amounts. They remain semantic B1 report evidence, so changing a
+double-pay date changes the B1 report fingerprint.
 
 Game evidence includes game IDs, logical keys, week/game numbers, raw stored
 timestamp text, mechanical dates, tenant-proven score IDs/counts, and activity
@@ -143,8 +145,9 @@ report excludes bowler/team names, score values, frames, notes, and full score
 payloads.
 
 Payment evidence includes payment IDs, safe status/type/amount/week fields,
-operation IDs, allocation indexes and safe amounts, immutable snapshot kind
-and version, operation cycle/status/currency, and sanitized refund/dispute
+operation IDs, allocation indexes and safe amounts, immutable snapshot kind,
+version, stored interactive snapshot week, explicit snapshot-location proof,
+operation cycle/status/currency, and sanitized refund/dispute
 state. A direct legacy `payments.week_of` remains ambiguous. An immutable
 scheduled or interactive snapshot plus a same-tenant operation and allocation
 is proven path-specific operation evidence, not proof of an occurrence
@@ -153,8 +156,10 @@ are counted as invalid rather than disappearing from valid evidence. A linked
 payment is proven only when the payment bowler and allocation bowler belong to
 the operation tenant and the immutable tuple agrees exactly on operation,
 allocation index, bowler, league, amount, lineage amount, prize-fund amount,
-and stored cycle/week value. Refund snapshots and disputes retain operational
-state without creating a link.
+and stored cycle/week value. For interactive operations, the snapshot,
+allocation, and linked payment weeks must agree exactly; contradictions are
+invalid evidence. Refund snapshots and disputes retain operational state
+without creating a link.
 
 The report excludes encrypted fields, source/card/customer IDs, provider
 object/order/location/application/merchant/payment/dispute IDs, idempotency
@@ -166,11 +171,15 @@ provider adapter.
 Games and scores are reached only through selected leagues, with score bowler
 ownership and team-league membership proven independently. Payments are
 reached through selected leagues and their bowler ownership is proven. Payment
-operations are accepted only through a selected-league snapshot, a matching
-operation organization, and a tenant-proven location; scheduled paths
-additionally prove the schedule's league, refund paths prove the payment's
-league, and linked payment allocations must exist in the accepted operation
-evidence. Contradictions fail closed and foreign details are suppressed.
+operations are accepted only through a selected-league snapshot and a matching
+operation organization. A non-null snapshot location must belong to that
+organization and is reported as `tenant_location`; a nullable snapshot
+location is reported with the deliberately weaker
+`organization_league_only` proof. Scheduled paths additionally prove the
+schedule's league, refund paths prove the payment's league and require their
+non-null location to belong to the tenant, and linked payment allocations must
+exist in the accepted operation evidence. Contradictions fail closed and
+foreign details are suppressed.
 
 Existing A1 commands, generation runs, exceptions, occurrences, billing
 terms, relationships, and discrepancies are reported as counts only. B1 does

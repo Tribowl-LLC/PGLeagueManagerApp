@@ -8,7 +8,7 @@ import {
 
 export const COMPLETED_SUMMER_SELECTION_CONTRACT_VERSION = "completed-summer-selection/1";
 export const CANONICAL_OCCURRENCE_COMPARISON_REPORT_VERSION = "canonical-occurrence-comparison-report/1";
-export const COMPLETED_SUMMER_COMPARATOR_VERSION = "completed-summer-comparator/2";
+export const COMPLETED_SUMMER_COMPARATOR_VERSION = "completed-summer-comparator/3";
 
 export interface CompletedSummerOperatorInputs {
   organizationId: number;
@@ -67,7 +67,8 @@ export interface LegacyCollectionEvidence {
   doublePayDates: string[];
   excludedFromGeneratorInput: true;
   excludedFromPhysicalComparison: true;
-  excludedFromFingerprints: true;
+  excludedFromA2InputFingerprint: true;
+  excludedFromA2PhysicalScheduleFingerprint: true;
   excludedFromBillingTermAmounts: true;
 }
 
@@ -147,6 +148,9 @@ export interface PaymentOperationEvidence {
   mechanicalBillingCycleDate: string | null;
   snapshotKind: "scheduled" | "interactive" | "refund";
   snapshotVersion: number;
+  snapshotLocationProof: "tenant_location" | "organization_league_only";
+  snapshotWeekOfRaw: string | null;
+  mechanicalSnapshotWeekOfDate: string | null;
   paymentId: number | null;
   refunded: boolean;
   disputed: boolean;
@@ -826,11 +830,15 @@ export function compareCompletedSummerLeague(input: CompletedSummerLeagueCompari
         operationType: operation.operationType,
         status: operation.status,
         billingCycleAtRaw: operation.billingCycleAtRaw,
+        snapshotLocationProof: operation.snapshotLocationProof,
+        snapshotWeekOfRaw: operation.snapshotWeekOfRaw,
         allocationIndexes: operation.allocations.map((allocation) => allocation.allocationIndex),
         refunded: operation.refunded,
         disputed: operation.disputed,
       },
-      explanation: "An immutable tenant-proven payment-operation path is retained as cycle/allocation evidence, without linking it to a canonical occurrence.",
+      explanation: operation.snapshotLocationProof === "tenant_location"
+        ? "An immutable tenant-location-proven payment-operation path is retained as cycle/allocation evidence, without linking it to a canonical occurrence."
+        : "An immutable organization/league-proven payment-operation path has no snapshot location; its weaker location proof is explicit and it is not linked to a canonical occurrence.",
     }));
   }
 

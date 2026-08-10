@@ -100,7 +100,8 @@ function comparison(overrides: Partial<CompletedSummerLeagueComparisonInput> = {
       doublePayDates: [],
       excludedFromGeneratorInput: true,
       excludedFromPhysicalComparison: true,
-      excludedFromFingerprints: true,
+      excludedFromA2InputFingerprint: true,
+      excludedFromA2PhysicalScheduleFingerprint: true,
       excludedFromBillingTermAmounts: true,
     },
     generationResult,
@@ -318,6 +319,9 @@ describe("B1 deterministic legacy comparison", () => {
         mechanicalBillingCycleDate: null,
         snapshotKind: "interactive",
         snapshotVersion: 2,
+        snapshotLocationProof: "tenant_location",
+        snapshotWeekOfRaw: "2025-06-08T00:00:00.000000",
+        mechanicalSnapshotWeekOfDate: "2025-06-08",
         paymentId: null,
         refunded: true,
         disputed: true,
@@ -347,7 +351,7 @@ describe("B1 deterministic legacy comparison", () => {
     expect(report.summary.matchCount).toBe(0);
   });
 
-  it("keeps double-pay outside generation and physical matching", () => {
+  it("keeps double-pay outside A2 fingerprints and physical matching while changing the B1 report fingerprint", () => {
     const baseline = comparison();
     const withDoublePay = comparison({
       legacyCollectionEvidence: {
@@ -356,7 +360,23 @@ describe("B1 deterministic legacy comparison", () => {
       },
     });
     expect(withDoublePay.canonicalGeneration.inputFingerprint).toBe(baseline.canonicalGeneration.inputFingerprint);
+    expect(withDoublePay.canonicalGeneration.physicalScheduleFingerprint).toBe(baseline.canonicalGeneration.physicalScheduleFingerprint);
     expect(withDoublePay.matchResults.map((finding) => finding.code)).toEqual(baseline.matchResults.map((finding) => finding.code));
+    const baselineReport = buildCompletedSummerComparisonReport({
+      normalizedOperatorInputs: operatorInputs,
+      inspectedLeagueCount: 1,
+      eligibleLeagueCount: 1,
+      leagues: [baseline],
+      fatalErrors: [],
+    });
+    const doublePayReport = buildCompletedSummerComparisonReport({
+      normalizedOperatorInputs: operatorInputs,
+      inspectedLeagueCount: 1,
+      eligibleLeagueCount: 1,
+      leagues: [withDoublePay],
+      fatalErrors: [],
+    });
+    expect(doublePayReport.reportFingerprint).not.toBe(baselineReport.reportFingerprint);
   });
 
   it("reports generator fatal errors and does not emit usable partial session matches", () => {

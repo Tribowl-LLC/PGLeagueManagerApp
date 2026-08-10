@@ -254,7 +254,14 @@ describe("B1 Completed-Summer PostgreSQL operator", () => {
       reportFingerprint: string;
       leagues: Array<{
         identity: { leagueId: number };
-        paymentEvidence: { confidence: string; legacyPayments: Array<{ operationLinkProof: string | null }> };
+        paymentEvidence: {
+          confidence: string;
+          legacyPayments: Array<{ operationLinkProof: string | null }>;
+          operations: Array<{
+            snapshotLocationProof: string;
+            snapshotWeekOfRaw: string | null;
+          }>;
+        };
         summary: { matchCount: number };
       }>;
     };
@@ -267,6 +274,10 @@ describe("B1 Completed-Summer PostgreSQL operator", () => {
     const activeLeague = output.leagues.find((league) => league.identity.leagueId === activeLeagueId);
     expect(activeLeague?.paymentEvidence.confidence).toBe("mixed");
     expect(activeLeague?.paymentEvidence.legacyPayments[0]?.operationLinkProof).toBe("tenant_and_immutable_tuple");
+    expect(activeLeague?.paymentEvidence.operations[0]).toMatchObject({
+      snapshotLocationProof: "tenant_location",
+      snapshotWeekOfRaw: "2025-06-01T19:00:00.000000",
+    });
     expect(activeLeague?.summary.matchCount).toBe(0);
     expect(first.stdout).not.toContain("ENCRYPTED_SOURCE_MUST_NOT_LEAK");
     expect(first.stdout).not.toContain("ENCRYPTED_CUSTOMER_MUST_NOT_LEAK");
@@ -377,6 +388,51 @@ describe("B1 Completed-Summer PostgreSQL operator", () => {
       expect(run.stdout).not.toContain("WRONG_TYPE_ENCRYPTED_SOURCE_MUST_NOT_LEAK");
     } finally {
       await db.delete(paymentOperations).where(eq(paymentOperations.id, wrongTypeOperation.id));
+    }
+  });
+
+  it("counts an interactive snapshot/allocation week contradiction as invalid evidence", async () => {
+    await db.update(interactivePaymentOperationSnapshots)
+      .set({ weekOf: "2025-06-02T19:00:00.000Z" })
+      .where(eq(interactivePaymentOperationSnapshots.operationId, operationId));
+    try {
+      const run = runOperator([`--leagueId=${activeLeagueId}`]);
+      expect(run.status).toBe(1);
+      const output = JSON.parse(run.stdout) as { fatalErrors: Array<{ code: string }> };
+      expect(output.fatalErrors.map((error) => error.code)).toContain("invalid_or_cross_tenant_evidence");
+      expect(run.stdout).not.toContain(operationId);
+    } finally {
+      await db.update(interactivePaymentOperationSnapshots)
+        .set({ weekOf: "2025-06-01T19:00:00.000Z" })
+        .where(eq(interactivePaymentOperationSnapshots.operationId, operationId));
+    }
+  });
+
+  it("reports an explicit organization/league-only proof when a snapshot location is null", async () => {
+    await db.update(interactivePaymentOperationSnapshots)
+      .set({ locationId: null })
+      .where(eq(interactivePaymentOperationSnapshots.operationId, operationId));
+    try {
+      const run = runOperator([`--leagueId=${activeLeagueId}`]);
+      expect(run.status).toBe(0);
+      const output = JSON.parse(run.stdout) as {
+        leagues: Array<{
+          paymentEvidence: {
+            operations: Array<{
+              snapshotLocationProof: string;
+              snapshotWeekOfRaw: string | null;
+            }>;
+          };
+        }>;
+      };
+      expect(output.leagues[0]?.paymentEvidence.operations[0]).toMatchObject({
+        snapshotLocationProof: "organization_league_only",
+        snapshotWeekOfRaw: "2025-06-01T19:00:00.000000",
+      });
+    } finally {
+      await db.update(interactivePaymentOperationSnapshots)
+        .set({ locationId: ownLocationId })
+        .where(eq(interactivePaymentOperationSnapshots.operationId, operationId));
     }
   });
 

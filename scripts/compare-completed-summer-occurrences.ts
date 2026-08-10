@@ -70,6 +70,8 @@ interface OperationEvidenceRow {
   billing_cycle_at_raw: string | null;
   snapshot_kind: "scheduled" | "interactive" | "refund";
   snapshot_version: number;
+  snapshot_location_id: number | null;
+  snapshot_week_of_raw: string | null;
   payment_id: number | null;
   allocation_index: number | null;
   allocation_bowler_id: number | null;
@@ -231,6 +233,9 @@ function operationEvidence(rows: readonly OperationEvidenceRow[], disputes: read
       mechanicalBillingCycleDate: legacyDate(first.billing_cycle_at_raw),
       snapshotKind: first.snapshot_kind,
       snapshotVersion: first.snapshot_version,
+      snapshotLocationProof: first.snapshot_location_id === null ? "organization_league_only" as const : "tenant_location" as const,
+      snapshotWeekOfRaw: first.snapshot_week_of_raw,
+      mechanicalSnapshotWeekOfDate: legacyDate(first.snapshot_week_of_raw),
       paymentId: first.payment_id,
       refunded: first.refunded || first.operation_type === "refund",
       disputed: disputeEvidence.length > 0,
@@ -414,6 +419,8 @@ async function loadReport(client: pg.Client, inputs: CompletedSummerOperatorInpu
         to_char(po.billing_cycle_at, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS billing_cycle_at_raw,
         'scheduled'::text AS snapshot_kind,
         ss.snapshot_version,
+        ss.location_id AS snapshot_location_id,
+        NULL::text AS snapshot_week_of_raw,
         NULL::integer AS payment_id,
         a.allocation_index,
         a.bowler_id AS allocation_bowler_id,
@@ -465,6 +472,8 @@ async function loadReport(client: pg.Client, inputs: CompletedSummerOperatorInpu
         NULL::text AS billing_cycle_at_raw,
         'interactive'::text AS snapshot_kind,
         ss.snapshot_version,
+        ss.location_id AS snapshot_location_id,
+        to_char(ss.week_of, 'YYYY-MM-DD"T"HH24:MI:SS.US') AS snapshot_week_of_raw,
         NULL::integer AS payment_id,
         a.allocation_index,
         a.bowler_id AS allocation_bowler_id,
@@ -500,6 +509,12 @@ async function loadReport(client: pg.Client, inputs: CompletedSummerOperatorInpu
           WHERE invalid_allocation.operation_id = po.id
             AND invalid_bowler.organization_id IS DISTINCT FROM $1
         )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM interactive_payment_operation_allocations AS invalid_allocation
+          WHERE invalid_allocation.operation_id = po.id
+            AND invalid_allocation.week_of IS DISTINCT FROM ss.week_of
+        )
       ORDER BY ss.league_id, po.id, a.allocation_index
     `, [inputs.organizationId, leagueIds]),
     client.query<OperationEvidenceRow>(`
@@ -513,6 +528,8 @@ async function loadReport(client: pg.Client, inputs: CompletedSummerOperatorInpu
         NULL::text AS billing_cycle_at_raw,
         'refund'::text AS snapshot_kind,
         ss.snapshot_version,
+        ss.location_id AS snapshot_location_id,
+        NULL::text AS snapshot_week_of_raw,
         ss.payment_id,
         NULL::integer AS allocation_index,
         NULL::integer AS allocation_bowler_id,
@@ -596,6 +613,12 @@ async function loadReport(client: pg.Client, inputs: CompletedSummerOperatorInpu
               JOIN bowlers AS invalid_bowler ON invalid_bowler.id = invalid_allocation.bowler_id
               WHERE invalid_allocation.operation_id = po.id
                 AND invalid_bowler.organization_id IS DISTINCT FROM $1
+            )
+            OR EXISTS (
+              SELECT 1
+              FROM interactive_payment_operation_allocations AS invalid_allocation
+              WHERE invalid_allocation.operation_id = po.id
+                AND invalid_allocation.week_of IS DISTINCT FROM ss.week_of
             )
           )
         UNION ALL
@@ -712,7 +735,8 @@ async function loadReport(client: pg.Client, inputs: CompletedSummerOperatorInpu
           && allocation.allocation_amount_minor === payment.amount_minor
           && allocation.lineage_amount_minor === payment.lineage_amount_minor
           && allocation.prize_fund_amount_minor === payment.prize_fund_amount_minor
-          && allocation.week_of_raw === payment.week_of_raw);
+          && allocation.week_of_raw === payment.week_of_raw
+          && (allocation.snapshot_kind !== "interactive" || allocation.snapshot_week_of_raw === payment.week_of_raw));
         if (!operationLinkValid) tenantEvidenceValid = false;
         return [{
         paymentId: payment.payment_id,
@@ -787,7 +811,8 @@ async function loadReport(client: pg.Client, inputs: CompletedSummerOperatorInpu
         doublePayDates: row.double_pay_dates ?? [],
         excludedFromGeneratorInput: true,
         excludedFromPhysicalComparison: true,
-        excludedFromFingerprints: true,
+        excludedFromA2InputFingerprint: true,
+        excludedFromA2PhysicalScheduleFingerprint: true,
         excludedFromBillingTermAmounts: true,
       },
       generationResult: generateCanonicalOccurrences(generatorInput),
