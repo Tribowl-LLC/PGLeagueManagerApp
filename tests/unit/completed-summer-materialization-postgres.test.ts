@@ -533,7 +533,10 @@ describe("B2 atomic Completed-Summer materialization", () => {
       "duplicate_historical_game_key",
       "ambiguous_historical_payment",
     ]));
-    await execute(plan(f, report), true);
+    const materializationPlan = plan(f, report);
+    await execute(materializationPlan, true);
+    const retry = await execute(materializationPlan, true);
+    expect(retry.mode).toBe("idempotent_retry");
     const discrepancies = await db.select().from(leagueOccurrenceGenerationDiscrepancies)
       .where(eq(leagueOccurrenceGenerationDiscrepancies.leagueId, f.leagueId))
       .orderBy(asc(leagueOccurrenceGenerationDiscrepancies.code));
@@ -542,6 +545,9 @@ describe("B2 atomic Completed-Summer materialization", () => {
       "duplicate_historical_game_key",
     ]);
     expect(discrepancies.every((row) => row.resolutionState === "open")).toBe(true);
+    const [run] = await db.select().from(leagueOccurrenceGenerationRuns)
+      .where(eq(leagueOccurrenceGenerationRuns.leagueId, f.leagueId));
+    expect(run?.discrepancyCount).toBe(discrepancies.length);
     const [paymentAfter] = await db.select().from(payments).where(eq(payments.id, payment.id));
     expect(paymentAfter).toMatchObject({
       id: payment.id,

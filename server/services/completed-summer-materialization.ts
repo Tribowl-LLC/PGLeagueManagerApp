@@ -345,7 +345,7 @@ function assertGenerationRunMatches(
     || run.candidateOccurrenceCount !== generation.counts.candidateOccurrenceCount
     || run.generatedOccurrenceCount !== generation.counts.generatedOccurrenceCount
     || run.skippedDateCount !== generation.counts.skippedDateCount
-    || run.discrepancyCount !== generation.counts.discrepancyCount
+    || run.discrepancyCount !== plan.persistedFindings.length
     || run.state !== "applied"
     || run.approvedByUserId !== plan.approval.actorUserId
     || run.approvalCommandId !== commands.approval.id
@@ -673,7 +673,7 @@ export async function executeCompletedSummerMaterialization(input: {
       candidateOccurrenceCount: generation.counts.candidateOccurrenceCount,
       generatedOccurrenceCount: generation.counts.generatedOccurrenceCount,
       skippedDateCount: generation.counts.skippedDateCount,
-      discrepancyCount: generation.counts.discrepancyCount,
+      discrepancyCount: plan.persistedFindings.length,
       state: "applied",
       approvedAt: actionTime,
       approvedByUserId: plan.approval.actorUserId,
