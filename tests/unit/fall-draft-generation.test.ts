@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { generateCanonicalOccurrences } from "@shared/canonical-occurrence-generator";
 import {
+  FALL_DRAFT_APPLY_REQUEST_VERSION,
+  FALL_DRAFT_PREVIEW_REQUEST_VERSION,
+  fallDraftApplyRequestSchema,
   fallDraftCandidateSetFingerprint,
+  fallDraftPreviewRequestSchema,
   fallDraftPreviewFingerprint,
+  fallDraftRegularSessionBillingPolicyForPaymentMode,
   fallDraftSha256,
 } from "@shared/fall-draft-generation";
 import { getProductSeasonFromDateOnly } from "@shared/season-utils";
@@ -56,7 +61,7 @@ describe("C1 semantic fingerprints", () => {
 
   it("excludes only the previewFingerprint field from the preview fingerprint", () => {
     const semantic = {
-      previewContractVersion: "fall-draft-generation-preview/1",
+      previewContractVersion: "fall-draft-generation-preview/2",
       operatorScope: { organizationId: 4, leagueId: 9, locationId: 12 },
       semantics: { currency: "USD", ambiguousFold: "reject" },
       occurrenceCandidates: generation.occurrenceCandidates,
@@ -67,5 +72,39 @@ describe("C1 semantic fingerprints", () => {
       ...semantic,
       semantics: { currency: "CAD", ambiguousFold: "reject" },
     })).not.toBe(fingerprint);
+  });
+});
+
+describe("C1 fixed system policy contracts", () => {
+  const semantics = {
+    billingOrdinalPolicy: "planned_slot",
+  } as const;
+
+  it("accepts only version 2 requests without a caller-selected ambiguous-fold policy", () => {
+    const previewRequest = {
+      contractVersion: FALL_DRAFT_PREVIEW_REQUEST_VERSION,
+      ...semantics,
+    };
+    expect(fallDraftPreviewRequestSchema.parse(previewRequest)).toEqual(previewRequest);
+    expect(() => fallDraftPreviewRequestSchema.parse({ ...previewRequest, ambiguousFold: "later" })).toThrow();
+    expect(() => fallDraftPreviewRequestSchema.parse({ ...previewRequest, currency: "CAD" })).toThrow();
+    expect(() => fallDraftPreviewRequestSchema.parse({ ...previewRequest, regularSessionBillingPolicy: "none" })).toThrow();
+
+    const applyRequest = {
+      contractVersion: FALL_DRAFT_APPLY_REQUEST_VERSION,
+      ...semantics,
+      confirmedPreviewFingerprint: "a".repeat(64),
+      reason: "Create the reviewed Fall draft set",
+      idempotencyKey: "fixed-fold-policy",
+    };
+    expect(fallDraftApplyRequestSchema.parse(applyRequest)).toEqual(applyRequest);
+    expect(() => fallDraftApplyRequestSchema.parse({ ...applyRequest, ambiguousFold: "earlier" })).toThrow();
+    expect(() => fallDraftApplyRequestSchema.parse({ ...applyRequest, currency: "EUR" })).toThrow();
+    expect(() => fallDraftApplyRequestSchema.parse({ ...applyRequest, regularSessionBillingPolicy: "none" })).toThrow();
+  });
+
+  it("keeps weekly obligations for both weekly and prepaid collection timing", () => {
+    expect(fallDraftRegularSessionBillingPolicyForPaymentMode("weekly")).toBe("eligible_bowlers");
+    expect(fallDraftRegularSessionBillingPolicyForPaymentMode("upfront")).toBe("eligible_bowlers");
   });
 });

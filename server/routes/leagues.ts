@@ -1,7 +1,7 @@
 import { Router, Request } from 'express';
 import { randomBytes } from 'crypto';
 import { storage } from '../storage';
-import { insertLeagueSchema, updateLeagueSchema, DEFAULT_TIMEZONE, WEEKDAYS, dateSchema } from "@shared/schema";
+import { insertLeagueSchema, updateLeagueSchema, DEFAULT_TIMEZONE, WEEKDAYS, PAYMENT_MODES, dateSchema } from "@shared/schema";
 import { validateDoublePayDates } from "@shared/schema/leagues";
 import { z } from "zod";
 import { sendSuccess, sendError, handleZodError, parseOptionalIntParam } from '../utils/api';
@@ -24,7 +24,7 @@ import {
   fireLeagueBowlersExternalResync,
   fireBowlersExternalResync,
 } from '../services/bowler-resync';
-import { LeagueOccurrenceEvidenceExistsError } from '../storage/leagues';
+import { LeagueOccurrenceEvidenceExistsError, LeaguePaymentModeLockedError } from '../storage/leagues';
 
 const log = createLogger("Leagues");
 
@@ -40,6 +40,7 @@ const newSeasonRequestSchema = z.object({
   cancelledDates: z.array(z.string()).default([]),
   doublePayDates: z.array(z.string()).max(2, "At most 2 double-pay weeks allowed").default([]),
   allowPublicSignup: z.boolean().optional(),
+  paymentMode: z.enum(PAYMENT_MODES),
 });
 
 // Apply organization filtering to all league routes
@@ -490,6 +491,14 @@ router.patch("/:id", async (req: Request, res) => {
     if (error instanceof z.ZodError) {
       return handleZodError(res, error);
     }
+    if (error instanceof LeaguePaymentModeLockedError) {
+      return sendError(
+        res,
+        'League payment timing cannot be changed after canonical schedule generation has started.',
+        409,
+        'LEAGUE_PAYMENT_MODE_LOCKED',
+      );
+    }
     sendError(res, 'Failed to update league');
   }
 });
@@ -682,6 +691,7 @@ router.post("/:id/new-season", async (req: Request, res) => {
       cancelledDates,
       doublePayDates,
       allowPublicSignup,
+      paymentMode,
     } = parsedRequest.data;
     const newSeasonWeekDay = weekDay ?? sourceLeague.weekDay;
     const newSeasonWeeks = totalBowlingWeeks ?? sourceLeague.totalBowlingWeeks;
@@ -732,7 +742,7 @@ router.post("/:id/new-season", async (req: Request, res) => {
       prizeFundItemVariationId: sourceLeague.prizeFundItemVariationId,
       squarePrizeFundItemName: sourceLeague.squarePrizeFundItemName,
       squareCategoryId: sourceLeague.squareCategoryId ?? undefined,
-      paymentMode: sourceLeague.paymentMode ?? "weekly",
+      paymentMode,
       organizationId: sourceLeague.organizationId,
       locationId: sourceLeague.locationId,
       seasonNumber: (sourceLeague.seasonNumber || 1) + 1,

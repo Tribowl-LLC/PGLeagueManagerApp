@@ -5,7 +5,7 @@ import { differenceInWeeks } from "date-fns";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { DEFAULT_WEEKLY_FEE_CENTS, DEFAULT_TIMEZONE } from "@shared/schema";
-import type { InsertLeagueInput, InsertLeague, League, PaymentMode } from "@shared/schema";
+import type { InsertLeagueInput, InsertLeague, League } from "@shared/schema";
 
 interface UseLeagueFormDataOptions {
   open: boolean;
@@ -97,7 +97,7 @@ export function useLeagueFormData({
         weeklyFee: league.weeklyFee || DEFAULT_WEEKLY_FEE_CENTS,
         lineageFee: league.lineageFee ?? null,
         prizeFundFee: league.prizeFundFee ?? null,
-        paymentMode: (league.paymentMode as PaymentMode) || "weekly",
+        paymentMode: league.paymentMode,
         squareLineageItemId: league.squareLineageItemId || null,
         lineageItemVariationId: league.lineageItemVariationId || null,
         squareLineageItemName: league.squareLineageItemName || null,
@@ -128,7 +128,7 @@ export function useLeagueFormData({
         weeklyFee: DEFAULT_WEEKLY_FEE_CENTS,
         lineageFee: null,
         prizeFundFee: null,
-        paymentMode: "weekly",
+        paymentMode: undefined,
         squareLineageItemId: null,
         lineageItemVariationId: null,
         squareLineageItemName: null,

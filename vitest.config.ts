@@ -157,6 +157,10 @@ const PARALLEL_ISOLATED = [
   'tests/unit/has-access-to-bowler.test.ts', // Task #720 hoist insufficient — vi.mock(server/storage) pollutes shared registry under isolate:false (#722). Reverted.
   'tests/unit/has-access-to-bowlers.test.ts', // Task #720 hoist insufficient — same storage-mock pollution as has-access-to-bowler (#722). Reverted.
   'tests/unit/league-mutation-resync.test.ts',
+  // Canonical Fall service suites use isolated PostgreSQL transactions but
+  // never call an HTTP endpoint, so they do not need a spawned Express app.
+  'tests/unit/fall-draft-generation-postgres.test.ts',
+  'tests/unit/fall-draft-review-postgres.test.ts',
   'tests/unit/list-routes-filter-validation.test.ts',
   'tests/unit/locked-sweep.test.ts', // Task #720 moved to parallel as factory-safe; reverted defensively after sibling regressions (#722).
   'tests/unit/password-changed-i18n.test.ts',

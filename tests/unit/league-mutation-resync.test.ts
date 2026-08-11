@@ -89,12 +89,14 @@ const mockStorage = {
   deleteBowlerLeague: vi.fn(),
   createBowlerLeagueIfBowlerFree: vi.fn(),
 };
-const { LeagueEvidenceError } = vi.hoisted(() => ({
+const { LeagueEvidenceError, LeaguePaymentModeError } = vi.hoisted(() => ({
   LeagueEvidenceError: class LeagueOccurrenceEvidenceExistsError extends Error {},
+  LeaguePaymentModeError: class LeaguePaymentModeLockedError extends Error {},
 }));
 vi.mock('../../server/storage', () => ({ storage: mockStorage }));
 vi.mock('../../server/storage/leagues', () => ({
   LeagueOccurrenceEvidenceExistsError: LeagueEvidenceError,
+  LeaguePaymentModeLockedError: LeaguePaymentModeError,
 }));
 
 // ---------------------------------------------------------------------------
@@ -510,6 +512,20 @@ describe('PATCH /api/leagues/:id (rename) → fires Square resync for every bowl
     await new Promise((r) => setTimeout(r, 50));
     expect(mockSyncCustomerLeagueAttributes).not.toHaveBeenCalled();
   });
+
+  it('returns a stable conflict when canonical evidence locks payment timing', async () => {
+    const league = makeLeague({ paymentMode: 'weekly' });
+    mockStorage.getLeague.mockResolvedValue(league);
+    mockStorage.updateLeague.mockRejectedValue(new LeaguePaymentModeError());
+
+    const res = await patch(`/api/leagues/${league.id}`, { paymentMode: 'upfront' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({
+      success: false,
+      error: { code: 'LEAGUE_PAYMENT_MODE_LOCKED' },
+    });
+    expect(mockSyncCustomerLeagueAttributes).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -687,6 +703,22 @@ describe('DELETE /api/leagues/:id → fires resync against the pre-captured bowl
 // 5. New-season clone → resync each unique bowler from the source league
 // ---------------------------------------------------------------------------
 describe('POST /api/leagues/:id/new-season → fires resync for every bowler cloned into the new season', () => {
+  it('requires an explicit payment timing choice', async () => {
+    const sourceLeague = makeLeague({ id: 119 });
+    mockStorage.getLeague.mockResolvedValue(sourceLeague);
+
+    const res = await post(`/api/leagues/${sourceLeague.id}/new-season`, {
+      seasonStart: '2026-09-01T00:00:00.000Z',
+      totalBowlingWeeks: 12,
+      weekDay: 'Tuesday',
+      skipDates: [],
+      cancelledDates: [],
+      doublePayDates: [],
+    });
+    expect(res.status).toBe(400);
+    expect(mockStorage.createLeague).not.toHaveBeenCalled();
+  });
+
   it('upserts attributes once per unique source-league bowler', async () => {
     const sourceLeague = makeLeague({ id: 120, name: 'Fall League' });
     const newLeague = makeLeague({
@@ -747,6 +779,7 @@ describe('POST /api/leagues/:id/new-season → fires resync for every bowler clo
       cancelledDates: [],
       doublePayDates: ['2026-09-15'],
       allowPublicSignup: true,
+      paymentMode: 'upfront',
     });
     expect(res.status, await res.text().catch(() => '')).toBe(201);
 
@@ -758,6 +791,7 @@ describe('POST /api/leagues/:id/new-season → fires resync for every bowler clo
         cancelledDates: [],
         doublePayDates: ['2026-09-15'],
         allowPublicSignup: true,
+        paymentMode: 'upfront',
       }),
     );
 

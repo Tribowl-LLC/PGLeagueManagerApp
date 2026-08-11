@@ -1,0 +1,1 @@
+ALTER TABLE "leagues" ADD CONSTRAINT "leagues_payment_mode_check" CHECK ("leagues"."payment_mode" IN ('weekly', 'upfront'));

@@ -33,7 +33,7 @@ import type { FallDraftMutationResult, FallDraftReview, FallDraftReviewOccurrenc
 import { secureFallDraftIdempotencyKey } from "./fall-draft-secure-id";
 
 // Keep the browser bundle type-only with respect to the server-side SHA-256 contract module.
-const FALL_DRAFT_RESCHEDULE_REQUEST_VERSION = "fall-draft-reschedule-request/1";
+const FALL_DRAFT_RESCHEDULE_REQUEST_VERSION = "fall-draft-reschedule-request/2";
 const FALL_DRAFT_CANCEL_REQUEST_VERSION = "fall-draft-cancel-request/1";
 const FALL_DRAFT_RESTORE_REQUEST_VERSION = "fall-draft-restore-request/1";
 const FALL_DRAFT_APPROVE_REQUEST_VERSION = "fall-draft-approve-request/1";
@@ -75,7 +75,6 @@ export function FallDraftReviewPanel({ basePath, querySuffix, enabled }: FallDra
   const [localDate, setLocalDate] = useState("");
   const [localTime, setLocalTime] = useState("");
   const [timezone, setTimezone] = useState("");
-  const [ambiguousFold, setAmbiguousFold] = useState<"reject" | "earlier" | "later">("reject");
   const [decisionReason, setDecisionReason] = useState("");
   const [dispositions, setDispositions] = useState<Record<string, "resolved" | "waived">>({});
   const [identityError, setIdentityError] = useState<string | null>(null);
@@ -140,7 +139,6 @@ export function FallDraftReviewPanel({ basePath, querySuffix, enabled }: FallDra
     setLocalDate(occurrence.authoritativeLocalDate);
     setLocalTime(occurrence.authoritativeLocalStartTime);
     setTimezone(occurrence.timezone);
-    setAmbiguousFold("reject");
     setSuccess(null);
   };
 
@@ -164,7 +162,6 @@ export function FallDraftReviewPanel({ basePath, querySuffix, enabled }: FallDra
           authoritativeLocalDate: localDate,
           authoritativeLocalStartTime: localTime,
           timezone,
-          ambiguousFold,
         },
       });
       return;
@@ -226,6 +223,7 @@ export function FallDraftReviewPanel({ basePath, querySuffix, enabled }: FallDra
         <p><span className="font-medium">Generation state:</span> {review.generationRun.state}; source revision {review.generationRun.sourceScheduleRevision}</p>
         <p className="break-all"><span className="font-medium">C1 preview:</span> <span className="font-mono">{review.c1.confirmedPreviewFingerprint}</span></p>
         <p className="break-all"><span className="font-medium">A2 input:</span> <span className="font-mono">{review.c1.inputFingerprint}</span></p>
+        <p><span className="font-medium">League payment timing:</span> {review.c1.paymentMode === "upfront" ? "Full season upfront" : "Weekly"}</p>
         <p><span className="font-medium">Legacy input:</span> {review.currentLegacyInput.matches ? "Current" : "Stale — approval blocked"}</p>
         <p><span className="font-medium">Versions:</span> {review.reviewContractVersion}; {review.c1.generatorVersion}; {review.c1.dstResolverVersion}</p>
       </div>
@@ -294,7 +292,7 @@ export function FallDraftReviewPanel({ basePath, querySuffix, enabled }: FallDra
       <Dialog open={entityAction !== null} onOpenChange={(open) => { if (!open && !mutation.isPending) setEntityAction(null); }}>
         <DialogContent>
           <DialogHeader><DialogTitle>{entityAction?.action === "reschedule" ? "Reschedule occurrence" : entityAction?.action === "cancel" ? "Cancel occurrence" : "Restore cancelled draft"}</DialogTitle><DialogDescription>Confirm occurrence {entityAction?.occurrence.id} at expected revision {entityAction?.occurrence.currentRevision}. The current review fingerprint is sent with this request and stale state fails closed.</DialogDescription></DialogHeader>
-          {entityAction?.action === "reschedule" && <div className="grid gap-3 sm:grid-cols-2"><div><Label htmlFor="fall-c2-local-date">Local date</Label><Input id="fall-c2-local-date" type="date" value={localDate} onChange={(event) => setLocalDate(event.target.value)} /></div><div><Label htmlFor="fall-c2-local-time">Local time</Label><Input id="fall-c2-local-time" type="time" step="1" value={localTime} onChange={(event) => setLocalTime(event.target.value)} /></div><div><Label htmlFor="fall-c2-timezone">IANA timezone</Label><Input id="fall-c2-timezone" value={timezone} onChange={(event) => setTimezone(event.target.value)} /></div><div><Label htmlFor="fall-c2-fold">Ambiguous fold</Label><Select value={ambiguousFold} onValueChange={(value: "reject" | "earlier" | "later") => setAmbiguousFold(value)}><SelectTrigger id="fall-c2-fold"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="reject">Reject</SelectItem><SelectItem value="earlier">Earlier</SelectItem><SelectItem value="later">Later</SelectItem></SelectContent></Select></div></div>}
+          {entityAction?.action === "reschedule" && <div className="grid gap-3 sm:grid-cols-2"><div><Label htmlFor="fall-c2-local-date">Local date</Label><Input id="fall-c2-local-date" type="date" value={localDate} onChange={(event) => setLocalDate(event.target.value)} /></div><div><Label htmlFor="fall-c2-local-time">Local time</Label><Input id="fall-c2-local-time" type="time" step="1" value={localTime} onChange={(event) => setLocalTime(event.target.value)} /></div><div><Label htmlFor="fall-c2-timezone">IANA timezone</Label><Input id="fall-c2-timezone" value={timezone} onChange={(event) => setTimezone(event.target.value)} /></div></div>}
           <div><Label htmlFor="fall-c2-entity-reason">Reason</Label><Textarea id="fall-c2-entity-reason" value={entityReason} onChange={(event) => setEntityReason(event.target.value)} placeholder="Required trimmed audit reason" /></div>
           <DialogFooter><Button variant="outline" disabled={mutation.isPending} onClick={() => setEntityAction(null)}>Keep reviewing</Button><Button variant={entityAction?.action === "cancel" ? "destructive" : "default"} disabled={mutation.isPending || entityReason.length === 0 || entityReason.trim() !== entityReason || (entityAction?.action === "reschedule" && (!localDate || !localTime || !timezone))} onClick={submitEntityAction}>{mutation.isPending && <Loader2 className="mr-2 size-4 animate-spin" />}Confirm {entityAction?.action}</Button></DialogFooter>
         </DialogContent>

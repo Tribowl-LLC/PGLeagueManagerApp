@@ -40,12 +40,20 @@ describe('Zod 4 migration contracts', () => {
     expect(team).toMatchObject({ active: true });
   });
 
-  it('preserves league defaults and date coercion', () => {
+  it('requires league payment timing while preserving other defaults and date coercion', () => {
+    expect(insertLeagueSchema.safeParse({
+      name: 'Monday Mixed',
+      seasonStart: '2026-09-07',
+      seasonEnd: '2026-12-14',
+      weekDay: 'Monday',
+    }).success).toBe(false);
+
     const league = insertLeagueSchema.parse({
       name: 'Monday Mixed',
       seasonStart: '2026-09-07',
       seasonEnd: '2026-12-14',
       weekDay: 'Monday',
+      paymentMode: 'weekly',
     });
 
     expect(league).toMatchObject({

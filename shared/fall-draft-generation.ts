@@ -9,24 +9,22 @@ import type {
   CanonicalGenerationResult,
   CanonicalNormalizedInput,
   CanonicalOccurrenceCandidate,
-  RegularSessionBillingPolicy,
 } from "./canonical-occurrence-generator";
-import type { AmbiguousFoldPolicy } from "./canonical-dst-resolver";
-
-export const FALL_DRAFT_PREVIEW_REQUEST_VERSION = "fall-draft-preview-request/1";
-export const FALL_DRAFT_PREVIEW_CONTRACT_VERSION = "fall-draft-generation-preview/1";
-export const FALL_DRAFT_APPLY_REQUEST_VERSION = "fall-draft-apply-request/1";
-export const FALL_DRAFT_APPLY_RESULT_VERSION = "fall-draft-generation-result/1";
-export const FALL_DRAFT_IMPLEMENTATION_VERSION = "fall-draft-generation/1";
+import type { PaymentMode } from "./schema/constants";
+export const FALL_DRAFT_AMBIGUOUS_FOLD_POLICY = "reject" as const;
+export const FALL_DRAFT_CURRENCY = "USD" as const;
+export const FALL_DRAFT_REGULAR_SESSION_BILLING_POLICY = "eligible_bowlers" as const;
+export const FALL_DRAFT_PREVIEW_REQUEST_VERSION = "fall-draft-preview-request/2";
+export const FALL_DRAFT_PREVIEW_CONTRACT_VERSION = "fall-draft-generation-preview/2";
+export const FALL_DRAFT_APPLY_REQUEST_VERSION = "fall-draft-apply-request/2";
+export const FALL_DRAFT_APPLY_RESULT_VERSION = "fall-draft-generation-result/2";
+export const FALL_DRAFT_IMPLEMENTATION_VERSION = "fall-draft-generation/2";
 export const FALL_DRAFT_MAPPING_VERSION = "fall-draft-mapping/1";
 export const FALL_DRAFT_OCCURRENCE_REVISION_SNAPSHOT_VERSION = 1;
 export const FALL_DRAFT_BILLING_TERM_REVISION_SNAPSHOT_VERSION = 1;
 export const FALL_DRAFT_EXCEPTION_REVISION_SNAPSHOT_VERSION = 1;
 
 export const fallDraftGeneratorSemanticsSchema = z.object({
-  ambiguousFold: z.enum(["reject", "earlier", "later"]),
-  currency: z.string().regex(/^[A-Z]{3}$/, "currency must be an uppercase three-letter code"),
-  regularSessionBillingPolicy: z.enum(["none", "eligible_bowlers"]),
   billingOrdinalPolicy: z.enum(["planned_slot", "dense_billable"]),
 }).strict();
 
@@ -44,6 +42,17 @@ export const fallDraftApplyRequestSchema = fallDraftGeneratorSemanticsSchema.ext
 export type FallDraftGeneratorSemantics = z.infer<typeof fallDraftGeneratorSemanticsSchema>;
 export type FallDraftPreviewRequest = z.infer<typeof fallDraftPreviewRequestSchema>;
 export type FallDraftApplyRequest = z.infer<typeof fallDraftApplyRequestSchema>;
+
+/**
+ * League payment mode controls collection timing, not whether a scheduled
+ * session creates a bowling obligation. Both supported modes therefore use
+ * the same canonical regular-session billing policy.
+ */
+export function fallDraftRegularSessionBillingPolicyForPaymentMode(
+  _paymentMode: PaymentMode,
+): typeof FALL_DRAFT_REGULAR_SESSION_BILLING_POLICY {
+  return FALL_DRAFT_REGULAR_SESSION_BILLING_POLICY;
+}
 
 export interface FallDraftExistingGenerationSummary {
   generationRunId: string;
@@ -101,9 +110,10 @@ export interface FallDraftPreview {
     locationId: number;
   };
   semantics: {
-    ambiguousFold: AmbiguousFoldPolicy;
-    currency: string;
-    regularSessionBillingPolicy: RegularSessionBillingPolicy;
+    paymentMode: PaymentMode;
+    ambiguousFold: typeof FALL_DRAFT_AMBIGUOUS_FOLD_POLICY;
+    currency: typeof FALL_DRAFT_CURRENCY;
+    regularSessionBillingPolicy: typeof FALL_DRAFT_REGULAR_SESSION_BILLING_POLICY;
     billingOrdinalPolicy: BillingOrdinalPolicy;
   };
   eligibility: {

@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/dialog";
 import { Loader2, RefreshCw } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
-import type { League } from "@shared/schema";
+import type { League, PaymentMode } from "@shared/schema";
 import { WEEKDAYS } from "@shared/schema";
 import type { ScheduleWeekType } from "@shared/schedule-utils";
 import {
@@ -38,6 +38,7 @@ export type NewSeasonFormValues = {
   cancelledDates: string[];
   doublePayDates: string[];
   allowPublicSignup: boolean;
+  paymentMode: PaymentMode;
 };
 
 export function NewSeasonDialog({
@@ -60,6 +61,7 @@ export function NewSeasonDialog({
   const [cancelledDates, setCancelledDates] = useState<string[]>([]);
   const [doublePayDates, setDoublePayDates] = useState<string[]>([]);
   const [allowPublicSignup, setAllowPublicSignup] = useState(league.allowPublicSignup ?? false);
+  const [paymentMode, setPaymentMode] = useState<PaymentMode>(league.paymentMode);
   const [showSchedule, setShowSchedule] = useState(false);
 
   const resetForm = useCallback(() => {
@@ -70,8 +72,9 @@ export function NewSeasonDialog({
     setCancelledDates([]);
     setDoublePayDates([]);
     setAllowPublicSignup(league.allowPublicSignup ?? false);
+    setPaymentMode(league.paymentMode);
     setShowSchedule(false);
-  }, [league.allowPublicSignup, league.totalBowlingWeeks, league.weekDay]);
+  }, [league.allowPublicSignup, league.paymentMode, league.totalBowlingWeeks, league.weekDay]);
 
   useEffect(() => {
     if (showNewSeason) resetForm();
@@ -137,6 +140,7 @@ export function NewSeasonDialog({
       cancelledDates,
       doublePayDates,
       allowPublicSignup,
+      paymentMode,
     });
   };
 
@@ -252,6 +256,24 @@ export function NewSeasonDialog({
               onCheckedChange={setAllowPublicSignup}
               aria-label="Allow Public Sign-up"
             />
+          </div>
+
+          <div>
+            <label htmlFor="new-season-payment-mode" className="text-sm font-medium">
+              League Payment Timing
+            </label>
+            <Select value={paymentMode} onValueChange={(value) => setPaymentMode(value as PaymentMode)}>
+              <SelectTrigger id="new-season-payment-mode" className="mt-1">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="weekly">Weekly: bowlers pay each week</SelectItem>
+                <SelectItem value="upfront">Full Season Upfront: full amount due at start</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="mt-1 text-xs text-muted-foreground">
+              This authoritative setting can differ from the previous season.
+            </p>
           </div>
 
           <LeagueSchedulePreview
