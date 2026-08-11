@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Layout } from "@/components/layout";
 import { ErrorBoundary } from "@/components/error-boundary";
@@ -28,6 +28,11 @@ import { LeagueActionCards } from "./league-view-page/league-action-cards";
 import { SeasonHistoryCard } from "./league-view-page/season-history-card";
 import { NewSeasonDialog, type NewSeasonFormValues } from "./league-view-page/new-season-dialog";
 import { FallDraftGenerationCard } from "./league-view-page/fall-draft-generation-card";
+import {
+  LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION,
+  type LeagueSetupIntegrationResult,
+} from "@shared/league-setup-integration";
+import { createSetupIdempotencyKeyRetainer } from "./league-view-page/fall-draft-secure-id";
 
 export default function LeagueViewPage() {
   const params = useParams();
@@ -36,6 +41,7 @@ export default function LeagueViewPage() {
   const leagueId = parseInt(params.leagueId!);
   const [inviteResult, setInviteResult] = useState<{ sent: number; alreadyRegistered: number; noEmail: number } | null>(null);
   const [showNewSeason, setShowNewSeason] = useState(false);
+  const newSeasonSetupIdempotency = useRef(createSetupIdempotencyKeyRetainer());
 
   const { data: leagueResponse, isLoading, error, refetch } = useQuery<{ success: true; data: League }>({
     queryKey: [`/api/leagues/${leagueId}`],
@@ -71,22 +77,31 @@ export default function LeagueViewPage() {
 
   const newSeasonMutation = useMutation({
     mutationFn: async (values: NewSeasonFormValues) => {
-      return await apiRequest<League>(`/api/leagues/${leagueId}/new-season`, "POST", values);
+      return await apiRequest<LeagueSetupIntegrationResult>(`/api/leagues/${leagueId}/new-season`, "POST", {
+        ...values,
+        setupIntegration: {
+          contractVersion: LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION,
+          idempotencyKey: newSeasonSetupIdempotency.current.keyFor({ sourceLeagueId: leagueId, ...values }),
+        },
+      });
     },
     onSuccess: (data) => {
       const newLeague = data.data;
+      newSeasonSetupIdempotency.current.reset();
       queryClient.invalidateQueries({ queryKey: ["/api/leagues"] });
       toast({
         title: "New Season Created",
-        description: `${league?.name} new season has been created. The previous season has been archived.`,
+        description: newLeague.canonicalDraftGeneration
+          ? `${league?.name} new season and its canonical Fall schedule drafts were created. The previous season has been archived.`
+          : `${league?.name} new season has been created. The previous season has been archived.`,
       });
       setShowNewSeason(false);
       setLocation(`/leagues/${newLeague.id}`);
     },
     onError: (error: Error) => {
       toast({
-        title: "Error",
-        description: error.message || "Failed to create new season",
+        title: "New season setup failed",
+        description: error.message || "No new season or canonical schedule was created.",
         variant: "destructive",
       });
     },

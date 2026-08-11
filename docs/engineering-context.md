@@ -65,7 +65,10 @@ limited to `weekly` or `upfront`. League creation and season rollover require
 an explicit choice; historical payments must not be used to guess it. Both
 modes retain per-session bowling obligations: prepaid means the season was
 collected in advance, not that the sessions are nonbillable. Once canonical
-schedule evidence exists, ordinary league editing cannot change this setting.
+schedule evidence exists, ordinary league editing cannot change this setting or
+any other canonical schedule input. No-op submissions are allowed, while name,
+description, public-signup visibility, unchanged Square catalog selections, and
+double-pay collection evidence remain outside the canonical schedule lock.
 
 Fall canonical schedule generation has one server-authoritative billing ordinal
 policy: `dense_billable`. New weekly and upfront Fall drafts both number only
@@ -77,6 +80,15 @@ Historical versioned C1 evidence is immutable: stored `planned_slot` semantics
 remain readable and govern C2 cancellation/restoration where supported. They must
 never be rewritten or silently treated as dense billable. Draft dense ordinals
 may be renumbered after cancellation; published billing ordinals never are.
+
+New active Fall league creation and season rollover generate the complete C1
+draft set inside the same transaction as authoritative legacy setup. The
+separate `league-setup-integration-request/1` entry-point contract does not bump
+persisted C1/C2 versions. Existing eligible Fall leagues without canonical state
+continue to use the explicit standalone preview/apply workflow. Season rollover
+locks and re-reads the source, copies teams and the complete ordered roster,
+generates the successor drafts, and archives the source in one commit; external
+bowler synchronization is post-commit only.
 
 Required weekly payer count and substitute-payer assignment are separate from
 payment timing. A future money-consumer cutover must model the league's three-

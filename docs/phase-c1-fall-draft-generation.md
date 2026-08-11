@@ -3,8 +3,10 @@
 Phase C1 is the first forward-season canonical workflow. It lets an authorized
 administrator inspect one explicit, tenant-scoped future Fall league, generate
 a deterministic zero-write preview from the authoritative legacy league and
-location rows, and explicitly create a complete canonical **draft** set. Draft
-creation is not attached to league creation or season rollover and does not
+location rows, and explicitly create a complete canonical **draft** set. New
+active Fall league setup now invokes that same persistence algorithm atomically;
+the standalone preview/apply path remains available for eligible leagues created
+before setup integration. Draft creation does not
 approve, reject, publish, lock, edit, discard, or consume the drafts.
 
 ## Contracts and versions
@@ -18,6 +20,8 @@ approve, reject, publish, lock, edit, discard, or consume the drafts.
 - input snapshot: `fall-draft-generation-input-snapshot/3`
 - initial occurrence, billing-term, and exception snapshot schema: version 1
 - command fingerprint envelope: `lvcanoncmd:v1:<lowercase-sha256>`
+- setup intent: `league-setup-integration-request/1`
+- setup result: `league-setup-integration-result/1`
 
 C1 exposes, but does not change, the merged A2 generator, input, result, and DST
 resolver versions. Request bodies are strict. Preview callers supply only the
@@ -29,6 +33,52 @@ accepted as authoritative input. Fall draft generation always uses
 `billingOrdinalPolicy = "dense_billable"`; callers cannot override those system
 policies or regular-session billing policy. The retired caller field is rejected
 by strict v3 request validation rather than ignored.
+
+The setup contract is a separate entry-point contract and does not change any
+C1 preview, apply, result, input-snapshot, generator, mapping, or command
+fingerprint version. A setup caller supplies only the versioned intent and a
+secure UUID idempotency key alongside the ordinary league form. Actor and tenant
+scope, generator input, preview confirmation, policies, revisions, timestamps,
+and command attribution remain server-owned. Setup uses the fixed audit reason
+`Generate canonical Fall drafts during authoritative league setup`.
+
+## Atomic setup integration
+
+`POST /api/leagues` and `POST /api/leagues/:id/new-season` classify Fall solely
+from the validated stored start month. For a newly inserted active August,
+September, or October league, one read-write transaction inserts and reloads the
+legacy row, takes the shared tenant/league schedule lock, reauthorizes the actor
+and location, builds the C1 preview from the uncommitted authoritative row,
+uses that internally generated fingerprint as confirmation, and invokes the
+same transaction-supplied C1 apply implementation used by the standalone
+endpoint. Commit therefore contains both the league and the complete generated
+draft set, or neither. Non-Fall creation inserts only the legacy row.
+
+New-season setup first takes the setup-key lock, then the source-league schedule
+lock, re-reads the authorized active source, and rejects an existing successor.
+It creates the successor, copies teams in display order, copies every active and
+inactive roster membership with its team mapping, membership order, and join
+time, generates Fall drafts when applicable, and archives the source last. The
+source remains active if any copy, generation, or archival step fails. Cache
+invalidation and bowler synchronization occur only after commit and are skipped
+for a zero-write exact retry.
+
+Fall setup keys are namespaced and hashed into the existing organization-scoped
+canonical command idempotency boundary. A transaction advisory lock on that
+derived key serializes the pre-league-insert window. An exact retry locates the
+originating generation command, verifies actor, organization, source-season and
+the complete normalized persisted league semantics, then runs C1's existing
+durable-set verifier and returns the original league and canonical UUIDs with no
+writes. A changed semantic request conflicts. Different new-season keys still
+serialize on the source league, so only one successor can be created.
+
+Normal league editing takes the shared schedule lock whenever a canonical input
+is present. After any retained canonical evidence exists, material changes to
+organization, location, season bounds, weekday, competition time, timezone,
+planned weeks, skips, cancellations, weekly fee, or payment mode are rejected.
+Equivalent no-op values and noncanonical metadata remain editable. Double-pay
+dates remain excluded collection evidence and can change without regenerating
+or renumbering canonical rows.
 
 ## Eligibility and authoritative input
 

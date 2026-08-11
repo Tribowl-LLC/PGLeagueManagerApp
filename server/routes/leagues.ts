@@ -1,5 +1,5 @@
 import { Router, Request } from 'express';
-import { randomBytes } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import { storage } from '../storage';
 import { insertLeagueSchema, updateLeagueSchema, DEFAULT_TIMEZONE, WEEKDAYS, PAYMENT_MODES, dateSchema } from "@shared/schema";
 import { validateDoublePayDates } from "@shared/schema/leagues";
@@ -24,7 +24,21 @@ import {
   fireLeagueBowlersExternalResync,
   fireBowlersExternalResync,
 } from '../services/bowler-resync';
-import { LeagueOccurrenceEvidenceExistsError, LeaguePaymentModeLockedError } from '../storage/leagues';
+import {
+  LeagueCanonicalScheduleLockedError,
+  LeagueOccurrenceEvidenceExistsError,
+  LeaguePaymentModeLockedError,
+} from '../storage/leagues';
+import {
+  LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION,
+  leagueSetupIntegrationIntentSchema,
+} from '@shared/league-setup-integration';
+import {
+  createLeagueWithCanonicalSetup,
+  createNewSeasonWithCanonicalSetup,
+  LeagueSetupIntegrationError,
+} from '../services/league-setup-integration.js';
+import { FallDraftGenerationError } from '../services/fall-draft-generation.js';
 
 const log = createLogger("Leagues");
 
@@ -41,7 +55,47 @@ const newSeasonRequestSchema = z.object({
   doublePayDates: z.array(z.string()).max(2, "At most 2 double-pay weeks allowed").default([]),
   allowPublicSignup: z.boolean().optional(),
   paymentMode: z.enum(PAYMENT_MODES),
-});
+  setupIntegration: leagueSetupIntegrationIntentSchema,
+}).strict();
+
+function sendLeagueSetupError(res: Parameters<typeof sendError>[0], error: unknown): void {
+  if (error instanceof z.ZodError) return handleZodError(res, error);
+  if (error instanceof FallDraftGenerationError) {
+    const mapping: Partial<Record<typeof error.code, { status: number; apiCode: string }>> = {
+      unauthorized_actor: { status: 403, apiCode: 'FORBIDDEN' },
+      league_not_found: { status: 404, apiCode: 'NOT_FOUND' },
+      invalid_location: { status: 404, apiCode: 'NOT_FOUND' },
+      ineligible_league: { status: 422, apiCode: 'FALL_DRAFT_INELIGIBLE' },
+      incomplete_authoritative_input: { status: 422, apiCode: 'FALL_DRAFT_INCOMPLETE_INPUT' },
+      generator_fatal_error: { status: 422, apiCode: 'FALL_DRAFT_GENERATOR_ERROR' },
+      unsupported_discrepancy: { status: 409, apiCode: 'FALL_DRAFT_UNSUPPORTED_DISCREPANCY' },
+      not_wholly_future: { status: 409, apiCode: 'FALL_DRAFT_NOT_FUTURE' },
+      idempotency_conflict: { status: 409, apiCode: 'IDEMPOTENCY_CONFLICT' },
+      canonical_collision: { status: 409, apiCode: 'FALL_DRAFT_COLLISION' },
+      incompatible_canonical_state: { status: 409, apiCode: 'FALL_DRAFT_INCOMPATIBLE_STATE' },
+    };
+    const selected = mapping[error.code] ?? { status: 500, apiCode: 'LEAGUE_SETUP_FAILED' };
+    return sendError(res, error.message, selected.status, selected.apiCode);
+  }
+  if (!(error instanceof LeagueSetupIntegrationError)) {
+    log.error('League setup error:', error);
+    return sendError(res, 'League setup failed. No league or canonical schedule was created.', 500, 'LEAGUE_SETUP_FAILED');
+  }
+  const mapping: Record<LeagueSetupIntegrationError['code'], { status: number; apiCode: string }> = {
+    invalid_scope: { status: 400, apiCode: 'INVALID_REQUEST' },
+    unauthorized_actor: { status: 403, apiCode: 'FORBIDDEN' },
+    organization_not_found: { status: 404, apiCode: 'NOT_FOUND' },
+    location_not_found: { status: 404, apiCode: 'NOT_FOUND' },
+    source_league_not_found: { status: 404, apiCode: 'NOT_FOUND' },
+    stale_source_league: { status: 409, apiCode: 'STALE_SOURCE_LEAGUE' },
+    successor_exists: { status: 409, apiCode: 'SUCCESSOR_SEASON_EXISTS' },
+    idempotency_conflict: { status: 409, apiCode: 'IDEMPOTENCY_CONFLICT' },
+    validation_error: { status: 400, apiCode: 'VALIDATION_ERROR' },
+    transaction_failure: { status: 500, apiCode: 'LEAGUE_SETUP_FAILED' },
+  };
+  const selected = mapping[error.code];
+  sendError(res, error.message, selected.status, selected.apiCode);
+}
 
 // Apply organization filtering to all league routes
 router.use(filterByOrganization);
@@ -215,6 +269,14 @@ router.get("/:id", async (req: Request, res) => {
 
 router.post("/", async (req: Request, res) => {
   try {
+    const forbiddenSetupFields = [
+      'actorUserId', 'generatorInput', 'occurrenceCandidates', 'confirmedPreviewFingerprint',
+      'sourceScheduleRevision', 'currency', 'ambiguousFold', 'regularSessionBillingPolicy',
+      'billingOrdinalPolicy', 'commandAttribution', 'reason',
+    ];
+    if (forbiddenSetupFields.some((field) => Object.prototype.hasOwnProperty.call(req.body ?? {}, field))) {
+      return sendError(res, 'League setup contains server-owned canonical generation fields', 400, 'VALIDATION_ERROR');
+    }
     // Derive seasonEnd server-side when totalBowlingWeeks is provided
     let derivedSeasonEnd = req.body.seasonEnd ? new Date(req.body.seasonEnd) : undefined;
     if (
@@ -237,7 +299,9 @@ router.post("/", async (req: Request, res) => {
     // (which don't include an organizationId field) would fail validation.
     const filterOrg = getOrganizationFilter(req);
     const bodyOrg = typeof req.body?.organizationId === 'number' ? req.body.organizationId : null;
-    let effectiveOrgId: number | null = bodyOrg ?? filterOrg ?? req.user?.organizationId ?? null;
+    const effectiveOrgId: number | null = req.user?.role === 'system_admin'
+      ? bodyOrg
+      : filterOrg ?? req.user?.organizationId ?? null;
 
     if (effectiveOrgId == null) {
       // Every league must belong to an organization. system_admin used to
@@ -260,30 +324,15 @@ router.post("/", async (req: Request, res) => {
       );
     }
 
-    // Task #454: existence pre-check for the admin-supplied
-    // organizationId. A system_admin may pass any number; a caller's
-    // session orgId is also re-verified here defensively (cheap and
-    // catches the rare case of a stale session pointing at an org that
-    // was archived/deleted between login and this request). Without
-    // this, a typoed/stale id falls through to the
-    // `leagues.organization_id -> organizations.id` foreign key and
-    // surfaces as a generic 500. Mirrors the #422 reference fix in
-    // server/routes/bowlers.ts.
-    const orgRow = await storage.getOrganization(effectiveOrgId);
-    if (!orgRow) {
-      return sendError(res, 'Organization not found', 404, 'NOT_FOUND');
+    if (!req.user) return sendError(res, 'Authentication is required', 403, 'FORBIDDEN');
+    if (req.user.role !== 'system_admin' && bodyOrg !== null) {
+      return sendError(res, 'Organization scope is server-owned for organization administrators', 400, 'VALIDATION_ERROR');
     }
-
-    // Task #454: same existence guard for the optional admin-supplied
-    // locationId. The schema accepts a number-or-null, so a typoed id
-    // is the only failure mode that bypasses the column nullability.
-    const bodyLocationId = req.body?.locationId;
-    if (typeof bodyLocationId === 'number') {
-      const locationRow = await storage.getLocation(bodyLocationId);
-      if (!locationRow || locationRow.organizationId !== effectiveOrgId) {
-        // Conflate "missing" and "wrong-org" into the same 404 — the
-        // caller has no business stamping a league with a location
-        // belonging to a different tenant either way.
+    const organization = await storage.getOrganization(effectiveOrgId);
+    if (!organization) return sendError(res, 'Organization not found', 404, 'NOT_FOUND');
+    if (typeof req.body?.locationId === 'number') {
+      const location = await storage.getLocation(req.body.locationId);
+      if (!location || location.organizationId !== effectiveOrgId) {
         return sendError(res, 'Location not found for this organization', 404, 'NOT_FOUND');
       }
     }
@@ -294,14 +343,22 @@ router.post("/", async (req: Request, res) => {
       seasonStart: new Date(req.body.seasonStart),
       seasonEnd: derivedSeasonEnd ?? new Date(req.body.seasonEnd)
     });
+    const isFallSetup = league.active && [7, 8, 9].includes(new Date(league.seasonStart).getUTCMonth());
+    const setup = req.body?.setupIntegration === undefined && !isFallSetup
+      ? {
+          contractVersion: LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION,
+          idempotencyKey: randomUUID(),
+        } as const
+      : leagueSetupIntegrationIntentSchema.parse(req.body?.setupIntegration);
 
-    const created = await storage.createLeague(league);
-    sendSuccess(res, created, 201);
+    const created = await createLeagueWithCanonicalSetup({
+      scope: { organizationId: effectiveOrgId, actorUserId: req.user.id },
+      league,
+      setup,
+    });
+    sendSuccess(res, created, created.setupIntegration.mode === 'idempotent_retry' ? 200 : 201);
   } catch (error) {
-    if (error instanceof z.ZodError) {
-      return handleZodError(res, error);
-    }
-    sendError(res, 'Failed to create league');
+    sendLeagueSetupError(res, error);
   }
 });
 
@@ -324,7 +381,8 @@ router.patch("/:id", async (req: Request, res) => {
     }
     
     // Non-admin users cannot change the organization of a league
-    if (req.user?.role !== 'system_admin' && req.body.organizationId !== undefined) {
+    if (req.user?.role !== 'system_admin' && req.body.organizationId !== undefined
+      && req.body.organizationId !== league.organizationId) {
       return sendError(res, "You don't have permission to change the organization of this league", 403, 'FORBIDDEN');
     }
 
@@ -499,6 +557,14 @@ router.patch("/:id", async (req: Request, res) => {
         'LEAGUE_PAYMENT_MODE_LOCKED',
       );
     }
+    if (error instanceof LeagueCanonicalScheduleLockedError) {
+      return sendError(
+        res,
+        'Canonical schedule inputs cannot be changed after canonical schedule generation has started.',
+        409,
+        'LEAGUE_CANONICAL_SCHEDULE_LOCKED',
+      );
+    }
     sendError(res, 'Failed to update league');
   }
 });
@@ -665,139 +731,42 @@ router.post("/:id/new-season", async (req: Request, res) => {
       return sendError(res, "Only admins can start a new season", 403, "FORBIDDEN");
     }
 
-    const sourceLeague = await storage.getLeague(id);
-    if (!sourceLeague) {
-      return sendError(res, "League not found", 404, "NOT_FOUND");
-    }
-
-    // Authz: cloning a league counts as a write against the source league's
-    // organization. Without this check an org_admin could create a new
-    // season on any league by ID, regardless of which org owns it.
-    if (!requireOrganizationAccess(req, sourceLeague.organizationId, 'league', id)) {
-      return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
-    }
-
     const parsedRequest = newSeasonRequestSchema.safeParse(req.body);
     if (!parsedRequest.success) {
       return handleZodError(res, parsedRequest.error);
     }
 
-    const {
-      seasonStart,
-      seasonEnd,
-      totalBowlingWeeks,
-      weekDay,
-      skipDates,
-      cancelledDates,
-      doublePayDates,
-      allowPublicSignup,
-      paymentMode,
-    } = parsedRequest.data;
-    const newSeasonWeekDay = weekDay ?? sourceLeague.weekDay;
-    const newSeasonWeeks = totalBowlingWeeks ?? sourceLeague.totalBowlingWeeks;
-    const newSeasonStart = new Date(seasonStart);
-    let newSeasonEnd: Date | null;
-    if (totalBowlingWeeks != null || !seasonEnd) {
-      newSeasonEnd = newSeasonWeeks != null
-        ? calculateSeasonEnd(seasonStart, newSeasonWeekDay, newSeasonWeeks, skipDates, cancelledDates)
-        : null;
-    } else {
-      newSeasonEnd = new Date(seasonEnd);
+    if (!req.user) return sendError(res, 'Authentication is required', 403, 'FORBIDDEN');
+    const explicitSystemOrganization = typeof req.query.organizationId === 'string'
+      && /^\d+$/.test(req.query.organizationId)
+      ? Number(req.query.organizationId)
+      : null;
+    if (req.user.role === 'system_admin' && (!explicitSystemOrganization || !Number.isSafeInteger(explicitSystemOrganization))) {
+      return sendError(res, 'System administrators must select one organization with ?organizationId=<id>', 400, 'INVALID_REQUEST');
     }
-
-    if (!newSeasonEnd || newSeasonEnd <= newSeasonStart) {
-      return sendError(res, "Season end date must be after start date", 400, "VALIDATION_ERROR");
-    }
-
-    const doublePayValidation = validateDoublePayDates({
-      doublePayDates,
-      skipDates,
-      cancelledDates,
-      weekDay: newSeasonWeekDay,
-      seasonStart,
-      seasonEnd: newSeasonEnd.toISOString(),
+    const organizationId = req.user.role === 'system_admin'
+      ? explicitSystemOrganization
+      : getOrganizationFilter(req) ?? req.user.organizationId;
+    if (!organizationId) return sendError(res, 'A valid organization scope is required', 400, 'INVALID_REQUEST');
+    const { setupIntegration, ...values } = parsedRequest.data;
+    const created = await createNewSeasonWithCanonicalSetup({
+      scope: { organizationId, actorUserId: req.user.id },
+      sourceLeagueId: id,
+      values,
+      setup: setupIntegration,
     });
-    if (!doublePayValidation.ok) {
-      return sendError(res, doublePayValidation.message, 400, "VALIDATION_ERROR");
-    }
-
-    const newLeague = await storage.createLeague({
-      name: sourceLeague.name,
-      description: sourceLeague.description,
-      active: true,
-      allowPublicSignup: allowPublicSignup ?? sourceLeague.allowPublicSignup ?? false,
-      seasonStart: newSeasonStart.toISOString(),
-      seasonEnd: newSeasonEnd.toISOString(),
-      weekDay: newSeasonWeekDay,
-      weeklyFee: sourceLeague.weeklyFee,
-      lineageFee: sourceLeague.lineageFee ?? undefined,
-      prizeFundFee: sourceLeague.prizeFundFee ?? undefined,
-      practiceStartTime: sourceLeague.practiceStartTime ?? undefined,
-      competitionStartTime: sourceLeague.competitionStartTime ?? undefined,
-      timezone: sourceLeague.timezone ?? DEFAULT_TIMEZONE,
-      squareLineageItemId: sourceLeague.squareLineageItemId,
-      lineageItemVariationId: sourceLeague.lineageItemVariationId,
-      squareLineageItemName: sourceLeague.squareLineageItemName,
-      squarePrizeFundItemId: sourceLeague.squarePrizeFundItemId,
-      prizeFundItemVariationId: sourceLeague.prizeFundItemVariationId,
-      squarePrizeFundItemName: sourceLeague.squarePrizeFundItemName,
-      squareCategoryId: sourceLeague.squareCategoryId ?? undefined,
-      paymentMode,
-      organizationId: sourceLeague.organizationId,
-      locationId: sourceLeague.locationId,
-      seasonNumber: (sourceLeague.seasonNumber || 1) + 1,
-      previousSeasonId: sourceLeague.id,
-      totalBowlingWeeks: newSeasonWeeks,
-      skipDates,
-      cancelledDates,
-      // Double-pay weeks are season-specific. The form sends the new
-      // season's explicit selections; they are never copied implicitly.
-      doublePayDates,
-    });
-
-    const sourceTeams = await storage.getTeams(sourceLeague.id);
-    const teamIdMap = new Map<number, number>();
-
-    for (const team of sourceTeams) {
-      const newTeam = await storage.createTeam({
-        name: team.name,
-        number: team.number,
-        leagueId: newLeague.id,
-        active: team.active,
-      });
-      teamIdMap.set(team.id, newTeam.id);
-    }
-
-    const sourceBowlerLeagues = await storage.getBowlerLeagues({ leagueId: sourceLeague.id });
-
-    for (const bl of sourceBowlerLeagues) {
-      const newTeamId = teamIdMap.get(bl.teamId);
-      if (newTeamId) {
-        await storage.createBowlerLeague({
-          bowlerId: bl.bowlerId,
-          leagueId: newLeague.id,
-          teamId: newTeamId,
-          active: bl.active,
-          order: bl.order,
-        });
-      }
-    }
-
-    await storage.updateLeague(sourceLeague.id, { active: false });
 
     // The source league is now inactive AND the bowlers are in the
     // freshly-cloned new league — both their `league_name` (likely
     // unchanged) and `league_season` (definitely changed) attribute
     // values need to be pushed out. Resync each bowler once. Task #429.
-    const uniqueBowlerIds = Array.from(
-      new Set(sourceBowlerLeagues.map((bl) => bl.bowlerId)),
-    );
-    fireBowlersExternalResync(uniqueBowlerIds, req.user?.organizationId);
+    if (created.result.setupIntegration.writesPerformed) {
+      fireBowlersExternalResync(created.affectedBowlerIds, organizationId);
+    }
 
-    sendSuccess(res, newLeague, 201);
+    sendSuccess(res, created.result, created.result.setupIntegration.mode === 'idempotent_retry' ? 200 : 201);
   } catch (error) {
-    log.error('New season error:', error);
-    sendError(res, 'Failed to create new season');
+    sendLeagueSetupError(res, error);
   }
 });
 

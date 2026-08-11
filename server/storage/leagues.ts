@@ -32,6 +32,45 @@ export class LeaguePaymentModeLockedError extends Error {
   }
 }
 
+export class LeagueCanonicalScheduleLockedError extends Error {
+  constructor() {
+    super('Canonical schedule inputs cannot change after canonical schedule evidence exists');
+    this.name = 'LeagueCanonicalScheduleLockedError';
+  }
+}
+
+const CANONICAL_UPDATE_FIELDS = [
+  'organizationId',
+  'locationId',
+  'seasonStart',
+  'seasonEnd',
+  'weekDay',
+  'competitionStartTime',
+  'timezone',
+  'totalBowlingWeeks',
+  'skipDates',
+  'cancelledDates',
+  'weeklyFee',
+  'paymentMode',
+] as const satisfies readonly (keyof UpdateLeague)[];
+
+function sameCanonicalValue(field: typeof CANONICAL_UPDATE_FIELDS[number], left: unknown, right: unknown): boolean {
+  if (field === 'seasonStart' || field === 'seasonEnd') {
+    return Date.parse(String(left)) === Date.parse(String(right));
+  }
+  if (field === 'skipDates' || field === 'cancelledDates') {
+    const normalize = (value: unknown) => Array.isArray(value) ? [...value].map(String).sort() : [];
+    return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right));
+  }
+  if (field === 'competitionStartTime') {
+    const normalize = (value: unknown) => typeof value === 'string' && /^\d{1,2}:\d{2}$/.test(value)
+      ? `${value.padStart(5, '0')}:00`
+      : value ?? null;
+    return normalize(left) === normalize(right);
+  }
+  return (left ?? null) === (right ?? null);
+}
+
 export async function getLeagues(organizationId: number): Promise<League[]> {
   return cacheFetch(`leagues:org:${organizationId}`, LEAGUES_TTL, () =>
     db.select().from(leagues)
@@ -63,7 +102,8 @@ export async function createLeague(league: InsertLeague): Promise<League> {
 }
 
 export async function updateLeague(id: number, league: UpdateLeague): Promise<League> {
-  if (league.paymentMode === undefined && league.organizationId === undefined) {
+  const canonicalFields = CANONICAL_UPDATE_FIELDS.filter((field) => league[field] !== undefined);
+  if (canonicalFields.length === 0) {
     const [result] = await db.update(leagues).set(league).where(eq(leagues.id, id)).returning();
     cacheInvalidate('leagues:');
     return result;
@@ -76,17 +116,15 @@ export async function updateLeague(id: number, league: UpdateLeague): Promise<Le
     if (!scope) throw new Error(`League with ID ${id} not found`);
 
     await lockLeagueSchedule(tx, scope.organizationId, id);
-    const [current] = await tx.select({
-      organizationId: leagues.organizationId,
-      paymentMode: leagues.paymentMode,
-    }).from(leagues).where(eq(leagues.id, id)).for('update');
+    const [current] = await tx.select().from(leagues).where(eq(leagues.id, id)).for('update');
     if (!current || current.organizationId !== scope.organizationId) {
       throw new Error('League organization changed while acquiring its schedule lock');
     }
 
-    if (league.paymentMode !== undefined && league.paymentMode !== current.paymentMode
-      && await hasLeagueOccurrenceEvidence(tx, current.organizationId, id)) {
-      throw new LeaguePaymentModeLockedError();
+    const changedFields = canonicalFields.filter((field) => !sameCanonicalValue(field, league[field], current[field]));
+    if (changedFields.length > 0 && await hasLeagueOccurrenceEvidence(tx, current.organizationId, id)) {
+      if (changedFields.length === 1 && changedFields[0] === 'paymentMode') throw new LeaguePaymentModeLockedError();
+      throw new LeagueCanonicalScheduleLockedError();
     }
 
     const [updated] = await tx.update(leagues).set(league).where(eq(leagues.id, id)).returning();
