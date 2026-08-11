@@ -119,13 +119,8 @@ router.post("/:id/canonical-fall-drafts/preview", async (req: Request, res) => {
   const scope = requireAdminScope(req, res);
   if (!scope) return;
   try {
-    const request = fallDraftPreviewRequestSchema.parse(req.body);
-    const preview = await previewFallDraftGeneration({
-      ...scope,
-      semantics: {
-        billingOrdinalPolicy: request.billingOrdinalPolicy,
-      },
-    });
+    fallDraftPreviewRequestSchema.parse(req.body);
+    const preview = await previewFallDraftGeneration(scope);
     sendSuccess(res, preview);
   } catch (caught) {
     sendFallDraftError(res, caught);

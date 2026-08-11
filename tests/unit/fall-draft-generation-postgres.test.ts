@@ -19,8 +19,8 @@ import {
 } from "@shared/schema";
 import {
   FALL_DRAFT_APPLY_REQUEST_VERSION,
+  FALL_DRAFT_BILLING_ORDINAL_POLICY,
   type FallDraftApplyRequest,
-  type FallDraftGeneratorSemantics,
   type FallDraftPreview,
 } from "@shared/fall-draft-generation";
 import {
@@ -45,10 +45,6 @@ interface Fixture {
   regularUserId: number;
   systemAdminUserId: number;
 }
-
-const semantics: FallDraftGeneratorSemantics = {
-  billingOrdinalPolicy: "planned_slot",
-};
 
 async function fixture(label: string, overrides: Partial<typeof leagues.$inferInsert> = {}): Promise<Fixture> {
   const unique = `${label}-${++sequence}`.toLowerCase();
@@ -103,7 +99,6 @@ function scope(f: Fixture, actorUserId = f.actorUserId) {
 function applyRequest(preview: FallDraftPreview, overrides: Partial<FallDraftApplyRequest> = {}): FallDraftApplyRequest {
   return {
     contractVersion: FALL_DRAFT_APPLY_REQUEST_VERSION,
-    ...semantics,
     confirmedPreviewFingerprint: preview.previewFingerprint,
     reason: "Create reviewed Fall canonical drafts",
     idempotencyKey: `c1-apply-${preview.operatorScope.leagueId}`,
@@ -196,9 +191,9 @@ describe("C1 Fall draft preview", () => {
     const beforeLeague = await db.select().from(leagues).where(eq(leagues.id, f.leagueId));
     const originalTz = process.env.TZ;
     process.env.TZ = "Pacific/Honolulu";
-    const first = await previewFallDraftGeneration({ ...scope(f), semantics });
+    const first = await previewFallDraftGeneration(scope(f));
     process.env.TZ = "Asia/Tokyo";
-    const second = await previewFallDraftGeneration({ ...scope(f), semantics });
+    const second = await previewFallDraftGeneration(scope(f));
     process.env.TZ = originalTz;
     expect(second).toEqual(first);
     expect(first.previewFingerprint).toBe(second.previewFingerprint);
@@ -215,7 +210,7 @@ describe("C1 Fall draft preview", () => {
     expect(await db.select().from(leagues).where(eq(leagues.id, f.leagueId))).toEqual(beforeLeague);
 
     await db.update(leagues).set({ doublePayDates: ["2032-08-01"] }).where(eq(leagues.id, f.leagueId));
-    const changedEvidence = await previewFallDraftGeneration({ ...scope(f), semantics });
+    const changedEvidence = await previewFallDraftGeneration(scope(f));
     expect(changedEvidence.previewFingerprint).not.toBe(first.previewFingerprint);
     expect(changedEvidence.inputFingerprint).toBe(first.inputFingerprint);
     expect(changedEvidence.physicalScheduleFingerprint).toBe(first.physicalScheduleFingerprint);
@@ -223,35 +218,36 @@ describe("C1 Fall draft preview", () => {
     expect(changedEvidence.billingTermCandidates).toEqual(first.billingTermCandidates);
   });
 
-  it("hardcodes USD while ordinal-policy changes leave physical identity stable", async () => {
+  it("hardcodes USD and dense billable ordinals in every new preview", async () => {
     const f = await fixture("semantic-change");
-    const billable = await previewFallDraftGeneration({ ...scope(f), semantics });
-    const denseBilling = await previewFallDraftGeneration({
-      ...scope(f),
-      semantics: { ...semantics, billingOrdinalPolicy: "dense_billable" },
+    const billable = await previewFallDraftGeneration(scope(f));
+    expect(billable.semantics).toMatchObject({
+      currency: "USD",
+      billingOrdinalPolicy: FALL_DRAFT_BILLING_ORDINAL_POLICY,
     });
-    expect(billable.semantics.currency).toBe("USD");
-    expect(billable.normalizedInput.currency).toBe("USD");
+    expect(billable.normalizedInput).toMatchObject({
+      currency: "USD",
+      billingOrdinalPolicy: FALL_DRAFT_BILLING_ORDINAL_POLICY,
+    });
+    expect(billable.billingTermCandidates.map((row) => row.billingOrdinal)).toEqual([1, null, 2]);
     expect(billable.billingTermCandidates.every((row) => row.currency === "USD")).toBe(true);
-    expect(denseBilling.previewFingerprint).not.toBe(billable.previewFingerprint);
-    expect(denseBilling.inputFingerprint).not.toBe(billable.inputFingerprint);
-    expect(denseBilling.physicalScheduleFingerprint).toBe(billable.physicalScheduleFingerprint);
-    expect(denseBilling.occurrenceCandidates.map((row) => row.generationKey)).toEqual(billable.occurrenceCandidates.map((row) => row.generationKey));
   });
 
   it("binds authoritative payment timing and locks it after canonical generation", async () => {
     const f = await fixture("payment-mode-lock");
-    const weekly = await previewFallDraftGeneration({ ...scope(f), semantics });
+    const weekly = await previewFallDraftGeneration(scope(f));
     expect(weekly.semantics).toMatchObject({
       paymentMode: "weekly",
       regularSessionBillingPolicy: "eligible_bowlers",
+      billingOrdinalPolicy: FALL_DRAFT_BILLING_ORDINAL_POLICY,
     });
 
     await updateLeague(f.leagueId, { paymentMode: "upfront" });
-    const upfront = await previewFallDraftGeneration({ ...scope(f), semantics });
+    const upfront = await previewFallDraftGeneration(scope(f));
     expect(upfront.semantics).toMatchObject({
       paymentMode: "upfront",
       regularSessionBillingPolicy: "eligible_bowlers",
+      billingOrdinalPolicy: FALL_DRAFT_BILLING_ORDINAL_POLICY,
     });
     expect(upfront.previewFingerprint).not.toBe(weekly.previewFingerprint);
     expect(upfront.inputFingerprint).toBe(weekly.inputFingerprint);
@@ -277,30 +273,30 @@ describe("C1 Fall draft preview", () => {
     ["November", "2032-11-07", "2032-11-28"],
   ])("rejects a %s start", async (_label, seasonStart, seasonEnd) => {
     const f = await fixture(`reject-${seasonStart}`, { seasonStart, seasonEnd, skipDates: [], cancelledDates: [], doublePayDates: [] });
-    expect(await caughtCode(() => previewFallDraftGeneration({ ...scope(f), semantics }))).toBe("ineligible_league");
+    expect(await caughtCode(() => previewFallDraftGeneration(scope(f)))).toBe("ineligible_league");
   });
 
   it("rejects inactive, missing-location, cross-tenant-location, already-started, and partially elapsed leagues", async () => {
     const inactive = await fixture("inactive", { active: false });
-    expect(await caughtCode(() => previewFallDraftGeneration({ ...scope(inactive), semantics }))).toBe("ineligible_league");
+    expect(await caughtCode(() => previewFallDraftGeneration(scope(inactive)))).toBe("ineligible_league");
 
     const missing = await fixture("missing-location", { locationId: null });
-    expect(await caughtCode(() => previewFallDraftGeneration({ ...scope(missing), semantics }))).toBe("invalid_location");
+    expect(await caughtCode(() => previewFallDraftGeneration(scope(missing)))).toBe("invalid_location");
 
     const cross = await fixture("cross-location");
     const other = await fixture("cross-location-other");
     await db.update(leagues).set({ locationId: other.locationId }).where(eq(leagues.id, cross.leagueId));
-    expect(await caughtCode(() => previewFallDraftGeneration({ ...scope(cross), semantics }))).toBe("invalid_location");
+    expect(await caughtCode(() => previewFallDraftGeneration(scope(cross)))).toBe("invalid_location");
 
     const elapsed = await fixture("elapsed", {
       seasonStart: "2025-08-03", seasonEnd: "2025-08-17", totalBowlingWeeks: 3, skipDates: [], cancelledDates: [], doublePayDates: [],
     });
-    expect(await caughtCode(() => previewFallDraftGeneration({ ...scope(elapsed), semantics }))).toBe("not_wholly_future");
+    expect(await caughtCode(() => previewFallDraftGeneration(scope(elapsed)))).toBe("not_wholly_future");
 
     const partial = await fixture("partial", {
       seasonStart: "2026-08-02", seasonEnd: "2026-08-30", totalBowlingWeeks: 5, skipDates: [], cancelledDates: [], doublePayDates: [],
     });
-    expect(await caughtCode(() => previewFallDraftGeneration({ ...scope(partial), semantics }))).toBe("not_wholly_future");
+    expect(await caughtCode(() => previewFallDraftGeneration(scope(partial)))).toBe("not_wholly_future");
   });
 
   it("rejects a past opening skip even when every occurrence candidate is still future-facing", async () => {
@@ -313,7 +309,7 @@ describe("C1 Fall draft preview", () => {
       cancelledDates: [],
       doublePayDates: [],
     });
-    expect(await caughtCode(() => previewFallDraftGeneration({ ...scope(f), semantics }))).toBe("not_wholly_future");
+    expect(await caughtCode(() => previewFallDraftGeneration(scope(f)))).toBe("not_wholly_future");
     expect(Object.values(await canonicalCounts(f)).every((count) => count === 0)).toBe(true);
   });
 
@@ -322,7 +318,7 @@ describe("C1 Fall draft preview", () => {
       seasonStart: "2032-10-03", seasonEnd: "2033-03-13", weekDay: "Sunday", competitionStartTime: "02:30",
       totalBowlingWeeks: 24, skipDates: [], cancelledDates: [], doublePayDates: [],
     });
-    const gapPreview = await previewFallDraftGeneration({ ...scope(gap), semantics });
+    const gapPreview = await previewFallDraftGeneration(scope(gap));
     expect(gapPreview.fatalErrors.some((row) => row.code === "invalid_dst_input")).toBe(true);
     expect(gapPreview.eligibility.eligibleForApply).toBe(false);
 
@@ -330,7 +326,7 @@ describe("C1 Fall draft preview", () => {
       seasonStart: "2032-10-03", seasonEnd: "2032-11-07", weekDay: "Sunday", competitionStartTime: "01:30",
       totalBowlingWeeks: 6, skipDates: [], cancelledDates: [], doublePayDates: [],
     });
-    const foldPreview = await previewFallDraftGeneration({ ...scope(fold), semantics });
+    const foldPreview = await previewFallDraftGeneration(scope(fold));
     expect(foldPreview.semantics.ambiguousFold).toBe("reject");
     expect(foldPreview.fatalErrors.some((row) => row.code === "invalid_dst_input")).toBe(true);
     expect(foldPreview.eligibility.eligibleForApply).toBe(false);
@@ -340,7 +336,7 @@ describe("C1 Fall draft preview", () => {
 describe("C1 atomic draft creation", () => {
   it("creates truthful drafts and revisions atomically and returns exact durable IDs on retry", async () => {
     const f = await fixture("apply-retry");
-    const preview = await previewFallDraftGeneration({ ...scope(f), semantics });
+    const preview = await previewFallDraftGeneration(scope(f));
     const request = applyRequest(preview);
     const beforeLegacy = await db.select().from(leagues).where(eq(leagues.id, f.leagueId));
     const beforePayments = await db.select().from(payments).where(eq(payments.leagueId, f.leagueId));
@@ -362,6 +358,10 @@ describe("C1 atomic draft creation", () => {
     expect(commands.some((row) => row.commandType === "approve_generation" || row.commandType === "publish")).toBe(false);
     const [run] = await db.select().from(leagueOccurrenceGenerationRuns).where(eq(leagueOccurrenceGenerationRuns.leagueId, f.leagueId));
     expect(run).toMatchObject({ state: "generated", approvedAt: null, rejectedAt: null, sourceScheduleRevision: 1 });
+    expect(run.normalizedInputSnapshot).toMatchObject({
+      snapshotContractVersion: "fall-draft-generation-input-snapshot/3",
+      normalizedInput: { billingOrdinalPolicy: "dense_billable" },
+    });
     const occurrences = await db.select().from(leagueOccurrences).where(eq(leagueOccurrences.leagueId, f.leagueId)).orderBy(asc(leagueOccurrences.plannedOrdinal));
     expect(occurrences.map((row) => ({
       status: row.status, lifecycle: row.lifecycle, planned: row.plannedOrdinal, competition: row.competitionNumber,
@@ -380,6 +380,8 @@ describe("C1 atomic draft creation", () => {
     expect(terms).toHaveLength(3);
     expect(terms.every((row) => row.state === "draft" && row.publicationCommandId === null)).toBe(true);
     expect(terms.find((row) => row.occurrenceId === cancelled.id)).toMatchObject({ obligationPolicy: "none", defaultAmountMinor: 0, billingOrdinal: null });
+    const termByOccurrence = new Map(terms.map((row) => [row.occurrenceId, row.billingOrdinal]));
+    expect(occurrences.map((row) => termByOccurrence.get(row.id))).toEqual([1, null, 2]);
     const exceptions = await db.select().from(leagueScheduleExceptions).where(eq(leagueScheduleExceptions.leagueId, f.leagueId));
     expect(exceptions).toHaveLength(1);
     expect(exceptions[0]).toMatchObject({ lifecycle: "draft", generationRunId: run.id, publicationCommandId: null });
@@ -391,13 +393,13 @@ describe("C1 atomic draft creation", () => {
 
   it("detects schedule staleness, same-key changes, different-key adoption, and persisted-view staleness", async () => {
     const stale = await fixture("stale-apply");
-    const stalePreview = await previewFallDraftGeneration({ ...scope(stale), semantics });
+    const stalePreview = await previewFallDraftGeneration(scope(stale));
     await db.update(leagues).set({ weeklyFee: 2_100 }).where(eq(leagues.id, stale.leagueId));
     expect(await caughtCode(() => applyFallDraftGeneration({ ...scope(stale), apply: applyRequest(stalePreview) }))).toBe("stale_preview");
     expect(Object.values(await canonicalCounts(stale)).every((count) => count === 0)).toBe(true);
 
     const conflict = await fixture("same-key-conflict");
-    const preview = await previewFallDraftGeneration({ ...scope(conflict), semantics });
+    const preview = await previewFallDraftGeneration(scope(conflict));
     const request = applyRequest(preview);
     await applyFallDraftGeneration({ ...scope(conflict), apply: request });
     expect(await caughtCode(() => applyFallDraftGeneration({ ...scope(conflict), apply: { ...request, reason: "Changed semantic reason" } }))).toBe("idempotency_conflict");
@@ -426,18 +428,18 @@ describe("C1 atomic draft creation", () => {
 
   it("fails closed for exact-start, same-day, and exception collisions without a C1 write", async () => {
     const exact = await fixture("exact-start-collision");
-    const exactCandidate = (await previewFallDraftGeneration({ ...scope(exact), semantics })).occurrenceCandidates[0];
+    const exactCandidate = (await previewFallDraftGeneration(scope(exact))).occurrenceCandidates[0];
     await stageScheduledOccurrence(exact, exactCandidate);
-    const exactPreview = await previewFallDraftGeneration({ ...scope(exact), semantics });
+    const exactPreview = await previewFallDraftGeneration(scope(exact));
     const exactBefore = await canonicalCounts(exact);
     expect(await caughtCode(() => applyFallDraftGeneration({ ...scope(exact), apply: applyRequest(exactPreview) }))).toBe("canonical_collision");
     expect(await canonicalCounts(exact)).toEqual(exactBefore);
 
     const sameDay = await fixture("same-day-collision");
-    const sameDayCandidate = (await previewFallDraftGeneration({ ...scope(sameDay), semantics })).occurrenceCandidates[0];
+    const sameDayCandidate = (await previewFallDraftGeneration(scope(sameDay))).occurrenceCandidates[0];
     const shiftedStart = new Date(Date.parse(sameDayCandidate.startAt) + 60 * 60 * 1_000).toISOString();
     await stageScheduledOccurrence(sameDay, sameDayCandidate, shiftedStart);
-    const sameDayPreview = await previewFallDraftGeneration({ ...scope(sameDay), semantics });
+    const sameDayPreview = await previewFallDraftGeneration(scope(sameDay));
     const sameDayBefore = await canonicalCounts(sameDay);
     expect(await caughtCode(() => applyFallDraftGeneration({ ...scope(sameDay), apply: applyRequest(sameDayPreview) }))).toBe("canonical_collision");
     expect(await canonicalCounts(sameDay)).toEqual(sameDayBefore);
@@ -455,7 +457,7 @@ describe("C1 atomic draft creation", () => {
       reason: "Existing exception",
       lastCommandId: command.id,
     });
-    const exceptionPreview = await previewFallDraftGeneration({ ...scope(exception), semantics });
+    const exceptionPreview = await previewFallDraftGeneration(scope(exception));
     const exceptionBefore = await canonicalCounts(exception);
     expect(await caughtCode(() => applyFallDraftGeneration({ ...scope(exception), apply: applyRequest(exceptionPreview) }))).toBe("exception_collision");
     expect(await canonicalCounts(exception)).toEqual(exceptionBefore);
@@ -463,7 +465,7 @@ describe("C1 atomic draft creation", () => {
 
   it("rejects a partial persisted generation instead of adopting or repairing it", async () => {
     const f = await fixture("partial-state");
-    const preview = await previewFallDraftGeneration({ ...scope(f), semantics });
+    const preview = await previewFallDraftGeneration(scope(f));
     const request = applyRequest(preview);
     await applyFallDraftGeneration({ ...scope(f), apply: request });
     const [revision] = await db.select().from(leagueOccurrenceRevisions).where(eq(leagueOccurrenceRevisions.leagueId, f.leagueId)).limit(1);
@@ -476,7 +478,7 @@ describe("C1 atomic draft creation", () => {
 
   it("serializes identical and competing concurrent requests", async () => {
     const identical = await fixture("concurrent-identical");
-    const preview = await previewFallDraftGeneration({ ...scope(identical), semantics });
+    const preview = await previewFallDraftGeneration(scope(identical));
     const request = applyRequest(preview);
     const results = await Promise.all([
       applyFallDraftGeneration({ ...scope(identical), apply: request }),
@@ -486,7 +488,7 @@ describe("C1 atomic draft creation", () => {
     expect(results[0].durableIds).toEqual(results[1].durableIds);
 
     const competing = await fixture("concurrent-competing");
-    const competingPreview = await previewFallDraftGeneration({ ...scope(competing), semantics });
+    const competingPreview = await previewFallDraftGeneration(scope(competing));
     const competingIdempotencyKey = ["competing", "c1", "key"].join("-");
     const outcomes = await Promise.allSettled([
       applyFallDraftGeneration({ ...scope(competing), apply: applyRequest(competingPreview) }),
@@ -500,11 +502,11 @@ describe("C1 atomic draft creation", () => {
   it("allows same-tenant org_admin and explicit system_admin actors while denying normal and cross-tenant actors", async () => {
     const f = await fixture("authorization");
     const other = await fixture("authorization-other");
-    await expect(previewFallDraftGeneration({ ...scope(f), semantics })).resolves.toMatchObject({ operatorScope: { organizationId: f.organizationId } });
-    await expect(previewFallDraftGeneration({ ...scope(f, f.systemAdminUserId), semantics })).resolves.toMatchObject({ operatorScope: { organizationId: f.organizationId } });
-    expect(await caughtCode(() => previewFallDraftGeneration({ ...scope(f, f.regularUserId), semantics }))).toBe("unauthorized_actor");
-    expect(await caughtCode(() => previewFallDraftGeneration({ ...scope(f, other.actorUserId), semantics }))).toBe("unauthorized_actor");
-    expect(await caughtCode(() => previewFallDraftGeneration({ organizationId: other.organizationId, leagueId: f.leagueId, actorUserId: other.actorUserId, semantics }))).toBe("league_not_found");
+    await expect(previewFallDraftGeneration(scope(f))).resolves.toMatchObject({ operatorScope: { organizationId: f.organizationId } });
+    await expect(previewFallDraftGeneration(scope(f, f.systemAdminUserId))).resolves.toMatchObject({ operatorScope: { organizationId: f.organizationId } });
+    expect(await caughtCode(() => previewFallDraftGeneration(scope(f, f.regularUserId)))).toBe("unauthorized_actor");
+    expect(await caughtCode(() => previewFallDraftGeneration(scope(f, other.actorUserId)))).toBe("unauthorized_actor");
+    expect(await caughtCode(() => previewFallDraftGeneration({ organizationId: other.organizationId, leagueId: f.leagueId, actorUserId: other.actorUserId }))).toBe("league_not_found");
   });
 
   it.each([
@@ -517,14 +519,14 @@ describe("C1 atomic draft creation", () => {
     "after_discrepancies",
   ] as const)("rolls back the complete C1 transaction after %s", async (failureInjection) => {
     const f = await fixture(`rollback-${failureInjection}`);
-    const preview = await previewFallDraftGeneration({ ...scope(f), semantics });
+    const preview = await previewFallDraftGeneration(scope(f));
     await expect(applyFallDraftGeneration({ ...scope(f), apply: applyRequest(preview), failureInjection })).rejects.toMatchObject({ code: "transaction_failure" });
     expect(Object.values(await canonicalCounts(f)).every((count) => count === 0)).toBe(true);
   });
 
   it("enforces only coherent cancelled-draft tuples while retaining prior lifecycle constraints", async () => {
     const f = await fixture("cancelled-constraint");
-    const preview = await previewFallDraftGeneration({ ...scope(f), semantics });
+    const preview = await previewFallDraftGeneration(scope(f));
     await applyFallDraftGeneration({ ...scope(f), apply: applyRequest(preview) });
     const [cancelled] = await db.select().from(leagueOccurrences).where(and(eq(leagueOccurrences.leagueId, f.leagueId), eq(leagueOccurrences.status, "cancelled")));
     const [scheduled] = await db.select().from(leagueOccurrences).where(and(eq(leagueOccurrences.leagueId, f.leagueId), eq(leagueOccurrences.status, "scheduled")));

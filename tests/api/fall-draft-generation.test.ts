@@ -19,8 +19,7 @@ const db = getTestDb();
 const suffix = `${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
 const password = "C1-api-local-password-1!";
 const previewBody = {
-  contractVersion: "fall-draft-preview-request/2",
-  billingOrdinalPolicy: "planned_slot",
+  contractVersion: "fall-draft-preview-request/3",
 };
 
 interface ApiFixture {
@@ -86,14 +85,13 @@ describe("C1 Fall draft API", () => {
     expect(previewResponse.data).toMatchObject({
       success: true,
       data: {
-        previewContractVersion: "fall-draft-generation-preview/2",
-        semantics: { paymentMode: "weekly", regularSessionBillingPolicy: "eligible_bowlers" },
+        previewContractVersion: "fall-draft-generation-preview/3",
+        semantics: { paymentMode: "weekly", regularSessionBillingPolicy: "eligible_bowlers", billingOrdinalPolicy: "dense_billable" },
       },
     });
     const preview = previewResponse.data.data as FallDraftPreview;
     const applyResponse = await apiPost<FallDraftApplyResult>(`/api/leagues/${primary.leagueId}/canonical-fall-drafts/apply`, {
-      contractVersion: "fall-draft-apply-request/2",
-      billingOrdinalPolicy: "planned_slot",
+      contractVersion: "fall-draft-apply-request/3",
       confirmedPreviewFingerprint: preview.previewFingerprint,
       reason: "C1 API reviewed draft creation",
       idempotencyKey: `c1-api-${primary.leagueId}`,
@@ -102,8 +100,7 @@ describe("C1 Fall draft API", () => {
     expect(applyResponse.data.data).toMatchObject({ mode: "applied", writesPerformed: true, relationshipsCreated: false });
 
     const retryResponse = await apiPost<FallDraftApplyResult>(`/api/leagues/${primary.leagueId}/canonical-fall-drafts/apply`, {
-      contractVersion: "fall-draft-apply-request/2",
-      billingOrdinalPolicy: "planned_slot",
+      contractVersion: "fall-draft-apply-request/3",
       confirmedPreviewFingerprint: preview.previewFingerprint,
       reason: "C1 API reviewed draft creation",
       idempotencyKey: `c1-api-${primary.leagueId}`,
@@ -169,6 +166,25 @@ describe("C1 Fall draft API", () => {
     }, other.admin);
     expect(billingOverride.status).toBe(400);
     expect(billingOverride.data.error?.code).toBe("VALIDATION_ERROR");
+
+    for (const billingOrdinalPolicy of ["planned_slot", "dense_billable"] as const) {
+      const ordinalOverride = await apiPost(`/api/leagues/${other.leagueId}/canonical-fall-drafts/preview`, {
+        ...previewBody,
+        billingOrdinalPolicy,
+      }, other.admin);
+      expect(ordinalOverride.status).toBe(400);
+      expect(ordinalOverride.data.error?.code).toBe("VALIDATION_ERROR");
+    }
+
+    const retiredApplyField = await apiPost(`/api/leagues/${other.leagueId}/canonical-fall-drafts/apply`, {
+      contractVersion: "fall-draft-apply-request/3",
+      billingOrdinalPolicy: "dense_billable",
+      confirmedPreviewFingerprint: "a".repeat(64),
+      reason: "Retired caller-selected policy",
+      idempotencyKey: `retired-policy-${other.leagueId}`,
+    }, other.admin);
+    expect(retiredApplyField.status).toBe(400);
+    expect(retiredApplyField.data.error?.code).toBe("VALIDATION_ERROR");
   });
 
   it("provides authenticated C2 review, stale protection, publication, and published-future cancellation", async () => {
@@ -226,6 +242,7 @@ describe("C1 Fall draft API", () => {
     const published = approved.data.data as FallDraftMutationResult;
     const scheduled = published.review.occurrences.find((row) => row.status === "scheduled");
     if (!scheduled) throw new Error("C2 API published fixture has no scheduled occurrence");
+    const publishedOrdinals = new Map(published.review.billingTerms.map((row) => [row.id, row.billingOrdinal]));
     const cancelled = await apiPost<FallDraftMutationResult>(`${path}/cancel`, {
       contractVersion: "fall-draft-cancel-request/1",
       confirmedReviewFingerprint: published.review.reviewFingerprint,
@@ -238,6 +255,16 @@ describe("C1 Fall draft API", () => {
     expect(cancelled.data.data?.review.occurrences.find((row) => row.id === scheduled.id)).toMatchObject({
       id: scheduled.id, generationKey: scheduled.generationKey, lifecycle: "published", status: "cancelled",
     });
+    const cancelledPublishedTerm = cancelled.data.data?.review.billingTerms.find((row) => row.occurrenceId === scheduled.id);
+    expect(cancelledPublishedTerm).toMatchObject({
+      obligationPolicy: "none",
+      defaultAmountMinor: 0,
+      billingOrdinal: null,
+      state: "published",
+    });
+    for (const term of cancelled.data.data?.review.billingTerms ?? []) {
+      if (term.occurrenceId !== scheduled.id) expect(term.billingOrdinal).toBe(publishedOrdinals.get(term.id));
+    }
     const transitionedStatus = await apiGet<FallDraftPersistedView>(
       `/api/leagues/${primary.leagueId}/canonical-fall-drafts`,
       primary.admin,

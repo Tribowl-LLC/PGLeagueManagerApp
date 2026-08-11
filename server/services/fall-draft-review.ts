@@ -45,6 +45,7 @@ import {
 } from "@shared/fall-draft-review";
 import {
   FALL_DRAFT_AMBIGUOUS_FOLD_POLICY,
+  FALL_DRAFT_BILLING_ORDINAL_POLICY,
   FALL_DRAFT_CURRENCY,
   fallDraftRegularSessionBillingPolicyForPaymentMode,
   fallDraftCandidateSetFingerprint,
@@ -65,7 +66,7 @@ import {
   fallDraftDatabaseTransactionTime,
   isFallDraftInputSnapshotFamily,
   resolveFallDraftInputSnapshot,
-  type FallDraftInputSnapshot,
+  type ResolvedFallDraftInputSnapshot,
   type FallDraftScope,
 } from "./fall-draft-generation.js";
 
@@ -109,7 +110,7 @@ export type FallDraftReviewFailureStage =
 
 interface ReviewRows {
   run: LeagueOccurrenceGenerationRun;
-  snapshot: FallDraftInputSnapshot;
+  snapshot: ResolvedFallDraftInputSnapshot;
   generation: CanonicalGenerationResult;
   commands: LeagueScheduleCommand[];
   occurrences: LeagueOccurrence[];
@@ -294,11 +295,11 @@ async function loadRows(tx: LeagueScheduleTransaction, scope: FallDraftScope, lo
   }));
   if (resolvedRuns.some(({ run, snapshot }) => isFallDraftInputSnapshotFamily(run.normalizedInputSnapshot)
     && snapshot === null)) {
-    throw new FallDraftReviewError("incompatible_canonical_state", "the league contains an unsupported C1 input snapshot version");
+    throw new FallDraftReviewError("incompatible_canonical_state", "the league contains an unsupported or semantically incompatible C1 input snapshot");
   }
   const c1Runs = resolvedRuns.filter((entry): entry is {
     run: LeagueOccurrenceGenerationRun;
-    snapshot: FallDraftInputSnapshot;
+    snapshot: ResolvedFallDraftInputSnapshot;
   } => entry.snapshot !== null);
   if (c1Runs.length === 0) throw new FallDraftReviewError("c1_run_not_found", "no C1 Fall generation run exists for this league");
   if (c1Runs.length !== 1) throw new FallDraftReviewError("incompatible_canonical_state", "multiple C1 Fall generation runs exist for this league");
@@ -858,7 +859,7 @@ async function recomputeDraftBillingOrdinals(
   commandId: string,
   overrides: Map<string, LeagueOccurrenceBillingTerm>,
 ): Promise<string[]> {
-  if (rows.generation.normalizedInput.billingOrdinalPolicy !== "dense_billable") return [];
+  if (rows.generation.normalizedInput.billingOrdinalPolicy !== FALL_DRAFT_BILLING_ORDINAL_POLICY) return [];
   const occurrences = [...rows.occurrences].sort((left, right) => (left.plannedOrdinal ?? 0) - (right.plannedOrdinal ?? 0));
   let ordinal = 0;
   const changed: string[] = [];

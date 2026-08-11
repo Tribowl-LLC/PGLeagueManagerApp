@@ -67,6 +67,17 @@ modes retain per-session bowling obligations: prepaid means the season was
 collected in advance, not that the sessions are nonbillable. Once canonical
 schedule evidence exists, ordinary league editing cannot change this setting.
 
+Fall canonical schedule generation has one server-authoritative billing ordinal
+policy: `dense_billable`. New weekly and upfront Fall drafts both number only
+actual billable bowling sessions, so cancelled sessions have null billing data
+and later draft ordinals close the gap. Clients do not select or submit this
+policy. C1 request and input-snapshot versions must be advanced when this input
+contract changes, and strict validation must reject retired policy fields.
+Historical versioned C1 evidence is immutable: stored `planned_slot` semantics
+remain readable and govern C2 cancellation/restoration where supported. They must
+never be rewritten or silently treated as dense billable. Draft dense ordinals
+may be renumbered after cancellation; published billing ordinals never are.
+
 Required weekly payer count and substitute-payer assignment are separate from
 payment timing. A future money-consumer cutover must model the league's three-
 or four-bowler team requirement and the actual bowlers responsible for each

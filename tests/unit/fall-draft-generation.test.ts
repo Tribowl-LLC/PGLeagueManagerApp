@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { generateCanonicalOccurrences } from "@shared/canonical-occurrence-generator";
 import {
   FALL_DRAFT_APPLY_REQUEST_VERSION,
+  FALL_DRAFT_BILLING_ORDINAL_POLICY,
   FALL_DRAFT_PREVIEW_REQUEST_VERSION,
   fallDraftApplyRequestSchema,
   fallDraftCandidateSetFingerprint,
@@ -61,7 +62,7 @@ describe("C1 semantic fingerprints", () => {
 
   it("excludes only the previewFingerprint field from the preview fingerprint", () => {
     const semantic = {
-      previewContractVersion: "fall-draft-generation-preview/2",
+      previewContractVersion: "fall-draft-generation-preview/3",
       operatorScope: { organizationId: 4, leagueId: 9, locationId: 12 },
       semantics: { currency: "USD", ambiguousFold: "reject" },
       occurrenceCandidates: generation.occurrenceCandidates,
@@ -76,23 +77,19 @@ describe("C1 semantic fingerprints", () => {
 });
 
 describe("C1 fixed system policy contracts", () => {
-  const semantics = {
-    billingOrdinalPolicy: "planned_slot",
-  } as const;
-
-  it("accepts only version 2 requests without a caller-selected ambiguous-fold policy", () => {
+  it("accepts only version 3 requests without caller-selected generator policy", () => {
     const previewRequest = {
       contractVersion: FALL_DRAFT_PREVIEW_REQUEST_VERSION,
-      ...semantics,
     };
     expect(fallDraftPreviewRequestSchema.parse(previewRequest)).toEqual(previewRequest);
     expect(() => fallDraftPreviewRequestSchema.parse({ ...previewRequest, ambiguousFold: "later" })).toThrow();
     expect(() => fallDraftPreviewRequestSchema.parse({ ...previewRequest, currency: "CAD" })).toThrow();
     expect(() => fallDraftPreviewRequestSchema.parse({ ...previewRequest, regularSessionBillingPolicy: "none" })).toThrow();
+    expect(() => fallDraftPreviewRequestSchema.parse({ ...previewRequest, billingOrdinalPolicy: "dense_billable" })).toThrow();
+    expect(() => fallDraftPreviewRequestSchema.parse({ ...previewRequest, billingOrdinalPolicy: "planned_slot" })).toThrow();
 
     const applyRequest = {
       contractVersion: FALL_DRAFT_APPLY_REQUEST_VERSION,
-      ...semantics,
       confirmedPreviewFingerprint: "a".repeat(64),
       reason: "Create the reviewed Fall draft set",
       idempotencyKey: "fixed-fold-policy",
@@ -101,6 +98,12 @@ describe("C1 fixed system policy contracts", () => {
     expect(() => fallDraftApplyRequestSchema.parse({ ...applyRequest, ambiguousFold: "earlier" })).toThrow();
     expect(() => fallDraftApplyRequestSchema.parse({ ...applyRequest, currency: "EUR" })).toThrow();
     expect(() => fallDraftApplyRequestSchema.parse({ ...applyRequest, regularSessionBillingPolicy: "none" })).toThrow();
+    expect(() => fallDraftApplyRequestSchema.parse({ ...applyRequest, billingOrdinalPolicy: "dense_billable" })).toThrow();
+    expect(() => fallDraftApplyRequestSchema.parse({ ...applyRequest, billingOrdinalPolicy: "planned_slot" })).toThrow();
+  });
+
+  it("defines one fixed dense-billable Fall policy", () => {
+    expect(FALL_DRAFT_BILLING_ORDINAL_POLICY).toBe("dense_billable");
   });
 
   it("keeps weekly obligations for both weekly and prepaid collection timing", () => {

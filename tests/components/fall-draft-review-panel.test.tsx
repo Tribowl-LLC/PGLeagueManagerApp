@@ -21,7 +21,7 @@ const review: FallDraftReview = {
     generatorVersion: "canonical-occurrence-generator/1",
     inputFingerprint: "b".repeat(64),
     sourceScheduleRevision: 1,
-    normalizedInputSnapshot: { snapshotContractVersion: "fall-draft-generation-input-snapshot/2", paymentMode: "weekly" },
+    normalizedInputSnapshot: { snapshotContractVersion: "fall-draft-generation-input-snapshot/3", paymentMode: "weekly" },
     rangeStartDate: "2032-08-01",
     rangeEndDate: "2032-08-08",
     candidateOccurrenceCount: 1,
@@ -39,7 +39,7 @@ const review: FallDraftReview = {
     supersededByCommandId: null,
   },
   c1: {
-    inputSnapshotVersion: "fall-draft-generation-input-snapshot/2",
+    inputSnapshotVersion: "fall-draft-generation-input-snapshot/3",
     paymentMode: "weekly",
     confirmedPreviewFingerprint: "c".repeat(64),
     candidateSetFingerprint: "d".repeat(64),
