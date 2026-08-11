@@ -18,7 +18,11 @@ import {
   payments,
   users,
 } from "@shared/schema";
-import type { FallDraftGeneratorSemantics, FallDraftPreview } from "@shared/fall-draft-generation";
+import { generateCanonicalOccurrences } from "@shared/canonical-occurrence-generator";
+import {
+  fallDraftCandidateSetFingerprint,
+  type FallDraftPreview,
+} from "@shared/fall-draft-generation";
 import {
   FALL_DRAFT_APPROVE_REQUEST_VERSION,
   FALL_DRAFT_CANCEL_REQUEST_VERSION,
@@ -48,10 +52,6 @@ import { getTestDb } from "../setup/test-db";
 const db = getTestDb();
 const organizationsToDelete: number[] = [];
 let sequence = 0;
-
-const semantics: FallDraftGeneratorSemantics = {
-  billingOrdinalPolicy: "dense_billable",
-};
 
 async function fixture(label: string, overrides: Partial<typeof leagues.$inferInsert> = {}) {
   const unique = `c2-${label}-${++sequence}`;
@@ -87,19 +87,48 @@ function scope(fixtureValue: Awaited<ReturnType<typeof fixture>>, actorUserId = 
   return { organizationId: fixtureValue.organizationId, leagueId: fixtureValue.leagueId, actorUserId };
 }
 
-async function generateDraft(fixtureValue: Awaited<ReturnType<typeof fixture>>, customSemantics = semantics): Promise<FallDraftPreview> {
-  const preview = await previewFallDraftGeneration({ ...scope(fixtureValue), semantics: customSemantics });
+async function generateDraft(fixtureValue: Awaited<ReturnType<typeof fixture>>): Promise<FallDraftPreview> {
+  const preview = await previewFallDraftGeneration(scope(fixtureValue));
   await applyFallDraftGeneration({
     ...scope(fixtureValue),
     apply: {
-      contractVersion: "fall-draft-apply-request/2",
-      ...customSemantics,
+      contractVersion: "fall-draft-apply-request/3",
       confirmedPreviewFingerprint: preview.previewFingerprint,
       reason: "Create deterministic C2 test draft",
       idempotencyKey: `c2-generate-${fixtureValue.leagueId}`,
     },
   });
   return preview;
+}
+
+async function convertFixtureToLegacyPlannedSlotV2(
+  fixtureValue: Awaited<ReturnType<typeof fixture>>,
+): Promise<void> {
+  const [run] = await db.select().from(leagueOccurrenceGenerationRuns)
+    .where(eq(leagueOccurrenceGenerationRuns.leagueId, fixtureValue.leagueId));
+  if (!run || !run.normalizedInputSnapshot || typeof run.normalizedInputSnapshot !== "object"
+    || Array.isArray(run.normalizedInputSnapshot)) throw new Error("C1 snapshot fixture failed");
+  const currentSnapshot = structuredClone(run.normalizedInputSnapshot) as Record<string, unknown>;
+  const currentNormalized = currentSnapshot.normalizedInput;
+  if (!currentNormalized || typeof currentNormalized !== "object" || Array.isArray(currentNormalized)) {
+    throw new Error("C1 normalized-input fixture failed");
+  }
+  const legacyGeneration = generateCanonicalOccurrences({
+    ...(currentNormalized as Parameters<typeof generateCanonicalOccurrences>[0]),
+    billingOrdinalPolicy: "planned_slot",
+  });
+  if (legacyGeneration.fatalErrors.length > 0) throw new Error("legacy planned-slot fixture did not regenerate");
+  const legacySnapshot = {
+    snapshotContractVersion: "fall-draft-generation-input-snapshot/2",
+    confirmedPreviewFingerprint: currentSnapshot.confirmedPreviewFingerprint,
+    candidateSetFingerprint: fallDraftCandidateSetFingerprint(legacyGeneration),
+    paymentMode: currentSnapshot.paymentMode,
+    normalizedInput: legacyGeneration.normalizedInput,
+  };
+  await db.update(leagueOccurrenceGenerationRuns).set({
+    inputFingerprint: legacyGeneration.inputFingerprint,
+    normalizedInputSnapshot: legacySnapshot,
+  }).where(eq(leagueOccurrenceGenerationRuns.id, run.id));
 }
 
 async function caughtCode(callback: () => Promise<unknown>): Promise<string | undefined> {
@@ -164,6 +193,29 @@ describe("C2 Fall draft persisted review and editing", () => {
       .from(leagueOccurrenceGenerationRuns)
       .where(eq(leagueOccurrenceGenerationRuns.id, run.id));
     expect(afterRejection?.snapshot).toEqual(legacySnapshot);
+  });
+
+  it("fails closed instead of reinterpreting planned-slot evidence labeled as the current contract", async () => {
+    const f = await fixture("invalid-current-planned-slot");
+    await generateDraft(f);
+    const [run] = await db.select().from(leagueOccurrenceGenerationRuns)
+      .where(eq(leagueOccurrenceGenerationRuns.leagueId, f.leagueId));
+    if (!run || !run.normalizedInputSnapshot || typeof run.normalizedInputSnapshot !== "object"
+      || Array.isArray(run.normalizedInputSnapshot)) throw new Error("C1 snapshot fixture failed");
+    const incompatible = structuredClone(run.normalizedInputSnapshot) as Record<string, unknown>;
+    incompatible.normalizedInput = {
+      ...(incompatible.normalizedInput as Record<string, unknown>),
+      billingOrdinalPolicy: "planned_slot",
+    };
+    await db.update(leagueOccurrenceGenerationRuns)
+      .set({ normalizedInputSnapshot: incompatible })
+      .where(eq(leagueOccurrenceGenerationRuns.id, run.id));
+
+    expect(await caughtCode(() => loadFallDraftReview(scope(f)))).toBe("incompatible_canonical_state");
+    const [reread] = await db.select({ snapshot: leagueOccurrenceGenerationRuns.normalizedInputSnapshot })
+      .from(leagueOccurrenceGenerationRuns)
+      .where(eq(leagueOccurrenceGenerationRuns.id, run.id));
+    expect(reread?.snapshot).toEqual(incompatible);
   });
 
   it("builds a deterministic complete review and rejects stale review and entity revisions", async () => {
@@ -338,11 +390,16 @@ describe("C2 Fall draft persisted review and editing", () => {
     });
   });
 
-  it("preserves planned-slot billing gaps and restores the original planned billing ordinal", async () => {
+  it("preserves version-2 planned-slot evidence without reinterpreting it as the new policy", async () => {
     const f = await fixture("planned-cancel-restore");
-    const plannedSemantics: FallDraftGeneratorSemantics = { ...semantics, billingOrdinalPolicy: "planned_slot" };
-    await generateDraft(f, plannedSemantics);
+    await generateDraft(f);
+    await convertFixtureToLegacyPlannedSlotV2(f);
     const review = await loadFallDraftReview(scope(f));
+    expect(review.c1.inputSnapshotVersion).toBe("fall-draft-generation-input-snapshot/2");
+    expect(review.generationRun.normalizedInputSnapshot).toMatchObject({
+      snapshotContractVersion: "fall-draft-generation-input-snapshot/2",
+      normalizedInput: { billingOrdinalPolicy: "planned_slot" },
+    });
     const target = review.occurrences[1];
     const cancelled = await cancelFallDraftOccurrence({
       ...scope(f),

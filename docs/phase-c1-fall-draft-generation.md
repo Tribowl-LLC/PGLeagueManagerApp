@@ -9,23 +9,26 @@ approve, reject, publish, lock, edit, discard, or consume the drafts.
 
 ## Contracts and versions
 
-- preview request: `fall-draft-preview-request/2`
-- semantic preview: `fall-draft-generation-preview/2`
-- apply request: `fall-draft-apply-request/2`
-- apply/persisted result: `fall-draft-generation-result/2`
-- implementation: `fall-draft-generation/2`
+- preview request: `fall-draft-preview-request/3`
+- semantic preview: `fall-draft-generation-preview/3`
+- apply request: `fall-draft-apply-request/3`
+- apply/persisted result: `fall-draft-generation-result/3`
+- implementation: `fall-draft-generation/3`
 - draft mapping: `fall-draft-mapping/1`
-- input snapshot: `fall-draft-generation-input-snapshot/2`
+- input snapshot: `fall-draft-generation-input-snapshot/3`
 - initial occurrence, billing-term, and exception snapshot schema: version 1
 - command fingerprint envelope: `lvcanoncmd:v1:<lowercase-sha256>`
 
 C1 exposes, but does not change, the merged A2 generator, input, result, and DST
-resolver versions. Request bodies are strict. The caller supplies only the
-contract version and billing ordinal policy; occurrence candidates,
-tenant identity, schedule fields, and request fingerprints are never accepted
-as authoritative input. Fall draft generation always uses
-`ambiguousFold = "reject"` and `currency = "USD"`; callers cannot override
-either system policy or regular-session billing policy.
+resolver versions. Request bodies are strict. Preview callers supply only the
+request contract version. Apply callers additionally supply the confirmed
+preview fingerprint, reason, and idempotency key. Occurrence candidates, tenant
+identity, schedule fields, request fingerprints, and generator policy are never
+accepted as authoritative input. Fall draft generation always uses
+`ambiguousFold = "reject"`, `currency = "USD"`, and
+`billingOrdinalPolicy = "dense_billable"`; callers cannot override those system
+policies or regular-session billing policy. The retired caller field is rejected
+by strict v3 request validation rather than ignored.
 
 ## Eligibility and authoritative input
 
@@ -47,8 +50,10 @@ PostgreSQL `transaction_timestamp()`; one started slot rejects the whole request
 Apply repeats all checks while holding the league lock because preview is not a
 reservation.
 
-The administrator must explicitly choose the billing ordinal policy:
-`planned_slot` or `dense_billable`.
+The shared server-authoritative Fall policy is `dense_billable` for every newly
+generated league, whether its payment mode is weekly or upfront. Billing ordinals
+therefore sequence actual billable bowling sessions: a cancelled session has no
+billing ordinal and later billable sessions do not retain a gap.
 
 League setup is authoritative for payment timing: `weekly` means bowlers pay
 week by week, while `upfront` means the full-season amount is collected in
@@ -90,8 +95,8 @@ preview, excluding only the fingerprint field itself. Arrays are sorted before
 construction. Runtime time, random UUIDs, credentials, provider/encrypted data,
 and personal/payment identities are excluded. PostgreSQL transaction time is
 used only as an eligibility check and does not enter the preview. Repeating a
-preview against identical authoritative state and semantics therefore produces
-the same fingerprint.
+preview against identical authoritative state and the fixed Fall semantics
+therefore produces the same fingerprint.
 
 Legacy `double_pay_dates` are displayed only as excluded collection evidence.
 They do not enter A2 input, physical or candidate fingerprints, occurrence or
@@ -102,9 +107,10 @@ does not alter physical generation or billing policy rows.
 
 ## Atomic apply, staleness, and draft mapping
 
-`POST /api/leagues/:id/canonical-fall-drafts/apply` requires the caller-supplied billing ordinal policy,
-the confirmed preview fingerprint, and trimmed nonempty reason and idempotency
-key. In one uninterrupted transaction it acquires the shared A2 league advisory
+`POST /api/leagues/:id/canonical-fall-drafts/apply` requires the confirmed
+preview fingerprint and trimmed nonempty reason and idempotency key. The server
+derives `dense_billable` again; it does not trust the confirmed client request to
+carry generator policy. In one uninterrupted transaction it acquires the shared A2 league advisory
 lock, proves tenant and actor, reloads authoritative input, allocates the next
 source revision, regenerates through A2, rebuilds and verifies the preview,
 rechecks future eligibility, validates same-day/exact-start/exception collisions,
@@ -158,8 +164,8 @@ another durable shared database. C1 adds no environment variables.
 The operation fingerprint covers tenant, league, actor, trimmed reason and key,
 confirmed preview, normalized A2 input, allocated source revision, candidate-set
 fingerprint, authoritative payment mode, the fixed reject fold policy, fixed USD
-currency, derived billing policy, explicit ordinal policy, and C1 mapping/version
-semantics. Related cancellation and exception command keys are deterministic
+currency, derived billing policy, fixed dense-billable ordinal policy, and C1
+mapping/version semantics. Related cancellation and exception command keys are deterministic
 derivations of the operator key and command role.
 
 Under the league lock, an exact same-key/same-payload retry verifies the complete
@@ -179,13 +185,17 @@ draft remains readable and reports `currentInputMatches: false`. Later legacy
 edits do not rewrite or regenerate the drafts. An administrator may preview again
 for read-only review, but cannot create a second generation.
 
-The persisted reader provides a zero-write transition for input snapshot version
-1. A version-1 snapshot is accepted only when its recorded fold, currency, and
-regular-session billing semantics already equal the fixed version-2 policies; the
-current authoritative league payment mode is then added to the in-memory view.
-The stored snapshot and its fingerprints are never rewritten. Compatible legacy
-drafts transition directly to C2 review instead of attempting a version-2 C1
-idempotency retry; semantically incompatible legacy snapshots still fail closed.
+The persisted reader provides a zero-write transition for input snapshot versions
+1 and 2. A version-1 snapshot is accepted only when its recorded fold, currency,
+regular-session billing, and ordinal semantics are supported; the current
+authoritative league payment mode is then added to the in-memory view. Version 2
+uses its recorded payment mode and ordinal policy. In both cases the stored
+snapshot, rows, revisions, and fingerprints are never rewritten. A historical
+`planned_slot` draft remains `planned_slot` for C2 review, cancellation, and
+restoration; it is never silently reinterpreted as dense billable. Compatible
+legacy drafts transition directly to C2 instead of attempting a v3 C1 idempotency
+retry. Unsupported semantics, including a v3 snapshot that claims a non-dense
+ordinal policy, fail closed as incompatible canonical state.
 
 After a C2 mutation advances an entity revision or terminalizes the generation
 run, this C1 status endpoint reports `found: true`, `transitionedToC2: true`, and
@@ -201,12 +211,14 @@ explicit `organizationId` query scope. Normal users, cross-tenant admins,
 org-less/missing leagues, and cross-tenant locations fail without exposing the
 target row. Actor and normal tenant scope always come from the session.
 
-The league administration card exposes the billing ordinal control, authoritative
-payment timing and derived obligation evidence, explicit
+The league administration card exposes authoritative payment timing and derived
+obligation evidence, explicit
 preview and confirmation actions, accessible labels and focus movement, loading,
 empty, validation, stale, retry, failure, and success states, a responsive
 candidate table, skip/cancellation/DST/numbering/billing/discrepancy evidence,
-fingerprints and proposed revision, and a persisted-draft staleness view.
+fingerprints and proposed revision, and a persisted-draft staleness view. There
+is no generator-settings or billing-ordinal selector. Preview remains available
+immediately because the server owns all generation policy.
 
 Operationally, authorization/not-found failures should be treated as scope
 errors; eligibility and generator failures require correcting authoritative
@@ -221,7 +233,8 @@ C2 now consumes only the versioned C1 input snapshot and implements audited
 future reschedule/cancel/restore, exact persisted review, discrepancy
 disposition, atomic approval/publication, and terminal rejection as documented
 in `docs/phase-c2-fall-draft-review-approval.md`. C1 generation itself remains
-draft-only and unchanged. D1/D2 remain
+draft-only. This v3 contract and policy change requires no database migration or
+production data rewrite. D1/D2 remain
 responsible for legacy dual-write/comparison and downstream transition. E1
 remains the calendar/schedule/admin consumer cutover. C1 does not update legacy
 games, schedules, scores, or payments and does not introduce workers, rollover,

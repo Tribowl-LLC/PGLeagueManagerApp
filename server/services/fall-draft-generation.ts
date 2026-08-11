@@ -26,6 +26,7 @@ import {
   CANONICAL_OCCURRENCE_INPUT_CONTRACT_VERSION,
   CANONICAL_OCCURRENCE_RESULT_CONTRACT_VERSION,
   generateCanonicalOccurrences,
+  type BillingOrdinalPolicy,
   type CanonicalGenerationResult,
   type CanonicalNormalizedInput,
 } from "@shared/canonical-occurrence-generator";
@@ -43,6 +44,7 @@ import {
   FALL_DRAFT_AMBIGUOUS_FOLD_POLICY,
   FALL_DRAFT_APPLY_REQUEST_VERSION,
   FALL_DRAFT_APPLY_RESULT_VERSION,
+  FALL_DRAFT_BILLING_ORDINAL_POLICY,
   FALL_DRAFT_BILLING_TERM_REVISION_SNAPSHOT_VERSION,
   FALL_DRAFT_EXCEPTION_REVISION_SNAPSHOT_VERSION,
   FALL_DRAFT_CURRENCY,
@@ -59,7 +61,6 @@ import {
   type FallDraftApplyRequest,
   type FallDraftApplyResult,
   type FallDraftExistingCanonicalState,
-  type FallDraftGeneratorSemantics,
   type FallDraftPersistedView,
   type FallDraftPreview,
 } from "@shared/fall-draft-generation";
@@ -75,8 +76,9 @@ import {
 } from "./canonical-occurrence-transactions.js";
 import { lockLeagueSchedule, type LeagueScheduleTransaction } from "../storage/league-schedule-lock.js";
 
-export const FALL_DRAFT_INPUT_SNAPSHOT_VERSION = "fall-draft-generation-input-snapshot/2";
-export const FALL_DRAFT_LEGACY_INPUT_SNAPSHOT_VERSION = "fall-draft-generation-input-snapshot/1";
+export const FALL_DRAFT_INPUT_SNAPSHOT_VERSION = "fall-draft-generation-input-snapshot/3";
+export const FALL_DRAFT_LEGACY_INPUT_SNAPSHOT_VERSION_2 = "fall-draft-generation-input-snapshot/2";
+export const FALL_DRAFT_LEGACY_INPUT_SNAPSHOT_VERSION_1 = "fall-draft-generation-input-snapshot/1";
 
 export type FallDraftGenerationErrorCode =
   | "invalid_scope"
@@ -137,11 +139,30 @@ export interface FallDraftInputSnapshot {
   normalizedInput: CanonicalNormalizedInput;
 }
 
-interface FallDraftLegacyInputSnapshot {
-  snapshotContractVersion: typeof FALL_DRAFT_LEGACY_INPUT_SNAPSHOT_VERSION;
+interface FallDraftLegacyInputSnapshotV2 {
+  snapshotContractVersion: typeof FALL_DRAFT_LEGACY_INPUT_SNAPSHOT_VERSION_2;
+  confirmedPreviewFingerprint: string;
+  candidateSetFingerprint: string;
+  paymentMode: PaymentMode;
+  normalizedInput: CanonicalNormalizedInput;
+}
+
+interface FallDraftLegacyInputSnapshotV1 {
+  snapshotContractVersion: typeof FALL_DRAFT_LEGACY_INPUT_SNAPSHOT_VERSION_1;
   confirmedPreviewFingerprint: string;
   candidateSetFingerprint: string;
   normalizedInput: CanonicalNormalizedInput;
+}
+
+export interface ResolvedFallDraftInputSnapshot {
+  snapshotContractVersion: typeof FALL_DRAFT_INPUT_SNAPSHOT_VERSION
+    | typeof FALL_DRAFT_LEGACY_INPUT_SNAPSHOT_VERSION_2
+    | typeof FALL_DRAFT_LEGACY_INPUT_SNAPSHOT_VERSION_1;
+  confirmedPreviewFingerprint: string;
+  candidateSetFingerprint: string;
+  paymentMode: PaymentMode;
+  normalizedInput: CanonicalNormalizedInput;
+  currentContract: boolean;
 }
 
 interface ExpectedCommands {
@@ -404,7 +425,6 @@ function canonicalRowCount(state: FallDraftExistingCanonicalState): number {
 
 function buildPreview(input: {
   scope: FallDraftScope;
-  semantics: FallDraftGeneratorSemantics;
   loaded: LoadedLeague;
   sourceScheduleRevision: number;
   rows: ExistingRows;
@@ -414,7 +434,7 @@ function buildPreview(input: {
     ambiguousFold: FALL_DRAFT_AMBIGUOUS_FOLD_POLICY,
     currency: FALL_DRAFT_CURRENCY,
     regularSessionBillingPolicy: fallDraftRegularSessionBillingPolicyForPaymentMode(input.loaded.paymentMode),
-    billingOrdinalPolicy: input.semantics.billingOrdinalPolicy,
+    billingOrdinalPolicy: FALL_DRAFT_BILLING_ORDINAL_POLICY,
   };
   const generatorInput = createCanonicalGeneratorInputFromLegacyRow(input.loaded.row, {
     organizationId: input.scope.organizationId,
@@ -515,7 +535,7 @@ async function proposedRevision(tx: LeagueScheduleTransaction, scope: FallDraftS
   return (latest?.sourceScheduleRevision ?? 0) + 1;
 }
 
-export async function previewFallDraftGeneration(input: FallDraftScope & { semantics: FallDraftGeneratorSemantics }): Promise<FallDraftPreview> {
+export async function previewFallDraftGeneration(input: FallDraftScope): Promise<FallDraftPreview> {
   return db.transaction(async (tx) => {
     await authorizeFallDraftScope(tx, input);
     const loaded = await loadAuthoritativeLeague(tx, input);
@@ -523,7 +543,7 @@ export async function previewFallDraftGeneration(input: FallDraftScope & { seman
     const revision = await proposedRevision(tx, input);
     const rows = await loadExistingRows(tx, input, false);
     const transactionTime = await fallDraftDatabaseTransactionTime(tx);
-    const preview = buildPreview({ scope: input, semantics: input.semantics, loaded, sourceScheduleRevision: revision, rows });
+    const preview = buildPreview({ scope: input, loaded, sourceScheduleRevision: revision, rows });
     if (preview.fatalErrors.length === 0) {
       assertWhollyFuture(generateCanonicalOccurrences(preview.normalizedInput as Parameters<typeof generateCanonicalOccurrences>[0]), transactionTime);
     }
@@ -706,24 +726,52 @@ export function isFallDraftInputSnapshot(value: unknown): value is FallDraftInpu
     && typeof snapshot.confirmedPreviewFingerprint === "string"
     && typeof snapshot.candidateSetFingerprint === "string"
     && (snapshot.paymentMode === "weekly" || snapshot.paymentMode === "upfront")
-    && !!snapshot.normalizedInput && typeof snapshot.normalizedInput === "object";
+    && !!snapshot.normalizedInput && typeof snapshot.normalizedInput === "object"
+    && snapshot.normalizedInput.billingOrdinalPolicy === FALL_DRAFT_BILLING_ORDINAL_POLICY;
 }
 
-export function isFallDraftLegacyInputSnapshot(value: unknown): value is FallDraftLegacyInputSnapshot {
+export function isFallDraftLegacyInputSnapshotV2(value: unknown): value is FallDraftLegacyInputSnapshotV2 {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const snapshot = value as Partial<FallDraftLegacyInputSnapshot>;
-  return snapshot.snapshotContractVersion === FALL_DRAFT_LEGACY_INPUT_SNAPSHOT_VERSION
+  const snapshot = value as Partial<FallDraftLegacyInputSnapshotV2>;
+  return snapshot.snapshotContractVersion === FALL_DRAFT_LEGACY_INPUT_SNAPSHOT_VERSION_2
     && typeof snapshot.confirmedPreviewFingerprint === "string"
     && typeof snapshot.candidateSetFingerprint === "string"
-    && !!snapshot.normalizedInput && typeof snapshot.normalizedInput === "object";
+    && (snapshot.paymentMode === "weekly" || snapshot.paymentMode === "upfront")
+    && !!snapshot.normalizedInput && typeof snapshot.normalizedInput === "object"
+    && (snapshot.normalizedInput.billingOrdinalPolicy === "planned_slot"
+      || snapshot.normalizedInput.billingOrdinalPolicy === FALL_DRAFT_BILLING_ORDINAL_POLICY);
+}
+
+export function isFallDraftLegacyInputSnapshotV1(value: unknown): value is FallDraftLegacyInputSnapshotV1 {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const snapshot = value as Partial<FallDraftLegacyInputSnapshotV1>;
+  return snapshot.snapshotContractVersion === FALL_DRAFT_LEGACY_INPUT_SNAPSHOT_VERSION_1
+    && typeof snapshot.confirmedPreviewFingerprint === "string"
+    && typeof snapshot.candidateSetFingerprint === "string"
+    && !!snapshot.normalizedInput && typeof snapshot.normalizedInput === "object"
+    && (snapshot.normalizedInput.billingOrdinalPolicy === "planned_slot"
+      || snapshot.normalizedInput.billingOrdinalPolicy === FALL_DRAFT_BILLING_ORDINAL_POLICY);
 }
 
 export function resolveFallDraftInputSnapshot(
   value: unknown,
   paymentMode: PaymentMode,
-): FallDraftInputSnapshot | null {
-  if (isFallDraftInputSnapshot(value)) return value;
-  if (!isFallDraftLegacyInputSnapshot(value)) return null;
+): ResolvedFallDraftInputSnapshot | null {
+  if (isFallDraftInputSnapshot(value)) {
+    const regularSessionBillingPolicy = fallDraftRegularSessionBillingPolicyForPaymentMode(value.paymentMode);
+    if (value.normalizedInput.ambiguousFold !== FALL_DRAFT_AMBIGUOUS_FOLD_POLICY
+      || value.normalizedInput.currency !== FALL_DRAFT_CURRENCY
+      || value.normalizedInput.regularSessionBillingPolicy !== regularSessionBillingPolicy) return null;
+    return { ...value, currentContract: true };
+  }
+  if (isFallDraftLegacyInputSnapshotV2(value)) {
+    const regularSessionBillingPolicy = fallDraftRegularSessionBillingPolicyForPaymentMode(value.paymentMode);
+    if (value.normalizedInput.ambiguousFold !== FALL_DRAFT_AMBIGUOUS_FOLD_POLICY
+      || value.normalizedInput.currency !== FALL_DRAFT_CURRENCY
+      || value.normalizedInput.regularSessionBillingPolicy !== regularSessionBillingPolicy) return null;
+    return { ...value, currentContract: false };
+  }
+  if (!isFallDraftLegacyInputSnapshotV1(value)) return null;
   const regularSessionBillingPolicy = fallDraftRegularSessionBillingPolicyForPaymentMode(paymentMode);
   if (value.normalizedInput.ambiguousFold !== FALL_DRAFT_AMBIGUOUS_FOLD_POLICY
     || value.normalizedInput.currency !== FALL_DRAFT_CURRENCY
@@ -731,11 +779,12 @@ export function resolveFallDraftInputSnapshot(
     return null;
   }
   return {
-    snapshotContractVersion: FALL_DRAFT_INPUT_SNAPSHOT_VERSION,
+    snapshotContractVersion: FALL_DRAFT_LEGACY_INPUT_SNAPSHOT_VERSION_1,
     confirmedPreviewFingerprint: value.confirmedPreviewFingerprint,
     candidateSetFingerprint: value.candidateSetFingerprint,
     paymentMode,
     normalizedInput: value.normalizedInput,
+    currentContract: false,
   };
 }
 
@@ -777,7 +826,7 @@ export async function currentFallDraftInputEvidence(
       ambiguousFold: FALL_DRAFT_AMBIGUOUS_FOLD_POLICY,
       currency: FALL_DRAFT_CURRENCY,
       regularSessionBillingPolicy: fallDraftRegularSessionBillingPolicyForPaymentMode(loaded.paymentMode),
-      billingOrdinalPolicy: normalizedInput.billingOrdinalPolicy as FallDraftGeneratorSemantics["billingOrdinalPolicy"],
+      billingOrdinalPolicy: normalizedInput.billingOrdinalPolicy as BillingOrdinalPolicy,
     });
     if ("failure" in candidate) return { matches: false, currentInputFingerprint: null };
     const currentInputFingerprint = generateCanonicalOccurrences(candidate).inputFingerprint;
@@ -861,7 +910,7 @@ function previewFromPersisted(
   run: LeagueOccurrenceGenerationRun,
   generation: CanonicalGenerationResult,
   rows: ExistingRows,
-  resolvedSnapshot?: FallDraftInputSnapshot,
+  resolvedSnapshot?: ResolvedFallDraftInputSnapshot,
 ): FallDraftPreview {
   const snapshot = resolvedSnapshot ?? run.normalizedInputSnapshot;
   if (!isFallDraftInputSnapshot(snapshot)) throw new FallDraftGenerationError("incompatible_canonical_state", "generation run is not a C1 input snapshot");
@@ -877,7 +926,7 @@ function previewFromPersisted(
     ambiguousFold: FALL_DRAFT_AMBIGUOUS_FOLD_POLICY,
     currency: FALL_DRAFT_CURRENCY,
     regularSessionBillingPolicy,
-    billingOrdinalPolicy: generation.normalizedInput.billingOrdinalPolicy as FallDraftGeneratorSemantics["billingOrdinalPolicy"],
+    billingOrdinalPolicy: FALL_DRAFT_BILLING_ORDINAL_POLICY,
   };
   const without: Omit<FallDraftPreview, "previewFingerprint"> = {
     previewContractVersion: FALL_DRAFT_PREVIEW_CONTRACT_VERSION,
@@ -928,8 +977,7 @@ async function verifyExactRetry(tx: LeagueScheduleTransaction, scope: FallDraftS
     throw new FallDraftGenerationError("incompatible_canonical_state", "persisted C1 generation input no longer regenerates exactly");
   }
   const persistedPreview = previewFromPersisted(scope, run, generation, rows);
-  if (apply.confirmedPreviewFingerprint !== snapshot.confirmedPreviewFingerprint
-    || apply.billingOrdinalPolicy !== persistedPreview.semantics.billingOrdinalPolicy) {
+  if (apply.confirmedPreviewFingerprint !== snapshot.confirmedPreviewFingerprint) {
     throw new FallDraftGenerationError("idempotency_conflict", "idempotency key is bound to different preview or generator semantics");
   }
   const expected = expectedCommands(scope, apply, persistedPreview);
@@ -1079,7 +1127,7 @@ export async function applyFallDraftGeneration(input: FallDraftScope & { apply: 
     const loaded = await loadAuthoritativeLeague(tx, input);
     assertFallLeague(loaded);
     const sourceScheduleRevision = await allocateCanonicalSourceScheduleRevisionInTransaction(tx, input.organizationId, input.leagueId);
-    const preview = buildPreview({ scope: input, semantics: input.apply, loaded, sourceScheduleRevision, rows });
+    const preview = buildPreview({ scope: input, loaded, sourceScheduleRevision, rows });
     if (preview.previewFingerprint !== input.apply.confirmedPreviewFingerprint) {
       throw new FallDraftGenerationError("stale_preview", "confirmed preview no longer matches the authoritative league schedule and canonical state");
     }
@@ -1287,9 +1335,9 @@ export async function loadFallDraftPersistedView(scope: FallDraftScope): Promise
     }));
     if (resolvedRuns.some(({ run, snapshot }) => isFallDraftInputSnapshotFamily(run.normalizedInputSnapshot)
       && snapshot === null)) {
-      throw new FallDraftGenerationError("incompatible_canonical_state", "league contains an unsupported C1 input snapshot version");
+      throw new FallDraftGenerationError("incompatible_canonical_state", "league contains an unsupported or semantically incompatible C1 input snapshot");
     }
-    const c1Runs = resolvedRuns.filter((entry): entry is { run: LeagueOccurrenceGenerationRun; snapshot: FallDraftInputSnapshot } => entry.snapshot !== null);
+    const c1Runs = resolvedRuns.filter((entry): entry is { run: LeagueOccurrenceGenerationRun; snapshot: ResolvedFallDraftInputSnapshot } => entry.snapshot !== null);
     if (c1Runs.length === 0) return {
       found: false,
       result: null,
@@ -1298,8 +1346,7 @@ export async function loadFallDraftPersistedView(scope: FallDraftScope): Promise
     if (c1Runs.length !== 1) throw new FallDraftGenerationError("incompatible_canonical_state", "multiple C1 generation runs exist for the league");
     const { run, snapshot } = c1Runs[0];
     const generation = generateCanonicalOccurrences(snapshot.normalizedInput as Parameters<typeof generateCanonicalOccurrences>[0]);
-    const legacySnapshot = isFallDraftLegacyInputSnapshot(run.normalizedInputSnapshot);
-    const transitionedToC2 = legacySnapshot || run.state !== "generated"
+    const transitionedToC2 = !snapshot.currentContract || run.state !== "generated"
       || rows.occurrences.some((row) => row.currentRevision > 1)
       || rows.terms.some((row) => row.currentRevision > 1)
       || rows.exceptions.some((row) => row.currentRevision > 1)
@@ -1322,7 +1369,6 @@ export async function loadFallDraftPersistedView(scope: FallDraftScope): Promise
       confirmedPreviewFingerprint: snapshot.confirmedPreviewFingerprint,
       reason: command.reason ?? "",
       idempotencyKey: command.idempotencyKey,
-      billingOrdinalPolicy: preview.semantics.billingOrdinalPolicy,
     };
     const result = await verifyExactRetry(tx, { ...scope, actorUserId: command.actorUserId }, apply, rows);
     return {

@@ -14,32 +14,28 @@ import type { PaymentMode } from "./schema/constants";
 export const FALL_DRAFT_AMBIGUOUS_FOLD_POLICY = "reject" as const;
 export const FALL_DRAFT_CURRENCY = "USD" as const;
 export const FALL_DRAFT_REGULAR_SESSION_BILLING_POLICY = "eligible_bowlers" as const;
-export const FALL_DRAFT_PREVIEW_REQUEST_VERSION = "fall-draft-preview-request/2";
-export const FALL_DRAFT_PREVIEW_CONTRACT_VERSION = "fall-draft-generation-preview/2";
-export const FALL_DRAFT_APPLY_REQUEST_VERSION = "fall-draft-apply-request/2";
-export const FALL_DRAFT_APPLY_RESULT_VERSION = "fall-draft-generation-result/2";
-export const FALL_DRAFT_IMPLEMENTATION_VERSION = "fall-draft-generation/2";
+export const FALL_DRAFT_BILLING_ORDINAL_POLICY = "dense_billable" as const satisfies BillingOrdinalPolicy;
+export const FALL_DRAFT_PREVIEW_REQUEST_VERSION = "fall-draft-preview-request/3";
+export const FALL_DRAFT_PREVIEW_CONTRACT_VERSION = "fall-draft-generation-preview/3";
+export const FALL_DRAFT_APPLY_REQUEST_VERSION = "fall-draft-apply-request/3";
+export const FALL_DRAFT_APPLY_RESULT_VERSION = "fall-draft-generation-result/3";
+export const FALL_DRAFT_IMPLEMENTATION_VERSION = "fall-draft-generation/3";
 export const FALL_DRAFT_MAPPING_VERSION = "fall-draft-mapping/1";
 export const FALL_DRAFT_OCCURRENCE_REVISION_SNAPSHOT_VERSION = 1;
 export const FALL_DRAFT_BILLING_TERM_REVISION_SNAPSHOT_VERSION = 1;
 export const FALL_DRAFT_EXCEPTION_REVISION_SNAPSHOT_VERSION = 1;
 
-export const fallDraftGeneratorSemanticsSchema = z.object({
-  billingOrdinalPolicy: z.enum(["planned_slot", "dense_billable"]),
-}).strict();
-
-export const fallDraftPreviewRequestSchema = fallDraftGeneratorSemanticsSchema.extend({
+export const fallDraftPreviewRequestSchema = z.object({
   contractVersion: z.literal(FALL_DRAFT_PREVIEW_REQUEST_VERSION),
 }).strict();
 
-export const fallDraftApplyRequestSchema = fallDraftGeneratorSemanticsSchema.extend({
+export const fallDraftApplyRequestSchema = z.object({
   contractVersion: z.literal(FALL_DRAFT_APPLY_REQUEST_VERSION),
   confirmedPreviewFingerprint: z.string().regex(/^[0-9a-f]{64}$/),
   reason: z.string().min(1).max(2_000).refine((value) => value.trim() === value, "reason must be trimmed"),
   idempotencyKey: z.string().min(1).max(255).refine((value) => value.trim() === value, "idempotencyKey must be trimmed"),
 }).strict();
 
-export type FallDraftGeneratorSemantics = z.infer<typeof fallDraftGeneratorSemanticsSchema>;
 export type FallDraftPreviewRequest = z.infer<typeof fallDraftPreviewRequestSchema>;
 export type FallDraftApplyRequest = z.infer<typeof fallDraftApplyRequestSchema>;
 
@@ -114,7 +110,7 @@ export interface FallDraftPreview {
     ambiguousFold: typeof FALL_DRAFT_AMBIGUOUS_FOLD_POLICY;
     currency: typeof FALL_DRAFT_CURRENCY;
     regularSessionBillingPolicy: typeof FALL_DRAFT_REGULAR_SESSION_BILLING_POLICY;
-    billingOrdinalPolicy: BillingOrdinalPolicy;
+    billingOrdinalPolicy: typeof FALL_DRAFT_BILLING_ORDINAL_POLICY;
   };
   eligibility: {
     active: true;

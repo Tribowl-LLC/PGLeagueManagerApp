@@ -29,6 +29,9 @@ key, and confirmed current review fingerprint. An entity edit also requires
 the occurrence's exact current revision. The caller cannot select actor,
 tenant, authoritative `now`, command attribution, durable state, or ambiguous
 fold handling. Fall rescheduling always uses `ambiguousFold = "reject"`.
+C2 request contracts were not version-bumped for the C1 v3 rollout because they
+never accepted a billing-ordinal policy; C2 continues to consume the stored,
+versioned C1 semantics.
 
 ## Persisted review and fingerprint
 
@@ -40,12 +43,16 @@ mismatch, unsupported command attribution, missing revisions, a non-contiguous
 revision chain, a before/after discontinuity, or a latest revision that does
 not equal the current row.
 
-Semantically compatible C1 input snapshot version 1 remains reviewable through
-the zero-write compatibility reader. It must already record the system-wide
-reject-fold, USD, and eligible-bowler policies; C2 supplies the league's current
-authoritative `payment_mode` only in memory and does not alter the stored legacy
-snapshot. Any version-1 snapshot with different generator semantics remains an
-explicit incompatible-state failure.
+New C1 input snapshot version 3 always records the server-authoritative
+`dense_billable` policy. Semantically compatible C1 input snapshot versions 1
+and 2 remain reviewable through the zero-write compatibility reader. Version 1
+must already record supported reject-fold, USD, eligible-bowler, and ordinal
+semantics; C2 supplies the league's current authoritative `payment_mode` only in
+memory. Version 2 uses its stored payment mode and ordinal semantics. C2 does not
+alter either legacy snapshot, any generated row, revision, or fingerprint.
+Historical `planned_slot` evidence remains planned-slot evidence. An unsupported
+snapshot or a version-3 snapshot claiming another ordinal policy is an explicit
+incompatible-state failure.
 
 The response contains:
 
@@ -122,8 +129,8 @@ ordinal are preserved. Competition numbering is cleared and the row becomes
 noncompetitive/non-standings. Its current term becomes `none`, zero amount,
 and null billing ordinal. Draft `dense_billable` terms are renumbered densely
 in planned order with a complete revision for each changed term;
-`planned_slot` leaves unaffected ordinals unchanged. Published numbering is
-never renumbered. Cancellation metadata uses the database action time and the
+historical `planned_slot` terms leave unaffected ordinals unchanged. Published
+numbering is never renumbered. Cancellation metadata uses the database action time and the
 truthful `cancel` command.
 
 ### Restore
@@ -214,6 +221,8 @@ pre-existing command and exception constraint branch is preserved.
 The migration must be applied by the normal reviewed deployment workflow; C2
 does not apply it to Neon or production. Rollback is restore-based. C2 adds no
 environment variable, worker, scheduler, provider integration, or backfill.
+The C1 v3 dense-billable decision changes application contracts and new snapshot
+contents only; it requires no additional migration or historical data rewrite.
 
 C2 writes only canonical schedule commands, the current C1 run and entities,
 and canonical revision/discrepancy rows. It does not write legacy league

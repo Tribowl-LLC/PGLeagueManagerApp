@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
-import userEvent, { type UserEvent } from "@testing-library/user-event";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FallDraftGenerationCard } from "@/pages/league-view-page/fall-draft-generation-card";
 import * as queryModule from "@/lib/queryClient";
@@ -12,23 +12,23 @@ const physicalFingerprint = "c".repeat(64);
 const candidateFingerprint = "d".repeat(64);
 
 const preview = {
-  previewContractVersion: "fall-draft-generation-preview/2",
-  previewRequestContractVersion: "fall-draft-preview-request/2",
-  implementationVersion: "fall-draft-generation/2",
+  previewContractVersion: "fall-draft-generation-preview/3",
+  previewRequestContractVersion: "fall-draft-preview-request/3",
+  implementationVersion: "fall-draft-generation/3",
   mappingVersion: "fall-draft-mapping/1",
   generatorVersion: "canonical-occurrence-generator/1",
   inputContractVersion: "canonical-occurrence-input/1",
   resultContractVersion: "canonical-occurrence-generation-result/1",
   dstResolverVersion: "canonical-dst-resolver/1;icu=test;tzdata=test",
   operatorScope: { organizationId: 3, leagueId: 7, locationId: 9 },
-  semantics: { paymentMode: "weekly", ambiguousFold: "reject", currency: "USD", regularSessionBillingPolicy: "eligible_bowlers", billingOrdinalPolicy: "planned_slot" },
+  semantics: { paymentMode: "weekly", ambiguousFold: "reject", currency: "USD", regularSessionBillingPolicy: "eligible_bowlers", billingOrdinalPolicy: "dense_billable" },
   eligibility: { active: true, archived: false, seasonClassification: "Fall", whollyFutureFacing: true, eligibleForApply: true, blockers: [] },
   normalizedInput: {
     contractVersion: "canonical-occurrence-input/1",
     organizationId: 3, leagueId: 7, locationId: 9, sourceScheduleRevision: 1,
     seasonStart: "2032-08-01", seasonEnd: "2032-08-22", weekday: "Sunday", localCompetitionStartTime: "19:00:00",
     timezone: "America/New_York", plannedSlotCount: 2, skipExceptions: [], cancelledDates: ["2032-08-08"], ambiguousFold: "reject",
-    defaultWeeklyAmountMinor: 2000, currency: "USD", regularSessionBillingPolicy: "eligible_bowlers", billingOrdinalPolicy: "planned_slot",
+    defaultWeeklyAmountMinor: 2000, currency: "USD", regularSessionBillingPolicy: "eligible_bowlers", billingOrdinalPolicy: "dense_billable",
     specialSessionBehavior: { mode: "regular_only", version: "1" },
   },
   inputFingerprint,
@@ -80,9 +80,9 @@ const preview = {
 } satisfies FallDraftPreview;
 
 const applyResult = {
-  resultContractVersion: "fall-draft-generation-result/2",
-  previewContractVersion: "fall-draft-generation-preview/2",
-  implementationVersion: "fall-draft-generation/2",
+  resultContractVersion: "fall-draft-generation-result/3",
+  previewContractVersion: "fall-draft-generation-preview/3",
+  implementationVersion: "fall-draft-generation/3",
   mappingVersion: "fall-draft-mapping/1",
   mode: "applied",
   organizationId: 3,
@@ -116,18 +116,13 @@ function renderCard(status: FallDraftPersistedView = { found: false, result: nul
   );
 }
 
-async function selectRequiredPolicies(user: UserEvent) {
-  await user.click(screen.getByLabelText("Billing ordinal policy"));
-  await user.click(screen.getByRole("option", { name: "Planned slot" }));
-}
-
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
 describe("FallDraftGenerationCard", () => {
-  it("derives billing policy, provides accessible preview focus, and requires explicit confirmation", async () => {
+  it("derives dense billing policy, provides accessible preview focus, and requires explicit confirmation", async () => {
     const user = userEvent.setup();
     const apiSpy = vi.spyOn(queryModule, "apiRequest")
       .mockResolvedValueOnce({ success: true, data: preview })
@@ -137,18 +132,15 @@ describe("FallDraftGenerationCard", () => {
     expect(screen.queryByLabelText("Ambiguous DST fold policy")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Currency")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Regular-session billing policy")).not.toBeInTheDocument();
-    expect(screen.getByLabelText("Billing ordinal policy")).toBeEnabled();
+    expect(screen.queryByLabelText("Billing ordinal policy")).not.toBeInTheDocument();
+    expect(screen.queryByText("Generator settings")).not.toBeInTheDocument();
     expect(screen.getByText("No C1 canonical draft generation exists for this league.")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Generate zero-write preview" })).toBeDisabled();
-
-    await selectRequiredPolicies(user);
     expect(screen.getByRole("button", { name: "Generate zero-write preview" })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: "Generate zero-write preview" }));
     const heading = await screen.findByRole("heading", { name: "Canonical preview" });
     await waitFor(() => expect(heading).toHaveFocus());
     expect(apiSpy).toHaveBeenNthCalledWith(1, "/api/leagues/7/canonical-fall-drafts/preview", "POST", {
-      contractVersion: "fall-draft-preview-request/2",
-      billingOrdinalPolicy: "planned_slot",
+      contractVersion: "fall-draft-preview-request/3",
     });
     expect(screen.getByText("cancelled")).toBeVisible();
     expect(screen.getByText(/2032-08-15: Holiday/)).toBeVisible();
@@ -156,6 +148,7 @@ describe("FallDraftGenerationCard", () => {
     expect(screen.getByText(/complete preview fingerprint includes this displayed evidence/i)).toBeVisible();
     expect(screen.getByText(/total_week_mismatch/)).toBeVisible();
     expect(screen.getByText("League payment timing:").parentElement).toHaveTextContent("Weekly; weekly session obligations retained");
+    expect(screen.getByText("Billing ordinals:").parentElement).toHaveTextContent("Dense billable (server policy)");
 
     await user.type(screen.getByLabelText("Reason for draft creation"), "Reviewed C1 draft generation");
     await user.click(screen.getByRole("button", { name: "Confirm and create canonical drafts" }));
@@ -167,34 +160,20 @@ describe("FallDraftGenerationCard", () => {
       reason: "Reviewed C1 draft generation",
     }));
     const applyPayload = apiSpy.mock.calls[1][2] as Record<string, unknown>;
-    expect(applyPayload.contractVersion).toBe("fall-draft-apply-request/2");
+    expect(applyPayload.contractVersion).toBe("fall-draft-apply-request/3");
     expect(applyPayload).not.toHaveProperty("ambiguousFold");
     expect(applyPayload).not.toHaveProperty("currency");
     expect(applyPayload).not.toHaveProperty("regularSessionBillingPolicy");
+    expect(applyPayload).not.toHaveProperty("billingOrdinalPolicy");
     expect(applyPayload).not.toHaveProperty("occurrenceCandidates");
     expect(applyPayload).not.toHaveProperty("organizationId");
-  });
-
-  it("marks a preview stale after policy edits and disables confirmation until re-preview", async () => {
-    const user = userEvent.setup();
-    vi.spyOn(queryModule, "apiRequest").mockResolvedValue({ success: true, data: preview });
-    renderCard();
-    await selectRequiredPolicies(user);
-    await user.click(screen.getByRole("button", { name: "Generate zero-write preview" }));
-    const previewHeading = await screen.findByRole("heading", { name: "Canonical preview" });
-    await waitFor(() => expect(previewHeading).toHaveFocus());
-    await user.type(screen.getByLabelText("Reason for draft creation"), "Reviewed");
-    await user.click(screen.getByLabelText("Billing ordinal policy"));
-    await user.click(screen.getByRole("option", { name: "Dense billable" }));
-    expect(screen.getByText("Preview controls changed")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Confirm and create canonical drafts" })).toBeDisabled();
   });
 
   it("shows persisted success and legacy-schedule staleness after reload", () => {
     renderCard({ found: true, result: { ...applyResult, currentLegacyScheduleMatchesGenerationInput: false }, currentLegacyScheduleMatchesGenerationInput: false });
     expect(screen.getByText("Canonical drafts already exist")).toBeVisible();
     expect(screen.getByText("Stale — preview again for review only")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Generate zero-write preview" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Generate zero-write preview" })).toBeEnabled();
   });
 
   it("exposes a disabled loading state while preview is in flight", async () => {
@@ -204,7 +183,6 @@ describe("FallDraftGenerationCard", () => {
       resolvePreview = resolve;
     }));
     renderCard();
-    await selectRequiredPolicies(user);
     const button = screen.getByRole("button", { name: "Generate zero-write preview" });
     await user.click(button);
     expect(button).toBeDisabled();
@@ -219,14 +197,12 @@ describe("FallDraftGenerationCard", () => {
       .mockRejectedValueOnce(new Error("temporary failure"))
       .mockResolvedValueOnce({ success: true, data: applyResult });
     renderCard();
-    await selectRequiredPolicies(user);
     await user.click(screen.getByRole("button", { name: "Generate zero-write preview" }));
     const previewHeading = await screen.findByRole("heading", { name: "Canonical preview" });
     await waitFor(() => expect(previewHeading).toHaveFocus());
     const reasonInput = screen.getByLabelText("Reason for draft creation");
     await user.type(reasonInput, "Original reviewed reason");
     expect(reasonInput).toHaveValue("Original reviewed reason");
-    expect(screen.queryByText("Preview controls changed")).not.toBeInTheDocument();
     const confirmButton = screen.getByRole("button", { name: "Confirm and create canonical drafts" });
     await waitFor(() => expect(confirmButton).toBeEnabled());
     await user.click(confirmButton);
@@ -252,7 +228,6 @@ describe("FallDraftGenerationCard", () => {
       .mockResolvedValueOnce({ success: true, data: preview })
       .mockResolvedValueOnce({ success: true, data: applyResult });
     renderCard();
-    await selectRequiredPolicies(user);
     await user.click(screen.getByRole("button", { name: "Generate zero-write preview" }));
     const previewHeading = await screen.findByRole("heading", { name: "Canonical preview" });
     await waitFor(() => expect(previewHeading).toHaveFocus());

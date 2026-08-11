@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { AlertCircle, CheckCircle2, Loader2, RefreshCw } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -17,14 +17,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { ApiResponse } from "@shared/schema";
 import type {
   FallDraftApplyRequest,
   FallDraftApplyResult,
-  FallDraftGeneratorSemantics,
   FallDraftPersistedView,
   FallDraftPreview,
 } from "@shared/fall-draft-generation";
@@ -37,12 +35,8 @@ interface FallDraftGenerationCardProps {
   isSystemAdmin: boolean;
 }
 
-const previewRequestVersion = "fall-draft-preview-request/2" as const;
-const applyRequestVersion = "fall-draft-apply-request/2" as const;
-
-interface FallDraftFormSemantics {
-  billingOrdinalPolicy: FallDraftGeneratorSemantics["billingOrdinalPolicy"] | "";
-}
+const previewRequestVersion = "fall-draft-preview-request/3" as const;
+const applyRequestVersion = "fall-draft-apply-request/3" as const;
 
 function formatMoney(amountMinor: number, currency: string): string {
   try {
@@ -57,11 +51,7 @@ function shortFingerprint(value: string): string {
 }
 
 export function FallDraftGenerationCard({ leagueId, organizationId, isSystemAdmin }: FallDraftGenerationCardProps) {
-  const [semantics, setSemantics] = useState<FallDraftFormSemantics>({
-    billingOrdinalPolicy: "",
-  });
   const [preview, setPreview] = useState<FallDraftPreview | null>(null);
-  const [previewSemantics, setPreviewSemantics] = useState<string | null>(null);
   const [reason, setReason] = useState("");
   const [idempotencyKey, setIdempotencyKey] = useState("");
   const [lastApplyRequest, setLastApplyRequest] = useState<FallDraftApplyRequest | null>(null);
@@ -71,15 +61,6 @@ export function FallDraftGenerationCard({ leagueId, organizationId, isSystemAdmi
   const querySuffix = isSystemAdmin ? `?organizationId=${organizationId}` : "";
   const basePath = `/api/leagues/${leagueId}/canonical-fall-drafts`;
 
-  const currentSemantics = useMemo(() => JSON.stringify(semantics), [semantics]);
-  const selectedSemantics = useMemo<FallDraftGeneratorSemantics | null>(() => {
-    if (semantics.billingOrdinalPolicy === "") return null;
-    return {
-      billingOrdinalPolicy: semantics.billingOrdinalPolicy,
-    };
-  }, [semantics]);
-  const previewIsStale = preview !== null && previewSemantics !== currentSemantics;
-
   const persistedQuery = useQuery<ApiResponse<FallDraftPersistedView>>({
     queryKey: [`${basePath}${querySuffix}`],
     queryFn: async () => apiRequest<FallDraftPersistedView>(`${basePath}${querySuffix}`, "GET"),
@@ -88,15 +69,12 @@ export function FallDraftGenerationCard({ leagueId, organizationId, isSystemAdmi
 
   const previewMutation = useMutation({
     mutationFn: async () => {
-      if (!selectedSemantics) throw new Error("Select a billing ordinal policy before previewing");
       return apiRequest<FallDraftPreview>(`${basePath}/preview${querySuffix}`, "POST", {
         contractVersion: previewRequestVersion,
-        ...selectedSemantics,
       });
     },
     onSuccess: (response) => {
       setPreview(response.data);
-      setPreviewSemantics(currentSemantics);
       setApplied(null);
       setIdempotencyKey("");
       setLastApplyRequest(null);
@@ -114,17 +92,13 @@ export function FallDraftGenerationCard({ leagueId, organizationId, isSystemAdmi
     },
   });
 
-  useEffect(() => {
-    if (previewIsStale) setApplied(null);
-  }, [previewIsStale]);
-
   const persisted = persistedQuery.data?.data;
   const persistedResult = persisted?.result;
-  const canConfirm = !!preview && !!selectedSemantics && !previewIsStale && preview.eligibility.eligibleForApply
+  const canConfirm = !!preview && preview.eligibility.eligibleForApply
     && reason.trim() === reason && reason.length > 0 && !applyMutation.isPending;
 
   const applyCurrentPreview = () => {
-    if (!preview || !selectedSemantics) return;
+    if (!preview) return;
     let key = idempotencyKey;
     if (!key) {
       try {
@@ -137,7 +111,6 @@ export function FallDraftGenerationCard({ leagueId, organizationId, isSystemAdmi
     setIdentityError(null);
     const request: FallDraftApplyRequest = {
       contractVersion: applyRequestVersion,
-      ...selectedSemantics,
       confirmedPreviewFingerprint: preview.previewFingerprint,
       reason,
       idempotencyKey: key,
@@ -212,21 +185,7 @@ export function FallDraftGenerationCard({ leagueId, organizationId, isSystemAdmi
           <p className="text-sm text-muted-foreground">No C1 canonical draft generation exists for this league.</p>
         )}
 
-        <fieldset className="grid gap-4 rounded-md border p-4" disabled={previewMutation.isPending || applyMutation.isPending}>
-          <legend className="px-1 text-sm font-medium">Generator settings</legend>
-          <div className="space-y-2">
-            <Label htmlFor="fall-draft-ordinal-policy">Billing ordinal policy</Label>
-            <Select value={semantics.billingOrdinalPolicy} onValueChange={(value: FallDraftGeneratorSemantics["billingOrdinalPolicy"]) => setSemantics((current) => ({ ...current, billingOrdinalPolicy: value }))}>
-              <SelectTrigger id="fall-draft-ordinal-policy"><SelectValue placeholder="Select ordinal policy" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="planned_slot">Planned slot</SelectItem>
-                <SelectItem value="dense_billable">Dense billable</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        </fieldset>
-
-        <Button onClick={() => previewMutation.mutate()} disabled={previewMutation.isPending || selectedSemantics === null}>
+        <Button onClick={() => previewMutation.mutate()} disabled={previewMutation.isPending}>
           {previewMutation.isPending ? <Loader2 className="mr-2 size-4 animate-spin" /> : <RefreshCw className="mr-2 size-4" />}
           Generate zero-write preview
         </Button>
@@ -250,14 +209,6 @@ export function FallDraftGenerationCard({ leagueId, organizationId, isSystemAdmi
               </p>
             </div>
 
-            {previewIsStale && (
-              <Alert variant="destructive">
-                <AlertCircle className="size-4" />
-                <AlertTitle>Preview controls changed</AlertTitle>
-                <AlertDescription>Generate a new preview before confirming.</AlertDescription>
-              </Alert>
-            )}
-
             {!preview.eligibility.eligibleForApply && (
               <Alert variant="destructive">
                 <AlertCircle className="size-4" />
@@ -271,6 +222,7 @@ export function FallDraftGenerationCard({ leagueId, organizationId, isSystemAdmi
               <p className="break-all"><span className="font-medium">A2 input:</span> <span className="font-mono">{preview.inputFingerprint}</span></p>
               <p className="break-all"><span className="font-medium">Physical schedule:</span> <span className="font-mono">{preview.physicalScheduleFingerprint}</span></p>
               <p><span className="font-medium">League payment timing:</span> {preview.semantics.paymentMode === "upfront" ? "Full season upfront" : "Weekly"}; weekly session obligations retained</p>
+              <p><span className="font-medium">Billing ordinals:</span> Dense billable (server policy)</p>
               <p><span className="font-medium">Versions:</span> {preview.generatorVersion}; {preview.inputContractVersion}; {preview.previewContractVersion}</p>
             </div>
 
