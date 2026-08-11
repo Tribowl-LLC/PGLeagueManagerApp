@@ -358,8 +358,8 @@ describe("authoritative league setup integration", () => {
       .rejects.toBeInstanceOf(LeagueCanonicalScheduleLockedError);
     await expect(updateLeague(created.id, {
       organizationId: created.organizationId as number,
-      seasonStart: created.seasonStart,
-      seasonEnd: created.seasonEnd,
+      seasonStart: `${created.seasonStart.slice(0, 10)}T12:00:00.000Z`,
+      seasonEnd: `${created.seasonEnd.slice(0, 10)}T12:00:00.000Z`,
       weekDay: created.weekDay,
       competitionStartTime: created.competitionStartTime ?? undefined,
       timezone: created.timezone ?? undefined,

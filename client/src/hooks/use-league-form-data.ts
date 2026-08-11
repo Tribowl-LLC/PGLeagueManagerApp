@@ -15,6 +15,7 @@ import { createSetupIdempotencyKeyRetainer } from "@/pages/league-view-page/fall
 interface UseLeagueFormDataOptions {
   open: boolean;
   league?: League;
+  systemAdminOrganizationId?: number | null;
   form: UseFormReturn<InsertLeagueInput, unknown, InsertLeague>;
   bowlingWeeks: number;
   setBowlingWeeks: (w: number) => void;
@@ -34,6 +35,7 @@ interface UseLeagueFormDataOptions {
 export function useLeagueFormData({
   open,
   league,
+  systemAdminOrganizationId,
   form,
   bowlingWeeks,
   setBowlingWeeks,
@@ -171,14 +173,17 @@ export function useLeagueFormData({
         cancelledDates,
         doublePayDates,
       };
+      const createPayload = systemAdminOrganizationId == null
+        ? semanticPayload
+        : { ...semanticPayload, organizationId: systemAdminOrganizationId };
       return apiRequest<LeagueSetupIntegrationResult>(
         league ? `/api/leagues/${league.id}` : "/api/leagues",
         league ? "PATCH" : "POST",
         league ? semanticPayload : {
-          ...semanticPayload,
+          ...createPayload,
           setupIntegration: {
             contractVersion: LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION,
-            idempotencyKey: setupIdempotency.current.keyFor(semanticPayload),
+            idempotencyKey: setupIdempotency.current.keyFor(createPayload),
           },
         },
       );

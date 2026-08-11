@@ -77,11 +77,19 @@ export default function LeagueViewPage() {
 
   const newSeasonMutation = useMutation({
     mutationFn: async (values: NewSeasonFormValues) => {
-      return await apiRequest<LeagueSetupIntegrationResult>(`/api/leagues/${leagueId}/new-season`, "POST", {
+      const organizationScope = league?.organizationId ?? null;
+      const querySuffix = currentUser?.role === "system_admin" && organizationScope !== null
+        ? `?organizationId=${organizationScope}`
+        : "";
+      return await apiRequest<LeagueSetupIntegrationResult>(`/api/leagues/${leagueId}/new-season${querySuffix}`, "POST", {
         ...values,
         setupIntegration: {
           contractVersion: LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION,
-          idempotencyKey: newSeasonSetupIdempotency.current.keyFor({ sourceLeagueId: leagueId, ...values }),
+          idempotencyKey: newSeasonSetupIdempotency.current.keyFor({
+            sourceLeagueId: leagueId,
+            organizationId: organizationScope,
+            ...values,
+          }),
         },
       });
     },

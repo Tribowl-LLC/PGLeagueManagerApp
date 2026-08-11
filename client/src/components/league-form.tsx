@@ -37,9 +37,10 @@ interface LeagueFormProps {
   open: boolean;
   onClose: () => void;
   league?: League;
+  systemAdminOrganizationId?: number | null;
 }
 
-export function LeagueForm({ open, onClose, league }: LeagueFormProps) {
+export function LeagueForm({ open, onClose, league, systemAdminOrganizationId }: LeagueFormProps) {
   const { toast } = useToast();
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showSchedule, setShowSchedule] = useState(false);
@@ -126,6 +127,7 @@ export function LeagueForm({ open, onClose, league }: LeagueFormProps) {
   const { mutation, deleteMutation } = useLeagueFormData({
     open,
     league,
+    systemAdminOrganizationId,
     form,
     bowlingWeeks,
     setBowlingWeeks,

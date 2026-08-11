@@ -56,7 +56,13 @@ const CANONICAL_UPDATE_FIELDS = [
 
 function sameCanonicalValue(field: typeof CANONICAL_UPDATE_FIELDS[number], left: unknown, right: unknown): boolean {
   if (field === 'seasonStart' || field === 'seasonEnd') {
-    return Date.parse(String(left)) === Date.parse(String(right));
+    const dateOnly = (value: unknown): string | null => {
+      const raw = value instanceof Date ? value.toISOString() : typeof value === 'string' ? value : null;
+      const match = raw === null ? null : /^(\d{4}-\d{2}-\d{2})(?:$|[ T])/.exec(raw);
+      return match?.[1] ?? null;
+    };
+    const leftDate = dateOnly(left);
+    return leftDate !== null && leftDate === dateOnly(right);
   }
   if (field === 'skipDates' || field === 'cancelledDates') {
     const normalize = (value: unknown) => Array.isArray(value) ? [...value].map(String).sort() : [];
