@@ -25,6 +25,13 @@ export class LeagueOccurrenceEvidenceExistsError extends Error {
   }
 }
 
+export class LeaguePaymentModeLockedError extends Error {
+  constructor() {
+    super('League payment timing cannot change after canonical schedule evidence exists');
+    this.name = 'LeaguePaymentModeLockedError';
+  }
+}
+
 export async function getLeagues(organizationId: number): Promise<League[]> {
   return cacheFetch(`leagues:org:${organizationId}`, LEAGUES_TTL, () =>
     db.select().from(leagues)
@@ -56,7 +63,36 @@ export async function createLeague(league: InsertLeague): Promise<League> {
 }
 
 export async function updateLeague(id: number, league: UpdateLeague): Promise<League> {
-  const [result] = await db.update(leagues).set(league).where(eq(leagues.id, id)).returning();
+  if (league.paymentMode === undefined && league.organizationId === undefined) {
+    const [result] = await db.update(leagues).set(league).where(eq(leagues.id, id)).returning();
+    cacheInvalidate('leagues:');
+    return result;
+  }
+
+  const result = await db.transaction(async (tx) => {
+    const [scope] = await tx.select({ organizationId: leagues.organizationId })
+      .from(leagues)
+      .where(eq(leagues.id, id));
+    if (!scope) throw new Error(`League with ID ${id} not found`);
+
+    await lockLeagueSchedule(tx, scope.organizationId, id);
+    const [current] = await tx.select({
+      organizationId: leagues.organizationId,
+      paymentMode: leagues.paymentMode,
+    }).from(leagues).where(eq(leagues.id, id)).for('update');
+    if (!current || current.organizationId !== scope.organizationId) {
+      throw new Error('League organization changed while acquiring its schedule lock');
+    }
+
+    if (league.paymentMode !== undefined && league.paymentMode !== current.paymentMode
+      && await hasLeagueOccurrenceEvidence(tx, current.organizationId, id)) {
+      throw new LeaguePaymentModeLockedError();
+    }
+
+    const [updated] = await tx.update(leagues).set(league).where(eq(leagues.id, id)).returning();
+    if (!updated) throw new Error(`League with ID ${id} not found`);
+    return updated;
+  });
   cacheInvalidate('leagues:');
   return result;
 }

@@ -16,7 +16,6 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
@@ -38,13 +37,10 @@ interface FallDraftGenerationCardProps {
   isSystemAdmin: boolean;
 }
 
-const previewRequestVersion = "fall-draft-preview-request/1" as const;
-const applyRequestVersion = "fall-draft-apply-request/1" as const;
+const previewRequestVersion = "fall-draft-preview-request/2" as const;
+const applyRequestVersion = "fall-draft-apply-request/2" as const;
 
 interface FallDraftFormSemantics {
-  ambiguousFold: FallDraftGeneratorSemantics["ambiguousFold"];
-  currency: string;
-  regularSessionBillingPolicy: FallDraftGeneratorSemantics["regularSessionBillingPolicy"] | "";
   billingOrdinalPolicy: FallDraftGeneratorSemantics["billingOrdinalPolicy"] | "";
 }
 
@@ -62,9 +58,6 @@ function shortFingerprint(value: string): string {
 
 export function FallDraftGenerationCard({ leagueId, organizationId, isSystemAdmin }: FallDraftGenerationCardProps) {
   const [semantics, setSemantics] = useState<FallDraftFormSemantics>({
-    ambiguousFold: "reject",
-    currency: "",
-    regularSessionBillingPolicy: "",
     billingOrdinalPolicy: "",
   });
   const [preview, setPreview] = useState<FallDraftPreview | null>(null);
@@ -80,13 +73,8 @@ export function FallDraftGenerationCard({ leagueId, organizationId, isSystemAdmi
 
   const currentSemantics = useMemo(() => JSON.stringify(semantics), [semantics]);
   const selectedSemantics = useMemo<FallDraftGeneratorSemantics | null>(() => {
-    if (!/^[A-Z]{3}$/.test(semantics.currency)
-      || semantics.regularSessionBillingPolicy === ""
-      || semantics.billingOrdinalPolicy === "") return null;
+    if (semantics.billingOrdinalPolicy === "") return null;
     return {
-      ambiguousFold: semantics.ambiguousFold,
-      currency: semantics.currency,
-      regularSessionBillingPolicy: semantics.regularSessionBillingPolicy,
       billingOrdinalPolicy: semantics.billingOrdinalPolicy,
     };
   }, [semantics]);
@@ -100,7 +88,7 @@ export function FallDraftGenerationCard({ leagueId, organizationId, isSystemAdmi
 
   const previewMutation = useMutation({
     mutationFn: async () => {
-      if (!selectedSemantics) throw new Error("Select currency, billing policy, and billing ordinal policy before previewing");
+      if (!selectedSemantics) throw new Error("Select a billing ordinal policy before previewing");
       return apiRequest<FallDraftPreview>(`${basePath}/preview${querySuffix}`, "POST", {
         contractVersion: previewRequestVersion,
         ...selectedSemantics,
@@ -164,7 +152,7 @@ export function FallDraftGenerationCard({ leagueId, organizationId, isSystemAdmi
       <CardHeader>
         <CardTitle as="h2">Fall canonical draft generation</CardTitle>
         <CardDescription>
-          Preview the stored league schedule with explicit canonical policies, then create draft-only sessions for later C2 review.
+          Preview the stored league schedule, then create draft-only sessions for later C2 review. Payment timing comes from league setup.
         </CardDescription>
       </CardHeader>
       <CardContent className="mt-5 space-y-5">
@@ -224,36 +212,8 @@ export function FallDraftGenerationCard({ leagueId, organizationId, isSystemAdmi
           <p className="text-sm text-muted-foreground">No C1 canonical draft generation exists for this league.</p>
         )}
 
-        <fieldset className="grid gap-4 rounded-md border p-4 sm:grid-cols-2" disabled={previewMutation.isPending || applyMutation.isPending}>
-          <legend className="px-1 text-sm font-medium">Explicit generator semantics</legend>
-          <div className="space-y-2">
-            <Label htmlFor="fall-draft-fold">Ambiguous DST fold policy</Label>
-            <Select value={semantics.ambiguousFold} onValueChange={(value: FallDraftGeneratorSemantics["ambiguousFold"]) => setSemantics((current) => ({ ...current, ambiguousFold: value }))}>
-              <SelectTrigger id="fall-draft-fold"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="reject">Reject (safe default)</SelectItem>
-                <SelectItem value="earlier">Earlier instant</SelectItem>
-                <SelectItem value="later">Later instant</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="fall-draft-currency">Currency</Label>
-            <Input id="fall-draft-currency" value={semantics.currency} maxLength={3} inputMode="text"
-              onChange={(event) => setSemantics((current) => ({ ...current, currency: event.target.value.toUpperCase() }))}
-              placeholder="USD" aria-describedby="fall-draft-currency-help" />
-            <p id="fall-draft-currency-help" className="text-xs text-muted-foreground">Uppercase three-letter code; never inferred.</p>
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="fall-draft-billing-policy">Regular-session billing policy</Label>
-            <Select value={semantics.regularSessionBillingPolicy} onValueChange={(value: FallDraftGeneratorSemantics["regularSessionBillingPolicy"]) => setSemantics((current) => ({ ...current, regularSessionBillingPolicy: value }))}>
-              <SelectTrigger id="fall-draft-billing-policy"><SelectValue placeholder="Select billing policy" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="eligible_bowlers">Eligible bowlers</SelectItem>
-                <SelectItem value="none">None</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
+        <fieldset className="grid gap-4 rounded-md border p-4" disabled={previewMutation.isPending || applyMutation.isPending}>
+          <legend className="px-1 text-sm font-medium">Generator settings</legend>
           <div className="space-y-2">
             <Label htmlFor="fall-draft-ordinal-policy">Billing ordinal policy</Label>
             <Select value={semantics.billingOrdinalPolicy} onValueChange={(value: FallDraftGeneratorSemantics["billingOrdinalPolicy"]) => setSemantics((current) => ({ ...current, billingOrdinalPolicy: value }))}>
@@ -310,6 +270,7 @@ export function FallDraftGenerationCard({ leagueId, organizationId, isSystemAdmi
               <p className="break-all"><span className="font-medium">Preview:</span> <span className="font-mono">{preview.previewFingerprint}</span></p>
               <p className="break-all"><span className="font-medium">A2 input:</span> <span className="font-mono">{preview.inputFingerprint}</span></p>
               <p className="break-all"><span className="font-medium">Physical schedule:</span> <span className="font-mono">{preview.physicalScheduleFingerprint}</span></p>
+              <p><span className="font-medium">League payment timing:</span> {preview.semantics.paymentMode === "upfront" ? "Full season upfront" : "Weekly"}; weekly session obligations retained</p>
               <p><span className="font-medium">Versions:</span> {preview.generatorVersion}; {preview.inputContractVersion}; {preview.previewContractVersion}</p>
             </div>
 

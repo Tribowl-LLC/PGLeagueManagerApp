@@ -9,8 +9,8 @@ import type { FallDraftMutationResult, FallDraftReview } from "@shared/fall-draf
 const reviewFingerprint = "a".repeat(64);
 
 const review: FallDraftReview = {
-  reviewContractVersion: "fall-draft-review/1",
-  reviewFingerprintVersion: "fall-draft-review-fingerprint/1",
+  reviewContractVersion: "fall-draft-review/2",
+  reviewFingerprintVersion: "fall-draft-review-fingerprint/2",
   reviewFingerprint,
   organizationId: 3,
   leagueId: 7,
@@ -21,7 +21,7 @@ const review: FallDraftReview = {
     generatorVersion: "canonical-occurrence-generator/1",
     inputFingerprint: "b".repeat(64),
     sourceScheduleRevision: 1,
-    normalizedInputSnapshot: { snapshotContractVersion: "fall-draft-generation-input-snapshot/1" },
+    normalizedInputSnapshot: { snapshotContractVersion: "fall-draft-generation-input-snapshot/2", paymentMode: "weekly" },
     rangeStartDate: "2032-08-01",
     rangeEndDate: "2032-08-08",
     candidateOccurrenceCount: 1,
@@ -39,7 +39,8 @@ const review: FallDraftReview = {
     supersededByCommandId: null,
   },
   c1: {
-    inputSnapshotVersion: "fall-draft-generation-input-snapshot/1",
+    inputSnapshotVersion: "fall-draft-generation-input-snapshot/2",
+    paymentMode: "weekly",
     confirmedPreviewFingerprint: "c".repeat(64),
     candidateSetFingerprint: "d".repeat(64),
     inputFingerprint: "b".repeat(64),
@@ -168,7 +169,7 @@ function renderPanel(value: FallDraftReview = review) {
 
 function result(updatedReview: FallDraftReview, operation: FallDraftMutationResult["operation"]): FallDraftMutationResult {
   return {
-    resultContractVersion: "fall-draft-mutation-result/1",
+    resultContractVersion: "fall-draft-mutation-result/2",
     operation,
     mode: "applied",
     commandIds: ["00000000-0000-4000-8000-000000000099"],
@@ -188,6 +189,7 @@ afterEach(() => {
 describe("FallDraftReviewPanel", () => {
   it("renders exact UUID, DST, lifecycle, numbering, billing, exception, fingerprint, and eligible controls", () => {
     renderPanel();
+    expect(screen.getByText("League payment timing:").parentElement).toHaveTextContent("Weekly");
     expect(screen.getByRole("heading", { name: "Audited C2 review and publication" })).toBeVisible();
     expect(screen.getByText(reviewFingerprint)).toBeVisible();
     expect(screen.getByText((content) => content.includes(review.occurrences[0].id))).toBeVisible();
@@ -198,6 +200,16 @@ describe("FallDraftReviewPanel", () => {
     expect(screen.getByRole("button", { name: "Reschedule" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Cancel occurrence" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Restore draft" })).toBeDisabled();
+  });
+
+  it("hardcodes ambiguous-fold rejection for rescheduling and does not expose a policy selector", async () => {
+    const user = userEvent.setup();
+    renderPanel();
+    await user.click(screen.getByRole("button", { name: "Reschedule" }));
+    expect(screen.getByLabelText("Local date")).toBeVisible();
+    expect(screen.getByLabelText("Local time")).toBeVisible();
+    expect(screen.getByLabelText("IANA timezone")).toBeVisible();
+    expect(screen.queryByLabelText("Ambiguous fold")).not.toBeInTheDocument();
   });
 
   it("requires a reason and confirmation and sends the exact fingerprint and revision for cancellation", async () => {

@@ -62,10 +62,14 @@ describe('NewSeasonDialog', () => {
 
     const endDate = screen.getByLabelText('New Season End Date');
     expect(endDate).toHaveValue('2026-11-23');
+    expect(screen.getByRole('button', { name: /create new season/i })).toBeDisabled();
 
     await user.click(screen.getByRole('button', { name: /bowling schedule/i }));
     await user.click(screen.getByTestId('schedule-week-2026-09-07'));
     await user.click(screen.getByRole('switch', { name: /allow public sign-up/i }));
+    await user.click(screen.getByLabelText('League Payment Timing'));
+    await user.click(screen.getByRole('option', { name: /full season upfront/i }));
+    expect(screen.getByRole('button', { name: /create new season/i })).toBeEnabled();
 
     expect(endDate).toHaveValue('2026-11-30');
 
@@ -78,6 +82,7 @@ describe('NewSeasonDialog', () => {
       cancelledDates: [],
       doublePayDates: [],
       allowPublicSignup: true,
+      paymentMode: 'upfront',
     });
   });
 });

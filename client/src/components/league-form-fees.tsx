@@ -1,6 +1,7 @@
 import { UseFormReturn } from "react-hook-form";
 import {
   FormControl,
+  FormDescription,
   FormField,
   FormItem,
   FormLabel,
@@ -52,14 +53,14 @@ export function LeagueFeeSection({
         name="paymentMode"
         render={({ field }) => (
           <FormItem>
-            <FormLabel>Payment Mode</FormLabel>
+            <FormLabel>League Payment Timing</FormLabel>
             <Select
               onValueChange={(value) => field.onChange(value as PaymentMode)}
-              value={field.value || "weekly"}
+              value={field.value}
             >
               <FormControl>
                 <SelectTrigger>
-                  <SelectValue />
+                  <SelectValue placeholder="Select weekly or prepaid" />
                 </SelectTrigger>
               </FormControl>
               <SelectContent>
@@ -67,6 +68,9 @@ export function LeagueFeeSection({
                 <SelectItem value="upfront">Full Season Upfront: full amount due at start</SelectItem>
               </SelectContent>
             </Select>
+            <FormDescription>
+              Required. This controls when bowlers pay; both choices retain weekly session obligations.
+            </FormDescription>
             <FormMessage />
           </FormItem>
         )}

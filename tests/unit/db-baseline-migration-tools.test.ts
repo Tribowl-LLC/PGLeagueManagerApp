@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(21);
+    expect(migrations).toHaveLength(22);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -317,6 +317,15 @@ describe('normalized migration baseline tools', () => {
     expect(migrations[20]?.sql).toContain("'restore_cancelled_draft'");
     expect(migrations[20]?.sql).toContain('generation_discrepancy_revisions_discrepancy_fk');
     expect(migrations[20]?.sql).not.toMatch(/(?:^|\n)\s*(?:UPDATE|DELETE|INSERT)\b/);
+    expect(migrations[21]).toMatchObject({
+      idx: 21,
+      tag: '0021_authoritative_league_payment_mode',
+      createdAt: 1786427220667,
+      hash: '878c2d349630f42051eff6b35a5d030f0c662acc7f51237bfd0e52046ac58598',
+    });
+    expect(migrations[21]?.sql).toContain('ADD CONSTRAINT "leagues_payment_mode_check"');
+    expect(migrations[21]?.sql).toContain("IN ('weekly', 'upfront')");
+    expect(migrations[21]?.sql).not.toMatch(/(?:^|\n)\s*(?:UPDATE|DELETE|INSERT)\b/);
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 

@@ -1,10 +1,11 @@
 import { z } from "zod";
 import { fallDraftSha256 } from "./fall-draft-generation";
+import type { PaymentMode } from "./schema/constants";
 
-export const FALL_DRAFT_REVIEW_CONTRACT_VERSION = "fall-draft-review/1";
-export const FALL_DRAFT_REVIEW_FINGERPRINT_VERSION = "fall-draft-review-fingerprint/1";
-export const FALL_DRAFT_MUTATION_RESULT_VERSION = "fall-draft-mutation-result/1";
-export const FALL_DRAFT_RESCHEDULE_REQUEST_VERSION = "fall-draft-reschedule-request/1";
+export const FALL_DRAFT_REVIEW_CONTRACT_VERSION = "fall-draft-review/2";
+export const FALL_DRAFT_REVIEW_FINGERPRINT_VERSION = "fall-draft-review-fingerprint/2";
+export const FALL_DRAFT_MUTATION_RESULT_VERSION = "fall-draft-mutation-result/2";
+export const FALL_DRAFT_RESCHEDULE_REQUEST_VERSION = "fall-draft-reschedule-request/2";
 export const FALL_DRAFT_CANCEL_REQUEST_VERSION = "fall-draft-cancel-request/1";
 export const FALL_DRAFT_RESTORE_REQUEST_VERSION = "fall-draft-restore-request/1";
 export const FALL_DRAFT_APPROVE_REQUEST_VERSION = "fall-draft-approve-request/1";
@@ -32,10 +33,9 @@ export const fallDraftRescheduleRequestSchema = z.object({
   authoritativeLocalDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   authoritativeLocalStartTime: z.string().regex(/^\d{2}:\d{2}(?::\d{2})?$/),
   timezone: z.string().min(1).max(128).refine((value) => value.trim() === value, "timezone must be trimmed"),
-  ambiguousFold: z.enum(["reject", "earlier", "later"]),
   startAt: z.iso.datetime({ offset: false }).optional(),
   selectedUtcOffsetMinutes: z.number().int().min(-840).max(840).optional(),
-  foldResolution: z.enum(["unambiguous", "earlier", "later"]).optional(),
+  foldResolution: z.literal("unambiguous").optional(),
   resolverVersion: z.string().min(1).max(128).optional(),
 }).strict();
 
@@ -254,6 +254,7 @@ export interface FallDraftReview {
   };
   c1: {
     inputSnapshotVersion: string;
+    paymentMode: PaymentMode;
     confirmedPreviewFingerprint: string;
     candidateSetFingerprint: string;
     inputFingerprint: string;

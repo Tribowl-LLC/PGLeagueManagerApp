@@ -8,10 +8,10 @@ It does not reinterpret B2 history or activate canonical consumers.
 
 ## Contracts and versions
 
-- review: `fall-draft-review/1`
-- semantic review fingerprint: `fall-draft-review-fingerprint/1`
-- mutation result: `fall-draft-mutation-result/1`
-- reschedule request: `fall-draft-reschedule-request/1`
+- review: `fall-draft-review/2`
+- semantic review fingerprint: `fall-draft-review-fingerprint/2`
+- mutation result: `fall-draft-mutation-result/2`
+- reschedule request: `fall-draft-reschedule-request/2`
 - cancellation request: `fall-draft-cancel-request/1`
 - restoration request: `fall-draft-restore-request/1`
 - approval/publication request: `fall-draft-approve-request/1`
@@ -27,7 +27,8 @@ All request schemas are strict. Every mutation requires a server-authorized
 tenant and league, authenticated actor, trimmed nonempty reason, idempotency
 key, and confirmed current review fingerprint. An entity edit also requires
 the occurrence's exact current revision. The caller cannot select actor,
-tenant, authoritative `now`, command attribution, or durable state.
+tenant, authoritative `now`, command attribution, durable state, or ambiguous
+fold handling. Fall rescheduling always uses `ambiguousFold = "reject"`.
 
 ## Persisted review and fingerprint
 
@@ -39,9 +40,16 @@ mismatch, unsupported command attribution, missing revisions, a non-contiguous
 revision chain, a before/after discontinuity, or a latest revision that does
 not equal the current row.
 
+Semantically compatible C1 input snapshot version 1 remains reviewable through
+the zero-write compatibility reader. It must already record the system-wide
+reject-fold, USD, and eligible-bowler policies; C2 supplies the league's current
+authoritative `payment_mode` only in memory and does not alter the stored legacy
+snapshot. Any version-1 snapshot with different generator semantics remains an
+explicit incompatible-state failure.
+
 The response contains:
 
-- the current generation run and C1/A2 input, physical, candidate, preview,
+- the current generation run, authoritative league payment mode, and C1/A2 input, physical, candidate, preview,
   generator, result, and DST versions/fingerprints;
 - current occurrences with UUID, immutable generation key, physical and DST
   tuple, lifecycle/status, planned/competition numbering, effective-lock
@@ -55,7 +63,7 @@ The response contains:
 - current legacy-input fingerprint and match/staleness evidence.
 
 The review fingerprint is lowercase SHA-256 over canonical sorted-key JSON for
-the complete persisted review plus `fall-draft-review-fingerprint/1`. Durable
+the complete persisted review plus `fall-draft-review-fingerprint/2`. Durable
 entity IDs, generation keys, numbering, DST tuples, snapshots, evidence,
 commands, reasons, request fingerprints, and lifecycle attribution are bound.
 The response's runtime-derived `effectivelyLocked` booleans are deliberately
@@ -101,7 +109,7 @@ occurrence. It preserves UUID, generation key, run, kind, location, planned
 ordinal, competition number, competitive/standings flags, and billing terms.
 The shared canonical DST resolver derives local date/time, canonical IANA
 timezone, selected offset, fold result, UTC instant, and resolver version.
-Gaps and unresolved folds are rejected. Optional caller assertions must equal
+Gaps and ambiguous folds are rejected under the fixed Fall policy. Optional caller assertions must equal
 the resolver exactly. Active same-day, league-wide exact-start, and exception
 collisions are rejected. One complete occurrence revision is appended.
 
@@ -125,7 +133,8 @@ C1 occurrence is proven by run membership, generation key, regenerated C1/A2
 semantics, and its verified revision chain. The regular-session competitive
 flags and competition number are restored from its planned-slot semantics.
 Policy, amount, currency, and planned/dense billing ordinal are rebuilt from
-the versioned C1 normalized input; affected dense draft terms are revised.
+the versioned C1 normalized input, whose Fall currency policy is fixed to USD;
+affected dense draft terms are revised.
 Current cancellation metadata is cleared while its prior value remains in the
 append-only occurrence revision. Collision and future checks are repeated.
 The operation uses the truthful `restore_cancelled_draft` command.

@@ -40,9 +40,6 @@
     }
   },
   "client/src/hooks/use-league-form-data.ts": {
-    "@typescript-eslint/no-unnecessary-type-assertion": {
-      "count": 1
-    },
     "react-hooks/exhaustive-deps": {
       "count": 2
     }

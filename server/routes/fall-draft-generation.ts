@@ -123,9 +123,6 @@ router.post("/:id/canonical-fall-drafts/preview", async (req: Request, res) => {
     const preview = await previewFallDraftGeneration({
       ...scope,
       semantics: {
-        ambiguousFold: request.ambiguousFold,
-        currency: request.currency,
-        regularSessionBillingPolicy: request.regularSessionBillingPolicy,
         billingOrdinalPolicy: request.billingOrdinalPolicy,
       },
     });

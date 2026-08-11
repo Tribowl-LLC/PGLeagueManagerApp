@@ -126,6 +126,12 @@
       "tag": "0020_phase_c2_fall_draft_review",
       "createdAt": 1786404198272,
       "hash": "d52c091899a9ccb7dc25d640bd0274dd26754dc541ca994bcabf021b876d3f62"
+    },
+    {
+      "idx": 21,
+      "tag": "0021_authoritative_league_payment_mode",
+      "createdAt": 1786427220667,
+      "hash": "878c2d349630f42051eff6b35a5d030f0c662acc7f51237bfd0e52046ac58598"
     }
   ]
 }

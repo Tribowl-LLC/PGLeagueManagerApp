@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/dialog";
 import { Loader2, RefreshCw } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
-import type { League } from "@shared/schema";
+import type { League, PaymentMode } from "@shared/schema";
 import { WEEKDAYS } from "@shared/schema";
 import type { ScheduleWeekType } from "@shared/schedule-utils";
 import {
@@ -38,6 +38,7 @@ export type NewSeasonFormValues = {
   cancelledDates: string[];
   doublePayDates: string[];
   allowPublicSignup: boolean;
+  paymentMode: PaymentMode;
 };
 
 export function NewSeasonDialog({
@@ -60,6 +61,7 @@ export function NewSeasonDialog({
   const [cancelledDates, setCancelledDates] = useState<string[]>([]);
   const [doublePayDates, setDoublePayDates] = useState<string[]>([]);
   const [allowPublicSignup, setAllowPublicSignup] = useState(league.allowPublicSignup ?? false);
+  const [paymentMode, setPaymentMode] = useState<PaymentMode | "">("");
   const [showSchedule, setShowSchedule] = useState(false);
 
   const resetForm = useCallback(() => {
@@ -70,6 +72,7 @@ export function NewSeasonDialog({
     setCancelledDates([]);
     setDoublePayDates([]);
     setAllowPublicSignup(league.allowPublicSignup ?? false);
+    setPaymentMode("");
     setShowSchedule(false);
   }, [league.allowPublicSignup, league.totalBowlingWeeks, league.weekDay]);
 
@@ -128,7 +131,7 @@ export function NewSeasonDialog({
   };
 
   const handleCreate = () => {
-    if (!seasonStart || bowlingWeeks <= 0 || !computedSeasonEnd) return;
+    if (!seasonStart || bowlingWeeks <= 0 || !computedSeasonEnd || paymentMode === "") return;
     onCreate({
       seasonStart,
       totalBowlingWeeks: bowlingWeeks,
@@ -137,6 +140,7 @@ export function NewSeasonDialog({
       cancelledDates,
       doublePayDates,
       allowPublicSignup,
+      paymentMode,
     });
   };
 
@@ -254,6 +258,24 @@ export function NewSeasonDialog({
             />
           </div>
 
+          <div>
+            <label htmlFor="new-season-payment-mode" className="text-sm font-medium">
+              League Payment Timing
+            </label>
+            <Select value={paymentMode} onValueChange={(value) => setPaymentMode(value as PaymentMode)}>
+              <SelectTrigger id="new-season-payment-mode" className="mt-1">
+                <SelectValue placeholder="Select weekly or prepaid" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="weekly">Weekly: bowlers pay each week</SelectItem>
+                <SelectItem value="upfront">Full Season Upfront: full amount due at start</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="mt-1 text-xs text-muted-foreground">
+              This authoritative setting can differ from the previous season.
+            </p>
+          </div>
+
           <LeagueSchedulePreview
             scheduleDates={scheduleDates}
             showSchedule={showSchedule}
@@ -280,7 +302,7 @@ export function NewSeasonDialog({
           </Button>
           <Button
             onClick={handleCreate}
-            disabled={!seasonStart || bowlingWeeks <= 0 || !computedSeasonEnd || isPending}
+            disabled={!seasonStart || bowlingWeeks <= 0 || !computedSeasonEnd || paymentMode === "" || isPending}
           >
             {isPending ? (
               <Loader2 className="mr-2 size-4 animate-spin" />

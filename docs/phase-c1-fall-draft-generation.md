@@ -9,21 +9,23 @@ approve, reject, publish, lock, edit, discard, or consume the drafts.
 
 ## Contracts and versions
 
-- preview request: `fall-draft-preview-request/1`
-- semantic preview: `fall-draft-generation-preview/1`
-- apply request: `fall-draft-apply-request/1`
-- apply/persisted result: `fall-draft-generation-result/1`
-- implementation: `fall-draft-generation/1`
+- preview request: `fall-draft-preview-request/2`
+- semantic preview: `fall-draft-generation-preview/2`
+- apply request: `fall-draft-apply-request/2`
+- apply/persisted result: `fall-draft-generation-result/2`
+- implementation: `fall-draft-generation/2`
 - draft mapping: `fall-draft-mapping/1`
-- input snapshot: `fall-draft-generation-input-snapshot/1`
+- input snapshot: `fall-draft-generation-input-snapshot/2`
 - initial occurrence, billing-term, and exception snapshot schema: version 1
 - command fingerprint envelope: `lvcanoncmd:v1:<lowercase-sha256>`
 
 C1 exposes, but does not change, the merged A2 generator, input, result, and DST
 resolver versions. Request bodies are strict. The caller supplies only the
-contract version and four non-authoritative semantics; occurrence candidates,
+contract version and billing ordinal policy; occurrence candidates,
 tenant identity, schedule fields, and request fingerprints are never accepted
-as authoritative input.
+as authoritative input. Fall draft generation always uses
+`ambiguousFold = "reject"` and `currency = "USD"`; callers cannot override
+either system policy or regular-session billing policy.
 
 ## Eligibility and authoritative input
 
@@ -34,29 +36,37 @@ non-archived state), belong to the authorized organization, and point to a
 location in that organization. Every A2-required field must be present.
 
 The service loads season boundaries, weekday, local competition time, timezone,
-location, planned slot count, weekly amount, skips, and cancellations from the
-tenant-proven league row. Date-only strings are validated and classified without
+location, planned slot count, weekly amount, payment mode, skips, and cancellations
+from the tenant-proven league row. Date-only strings are validated and classified without
 host-local `Date` parsing. A2 resolves each local start through the shared DST
 resolver. The future-only gate also resolves every skipped planned slot at the
-authoritative local competition time with the same timezone and fold policy.
+authoritative local competition time with the same timezone and fixed reject
+fold policy.
 Every occurrence and skipped-slot UTC start must be strictly later than
 PostgreSQL `transaction_timestamp()`; one started slot rejects the whole request.
 Apply repeats all checks while holding the league lock because preview is not a
 reservation.
 
-The administrator must explicitly choose:
+The administrator must explicitly choose the billing ordinal policy:
+`planned_slot` or `dense_billable`.
 
-- ambiguous-fold policy: `reject`, `earlier`, or `later` (`reject` is visible as
-  the safe UI default);
-- an uppercase three-letter currency;
-- regular-session billing policy: `none` or `eligible_bowlers`; and
-- billing ordinal policy: `planned_slot` or `dense_billable`.
-
-None is inferred from payment mode, weekly fee, organization, season, or another
-league. The UI leaves currency and both billing-policy controls unselected until
-the administrator makes an explicit choice; only the visible safe fold policy
-defaults to `reject`. Billing terms are version-1 draft policy snapshots, not
+League setup is authoritative for payment timing: `weekly` means bowlers pay
+week by week, while `upfront` means the full-season amount is collected in
+advance. Payment timing does not remove the underlying weekly session
+obligations, so both supported modes derive
+`regularSessionBillingPolicy = "eligible_bowlers"`. A prepaid league must never
+be represented as nonbillable merely because collection happened earlier.
+Ambiguous-fold policy, currency, and regular-session billing policy are not C1
+UI controls: C1 rejects repeated local times, records USD, and retains eligible
+weekly obligations. Billing terms are version-1 draft policy snapshots, not
 bowler debt or collection instructions.
+
+League creation and new-season setup require an explicit payment-mode choice.
+The database limits persisted values to `weekly` or `upfront`. A payment-mode
+change takes the shared canonical league lock and is rejected after any
+canonical schedule evidence exists, so preview/apply and league setup cannot
+race into an untruthful snapshot. Historical correction after that boundary
+requires a separate audited workflow; it is not a normal league edit.
 
 ## Zero-write preview
 
@@ -92,7 +102,7 @@ does not alter physical generation or billing policy rows.
 
 ## Atomic apply, staleness, and draft mapping
 
-`POST /api/leagues/:id/canonical-fall-drafts/apply` requires the four semantics,
+`POST /api/leagues/:id/canonical-fall-drafts/apply` requires the caller-supplied billing ordinal policy,
 the confirmed preview fingerprint, and trimmed nonempty reason and idempotency
 key. In one uninterrupted transaction it acquires the shared A2 league advisory
 lock, proves tenant and actor, reloads authoritative input, allocates the next
@@ -117,7 +127,17 @@ commands as foreign-key placeholders. Supported nonfatal A2
 `outside_season_occurrence` and `total_week_mismatch` findings persist as open
 draft-review discrepancies; unsupported mappings fail closed.
 
-## Cancelled drafts and migration order
+## Schema constraints, cancelled drafts, and migration order
+
+Migration `0021_authoritative_league_payment_mode.sql` adds the database check
+that accepts only `weekly` and `upfront`. It does not rewrite existing rows and
+retains the legacy database default for internal compatibility; the public
+create and new-season contracts still require an explicit value. Before applying
+the migration to a durable database, audit `leagues.payment_mode` and stop if
+any null or non-contract value exists. Correct such a row explicitly rather
+than inferring payment timing from historical payment records. It follows
+`0020_phase_c2_fall_draft_review.sql` and must be applied before deploying the
+matching application contract.
 
 Migration `0019_phase_c1_cancelled_draft_occurrences.sql` must run after the
 already-applied A1 migration chain. It narrowly extends the occurrence lifecycle
@@ -137,7 +157,8 @@ another durable shared database. C1 adds no environment variables.
 
 The operation fingerprint covers tenant, league, actor, trimmed reason and key,
 confirmed preview, normalized A2 input, allocated source revision, candidate-set
-fingerprint, the explicit fold/billing semantics, and C1 mapping/version
+fingerprint, authoritative payment mode, the fixed reject fold policy, fixed USD
+currency, derived billing policy, explicit ordinal policy, and C1 mapping/version
 semantics. Related cancellation and exception command keys are deterministic
 derivations of the operator key and command role.
 
@@ -158,6 +179,14 @@ draft remains readable and reports `currentInputMatches: false`. Later legacy
 edits do not rewrite or regenerate the drafts. An administrator may preview again
 for read-only review, but cannot create a second generation.
 
+The persisted reader provides a zero-write transition for input snapshot version
+1. A version-1 snapshot is accepted only when its recorded fold, currency, and
+regular-session billing semantics already equal the fixed version-2 policies; the
+current authoritative league payment mode is then added to the in-memory view.
+The stored snapshot and its fingerprints are never rewritten. Compatible legacy
+drafts transition directly to C2 review instead of attempting a version-2 C1
+idempotency retry; semantically incompatible legacy snapshots still fail closed.
+
 After a C2 mutation advances an entity revision or terminalizes the generation
 run, this C1 status endpoint reports `found: true`, `transitionedToC2: true`, and
 the durable generation-run ID without pretending the original C1 apply result is
@@ -172,7 +201,8 @@ explicit `organizationId` query scope. Normal users, cross-tenant admins,
 org-less/missing leagues, and cross-tenant locations fail without exposing the
 target row. Actor and normal tenant scope always come from the session.
 
-The league administration card exposes the four policy controls, explicit
+The league administration card exposes the billing ordinal control, authoritative
+payment timing and derived obligation evidence, explicit
 preview and confirmation actions, accessible labels and focus movement, loading,
 empty, validation, stale, retry, failure, and success states, a responsive
 candidate table, skip/cancellation/DST/numbering/billing/discrepancy evidence,

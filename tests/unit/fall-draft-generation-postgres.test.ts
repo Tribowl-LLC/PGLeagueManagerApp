@@ -29,6 +29,7 @@ import {
   previewFallDraftGeneration,
 } from "../../server/services/fall-draft-generation";
 import { deleteOrganization } from "../../server/storage/organizations";
+import { LeaguePaymentModeLockedError, updateLeague } from "../../server/storage/leagues";
 import { getTestDb } from "../setup/test-db";
 
 const db = getTestDb();
@@ -46,9 +47,6 @@ interface Fixture {
 }
 
 const semantics: FallDraftGeneratorSemantics = {
-  ambiguousFold: "reject",
-  currency: "USD",
-  regularSessionBillingPolicy: "eligible_bowlers",
   billingOrdinalPolicy: "planned_slot",
 };
 
@@ -225,15 +223,53 @@ describe("C1 Fall draft preview", () => {
     expect(changedEvidence.billingTermCandidates).toEqual(first.billingTermCandidates);
   });
 
-  it("changes semantic fingerprints without changing physical identity for financial policy changes", async () => {
+  it("hardcodes USD while ordinal-policy changes leave physical identity stable", async () => {
     const f = await fixture("semantic-change");
-    const usd = await previewFallDraftGeneration({ ...scope(f), semantics });
-    const cad = await previewFallDraftGeneration({ ...scope(f), semantics: { ...semantics, currency: "CAD" } });
-    expect(cad.previewFingerprint).not.toBe(usd.previewFingerprint);
-    expect(cad.inputFingerprint).not.toBe(usd.inputFingerprint);
-    expect(cad.physicalScheduleFingerprint).toBe(usd.physicalScheduleFingerprint);
-    expect(cad.occurrenceCandidates.map((row) => row.generationKey)).toEqual(usd.occurrenceCandidates.map((row) => row.generationKey));
-    expect(cad.billingTermCandidates.every((row) => row.currency === "CAD")).toBe(true);
+    const billable = await previewFallDraftGeneration({ ...scope(f), semantics });
+    const denseBilling = await previewFallDraftGeneration({
+      ...scope(f),
+      semantics: { ...semantics, billingOrdinalPolicy: "dense_billable" },
+    });
+    expect(billable.semantics.currency).toBe("USD");
+    expect(billable.normalizedInput.currency).toBe("USD");
+    expect(billable.billingTermCandidates.every((row) => row.currency === "USD")).toBe(true);
+    expect(denseBilling.previewFingerprint).not.toBe(billable.previewFingerprint);
+    expect(denseBilling.inputFingerprint).not.toBe(billable.inputFingerprint);
+    expect(denseBilling.physicalScheduleFingerprint).toBe(billable.physicalScheduleFingerprint);
+    expect(denseBilling.occurrenceCandidates.map((row) => row.generationKey)).toEqual(billable.occurrenceCandidates.map((row) => row.generationKey));
+  });
+
+  it("binds authoritative payment timing and locks it after canonical generation", async () => {
+    const f = await fixture("payment-mode-lock");
+    const weekly = await previewFallDraftGeneration({ ...scope(f), semantics });
+    expect(weekly.semantics).toMatchObject({
+      paymentMode: "weekly",
+      regularSessionBillingPolicy: "eligible_bowlers",
+    });
+
+    await updateLeague(f.leagueId, { paymentMode: "upfront" });
+    const upfront = await previewFallDraftGeneration({ ...scope(f), semantics });
+    expect(upfront.semantics).toMatchObject({
+      paymentMode: "upfront",
+      regularSessionBillingPolicy: "eligible_bowlers",
+    });
+    expect(upfront.previewFingerprint).not.toBe(weekly.previewFingerprint);
+    expect(upfront.inputFingerprint).toBe(weekly.inputFingerprint);
+    expect(upfront.physicalScheduleFingerprint).toBe(weekly.physicalScheduleFingerprint);
+
+    await applyFallDraftGeneration({ ...scope(f), apply: applyRequest(upfront) });
+    await expect(updateLeague(f.leagueId, { paymentMode: "weekly" }))
+      .rejects.toBeInstanceOf(LeaguePaymentModeLockedError);
+    const [persisted] = await db.select({ paymentMode: leagues.paymentMode })
+      .from(leagues)
+      .where(eq(leagues.id, f.leagueId));
+    expect(persisted?.paymentMode).toBe("upfront");
+
+    // A direct/manual database edit bypassing the application guard still
+    // invalidates C1/C2 approval evidence rather than being silently adopted.
+    await db.update(leagues).set({ paymentMode: "weekly" }).where(eq(leagues.id, f.leagueId));
+    const stale = await loadFallDraftPersistedView(scope(f));
+    expect(stale.currentLegacyScheduleMatchesGenerationInput).toBe(false);
   });
 
   it.each([
@@ -281,7 +317,7 @@ describe("C1 Fall draft preview", () => {
     expect(Object.values(await canonicalCounts(f)).every((count) => count === 0)).toBe(true);
   });
 
-  it("fails closed for DST gaps and requires explicit fold selection", async () => {
+  it("fails closed for DST gaps and ambiguous folds under the fixed reject policy", async () => {
     const gap = await fixture("dst-gap", {
       seasonStart: "2032-10-03", seasonEnd: "2033-03-13", weekDay: "Sunday", competitionStartTime: "02:30",
       totalBowlingWeeks: 24, skipDates: [], cancelledDates: [], doublePayDates: [],
@@ -294,14 +330,10 @@ describe("C1 Fall draft preview", () => {
       seasonStart: "2032-10-03", seasonEnd: "2032-11-07", weekDay: "Sunday", competitionStartTime: "01:30",
       totalBowlingWeeks: 6, skipDates: [], cancelledDates: [], doublePayDates: [],
     });
-    const rejected = await previewFallDraftGeneration({ ...scope(fold), semantics });
-    expect(rejected.fatalErrors.some((row) => row.code === "invalid_dst_input")).toBe(true);
-    const earlier = await previewFallDraftGeneration({ ...scope(fold), semantics: { ...semantics, ambiguousFold: "earlier" } });
-    const later = await previewFallDraftGeneration({ ...scope(fold), semantics: { ...semantics, ambiguousFold: "later" } });
-    const earlierFold = earlier.occurrenceCandidates.find((row) => row.foldResolution === "earlier");
-    const laterFold = later.occurrenceCandidates.find((row) => row.foldResolution === "later");
-    expect(earlierFold?.authoritativeLocalDate).toBe(laterFold?.authoritativeLocalDate);
-    expect(earlierFold?.startAt).not.toBe(laterFold?.startAt);
+    const foldPreview = await previewFallDraftGeneration({ ...scope(fold), semantics });
+    expect(foldPreview.semantics.ambiguousFold).toBe("reject");
+    expect(foldPreview.fatalErrors.some((row) => row.code === "invalid_dst_input")).toBe(true);
+    expect(foldPreview.eligibility.eligibleForApply).toBe(false);
   });
 });
 

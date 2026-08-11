@@ -10,7 +10,7 @@ import {
 describe("C2 Fall draft review contracts", () => {
   it("fingerprints semantic state deterministically while excluding runtime eligibility and personal identity", () => {
     const value = {
-      reviewContractVersion: "fall-draft-review/1",
+      reviewContractVersion: "fall-draft-review/2",
       organizationId: 1,
       occurrences: [{ id: "occurrence", status: "scheduled", effectivelyLocked: false }],
       commands: [{ id: "command", commandType: "generate" }],
@@ -43,12 +43,13 @@ describe("C2 Fall draft review contracts", () => {
       authoritativeLocalDate: "2032-11-07",
       authoritativeLocalStartTime: "01:30:00",
       timezone: "America/New_York",
-      ambiguousFold: "later",
     };
     expect(fallDraftRescheduleRequestSchema.parse(reschedule)).toEqual(reschedule);
     expect(() => fallDraftRescheduleRequestSchema.parse({ ...reschedule, now: "2032-01-01T00:00:00.000Z" })).toThrow();
     expect(() => fallDraftRescheduleRequestSchema.parse({ ...reschedule, reason: " untrimmed" })).toThrow();
     expect(() => fallDraftRescheduleRequestSchema.parse({ ...reschedule, expectedOccurrenceRevision: 0 })).toThrow();
+    expect(() => fallDraftRescheduleRequestSchema.parse({ ...reschedule, ambiguousFold: "later" })).toThrow();
+    expect(() => fallDraftRescheduleRequestSchema.parse({ ...reschedule, foldResolution: "later" })).toThrow();
 
     const approval = {
       contractVersion: FALL_DRAFT_APPROVE_REQUEST_VERSION,

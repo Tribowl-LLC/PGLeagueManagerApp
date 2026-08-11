@@ -76,7 +76,7 @@ export function LeagueForm({ open, onClose, league }: LeagueFormProps) {
       weeklyFee: DEFAULT_WEEKLY_FEE_CENTS,
       lineageFee: null,
       prizeFundFee: null,
-      paymentMode: "weekly",
+      paymentMode: undefined,
       squareLineageItemId: null,
       lineageItemVariationId: null,
       squareLineageItemName: null,

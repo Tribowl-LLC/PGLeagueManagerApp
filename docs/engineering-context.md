@@ -60,6 +60,19 @@ weeks, weekday, skip dates, cancelled dates, and double-pay dates are
 season-specific; they must not be copied implicitly when the product behavior
 requires a new selection.
 
+`leagues.payment_mode` is the authoritative collection-timing setting and is
+limited to `weekly` or `upfront`. League creation and season rollover require
+an explicit choice; historical payments must not be used to guess it. Both
+modes retain per-session bowling obligations: prepaid means the season was
+collected in advance, not that the sessions are nonbillable. Once canonical
+schedule evidence exists, ordinary league editing cannot change this setting.
+
+Required weekly payer count and substitute-payer assignment are separate from
+payment timing. A future money-consumer cutover must model the league's three-
+or four-bowler team requirement and the actual bowlers responsible for each
+occurrence; it must not infer payer responsibility merely from roster membership
+or `payment_mode`.
+
 ## Native And Handoff Targets
 
 Capacitor, `ios/`, and `android/` are intentional native targets. They may look

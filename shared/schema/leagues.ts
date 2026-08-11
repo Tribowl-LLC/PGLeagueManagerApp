@@ -1,4 +1,4 @@
-import { pgTable, text, serial, integer, boolean, timestamp, index, uniqueIndex, type AnyPgColumn } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, integer, boolean, timestamp, index, uniqueIndex, check, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -94,6 +94,8 @@ export const leagues = pgTable("leagues", {
   squarePrizeFundItemName: text("square_prize_fund_item_name"),
   squareCategoryId: text("square_category_id"),
   timezone: text("timezone").default(DEFAULT_TIMEZONE),
+  // Keep the database default for legacy/internal insert compatibility. The
+  // public create contract still requires an explicit operator choice.
   paymentMode: text("payment_mode", { enum: PAYMENT_MODES }).notNull().default("weekly"),
   seasonNumber: integer("season_number").notNull().default(1),
   previousSeasonId: integer("previous_season_id").references((): AnyPgColumn => leagues.id, { onDelete: 'set null' }),
@@ -121,6 +123,7 @@ export const leagues = pgTable("leagues", {
   seasonIdx: index("leagues_season_idx").on(table.seasonStart, table.seasonEnd),
   organizationIdx: index("leagues_organization_idx").on(table.organizationId),
   locationIdx: index("leagues_location_idx").on(table.locationId),
+  paymentModeCheck: check("leagues_payment_mode_check", sql`${table.paymentMode} IN ('weekly', 'upfront')`),
   // Canonical occurrence rows carry both the league and organization IDs.
   // This parent key lets PostgreSQL enforce that the pair came from the same
   // tenant even though legacy leagues.organization_id remains nullable.
@@ -153,7 +156,7 @@ export const insertLeagueSchema = baseLeagueSchema.extend({
   locationId: z.number().int().positive().nullable().optional(),
   seasonNumber: z.number().int().positive().default(1),
   previousSeasonId: z.number().int().positive().nullable().optional(),
-  paymentMode: z.enum(PAYMENT_MODES).default("weekly"),
+  paymentMode: z.enum(PAYMENT_MODES),
   totalBowlingWeeks: z.number().int().positive().nullable().optional(),
   skipDates: z.array(z.string()).default([]),
   cancelledDates: z.array(z.string()).default([]),
