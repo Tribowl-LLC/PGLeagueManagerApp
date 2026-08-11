@@ -27,7 +27,7 @@ import { LeaguesTable } from "@/components/leagues-table";
 import { LeagueSquareMissingBanner } from "@/components/league-square-missing-banner";
 import { ConfirmArchiveDialog } from "@/components/confirm-archive-dialog";
 import { ConfirmDeleteDialog } from "@/components/confirm-delete-dialog";
-import type { League, Team, Location } from "@shared/schema";
+import type { ApiResponse, League, Team, Location, User } from "@shared/schema";
 import type { ScoreWithRelations } from "@/lib/types/scores";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -47,6 +47,12 @@ export default function LeaguesPage() {
   const { data: leaguesResponse, isLoading: loadingLeagues } = useQuery<{ data: League[] }>({
     queryKey: ["/api/leagues"],
   });
+
+  const { data: currentUserResponse } = useQuery<ApiResponse<User>>({
+    queryKey: ["/api/user"],
+    staleTime: 5 * 60 * 1000,
+  });
+  const currentUser = currentUserResponse?.data;
 
   const { data: locationsResponse } = useQuery<{ data: Location[] }>({
     queryKey: ["/api/locations"],
@@ -228,6 +234,7 @@ export default function LeaguesPage() {
           open={showForm}
           onClose={() => { setShowForm(false); setSelectedLeague(undefined); }}
           league={selectedLeague}
+          systemAdminOrganizationId={currentUser?.role === "system_admin" ? currentUser.organizationId : undefined}
         />
 
         <ConfirmArchiveDialog

@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { useState } from 'react';
 
 if (typeof globalThis.ResizeObserver === 'undefined') {
   class NoopResizeObserver implements ResizeObserver {
@@ -19,7 +20,7 @@ const LOCATIONS = [
   { id: 2, name: 'Lanes B', active: true },
 ];
 
-const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = String(input);
   if (url.includes('/api/locations')) {
     return new Response(
@@ -35,9 +36,12 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
   }
   if (url.includes('/api/csrf-token')) {
     return new Response(
-      JSON.stringify({ csrfToken: 'test' }),
+      JSON.stringify({ success: true, data: { token: 'test' } }),
       { status: 200, headers: { 'content-type': 'application/json' } },
     );
+  }
+  if (url === '/api/leagues' && init?.method === 'POST') {
+    return new Promise<Response>(() => {});
   }
   return new Response(
     JSON.stringify({ success: true, data: [] }),
@@ -88,14 +92,25 @@ const seededLeague: League = {
   doublePayDates: [],
 };
 
-function renderForm() {
+function renderForm(league: League | null = seededLeague, systemAdminOrganizationId?: number) {
   // Use the real queryClient so its default queryFn (which calls the
   // mocked global fetch) hydrates the /api/locations query — without it
   // the LeagueBasicInfo Location <Select> never renders.
   queryClient.clear();
+  function Harness() {
+    const [open, setOpen] = useState(true);
+    return (
+      <LeagueForm
+        open={open}
+        onClose={() => setOpen(false)}
+        league={league ?? undefined}
+        systemAdminOrganizationId={systemAdminOrganizationId}
+      />
+    );
+  }
   return render(
     <QueryClientProvider client={queryClient}>
-      <LeagueForm open={true} onClose={() => {}} league={seededLeague} />
+      <Harness />
     </QueryClientProvider>,
   );
 }
@@ -141,6 +156,30 @@ describe('LeagueForm — handleLocationChange clears stored lineage / prize-fund
     await waitFor(() => {
       expect(lineageInput.value).toBe('');
       expect(prizeFundInput.value).toBe('');
+    });
+  });
+
+  it('includes the selected organization in a system-admin Add League request', async () => {
+    const user = userEvent.setup();
+    renderForm(null, 37);
+
+    await user.type(screen.getByLabelText(/^Name$/), 'Scoped League');
+    await user.click(await screen.findByRole('combobox', { name: /location/i }));
+    await user.click(screen.getByRole('option', { name: 'Lanes A' }));
+    await user.click(screen.getByLabelText('League Payment Timing'));
+    await user.click(screen.getByRole('option', { name: /weekly: bowlers pay each week/i }));
+    await user.click(screen.getByRole('button', { name: 'Add League' }));
+
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some(([input, init]) => String(input) === '/api/leagues' && init?.method === 'POST')).toBe(true);
+    });
+    const postCall = fetchMock.mock.calls.find(([input, init]) => String(input) === '/api/leagues' && init?.method === 'POST');
+    expect(postCall).toBeDefined();
+    const requestBody = JSON.parse(String(postCall?.[1]?.body));
+    expect(requestBody).toMatchObject({
+      name: 'Scoped League',
+      organizationId: 37,
+      setupIntegration: { contractVersion: 'league-setup-integration-request/1' },
     });
   });
 });

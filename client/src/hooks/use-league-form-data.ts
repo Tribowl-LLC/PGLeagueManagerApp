@@ -6,10 +6,16 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { DEFAULT_WEEKLY_FEE_CENTS, DEFAULT_TIMEZONE } from "@shared/schema";
 import type { InsertLeagueInput, InsertLeague, League } from "@shared/schema";
+import {
+  LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION,
+  type LeagueSetupIntegrationResult,
+} from "@shared/league-setup-integration";
+import { createSetupIdempotencyKeyRetainer } from "@/pages/league-view-page/fall-draft-secure-id";
 
 interface UseLeagueFormDataOptions {
   open: boolean;
   league?: League;
+  systemAdminOrganizationId?: number | null;
   form: UseFormReturn<InsertLeagueInput, unknown, InsertLeague>;
   bowlingWeeks: number;
   setBowlingWeeks: (w: number) => void;
@@ -29,6 +35,7 @@ interface UseLeagueFormDataOptions {
 export function useLeagueFormData({
   open,
   league,
+  systemAdminOrganizationId,
   form,
   bowlingWeeks,
   setBowlingWeeks,
@@ -46,6 +53,7 @@ export function useLeagueFormData({
 }: UseLeagueFormDataOptions) {
   const { toast } = useToast();
   const isResettingForm = useRef(false);
+  const setupIdempotency = useRef(createSetupIdempotencyKeyRetainer());
 
   const today = new Date();
   today.setHours(12, 0, 0, 0);
@@ -156,35 +164,49 @@ export function useLeagueFormData({
   const mutation = useMutation({
     mutationFn: async (data: InsertLeague) => {
       const derivedEnd = computedSeasonEnd ?? data.seasonEnd;
-      return apiRequest(
+      const semanticPayload = {
+        ...data,
+        seasonStart: data.seasonStart,
+        seasonEnd: derivedEnd instanceof Date ? derivedEnd.toISOString() : derivedEnd,
+        totalBowlingWeeks: bowlingWeeks,
+        skipDates,
+        cancelledDates,
+        doublePayDates,
+      };
+      const createPayload = systemAdminOrganizationId == null
+        ? semanticPayload
+        : { ...semanticPayload, organizationId: systemAdminOrganizationId };
+      return apiRequest<LeagueSetupIntegrationResult>(
         league ? `/api/leagues/${league.id}` : "/api/leagues",
         league ? "PATCH" : "POST",
-        {
-          ...data,
-          seasonStart: data.seasonStart,
-          seasonEnd: derivedEnd instanceof Date ? derivedEnd.toISOString() : derivedEnd,
-          totalBowlingWeeks: bowlingWeeks,
-          skipDates,
-          cancelledDates,
-          doublePayDates,
-        }
+        league ? semanticPayload : {
+          ...createPayload,
+          setupIntegration: {
+            contractVersion: LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION,
+            idempotencyKey: setupIdempotency.current.keyFor(createPayload),
+          },
+        },
       );
     },
-    onSuccess: () => {
+    onSuccess: (response) => {
       queryClient.invalidateQueries({ queryKey: ["/api/leagues"] });
       queryClient.invalidateQueries({ queryKey: ["/api/leagues/square-missing-alerts/recent"] });
+      if (!league) setupIdempotency.current.reset();
+      const canonicalCreated = !league && response.data.canonicalDraftGeneration !== null;
       toast({
         title: league ? "League updated" : "League created",
         description: league
           ? "League has been updated successfully."
-          : "League has been created successfully.",
+          : canonicalCreated
+            ? "League and its canonical Fall schedule drafts were created successfully."
+            : "League has been created successfully.",
       });
       onClose();
       form.reset();
     },
     onError: (error: Error) => {
       toast({
-        title: league ? "Error updating league" : "Error creating league",
+        title: league ? "Error updating league" : "League setup failed",
         description: error.message,
         variant: "destructive",
       });

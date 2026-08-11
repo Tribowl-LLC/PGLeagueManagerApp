@@ -93,10 +93,19 @@ const { LeagueEvidenceError, LeaguePaymentModeError } = vi.hoisted(() => ({
   LeagueEvidenceError: class LeagueOccurrenceEvidenceExistsError extends Error {},
   LeaguePaymentModeError: class LeaguePaymentModeLockedError extends Error {},
 }));
+const { mockCreateLeagueWithCanonicalSetup, mockCreateNewSeasonWithCanonicalSetup } = vi.hoisted(() => ({
+  mockCreateLeagueWithCanonicalSetup: vi.fn(),
+  mockCreateNewSeasonWithCanonicalSetup: vi.fn(),
+}));
 vi.mock('../../server/storage', () => ({ storage: mockStorage }));
 vi.mock('../../server/storage/leagues', () => ({
   LeagueOccurrenceEvidenceExistsError: LeagueEvidenceError,
   LeaguePaymentModeLockedError: LeaguePaymentModeError,
+}));
+vi.mock('../../server/services/league-setup-integration.js', () => ({
+  LeagueSetupIntegrationError: class LeagueSetupIntegrationError extends Error {},
+  createLeagueWithCanonicalSetup: mockCreateLeagueWithCanonicalSetup,
+  createNewSeasonWithCanonicalSetup: mockCreateNewSeasonWithCanonicalSetup,
 }));
 
 // ---------------------------------------------------------------------------
@@ -329,6 +338,8 @@ beforeEach(() => {
   mockGetPaymentProvider.mockImplementation(
     async (locationId: number) => new FakeSquareProvider(locationId),
   );
+  mockCreateLeagueWithCanonicalSetup.mockReset();
+  mockCreateNewSeasonWithCanonicalSetup.mockReset();
 });
 
 afterEach(() => vi.clearAllMocks());
@@ -768,6 +779,19 @@ describe('POST /api/leagues/:id/new-season → fires resync for every bowler clo
     mockStorage.createBowlerLeague.mockResolvedValue({});
     mockStorage.createBowlerLeagueIfNotInLeague.mockResolvedValue({});
     mockStorage.updateLeague.mockResolvedValue({ ...sourceLeague, active: false });
+    mockCreateNewSeasonWithCanonicalSetup.mockResolvedValue({
+      result: {
+        ...newLeague,
+        setupIntegration: {
+          resultContractVersion: 'league-setup-integration-result/1',
+          requestContractVersion: 'league-setup-integration-request/1',
+          mode: 'created',
+          writesPerformed: true,
+        },
+        canonicalDraftGeneration: {},
+      },
+      affectedBowlerIds: sourceBlRows.map((row) => row.bowlerId),
+    });
     const bowlerById = new Map(bowlers.map((b) => [b.id, b]));
     mockStorage.getBowler.mockImplementation(async (id: number) => bowlerById.get(id) ?? null);
 
@@ -780,11 +804,17 @@ describe('POST /api/leagues/:id/new-season → fires resync for every bowler clo
       doublePayDates: ['2026-09-15'],
       allowPublicSignup: true,
       paymentMode: 'upfront',
+      setupIntegration: {
+        contractVersion: 'league-setup-integration-request/1',
+        idempotencyKey: '10000000-0000-4000-8000-000000000120',
+      },
     });
     expect(res.status, await res.text().catch(() => '')).toBe(201);
 
-    expect(mockStorage.createLeague).toHaveBeenCalledWith(
+    expect(mockCreateNewSeasonWithCanonicalSetup).toHaveBeenCalledWith(
       expect.objectContaining({
+        sourceLeagueId: sourceLeague.id,
+        values: expect.objectContaining({
         totalBowlingWeeks: 12,
         weekDay: 'Tuesday',
         skipDates: ['2026-09-08'],
@@ -792,6 +822,7 @@ describe('POST /api/leagues/:id/new-season → fires resync for every bowler clo
         doublePayDates: ['2026-09-15'],
         allowPublicSignup: true,
         paymentMode: 'upfront',
+        }),
       }),
     );
 

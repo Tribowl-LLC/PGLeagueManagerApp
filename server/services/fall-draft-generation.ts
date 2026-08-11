@@ -181,6 +181,11 @@ export type FallDraftFailureStage =
   | "after_revisions"
   | "after_discrepancies";
 
+export interface InternalFallDraftSetupApply {
+  idempotencyKey: string;
+  reason: string;
+}
+
 function injectFailure(requested: FallDraftFailureStage | undefined, stage: FallDraftFailureStage): void {
   if (requested === stage) throw new FallDraftGenerationError("transaction_failure", `injected C1 failure at ${stage}`);
 }
@@ -1105,13 +1110,27 @@ async function assertNoCollisions(tx: LeagueScheduleTransaction, scope: FallDraf
   }
 }
 
-export async function applyFallDraftGeneration(input: FallDraftScope & { apply: FallDraftApplyRequest; failureInjection?: FallDraftFailureStage }): Promise<FallDraftApplyResult> {
-  return db.transaction(async (tx) => {
+export async function applyFallDraftGenerationInTransaction(
+  tx: LeagueScheduleTransaction,
+  input: FallDraftScope & {
+    apply?: FallDraftApplyRequest;
+    internalSetupApply?: InternalFallDraftSetupApply;
+    failureInjection?: FallDraftFailureStage;
+  },
+): Promise<FallDraftApplyResult> {
+    if ((input.apply === undefined) === (input.internalSetupApply === undefined)) {
+      throw new FallDraftGenerationError("transaction_failure", "exactly one C1 apply confirmation source is required");
+    }
+    const requestedIdempotencyKey = input.apply?.idempotencyKey ?? input.internalSetupApply?.idempotencyKey;
+    const requestedReason = input.apply?.reason ?? input.internalSetupApply?.reason;
+    if (!requestedIdempotencyKey || !requestedReason) {
+      throw new FallDraftGenerationError("transaction_failure", "C1 apply intent is incomplete");
+    }
     await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
     const authRequest: MaterializationScheduleCommandRequest = {
       organizationId: input.organizationId, leagueId: input.leagueId, actorUserId: input.actorUserId,
-      commandType: "generate", idempotencyKey: input.apply.idempotencyKey, requestFingerprint: `lvcanoncmd:v1:${"0".repeat(64)}`,
-      reason: input.apply.reason, materializationOperation: "fall_draft_generation", materializationPayload: {},
+      commandType: "generate", idempotencyKey: requestedIdempotencyKey, requestFingerprint: `lvcanoncmd:v1:${"0".repeat(64)}`,
+      reason: requestedReason, materializationOperation: "fall_draft_generation", materializationPayload: {},
     };
     try {
       await assertCanonicalScheduleTenantAndActor(tx, authRequest);
@@ -1122,13 +1141,35 @@ export async function applyFallDraftGeneration(input: FallDraftScope & { apply: 
       throw caught;
     }
     const rows = await loadExistingRows(tx, input, true);
-    const existingKey = rows.commands.find((row) => row.idempotencyKey === input.apply.idempotencyKey);
-    if (existingKey) return verifyExactRetry(tx, input, input.apply, rows);
+    const existingKey = rows.commands.find((row) => row.idempotencyKey === requestedIdempotencyKey);
+    if (existingKey) {
+      let retryApply = input.apply;
+      if (!retryApply) {
+        const existingRun = rows.runs.find((row) => row.originatingCommandId === existingKey.id);
+        const snapshot = existingRun?.normalizedInputSnapshot;
+        if (!isFallDraftInputSnapshot(snapshot)) {
+          throw new FallDraftGenerationError("incompatible_canonical_state", "setup command is missing one complete C1 input snapshot");
+        }
+        retryApply = {
+          contractVersion: FALL_DRAFT_APPLY_REQUEST_VERSION,
+          confirmedPreviewFingerprint: snapshot.confirmedPreviewFingerprint,
+          reason: requestedReason,
+          idempotencyKey: requestedIdempotencyKey,
+        };
+      }
+      return verifyExactRetry(tx, input, retryApply, rows);
+    }
     const loaded = await loadAuthoritativeLeague(tx, input);
     assertFallLeague(loaded);
     const sourceScheduleRevision = await allocateCanonicalSourceScheduleRevisionInTransaction(tx, input.organizationId, input.leagueId);
     const preview = buildPreview({ scope: input, loaded, sourceScheduleRevision, rows });
-    if (preview.previewFingerprint !== input.apply.confirmedPreviewFingerprint) {
+    const apply: FallDraftApplyRequest = input.apply ?? {
+      contractVersion: FALL_DRAFT_APPLY_REQUEST_VERSION,
+      confirmedPreviewFingerprint: preview.previewFingerprint,
+      reason: requestedReason,
+      idempotencyKey: requestedIdempotencyKey,
+    };
+    if (preview.previewFingerprint !== apply.confirmedPreviewFingerprint) {
       throw new FallDraftGenerationError("stale_preview", "confirmed preview no longer matches the authoritative league schedule and canonical state");
     }
     if (preview.fatalErrors.length > 0) throw new FallDraftGenerationError("generator_fatal_error", "C1 cannot apply a preview with generator fatal errors");
@@ -1142,7 +1183,7 @@ export async function applyFallDraftGeneration(input: FallDraftScope & { apply: 
     if (canonicalRowCount(existingCanonicalState(rows)) !== 0) {
       throw new FallDraftGenerationError("incompatible_canonical_state", "league contains partial, foreign, or competing canonical state");
     }
-    const expected = expectedCommands(input, input.apply, preview);
+    const expected = expectedCommands(input, apply, preview);
     const commands = new Map<string, LeagueScheduleCommand>();
     for (const request of expected.all) {
       const created = await getOrCreateCanonicalScheduleCommandInTransaction(tx, request, [request.commandType]);
@@ -1312,6 +1353,11 @@ export async function applyFallDraftGeneration(input: FallDraftScope & { apply: 
       mode: "applied", preview, expected, commands: [...commands.values()], run, occurrences, terms, exceptions,
       occurrenceRevisionIds, termRevisionIds, exceptionRevisionIds, discrepancies, currentMatches: true,
     });
+}
+
+export async function applyFallDraftGeneration(input: FallDraftScope & { apply: FallDraftApplyRequest; failureInjection?: FallDraftFailureStage }): Promise<FallDraftApplyResult> {
+  return db.transaction(async (tx) => {
+    return applyFallDraftGenerationInTransaction(tx, input);
   }, { isolationLevel: "read committed", accessMode: "read write" });
 }
 
