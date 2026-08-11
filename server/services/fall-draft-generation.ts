@@ -1271,11 +1271,19 @@ export async function loadFallDraftPersistedView(scope: FallDraftScope): Promise
   return db.transaction(async (tx) => {
     await authorizeFallDraftScope(tx, scope);
     await assertTenantLeagueExists(tx, scope);
-    const authoritativeLeague = await loadAuthoritativeLeague(tx, scope);
+    const [league] = await tx.select({ paymentMode: leagues.paymentMode }).from(leagues).where(and(
+      eq(leagues.id, scope.leagueId),
+      eq(leagues.organizationId, scope.organizationId),
+    )).limit(1);
+    if (!league) throw new FallDraftGenerationError("league_not_found", "league does not exist in the authorized organization");
+    if (league.paymentMode !== "weekly" && league.paymentMode !== "upfront") {
+      throw new FallDraftGenerationError("incompatible_canonical_state", "league payment timing is unsupported");
+    }
+    const paymentMode: PaymentMode = league.paymentMode;
     const rows = await loadExistingRows(tx, scope, false);
     const resolvedRuns = rows.runs.map((run) => ({
       run,
-      snapshot: resolveFallDraftInputSnapshot(run.normalizedInputSnapshot, authoritativeLeague.paymentMode),
+      snapshot: resolveFallDraftInputSnapshot(run.normalizedInputSnapshot, paymentMode),
     }));
     if (resolvedRuns.some(({ run, snapshot }) => isFallDraftInputSnapshotFamily(run.normalizedInputSnapshot)
       && snapshot === null)) {
