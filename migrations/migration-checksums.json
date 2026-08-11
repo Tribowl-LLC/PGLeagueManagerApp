@@ -120,6 +120,12 @@
       "tag": "0019_phase_c1_cancelled_draft_occurrences",
       "createdAt": 1786399141328,
       "hash": "827dca651d26e840922a2cfefd6aff27d21b83a9e657a6fb6c16bbb2f228ffc9"
+    },
+    {
+      "idx": 20,
+      "tag": "0020_phase_c2_fall_draft_review",
+      "createdAt": 1786404198272,
+      "hash": "d52c091899a9ccb7dc25d640bd0274dd26754dc541ca994bcabf021b876d3f62"
     }
   ]
 }

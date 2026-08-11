@@ -13,6 +13,7 @@ import {
   bowlers,
   leagueOccurrenceBillingTermRevisions,
   leagueOccurrenceGenerationDiscrepancies,
+  leagueOccurrenceGenerationDiscrepancyRevisions,
   leagueOccurrenceGenerationRuns,
   leagueOccurrenceRelationshipRevisions,
   leagueOccurrenceRelationships,
@@ -273,6 +274,7 @@ export async function deleteOrganization(id: number): Promise<void> {
     // parent FKs. Full organization deletion is the explicit retention-policy
     // exception, so remove child audit rows before current rows, then remove
     // runs and immutable commands before tenant actors and parents.
+    await tx.delete(leagueOccurrenceGenerationDiscrepancyRevisions).where(eq(leagueOccurrenceGenerationDiscrepancyRevisions.organizationId, id));
     await tx.delete(leagueOccurrenceGenerationDiscrepancies).where(eq(leagueOccurrenceGenerationDiscrepancies.organizationId, id));
     await tx.delete(leagueOccurrenceRevisions).where(eq(leagueOccurrenceRevisions.organizationId, id));
     await tx.delete(leagueScheduleExceptionRevisions).where(eq(leagueScheduleExceptionRevisions.organizationId, id));

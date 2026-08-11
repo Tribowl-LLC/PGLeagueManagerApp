@@ -29,6 +29,8 @@ import type {
   FallDraftPersistedView,
   FallDraftPreview,
 } from "@shared/fall-draft-generation";
+import { FallDraftReviewPanel } from "./fall-draft-review-panel";
+import { secureFallDraftIdempotencyKey } from "./fall-draft-secure-id";
 
 interface FallDraftGenerationCardProps {
   leagueId: number;
@@ -56,19 +58,6 @@ function formatMoney(amountMinor: number, currency: string): string {
 
 function shortFingerprint(value: string): string {
   return `${value.slice(0, 12)}…${value.slice(-8)}`;
-}
-
-function secureRandomUuid(): string {
-  const cryptoApi = globalThis.crypto;
-  if (typeof cryptoApi?.randomUUID === "function") return cryptoApi.randomUUID();
-  if (typeof cryptoApi?.getRandomValues !== "function") {
-    throw new Error("Secure identifier generation is unavailable. Use a supported browser or update the app before retrying.");
-  }
-  const bytes = cryptoApi.getRandomValues(new Uint8Array(16));
-  bytes[6] = (bytes[6] & 0x0f) | 0x40;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  const hex = Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 export function FallDraftGenerationCard({ leagueId, organizationId, isSystemAdmin }: FallDraftGenerationCardProps) {
@@ -151,7 +140,7 @@ export function FallDraftGenerationCard({ leagueId, organizationId, isSystemAdmi
     let key = idempotencyKey;
     if (!key) {
       try {
-        key = secureRandomUuid();
+        key = secureFallDraftIdempotencyKey();
       } catch (caught) {
         setIdentityError(caught instanceof Error ? caught.message : "Secure identifier generation is unavailable");
         return;
@@ -216,6 +205,17 @@ export function FallDraftGenerationCard({ leagueId, organizationId, isSystemAdmi
                 <p className="break-all font-mono text-xs">Input {persistedResult.inputFingerprint}</p>
                 <p className="break-all font-mono text-xs">Generation run {persistedResult.durableIds.generationRunId}</p>
               </div>
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {persisted?.found && persisted.transitionedToC2 && !persistedResult && (
+          <Alert>
+            <CheckCircle2 className="size-4" />
+            <AlertTitle>Canonical set is managed by C2</AlertTitle>
+            <AlertDescription>
+              The exact current editable, published, or rejected state is shown in the audited review below.
+              {persisted.generationRunId && <span className="mt-1 block break-all font-mono text-xs">Generation run {persisted.generationRunId}</span>}
             </AlertDescription>
           </Alert>
         )}
@@ -423,6 +423,7 @@ export function FallDraftGenerationCard({ leagueId, organizationId, isSystemAdmi
             </AlertDescription>
           </Alert>
         )}
+        <FallDraftReviewPanel basePath={basePath} querySuffix={querySuffix} enabled={persisted?.found === true} />
       </CardContent>
     </Card>
   );

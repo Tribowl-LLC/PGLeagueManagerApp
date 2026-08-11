@@ -71,7 +71,7 @@ import {
 } from "./canonical-occurrence-transactions.js";
 import { lockLeagueSchedule, type LeagueScheduleTransaction } from "../storage/league-schedule-lock.js";
 
-const FALL_DRAFT_INPUT_SNAPSHOT_VERSION = "fall-draft-generation-input-snapshot/1";
+export const FALL_DRAFT_INPUT_SNAPSHOT_VERSION = "fall-draft-generation-input-snapshot/1";
 
 export type FallDraftGenerationErrorCode =
   | "invalid_scope"
@@ -99,7 +99,7 @@ export class FallDraftGenerationError extends Error {
   }
 }
 
-interface FallDraftScope {
+export interface FallDraftScope {
   organizationId: number;
   leagueId: number;
   actorUserId: number;
@@ -123,7 +123,7 @@ interface ExistingRows {
   discrepancies: LeagueOccurrenceGenerationDiscrepancy[];
 }
 
-interface FallDraftInputSnapshot {
+export interface FallDraftInputSnapshot {
   snapshotContractVersion: typeof FALL_DRAFT_INPUT_SNAPSHOT_VERSION;
   confirmedPreviewFingerprint: string;
   candidateSetFingerprint: string;
@@ -174,7 +174,7 @@ function dateOnly(value: string | null): string | null {
   return `${match[1]}-${match[2]}-${match[3]}`;
 }
 
-async function authorizeReadOnly(tx: LeagueScheduleTransaction, scope: FallDraftScope): Promise<void> {
+export async function authorizeFallDraftScope(tx: LeagueScheduleTransaction, scope: FallDraftScope): Promise<void> {
   assertPositiveInteger(scope.organizationId, "organizationId");
   assertPositiveInteger(scope.leagueId, "leagueId");
   assertPositiveInteger(scope.actorUserId, "actorUserId");
@@ -261,7 +261,7 @@ function assertFallLeague(loaded: LoadedLeague): void {
   }
 }
 
-async function databaseTransactionTime(tx: LeagueScheduleTransaction): Promise<string> {
+export async function fallDraftDatabaseTransactionTime(tx: LeagueScheduleTransaction): Promise<string> {
   const result = await tx.execute<{ transaction_time: string }>(sql`
     SELECT to_char(transaction_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS transaction_time
   `);
@@ -497,12 +497,12 @@ async function proposedRevision(tx: LeagueScheduleTransaction, scope: FallDraftS
 
 export async function previewFallDraftGeneration(input: FallDraftScope & { semantics: FallDraftGeneratorSemantics }): Promise<FallDraftPreview> {
   return db.transaction(async (tx) => {
-    await authorizeReadOnly(tx, input);
+    await authorizeFallDraftScope(tx, input);
     const loaded = await loadAuthoritativeLeague(tx, input);
     assertFallLeague(loaded);
     const revision = await proposedRevision(tx, input);
     const rows = await loadExistingRows(tx, input, false);
-    const transactionTime = await databaseTransactionTime(tx);
+    const transactionTime = await fallDraftDatabaseTransactionTime(tx);
     const preview = buildPreview({ scope: input, semantics: input.semantics, loaded, sourceScheduleRevision: revision, rows });
     if (preview.fatalErrors.length === 0) {
       assertWhollyFuture(generateCanonicalOccurrences(preview.normalizedInput as Parameters<typeof generateCanonicalOccurrences>[0]), transactionTime);
@@ -678,7 +678,7 @@ function inputSnapshot(preview: FallDraftPreview): FallDraftInputSnapshot {
   };
 }
 
-function isInputSnapshot(value: unknown): value is FallDraftInputSnapshot {
+export function isFallDraftInputSnapshot(value: unknown): value is FallDraftInputSnapshot {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const snapshot = value as Partial<FallDraftInputSnapshot>;
   return snapshot.snapshotContractVersion === FALL_DRAFT_INPUT_SNAPSHOT_VERSION
@@ -698,10 +698,16 @@ function sameValue(left: unknown, right: unknown): boolean {
   return fallDraftCanonicalJson(left) === fallDraftCanonicalJson(right);
 }
 
-async function currentInputMatches(tx: LeagueScheduleTransaction, scope: FallDraftScope, normalizedInput: CanonicalNormalizedInput): Promise<boolean> {
+export async function currentFallDraftInputEvidence(
+  tx: LeagueScheduleTransaction,
+  scope: FallDraftScope,
+  normalizedInput: CanonicalNormalizedInput,
+): Promise<{ matches: boolean; currentInputFingerprint: string | null }> {
   try {
     const loaded = await loadAuthoritativeLeague(tx, scope);
-    if (!loaded.active || getProductSeasonFromDateOnly(dateOnly(loaded.row.season_start) ?? "") !== "Fall") return false;
+    if (!loaded.active || getProductSeasonFromDateOnly(dateOnly(loaded.row.season_start) ?? "") !== "Fall") {
+      return { matches: false, currentInputFingerprint: null };
+    }
     const candidate = createCanonicalGeneratorInputFromLegacyRow(loaded.row, {
       organizationId: scope.organizationId,
       leagueId: scope.leagueId,
@@ -711,11 +717,19 @@ async function currentInputMatches(tx: LeagueScheduleTransaction, scope: FallDra
       regularSessionBillingPolicy: normalizedInput.regularSessionBillingPolicy as FallDraftGeneratorSemantics["regularSessionBillingPolicy"],
       billingOrdinalPolicy: normalizedInput.billingOrdinalPolicy as FallDraftGeneratorSemantics["billingOrdinalPolicy"],
     });
-    if ("failure" in candidate) return false;
-    return generateCanonicalOccurrences(candidate).inputFingerprint === generateCanonicalOccurrences(normalizedInput as Parameters<typeof generateCanonicalOccurrences>[0]).inputFingerprint;
+    if ("failure" in candidate) return { matches: false, currentInputFingerprint: null };
+    const currentInputFingerprint = generateCanonicalOccurrences(candidate).inputFingerprint;
+    return {
+      matches: currentInputFingerprint === generateCanonicalOccurrences(normalizedInput as Parameters<typeof generateCanonicalOccurrences>[0]).inputFingerprint,
+      currentInputFingerprint,
+    };
   } catch {
-    return false;
+    return { matches: false, currentInputFingerprint: null };
   }
+}
+
+async function currentInputMatches(tx: LeagueScheduleTransaction, scope: FallDraftScope, normalizedInput: CanonicalNormalizedInput): Promise<boolean> {
+  return (await currentFallDraftInputEvidence(tx, scope, normalizedInput)).matches;
 }
 
 function resultFromRows(input: {
@@ -777,7 +791,7 @@ function resultFromRows(input: {
 
 function previewFromPersisted(scope: FallDraftScope, run: LeagueOccurrenceGenerationRun, generation: CanonicalGenerationResult, rows: ExistingRows): FallDraftPreview {
   const snapshot = run.normalizedInputSnapshot;
-  if (!isInputSnapshot(snapshot)) throw new FallDraftGenerationError("incompatible_canonical_state", "generation run is not a C1 input snapshot");
+  if (!isFallDraftInputSnapshot(snapshot)) throw new FallDraftGenerationError("incompatible_canonical_state", "generation run is not a C1 input snapshot");
   const state = existingCanonicalState(rows);
   const semantics: FallDraftGeneratorSemantics = {
     ambiguousFold: generation.normalizedInput.ambiguousFold as FallDraftGeneratorSemantics["ambiguousFold"],
@@ -824,7 +838,7 @@ async function verifyExactRetry(tx: LeagueScheduleTransaction, scope: FallDraftS
   const primary = rows.commands.find((row) => row.idempotencyKey === apply.idempotencyKey);
   if (!primary) throw new FallDraftGenerationError("incompatible_canonical_state", "canonical state exists but is not owned by this idempotency key");
   const run = rows.runs.find((row) => row.originatingCommandId === primary.id);
-  if (!run || !isInputSnapshot(run.normalizedInputSnapshot)) {
+  if (!run || !isFallDraftInputSnapshot(run.normalizedInputSnapshot)) {
     throw new FallDraftGenerationError("incompatible_canonical_state", "generation command exists without one complete C1 generation run");
   }
   const snapshot = run.normalizedInputSnapshot;
@@ -996,7 +1010,7 @@ export async function applyFallDraftGeneration(input: FallDraftScope & { apply: 
     if (preview.discrepancies.some((row) => row.code === "exception_collision")) {
       throw new FallDraftGenerationError("unsupported_discrepancy", "exception-collision discrepancies cannot be materialized by C1");
     }
-    const transactionTime = await databaseTransactionTime(tx);
+    const transactionTime = await fallDraftDatabaseTransactionTime(tx);
     const generation = generateCanonicalOccurrences(preview.normalizedInput as Parameters<typeof generateCanonicalOccurrences>[0]);
     assertWhollyFuture(generation, transactionTime);
     await assertNoCollisions(tx, input, preview, rows);
@@ -1178,16 +1192,35 @@ export async function applyFallDraftGeneration(input: FallDraftScope & { apply: 
 
 export async function loadFallDraftPersistedView(scope: FallDraftScope): Promise<FallDraftPersistedView> {
   return db.transaction(async (tx) => {
-    await authorizeReadOnly(tx, scope);
+    await authorizeFallDraftScope(tx, scope);
     await assertTenantLeagueExists(tx, scope);
     const rows = await loadExistingRows(tx, scope, false);
-    const c1Runs = rows.runs.filter((run) => isInputSnapshot(run.normalizedInputSnapshot));
-    if (c1Runs.length === 0) return { found: false, result: null, currentLegacyScheduleMatchesGenerationInput: null };
+    const c1Runs = rows.runs.filter((run) => isFallDraftInputSnapshot(run.normalizedInputSnapshot));
+    if (c1Runs.length === 0) return {
+      found: false,
+      result: null,
+      currentLegacyScheduleMatchesGenerationInput: null,
+    };
     if (c1Runs.length !== 1) throw new FallDraftGenerationError("incompatible_canonical_state", "multiple C1 generation runs exist for the league");
     const run = c1Runs[0];
     const snapshot = run.normalizedInputSnapshot;
-    if (!isInputSnapshot(snapshot)) throw new FallDraftGenerationError("incompatible_canonical_state", "C1 snapshot is invalid");
+    if (!isFallDraftInputSnapshot(snapshot)) throw new FallDraftGenerationError("incompatible_canonical_state", "C1 snapshot is invalid");
     const generation = generateCanonicalOccurrences(snapshot.normalizedInput as Parameters<typeof generateCanonicalOccurrences>[0]);
+    const transitionedToC2 = run.state !== "generated"
+      || rows.occurrences.some((row) => row.currentRevision > 1)
+      || rows.terms.some((row) => row.currentRevision > 1)
+      || rows.exceptions.some((row) => row.currentRevision > 1)
+      || rows.discrepancies.some((row) => row.resolutionState !== "open");
+    if (transitionedToC2) {
+      const currentMatches = await currentInputMatches(tx, scope, generation.normalizedInput);
+      return {
+        found: true,
+        result: null,
+        currentLegacyScheduleMatchesGenerationInput: currentMatches,
+        transitionedToC2: true,
+        generationRunId: run.id,
+      };
+    }
     const preview = previewFromPersisted(scope, run, generation, rows);
     const command = rows.commands.find((row) => row.id === run.originatingCommandId);
     if (!command) throw new FallDraftGenerationError("incompatible_canonical_state", "C1 run has no originating generation command");
@@ -1202,7 +1235,13 @@ export async function loadFallDraftPersistedView(scope: FallDraftScope): Promise
       billingOrdinalPolicy: preview.semantics.billingOrdinalPolicy,
     };
     const result = await verifyExactRetry(tx, { ...scope, actorUserId: command.actorUserId }, apply, rows);
-    return { found: true, result, currentLegacyScheduleMatchesGenerationInput: result.currentLegacyScheduleMatchesGenerationInput };
+    return {
+      found: true,
+      result,
+      currentLegacyScheduleMatchesGenerationInput: result.currentLegacyScheduleMatchesGenerationInput,
+      transitionedToC2: false,
+      generationRunId: run.id,
+    };
   }, { isolationLevel: "repeatable read", accessMode: "read only" });
 }
 

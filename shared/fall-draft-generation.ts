@@ -205,6 +205,9 @@ export interface FallDraftPersistedView {
   found: boolean;
   result: FallDraftApplyResult | null;
   currentLegacyScheduleMatchesGenerationInput: boolean | null;
+  /** True once C2 owns the mutable lifecycle; use the C2 review endpoint for exact current state. */
+  transitionedToC2?: boolean;
+  generationRunId?: string | null;
 }
 
 function compareStrings(left: string, right: string): number {

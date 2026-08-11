@@ -35,6 +35,8 @@ export const LEAGUE_SCHEDULE_COMMAND_TYPES = [
   "revoke_makeup_relationship",
   "revise_billing_terms",
   "repair",
+  "reject_generation",
+  "restore_cancelled_draft",
 ] as const;
 export type LeagueScheduleCommandType = (typeof LEAGUE_SCHEDULE_COMMAND_TYPES)[number];
 
@@ -173,7 +175,7 @@ export const leagueScheduleCommands = pgTable("league_schedule_commands", {
   ),
   reasonCheck: check(
     "schedule_commands_reason_check",
-    sql`${table.commandType} NOT IN ('cancel', 'reschedule', 'discard_draft', 'revoke_exception', 'revoke_makeup_relationship', 'repair')
+    sql`${table.commandType} NOT IN ('cancel', 'reschedule', 'discard_draft', 'revoke_exception', 'revoke_makeup_relationship', 'repair', 'reject_generation', 'restore_cancelled_draft')
       OR (${table.reason} IS NOT NULL AND length(${table.reason}) > 0 AND btrim(${table.reason}) = ${table.reason})`,
   ),
 }));
@@ -355,7 +357,8 @@ export const leagueScheduleExceptions = pgTable("league_schedule_exceptions", {
       AND ${table.revokedAt} IS NULL AND ${table.revokedByUserId} IS NULL AND ${table.revocationCommandId} IS NULL
     ) OR (
       ${table.lifecycle} = 'revoked'
-      AND ${table.publishedAt} IS NOT NULL AND ${table.publishedByUserId} IS NOT NULL AND ${table.publicationCommandId} IS NOT NULL
+      AND ((${table.publishedAt} IS NULL AND ${table.publishedByUserId} IS NULL AND ${table.publicationCommandId} IS NULL)
+        OR (${table.publishedAt} IS NOT NULL AND ${table.publishedByUserId} IS NOT NULL AND ${table.publicationCommandId} IS NOT NULL))
       AND ${table.revokedAt} IS NOT NULL AND ${table.revokedByUserId} IS NOT NULL AND ${table.revocationCommandId} IS NOT NULL
     )`,
   ),
@@ -826,6 +829,8 @@ export const leagueOccurrenceGenerationDiscrepancies = pgTable("league_occurrenc
   createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull().defaultNow(),
 }, (table) => ({
+  tenantIdentityUnique: uniqueIndex("generation_discrepancies_tenant_identity_unique")
+    .on(table.id, table.organizationId, table.leagueId),
   generationRunFk: foreignKey({
     name: "generation_discrepancies_generation_run_fk",
     columns: [table.generationRunId, table.organizationId, table.leagueId],
@@ -847,6 +852,42 @@ export const leagueOccurrenceGenerationDiscrepancies = pgTable("league_occurrenc
   runIdx: index("generation_discrepancies_run_idx").on(table.generationRunId),
 }));
 
+export const leagueOccurrenceGenerationDiscrepancyRevisions = pgTable("league_occurrence_generation_discrepancy_revisions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  organizationId: integer("organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
+  leagueId: integer("league_id").notNull(),
+  discrepancyId: uuid("discrepancy_id").notNull(),
+  commandId: uuid("command_id").notNull(),
+  revisionNumber: integer("revision_number").notNull(),
+  snapshotSchemaVersion: integer("snapshot_schema_version").notNull(),
+  beforeSnapshot: jsonb("before_snapshot").notNull(),
+  afterSnapshot: jsonb("after_snapshot").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull().defaultNow(),
+}, (table) => ({
+  discrepancyTenantFk: foreignKey({
+    name: "generation_discrepancy_revisions_discrepancy_fk",
+    columns: [table.discrepancyId, table.organizationId, table.leagueId],
+    foreignColumns: [
+      leagueOccurrenceGenerationDiscrepancies.id,
+      leagueOccurrenceGenerationDiscrepancies.organizationId,
+      leagueOccurrenceGenerationDiscrepancies.leagueId,
+    ],
+  }).onDelete("restrict"),
+  commandTenantFk: foreignKey({
+    name: "generation_discrepancy_revisions_command_fk",
+    columns: [table.commandId, table.organizationId, table.leagueId],
+    foreignColumns: [leagueScheduleCommands.id, leagueScheduleCommands.organizationId, leagueScheduleCommands.leagueId],
+  }).onDelete("restrict"),
+  revisionUnique: uniqueIndex("generation_discrepancy_revisions_entity_revision_unique")
+    .on(table.organizationId, table.leagueId, table.discrepancyId, table.revisionNumber),
+  revisionCheck: check(
+    "generation_discrepancy_revisions_revision_check",
+    sql`${table.revisionNumber} > 0 AND ${table.snapshotSchemaVersion} > 0`,
+  ),
+  tenantCreatedIdx: index("generation_discrepancy_revisions_tenant_created_idx")
+    .on(table.organizationId, table.createdAt.desc()),
+}));
+
 export type LeagueScheduleCommand = typeof leagueScheduleCommands.$inferSelect;
 export type LeagueOccurrenceGenerationRun = typeof leagueOccurrenceGenerationRuns.$inferSelect;
 export type LeagueScheduleException = typeof leagueScheduleExceptions.$inferSelect;
@@ -858,3 +899,4 @@ export type LeagueScheduleExceptionRevision = typeof leagueScheduleExceptionRevi
 export type LeagueOccurrenceRelationshipRevision = typeof leagueOccurrenceRelationshipRevisions.$inferSelect;
 export type LeagueOccurrenceBillingTermRevision = typeof leagueOccurrenceBillingTermRevisions.$inferSelect;
 export type LeagueOccurrenceGenerationDiscrepancy = typeof leagueOccurrenceGenerationDiscrepancies.$inferSelect;
+export type LeagueOccurrenceGenerationDiscrepancyRevision = typeof leagueOccurrenceGenerationDiscrepancyRevisions.$inferSelect;

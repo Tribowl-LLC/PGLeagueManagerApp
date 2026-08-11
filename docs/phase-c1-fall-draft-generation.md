@@ -158,6 +158,12 @@ draft remains readable and reports `currentInputMatches: false`. Later legacy
 edits do not rewrite or regenerate the drafts. An administrator may preview again
 for read-only review, but cannot create a second generation.
 
+After a C2 mutation advances an entity revision or terminalizes the generation
+run, this C1 status endpoint reports `found: true`, `transitionedToC2: true`, and
+the durable generation-run ID without pretending the original C1 apply result is
+still the exact current state. The versioned C2 review endpoint then owns complete
+current-state and revision-chain verification.
+
 ## Authorization, UI, and errors
 
 All three endpoints require the normal authenticated session and API/CSRF
@@ -181,8 +187,11 @@ not adoption or manual partial continuation.
 
 ## Phase boundary and security
 
-C2 remains responsible for audited editing, cancellation changes, approval,
-rejection, publication, and later lifecycle transitions. D1/D2 remain
+C2 now consumes only the versioned C1 input snapshot and implements audited
+future reschedule/cancel/restore, exact persisted review, discrepancy
+disposition, atomic approval/publication, and terminal rejection as documented
+in `docs/phase-c2-fall-draft-review-approval.md`. C1 generation itself remains
+draft-only and unchanged. D1/D2 remain
 responsible for legacy dual-write/comparison and downstream transition. E1
 remains the calendar/schedule/admin consumer cutover. C1 does not update legacy
 games, schedules, scores, or payments and does not introduce workers, rollover,

@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { leagues, locations, organizations, users } from "@shared/schema";
 import type { FallDraftApplyResult, FallDraftPersistedView, FallDraftPreview } from "@shared/fall-draft-generation";
+import type { FallDraftMutationResult, FallDraftReview } from "@shared/fall-draft-review";
 import { hashPassword } from "../../server/lib/password";
 import { deleteOrganization } from "../../server/storage/organizations";
 import {
@@ -150,5 +151,80 @@ describe("C1 Fall draft API", () => {
     }, other.admin);
     expect(result.status).toBe(400);
     expect(result.data.error?.code).toBe("VALIDATION_ERROR");
+  });
+
+  it("provides authenticated C2 review, stale protection, publication, and published-future cancellation", async () => {
+    const path = `/api/leagues/${primary.leagueId}/canonical-fall-drafts/review`;
+    const normal = await apiGet(path, primary.user);
+    expect(normal.status).toBe(403);
+    const crossTenant = await apiGet(`/api/leagues/${primary.leagueId}/canonical-fall-drafts/review`, other.admin);
+    expect(crossTenant.status).toBe(404);
+    expect(JSON.stringify(crossTenant.data)).not.toContain(primary.organizationId.toString());
+    const systemMissingScope = await apiGet(path, systemAdmin);
+    expect(systemMissingScope.status).toBe(400);
+    const systemReview = await apiGet<FallDraftReview>(`${path}?organizationId=${primary.organizationId}`, systemAdmin);
+    expect(systemReview.status).toBe(200);
+    expect(systemReview.data.data).toMatchObject({ reviewContractVersion: "fall-draft-review/1", generationRun: { state: "generated" } });
+
+    const reviewResponse = await apiGet<FallDraftReview>(path, primary.admin);
+    const review = reviewResponse.data.data as FallDraftReview;
+    const stale = await apiPost(`${path}/cancel`, {
+      contractVersion: "fall-draft-cancel-request/1",
+      confirmedReviewFingerprint: "0".repeat(64),
+      reason: "Reject stale API confirmation",
+      idempotencyKey: `c2-api-stale-${primary.leagueId}`,
+      occurrenceId: review.occurrences[0].id,
+      expectedOccurrenceRevision: review.occurrences[0].currentRevision,
+    }, primary.admin);
+    expect(stale.status).toBe(409);
+    expect(stale.data.error?.code).toBe("FALL_DRAFT_STALE_REVIEW");
+
+    const noCsrf = await fetch(`${BASE_URL}${path}/approve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: primary.admin.cookies },
+      body: JSON.stringify({
+        contractVersion: "fall-draft-approve-request/1",
+        confirmedReviewFingerprint: review.reviewFingerprint,
+        reason: "Approve complete C2 API review",
+        idempotencyKey: `c2-api-approve-no-csrf-${primary.leagueId}`,
+        discrepancyDispositions: [],
+      }),
+    });
+    expect(noCsrf.status).toBe(403);
+
+    const approved = await apiPost<FallDraftMutationResult>(`${path}/approve`, {
+      contractVersion: "fall-draft-approve-request/1",
+      confirmedReviewFingerprint: review.reviewFingerprint,
+      reason: "Approve complete C2 API review",
+      idempotencyKey: `c2-api-approve-${primary.leagueId}`,
+      discrepancyDispositions: [],
+    }, primary.admin);
+    expect(approved.status).toBe(201);
+    expect(approved.data.data).toMatchObject({ operation: "approve_publish", mode: "applied", review: { generationRun: { state: "applied" } } });
+    const published = approved.data.data as FallDraftMutationResult;
+    const scheduled = published.review.occurrences.find((row) => row.status === "scheduled");
+    if (!scheduled) throw new Error("C2 API published fixture has no scheduled occurrence");
+    const cancelled = await apiPost<FallDraftMutationResult>(`${path}/cancel`, {
+      contractVersion: "fall-draft-cancel-request/1",
+      confirmedReviewFingerprint: published.review.reviewFingerprint,
+      reason: "Cancel one published future occurrence through C2 API",
+      idempotencyKey: `c2-api-published-cancel-${primary.leagueId}`,
+      occurrenceId: scheduled.id,
+      expectedOccurrenceRevision: scheduled.currentRevision,
+    }, primary.admin);
+    expect(cancelled.status).toBe(201);
+    expect(cancelled.data.data?.review.occurrences.find((row) => row.id === scheduled.id)).toMatchObject({
+      id: scheduled.id, generationKey: scheduled.generationKey, lifecycle: "published", status: "cancelled",
+    });
+    const transitionedStatus = await apiGet<FallDraftPersistedView>(
+      `/api/leagues/${primary.leagueId}/canonical-fall-drafts`,
+      primary.admin,
+    );
+    expect(transitionedStatus.data.data).toMatchObject({
+      found: true,
+      result: null,
+      transitionedToC2: true,
+      generationRunId: review.generationRun.id,
+    });
   });
 });

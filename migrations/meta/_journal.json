@@ -141,6 +141,13 @@
       "when": 1786399141328,
       "tag": "0019_phase_c1_cancelled_draft_occurrences",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1786404198272,
+      "tag": "0020_phase_c2_fall_draft_review",
+      "breakpoints": true
     }
   ]
 }
