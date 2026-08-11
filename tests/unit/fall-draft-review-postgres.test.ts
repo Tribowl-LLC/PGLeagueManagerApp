@@ -29,7 +29,11 @@ import {
   type FallDraftRejectRequest,
   type FallDraftRescheduleRequest,
 } from "@shared/fall-draft-review";
-import { applyFallDraftGeneration, previewFallDraftGeneration } from "../../server/services/fall-draft-generation";
+import {
+  applyFallDraftGeneration,
+  loadFallDraftPersistedView,
+  previewFallDraftGeneration,
+} from "../../server/services/fall-draft-generation";
 import {
   approveAndPublishFallDraft,
   cancelFallDraftOccurrence,
@@ -114,6 +118,54 @@ afterAll(async () => {
 });
 
 describe("C2 Fall draft persisted review and editing", () => {
+  it("reads semantically compatible version-1 C1 snapshots without rewriting them", async () => {
+    const f = await fixture("legacy-c1-snapshot");
+    await generateDraft(f);
+    const [run] = await db.select().from(leagueOccurrenceGenerationRuns)
+      .where(eq(leagueOccurrenceGenerationRuns.leagueId, f.leagueId));
+    if (!run || !run.normalizedInputSnapshot || typeof run.normalizedInputSnapshot !== "object"
+      || Array.isArray(run.normalizedInputSnapshot)) throw new Error("C1 snapshot fixture failed");
+    const legacySnapshot = structuredClone(run.normalizedInputSnapshot) as Record<string, unknown>;
+    legacySnapshot.snapshotContractVersion = "fall-draft-generation-input-snapshot/1";
+    delete legacySnapshot.paymentMode;
+    await db.update(leagueOccurrenceGenerationRuns)
+      .set({ normalizedInputSnapshot: legacySnapshot })
+      .where(eq(leagueOccurrenceGenerationRuns.id, run.id));
+
+    const persisted = await loadFallDraftPersistedView(scope(f));
+    expect(persisted).toMatchObject({
+      found: true,
+      result: null,
+      transitionedToC2: true,
+      generationRunId: run.id,
+      currentLegacyScheduleMatchesGenerationInput: true,
+    });
+    const review = await loadFallDraftReview(scope(f));
+    expect(review).toMatchObject({
+      reviewContractVersion: "fall-draft-review/2",
+      c1: { paymentMode: "weekly" },
+      generationRun: { id: run.id, state: "generated" },
+    });
+    const [reread] = await db.select({ snapshot: leagueOccurrenceGenerationRuns.normalizedInputSnapshot })
+      .from(leagueOccurrenceGenerationRuns)
+      .where(eq(leagueOccurrenceGenerationRuns.id, run.id));
+    expect(reread?.snapshot).toEqual(legacySnapshot);
+    const rejected = await rejectFallDraft({
+      ...scope(f),
+      request: {
+        contractVersion: FALL_DRAFT_REJECT_REQUEST_VERSION,
+        confirmedReviewFingerprint: review.reviewFingerprint,
+        reason: "Reject the compatible legacy C1 draft through C2",
+        idempotencyKey: `c2-reject-legacy-${f.leagueId}`,
+      },
+    });
+    expect(rejected.review.generationRun.state).toBe("rejected");
+    const [afterRejection] = await db.select({ snapshot: leagueOccurrenceGenerationRuns.normalizedInputSnapshot })
+      .from(leagueOccurrenceGenerationRuns)
+      .where(eq(leagueOccurrenceGenerationRuns.id, run.id));
+    expect(afterRejection?.snapshot).toEqual(legacySnapshot);
+  });
+
   it("builds a deterministic complete review and rejects stale review and entity revisions", async () => {
     const f = await fixture("review");
     await generateDraft(f);

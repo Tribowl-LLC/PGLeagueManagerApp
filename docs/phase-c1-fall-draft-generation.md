@@ -179,6 +179,14 @@ draft remains readable and reports `currentInputMatches: false`. Later legacy
 edits do not rewrite or regenerate the drafts. An administrator may preview again
 for read-only review, but cannot create a second generation.
 
+The persisted reader provides a zero-write transition for input snapshot version
+1. A version-1 snapshot is accepted only when its recorded fold, currency, and
+regular-session billing semantics already equal the fixed version-2 policies; the
+current authoritative league payment mode is then added to the in-memory view.
+The stored snapshot and its fingerprints are never rewritten. Compatible legacy
+drafts transition directly to C2 review instead of attempting a version-2 C1
+idempotency retry; semantically incompatible legacy snapshots still fail closed.
+
 After a C2 mutation advances an entity revision or terminalizes the generation
 run, this C1 status endpoint reports `found: true`, `transitionedToC2: true`, and
 the durable generation-run ID without pretending the original C1 apply result is

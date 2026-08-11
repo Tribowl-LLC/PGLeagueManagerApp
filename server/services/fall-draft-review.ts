@@ -11,12 +11,14 @@ import {
   leagueScheduleCommands,
   leagueScheduleExceptionRevisions,
   leagueScheduleExceptions,
+  leagues,
   type LeagueOccurrence,
   type LeagueOccurrenceBillingTerm,
   type LeagueOccurrenceGenerationDiscrepancy,
   type LeagueOccurrenceGenerationRun,
   type LeagueScheduleCommand,
   type LeagueScheduleException,
+  type PaymentMode,
 } from "@shared/schema";
 import {
   generateCanonicalOccurrences,
@@ -62,7 +64,7 @@ import {
   currentFallDraftInputEvidence,
   fallDraftDatabaseTransactionTime,
   isFallDraftInputSnapshotFamily,
-  isFallDraftInputSnapshot,
+  resolveFallDraftInputSnapshot,
   type FallDraftInputSnapshot,
   type FallDraftScope,
 } from "./fall-draft-generation.js";
@@ -272,24 +274,36 @@ function assertRevisionChain<T extends { revisionNumber: number; beforeSnapshot:
 }
 
 async function loadRows(tx: LeagueScheduleTransaction, scope: FallDraftScope, lock: boolean): Promise<ReviewRows> {
+  const [league] = await tx.select({ paymentMode: leagues.paymentMode }).from(leagues).where(and(
+    eq(leagues.id, scope.leagueId),
+    eq(leagues.organizationId, scope.organizationId),
+  )).limit(1);
+  if (!league) throw new FallDraftReviewError("league_not_found", "league does not exist in the authorized organization");
+  if (league.paymentMode !== "weekly" && league.paymentMode !== "upfront") {
+    throw new FallDraftReviewError("incompatible_canonical_state", "league payment timing is unsupported");
+  }
+  const paymentMode: PaymentMode = league.paymentMode;
   const runsQuery = tx.select().from(leagueOccurrenceGenerationRuns).where(and(
     eq(leagueOccurrenceGenerationRuns.organizationId, scope.organizationId),
     eq(leagueOccurrenceGenerationRuns.leagueId, scope.leagueId),
   )).orderBy(asc(leagueOccurrenceGenerationRuns.sourceScheduleRevision));
   const runs = lock ? await runsQuery.for("update") : await runsQuery;
-  if (runs.some((row) => isFallDraftInputSnapshotFamily(row.normalizedInputSnapshot)
-    && !isFallDraftInputSnapshot(row.normalizedInputSnapshot))) {
+  const resolvedRuns = runs.map((run) => ({
+    run,
+    snapshot: resolveFallDraftInputSnapshot(run.normalizedInputSnapshot, paymentMode),
+  }));
+  if (resolvedRuns.some(({ run, snapshot }) => isFallDraftInputSnapshotFamily(run.normalizedInputSnapshot)
+    && snapshot === null)) {
     throw new FallDraftReviewError("incompatible_canonical_state", "the league contains an unsupported C1 input snapshot version");
   }
-  const c1Runs = runs.filter((row) => isFallDraftInputSnapshot(row.normalizedInputSnapshot));
+  const c1Runs = resolvedRuns.filter((entry): entry is {
+    run: LeagueOccurrenceGenerationRun;
+    snapshot: FallDraftInputSnapshot;
+  } => entry.snapshot !== null);
   if (c1Runs.length === 0) throw new FallDraftReviewError("c1_run_not_found", "no C1 Fall generation run exists for this league");
   if (c1Runs.length !== 1) throw new FallDraftReviewError("incompatible_canonical_state", "multiple C1 Fall generation runs exist for this league");
   if (runs.length !== 1) throw new FallDraftReviewError("incompatible_canonical_state", "the C1 league contains a foreign or replacement generation run");
-  const run = c1Runs[0];
-  const snapshot = run.normalizedInputSnapshot;
-  if (!isFallDraftInputSnapshot(snapshot) || snapshot.snapshotContractVersion !== FALL_DRAFT_INPUT_SNAPSHOT_VERSION) {
-    throw new FallDraftReviewError("incompatible_canonical_state", "the generation run does not contain the supported C1 input snapshot");
-  }
+  const { run, snapshot } = c1Runs[0];
   if (snapshot.normalizedInput.ambiguousFold !== FALL_DRAFT_AMBIGUOUS_FOLD_POLICY
     || snapshot.normalizedInput.currency !== FALL_DRAFT_CURRENCY
     || snapshot.normalizedInput.regularSessionBillingPolicy

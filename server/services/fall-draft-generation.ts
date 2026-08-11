@@ -76,6 +76,7 @@ import {
 import { lockLeagueSchedule, type LeagueScheduleTransaction } from "../storage/league-schedule-lock.js";
 
 export const FALL_DRAFT_INPUT_SNAPSHOT_VERSION = "fall-draft-generation-input-snapshot/2";
+export const FALL_DRAFT_LEGACY_INPUT_SNAPSHOT_VERSION = "fall-draft-generation-input-snapshot/1";
 
 export type FallDraftGenerationErrorCode =
   | "invalid_scope"
@@ -133,6 +134,13 @@ export interface FallDraftInputSnapshot {
   confirmedPreviewFingerprint: string;
   candidateSetFingerprint: string;
   paymentMode: PaymentMode;
+  normalizedInput: CanonicalNormalizedInput;
+}
+
+interface FallDraftLegacyInputSnapshot {
+  snapshotContractVersion: typeof FALL_DRAFT_LEGACY_INPUT_SNAPSHOT_VERSION;
+  confirmedPreviewFingerprint: string;
+  candidateSetFingerprint: string;
   normalizedInput: CanonicalNormalizedInput;
 }
 
@@ -701,6 +709,36 @@ export function isFallDraftInputSnapshot(value: unknown): value is FallDraftInpu
     && !!snapshot.normalizedInput && typeof snapshot.normalizedInput === "object";
 }
 
+export function isFallDraftLegacyInputSnapshot(value: unknown): value is FallDraftLegacyInputSnapshot {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const snapshot = value as Partial<FallDraftLegacyInputSnapshot>;
+  return snapshot.snapshotContractVersion === FALL_DRAFT_LEGACY_INPUT_SNAPSHOT_VERSION
+    && typeof snapshot.confirmedPreviewFingerprint === "string"
+    && typeof snapshot.candidateSetFingerprint === "string"
+    && !!snapshot.normalizedInput && typeof snapshot.normalizedInput === "object";
+}
+
+export function resolveFallDraftInputSnapshot(
+  value: unknown,
+  paymentMode: PaymentMode,
+): FallDraftInputSnapshot | null {
+  if (isFallDraftInputSnapshot(value)) return value;
+  if (!isFallDraftLegacyInputSnapshot(value)) return null;
+  const regularSessionBillingPolicy = fallDraftRegularSessionBillingPolicyForPaymentMode(paymentMode);
+  if (value.normalizedInput.ambiguousFold !== FALL_DRAFT_AMBIGUOUS_FOLD_POLICY
+    || value.normalizedInput.currency !== FALL_DRAFT_CURRENCY
+    || value.normalizedInput.regularSessionBillingPolicy !== regularSessionBillingPolicy) {
+    return null;
+  }
+  return {
+    snapshotContractVersion: FALL_DRAFT_INPUT_SNAPSHOT_VERSION,
+    confirmedPreviewFingerprint: value.confirmedPreviewFingerprint,
+    candidateSetFingerprint: value.candidateSetFingerprint,
+    paymentMode,
+    normalizedInput: value.normalizedInput,
+  };
+}
+
 export function isFallDraftInputSnapshotFamily(value: unknown): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const version = (value as { snapshotContractVersion?: unknown }).snapshotContractVersion;
@@ -818,8 +856,14 @@ function resultFromRows(input: {
   };
 }
 
-function previewFromPersisted(scope: FallDraftScope, run: LeagueOccurrenceGenerationRun, generation: CanonicalGenerationResult, rows: ExistingRows): FallDraftPreview {
-  const snapshot = run.normalizedInputSnapshot;
+function previewFromPersisted(
+  scope: FallDraftScope,
+  run: LeagueOccurrenceGenerationRun,
+  generation: CanonicalGenerationResult,
+  rows: ExistingRows,
+  resolvedSnapshot?: FallDraftInputSnapshot,
+): FallDraftPreview {
+  const snapshot = resolvedSnapshot ?? run.normalizedInputSnapshot;
   if (!isFallDraftInputSnapshot(snapshot)) throw new FallDraftGenerationError("incompatible_canonical_state", "generation run is not a C1 input snapshot");
   const regularSessionBillingPolicy = fallDraftRegularSessionBillingPolicyForPaymentMode(snapshot.paymentMode);
   if (generation.normalizedInput.ambiguousFold !== FALL_DRAFT_AMBIGUOUS_FOLD_POLICY
@@ -1227,23 +1271,27 @@ export async function loadFallDraftPersistedView(scope: FallDraftScope): Promise
   return db.transaction(async (tx) => {
     await authorizeFallDraftScope(tx, scope);
     await assertTenantLeagueExists(tx, scope);
+    const authoritativeLeague = await loadAuthoritativeLeague(tx, scope);
     const rows = await loadExistingRows(tx, scope, false);
-    if (rows.runs.some((run) => isFallDraftInputSnapshotFamily(run.normalizedInputSnapshot)
-      && !isFallDraftInputSnapshot(run.normalizedInputSnapshot))) {
+    const resolvedRuns = rows.runs.map((run) => ({
+      run,
+      snapshot: resolveFallDraftInputSnapshot(run.normalizedInputSnapshot, authoritativeLeague.paymentMode),
+    }));
+    if (resolvedRuns.some(({ run, snapshot }) => isFallDraftInputSnapshotFamily(run.normalizedInputSnapshot)
+      && snapshot === null)) {
       throw new FallDraftGenerationError("incompatible_canonical_state", "league contains an unsupported C1 input snapshot version");
     }
-    const c1Runs = rows.runs.filter((run) => isFallDraftInputSnapshot(run.normalizedInputSnapshot));
+    const c1Runs = resolvedRuns.filter((entry): entry is { run: LeagueOccurrenceGenerationRun; snapshot: FallDraftInputSnapshot } => entry.snapshot !== null);
     if (c1Runs.length === 0) return {
       found: false,
       result: null,
       currentLegacyScheduleMatchesGenerationInput: null,
     };
     if (c1Runs.length !== 1) throw new FallDraftGenerationError("incompatible_canonical_state", "multiple C1 generation runs exist for the league");
-    const run = c1Runs[0];
-    const snapshot = run.normalizedInputSnapshot;
-    if (!isFallDraftInputSnapshot(snapshot)) throw new FallDraftGenerationError("incompatible_canonical_state", "C1 snapshot is invalid");
+    const { run, snapshot } = c1Runs[0];
     const generation = generateCanonicalOccurrences(snapshot.normalizedInput as Parameters<typeof generateCanonicalOccurrences>[0]);
-    const transitionedToC2 = run.state !== "generated"
+    const legacySnapshot = isFallDraftLegacyInputSnapshot(run.normalizedInputSnapshot);
+    const transitionedToC2 = legacySnapshot || run.state !== "generated"
       || rows.occurrences.some((row) => row.currentRevision > 1)
       || rows.terms.some((row) => row.currentRevision > 1)
       || rows.exceptions.some((row) => row.currentRevision > 1)
@@ -1258,7 +1306,7 @@ export async function loadFallDraftPersistedView(scope: FallDraftScope): Promise
         generationRunId: run.id,
       };
     }
-    const preview = previewFromPersisted(scope, run, generation, rows);
+    const preview = previewFromPersisted(scope, run, generation, rows, snapshot);
     const command = rows.commands.find((row) => row.id === run.originatingCommandId);
     if (!command) throw new FallDraftGenerationError("incompatible_canonical_state", "C1 run has no originating generation command");
     const apply: FallDraftApplyRequest = {

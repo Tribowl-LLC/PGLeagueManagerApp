@@ -61,7 +61,7 @@ export function NewSeasonDialog({
   const [cancelledDates, setCancelledDates] = useState<string[]>([]);
   const [doublePayDates, setDoublePayDates] = useState<string[]>([]);
   const [allowPublicSignup, setAllowPublicSignup] = useState(league.allowPublicSignup ?? false);
-  const [paymentMode, setPaymentMode] = useState<PaymentMode>(league.paymentMode);
+  const [paymentMode, setPaymentMode] = useState<PaymentMode | "">("");
   const [showSchedule, setShowSchedule] = useState(false);
 
   const resetForm = useCallback(() => {
@@ -72,9 +72,9 @@ export function NewSeasonDialog({
     setCancelledDates([]);
     setDoublePayDates([]);
     setAllowPublicSignup(league.allowPublicSignup ?? false);
-    setPaymentMode(league.paymentMode);
+    setPaymentMode("");
     setShowSchedule(false);
-  }, [league.allowPublicSignup, league.paymentMode, league.totalBowlingWeeks, league.weekDay]);
+  }, [league.allowPublicSignup, league.totalBowlingWeeks, league.weekDay]);
 
   useEffect(() => {
     if (showNewSeason) resetForm();
@@ -131,7 +131,7 @@ export function NewSeasonDialog({
   };
 
   const handleCreate = () => {
-    if (!seasonStart || bowlingWeeks <= 0 || !computedSeasonEnd) return;
+    if (!seasonStart || bowlingWeeks <= 0 || !computedSeasonEnd || paymentMode === "") return;
     onCreate({
       seasonStart,
       totalBowlingWeeks: bowlingWeeks,
@@ -264,7 +264,7 @@ export function NewSeasonDialog({
             </label>
             <Select value={paymentMode} onValueChange={(value) => setPaymentMode(value as PaymentMode)}>
               <SelectTrigger id="new-season-payment-mode" className="mt-1">
-                <SelectValue />
+                <SelectValue placeholder="Select weekly or prepaid" />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="weekly">Weekly: bowlers pay each week</SelectItem>
@@ -302,7 +302,7 @@ export function NewSeasonDialog({
           </Button>
           <Button
             onClick={handleCreate}
-            disabled={!seasonStart || bowlingWeeks <= 0 || !computedSeasonEnd || isPending}
+            disabled={!seasonStart || bowlingWeeks <= 0 || !computedSeasonEnd || paymentMode === "" || isPending}
           >
             {isPending ? (
               <Loader2 className="mr-2 size-4 animate-spin" />

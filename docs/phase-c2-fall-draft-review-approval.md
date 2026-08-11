@@ -40,6 +40,13 @@ mismatch, unsupported command attribution, missing revisions, a non-contiguous
 revision chain, a before/after discontinuity, or a latest revision that does
 not equal the current row.
 
+Semantically compatible C1 input snapshot version 1 remains reviewable through
+the zero-write compatibility reader. It must already record the system-wide
+reject-fold, USD, and eligible-bowler policies; C2 supplies the league's current
+authoritative `payment_mode` only in memory and does not alter the stored legacy
+snapshot. Any version-1 snapshot with different generator semantics remains an
+explicit incompatible-state failure.
+
 The response contains:
 
 - the current generation run, authoritative league payment mode, and C1/A2 input, physical, candidate, preview,
