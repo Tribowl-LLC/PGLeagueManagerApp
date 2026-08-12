@@ -301,6 +301,48 @@ describe("league-standings/1 evidence contract", () => {
     });
   });
 
+  it("audits duplicate score slots in fallback sessions with aggregated evidence", () => {
+    const legacyOccurrence = occurrence({
+      occurrenceId: null,
+      legacyProjectionKey: "legacy:20:2038-01-08:1",
+      identitySource: "legacy_projection",
+      lifecycle: "legacy",
+      startAt: null,
+      selectedUtcOffsetMinutes: null,
+      foldResolution: null,
+      resolverVersion: null,
+      currentRevision: null,
+    });
+    const legacyGame = game(legacyOccurrence, {
+      occurrenceId: null,
+      occurrence: null,
+      identitySource: "legacy_projection",
+      legacyProjectionKey: "legacy-game:20:7:2038-01-08",
+    });
+    const contract = buildLeagueStandingsContract(snapshot({
+      source: "legacy_fallback",
+      occurrences: [legacyOccurrence],
+      games: [legacyGame],
+      scores: [
+        score(legacyGame, { id: 201 }),
+        score(legacyGame, { id: 202 }),
+        score(legacyGame, { id: 203 }),
+      ],
+    }));
+    expect(contract.discrepancies.filter((row) => row.classification === "duplicate_score_slot"))
+      .toEqual([{
+        classification: "duplicate_score_slot",
+        severity: "warning",
+        identity: {
+          identitySource: "legacy_game_projection",
+          occurrenceId: null,
+          legacyProjectionKey: "legacy-game:20:7:2038-01-08",
+        },
+        gameId: legacyGame.id,
+        evidenceCount: 3,
+      }]);
+  });
+
   it("surfaces missing games, scoreless games, pending/excluded scores, and duplicate slots without ranking", () => {
     const eligibleWithoutGame = occurrence({
       occurrenceId: "11111111-1111-4111-8111-111111111112",

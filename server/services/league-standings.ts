@@ -417,6 +417,21 @@ function buildDiscrepancies(
     evidenceCount: number,
   ) => discrepancies.push({ classification, severity, identity, gameId, evidenceCount });
 
+  for (const resultSession of resultSessions) {
+    for (const game of resultSession.games) {
+      const slots = new Map<string, number>();
+      for (const score of game.scores) {
+        const key = `${score.teamId}:${score.position}`;
+        slots.set(key, (slots.get(key) ?? 0) + 1);
+      }
+      for (const count of slots.values()) {
+        if (count > 1) {
+          add("duplicate_score_slot", "warning", resultSession.identity, game.gameId, count);
+        }
+      }
+    }
+  }
+
   if (snapshot.schedule.authoritativeSource === "legacy_fallback") {
     const identities: LeagueStandingsStableIdentity[] = [
       ...occurrences.map((occurrence) => occurrence.identity),
@@ -452,16 +467,6 @@ function buildDiscrepancies(
       add("pending_occurrence_has_score_evidence", "info", occurrence.identity, null, sessionScoreCount);
     } else if (occurrence.eligibility.state.startsWith("excluded_") && sessionScoreCount > 0) {
       add("excluded_occurrence_has_score_evidence", "warning", occurrence.identity, null, sessionScoreCount);
-    }
-    for (const game of resultSession.games) {
-      const slots = new Map<string, number>();
-      for (const score of game.scores) {
-        const key = `${score.teamId}:${score.position}`;
-        slots.set(key, (slots.get(key) ?? 0) + 1);
-      }
-      for (const count of slots.values()) {
-        if (count > 1) add("duplicate_score_slot", "warning", occurrence.identity, game.gameId, count);
-      }
     }
   }
   return combineDiscrepancies(discrepancies);
