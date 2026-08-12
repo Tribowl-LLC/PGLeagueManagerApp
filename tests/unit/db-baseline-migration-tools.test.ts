@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(23);
+    expect(migrations).toHaveLength(24);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -337,6 +337,30 @@ describe('normalized migration baseline tools', () => {
     expect(migrations[22]?.sql).toContain('ADD COLUMN "trigger_occurrence_id" uuid');
     expect(migrations[22]?.sql).toContain('payment_operations_trigger_occurrence_check');
     expect(migrations[22]?.sql).not.toMatch(/(?:^|\n)\s*(?:DROP|UPDATE|DELETE|INSERT)\b/);
+    expect(migrations[23]).toMatchObject({
+      idx: 23,
+      tag: '0023_phase_d2_occurrence_financial_foundation',
+      createdAt: 1786510399259,
+      hash: 'ae3b91f7a581d4c6e39e01665306edf64bc51614856a76b25dcf2edbc4239336',
+    });
+    for (const table of [
+      'bowler_occurrence_eligibilities',
+      'bowler_occurrence_team_assignments',
+      'bowler_occurrence_obligations',
+      'occurrence_collection_plans',
+      'occurrence_collection_plan_items',
+      'payment_occurrence_allocations',
+      'payment_operation_occurrence_snapshots',
+      'payment_operation_occurrence_snapshot_allocations',
+    ]) {
+      expect(migrations[23]?.sql).toContain(`CREATE TABLE "${table}"`);
+    }
+    expect(migrations[23]?.sql).toContain('enforce_d2_payment_allocation_conservation');
+    expect(migrations[23]?.sql).toContain('assert_d2_collection_plan_obligation_amount');
+    expect(migrations[23]?.sql).toContain('requires its matching execution snapshot');
+    expect(migrations[23]?.sql).toContain('payment_occurrence_interactive_base_snapshot_consistency');
+    expect(migrations[23]?.sql).toContain('pg_advisory_xact_lock');
+    expect(migrations[23]?.sql).not.toMatch(/(?:^|\n)\s*(?:DROP|RENAME|UPDATE|DELETE|INSERT)\b/);
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 

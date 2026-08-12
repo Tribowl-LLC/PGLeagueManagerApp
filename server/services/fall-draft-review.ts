@@ -14,6 +14,13 @@ import {
   games,
   paymentOperations,
   paymentSchedules,
+  bowlerOccurrenceEligibilities,
+  bowlerOccurrenceTeamAssignments,
+  bowlerOccurrenceObligations,
+  occurrenceCollectionPlans,
+  occurrenceCollectionPlanItems,
+  paymentOccurrenceAllocations,
+  paymentOperationOccurrenceSnapshotAllocations,
   leagues,
   type LeagueOccurrence,
   type LeagueOccurrenceBillingTerm,
@@ -429,9 +436,54 @@ async function loadRows(tx: LeagueScheduleTransaction, scope: FallDraftScope, lo
       "a linked scheduled operation contradicts the occurrence league",
     );
   }
+  const d2ActivityIds = occurrenceIds.length === 0 ? [] : [
+    ...(await tx.select({ occurrenceId: bowlerOccurrenceEligibilities.occurrenceId })
+      .from(bowlerOccurrenceEligibilities).where(and(
+        eq(bowlerOccurrenceEligibilities.organizationId, scope.organizationId),
+        eq(bowlerOccurrenceEligibilities.leagueId, scope.leagueId),
+        inArray(bowlerOccurrenceEligibilities.occurrenceId, occurrenceIds),
+      ))),
+    ...(await tx.select({ occurrenceId: bowlerOccurrenceTeamAssignments.occurrenceId })
+      .from(bowlerOccurrenceTeamAssignments).where(and(
+        eq(bowlerOccurrenceTeamAssignments.organizationId, scope.organizationId),
+        eq(bowlerOccurrenceTeamAssignments.leagueId, scope.leagueId),
+        inArray(bowlerOccurrenceTeamAssignments.occurrenceId, occurrenceIds),
+      ))),
+    ...(await tx.select({ occurrenceId: bowlerOccurrenceObligations.occurrenceId })
+      .from(bowlerOccurrenceObligations).where(and(
+        eq(bowlerOccurrenceObligations.organizationId, scope.organizationId),
+        eq(bowlerOccurrenceObligations.leagueId, scope.leagueId),
+        inArray(bowlerOccurrenceObligations.occurrenceId, occurrenceIds),
+      ))),
+    ...(await tx.select({ occurrenceId: occurrenceCollectionPlans.triggerOccurrenceId })
+      .from(occurrenceCollectionPlans).where(and(
+        eq(occurrenceCollectionPlans.organizationId, scope.organizationId),
+        eq(occurrenceCollectionPlans.leagueId, scope.leagueId),
+        inArray(occurrenceCollectionPlans.triggerOccurrenceId, occurrenceIds),
+      ))),
+    ...(await tx.select({ occurrenceId: occurrenceCollectionPlanItems.occurrenceId })
+      .from(occurrenceCollectionPlanItems).where(and(
+        eq(occurrenceCollectionPlanItems.organizationId, scope.organizationId),
+        eq(occurrenceCollectionPlanItems.leagueId, scope.leagueId),
+        inArray(occurrenceCollectionPlanItems.occurrenceId, occurrenceIds),
+      ))),
+    ...(await tx.select({ occurrenceId: paymentOccurrenceAllocations.occurrenceId })
+      .from(paymentOccurrenceAllocations).where(and(
+        eq(paymentOccurrenceAllocations.organizationId, scope.organizationId),
+        eq(paymentOccurrenceAllocations.leagueId, scope.leagueId),
+        inArray(paymentOccurrenceAllocations.occurrenceId, occurrenceIds),
+      ))),
+    ...(await tx.select({ occurrenceId: paymentOperationOccurrenceSnapshotAllocations.occurrenceId })
+      .from(paymentOperationOccurrenceSnapshotAllocations).where(and(
+        eq(paymentOperationOccurrenceSnapshotAllocations.organizationId, scope.organizationId),
+        eq(paymentOperationOccurrenceSnapshotAllocations.leagueId, scope.leagueId),
+        inArray(paymentOperationOccurrenceSnapshotAllocations.occurrenceId, occurrenceIds),
+      ))),
+  ];
   const activityOccurrenceIds = new Set<string>([
     ...linkedGames.flatMap((row) => row.occurrenceId === null ? [] : [row.occurrenceId]),
     ...linkedOperations.flatMap((row) => row.occurrenceId === null ? [] : [row.occurrenceId]),
+    ...d2ActivityIds.flatMap((row) => row.occurrenceId === null ? [] : [row.occurrenceId]),
   ]);
   const commandType = (commandId: string | null): string | null =>
     commandId === null ? null : commands.find((command) => command.id === commandId)?.commandType ?? null;

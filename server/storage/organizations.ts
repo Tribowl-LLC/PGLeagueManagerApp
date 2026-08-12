@@ -10,6 +10,12 @@ import {
   applePayJobs,
   autopaySetupRequests,
   bowlerPaymentLinks,
+  bowlerOccurrenceEligibilities,
+  bowlerOccurrenceEligibilityRevisions,
+  bowlerOccurrenceTeamAssignments,
+  bowlerOccurrenceTeamAssignmentRevisions,
+  bowlerOccurrenceObligations,
+  bowlerOccurrenceObligationRevisions,
   bowlers,
   leagueOccurrenceBillingTermRevisions,
   leagueOccurrenceGenerationDiscrepancies,
@@ -33,6 +39,13 @@ import {
   paymentDisputeReplayAudits,
   paymentDisputes,
   paymentOperations,
+  occurrenceCollectionPlans,
+  occurrenceCollectionPlanItems,
+  occurrenceCollectionPlanRevisions,
+  paymentOccurrenceAllocations,
+  paymentOccurrenceAllocationRevisions,
+  paymentOperationOccurrenceSnapshots,
+  paymentOperationOccurrenceSnapshotAllocations,
   paymentSchedules,
   users,
   webhookEvents,
@@ -247,6 +260,37 @@ export async function deleteOrganization(id: number): Promise<void> {
     // Setup workflows retain restrictive operation/schedule references, so
     // explicit tenant teardown removes them before either referenced table.
     await tx.delete(autopaySetupRequests).where(eq(autopaySetupRequests.organizationId, id));
+
+    // D2 financial evidence uses restrictive parent links. Full tenant
+    // teardown is the explicit retention-policy exception and removes every
+    // revision and child before current rows, operations, payments, bowlers,
+    // canonical occurrences, and leagues.
+    await tx.delete(paymentOperationOccurrenceSnapshotAllocations)
+      .where(eq(paymentOperationOccurrenceSnapshotAllocations.organizationId, id));
+    await tx.delete(paymentOperationOccurrenceSnapshots)
+      .where(eq(paymentOperationOccurrenceSnapshots.organizationId, id));
+    await tx.delete(paymentOccurrenceAllocationRevisions)
+      .where(eq(paymentOccurrenceAllocationRevisions.organizationId, id));
+    await tx.delete(paymentOccurrenceAllocations)
+      .where(eq(paymentOccurrenceAllocations.organizationId, id));
+    await tx.delete(occurrenceCollectionPlanRevisions)
+      .where(eq(occurrenceCollectionPlanRevisions.organizationId, id));
+    await tx.delete(occurrenceCollectionPlanItems)
+      .where(eq(occurrenceCollectionPlanItems.organizationId, id));
+    await tx.delete(occurrenceCollectionPlans)
+      .where(eq(occurrenceCollectionPlans.organizationId, id));
+    await tx.delete(bowlerOccurrenceObligationRevisions)
+      .where(eq(bowlerOccurrenceObligationRevisions.organizationId, id));
+    await tx.delete(bowlerOccurrenceObligations)
+      .where(eq(bowlerOccurrenceObligations.organizationId, id));
+    await tx.delete(bowlerOccurrenceTeamAssignmentRevisions)
+      .where(eq(bowlerOccurrenceTeamAssignmentRevisions.organizationId, id));
+    await tx.delete(bowlerOccurrenceTeamAssignments)
+      .where(eq(bowlerOccurrenceTeamAssignments.organizationId, id));
+    await tx.delete(bowlerOccurrenceEligibilityRevisions)
+      .where(eq(bowlerOccurrenceEligibilityRevisions.organizationId, id));
+    await tx.delete(bowlerOccurrenceEligibilities)
+      .where(eq(bowlerOccurrenceEligibilities.organizationId, id));
 
     // Replay audits and in-app notifications retain restrictive user,
     // dispute, and webhook-evidence references. Full tenant teardown is the

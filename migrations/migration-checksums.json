@@ -138,6 +138,12 @@
       "tag": "0022_phase_d1_occurrence_compatibility",
       "createdAt": 1786505453799,
       "hash": "39e4d64004aed5bd05cc9fdf0ecf45412be47f55c99f4c141aa99e3d9c75a997"
+    },
+    {
+      "idx": 23,
+      "tag": "0023_phase_d2_occurrence_financial_foundation",
+      "createdAt": 1786510399259,
+      "hash": "ae3b91f7a581d4c6e39e01665306edf64bc51614856a76b25dcf2edbc4239336"
     }
   ]
 }

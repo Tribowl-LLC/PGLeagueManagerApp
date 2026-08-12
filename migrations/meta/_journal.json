@@ -162,6 +162,13 @@
       "when": 1786505453799,
       "tag": "0022_phase_d1_occurrence_compatibility",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1786510399259,
+      "tag": "0023_phase_d2_occurrence_financial_foundation",
+      "breakpoints": true
     }
   ]
 }

@@ -69,6 +69,8 @@ export const payments = pgTable("payments", {
   paymentOperationAllocationIndex: integer("payment_operation_allocation_index"),
   createdAt: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
 }, (table) => ({
+  idBowlerLeagueUnique: uniqueIndex("payments_id_bowler_league_unique")
+    .on(table.id, table.bowlerId, table.leagueId),
   bowlerIdx: index("payments_bowler_idx").on(table.bowlerId),
   leagueIdx: index("payments_league_idx").on(table.leagueId),
   weekOfIdx: index("payments_week_of_idx").on(table.weekOf),

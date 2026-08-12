@@ -107,6 +107,7 @@ const UNIT_NO_DB = [
   'tests/unit/subdomain-resolution-consistency.test.ts',
   'tests/unit/scheduled-payment-operation-snapshot.test.ts',
   'tests/unit/interactive-payment-operation-snapshot.test.ts',
+  'tests/unit/payment-operation-occurrence-snapshot.test.ts',
   'tests/unit/location-webhook-retention-route.test.ts',
   'tests/unit/weekly-billing-occurrence-planner.test.ts',
   'tests/unit/canonical-occurrence-generator.test.ts',

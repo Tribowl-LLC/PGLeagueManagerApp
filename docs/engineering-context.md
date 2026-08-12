@@ -105,6 +105,22 @@ or four-bowler team requirement and the actual bowlers responsible for each
 occurrence; it must not infer payer responsibility merely from roster membership
 or `payment_mode`.
 
+Phase D2 models occurrence eligibility, occurrence team assignment, bowler
+obligation, collection timing, operation intent, and payment settlement as
+separate tenant-scoped evidence. Obligation amount/currency and billing-term
+identity are immutable after creation. Weekly and upfront modes both retain
+per-occurrence debts; upfront only moves collection earlier. Double-pay is one
+plan over two real obligations, never a synthetic occurrence. Payment
+settlement is many-to-many through explicit positive allocations protected by
+the league advisory lock and database conservation triggers. Ready/fulfilled
+plans collectively cannot over-plan an obligation; draft alternatives do not
+reserve it. Existing payment
+execution snapshot versions remain unchanged; the dormant `lvpayocc:v1`
+supplement must match the operation type's execution-snapshot league and adds
+obligation/occurrence allocation semantics without changing provider identity
+or the interactive bowler-uniqueness contract. See
+`docs/phase-d2-occurrence-financial-foundation.md`.
+
 ## Native And Handoff Targets
 
 Capacitor, `ios/`, and `android/` are intentional native targets. They may look

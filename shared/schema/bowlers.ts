@@ -1,4 +1,4 @@
-import { pgTable, text, serial, integer, boolean, timestamp, index } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, integer, boolean, timestamp, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -54,6 +54,7 @@ export const bowlers = pgTable("bowlers", {
   // manually parked); non-NULL rows are ordered by the partial index below.
   paymentSyncNextRetryAt: timestamp("payment_sync_next_retry_at", { mode: "string" }),
 }, (table) => ({
+  idOrganizationUnique: uniqueIndex("bowlers_id_organization_unique").on(table.id, table.organizationId),
   paymentSyncNextRetryIdx: index("bowlers_payment_sync_next_retry_idx")
     .on(table.paymentSyncNextRetryAt)
     .where(sql`${table.paymentSyncPendingAt} IS NOT NULL AND ${table.paymentSyncNextRetryAt} IS NOT NULL`),
