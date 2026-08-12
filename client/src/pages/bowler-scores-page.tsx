@@ -14,46 +14,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card.j
 import { ArrowLeft } from "lucide-react";
 import { PageLoadingState, PageErrorState } from "@/components/page-states";
 import type { Score, Bowler } from "@shared/schema";
+import type { BowlerScoreHistoryReadContract } from "@shared/canonical-games-scores";
+import { groupBowlerScoreHistory } from "@/lib/bowler-score-history";
 import { format } from "date-fns";
 import { Link, useParams, useSearch } from "wouter";
-
-interface ExtendedScore extends Score {
-  game: {
-    id: number;
-    leagueId: number;
-    weekNumber: number;
-    gameNumber: number;
-    date: string;
-  };
-  team: {
-    id: number;
-    name: string;
-    number: number;
-    leagueId: number;
-    active: boolean;
-  };
-  league: {
-    id: number;
-    name: string;
-    description: string | null;
-    active: boolean;
-  };
-}
-
-interface WeeklyScores {
-  date: string;
-  weekNumber: number;
-  games: (ExtendedScore | null)[];
-  seriesTotal: number;
-  league: {
-    id: number;
-    name: string;
-  };
-  team: {
-    id: number;
-    name: string;
-  };
-}
 
 interface ApiResponse<T> {
   success: boolean;
@@ -76,7 +40,7 @@ export default function BowlerScoresPage() {
   });
 
   // Use historical scores endpoint for complete history
-  const { data: scoresResponse, isLoading: loadingScores, error: scoresError, refetch: refetchScores } = useQuery<ApiResponse<ExtendedScore[]>>({
+  const { data: scoresResponse, isLoading: loadingScores, error: scoresError, refetch: refetchScores } = useQuery<ApiResponse<BowlerScoreHistoryReadContract>>({
     queryKey: ["/api/scores/history", parsedBowlerId],
     queryFn: async () => {
       if (!parsedBowlerId) throw new Error("Bowler ID is required");
@@ -91,44 +55,11 @@ export default function BowlerScoresPage() {
   });
 
   const bowler = bowlerResponse?.data;
-  const scores = scoresResponse?.data || [];
+  const scores = scoresResponse?.data.scores || [];
   const isLoading = loadingBowler || loadingScores;
 
   // Group scores by week and calculate series totals
-  const weeklyScores: WeeklyScores[] = scores.reduce((weeks: WeeklyScores[], score) => {
-    const weekIndex = weeks.findIndex(w => 
-      w.weekNumber === score.game.weekNumber && 
-      w.date === score.game.date
-    );
-
-    if (weekIndex === -1) {
-      // Create new week entry
-      const newWeek: WeeklyScores = {
-        date: score.game.date,
-        weekNumber: score.game.weekNumber,
-        games: Array(3).fill(null),
-        seriesTotal: score.score || 0,
-        league: {
-          id: score.league.id,
-          name: score.league.name,
-        },
-        team: {
-          id: score.team.id,
-          name: score.team.name,
-        }
-      };
-      newWeek.games[score.game.gameNumber - 1] = score;
-      weeks.push(newWeek);
-    } else {
-      // Update existing week
-      weeks[weekIndex].games[score.game.gameNumber - 1] = score;
-      if (!score.isAbsent && !score.isVacant && score.score !== null) {
-        weeks[weekIndex].seriesTotal += score.score;
-      }
-    }
-
-    return weeks;
-  }, []);
+  const weeklyScores = groupBowlerScoreHistory(scores);
 
   if (isLoading) {
     return (
@@ -208,13 +139,13 @@ export default function BowlerScoresPage() {
                 </TableHeader>
                 <TableBody>
                   {weeklyScores.map((week) => (
-                    <TableRow key={`${week.date}-${week.weekNumber}`}>
-                      <TableCell>{format(new Date(week.date), "MMM d, yyyy")}</TableCell>
+                    <TableRow key={week.identityKey}>
+                      <TableCell>{format(new Date(`${week.date}T12:00:00.000Z`), "MMM d, yyyy")}</TableCell>
                       <TableCell>{week.weekNumber}</TableCell>
                       {[1, 2, 3].map((gameNumber) => {
                         const game = week.games[gameNumber - 1];
                         return (
-                        <TableCell key={`${week.date}-${week.weekNumber}-g${gameNumber}`} className="text-right">
+                        <TableCell key={`${week.identityKey}-g${gameNumber}`} className="text-right">
                           {game?.isVacant ? "VACANT" :
                            game?.isAbsent ? "ABSENT" :
                            game?.score || "—"}

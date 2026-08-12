@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import {
   bowlers,
   games,
+  leagueOccurrenceGenerationRuns,
   leagueOccurrences,
   leagueScheduleCommands,
   leagues,
@@ -46,6 +47,7 @@ let otherLeagueId: number;
 let crossTenantLeagueId: number;
 let bowlerId: number;
 let sequence = 0;
+const generationRunIds = new Map<number, string>();
 
 async function publishedOccurrence(input: {
   leagueId?: number;
@@ -69,11 +71,45 @@ async function publishedOccurrence(input: {
     requestFingerprint: `lvcanoncmd:v1:${String(sequence).padStart(64, "0")}`,
   }).returning();
   if (!command) throw new Error("publish command fixture was not created");
+  let generationRunId = generationRunIds.get(targetLeagueId);
+  if (generationRunId === undefined) {
+    const [run] = await db.insert(leagueOccurrenceGenerationRuns).values({
+      organizationId: orgId,
+      leagueId: targetLeagueId,
+      originatingCommandId: command.id,
+      generatorVersion: "d1-operational-fixture/1",
+      inputFingerprint: `d1-operational-${suffix}-${targetLeagueId}`,
+      sourceScheduleRevision: 1,
+      normalizedInputSnapshot: { fixture: "d1-operational" },
+      rangeStartDate: "2035-01-01",
+      rangeEndDate: "2035-12-31",
+      candidateOccurrenceCount: 1,
+      generatedOccurrenceCount: 1,
+      skippedDateCount: 0,
+      discrepancyCount: 0,
+      state: "applied",
+      approvedAt: "2034-12-01T00:00:00.000Z",
+      approvedByUserId: commandActorUserId,
+      approvalCommandId: command.id,
+    }).returning({ id: leagueOccurrenceGenerationRuns.id });
+    if (!run) throw new Error("generation run fixture was not created");
+    generationRunId = run.id;
+    generationRunIds.set(targetLeagueId, run.id);
+  } else {
+    const [run] = await db.select().from(leagueOccurrenceGenerationRuns)
+      .where(eq(leagueOccurrenceGenerationRuns.id, generationRunId)).limit(1);
+    if (!run) throw new Error("generation run fixture was not found");
+    await db.update(leagueOccurrenceGenerationRuns).set({
+      candidateOccurrenceCount: run.candidateOccurrenceCount + 1,
+      generatedOccurrenceCount: run.generatedOccurrenceCount + 1,
+    }).where(eq(leagueOccurrenceGenerationRuns.id, generationRunId));
+  }
   const [occurrence] = await db.insert(leagueOccurrences).values({
     organizationId: orgId,
     leagueId: targetLeagueId,
     locationId: targetLocationId,
     generationKey: `d1-occurrence-${suffix}-${sequence}`,
+    generationRunId,
     kind: "regular",
     status: "scheduled",
     lifecycle: "published",
@@ -201,22 +237,23 @@ describe("D1 occurrence compatibility PostgreSQL behavior", () => {
     const linked = await createGame({ leagueId, weekNumber: 1, gameNumber: 1, date: "2035-01-05" });
     expect(linked.occurrenceId).toBe(occurrence.id);
     await expect(updateGame(linked.id, { weekNumber: 2 })).rejects.toMatchObject({
-      name: "OccurrenceCompatibilityConflictError",
+      name: "CanonicalGamesScoresError",
     });
     expect((await db.select().from(games).where(eq(games.id, linked.id)))[0]).toMatchObject({
       occurrenceId: occurrence.id,
       weekNumber: 1,
     });
-    const duplicate = await createGame({ leagueId, weekNumber: 1, gameNumber: 1, date: "2035-01-05" });
-    expect(duplicate.occurrenceId).toBeNull();
-    const mismatch = await createGame({ leagueId, weekNumber: 2, gameNumber: 2, date: "2035-01-05" });
-    expect(mismatch.occurrenceId).toBeNull();
+    await expect(createGame({ leagueId, weekNumber: 1, gameNumber: 1, date: "2035-01-05" }))
+      .rejects.toMatchObject({ name: "CanonicalGamesScoresError" });
+    await expect(createGame({ leagueId, weekNumber: 2, gameNumber: 2, date: "2035-01-05" }))
+      .rejects.toMatchObject({ name: "CanonicalGamesScoresError" });
 
     const [legacy] = await db.insert(games).values({
       leagueId, weekNumber: 99, gameNumber: 3, date: "2035-06-01T00:00:00.000Z",
     }).returning();
     expect(legacy?.occurrenceId).toBeNull();
     expect("occurrenceId" in (await import("@shared/schema")).scores).toBe(false);
+    if (legacy) await db.delete(games).where(eq(games.id, legacy.id));
 
     await expect(db.delete(leagueOccurrences).where(eq(leagueOccurrences.id, occurrence.id)))
       .rejects.toBeDefined();

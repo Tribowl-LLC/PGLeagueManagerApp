@@ -1,22 +1,6 @@
-import type { Game, Score, Team, Bowler } from "@shared/schema";
+import type { CanonicalScoreProjection } from "@shared/canonical-games-scores";
 
-export interface ScoreWithRelations extends Score {
-  bowler: {
-    id: number;
-    name: string;
-  };
-  team: {
-    id: number;
-    name: string;
-    number: number;
-  };
-  game: {
-    id: number;
-    weekNumber: number;
-    gameNumber: number;
-    date: string;
-  };
-}
+export type ScoreWithRelations = CanonicalScoreProjection;
 
 interface BowlerScores {
   bowlerId: number;
@@ -39,4 +23,3 @@ interface TeamScores {
   laneNumber: number;
   bowlers: BowlerScores[];
 }
-

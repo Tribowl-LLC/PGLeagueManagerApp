@@ -28,6 +28,7 @@ import { LeagueSquareMissingBanner } from "@/components/league-square-missing-ba
 import { ConfirmArchiveDialog } from "@/components/confirm-archive-dialog";
 import { ConfirmDeleteDialog } from "@/components/confirm-delete-dialog";
 import type { ApiResponse, League, Team, Location, User } from "@shared/schema";
+import type { LeagueScoresReadContract } from "@shared/canonical-games-scores";
 import type { ScoreWithRelations } from "@/lib/types/scores";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -70,7 +71,9 @@ export default function LeaguesPage() {
   const firstLeague = leagues?.[0];
   const currentWeek = firstLeague ? getWeeksPassedInSeason(firstLeague) : 0;
 
-  const { data: scoresResponse, isLoading: loadingScores } = useQuery<{ data: ScoreWithRelations[] }>({
+  const { data: scoresResponse, isLoading: loadingScores } = useQuery<{
+    data: LeagueScoresReadContract | ScoreWithRelations[];
+  }>({
     queryKey: ["/api/scores/history", firstLeague?.id, currentWeek],
     queryFn: async () => {
       if (!firstLeague?.id) throw new Error("No league selected");
@@ -84,7 +87,9 @@ export default function LeaguesPage() {
     enabled: !!firstLeague && currentWeek > 0,
   });
 
-  const weeklyScores = scoresResponse?.data || [];
+  const weeklyScores = Array.isArray(scoresResponse?.data)
+    ? scoresResponse.data
+    : scoresResponse?.data.scores ?? [];
 
   const deleteMutation = useMutation({
     mutationFn: async (id: number) => apiRequest(`/api/leagues/${id}`, "DELETE"),
