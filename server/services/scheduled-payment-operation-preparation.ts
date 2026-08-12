@@ -444,10 +444,28 @@ export async function prepareScheduledPaymentCycle(input: {
         || triggerComparison.occurrenceId !== schedule.nextOccurrenceId)) {
       throw new OccurrenceCompatibilityConflictError(triggerComparison);
     }
-    const triggerOccurrenceId = schedule.nextOccurrenceId !== null
-      && triggerComparison.classification === "exact_match"
-      ? schedule.nextOccurrenceId
+    const exactTriggerOccurrenceId = triggerComparison.classification === "exact_match"
+      ? triggerComparison.occurrenceId
       : null;
+    let triggerOccurrenceId = schedule.nextOccurrenceId;
+    if (!upfront && triggerOccurrenceId === null && exactTriggerOccurrenceId !== null) {
+      const [reconciled] = await tx
+        .update(paymentSchedules)
+        .set({ nextOccurrenceId: exactTriggerOccurrenceId })
+        .where(and(
+          eq(paymentSchedules.id, schedule.id),
+          eq(paymentSchedules.active, true),
+          eq(paymentSchedules.nextPaymentDate, expectedCycleAt),
+          sql`${paymentSchedules.nextOccurrenceId} IS NULL`,
+        ))
+        .returning({ nextOccurrenceId: paymentSchedules.nextOccurrenceId });
+      if (reconciled?.nextOccurrenceId !== exactTriggerOccurrenceId) {
+        throw new ScheduledPaymentPreparationError(
+          "scheduled cycle cursor occurrence could not be reconciled",
+        );
+      }
+      triggerOccurrenceId = exactTriggerOccurrenceId;
+    }
     const operation = await createOrGetScheduledPaymentOperation({
       organizationId: context.organizationId,
       paymentScheduleId: schedule.id,

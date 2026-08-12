@@ -353,6 +353,39 @@ describe("D1 occurrence compatibility PostgreSQL behavior", () => {
     if (retry.kind === "existing") expect(retry.operation.triggerOccurrenceId).toBe(first.id);
   });
 
+  it("links a new exact operation when the schedule predates D1", async () => {
+    await deactivateSchedules();
+    const trigger = await publishedOccurrence({
+      localDate: "2035-04-13", startAt: "2035-04-13T19:00:00.000Z", ordinal: 11,
+    });
+    const next = await publishedOccurrence({
+      localDate: "2035-04-20", startAt: "2035-04-20T19:00:00.000Z", ordinal: 12,
+    });
+    const [preD1Schedule] = await db.insert(paymentSchedules).values({
+      bowlerId,
+      leagueId,
+      frequency: "weekly",
+      amount: 2_000,
+      nextPaymentDate: trigger.startAt,
+      paymentCardId: "ccof:d1-pre-d1-new-operation",
+    }).returning();
+    if (!preD1Schedule) throw new Error("pre-D1 schedule fixture was not created");
+    expect(preD1Schedule.nextOccurrenceId).toBeNull();
+
+    const prepared = await prepareScheduledPaymentCycle({
+      paymentScheduleId: preD1Schedule.id,
+      billingCycleAt: trigger.startAt,
+      now: new Date("2035-04-13T20:00:00.000Z"),
+    });
+    expect(prepared.kind).toBe("prepared");
+    if (prepared.kind !== "prepared") throw new Error("pre-D1 cycle was not prepared");
+    expect(prepared.operation.triggerOccurrenceId).toBe(trigger.id);
+    expect(prepared.schedule).toMatchObject({
+      nextPaymentDate: expect.stringContaining("2035-04-20 19:00:00"),
+      nextOccurrenceId: next.id,
+    });
+  });
+
   it("leaves pre-D1 operation retries null and interactive/refund operations unlinked", async () => {
     await deactivateSchedules();
     const [schedule] = await db.insert(paymentSchedules).values({

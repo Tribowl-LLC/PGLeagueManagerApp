@@ -71,9 +71,11 @@ upfront schedules deliberately remain unlinked.
 
 Scheduled-operation comparison requires exact billing-cycle/start equality,
 the same organization, and the schedule's underlying league. A new operation
-uses the already-proven schedule cursor reference; a non-null cursor that does
-not agree fails closed. A same-key retry of a pre-D1 null operation remains
-null. A retry of a post-D1 operation verifies and returns its original trigger.
+uses the exact comparison result; for a recurring pre-D1 schedule whose shadow
+cursor is still null, preparation first reconciles that cursor under the same
+locks and transaction. A non-null cursor that does not agree fails closed. A
+same-key retry of a pre-D1 null operation remains null. A retry of a post-D1
+operation verifies and returns its original trigger.
 Trigger identity never enters payment amount, allocation, request fingerprint,
 target key, Square/provider idempotency key, snapshot version, lease, fencing,
 or retry semantics.
