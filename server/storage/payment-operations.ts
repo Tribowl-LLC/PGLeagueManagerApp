@@ -4,6 +4,7 @@ import {
   bowlers,
   bowlerLeagues,
   leagues,
+  leagueOccurrences,
   locations,
   organizations,
   paymentOperations,
@@ -91,6 +92,8 @@ export interface CreateOrGetScheduledPaymentOperationInput {
   amountMinor: number;
   currency: string;
   providerName: string;
+  /** Server-resolved D1 trigger identity; never part of provider identity. */
+  triggerOccurrenceId?: string | null;
 }
 
 export interface CreateOrGetInteractivePaymentOperationInput {
@@ -635,7 +638,11 @@ export async function createOrGetScheduledPaymentOperation(
     // short insert/get transaction. That closes the tenant-check TOCTOU window
     // without ever spanning a provider call.
     const [owned] = await tx
-      .select({ id: paymentSchedules.id })
+      .select({
+        id: paymentSchedules.id,
+        leagueId: paymentSchedules.leagueId,
+        nextOccurrenceId: paymentSchedules.nextOccurrenceId,
+      })
       .from(paymentSchedules)
       .innerJoin(leagues, eq(paymentSchedules.leagueId, leagues.id))
       .where(and(
@@ -646,6 +653,44 @@ export async function createOrGetScheduledPaymentOperation(
       .for("share");
     if (!owned) throw new PaymentOperationNotFoundError();
 
+    const [prior] = await tx
+      .select()
+      .from(paymentOperations)
+      .where(and(
+        eq(paymentOperations.operationType, "scheduled_charge"),
+        eq(paymentOperations.paymentScheduleId, input.paymentScheduleId),
+        sql`${paymentOperations.billingCycleAt} = ${request.billingCycleAt}`,
+      ))
+      .limit(1);
+    if (prior) {
+      if (!immutableScheduledOperationMatches(prior, identity)
+        || (prior.triggerOccurrenceId !== null
+          && prior.triggerOccurrenceId !== (input.triggerOccurrenceId ?? null))) {
+        throw new PaymentOperationImmutableMismatchError();
+      }
+      // A pre-D1 retry intentionally retains its original null reference even
+      // when the caller can now see canonical state.
+      if (prior.triggerOccurrenceId === null) return prior;
+    } else if ((input.triggerOccurrenceId ?? null) !== owned.nextOccurrenceId) {
+      throw new PaymentOperationImmutableMismatchError();
+    }
+    if (input.triggerOccurrenceId != null) {
+      const [trigger] = await tx.select({ id: leagueOccurrences.id })
+        .from(leagueOccurrences)
+        .where(and(
+          eq(leagueOccurrences.id, input.triggerOccurrenceId),
+          eq(leagueOccurrences.organizationId, input.organizationId),
+          eq(leagueOccurrences.leagueId, owned.leagueId),
+          eq(leagueOccurrences.startAt, request.billingCycleAt as string),
+          inArray(leagueOccurrences.lifecycle, ["published", "locked"]),
+          inArray(leagueOccurrences.status, ["scheduled", "completed"]),
+        ))
+        .limit(1)
+        .for("share");
+      if (!trigger) throw new PaymentOperationImmutableMismatchError();
+    }
+    if (prior) return prior;
+
     const [created] = await tx
       .insert(paymentOperations)
       .values({
@@ -654,6 +699,7 @@ export async function createOrGetScheduledPaymentOperation(
         targetKey: request.targetKey,
         paymentScheduleId: request.paymentScheduleId,
         billingCycleAt: request.billingCycleAt,
+        triggerOccurrenceId: input.triggerOccurrenceId ?? null,
         amountMinor: request.amountMinor,
         currency: request.currency,
         requestFingerprint: identity.requestFingerprint,
@@ -677,7 +723,9 @@ export async function createOrGetScheduledPaymentOperation(
         sql`${paymentOperations.billingCycleAt} = ${request.billingCycleAt}`,
       ))
       .limit(1);
-    if (!existing || !immutableScheduledOperationMatches(existing, identity)) {
+    if (!existing || !immutableScheduledOperationMatches(existing, identity)
+      || (existing.triggerOccurrenceId !== null
+        && existing.triggerOccurrenceId !== (input.triggerOccurrenceId ?? null))) {
       throw new PaymentOperationImmutableMismatchError();
     }
     return existing;

@@ -110,6 +110,7 @@ const UNIT_NO_DB = [
   'tests/unit/location-webhook-retention-route.test.ts',
   'tests/unit/weekly-billing-occurrence-planner.test.ts',
   'tests/unit/canonical-occurrence-generator.test.ts',
+  'tests/unit/canonical-occurrence-compatibility.test.ts',
   'tests/unit/canonical-occurrence-operator.test.ts',
   'tests/unit/completed-summer-comparator.test.ts',
   'tests/unit/completed-summer-operator.test.ts',
@@ -161,6 +162,7 @@ const PARALLEL_ISOLATED = [
   // never call an HTTP endpoint, so they do not need a spawned Express app.
   'tests/unit/fall-draft-generation-postgres.test.ts',
   'tests/unit/fall-draft-review-postgres.test.ts',
+  'tests/unit/canonical-occurrence-compatibility-postgres.test.ts',
   'tests/unit/list-routes-filter-validation.test.ts',
   'tests/unit/locked-sweep.test.ts', // Task #720 moved to parallel as factory-safe; reverted defensively after sibling regressions (#722).
   'tests/unit/password-changed-i18n.test.ts',

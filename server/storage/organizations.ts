@@ -24,6 +24,7 @@ import {
   leagueScheduleCommands,
   leagueOccurrences,
   deletionRequests,
+  games,
   leagues,
   locations,
   organizations,
@@ -32,6 +33,7 @@ import {
   paymentDisputeReplayAudits,
   paymentDisputes,
   paymentOperations,
+  paymentSchedules,
   users,
   webhookEvents,
   type Organization, type InsertOrganization, type UpdateOrganization,
@@ -263,6 +265,14 @@ export async function deleteOrganization(id: number): Promise<void> {
     // Full tenant teardown is the explicit exception and removes these rows
     // before deleting the organization's leagues/schedules.
     await tx.delete(paymentOperations).where(eq(paymentOperations.organizationId, id));
+
+    // D1 compatibility references are restrictive by design. Full tenant
+    // teardown removes their legacy dependants before canonical occurrences;
+    // ordinary row deletion remains blocked while evidence is linked.
+    if (leagueIds.length > 0) {
+      await tx.delete(games).where(inArray(games.leagueId, leagueIds));
+      await tx.delete(paymentSchedules).where(inArray(paymentSchedules.leagueId, leagueIds));
+    }
 
     // Ordinary location deletion retains webhook evidence and is rejected.
     // Full tenant teardown is the explicit retention-policy exception: remove

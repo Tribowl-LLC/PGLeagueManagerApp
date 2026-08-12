@@ -11,6 +11,17 @@ const insertedRows: Record<string, unknown>[] = [];
 
 // eslint-disable-next-line local/factory-must-use-schema -- mocked db transaction, not a schema row
 const fakeTx = {
+  execute: () => Promise.resolve({
+    rows: [{ transaction_time: '2026-04-22T20:00:00.000Z' }],
+  }),
+  select: () => ({
+    from: () => ({
+      where: () => ({
+        limit: () => Promise.resolve([]),
+        orderBy: () => ({ limit: () => Promise.resolve([]) }),
+      }),
+    }),
+  }),
   update: () => ({ set: () => ({ where: () => Promise.resolve() }) }),
   insert: () => ({
     values: (v: Record<string, unknown> | Record<string, unknown>[]) => {
@@ -161,6 +172,7 @@ const baseSchedule: Parameters<typeof processScheduledPaymentJob>[0] = {
   frequency: 'weekly',
   paymentCardId: 'card_token_abcdef',
   nextPaymentDate: '2026-04-22T19:00:00.000Z',
+  nextOccurrenceId: null,
   lastPaymentDate: null,
   active: true,
   additionalBowlerIds: [77, 78],

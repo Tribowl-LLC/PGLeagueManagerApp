@@ -11,6 +11,9 @@ import {
   leagueScheduleCommands,
   leagueScheduleExceptionRevisions,
   leagueScheduleExceptions,
+  games,
+  paymentOperations,
+  paymentSchedules,
   leagues,
   type LeagueOccurrence,
   type LeagueOccurrenceBillingTerm,
@@ -121,6 +124,7 @@ interface ReviewRows {
   billingTermRevisions: Array<typeof leagueOccurrenceBillingTermRevisions.$inferSelect>;
   exceptionRevisions: Array<typeof leagueScheduleExceptionRevisions.$inferSelect>;
   discrepancyRevisions: Array<typeof leagueOccurrenceGenerationDiscrepancyRevisions.$inferSelect>;
+  activityOccurrenceIds: Set<string>;
 }
 
 type MutationRequest = FallDraftRescheduleRequest | FallDraftCancelRequest | FallDraftRestoreRequest
@@ -403,6 +407,32 @@ async function loadRows(tx: LeagueScheduleTransaction, scope: FallDraftScope, lo
     || allBillingTermIds.length !== billingTerms.length) {
     throw new FallDraftReviewError("incompatible_canonical_state", "the C1 run contains unsupported relationships or incomplete billing terms");
   }
+  const linkedGames = occurrenceIds.length === 0 ? [] : await tx.select({ occurrenceId: games.occurrenceId })
+    .from(games)
+    .where(and(
+      eq(games.leagueId, scope.leagueId),
+      inArray(games.occurrenceId, occurrenceIds),
+    ));
+  const linkedOperations = occurrenceIds.length === 0 ? [] : await tx.select({
+    occurrenceId: paymentOperations.triggerOccurrenceId,
+    scheduleLeagueId: paymentSchedules.leagueId,
+  }).from(paymentOperations).innerJoin(
+    paymentSchedules,
+    eq(paymentSchedules.id, paymentOperations.paymentScheduleId),
+  ).where(and(
+    eq(paymentOperations.organizationId, scope.organizationId),
+    inArray(paymentOperations.triggerOccurrenceId, occurrenceIds),
+  ));
+  if (linkedOperations.some((row) => row.scheduleLeagueId !== scope.leagueId)) {
+    throw new FallDraftReviewError(
+      "incompatible_canonical_state",
+      "a linked scheduled operation contradicts the occurrence league",
+    );
+  }
+  const activityOccurrenceIds = new Set<string>([
+    ...linkedGames.flatMap((row) => row.occurrenceId === null ? [] : [row.occurrenceId]),
+    ...linkedOperations.flatMap((row) => row.occurrenceId === null ? [] : [row.occurrenceId]),
+  ]);
   const commandType = (commandId: string | null): string | null =>
     commandId === null ? null : commands.find((command) => command.id === commandId)?.commandType ?? null;
   if (commandType(run.originatingCommandId) !== "generate"
@@ -481,6 +511,7 @@ async function loadRows(tx: LeagueScheduleTransaction, scope: FallDraftScope, lo
   return {
     run, snapshot, generation, commands, occurrences, billingTerms, exceptions, discrepancies,
     occurrenceRevisions, billingTermRevisions, exceptionRevisions, discrepancyRevisions,
+    activityOccurrenceIds,
   };
 }
 
@@ -596,7 +627,8 @@ async function buildReview(
       discardedByUserId: row.discardedByUserId,
       discardCommandId: row.discardCommandId,
       effectivelyLocked: row.lifecycle === "locked" || row.lockedAt !== null
-        || Date.parse(row.startAt) <= Date.parse(transactionTime),
+        || Date.parse(row.startAt) <= Date.parse(transactionTime)
+        || rows.activityOccurrenceIds.has(row.id),
       revisions: rows.occurrenceRevisions.filter((revision) => revision.occurrenceId === row.id).map((revision) => ({
         id: revision.id,
         occurrenceId: revision.occurrenceId,
@@ -705,8 +737,10 @@ function assertReview(review: FallDraftReview, confirmed: string): void {
   }
 }
 
-function assertFuture(row: LeagueOccurrence, transactionTime: string): void {
-  if (row.lifecycle === "locked" || row.lockedAt !== null || Date.parse(row.startAt) <= Date.parse(transactionTime)) {
+function assertFuture(row: LeagueOccurrence, transactionTime: string, rows: ReviewRows): void {
+  if (row.lifecycle === "locked" || row.lockedAt !== null
+    || Date.parse(row.startAt) <= Date.parse(transactionTime)
+    || rows.activityOccurrenceIds.has(row.id)) {
     throw new FallDraftReviewError("effective_lock", "the occurrence is locked as soon as its authoritative start instant is reached");
   }
 }
@@ -944,7 +978,7 @@ export async function rescheduleFallDraftOccurrence(input: FallDraftScope & {
     if (occurrence.status !== "scheduled" || !["draft", "published"].includes(occurrence.lifecycle)) {
       throw new FallDraftReviewError("terminal_state", "only a scheduled C1 draft or published occurrence can be rescheduled");
     }
-    assertFuture(occurrence, transactionTime);
+    assertFuture(occurrence, transactionTime, rows);
     let resolution;
     try {
       resolution = resolveCanonicalLocalDateTime({
@@ -1022,7 +1056,7 @@ export async function cancelFallDraftOccurrence(input: FallDraftScope & {
     if (occurrence.completedAt !== null || occurrence.lifecycle === "locked") {
       throw new FallDraftReviewError("activity_evidence", "canonical activity or lifecycle evidence blocks cancellation");
     }
-    assertFuture(occurrence, transactionTime);
+    assertFuture(occurrence, transactionTime, rows);
     const { command } = await getOrCreateCanonicalScheduleCommandInTransaction(tx, commandRequestValue, ["cancel"]);
     injectFailure(input.failureInjection, "after_commands");
     const [updated] = await tx.update(leagueOccurrences).set({
@@ -1086,7 +1120,7 @@ export async function restoreFallDraftOccurrence(input: FallDraftScope & {
     if (occurrence.lifecycle !== "draft" || occurrence.status !== "cancelled") {
       throw new FallDraftReviewError("terminal_state", "only a cancelled draft in the editable C1 run can be restored");
     }
-    assertFuture(occurrence, transactionTime);
+    assertFuture(occurrence, transactionTime, rows);
     await assertPlacement(tx, input, rows, occurrence.id, occurrence.authoritativeLocalDate, occurrence.startAt);
     const generated = rows.generation.occurrenceCandidates.find((candidate) => candidate.generationKey === occurrence.generationKey);
     const term = rows.billingTerms.find((row) => row.occurrenceId === occurrence.id);
@@ -1138,7 +1172,7 @@ async function assertApprovalFutureAndCollisions(
 ): Promise<void> {
   for (const occurrence of rows.occurrences) {
     if (occurrence.status === "discarded") throw new FallDraftReviewError("incompatible_canonical_state", "discarded rows cannot be published by C2");
-    assertFuture(occurrence, transactionTime);
+    assertFuture(occurrence, transactionTime, rows);
     if (occurrence.status === "scheduled") {
       await assertPlacement(tx, scope, rows, occurrence.id, occurrence.authoritativeLocalDate, occurrence.startAt);
     }

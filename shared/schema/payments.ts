@@ -1,4 +1,4 @@
-import { pgTable, text, serial, integer, boolean, timestamp, index, uniqueIndex, uuid, check } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, integer, boolean, timestamp, index, uniqueIndex, uuid, check, foreignKey } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -6,6 +6,7 @@ import { PAYMENT_STATUSES, PAYMENT_TYPES, SCHEDULE_FREQUENCIES, positiveIntSchem
 import { bowlers } from "./bowlers";
 import { leagues } from "./leagues";
 import { users } from "./users";
+import { leagueOccurrences } from "./canonical-occurrences";
 
 export const payments = pgTable("payments", {
   id: serial("id").primaryKey(),
@@ -93,6 +94,7 @@ export const paymentSchedules = pgTable("payment_schedules", {
   frequency: text("frequency", { enum: SCHEDULE_FREQUENCIES }).notNull(),
   amount: integer("amount").notNull(),
   nextPaymentDate: timestamp("next_payment_date", { mode: "string" }).notNull(),
+  nextOccurrenceId: uuid("next_occurrence_id"),
   active: boolean("active").notNull().default(true),
   createdAt: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
   lastPaymentDate: timestamp("last_payment_date", { mode: "string" }),
@@ -114,6 +116,12 @@ export const paymentSchedules = pgTable("payment_schedules", {
     .on(table.bowlerId, table.leagueId)
     .where(sql`${table.active} = true`),
   activeIdx: index("active_schedule_idx").on(table.active),
+  nextOccurrenceIdx: index("payment_schedules_next_occurrence_idx").on(table.nextOccurrenceId),
+  nextOccurrenceLeagueFk: foreignKey({
+    name: "payment_schedules_next_occurrence_league_fk",
+    columns: [table.nextOccurrenceId, table.leagueId],
+    foreignColumns: [leagueOccurrences.id, leagueOccurrences.leagueId],
+  }).onDelete("restrict"),
 }));
 
 const basePaymentSchema = createInsertSchema(payments);
@@ -156,7 +164,14 @@ export const insertPaymentScheduleSchema = basePaymentScheduleSchema.extend({
   active: z.boolean().default(true),
   paymentCardId: z.string(),
   additionalBowlerIds: z.array(z.number().int().positive()).optional().nullable(),
-}).omit({ id: true, createdAt: true, lastPaymentDate: true, cancelledAt: true, cancelReason: true });
+}).omit({
+  id: true,
+  createdAt: true,
+  lastPaymentDate: true,
+  cancelledAt: true,
+  cancelReason: true,
+  nextOccurrenceId: true,
+});
 
 export const updatePaymentSchema = z.object({
   amount: positiveIntSchema,

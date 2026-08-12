@@ -36,6 +36,13 @@ import {
   buildPaymentOperationIdentity,
   buildSquarePaymentRequestIdentity,
 } from "./payment-operation-idempotency.js";
+import { lockLeagueSchedule } from "../storage/league-schedule-lock.js";
+import {
+  assertNoOccurrenceReferenceConflict,
+  logOccurrenceCompatibility,
+  occurrenceCompatibilityTransactionTime,
+  resolveCanonicalOccurrenceCompatibility,
+} from "./canonical-occurrence-compatibility.js";
 
 interface SchedulerCallbacks {
   schedulePayment: (record: PaymentSchedule) => void;
@@ -269,10 +276,29 @@ async function handleSuccessfulPayment(
   });
 
   await db.transaction(async (tx) => {
+    let nextOccurrenceId: string | null = null;
+    if (league.organizationId !== null && !isUpfrontLeague) {
+      await lockLeagueSchedule(tx, league.organizationId, scheduleRecord.leagueId);
+      const comparison = await resolveCanonicalOccurrenceCompatibility(tx, {
+        subject: 'payment_schedule',
+        organizationId: league.organizationId,
+        leagueId: scheduleRecord.leagueId,
+        legacyStartAt: nextDate.toISOString(),
+        immediateUpfront: false,
+        eligibilityNow: await occurrenceCompatibilityTransactionTime(tx),
+        existingReferenceId: scheduleRecord.nextOccurrenceId,
+      });
+      assertNoOccurrenceReferenceConflict(comparison);
+      logOccurrenceCompatibility('legacy_payment_schedule_cursor_advance', comparison);
+      nextOccurrenceId = comparison.classification === 'exact_match'
+        ? comparison.occurrenceId
+        : null;
+    }
     await tx
       .update(paymentSchedules)
       .set({
         nextPaymentDate: nextDate.toISOString(),
+        nextOccurrenceId,
         lastPaymentDate: scheduleRecord.nextPaymentDate,
       })
       .where(eq(paymentSchedules.id, scheduleRecord.id));
