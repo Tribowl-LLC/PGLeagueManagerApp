@@ -22,16 +22,17 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Plus } from "lucide-react";
-import { LeaguesTableSkeleton } from "@/components/page-states";
+import { LeaguesTableSkeleton, PageErrorState } from "@/components/page-states";
 import { LeaguesTable } from "@/components/leagues-table";
 import { LeagueSquareMissingBanner } from "@/components/league-square-missing-banner";
 import { ConfirmArchiveDialog } from "@/components/confirm-archive-dialog";
 import { ConfirmDeleteDialog } from "@/components/confirm-delete-dialog";
 import type { ApiResponse, League, Team, Location, User } from "@shared/schema";
+import type { LeagueScoresReadContract } from "@shared/canonical-games-scores";
 import type { ScoreWithRelations } from "@/lib/types/scores";
 import { apiRequest } from "@/lib/queryClient";
+import { leagueLatestScoresRequest } from "@/lib/score-requests";
 import { useToast } from "@/hooks/use-toast";
-import { getWeeksPassedInSeason } from "@/lib/financial-utils";
 import { filterAndSortLeagues, buildLocationMap, countArchivedLeagues } from "@/lib/league-filter-utils";
 
 export default function LeaguesPage() {
@@ -68,23 +69,35 @@ export default function LeaguesPage() {
   const allTeams = teamsResponse?.data || [];
 
   const firstLeague = leagues?.[0];
-  const currentWeek = firstLeague ? getWeeksPassedInSeason(firstLeague) : 0;
+  const latestScoresRequest = firstLeague?.organizationId
+    ? leagueLatestScoresRequest(firstLeague.id, firstLeague.organizationId)
+    : null;
 
-  const { data: scoresResponse, isLoading: loadingScores } = useQuery<{ data: ScoreWithRelations[] }>({
-    queryKey: ["/api/scores/history", firstLeague?.id, currentWeek],
-    queryFn: async () => {
-      if (!firstLeague?.id) throw new Error("No league selected");
-      const response = await fetch(`/api/scores?leagueId=${firstLeague.id}&weekNumber=${currentWeek}`);
+  const {
+    data: scoresResponse,
+    isLoading: loadingScores,
+    error: scoresError,
+    refetch: refetchScores,
+  } = useQuery<{
+    data: LeagueScoresReadContract | ScoreWithRelations[];
+  }>({
+    queryKey: latestScoresRequest?.queryKey ?? ["/api/scores/latest-scored-session", null, null],
+    queryFn: async ({ queryKey }) => {
+      const scopedUrl = queryKey[3];
+      if (typeof scopedUrl !== "string") throw new Error("No tenant-scoped league selected");
+      const response = await fetch(scopedUrl);
       if (!response.ok) {
         const errorData = await response.json();
         throw new Error(errorData.error?.message || "Failed to fetch scores");
       }
       return response.json();
     },
-    enabled: !!firstLeague && currentWeek > 0,
+    enabled: latestScoresRequest !== null,
   });
 
-  const weeklyScores = scoresResponse?.data || [];
+  const weeklyScores = Array.isArray(scoresResponse?.data)
+    ? scoresResponse.data
+    : scoresResponse?.data.scores ?? [];
 
   const deleteMutation = useMutation({
     mutationFn: async (id: number) => apiRequest(`/api/leagues/${id}`, "DELETE"),
@@ -200,7 +213,15 @@ export default function LeaguesPage() {
           />
         </div>
 
-        {weeklyScores.length > 0 && (
+        {scoresError ? (
+          <section className="mt-8" aria-labelledby="recent-scores-heading">
+            <h2 id="recent-scores-heading" className="text-xl font-semibold mb-4">Recent Scores</h2>
+            <PageErrorState
+              message={`Recent scores could not be loaded safely: ${scoresError.message}`}
+              onRetry={() => { void refetchScores(); }}
+            />
+          </section>
+        ) : weeklyScores.length > 0 && (
           <div className="mt-8">
             <h2 className="text-xl font-semibold mb-4">Recent Scores</h2>
             <div className="rounded-md border">

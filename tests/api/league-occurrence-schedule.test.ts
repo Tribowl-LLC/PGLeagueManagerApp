@@ -3,10 +3,13 @@ import { eq, sql } from "drizzle-orm";
 import {
   bowlerLeagues,
   bowlers,
+  games,
   leagueOccurrenceGenerationRuns,
+  leagueOccurrences,
   leagues,
   locations,
   organizations,
+  scores,
   teams,
   users,
 } from "@shared/schema";
@@ -15,6 +18,7 @@ import type { FallDraftPreview } from "@shared/fall-draft-generation";
 import type { FallDraftReview } from "@shared/fall-draft-review";
 import { hashPassword } from "../../server/lib/password";
 import { deleteOrganization } from "../../server/storage/organizations";
+import { createGame } from "../../server/storage/games-scores";
 import {
   TEST_ADMIN_EMAIL,
   TEST_ADMIN_PASSWORD,
@@ -33,8 +37,11 @@ const organizationsToDelete: number[] = [];
 interface Fixture {
   organizationId: number;
   leagueId: number;
+  teamId: number;
+  bowlerId: number;
   admin: AuthSession;
   member: AuthSession;
+  peer: AuthSession;
   unrostered: AuthSession;
 }
 
@@ -68,22 +75,31 @@ async function fixture(label: string): Promise<Fixture> {
   if (!league) throw new Error("E1 league was not created");
   const [team] = await db.insert(teams).values({ name: `E1 ${label} team`, number: 1, leagueId: league.id }).returning({ id: teams.id });
   const [bowler] = await db.insert(bowlers).values({ name: `E1 ${label} bowler`, organizationId: organization.id }).returning({ id: bowlers.id });
-  if (!team || !bowler) throw new Error("E1 roster fixture was not created");
-  await db.insert(bowlerLeagues).values({ bowlerId: bowler.id, leagueId: league.id, teamId: team.id });
+  const [peerBowler] = await db.insert(bowlers).values({ name: `E1 ${label} peer`, organizationId: organization.id }).returning({ id: bowlers.id });
+  if (!team || !bowler || !peerBowler) throw new Error("E1 roster fixture was not created");
+  await db.insert(bowlerLeagues).values([
+    { bowlerId: bowler.id, leagueId: league.id, teamId: team.id },
+    { bowlerId: peerBowler.id, leagueId: league.id, teamId: team.id },
+  ]);
   const hashed = await hashPassword(password);
   const adminEmail = `e1-${label}-admin-${suffix}@example.test`;
   const memberEmail = `e1-${label}-member-${suffix}@example.test`;
+  const peerEmail = `e1-${label}-peer-${suffix}@example.test`;
   const unrosteredEmail = `e1-${label}-unrostered-${suffix}@example.test`;
   await db.insert(users).values([
     { email: adminEmail, password: hashed, name: `E1 ${label} admin`, role: "org_admin", organizationId: organization.id },
     { email: memberEmail, password: hashed, name: `E1 ${label} member`, role: "user", organizationId: organization.id, bowlerId: bowler.id },
+    { email: peerEmail, password: hashed, name: `E1 ${label} peer`, role: "user", organizationId: organization.id, bowlerId: peerBowler.id },
     { email: unrosteredEmail, password: hashed, name: `E1 ${label} unrostered`, role: "user", organizationId: organization.id },
   ]);
   return {
     organizationId: organization.id,
     leagueId: league.id,
+    teamId: team.id,
+    bowlerId: bowler.id,
     admin: await login(adminEmail, password),
     member: await login(memberEmail, password),
+    peer: await login(peerEmail, password),
     unrostered: await login(unrosteredEmail, password),
   };
 }
@@ -106,8 +122,12 @@ async function writeSnapshot(leagueId: number): Promise<Record<string, string>> 
     UNION ALL SELECT 'd2_assignments', count(*)::text FROM bowler_occurrence_team_assignments WHERE league_id = ${leagueId}
     UNION ALL SELECT 'd2_obligations', count(*)::text FROM bowler_occurrence_obligations WHERE league_id = ${leagueId}
     UNION ALL SELECT 'd2_plans', count(*)::text FROM occurrence_collection_plans WHERE league_id = ${leagueId}
+    UNION ALL SELECT 'd2_plan_items', count(*)::text FROM occurrence_collection_plan_items WHERE league_id = ${leagueId}
     UNION ALL SELECT 'd2_allocations', count(*)::text FROM payment_occurrence_allocations WHERE league_id = ${leagueId}
+    UNION ALL SELECT 'd2_operation_snapshots', count(*)::text FROM payment_operation_occurrence_snapshots WHERE league_id = ${leagueId}
+    UNION ALL SELECT 'd2_operation_snapshot_allocations', count(*)::text FROM payment_operation_occurrence_snapshot_allocations WHERE league_id = ${leagueId}
     UNION ALL SELECT 'payment_schedules', count(*)::text FROM payment_schedules WHERE league_id = ${leagueId}
+    UNION ALL SELECT 'payment_operations', count(*)::text FROM payment_operations po JOIN payment_schedules ps ON ps.id = po.payment_schedule_id WHERE ps.league_id = ${leagueId}
     UNION ALL SELECT 'payments', count(*)::text FROM payments WHERE league_id = ${leagueId}
   `);
   return Object.fromEntries(result.rows.map((row) => [row.name, row.value]));
@@ -263,5 +283,186 @@ describe("E1 league occurrence schedule API", () => {
     );
     expect(partialSet.status).toBe(409);
     expect(partialSet.data.error?.code).toBe("CANONICAL_SCHEDULE_INCOMPATIBLE");
+    await db.update(leagueOccurrenceGenerationRuns).set({
+      candidateOccurrenceCount: currentRun.candidateOccurrenceCount,
+      generatedOccurrenceCount: currentRun.generatedOccurrenceCount,
+    }).where(eq(leagueOccurrenceGenerationRuns.id, currentRun.id));
+  });
+
+  it("cuts game and score routes to occurrence identity with tenant-safe atomic batches", async () => {
+    const operational = await db.select().from(leagueOccurrences)
+      .where(eq(leagueOccurrences.leagueId, primary.leagueId));
+    const target = operational.find((row) => row.status === "scheduled" && row.competitionNumber !== null);
+    if (!target?.competitionNumber) throw new Error("E2 API target occurrence was not found");
+    const game = await createGame({
+      leagueId: primary.leagueId,
+      weekNumber: target.competitionNumber,
+      gameNumber: 1,
+      date: target.authoritativeLocalDate,
+    });
+    expect(game.occurrenceId).toBe(target.id);
+
+    const memberGames = await apiGet<{
+      authoritativeSource: string;
+      games: Array<{ occurrenceId: string | null; occurrence: { occurrenceId: string } | null }>;
+    }>(`/api/games?leagueId=${primary.leagueId}&weekNumber=${target.competitionNumber}`, primary.member);
+    expect(memberGames.status).toBe(200);
+    expect(memberGames.data.data?.authoritativeSource).toBe("canonical");
+    expect(memberGames.data.data?.games).toHaveLength(1);
+    expect(memberGames.data.data?.games[0]?.occurrenceId).toBe(target.id);
+    expect(memberGames.data.data?.games[0]?.occurrence?.occurrenceId).toBe(target.id);
+    const byOccurrence = await apiGet(
+      `/api/games?leagueId=${primary.leagueId}&occurrenceId=${target.id}`,
+      primary.member,
+    );
+    expect(byOccurrence.status).toBe(200);
+    const spoofedOccurrence = await apiGet(
+      `/api/games?leagueId=${primary.leagueId}&occurrenceId=00000000-0000-4000-8000-000000000099`,
+      primary.member,
+    );
+    expect(spoofedOccurrence.status).toBe(409);
+    expect(spoofedOccurrence.data.error?.code).toBe("CANONICAL_GAMES_SCORES_INCOMPATIBLE");
+
+    const missingSystemScope = await apiGet(`/api/games?leagueId=${primary.leagueId}`, systemAdmin);
+    expect(missingSystemScope.status).toBe(400);
+    const scopedSystem = await apiGet(
+      `/api/games?leagueId=${primary.leagueId}&organizationId=${primary.organizationId}`,
+      systemAdmin,
+    );
+    expect(scopedSystem.status).toBe(200);
+    const crossTenant = await apiGet(`/api/games?leagueId=${other.leagueId}`, primary.admin);
+    expect(crossTenant.status).toBe(404);
+    expect(JSON.stringify(crossTenant.data)).not.toContain(other.organizationId.toString());
+
+    const validScore = {
+      gameId: game.id,
+      bowlerId: primary.bowlerId,
+      teamId: primary.teamId,
+      score: 190,
+      handicap: 20,
+      average: 175,
+      position: 1,
+      isVacant: false,
+      isAbsent: false,
+      isSub: false,
+      laneNumber: 1,
+      frames: [],
+      splits: [],
+      notes: [],
+    };
+    const beforeFinancialEvidence = await writeSnapshot(primary.leagueId);
+    const created = await apiPost(`/api/scores/batch`, { scores: [validScore] }, primary.member);
+    expect(created.status).toBe(201);
+    const scoreRead = await apiGet<{
+      authoritativeSource: string;
+      scores: Array<{ game: { occurrence: { occurrenceId: string } | null } }>;
+    }>(`/api/scores/league/${primary.leagueId}/week/${target.competitionNumber}`, primary.member);
+    expect(scoreRead.status).toBe(200);
+    expect(scoreRead.data.data?.authoritativeSource).toBe("canonical");
+    expect(scoreRead.data.data?.scores).toHaveLength(1);
+    expect(scoreRead.data.data?.scores[0]?.game.occurrence?.occurrenceId).toBe(target.id);
+    const latestScoreRead = await apiGet<{
+      selection: { kind: string; occurrenceId: string | null };
+      scores: Array<{ game: { occurrence: { occurrenceId: string } | null } }>;
+    }>(`/api/scores?leagueId=${primary.leagueId}&selection=latest_scored_session`, primary.member);
+    expect(latestScoreRead.status).toBe(200);
+    expect(latestScoreRead.data.data?.selection).toEqual({
+      kind: "latest_scored_session",
+      identitySource: "canonical_uuid",
+      occurrenceId: target.id,
+      legacyProjectionKey: null,
+    });
+    expect(latestScoreRead.data.data?.scores[0]?.game.occurrence?.occurrenceId).toBe(target.id);
+    const missingSystemScoreScope = await apiGet(
+      `/api/scores?leagueId=${primary.leagueId}&selection=latest_scored_session`,
+      systemAdmin,
+    );
+    expect(missingSystemScoreScope.status).toBe(400);
+    const scopedSystemScores = await apiGet(
+      `/api/scores?leagueId=${primary.leagueId}&selection=latest_scored_session&organizationId=${primary.organizationId}`,
+      systemAdmin,
+    );
+    expect(scopedSystemScores.status).toBe(200);
+    const history = await apiGet<{
+      scores: Array<{ game: { occurrence: { occurrenceId: string } | null } }>;
+    }>(`/api/scores/history?bowlerId=${primary.bowlerId}`, primary.member);
+    expect(history.status).toBe(200);
+    expect(history.data.data?.scores[0]?.game.occurrence?.occurrenceId).toBe(target.id);
+    const activeSharedLeagueHistory = await apiGet<{ scores: unknown[] }>(
+      `/api/scores/history?bowlerId=${primary.bowlerId}`,
+      primary.peer,
+    );
+    expect(activeSharedLeagueHistory.status).toBe(200);
+    expect(activeSharedLeagueHistory.data.data?.scores).toHaveLength(1);
+    const missingSystemHistoryScope = await apiGet(
+      `/api/scores/history?bowlerId=${primary.bowlerId}`,
+      systemAdmin,
+    );
+    expect(missingSystemHistoryScope.status).toBe(400);
+    const scopedSystemHistory = await apiGet(
+      `/api/scores/history?bowlerId=${primary.bowlerId}&organizationId=${primary.organizationId}`,
+      systemAdmin,
+    );
+    expect(scopedSystemHistory.status).toBe(200);
+
+    const [foreignGame] = await db.insert(games).values({
+      leagueId: other.leagueId,
+      weekNumber: 1,
+      gameNumber: 1,
+      date: "2032-08-01",
+    }).returning();
+    if (!foreignGame) throw new Error("E2 foreign game fixture was not created");
+    const beforeMixed = await db.select().from(scores).where(eq(scores.gameId, game.id));
+    const mixed = await apiPost(`/api/scores/batch`, {
+      scores: [
+        { ...validScore, position: 2, score: 191 },
+        {
+          ...validScore,
+          gameId: foreignGame.id,
+          bowlerId: other.bowlerId,
+          teamId: other.teamId,
+          position: 3,
+        },
+      ],
+    }, primary.member);
+    expect(mixed.status).toBe(404);
+    expect(JSON.stringify(mixed.data)).not.toContain(other.organizationId.toString());
+    expect(await db.select().from(scores).where(eq(scores.gameId, game.id))).toEqual(beforeMixed);
+
+    const teamSpoof = await apiPost(`/api/scores/batch`, {
+      scores: [{ ...validScore, teamId: other.teamId, position: 2 }],
+    }, primary.member);
+    expect(teamSpoof.status).toBe(400);
+    const bowlerSpoof = await apiPost(`/api/scores/batch`, {
+      scores: [{ ...validScore, bowlerId: other.bowlerId, position: 2 }],
+    }, primary.member);
+    expect(bowlerSpoof.status).toBe(400);
+    expect(await db.select().from(scores).where(eq(scores.gameId, game.id))).toEqual(beforeMixed);
+    expect(await writeSnapshot(primary.leagueId)).toEqual(beforeFinancialEvidence);
+
+    await db.update(bowlerLeagues).set({ active: false }).where(eq(bowlerLeagues.bowlerId, primary.bowlerId));
+    const retainedSelfHistory = await apiGet<{ scores: unknown[] }>(
+      `/api/scores/history?bowlerId=${primary.bowlerId}`,
+      primary.member,
+    );
+    expect(retainedSelfHistory.status).toBe(200);
+    expect(retainedSelfHistory.data.data?.scores).toHaveLength(1);
+    const retainedAdminHistory = await apiGet<{ scores: unknown[] }>(
+      `/api/scores/history?bowlerId=${primary.bowlerId}`,
+      primary.admin,
+    );
+    expect(retainedAdminHistory.status).toBe(200);
+    expect(retainedAdminHistory.data.data?.scores).toHaveLength(1);
+    const retainedSystemHistory = await apiGet<{ scores: unknown[] }>(
+      `/api/scores/history?bowlerId=${primary.bowlerId}&organizationId=${primary.organizationId}`,
+      systemAdmin,
+    );
+    expect(retainedSystemHistory.status).toBe(200);
+    expect(retainedSystemHistory.data.data?.scores).toHaveLength(1);
+    const formerPeerHistory = await apiGet(
+      `/api/scores/history?bowlerId=${primary.bowlerId}`,
+      primary.peer,
+    );
+    expect(formerPeerHistory.status).toBe(404);
   });
 });

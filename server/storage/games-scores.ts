@@ -1,4 +1,4 @@
-import { eq, and, desc, inArray, sql } from "drizzle-orm";
+import { eq, and, desc, inArray } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   games, scores, bowlers, teams, leagues,
@@ -6,13 +6,11 @@ import {
   type Score, type InsertScore, type UpdateScore,
 } from "@shared/schema";
 import { createLogger } from '../logger';
-import { lockLeagueSchedule } from './league-schedule-lock.js';
 import {
-  assertNoOccurrenceReferenceConflict,
-  logOccurrenceCompatibility,
-  OccurrenceCompatibilityConflictError,
-  resolveCanonicalOccurrenceCompatibility,
-} from '../services/canonical-occurrence-compatibility.js';
+  createCanonicalAwareGame,
+  deleteCanonicalAwareGame,
+  updateCanonicalAwareGame,
+} from '../services/canonical-games-scores.js';
 
 const log = createLogger("StorageGamesScores");
 
@@ -40,117 +38,15 @@ export async function getGame(id: number): Promise<Game | undefined> {
 }
 
 export async function createGame(game: InsertGame): Promise<Game> {
-  const gameDate = typeof game.date === 'string' ? new Date(game.date) : game.date;
-  if (gameDate instanceof Date && isNaN(gameDate.getTime())) {
-    throw new Error('Invalid date provided to createGame');
-  }
-  const dateStr = gameDate instanceof Date ? gameDate.toISOString() : String(game.date);
-
-  const { result, comparison } = await db.transaction(async (tx) => {
-    const [league] = await tx.select({ organizationId: leagues.organizationId })
-      .from(leagues).where(eq(leagues.id, game.leagueId)).limit(1);
-    if (!league) throw new Error('League not found for createGame');
-    if (league.organizationId === null) {
-      const [legacyResult] = await tx.insert(games).values({
-        leagueId: game.leagueId,
-        weekNumber: game.weekNumber,
-        gameNumber: game.gameNumber,
-        date: dateStr,
-      }).returning();
-      return { result: legacyResult, comparison: null };
-    }
-    await lockLeagueSchedule(tx, league.organizationId, game.leagueId);
-    const [duplicate] = await tx.select({ id: games.id }).from(games).where(and(
-      eq(games.leagueId, game.leagueId),
-      eq(games.weekNumber, game.weekNumber),
-      eq(games.gameNumber, game.gameNumber),
-    )).limit(1).for('update');
-    const compatibility = await resolveCanonicalOccurrenceCompatibility(tx, {
-      subject: 'game',
-      organizationId: league.organizationId,
-      leagueId: game.leagueId,
-      legacyCompetitionNumber: game.weekNumber,
-      legacyTimestamp: dateStr,
-      duplicateLegacyKey: duplicate !== undefined,
-      existingReferenceId: null,
-    });
-    assertNoOccurrenceReferenceConflict(compatibility);
-    const [created] = await tx.insert(games).values({
-      leagueId: game.leagueId,
-      weekNumber: game.weekNumber,
-      gameNumber: game.gameNumber,
-      date: dateStr,
-      occurrenceId: compatibility.classification === 'exact_match'
-        ? compatibility.occurrenceId
-        : null,
-    }).returning();
-    return { result: created, comparison: compatibility };
-  });
-  if (comparison) logOccurrenceCompatibility('game_create', comparison);
-  if (!result) throw new Error('Game was not created');
-  return result;
+  return createCanonicalAwareGame(game);
 }
 
 export async function updateGame(id: number, game: UpdateGame): Promise<Game> {
-  const normalizedDate = game.date
-    ? (typeof game.date === 'string' ? game.date : new Date(game.date).toISOString())
-    : undefined;
-  const { result, comparison } = await db.transaction(async (tx) => {
-    const [current] = await tx.select().from(games).where(eq(games.id, id)).limit(1).for('update');
-    if (!current) return { result: undefined, comparison: null };
-    const next = {
-      leagueId: game.leagueId ?? current.leagueId,
-      weekNumber: game.weekNumber ?? current.weekNumber,
-      gameNumber: game.gameNumber ?? current.gameNumber,
-      date: normalizedDate ?? current.date,
-    };
-    const [league] = await tx.select({ organizationId: leagues.organizationId })
-      .from(leagues).where(eq(leagues.id, next.leagueId)).limit(1);
-    if (!league) throw new Error('League not found for updateGame');
-    if (league.organizationId === null) {
-      if (current.occurrenceId !== null) throw new Error('Linked game cannot move to an organization-less league');
-      const [updated] = await tx.update(games).set({ ...game, date: normalizedDate })
-        .where(eq(games.id, id)).returning();
-      return { result: updated, comparison: null };
-    }
-    await lockLeagueSchedule(tx, league.organizationId, next.leagueId);
-    const [duplicate] = await tx.select({ id: games.id }).from(games).where(and(
-      eq(games.leagueId, next.leagueId),
-      eq(games.weekNumber, next.weekNumber),
-      eq(games.gameNumber, next.gameNumber),
-      sql`${games.id} <> ${id}`,
-    )).limit(1).for('update');
-    const compatibility = await resolveCanonicalOccurrenceCompatibility(tx, {
-      subject: 'game',
-      organizationId: league.organizationId,
-      leagueId: next.leagueId,
-      legacyCompetitionNumber: next.weekNumber,
-      legacyTimestamp: next.date,
-      duplicateLegacyKey: duplicate !== undefined,
-      existingReferenceId: current.occurrenceId,
-    });
-    assertNoOccurrenceReferenceConflict(compatibility);
-    if (current.occurrenceId !== null
-      && (compatibility.classification !== 'exact_match'
-        || compatibility.occurrenceId !== current.occurrenceId)) {
-      throw new OccurrenceCompatibilityConflictError(compatibility);
-    }
-    const [updated] = await tx.update(games).set({
-      ...game,
-      date: normalizedDate,
-      occurrenceId: compatibility.classification === 'exact_match'
-        ? compatibility.occurrenceId
-        : null,
-    }).where(eq(games.id, id)).returning();
-    return { result: updated, comparison: compatibility };
-  });
-  if (comparison) logOccurrenceCompatibility('game_update', comparison);
-  if (!result) throw new Error('Game not found for updateGame');
-  return result;
+  return updateCanonicalAwareGame(id, game);
 }
 
 export async function deleteGame(id: number): Promise<void> {
-  await db.delete(games).where(eq(games.id, id));
+  await deleteCanonicalAwareGame(id);
 }
 
 export async function getScores(gameId: number, teamId?: number): Promise<Score[]> {

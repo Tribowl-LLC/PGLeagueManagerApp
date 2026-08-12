@@ -546,7 +546,7 @@ export function buildLeagueOccurrenceSchedule(
     : buildLegacySchedule(input);
 }
 
-type ScheduleExecutor = typeof db | LeagueScheduleTransaction;
+export type ScheduleExecutor = typeof db | LeagueScheduleTransaction;
 
 async function databaseNow(executor: ScheduleExecutor): Promise<string> {
   const result = await executor.execute<{ database_now: string }>(sql`
@@ -615,13 +615,13 @@ async function linkedActivityOccurrenceIds(
   return new Set(result.rows.map((row) => row.occurrence_id));
 }
 
-interface LoadLeagueOccurrenceScheduleInput {
+export interface LoadLeagueOccurrenceScheduleInput {
   organizationId: number;
   leagueId: number;
   includeAdministratorEvidence: boolean;
 }
 
-async function loadLeagueOccurrenceScheduleSnapshot(
+export async function loadLeagueOccurrenceScheduleSnapshot(
   input: LoadLeagueOccurrenceScheduleInput,
   executor: ScheduleExecutor,
 ): Promise<LeagueOccurrenceScheduleReadContract> {
@@ -648,30 +648,31 @@ async function loadLeagueOccurrenceScheduleSnapshot(
   if (!league || league.organizationId !== input.organizationId) {
     throw new LeagueOccurrenceScheduleError("league_not_found", "league was not found in the authorized organization");
   }
-  const [generationRuns, occurrences, billingTerms, scheduleExceptions, relationships, hasAnyEvidence, now] = await Promise.all([
-    executor.select().from(leagueOccurrenceGenerationRuns).where(and(
-      eq(leagueOccurrenceGenerationRuns.organizationId, input.organizationId),
-      eq(leagueOccurrenceGenerationRuns.leagueId, input.leagueId),
-    )).orderBy(asc(leagueOccurrenceGenerationRuns.sourceScheduleRevision), asc(leagueOccurrenceGenerationRuns.id)),
-    executor.select().from(leagueOccurrences).where(and(
-      eq(leagueOccurrences.organizationId, input.organizationId),
-      eq(leagueOccurrences.leagueId, input.leagueId),
-    )).orderBy(asc(leagueOccurrences.authoritativeLocalDate), asc(leagueOccurrences.id)),
-    executor.select().from(leagueOccurrenceBillingTerms).where(and(
-      eq(leagueOccurrenceBillingTerms.organizationId, input.organizationId),
-      eq(leagueOccurrenceBillingTerms.leagueId, input.leagueId),
-    )).orderBy(asc(leagueOccurrenceBillingTerms.occurrenceId), asc(leagueOccurrenceBillingTerms.id)),
-    executor.select().from(leagueScheduleExceptions).where(and(
-      eq(leagueScheduleExceptions.organizationId, input.organizationId),
-      eq(leagueScheduleExceptions.leagueId, input.leagueId),
-    )).orderBy(asc(leagueScheduleExceptions.localDate), asc(leagueScheduleExceptions.id)),
-    executor.select().from(leagueOccurrenceRelationships).where(and(
-      eq(leagueOccurrenceRelationships.organizationId, input.organizationId),
-      eq(leagueOccurrenceRelationships.leagueId, input.leagueId),
-    )).orderBy(asc(leagueOccurrenceRelationships.id)),
-    hasLeagueOccurrenceEvidence(executor, input.organizationId, input.leagueId),
-    databaseNow(executor),
-  ]);
+  // A transaction uses one PostgreSQL client. Keep these reads sequential so
+  // E2 mutation callers do not issue overlapping client.query calls while the
+  // league advisory lock and one MVCC snapshot are active.
+  const generationRuns = await executor.select().from(leagueOccurrenceGenerationRuns).where(and(
+    eq(leagueOccurrenceGenerationRuns.organizationId, input.organizationId),
+    eq(leagueOccurrenceGenerationRuns.leagueId, input.leagueId),
+  )).orderBy(asc(leagueOccurrenceGenerationRuns.sourceScheduleRevision), asc(leagueOccurrenceGenerationRuns.id));
+  const occurrences = await executor.select().from(leagueOccurrences).where(and(
+    eq(leagueOccurrences.organizationId, input.organizationId),
+    eq(leagueOccurrences.leagueId, input.leagueId),
+  )).orderBy(asc(leagueOccurrences.authoritativeLocalDate), asc(leagueOccurrences.id));
+  const billingTerms = await executor.select().from(leagueOccurrenceBillingTerms).where(and(
+    eq(leagueOccurrenceBillingTerms.organizationId, input.organizationId),
+    eq(leagueOccurrenceBillingTerms.leagueId, input.leagueId),
+  )).orderBy(asc(leagueOccurrenceBillingTerms.occurrenceId), asc(leagueOccurrenceBillingTerms.id));
+  const scheduleExceptions = await executor.select().from(leagueScheduleExceptions).where(and(
+    eq(leagueScheduleExceptions.organizationId, input.organizationId),
+    eq(leagueScheduleExceptions.leagueId, input.leagueId),
+  )).orderBy(asc(leagueScheduleExceptions.localDate), asc(leagueScheduleExceptions.id));
+  const relationships = await executor.select().from(leagueOccurrenceRelationships).where(and(
+    eq(leagueOccurrenceRelationships.organizationId, input.organizationId),
+    eq(leagueOccurrenceRelationships.leagueId, input.leagueId),
+  )).orderBy(asc(leagueOccurrenceRelationships.id));
+  const hasAnyEvidence = await hasLeagueOccurrenceEvidence(executor, input.organizationId, input.leagueId);
+  const now = await databaseNow(executor);
   const linkedIds = await linkedActivityOccurrenceIds(
     executor,
     input.organizationId,

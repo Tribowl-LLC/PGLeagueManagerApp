@@ -1086,9 +1086,9 @@ describe('Organization Isolation', () => {
             return `/api/scores/league/${orgBLeagueId}/week/${weekNumber}`;
           },
         },
-      ])('org A $name → 403', async ({ path }) => {
+      ])('org A $name → 403/404', async ({ path }) => {
         const { status, data } = await apiGet(path(), sessionA);
-        expect(status).toBe(403);
+        expect([403, 404]).toContain(status);
         expect(data.success).toBe(false);
       });
 
@@ -1143,7 +1143,7 @@ describe('Organization Isolation', () => {
         }
       });
 
-      it('org A GET /api/scores/league/:leagueId/week/:weekNumber (org B league) → 403 (hasAccessToLeague gate)', async () => {
+      it('org A GET /api/scores/league/:leagueId/week/:weekNumber (org B league) → 404 without tenant enumeration', async () => {
         expect(orgBLeagueId).not.toBeNull();
         // Bind the week number to a variable so both segments are
         // template-literal `${...}` references — the coverage lint's
@@ -1154,7 +1154,7 @@ describe('Organization Isolation', () => {
           `/api/scores/league/${orgBLeagueId}/week/${weekNumber}`,
           sessionA,
         );
-        expect(status).toBe(403);
+        expect(status).toBe(404);
         expect(data.success).toBe(false);
       });
 

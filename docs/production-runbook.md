@@ -359,6 +359,20 @@ provider request is caused by D2. The previous application is compatible with
 See [Phase D2 occurrence financial foundation](phase-d2-occurrence-financial-foundation.md)
 for the full smoke-test and later-phase boundary.
 
+### Phase E2 canonical games and scores
+
+Phase E2 is a code-only cutover that reuses the E1 authoritative schedule
+selection and the existing nullable `games.occurrence_id` from migration 0022.
+Migration 0023 remains the latest required migration; do not run a migration or
+backfill as part of the E2 release. Deploy the exact CI-certified application
+commit, then verify canonical and explicit fallback game/score reads, one
+atomic score batch, tenant boundaries, bowler-history grouping by occurrence
+UUID, and unchanged canonical effective locks. Confirm no D2 financial row or
+payment/provider operation was created. Application rollback is schema-safe
+and leaves exact occurrence links in place. See
+[Phase E2 canonical games and scores](phase-e2-canonical-games-scores.md) for
+the full contract, incompatibility behavior, smoke matrix, and E3 boundary.
+
 ## Post-Deployment Checks
 
 - Confirm the Render deploy is running the expected commit.
