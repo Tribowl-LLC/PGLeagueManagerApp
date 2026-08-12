@@ -75,7 +75,9 @@ export class CanonicalGamesScoresError extends Error {
   }
 }
 
-type Executor = typeof db | LeagueScheduleTransaction;
+export type CanonicalGamesScoresReadExecutor = typeof db | LeagueScheduleTransaction;
+
+type Executor = CanonicalGamesScoresReadExecutor;
 
 interface LeagueReadInput {
   organizationId: number;
@@ -322,6 +324,30 @@ async function scoreRows(
     || left.team.number - right.team.number
     || left.position - right.position
     || left.id - right.id);
+}
+
+export interface CanonicalGamesScoresEvidenceSnapshot {
+  schedule: LeagueOccurrenceScheduleReadContract;
+  games: CanonicalGameProjection[];
+  scores: CanonicalScoreProjection[];
+}
+
+/**
+ * Server-internal E3 bridge. The caller owns the transaction so E1 schedule
+ * selection, E2 game validation, and inherited score evidence share one
+ * repeatable snapshot. This function never starts a nested transaction.
+ */
+export async function loadCanonicalGamesScoresEvidenceSnapshot(
+  executor: CanonicalGamesScoresReadExecutor,
+  input: Pick<LeagueReadInput, "organizationId" | "leagueId">,
+): Promise<CanonicalGamesScoresEvidenceSnapshot> {
+  const schedule = await scheduleSnapshot(executor, input);
+  const gameRows = await projectLeagueGames(executor, schedule, input);
+  return {
+    schedule,
+    games: gameRows,
+    scores: await scoreRows(executor, gameRows, input.organizationId, input.leagueId),
+  };
 }
 
 export async function loadLeagueScores(input: LeagueReadInput): Promise<LeagueScoresReadContract> {
