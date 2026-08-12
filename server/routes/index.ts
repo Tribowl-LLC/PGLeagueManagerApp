@@ -3,6 +3,7 @@ import { Router } from "express";
 import { timingSafeEqual } from "node:crypto";
 import { sendError } from "../utils/api.js";
 import leaguesRouter from './leagues.js';
+import leagueOccurrenceScheduleRouter from './league-occurrence-schedule.js';
 import fallDraftGenerationRouter from './fall-draft-generation.js';
 import teamsRouter from './teams.js';
 import bowlersRouter from './bowlers.js';
@@ -120,6 +121,7 @@ export function registerRoutes(app: Express): void {
   // and the security rationale.
   app.use('/api', requirePasswordRotated);
 
+  app.use('/api/leagues', requireAuth, leagueOccurrenceScheduleRouter);
   app.use('/api/leagues', requireAuth, fallDraftGenerationRouter);
   app.use('/api/leagues', requireAuth, leaguesRouter);
   app.use('/api/teams', requireAuth, teamsRouter);

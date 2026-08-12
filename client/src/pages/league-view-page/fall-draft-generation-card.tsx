@@ -15,7 +15,6 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -26,10 +25,9 @@ import type {
   FallDraftPersistedView,
   FallDraftPreview,
 } from "@shared/fall-draft-generation";
-import { FallDraftReviewPanel } from "./fall-draft-review-panel";
 import { secureFallDraftIdempotencyKey } from "./fall-draft-secure-id";
 
-interface FallDraftGenerationCardProps {
+interface FallCanonicalRecoveryPanelProps {
   leagueId: number;
   organizationId: number;
   isSystemAdmin: boolean;
@@ -50,7 +48,7 @@ function shortFingerprint(value: string): string {
   return `${value.slice(0, 12)}…${value.slice(-8)}`;
 }
 
-export function FallDraftGenerationCard({ leagueId, organizationId, isSystemAdmin }: FallDraftGenerationCardProps) {
+export function FallCanonicalRecoveryPanel({ leagueId, organizationId, isSystemAdmin }: FallCanonicalRecoveryPanelProps) {
   const [preview, setPreview] = useState<FallDraftPreview | null>(null);
   const [reason, setReason] = useState("");
   const [idempotencyKey, setIdempotencyKey] = useState("");
@@ -121,14 +119,13 @@ export function FallDraftGenerationCard({ leagueId, organizationId, isSystemAdmi
   };
 
   return (
-    <Card data-testid="fall-draft-generation-card">
-      <CardHeader>
-        <CardTitle as="h2">Fall canonical draft generation</CardTitle>
-        <CardDescription>
-          Preview the stored league schedule, then create draft-only sessions for later C2 review. Payment timing comes from league setup.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="mt-5 space-y-5">
+    <section className="space-y-5" data-testid="fall-canonical-recovery-panel" aria-labelledby="fall-canonical-recovery-heading">
+      <div>
+        <h3 id="fall-canonical-recovery-heading" className="text-lg font-semibold">Recover a pre-integration Fall schedule</h3>
+        <p className="text-sm text-muted-foreground">
+          Preview the stored league schedule without writes, then create draft-only sessions for audited review.
+        </p>
+      </div>
         {persistedQuery.isLoading && (
           <div className="flex items-center gap-2 text-sm text-muted-foreground" aria-live="polite">
             <Loader2 className="size-4 animate-spin" /> Checking for persisted drafts…
@@ -185,10 +182,10 @@ export function FallDraftGenerationCard({ leagueId, organizationId, isSystemAdmi
           <p className="text-sm text-muted-foreground">No C1 canonical draft generation exists for this league.</p>
         )}
 
-        <Button onClick={() => previewMutation.mutate()} disabled={previewMutation.isPending}>
+        {!persisted?.found && <Button onClick={() => previewMutation.mutate()} disabled={previewMutation.isPending}>
           {previewMutation.isPending ? <Loader2 className="mr-2 size-4 animate-spin" /> : <RefreshCw className="mr-2 size-4" />}
           Generate zero-write preview
-        </Button>
+        </Button>}
 
         {previewMutation.isError && (
           <Alert variant="destructive">
@@ -336,8 +333,6 @@ export function FallDraftGenerationCard({ leagueId, organizationId, isSystemAdmi
             </AlertDescription>
           </Alert>
         )}
-        <FallDraftReviewPanel basePath={basePath} querySuffix={querySuffix} enabled={persisted?.found === true} />
-      </CardContent>
-    </Card>
+    </section>
   );
 }

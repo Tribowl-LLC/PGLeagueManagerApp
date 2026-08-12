@@ -27,7 +27,7 @@ import { InviteResultCard } from "./league-view-page/invite-result-card";
 import { LeagueActionCards } from "./league-view-page/league-action-cards";
 import { SeasonHistoryCard } from "./league-view-page/season-history-card";
 import { NewSeasonDialog, type NewSeasonFormValues } from "./league-view-page/new-season-dialog";
-import { FallDraftGenerationCard } from "./league-view-page/fall-draft-generation-card";
+import { LeagueOccurrenceScheduleCard } from "./league-view-page/league-occurrence-schedule-card";
 import {
   LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION,
   type LeagueSetupIntegrationResult,
@@ -62,7 +62,6 @@ export default function LeagueViewPage() {
     staleTime: 5 * 60 * 1000,
   });
   const currentUser = currentUserResponse?.data;
-  const canGenerateFallDrafts = currentUser?.role === 'org_admin' || currentUser?.role === 'system_admin';
 
   const { data: seasonHistoryResponse } = useQuery<{ success: true; data: League[] }>({
     queryKey: ['/api/leagues', leagueId, 'season-history'],
@@ -219,12 +218,12 @@ export default function LeagueViewPage() {
           <LeagueActionCards leagueId={leagueId} />
         </ErrorBoundary>
 
-        {canGenerateFallDrafts && league.organizationId && (
+        {league.organizationId && (
           <ErrorBoundary level="section">
-            <FallDraftGenerationCard
+            <LeagueOccurrenceScheduleCard
               leagueId={leagueId}
               organizationId={league.organizationId}
-              isSystemAdmin={currentUser?.role === 'system_admin'}
+              viewerRole={currentUser?.role}
             />
           </ErrorBoundary>
         )}
