@@ -25,8 +25,9 @@ const getScoresQuerySchema = z.object({
   leagueId: z.coerce.number().int().positive(),
   weekNumber: z.coerce.number().int().positive().optional(),
   occurrenceId: z.string().uuid().optional(),
-}).refine((value) => value.weekNumber === undefined || value.occurrenceId === undefined, {
-  message: "weekNumber and occurrenceId cannot be combined",
+  selection: z.literal("latest_scored_session").optional(),
+}).refine((value) => [value.weekNumber, value.occurrenceId, value.selection].filter((entry) => entry !== undefined).length <= 1, {
+  message: "weekNumber, occurrenceId, and selection cannot be combined",
 });
 
 const historyQuerySchema = z.object({ bowlerId: z.coerce.number().int().positive() });
@@ -76,14 +77,19 @@ router.get('/history', async (req, res) => {
     if (!bowler || bowler.organizationId !== organizationId) {
       return sendError(res, "Bowler score history not found", 404, "NOT_FOUND");
     }
-    const targetMemberships = (await storage.getBowlerLeagues({ bowlerId })).filter((row) => row.active);
-    let allowedLeagueIds = targetMemberships.map((row) => row.leagueId);
-    if (req.user?.role !== "system_admin" && req.user?.role !== "org_admin" && req.user?.bowlerId !== bowlerId) {
+    const canReadRetainedTenantHistory = req.user?.role === "system_admin"
+      || req.user?.role === "org_admin"
+      || req.user?.bowlerId === bowlerId;
+    let allowedLeagueIds: number[] | undefined;
+    if (!canReadRetainedTenantHistory) {
+      const targetMemberships = await storage.getBowlerLeagues({ bowlerId });
       const ownMemberships = req.user?.bowlerId
         ? await storage.getBowlerLeagues({ bowlerId: req.user.bowlerId })
         : [];
       const ownLeagueIds = new Set(ownMemberships.filter((row) => row.active).map((row) => row.leagueId));
-      allowedLeagueIds = allowedLeagueIds.filter((leagueId) => ownLeagueIds.has(leagueId));
+      allowedLeagueIds = targetMemberships
+        .filter((row) => row.active && ownLeagueIds.has(row.leagueId))
+        .map((row) => row.leagueId);
     }
     return sendSuccess(res, await loadBowlerScoreHistory({ organizationId, bowlerId, allowedLeagueIds }));
   } catch (error) {
@@ -100,7 +106,12 @@ router.get('/', async (req, res) => {
       return sendError(res, "System administrators must select one organization with ?organizationId=<id>", 400, "INVALID_REQUEST");
     }
     if (scope.kind === "not_found") return sendError(res, "League scores not found", 404, "NOT_FOUND");
-    return sendSuccess(res, await loadLeagueScores({ ...scope, weekNumber: parsed.data.weekNumber, occurrenceId: parsed.data.occurrenceId }));
+    return sendSuccess(res, await loadLeagueScores({
+      ...scope,
+      weekNumber: parsed.data.weekNumber,
+      occurrenceId: parsed.data.occurrenceId,
+      latestScoredSession: parsed.data.selection === "latest_scored_session",
+    }));
   } catch (error) {
     return handleScoresError(res, error, "fetching scores");
   }

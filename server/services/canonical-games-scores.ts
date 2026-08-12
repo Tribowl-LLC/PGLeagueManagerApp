@@ -82,6 +82,7 @@ interface LeagueReadInput {
   leagueId: number;
   weekNumber?: number;
   occurrenceId?: string;
+  latestScoredSession?: boolean;
 }
 
 function error(
@@ -326,6 +327,67 @@ async function scoreRows(
 export async function loadLeagueScores(input: LeagueReadInput): Promise<LeagueScoresReadContract> {
   return db.transaction(async (tx) => {
     const gameContract = await loadLeagueGamesSnapshot(tx, input);
+    let projectedScores = await scoreRows(tx, gameContract.games, input.organizationId, input.leagueId);
+    let selection: LeagueScoresReadContract["selection"];
+    if (input.latestScoredSession) {
+      const sessions = new Map<string, {
+        identitySource: "canonical_uuid" | "legacy_projection";
+        occurrenceId: string | null;
+        legacyProjectionKey: string | null;
+        orderKey: string;
+      }>();
+      for (const row of projectedScores) {
+        const occurrence = row.game.occurrence;
+        const identitySource = row.game.identitySource;
+        const identity = occurrence?.occurrenceId ?? row.game.legacyProjectionKey;
+        if (!identity) return error(input, "latest_scored_session_ambiguous", { scoreCount: projectedScores.length });
+        const orderKey = occurrence
+          ? `${occurrence.authoritativeLocalDate}T${occurrence.authoritativeLocalStartTime ?? "00:00:00"}`
+          : `${extractStoredDateOnly(row.game.date) ?? row.game.date}:${row.game.weekNumber.toString().padStart(10, "0")}:${identity}`;
+        sessions.set(`${identitySource}:${identity}`, {
+          identitySource,
+          occurrenceId: occurrence?.occurrenceId ?? null,
+          legacyProjectionKey: row.game.legacyProjectionKey,
+          orderKey,
+        });
+      }
+      const orderedSessions = [...sessions.entries()].sort((left, right) =>
+        right[1].orderKey.localeCompare(left[1].orderKey) || right[0].localeCompare(left[0]))[0];
+      const latest = orderedSessions;
+      if (latest?.[1].identitySource === "canonical_uuid") {
+        const tiedCanonicalSessions = [...sessions.values()].filter((session) =>
+          session.identitySource === "canonical_uuid" && session.orderKey === latest[1].orderKey);
+        if (tiedCanonicalSessions.length !== 1) {
+          return error(input, "latest_scored_session_ambiguous", { scoreCount: projectedScores.length });
+        }
+      }
+      if (latest) {
+        const [latestKey, latestSession] = latest;
+        projectedScores = projectedScores.filter((row) => {
+          const identity = row.game.occurrence?.occurrenceId ?? row.game.legacyProjectionKey;
+          return `${row.game.identitySource}:${identity}` === latestKey;
+        });
+        selection = {
+          kind: "latest_scored_session",
+          identitySource: latestSession.identitySource,
+          occurrenceId: latestSession.occurrenceId,
+          legacyProjectionKey: latestSession.legacyProjectionKey,
+        };
+      } else {
+        selection = {
+          kind: "latest_scored_session",
+          identitySource: null,
+          occurrenceId: null,
+          legacyProjectionKey: null,
+        };
+      }
+    } else if (input.occurrenceId !== undefined) {
+      selection = { kind: "occurrence_id", occurrenceId: input.occurrenceId };
+    } else if (input.weekNumber !== undefined) {
+      selection = { kind: "competition_number", competitionNumber: input.weekNumber };
+    } else {
+      selection = { kind: "all" };
+    }
     return {
       contractVersion: gameContract.contractVersion,
       orderingVersion: gameContract.orderingVersion,
@@ -333,7 +395,8 @@ export async function loadLeagueScores(input: LeagueReadInput): Promise<LeagueSc
       leagueId: gameContract.leagueId,
       authoritativeSource: gameContract.authoritativeSource,
       operationalCanonicalStateExists: gameContract.operationalCanonicalStateExists,
-      scores: await scoreRows(tx, gameContract.games, input.organizationId, input.leagueId),
+      selection,
+      scores: projectedScores,
     };
   }, { isolationLevel: "repeatable read", accessMode: "read only" });
 }
@@ -341,7 +404,7 @@ export async function loadLeagueScores(input: LeagueReadInput): Promise<LeagueSc
 export async function loadBowlerScoreHistory(input: {
   organizationId: number;
   bowlerId: number;
-  allowedLeagueIds: readonly number[];
+  allowedLeagueIds?: readonly number[];
 }): Promise<BowlerScoreHistoryReadContract> {
   return db.transaction(async (tx) => {
     const [bowler] = await tx.select({ id: bowlers.id }).from(bowlers).where(and(
@@ -354,14 +417,14 @@ export async function loadBowlerScoreHistory(input: {
         classification: "score_reference_out_of_scope",
       });
     }
-    const allowed = new Set(input.allowedLeagueIds);
+    const allowed = input.allowedLeagueIds === undefined ? null : new Set(input.allowedLeagueIds);
     const leagueIds = (await tx.selectDistinct({ leagueId: games.leagueId }).from(scores)
       .innerJoin(games, eq(games.id, scores.gameId))
       .innerJoin(leagues, eq(leagues.id, games.leagueId))
       .where(and(eq(scores.bowlerId, input.bowlerId), eq(leagues.organizationId, input.organizationId)))
       .orderBy(asc(games.leagueId)))
       .map((row) => row.leagueId)
-      .filter((leagueId) => allowed.has(leagueId));
+      .filter((leagueId) => allowed === null || allowed.has(leagueId));
     const allScores: CanonicalScoreProjection[] = [];
     for (const leagueId of leagueIds) {
       const gameContract = await loadLeagueGamesSnapshot(tx, {
@@ -473,17 +536,26 @@ export async function createCanonicalAwareGame(game: InsertGame): Promise<Game> 
 
 export async function updateCanonicalAwareGame(id: number, patch: UpdateGame): Promise<Game> {
   return db.transaction(async (tx) => {
-    const [current] = await tx.select().from(games).where(eq(games.id, id)).limit(1).for("update");
-    if (!current) throw new Error("Game not found for updateGame");
-    const [league] = await tx.select({ organizationId: leagues.organizationId })
-      .from(leagues).where(eq(leagues.id, current.leagueId)).limit(1);
-    if (!league) throw new Error("League not found for updateGame");
-    if (patch.leagueId !== undefined && patch.leagueId !== current.leagueId) {
+    const [preRead] = await tx.select({
+      leagueId: games.leagueId,
+      organizationId: leagues.organizationId,
+    }).from(games).innerJoin(leagues, eq(leagues.id, games.leagueId))
+      .where(eq(games.id, id)).limit(1);
+    if (!preRead) throw new Error("Game not found for updateGame");
+    if (patch.leagueId !== undefined && patch.leagueId !== preRead.leagueId) {
       throw new CanonicalGamesScoresError({
-        organizationId: league.organizationId ?? 0,
-        leagueId: current.leagueId,
+        organizationId: preRead.organizationId ?? 0,
+        leagueId: preRead.leagueId,
         classification: "game_occurrence_out_of_scope",
       });
+    }
+    await lockLeagueSchedule(tx, preRead.organizationId, preRead.leagueId);
+    const [current] = await tx.select().from(games).where(eq(games.id, id)).limit(1).for("update");
+    if (!current || current.leagueId !== preRead.leagueId) throw new Error("Game scope changed while updateGame was waiting for its league lock");
+    const [league] = await tx.select({ organizationId: leagues.organizationId })
+      .from(leagues).where(eq(leagues.id, current.leagueId)).limit(1);
+    if (!league || league.organizationId !== preRead.organizationId) {
+      throw new Error("League scope changed while updateGame was waiting for its league lock");
     }
     const next = {
       leagueId: current.leagueId,
@@ -497,7 +569,6 @@ export async function updateCanonicalAwareGame(id: number, patch: UpdateGame): P
       if (!updated) throw new Error("Game not found for updateGame");
       return updated;
     }
-    await lockLeagueSchedule(tx, league.organizationId, current.leagueId);
     const scope = { organizationId: league.organizationId, leagueId: current.leagueId };
     const schedule = await scheduleSnapshot(tx, scope);
     if (schedule.authoritativeSource === "legacy_fallback") {
@@ -524,8 +595,16 @@ export async function updateCanonicalAwareGame(id: number, patch: UpdateGame): P
 
 export async function deleteCanonicalAwareGame(id: number): Promise<void> {
   await db.transaction(async (tx) => {
+    const [preRead] = await tx.select({
+      leagueId: games.leagueId,
+      organizationId: leagues.organizationId,
+    }).from(games).innerJoin(leagues, eq(leagues.id, games.leagueId))
+      .where(eq(games.id, id)).limit(1);
+    if (!preRead) return;
+    await lockLeagueSchedule(tx, preRead.organizationId, preRead.leagueId);
     const [current] = await tx.select().from(games).where(eq(games.id, id)).limit(1).for("update");
     if (!current) return;
+    if (current.leagueId !== preRead.leagueId) throw new Error("Game scope changed while deleteGame was waiting for its league lock");
     if (current.occurrenceId !== null) {
       const [league] = await tx.select({ organizationId: leagues.organizationId })
         .from(leagues).where(eq(leagues.id, current.leagueId)).limit(1);

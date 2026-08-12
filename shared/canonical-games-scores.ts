@@ -17,6 +17,7 @@ export const CANONICAL_GAMES_SCORES_INCOMPATIBILITY_CLASSIFICATIONS = [
   "competition_mapping_missing",
   "competition_mapping_ambiguous",
   "legacy_occurrence_access_unavailable",
+  "latest_scored_session_ambiguous",
   "score_reference_out_of_scope",
   "score_team_relationship_invalid",
   "score_bowler_relationship_invalid",
@@ -52,6 +53,16 @@ export interface LeagueGamesReadContract extends GamesScoresReadBase {
 }
 
 export interface LeagueScoresReadContract extends GamesScoresReadBase {
+  selection:
+    | { kind: "all" }
+    | { kind: "competition_number"; competitionNumber: number }
+    | { kind: "occurrence_id"; occurrenceId: string }
+    | {
+        kind: "latest_scored_session";
+        identitySource: "canonical_uuid" | "legacy_projection" | null;
+        occurrenceId: string | null;
+        legacyProjectionKey: string | null;
+      };
   scores: CanonicalScoreProjection[];
 }
 

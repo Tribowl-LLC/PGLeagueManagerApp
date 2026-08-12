@@ -16,6 +16,7 @@ import { PageLoadingState, PageErrorState } from "@/components/page-states";
 import type { Score, Bowler } from "@shared/schema";
 import type { BowlerScoreHistoryReadContract } from "@shared/canonical-games-scores";
 import { groupBowlerScoreHistory } from "@/lib/bowler-score-history";
+import { bowlerScoreHistoryRequest } from "@/lib/score-requests";
 import { format } from "date-fns";
 import { Link, useParams, useSearch } from "wouter";
 
@@ -38,23 +39,27 @@ export default function BowlerScoresPage() {
     queryKey: [`/api/bowlers/${bowlerId}`],
     enabled: !!bowlerId,
   });
+  const bowler = bowlerResponse?.data;
+  const historyRequest = parsedBowlerId && bowler?.organizationId
+    ? bowlerScoreHistoryRequest(parsedBowlerId, bowler.organizationId)
+    : null;
 
   // Use historical scores endpoint for complete history
   const { data: scoresResponse, isLoading: loadingScores, error: scoresError, refetch: refetchScores } = useQuery<ApiResponse<BowlerScoreHistoryReadContract>>({
-    queryKey: ["/api/scores/history", parsedBowlerId],
-    queryFn: async () => {
-      if (!parsedBowlerId) throw new Error("Bowler ID is required");
-      const response = await fetch(`/api/scores/history?bowlerId=${parsedBowlerId}`);
+    queryKey: historyRequest?.queryKey ?? ["/api/scores/history", parsedBowlerId, null],
+    queryFn: async ({ queryKey }) => {
+      const scopedUrl = queryKey[3];
+      if (typeof scopedUrl !== "string") throw new Error("Tenant-scoped bowler ID is required");
+      const response = await fetch(scopedUrl);
       if (!response.ok) {
         const errorData = await response.json();
         throw new Error(errorData.error?.message || 'Failed to fetch scores');
       }
       return response.json();
     },
-    enabled: !!parsedBowlerId,
+    enabled: historyRequest !== null,
   });
 
-  const bowler = bowlerResponse?.data;
   const scores = scoresResponse?.data.scores || [];
   const isLoading = loadingBowler || loadingScores;
 

@@ -69,6 +69,17 @@ when exactly one operational occurrence has that competition number. Missing
 or ambiguous mappings return 409; no row-order, date-proximity, kind, planned
 ordinal, or roster heuristic is used.
 
+`GET /api/scores?leagueId=...&selection=latest_scored_session` is the bounded
+recent-score consumer contract. The server first applies the E1 source policy,
+then selects the latest physical session that actually owns scores. Canonical
+selection groups only by occurrence UUID and orders by stored canonical local
+date/time; makeup or reschedule attributes therefore cannot be confused with a
+legacy-derived current week. Exact canonical date/time ties fail closed.
+Fallback selection uses the deterministic legacy projection identity and
+stored game date/week ordering. The response's `selection` evidence names the
+chosen UUID or legacy key, and returns null identity evidence when no scored
+session exists.
+
 Canonical ordering is the E1 physical occurrence order, followed by game
 number and stable game ID, then team number, position, and stable score ID.
 Legacy game ordering retains the prior week-specific game-number order and the
@@ -77,7 +88,13 @@ prior all-games reverse-date order with stable IDs as final ties.
 `GET /api/scores/history?bowlerId=...` returns authorized league history. The
 client groups canonical sessions by occurrence UUID. Fallback rows use the
 server-provided deterministic legacy projection key. It does not independently
-derive canonical identity from week/date.
+derive canonical identity from week/date. Self-history and administrator
+history derive league scope from retained, tenant-owned score/game evidence so
+roster deactivation or removal does not erase history. An ordinary user reading
+another bowler remains restricted to currently active shared leagues. Score
+clients include the selected resource organization in their URL and cache key;
+the server still derives authority from the session and requires that explicit
+scope for system administrators.
 
 ## Score writes, authorization, and atomicity
 
@@ -95,6 +112,11 @@ relationship. A substitute may use a different scoring team only when the
 bowler has an active membership in the same league. Cross-tenant, cross-league,
 foreign game, team, or bowler IDs fail without exposing foreign names or
 organization details. Any invalid entry rolls back the entire batch.
+
+Every E2 game mutation uses the same pre-read, league advisory lock, game-row
+lock, and scope-revalidation order. In particular, game update/delete never
+hold a game row while waiting for the advisory lock, so they cannot form the
+inverse-lock cycle with a score batch.
 
 Authentication, password-rotation gating, ordinary-member league visibility,
 organization-administrator scope, and explicit system-administrator scope are

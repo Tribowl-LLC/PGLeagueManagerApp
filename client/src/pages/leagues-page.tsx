@@ -31,8 +31,8 @@ import type { ApiResponse, League, Team, Location, User } from "@shared/schema";
 import type { LeagueScoresReadContract } from "@shared/canonical-games-scores";
 import type { ScoreWithRelations } from "@/lib/types/scores";
 import { apiRequest } from "@/lib/queryClient";
+import { leagueLatestScoresRequest } from "@/lib/score-requests";
 import { useToast } from "@/hooks/use-toast";
-import { getWeeksPassedInSeason } from "@/lib/financial-utils";
 import { filterAndSortLeagues, buildLocationMap, countArchivedLeagues } from "@/lib/league-filter-utils";
 
 export default function LeaguesPage() {
@@ -69,22 +69,25 @@ export default function LeaguesPage() {
   const allTeams = teamsResponse?.data || [];
 
   const firstLeague = leagues?.[0];
-  const currentWeek = firstLeague ? getWeeksPassedInSeason(firstLeague) : 0;
+  const latestScoresRequest = firstLeague?.organizationId
+    ? leagueLatestScoresRequest(firstLeague.id, firstLeague.organizationId)
+    : null;
 
   const { data: scoresResponse, isLoading: loadingScores } = useQuery<{
     data: LeagueScoresReadContract | ScoreWithRelations[];
   }>({
-    queryKey: ["/api/scores/history", firstLeague?.id, currentWeek],
-    queryFn: async () => {
-      if (!firstLeague?.id) throw new Error("No league selected");
-      const response = await fetch(`/api/scores?leagueId=${firstLeague.id}&weekNumber=${currentWeek}`);
+    queryKey: latestScoresRequest?.queryKey ?? ["/api/scores/latest-scored-session", null, null],
+    queryFn: async ({ queryKey }) => {
+      const scopedUrl = queryKey[3];
+      if (typeof scopedUrl !== "string") throw new Error("No tenant-scoped league selected");
+      const response = await fetch(scopedUrl);
       if (!response.ok) {
         const errorData = await response.json();
         throw new Error(errorData.error?.message || "Failed to fetch scores");
       }
       return response.json();
     },
-    enabled: !!firstLeague && currentWeek > 0,
+    enabled: latestScoresRequest !== null,
   });
 
   const weeklyScores = Array.isArray(scoresResponse?.data)

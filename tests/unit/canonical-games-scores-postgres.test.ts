@@ -15,9 +15,9 @@ import {
   teams,
   users,
 } from "@shared/schema";
-import { getTestDb } from "../setup/test-db";
+import { getTestDb, getTestPool } from "../setup/test-db";
 import { deleteOrganization } from "../../server/storage/organizations";
-import { createGame, deleteGame } from "../../server/storage/games-scores";
+import { createGame, deleteGame, updateGame } from "../../server/storage/games-scores";
 import {
   CanonicalGamesScoresError,
   createAuthorizedScoreBatch,
@@ -34,6 +34,7 @@ let leagueId = 0;
 let fallbackLeagueId = 0;
 let otherLeagueId = 0;
 let teamId = 0;
+let fallbackTeamId = 0;
 let otherTeamId = 0;
 let bowlerId = 0;
 let foreignBowlerId = 0;
@@ -118,15 +119,20 @@ beforeAll(async () => {
   fallbackLeagueId = fallbackLeague.id;
   otherLeagueId = otherLeague.id;
   const [team] = await db.insert(teams).values({ name: "E2 team", number: 1, leagueId }).returning();
+  const [fallbackTeam] = await db.insert(teams).values({ name: "E2 fallback team", number: 1, leagueId: fallbackLeagueId }).returning();
   const [otherTeam] = await db.insert(teams).values({ name: "E2 other team", number: 1, leagueId: otherLeagueId }).returning();
   const [bowler] = await db.insert(bowlers).values({ name: "E2 bowler", organizationId }).returning();
   const [foreignBowler] = await db.insert(bowlers).values({ name: "E2 foreign bowler", organizationId: otherOrganizationId }).returning();
-  if (!team || !otherTeam || !bowler || !foreignBowler) throw new Error("E2 score principals were not created");
+  if (!team || !fallbackTeam || !otherTeam || !bowler || !foreignBowler) throw new Error("E2 score principals were not created");
   teamId = team.id;
+  fallbackTeamId = fallbackTeam.id;
   otherTeamId = otherTeam.id;
   bowlerId = bowler.id;
   foreignBowlerId = foreignBowler.id;
-  await db.insert(bowlerLeagues).values({ bowlerId, leagueId, teamId, active: true });
+  await db.insert(bowlerLeagues).values([
+    { bowlerId, leagueId, teamId, active: true },
+    { bowlerId, leagueId: fallbackLeagueId, teamId: fallbackTeamId, active: true },
+  ]);
 
   const [command] = await db.insert(leagueScheduleCommands).values({
     organizationId,
@@ -274,6 +280,19 @@ describe("E2 canonical games and scores PostgreSQL behavior", () => {
     expect(contract.games.map((row) => row.id)).toEqual([first.id, second.id]);
     expect(contract.games.every((row) => row.identitySource === "legacy_projection" && row.occurrence === null)).toBe(true);
     expect(after).toEqual(before);
+    await createAuthorizedScoreBatch({
+      organizationId,
+      authorizedLeagueIds: [fallbackLeagueId],
+      batchScores: [scoreInput(first.id, { teamId: fallbackTeamId })],
+    });
+    const recent = await loadLeagueScores({ organizationId, leagueId: fallbackLeagueId, latestScoredSession: true });
+    expect(recent.selection).toEqual({
+      kind: "latest_scored_session",
+      identitySource: "legacy_projection",
+      occurrenceId: null,
+      legacyProjectionKey: recent.scores[0]?.game.legacyProjectionKey,
+    });
+    expect(recent.scores).toHaveLength(1);
   });
 
   it("links canonical games exactly, preserves distinct ordinals, and serializes duplicate creates", async () => {
@@ -352,6 +371,20 @@ describe("E2 canonical games and scores PostgreSQL behavior", () => {
 
     const makeupGame = (await db.select().from(games).where(eq(games.occurrenceId, makeupOccurrenceId)))[0];
     if (!makeupGame) throw new Error("makeup game fixture was not found");
+    await createAuthorizedScoreBatch({
+      organizationId,
+      authorizedLeagueIds: [leagueId],
+      batchScores: [scoreInput(makeupGame.id, { score: 205 })],
+    });
+    const latest = await loadLeagueScores({ organizationId, leagueId, latestScoredSession: true });
+    expect(latest.selection).toEqual({
+      kind: "latest_scored_session",
+      identitySource: "canonical_uuid",
+      occurrenceId: makeupOccurrenceId,
+      legacyProjectionKey: null,
+    });
+    expect(latest.scores.map((row) => row.game.occurrence?.occurrenceId)).toEqual([makeupOccurrenceId]);
+
     const before = await db.select().from(scores).where(eq(scores.gameId, makeupGame.id));
     await expect(createAuthorizedScoreBatch({
       organizationId,
@@ -367,6 +400,53 @@ describe("E2 canonical games and scores PostgreSQL behavior", () => {
       batchScores: [scoreInput(makeupGame.id, { bowlerId: foreignBowlerId })],
     })).rejects.toMatchObject({ evidence: { classification: "score_bowler_relationship_invalid" } });
     expect(await db.select().from(scores).where(eq(scores.gameId, makeupGame.id))).toEqual(before);
+  });
+
+  it("takes the league advisory lock before the game row for concurrent updates and score batches", async () => {
+    const makeupGame = (await db.select().from(games).where(eq(games.occurrenceId, makeupOccurrenceId)))[0];
+    if (!makeupGame) throw new Error("makeup game fixture was not found");
+    const blocker = await getTestPool().connect();
+    const probe = await getTestPool().connect();
+    let updatePromise: Promise<unknown> | undefined;
+    let batchPromise: Promise<unknown> | undefined;
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query("SELECT pg_advisory_xact_lock($1::integer, $2::integer)", [organizationId, leagueId]);
+      updatePromise = updateGame(makeupGame.id, { date: makeupGame.date });
+      batchPromise = createAuthorizedScoreBatch({
+        organizationId,
+        authorizedLeagueIds: [leagueId],
+        batchScores: [scoreInput(makeupGame.id, { score: 211, position: 4 })],
+      });
+
+      let waitingMutations = 0;
+      for (let attempt = 0; attempt < 200 && waitingMutations < 2; attempt += 1) {
+        const waiting = await probe.query<{ count: string }>(`
+          SELECT count(*)::text AS count
+          FROM pg_locks
+          WHERE locktype = 'advisory'
+            AND classid = $1::oid
+            AND objid = $2::oid
+            AND granted = false
+        `, [organizationId, leagueId]);
+        waitingMutations = Number(waiting.rows[0]?.count ?? 0);
+        if (waitingMutations < 2) await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(waitingMutations).toBeGreaterThanOrEqual(2);
+
+      await probe.query("BEGIN");
+      await expect(probe.query("SELECT id FROM games WHERE id = $1 FOR UPDATE NOWAIT", [makeupGame.id]))
+        .resolves.toMatchObject({ rowCount: 1 });
+      await probe.query("ROLLBACK");
+      await blocker.query("COMMIT");
+      await expect(Promise.all([updatePromise, batchPromise])).resolves.toHaveLength(2);
+    } finally {
+      await probe.query("ROLLBACK").catch(() => undefined);
+      await blocker.query("ROLLBACK").catch(() => undefined);
+      await Promise.allSettled([updatePromise, batchPromise].filter((value): value is Promise<unknown> => value !== undefined));
+      probe.release();
+      blocker.release();
+    }
   });
 
   it("fails closed on unlinked or duplicate canonical game evidence without guessing", async () => {
