@@ -95,6 +95,14 @@ const KIND_ORDER = new Map([
   ["extension", 5],
 ]);
 
+const AUDITED_POST_SET_KINDS = new Set<LeagueOccurrence["kind"]>([
+  "makeup",
+  "position_round",
+  "rolloff",
+  "playoff",
+  "extension",
+]);
+
 function compareStrings(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
@@ -250,10 +258,87 @@ function relationshipEvidence(
   return result.sort((left, right) => compareStrings(left.relationshipId, right.relationshipId));
 }
 
+function hasPublicationAudit(row: LeagueOccurrence | LeagueScheduleException): boolean {
+  return row.lastCommandId !== null
+    && row.publicationCommandId !== null
+    && row.publishedAt !== null
+    && row.publishedByUserId !== null;
+}
+
+function assertOperationalSetIntegrity(
+  input: BuildLeagueOccurrenceScheduleInput,
+  operational: LeagueOccurrence[],
+): void {
+  const currentRuns = input.canonical.generationRuns.filter(
+    (row) => row.state === "approved" || row.state === "applied",
+  );
+  if (currentRuns.length !== 1) {
+    throw new LeagueOccurrenceScheduleError(
+      "incompatible_canonical_state",
+      "operational canonical state must have exactly one current approved or applied generation run",
+    );
+  }
+  const currentRun = currentRuns[0];
+  if (currentRun.candidateOccurrenceCount
+    !== currentRun.generatedOccurrenceCount + currentRun.skippedDateCount) {
+    throw new LeagueOccurrenceScheduleError(
+      "incompatible_canonical_state",
+      "the current canonical generation run has contradictory declared counts",
+    );
+  }
+  const generatedOccurrences = input.canonical.occurrences.filter(
+    (row) => row.generationRunId === currentRun.id,
+  );
+  if (generatedOccurrences.length !== currentRun.generatedOccurrenceCount
+    || generatedOccurrences.some((row) => row.lifecycle !== "published" && row.lifecycle !== "locked")) {
+    throw new LeagueOccurrenceScheduleError(
+      "incompatible_canonical_state",
+      "the current canonical generation run has a partial or non-operational occurrence set",
+    );
+  }
+  const generatedExceptions = input.canonical.scheduleExceptions.filter(
+    (row) => row.generationRunId === currentRun.id,
+  );
+  if (generatedExceptions.length !== currentRun.skippedDateCount) {
+    throw new LeagueOccurrenceScheduleError(
+      "incompatible_canonical_state",
+      "the current canonical generation run has a partial schedule-exception set",
+    );
+  }
+
+  const publishedRelationships = input.canonical.relationships.filter((row) => row.state === "published");
+  for (const row of operational) {
+    if (row.generationRunId === currentRun.id) continue;
+    const auditedPostSetOccurrence = row.generationRunId === null
+      && AUDITED_POST_SET_KINDS.has(row.kind)
+      && hasPublicationAudit(row)
+      && (row.kind !== "makeup" || publishedRelationships.some(
+        (relationship) => relationship.kind === "makeup_for" && relationship.sourceOccurrenceId === row.id,
+      ));
+    if (!auditedPostSetOccurrence) {
+      throw new LeagueOccurrenceScheduleError(
+        "incompatible_canonical_state",
+        "an operational occurrence is neither part of the current generation set nor an audited later special session",
+      );
+    }
+  }
+
+  for (const row of input.canonical.scheduleExceptions.filter((value) => value.lifecycle === "published")) {
+    if (row.generationRunId === currentRun.id) continue;
+    if (row.generationRunId !== null || !hasPublicationAudit(row)) {
+      throw new LeagueOccurrenceScheduleError(
+        "incompatible_canonical_state",
+        "a published schedule exception is neither part of the current generation set nor an audited later exception",
+      );
+    }
+  }
+}
+
 function buildCanonicalSchedule(
   input: BuildLeagueOccurrenceScheduleInput,
   operational: LeagueOccurrence[],
 ): LeagueOccurrenceScheduleReadContract {
+  assertOperationalSetIntegrity(input, operational);
   const operationalIds = new Set(operational.map((row) => row.id));
   if ([...input.canonical.linkedActivityOccurrenceIds].some((id) => !operationalIds.has(id))) {
     throw new LeagueOccurrenceScheduleError(

@@ -151,8 +151,8 @@ function run(overrides: Partial<LeagueOccurrenceGenerationRun> = {}): LeagueOccu
     normalizedInputSnapshot: { snapshotContractVersion: "fall-draft-generation-input-snapshot/3" },
     rangeStartDate: "2031-03-09",
     rangeEndDate: "2031-03-30",
-    candidateOccurrenceCount: 3,
-    generatedOccurrenceCount: 2,
+    candidateOccurrenceCount: 2,
+    generatedOccurrenceCount: 1,
     skippedDateCount: 1,
     discrepancyCount: 0,
     state: "applied",
@@ -323,7 +323,13 @@ describe("league occurrence schedule source selection", () => {
       cancellationCommandId: commandId,
     });
     const schedule = buildLeagueOccurrenceSchedule(input({
-      canonical: { ...input().canonical, occurrences: [current], billingTerms: [term({ billingOrdinal: 12 })], scheduleExceptions: [] },
+      canonical: {
+        ...input().canonical,
+        generationRuns: [run({ candidateOccurrenceCount: 1, skippedDateCount: 0 })],
+        occurrences: [current],
+        billingTerms: [term({ billingOrdinal: 12 })],
+        scheduleExceptions: [],
+      },
     }));
     expect(schedule.occurrences[0]).toMatchObject({
       occurrenceId: id,
@@ -351,6 +357,7 @@ describe("league occurrence schedule source selection", () => {
     const makeup = occurrence({
       id: "20000000-0000-4000-8000-000000000002",
       generationKey: "makeup",
+      generationRunId: null,
       kind: "makeup",
       plannedOrdinal: 4,
       competitionNumber: 4,
@@ -358,6 +365,7 @@ describe("league occurrence schedule source selection", () => {
     const special = occurrence({
       id: "20000000-0000-4000-8000-000000000003",
       generationKey: "rolloff",
+      generationRunId: null,
       kind: "rolloff",
       plannedOrdinal: 5,
       competitionNumber: 5,
@@ -367,6 +375,7 @@ describe("league occurrence schedule source selection", () => {
     const schedule = buildLeagueOccurrenceSchedule(input({
       canonical: {
         ...input().canonical,
+        generationRuns: [run({ candidateOccurrenceCount: 1, skippedDateCount: 0 })],
         occurrences: [special, makeup, regular],
         billingTerms: [],
         scheduleExceptions: [],
@@ -384,7 +393,11 @@ describe("league occurrence schedule source selection", () => {
     process.env.TZ = "Pacific/Auckland";
     try {
       const schedule = buildLeagueOccurrenceSchedule(input({
-        canonical: { ...input().canonical, scheduleExceptions: [] },
+        canonical: {
+          ...input().canonical,
+          generationRuns: [run({ candidateOccurrenceCount: 1, skippedDateCount: 0 })],
+          scheduleExceptions: [],
+        },
       }));
       expect(schedule.occurrences[0]).toMatchObject({
         authoritativeLocalDate: "2031-03-09",
@@ -403,7 +416,12 @@ describe("league occurrence schedule source selection", () => {
   it("computes effective locks from read evidence without stamping canonical locks", () => {
     const row = occurrence();
     const schedule = buildLeagueOccurrenceSchedule(input({
-      canonical: { ...input().canonical, scheduleExceptions: [], linkedActivityOccurrenceIds: new Set([row.id]) },
+      canonical: {
+        ...input().canonical,
+        generationRuns: [run({ candidateOccurrenceCount: 1, skippedDateCount: 0 })],
+        scheduleExceptions: [],
+        linkedActivityOccurrenceIds: new Set([row.id]),
+      },
     }));
     expect(schedule.occurrences[0]).toMatchObject({ lifecycle: "published", effectivelyLocked: true });
     expect(schedule.occurrences[0].effectiveLockReasons).toEqual(["linked_activity"]);
@@ -430,6 +448,42 @@ describe("league occurrence schedule source selection", () => {
     expect(() => buildLeagueOccurrenceSchedule(input({
       canonical: { ...input().canonical, occurrences: [occurrence({ organizationId: organizationId + 1 })] },
     }))).toThrow(/outside the authorized tenant/);
+  });
+
+  it("rejects partial or inconsistently associated operational generation sets", () => {
+    expect(() => buildLeagueOccurrenceSchedule(input({
+      canonical: {
+        ...input().canonical,
+        generationRuns: [run({ candidateOccurrenceCount: 3, generatedOccurrenceCount: 2 })],
+      },
+    }))).toThrow(/partial or non-operational occurrence set/);
+
+    expect(() => buildLeagueOccurrenceSchedule(input({
+      canonical: { ...input().canonical, scheduleExceptions: [] },
+    }))).toThrow(/partial schedule-exception set/);
+
+    expect(() => buildLeagueOccurrenceSchedule(input({
+      canonical: {
+        ...input().canonical,
+        generationRuns: [run(), run({
+          id: "30000000-0000-4000-8000-000000000002",
+          sourceScheduleRevision: 2,
+        })],
+      },
+    }))).toThrow(/exactly one current approved or applied generation run/);
+
+    expect(() => buildLeagueOccurrenceSchedule(input({
+      canonical: {
+        ...input().canonical,
+        occurrences: [occurrence(), occurrence({
+          id: "20000000-0000-4000-8000-000000000002",
+          generationKey: "unassociated-regular",
+          generationRunId: null,
+          plannedOrdinal: 2,
+          competitionNumber: 2,
+        })],
+      },
+    }))).toThrow(/audited later special session/);
   });
 
   it("does not import provider or payment services from the E1 read implementation", () => {

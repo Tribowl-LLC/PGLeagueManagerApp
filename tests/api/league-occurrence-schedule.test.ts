@@ -1,8 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import {
   bowlerLeagues,
   bowlers,
+  leagueOccurrenceGenerationRuns,
   leagues,
   locations,
   organizations,
@@ -247,5 +248,20 @@ describe("E1 league occurrence schedule API", () => {
     ]);
     expect(canonicalRead.data.data?.occurrences.some((row) => row.authoritativeLocalDate === "2032-08-08")).toBe(false);
     expect(afterRead).toEqual(beforeRead);
+
+    const [currentRun] = await db.select().from(leagueOccurrenceGenerationRuns).where(
+      eq(leagueOccurrenceGenerationRuns.leagueId, primary.leagueId),
+    );
+    if (!currentRun) throw new Error("E1 approved generation run was not returned");
+    await db.update(leagueOccurrenceGenerationRuns).set({
+      candidateOccurrenceCount: currentRun.candidateOccurrenceCount + 1,
+      generatedOccurrenceCount: currentRun.generatedOccurrenceCount + 1,
+    }).where(eq(leagueOccurrenceGenerationRuns.id, currentRun.id));
+    const partialSet = await apiGet<LeagueOccurrenceScheduleReadContract>(
+      `/api/leagues/${primary.leagueId}/occurrence-schedule`,
+      primary.admin,
+    );
+    expect(partialSet.status).toBe(409);
+    expect(partialSet.data.error?.code).toBe("CANONICAL_SCHEDULE_INCOMPATIBLE");
   });
 });

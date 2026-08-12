@@ -41,6 +41,12 @@ The server owns one source-selection policy:
   published billing summaries, and published relationships enter the
   operational projection. Published cancellations keep their UUID and planned
   number. Reschedules keep the UUID and expose the current canonical start.
+- Canonical selection requires exactly one current approved/applied generation
+  run. Its durable occurrence and exception associations must match its
+  declared generated/skipped counts, and its candidate count must equal their
+  sum. Later operational rows are accepted only as separately audited special
+  sessions or published exceptions; makeup sessions also require their active
+  typed relationship.
 - Legacy league arrays are never merged into an operational canonical result.
   Legacy skips, cancellations, numbering, and dates cannot replace or augment
   canonical rows.
