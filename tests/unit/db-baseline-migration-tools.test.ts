@@ -341,7 +341,7 @@ describe('normalized migration baseline tools', () => {
       idx: 23,
       tag: '0023_phase_d2_occurrence_financial_foundation',
       createdAt: 1786510399259,
-      hash: '9d1d06dec43a6bdde31546627f0d5a35cdede381a3b1447908f449a214f56a16',
+      hash: 'ae3b91f7a581d4c6e39e01665306edf64bc51614856a76b25dcf2edbc4239336',
     });
     for (const table of [
       'bowler_occurrence_eligibilities',
@@ -356,6 +356,9 @@ describe('normalized migration baseline tools', () => {
       expect(migrations[23]?.sql).toContain(`CREATE TABLE "${table}"`);
     }
     expect(migrations[23]?.sql).toContain('enforce_d2_payment_allocation_conservation');
+    expect(migrations[23]?.sql).toContain('assert_d2_collection_plan_obligation_amount');
+    expect(migrations[23]?.sql).toContain('requires its matching execution snapshot');
+    expect(migrations[23]?.sql).toContain('payment_occurrence_interactive_base_snapshot_consistency');
     expect(migrations[23]?.sql).toContain('pg_advisory_xact_lock');
     expect(migrations[23]?.sql).not.toMatch(/(?:^|\n)\s*(?:DROP|RENAME|UPDATE|DELETE|INSERT)\b/);
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);

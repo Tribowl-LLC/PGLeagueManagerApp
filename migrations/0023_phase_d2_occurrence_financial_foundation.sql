@@ -358,25 +358,60 @@ $$;--> statement-breakpoint
 CREATE TRIGGER bowler_obligations_financial_identity_immutable
 BEFORE UPDATE ON bowler_occurrence_obligations
 FOR EACH ROW EXECUTE FUNCTION enforce_d2_obligation_amount_immutable();--> statement-breakpoint
-CREATE FUNCTION enforce_d2_collection_plan_item_amount() RETURNS trigger
+CREATE FUNCTION assert_d2_collection_plan_obligation_amount(
+	scope_organization_id integer,
+	scope_league_id integer,
+	scope_obligation_id uuid,
+	candidate_amount integer
+) RETURNS void
 LANGUAGE plpgsql
 AS $$
 DECLARE
 	obligation_amount integer;
+	planned_amount bigint;
 BEGIN
-	PERFORM pg_advisory_xact_lock(NEW.organization_id, NEW.league_id);
+	PERFORM pg_advisory_xact_lock(scope_organization_id, scope_league_id);
 	SELECT amount_minor
 	INTO obligation_amount
 	FROM bowler_occurrence_obligations
-	WHERE id = NEW.obligation_id
-	  AND organization_id = NEW.organization_id
-	  AND league_id = NEW.league_id
+	WHERE id = scope_obligation_id
+	  AND organization_id = scope_organization_id
+	  AND league_id = scope_league_id
 	FOR UPDATE;
 
-	IF obligation_amount IS NULL OR NEW.amount_minor > obligation_amount THEN
-		RAISE EXCEPTION 'collection plan item exceeds its obligation amount'
+	IF obligation_amount IS NULL THEN
+		RAISE EXCEPTION 'collection plan item obligation is missing'
+			USING ERRCODE = '23503';
+	END IF;
+
+	SELECT COALESCE(SUM(item.amount_minor), 0)
+	INTO planned_amount
+	FROM occurrence_collection_plan_items item
+	INNER JOIN occurrence_collection_plans plan ON plan.id = item.plan_id
+	WHERE item.organization_id = scope_organization_id
+	  AND item.league_id = scope_league_id
+	  AND item.obligation_id = scope_obligation_id
+	  AND plan.organization_id = scope_organization_id
+	  AND plan.league_id = scope_league_id
+	  AND plan.state IN ('ready', 'fulfilled');
+
+	IF candidate_amount > obligation_amount OR planned_amount > obligation_amount THEN
+		RAISE EXCEPTION 'collectable plan items exceed their obligation amount'
 			USING ERRCODE = '23514';
 	END IF;
+	RETURN;
+END;
+$$;--> statement-breakpoint
+CREATE FUNCTION enforce_d2_collection_plan_item_amount() RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+	PERFORM assert_d2_collection_plan_obligation_amount(
+		NEW.organization_id,
+		NEW.league_id,
+		NEW.obligation_id,
+		NEW.amount_minor
+	);
 	RETURN NULL;
 END;
 $$;--> statement-breakpoint
@@ -384,6 +419,38 @@ CREATE CONSTRAINT TRIGGER collection_plan_items_amount_conservation
 AFTER INSERT OR UPDATE ON occurrence_collection_plan_items
 DEFERRABLE INITIALLY IMMEDIATE
 FOR EACH ROW EXECUTE FUNCTION enforce_d2_collection_plan_item_amount();--> statement-breakpoint
+CREATE FUNCTION enforce_d2_collection_plan_state_amount() RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+	item_record record;
+BEGIN
+	IF NEW.state NOT IN ('ready', 'fulfilled') THEN
+		RETURN NULL;
+	END IF;
+
+	PERFORM pg_advisory_xact_lock(NEW.organization_id, NEW.league_id);
+	FOR item_record IN
+		SELECT DISTINCT item.obligation_id
+		FROM occurrence_collection_plan_items item
+		WHERE item.organization_id = NEW.organization_id
+		  AND item.league_id = NEW.league_id
+		  AND item.plan_id = NEW.id
+	LOOP
+		PERFORM assert_d2_collection_plan_obligation_amount(
+			NEW.organization_id,
+			NEW.league_id,
+			item_record.obligation_id,
+			0
+		);
+	END LOOP;
+	RETURN NULL;
+END;
+$$;--> statement-breakpoint
+CREATE CONSTRAINT TRIGGER collection_plans_amount_conservation
+AFTER INSERT OR UPDATE ON occurrence_collection_plans
+DEFERRABLE INITIALLY IMMEDIATE
+FOR EACH ROW EXECUTE FUNCTION enforce_d2_collection_plan_state_amount();--> statement-breakpoint
 CREATE FUNCTION enforce_d2_payment_allocation_conservation() RETURNS trigger
 LANGUAGE plpgsql
 AS $$
@@ -469,6 +536,7 @@ DECLARE
 	expected_count integer;
 	operation_amount integer;
 	stored_operation_type text;
+	base_snapshot_league_id integer;
 	actual_amount bigint;
 	actual_count integer;
 BEGIN
@@ -495,6 +563,29 @@ BEGIN
 			USING ERRCODE = '23514';
 	END IF;
 
+	IF stored_operation_type = 'scheduled_charge' THEN
+		SELECT snapshot.league_id
+		INTO base_snapshot_league_id
+		FROM scheduled_payment_operation_snapshots snapshot
+		WHERE snapshot.operation_id = operation_uuid
+		FOR SHARE;
+	ELSE
+		SELECT snapshot.league_id
+		INTO base_snapshot_league_id
+		FROM interactive_payment_operation_snapshots snapshot
+		WHERE snapshot.operation_id = operation_uuid
+		FOR SHARE;
+	END IF;
+
+	IF base_snapshot_league_id IS NULL THEN
+		RAISE EXCEPTION 'payment operation occurrence snapshot requires its matching execution snapshot'
+			USING ERRCODE = '23514';
+	END IF;
+	IF base_snapshot_league_id <> snapshot_league_id THEN
+		RAISE EXCEPTION 'payment operation occurrence snapshot league conflicts with its execution snapshot'
+			USING ERRCODE = '23514';
+	END IF;
+
 	SELECT COALESCE(SUM(amount_minor), 0), COUNT(*)::integer
 	INTO actual_amount, actual_count
 	FROM payment_operation_occurrence_snapshot_allocations
@@ -516,5 +607,13 @@ DEFERRABLE INITIALLY DEFERRED
 FOR EACH ROW EXECUTE FUNCTION enforce_payment_occurrence_snapshot_total();--> statement-breakpoint
 CREATE CONSTRAINT TRIGGER payment_occurrence_snapshot_allocations_total
 AFTER INSERT OR UPDATE OR DELETE ON payment_operation_occurrence_snapshot_allocations
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_payment_occurrence_snapshot_total();--> statement-breakpoint
+CREATE CONSTRAINT TRIGGER payment_occurrence_scheduled_base_snapshot_consistency
+AFTER UPDATE OR DELETE ON scheduled_payment_operation_snapshots
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_payment_occurrence_snapshot_total();--> statement-breakpoint
+CREATE CONSTRAINT TRIGGER payment_occurrence_interactive_base_snapshot_consistency
+AFTER UPDATE OR DELETE ON interactive_payment_operation_snapshots
 DEFERRABLE INITIALLY DEFERRED
 FOR EACH ROW EXECUTE FUNCTION enforce_payment_occurrence_snapshot_total();

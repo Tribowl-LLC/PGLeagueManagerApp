@@ -8,6 +8,8 @@ import {
   bowlerOccurrenceTeamAssignments,
   bowlerOccurrenceTeamAssignmentRevisions,
   bowlers,
+  interactivePaymentOperationAllocations,
+  interactivePaymentOperationSnapshots,
   leagueOccurrenceBillingTerms,
   leagueOccurrences,
   leagues,
@@ -62,6 +64,20 @@ function withFingerprint<T extends CanonicalScheduleCommandFingerprintRequest>(
   request: T,
 ): Omit<T, "requestFingerprint"> & { requestFingerprint: string } {
   return { ...request, requestFingerprint: buildCanonicalScheduleCommandFingerprint(request) };
+}
+
+async function expectDatabaseConstraint(
+  action: Promise<unknown>,
+  expectedMessage: RegExp,
+): Promise<void> {
+  try {
+    await action;
+  } catch (error) {
+    if (!(error instanceof Error) || !(error.cause instanceof Error)) throw error;
+    expect(error.cause.message).toMatch(expectedMessage);
+    return;
+  }
+  throw new Error(`expected PostgreSQL constraint rejection matching ${expectedMessage}`);
 }
 
 async function createFixture(label: string): Promise<Fixture> {
@@ -363,7 +379,7 @@ describe("D2 occurrence financial foundation PostgreSQL contract", () => {
       planKey: `prepaid-${suffix}`,
       collectAt: "2037-12-01T00:00:00.000Z",
       currency: "USD",
-      state: "ready",
+      state: "draft",
       version: 1,
       recordedByUserId: scope.actorUserId,
     }).returning();
@@ -417,6 +433,15 @@ describe("D2 occurrence financial foundation PostgreSQL contract", () => {
     expect(doublePayItems.map((item) => item.occurrenceId).sort())
       .toEqual([...scope.occurrenceIds.slice(0, 2)].sort());
     expect(new Set(doublePayItems.map((item) => item.obligationId)).size).toBe(2);
+    await expectDatabaseConstraint(
+      db.update(occurrenceCollectionPlans).set({ state: "ready" })
+        .where(eq(occurrenceCollectionPlans.id, prepaidPlan.id)),
+      /collectable plan items exceed their obligation amount/i,
+    );
+    const [prepaidAfterRejectedActivation] = await db.select({ state: occurrenceCollectionPlans.state })
+      .from(occurrenceCollectionPlans)
+      .where(eq(occurrenceCollectionPlans.id, prepaidPlan.id));
+    expect(prepaidAfterRejectedActivation?.state).toBe("draft");
     await expect(db.insert(occurrenceCollectionPlanItems).values({
       organizationId: scope.organizationId,
       leagueId: scope.leagueId,
@@ -439,6 +464,55 @@ describe("D2 occurrence financial foundation PostgreSQL contract", () => {
       currency: "CAD",
       itemIndex: 1,
     })).rejects.toThrow();
+
+    const third = await insertObligation(scope, 2);
+    const partialPlans = await db.insert(occurrenceCollectionPlans).values([
+      {
+        organizationId: scope.organizationId,
+        leagueId: scope.leagueId,
+        planKey: `partial-a-${suffix}`,
+        collectAt: "2037-12-02T00:00:00.000Z",
+        currency: "USD",
+        state: "draft" as const,
+        version: 1,
+        recordedByUserId: scope.actorUserId,
+      },
+      {
+        organizationId: scope.organizationId,
+        leagueId: scope.leagueId,
+        planKey: `partial-b-${suffix}`,
+        collectAt: "2037-12-03T00:00:00.000Z",
+        currency: "USD",
+        state: "draft" as const,
+        version: 1,
+        recordedByUserId: scope.actorUserId,
+      },
+    ]).returning({ id: occurrenceCollectionPlans.id });
+    if (!partialPlans[0] || !partialPlans[1]) throw new Error("partial plan fixtures are missing");
+    await db.insert(occurrenceCollectionPlanItems).values(partialPlans.map((plan) => ({
+      organizationId: scope.organizationId,
+      leagueId: scope.leagueId,
+      planId: plan.id,
+      obligationId: third.id,
+      occurrenceId: third.occurrenceId,
+      bowlerId: scope.bowlerId,
+      amountMinor: 300,
+      currency: "USD",
+      itemIndex: 0,
+    })));
+    const concurrentActivation = await Promise.allSettled(partialPlans.map((plan) => (
+      db.update(occurrenceCollectionPlans).set({ state: "ready" })
+        .where(eq(occurrenceCollectionPlans.id, plan.id))
+    )));
+    expect(concurrentActivation.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(concurrentActivation.filter((result) => result.status === "rejected")).toHaveLength(1);
+    const partialPlanStates = await db.select({ state: occurrenceCollectionPlans.state })
+      .from(occurrenceCollectionPlans)
+      .where(and(
+        eq(occurrenceCollectionPlans.organizationId, scope.organizationId),
+        eq(occurrenceCollectionPlans.leagueId, scope.leagueId),
+      ));
+    expect(partialPlanStates.filter((plan) => plan.state === "ready")).toHaveLength(2);
   });
 
   it("supports partial many-to-many payment allocations and rejects duplicate or concurrent over-allocation", async () => {
@@ -450,8 +524,8 @@ describe("D2 occurrence financial foundation PostgreSQL contract", () => {
     ));
     const first = obligations.find((row) => row.occurrenceId === scope.occurrenceIds[0]);
     const second = obligations.find((row) => row.occurrenceId === scope.occurrenceIds[1]);
-    const third = await insertObligation(scope, 2);
-    if (!first || !second) throw new Error("D2 allocation obligations are missing");
+    const third = obligations.find((row) => row.occurrenceId === scope.occurrenceIds[2]);
+    if (!first || !second || !third) throw new Error("D2 allocation obligations are missing");
     const paymentRows = await db.insert(payments).values([
       { bowlerId: scope.bowlerId, leagueId: scope.leagueId, amount: 700, weekOf: "2037-12-01T00:00:00.000Z", status: "paid" as const, type: "cash" as const },
       { bowlerId: scope.bowlerId, leagueId: scope.leagueId, amount: 200, weekOf: "2037-12-02T00:00:00.000Z", status: "paid" as const, type: "check" as const },
@@ -507,7 +581,7 @@ describe("D2 occurrence financial foundation PostgreSQL contract", () => {
     expect(allocated.reduce((sum, row) => sum + row.amountMinor, 0)).toBe(400);
   });
 
-  it("stores a dormant versioned operation supplement with same-bowler multi-occurrence allocations", async () => {
+  it("binds a dormant same-bowler multi-occurrence supplement to its execution snapshot", async () => {
     const scope = fixture;
     if (!scope) throw new Error("D2 fixture is missing");
     const obligations = await db.select().from(bowlerOccurrenceObligations)
@@ -515,38 +589,66 @@ describe("D2 occurrence financial foundation PostgreSQL contract", () => {
     const first = obligations.find((row) => row.occurrenceId === scope.occurrenceIds[0]);
     const second = obligations.find((row) => row.occurrenceId === scope.occurrenceIds[1]);
     if (!first || !second) throw new Error("D2 snapshot obligations are missing");
-    const [operation] = await db.insert(paymentOperations).values({
-      organizationId: scope.organizationId,
-      operationType: "interactive_charge",
-      targetKey: `interactive-charge:d2-${suffix}`,
-      amountMinor: 1_000,
-      currency: "USD",
-      requestFingerprint: `lvpayreq:v1:${"a".repeat(64)}`,
-      providerIdempotencyKey: `d2-${suffix}`.slice(0, 45),
-      providerName: "square",
-    }).returning();
-    if (!operation) throw new Error("D2 snapshot operation was not created");
-    const semantic: PaymentOperationOccurrenceSnapshotV1 = {
+    const createOperation = async (label: string) => {
+      const [operation] = await db.insert(paymentOperations).values({
+        organizationId: scope.organizationId,
+        operationType: "interactive_charge",
+        targetKey: `interactive-charge:d2-${label}-${suffix}`,
+        amountMinor: 1_000,
+        currency: "USD",
+        requestFingerprint: `lvpayreq:v1:${"a".repeat(64)}`,
+        providerIdempotencyKey: `d2-${label}-${suffix}`.slice(0, 45),
+        providerName: "square",
+      }).returning();
+      if (!operation) throw new Error("D2 snapshot operation was not created");
+      return operation;
+    };
+    const semanticFor = (
+      operationId: string,
+      leagueId = scope.leagueId,
+    ): PaymentOperationOccurrenceSnapshotV1 => ({
       contractVersion: PAYMENT_OPERATION_OCCURRENCE_SNAPSHOT_CONTRACT,
       snapshotVersion: 1,
-      operationId: operation.id,
+      operationId,
       operationType: "interactive_charge",
       organizationId: scope.organizationId,
-      leagueId: scope.leagueId,
+      leagueId,
       amountMinor: 1_000,
       currency: "USD",
       allocations: [first, second].map((obligation, allocationIndex) => ({
         allocationIndex,
         organizationId: scope.organizationId,
-        leagueId: scope.leagueId,
+        leagueId,
         occurrenceId: obligation.occurrenceId,
         bowlerId: scope.bowlerId,
         obligationId: obligation.id,
         amountMinor: 500,
         currency: "USD",
       })),
-    };
+    });
+    const operation = await createOperation("valid");
+    const semantic = semanticFor(operation.id);
     await db.transaction(async (tx) => {
+      await tx.insert(interactivePaymentOperationSnapshots).values({
+        operationId: operation.id,
+        snapshotVersion: 2,
+        snapshotFingerprint: `lvpayexecic:v2:${"b".repeat(64)}`,
+        leagueId: scope.leagueId,
+        locationId: scope.locationId,
+        payerBowlerId: scope.bowlerId,
+        requestKind: "direct",
+        encryptedSourceId: "D2_ENCRYPTED_SOURCE",
+        storeCard: false,
+        sourceKind: "new_card",
+        weekOf: "2037-12-01T00:00:00.000Z",
+      });
+      await tx.insert(interactivePaymentOperationAllocations).values({
+        operationId: operation.id,
+        allocationIndex: 0,
+        bowlerId: scope.bowlerId,
+        amountMinor: 1_000,
+        weekOf: "2037-12-01T00:00:00.000Z",
+      });
       await tx.insert(paymentOperationOccurrenceSnapshots).values({
         operationId: operation.id,
         organizationId: scope.organizationId,
@@ -566,6 +668,80 @@ describe("D2 occurrence financial foundation PostgreSQL contract", () => {
     expect(rows).toHaveLength(2);
     expect(new Set(rows.map((row) => row.bowlerId)).size).toBe(1);
     expect(new Set(rows.map((row) => row.occurrenceId)).size).toBe(2);
+    await expectDatabaseConstraint(
+      db.update(interactivePaymentOperationSnapshots).set({ leagueId: scope.otherLeagueId })
+        .where(eq(interactivePaymentOperationSnapshots.operationId, operation.id)),
+      /league conflicts with its execution snapshot/i,
+    );
+    await expectDatabaseConstraint(
+      db.delete(interactivePaymentOperationSnapshots)
+        .where(eq(interactivePaymentOperationSnapshots.operationId, operation.id)),
+      /requires its matching execution snapshot/i,
+    );
+
+    const missingBaseOperation = await createOperation("missing-base");
+    const missingBaseSemantic = semanticFor(missingBaseOperation.id);
+    await expectDatabaseConstraint(db.transaction(async (tx) => {
+      await tx.insert(paymentOperationOccurrenceSnapshots).values({
+        operationId: missingBaseOperation.id,
+        organizationId: scope.organizationId,
+        leagueId: scope.leagueId,
+        snapshotVersion: 1,
+        snapshotFingerprint: fingerprintPaymentOperationOccurrenceSnapshot(missingBaseSemantic),
+        amountMinor: 1_000,
+        currency: "USD",
+        allocationCount: 2,
+      });
+      await tx.insert(paymentOperationOccurrenceSnapshotAllocations).values(
+        missingBaseSemantic.allocations.map((allocation) => ({
+          operationId: missingBaseOperation.id,
+          snapshotVersion: 1,
+          ...allocation,
+        })),
+      );
+    }), /requires its matching execution snapshot/i);
+
+    const mismatchedBaseOperation = await createOperation("mismatched-base");
+    const mismatchedBaseSemantic = semanticFor(mismatchedBaseOperation.id);
+    await expectDatabaseConstraint(db.transaction(async (tx) => {
+      await tx.insert(interactivePaymentOperationSnapshots).values({
+        operationId: mismatchedBaseOperation.id,
+        snapshotVersion: 2,
+        snapshotFingerprint: `lvpayexecic:v2:${"c".repeat(64)}`,
+        leagueId: scope.otherLeagueId,
+        locationId: scope.locationId,
+        payerBowlerId: scope.bowlerId,
+        requestKind: "direct",
+        encryptedSourceId: "D2_ENCRYPTED_SOURCE",
+        storeCard: false,
+        sourceKind: "new_card",
+        weekOf: "2037-12-01T00:00:00.000Z",
+      });
+      await tx.insert(interactivePaymentOperationAllocations).values({
+        operationId: mismatchedBaseOperation.id,
+        allocationIndex: 0,
+        bowlerId: scope.bowlerId,
+        amountMinor: 1_000,
+        weekOf: "2037-12-01T00:00:00.000Z",
+      });
+      await tx.insert(paymentOperationOccurrenceSnapshots).values({
+        operationId: mismatchedBaseOperation.id,
+        organizationId: scope.organizationId,
+        leagueId: scope.leagueId,
+        snapshotVersion: 1,
+        snapshotFingerprint: fingerprintPaymentOperationOccurrenceSnapshot(mismatchedBaseSemantic),
+        amountMinor: 1_000,
+        currency: "USD",
+        allocationCount: 2,
+      });
+      await tx.insert(paymentOperationOccurrenceSnapshotAllocations).values(
+        mismatchedBaseSemantic.allocations.map((allocation) => ({
+          operationId: mismatchedBaseOperation.id,
+          snapshotVersion: 1,
+          ...allocation,
+        })),
+      );
+    }), /league conflicts with its execution snapshot/i);
   });
 
   it("removes D2 evidence in atomic organization teardown order", async () => {

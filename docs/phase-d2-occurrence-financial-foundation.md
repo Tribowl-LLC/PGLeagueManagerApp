@@ -122,9 +122,19 @@ payment amount or obligation amount. This is intentionally not a race-prone
 check-then-insert service. Unique indexes reject duplicate logical allocations,
 and competing allocations against the same payment or obligation serialize.
 
-Plan-item amounts cannot exceed their obligations. The versioned operation
-supplement uses deferred commit-time triggers to prove its ordered allocation
-count and amount exactly equal both its snapshot and existing operation amount.
+Draft plans may hold alternative or partial arrangements without reserving an
+obligation. Once a plan is `ready` or `fulfilled`, its items count toward the
+obligation's collectable total. Item writes and plan-state transitions acquire
+the league advisory lock and lock the obligation; the aggregate across all
+collectable plans cannot exceed the authoritative obligation amount. This
+prevents two concurrent plans from presenting the same debt for collection.
+
+The versioned operation supplement uses deferred commit-time triggers to prove
+its ordered allocation count and amount exactly equal both its snapshot and
+existing operation amount. The trigger also requires the matching scheduled or
+interactive execution snapshot and requires its league to equal the supplement
+league, so occurrence evidence cannot drift from the snapshotted provider
+intent.
 
 ## Snapshot compatibility
 
@@ -143,8 +153,9 @@ The new supplemental contract is
 explicit version dispatcher validates tenant/league/currency equality,
 contiguous indexes, exact totals, and obligation uniqueness. It permits the
 same bowler across different obligations/occurrences without weakening the
-interactive one-bowler-per-operation invariant. No production reader or writer
-imports or activates the supplement in D2.
+interactive one-bowler-per-operation invariant. At persistence, the supplement
+must match the operation type's existing execution snapshot and league. No
+production reader or writer imports or activates the supplement in D2.
 
 ## Effective locks and dormancy
 

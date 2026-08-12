@@ -112,10 +112,13 @@ identity are immutable after creation. Weekly and upfront modes both retain
 per-occurrence debts; upfront only moves collection earlier. Double-pay is one
 plan over two real obligations, never a synthetic occurrence. Payment
 settlement is many-to-many through explicit positive allocations protected by
-the league advisory lock and database conservation triggers. Existing payment
+the league advisory lock and database conservation triggers. Ready/fulfilled
+plans collectively cannot over-plan an obligation; draft alternatives do not
+reserve it. Existing payment
 execution snapshot versions remain unchanged; the dormant `lvpayocc:v1`
-supplement adds obligation/occurrence allocation semantics without changing
-provider identity or the interactive bowler-uniqueness contract. See
+supplement must match the operation type's execution-snapshot league and adds
+obligation/occurrence allocation semantics without changing provider identity
+or the interactive bowler-uniqueness contract. See
 `docs/phase-d2-occurrence-financial-foundation.md`.
 
 ## Native And Handoff Targets
