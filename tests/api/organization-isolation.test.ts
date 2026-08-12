@@ -245,6 +245,27 @@ describe('Organization Isolation', () => {
       expect(spoofedScope.data.success).toBe(false);
       expect(JSON.stringify(spoofedScope.data)).not.toContain(`"organizationId":${sessionB.user.organizationId}`);
     });
+
+    it('org A GET /api/leagues/:leagueId/standings?organizationId=<orgB> must fail closed for both implicit and spoofed scope', async () => {
+      expect(orgBLeagueId, 'expected an org B league id to test against').not.toBeNull();
+      expect(sessionB.user.organizationId, 'expected an org B organization id').not.toBeNull();
+
+      const implicitScope = await apiGet(
+        `/api/leagues/${orgBLeagueId}/standings`,
+        sessionA,
+      );
+      expect([403, 404]).toContain(implicitScope.status);
+      expect(implicitScope.data.success).toBe(false);
+      expect(JSON.stringify(implicitScope.data)).not.toContain(`"organizationId":${sessionB.user.organizationId}`);
+
+      const spoofedScope = await apiGet(
+        `/api/leagues/${orgBLeagueId}/standings?organizationId=${sessionB.user.organizationId}`,
+        sessionA,
+      );
+      expect([403, 404]).toContain(spoofedScope.status);
+      expect(spoofedScope.data.success).toBe(false);
+      expect(JSON.stringify(spoofedScope.data)).not.toContain(`"organizationId":${sessionB.user.organizationId}`);
+    });
   });
 
   // -------------------------------------------------------------------------
