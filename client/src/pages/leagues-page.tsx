@@ -22,7 +22,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Plus } from "lucide-react";
-import { LeaguesTableSkeleton } from "@/components/page-states";
+import { LeaguesTableSkeleton, PageErrorState } from "@/components/page-states";
 import { LeaguesTable } from "@/components/leagues-table";
 import { LeagueSquareMissingBanner } from "@/components/league-square-missing-banner";
 import { ConfirmArchiveDialog } from "@/components/confirm-archive-dialog";
@@ -73,7 +73,12 @@ export default function LeaguesPage() {
     ? leagueLatestScoresRequest(firstLeague.id, firstLeague.organizationId)
     : null;
 
-  const { data: scoresResponse, isLoading: loadingScores } = useQuery<{
+  const {
+    data: scoresResponse,
+    isLoading: loadingScores,
+    error: scoresError,
+    refetch: refetchScores,
+  } = useQuery<{
     data: LeagueScoresReadContract | ScoreWithRelations[];
   }>({
     queryKey: latestScoresRequest?.queryKey ?? ["/api/scores/latest-scored-session", null, null],
@@ -208,7 +213,15 @@ export default function LeaguesPage() {
           />
         </div>
 
-        {weeklyScores.length > 0 && (
+        {scoresError ? (
+          <section className="mt-8" aria-labelledby="recent-scores-heading">
+            <h2 id="recent-scores-heading" className="text-xl font-semibold mb-4">Recent Scores</h2>
+            <PageErrorState
+              message={`Recent scores could not be loaded safely: ${scoresError.message}`}
+              onRetry={() => { void refetchScores(); }}
+            />
+          </section>
+        ) : weeklyScores.length > 0 && (
           <div className="mt-8">
             <h2 className="text-xl font-semibold mb-4">Recent Scores</h2>
             <div className="rounded-md border">
