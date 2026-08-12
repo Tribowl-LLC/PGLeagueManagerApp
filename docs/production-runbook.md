@@ -373,6 +373,29 @@ and leaves exact occurrence links in place. See
 [Phase E2 canonical games and scores](phase-e2-canonical-games-scores.md) for
 the full contract, incompatibility behavior, smoke matrix, and E3 boundary.
 
+### Phase E3 canonical standings evidence
+
+Phase E3 is a code-only, read-only evidence release. It adds
+`GET /api/leagues/:leagueId/standings` with the versioned
+`league-standings/1` contract, reusing the complete E1/E2 snapshot in one
+repeatable-read/read-only transaction. The response explicitly reports
+`ranking.state = policy_required` and returns no ranked rows because matchup
+and ranking policy is not yet approved. Migration 0023 remains latest; do not
+run a migration or backfill for E3.
+
+Keep Render Auto-Deploy Off and deploy only the exact CI-certified application
+commit. Smoke-test active-member, organization-administrator, and explicitly
+scoped system-administrator access; canonical UUID grouping and eligibility;
+separate legacy schedule/game projection domains; stable full-evidence
+fingerprints; bounded discrepancies; the generic incompatibility 409; and
+before/after zero-write evidence across canonical, game/score, D2, payment, and
+payment-operation tables. Confirm the Bowler Scores average, financial reports,
+receipts, refunds, webhooks, and provider behavior are unchanged. Application
+rollback to E2 is schema-compatible and must leave migration 0023 and all
+durable evidence intact. See
+[Phase E3 canonical standings evidence](phase-e3-canonical-standings-reports.md)
+for the complete contract and smoke matrix.
+
 ## Post-Deployment Checks
 
 - Confirm the Render deploy is running the expected commit.
