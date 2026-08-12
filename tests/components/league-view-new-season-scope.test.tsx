@@ -18,7 +18,7 @@ vi.mock('@/components/error-boundary', () => ({ ErrorBoundary: ({ children }: Pr
 vi.mock('@/pages/league-view-page/invite-result-card', () => ({ InviteResultCard: () => null }));
 vi.mock('@/pages/league-view-page/league-action-cards', () => ({ LeagueActionCards: () => null }));
 vi.mock('@/pages/league-view-page/season-history-card', () => ({ SeasonHistoryCard: () => null }));
-vi.mock('@/pages/league-view-page/fall-draft-generation-card', () => ({ FallDraftGenerationCard: () => null }));
+vi.mock('@/pages/league-view-page/league-occurrence-schedule-card', () => ({ LeagueOccurrenceScheduleCard: () => null }));
 vi.mock('@/pages/league-view-page/new-season-dialog', () => ({
   NewSeasonDialog: ({ showNewSeason, onCreate }: {
     showNewSeason: boolean;

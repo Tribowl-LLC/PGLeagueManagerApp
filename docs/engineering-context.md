@@ -99,6 +99,16 @@ are never guessed from proximity, amount, or roster membership. Linked games
 and scheduled operations are effective-lock evidence, while a schedule cursor
 alone is not. See `docs/phase-d1-canonical-occurrence-compatibility.md`.
 
+Phase E1 makes a published or locked canonical occurrence set exclusively
+authoritative for the physical league schedule shown to users and
+administrators. Canonical and legacy dates are never blended. Draft-only,
+rejected, revoked, discarded, and superseded evidence remains non-operational;
+unsafe or incomplete operational evidence fails closed instead of falling
+back. Leagues without operational canonical state retain an explicitly labeled
+legacy projection with no fabricated UUID or UTC/DST proof. Schedule reads are
+tenant-scoped and zero-write. See
+`docs/phase-e1-canonical-schedule-admin-views.md`.
+
 Required weekly payer count and substitute-payer assignment are separate from
 payment timing. A future money-consumer cutover must model the league's three-
 or four-bowler team requirement and the actual bowlers responsible for each

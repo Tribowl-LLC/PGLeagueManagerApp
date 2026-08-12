@@ -1,0 +1,620 @@
+import { and, asc, eq, sql } from "drizzle-orm";
+import { DEFAULT_TIMEZONE } from "@shared/schema/constants";
+import {
+  leagueOccurrenceBillingTerms,
+  leagueOccurrenceGenerationRuns,
+  leagueOccurrenceRelationships,
+  leagueOccurrences,
+  leagueScheduleExceptions,
+  type LeagueOccurrence,
+  type LeagueOccurrenceBillingTerm,
+  type LeagueOccurrenceGenerationRun,
+  type LeagueOccurrenceRelationship,
+  type LeagueScheduleException,
+} from "@shared/schema/canonical-occurrences";
+import { leagues, type League } from "@shared/schema/leagues";
+import {
+  LEAGUE_OCCURRENCE_SCHEDULE_CONTRACT_VERSION,
+  LEAGUE_OCCURRENCE_SCHEDULE_ORDER_VERSION,
+  type LeagueOccurrenceEffectiveLockReason,
+  type LeagueOccurrenceScheduleAdministratorEvidence,
+  type LeagueOccurrenceScheduleOccurrence,
+  type LeagueOccurrenceScheduleReadContract,
+  type LeagueOccurrenceScheduleRelationship,
+  type LeagueOccurrenceScheduleSkippedDate,
+} from "@shared/league-occurrence-schedule";
+import { getAllBowlingDates } from "@shared/schedule-utils";
+import { getProductSeasonFromDateOnly } from "@shared/season-utils";
+import { db } from "../db.js";
+import { hasLeagueOccurrenceEvidence } from "../storage/canonical-occurrence-evidence.js";
+import type { LeagueScheduleTransaction } from "../storage/league-schedule-lock.js";
+
+export const LEAGUE_OCCURRENCE_SCHEDULE_IMPLEMENTATION_VERSION = "league-occurrence-schedule-read/1" as const;
+
+export type LeagueOccurrenceScheduleErrorCode =
+  | "invalid_scope"
+  | "league_not_found"
+  | "incompatible_canonical_state";
+
+export class LeagueOccurrenceScheduleError extends Error {
+  constructor(public readonly code: LeagueOccurrenceScheduleErrorCode, message: string) {
+    super(message);
+    this.name = "LeagueOccurrenceScheduleError";
+  }
+}
+
+type ScheduleLeague = Pick<
+  League,
+  | "id"
+  | "organizationId"
+  | "active"
+  | "seasonStart"
+  | "seasonEnd"
+  | "weekDay"
+  | "competitionStartTime"
+  | "timezone"
+  | "totalBowlingWeeks"
+  | "skipDates"
+  | "cancelledDates"
+>;
+
+export interface LeagueOccurrenceScheduleCanonicalRows {
+  generationRuns: LeagueOccurrenceGenerationRun[];
+  occurrences: LeagueOccurrence[];
+  billingTerms: LeagueOccurrenceBillingTerm[];
+  scheduleExceptions: LeagueScheduleException[];
+  relationships: LeagueOccurrenceRelationship[];
+  linkedActivityOccurrenceIds: ReadonlySet<string>;
+  hasAnyCanonicalEvidence: boolean;
+}
+
+export interface BuildLeagueOccurrenceScheduleInput {
+  organizationId: number;
+  leagueId: number;
+  league: ScheduleLeague;
+  canonical: LeagueOccurrenceScheduleCanonicalRows;
+  includeAdministratorEvidence: boolean;
+  databaseNow: string;
+}
+
+const ORDERING_KEYS = [
+  "authoritativeLocalDate",
+  "authoritativeLocalStartTime",
+  "plannedOrdinal",
+  "competitionNumber",
+  "kind",
+  "stableIdentity",
+] as const;
+
+const KIND_ORDER = new Map([
+  ["regular", 0],
+  ["makeup", 1],
+  ["position_round", 2],
+  ["rolloff", 3],
+  ["playoff", 4],
+  ["extension", 5],
+]);
+
+function compareStrings(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function compareNullableNumbers(left: number | null, right: number | null): number {
+  if (left === right) return 0;
+  if (left === null) return 1;
+  if (right === null) return -1;
+  return left - right;
+}
+
+export function compareLeagueScheduleOccurrences(
+  left: LeagueOccurrenceScheduleOccurrence,
+  right: LeagueOccurrenceScheduleOccurrence,
+): number {
+  return compareStrings(left.authoritativeLocalDate, right.authoritativeLocalDate)
+    || compareStrings(left.authoritativeLocalStartTime ?? "", right.authoritativeLocalStartTime ?? "")
+    || compareNullableNumbers(left.plannedOrdinal, right.plannedOrdinal)
+    || compareNullableNumbers(left.competitionNumber, right.competitionNumber)
+    || ((KIND_ORDER.get(left.kind) ?? 99) - (KIND_ORDER.get(right.kind) ?? 99))
+    || compareStrings(
+      left.occurrenceId ?? left.legacyProjectionKey ?? "",
+      right.occurrenceId ?? right.legacyProjectionKey ?? "",
+    );
+}
+
+function dateOnly(value: string): string | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})(?:$|[ T])/.exec(value);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const probe = new Date(Date.UTC(year, month - 1, day, 12));
+  if (year < 1 || probe.getUTCFullYear() !== year || probe.getUTCMonth() + 1 !== month || probe.getUTCDate() !== day) {
+    return null;
+  }
+  return `${match[1]}-${match[2]}-${match[3]}`;
+}
+
+function normalizeLocalTime(value: string | null): string | null {
+  const match = value?.match(/^([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?/);
+  return match ? `${match[1]}:${match[2]}:${match[3] ?? "00"}` : null;
+}
+
+function normalizeUtcInstant(value: string, field: string): string {
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) {
+    throw new LeagueOccurrenceScheduleError("incompatible_canonical_state", `${field} is not a valid UTC instant`);
+  }
+  return parsed.toISOString();
+}
+
+function assertScope(input: BuildLeagueOccurrenceScheduleInput): void {
+  if (!Number.isSafeInteger(input.organizationId) || input.organizationId <= 0
+    || !Number.isSafeInteger(input.leagueId) || input.leagueId <= 0) {
+    throw new LeagueOccurrenceScheduleError("invalid_scope", "organizationId and leagueId must be positive safe integers");
+  }
+  if (input.league.id !== input.leagueId || input.league.organizationId !== input.organizationId) {
+    throw new LeagueOccurrenceScheduleError("league_not_found", "league was not found in the authorized organization");
+  }
+  for (const row of [
+    ...input.canonical.generationRuns,
+    ...input.canonical.occurrences,
+    ...input.canonical.billingTerms,
+    ...input.canonical.scheduleExceptions,
+    ...input.canonical.relationships,
+  ]) {
+    if (row.organizationId !== input.organizationId || row.leagueId !== input.leagueId) {
+      throw new LeagueOccurrenceScheduleError(
+        "incompatible_canonical_state",
+        "canonical schedule evidence is outside the authorized tenant or league",
+      );
+    }
+  }
+}
+
+function isFallDraftSnapshot(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const version = (value as { snapshotContractVersion?: unknown }).snapshotContractVersion;
+  return typeof version === "string" && /^fall-draft-generation-input-snapshot\/\d+$/.test(version);
+}
+
+function administratorEvidence(
+  input: BuildLeagueOccurrenceScheduleInput,
+): LeagueOccurrenceScheduleAdministratorEvidence | null {
+  if (!input.includeAdministratorEvidence) return null;
+  const { canonical } = input;
+  const start = dateOnly(input.league.seasonStart);
+  const c2Runs = canonical.generationRuns.filter((row) => isFallDraftSnapshot(row.normalizedInputSnapshot));
+  return {
+    hasDraftEvidence: canonical.generationRuns.some((row) => row.state === "generated")
+      || canonical.occurrences.some((row) => row.lifecycle === "draft" && row.status !== "discarded")
+      || canonical.scheduleExceptions.some((row) => row.lifecycle === "draft")
+      || canonical.relationships.some((row) => row.state === "draft")
+      || canonical.billingTerms.some((row) => row.state === "draft"),
+    hasRejectedEvidence: canonical.generationRuns.some((row) => row.state === "rejected"),
+    hasSupersededEvidence: canonical.generationRuns.some((row) => row.state === "superseded")
+      || canonical.billingTerms.some((row) => row.state === "superseded"),
+    hasRevokedEvidence: canonical.scheduleExceptions.some((row) => row.lifecycle === "revoked")
+      || canonical.relationships.some((row) => row.state === "revoked"),
+    c2ReviewAvailable: c2Runs.length === 1,
+    fallRecoveryEligible: !canonical.hasAnyCanonicalEvidence
+      && input.league.active
+      && start !== null
+      && getProductSeasonFromDateOnly(start) === "Fall",
+    counts: {
+      generationRuns: canonical.generationRuns.length,
+      draftOccurrences: canonical.occurrences.filter((row) => row.lifecycle === "draft" && row.status !== "discarded").length,
+      discardedOccurrences: canonical.occurrences.filter((row) => row.status === "discarded").length,
+      draftExceptions: canonical.scheduleExceptions.filter((row) => row.lifecycle === "draft").length,
+      revokedExceptions: canonical.scheduleExceptions.filter((row) => row.lifecycle === "revoked").length,
+      draftRelationships: canonical.relationships.filter((row) => row.state === "draft").length,
+      revokedRelationships: canonical.relationships.filter((row) => row.state === "revoked").length,
+      supersededBillingTerms: canonical.billingTerms.filter((row) => row.state === "superseded").length,
+    },
+  };
+}
+
+function scheduleBase(input: BuildLeagueOccurrenceScheduleInput) {
+  return {
+    contractVersion: LEAGUE_OCCURRENCE_SCHEDULE_CONTRACT_VERSION,
+    ordering: { version: LEAGUE_OCCURRENCE_SCHEDULE_ORDER_VERSION, keys: ORDERING_KEYS },
+    organizationId: input.organizationId,
+    leagueId: input.leagueId,
+    administrator: administratorEvidence(input),
+  } as const;
+}
+
+function relationshipEvidence(
+  occurrenceId: string,
+  relationships: LeagueOccurrenceRelationship[],
+): LeagueOccurrenceScheduleRelationship[] {
+  const result: LeagueOccurrenceScheduleRelationship[] = [];
+  for (const relationship of relationships) {
+    if (relationship.sourceOccurrenceId === occurrenceId) {
+      result.push({
+        relationshipId: relationship.id,
+        kind: relationship.kind,
+        role: "source",
+        relatedOccurrenceId: relationship.targetOccurrenceId,
+        currentRevision: relationship.currentRevision,
+      });
+    } else if (relationship.targetOccurrenceId === occurrenceId) {
+      result.push({
+        relationshipId: relationship.id,
+        kind: relationship.kind,
+        role: "target",
+        relatedOccurrenceId: relationship.sourceOccurrenceId,
+        currentRevision: relationship.currentRevision,
+      });
+    }
+  }
+  return result.sort((left, right) => compareStrings(left.relationshipId, right.relationshipId));
+}
+
+function buildCanonicalSchedule(
+  input: BuildLeagueOccurrenceScheduleInput,
+  operational: LeagueOccurrence[],
+): LeagueOccurrenceScheduleReadContract {
+  const operationalIds = new Set(operational.map((row) => row.id));
+  if ([...input.canonical.linkedActivityOccurrenceIds].some((id) => !operationalIds.has(id))) {
+    throw new LeagueOccurrenceScheduleError(
+      "incompatible_canonical_state",
+      "linked canonical activity references a non-operational occurrence",
+    );
+  }
+  const liveDrafts = input.canonical.occurrences.filter(
+    (row) => row.lifecycle === "draft" && row.status !== "discarded",
+  );
+  if (liveDrafts.length > 0) {
+    throw new LeagueOccurrenceScheduleError(
+      "incompatible_canonical_state",
+      "published canonical state is mixed with an active draft occurrence set",
+    );
+  }
+  const publishedRelationships = input.canonical.relationships.filter((row) => row.state === "published");
+  if (publishedRelationships.some((row) => (
+    !operationalIds.has(row.sourceOccurrenceId) || !operationalIds.has(row.targetOccurrenceId)
+  ))) {
+    throw new LeagueOccurrenceScheduleError(
+      "incompatible_canonical_state",
+      "an active canonical relationship references a non-operational occurrence",
+    );
+  }
+  const publishedTerms = input.canonical.billingTerms.filter((row) => row.state === "published");
+  if (publishedTerms.some((row) => !operationalIds.has(row.occurrenceId))) {
+    throw new LeagueOccurrenceScheduleError(
+      "incompatible_canonical_state",
+      "a published billing summary references a non-operational occurrence",
+    );
+  }
+  const publishedExceptions = input.canonical.scheduleExceptions.filter((row) => row.lifecycle === "published");
+  const operationalDates = new Set(operational.map((row) => row.authoritativeLocalDate));
+  if (publishedExceptions.some((row) => operationalDates.has(row.localDate))) {
+    throw new LeagueOccurrenceScheduleError(
+      "incompatible_canonical_state",
+      "a published skipped date overlaps an operational occurrence",
+    );
+  }
+  const now = Date.parse(normalizeUtcInstant(input.databaseNow, "databaseNow"));
+  const occurrences = operational.map((row): LeagueOccurrenceScheduleOccurrence => {
+    const matchingTerms = publishedTerms.filter((term) => term.occurrenceId === row.id);
+    if (matchingTerms.length > 1) {
+      throw new LeagueOccurrenceScheduleError(
+        "incompatible_canonical_state",
+        "an operational occurrence has multiple current published billing summaries",
+      );
+    }
+    if (row.plannedOrdinal === null) {
+      throw new LeagueOccurrenceScheduleError(
+        "incompatible_canonical_state",
+        "an operational occurrence is missing its planned ordinal",
+      );
+    }
+    const startAt = normalizeUtcInstant(row.startAt, `occurrence ${row.id} startAt`);
+    const effectiveLockReasons: LeagueOccurrenceEffectiveLockReason[] = [];
+    if (row.lifecycle === "locked" || row.lockedAt !== null) effectiveLockReasons.push("canonical_lock");
+    if (Date.parse(startAt) <= now) effectiveLockReasons.push("start_elapsed");
+    if (input.canonical.linkedActivityOccurrenceIds.has(row.id)) effectiveLockReasons.push("linked_activity");
+    const term = matchingTerms[0] ?? null;
+    return {
+      occurrenceId: row.id,
+      legacyProjectionKey: null,
+      identitySource: "canonical_uuid",
+      kind: row.kind,
+      status: row.status as "scheduled" | "cancelled" | "completed",
+      lifecycle: row.lifecycle,
+      authoritativeLocalDate: row.authoritativeLocalDate,
+      authoritativeLocalStartTime: row.authoritativeLocalStartTime,
+      timezone: row.timezone,
+      startAt,
+      selectedUtcOffsetMinutes: row.selectedUtcOffsetMinutes,
+      foldResolution: row.foldResolution,
+      resolverVersion: row.resolverVersion,
+      plannedOrdinal: row.plannedOrdinal,
+      competitionNumber: row.competitionNumber,
+      competitive: row.competitive,
+      countsInStandings: row.countsInStandings,
+      currentRevision: row.currentRevision,
+      effectivelyLocked: effectiveLockReasons.length > 0,
+      effectiveLockReasons,
+      billing: term ? {
+        purpose: term.purpose,
+        obligationPolicy: term.obligationPolicy,
+        billingOrdinal: term.billingOrdinal,
+        version: term.version,
+        currentRevision: term.currentRevision,
+      } : null,
+      relationships: relationshipEvidence(row.id, publishedRelationships),
+    };
+  }).sort(compareLeagueScheduleOccurrences);
+  const skippedDates = publishedExceptions.map((row): LeagueOccurrenceScheduleSkippedDate => ({
+    exceptionId: row.id,
+    kind: row.kind,
+    localDate: row.localDate,
+    timezone: row.timezone,
+    reason: row.reason,
+    source: row.source,
+    lifecycle: "published",
+    durableCanonicalException: true,
+    currentRevision: row.currentRevision,
+  })).sort((left, right) => compareStrings(left.localDate, right.localDate)
+    || compareStrings(left.kind, right.kind)
+    || compareStrings(left.exceptionId ?? "", right.exceptionId ?? ""));
+  return {
+    ...scheduleBase(input),
+    authoritativeSource: "canonical",
+    operationalCanonicalStateExists: true,
+    occurrences,
+    skippedDates,
+  };
+}
+
+function buildLegacySchedule(input: BuildLeagueOccurrenceScheduleInput): LeagueOccurrenceScheduleReadContract {
+  const timezone = input.league.timezone?.trim() || DEFAULT_TIMEZONE;
+  const totalBowlingWeeks = input.league.totalBowlingWeeks ?? 0;
+  const seasonStart = dateOnly(input.league.seasonStart);
+  const localStartTime = normalizeLocalTime(input.league.competitionStartTime);
+  const projected = seasonStart && Number.isSafeInteger(totalBowlingWeeks) && totalBowlingWeeks > 0
+    ? getAllBowlingDates(
+      seasonStart,
+      input.league.weekDay,
+      totalBowlingWeeks,
+      input.league.skipDates,
+      input.league.cancelledDates,
+      [],
+    )
+    : [];
+  let plannedOrdinal = 0;
+  const occurrences: LeagueOccurrenceScheduleOccurrence[] = [];
+  const skippedDates: LeagueOccurrenceScheduleSkippedDate[] = [];
+  for (const row of projected) {
+    if (row.type === "skip") {
+      skippedDates.push({
+        exceptionId: null,
+        kind: "skip",
+        localDate: row.isoDate,
+        timezone,
+        reason: "Legacy league skip date",
+        source: "legacy_array",
+        lifecycle: "legacy",
+        durableCanonicalException: false,
+        currentRevision: null,
+      });
+      continue;
+    }
+    plannedOrdinal += 1;
+    const status = row.type === "cancelled" ? "cancelled" as const : "scheduled" as const;
+    occurrences.push({
+      occurrenceId: null,
+      legacyProjectionKey: `legacy:${input.leagueId}:${row.isoDate}:${plannedOrdinal}`,
+      identitySource: "legacy_projection",
+      kind: "regular",
+      status,
+      lifecycle: "legacy",
+      authoritativeLocalDate: row.isoDate,
+      authoritativeLocalStartTime: localStartTime,
+      timezone,
+      startAt: null,
+      selectedUtcOffsetMinutes: null,
+      foldResolution: null,
+      resolverVersion: null,
+      plannedOrdinal,
+      competitionNumber: status === "cancelled" ? null : row.bowlingWeekNumber,
+      competitive: status !== "cancelled",
+      countsInStandings: status !== "cancelled",
+      currentRevision: null,
+      effectivelyLocked: false,
+      effectiveLockReasons: [],
+      billing: null,
+      relationships: [],
+    });
+  }
+  return {
+    ...scheduleBase(input),
+    authoritativeSource: "legacy_fallback",
+    operationalCanonicalStateExists: false,
+    occurrences: occurrences.sort(compareLeagueScheduleOccurrences),
+    skippedDates: skippedDates.sort((left, right) => compareStrings(left.localDate, right.localDate)),
+  };
+}
+
+export function buildLeagueOccurrenceSchedule(
+  input: BuildLeagueOccurrenceScheduleInput,
+): LeagueOccurrenceScheduleReadContract {
+  assertScope(input);
+  const operational = input.canonical.occurrences.filter(
+    (row) => row.lifecycle === "published" || row.lifecycle === "locked",
+  );
+  const operationalMarkerWithoutOccurrence = input.canonical.generationRuns.some(
+    (row) => row.state === "approved" || row.state === "applied",
+  ) || input.canonical.billingTerms.some((row) => row.state === "published")
+    || input.canonical.scheduleExceptions.some((row) => row.lifecycle === "published")
+    || input.canonical.relationships.some((row) => row.state === "published")
+    || input.canonical.linkedActivityOccurrenceIds.size > 0;
+  if (operational.length === 0 && operationalMarkerWithoutOccurrence) {
+    throw new LeagueOccurrenceScheduleError(
+      "incompatible_canonical_state",
+      "operational canonical evidence is incomplete and cannot safely fall back to legacy schedule data",
+    );
+  }
+  return operational.length > 0
+    ? buildCanonicalSchedule(input, operational)
+    : buildLegacySchedule(input);
+}
+
+type ScheduleExecutor = typeof db | LeagueScheduleTransaction;
+
+async function databaseNow(executor: ScheduleExecutor): Promise<string> {
+  const result = await executor.execute<{ database_now: string }>(sql`
+    SELECT to_char(transaction_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS database_now
+  `);
+  const value = result.rows[0]?.database_now;
+  if (!value) throw new LeagueOccurrenceScheduleError("incompatible_canonical_state", "database time is unavailable");
+  return value;
+}
+
+async function linkedActivityOccurrenceIds(
+  executor: ScheduleExecutor,
+  organizationId: number,
+  leagueId: number,
+  occurrenceIds: string[],
+): Promise<ReadonlySet<string>> {
+  if (occurrenceIds.length === 0) return new Set();
+  const result = await executor.execute<{ occurrence_id: string; evidence_league_id: number }>(sql`
+    SELECT evidence.occurrence_id, evidence.evidence_league_id
+      FROM (
+        SELECT g.occurrence_id, g.league_id AS evidence_league_id
+          FROM games g
+         WHERE g.occurrence_id IN (${sql.join(occurrenceIds.map((id) => sql`${id}::uuid`), sql`, `)})
+        UNION ALL
+        SELECT po.trigger_occurrence_id AS occurrence_id, ps.league_id AS evidence_league_id
+          FROM payment_operations po
+          JOIN payment_schedules ps ON ps.id = po.payment_schedule_id
+         WHERE po.organization_id = ${organizationId}
+           AND po.trigger_occurrence_id IN (${sql.join(occurrenceIds.map((id) => sql`${id}::uuid`), sql`, `)})
+        UNION ALL
+        SELECT occurrence_id, league_id FROM bowler_occurrence_eligibilities
+         WHERE organization_id = ${organizationId} AND league_id = ${leagueId}
+           AND occurrence_id IN (${sql.join(occurrenceIds.map((id) => sql`${id}::uuid`), sql`, `)})
+        UNION ALL
+        SELECT occurrence_id, league_id FROM bowler_occurrence_team_assignments
+         WHERE organization_id = ${organizationId} AND league_id = ${leagueId}
+           AND occurrence_id IN (${sql.join(occurrenceIds.map((id) => sql`${id}::uuid`), sql`, `)})
+        UNION ALL
+        SELECT occurrence_id, league_id FROM bowler_occurrence_obligations
+         WHERE organization_id = ${organizationId} AND league_id = ${leagueId}
+           AND occurrence_id IN (${sql.join(occurrenceIds.map((id) => sql`${id}::uuid`), sql`, `)})
+        UNION ALL
+        SELECT trigger_occurrence_id AS occurrence_id, league_id FROM occurrence_collection_plans
+         WHERE organization_id = ${organizationId} AND league_id = ${leagueId}
+           AND trigger_occurrence_id IN (${sql.join(occurrenceIds.map((id) => sql`${id}::uuid`), sql`, `)})
+        UNION ALL
+        SELECT occurrence_id, league_id FROM occurrence_collection_plan_items
+         WHERE organization_id = ${organizationId} AND league_id = ${leagueId}
+           AND occurrence_id IN (${sql.join(occurrenceIds.map((id) => sql`${id}::uuid`), sql`, `)})
+        UNION ALL
+        SELECT occurrence_id, league_id FROM payment_occurrence_allocations
+         WHERE organization_id = ${organizationId} AND league_id = ${leagueId}
+           AND occurrence_id IN (${sql.join(occurrenceIds.map((id) => sql`${id}::uuid`), sql`, `)})
+        UNION ALL
+        SELECT occurrence_id, league_id FROM payment_operation_occurrence_snapshot_allocations
+         WHERE organization_id = ${organizationId} AND league_id = ${leagueId}
+           AND occurrence_id IN (${sql.join(occurrenceIds.map((id) => sql`${id}::uuid`), sql`, `)})
+      ) evidence
+  `);
+  if (result.rows.some((row) => row.evidence_league_id !== leagueId)) {
+    throw new LeagueOccurrenceScheduleError(
+      "incompatible_canonical_state",
+      "linked canonical activity contradicts the authorized league",
+    );
+  }
+  return new Set(result.rows.map((row) => row.occurrence_id));
+}
+
+interface LoadLeagueOccurrenceScheduleInput {
+  organizationId: number;
+  leagueId: number;
+  includeAdministratorEvidence: boolean;
+}
+
+async function loadLeagueOccurrenceScheduleSnapshot(
+  input: LoadLeagueOccurrenceScheduleInput,
+  executor: ScheduleExecutor,
+): Promise<LeagueOccurrenceScheduleReadContract> {
+  if (!Number.isSafeInteger(input.organizationId) || input.organizationId <= 0
+    || !Number.isSafeInteger(input.leagueId) || input.leagueId <= 0) {
+    throw new LeagueOccurrenceScheduleError("invalid_scope", "organizationId and leagueId must be positive safe integers");
+  }
+  const [league] = await executor.select({
+    id: leagues.id,
+    organizationId: leagues.organizationId,
+    active: leagues.active,
+    seasonStart: leagues.seasonStart,
+    seasonEnd: leagues.seasonEnd,
+    weekDay: leagues.weekDay,
+    competitionStartTime: leagues.competitionStartTime,
+    timezone: leagues.timezone,
+    totalBowlingWeeks: leagues.totalBowlingWeeks,
+    skipDates: leagues.skipDates,
+    cancelledDates: leagues.cancelledDates,
+  }).from(leagues).where(and(
+    eq(leagues.id, input.leagueId),
+    eq(leagues.organizationId, input.organizationId),
+  )).limit(1);
+  if (!league || league.organizationId !== input.organizationId) {
+    throw new LeagueOccurrenceScheduleError("league_not_found", "league was not found in the authorized organization");
+  }
+  const [generationRuns, occurrences, billingTerms, scheduleExceptions, relationships, hasAnyEvidence, now] = await Promise.all([
+    executor.select().from(leagueOccurrenceGenerationRuns).where(and(
+      eq(leagueOccurrenceGenerationRuns.organizationId, input.organizationId),
+      eq(leagueOccurrenceGenerationRuns.leagueId, input.leagueId),
+    )).orderBy(asc(leagueOccurrenceGenerationRuns.sourceScheduleRevision), asc(leagueOccurrenceGenerationRuns.id)),
+    executor.select().from(leagueOccurrences).where(and(
+      eq(leagueOccurrences.organizationId, input.organizationId),
+      eq(leagueOccurrences.leagueId, input.leagueId),
+    )).orderBy(asc(leagueOccurrences.authoritativeLocalDate), asc(leagueOccurrences.id)),
+    executor.select().from(leagueOccurrenceBillingTerms).where(and(
+      eq(leagueOccurrenceBillingTerms.organizationId, input.organizationId),
+      eq(leagueOccurrenceBillingTerms.leagueId, input.leagueId),
+    )).orderBy(asc(leagueOccurrenceBillingTerms.occurrenceId), asc(leagueOccurrenceBillingTerms.id)),
+    executor.select().from(leagueScheduleExceptions).where(and(
+      eq(leagueScheduleExceptions.organizationId, input.organizationId),
+      eq(leagueScheduleExceptions.leagueId, input.leagueId),
+    )).orderBy(asc(leagueScheduleExceptions.localDate), asc(leagueScheduleExceptions.id)),
+    executor.select().from(leagueOccurrenceRelationships).where(and(
+      eq(leagueOccurrenceRelationships.organizationId, input.organizationId),
+      eq(leagueOccurrenceRelationships.leagueId, input.leagueId),
+    )).orderBy(asc(leagueOccurrenceRelationships.id)),
+    hasLeagueOccurrenceEvidence(executor, input.organizationId, input.leagueId),
+    databaseNow(executor),
+  ]);
+  const linkedIds = await linkedActivityOccurrenceIds(
+    executor,
+    input.organizationId,
+    input.leagueId,
+    occurrences.map((row) => row.id),
+  );
+  return buildLeagueOccurrenceSchedule({
+    ...input,
+    league,
+    databaseNow: now,
+    canonical: {
+      generationRuns,
+      occurrences,
+      billingTerms,
+      scheduleExceptions,
+      relationships,
+      linkedActivityOccurrenceIds: linkedIds,
+      hasAnyCanonicalEvidence: hasAnyEvidence,
+    },
+  });
+}
+
+export async function loadLeagueOccurrenceSchedule(
+  input: LoadLeagueOccurrenceScheduleInput,
+  executor: typeof db = db,
+): Promise<LeagueOccurrenceScheduleReadContract> {
+  return executor.transaction(
+    (tx) => loadLeagueOccurrenceScheduleSnapshot(input, tx),
+    { isolationLevel: "repeatable read", accessMode: "read only" },
+  );
+}

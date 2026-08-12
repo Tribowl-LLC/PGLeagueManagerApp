@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { FallDraftGenerationCard } from "@/pages/league-view-page/fall-draft-generation-card";
+import { FallCanonicalRecoveryPanel } from "@/pages/league-view-page/fall-draft-generation-card";
 import * as queryModule from "@/lib/queryClient";
 import type { FallDraftApplyResult, FallDraftPersistedView, FallDraftPreview } from "@shared/fall-draft-generation";
 
@@ -111,7 +111,7 @@ function renderCard(status: FallDraftPersistedView = { found: false, result: nul
   client.setQueryData(["/api/leagues/7/canonical-fall-drafts"], { success: true, data: status });
   return render(
     <QueryClientProvider client={client}>
-      <FallDraftGenerationCard leagueId={7} organizationId={3} isSystemAdmin={false} />
+      <FallCanonicalRecoveryPanel leagueId={7} organizationId={3} isSystemAdmin={false} />
     </QueryClientProvider>,
   );
 }
@@ -121,7 +121,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("FallDraftGenerationCard", () => {
+describe("FallCanonicalRecoveryPanel", () => {
   it("derives dense billing policy, provides accessible preview focus, and requires explicit confirmation", async () => {
     const user = userEvent.setup();
     const apiSpy = vi.spyOn(queryModule, "apiRequest")
@@ -173,7 +173,7 @@ describe("FallDraftGenerationCard", () => {
     renderCard({ found: true, result: { ...applyResult, currentLegacyScheduleMatchesGenerationInput: false }, currentLegacyScheduleMatchesGenerationInput: false });
     expect(screen.getByText("Canonical drafts already exist")).toBeVisible();
     expect(screen.getByText("Stale — preview again for review only")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Generate zero-write preview" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Generate zero-write preview" })).not.toBeInTheDocument();
   });
 
   it("exposes a disabled loading state while preview is in flight", async () => {
