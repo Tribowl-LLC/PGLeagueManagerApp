@@ -1,9 +1,10 @@
-import { pgTable, text, serial, integer, boolean, timestamp, index } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, integer, boolean, timestamp, index, foreignKey, uuid } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { positiveIntSchema, dateSchema } from "./constants";
 import { leagues } from "./leagues";
+import { leagueOccurrences } from "./canonical-occurrences";
 import { bowlers } from "./bowlers";
 import { teams } from "./teams";
 
@@ -15,9 +16,16 @@ export const games = pgTable("games", {
   weekNumber: integer("week_number").notNull(),
   gameNumber: integer("game_number").notNull(),
   date: timestamp("date", { mode: "string" }).notNull(),
+  occurrenceId: uuid("occurrence_id"),
 }, (table) => ({
   leagueGameIdx: index("league_game_idx").on(table.leagueId, table.weekNumber, table.gameNumber),
   dateIdx: index("game_date_idx").on(table.date),
+  occurrenceIdx: index("games_occurrence_idx").on(table.occurrenceId),
+  occurrenceLeagueFk: foreignKey({
+    name: "games_occurrence_league_fk",
+    columns: [table.occurrenceId, table.leagueId],
+    foreignColumns: [leagueOccurrences.id, leagueOccurrences.leagueId],
+  }).onDelete("restrict"),
 }));
 
 export const scores = pgTable("scores", {
@@ -58,7 +66,7 @@ export const insertGameSchema = baseGameSchema.extend({
   weekNumber: positiveIntSchema,
   gameNumber: z.number().int().min(1).max(3),
   date: dateSchema,
-}).omit({ id: true });
+}).omit({ id: true, occurrenceId: true });
 
 export const insertScoreSchema = baseScoreSchema.extend({
   gameId: positiveIntSchema,

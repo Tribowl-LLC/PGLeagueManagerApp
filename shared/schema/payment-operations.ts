@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import {
   check,
   boolean,
+  foreignKey,
   index,
   integer,
   primaryKey,
@@ -18,6 +19,7 @@ import { leagues } from "./leagues";
 import { locations } from "./locations";
 import { payments, paymentSchedules } from "./payments";
 import { users } from "./users";
+import { leagueOccurrences } from "./canonical-occurrences";
 
 export const PAYMENT_OPERATION_TYPES = [
   "scheduled_charge",
@@ -84,6 +86,7 @@ export const paymentOperations = pgTable("payment_operations", {
   paymentScheduleId: integer("payment_schedule_id")
     .references(() => paymentSchedules.id, { onDelete: "restrict" }),
   billingCycleAt: timestamp("billing_cycle_at", { mode: "string" }),
+  triggerOccurrenceId: uuid("trigger_occurrence_id"),
   amountMinor: integer("amount_minor").notNull(),
   currency: varchar("currency", { length: 3 }).notNull(),
   requestFingerprint: varchar("request_fingerprint", { length: 76 }).notNull(),
@@ -138,6 +141,13 @@ export const paymentOperations = pgTable("payment_operations", {
   expiredLeaseIdx: index("payment_operations_expired_lease_idx")
     .on(table.leaseExpiresAt)
     .where(sql`${table.status} = 'leased'`),
+  triggerOccurrenceIdx: index("payment_operations_trigger_occurrence_idx")
+    .on(table.triggerOccurrenceId),
+  triggerOccurrenceTenantFk: foreignKey({
+    name: "payment_operations_trigger_occurrence_tenant_fk",
+    columns: [table.triggerOccurrenceId, table.organizationId],
+    foreignColumns: [leagueOccurrences.id, leagueOccurrences.organizationId],
+  }).onDelete("restrict"),
   operationTypeCheck: check(
     "payment_operations_operation_type_check",
     sql`${table.operationType} IN ('scheduled_charge', 'interactive_charge', 'refund')`,
@@ -218,6 +228,14 @@ export const paymentOperations = pgTable("payment_operations", {
     ) OR (
       ${table.operationType} <> 'scheduled_charge'
       AND ${table.billingCycleAt} IS NULL
+    )`,
+  ),
+  triggerOccurrenceCheck: check(
+    "payment_operations_trigger_occurrence_check",
+    sql`${table.triggerOccurrenceId} IS NULL OR (
+      ${table.operationType} = 'scheduled_charge'
+      AND ${table.paymentScheduleId} IS NOT NULL
+      AND ${table.billingCycleAt} IS NOT NULL
     )`,
   ),
   dueStateCheck: check(

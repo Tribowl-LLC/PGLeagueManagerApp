@@ -30,6 +30,13 @@ import {
   type PaymentOperationLinkedPaymentInput,
   type PaymentOperationTransaction,
 } from "./payment-operations.js";
+import { lockLeagueSchedule } from "./league-schedule-lock.js";
+import {
+  assertNoOccurrenceReferenceConflict,
+  logOccurrenceCompatibility,
+  occurrenceCompatibilityTransactionTime,
+  resolveCanonicalOccurrenceCompatibility,
+} from "../services/canonical-occurrence-compatibility.js";
 
 export const AUTOPAY_SETUP_REQUEST_FINGERPRINT_PREFIX = "lvautopaysetup:v1:" as const;
 
@@ -565,12 +572,28 @@ async function ensureAutopaySetupSchedule(
   if (!sourceId) {
     throw new AutopaySetupRequestImmutableMismatchError();
   }
+  await lockLeagueSchedule(tx, request.organizationId, request.leagueId);
+  const comparison = await resolveCanonicalOccurrenceCompatibility(tx, {
+    subject: "payment_schedule",
+    organizationId: request.organizationId,
+    leagueId: request.leagueId,
+    legacyStartAt: snapshot.firstAutomaticAt,
+    immediateUpfront: false,
+    eligibilityNow: await occurrenceCompatibilityTransactionTime(tx),
+    existingReferenceId: null,
+  });
+  assertNoOccurrenceReferenceConflict(comparison);
+  logOccurrenceCompatibility("autopay_setup_schedule_create", comparison);
+  const nextOccurrenceId = comparison.classification === "exact_match"
+    ? comparison.occurrenceId
+    : null;
   const [inserted] = await tx.insert(paymentSchedules).values({
     bowlerId: request.payerBowlerId,
     leagueId: request.leagueId,
     frequency: "weekly",
     amount: snapshot.recurringAmountMinor,
     nextPaymentDate: snapshot.firstAutomaticAt,
+    nextOccurrenceId,
     active: true,
     paymentCardId: sourceId,
     additionalBowlerIds: snapshot.additionalBowlerIds.length > 0
@@ -588,6 +611,7 @@ async function ensureAutopaySetupSchedule(
     || schedule.amount !== snapshot.recurringAmountMinor
     || schedule.frequency !== "weekly"
     || schedule.paymentCardId !== sourceId
+    || (schedule.nextOccurrenceId !== null && schedule.nextOccurrenceId !== nextOccurrenceId)
     || canonicalizePaymentOperationInput(schedule.additionalBowlerIds ?? [])
       !== canonicalizePaymentOperationInput(snapshot.additionalBowlerIds)
   ) {

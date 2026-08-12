@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(22);
+    expect(migrations).toHaveLength(23);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -326,6 +326,17 @@ describe('normalized migration baseline tools', () => {
     expect(migrations[21]?.sql).toContain('ADD CONSTRAINT "leagues_payment_mode_check"');
     expect(migrations[21]?.sql).toContain("IN ('weekly', 'upfront')");
     expect(migrations[21]?.sql).not.toMatch(/(?:^|\n)\s*(?:UPDATE|DELETE|INSERT)\b/);
+    expect(migrations[22]).toMatchObject({
+      idx: 22,
+      tag: '0022_phase_d1_occurrence_compatibility',
+      createdAt: 1786505453799,
+      hash: '39e4d64004aed5bd05cc9fdf0ecf45412be47f55c99f4c141aa99e3d9c75a997',
+    });
+    expect(migrations[22]?.sql).toContain('ADD COLUMN "occurrence_id" uuid');
+    expect(migrations[22]?.sql).toContain('ADD COLUMN "next_occurrence_id" uuid');
+    expect(migrations[22]?.sql).toContain('ADD COLUMN "trigger_occurrence_id" uuid');
+    expect(migrations[22]?.sql).toContain('payment_operations_trigger_occurrence_check');
+    expect(migrations[22]?.sql).not.toMatch(/(?:^|\n)\s*(?:DROP|UPDATE|DELETE|INSERT)\b/);
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 

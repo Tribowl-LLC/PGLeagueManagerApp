@@ -359,6 +359,7 @@ function squareErr(statusCode: number, detail?: string, code = 'GENERIC_DECLINE'
 const baseSchedule: PaymentSchedule = {
   id: 333, bowlerId: 42, leagueId: 11, amount: 2000, frequency: 'weekly',
   paymentCardId: 'card_token_123', nextPaymentDate: '2026-04-22T19:00:00.000Z',
+  nextOccurrenceId: null,
   lastPaymentDate: null, active: true, createdAt: '2026-04-01T00:00:00.000Z',
   additionalBowlerIds: null, cancelledAt: null, cancelReason: null,
 };

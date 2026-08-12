@@ -34,6 +34,13 @@ import {
   normalizeScheduledBillingCycle,
   scheduledPaymentCycleLockKey,
 } from "./scheduled-payment-cycle-lock.js";
+import { lockLeagueSchedule } from "../storage/league-schedule-lock.js";
+import {
+  assertNoOccurrenceReferenceConflict,
+  logOccurrenceCompatibility,
+  OccurrenceCompatibilityConflictError,
+  resolveCanonicalOccurrenceCompatibility,
+} from "./canonical-occurrence-compatibility.js";
 
 const SERIALIZATION_MAX_ATTEMPTS = 4;
 
@@ -340,15 +347,34 @@ export async function prepareScheduledPaymentCycle(input: {
     const schedule = await loadLockedSchedule(tx, input.paymentScheduleId);
     if (!schedule) return { kind: "stale" };
 
+    const [ownedLeague] = await tx
+      .select({ organizationId: leagues.organizationId })
+      .from(leagues)
+      .where(eq(leagues.id, schedule.leagueId))
+      .limit(1);
+    if (!ownedLeague?.organizationId) {
+      throw new ScheduledPaymentPreparationError("scheduled payment league has no tenant owner");
+    }
+    await lockLeagueSchedule(tx, ownedLeague.organizationId, schedule.leagueId);
+
     const existing = await getExistingCycleOperation(tx, schedule.id, expectedCycleAt);
     if (existing) {
-      const [ownedLeague] = await tx
-        .select({ organizationId: leagues.organizationId })
-        .from(leagues)
-        .where(eq(leagues.id, schedule.leagueId))
-        .limit(1);
-      if (!ownedLeague?.organizationId || existing.organizationId !== ownedLeague.organizationId) {
+      if (existing.organizationId !== ownedLeague.organizationId) {
         throw new ScheduledPaymentPreparationError("existing scheduled operation tenant does not match its schedule");
+      }
+      if (existing.triggerOccurrenceId !== null) {
+        const comparison = await resolveCanonicalOccurrenceCompatibility(tx, {
+          subject: "scheduled_operation",
+          organizationId: ownedLeague.organizationId,
+          leagueId: schedule.leagueId,
+          legacyStartAt: expectedCycleAt,
+          existingReferenceId: existing.triggerOccurrenceId,
+        });
+        logOccurrenceCompatibility("scheduled_operation_retry", comparison);
+        if (comparison.classification !== "exact_match"
+          || comparison.occurrenceId !== existing.triggerOccurrenceId) {
+          throw new OccurrenceCompatibilityConflictError(comparison);
+        }
       }
       return { kind: "existing", operation: existing, schedule };
     }
@@ -373,9 +399,26 @@ export async function prepareScheduledPaymentCycle(input: {
       context.league.cancelledDates ?? [],
     )) {
       const nextPaymentDate = computeNextPaymentDate(schedule, context.league).toISOString();
+      const nextComparison = await resolveCanonicalOccurrenceCompatibility(tx, {
+        subject: "payment_schedule",
+        organizationId: context.organizationId,
+        leagueId: schedule.leagueId,
+        legacyStartAt: nextPaymentDate,
+        immediateUpfront: false,
+        eligibilityNow: now.toISOString(),
+        existingReferenceId: schedule.nextOccurrenceId,
+      });
+      assertNoOccurrenceReferenceConflict(nextComparison);
+      logOccurrenceCompatibility("payment_schedule_skipped_cursor_advance", nextComparison);
       const [advanced] = await tx
         .update(paymentSchedules)
-        .set({ nextPaymentDate, lastPaymentDate: expectedCycleAt })
+        .set({
+          nextPaymentDate,
+          nextOccurrenceId: nextComparison.classification === "exact_match"
+            ? nextComparison.occurrenceId
+            : null,
+          lastPaymentDate: expectedCycleAt,
+        })
         .where(and(
           eq(paymentSchedules.id, schedule.id),
           eq(paymentSchedules.active, true),
@@ -387,6 +430,24 @@ export async function prepareScheduledPaymentCycle(input: {
     }
 
     const plan = buildScheduledChargePlan(schedule, context.league, context.validPartnerIds.length);
+    const triggerComparison = await resolveCanonicalOccurrenceCompatibility(tx, {
+      subject: "scheduled_operation",
+      organizationId: context.organizationId,
+      leagueId: schedule.leagueId,
+      legacyStartAt: expectedCycleAt,
+      existingReferenceId: schedule.nextOccurrenceId,
+    });
+    assertNoOccurrenceReferenceConflict(triggerComparison);
+    logOccurrenceCompatibility("scheduled_operation_prepare", triggerComparison);
+    if (schedule.nextOccurrenceId !== null
+      && (triggerComparison.classification !== "exact_match"
+        || triggerComparison.occurrenceId !== schedule.nextOccurrenceId)) {
+      throw new OccurrenceCompatibilityConflictError(triggerComparison);
+    }
+    const triggerOccurrenceId = schedule.nextOccurrenceId !== null
+      && triggerComparison.classification === "exact_match"
+      ? schedule.nextOccurrenceId
+      : null;
     const operation = await createOrGetScheduledPaymentOperation({
       organizationId: context.organizationId,
       paymentScheduleId: schedule.id,
@@ -394,6 +455,7 @@ export async function prepareScheduledPaymentCycle(input: {
       amountMinor: plan.amountMinor,
       currency: "USD",
       providerName: "square",
+      triggerOccurrenceId,
     }, tx);
     await persistScheduledPaymentOperationSnapshot(
       operation,
@@ -401,15 +463,37 @@ export async function prepareScheduledPaymentCycle(input: {
       tx,
     );
 
+    const nextPaymentDate = upfront
+      ? null
+      : computeNextPaymentDate(schedule, context.league).toISOString();
+    const nextComparison = nextPaymentDate === null
+      ? null
+      : await resolveCanonicalOccurrenceCompatibility(tx, {
+        subject: "payment_schedule",
+        organizationId: context.organizationId,
+        leagueId: schedule.leagueId,
+        legacyStartAt: nextPaymentDate,
+        immediateUpfront: false,
+        eligibilityNow: now.toISOString(),
+        existingReferenceId: schedule.nextOccurrenceId,
+      });
+    if (nextComparison) {
+      assertNoOccurrenceReferenceConflict(nextComparison);
+      logOccurrenceCompatibility("payment_schedule_prepared_cursor_advance", nextComparison);
+    }
     const scheduleUpdate = upfront
       ? {
         active: false,
+        nextOccurrenceId: null,
         lastPaymentDate: expectedCycleAt,
         cancelledAt: now.toISOString(),
         cancelReason: `ledger_upfront_prepared:operation=${operation.id}`,
       }
       : {
-        nextPaymentDate: computeNextPaymentDate(schedule, context.league).toISOString(),
+        nextPaymentDate: nextPaymentDate as string,
+        nextOccurrenceId: nextComparison?.classification === "exact_match"
+          ? nextComparison.occurrenceId
+          : null,
         lastPaymentDate: expectedCycleAt,
       };
     const [advanced] = await tx

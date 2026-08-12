@@ -422,6 +422,10 @@ export const leagueOccurrences = pgTable("league_occurrences", {
   }).onDelete("restrict"),
   tenantIdentityUnique: uniqueIndex("occurrences_tenant_identity_unique")
     .on(table.id, table.organizationId, table.leagueId),
+  leagueReferenceUnique: uniqueIndex("occurrences_league_reference_unique")
+    .on(table.id, table.leagueId),
+  tenantReferenceUnique: uniqueIndex("occurrences_tenant_reference_unique")
+    .on(table.id, table.organizationId),
   generationRunFk: foreignKey({
     name: "occurrences_generation_run_fk",
     columns: [table.generationRunId, table.organizationId, table.leagueId],

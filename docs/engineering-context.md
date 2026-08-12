@@ -90,6 +90,15 @@ locks and re-reads the source, copies teams and the complete ordered roster,
 generates the successor drafts, and archives the source in one commit; external
 bowler synchronization is post-commit only.
 
+Phase D1 keeps every legacy game and payment consumer authoritative while
+event-driven writes attach nullable canonical compatibility evidence. Games
+link physical occurrences, schedule cursors shadow exact future starts, and a
+scheduled operation records only its trigger occurrence—not paid obligations.
+Exact matching is tenant/league scoped and DST-safe; mismatches remain null and
+are never guessed from proximity, amount, or roster membership. Linked games
+and scheduled operations are effective-lock evidence, while a schedule cursor
+alone is not. See `docs/phase-d1-canonical-occurrence-compatibility.md`.
+
 Required weekly payer count and substitute-payer assignment are separate from
 payment timing. A future money-consumer cutover must model the league's three-
 or four-bowler team requirement and the actual bowlers responsible for each

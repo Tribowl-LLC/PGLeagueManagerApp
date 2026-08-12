@@ -8,6 +8,13 @@ import {
   type PaginatedResult,
 } from "@shared/schema";
 import { createLogger } from '../logger';
+import { lockLeagueSchedule } from './league-schedule-lock.js';
+import {
+  assertNoOccurrenceReferenceConflict,
+  logOccurrenceCompatibility,
+  occurrenceCompatibilityTransactionTime,
+  resolveCanonicalOccurrenceCompatibility,
+} from '../services/canonical-occurrence-compatibility.js';
 
 const log = createLogger("StoragePayments");
 
@@ -309,7 +316,36 @@ export async function deletePayment(id: number): Promise<void> {
 }
 
 export async function createPaymentSchedule(schedule: InsertPaymentSchedule): Promise<PaymentSchedule> {
-  const [result] = await db.insert(paymentSchedules).values(schedule).returning();
+  const { result, comparison } = await db.transaction(async (tx) => {
+    const [league] = await tx.select({ organizationId: leagues.organizationId })
+      .from(leagues).where(eq(leagues.id, schedule.leagueId)).limit(1);
+    if (!league) throw new Error('Payment schedule league not found');
+    if (league.organizationId === null) {
+      const [legacyResult] = await tx.insert(paymentSchedules).values(schedule).returning();
+      return { result: legacyResult, comparison: null };
+    }
+    await lockLeagueSchedule(tx, league.organizationId, schedule.leagueId);
+    const transactionTime = await occurrenceCompatibilityTransactionTime(tx);
+    const compatibility = await resolveCanonicalOccurrenceCompatibility(tx, {
+      subject: 'payment_schedule',
+      organizationId: league.organizationId,
+      leagueId: schedule.leagueId,
+      legacyStartAt: String(schedule.nextPaymentDate),
+      immediateUpfront: schedule.frequency === 'upfront',
+      eligibilityNow: transactionTime,
+      existingReferenceId: null,
+    });
+    assertNoOccurrenceReferenceConflict(compatibility);
+    const [created] = await tx.insert(paymentSchedules).values({
+      ...schedule,
+      nextOccurrenceId: compatibility.classification === 'exact_match'
+        ? compatibility.occurrenceId
+        : null,
+    }).returning();
+    return { result: created, comparison: compatibility };
+  });
+  if (comparison) logOccurrenceCompatibility('payment_schedule_create', comparison);
+  if (!result) throw new Error('Payment schedule was not created');
   return result;
 }
 
@@ -376,11 +412,46 @@ export async function updatePaymentScheduleFields(
   id: number,
   fields: UpdatePaymentSchedule
 ): Promise<PaymentSchedule> {
-  const [updated] = await db
-    .update(paymentSchedules)
-    .set(fields)
-    .where(eq(paymentSchedules.id, id))
-    .returning();
+  const preliminary = await getPaymentScheduleById(id);
+  if (!preliminary) throw new Error('Payment schedule not found');
+  const [league] = await db.select({ organizationId: leagues.organizationId })
+    .from(leagues).where(eq(leagues.id, preliminary.leagueId)).limit(1);
+  if (!league) throw new Error('Payment schedule league not found');
+  const { updated, comparison } = await db.transaction(async (tx) => {
+    if (league.organizationId !== null) {
+      await lockLeagueSchedule(tx, league.organizationId, preliminary.leagueId);
+    }
+    const [current] = await tx.select().from(paymentSchedules)
+      .where(eq(paymentSchedules.id, id)).limit(1).for('update');
+    if (!current) throw new Error('Payment schedule not found');
+    const cursorChanged = fields.nextPaymentDate !== undefined
+      || (fields.frequency !== undefined && fields.frequency !== current.frequency);
+    if (!cursorChanged || league.organizationId === null) {
+      const [result] = await tx.update(paymentSchedules).set(fields)
+        .where(eq(paymentSchedules.id, id)).returning();
+      return { updated: result, comparison: null };
+    }
+    const transactionTime = await occurrenceCompatibilityTransactionTime(tx);
+    const compatibility = await resolveCanonicalOccurrenceCompatibility(tx, {
+      subject: 'payment_schedule',
+      organizationId: league.organizationId,
+      leagueId: current.leagueId,
+      legacyStartAt: String(fields.nextPaymentDate ?? current.nextPaymentDate),
+      immediateUpfront: (fields.frequency ?? current.frequency) === 'upfront',
+      eligibilityNow: transactionTime,
+      existingReferenceId: current.nextOccurrenceId,
+    });
+    assertNoOccurrenceReferenceConflict(compatibility);
+    const [result] = await tx.update(paymentSchedules).set({
+      ...fields,
+      nextOccurrenceId: compatibility.classification === 'exact_match'
+        ? compatibility.occurrenceId
+        : null,
+    }).where(eq(paymentSchedules.id, id)).returning();
+    return { updated: result, comparison: compatibility };
+  });
+  if (comparison) logOccurrenceCompatibility('payment_schedule_cursor_update', comparison);
+  if (!updated) throw new Error('Payment schedule was not updated');
   return updated;
 }
 

@@ -9,6 +9,8 @@ import {
   leagueOccurrences,
   leagueScheduleCommands,
   leagueScheduleExceptions,
+  games,
+  paymentOperations,
   leagues,
   users,
   type LeagueOccurrence,
@@ -760,10 +762,28 @@ function billingTermSnapshot(row: LeagueOccurrenceBillingTerm): Record<string, u
   };
 }
 
-function assertNotEffectivelyLocked(row: LeagueOccurrence, now: string): void {
+async function assertNotEffectivelyLocked(
+  tx: LeagueScheduleLockExecutor,
+  row: LeagueOccurrence,
+  now: string,
+): Promise<void> {
   assertValidInstant(now, "now");
   if (Date.parse(row.startAt) <= Date.parse(now) || row.lifecycle === "locked" || row.lockedAt !== null) {
     throw new CanonicalOccurrenceTransactionError("occurrence_effectively_locked", "occurrence is effectively locked at the supplied authoritative now");
+  }
+  const [linkedGame] = await tx.select({ id: games.id }).from(games).where(and(
+    eq(games.leagueId, row.leagueId),
+    eq(games.occurrenceId, row.id),
+  )).limit(1);
+  const [linkedOperation] = await tx.select({ id: paymentOperations.id }).from(paymentOperations).where(and(
+    eq(paymentOperations.organizationId, row.organizationId),
+    eq(paymentOperations.triggerOccurrenceId, row.id),
+  )).limit(1);
+  if (linkedGame || linkedOperation) {
+    throw new CanonicalOccurrenceTransactionError(
+      "occurrence_effectively_locked",
+      "occurrence is effectively locked by a linked game or scheduled operation",
+    );
   }
 }
 
@@ -799,7 +819,7 @@ export async function discardDraftOccurrence(request: DraftDiscardRequest): Prom
     }
     if (occurrence.lifecycle !== "draft" || occurrence.status !== "scheduled") throw new CanonicalOccurrenceTransactionError("occurrence_not_draft", "only a scheduled draft occurrence can be discarded");
     if (request.activityEvidence && request.activityEvidence.length > 0) throw new CanonicalOccurrenceTransactionError("activity_evidence", "draft discard is refused when explicit activity evidence is present");
-    assertNotEffectivelyLocked(occurrence, request.now);
+    await assertNotEffectivelyLocked(tx, occurrence, request.now);
     const terms = await tx
       .select()
       .from(leagueOccurrenceBillingTerms)
@@ -893,7 +913,7 @@ export async function cancelOccurrence(request: OccurrenceCancellationRequest): 
     if (existing && occurrence.cancellationCommandId === command.id) return occurrence;
     if (occurrence.lifecycle === "draft" || occurrence.status !== "scheduled") throw new CanonicalOccurrenceTransactionError("occurrence_terminal", "only a scheduled published or locked occurrence can be cancelled");
     if (request.activityEvidence && request.activityEvidence.length > 0) throw new CanonicalOccurrenceTransactionError("activity_evidence", "cancellation is refused when explicit activity evidence is present");
-    assertNotEffectivelyLocked(occurrence, request.now);
+    await assertNotEffectivelyLocked(tx, occurrence, request.now);
     const nextRevision = occurrence.currentRevision + 1;
     const [cancelled] = await tx.update(leagueOccurrences).set({
       status: "cancelled",
@@ -973,7 +993,7 @@ export async function rescheduleOccurrence(request: OccurrenceRescheduleRequest)
     if (!occurrence) throw new CanonicalOccurrenceTransactionError("occurrence_not_found", "occurrence is missing or outside the requested tenant");
     if (existing && occurrence.lastCommandId === command.id) return occurrence;
     if (occurrence.status === "discarded" || occurrence.status === "cancelled") throw new CanonicalOccurrenceTransactionError("occurrence_terminal", "discarded or cancelled occurrences cannot be rescheduled");
-    assertNotEffectivelyLocked(occurrence, canonicalRequest.now);
+    await assertNotEffectivelyLocked(tx, occurrence, canonicalRequest.now);
     await validateCanonicalOccurrencePlacementInTransaction(tx, {
       ...canonicalRequest,
       existingOccurrenceId: occurrence.id,
