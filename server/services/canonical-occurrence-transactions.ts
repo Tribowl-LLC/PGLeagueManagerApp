@@ -11,6 +11,13 @@ import {
   leagueScheduleExceptions,
   games,
   paymentOperations,
+  bowlerOccurrenceEligibilities,
+  bowlerOccurrenceTeamAssignments,
+  bowlerOccurrenceObligations,
+  occurrenceCollectionPlans,
+  occurrenceCollectionPlanItems,
+  paymentOccurrenceAllocations,
+  paymentOperationOccurrenceSnapshotAllocations,
   leagues,
   users,
   type LeagueOccurrence,
@@ -779,10 +786,63 @@ async function assertNotEffectivelyLocked(
     eq(paymentOperations.organizationId, row.organizationId),
     eq(paymentOperations.triggerOccurrenceId, row.id),
   )).limit(1);
-  if (linkedGame || linkedOperation) {
+  const [eligibility] = await tx.select({ id: bowlerOccurrenceEligibilities.id })
+    .from(bowlerOccurrenceEligibilities).where(and(
+      eq(bowlerOccurrenceEligibilities.organizationId, row.organizationId),
+      eq(bowlerOccurrenceEligibilities.leagueId, row.leagueId),
+      eq(bowlerOccurrenceEligibilities.occurrenceId, row.id),
+    )).limit(1);
+  const [teamAssignment] = await tx.select({ id: bowlerOccurrenceTeamAssignments.id })
+    .from(bowlerOccurrenceTeamAssignments).where(and(
+      eq(bowlerOccurrenceTeamAssignments.organizationId, row.organizationId),
+      eq(bowlerOccurrenceTeamAssignments.leagueId, row.leagueId),
+      eq(bowlerOccurrenceTeamAssignments.occurrenceId, row.id),
+    )).limit(1);
+  const [obligation] = await tx.select({ id: bowlerOccurrenceObligations.id })
+    .from(bowlerOccurrenceObligations).where(and(
+      eq(bowlerOccurrenceObligations.organizationId, row.organizationId),
+      eq(bowlerOccurrenceObligations.leagueId, row.leagueId),
+      eq(bowlerOccurrenceObligations.occurrenceId, row.id),
+    )).limit(1);
+  const [triggerPlan] = await tx.select({ id: occurrenceCollectionPlans.id })
+    .from(occurrenceCollectionPlans).where(and(
+      eq(occurrenceCollectionPlans.organizationId, row.organizationId),
+      eq(occurrenceCollectionPlans.leagueId, row.leagueId),
+      eq(occurrenceCollectionPlans.triggerOccurrenceId, row.id),
+    )).limit(1);
+  const [planItem] = await tx.select({ id: occurrenceCollectionPlanItems.id })
+    .from(occurrenceCollectionPlanItems).where(and(
+      eq(occurrenceCollectionPlanItems.organizationId, row.organizationId),
+      eq(occurrenceCollectionPlanItems.leagueId, row.leagueId),
+      eq(occurrenceCollectionPlanItems.occurrenceId, row.id),
+    )).limit(1);
+  const [allocation] = await tx.select({ id: paymentOccurrenceAllocations.id })
+    .from(paymentOccurrenceAllocations).where(and(
+      eq(paymentOccurrenceAllocations.organizationId, row.organizationId),
+      eq(paymentOccurrenceAllocations.leagueId, row.leagueId),
+      eq(paymentOccurrenceAllocations.occurrenceId, row.id),
+    )).limit(1);
+  const [snapshotAllocation] = await tx
+    .select({ operationId: paymentOperationOccurrenceSnapshotAllocations.operationId })
+    .from(paymentOperationOccurrenceSnapshotAllocations).where(and(
+      eq(paymentOperationOccurrenceSnapshotAllocations.organizationId, row.organizationId),
+      eq(paymentOperationOccurrenceSnapshotAllocations.leagueId, row.leagueId),
+      eq(paymentOperationOccurrenceSnapshotAllocations.occurrenceId, row.id),
+    )).limit(1);
+  if (
+    linkedGame
+    || linkedOperation
+    || eligibility
+    || teamAssignment
+    || obligation
+    || triggerPlan
+    || planItem
+    || allocation
+    || snapshotAllocation
+  ) {
     throw new CanonicalOccurrenceTransactionError(
       "occurrence_effectively_locked",
-      "occurrence is effectively locked by a linked game or scheduled operation",
+      "occurrence is effectively locked by linked schedule, participation, obligation, collection, or settlement evidence",
     );
   }
 }

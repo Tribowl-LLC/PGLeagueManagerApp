@@ -14,6 +14,7 @@ export const teams = pgTable("teams", {
   active: boolean("active").notNull().default(true),
   displayOrder: integer("display_order").notNull().default(0),
 }, (table) => ({
+  idLeagueUnique: uniqueIndex("teams_id_league_unique").on(table.id, table.leagueId),
   leagueNumberIdx: uniqueIndex("teams_league_number_idx").on(table.leagueId, table.number),
 }));
 

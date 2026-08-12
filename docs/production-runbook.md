@@ -342,6 +342,23 @@ interactive operation exists, do not resume the old client-orchestrated weekly
 setup path: drain the service and deploy a forward fix while preserving all
 setup, operation, payment, and provider evidence.
 
+### Migration 0023: dormant occurrence financial foundation
+
+Migration `0023_phase_d2_occurrence_financial_foundation` is additive and
+creates empty eligibility, occurrence-team, obligation, collection-plan,
+settlement-allocation, revision, and supplemental operation-snapshot tables.
+It performs no backfill and activates no payment behavior. Follow the schema
+release auto-deploy hold and normal target/backup/journal/fingerprint gates.
+
+Apply 0023 before deploying its matching application. Verify that the new
+tables are empty, current scheduled and interactive writers still emit only
+their existing snapshot versions, existing provider/request/idempotency
+identity is unchanged, legacy weekly and upfront flows remain healthy, and no
+provider request is caused by D2. The previous application is compatible with
+0023; rollback leaves the forward migration and any durable evidence in place.
+See [Phase D2 occurrence financial foundation](phase-d2-occurrence-financial-foundation.md)
+for the full smoke-test and later-phase boundary.
+
 ## Post-Deployment Checks
 
 - Confirm the Render deploy is running the expected commit.

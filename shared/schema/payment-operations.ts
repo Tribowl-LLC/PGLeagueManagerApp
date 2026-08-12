@@ -119,6 +119,8 @@ export const paymentOperations = pgTable("payment_operations", {
   startedAt: timestamp("started_at", { mode: "string" }),
   completedAt: timestamp("completed_at", { mode: "string" }),
 }, (table) => ({
+  tenantCurrencyReferenceUnique: uniqueIndex("payment_operations_tenant_currency_reference_unique")
+    .on(table.id, table.organizationId, table.currency),
   providerIdempotencyUnique: uniqueIndex("payment_operations_provider_idempotency_key_unique")
     .on(table.providerIdempotencyKey),
   recurringCycleUnique: uniqueIndex("payment_operations_recurring_cycle_unique")

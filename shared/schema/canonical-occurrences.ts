@@ -578,6 +578,16 @@ export const leagueOccurrenceBillingTerms = pgTable("league_occurrence_billing_t
   }).onDelete("restrict"),
   tenantIdentityUnique: uniqueIndex("billing_terms_tenant_identity_unique")
     .on(table.id, table.organizationId, table.leagueId),
+  obligationReferenceUnique: uniqueIndex("billing_terms_obligation_reference_unique")
+    .on(
+      table.id,
+      table.organizationId,
+      table.leagueId,
+      table.occurrenceId,
+      table.purpose,
+      table.version,
+      table.currency,
+    ),
   publicationCommandFk: foreignKey({
     name: "billing_terms_publication_command_fk",
     columns: [table.publicationCommandId, table.organizationId, table.leagueId],
