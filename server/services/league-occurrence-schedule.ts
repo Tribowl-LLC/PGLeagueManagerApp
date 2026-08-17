@@ -185,6 +185,12 @@ function isFallDraftSnapshot(value: unknown): boolean {
   return typeof version === "string" && /^fall-draft-generation-input-snapshot\/\d+$/.test(version);
 }
 
+function isFutureSeasonDraftSnapshot(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  return (value as { snapshotContractVersion?: unknown }).snapshotContractVersion
+    === "future-season-draft-generation-input-snapshot/1";
+}
+
 function administratorEvidence(
   input: BuildLeagueOccurrenceScheduleInput,
 ): LeagueOccurrenceScheduleAdministratorEvidence | null {
@@ -192,6 +198,12 @@ function administratorEvidence(
   const { canonical } = input;
   const start = dateOnly(input.league.seasonStart);
   const c2Runs = canonical.generationRuns.filter((row) => isFallDraftSnapshot(row.normalizedInputSnapshot));
+  const e4Runs = canonical.generationRuns.filter((row) => isFutureSeasonDraftSnapshot(row.normalizedInputSnapshot));
+  const reviewContractFamily = c2Runs.length === 1 && e4Runs.length === 0
+    ? "fall" as const
+    : e4Runs.length === 1 && c2Runs.length === 0
+      ? "canonical" as const
+      : null;
   return {
     hasDraftEvidence: canonical.generationRuns.some((row) => row.state === "generated")
       || canonical.occurrences.some((row) => row.lifecycle === "draft" && row.status !== "discarded")
@@ -203,7 +215,8 @@ function administratorEvidence(
       || canonical.billingTerms.some((row) => row.state === "superseded"),
     hasRevokedEvidence: canonical.scheduleExceptions.some((row) => row.lifecycle === "revoked")
       || canonical.relationships.some((row) => row.state === "revoked"),
-    c2ReviewAvailable: c2Runs.length === 1,
+    c2ReviewAvailable: reviewContractFamily !== null,
+    reviewContractFamily,
     fallRecoveryEligible: !canonical.hasAnyCanonicalEvidence
       && input.league.active
       && start !== null

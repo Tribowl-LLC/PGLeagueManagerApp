@@ -29,8 +29,8 @@ import { SeasonHistoryCard } from "./league-view-page/season-history-card";
 import { NewSeasonDialog, type NewSeasonFormValues } from "./league-view-page/new-season-dialog";
 import { LeagueOccurrenceScheduleCard } from "./league-view-page/league-occurrence-schedule-card";
 import {
-  LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION,
-  type LeagueSetupIntegrationResult,
+  LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION_2,
+  type AnyLeagueSetupIntegrationResult,
 } from "@shared/league-setup-integration";
 import { createSetupIdempotencyKeyRetainer } from "./league-view-page/fall-draft-secure-id";
 
@@ -80,10 +80,10 @@ export default function LeagueViewPage() {
       const querySuffix = currentUser?.role === "system_admin" && organizationScope !== null
         ? `?organizationId=${organizationScope}`
         : "";
-      return await apiRequest<LeagueSetupIntegrationResult>(`/api/leagues/${leagueId}/new-season${querySuffix}`, "POST", {
+      return await apiRequest<AnyLeagueSetupIntegrationResult>(`/api/leagues/${leagueId}/new-season${querySuffix}`, "POST", {
         ...values,
         setupIntegration: {
-          contractVersion: LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION,
+          contractVersion: LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION_2,
           idempotencyKey: newSeasonSetupIdempotency.current.keyFor({
             sourceLeagueId: leagueId,
             organizationId: organizationScope,
@@ -99,7 +99,7 @@ export default function LeagueViewPage() {
       toast({
         title: "New Season Created",
         description: newLeague.canonicalDraftGeneration
-          ? `${league?.name} new season and its canonical Fall schedule drafts were created. The previous season has been archived.`
+          ? `${league?.name} new season and its canonical schedule drafts were created. The previous season has been archived.`
           : `${league?.name} new season has been created. The previous season has been archived.`,
       });
       setShowNewSeason(false);
@@ -248,6 +248,7 @@ export default function LeagueViewPage() {
           setShowNewSeason={setShowNewSeason}
           onCreate={(values) => newSeasonMutation.mutate(values)}
           isPending={newSeasonMutation.isPending}
+          isSystemAdmin={currentUser?.role === "system_admin"}
         />
         </ErrorBoundary>
       </div>

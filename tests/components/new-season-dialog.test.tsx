@@ -1,8 +1,15 @@
 import { fireEvent, render, screen } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { League } from '@shared/schema';
 import { NewSeasonDialog } from '@/pages/league-view-page/new-season-dialog';
+
+const apiRequestMock = vi.hoisted(() => vi.fn());
+vi.mock('@/lib/queryClient', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/lib/queryClient')>(),
+  apiRequest: apiRequestMock,
+}));
 
 const league = {
   id: 42,
@@ -42,15 +49,39 @@ describe('NewSeasonDialog', () => {
   it('calculates the end date and submits the edited bowling schedule', async () => {
     const user = userEvent.setup();
     const onCreate = vi.fn();
+    apiRequestMock.mockResolvedValue({
+      success: true,
+      data: {
+        contractVersion: 'league-rollover-source/1',
+        fingerprintVersion: 'league-rollover-source-fingerprint/1',
+        fingerprint: 'a'.repeat(64),
+        organizationId: 3,
+        sourceLeagueId: 42,
+        carriedConfiguration: {
+          name: league.name,
+          description: null,
+          locationId: 9,
+          timezone: 'America/Chicago',
+          practiceStartTime: '18:30',
+          competitionStartTime: '19:00',
+          weeklyFee: 2000,
+          lineageFee: null,
+          prizeFundFee: null,
+        },
+      },
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
     render(
-      <NewSeasonDialog
-        league={league}
-        showNewSeason
-        setShowNewSeason={() => {}}
-        onCreate={onCreate}
-        isPending={false}
-      />,
+      <QueryClientProvider client={client}>
+        <NewSeasonDialog
+          league={league}
+          showNewSeason
+          setShowNewSeason={() => {}}
+          onCreate={onCreate}
+          isPending={false}
+        />
+      </QueryClientProvider>,
     );
 
     fireEvent.change(screen.getByLabelText('New Season Start Date'), {
@@ -69,6 +100,7 @@ describe('NewSeasonDialog', () => {
     await user.click(screen.getByRole('switch', { name: /allow public sign-up/i }));
     await user.click(screen.getByLabelText('League Payment Timing'));
     await user.click(screen.getByRole('option', { name: /full season upfront/i }));
+    await user.click(await screen.findByLabelText(/reviewed and confirm this carried configuration/i));
     expect(screen.getByRole('button', { name: /create new season/i })).toBeEnabled();
 
     expect(endDate).toHaveValue('2026-11-30');
@@ -83,6 +115,11 @@ describe('NewSeasonDialog', () => {
       doublePayDates: [],
       allowPublicSignup: true,
       paymentMode: 'upfront',
+      sourceConfirmation: {
+        contractVersion: 'league-rollover-source/1',
+        fingerprint: 'a'.repeat(64),
+        confirmed: true,
+      },
     });
   });
 });

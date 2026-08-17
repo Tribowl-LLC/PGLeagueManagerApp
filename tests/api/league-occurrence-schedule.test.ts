@@ -194,7 +194,7 @@ describe("E1 league occurrence schedule API", () => {
       contractVersion: "league-occurrence-schedule/1",
       authoritativeSource: "legacy_fallback",
       operationalCanonicalStateExists: false,
-      administrator: { fallRecoveryEligible: true, c2ReviewAvailable: false },
+      administrator: { fallRecoveryEligible: true, c2ReviewAvailable: false, reviewContractFamily: null },
     });
 
     const previewResponse = await apiPost<FallDraftPreview>(
@@ -223,7 +223,7 @@ describe("E1 league occurrence schedule API", () => {
     expect(draftOnly.data.data).toMatchObject({
       authoritativeSource: "legacy_fallback",
       operationalCanonicalStateExists: false,
-      administrator: { hasDraftEvidence: true, c2ReviewAvailable: true, fallRecoveryEligible: false },
+      administrator: { hasDraftEvidence: true, c2ReviewAvailable: true, reviewContractFamily: "fall", fallRecoveryEligible: false },
     });
     expect(draftOnly.data.data?.occurrences.every((row) => row.occurrenceId === null)).toBe(true);
 

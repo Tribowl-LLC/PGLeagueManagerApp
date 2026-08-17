@@ -178,6 +178,7 @@ export function LeagueOccurrenceScheduleCard({
     })),
   ].sort(compareRows) : [];
   const fallAdminPath = `/api/leagues/${leagueId}/canonical-fall-drafts`;
+  const canonicalAdminPath = `/api/leagues/${leagueId}/canonical-drafts`;
 
   return (
     <Card data-testid="league-occurrence-schedule-card">
@@ -261,7 +262,13 @@ export function LeagueOccurrenceScheduleCard({
               <FallCanonicalRecoveryPanel leagueId={leagueId} organizationId={organizationId} isSystemAdmin={isSystemAdmin} />
             )}
             {schedule.administrator.c2ReviewAvailable && (
-              <FallDraftReviewPanel basePath={fallAdminPath} querySuffix={querySuffix} enabled />
+              <FallDraftReviewPanel
+                basePath={schedule.administrator.reviewContractFamily === "canonical" ? canonicalAdminPath : fallAdminPath}
+                querySuffix={querySuffix}
+                enabled
+                contractFamily={schedule.administrator.reviewContractFamily ?? "fall"}
+                scheduleQueryKey={["league-occurrence-schedule", endpoint]}
+              />
             )}
           </section>
         )}

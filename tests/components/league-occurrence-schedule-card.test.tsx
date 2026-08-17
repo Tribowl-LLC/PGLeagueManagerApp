@@ -9,7 +9,16 @@ vi.mock("@/pages/league-view-page/fall-draft-generation-card", () => ({
   FallCanonicalRecoveryPanel: () => <div>Contextual Fall recovery</div>,
 }));
 vi.mock("@/pages/league-view-page/fall-draft-review-panel", () => ({
-  FallDraftReviewPanel: () => <div>Audited C2 controls</div>,
+  FallDraftReviewPanel: ({ basePath, contractFamily, scheduleQueryKey }: { basePath: string; contractFamily: string; scheduleQueryKey: unknown[] }) => (
+    <div
+      data-testid="draft-review-panel"
+      data-base-path={basePath}
+      data-contract-family={contractFamily}
+      data-schedule-query-key={JSON.stringify(scheduleQueryKey)}
+    >
+      Audited C2 controls
+    </div>
+  ),
 }));
 
 import { LeagueOccurrenceScheduleCard } from "@/pages/league-view-page/league-occurrence-schedule-card";
@@ -90,7 +99,8 @@ const canonical: LeagueOccurrenceScheduleReadContract = {
     hasRejectedEvidence: false,
     hasSupersededEvidence: false,
     hasRevokedEvidence: false,
-    c2ReviewAvailable: true,
+  c2ReviewAvailable: true,
+  reviewContractFamily: "fall",
     fallRecoveryEligible: false,
     counts: {
       generationRuns: 1,
@@ -161,7 +171,7 @@ describe("LeagueOccurrenceScheduleCard", () => {
         billing: null,
       }],
       skippedDates: [],
-      administrator: { ...administrator, c2ReviewAvailable: false, fallRecoveryEligible: true },
+      administrator: { ...administrator, c2ReviewAvailable: false, reviewContractFamily: null, fallRecoveryEligible: true },
     };
     vi.spyOn(queryModule, "apiRequest").mockResolvedValue({ success: true, data: fallback });
     renderCard();
@@ -170,6 +180,26 @@ describe("LeagueOccurrenceScheduleCard", () => {
     expect(screen.getByText("No canonical occurrence identity is assigned in legacy fallback.")).toBeVisible();
     expect(screen.getByText("Contextual Fall recovery")).toBeVisible();
     expect(screen.queryByText("Audited C2 controls")).not.toBeInTheDocument();
+  });
+
+  it("selects the generic review route for an E4 generation snapshot", async () => {
+    const administrator = canonical.administrator;
+    if (!administrator) throw new Error("canonical component fixture is missing administrator evidence");
+    vi.spyOn(queryModule, "apiRequest").mockResolvedValue({
+      success: true,
+      data: {
+        ...canonical,
+        administrator: { ...administrator, reviewContractFamily: "canonical" },
+      },
+    });
+    renderCard();
+    const panel = await screen.findByTestId("draft-review-panel");
+    expect(panel).toHaveAttribute("data-base-path", "/api/leagues/7/canonical-drafts");
+    expect(panel).toHaveAttribute("data-contract-family", "canonical");
+    expect(panel).toHaveAttribute(
+      "data-schedule-query-key",
+      JSON.stringify(["league-occurrence-schedule", "/api/leagues/7/occurrence-schedule"]),
+    );
   });
 
   it("supports loading, empty, error, and retry states", async () => {

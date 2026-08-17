@@ -31,6 +31,11 @@ vi.mock('@/pages/league-view-page/new-season-dialog', () => ({
       doublePayDates: string[];
       allowPublicSignup: boolean;
       paymentMode: 'weekly';
+      sourceConfirmation: {
+        contractVersion: 'league-rollover-source/1';
+        fingerprint: string;
+        confirmed: true;
+      };
     }) => void;
   }) => showNewSeason ? (
     <button type="button" onClick={() => onCreate({
@@ -42,6 +47,11 @@ vi.mock('@/pages/league-view-page/new-season-dialog', () => ({
       doublePayDates: [],
       allowPublicSignup: false,
       paymentMode: 'weekly',
+      sourceConfirmation: {
+        contractVersion: 'league-rollover-source/1',
+        fingerprint: 'b'.repeat(64),
+        confirmed: true,
+      },
     })}>
       Submit mocked new season
     </button>
@@ -150,7 +160,8 @@ describe('LeagueViewPage system-admin new-season scope', () => {
       `/api/leagues/42/new-season?organizationId=${organizationId}`,
       'POST',
       expect.objectContaining({
-        setupIntegration: expect.objectContaining({ contractVersion: 'league-setup-integration-request/1' }),
+        setupIntegration: expect.objectContaining({ contractVersion: 'league-setup-integration-request/2' }),
+        sourceConfirmation: expect.objectContaining({ contractVersion: 'league-rollover-source/1' }),
       }),
     );
   });

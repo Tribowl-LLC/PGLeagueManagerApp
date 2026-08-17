@@ -78,6 +78,7 @@ export interface LeagueOccurrenceScheduleAdministratorEvidence {
   hasSupersededEvidence: boolean;
   hasRevokedEvidence: boolean;
   c2ReviewAvailable: boolean;
+  reviewContractFamily: "fall" | "canonical" | null;
   fallRecoveryEligible: boolean;
   counts: {
     generationRuns: number;

@@ -302,7 +302,7 @@ describe("league occurrence schedule source selection", () => {
     expect(evidence.occurrences.every((row) => row.occurrenceId === null)).toBe(true);
     expect(evidence.administrator).toMatchObject({
       hasDraftEvidence: true, hasRejectedEvidence: true, hasSupersededEvidence: true, hasRevokedEvidence: true,
-      c2ReviewAvailable: true, fallRecoveryEligible: false,
+      c2ReviewAvailable: true, reviewContractFamily: "fall", fallRecoveryEligible: false,
     });
   });
 

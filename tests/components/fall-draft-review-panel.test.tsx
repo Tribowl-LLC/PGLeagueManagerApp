@@ -161,10 +161,29 @@ const review: FallDraftReview = {
   }],
 };
 
-function renderPanel(value: FallDraftReview = review) {
+function renderPanel(value: FallDraftReview = review, contractFamily: "fall" | "canonical" = "fall") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } });
-  client.setQueryData(["/api/leagues/7/canonical-fall-drafts/review"], { success: true, data: value });
-  return render(<QueryClientProvider client={client}><FallDraftReviewPanel basePath="/api/leagues/7/canonical-fall-drafts" querySuffix="" enabled /></QueryClientProvider>);
+  const basePath = contractFamily === "canonical"
+    ? "/api/leagues/7/canonical-drafts"
+    : "/api/leagues/7/canonical-fall-drafts";
+  client.setQueryData([`${basePath}/review`], { success: true, data: value });
+  const scheduleQueryKey = ["league-occurrence-schedule", "/api/leagues/7/occurrence-schedule"];
+  return {
+    ...render(
+      <QueryClientProvider client={client}>
+        <FallDraftReviewPanel
+          basePath={basePath}
+          querySuffix=""
+          enabled
+          contractFamily={contractFamily}
+          scheduleQueryKey={scheduleQueryKey}
+        />
+      </QueryClientProvider>,
+    ),
+    client,
+    basePath,
+    scheduleQueryKey,
+  };
 }
 
 function result(updatedReview: FallDraftReview, operation: FallDraftMutationResult["operation"]): FallDraftMutationResult {
@@ -240,6 +259,31 @@ describe("FallDraftReviewPanel", () => {
     expect(await screen.findByText("The audited mutation was committed.")).toBeVisible();
   });
 
+  it("uses generic E4 routes and strict request versions for canonical review", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("crypto", { randomUUID: () => "00000000-0000-4000-8000-000000000092" });
+    const apiSpy = vi.spyOn(queryModule, "apiRequest").mockResolvedValue({ success: true, data: result(review, "cancel") });
+    const rendered = renderPanel(review, "canonical");
+    const invalidateSpy = vi.spyOn(rendered.client, "invalidateQueries");
+    await user.click(screen.getByRole("button", { name: "Cancel occurrence" }));
+    await user.type(screen.getByLabelText("Reason"), "Cancel generic future occurrence");
+    await user.click(screen.getByRole("button", { name: "Confirm cancel" }));
+    await waitFor(() => expect(apiSpy).toHaveBeenCalledWith(
+      "/api/leagues/7/canonical-drafts/review/cancel",
+      "POST",
+      expect.objectContaining({
+        contractVersion: "canonical-draft-cancel-request/1",
+        confirmedReviewFingerprint: reviewFingerprint,
+      }),
+    ));
+    expect(rendered.client.getQueryData([`${rendered.basePath}/review`])).toEqual({ success: true, data: review });
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: rendered.scheduleQueryKey,
+      exact: true,
+      refetchType: "active",
+    });
+  });
+
   it("requires every explicit discrepancy disposition before approval and describes excluded side effects", async () => {
     const user = userEvent.setup();
     vi.stubGlobal("crypto", { randomUUID: () => "00000000-0000-4000-8000-000000000091" });
@@ -253,7 +297,8 @@ describe("FallDraftReviewPanel", () => {
       discrepancies: [{ ...review.discrepancies[0], resolutionState: "waived", resolutionCommandId: "approved" }],
     };
     const apiSpy = vi.spyOn(queryModule, "apiRequest").mockResolvedValue({ success: true, data: result(published, "approve_publish") });
-    renderPanel();
+    const rendered = renderPanel(review, "canonical");
+    const invalidateSpy = vi.spyOn(rendered.client, "invalidateQueries");
     await user.type(screen.getByLabelText("Reason for approval or rejection"), "Approve reviewed policy snapshots");
     expect(screen.getByRole("button", { name: "Approve and publish reviewed set" })).toBeDisabled();
     await user.click(screen.getByLabelText("Disposition"));
@@ -263,10 +308,19 @@ describe("FallDraftReviewPanel", () => {
     expect(await screen.findByText(/creates no debts, games, standings results, payments, or collection plans/i)).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Approve and publish" }));
     await waitFor(() => expect(apiSpy).toHaveBeenCalledWith(
-      "/api/leagues/7/canonical-fall-drafts/review/approve",
+      "/api/leagues/7/canonical-drafts/review/approve",
       "POST",
-      expect.objectContaining({ discrepancyDispositions: [{ discrepancyId: review.discrepancies[0].id, disposition: "waived" }] }),
+      expect.objectContaining({
+        contractVersion: "canonical-draft-approve-request/1",
+        discrepancyDispositions: [{ discrepancyId: review.discrepancies[0].id, disposition: "waived" }],
+      }),
     ));
+    expect(rendered.client.getQueryData([`${rendered.basePath}/review`])).toEqual({ success: true, data: published });
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: rendered.scheduleQueryKey,
+      exact: true,
+      refetchType: "active",
+    });
   });
 
   it("clearly displays stale, effectively locked, and terminal rejected states", () => {

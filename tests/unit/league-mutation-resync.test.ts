@@ -783,8 +783,8 @@ describe('POST /api/leagues/:id/new-season → fires resync for every bowler clo
       result: {
         ...newLeague,
         setupIntegration: {
-          resultContractVersion: 'league-setup-integration-result/1',
-          requestContractVersion: 'league-setup-integration-request/1',
+          resultContractVersion: 'league-setup-integration-result/2',
+          requestContractVersion: 'league-setup-integration-request/2',
           mode: 'created',
           writesPerformed: true,
         },
@@ -805,8 +805,13 @@ describe('POST /api/leagues/:id/new-season → fires resync for every bowler clo
       allowPublicSignup: true,
       paymentMode: 'upfront',
       setupIntegration: {
-        contractVersion: 'league-setup-integration-request/1',
+        contractVersion: 'league-setup-integration-request/2',
         idempotencyKey: '10000000-0000-4000-8000-000000000120',
+      },
+      sourceConfirmation: {
+        contractVersion: 'league-rollover-source/1',
+        fingerprint: 'c'.repeat(64),
+        confirmed: true,
       },
     });
     expect(res.status, await res.text().catch(() => '')).toBe(201);
