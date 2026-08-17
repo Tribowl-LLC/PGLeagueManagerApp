@@ -13,6 +13,7 @@ const ARCHIVED_LEAGUE_ID = 200;
 const ACTIVE_LEAGUE_ID = 201;
 const ARCHIVED_TEAM_ID = 300;
 const ACTIVE_TEAM_ID = 301;
+const RESPONSIBILITY_TEAM_ID = 302;
 
 const bowler: BowlerWithAccount = {
   id: BOWLER_ID,
@@ -89,6 +90,14 @@ const teams: Team[] = [
     active: true,
     displayOrder: 0,
   },
+  {
+    id: RESPONSIBILITY_TEAM_ID,
+    name: 'Explicit Responsibility Team',
+    number: 2,
+    leagueId: ACTIVE_LEAGUE_ID,
+    active: true,
+    displayOrder: 1,
+  },
 ];
 
 const bowlerLeagues: BowlerLeague[] = [
@@ -112,7 +121,7 @@ const bowlerLeagues: BowlerLeague[] = [
   },
 ];
 
-function renderSection() {
+function renderSection(report?: unknown, enabled = true) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: {
@@ -131,12 +140,14 @@ function renderSection() {
     { success: true, data: bowlerLeagues },
   );
   queryClient.setQueryData<{ data: Payment[] }>(['/api/payments'], { data: [] });
+  queryClient.setQueryData(['/api/financials/due-past-due'], report ?? { data: { leagues: [] } });
 
-  return render(
+  const rendered = render(
     <QueryClientProvider client={queryClient}>
-      <PastDueBowlersSection />
+      <PastDueBowlersSection enabled={enabled} />
     </QueryClientProvider>,
   );
+  return { ...rendered, queryClient };
 }
 
 describe('PastDueBowlersSection', () => {
@@ -146,5 +157,43 @@ describe('PastDueBowlersSection', () => {
     expect(screen.getByText('No past due balances found')).toBeInTheDocument();
     expect(screen.queryByText('Farmington Mixed League 25/26')).not.toBeInTheDocument();
     expect(screen.queryByText('Jane Doe')).not.toBeInTheDocument();
+  });
+
+  it('keeps zero-outstanding review evidence visible and aggregates obligation rows', () => {
+    renderSection({ data: { leagues: [{ leagueId: ACTIVE_LEAGUE_ID, report: { rows: [
+      { bowlerId: BOWLER_ID, teamId: ACTIVE_TEAM_ID, classification: 'future', outstandingMinor: 500, reviewRequired: false },
+      { bowlerId: BOWLER_ID, teamId: ACTIVE_TEAM_ID, classification: 'due', outstandingMinor: 400, reviewRequired: false },
+      { bowlerId: BOWLER_ID, teamId: ACTIVE_TEAM_ID, classification: 'settled', outstandingMinor: 0, reviewRequired: true },
+      { bowlerId: BOWLER_ID, teamId: ACTIVE_TEAM_ID, classification: 'past_due', outstandingMinor: 250, reviewRequired: false },
+    ] } }] } });
+    expect(screen.getAllByText('Review required').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText('Jane Doe')).toBeInTheDocument();
+    expect(screen.getByText('$2.50')).toBeInTheDocument();
+  });
+
+  it('uses canonical responsibility team identity for an explicit substitute', () => {
+    renderSection({ data: { leagues: [{ leagueId: ACTIVE_LEAGUE_ID, report: { rows: [
+      { bowlerId: BOWLER_ID, teamId: RESPONSIBILITY_TEAM_ID, classification: 'past_due', outstandingMinor: 250, reviewRequired: false },
+    ] } }] } });
+    expect(screen.getByText('Explicit Responsibility Team')).toBeInTheDocument();
+  });
+
+  it('does not issue the org-wide financial request when disabled for an ordinary member', () => {
+    const { queryClient } = renderSection(undefined, false);
+    expect(queryClient.getQueryState(['/api/financials/due-past-due'])?.fetchStatus).toBe("idle");
+    expect(screen.queryByText('Past Due Balances')).not.toBeInTheDocument();
+  });
+
+  it('keeps canonical responsibility visible after the current roster moves or deactivates', () => {
+    bowler.active = false;
+    bowlerLeagues[1].active = false;
+    bowlerLeagues[1].teamId = ACTIVE_TEAM_ID;
+    renderSection({ data: { leagues: [{ leagueId: ACTIVE_LEAGUE_ID, report: { mode: 'canonical', rows: [
+      { bowlerId: BOWLER_ID, teamId: RESPONSIBILITY_TEAM_ID, classification: 'past_due', outstandingMinor: 250, reviewRequired: false },
+    ] } }] } });
+    expect(screen.getByText('Jane Doe')).toBeInTheDocument();
+    expect(screen.getByText('Explicit Responsibility Team')).toBeInTheDocument();
+    bowler.active = true;
+    bowlerLeagues[1].active = true;
   });
 });

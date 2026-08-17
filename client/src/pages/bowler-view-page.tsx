@@ -17,7 +17,6 @@ import {
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import type { Payment, BowlerDetailsResponse, ApiResponse } from "@shared/schema";
-import { calculateBowlerViewFinancials } from "@/lib/financial-utils";
 import { filterActiveBowlerLeagues } from "@/lib/bowler-league-utils";
 import { BowlerFinancialSummary } from "@/components/bowler-financial-summary";
 import { BowlerPaymentHistoryTable } from "@/components/bowler-payment-history-table";
@@ -35,6 +34,7 @@ export default function BowlerViewPage() {
     staleTime: 1000 * 60 * 5,
   });
   const currentUserRole = currentUserResponse?.data?.role;
+  const systemScope = currentUserRole === "system_admin" && currentUserResponse?.data?.organizationId ? `&organizationId=${encodeURIComponent(currentUserResponse.data.organizationId)}` : "";
   const canEditBowler = currentUserRole === "system_admin" || currentUserRole === "org_admin";
 
   const search = useSearch();
@@ -131,6 +131,23 @@ export default function BowlerViewPage() {
 
   const payments = paymentsResponse?.data || [];
 
+  const { data: financialResponse, isLoading: loadingFinancials, error: financialError } = useQuery<ApiResponse<{
+    mode: string;
+    rows: Array<{ amountMinor: number; allocatedMinor: number; outstandingMinor: number; classification: string; reviewRequired: boolean; reviewCategory: "refund" | "dispute" | "evidence" | null }>;
+    legacyFallback?: { totalPaidMinor: number; amountPastDueMinor: number; totalDueToDateMinor: number; fullSeasonAmountMinor: number; remainingBalanceMinor: number; totalWeeksInSeason: number };
+    totals: { collectiblePastDueMinor: number; reviewCount: number };
+  }>>({
+    queryKey: ["/api/financials/leagues", effectiveLeagueId, "due-past-due", bowlerId, systemScope],
+    queryFn: async ({ signal }) => {
+      const response = await fetch(`/api/financials/leagues/${effectiveLeagueId}/due-past-due?bowlerId=${bowlerId}${systemScope}`, { credentials: "include", headers: { Accept: "application/json" }, signal });
+      if (!response.ok) throw new Error("Financial evidence is unavailable");
+      return response.json();
+    },
+    enabled: !!effectiveLeagueId && !!bowlerId && !!currentUserResponse?.data,
+    staleTime: 1000 * 30,
+    retry: false,
+  });
+
   if (loadingDetails) {
     return <Layout><PageLoadingState /></Layout>;
   }
@@ -138,8 +155,28 @@ export default function BowlerViewPage() {
   if (!bowler) {
     return <Layout><div className="text-center">Bowler not found</div></Layout>;
   }
+  if (loadingFinancials) return <Layout><PageLoadingState /></Layout>;
+  if (financialError || !financialResponse?.data) return <Layout><p className="p-6 text-destructive">Financial evidence requires review; balances are unavailable.</p></Layout>;
 
-  const financials = calculateBowlerViewFinancials(league, payments);
+  const financialRows = financialResponse?.data?.rows ?? [];
+  const financials = (() => {
+    const dueRows = financialRows.filter((row) => row.classification !== "future");
+    const pastDueRows = financialRows.filter((row) => row.classification === "past_due");
+    return {
+      weeksDue: dueRows.length,
+      totalSeasonDues: financialResponse.data.mode === "legacy_fallback" ? financialResponse.data.legacyFallback?.totalDueToDateMinor ?? 0 : dueRows.reduce((sum, row) => sum + row.amountMinor, 0),
+      totalWeeksInSeason: financialResponse.data.mode === "legacy_fallback" ? financialResponse.data.legacyFallback?.totalWeeksInSeason ?? 0 : financialRows.length,
+      fullSeasonAmount: financialResponse.data.mode === "legacy_fallback" ? financialResponse.data.legacyFallback?.fullSeasonAmountMinor ?? 0 : financialRows.reduce((sum, row) => sum + row.amountMinor, 0),
+      amountPastDue: financialResponse.data.mode === "canonical" ? financialResponse.data.totals.collectiblePastDueMinor : financialResponse.data.legacyFallback?.amountPastDueMinor ?? pastDueRows.reduce((sum, row) => sum + row.outstandingMinor, 0),
+      remainingBalance: financialResponse.data.mode === "legacy_fallback" ? financialResponse.data.legacyFallback?.remainingBalanceMinor ?? 0 : financialRows.reduce((sum, row) => sum + row.outstandingMinor, 0),
+      totalPaidAmount: financialResponse?.data?.mode === "canonical"
+        ? financialRows.reduce((sum, row) => sum + row.allocatedMinor, 0)
+        : financialResponse?.data?.legacyFallback?.totalPaidMinor ?? 0,
+      totalUnpaidAmount: 0,
+      reviewRequired: financialRows.some((row) => row.reviewRequired),
+      reviewCategory: financialRows.some((row) => row.reviewCategory === "refund") ? ("refund" as const) : financialRows.some((row) => row.reviewCategory === "dispute") ? ("dispute" as const) : financialRows.some((row) => row.reviewRequired) ? ("evidence" as const) : null,
+    };
+  })();
 
   return (
     <Layout>
@@ -216,7 +253,7 @@ export default function BowlerViewPage() {
         </div>
 
         <ErrorBoundary level="section">
-          <BowlerFinancialSummary league={league} financials={financials} />
+          {loadingFinancials ? <div className="text-sm text-muted-foreground">Loading server financial evidence…</div> : financialError ? <div className="text-sm text-amber-700">Financial evidence unavailable or requires review.</div> : <BowlerFinancialSummary league={league} financials={financials} sourceLabel={financialResponse?.data?.mode === "canonical" ? "Canonical" : "Legacy fallback"} />}
         </ErrorBoundary>
       </div>
 

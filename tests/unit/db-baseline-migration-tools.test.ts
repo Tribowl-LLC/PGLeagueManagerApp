@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(24);
+    expect(migrations).toHaveLength(25);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -361,6 +361,16 @@ describe('normalized migration baseline tools', () => {
     expect(migrations[23]?.sql).toContain('payment_occurrence_interactive_base_snapshot_consistency');
     expect(migrations[23]?.sql).toContain('pg_advisory_xact_lock');
     expect(migrations[23]?.sql).not.toMatch(/(?:^|\n)\s*(?:DROP|RENAME|UPDATE|DELETE|INSERT)\b/);
+    expect(migrations[24]).toMatchObject({
+      idx: 24,
+      tag: '0024_canonical_due_past_due_activation',
+      createdAt: 1786989649369,
+      hash: 'fb70a30b34716b5bfd8bdcb815ce70da83233ae7be65cba8b24cfe0dda0b7488',
+    });
+    expect(migrations[24]?.sql).toContain('CREATE TABLE "financial_activations"');
+    expect(migrations[24]?.sql).toContain('CREATE TABLE "financial_responsibilities"');
+    expect(migrations[24]?.sql).toContain('financial_activation_completeness_guard');
+    expect(migrations[24]?.sql).not.toMatch(/(?:^|\n)\s*(?:DROP|RENAME|UPDATE|DELETE|INSERT)\b/);
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 

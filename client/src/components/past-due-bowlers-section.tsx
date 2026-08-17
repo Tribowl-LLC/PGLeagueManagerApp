@@ -9,12 +9,12 @@ import {
 } from "@/components/ui/table";
 import { CheckCircle2 } from "lucide-react";
 import { Link } from "wouter";
-import type { League, Team, Bowler, Payment, BowlerLeague, BowlerWithAccount } from "@shared/schema";
-import { calculateBowlerPastDue } from "@/lib/financial-utils";
+import type { League, Team, BowlerLeague, BowlerWithAccount } from "@shared/schema";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { cn } from "@/lib/utils";
 
-export function PastDueBowlersSection() {
+export function PastDueBowlersSection({ enabled = true, organizationId }: { enabled?: boolean; organizationId?: number | null }) {
+  const scopeSuffix = organizationId ? `?organizationId=${encodeURIComponent(organizationId)}` : "";
   const isMobile = useIsMobile();
   const { data: leaguesResponse } = useQuery<{ success: true, data: League[] }>({
     queryKey: ["/api/leagues"],
@@ -41,52 +41,38 @@ export function PastDueBowlersSection() {
   });
   const bowlerLeagues = bowlerLeaguesResponse?.data || [];
 
-  const { data: paymentsResponse } = useQuery<{ data: Payment[] }>({
-    queryKey: ["/api/payments"],
+  // scopeSuffix is encoded in the URL key above; keep the legacy base key for existing ordinary-member cache/tests.
+  // eslint-disable-next-line @tanstack/query/exhaustive-deps
+  const { data: financialReportResponse, isLoading: financialLoading, error: financialError } = useQuery<{ data: { leagues: Array<{ leagueId: number; report: { rows: Array<{ bowlerId: number; teamId: number | null; classification: string; outstandingMinor: number; reviewRequired: boolean }> } }> } }>({
+    queryKey: [organizationId ? `/api/financials/due-past-due?organizationId=${organizationId}` : "/api/financials/due-past-due"],
+    queryFn: async () => {
+      const response = await fetch(`/api/financials/due-past-due${scopeSuffix}`);
+      if (!response.ok) throw new Error("Financial evidence requires review");
+      return response.json();
+    },
+    enabled,
   });
-  const payments = paymentsResponse?.data || [];
+  if (!enabled) return null;
+  if (financialLoading) return <div className="text-sm text-muted-foreground">Loading server financial evidence…</div>;
+  if (financialError) return <div className="text-sm text-amber-700">Financial evidence requires review; balances are unavailable.</div>;
+  const financialRows = financialReportResponse?.data?.leagues?.flatMap((entry) => entry.report.rows.map((row) => ({ ...row, leagueId: entry.leagueId, mode: (entry.report as { mode?: string }).mode ?? "legacy_fallback" }))) ?? [];
 
-  // Calculate past due details for each bowler in each league
-  const pastDueBowlers = bowlers
-    .flatMap(bowler => {
-      if (!bowler.active) return [];
-      const bowlerAssociations = bowlerLeagues.filter(
-        bl => bl.bowlerId === bowler.id && bl.active,
-      );
-
-      return bowlerAssociations.flatMap(association => {
-        const league = leagues.find(l => l.id === association.leagueId);
-        const team = teams.find(t => t.id === association.teamId);
-
-        if (!league || !league.active || !team || !league.seasonStart) {
-          return [];
-        }
-
-        const leaguePayments = payments.filter(p =>
-          p.bowlerId === bowler.id &&
-          p.leagueId === league.id &&
-          p.status === 'paid'
-        );
-
-        const totalPaid = leaguePayments.reduce((sum, p) => sum + p.amount, 0);
-        // Use the shared upfront-aware past-due helper so this table matches
-        // the per-bowler view, the dashboard stat, and the past-due reports.
-        const pastDueAmount = calculateBowlerPastDue(league, totalPaid);
-        const isUpfront = league.paymentMode === "upfront";
-        const weeksPastDueDisplay: string = isUpfront
-          ? "Full season"
-          : league.weeklyFee > 0
-            ? String(Math.floor(pastDueAmount / league.weeklyFee))
-            : "0";
-
-        return pastDueAmount > 0 ? [{
-          bowler,
-          team,
-          league,
-          weeksPastDueDisplay,
-          pastDueAmount,
-        }] : [];
-      });
+  const groupedFinancialRows = [...financialRows.reduce((map, row) => {
+    const key = `${row.leagueId}:${row.bowlerId}:${row.teamId ?? "none"}`;
+    const prior = map.get(key);
+    const collectible = row.classification === "past_due" ? row.outstandingMinor : 0;
+    map.set(key, prior ? { ...prior, outstandingMinor: prior.outstandingMinor + row.outstandingMinor, collectiblePastDueMinor: prior.collectiblePastDueMinor + collectible, reviewRequired: prior.reviewRequired || row.reviewRequired, reviewMinor: prior.reviewMinor + (row.reviewRequired ? row.outstandingMinor : 0), classification: prior.reviewRequired || row.reviewRequired ? "review_required" : prior.collectiblePastDueMinor + collectible > 0 ? "past_due" : row.classification } : { ...row, collectiblePastDueMinor: collectible, reviewMinor: row.reviewRequired ? row.outstandingMinor : 0 });
+    return map;
+  }, new Map<string, (typeof financialRows)[number] & { collectiblePastDueMinor: number; reviewMinor: number }>()).values()]
+  const pastDueBowlers = groupedFinancialRows
+    .filter((row) => row.collectiblePastDueMinor > 0 || row.reviewRequired)
+    .flatMap((row) => {
+      const bowler = bowlers.find((candidate) => candidate.id === row.bowlerId);
+      const league = leagues.find((candidate) => candidate.id === row.leagueId);
+      const association = bowlerLeagues.find((candidate) => candidate.bowlerId === row.bowlerId && candidate.leagueId === row.leagueId && candidate.active);
+      const team = teams.find((candidate) => candidate.id === (row.teamId ?? association?.teamId));
+      if (!bowler || !league || !league.active || !team || (row.mode !== "canonical" && (!bowler.active || !association))) return [];
+      return [{ bowler, team, league, weeksPastDueDisplay: row.reviewRequired ? "Review required" : league.paymentMode === "upfront" ? "Full season" : "—", pastDueAmount: row.collectiblePastDueMinor, reviewRequired: row.reviewRequired }];
     })
     .sort((a, b) => b.pastDueAmount - a.pastDueAmount);
 
@@ -95,7 +81,7 @@ export function PastDueBowlersSection() {
       <div>
         <h2 className="text-lg font-semibold mb-2">Past Due Balances</h2>
         <p className="text-sm text-muted-foreground">
-          Bowlers with outstanding payments
+          Bowlers with outstanding payments · source: versioned server financial contract
         </p>
       </div>
 
@@ -132,7 +118,7 @@ export function PastDueBowlersSection() {
                   <TableCell className={cn("hidden md:table-cell")}>{item.team.name}</TableCell>
                   <TableCell className={cn("hidden md:table-cell")}>{item.weeksPastDueDisplay}</TableCell>
                   <TableCell className="text-destructive">
-                    ${(item.pastDueAmount / 100).toFixed(2)}
+                    {`$${(item.pastDueAmount / 100).toFixed(2)}`}
                   </TableCell>
                 </TableRow>
               ))

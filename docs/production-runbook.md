@@ -12,6 +12,13 @@ Production must set `SCHEDULED_PAYMENT_EXECUTION_MODE` explicitly; a missing
 value fails startup. Render Auto-Deploy must be Off before merging migration
 0008 or any later payment-operation schema release.
 
+F1 canonical due/past-due is a separate dormant gate. Keep
+`LEAGUEVAULT_F1_ACTIVATION_ENABLED` unset or false in every production
+environment. Do not enable it until legacy payment writers/history have been
+reconciled and the product owner has approved activation of individual
+leagues. Migration 0024 may be installed while activation remains dormant;
+production D2 activation rows must remain zero until that approval.
+
 Production is hosted on Render and uses Neon PostgreSQL. GitHub `main` is the
 release source. This document covers the safe release path; it does not store
 credentials.
@@ -456,3 +463,13 @@ For a schema regression, stop further deploys, preserve logs, and use the
 prepared Neon backup or restore plan. Do not guess at a reverse migration; schema
 changes and data restoration require an explicit review of the current database
 state.
+## F1 canonical due/past-due rollout
+
+Before release, apply the single forward migration `0024_canonical_due_past_due_activation` and verify `npm run db:migration-bytes:check` plus `npm run db:check`. Confirm financial activation count is zero and provider mocks/call counters remain zero. F1 activation is dormant unless an authorized organization administrator explicitly reviews and confirms every three-or-four-slot responsibility group.
+
+Post-release smoke checks are read-only: an org-admin report returns the versioned source label; a system-admin report requires an explicit organization scope; an ordinary member receives only an active self-bowler league read; cross-tenant and inactive membership requests are nondisclosing. Verify legacy fallback and canonical review-required states are visible. Roll back the application release only; never reverse migration 0024 or delete activation evidence.
+
+Permanent organization deletion is not available for a tenant with F1 activation
+evidence. The API returns a generic `409 FINANCIAL_ACTIVATION_RETENTION_REQUIRED`;
+archive or retain that tenant and preserve the immutable audit rows. A separately
+approved retention/deletion workflow is required before any irreversible removal.

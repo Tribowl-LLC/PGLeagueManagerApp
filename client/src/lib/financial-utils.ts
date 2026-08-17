@@ -231,6 +231,8 @@ export interface BowlerViewFinancials {
   remainingBalance: number;
   totalPaidAmount: number;
   totalUnpaidAmount: number;
+  reviewRequired: boolean;
+  reviewCategory: "refund" | "dispute" | "evidence" | null;
 }
 
 export function calculateBowlerViewFinancials(
@@ -249,5 +251,7 @@ export function calculateBowlerViewFinancials(
     remainingBalance: financials.remainingBalance,
     totalPaidAmount,
     totalUnpaidAmount,
+    reviewRequired: false,
+    reviewCategory: null,
   };
 }

@@ -144,6 +144,12 @@
       "tag": "0023_phase_d2_occurrence_financial_foundation",
       "createdAt": 1786510399259,
       "hash": "ae3b91f7a581d4c6e39e01665306edf64bc51614856a76b25dcf2edbc4239336"
+    },
+    {
+      "idx": 24,
+      "tag": "0024_canonical_due_past_due_activation",
+      "createdAt": 1786989649369,
+      "hash": "fb70a30b34716b5bfd8bdcb815ce70da83233ae7be65cba8b24cfe0dda0b7488"
     }
   ]
 }

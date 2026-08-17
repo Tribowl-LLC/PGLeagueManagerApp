@@ -169,6 +169,13 @@
       "when": 1786510399259,
       "tag": "0023_phase_d2_occurrence_financial_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1786989649369,
+      "tag": "0024_canonical_due_past_due_activation",
+      "breakpoints": true
     }
   ]
 }
