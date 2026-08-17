@@ -1,7 +1,17 @@
 import { Router, Request } from 'express';
 import { randomBytes } from 'crypto';
 import { storage } from '../storage';
-import { insertLeagueSchema, updateLeagueSchema, DEFAULT_TIMEZONE, WEEKDAYS, PAYMENT_MODES, dateSchema } from "@shared/schema";
+import {
+  insertLeagueSchema,
+  updateLeagueSchema,
+  DEFAULT_TIMEZONE,
+  WEEKDAYS,
+  PAYMENT_MODES,
+  dateSchema,
+  nameSchema,
+  positiveIntSchema,
+  timeSchema,
+} from "@shared/schema";
 import { validateDoublePayDates } from "@shared/schema/leagues";
 import { z } from "zod";
 import { sendSuccess, sendError, handleZodError, parseOptionalIntParam } from '../utils/api';
@@ -76,6 +86,11 @@ const newSeasonRequestV2Schema = z.object({
 const newSeasonRequestSchema = z.union([newSeasonRequestV2Schema, newSeasonRequestV1Schema]);
 
 const directLeagueSetupV2TargetSchema = z.object({
+  name: nameSchema,
+  description: z.string().nullable().optional(),
+  active: z.boolean().optional(),
+  organizationId: z.number().int().positive().optional(),
+  locationId: z.number().int().positive().nullable().optional(),
   seasonStart: dateSchema,
   totalBowlingWeeks: z.number().int().positive().max(52),
   weekDay: z.enum(WEEKDAYS),
@@ -84,7 +99,21 @@ const directLeagueSetupV2TargetSchema = z.object({
   doublePayDates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).max(2, "At most 2 double-pay weeks allowed"),
   allowPublicSignup: z.boolean(),
   paymentMode: z.enum(PAYMENT_MODES),
-}).passthrough();
+  weeklyFee: positiveIntSchema.optional(),
+  lineageFee: z.number().int().min(0).nullable().optional(),
+  prizeFundFee: z.number().int().min(0).nullable().optional(),
+  practiceStartTime: timeSchema.optional(),
+  competitionStartTime: timeSchema.optional(),
+  timezone: z.string().optional(),
+  squareLineageItemId: z.string().nullable().optional(),
+  lineageItemVariationId: z.string().nullable().optional(),
+  squareLineageItemName: z.string().nullable().optional(),
+  squarePrizeFundItemId: z.string().nullable().optional(),
+  prizeFundItemVariationId: z.string().nullable().optional(),
+  squarePrizeFundItemName: z.string().nullable().optional(),
+  squareCategoryId: z.string().nullable().optional(),
+  setupIntegration: leagueSetupIntegrationIntentV2Schema,
+}).strict();
 
 function sendLeagueSetupError(res: Parameters<typeof sendError>[0], error: unknown): void {
   if (error instanceof z.ZodError) return handleZodError(res, error);

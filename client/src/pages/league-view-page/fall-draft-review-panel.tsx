@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type QueryKey } from "@tanstack/react-query";
 import { AlertCircle, CheckCircle2, Loader2, RefreshCw } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
@@ -27,7 +27,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest } from "@/lib/queryClient";
 import type { ApiResponse } from "@shared/schema";
 import type { FallDraftMutationResult, FallDraftReview, FallDraftReviewOccurrence } from "@shared/fall-draft-review";
 import type { CanonicalDraftMutationResult, CanonicalDraftReview } from "@shared/canonical-draft-review";
@@ -45,6 +45,7 @@ interface FallDraftReviewPanelProps {
   querySuffix: string;
   enabled: boolean;
   contractFamily?: "fall" | "canonical";
+  scheduleQueryKey: QueryKey;
 }
 
 type DraftReview = FallDraftReview | CanonicalDraftReview;
@@ -72,7 +73,14 @@ function stateBadge(review: DraftReview) {
   return <Badge variant="outline">Editable draft</Badge>;
 }
 
-export function FallDraftReviewPanel({ basePath, querySuffix, enabled, contractFamily = "fall" }: FallDraftReviewPanelProps) {
+export function FallDraftReviewPanel({
+  basePath,
+  querySuffix,
+  enabled,
+  contractFamily = "fall",
+  scheduleQueryKey,
+}: FallDraftReviewPanelProps) {
+  const queryClient = useQueryClient();
   const requestVersions = contractFamily === "canonical" ? {
     reschedule: "canonical-draft-reschedule-request/1",
     cancel: "canonical-draft-cancel-request/1",
@@ -112,8 +120,9 @@ export function FallDraftReviewPanel({ basePath, querySuffix, enabled, contractF
   const mutation = useMutation({
     mutationFn: async ({ endpoint, body }: { endpoint: string; body: unknown }) =>
       apiRequest<DraftMutationResult>(`${basePath}/review/${endpoint}${querySuffix}`, "POST", body),
-    onSuccess: (response) => {
-      queryClient.setQueryData(queryKey, { success: true, data: response.data });
+    onSuccess: async (response) => {
+      queryClient.setQueryData(queryKey, { success: true, data: response.data.review });
+      await queryClient.invalidateQueries({ queryKey: scheduleQueryKey, exact: true, refetchType: "active" });
       setEntityAction(null);
       setEntityReason("");
       setDecisionReason("");
@@ -122,7 +131,7 @@ export function FallDraftReviewPanel({ basePath, querySuffix, enabled, contractF
     },
     onError: () => {
       setSuccess(null);
-      queryClient.invalidateQueries({ queryKey });
+      void queryClient.invalidateQueries({ queryKey, exact: true });
     },
   });
 

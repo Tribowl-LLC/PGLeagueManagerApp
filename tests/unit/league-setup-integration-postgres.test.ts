@@ -184,10 +184,10 @@ afterAll(async () => {
 
 describe("authoritative league setup integration", () => {
   it.each([
-    ["Winter", "2032-12-26T00:00:00.000Z", "2033-01-09T00:00:00.000Z"],
-    ["Spring", "2032-03-07T00:00:00.000Z", "2032-03-21T00:00:00.000Z"],
-    ["Summer", "2032-06-06T00:00:00.000Z", "2032-06-20T00:00:00.000Z"],
-  ] as const)("creates complete generic drafts for a future %s season", async (seasonClassification, seasonStart, seasonEnd) => {
+    ["Winter", "2032-12-26T00:00:00.000Z", "2033-01-09T00:00:00.000Z", ["2032-12-26", "2033-01-02", "2033-01-09"]],
+    ["Spring", "2032-03-07T00:00:00.000Z", "2032-03-21T00:00:00.000Z", ["2032-03-07", "2032-03-14", "2032-03-21"]],
+    ["Summer", "2032-06-06T00:00:00.000Z", "2032-06-20T00:00:00.000Z", ["2032-06-06", "2032-06-13", "2032-06-20"]],
+  ] as const)("creates a database-backed complete generic draft for a future %s season", async (seasonClassification, seasonStart, seasonEnd, expectedDates) => {
     const f = await fixture(`all-season-${seasonClassification}`);
     const result = await createLeagueWithCanonicalSetup({
       scope: { organizationId: f.organizationId, actorUserId: f.actorUserId },
@@ -202,6 +202,15 @@ describe("authoritative league setup integration", () => {
       setup: setup(++sequence),
     });
     expect(result.canonicalDraftGeneration).toMatchObject({ seasonClassification, counts: { occurrences: 3 } });
+    const persistedOccurrences = await db.select({
+      localDate: leagueOccurrences.authoritativeLocalDate,
+      lifecycle: leagueOccurrences.lifecycle,
+      generationRunId: leagueOccurrences.generationRunId,
+    }).from(leagueOccurrences)
+      .where(eq(leagueOccurrences.leagueId, result.id))
+      .orderBy(asc(leagueOccurrences.authoritativeLocalDate));
+    expect(persistedOccurrences.map((row) => row.localDate)).toEqual(expectedDates);
+    expect(persistedOccurrences.every((row) => row.lifecycle === "draft" && row.generationRunId !== null)).toBe(true);
   });
 
   it.each([

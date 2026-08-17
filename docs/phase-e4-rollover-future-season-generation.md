@@ -65,8 +65,11 @@ mapped team, active/order values and original `joinedAt`, generates new
 canonical UUIDs and revision-1 evidence, then archives the source last. Any
 failure rolls back the target, copied structure, canonical set, and archive.
 Identical v2 retries return the original target and canonical IDs with zero
-writes. Changed semantics conflict; competing successor keys serialize and at
-most one commits.
+writes. Once a setup command exists, retry verification uses its immutable
+input snapshot, command family, and revision-1 entity snapshots before looking
+at mutable archived-source state; later generic C2 review/publication does not
+invalidate that original result. Changed semantics conflict; competing
+successor keys serialize and at most one commits.
 
 All seven league Square catalog/category identity fields are null on the
 target. Rollover never copies occurrence IDs, commands, runs, revisions,

@@ -9,8 +9,13 @@ vi.mock("@/pages/league-view-page/fall-draft-generation-card", () => ({
   FallCanonicalRecoveryPanel: () => <div>Contextual Fall recovery</div>,
 }));
 vi.mock("@/pages/league-view-page/fall-draft-review-panel", () => ({
-  FallDraftReviewPanel: ({ basePath, contractFamily }: { basePath: string; contractFamily: string }) => (
-    <div data-testid="draft-review-panel" data-base-path={basePath} data-contract-family={contractFamily}>
+  FallDraftReviewPanel: ({ basePath, contractFamily, scheduleQueryKey }: { basePath: string; contractFamily: string; scheduleQueryKey: unknown[] }) => (
+    <div
+      data-testid="draft-review-panel"
+      data-base-path={basePath}
+      data-contract-family={contractFamily}
+      data-schedule-query-key={JSON.stringify(scheduleQueryKey)}
+    >
       Audited C2 controls
     </div>
   ),
@@ -191,6 +196,10 @@ describe("LeagueOccurrenceScheduleCard", () => {
     const panel = await screen.findByTestId("draft-review-panel");
     expect(panel).toHaveAttribute("data-base-path", "/api/leagues/7/canonical-drafts");
     expect(panel).toHaveAttribute("data-contract-family", "canonical");
+    expect(panel).toHaveAttribute(
+      "data-schedule-query-key",
+      JSON.stringify(["league-occurrence-schedule", "/api/leagues/7/occurrence-schedule"]),
+    );
   });
 
   it("supports loading, empty, error, and retry states", async () => {

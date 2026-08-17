@@ -267,6 +267,7 @@ export function LeagueOccurrenceScheduleCard({
                 querySuffix={querySuffix}
                 enabled
                 contractFamily={schedule.administrator.reviewContractFamily ?? "fall"}
+                scheduleQueryKey={["league-occurrence-schedule", endpoint]}
               />
             )}
           </section>

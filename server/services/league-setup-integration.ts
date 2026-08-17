@@ -41,6 +41,7 @@ import { cacheInvalidate } from "../utils/cache.js";
 import {
   applyFallDraftGenerationInTransaction,
   applyFutureSeasonDraftGenerationInTransaction,
+  verifyFutureSeasonSetupRetryInTransaction,
   type FallDraftFailureStage,
 } from "./fall-draft-generation.js";
 import type { FutureSeasonDraftGenerationResult } from "@shared/future-season-draft-generation";
@@ -436,16 +437,14 @@ async function retryExistingSetup(input: {
   if (!input.seasonClassification || !input.setupConfirmationFingerprint) {
     throw new LeagueSetupIntegrationError("transaction_failure", "v2 retry semantics are incomplete");
   }
-  const canonicalDraftGeneration = await applyFutureSeasonDraftGenerationInTransaction(input.tx, {
-      ...input.scope,
-      leagueId: league.id,
-      seasonClassification: input.seasonClassification,
-      internalSetupApply: {
-        idempotencyKey: input.commandKey,
-        reason: LEAGUE_SETUP_FUTURE_SEASON_AUDIT_REASON,
-        setupConfirmationFingerprint: input.setupConfirmationFingerprint,
-      },
-    });
+  const canonicalDraftGeneration = await verifyFutureSeasonSetupRetryInTransaction(input.tx, {
+    ...input.scope,
+    leagueId: league.id,
+    seasonClassification: input.seasonClassification,
+    idempotencyKey: input.commandKey,
+    reason: LEAGUE_SETUP_FUTURE_SEASON_AUDIT_REASON,
+    setupConfirmationFingerprint: input.setupConfirmationFingerprint,
+  });
   if (canonicalDraftGeneration.mode !== "idempotent_retry" || canonicalDraftGeneration.writesPerformed) {
     throw new LeagueSetupIntegrationError("transaction_failure", "setup retry did not resolve to the durable zero-write result");
   }
@@ -576,6 +575,59 @@ function buildNewSeasonLeague(
   };
 }
 
+async function retryExistingNewSeasonV2BeforeSourceFreshness(input: {
+  tx: LeagueScheduleTransaction;
+  scope: LeagueSetupScope;
+  sourceLeagueId: number;
+  values: NewSeasonSetupValues | NewSeasonSetupValuesV2;
+  setup: LeagueSetupIntegrationIntentV2;
+  sourceConfirmation?: LeagueRolloverSourceConfirmation;
+  commandKey: string;
+}): Promise<SetupTransactionResult | null> {
+  const command = await existingSetupCommand(input.tx, input.scope.organizationId, input.commandKey);
+  if (!command) return null;
+  if (!input.sourceConfirmation || input.sourceConfirmation.contractVersion !== LEAGUE_ROLLOVER_SOURCE_CONTRACT_VERSION
+    || input.sourceConfirmation.confirmed !== true) {
+    throw new LeagueSetupIntegrationError("idempotency_conflict", "v2 retry is missing its original source confirmation");
+  }
+  await lockLeagueSchedule(input.tx, input.scope.organizationId, command.leagueId);
+  const [persisted] = await input.tx.select().from(leagues).where(and(
+    eq(leagues.id, command.leagueId),
+    eq(leagues.organizationId, input.scope.organizationId),
+  )).for("update");
+  if (!persisted || persisted.previousSeasonId !== input.sourceLeagueId) {
+    throw new LeagueSetupIntegrationError("idempotency_conflict", "setup idempotency key is bound to another source league");
+  }
+  const syntheticSource: League = {
+    ...persisted,
+    id: input.sourceLeagueId,
+    active: true,
+    seasonNumber: persisted.seasonNumber - 1,
+  };
+  const expected = buildNewSeasonLeague(syntheticSource, input.values, input.setup.contractVersion);
+  const start = dateOnly(expected.seasonStart);
+  const seasonClassification = start ? getProductSeasonFromDateOnly(start) : null;
+  if (!seasonClassification) {
+    throw new LeagueSetupIntegrationError("validation_error", "target season start must classify to a product season");
+  }
+  const confirmationFingerprint = setupConfirmationFingerprint({
+    setup: input.setup,
+    kind: "new_season",
+    target: expected,
+    sourceConfirmationFingerprint: input.sourceConfirmation.fingerprint,
+  });
+  return retryExistingSetup({
+    tx: input.tx,
+    scope: input.scope,
+    expected,
+    commandKey: input.commandKey,
+    kind: "new_season",
+    setup: input.setup,
+    setupConfirmationFingerprint: confirmationFingerprint,
+    seasonClassification,
+  });
+}
+
 async function createNewSeasonInTransaction(input: {
   tx: LeagueScheduleTransaction;
   scope: LeagueSetupScope;
@@ -590,6 +642,18 @@ async function createNewSeasonInTransaction(input: {
   const commandKey = setupCommandKey(input.setup);
   await lockSetupIntent(input.tx, commandKey);
   await assertSetupKeyOrganization(input.tx, input.scope.organizationId, commandKey);
+  if (input.setup.contractVersion === LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION_2) {
+    const retry = await retryExistingNewSeasonV2BeforeSourceFreshness({
+      tx: input.tx,
+      scope: input.scope,
+      sourceLeagueId: input.sourceLeagueId,
+      values: input.values,
+      setup: input.setup,
+      sourceConfirmation: input.sourceConfirmation,
+      commandKey,
+    });
+    if (retry) return retry;
+  }
   await lockLeagueSchedule(input.tx, input.scope.organizationId, input.sourceLeagueId);
   await authorizeSetupActor(input.tx, input.scope, true);
   const [source] = await input.tx.select().from(leagues).where(and(

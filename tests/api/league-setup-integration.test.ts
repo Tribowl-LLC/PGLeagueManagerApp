@@ -5,6 +5,7 @@ import {
   bowlers,
   leagueOccurrenceGenerationRuns,
   leagueOccurrences,
+  leagueScheduleCommands,
   leagues,
   locations,
   organizations,
@@ -29,6 +30,7 @@ const db = getTestDb();
 const suffix = `${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
 const password = "Setup-api-password-1!";
 let organizationId: number;
+let otherOrganizationId: number;
 let locationId: number;
 let admin: AuthSession;
 let regular: AuthSession;
@@ -68,6 +70,11 @@ beforeAll(async () => {
     slug: `setup-api-${suffix}`,
   }).returning();
   organizationId = organization.id;
+  const [otherOrganization] = await db.insert(organizations).values({
+    name: `Setup API other ${suffix}`,
+    slug: `setup-api-other-${suffix}`,
+  }).returning();
+  otherOrganizationId = otherOrganization.id;
   const hashed = await hashPassword(password);
   const adminEmail = `setup-api-${suffix}@example.test`;
   const regularEmail = `setup-api-${suffix}-user@example.test`;
@@ -84,6 +91,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (organizationId) await deleteOrganization(organizationId).catch(() => undefined);
+  if (otherOrganizationId) await deleteOrganization(otherOrganizationId).catch(() => undefined);
 });
 
 describe("league setup integration API", () => {
@@ -141,6 +149,47 @@ describe("league setup integration API", () => {
     }, admin);
     expect(retiredSeasonEnd.status).toBe(400);
     expect(await db.select().from(leagues).where(eq(leagues.organizationId, organizationId))).toHaveLength(before.length);
+  });
+
+  it("strictly rejects direct-v2 lineage, retired, and unknown fields with zero writes", async () => {
+    const [sameTenantPrevious, crossTenantPrevious] = await db.insert(leagues).values([
+      {
+        name: "Same-tenant lineage source",
+        organizationId,
+        seasonStart: "2031-01-05",
+        seasonEnd: "2031-01-19",
+        weekDay: "Sunday",
+        paymentMode: "weekly",
+      },
+      {
+        name: "Cross-tenant lineage source",
+        organizationId: otherOrganizationId,
+        seasonStart: "2031-01-05",
+        seasonEnd: "2031-01-19",
+        weekDay: "Sunday",
+        paymentMode: "weekly",
+      },
+    ]).returning();
+    const counts = async () => ({
+      leagues: (await db.select().from(leagues).where(eq(leagues.organizationId, organizationId))).length,
+      commands: (await db.select().from(leagueScheduleCommands).where(eq(leagueScheduleCommands.organizationId, organizationId))).length,
+      runs: (await db.select().from(leagueOccurrenceGenerationRuns).where(eq(leagueOccurrenceGenerationRuns.organizationId, organizationId))).length,
+      occurrences: (await db.select().from(leagueOccurrences).where(eq(leagueOccurrences.organizationId, organizationId))).length,
+    });
+    const before = await counts();
+    const attempts = [
+      { ...futureBody(32), previousSeasonId: sameTenantPrevious.id },
+      { ...futureBody(33), previousSeasonId: crossTenantPrevious.id },
+      { ...futureBody(34), seasonNumber: 99 },
+      { ...futureBody(35), finalTwoWeeksDueWeek: 4 },
+      { ...futureBody(36), unsupportedSetupField: "not accepted" },
+    ];
+    for (const body of attempts) {
+      const response = await apiPost("/api/leagues", body, admin);
+      expect(response.status).toBe(400);
+      expect(response.data.error?.code).toBe("VALIDATION_ERROR");
+    }
+    expect(await counts()).toEqual(before);
   });
 
   it("requires and honors explicit system-administrator organization scope", async () => {
@@ -224,7 +273,9 @@ describe("league setup integration API", () => {
       apiPost<AnyLeagueSetupIntegrationResult>(`/api/leagues/${source.id}/new-season`, { ...values, setupIntegration: intent(4), sourceConfirmation }, admin),
       apiPost<AnyLeagueSetupIntegrationResult>(`/api/leagues/${source.id}/new-season`, { ...values, setupIntegration: intent(5), sourceConfirmation }, admin),
     ]);
-    const successful = [first, second].find((response) => response.status === 201);
+    const attempts = [{ response: first, key: 4 }, { response: second, key: 5 }];
+    const successfulAttempt = attempts.find(({ response }) => response.status === 201);
+    const successful = successfulAttempt?.response;
     const rejected = [first, second].find((response) => response.status === 409);
     expect(successful?.data.data).toMatchObject({
       previousSeasonId: source.id,
@@ -238,5 +289,46 @@ describe("league setup integration API", () => {
     expect(await db.select().from(bowlerLeagues).where(eq(bowlerLeagues.leagueId, target.id))).toHaveLength(1);
     expect(await db.select().from(leagueOccurrenceGenerationRuns).where(eq(leagueOccurrenceGenerationRuns.leagueId, target.id))).toHaveLength(1);
     expect(await db.select().from(leagueOccurrences).where(eq(leagueOccurrences.leagueId, target.id))).toHaveLength(4);
+    const review = await apiGet<CanonicalDraftReview>(`/api/leagues/${target.id}/canonical-drafts/review`, admin);
+    expect(review.status).toBe(200);
+    if (!review.data.data || !successfulAttempt) throw new Error("successful rollover review is missing");
+    const published = await apiPost<CanonicalDraftMutationResult>(`/api/leagues/${target.id}/canonical-drafts/review/approve`, {
+      contractVersion: "canonical-draft-approve-request/1",
+      confirmedReviewFingerprint: review.data.data.reviewFingerprint,
+      reason: "Publish rollover before retry",
+      idempotencyKey: "e4-rollover-publish-before-retry",
+      discrepancyDispositions: review.data.data.discrepancies
+        .filter((row) => row.resolutionState === "open")
+        .map((row) => ({ discrepancyId: row.id, disposition: "waived" })),
+    }, admin);
+    expect(published.status).toBe(201);
+    expect(published.data.data).toMatchObject({ review: { generationRun: { state: "applied" } } });
+
+    await db.update(leagues).set({ description: "Archived source changed after commit" }).where(eq(leagues.id, source.id));
+    await db.update(teams).set({ name: "Archived source team changed" }).where(eq(teams.id, team.id));
+    const [lateBowler] = await db.insert(bowlers).values({ name: "Late archived-source bowler", organizationId }).returning();
+    await db.insert(bowlerLeagues).values({ bowlerId: lateBowler.id, leagueId: source.id, teamId: team.id, active: false, order: 9 });
+    const targetCounts = async () => ({
+      commands: (await db.select().from(leagueScheduleCommands).where(eq(leagueScheduleCommands.leagueId, target.id))).length,
+      runs: (await db.select().from(leagueOccurrenceGenerationRuns).where(eq(leagueOccurrenceGenerationRuns.leagueId, target.id))).length,
+      occurrences: (await db.select().from(leagueOccurrences).where(eq(leagueOccurrences.leagueId, target.id))).length,
+      teams: (await db.select().from(teams).where(eq(teams.leagueId, target.id))).length,
+      roster: (await db.select().from(bowlerLeagues).where(eq(bowlerLeagues.leagueId, target.id))).length,
+    });
+    const beforeRetry = await targetCounts();
+    const retry = await apiPost<AnyLeagueSetupIntegrationResult>(`/api/leagues/${source.id}/new-season`, {
+      ...values,
+      setupIntegration: intent(successfulAttempt.key),
+      sourceConfirmation,
+    }, admin);
+    expect(retry.status).toBe(200);
+    expect(retry.data.data).toMatchObject({
+      id: target.id,
+      setupIntegration: { mode: "idempotent_retry", writesPerformed: false },
+      canonicalDraftGeneration: { mode: "idempotent_retry", writesPerformed: false },
+    });
+    expect(retry.data.data?.canonicalDraftGeneration?.durableIds)
+      .toEqual(target.canonicalDraftGeneration?.durableIds);
+    expect(await targetCounts()).toEqual(beforeRetry);
   });
 });

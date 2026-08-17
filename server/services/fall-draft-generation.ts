@@ -1259,6 +1259,281 @@ async function verifyExactRetry(
   });
 }
 
+function exactSnapshot(value: unknown, expected: Record<string, unknown>): boolean {
+  return !!value && typeof value === "object" && !Array.isArray(value) && sameValue(value, expected);
+}
+
+/**
+ * Reconstruct a setup-v2 result from immutable generation input, commands, and
+ * revision-1 snapshots. Current C2 lifecycle/revision state is intentionally
+ * excluded: approval, publication, rejection, and reviewed mutations must not
+ * invalidate the idempotent result of the earlier setup command.
+ */
+export async function verifyFutureSeasonSetupRetryInTransaction(
+  tx: LeagueScheduleTransaction,
+  input: FallDraftScope & {
+    idempotencyKey: string;
+    reason: string;
+    setupConfirmationFingerprint: string;
+    seasonClassification: ProductSeason;
+  },
+): Promise<FutureSeasonDraftGenerationResult> {
+  const rows = await loadExistingRows(tx, input, true);
+  const primary = rows.commands.find((row) => row.idempotencyKey === input.idempotencyKey);
+  if (!primary || primary.actorUserId !== input.actorUserId || primary.commandType !== "generate"
+    || primary.reason !== input.reason) {
+    throw new FallDraftGenerationError("idempotency_conflict", "setup idempotency key is bound to another actor or operation");
+  }
+  const run = rows.runs.find((row) => row.originatingCommandId === primary.id);
+  if (!run || rows.runs.length !== 1 || !isFutureSeasonDraftInputSnapshot(run.normalizedInputSnapshot)) {
+    throw new FallDraftGenerationError("incompatible_canonical_state", "setup command is missing one complete future-season generation run");
+  }
+  const snapshot = run.normalizedInputSnapshot;
+  if (snapshot.setupConfirmationFingerprint !== input.setupConfirmationFingerprint
+    || snapshot.seasonClassification !== input.seasonClassification) {
+    throw new FallDraftGenerationError("idempotency_conflict", "setup idempotency key is bound to different v2 semantics");
+  }
+  const generation = generateCanonicalOccurrences(
+    snapshot.normalizedInput as Parameters<typeof generateCanonicalOccurrences>[0],
+  );
+  if (generation.fatalErrors.length > 0 || generation.inputFingerprint !== run.inputFingerprint
+    || generation.generatorVersion !== run.generatorVersion
+    || generation.normalizedInput.sourceScheduleRevision !== run.sourceScheduleRevision
+    || snapshot.candidateSetFingerprint !== fallDraftCandidateSetFingerprint(generation)
+    || run.candidateOccurrenceCount !== generation.counts.candidateOccurrenceCount
+    || run.generatedOccurrenceCount !== generation.counts.generatedOccurrenceCount
+    || run.skippedDateCount !== generation.counts.skippedDateCount
+    || run.discrepancyCount !== generation.discrepancies.length) {
+    throw new FallDraftGenerationError("incompatible_canonical_state", "persisted setup generation evidence no longer regenerates exactly");
+  }
+  const profile: Extract<DraftGenerationProfile, { kind: "future_season" }> = {
+    kind: "future_season",
+    seasonClassification: input.seasonClassification,
+    setupConfirmationFingerprint: input.setupConfirmationFingerprint,
+  };
+  const preview = previewFromPersisted(input, run, generation, rows, undefined, profile);
+  const apply: FallDraftApplyRequest = {
+    contractVersion: FALL_DRAFT_APPLY_REQUEST_VERSION,
+    confirmedPreviewFingerprint: input.setupConfirmationFingerprint,
+    reason: input.reason,
+    idempotencyKey: input.idempotencyKey,
+  };
+  const expected = expectedCommands(input, apply, preview, profile);
+  const initialCommands: LeagueScheduleCommand[] = [];
+  for (const request of expected.all) {
+    const command = rows.commands.find((row) => row.idempotencyKey === request.idempotencyKey);
+    if (!command || !commandMatches(command, request)) {
+      throw new FallDraftGenerationError("idempotency_conflict", "setup command family is bound to different initial generation semantics");
+    }
+    initialCommands.push(command);
+  }
+  const generateCommand = initialCommands.find((row) => row.idempotencyKey === expected.generate.idempotencyKey);
+  const cancelCommand = expected.cancel
+    ? initialCommands.find((row) => row.idempotencyKey === expected.cancel?.idempotencyKey)
+    : null;
+  const exceptionCommand = expected.createException
+    ? initialCommands.find((row) => row.idempotencyKey === expected.createException?.idempotencyKey)
+    : null;
+  if (!generateCommand || (expected.cancel && !cancelCommand) || (expected.createException && !exceptionCommand)) {
+    throw new FallDraftGenerationError("incompatible_canonical_state", "setup command family is incomplete");
+  }
+
+  const initialOccurrences = rows.occurrences.filter((row) => row.generationRunId === run.id);
+  if (initialOccurrences.length !== generation.occurrenceCandidates.length) {
+    throw new FallDraftGenerationError("incompatible_canonical_state", "setup occurrence identity set is incomplete");
+  }
+  const initialOccurrenceRevisions: Array<typeof leagueOccurrenceRevisions.$inferSelect> = [];
+  for (const candidate of generation.occurrenceCandidates) {
+    const row = initialOccurrences.find((value) => value.generationKey === candidate.generationKey);
+    const responsible = candidate.status === "cancelled" ? cancelCommand : generateCommand;
+    const revision = row && rows.occurrenceRevisions.find((value) => value.occurrenceId === row.id && value.revisionNumber === 1);
+    const after = revision?.afterSnapshot as Record<string, unknown> | null | undefined;
+    const cancelledAt = candidate.status === "cancelled" ? after?.cancelledAt : null;
+    if (!row || !responsible || !revision || revision.commandId !== responsible.id
+      || revision.snapshotSchemaVersion !== FALL_DRAFT_OCCURRENCE_REVISION_SNAPSHOT_VERSION
+      || revision.beforeSnapshot !== null
+      || (candidate.status === "cancelled" && (typeof cancelledAt !== "string" || Number.isNaN(Date.parse(cancelledAt))))
+      || !exactSnapshot(after, {
+        snapshotContractVersion: "fall-draft-occurrence-revision/1",
+        id: row.id,
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        locationId: generation.normalizedInput.locationId,
+        generationKey: candidate.generationKey,
+        generationRunId: run.id,
+        kind: candidate.kind,
+        status: candidate.status,
+        lifecycle: "draft",
+        authoritativeLocalDate: candidate.authoritativeLocalDate,
+        authoritativeLocalStartTime: candidate.authoritativeLocalStartTime,
+        timezone: candidate.timezone,
+        startAt: candidate.startAt,
+        selectedUtcOffsetMinutes: candidate.selectedUtcOffsetMinutes,
+        foldResolution: candidate.foldResolution,
+        resolverVersion: candidate.resolverVersion,
+        plannedOrdinal: candidate.plannedOrdinal,
+        competitionNumber: candidate.competitionNumber,
+        competitive: candidate.competitive,
+        countsInStandings: candidate.countsInStandings,
+        currentRevision: 1,
+        lastCommandId: responsible.id,
+        publishedAt: null,
+        publishedByUserId: null,
+        publicationCommandId: null,
+        lockedAt: null,
+        lockedByUserId: null,
+        lockReason: null,
+        lockCommandId: null,
+        cancelledAt,
+        cancelledByUserId: candidate.status === "cancelled" ? input.actorUserId : null,
+        cancellationCommandId: candidate.status === "cancelled" ? responsible.id : null,
+        completedAt: null,
+        completedByUserId: null,
+        completionCommandId: null,
+        discardedAt: null,
+        discardedByUserId: null,
+        discardCommandId: null,
+      })) {
+      throw new FallDraftGenerationError("incompatible_canonical_state", "setup occurrence revision-1 evidence is incomplete or incompatible");
+    }
+    initialOccurrenceRevisions.push(revision);
+  }
+
+  const occurrenceIds = new Set(initialOccurrences.map((row) => row.id));
+  const initialTerms = rows.terms.filter((row) => occurrenceIds.has(row.occurrenceId));
+  if (initialTerms.length !== generation.billingTermCandidates.length) {
+    throw new FallDraftGenerationError("incompatible_canonical_state", "setup billing-term identity set is incomplete");
+  }
+  const initialTermRevisions: Array<typeof leagueOccurrenceBillingTermRevisions.$inferSelect> = [];
+  for (const candidate of generation.billingTermCandidates) {
+    const occurrenceCandidate = generation.occurrenceCandidates.find((value) => value.candidateReference === candidate.occurrenceCandidateReference);
+    const occurrence = initialOccurrences.find((value) => value.generationKey === occurrenceCandidate?.generationKey);
+    const row = initialTerms.find((value) => value.occurrenceId === occurrence?.id);
+    const revision = row && rows.termRevisions.find((value) => value.billingTermId === row.id && value.revisionNumber === 1);
+    if (!occurrence || !row || !revision || revision.commandId !== generateCommand.id
+      || revision.snapshotSchemaVersion !== FALL_DRAFT_BILLING_TERM_REVISION_SNAPSHOT_VERSION
+      || revision.beforeSnapshot !== null
+      || !exactSnapshot(revision.afterSnapshot, {
+        snapshotContractVersion: "fall-draft-billing-term-revision/1",
+        id: row.id,
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        occurrenceId: occurrence.id,
+        purpose: candidate.purpose,
+        obligationPolicy: candidate.obligationPolicy,
+        defaultAmountMinor: candidate.defaultAmountMinor,
+        currency: candidate.currency,
+        billingOrdinal: candidate.billingOrdinal,
+        version: 1,
+        state: "draft",
+        currentRevision: 1,
+        lastCommandId: generateCommand.id,
+        publishedAt: null,
+        publishedByUserId: null,
+        publicationCommandId: null,
+        supersededAt: null,
+        supersededByCommandId: null,
+      })) {
+      throw new FallDraftGenerationError("incompatible_canonical_state", "setup billing-term revision-1 evidence is incomplete or incompatible");
+    }
+    initialTermRevisions.push(revision);
+  }
+
+  const initialExceptions = rows.exceptions.filter((row) => row.generationRunId === run.id);
+  if (initialExceptions.length !== generation.exceptionCandidates.length) {
+    throw new FallDraftGenerationError("incompatible_canonical_state", "setup exception identity set is incomplete");
+  }
+  const initialExceptionRevisions: Array<typeof leagueScheduleExceptionRevisions.$inferSelect> = [];
+  for (const candidate of generation.exceptionCandidates) {
+    const row = initialExceptions.find((value) => value.localDate === candidate.authoritativeLocalDate);
+    const revision = row && rows.exceptionRevisions.find((value) => value.exceptionId === row.id && value.revisionNumber === 1);
+    if (!row || !exceptionCommand || !revision || revision.commandId !== exceptionCommand.id
+      || revision.snapshotSchemaVersion !== FALL_DRAFT_EXCEPTION_REVISION_SNAPSHOT_VERSION
+      || revision.beforeSnapshot !== null
+      || !exactSnapshot(revision.afterSnapshot, {
+        snapshotContractVersion: "fall-draft-exception-revision/1",
+        id: row.id,
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        kind: candidate.kind,
+        localDate: candidate.authoritativeLocalDate,
+        timezone: candidate.timezone,
+        source: candidate.source,
+        lifecycle: "draft",
+        reason: candidate.reason,
+        generationRunId: run.id,
+        currentRevision: 1,
+        lastCommandId: exceptionCommand.id,
+        publishedAt: null,
+        publishedByUserId: null,
+        publicationCommandId: null,
+        revokedAt: null,
+        revokedByUserId: null,
+        revocationCommandId: null,
+      })) {
+      throw new FallDraftGenerationError("incompatible_canonical_state", "setup exception revision-1 evidence is incomplete or incompatible");
+    }
+    initialExceptionRevisions.push(revision);
+  }
+
+  const initialDiscrepancies = rows.discrepancies.filter((row) => row.generationRunId === run.id);
+  if (initialDiscrepancies.length !== generation.discrepancies.length) {
+    throw new FallDraftGenerationError("incompatible_canonical_state", "setup discrepancy identity set is incomplete");
+  }
+  for (const discrepancy of generation.discrepancies) {
+    const row = initialDiscrepancies.find((value) => value.code === discrepancy.code
+      && sameValue(value.details, { generatorDetails: discrepancy.details }));
+    if (!row || row.severity !== discrepancy.severity || row.generationKey !== null) {
+      throw new FallDraftGenerationError("incompatible_canonical_state", "setup discrepancy evidence is incomplete or incompatible");
+    }
+  }
+  const currentMatches = await currentInputMatches(tx, {
+    ...input,
+    draftContractFamily: "future_season",
+    draftSeasonClassification: input.seasonClassification,
+  }, generation.normalizedInput, snapshot.paymentMode);
+  return {
+    resultContractVersion: FUTURE_SEASON_DRAFT_RESULT_VERSION,
+    implementationVersion: FUTURE_SEASON_DRAFT_IMPLEMENTATION_VERSION,
+    mappingVersion: FUTURE_SEASON_DRAFT_MAPPING_VERSION,
+    mode: "idempotent_retry",
+    organizationId: input.organizationId,
+    leagueId: input.leagueId,
+    seasonClassification: input.seasonClassification,
+    setupConfirmationFingerprint: input.setupConfirmationFingerprint,
+    requestFingerprint: expected.generate.requestFingerprint,
+    inputFingerprint: generation.inputFingerprint,
+    physicalScheduleFingerprint: generation.physicalScheduleFingerprint,
+    candidateSetFingerprint: snapshot.candidateSetFingerprint,
+    sourceScheduleRevision: run.sourceScheduleRevision,
+    durableIds: {
+      commandIds: initialCommands.map((row) => row.id).sort(compareStrings),
+      generationRunId: run.id,
+      occurrenceIds: initialOccurrences.map((row) => row.id).sort(compareStrings),
+      billingTermIds: initialTerms.map((row) => row.id).sort(compareStrings),
+      exceptionIds: initialExceptions.map((row) => row.id).sort(compareStrings),
+      occurrenceRevisionIds: initialOccurrenceRevisions.map((row) => row.id).sort(compareStrings),
+      billingTermRevisionIds: initialTermRevisions.map((row) => row.id).sort(compareStrings),
+      exceptionRevisionIds: initialExceptionRevisions.map((row) => row.id).sort(compareStrings),
+      discrepancyIds: initialDiscrepancies.map((row) => row.id).sort(compareStrings),
+    },
+    counts: {
+      commands: initialCommands.length,
+      occurrences: generation.occurrenceCandidates.length,
+      scheduledOccurrences: generation.occurrenceCandidates.filter((row) => row.status === "scheduled").length,
+      cancelledOccurrences: generation.occurrenceCandidates.filter((row) => row.status === "cancelled").length,
+      billingTerms: generation.billingTermCandidates.length,
+      exceptions: generation.exceptionCandidates.length,
+      discrepancies: generation.discrepancies.length,
+    },
+    writesPerformed: false,
+    legacyWritesPerformed: false,
+    relationshipsCreated: false,
+    paymentObligationOrCollectionRowsCreated: false,
+    currentLegacyScheduleMatchesGenerationInput: currentMatches,
+  };
+}
+
 async function assertNoCollisions(tx: LeagueScheduleTransaction, scope: FallDraftScope, preview: FallDraftPreview, rows: ExistingRows): Promise<void> {
   for (const candidate of preview.occurrenceCandidates) {
     const exact = rows.occurrences.find((row) => row.status !== "discarded" && Date.parse(row.startAt) === Date.parse(candidate.startAt));
