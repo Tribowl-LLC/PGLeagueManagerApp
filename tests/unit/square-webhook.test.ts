@@ -59,7 +59,10 @@ const {
   SQUARE_WEBHOOK_SUPPORTED_API_VERSION,
   resolveSquareWebhookConfig,
 } = await import("../../server/services/square-webhook-config");
-const { normalizeSquareWebhookEvent } = await import(
+const {
+  normalizeSquareWebhookEvent,
+  SquareWebhookPayloadError,
+} = await import(
   "../../server/services/square-webhook-event"
 );
 const { classifySquarePaymentWebhookOrigin } = await import(
@@ -560,6 +563,29 @@ describe("Square webhook parsing and log safety", () => {
     });
   });
 
+  it("keeps unsupported event names out of operational logs", async () => {
+    const body = JSON.stringify({
+      merchant_id: "merchant-fixture-1",
+      location_id: "location-fixture-1",
+      type: "customer.updated",
+      event_id: "event-unknown-log-fixture",
+      created_at: "2026-08-03T12:00:00Z",
+      data: { type: "customer", id: "customer-fixture-1", object: {} },
+    });
+    ingest.mockResolvedValueOnce({
+      event: webhookEventFixture("ignored"),
+      duplicate: false,
+    });
+
+    const response = await post(body);
+
+    expect(response.status).toBe(200);
+    expect(fakeLogger.info).toHaveBeenCalledWith(
+      "Square webhook durably recorded",
+      expect.objectContaining({ eventType: "other" }),
+    );
+  });
+
   it("marks an unexpected supported-version event ignored when it maps to one location", async () => {
     const body = JSON.stringify({
       merchant_id: "merchant-fixture-1",
@@ -623,6 +649,177 @@ describe("Square webhook parsing and log safety", () => {
     expect(receiverIndex).toBeGreaterThan(-1);
     expect(receiverIndex).toBeLessThan(source.indexOf("app.use(subdomainDetection);"));
     expect(receiverIndex).toBeLessThan(source.indexOf("limit: '256kb'"));
+  });
+});
+
+describe("Square webhook rejection diagnostics", () => {
+  function rejectedLog() {
+    const call = [...fakeLogger.warn.mock.calls].reverse().find(([message, fields]) => (
+      message === "Square webhook request rejected"
+      && fields?.event === "square_webhook_rejected"
+    ));
+    expect(call).toBeDefined();
+    return call?.[1] as Record<string, unknown>;
+  }
+
+  it("classifies origin-gate wrong data type without reaching the limiter", async () => {
+    const event = paymentEvent();
+    event.data.type = "order";
+    const response = await post(JSON.stringify(event));
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error.code).toBe("SQUARE_WEBHOOK_EVENT_INVALID");
+    expect(databaseLimiter).not.toHaveBeenCalled();
+    expect(ingest).not.toHaveBeenCalled();
+    expect(rejectedLog()).toMatchObject({
+      outcome: "invalid_event_object",
+      stage: "origin_gate",
+      reason: "wrong_data_type",
+      eventType: "payment.updated",
+    });
+  });
+
+  it("classifies a missing target object and preserves the 400 response", async () => {
+    const event = paymentEvent();
+    Object.assign(event.data, { object: {} });
+    const response = await post(JSON.stringify(event));
+
+    expect(response.status).toBe(400);
+    expect(databaseLimiter).not.toHaveBeenCalled();
+    expect(ingest).not.toHaveBeenCalled();
+    expect(rejectedLog()).toMatchObject({
+      stage: "origin_gate",
+      reason: "missing_target_object",
+      eventType: "payment.updated",
+    });
+  });
+
+  it("classifies an object ID mismatch before database work", async () => {
+    const event = paymentEvent();
+    event.data.object.payment.id = "different-payment-fixture";
+    const response = await post(JSON.stringify(event));
+
+    expect(response.status).toBe(400);
+    expect(databaseLimiter).not.toHaveBeenCalled();
+    expect(ingest).not.toHaveBeenCalled();
+    expect(rejectedLog()).toMatchObject({
+      stage: "origin_gate",
+      reason: "object_id_mismatch",
+      eventType: "payment.updated",
+    });
+  });
+
+  it("classifies an envelope/object location mismatch before database work", async () => {
+    const event = paymentEvent();
+    (event as typeof event & { location_id: string }).location_id = "other-location-fixture";
+    const response = await post(JSON.stringify(event));
+
+    expect(response.status).toBe(400);
+    expect(databaseLimiter).not.toHaveBeenCalled();
+    expect(ingest).not.toHaveBeenCalled();
+    expect(rejectedLog()).toMatchObject({
+      stage: "origin_gate",
+      reason: "location_mismatch",
+      eventType: "payment.updated",
+    });
+  });
+
+  it("classifies an owned zero-value payment during full normalization", async () => {
+    const event = paymentEvent("event-owned-zero-diagnostic", "location-fixture-1", {
+      amount: 0,
+      applicationId,
+    });
+    const response = await post(JSON.stringify(event));
+
+    expect(response.status).toBe(400);
+    expect(databaseLimiter).toHaveBeenCalledTimes(1);
+    expect(ingest).not.toHaveBeenCalled();
+    expect(rejectedLog()).toMatchObject({
+      stage: "full_normalize",
+      reason: "invalid_amount_currency",
+      eventType: "payment.updated",
+    });
+  });
+
+  it("classifies a required timestamp failure during full normalization", async () => {
+    const event = paymentEvent("event-invalid-timestamp-diagnostic", "location-fixture-1", {
+      applicationId,
+    });
+    event.data.object.payment.updated_at = "not-a-timestamp";
+    const response = await post(JSON.stringify(event));
+
+    expect(response.status).toBe(400);
+    expect(databaseLimiter).toHaveBeenCalledTimes(1);
+    expect(ingest).not.toHaveBeenCalled();
+    expect(rejectedLog()).toMatchObject({
+      stage: "full_normalize",
+      reason: "required_field_or_timestamp_invalid",
+      eventType: "payment.updated",
+    });
+  });
+
+  it("classifies unsupported events without a unique location", async () => {
+    const response = await post(JSON.stringify({
+      merchant_id: "merchant-fixture-1",
+      type: "customer.updated",
+      event_id: "event-unsupported-no-location",
+      created_at: "2026-08-03T12:00:00Z",
+      data: {
+        type: "customer",
+        id: "customer-fixture-1",
+        object: { customer: { id: "customer-fixture-1" } },
+      },
+    }));
+
+    expect(response.status).toBe(400);
+    expect(databaseLimiter).toHaveBeenCalledTimes(1);
+    expect(ingest).not.toHaveBeenCalled();
+    expect(rejectedLog()).toMatchObject({
+      stage: "full_normalize",
+      reason: "unsupported_event_without_unique_location",
+      eventType: "other",
+    });
+  });
+
+  it("classifies invalid JSON and envelope failures without payload details", async () => {
+    const malformedResponse = await post('{"type":"payment.updated"');
+    expect(malformedResponse.status).toBe(400);
+    expect(databaseLimiter).not.toHaveBeenCalled();
+    expect(ingest).not.toHaveBeenCalled();
+    expect(rejectedLog()).toMatchObject({
+      stage: "origin_gate",
+      reason: "invalid_json",
+      eventType: "other",
+    });
+
+    const envelopeResponse = await post(JSON.stringify({ type: "payment.updated" }));
+    expect(envelopeResponse.status).toBe(400);
+    expect(databaseLimiter).not.toHaveBeenCalled();
+    expect(ingest).not.toHaveBeenCalled();
+    expect(rejectedLog()).toMatchObject({
+      stage: "origin_gate",
+      reason: "invalid_envelope",
+      eventType: "other",
+    });
+
+    const observations = JSON.stringify(fakeLogger.warn.mock.calls);
+    expect(observations).not.toContain("payment-fixture-1");
+    expect(observations).not.toContain("merchant-fixture-1");
+  });
+
+  it("exposes the fixed diagnostic metadata without changing the payload error contract", () => {
+    const error = new SquareWebhookPayloadError("INVALID_EVENT_OBJECT", {
+      stage: "origin_gate",
+      reason: "wrong_data_type",
+      eventType: "payment.updated",
+    });
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error.code).toBe("INVALID_EVENT_OBJECT");
+    expect(error.message).toBe("INVALID_EVENT_OBJECT");
+    expect(error.diagnosticStage).toBe("origin_gate");
+    expect(error.diagnosticReason).toBe("wrong_data_type");
+    expect(error.diagnosticEventType).toBe("payment.updated");
   });
 });
 
