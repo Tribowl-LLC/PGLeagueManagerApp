@@ -146,7 +146,10 @@ function rawBodyText(body: Buffer): string | null {
   }
 }
 
-function payloadDiagnostic(error: unknown): {
+function payloadDiagnostic(
+  error: unknown,
+  fallbackStage: SquareWebhookDiagnosticStage,
+): {
   stage: SquareWebhookDiagnosticStage;
   reason: SquareWebhookDiagnosticReason;
   eventType: SquareWebhookDiagnosticEventType;
@@ -159,7 +162,7 @@ function payloadDiagnostic(error: unknown): {
     };
   }
   return {
-    stage: "full_normalize",
+    stage: fallbackStage,
     reason: "invalid_envelope",
     eventType: "other",
   };
@@ -246,7 +249,7 @@ function originGate(
       next();
     } catch (error) {
       const code = error instanceof SquareWebhookPayloadError ? error.code : "INVALID_ENVELOPE";
-      const diagnostic = payloadDiagnostic(error);
+      const diagnostic = payloadDiagnostic(error, "origin_gate");
       log.warn("Square webhook request rejected", {
         event: "square_webhook_rejected",
         requestId: correlationId,
@@ -305,7 +308,7 @@ export function registerSquareWebhookReceiver(
         normalized = normalizeSquareWebhookEvent(text);
       } catch (error) {
         const code = error instanceof SquareWebhookPayloadError ? error.code : "INVALID_ENVELOPE";
-        const diagnostic = payloadDiagnostic(error);
+        const diagnostic = payloadDiagnostic(error, "full_normalize");
         log.warn("Square webhook request rejected", {
           event: "square_webhook_rejected",
           requestId: correlationId,

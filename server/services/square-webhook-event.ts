@@ -212,9 +212,12 @@ function findUnknownLocation(
   envelopeLocation: string | undefined,
   object: Record<string, unknown>,
 ): string | undefined {
-  const objectLocations = Object.values(object)
-    .filter((value): value is Record<string, unknown> => value !== null && typeof value === "object")
-    .map((value) => value.location_id)
+  const objectLocations = [
+    object.location_id,
+    ...Object.values(object)
+      .filter((value): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value))
+      .map((value) => value.location_id),
+  ]
     .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     .map((value) => value.trim());
   const distinct = new Set(objectLocations);
@@ -226,9 +229,12 @@ function hasConflictingLocations(
   envelopeLocation: string | undefined,
   object: Record<string, unknown>,
 ): boolean {
-  const objectLocations = Object.values(object)
-    .filter((value): value is Record<string, unknown> => value !== null && typeof value === "object")
-    .map((value) => value.location_id)
+  const objectLocations = [
+    object.location_id,
+    ...Object.values(object)
+      .filter((value): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value))
+      .map((value) => value.location_id),
+  ]
     .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     .map((value) => value.trim());
   const distinct = new Set(objectLocations);

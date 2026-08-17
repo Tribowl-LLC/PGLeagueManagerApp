@@ -679,6 +679,24 @@ describe("Square webhook rejection diagnostics", () => {
     });
   });
 
+  it("uses the origin-gate stage for an unexpected classifier failure", async () => {
+    originClassifier.mockImplementationOnce(() => {
+      throw new Error("injected classifier failure");
+    });
+
+    const response = await post(JSON.stringify(paymentEvent()));
+
+    expect(response.status).toBe(400);
+    expect(databaseLimiter).not.toHaveBeenCalled();
+    expect(ingest).not.toHaveBeenCalled();
+    expect(rejectedLog()).toMatchObject({
+      outcome: "invalid_envelope",
+      stage: "origin_gate",
+      reason: "invalid_envelope",
+      eventType: "other",
+    });
+  });
+
   it("classifies a missing target object and preserves the 400 response", async () => {
     const event = paymentEvent();
     Object.assign(event.data, { object: {} });
@@ -779,6 +797,33 @@ describe("Square webhook rejection diagnostics", () => {
       reason: "unsupported_event_without_unique_location",
       eventType: "other",
     });
+  });
+
+  it("fails closed when an unsupported event conflicts at the direct object location", () => {
+    const event = {
+      merchant_id: "merchant-fixture-1",
+      location_id: "location-fixture-1",
+      type: "customer.updated",
+      event_id: "event-unsupported-location-conflict",
+      created_at: "2026-08-03T12:00:00Z",
+      data: {
+        type: "customer",
+        id: "customer-fixture-1",
+        object: {
+          location_id: "other-location-fixture",
+          customer: { id: "customer-fixture-1" },
+        },
+      },
+    };
+
+    expect(() => normalizeSquareWebhookEvent(JSON.stringify(event))).toThrowError(
+      expect.objectContaining({
+        code: "INVALID_EVENT_OBJECT",
+        diagnosticStage: "full_normalize",
+        diagnosticReason: "location_mismatch",
+        diagnosticEventType: "other",
+      }),
+    );
   });
 
   it("classifies invalid JSON and envelope failures without payload details", async () => {
