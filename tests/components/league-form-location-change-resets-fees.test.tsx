@@ -179,7 +179,8 @@ describe('LeagueForm — handleLocationChange clears stored lineage / prize-fund
     expect(requestBody).toMatchObject({
       name: 'Scoped League',
       organizationId: 37,
-      setupIntegration: { contractVersion: 'league-setup-integration-request/1' },
+      setupIntegration: { contractVersion: 'league-setup-integration-request/2' },
     });
+    expect(requestBody).not.toHaveProperty('seasonEnd');
   });
 });

@@ -11,8 +11,8 @@ import {
   teams,
   users,
 } from "@shared/schema";
-import type { LeagueSetupIntegrationResult } from "@shared/league-setup-integration";
-import type { FallDraftReview } from "@shared/fall-draft-review";
+import type { AnyLeagueSetupIntegrationResult, LeagueRolloverSourceContract } from "@shared/league-setup-integration";
+import type { CanonicalDraftMutationResult, CanonicalDraftReview } from "@shared/canonical-draft-review";
 import { hashPassword } from "../../server/lib/password";
 import { deleteOrganization } from "../../server/storage/organizations";
 import {
@@ -36,23 +36,23 @@ let systemAdmin: AuthSession;
 
 function intent(value: number) {
   return {
-    contractVersion: "league-setup-integration-request/1",
+    contractVersion: "league-setup-integration-request/2",
     idempotencyKey: `20000000-0000-4000-8000-${String(value).padStart(12, "0")}`,
   };
 }
 
-function fallBody(key: number) {
+function futureBody(key: number) {
   return {
-    name: `API atomic Fall ${key}`,
+    name: `API atomic Spring ${key}`,
     description: "setup API coverage",
     active: true,
     allowPublicSignup: true,
-    seasonStart: "2032-10-03",
+    seasonStart: "2032-03-07",
     weekDay: "Sunday",
     totalBowlingWeeks: 6,
-    skipDates: ["2032-10-10"],
-    cancelledDates: ["2032-10-24"],
-    doublePayDates: ["2032-11-07"],
+    skipDates: ["2032-03-14"],
+    cancelledDates: ["2032-03-28"],
+    doublePayDates: ["2032-04-11"],
     competitionStartTime: "19:00",
     timezone: "America/New_York",
     weeklyFee: 2_000,
@@ -87,43 +87,68 @@ afterAll(async () => {
 });
 
 describe("league setup integration API", () => {
-  it("creates Fall drafts atomically, returns durable IDs on retry, and exposes them to C2", async () => {
-    const body = fallBody(1);
-    const created = await apiPost<LeagueSetupIntegrationResult>("/api/leagues", body, admin);
+  it("creates non-Fall drafts atomically, returns durable IDs on retry, and exposes them to generic review", async () => {
+    const body = futureBody(1);
+    const created = await apiPost<AnyLeagueSetupIntegrationResult>("/api/leagues", body, admin);
     expect(created.status).toBe(201);
     expect(created.data.data).toMatchObject({
       setupIntegration: { mode: "created", writesPerformed: true },
       canonicalDraftGeneration: { mode: "applied", writesPerformed: true },
     });
-    const result = created.data.data as LeagueSetupIntegrationResult;
-    const retry = await apiPost<LeagueSetupIntegrationResult>("/api/leagues", body, admin);
+    const result = created.data.data as AnyLeagueSetupIntegrationResult;
+    const retry = await apiPost<AnyLeagueSetupIntegrationResult>("/api/leagues", body, admin);
     expect(retry.status).toBe(200);
     expect(retry.data.data).toMatchObject({ setupIntegration: { mode: "idempotent_retry", writesPerformed: false } });
     expect(retry.data.data?.canonicalDraftGeneration?.durableIds).toEqual(result.canonicalDraftGeneration?.durableIds);
     const changed = await apiPost("/api/leagues", { ...body, paymentMode: "upfront" }, admin);
     expect(changed.status).toBe(409);
     expect(changed.data.error?.code).toBe("IDEMPOTENCY_CONFLICT");
-    const review = await apiGet<FallDraftReview>(`/api/leagues/${result.id}/canonical-fall-drafts/review`, admin);
+    const review = await apiGet<CanonicalDraftReview>(`/api/leagues/${result.id}/canonical-drafts/review`, admin);
     expect(review.status).toBe(200);
-    expect(review.data.data).toMatchObject({ generationRun: { state: "generated" }, c1: { paymentMode: "weekly" } });
+    expect(review.data.data).toMatchObject({ generationRun: { state: "generated" }, generation: { paymentMode: "weekly", seasonClassification: "Spring" } });
+    const legacyAlias = await apiGet(`/api/leagues/${result.id}/canonical-fall-drafts/review`, admin);
+    expect(legacyAlias.status).toBe(404);
+    if (!review.data.data) throw new Error("generic review response missing");
+    const published = await apiPost<CanonicalDraftMutationResult>(`/api/leagues/${result.id}/canonical-drafts/review/approve`, {
+      contractVersion: "canonical-draft-approve-request/1",
+      confirmedReviewFingerprint: review.data.data.reviewFingerprint,
+      reason: "Approve E4 generic setup evidence",
+      idempotencyKey: "e4-api-approve-1",
+      discrepancyDispositions: review.data.data.discrepancies
+        .filter((row) => row.resolutionState === "open")
+        .map((row) => ({ discrepancyId: row.id, disposition: "waived" })),
+    }, admin);
+    expect(published.status).toBe(201);
+    expect(published.data.data).toMatchObject({ review: { generationRun: { state: "applied" } } });
+    const schedule = await apiGet(`/api/leagues/${result.id}/occurrence-schedule`, admin);
+    expect(schedule.status).toBe(200);
+    expect(schedule.data.data).toMatchObject({ authoritativeSource: "canonical", operationalCanonicalStateExists: true });
   });
 
   it("rejects ordinary users and forbidden canonical claims without creating a league", async () => {
     const before = await db.select().from(leagues).where(eq(leagues.organizationId, organizationId));
-    const unauthorized = await apiPost("/api/leagues", fallBody(2), regular);
+    const unauthorized = await apiPost("/api/leagues", futureBody(2), regular);
     expect(unauthorized.status).toBe(403);
-    const forbidden = await apiPost("/api/leagues", { ...fallBody(3), currency: "CAD" }, admin);
+    const forbidden = await apiPost("/api/leagues", { ...futureBody(3), currency: "CAD" }, admin);
     expect(forbidden.status).toBe(400);
     expect(forbidden.data.error?.code).toBe("VALIDATION_ERROR");
+    const { allowPublicSignup: _omitted, ...missingExplicitTarget } = futureBody(30);
+    const missingTarget = await apiPost("/api/leagues", missingExplicitTarget, admin);
+    expect(missingTarget.status).toBe(400);
+    const retiredSeasonEnd = await apiPost("/api/leagues", {
+      ...futureBody(31),
+      seasonEnd: "2032-12-01",
+    }, admin);
+    expect(retiredSeasonEnd.status).toBe(400);
     expect(await db.select().from(leagues).where(eq(leagues.organizationId, organizationId))).toHaveLength(before.length);
   });
 
   it("requires and honors explicit system-administrator organization scope", async () => {
-    const missingScope = await apiPost("/api/leagues", fallBody(6), systemAdmin);
+    const missingScope = await apiPost("/api/leagues", futureBody(6), systemAdmin);
     expect(missingScope.status).toBe(400);
     expect(missingScope.data.error?.code).toBe("ORG_REQUIRED");
-    const created = await apiPost<LeagueSetupIntegrationResult>("/api/leagues", {
-      ...fallBody(7),
+    const created = await apiPost<AnyLeagueSetupIntegrationResult>("/api/leagues", {
+      ...futureBody(7),
       organizationId,
     }, systemAdmin);
     expect(created.status).toBe(201);
@@ -158,9 +183,46 @@ describe("league setup integration API", () => {
       allowPublicSignup: false,
       paymentMode: "upfront",
     };
+    const confirmationResponse = await apiGet<LeagueRolloverSourceContract>(
+      `/api/leagues/${source.id}/new-season/source-confirmation`,
+      admin,
+    );
+    expect(confirmationResponse.status).toBe(200);
+    expect(confirmationResponse.data.data).toMatchObject({
+      organizationId,
+      sourceLeagueId: source.id,
+      carriedConfiguration: { name: source.name, locationId, weeklyFee: source.weeklyFee },
+    });
+    expect(JSON.stringify(confirmationResponse.data.data)).not.toMatch(/square|provider|payment|bowler/i);
+    expect((await apiGet(`/api/leagues/${source.id}/new-season/source-confirmation`, regular)).status).toBe(403);
+    expect((await apiGet(`/api/leagues/${source.id}/new-season/source-confirmation`, systemAdmin)).status).toBe(400);
+    expect((await apiGet(
+      `/api/leagues/${source.id}/new-season/source-confirmation?organizationId=${organizationId}`,
+      systemAdmin,
+    )).status).toBe(200);
+    if (!confirmationResponse.data.data) throw new Error("source confirmation response missing");
+    const sourceConfirmation = {
+      contractVersion: confirmationResponse.data.data.contractVersion,
+      fingerprint: confirmationResponse.data.data.fingerprint,
+      confirmed: true,
+    };
+    const { allowPublicSignup: _omitted, ...missingExplicitTarget } = values;
+    const missingTarget = await apiPost(`/api/leagues/${source.id}/new-season`, {
+      ...missingExplicitTarget,
+      setupIntegration: intent(40),
+      sourceConfirmation,
+    }, admin);
+    expect(missingTarget.status).toBe(400);
+    const retiredEnd = await apiPost(`/api/leagues/${source.id}/new-season`, {
+      ...values,
+      seasonEnd: "2032-12-01",
+      setupIntegration: intent(41),
+      sourceConfirmation,
+    }, admin);
+    expect(retiredEnd.status).toBe(400);
     const [first, second] = await Promise.all([
-      apiPost<LeagueSetupIntegrationResult>(`/api/leagues/${source.id}/new-season`, { ...values, setupIntegration: intent(4) }, admin),
-      apiPost<LeagueSetupIntegrationResult>(`/api/leagues/${source.id}/new-season`, { ...values, setupIntegration: intent(5) }, admin),
+      apiPost<AnyLeagueSetupIntegrationResult>(`/api/leagues/${source.id}/new-season`, { ...values, setupIntegration: intent(4), sourceConfirmation }, admin),
+      apiPost<AnyLeagueSetupIntegrationResult>(`/api/leagues/${source.id}/new-season`, { ...values, setupIntegration: intent(5), sourceConfirmation }, admin),
     ]);
     const successful = [first, second].find((response) => response.status === 201);
     const rejected = [first, second].find((response) => response.status === 409);
@@ -170,7 +232,7 @@ describe("league setup integration API", () => {
       canonicalDraftGeneration: { mode: "applied" },
     });
     expect(rejected?.data.error?.code).toMatch(/STALE_SOURCE_LEAGUE|SUCCESSOR_SEASON_EXISTS/);
-    const target = successful?.data.data as LeagueSetupIntegrationResult;
+    const target = successful?.data.data as AnyLeagueSetupIntegrationResult;
     expect((await db.select().from(leagues).where(eq(leagues.id, source.id)))[0]?.active).toBe(false);
     expect(await db.select().from(teams).where(eq(teams.leagueId, target.id))).toHaveLength(1);
     expect(await db.select().from(bowlerLeagues).where(eq(bowlerLeagues.leagueId, target.id))).toHaveLength(1);

@@ -161,10 +161,13 @@ const review: FallDraftReview = {
   }],
 };
 
-function renderPanel(value: FallDraftReview = review) {
+function renderPanel(value: FallDraftReview = review, contractFamily: "fall" | "canonical" = "fall") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } });
-  client.setQueryData(["/api/leagues/7/canonical-fall-drafts/review"], { success: true, data: value });
-  return render(<QueryClientProvider client={client}><FallDraftReviewPanel basePath="/api/leagues/7/canonical-fall-drafts" querySuffix="" enabled /></QueryClientProvider>);
+  const basePath = contractFamily === "canonical"
+    ? "/api/leagues/7/canonical-drafts"
+    : "/api/leagues/7/canonical-fall-drafts";
+  client.setQueryData([`${basePath}/review`], { success: true, data: value });
+  return render(<QueryClientProvider client={client}><FallDraftReviewPanel basePath={basePath} querySuffix="" enabled contractFamily={contractFamily} /></QueryClientProvider>);
 }
 
 function result(updatedReview: FallDraftReview, operation: FallDraftMutationResult["operation"]): FallDraftMutationResult {
@@ -238,6 +241,24 @@ describe("FallDraftReviewPanel", () => {
       }),
     ));
     expect(await screen.findByText("The audited mutation was committed.")).toBeVisible();
+  });
+
+  it("uses generic E4 routes and strict request versions for canonical review", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("crypto", { randomUUID: () => "00000000-0000-4000-8000-000000000092" });
+    const apiSpy = vi.spyOn(queryModule, "apiRequest").mockResolvedValue({ success: true, data: result(review, "cancel") });
+    renderPanel(review, "canonical");
+    await user.click(screen.getByRole("button", { name: "Cancel occurrence" }));
+    await user.type(screen.getByLabelText("Reason"), "Cancel generic future occurrence");
+    await user.click(screen.getByRole("button", { name: "Confirm cancel" }));
+    await waitFor(() => expect(apiSpy).toHaveBeenCalledWith(
+      "/api/leagues/7/canonical-drafts/review/cancel",
+      "POST",
+      expect.objectContaining({
+        contractVersion: "canonical-draft-cancel-request/1",
+        confirmedReviewFingerprint: reviewFingerprint,
+      }),
+    ));
   });
 
   it("requires every explicit discrepancy disposition before approval and describes excluded side effects", async () => {

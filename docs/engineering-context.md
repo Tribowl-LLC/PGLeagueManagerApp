@@ -81,14 +81,17 @@ remain readable and govern C2 cancellation/restoration where supported. They mus
 never be rewritten or silently treated as dense billable. Draft dense ordinals
 may be renumbered after cancellation; published billing ordinals never are.
 
-New active Fall league creation and season rollover generate the complete C1
-draft set inside the same transaction as authoritative legacy setup. The
-separate `league-setup-integration-request/1` entry-point contract does not bump
-persisted C1/C2 versions. Existing eligible Fall leagues without canonical state
-continue to use the explicit standalone preview/apply workflow. Season rollover
-locks and re-reads the source, copies teams and the complete ordered roster,
-generates the successor drafts, and archives the source in one commit; external
-bowler synchronization is post-commit only.
+Historical active Fall setup uses the immutable C1 contract family. Phase E4
+advances new authoritative setup to `league-setup-integration-request/2` and
+creates a generic versioned canonical draft set for every wholly future product
+season. Request v1 is retry-only for an already committed historical Fall setup.
+Existing eligible pre-integration Fall leagues retain the standalone Fall
+preview/apply workflow; no standalone generic generator exists. Rollover binds
+an explicit UI confirmation to a sanitized fingerprint of every carried stable
+field, resets league Square catalog identity, copies teams and the complete
+ordered roster, creates new canonical identities, and archives the source in one
+transaction. External bowler synchronization remains post-commit only. See
+`docs/phase-e4-rollover-future-season-generation.md`.
 
 Phase D1 keeps every legacy game and payment consumer authoritative while
 event-driven writes attach nullable canonical compatibility evidence. Games

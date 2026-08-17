@@ -30,6 +30,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { ApiResponse } from "@shared/schema";
 import type { FallDraftMutationResult, FallDraftReview, FallDraftReviewOccurrence } from "@shared/fall-draft-review";
+import type { CanonicalDraftMutationResult, CanonicalDraftReview } from "@shared/canonical-draft-review";
 import { secureFallDraftIdempotencyKey } from "./fall-draft-secure-id";
 
 // Keep the browser bundle type-only with respect to the server-side SHA-256 contract module.
@@ -43,7 +44,11 @@ interface FallDraftReviewPanelProps {
   basePath: string;
   querySuffix: string;
   enabled: boolean;
+  contractFamily?: "fall" | "canonical";
 }
+
+type DraftReview = FallDraftReview | CanonicalDraftReview;
+type DraftMutationResult = FallDraftMutationResult | CanonicalDraftMutationResult;
 
 type EntityAction = "reschedule" | "cancel" | "restore";
 
@@ -60,14 +65,27 @@ function formatMoney(amountMinor: number, currency: string): string {
   }
 }
 
-function stateBadge(review: FallDraftReview) {
+function stateBadge(review: DraftReview) {
   if (review.generationRun.state === "rejected") return <Badge variant="destructive">Rejected</Badge>;
   if (review.generationRun.state === "applied") return <Badge variant="outline">Published</Badge>;
   if (!review.currentLegacyInput.matches) return <Badge variant="destructive">Stale legacy input</Badge>;
   return <Badge variant="outline">Editable draft</Badge>;
 }
 
-export function FallDraftReviewPanel({ basePath, querySuffix, enabled }: FallDraftReviewPanelProps) {
+export function FallDraftReviewPanel({ basePath, querySuffix, enabled, contractFamily = "fall" }: FallDraftReviewPanelProps) {
+  const requestVersions = contractFamily === "canonical" ? {
+    reschedule: "canonical-draft-reschedule-request/1",
+    cancel: "canonical-draft-cancel-request/1",
+    restore: "canonical-draft-restore-request/1",
+    approve: "canonical-draft-approve-request/1",
+    reject: "canonical-draft-reject-request/1",
+  } as const : {
+    reschedule: FALL_DRAFT_RESCHEDULE_REQUEST_VERSION,
+    cancel: FALL_DRAFT_CANCEL_REQUEST_VERSION,
+    restore: FALL_DRAFT_RESTORE_REQUEST_VERSION,
+    approve: FALL_DRAFT_APPROVE_REQUEST_VERSION,
+    reject: FALL_DRAFT_REJECT_REQUEST_VERSION,
+  } as const;
   const reviewPath = `${basePath}/review${querySuffix}`;
   const queryKey = [reviewPath];
   const [entityAction, setEntityAction] = useState<EntityActionState | null>(null);
@@ -80,17 +98,20 @@ export function FallDraftReviewPanel({ basePath, querySuffix, enabled }: FallDra
   const [identityError, setIdentityError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
-  const reviewQuery = useQuery<ApiResponse<FallDraftReview>>({
+  const reviewQuery = useQuery<ApiResponse<DraftReview>>({
     queryKey,
-    queryFn: async () => apiRequest<FallDraftReview>(reviewPath, "GET"),
+    queryFn: async () => apiRequest<DraftReview>(reviewPath, "GET"),
     enabled,
     retry: false,
   });
   const review = reviewQuery.data?.data;
+  const generationEvidence = review
+    ? "c1" in review ? review.c1 : review.generation
+    : null;
 
   const mutation = useMutation({
     mutationFn: async ({ endpoint, body }: { endpoint: string; body: unknown }) =>
-      apiRequest<FallDraftMutationResult>(`${basePath}/review/${endpoint}${querySuffix}`, "POST", body),
+      apiRequest<DraftMutationResult>(`${basePath}/review/${endpoint}${querySuffix}`, "POST", body),
     onSuccess: (response) => {
       queryClient.setQueryData(queryKey, { success: true, data: response.data });
       setEntityAction(null);
@@ -157,7 +178,7 @@ export function FallDraftReviewPanel({ basePath, querySuffix, enabled }: FallDra
       mutation.mutate({
         endpoint: "reschedule",
         body: {
-          contractVersion: FALL_DRAFT_RESCHEDULE_REQUEST_VERSION,
+          contractVersion: requestVersions.reschedule,
           ...common,
           authoritativeLocalDate: localDate,
           authoritativeLocalStartTime: localTime,
@@ -169,7 +190,7 @@ export function FallDraftReviewPanel({ basePath, querySuffix, enabled }: FallDra
     mutation.mutate({
       endpoint: entityAction.action,
       body: {
-        contractVersion: entityAction.action === "cancel" ? FALL_DRAFT_CANCEL_REQUEST_VERSION : FALL_DRAFT_RESTORE_REQUEST_VERSION,
+        contractVersion: entityAction.action === "cancel" ? requestVersions.cancel : requestVersions.restore,
         ...common,
       },
     });
@@ -182,13 +203,13 @@ export function FallDraftReviewPanel({ basePath, querySuffix, enabled }: FallDra
     mutation.mutate({
       endpoint: decision,
       body: decision === "approve" ? {
-        contractVersion: FALL_DRAFT_APPROVE_REQUEST_VERSION,
+        contractVersion: requestVersions.approve,
         confirmedReviewFingerprint: review.reviewFingerprint,
         reason: decisionReason,
         idempotencyKey,
         discrepancyDispositions: openDiscrepancies.map((row) => ({ discrepancyId: row.id, disposition: dispositions[row.id] })),
       } : {
-        contractVersion: FALL_DRAFT_REJECT_REQUEST_VERSION,
+        contractVersion: requestVersions.reject,
         confirmedReviewFingerprint: review.reviewFingerprint,
         reason: decisionReason,
         idempotencyKey,
@@ -221,11 +242,11 @@ export function FallDraftReviewPanel({ basePath, querySuffix, enabled }: FallDra
       <div className="grid gap-2 text-xs sm:grid-cols-2">
         <p className="break-all"><span className="font-medium">Review fingerprint:</span> <span className="font-mono">{review.reviewFingerprint}</span></p>
         <p><span className="font-medium">Generation state:</span> {review.generationRun.state}; source revision {review.generationRun.sourceScheduleRevision}</p>
-        <p className="break-all"><span className="font-medium">C1 preview:</span> <span className="font-mono">{review.c1.confirmedPreviewFingerprint}</span></p>
-        <p className="break-all"><span className="font-medium">A2 input:</span> <span className="font-mono">{review.c1.inputFingerprint}</span></p>
-        <p><span className="font-medium">League payment timing:</span> {review.c1.paymentMode === "upfront" ? "Full season upfront" : "Weekly"}</p>
+        <p className="break-all"><span className="font-medium">Generation confirmation:</span> <span className="font-mono">{generationEvidence?.confirmedPreviewFingerprint}</span></p>
+        <p className="break-all"><span className="font-medium">A2 input:</span> <span className="font-mono">{generationEvidence?.inputFingerprint}</span></p>
+        <p><span className="font-medium">League payment timing:</span> {generationEvidence?.paymentMode === "upfront" ? "Full season upfront" : "Weekly"}</p>
         <p><span className="font-medium">Legacy input:</span> {review.currentLegacyInput.matches ? "Current" : "Stale — approval blocked"}</p>
-        <p><span className="font-medium">Versions:</span> {review.reviewContractVersion}; {review.c1.generatorVersion}; {review.c1.dstResolverVersion}</p>
+        <p><span className="font-medium">Versions:</span> {review.reviewContractVersion}; {generationEvidence?.generatorVersion}; {generationEvidence?.dstResolverVersion}</p>
       </div>
 
       {!review.currentLegacyInput.matches && review.generationRun.state === "generated" && (
@@ -234,7 +255,7 @@ export function FallDraftReviewPanel({ basePath, querySuffix, enabled }: FallDra
 
       <div className="overflow-x-auto rounded-md border">
         <table className="w-full min-w-[1180px] text-left text-sm">
-          <caption className="sr-only">Persisted canonical Fall occurrences and C2 controls</caption>
+          <caption className="sr-only">Persisted canonical occurrences and audited review controls</caption>
           <thead className="bg-muted/50"><tr>{["UUID / revision", "Local / UTC / DST", "Lifecycle", "Numbers", "Billing policy / amount", "Exception evidence", "Actions"].map((heading) => <th key={heading} scope="col" className="px-3 py-2 font-medium">{heading}</th>)}</tr></thead>
           <tbody className="divide-y">
             {review.occurrences.map((occurrence) => {

@@ -149,7 +149,8 @@ export interface OccurrenceRescheduleRequest extends ScheduleCommandRequest {
 export interface MaterializationScheduleCommandRequest extends ScheduleCommandRequest {
   commandType: "generate" | "approve_generation" | "publish" | "cancel" | "create_exception"
     | "reschedule" | "reject_generation" | "restore_cancelled_draft";
-  materializationOperation?: "approved_completed_summer_materialization" | "fall_draft_generation" | "fall_draft_review";
+  materializationOperation?: "approved_completed_summer_materialization" | "fall_draft_generation"
+    | "future_season_draft_generation" | "fall_draft_review" | "canonical_draft_review";
   materializationPayload: Record<string, unknown>;
 }
 

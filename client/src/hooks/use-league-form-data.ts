@@ -7,8 +7,8 @@ import { useToast } from "@/hooks/use-toast";
 import { DEFAULT_WEEKLY_FEE_CENTS, DEFAULT_TIMEZONE } from "@shared/schema";
 import type { InsertLeagueInput, InsertLeague, League } from "@shared/schema";
 import {
-  LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION,
-  type LeagueSetupIntegrationResult,
+  LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION_2,
+  type AnyLeagueSetupIntegrationResult,
 } from "@shared/league-setup-integration";
 import { createSetupIdempotencyKeyRetainer } from "@/pages/league-view-page/fall-draft-secure-id";
 
@@ -176,14 +176,15 @@ export function useLeagueFormData({
       const createPayload = systemAdminOrganizationId == null
         ? semanticPayload
         : { ...semanticPayload, organizationId: systemAdminOrganizationId };
-      return apiRequest<LeagueSetupIntegrationResult>(
+      const { seasonEnd: _derivedSeasonEnd, ...canonicalCreatePayload } = createPayload;
+      return apiRequest<AnyLeagueSetupIntegrationResult>(
         league ? `/api/leagues/${league.id}` : "/api/leagues",
         league ? "PATCH" : "POST",
         league ? semanticPayload : {
-          ...createPayload,
+          ...canonicalCreatePayload,
           setupIntegration: {
-            contractVersion: LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION,
-            idempotencyKey: setupIdempotency.current.keyFor(createPayload),
+            contractVersion: LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION_2,
+            idempotencyKey: setupIdempotency.current.keyFor(canonicalCreatePayload),
           },
         },
       );
@@ -198,7 +199,7 @@ export function useLeagueFormData({
         description: league
           ? "League has been updated successfully."
           : canonicalCreated
-            ? "League and its canonical Fall schedule drafts were created successfully."
+            ? "League and its canonical schedule drafts were created successfully."
             : "League has been created successfully.",
       });
       onClose();

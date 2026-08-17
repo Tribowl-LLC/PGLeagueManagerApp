@@ -40,6 +40,16 @@ import {
   type CanonicalLegacyLeagueRow,
 } from "@shared/legacy-canonical-occurrence-input";
 import { getProductSeasonFromDateOnly } from "@shared/season-utils";
+import type { ProductSeason } from "@shared/season-utils";
+import {
+  FUTURE_SEASON_DRAFT_IMPLEMENTATION_VERSION,
+  FUTURE_SEASON_DRAFT_INPUT_SNAPSHOT_VERSION,
+  FUTURE_SEASON_DRAFT_MAPPING_VERSION,
+  FUTURE_SEASON_DRAFT_RESULT_VERSION,
+  isFutureSeasonDraftInputSnapshot,
+  type FutureSeasonDraftGenerationResult,
+  type FutureSeasonDraftInputSnapshot,
+} from "@shared/future-season-draft-generation";
 import {
   FALL_DRAFT_AMBIGUOUS_FOLD_POLICY,
   FALL_DRAFT_APPLY_REQUEST_VERSION,
@@ -110,6 +120,12 @@ export interface FallDraftScope {
   organizationId: number;
   leagueId: number;
   actorUserId: number;
+  draftContractFamily?: "fall" | "future_season";
+  draftSeasonClassification?: ProductSeason;
+  draftReviewRequestContext?: {
+    contractVersion: string;
+    confirmedReviewFingerprint: string;
+  };
 }
 
 interface LoadedLeague {
@@ -157,12 +173,15 @@ interface FallDraftLegacyInputSnapshotV1 {
 export interface ResolvedFallDraftInputSnapshot {
   snapshotContractVersion: typeof FALL_DRAFT_INPUT_SNAPSHOT_VERSION
     | typeof FALL_DRAFT_LEGACY_INPUT_SNAPSHOT_VERSION_2
-    | typeof FALL_DRAFT_LEGACY_INPUT_SNAPSHOT_VERSION_1;
+    | typeof FALL_DRAFT_LEGACY_INPUT_SNAPSHOT_VERSION_1
+    | typeof FUTURE_SEASON_DRAFT_INPUT_SNAPSHOT_VERSION;
   confirmedPreviewFingerprint: string;
   candidateSetFingerprint: string;
   paymentMode: PaymentMode;
   normalizedInput: CanonicalNormalizedInput;
   currentContract: boolean;
+  draftContractFamily: "fall" | "future_season";
+  seasonClassification?: ProductSeason;
 }
 
 interface ExpectedCommands {
@@ -185,6 +204,20 @@ export interface InternalFallDraftSetupApply {
   idempotencyKey: string;
   reason: string;
 }
+
+export interface InternalFutureSeasonDraftSetupApply {
+  idempotencyKey: string;
+  reason: string;
+  setupConfirmationFingerprint: string;
+}
+
+type DraftGenerationProfile =
+  | { kind: "fall" }
+  | {
+    kind: "future_season";
+    seasonClassification: ProductSeason;
+    setupConfirmationFingerprint: string;
+  };
 
 function injectFailure(requested: FallDraftFailureStage | undefined, stage: FallDraftFailureStage): void {
   if (requested === stage) throw new FallDraftGenerationError("transaction_failure", `injected C1 failure at ${stage}`);
@@ -304,6 +337,18 @@ function assertFallLeague(loaded: LoadedLeague): void {
   if (!start || getProductSeasonFromDateOnly(start) !== "Fall") {
     throw new FallDraftGenerationError("ineligible_league", "C1 requires a Fall league whose stored start month is August, September, or October");
   }
+}
+
+function assertFutureSeasonLeague(loaded: LoadedLeague): ProductSeason {
+  if (!loaded.active) {
+    throw new FallDraftGenerationError("ineligible_league", "future-season setup requires an active, non-archived league");
+  }
+  const start = dateOnly(loaded.row.season_start);
+  const season = start ? getProductSeasonFromDateOnly(start) : null;
+  if (!season) {
+    throw new FallDraftGenerationError("ineligible_league", "future-season setup requires a valid product-season start date");
+  }
+  return season;
 }
 
 export async function fallDraftDatabaseTransactionTime(tx: LeagueScheduleTransaction): Promise<string> {
@@ -556,8 +601,9 @@ export async function previewFallDraftGeneration(input: FallDraftScope): Promise
   }, { isolationLevel: "repeatable read", accessMode: "read only" });
 }
 
-function relatedIdempotencyKey(scope: FallDraftScope, operatorKey: string, role: string): string {
-  return `lvc1:${fallDraftSha256({ organizationId: scope.organizationId, leagueId: scope.leagueId, operatorKey, role })}`;
+function relatedIdempotencyKey(scope: FallDraftScope, operatorKey: string, role: string, profile: DraftGenerationProfile): string {
+  const namespace = profile.kind === "fall" ? "lvc1" : "lve4";
+  return `${namespace}:${fallDraftSha256({ organizationId: scope.organizationId, leagueId: scope.leagueId, operatorKey, role })}`;
 }
 
 function commandRequest(input: {
@@ -566,7 +612,9 @@ function commandRequest(input: {
   preview: FallDraftPreview;
   role: "generate" | "cancel" | "create_exception";
   idempotencyKey: string;
+  profile: DraftGenerationProfile;
 }): MaterializationScheduleCommandRequest {
+  const generic = input.profile.kind === "future_season";
   const request: MaterializationScheduleCommandRequest = {
     organizationId: input.scope.organizationId,
     leagueId: input.scope.leagueId,
@@ -575,14 +623,23 @@ function commandRequest(input: {
     idempotencyKey: input.idempotencyKey,
     requestFingerprint: "",
     reason: input.apply.reason,
-    materializationOperation: "fall_draft_generation",
+    materializationOperation: generic ? "future_season_draft_generation" : "fall_draft_generation",
     materializationPayload: input.role === "generate" ? {
-      applyRequestContractVersion: input.apply.contractVersion,
-      previewContractVersion: input.preview.previewContractVersion,
-      implementationVersion: input.preview.implementationVersion,
-      mappingVersion: input.preview.mappingVersion,
+      ...(generic ? {
+        setupRequestContractVersion: "league-setup-integration-request/2",
+        generationResultContractVersion: FUTURE_SEASON_DRAFT_RESULT_VERSION,
+        implementationVersion: FUTURE_SEASON_DRAFT_IMPLEMENTATION_VERSION,
+        mappingVersion: FUTURE_SEASON_DRAFT_MAPPING_VERSION,
+        seasonClassification: input.profile.kind === "future_season" ? input.profile.seasonClassification : undefined,
+        setupConfirmationFingerprint: input.profile.kind === "future_season" ? input.profile.setupConfirmationFingerprint : undefined,
+      } : {
+        applyRequestContractVersion: input.apply.contractVersion,
+        previewContractVersion: input.preview.previewContractVersion,
+        implementationVersion: input.preview.implementationVersion,
+        mappingVersion: input.preview.mappingVersion,
+        confirmedPreviewFingerprint: input.apply.confirmedPreviewFingerprint,
+      }),
       idempotencyKey: input.apply.idempotencyKey,
-      confirmedPreviewFingerprint: input.apply.confirmedPreviewFingerprint,
       inputFingerprint: input.preview.inputFingerprint,
       physicalScheduleFingerprint: input.preview.physicalScheduleFingerprint,
       candidateSetFingerprint: input.preview.candidateSetFingerprint,
@@ -591,11 +648,14 @@ function commandRequest(input: {
       semantics: input.preview.semantics,
       draftMapping: input.preview.draftMapping,
     } : {
-      implementationVersion: input.preview.implementationVersion,
-      mappingVersion: input.preview.mappingVersion,
+      implementationVersion: generic ? FUTURE_SEASON_DRAFT_IMPLEMENTATION_VERSION : input.preview.implementationVersion,
+      mappingVersion: generic ? FUTURE_SEASON_DRAFT_MAPPING_VERSION : input.preview.mappingVersion,
       role: input.role,
       originatingIdempotencyKey: input.apply.idempotencyKey,
-      confirmedPreviewFingerprint: input.apply.confirmedPreviewFingerprint,
+      ...(generic ? {
+        setupConfirmationFingerprint: input.profile.kind === "future_season" ? input.profile.setupConfirmationFingerprint : undefined,
+        seasonClassification: input.profile.kind === "future_season" ? input.profile.seasonClassification : undefined,
+      } : { confirmedPreviewFingerprint: input.apply.confirmedPreviewFingerprint }),
       inputFingerprint: input.preview.inputFingerprint,
       candidateSetFingerprint: input.preview.candidateSetFingerprint,
       sourceScheduleRevision: input.preview.proposedSourceScheduleRevision.value,
@@ -607,13 +667,13 @@ function commandRequest(input: {
   return { ...request, requestFingerprint: buildCanonicalScheduleCommandFingerprint(request) };
 }
 
-function expectedCommands(scope: FallDraftScope, apply: FallDraftApplyRequest, preview: FallDraftPreview): ExpectedCommands {
-  const generate = commandRequest({ scope, apply, preview, role: "generate", idempotencyKey: apply.idempotencyKey });
+function expectedCommands(scope: FallDraftScope, apply: FallDraftApplyRequest, preview: FallDraftPreview, profile: DraftGenerationProfile = { kind: "fall" }): ExpectedCommands {
+  const generate = commandRequest({ scope, apply, preview, profile, role: "generate", idempotencyKey: apply.idempotencyKey });
   const cancel = preview.occurrenceCandidates.some((candidate) => candidate.status === "cancelled")
-    ? commandRequest({ scope, apply, preview, role: "cancel", idempotencyKey: relatedIdempotencyKey(scope, apply.idempotencyKey, "cancel") })
+    ? commandRequest({ scope, apply, preview, profile, role: "cancel", idempotencyKey: relatedIdempotencyKey(scope, apply.idempotencyKey, "cancel", profile) })
     : null;
   const createException = preview.exceptionCandidates.length > 0
-    ? commandRequest({ scope, apply, preview, role: "create_exception", idempotencyKey: relatedIdempotencyKey(scope, apply.idempotencyKey, "create_exception") })
+    ? commandRequest({ scope, apply, preview, profile, role: "create_exception", idempotencyKey: relatedIdempotencyKey(scope, apply.idempotencyKey, "create_exception", profile) })
     : null;
   return { generate, cancel, createException, all: [generate, cancel, createException].filter((value): value is MaterializationScheduleCommandRequest => value !== null) };
 }
@@ -714,7 +774,18 @@ function exceptionSnapshot(row: LeagueScheduleException): Record<string, unknown
   };
 }
 
-function inputSnapshot(preview: FallDraftPreview): FallDraftInputSnapshot {
+function inputSnapshot(preview: FallDraftPreview, profile: DraftGenerationProfile = { kind: "fall" }): FallDraftInputSnapshot | FutureSeasonDraftInputSnapshot {
+  if (profile.kind === "future_season") {
+    return {
+      snapshotContractVersion: FUTURE_SEASON_DRAFT_INPUT_SNAPSHOT_VERSION,
+      setupRequestContractVersion: "league-setup-integration-request/2",
+      setupConfirmationFingerprint: profile.setupConfirmationFingerprint,
+      candidateSetFingerprint: preview.candidateSetFingerprint,
+      seasonClassification: profile.seasonClassification,
+      paymentMode: preview.semantics.paymentMode,
+      normalizedInput: preview.normalizedInput,
+    };
+  }
   return {
     snapshotContractVersion: FALL_DRAFT_INPUT_SNAPSHOT_VERSION,
     confirmedPreviewFingerprint: preview.previewFingerprint,
@@ -767,14 +838,14 @@ export function resolveFallDraftInputSnapshot(
     if (value.normalizedInput.ambiguousFold !== FALL_DRAFT_AMBIGUOUS_FOLD_POLICY
       || value.normalizedInput.currency !== FALL_DRAFT_CURRENCY
       || value.normalizedInput.regularSessionBillingPolicy !== regularSessionBillingPolicy) return null;
-    return { ...value, currentContract: true };
+    return { ...value, currentContract: true, draftContractFamily: "fall" };
   }
   if (isFallDraftLegacyInputSnapshotV2(value)) {
     const regularSessionBillingPolicy = fallDraftRegularSessionBillingPolicyForPaymentMode(value.paymentMode);
     if (value.normalizedInput.ambiguousFold !== FALL_DRAFT_AMBIGUOUS_FOLD_POLICY
       || value.normalizedInput.currency !== FALL_DRAFT_CURRENCY
       || value.normalizedInput.regularSessionBillingPolicy !== regularSessionBillingPolicy) return null;
-    return { ...value, currentContract: false };
+    return { ...value, currentContract: false, draftContractFamily: "fall" };
   }
   if (!isFallDraftLegacyInputSnapshotV1(value)) return null;
   const regularSessionBillingPolicy = fallDraftRegularSessionBillingPolicyForPaymentMode(paymentMode);
@@ -790,6 +861,26 @@ export function resolveFallDraftInputSnapshot(
     paymentMode,
     normalizedInput: value.normalizedInput,
     currentContract: false,
+    draftContractFamily: "fall",
+  };
+}
+
+export function resolveCanonicalDraftInputSnapshot(
+  value: unknown,
+  paymentMode: PaymentMode,
+): ResolvedFallDraftInputSnapshot | null {
+  const fall = resolveFallDraftInputSnapshot(value, paymentMode);
+  if (fall) return fall;
+  if (!isFutureSeasonDraftInputSnapshot(value) || value.paymentMode !== paymentMode) return null;
+  return {
+    snapshotContractVersion: FUTURE_SEASON_DRAFT_INPUT_SNAPSHOT_VERSION,
+    confirmedPreviewFingerprint: value.setupConfirmationFingerprint,
+    candidateSetFingerprint: value.candidateSetFingerprint,
+    paymentMode: value.paymentMode,
+    normalizedInput: value.normalizedInput,
+    currentContract: true,
+    draftContractFamily: "future_season",
+    seasonClassification: value.seasonClassification,
   };
 }
 
@@ -797,6 +888,13 @@ export function isFallDraftInputSnapshotFamily(value: unknown): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const version = (value as { snapshotContractVersion?: unknown }).snapshotContractVersion;
   return typeof version === "string" && version.startsWith("fall-draft-generation-input-snapshot/");
+}
+
+export function isCanonicalDraftInputSnapshotFamily(value: unknown): boolean {
+  if (isFallDraftInputSnapshotFamily(value)) return true;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  return (value as { snapshotContractVersion?: unknown }).snapshotContractVersion
+    === FUTURE_SEASON_DRAFT_INPUT_SNAPSHOT_VERSION;
 }
 
 function commandMatches(row: LeagueScheduleCommand, request: MaterializationScheduleCommandRequest): boolean {
@@ -818,7 +916,11 @@ export async function currentFallDraftInputEvidence(
 ): Promise<{ matches: boolean; currentInputFingerprint: string | null }> {
   try {
     const loaded = await loadAuthoritativeLeague(tx, scope);
-    if (!loaded.active || getProductSeasonFromDateOnly(dateOnly(loaded.row.season_start) ?? "") !== "Fall") {
+    const expectedSeason = scope.draftContractFamily === "future_season"
+      ? scope.draftSeasonClassification
+      : "Fall";
+    if (!expectedSeason || !loaded.active
+      || getProductSeasonFromDateOnly(dateOnly(loaded.row.season_start) ?? "") !== expectedSeason) {
       return { matches: false, currentInputFingerprint: null };
     }
     if (loaded.paymentMode !== expectedPaymentMode) {
@@ -853,7 +955,7 @@ async function currentInputMatches(
   return (await currentFallDraftInputEvidence(tx, scope, normalizedInput, paymentMode)).matches;
 }
 
-function resultFromRows(input: {
+interface ResultFromRowsInput {
   mode: "applied" | "idempotent_retry";
   preview: FallDraftPreview;
   expected: ExpectedCommands;
@@ -867,16 +969,24 @@ function resultFromRows(input: {
   exceptionRevisionIds: string[];
   discrepancies: LeagueOccurrenceGenerationDiscrepancy[];
   currentMatches: boolean;
-}): FallDraftApplyResult {
-  return {
-    resultContractVersion: FALL_DRAFT_APPLY_RESULT_VERSION,
-    previewContractVersion: FALL_DRAFT_PREVIEW_CONTRACT_VERSION,
-    implementationVersion: FALL_DRAFT_IMPLEMENTATION_VERSION,
-    mappingVersion: FALL_DRAFT_MAPPING_VERSION,
+}
+
+function resultFromRows(input: ResultFromRowsInput & {
+  profile: Extract<DraftGenerationProfile, { kind: "future_season" }>;
+}): FutureSeasonDraftGenerationResult;
+function resultFromRows(input: ResultFromRowsInput & {
+  profile?: Extract<DraftGenerationProfile, { kind: "fall" }>;
+}): FallDraftApplyResult;
+function resultFromRows(input: ResultFromRowsInput & {
+  profile?: DraftGenerationProfile;
+}): FallDraftApplyResult | FutureSeasonDraftGenerationResult;
+function resultFromRows(input: ResultFromRowsInput & {
+  profile?: DraftGenerationProfile;
+}): FallDraftApplyResult | FutureSeasonDraftGenerationResult {
+  const common = {
     mode: input.mode,
     organizationId: input.preview.operatorScope.organizationId,
     leagueId: input.preview.operatorScope.leagueId,
-    confirmedPreviewFingerprint: input.preview.previewFingerprint,
     requestFingerprint: input.expected.generate.requestFingerprint,
     inputFingerprint: input.preview.inputFingerprint,
     physicalScheduleFingerprint: input.preview.physicalScheduleFingerprint,
@@ -903,10 +1013,28 @@ function resultFromRows(input: {
       discrepancies: input.discrepancies.length,
     },
     writesPerformed: input.mode === "applied",
-    legacyWritesPerformed: false,
-    relationshipsCreated: false,
-    paymentObligationOrCollectionRowsCreated: false,
+    legacyWritesPerformed: false as const,
+    relationshipsCreated: false as const,
+    paymentObligationOrCollectionRowsCreated: false as const,
     currentLegacyScheduleMatchesGenerationInput: input.currentMatches,
+  };
+  if (input.profile?.kind === "future_season") {
+    return {
+      resultContractVersion: FUTURE_SEASON_DRAFT_RESULT_VERSION,
+      implementationVersion: FUTURE_SEASON_DRAFT_IMPLEMENTATION_VERSION,
+      mappingVersion: FUTURE_SEASON_DRAFT_MAPPING_VERSION,
+      seasonClassification: input.profile.seasonClassification,
+      setupConfirmationFingerprint: input.profile.setupConfirmationFingerprint,
+      ...common,
+    };
+  }
+  return {
+    resultContractVersion: FALL_DRAFT_APPLY_RESULT_VERSION,
+    previewContractVersion: FALL_DRAFT_PREVIEW_CONTRACT_VERSION,
+    implementationVersion: FALL_DRAFT_IMPLEMENTATION_VERSION,
+    mappingVersion: FALL_DRAFT_MAPPING_VERSION,
+    confirmedPreviewFingerprint: input.preview.previewFingerprint,
+    ...common,
   };
 }
 
@@ -916,9 +1044,18 @@ function previewFromPersisted(
   generation: CanonicalGenerationResult,
   rows: ExistingRows,
   resolvedSnapshot?: ResolvedFallDraftInputSnapshot,
+  profile: DraftGenerationProfile = { kind: "fall" },
 ): FallDraftPreview {
   const snapshot = resolvedSnapshot ?? run.normalizedInputSnapshot;
-  if (!isFallDraftInputSnapshot(snapshot)) throw new FallDraftGenerationError("incompatible_canonical_state", "generation run is not a C1 input snapshot");
+  if (profile.kind === "fall" && !isFallDraftInputSnapshot(snapshot)) {
+    throw new FallDraftGenerationError("incompatible_canonical_state", "generation run is not a C1 input snapshot");
+  }
+  if (profile.kind === "future_season" && !isFutureSeasonDraftInputSnapshot(snapshot)) {
+    throw new FallDraftGenerationError("incompatible_canonical_state", "generation run is not a future-season input snapshot");
+  }
+  if (!isFallDraftInputSnapshot(snapshot) && !isFutureSeasonDraftInputSnapshot(snapshot)) {
+    throw new FallDraftGenerationError("incompatible_canonical_state", "generation run input snapshot is unsupported");
+  }
   const regularSessionBillingPolicy = fallDraftRegularSessionBillingPolicyForPaymentMode(snapshot.paymentMode);
   if (generation.normalizedInput.ambiguousFold !== FALL_DRAFT_AMBIGUOUS_FOLD_POLICY
     || generation.normalizedInput.currency !== FALL_DRAFT_CURRENCY
@@ -965,27 +1102,67 @@ function previewFromPersisted(
       paymentObligationOrCollectionMaterialization: "none", occurrenceRevisionSnapshotVersion: 1, billingTermRevisionSnapshotVersion: 1, exceptionRevisionSnapshotVersion: 1,
     },
   };
-  return { ...without, previewFingerprint: snapshot.confirmedPreviewFingerprint };
+  return {
+    ...without,
+    previewFingerprint: isFallDraftInputSnapshot(snapshot)
+      ? snapshot.confirmedPreviewFingerprint
+      : snapshot.setupConfirmationFingerprint,
+  };
 }
 
-async function verifyExactRetry(tx: LeagueScheduleTransaction, scope: FallDraftScope, apply: FallDraftApplyRequest, rows: ExistingRows): Promise<FallDraftApplyResult> {
+async function verifyExactRetry(
+  tx: LeagueScheduleTransaction,
+  scope: FallDraftScope,
+  apply: FallDraftApplyRequest,
+  rows: ExistingRows,
+): Promise<FallDraftApplyResult>;
+async function verifyExactRetry(
+  tx: LeagueScheduleTransaction,
+  scope: FallDraftScope,
+  apply: FallDraftApplyRequest,
+  rows: ExistingRows,
+  profile: Extract<DraftGenerationProfile, { kind: "future_season" }>,
+): Promise<FutureSeasonDraftGenerationResult>;
+async function verifyExactRetry(
+  tx: LeagueScheduleTransaction,
+  scope: FallDraftScope,
+  apply: FallDraftApplyRequest,
+  rows: ExistingRows,
+  profile: DraftGenerationProfile,
+): Promise<FallDraftApplyResult | FutureSeasonDraftGenerationResult>;
+async function verifyExactRetry(
+  tx: LeagueScheduleTransaction,
+  scope: FallDraftScope,
+  apply: FallDraftApplyRequest,
+  rows: ExistingRows,
+  profile: DraftGenerationProfile = { kind: "fall" },
+): Promise<FallDraftApplyResult | FutureSeasonDraftGenerationResult> {
   const primary = rows.commands.find((row) => row.idempotencyKey === apply.idempotencyKey);
   if (!primary) throw new FallDraftGenerationError("incompatible_canonical_state", "canonical state exists but is not owned by this idempotency key");
   const run = rows.runs.find((row) => row.originatingCommandId === primary.id);
-  if (!run || !isFallDraftInputSnapshot(run.normalizedInputSnapshot)) {
-    throw new FallDraftGenerationError("incompatible_canonical_state", "generation command exists without one complete C1 generation run");
+  const supportedSnapshot = profile.kind === "fall"
+    ? isFallDraftInputSnapshot(run?.normalizedInputSnapshot)
+    : isFutureSeasonDraftInputSnapshot(run?.normalizedInputSnapshot);
+  if (!run || !supportedSnapshot) {
+    throw new FallDraftGenerationError("incompatible_canonical_state", "generation command exists without one complete matching generation run");
   }
-  const snapshot = run.normalizedInputSnapshot;
+  const snapshot = run.normalizedInputSnapshot as FallDraftInputSnapshot | FutureSeasonDraftInputSnapshot;
   const generation = generateCanonicalOccurrences(snapshot.normalizedInput as Parameters<typeof generateCanonicalOccurrences>[0]);
   if (generation.fatalErrors.length > 0 || generation.inputFingerprint !== run.inputFingerprint
     || generation.generatorVersion !== run.generatorVersion || snapshot.candidateSetFingerprint !== fallDraftCandidateSetFingerprint(generation)) {
     throw new FallDraftGenerationError("incompatible_canonical_state", "persisted C1 generation input no longer regenerates exactly");
   }
-  const persistedPreview = previewFromPersisted(scope, run, generation, rows);
-  if (apply.confirmedPreviewFingerprint !== snapshot.confirmedPreviewFingerprint) {
+  const persistedPreview = previewFromPersisted(scope, run, generation, rows, undefined, profile);
+  const persistedConfirmation = isFallDraftInputSnapshot(snapshot)
+    ? snapshot.confirmedPreviewFingerprint
+    : snapshot.setupConfirmationFingerprint;
+  const submittedConfirmation = profile.kind === "fall"
+    ? apply.confirmedPreviewFingerprint
+    : profile.setupConfirmationFingerprint;
+  if (submittedConfirmation !== persistedConfirmation) {
     throw new FallDraftGenerationError("idempotency_conflict", "idempotency key is bound to different preview or generator semantics");
   }
-  const expected = expectedCommands(scope, apply, persistedPreview);
+  const expected = expectedCommands(scope, apply, persistedPreview, profile);
   if (rows.commands.length !== expected.all.length || rows.runs.length !== 1 || rows.relationships.length !== 0) {
     throw new FallDraftGenerationError("incompatible_canonical_state", "C1 retry found partial, foreign, or competing canonical state");
   }
@@ -1078,7 +1255,7 @@ async function verifyExactRetry(tx: LeagueScheduleTransaction, scope: FallDraftS
     mode: "idempotent_retry", preview: persistedPreview, expected, commands: rows.commands, run,
     occurrences: rows.occurrences, terms: rows.terms, exceptions: rows.exceptions,
     occurrenceRevisionIds: rows.occurrenceRevisions.map((row) => row.id), termRevisionIds: rows.termRevisions.map((row) => row.id),
-    exceptionRevisionIds: rows.exceptionRevisions.map((row) => row.id), discrepancies: rows.discrepancies, currentMatches,
+    exceptionRevisionIds: rows.exceptionRevisions.map((row) => row.id), discrepancies: rows.discrepancies, currentMatches, profile,
   });
 }
 
@@ -1110,14 +1287,15 @@ async function assertNoCollisions(tx: LeagueScheduleTransaction, scope: FallDraf
   }
 }
 
-export async function applyFallDraftGenerationInTransaction(
+async function applyDraftGenerationInTransaction(
   tx: LeagueScheduleTransaction,
   input: FallDraftScope & {
     apply?: FallDraftApplyRequest;
     internalSetupApply?: InternalFallDraftSetupApply;
     failureInjection?: FallDraftFailureStage;
   },
-): Promise<FallDraftApplyResult> {
+  profile: DraftGenerationProfile,
+): Promise<FallDraftApplyResult | FutureSeasonDraftGenerationResult> {
     if ((input.apply === undefined) === (input.internalSetupApply === undefined)) {
       throw new FallDraftGenerationError("transaction_failure", "exactly one C1 apply confirmation source is required");
     }
@@ -1130,7 +1308,9 @@ export async function applyFallDraftGenerationInTransaction(
     const authRequest: MaterializationScheduleCommandRequest = {
       organizationId: input.organizationId, leagueId: input.leagueId, actorUserId: input.actorUserId,
       commandType: "generate", idempotencyKey: requestedIdempotencyKey, requestFingerprint: `lvcanoncmd:v1:${"0".repeat(64)}`,
-      reason: requestedReason, materializationOperation: "fall_draft_generation", materializationPayload: {},
+      reason: requestedReason,
+      materializationOperation: profile.kind === "fall" ? "fall_draft_generation" : "future_season_draft_generation",
+      materializationPayload: {},
     };
     try {
       await assertCanonicalScheduleTenantAndActor(tx, authRequest);
@@ -1147,29 +1327,43 @@ export async function applyFallDraftGenerationInTransaction(
       if (!retryApply) {
         const existingRun = rows.runs.find((row) => row.originatingCommandId === existingKey.id);
         const snapshot = existingRun?.normalizedInputSnapshot;
-        if (!isFallDraftInputSnapshot(snapshot)) {
-          throw new FallDraftGenerationError("incompatible_canonical_state", "setup command is missing one complete C1 input snapshot");
+        const matchingSnapshot = profile.kind === "fall"
+          ? isFallDraftInputSnapshot(snapshot)
+          : isFutureSeasonDraftInputSnapshot(snapshot);
+        if (!matchingSnapshot || (!isFallDraftInputSnapshot(snapshot) && !isFutureSeasonDraftInputSnapshot(snapshot))) {
+          throw new FallDraftGenerationError("incompatible_canonical_state", "setup command is missing one complete matching input snapshot");
         }
         retryApply = {
           contractVersion: FALL_DRAFT_APPLY_REQUEST_VERSION,
-          confirmedPreviewFingerprint: snapshot.confirmedPreviewFingerprint,
+          confirmedPreviewFingerprint: isFallDraftInputSnapshot(snapshot)
+            ? snapshot.confirmedPreviewFingerprint
+            : snapshot.setupConfirmationFingerprint,
           reason: requestedReason,
           idempotencyKey: requestedIdempotencyKey,
         };
       }
-      return verifyExactRetry(tx, input, retryApply, rows);
+      return verifyExactRetry(tx, input, retryApply, rows, profile);
     }
     const loaded = await loadAuthoritativeLeague(tx, input);
-    assertFallLeague(loaded);
+    if (profile.kind === "fall") {
+      assertFallLeague(loaded);
+    } else {
+      const actualSeason = assertFutureSeasonLeague(loaded);
+      if (actualSeason !== profile.seasonClassification) {
+        throw new FallDraftGenerationError("idempotency_conflict", "future-season setup classification changed before generation");
+      }
+    }
     const sourceScheduleRevision = await allocateCanonicalSourceScheduleRevisionInTransaction(tx, input.organizationId, input.leagueId);
     const preview = buildPreview({ scope: input, loaded, sourceScheduleRevision, rows });
     const apply: FallDraftApplyRequest = input.apply ?? {
       contractVersion: FALL_DRAFT_APPLY_REQUEST_VERSION,
-      confirmedPreviewFingerprint: preview.previewFingerprint,
+      confirmedPreviewFingerprint: profile.kind === "fall"
+        ? preview.previewFingerprint
+        : profile.setupConfirmationFingerprint,
       reason: requestedReason,
       idempotencyKey: requestedIdempotencyKey,
     };
-    if (preview.previewFingerprint !== apply.confirmedPreviewFingerprint) {
+    if (profile.kind === "fall" && preview.previewFingerprint !== apply.confirmedPreviewFingerprint) {
       throw new FallDraftGenerationError("stale_preview", "confirmed preview no longer matches the authoritative league schedule and canonical state");
     }
     if (preview.fatalErrors.length > 0) throw new FallDraftGenerationError("generator_fatal_error", "C1 cannot apply a preview with generator fatal errors");
@@ -1183,7 +1377,7 @@ export async function applyFallDraftGenerationInTransaction(
     if (canonicalRowCount(existingCanonicalState(rows)) !== 0) {
       throw new FallDraftGenerationError("incompatible_canonical_state", "league contains partial, foreign, or competing canonical state");
     }
-    const expected = expectedCommands(input, apply, preview);
+    const expected = expectedCommands(input, apply, preview, profile);
     const commands = new Map<string, LeagueScheduleCommand>();
     for (const request of expected.all) {
       const created = await getOrCreateCanonicalScheduleCommandInTransaction(tx, request, [request.commandType]);
@@ -1207,7 +1401,7 @@ export async function applyFallDraftGenerationInTransaction(
       generatorVersion: generation.generatorVersion,
       inputFingerprint: generation.inputFingerprint,
       sourceScheduleRevision,
-      normalizedInputSnapshot: inputSnapshot(preview),
+      normalizedInputSnapshot: inputSnapshot(preview, profile),
       rangeStartDate: generation.generationRange.startDate,
       rangeEndDate: generation.generationRange.endDate,
       candidateOccurrenceCount: generation.counts.candidateOccurrenceCount,
@@ -1351,8 +1545,39 @@ export async function applyFallDraftGenerationInTransaction(
     injectFailure(input.failureInjection, "after_discrepancies");
     return resultFromRows({
       mode: "applied", preview, expected, commands: [...commands.values()], run, occurrences, terms, exceptions,
-      occurrenceRevisionIds, termRevisionIds, exceptionRevisionIds, discrepancies, currentMatches: true,
+      occurrenceRevisionIds, termRevisionIds, exceptionRevisionIds, discrepancies, currentMatches: true, profile,
     });
+}
+
+export async function applyFallDraftGenerationInTransaction(
+  tx: LeagueScheduleTransaction,
+  input: FallDraftScope & {
+    apply?: FallDraftApplyRequest;
+    internalSetupApply?: InternalFallDraftSetupApply;
+    failureInjection?: FallDraftFailureStage;
+  },
+): Promise<FallDraftApplyResult> {
+  return applyDraftGenerationInTransaction(tx, input, { kind: "fall" }) as Promise<FallDraftApplyResult>;
+}
+
+export async function applyFutureSeasonDraftGenerationInTransaction(
+  tx: LeagueScheduleTransaction,
+  input: FallDraftScope & {
+    internalSetupApply: InternalFutureSeasonDraftSetupApply;
+    seasonClassification: ProductSeason;
+    failureInjection?: FallDraftFailureStage;
+  },
+): Promise<FutureSeasonDraftGenerationResult> {
+  return applyDraftGenerationInTransaction(tx, {
+    ...input,
+    draftContractFamily: "future_season",
+    draftSeasonClassification: input.seasonClassification,
+    internalSetupApply: input.internalSetupApply,
+  }, {
+    kind: "future_season",
+    seasonClassification: input.seasonClassification,
+    setupConfirmationFingerprint: input.internalSetupApply.setupConfirmationFingerprint,
+  }) as Promise<FutureSeasonDraftGenerationResult>;
 }
 
 export async function applyFallDraftGeneration(input: FallDraftScope & { apply: FallDraftApplyRequest; failureInjection?: FallDraftFailureStage }): Promise<FallDraftApplyResult> {

@@ -363,6 +363,7 @@ for the full smoke-test and later-phase boundary.
 
 Phase E2 is a code-only cutover that reuses the E1 authoritative schedule
 selection and the existing nullable `games.occurrence_id` from migration 0022.
+
 Migration 0023 remains the latest required migration; do not run a migration or
 backfill as part of the E2 release. Deploy the exact CI-certified application
 commit, then verify canonical and explicit fallback game/score reads, one
@@ -395,6 +396,28 @@ rollback to E2 is schema-compatible and must leave migration 0023 and all
 durable evidence intact. See
 [Phase E3 canonical standings evidence](phase-e3-canonical-standings-reports.md)
 for the complete contract and smoke matrix.
+
+### Phase E4 rollover and future-season generation
+
+E4 is an application-only release; migration 0023 remains latest. Keep Render
+Auto-Deploy off, verify the exact CI-certified main SHA and the production 0023
+journal/checksum, then deploy that exact SHA without running a new migration.
+No environment variable or provider configuration changes.
+
+Authenticated smoke coverage must create only reviewed disposable test data:
+confirm that the source-confirmation response excludes provider/payment/PII
+fields, stale source configuration is rejected, and a wholly future rollover
+creates one target with copied teams/complete roster, null Square catalog IDs,
+new canonical UUIDs, and a generic draft review. Verify an exact retry performs
+zero writes and returns the same IDs. Approve/publish the disposable generic set
+through the canonical review route, confirm E1 becomes canonical-authoritative,
+and verify cross-tenant access fails closed. Confirm no D2, payment, operation,
+refund, dispute, webhook, or unexpected provider evidence was created and no
+provider call occurred in the smoke window.
+
+Application rollback keeps the generic versioned evidence. Do not delete it,
+run a Fall recovery route against it, or resume request-v1 setup writes. See
+[Phase E4 rollover and future-season generation](phase-e4-rollover-future-season-generation.md).
 
 ## Post-Deployment Checks
 

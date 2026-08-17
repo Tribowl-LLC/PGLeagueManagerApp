@@ -11,6 +11,23 @@ import {
   fallDraftRescheduleRequestSchema,
   fallDraftRestoreRequestSchema,
 } from "@shared/fall-draft-review";
+import {
+  CANONICAL_DRAFT_APPROVE_REQUEST_VERSION,
+  CANONICAL_DRAFT_CANCEL_REQUEST_VERSION,
+  CANONICAL_DRAFT_REJECT_REQUEST_VERSION,
+  CANONICAL_DRAFT_RESCHEDULE_REQUEST_VERSION,
+  CANONICAL_DRAFT_RESTORE_REQUEST_VERSION,
+  CANONICAL_DRAFT_MUTATION_RESULT_VERSION,
+  canonicalDraftApproveRequestSchema,
+  canonicalDraftCancelRequestSchema,
+  canonicalDraftRejectRequestSchema,
+  canonicalDraftRescheduleRequestSchema,
+  canonicalDraftRestoreRequestSchema,
+  toCanonicalDraftReview,
+  type CanonicalDraftMutationResult,
+  type CanonicalDraftReview,
+} from "@shared/canonical-draft-review";
+import { isFutureSeasonDraftInputSnapshot } from "@shared/future-season-draft-generation";
 import { filterByOrganization } from "../middleware/organization.js";
 import { singleRouteParam } from "../utils/route-params.js";
 import { handleZodError, sendError, sendSuccess } from "../utils/api.js";
@@ -217,6 +234,119 @@ router.post("/:id/canonical-fall-drafts/review/reject", async (req: Request, res
   } catch (caught) {
     sendFallDraftError(res, caught);
   }
+});
+
+async function genericReview(scope: NonNullable<ReturnType<typeof authorizedScope>>): Promise<CanonicalDraftReview> {
+  const review = await loadFallDraftReview({ ...scope, draftContractFamily: "future_season" });
+  if (!isFutureSeasonDraftInputSnapshot(review.generationRun.normalizedInputSnapshot)) {
+    throw new FallDraftReviewError("incompatible_canonical_state", "canonical draft review requires E4 future-season evidence");
+  }
+  return toCanonicalDraftReview(review, review.generationRun.normalizedInputSnapshot.seasonClassification);
+}
+
+function genericMutationResult(
+  result: Awaited<ReturnType<typeof rescheduleFallDraftOccurrence>>,
+): CanonicalDraftMutationResult {
+  if (!isFutureSeasonDraftInputSnapshot(result.review.generationRun.normalizedInputSnapshot)) {
+    throw new FallDraftReviewError("incompatible_canonical_state", "canonical draft mutation returned non-E4 evidence");
+  }
+  return {
+    ...result,
+    resultContractVersion: CANONICAL_DRAFT_MUTATION_RESULT_VERSION,
+    review: toCanonicalDraftReview(
+      result.review,
+      result.review.generationRun.normalizedInputSnapshot.seasonClassification,
+    ),
+  };
+}
+
+async function genericMutationScope(
+  scope: NonNullable<ReturnType<typeof authorizedScope>>,
+  contractVersion: string,
+  confirmedReviewFingerprint: string,
+) {
+  const current = await genericReview(scope);
+  return {
+    ...scope,
+    draftContractFamily: "future_season" as const,
+    draftSeasonClassification: current.generation.seasonClassification,
+    draftReviewRequestContext: { contractVersion, confirmedReviewFingerprint },
+  };
+}
+
+router.get("/:id/canonical-drafts/review", async (req: Request, res) => {
+  const scope = requireAdminScope(req, res);
+  if (!scope) return;
+  try {
+    sendSuccess(res, await genericReview(scope));
+  } catch (caught) {
+    sendFallDraftError(res, caught);
+  }
+});
+
+router.post("/:id/canonical-drafts/review/reschedule", async (req: Request, res) => {
+  const scope = requireAdminScope(req, res);
+  if (!scope) return;
+  try {
+    const parsed = canonicalDraftRescheduleRequestSchema.parse(req.body);
+    const result = await rescheduleFallDraftOccurrence({
+      ...await genericMutationScope(scope, CANONICAL_DRAFT_RESCHEDULE_REQUEST_VERSION, parsed.confirmedReviewFingerprint),
+      request: { ...parsed, contractVersion: "fall-draft-reschedule-request/2" },
+    });
+    sendSuccess(res, genericMutationResult(result), result.mode === "applied" ? 201 : 200);
+  } catch (caught) { sendFallDraftError(res, caught); }
+});
+
+router.post("/:id/canonical-drafts/review/cancel", async (req: Request, res) => {
+  const scope = requireAdminScope(req, res);
+  if (!scope) return;
+  try {
+    const parsed = canonicalDraftCancelRequestSchema.parse(req.body);
+    const result = await cancelFallDraftOccurrence({
+      ...await genericMutationScope(scope, CANONICAL_DRAFT_CANCEL_REQUEST_VERSION, parsed.confirmedReviewFingerprint),
+      request: { ...parsed, contractVersion: "fall-draft-cancel-request/1" },
+    });
+    sendSuccess(res, genericMutationResult(result), result.mode === "applied" ? 201 : 200);
+  } catch (caught) { sendFallDraftError(res, caught); }
+});
+
+router.post("/:id/canonical-drafts/review/restore", async (req: Request, res) => {
+  const scope = requireAdminScope(req, res);
+  if (!scope) return;
+  try {
+    const parsed = canonicalDraftRestoreRequestSchema.parse(req.body);
+    const result = await restoreFallDraftOccurrence({
+      ...await genericMutationScope(scope, CANONICAL_DRAFT_RESTORE_REQUEST_VERSION, parsed.confirmedReviewFingerprint),
+      request: { ...parsed, contractVersion: "fall-draft-restore-request/1" },
+    });
+    sendSuccess(res, genericMutationResult(result), result.mode === "applied" ? 201 : 200);
+  } catch (caught) { sendFallDraftError(res, caught); }
+});
+
+router.post("/:id/canonical-drafts/review/approve", async (req: Request, res) => {
+  const scope = requireAdminScope(req, res);
+  if (!scope) return;
+  try {
+    const parsed = canonicalDraftApproveRequestSchema.parse(req.body);
+    const result = await approveAndPublishFallDraft({
+      ...await genericMutationScope(scope, CANONICAL_DRAFT_APPROVE_REQUEST_VERSION, parsed.confirmedReviewFingerprint),
+      request: { ...parsed, contractVersion: "fall-draft-approve-request/1" },
+    });
+    sendSuccess(res, genericMutationResult(result), result.mode === "applied" ? 201 : 200);
+  } catch (caught) { sendFallDraftError(res, caught); }
+});
+
+router.post("/:id/canonical-drafts/review/reject", async (req: Request, res) => {
+  const scope = requireAdminScope(req, res);
+  if (!scope) return;
+  try {
+    const parsed = canonicalDraftRejectRequestSchema.parse(req.body);
+    const result = await rejectFallDraft({
+      ...await genericMutationScope(scope, CANONICAL_DRAFT_REJECT_REQUEST_VERSION, parsed.confirmedReviewFingerprint),
+      request: { ...parsed, contractVersion: "fall-draft-reject-request/1" },
+    });
+    sendSuccess(res, genericMutationResult(result), result.mode === "applied" ? 201 : 200);
+  } catch (caught) { sendFallDraftError(res, caught); }
 });
 
 export default router;

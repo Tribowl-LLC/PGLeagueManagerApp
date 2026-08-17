@@ -1,5 +1,5 @@
 import { Router, Request } from 'express';
-import { randomBytes, randomUUID } from 'crypto';
+import { randomBytes } from 'crypto';
 import { storage } from '../storage';
 import { insertLeagueSchema, updateLeagueSchema, DEFAULT_TIMEZONE, WEEKDAYS, PAYMENT_MODES, dateSchema } from "@shared/schema";
 import { validateDoublePayDates } from "@shared/schema/leagues";
@@ -30,12 +30,14 @@ import {
   LeaguePaymentModeLockedError,
 } from '../storage/leagues';
 import {
-  LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION,
   leagueSetupIntegrationIntentSchema,
+  leagueSetupIntegrationIntentV2Schema,
+  leagueRolloverSourceConfirmationSchema,
 } from '@shared/league-setup-integration';
 import {
   createLeagueWithCanonicalSetup,
   createNewSeasonWithCanonicalSetup,
+  loadLeagueRolloverSource,
   LeagueSetupIntegrationError,
 } from '../services/league-setup-integration.js';
 import { FallDraftGenerationError } from '../services/fall-draft-generation.js';
@@ -44,7 +46,7 @@ const log = createLogger("Leagues");
 
 const router = Router();
 
-const newSeasonRequestSchema = z.object({
+const newSeasonRequestV1Schema = z.object({
   seasonStart: dateSchema,
   // Retained for older clients that still submit an explicit end date.
   seasonEnd: dateSchema.optional(),
@@ -57,6 +59,32 @@ const newSeasonRequestSchema = z.object({
   paymentMode: z.enum(PAYMENT_MODES),
   setupIntegration: leagueSetupIntegrationIntentSchema,
 }).strict();
+
+const newSeasonRequestV2Schema = z.object({
+  seasonStart: dateSchema,
+  totalBowlingWeeks: z.number().int().positive().max(52),
+  weekDay: z.enum(WEEKDAYS),
+  skipDates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)),
+  cancelledDates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)),
+  doublePayDates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).max(2, "At most 2 double-pay weeks allowed"),
+  allowPublicSignup: z.boolean(),
+  paymentMode: z.enum(PAYMENT_MODES),
+  setupIntegration: leagueSetupIntegrationIntentV2Schema,
+  sourceConfirmation: leagueRolloverSourceConfirmationSchema,
+}).strict();
+
+const newSeasonRequestSchema = z.union([newSeasonRequestV2Schema, newSeasonRequestV1Schema]);
+
+const directLeagueSetupV2TargetSchema = z.object({
+  seasonStart: dateSchema,
+  totalBowlingWeeks: z.number().int().positive().max(52),
+  weekDay: z.enum(WEEKDAYS),
+  skipDates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)),
+  cancelledDates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)),
+  doublePayDates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).max(2, "At most 2 double-pay weeks allowed"),
+  allowPublicSignup: z.boolean(),
+  paymentMode: z.enum(PAYMENT_MODES),
+}).passthrough();
 
 function sendLeagueSetupError(res: Parameters<typeof sendError>[0], error: unknown): void {
   if (error instanceof z.ZodError) return handleZodError(res, error);
@@ -277,8 +305,11 @@ router.post("/", async (req: Request, res) => {
     if (forbiddenSetupFields.some((field) => Object.prototype.hasOwnProperty.call(req.body ?? {}, field))) {
       return sendError(res, 'League setup contains server-owned canonical generation fields', 400, 'VALIDATION_ERROR');
     }
+    const submittedV2 = req.body?.setupIntegration?.contractVersion === "league-setup-integration-request/2";
     // Derive seasonEnd server-side when totalBowlingWeeks is provided
-    let derivedSeasonEnd = req.body.seasonEnd ? new Date(req.body.seasonEnd) : undefined;
+    let derivedSeasonEnd = !submittedV2 && req.body.seasonEnd
+      ? new Date(req.body.seasonEnd)
+      : undefined;
     if (
       req.body.totalBowlingWeeks != null &&
       req.body.seasonStart &&
@@ -337,20 +368,23 @@ router.post("/", async (req: Request, res) => {
       }
     }
 
+    const setup = z.union([
+      leagueSetupIntegrationIntentV2Schema,
+      leagueSetupIntegrationIntentSchema,
+    ]).parse(req.body?.setupIntegration);
+    if (setup.contractVersion === "league-setup-integration-request/2") {
+      if (Object.prototype.hasOwnProperty.call(req.body ?? {}, "seasonEnd")) {
+        return sendError(res, 'seasonEnd is derived by canonical v2 league setup', 400, 'VALIDATION_ERROR');
+      }
+      directLeagueSetupV2TargetSchema.parse(req.body);
+    }
+
     const league = insertLeagueSchema.parse({
       ...req.body,
       organizationId: effectiveOrgId,
       seasonStart: new Date(req.body.seasonStart),
       seasonEnd: derivedSeasonEnd ?? new Date(req.body.seasonEnd)
     });
-    const isFallSetup = league.active && [7, 8, 9].includes(new Date(league.seasonStart).getUTCMonth());
-    const setup = req.body?.setupIntegration === undefined && !isFallSetup
-      ? {
-          contractVersion: LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION,
-          idempotencyKey: randomUUID(),
-        } as const
-      : leagueSetupIntegrationIntentSchema.parse(req.body?.setupIntegration);
-
     const created = await createLeagueWithCanonicalSetup({
       scope: { organizationId: effectiveOrgId, actorUserId: req.user.id },
       league,
@@ -720,10 +754,41 @@ router.post("/:id/send-invites", async (req: Request, res) => {
   }
 });
 
+router.get("/:id/new-season/source-confirmation", async (req: Request, res) => {
+  try {
+    const rawId = singleRouteParam(req.params.id);
+    const id = /^\d+$/.test(rawId) ? Number(rawId) : NaN;
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      return sendError(res, "Invalid league ID", 400, "INVALID_ID");
+    }
+    if (!req.user || (req.user.role !== 'system_admin' && req.user.role !== 'org_admin')) {
+      return sendError(res, "Only admins can start a new season", 403, "FORBIDDEN");
+    }
+    const explicitSystemOrganization = typeof req.query.organizationId === 'string'
+      && /^\d+$/.test(req.query.organizationId)
+      ? Number(req.query.organizationId)
+      : null;
+    if (req.user.role === 'system_admin' && (!explicitSystemOrganization || !Number.isSafeInteger(explicitSystemOrganization))) {
+      return sendError(res, 'System administrators must select one organization with ?organizationId=<id>', 400, 'INVALID_REQUEST');
+    }
+    const organizationId = req.user.role === 'system_admin'
+      ? explicitSystemOrganization
+      : getOrganizationFilter(req) ?? req.user.organizationId;
+    if (!organizationId) return sendError(res, 'A valid organization scope is required', 400, 'INVALID_REQUEST');
+    sendSuccess(res, await loadLeagueRolloverSource({
+      scope: { organizationId, actorUserId: req.user.id },
+      sourceLeagueId: id,
+    }));
+  } catch (error) {
+    sendLeagueSetupError(res, error);
+  }
+});
+
 router.post("/:id/new-season", async (req: Request, res) => {
   try {
-    const id = parseInt(singleRouteParam(req.params.id));
-    if (isNaN(id)) {
+    const rawId = singleRouteParam(req.params.id);
+    const id = /^\d+$/.test(rawId) ? Number(rawId) : NaN;
+    if (!Number.isSafeInteger(id) || id <= 0) {
       return sendError(res, "Invalid league ID", 400, "INVALID_ID");
     }
 
@@ -748,12 +813,19 @@ router.post("/:id/new-season", async (req: Request, res) => {
       ? explicitSystemOrganization
       : getOrganizationFilter(req) ?? req.user.organizationId;
     if (!organizationId) return sendError(res, 'A valid organization scope is required', 400, 'INVALID_REQUEST');
-    const { setupIntegration, ...values } = parsedRequest.data;
+    const { setupIntegration, ...requestValues } = parsedRequest.data;
+    const sourceConfirmation = "sourceConfirmation" in requestValues
+      ? requestValues.sourceConfirmation
+      : undefined;
+    const values = "sourceConfirmation" in requestValues
+      ? (({ sourceConfirmation: _confirmed, ...targetValues }) => targetValues)(requestValues)
+      : requestValues;
     const created = await createNewSeasonWithCanonicalSetup({
       scope: { organizationId, actorUserId: req.user.id },
       sourceLeagueId: id,
       values,
       setup: setupIntegration,
+      sourceConfirmation,
     });
 
     // The source league is now inactive AND the bowlers are in the

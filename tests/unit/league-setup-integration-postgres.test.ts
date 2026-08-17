@@ -16,14 +16,20 @@ import {
   type InsertLeague,
   type PaymentMode,
 } from "@shared/schema";
-import { LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION } from "@shared/league-setup-integration";
+import { LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION_2 } from "@shared/league-setup-integration";
+import { fallDraftSha256 } from "@shared/fall-draft-generation";
 import {
   createLeagueWithCanonicalSetup,
   createNewSeasonWithCanonicalSetup,
   LeagueSetupIntegrationError,
+  loadLeagueRolloverSource,
   type LeagueSetupFailureStage,
+  LEAGUE_SETUP_FALL_AUDIT_REASON,
 } from "../../server/services/league-setup-integration";
-import type { FallDraftFailureStage } from "../../server/services/fall-draft-generation";
+import {
+  applyFallDraftGenerationInTransaction,
+  type FallDraftFailureStage,
+} from "../../server/services/fall-draft-generation";
 import { LeagueCanonicalScheduleLockedError, updateLeague } from "../../server/storage/leagues";
 import { deleteOrganization } from "../../server/storage/organizations";
 import { getTestDb } from "../setup/test-db";
@@ -65,9 +71,17 @@ async function fixture(label: string): Promise<Fixture> {
 
 function setup(key: number) {
   return {
-    contractVersion: LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION,
+    contractVersion: LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION_2,
     idempotencyKey: `10000000-0000-4000-8000-${String(key).padStart(12, "0")}`,
   } as const;
+}
+
+async function sourceConfirmation(f: Fixture, sourceLeagueId: number) {
+  const source = await loadLeagueRolloverSource({
+    scope: { organizationId: f.organizationId, actorUserId: f.actorUserId },
+    sourceLeagueId,
+  });
+  return { contractVersion: source.contractVersion, fingerprint: source.fingerprint, confirmed: true as const };
 }
 
 function fallLeague(f: Fixture, paymentMode: PaymentMode = "weekly", overrides: Partial<InsertLeague> = {}): InsertLeague {
@@ -119,6 +133,46 @@ async function organizationCounts(organizationId: number) {
   return result;
 }
 
+async function nonRolloverEvidenceCounts() {
+  const names = [
+    "games",
+    "scores",
+    "payments",
+    "payment_schedules",
+    "payment_operations",
+    "scheduled_payment_operation_snapshots",
+    "scheduled_payment_operation_allocations",
+    "scheduled_payment_operation_line_items",
+    "interactive_payment_operation_snapshots",
+    "interactive_payment_operation_allocations",
+    "interactive_payment_operation_line_items",
+    "refund_payment_operation_snapshots",
+    "payment_disputes",
+    "payment_dispute_notifications",
+    "payment_dispute_replay_audits",
+    "webhook_events",
+    "bowler_occurrence_eligibilities",
+    "bowler_occurrence_eligibility_revisions",
+    "bowler_occurrence_team_assignments",
+    "bowler_occurrence_team_assignment_revisions",
+    "bowler_occurrence_obligations",
+    "bowler_occurrence_obligation_revisions",
+    "occurrence_collection_plans",
+    "occurrence_collection_plan_items",
+    "occurrence_collection_plan_revisions",
+    "payment_occurrence_allocations",
+    "payment_occurrence_allocation_revisions",
+    "payment_operation_occurrence_snapshots",
+    "payment_operation_occurrence_snapshot_allocations",
+  ] as const;
+  const result: Record<string, number> = {};
+  for (const name of names) {
+    const counted = await db.execute(sql.raw(`SELECT count(*)::integer AS count FROM ${name}`));
+    result[name] = Number(counted.rows[0]?.count ?? 0);
+  }
+  return result;
+}
+
 afterAll(async () => {
   for (const organizationId of organizationsToDelete.splice(0)) {
     await deleteOrganization(organizationId).catch(() => undefined);
@@ -129,6 +183,80 @@ afterAll(async () => {
 });
 
 describe("authoritative league setup integration", () => {
+  it.each([
+    ["Winter", "2032-12-26T00:00:00.000Z", "2033-01-09T00:00:00.000Z"],
+    ["Spring", "2032-03-07T00:00:00.000Z", "2032-03-21T00:00:00.000Z"],
+    ["Summer", "2032-06-06T00:00:00.000Z", "2032-06-20T00:00:00.000Z"],
+  ] as const)("creates complete generic drafts for a future %s season", async (seasonClassification, seasonStart, seasonEnd) => {
+    const f = await fixture(`all-season-${seasonClassification}`);
+    const result = await createLeagueWithCanonicalSetup({
+      scope: { organizationId: f.organizationId, actorUserId: f.actorUserId },
+      league: fallLeague(f, "weekly", {
+        seasonStart,
+        seasonEnd,
+        totalBowlingWeeks: 3,
+        skipDates: [],
+        cancelledDates: [],
+        doublePayDates: [],
+      }),
+      setup: setup(++sequence),
+    });
+    expect(result.canonicalDraftGeneration).toMatchObject({ seasonClassification, counts: { occurrences: 3 } });
+  });
+
+  it.each([
+    ["gap", "2032-03-14T00:00:00.000Z", "2032-03-21T00:00:00.000Z", "02:30"],
+    ["fold", "2032-11-07T00:00:00.000Z", "2032-11-14T00:00:00.000Z", "01:30"],
+  ] as const)("rejects a DST %s without partial setup rows", async (_kind, seasonStart, seasonEnd, competitionStartTime) => {
+    const f = await fixture(`dst-${_kind}`);
+    const before = await organizationCounts(f.organizationId);
+    await expect(createLeagueWithCanonicalSetup({
+      scope: { organizationId: f.organizationId, actorUserId: f.actorUserId },
+      league: fallLeague(f, "weekly", {
+        seasonStart,
+        seasonEnd,
+        totalBowlingWeeks: 2,
+        competitionStartTime,
+        skipDates: [],
+        cancelledDates: [],
+        doublePayDates: [],
+      }),
+      setup: setup(++sequence),
+    })).rejects.toMatchObject({ code: "generator_fatal_error" });
+    expect(await organizationCounts(f.organizationId)).toEqual(before);
+  });
+
+  it("accepts request/1 only for an exact historical Fall setup retry", async () => {
+    const f = await fixture("v1-history");
+    const legacyIntent = {
+      contractVersion: "league-setup-integration-request/1" as const,
+      idempotencyKey: `30000000-0000-4000-8000-${String(++sequence).padStart(12, "0")}`,
+    };
+    const commandKey = `lvsetup:${fallDraftSha256(legacyIntent)}`;
+    const leagueInput = fallLeague(f);
+    const [persisted] = await db.insert(leagues).values(leagueInput).returning();
+    await db.transaction((tx) => applyFallDraftGenerationInTransaction(tx, {
+      organizationId: f.organizationId,
+      leagueId: persisted.id,
+      actorUserId: f.actorUserId,
+      internalSetupApply: { idempotencyKey: commandKey, reason: LEAGUE_SETUP_FALL_AUDIT_REASON },
+    }));
+    const retried = await createLeagueWithCanonicalSetup({
+      scope: { organizationId: f.organizationId, actorUserId: f.actorUserId },
+      league: leagueInput,
+      setup: legacyIntent,
+    });
+    expect(retried).toMatchObject({
+      id: persisted.id,
+      setupIntegration: { requestContractVersion: "league-setup-integration-request/1", mode: "idempotent_retry", writesPerformed: false },
+    });
+    await expect(createLeagueWithCanonicalSetup({
+      scope: { organizationId: f.organizationId, actorUserId: f.actorUserId },
+      league: { ...leagueInput, name: "new v1 write forbidden" },
+      setup: { ...legacyIntent, idempotencyKey: `30000000-0000-4000-8000-${String(++sequence).padStart(12, "0")}` },
+    })).rejects.toMatchObject({ code: "idempotency_conflict" });
+  });
+
   it.each(["weekly", "upfront"] as const)("atomically creates complete %s Fall drafts with fixed policies", async (paymentMode) => {
     const f = await fixture(`complete-${paymentMode}`);
     const result = await createLeagueWithCanonicalSetup({
@@ -161,16 +289,22 @@ describe("authoritative league setup integration", () => {
     expect(exceptions[0]).toMatchObject({ lifecycle: "draft", localDate: "2032-10-10" });
   });
 
-  it("keeps non-Fall creation on the legacy row path without canonical writes", async () => {
+  it("creates canonical drafts for a future Winter league", async () => {
     const f = await fixture("non-fall");
     const result = await createLeagueWithCanonicalSetup({
-      scope: { organizationId: f.organizationId, actorUserId: f.regularUserId },
-      league: fallLeague(f, "weekly", { seasonStart: "2032-11-07T00:00:00.000Z", seasonEnd: "2032-12-19T00:00:00.000Z", skipDates: [] }),
+      scope: { organizationId: f.organizationId, actorUserId: f.actorUserId },
+      league: fallLeague(f, "weekly", {
+        seasonStart: "2032-11-07T00:00:00.000Z",
+        seasonEnd: "2032-12-12T00:00:00.000Z",
+        skipDates: [],
+        cancelledDates: [],
+        doublePayDates: [],
+      }),
       setup: setup(++sequence),
     });
-    expect(result.setupIntegration).toMatchObject({ mode: "not_applicable", writesPerformed: true });
-    expect(result.canonicalDraftGeneration).toBeNull();
-    expect(await db.select().from(leagueScheduleCommands).where(eq(leagueScheduleCommands.leagueId, result.id))).toHaveLength(0);
+    expect(result.setupIntegration).toMatchObject({ mode: "created", writesPerformed: true });
+    expect(result.canonicalDraftGeneration).toMatchObject({ seasonClassification: "Winter", mode: "applied" });
+    expect(await db.select().from(leagueScheduleCommands).where(eq(leagueScheduleCommands.leagueId, result.id))).not.toHaveLength(0);
   });
 
   it("rolls back the league for past slots, unauthorized actors, and cross-tenant locations", async () => {
@@ -263,7 +397,9 @@ describe("authoritative league setup integration", () => {
 
   it("copies the complete roster in order, creates drafts, and archives the source only at commit", async () => {
     const f = await fixture("new-season");
-    const [source] = await db.insert(leagues).values(fallLeague(f, "weekly", {
+    const source = await createLeagueWithCanonicalSetup({
+      scope: { organizationId: f.organizationId, actorUserId: f.actorUserId },
+      league: fallLeague(f, "weekly", {
       name: "Source season",
       seasonStart: "2031-01-05T00:00:00.000Z",
       seasonEnd: "2031-03-30T00:00:00.000Z",
@@ -271,7 +407,17 @@ describe("authoritative league setup integration", () => {
       skipDates: [],
       cancelledDates: [],
       doublePayDates: [],
-    })).returning();
+      squareLineageItemId: "source-lineage-item",
+      lineageItemVariationId: "source-lineage-variation",
+      squareLineageItemName: "Source lineage",
+      squarePrizeFundItemId: "source-prize-item",
+      prizeFundItemVariationId: "source-prize-variation",
+      squarePrizeFundItemName: "Source prize",
+      squareCategoryId: "source-category",
+      }),
+      setup: setup(++sequence),
+    });
+    const sourceOccurrenceIds = source.canonicalDraftGeneration?.durableIds.occurrenceIds ?? [];
     const sourceTeams = await db.insert(teams).values([
       { name: "Second", number: 2, leagueId: source.id, active: false, displayOrder: 1 },
       { name: "First", number: 1, leagueId: source.id, active: true, displayOrder: 0 },
@@ -280,10 +426,13 @@ describe("authoritative league setup integration", () => {
       { name: "First Bowler", organizationId: f.organizationId },
       { name: "Second Bowler", organizationId: f.organizationId },
     ]).returning();
+    const firstJoinedAt = "2030-01-02T03:04:05.000Z";
+    const secondJoinedAt = "2030-02-03T04:05:06.000Z";
     await db.insert(bowlerLeagues).values([
-      { bowlerId: firstBowler.id, leagueId: source.id, teamId: sourceTeams[1].id, active: true, order: 3 },
-      { bowlerId: secondBowler.id, leagueId: source.id, teamId: sourceTeams[0].id, active: false, order: 7 },
+      { bowlerId: firstBowler.id, leagueId: source.id, teamId: sourceTeams[1].id, active: true, order: 3, joinedAt: firstJoinedAt },
+      { bowlerId: secondBowler.id, leagueId: source.id, teamId: sourceTeams[0].id, active: false, order: 7, joinedAt: secondJoinedAt },
     ]);
+    const untouchedEvidenceBefore = await nonRolloverEvidenceCounts();
     const values = {
       seasonStart: "2032-10-03",
       totalBowlingWeeks: 6,
@@ -294,13 +443,55 @@ describe("authoritative league setup integration", () => {
       allowPublicSignup: true,
       paymentMode: "upfront" as const,
     };
+    const confirmedSource = await sourceConfirmation(f, source.id);
     const created = await createNewSeasonWithCanonicalSetup({
       scope: { organizationId: f.organizationId, actorUserId: f.actorUserId },
       sourceLeagueId: source.id,
       values,
       setup: setup(++sequence),
+      sourceConfirmation: confirmedSource,
     });
     expect(created.result).toMatchObject({ previousSeasonId: source.id, active: true, canonicalDraftGeneration: { mode: "applied" } });
+    expect(created.result.canonicalDraftGeneration?.durableIds.occurrenceIds)
+      .not.toEqual(sourceOccurrenceIds);
+    expect(created.result.canonicalDraftGeneration?.durableIds.occurrenceIds.some((id) => sourceOccurrenceIds.includes(id)))
+      .toBe(false);
+    expect(await nonRolloverEvidenceCounts()).toEqual(untouchedEvidenceBefore);
+    for (const table of [
+      "games",
+      "payments",
+      "payment_schedules",
+      "bowler_occurrence_eligibilities",
+      "bowler_occurrence_team_assignments",
+      "bowler_occurrence_obligations",
+      "occurrence_collection_plans",
+      "occurrence_collection_plan_items",
+      "payment_occurrence_allocations",
+      "payment_operation_occurrence_snapshot_allocations",
+    ]) {
+      const counted = await db.execute(sql.raw(
+        `SELECT count(*)::integer AS count FROM ${table} WHERE league_id = ${created.result.id}`,
+      ));
+      expect(Number(counted.rows[0]?.count ?? 0), `${table} must not be copied`).toBe(0);
+    }
+    expect(created.result).toMatchObject({
+      name: source.name,
+      description: source.description,
+      locationId: source.locationId,
+      timezone: source.timezone,
+      practiceStartTime: source.practiceStartTime,
+      competitionStartTime: source.competitionStartTime,
+      weeklyFee: source.weeklyFee,
+      lineageFee: source.lineageFee,
+      prizeFundFee: source.prizeFundFee,
+      squareLineageItemId: null,
+      lineageItemVariationId: null,
+      squareLineageItemName: null,
+      squarePrizeFundItemId: null,
+      prizeFundItemVariationId: null,
+      squarePrizeFundItemName: null,
+      squareCategoryId: null,
+    });
     const [archived] = await db.select().from(leagues).where(eq(leagues.id, source.id));
     expect(archived.active).toBe(false);
     const copiedTeams = await db.select().from(teams).where(eq(teams.leagueId, created.result.id)).orderBy(asc(teams.displayOrder));
@@ -313,12 +504,17 @@ describe("authoritative league setup integration", () => {
       [firstBowler.id, true, 3],
       [secondBowler.id, false, 7],
     ]);
+    expect(copiedRoster.map((row) => new Date(row.joinedAt).toISOString())).toEqual([
+      firstJoinedAt,
+      secondJoinedAt,
+    ]);
     expect(copiedRoster.map((row) => copiedTeams.find((team) => team.id === row.teamId)?.name)).toEqual(["First", "Second"]);
     const retry = await createNewSeasonWithCanonicalSetup({
       scope: { organizationId: f.organizationId, actorUserId: f.actorUserId },
       sourceLeagueId: source.id,
       values,
       setup: setup(sequence),
+      sourceConfirmation: confirmedSource,
     });
     expect(retry.result).toMatchObject({ id: created.result.id, setupIntegration: { mode: "idempotent_retry", writesPerformed: false } });
   });
@@ -337,14 +533,64 @@ describe("authoritative league setup integration", () => {
     await expect(createNewSeasonWithCanonicalSetup({
       scope: { organizationId: f.organizationId, actorUserId: f.actorUserId },
       sourceLeagueId: source.id,
-      values: { seasonStart: "2032-08-01", totalBowlingWeeks: 3, weekDay: "Sunday", skipDates: [], cancelledDates: [], doublePayDates: [], paymentMode: "weekly" },
+      values: { seasonStart: "2032-08-01", totalBowlingWeeks: 3, weekDay: "Sunday", skipDates: [], cancelledDates: [], doublePayDates: [], allowPublicSignup: false, paymentMode: "weekly" },
       setup: setup(++sequence),
+      sourceConfirmation: await sourceConfirmation(f, source.id),
       failureInjection,
     })).rejects.toMatchObject({ code: "transaction_failure" });
     const rows = await db.select().from(leagues).where(eq(leagues.organizationId, f.organizationId));
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ id: source.id, active: true });
     expect(await db.select().from(leagueScheduleCommands).where(eq(leagueScheduleCommands.organizationId, f.organizationId))).toHaveLength(0);
+  });
+
+  it("fails stale carried-source confirmation without archiving or creating a successor", async () => {
+    const f = await fixture("stale-source-confirmation");
+    const [source] = await db.insert(leagues).values(fallLeague(f, "weekly", {
+      seasonStart: "2031-01-05T00:00:00.000Z",
+      seasonEnd: "2031-01-19T00:00:00.000Z",
+      totalBowlingWeeks: 3,
+      skipDates: [], cancelledDates: [], doublePayDates: [],
+    })).returning();
+    const confirmed = await sourceConfirmation(f, source.id);
+    await db.update(leagues).set({ weeklyFee: source.weeklyFee + 100 }).where(eq(leagues.id, source.id));
+    await expect(createNewSeasonWithCanonicalSetup({
+      scope: { organizationId: f.organizationId, actorUserId: f.actorUserId },
+      sourceLeagueId: source.id,
+      values: {
+        seasonStart: "2032-03-07", totalBowlingWeeks: 3, weekDay: "Sunday",
+        skipDates: [], cancelledDates: [], doublePayDates: [], allowPublicSignup: false, paymentMode: "weekly",
+      },
+      setup: setup(++sequence),
+      sourceConfirmation: confirmed,
+    })).rejects.toMatchObject({ code: "stale_source_league" });
+    expect(await db.select().from(leagues).where(eq(leagues.organizationId, f.organizationId))).toHaveLength(1);
+    expect((await db.select().from(leagues).where(eq(leagues.id, source.id)))[0]?.active).toBe(true);
+  });
+
+  it("rolls back a cross-tenant source roster corruption", async () => {
+    const f = await fixture("cross-tenant-roster");
+    const other = await fixture("cross-tenant-roster-other");
+    const [source] = await db.insert(leagues).values(fallLeague(f, "weekly", {
+      seasonStart: "2031-01-05T00:00:00.000Z", seasonEnd: "2031-01-19T00:00:00.000Z",
+      totalBowlingWeeks: 3, skipDates: [], cancelledDates: [], doublePayDates: [],
+    })).returning();
+    const [team] = await db.insert(teams).values({ name: "Tenant team", number: 1, leagueId: source.id }).returning();
+    const confirmed = await sourceConfirmation(f, source.id);
+    const [foreignBowler] = await db.insert(bowlers).values({ name: "Foreign bowler", organizationId: other.organizationId }).returning();
+    await db.insert(bowlerLeagues).values({ bowlerId: foreignBowler.id, leagueId: source.id, teamId: team.id });
+    await expect(createNewSeasonWithCanonicalSetup({
+      scope: { organizationId: f.organizationId, actorUserId: f.actorUserId },
+      sourceLeagueId: source.id,
+      values: {
+        seasonStart: "2032-06-06", totalBowlingWeeks: 3, weekDay: "Sunday",
+        skipDates: [], cancelledDates: [], doublePayDates: [], allowPublicSignup: false, paymentMode: "weekly",
+      },
+      setup: setup(++sequence),
+      sourceConfirmation: confirmed,
+    })).rejects.toMatchObject({ code: "transaction_failure" });
+    expect(await db.select().from(leagues).where(eq(leagues.organizationId, f.organizationId))).toHaveLength(1);
+    expect((await db.select().from(leagues).where(eq(leagues.id, source.id)))[0]?.active).toBe(true);
   });
 
   it("blocks material canonical edits after setup while permitting no-ops, metadata, and double-pay evidence", async () => {

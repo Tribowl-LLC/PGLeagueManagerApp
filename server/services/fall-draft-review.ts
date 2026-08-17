@@ -54,6 +54,11 @@ import {
   type FallDraftReview,
 } from "@shared/fall-draft-review";
 import {
+  CANONICAL_DRAFT_REVIEW_CONTRACT_VERSION,
+  CANONICAL_DRAFT_REVIEW_FINGERPRINT_VERSION,
+  toCanonicalDraftReview,
+} from "@shared/canonical-draft-review";
+import {
   FALL_DRAFT_AMBIGUOUS_FOLD_POLICY,
   FALL_DRAFT_BILLING_ORDINAL_POLICY,
   FALL_DRAFT_CURRENCY,
@@ -74,8 +79,8 @@ import {
   authorizeFallDraftScope,
   currentFallDraftInputEvidence,
   fallDraftDatabaseTransactionTime,
-  isFallDraftInputSnapshotFamily,
-  resolveFallDraftInputSnapshot,
+  isCanonicalDraftInputSnapshotFamily,
+  resolveCanonicalDraftInputSnapshot,
   type ResolvedFallDraftInputSnapshot,
   type FallDraftScope,
 } from "./fall-draft-generation.js";
@@ -302,16 +307,17 @@ async function loadRows(tx: LeagueScheduleTransaction, scope: FallDraftScope, lo
   const runs = lock ? await runsQuery.for("update") : await runsQuery;
   const resolvedRuns = runs.map((run) => ({
     run,
-    snapshot: resolveFallDraftInputSnapshot(run.normalizedInputSnapshot, paymentMode),
+    snapshot: resolveCanonicalDraftInputSnapshot(run.normalizedInputSnapshot, paymentMode),
   }));
-  if (resolvedRuns.some(({ run, snapshot }) => isFallDraftInputSnapshotFamily(run.normalizedInputSnapshot)
+  if (resolvedRuns.some(({ run, snapshot }) => isCanonicalDraftInputSnapshotFamily(run.normalizedInputSnapshot)
     && snapshot === null)) {
     throw new FallDraftReviewError("incompatible_canonical_state", "the league contains an unsupported or semantically incompatible C1 input snapshot");
   }
+  const expectedFamily = scope.draftContractFamily ?? "fall";
   const c1Runs = resolvedRuns.filter((entry): entry is {
     run: LeagueOccurrenceGenerationRun;
     snapshot: ResolvedFallDraftInputSnapshot;
-  } => entry.snapshot !== null);
+  } => entry.snapshot !== null && entry.snapshot.draftContractFamily === expectedFamily);
   if (c1Runs.length === 0) throw new FallDraftReviewError("c1_run_not_found", "no C1 Fall generation run exists for this league");
   if (c1Runs.length !== 1) throw new FallDraftReviewError("incompatible_canonical_state", "multiple C1 Fall generation runs exist for this league");
   if (runs.length !== 1) throw new FallDraftReviewError("incompatible_canonical_state", "the C1 league contains a foreign or replacement generation run");
@@ -592,7 +598,9 @@ async function buildReview(
 ): Promise<FallDraftReview> {
   const legacy = await currentFallDraftInputEvidence(
     tx,
-    scope,
+    rows.snapshot.draftContractFamily === "future_season"
+      ? { ...scope, draftContractFamily: "future_season", draftSeasonClassification: rows.snapshot.seasonClassification }
+      : scope,
     rows.generation.normalizedInput,
     rows.snapshot.paymentMode,
   );
@@ -783,8 +791,11 @@ async function buildReview(
   return { ...reviewWithoutFingerprint, reviewFingerprint: fallDraftReviewFingerprint(reviewWithoutFingerprint) };
 }
 
-function assertReview(review: FallDraftReview, confirmed: string): void {
-  if (review.reviewFingerprint !== confirmed) {
+function assertReview(scope: FallDraftScope, review: FallDraftReview, confirmed: string): void {
+  const currentFingerprint = scope.draftContractFamily === "future_season"
+    ? toCanonicalDraftReview(review, scope.draftSeasonClassification ?? "Fall").reviewFingerprint
+    : review.reviewFingerprint;
+  if (currentFingerprint !== confirmed) {
     throw new FallDraftReviewError("stale_review", "the confirmed C2 review fingerprint no longer matches durable state");
   }
 }
@@ -810,16 +821,29 @@ function commandRequest(
   idempotencyKey = request.idempotencyKey,
   role: string = commandType,
 ): MaterializationScheduleCommandRequest {
-  const normalizedRequest = "discrepancyDispositions" in request
+  const genericContext = scope.draftContractFamily === "future_season"
+    ? scope.draftReviewRequestContext
+    : undefined;
+  if (scope.draftContractFamily === "future_season" && !genericContext) {
+    throw new FallDraftReviewError("transaction_failure", "generic review request context is missing");
+  }
+  const requestWithContract = genericContext
     ? {
       ...request,
-      discrepancyDispositions: [...request.discrepancyDispositions]
-        .sort((left, right) => compareStrings(left.discrepancyId, right.discrepancyId)),
+      contractVersion: genericContext.contractVersion,
+      confirmedReviewFingerprint: genericContext.confirmedReviewFingerprint,
     }
     : request;
+  const normalizedRequest = "discrepancyDispositions" in requestWithContract
+    ? {
+      ...requestWithContract,
+      discrepancyDispositions: [...requestWithContract.discrepancyDispositions]
+        .sort((left, right) => compareStrings(left.discrepancyId, right.discrepancyId)),
+    }
+    : requestWithContract;
   const materializationPayload = {
-    reviewContractVersion: FALL_DRAFT_REVIEW_CONTRACT_VERSION,
-    reviewFingerprintVersion: FALL_DRAFT_REVIEW_FINGERPRINT_VERSION,
+    reviewContractVersion: genericContext ? CANONICAL_DRAFT_REVIEW_CONTRACT_VERSION : FALL_DRAFT_REVIEW_CONTRACT_VERSION,
+    reviewFingerprintVersion: genericContext ? CANONICAL_DRAFT_REVIEW_FINGERPRINT_VERSION : FALL_DRAFT_REVIEW_FINGERPRINT_VERSION,
     operation: role,
     request: normalizedRequest,
   };
@@ -831,7 +855,7 @@ function commandRequest(
     reason: request.reason,
     idempotencyKey,
     requestFingerprint: "",
-    materializationOperation: "fall_draft_review",
+    materializationOperation: genericContext ? "canonical_draft_review" : "fall_draft_review",
     materializationPayload,
   };
   return { ...base, requestFingerprint: buildCanonicalScheduleCommandFingerprint(base) };
@@ -856,7 +880,8 @@ function exactRevisionEntityIds(rows: ReviewRows, commandId: string): string[] {
 }
 
 function relatedIdempotencyKey(scope: FallDraftScope, key: string, role: string): string {
-  return `lvc2:${fallDraftSha256({ organizationId: scope.organizationId, leagueId: scope.leagueId, key, role })}`;
+  const namespace = scope.draftContractFamily === "future_season" ? "lve4c2" : "lvc2";
+  return `${namespace}:${fallDraftSha256({ organizationId: scope.organizationId, leagueId: scope.leagueId, key, role })}`;
 }
 
 function existingCommand(rows: ReviewRows, request: MaterializationScheduleCommandRequest): LeagueScheduleCommand | null {
@@ -1024,7 +1049,7 @@ export async function rescheduleFallDraftOccurrence(input: FallDraftScope & {
       return mutationResult("reschedule", "idempotent_retry", [prior.id], [occurrence.id], await buildReview(tx, input, rows, transactionTime));
     }
     const review = await buildReview(tx, input, rows, transactionTime);
-    assertReview(review, input.request.confirmedReviewFingerprint);
+    assertReview(input, review, input.request.confirmedReviewFingerprint);
     const occurrence = findOccurrence(rows, input.request.occurrenceId);
     assertExpectedRevision(occurrence, input.request.expectedOccurrenceRevision);
     if (occurrence.status !== "scheduled" || !["draft", "published"].includes(occurrence.lifecycle)) {
@@ -1099,7 +1124,7 @@ export async function cancelFallDraftOccurrence(input: FallDraftScope & {
       return mutationResult("cancel", "idempotent_retry", [prior.id], entityIds, await buildReview(tx, input, rows, transactionTime));
     }
     const review = await buildReview(tx, input, rows, transactionTime);
-    assertReview(review, input.request.confirmedReviewFingerprint);
+    assertReview(input, review, input.request.confirmedReviewFingerprint);
     const occurrence = findOccurrence(rows, input.request.occurrenceId);
     assertExpectedRevision(occurrence, input.request.expectedOccurrenceRevision);
     if (occurrence.status !== "scheduled" || !["draft", "published"].includes(occurrence.lifecycle)) {
@@ -1165,7 +1190,7 @@ export async function restoreFallDraftOccurrence(input: FallDraftScope & {
       return mutationResult("restore", "idempotent_retry", [prior.id], entityIds, await buildReview(tx, input, rows, transactionTime));
     }
     const review = await buildReview(tx, input, rows, transactionTime);
-    assertReview(review, input.request.confirmedReviewFingerprint);
+    assertReview(input, review, input.request.confirmedReviewFingerprint);
     if (rows.run.state !== "generated") throw new FallDraftReviewError("terminal_state", "published cancellations cannot be restored");
     const occurrence = findOccurrence(rows, input.request.occurrenceId);
     assertExpectedRevision(occurrence, input.request.expectedOccurrenceRevision);
@@ -1304,7 +1329,7 @@ export async function approveAndPublishFallDraft(input: FallDraftScope & {
       ], await buildReview(tx, input, rows, transactionTime));
     }
     const review = await buildReview(tx, input, rows, transactionTime);
-    assertReview(review, input.request.confirmedReviewFingerprint);
+    assertReview(input, review, input.request.confirmedReviewFingerprint);
     if (rows.run.state !== "generated") throw new FallDraftReviewError("terminal_state", "only an editable generated C1 run can be approved");
     if (!review.currentLegacyInput.matches) throw new FallDraftReviewError("legacy_input_stale", "current authoritative legacy input no longer matches the C1 generation input");
     const dispositions = validateDispositions(input.request, review);
@@ -1411,7 +1436,7 @@ export async function rejectFallDraft(input: FallDraftScope & {
       return mutationResult("reject", "idempotent_retry", [prior.id], [rows.run.id, ...exactRevisionEntityIds(rows, prior.id)], await buildReview(tx, input, rows, transactionTime));
     }
     const review = await buildReview(tx, input, rows, transactionTime);
-    assertReview(review, input.request.confirmedReviewFingerprint);
+    assertReview(input, review, input.request.confirmedReviewFingerprint);
     if (rows.run.state !== "generated") throw new FallDraftReviewError("terminal_state", "only an editable generated C1 run can be rejected");
     const { command } = await getOrCreateCanonicalScheduleCommandInTransaction(tx, commandRequestValue, ["reject_generation"]);
     injectFailure(input.failureInjection, "after_commands");
