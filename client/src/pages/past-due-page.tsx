@@ -11,11 +11,12 @@ import {
 } from "@/components/ui/table";
 import { ArrowLeft, CheckCircle2 } from "lucide-react";
 import { PageLoadingState } from "@/components/page-states";
-import type { League, Team, Bowler, Payment, BowlerLeague, BowlerWithAccount } from "@shared/schema";
-import { getTotalPaidAmount, calculateBowlerPastDue } from "@/lib/financial-utils";
+import type { League, Team, BowlerLeague, BowlerWithAccount, User } from "@shared/schema";
 import { Link } from "wouter";
 
 export default function PastDuePage() {
+  const { data: userResponse } = useQuery<{ data: User }>({ queryKey: ["/api/user"], staleTime: 1000 * 60 * 5 });
+  const systemScope = userResponse?.data?.role === "system_admin" && userResponse.data.organizationId ? `?organizationId=${encodeURIComponent(userResponse.data.organizationId)}` : "";
   const { data: leaguesResponse, isLoading: loadingLeagues } = useQuery<{ success: true, data: League[] }>({
     queryKey: ["/api/leagues"],
     queryFn: async () => {
@@ -64,61 +65,47 @@ export default function PastDuePage() {
   });
   const bowlerLeagues = bowlerLeaguesResponse?.data || [];
 
-  const { data: paymentsResponse, isLoading: loadingPayments } = useQuery<{ data: Payment[] }>({
-    queryKey: ["/api/payments"],
+  const { data: financialResponse, isLoading: loadingFinancials, error: financialError } = useQuery<{ data: { leagues: Array<{ leagueId: number; report: { rows: Array<{ bowlerId: number; teamId: number | null; outstandingMinor: number; classification: string; reviewRequired: boolean }> } }> } }>({
+    queryKey: [systemScope ? `/api/financials/due-past-due${systemScope}` : "/api/financials/due-past-due"],
     queryFn: async () => {
-      const response = await fetch('/api/payments');
+      const response = await fetch(`/api/financials/due-past-due${systemScope}`);
       if (!response.ok) {
-        throw new Error('Failed to fetch payments');
+        throw new Error('Canonical financial evidence requires review');
       }
       return response.json();
-    }
+    },
+    enabled: userResponse?.data?.role === "org_admin" || userResponse?.data?.role === "system_admin",
   });
-  const payments = paymentsResponse?.data || [];
+  const financialLeagues = financialResponse?.data.leagues || [];
 
-  if (loadingLeagues || loadingTeams || loadingBowlers || loadingPayments || loadingBowlerLeagues) {
+  if (loadingLeagues || loadingTeams || loadingBowlers || loadingFinancials || loadingBowlerLeagues) {
     return (
       <Layout>
         <PageLoadingState />
       </Layout>
     );
   }
+  if (financialError || !financialResponse?.data?.leagues) return <Layout><p className="p-6 text-destructive">Financial evidence requires review; no balance is shown.</p></Layout>;
 
-  // Calculate past due details for each bowler in each league
-  const pastDueBowlers = bowlers
-    .flatMap(bowler => {
-      if (!bowler.active) return [];
-      // Get all league associations for this bowler
-      const bowlerAssociations = bowlerLeagues.filter(bl => bl.bowlerId === bowler.id);
-
-      return bowlerAssociations.flatMap(association => {
-        const league = leagues.find(l => l.id === association.leagueId);
-        const team = teams.find(t => t.id === association.teamId);
-
-        if (!league || !team) {
-          return [];
-        }
-
-        if (!league.seasonStart) {
-          return [];
-        }
-
-        const totalPaid = getTotalPaidAmount(
-          payments.filter(p => p.bowlerId === bowler.id && p.leagueId === league.id)
-        );
-
-        const pastDueAmount = calculateBowlerPastDue(league, totalPaid);
-        const weeksPastDue = Math.floor(pastDueAmount / league.weeklyFee);
-
-        return pastDueAmount > 0 ? [{
-          bowler,
-          team,
-          league,
-          weeksPastDue,
-          pastDueAmount,
-        }] : [];
-      });
-    })
+  const groupedRows = [...financialLeagues.flatMap((entry) => entry.report.rows.map((row) => ({ ...row, leagueId: entry.leagueId, mode: (entry.report as { mode?: string }).mode ?? "legacy_fallback" }))).reduce((map, row) => {
+    const key = `${row.leagueId}:${row.bowlerId}:${row.teamId ?? "none"}`;
+    const prior = map.get(key);
+    const collectible = row.classification === "past_due" ? row.outstandingMinor : 0;
+    const next = prior ? { ...prior, outstandingMinor: prior.outstandingMinor + row.outstandingMinor, collectiblePastDueMinor: prior.collectiblePastDueMinor + collectible, reviewRequired: prior.reviewRequired || row.reviewRequired, reviewMinor: prior.reviewMinor + (row.reviewRequired ? row.outstandingMinor : 0), classification: prior.reviewRequired || row.reviewRequired ? "review_required" : prior.collectiblePastDueMinor + collectible > 0 ? "past_due" : row.classification } : { ...row, collectiblePastDueMinor: collectible, reviewMinor: row.reviewRequired ? row.outstandingMinor : 0 };
+    map.set(key, next);
+    return map;
+  }, new Map<string, (typeof financialLeagues[number]["report"]["rows"][number] & { leagueId: number; mode: string; collectiblePastDueMinor: number; reviewMinor: number })>()).values()];
+  const pastDueBowlers = groupedRows.flatMap((financialLeague) => {
+    const league = leagues.find((candidate) => candidate.id === financialLeague.leagueId);
+    if (!league) return [];
+    return [financialLeague].filter((row) => row.collectiblePastDueMinor > 0 || row.reviewRequired).flatMap((row) => {
+      const bowler = bowlers.find((candidate) => candidate.id === row.bowlerId);
+      const association = bowlerLeagues.find((candidate) => candidate.bowlerId === row.bowlerId && candidate.leagueId === league.id && candidate.active);
+      const team = teams.find((candidate) => candidate.id === (row.teamId ?? association?.teamId));
+      if (!bowler || !team || (row.mode !== "canonical" && !association)) return [];
+      return [{ bowler, team, league, pastDueObligations: row.reviewRequired ? "Review required" : "Aggregated", pastDueAmount: row.collectiblePastDueMinor, reviewRequired: row.reviewRequired }];
+    });
+  })
     .sort((a, b) => b.pastDueAmount - a.pastDueAmount);
 
   return (
@@ -133,7 +120,7 @@ export default function PastDuePage() {
         <div>
           <h1 className="text-2xl font-bold mb-2">Past Due Balances</h1>
           <p className="text-muted-foreground mb-6">
-            List of bowlers with past due balances
+            List of bowlers with past due balances. Source: server canonical/legacy contract.
           </p>
         </div>
 
@@ -144,7 +131,7 @@ export default function PastDuePage() {
                 <TableHead>Bowler Name</TableHead>
                 <TableHead>League</TableHead>
                 <TableHead>Team</TableHead>
-                <TableHead>Weeks Past Due</TableHead>
+                <TableHead>Past-due obligations</TableHead>
                 <TableHead>Past Due Amount</TableHead>
               </TableRow>
             </TableHeader>
@@ -168,9 +155,9 @@ export default function PastDuePage() {
                     </TableCell>
                     <TableCell>{item.league.name}</TableCell>
                     <TableCell>{item.team.name}</TableCell>
-                    <TableCell>{item.weeksPastDue}</TableCell>
+                    <TableCell>{item.reviewRequired ? "Review required" : item.pastDueObligations}</TableCell>
                     <TableCell className="text-destructive">
-                      ${(item.pastDueAmount / 100).toFixed(2)}
+                    {`$${(item.pastDueAmount / 100).toFixed(2)}`}
                     </TableCell>
                   </TableRow>
                 ))

@@ -26,6 +26,7 @@ import {
   payments,
   teams,
   users,
+  financialActivations,
 } from "@shared/schema";
 import {
   buildCanonicalScheduleCommandFingerprint,
@@ -772,5 +773,35 @@ describe("D2 occurrence financial foundation PostgreSQL contract", () => {
       .where(eq(bowlerOccurrenceEligibilityRevisions.organizationId, teardown.organizationId))).toEqual([]);
     expect(await db.select().from(organizations)
       .where(eq(organizations.id, teardown.organizationId))).toEqual([]);
+  });
+
+  it("rejects direct SQL activation evidence with incomplete responsibility counts and mutation", async () => {
+    const scope = await createFixture("F1Guard");
+    const fp = `lvfinancialactivation:v1:${"0".repeat(64)}`;
+    const sourceFp = `lvfinancialsource:v1:${"0".repeat(64)}`;
+    await expectDatabaseConstraint(db.transaction(async (tx) => {
+      await tx.insert(financialActivations).values({
+        organizationId: scope.organizationId,
+        leagueId: scope.leagueId,
+        activationVersion: 1,
+        policyVersion: "eligible-bowlers/1",
+        orderVersion: "occurrence-team-slot-bowler/1",
+        commandKey: "f1-direct-incomplete",
+        requestFingerprint: fp,
+        sourceFingerprint: sourceFp,
+        paymentMode: "upfront",
+        state: "active",
+        completenessMarker: true,
+        payingLineupSize: 3,
+        expectedResponsibilityCount: 3,
+        expectedGroupCount: 1,
+        currentRevision: 1,
+        upfrontDueAt: "2038-01-01T00:00:00.000Z",
+        recordedByUserId: scope.actorUserId,
+      });
+    }), /financial activation evidence is incomplete/i);
+    const [activation] = await db.select().from(financialActivations).where(and(eq(financialActivations.organizationId, scope.organizationId), eq(financialActivations.commandKey, "f1-direct-incomplete")));
+    expect(activation).toBeUndefined();
+    await deleteOrganization(scope.organizationId);
   });
 });

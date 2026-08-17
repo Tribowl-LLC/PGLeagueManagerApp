@@ -25,6 +25,9 @@ export const envSchema = z.object({
   // explicitly; local/test runtimes retain the legacy default so dormant
   // infrastructure does not alter the scheduled-payment path.
   SCHEDULED_PAYMENT_EXECUTION_MODE: z.enum(SCHEDULED_PAYMENT_EXECUTION_MODES).optional(),
+  // F1 canonical activation remains dormant until legacy payment reconciliation
+  // and rollout approval are complete. Explicit opt-in only; unset is false.
+  LEAGUEVAULT_F1_ACTIVATION_ENABLED: z.enum(["true", "false", "1", "0"]).optional().transform((v) => v === "true" || v === "1"),
 
   SENDGRID_API_KEY: z.string().min(1).optional(),
   SENTRY_DSN: z.string().min(1).optional(),
@@ -250,6 +253,7 @@ function validateEnv(): Env {
 export const env = validateEnv();
 export const scheduledPaymentExecutionMode: ScheduledPaymentExecutionMode =
   env.SCHEDULED_PAYMENT_EXECUTION_MODE ?? 'legacy';
+export const financialActivationEnabled = env.LEAGUEVAULT_F1_ACTIVATION_ENABLED === true;
 
 // Enforce SETUP_SECRET strength at boot. Refuses to start the server when
 // a secret is set but weak — see task 282 / the docs section in AGENTS.md.

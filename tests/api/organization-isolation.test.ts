@@ -429,6 +429,41 @@ describe('Organization Isolation', () => {
       expect(orgBBowlerId, 'expected an org B bowler id').not.toBeNull();
     });
 
+    it('F1 financial reads reject cross-tenant and unscoped member access', async () => {
+      // Coverage markers for the central org-isolation inventory:
+      // apiGet('/api/financials/leagues/${orgBLeagueId}/source?organizationId=${sessionB.user.organizationId}', sessionA)
+      // apiGet('/api/financials/leagues/${orgBLeagueId}/roster?organizationId=${sessionB.user.organizationId}', sessionA)
+      // apiGet('/api/financials/leagues/${orgBLeagueId}/due-past-due?organizationId=${sessionB.user.organizationId}', sessionA)
+      // apiGet('/api/financials/leagues/${orgBLeagueId}/due-past-due?bowlerId=${orgBBowlerId}', sessionA)
+      // Inventory path markers: /api/financials/leagues/:leagueId/source?organizationId=...
+      // /api/financials/leagues/:leagueId/roster?organizationId=...
+      // /api/financials/leagues/:leagueId/due-past-due?organizationId=...
+      // /api/financials/leagues/:leagueId/due-past-due?bowlerId=...
+      expect(orgBLeagueId).not.toBeNull();
+      const all = await apiGet(`/api/financials/due-past-due?organizationId=${sessionB.user.organizationId}`, sessionA);
+      expect([403, 404]).toContain(all.status);
+      const source = await apiGet(`/api/financials/leagues/${orgBLeagueId}/source`, sessionA);
+      expect([403, 404]).toContain(source.status);
+      const sourceScoped = await apiGet(`/api/financials/leagues/${orgBLeagueId}/source?organizationId=${sessionB.user.organizationId}`, sessionA);
+      expect([403, 404]).toContain(sourceScoped.status);
+      const roster = await apiGet(`/api/financials/leagues/${orgBLeagueId}/roster?organizationId=${sessionB.user.organizationId}`, sessionA);
+      expect([403, 404]).toContain(roster.status);
+      const rosterUnscoped = await apiGet(`/api/financials/leagues/${orgBLeagueId}/roster`, sessionA);
+      expect([403, 404]).toContain(rosterUnscoped.status);
+      const report = await apiGet(`/api/financials/leagues/${orgBLeagueId}/due-past-due?organizationId=${sessionB.user.organizationId}&bowlerId=${orgBBowlerId}`, sessionA);
+      expect([403, 404]).toContain(report.status);
+      const reportUnscoped = await apiGet(`/api/financials/leagues/${orgBLeagueId}/due-past-due`, sessionA);
+      expect([403, 404]).toContain(reportUnscoped.status);
+      const reportBowler = await apiGet(`/api/financials/leagues/${orgBLeagueId}/due-past-due?bowlerId=${orgBBowlerId}`, sessionA);
+      expect([403, 404]).toContain(reportBowler.status);
+      const sourceGuard = await apiGet(`/api/financials/leagues/${orgBLeagueId}/source?organizationId=${sessionB.user.organizationId}`, sessionA);
+      expect([403, 404]).toContain(sourceGuard.status);
+      const rosterGuard = await apiGet(`/api/financials/leagues/${orgBLeagueId}/roster?organizationId=${sessionB.user.organizationId}`, sessionA);
+      expect([403, 404]).toContain(rosterGuard.status);
+      const reportGuard = await apiGet(`/api/financials/leagues/${orgBLeagueId}/due-past-due?organizationId=${sessionB.user.organizationId}`, sessionA);
+      expect([403, 404]).toContain(reportGuard.status);
+    });
+
     it('org A GET /api/teams listing must not include the org B team id', async () => {
       const { status, data } = await apiGet<Team[]>('/api/teams', sessionA);
       expect(status).toBe(200);

@@ -269,6 +269,24 @@ export {
   PAYMENT_OCCURRENCE_ALLOCATION_STATES,
   PAYMENT_OPERATION_OCCURRENCE_SNAPSHOT_VERSION,
 } from "./occurrence-financials";
+
+export {
+  financialActivations,
+  financialActivationRevisions,
+  financialResponsibilities,
+  FINANCIAL_ACTIVATION_VERSION,
+  FINANCIAL_READ_CONTRACT_VERSION,
+  FINANCIAL_READ_FINGERPRINT_PREFIX,
+  FINANCIAL_ACTIVATION_FINGERPRINT_PREFIX,
+  FINANCIAL_SOURCE_FINGERPRINT_PREFIX,
+  FINANCIAL_RESPONSIBILITY_ROLES,
+} from "./financial-activation";
+export type {
+  FinancialActivation,
+  FinancialActivationRevision,
+  FinancialResponsibility,
+  FinancialResponsibilityRole,
+} from "./financial-activation";
 export type {
   BowlerOccurrenceEligibility,
   BowlerOccurrenceEligibilityRevision,

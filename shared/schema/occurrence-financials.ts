@@ -99,6 +99,8 @@ export const bowlerOccurrenceEligibilities = pgTable("bowler_occurrence_eligibil
   }).onDelete("restrict"),
   tenantIdentityUnique: uniqueIndex("bowler_eligibilities_tenant_identity_unique")
     .on(table.id, table.organizationId, table.leagueId),
+  exactResponsibilityUnique: uniqueIndex("bowler_eligibilities_exact_responsibility_unique")
+    .on(table.id, table.organizationId, table.leagueId, table.occurrenceId, table.bowlerId),
   logicalUnique: uniqueIndex("bowler_eligibilities_logical_unique")
     .on(table.organizationId, table.leagueId, table.occurrenceId, table.bowlerId),
   leagueStateIdx: index("bowler_eligibilities_league_state_idx")
@@ -179,6 +181,8 @@ export const bowlerOccurrenceTeamAssignments = pgTable("bowler_occurrence_team_a
     .on(table.id, table.organizationId, table.leagueId),
   logicalUnique: uniqueIndex("bowler_team_assignments_logical_unique")
     .on(table.organizationId, table.leagueId, table.occurrenceId, table.bowlerId),
+  exactResponsibilityUnique: uniqueIndex("bowler_team_assignments_exact_responsibility_unique")
+    .on(table.id, table.organizationId, table.leagueId, table.occurrenceId, table.bowlerId, table.teamId),
   leagueStateIdx: index("bowler_team_assignments_league_state_idx")
     .on(table.organizationId, table.leagueId, table.state),
   occurrenceIdx: index("bowler_team_assignments_occurrence_idx")
@@ -234,6 +238,8 @@ export const bowlerOccurrenceObligations = pgTable("bowler_occurrence_obligation
   purpose: text("purpose").notNull(),
   amountMinor: integer("amount_minor").notNull(),
   currency: varchar("currency", { length: 3 }).notNull(),
+  dueAt: timestamp("due_at", { withTimezone: true, mode: "string" }),
+  pastDueAt: timestamp("past_due_at", { withTimezone: true, mode: "string" }),
   state: text("state", { enum: BOWLER_OCCURRENCE_OBLIGATION_STATES }).notNull().default("open"),
   billingTermId: uuid("billing_term_id"),
   billingTermVersion: integer("billing_term_version"),
@@ -277,6 +283,8 @@ export const bowlerOccurrenceObligations = pgTable("bowler_occurrence_obligation
     .on(table.id, table.organizationId, table.leagueId),
   settlementReferenceUnique: uniqueIndex("bowler_obligations_settlement_reference_unique")
     .on(table.id, table.organizationId, table.leagueId, table.occurrenceId, table.bowlerId, table.currency),
+  exactFinancialReferenceUnique: uniqueIndex("bowler_obligations_exact_financial_reference_unique")
+    .on(table.id, table.organizationId, table.leagueId, table.occurrenceId, table.bowlerId, table.purpose, table.amountMinor, table.currency, table.billingTermId, table.billingTermVersion, table.dueAt, table.pastDueAt),
   logicalCurrentUnique: uniqueIndex("bowler_obligations_logical_current_unique")
     .on(table.organizationId, table.leagueId, table.occurrenceId, table.bowlerId, table.purpose),
   leagueStateIdx: index("bowler_obligations_league_state_idx")
@@ -296,6 +304,10 @@ export const bowlerOccurrenceObligations = pgTable("bowler_occurrence_obligation
     "bowler_obligations_billing_term_check",
     sql`(${table.billingTermId} IS NULL) = (${table.billingTermVersion} IS NULL)
       AND (${table.billingTermVersion} IS NULL OR ${table.billingTermVersion} > 0)`,
+  ),
+  timingCheck: check(
+    "bowler_obligations_timing_check",
+    sql`(${table.dueAt} IS NULL AND ${table.pastDueAt} IS NULL) OR (${table.dueAt} IS NOT NULL AND ${table.pastDueAt} IS NOT NULL AND ${table.pastDueAt} >= ${table.dueAt})`,
   ),
   revisionCheck: check("bowler_obligations_revision_check", sql`${table.currentRevision} > 0`),
 }));

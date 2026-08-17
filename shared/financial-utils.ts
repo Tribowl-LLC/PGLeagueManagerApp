@@ -100,3 +100,25 @@ export function calculateBowlerPastDue(
   const dueToDate = Math.min(league.weeklyFee * weeksPassedRaw, fullSeasonAmount);
   return Math.max(0, dueToDate - bowlerPaidAmount);
 }
+
+/** Server/client parity summary for legacy compatibility reads. Historical
+ * payments are inputs to this helper, never canonical allocation evidence. */
+export function calculateBowlerLegacySummary(
+  league: BowlerPastDueLeague,
+  bowlerPaidAmount: number,
+  now: Date = new Date(),
+): { totalWeeksInSeason: number; fullSeasonAmount: number; totalDueToDate: number; amountPastDue: number; remainingBalance: number } {
+  const totalWeeksInSeason = getSeasonLengthWeeks({ seasonStart: league.seasonStart, seasonEnd: league.seasonEnd ?? league.seasonStart, totalBowlingWeeks: league.totalBowlingWeeks, cancelledDates: league.cancelledDates });
+  const fullSeasonAmount = league.weeklyFee * totalWeeksInSeason;
+  let totalDueToDate = fullSeasonAmount;
+  if (league.paymentMode !== "upfront") {
+    if (league.weekDay) {
+      totalDueToDate = getWeeklyBillingOccurrences({ seasonStart: league.seasonStart, seasonEnd: league.seasonEnd ?? league.seasonStart, weekDay: league.weekDay, competitionStartTime: league.competitionStartTime ?? "12:00", timezone: league.timezone, weeklyFee: league.weeklyFee, totalBowlingWeeks: league.totalBowlingWeeks, skipDates: league.skipDates, cancelledDates: league.cancelledDates, doublePayDates: league.doublePayDates }).filter((occurrence) => new Date(occurrence.graceDeadlineAt).getTime() <= now.getTime()).reduce((sum, occurrence) => sum + occurrence.amountMinor, 0);
+    } else {
+      const seasonStart = new Date(league.seasonStart);
+      const weeksPassed = isValid(seasonStart) ? Math.min(totalWeeksInSeason, Math.max(0, Math.round((now.getTime() - seasonStart.getTime()) / (7 * 24 * 60 * 60 * 1000)))) : 0;
+      totalDueToDate = weeksPassed * league.weeklyFee;
+    }
+  }
+  return { totalWeeksInSeason, fullSeasonAmount, totalDueToDate, amountPastDue: Math.max(0, totalDueToDate - bowlerPaidAmount), remainingBalance: Math.max(0, fullSeasonAmount - bowlerPaidAmount) };
+}

@@ -16,6 +16,9 @@ import {
   bowlerOccurrenceTeamAssignmentRevisions,
   bowlerOccurrenceObligations,
   bowlerOccurrenceObligationRevisions,
+  financialResponsibilities,
+  financialActivationRevisions,
+  financialActivations,
   bowlers,
   leagueOccurrenceBillingTermRevisions,
   leagueOccurrenceGenerationDiscrepancies,
@@ -70,6 +73,15 @@ export class OrganizationHostnameConflictError extends Error {
   constructor() {
     super('Organization hostname is already in use');
     this.name = 'OrganizationHostnameConflictError';
+  }
+}
+
+export class OrganizationFinancialActivationRetentionError extends Error {
+  readonly code = 'FINANCIAL_ACTIVATION_RETENTION_REQUIRED' as const;
+
+  constructor() {
+    super('Organization teardown requires retention of canonical financial evidence');
+    this.name = 'OrganizationFinancialActivationRetentionError';
   }
 }
 
@@ -139,6 +151,18 @@ export async function deleteOrganization(id: number): Promise<void> {
     // so a new ingestion either commits first and is deleted here or observes
     // the completed teardown and fails mapping, without a lock-order deadlock.
     await tx.execute(sql`SELECT id FROM ${organizations} WHERE id = ${id} FOR NO KEY UPDATE`);
+
+    // F1 evidence is immutable and has no runtime trigger bypass. A tenant
+    // with an activation must be archived or retained; hard deletion fails
+    // closed so an application writer cannot erase the audit contract.
+    const [financialActivation] = await tx
+      .select({ id: financialActivations.id })
+      .from(financialActivations)
+      .where(eq(financialActivations.organizationId, id))
+      .limit(1);
+    if (financialActivation) {
+      throw new OrganizationFinancialActivationRetentionError();
+    }
 
     // The system-admin-only delete route is an intentional full teardown.
     // Clear restrictive audit FKs and organization-owned join rows first,
@@ -281,6 +305,14 @@ export async function deleteOrganization(id: number): Promise<void> {
       .where(eq(occurrenceCollectionPlans.organizationId, id));
     await tx.delete(bowlerOccurrenceObligationRevisions)
       .where(eq(bowlerOccurrenceObligationRevisions.organizationId, id));
+    // F1 responsibility evidence is restrictive against both obligations and
+    // activation revisions/current rows; remove it before D2 and league data.
+    await tx.delete(financialResponsibilities)
+      .where(eq(financialResponsibilities.organizationId, id));
+    await tx.delete(financialActivationRevisions)
+      .where(eq(financialActivationRevisions.organizationId, id));
+    await tx.delete(financialActivations)
+      .where(eq(financialActivations.organizationId, id));
     await tx.delete(bowlerOccurrenceObligations)
       .where(eq(bowlerOccurrenceObligations.organizationId, id));
     await tx.delete(bowlerOccurrenceTeamAssignmentRevisions)
