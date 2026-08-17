@@ -209,6 +209,35 @@ reconciliation. In particular, a combined Square payment can legitimately map
 to multiple local allocation rows, and a dispute must not be forced onto one
 of them by guesswork.
 
+## Safe signed-rejection diagnostics
+
+The receiver adds fixed-enum diagnostics to signed payload rejections without
+changing the response, signature boundary, limiter ordering, or durable ingest
+behavior. Operational logs contain only:
+
+- `stage`: `origin_gate` or `full_normalize`;
+- `reason`: `invalid_json`, `invalid_envelope`, `wrong_data_type`,
+  `missing_target_object`, `object_id_mismatch`, `location_mismatch`,
+  `invalid_amount_currency`, `required_field_or_timestamp_invalid`, or
+  `unsupported_event_without_unique_location`; and
+- `eventType`: one of the four supported event types or `other`.
+
+The diagnostic event type is an allowlist projection. It never logs the raw
+provider event type, object or event identifiers, merchant/location values,
+amounts, signatures, payload hashes, or request bodies. `origin_gate` means
+the signature-verified in-memory payment-origin prefilter rejected the event;
+`full_normalize` means the event passed that prefilter and failed the complete
+normalization boundary. These fields are for aggregate operational counts and
+must not be used to infer or reconstruct provider evidence.
+
+The reason is intentionally coarse. It distinguishes the rejection boundary
+without exposing Zod paths or provider payload details. A zero-value payment
+that is potentially owned or ambiguous is reported as `invalid_amount_currency`
+at `full_normalize`; conclusively unrelated payments continue to receive the
+zero-database `ignored` response. Unknown event types with no unique location
+are reported as `unsupported_event_without_unique_location` and remain
+non-2xx. No schema is relaxed by this diagnostic layer.
+
 ## Signed payment origin prefilter
 
 The prefilter is intentionally separate from full business-event

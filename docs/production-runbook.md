@@ -430,6 +430,13 @@ run a Fall recovery route against it, or resume request-v1 setup writes. See
   [`square-webhook-inbox.md`](./square-webhook-inbox.md). Do not configure a
   subscription, copy a signature key, send a test event, or activate processing
   as part of the implementation PR.
+- For signed webhook rejection diagnostics, review only aggregate counts by
+  the fixed `stage`, `reason`, and allowlisted `eventType` fields documented in
+  [`square-webhook-inbox.md`](./square-webhook-inbox.md). Do not export or
+  search for raw bodies, payload hashes, provider identifiers,
+  merchant/location values, amounts, signatures, or schema issue paths. A
+  diagnostic-only deployment may be rolled back application-only while
+  retaining all existing inbox, dispute, and operation evidence.
 - Run the post-deploy trust-proxy workflow with its configured repository
   secrets: `DEPLOY_BASE_URL` and token-based `DEPLOY_PROBE_TOKEN` are preferred;
   `DEPLOY_ADMIN_COOKIE` is a legacy fallback. `DEPLOY_EXPECTED_RESOLVED_IP` is

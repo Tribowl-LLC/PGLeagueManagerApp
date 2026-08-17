@@ -7,6 +7,27 @@ export const SQUARE_WEBHOOK_EVENT_TYPES = [
   "dispute.state.updated",
 ] as const;
 
+export const SQUARE_WEBHOOK_DIAGNOSTIC_STAGES = [
+  "origin_gate",
+  "full_normalize",
+] as const;
+export type SquareWebhookDiagnosticStage = (typeof SQUARE_WEBHOOK_DIAGNOSTIC_STAGES)[number];
+
+export const SQUARE_WEBHOOK_DIAGNOSTIC_REASONS = [
+  "invalid_json",
+  "invalid_envelope",
+  "wrong_data_type",
+  "missing_target_object",
+  "object_id_mismatch",
+  "location_mismatch",
+  "invalid_amount_currency",
+  "required_field_or_timestamp_invalid",
+  "unsupported_event_without_unique_location",
+] as const;
+export type SquareWebhookDiagnosticReason = (typeof SQUARE_WEBHOOK_DIAGNOSTIC_REASONS)[number];
+
+export type SquareWebhookDiagnosticEventType = (typeof SQUARE_WEBHOOK_EVENT_TYPES)[number] | "other";
+
 const supportedTypes = new Set<string>(SQUARE_WEBHOOK_EVENT_TYPES);
 const safeProviderString = z.string().trim().min(1).max(255).refine(
   (value) => !/[\u0000-\u001f\u007f]/.test(value),
@@ -134,10 +155,31 @@ export interface NormalizedSquareWebhookEvent {
   dispute: NormalizedSquareDisputeEvidence | null;
 }
 
+export function squareWebhookDiagnosticEventType(value: unknown): SquareWebhookDiagnosticEventType {
+  return typeof value === "string" && supportedTypes.has(value)
+    ? value as SquareWebhookDiagnosticEventType
+    : "other";
+}
+
 export class SquareWebhookPayloadError extends Error {
-  constructor(readonly code: "INVALID_JSON" | "INVALID_ENVELOPE" | "INVALID_EVENT_OBJECT") {
+  readonly diagnosticStage: SquareWebhookDiagnosticStage;
+  readonly diagnosticReason: SquareWebhookDiagnosticReason;
+  readonly diagnosticEventType: SquareWebhookDiagnosticEventType;
+
+  constructor(
+    readonly code: "INVALID_JSON" | "INVALID_ENVELOPE" | "INVALID_EVENT_OBJECT",
+    diagnostics: {
+      stage?: SquareWebhookDiagnosticStage;
+      reason?: SquareWebhookDiagnosticReason;
+      eventType?: SquareWebhookDiagnosticEventType;
+    } = {},
+  ) {
     super(code);
     this.name = "SquareWebhookPayloadError";
+    this.diagnosticStage = diagnostics.stage ?? "full_normalize";
+    this.diagnosticReason = diagnostics.reason
+      ?? (code === "INVALID_JSON" ? "invalid_json" : "invalid_envelope");
+    this.diagnosticEventType = diagnostics.eventType ?? "other";
   }
 }
 
@@ -151,9 +193,18 @@ function iso(value: string): string {
   return new Date(value).toISOString();
 }
 
-function assertEnvelopeLocation(envelopeLocation: string | undefined, objectLocation: string): void {
+function assertEnvelopeLocation(
+  envelopeLocation: string | undefined,
+  objectLocation: string,
+  stage: SquareWebhookDiagnosticStage,
+  eventType: SquareWebhookDiagnosticEventType,
+): void {
   if (envelopeLocation !== undefined && envelopeLocation !== objectLocation) {
-    throw new SquareWebhookPayloadError("INVALID_EVENT_OBJECT");
+    throw new SquareWebhookPayloadError("INVALID_EVENT_OBJECT", {
+      stage,
+      reason: "location_mismatch",
+      eventType,
+    });
   }
 }
 
@@ -161,9 +212,12 @@ function findUnknownLocation(
   envelopeLocation: string | undefined,
   object: Record<string, unknown>,
 ): string | undefined {
-  const objectLocations = Object.values(object)
-    .filter((value): value is Record<string, unknown> => value !== null && typeof value === "object")
-    .map((value) => value.location_id)
+  const objectLocations = [
+    object.location_id,
+    ...Object.values(object)
+      .filter((value): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value))
+      .map((value) => value.location_id),
+  ]
     .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     .map((value) => value.trim());
   const distinct = new Set(objectLocations);
@@ -171,16 +225,124 @@ function findUnknownLocation(
   return distinct.size === 1 ? [...distinct][0] : undefined;
 }
 
-function parseEnvelope(rawBody: string): z.infer<typeof envelopeSchema> {
+function hasConflictingLocations(
+  envelopeLocation: string | undefined,
+  object: Record<string, unknown>,
+): boolean {
+  const objectLocations = [
+    object.location_id,
+    ...Object.values(object)
+      .filter((value): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value))
+      .map((value) => value.location_id),
+  ]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .map((value) => value.trim());
+  const distinct = new Set(objectLocations);
+  if (envelopeLocation) distinct.add(envelopeLocation);
+  return distinct.size > 1;
+}
+
+function parseEnvelope(
+  rawBody: string,
+  stage: SquareWebhookDiagnosticStage,
+): z.infer<typeof envelopeSchema> {
   let decoded: unknown;
   try {
     decoded = JSON.parse(rawBody);
   } catch {
-    throw new SquareWebhookPayloadError("INVALID_JSON");
+    throw new SquareWebhookPayloadError("INVALID_JSON", {
+      stage,
+      reason: "invalid_json",
+    });
   }
   const envelopeResult = envelopeSchema.safeParse(decoded);
-  if (!envelopeResult.success) throw new SquareWebhookPayloadError("INVALID_ENVELOPE");
+  if (!envelopeResult.success) {
+    throw new SquareWebhookPayloadError("INVALID_ENVELOPE", {
+      stage,
+      reason: "invalid_envelope",
+    });
+  }
   return envelopeResult.data;
+}
+
+type ObjectValidationKind = "payment" | "refund" | "dispute" | "payment_origin";
+
+function targetObject(
+  envelope: z.infer<typeof envelopeSchema>,
+  key: "payment" | "refund" | "dispute",
+  stage: SquareWebhookDiagnosticStage,
+  eventType: SquareWebhookDiagnosticEventType,
+): Record<string, unknown> {
+  const value = envelope.data.object[key];
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new SquareWebhookPayloadError("INVALID_EVENT_OBJECT", {
+      stage,
+      reason: "missing_target_object",
+      eventType,
+    });
+  }
+  return value as Record<string, unknown>;
+}
+
+function isValidTimestamp(value: unknown): boolean {
+  return typeof value === "string"
+    && value.trim().length > 0
+    && value.length <= 64
+    && Number.isFinite(new Date(value).getTime());
+}
+
+function hasInvalidMoney(value: unknown): boolean {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return true;
+  const money = value as Record<string, unknown>;
+  return typeof money.amount !== "number"
+    || !Number.isInteger(money.amount)
+    || money.amount <= 0
+    || money.amount > 2_147_483_647
+    || typeof money.currency !== "string"
+    || !/^[A-Z]{3}$/.test(money.currency.trim());
+}
+
+function objectFailureReason(
+  object: Record<string, unknown>,
+  dataId: string,
+  kind: ObjectValidationKind,
+): SquareWebhookDiagnosticReason {
+  if (typeof object.id === "string" && object.id !== dataId) return "object_id_mismatch";
+  if (kind !== "payment_origin" && hasInvalidMoney(object.amount_money)) {
+    return object.amount_money === undefined
+      ? "required_field_or_timestamp_invalid"
+      : "invalid_amount_currency";
+  }
+  if (kind === "payment_origin") {
+    return "required_field_or_timestamp_invalid";
+  }
+  if (typeof object.updated_at === "string" && !isValidTimestamp(object.updated_at)) {
+    return "required_field_or_timestamp_invalid";
+  }
+  if (kind === "dispute") {
+    if (typeof object.created_at !== "string" || !isValidTimestamp(object.created_at)) {
+      return "required_field_or_timestamp_invalid";
+    }
+    if (object.reported_at !== undefined && object.reported_at !== null
+      && !isValidTimestamp(object.reported_at)) {
+      return "required_field_or_timestamp_invalid";
+    }
+  }
+  return "required_field_or_timestamp_invalid";
+}
+
+function invalidKnownObject(
+  object: Record<string, unknown>,
+  dataId: string,
+  kind: ObjectValidationKind,
+  stage: SquareWebhookDiagnosticStage,
+  eventType: SquareWebhookDiagnosticEventType,
+): SquareWebhookPayloadError {
+  return new SquareWebhookPayloadError("INVALID_EVENT_OBJECT", {
+    stage,
+    reason: objectFailureReason(object, dataId, kind),
+    eventType,
+  });
 }
 
 export function isPaymentOperationReference(value: string): boolean {
@@ -196,16 +358,30 @@ export function classifySquarePaymentWebhookOrigin(
   rawBody: string,
   leagueVaultApplicationId: string,
 ): SquarePaymentWebhookOrigin {
-  const envelope = parseEnvelope(rawBody);
+  const stage = "origin_gate" as const;
+  const envelope = parseEnvelope(rawBody, stage);
   if (envelope.type !== "payment.updated") return "not_payment";
+  const eventType = squareWebhookDiagnosticEventType(envelope.type);
   if (envelope.data.type !== "payment") {
-    throw new SquareWebhookPayloadError("INVALID_EVENT_OBJECT");
+    throw new SquareWebhookPayloadError("INVALID_EVENT_OBJECT", {
+      stage,
+      reason: "wrong_data_type",
+      eventType,
+    });
   }
-  const result = paymentOriginSchema.safeParse(envelope.data.object.payment);
-  if (!result.success || result.data.id !== envelope.data.id) {
-    throw new SquareWebhookPayloadError("INVALID_EVENT_OBJECT");
+  const paymentObject = targetObject(envelope, "payment", stage, eventType);
+  const result = paymentOriginSchema.safeParse(paymentObject);
+  if (!result.success) {
+    throw invalidKnownObject(paymentObject, envelope.data.id, "payment_origin", stage, eventType);
   }
-  assertEnvelopeLocation(envelope.location_id, result.data.location_id);
+  if (result.data.id !== envelope.data.id) {
+    throw new SquareWebhookPayloadError("INVALID_EVENT_OBJECT", {
+      stage,
+      reason: "object_id_mismatch",
+      eventType,
+    });
+  }
+  assertEnvelopeLocation(envelope.location_id, result.data.location_id, stage, eventType);
 
   const applicationId = result.data.application_details?.application_id ?? null;
   const squareProduct = result.data.application_details?.square_product ?? null;
@@ -227,7 +403,9 @@ export function classifySquarePaymentWebhookOrigin(
 
 /** Parses a signature-verified Square body into non-sensitive inbox metadata. */
 export function normalizeSquareWebhookEvent(rawBody: string): NormalizedSquareWebhookEvent {
-  const envelope = parseEnvelope(rawBody);
+  const stage = "full_normalize" as const;
+  const envelope = parseEnvelope(rawBody, stage);
+  const eventType = squareWebhookDiagnosticEventType(envelope.type);
   const common = {
     providerEventId: envelope.event_id,
     eventType: envelope.type,
@@ -236,12 +414,26 @@ export function normalizeSquareWebhookEvent(rawBody: string): NormalizedSquareWe
   };
 
   if (envelope.type === "refund.updated") {
-    if (envelope.data.type !== "refund") throw new SquareWebhookPayloadError("INVALID_EVENT_OBJECT");
-    const result = refundSchema.safeParse(envelope.data.object.refund);
-    if (!result.success || result.data.id !== envelope.data.id) {
-      throw new SquareWebhookPayloadError("INVALID_EVENT_OBJECT");
+    if (envelope.data.type !== "refund") {
+      throw new SquareWebhookPayloadError("INVALID_EVENT_OBJECT", {
+        stage,
+        reason: "wrong_data_type",
+        eventType,
+      });
     }
-    assertEnvelopeLocation(envelope.location_id, result.data.location_id);
+    const refundObject = targetObject(envelope, "refund", stage, eventType);
+    const result = refundSchema.safeParse(refundObject);
+    if (!result.success) {
+      throw invalidKnownObject(refundObject, envelope.data.id, "refund", stage, eventType);
+    }
+    if (result.data.id !== envelope.data.id) {
+      throw new SquareWebhookPayloadError("INVALID_EVENT_OBJECT", {
+        stage,
+        reason: "object_id_mismatch",
+        eventType,
+      });
+    }
+    assertEnvelopeLocation(envelope.location_id, result.data.location_id, stage, eventType);
     return {
       ...common,
       providerLocationId: result.data.location_id,
@@ -263,12 +455,26 @@ export function normalizeSquareWebhookEvent(rawBody: string): NormalizedSquareWe
   }
 
   if (envelope.type === "payment.updated") {
-    if (envelope.data.type !== "payment") throw new SquareWebhookPayloadError("INVALID_EVENT_OBJECT");
-    const result = paymentSchema.safeParse(envelope.data.object.payment);
-    if (!result.success || result.data.id !== envelope.data.id) {
-      throw new SquareWebhookPayloadError("INVALID_EVENT_OBJECT");
+    if (envelope.data.type !== "payment") {
+      throw new SquareWebhookPayloadError("INVALID_EVENT_OBJECT", {
+        stage,
+        reason: "wrong_data_type",
+        eventType,
+      });
     }
-    assertEnvelopeLocation(envelope.location_id, result.data.location_id);
+    const paymentObject = targetObject(envelope, "payment", stage, eventType);
+    const result = paymentSchema.safeParse(paymentObject);
+    if (!result.success) {
+      throw invalidKnownObject(paymentObject, envelope.data.id, "payment", stage, eventType);
+    }
+    if (result.data.id !== envelope.data.id) {
+      throw new SquareWebhookPayloadError("INVALID_EVENT_OBJECT", {
+        stage,
+        reason: "object_id_mismatch",
+        eventType,
+      });
+    }
+    assertEnvelopeLocation(envelope.location_id, result.data.location_id, stage, eventType);
     return {
       ...common,
       providerLocationId: result.data.location_id,
@@ -290,12 +496,26 @@ export function normalizeSquareWebhookEvent(rawBody: string): NormalizedSquareWe
   }
 
   if (envelope.type === "dispute.created" || envelope.type === "dispute.state.updated") {
-    if (envelope.data.type !== "dispute") throw new SquareWebhookPayloadError("INVALID_EVENT_OBJECT");
-    const result = disputeSchema.safeParse(envelope.data.object.dispute);
-    if (!result.success || result.data.id !== envelope.data.id) {
-      throw new SquareWebhookPayloadError("INVALID_EVENT_OBJECT");
+    if (envelope.data.type !== "dispute") {
+      throw new SquareWebhookPayloadError("INVALID_EVENT_OBJECT", {
+        stage,
+        reason: "wrong_data_type",
+        eventType,
+      });
     }
-    assertEnvelopeLocation(envelope.location_id, result.data.location_id);
+    const disputeObject = targetObject(envelope, "dispute", stage, eventType);
+    const result = disputeSchema.safeParse(disputeObject);
+    if (!result.success) {
+      throw invalidKnownObject(disputeObject, envelope.data.id, "dispute", stage, eventType);
+    }
+    if (result.data.id !== envelope.data.id) {
+      throw new SquareWebhookPayloadError("INVALID_EVENT_OBJECT", {
+        stage,
+        reason: "object_id_mismatch",
+        eventType,
+      });
+    }
+    assertEnvelopeLocation(envelope.location_id, result.data.location_id, stage, eventType);
     return {
       ...common,
       providerLocationId: result.data.location_id,
@@ -324,10 +544,22 @@ export function normalizeSquareWebhookEvent(rawBody: string): NormalizedSquareWe
   }
 
   if (supportedTypes.has(envelope.type)) {
-    throw new SquareWebhookPayloadError("INVALID_EVENT_OBJECT");
+    throw new SquareWebhookPayloadError("INVALID_EVENT_OBJECT", {
+      stage,
+      reason: "required_field_or_timestamp_invalid",
+      eventType,
+    });
   }
   const providerLocationId = findUnknownLocation(envelope.location_id, envelope.data.object);
-  if (!providerLocationId) throw new SquareWebhookPayloadError("INVALID_EVENT_OBJECT");
+  if (!providerLocationId) {
+    throw new SquareWebhookPayloadError("INVALID_EVENT_OBJECT", {
+      stage,
+      reason: hasConflictingLocations(envelope.location_id, envelope.data.object)
+        ? "location_mismatch"
+        : "unsupported_event_without_unique_location",
+      eventType: "other",
+    });
+  }
   return {
     ...common,
     providerLocationId,

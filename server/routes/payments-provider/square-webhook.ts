@@ -26,7 +26,11 @@ import {
 import {
   classifySquarePaymentWebhookOrigin,
   normalizeSquareWebhookEvent,
+  squareWebhookDiagnosticEventType,
   SquareWebhookPayloadError,
+  type SquareWebhookDiagnosticEventType,
+  type SquareWebhookDiagnosticReason,
+  type SquareWebhookDiagnosticStage,
 } from "../../services/square-webhook-event.js";
 import { sendError, sendSuccess } from "../../utils/api.js";
 import {
@@ -142,6 +146,28 @@ function rawBodyText(body: Buffer): string | null {
   }
 }
 
+function payloadDiagnostic(
+  error: unknown,
+  fallbackStage: SquareWebhookDiagnosticStage,
+): {
+  stage: SquareWebhookDiagnosticStage;
+  reason: SquareWebhookDiagnosticReason;
+  eventType: SquareWebhookDiagnosticEventType;
+} {
+  if (error instanceof SquareWebhookPayloadError) {
+    return {
+      stage: error.diagnosticStage,
+      reason: error.diagnosticReason,
+      eventType: error.diagnosticEventType,
+    };
+  }
+  return {
+    stage: fallbackStage,
+    reason: "invalid_envelope",
+    eventType: "other",
+  };
+}
+
 function signatureGate(config: SquareWebhookConfig) {
   return (req: Request, res: Response, next: NextFunction): void => {
     const correlationId = requestId(res);
@@ -192,6 +218,14 @@ function originGate(
     const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
     const text = rawBodyText(body);
     if (text === null) {
+      log.warn("Square webhook request rejected", {
+        event: "square_webhook_rejected",
+        requestId: correlationId,
+        outcome: "invalid_json",
+        stage: "origin_gate",
+        reason: "invalid_json",
+        eventType: "other",
+      });
       sendError(res, "Malformed JSON body", 400, "SQUARE_WEBHOOK_INVALID_JSON");
       return;
     }
@@ -215,10 +249,12 @@ function originGate(
       next();
     } catch (error) {
       const code = error instanceof SquareWebhookPayloadError ? error.code : "INVALID_ENVELOPE";
+      const diagnostic = payloadDiagnostic(error, "origin_gate");
       log.warn("Square webhook request rejected", {
         event: "square_webhook_rejected",
         requestId: correlationId,
         outcome: code.toLowerCase(),
+        ...diagnostic,
       });
       sendError(res, "Malformed webhook event", 400, "SQUARE_WEBHOOK_EVENT_INVALID");
     }
@@ -272,10 +308,12 @@ export function registerSquareWebhookReceiver(
         normalized = normalizeSquareWebhookEvent(text);
       } catch (error) {
         const code = error instanceof SquareWebhookPayloadError ? error.code : "INVALID_ENVELOPE";
+        const diagnostic = payloadDiagnostic(error, "full_normalize");
         log.warn("Square webhook request rejected", {
           event: "square_webhook_rejected",
           requestId: correlationId,
           outcome: code.toLowerCase(),
+          ...diagnostic,
         });
         sendError(res, "Malformed webhook event", 400, "SQUARE_WEBHOOK_EVENT_INVALID");
         return;
@@ -292,7 +330,7 @@ export function registerSquareWebhookReceiver(
         log.info("Square webhook durably recorded", {
           event: "square_webhook_ingested",
           requestId: correlationId,
-          eventType: normalized.eventType,
+          eventType: squareWebhookDiagnosticEventType(normalized.eventType),
           duplicate: result.duplicate,
           status: result.event.status,
         });
@@ -318,7 +356,7 @@ export function registerSquareWebhookReceiver(
               log.error("Square webhook scheduler rearm failed", {
                 event: "square_webhook_rearm_failed",
                 requestId: correlationId,
-                eventType: normalized.eventType,
+                eventType: squareWebhookDiagnosticEventType(normalized.eventType),
                 errorName: error instanceof Error ? error.name : "UnknownError",
               });
             }
@@ -340,7 +378,7 @@ export function registerSquareWebhookReceiver(
           log.warn("Square webhook mapping rejected", {
             event: "square_webhook_mapping_rejected",
             requestId: correlationId,
-            eventType: normalized.eventType,
+            eventType: squareWebhookDiagnosticEventType(normalized.eventType),
             code: error.code,
           });
           sendError(res, "Webhook location could not be resolved", 422, "SQUARE_WEBHOOK_MAPPING_FAILED");
@@ -350,7 +388,7 @@ export function registerSquareWebhookReceiver(
           log.error("Square webhook duplicate evidence mismatch", {
             event: "square_webhook_duplicate_mismatch",
             requestId: correlationId,
-            eventType: normalized.eventType,
+            eventType: squareWebhookDiagnosticEventType(normalized.eventType),
           });
           sendError(res, "Webhook event identity conflict", 409, "SQUARE_WEBHOOK_EVENT_CONFLICT");
           return;
@@ -358,7 +396,7 @@ export function registerSquareWebhookReceiver(
         log.error("Square webhook durable ingestion failed", {
           event: "square_webhook_ingestion_failed",
           requestId: correlationId,
-          eventType: normalized.eventType,
+          eventType: squareWebhookDiagnosticEventType(normalized.eventType),
           errorName: error instanceof Error ? error.name : "UnknownError",
         });
         sendError(res, "Webhook event was not recorded", 503, "SQUARE_WEBHOOK_INGESTION_FAILED");
