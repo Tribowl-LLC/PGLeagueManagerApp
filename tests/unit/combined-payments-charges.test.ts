@@ -109,7 +109,8 @@ const { fakeLogger } = vi.hoisted(() => ({
 }));
 vi.mock('../../server/logger', () => ({ logger: fakeLogger, createLogger: () => fakeLogger }));
 
-const chargesRouter = (await import('../../server/routes/payments-provider/charges')).default;
+const chargesModule = await import('../../server/routes/payments-provider/charges');
+const chargesRouter = chargesModule.default;
 
 let server: Server;
 let baseUrl: string;
@@ -220,6 +221,25 @@ async function postCombined(body: Record<string, unknown>) {
 }
 
 describe('POST /api/payments-provider/combined-payments', () => {
+  it('rejects shifted per-bowler occurrence totals before provider preparation', () => {
+    try {
+      chargesModule.validateInteractiveQuotePayees(
+        {
+          rows: [
+            { obligationId: '11111111-1111-4111-8111-111111111111', bowlerId: 7 },
+            { obligationId: '22222222-2222-4222-8222-222222222222', bowlerId: 8 },
+          ],
+          selections: [{ obligationId: '11111111-1111-4111-8111-111111111111', amountMinor: 3000 }, { obligationId: '22222222-2222-4222-8222-222222222222', amountMinor: 1000 }],
+        },
+        [{ bowlerId: 7, amount: 2000 }, { bowlerId: 8, amount: 2000 }],
+      );
+      throw new Error('expected per-bowler mismatch');
+    } catch (error) {
+      expect(error).toBeInstanceOf(InteractiveOccurrenceAllocationError);
+      expect((error as InteractiveOccurrenceAllocationError).code).toBe('BASE_ALLOCATION_MISMATCH');
+    }
+  });
+
   it('maps a stale occurrence preparation to a bounded 409 without provider dispatch', async () => {
     mockPrepareInteractiveOperation.mockRejectedValueOnce(new InteractiveOccurrenceAllocationError('STALE_QUOTE'));
     const res = await postCombined({
@@ -231,6 +251,20 @@ describe('POST /api/payments-provider/combined-payments', () => {
     expect(res.status).toBe(409);
     expect((await res.json()).error?.code).toBe('OCCURRENCE_QUOTE_STALE');
     expect(mockSquareProvider.processPayment).not.toHaveBeenCalled();
+  });
+
+  it('maps changed-selection and pre-F2 preparation conflicts without replaying the provider', async () => {
+    for (const code of ['IMMUTABLE_SELECTION_MISMATCH', 'PRE_F2_OPERATION'] as const) {
+      mockPrepareInteractiveOperation.mockRejectedValueOnce(new InteractiveOccurrenceAllocationError(code));
+      const res = await postCombined({
+        sourceId: 'cnon:tok', leagueId: 11, amount: 4000,
+        payees: [{ bowlerId: 7, amount: 2000 }, { bowlerId: 8, amount: 2000 }],
+      });
+      expect(res.status).toBe(409);
+      expect((await res.json()).error?.code).toBe('OCCURRENCE_IDEMPOTENCY_CONFLICT');
+    }
+    expect(mockSquareProvider.processPayment).not.toHaveBeenCalled();
+    expect(mockInteractiveExecute).not.toHaveBeenCalled();
   });
 
   it('rejects when payee amounts do not sum to total amount', async () => {

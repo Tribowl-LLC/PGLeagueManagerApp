@@ -40,6 +40,7 @@ import {
   getInteractiveOccurrenceActivation,
   InteractiveOccurrenceAllocationError,
   quoteInteractiveOccurrenceAllocations,
+  validateInteractiveOccurrenceBaseAllocations,
   type InteractiveOccurrenceSelection,
 } from '../../services/interactive-occurrence-allocation.js';
 
@@ -80,16 +81,39 @@ function occurrenceAllocationRouteError(error: unknown): { message: string; code
   }
 }
 
+export function validateInteractiveQuotePayees(
+  quote: { rows: Array<{ obligationId: string; bowlerId: number }>; selections: InteractiveOccurrenceSelection[] },
+  payees: Array<{ bowlerId: number; amount: number }>,
+): void {
+  validateInteractiveOccurrenceBaseAllocations(
+    quote.selections.map((selection) => {
+      const row = quote.rows.find((candidate) => candidate.obligationId === selection.obligationId);
+      if (!row) throw new InteractiveOccurrenceAllocationError('INVALID_SELECTION');
+      return { bowlerId: row.bowlerId, amountMinor: selection.amountMinor };
+    }),
+    payees.map((payee) => ({ bowlerId: payee.bowlerId, amountMinor: payee.amount })),
+  );
+}
+
 async function occurrenceQuote(req: Request, res: Response): Promise<void> {
   const leagueId = Number(req.body?.leagueId);
   const amountMinor = Number(req.body?.amountMinor ?? req.body?.amount);
-  const organizationId = req.user?.organizationId;
+  const explicitOrganizationId = Number(req.body?.organizationId);
+  const organizationId = req.organizationFilter
+    ?? (req.user?.role === 'system_admin' && Number.isSafeInteger(explicitOrganizationId) && explicitOrganizationId > 0
+      ? explicitOrganizationId
+      : req.user?.organizationId);
   if (!organizationId || !Number.isSafeInteger(leagueId) || leagueId <= 0 || !Number.isSafeInteger(amountMinor) || amountMinor <= 0) {
     sendError(res, 'Invalid payment quote request', 400, 'VALIDATION_ERROR');
     return;
   }
   if (!await hasAccessToLeague(req, leagueId)) {
     sendError(res, 'You do not have access to this league', 403, 'FORBIDDEN');
+    return;
+  }
+  const league = await storage.getLeague(leagueId);
+  if (!league || league.organizationId !== organizationId) {
+    sendError(res, 'Payment quote is unavailable', 404, 'NOT_FOUND');
     return;
   }
   const requestedBowlers: number[] = Array.isArray(req.body?.payees)
@@ -271,6 +295,15 @@ async function canRecoverInteractiveOperation(req: Request, operation: PaymentOp
   return (await canUserPayForBowler(req, snapshot.payerBowlerId)).allowed;
 }
 
+function interactiveOrganizationScope(req: Request): number | undefined {
+  if (req.organizationFilter != null) return req.organizationFilter;
+  if (req.user?.role === 'system_admin') {
+    const requested = Number(req.query.organizationId ?? req.body?.organizationId);
+    return Number.isSafeInteger(requested) && requested > 0 ? requested : undefined;
+  }
+  return req.user?.organizationId ?? undefined;
+}
+
 function terminalOperationError(operation: PaymentOperation): {
   status: number;
   message: string;
@@ -346,7 +379,7 @@ router.get('/payment-operations/status', async (req, res) => {
   try {
     const requestKey = requireInteractiveRequestKey(req, res);
     if (!requestKey) return;
-    const organizationId = req.user?.organizationId;
+    const organizationId = interactiveOrganizationScope(req);
     if (!organizationId) {
       return sendError(res, 'Organization context is required for payment recovery', 403, 'FORBIDDEN');
     }
@@ -381,7 +414,7 @@ router.post('/payment-operations/recover', paymentLimiter, async (req, res) => {
   try {
     const requestKey = requireInteractiveRequestKey(req, res);
     if (!requestKey) return;
-    const organizationId = req.user?.organizationId;
+    const organizationId = interactiveOrganizationScope(req);
     if (!organizationId) {
       return sendError(res, 'Organization context is required for payment recovery', 403, 'FORBIDDEN');
     }
@@ -603,7 +636,8 @@ router.post('/combined-payments', paymentLimiter, async (req, res) => {
     const existingOperationForQuote = await storage.getGeneralInteractivePaymentOperationForOrganization(league.organizationId, requestKey);
     if (canonicalOccurrenceActive && occurrenceSelections) {
       try {
-        await quoteInteractiveOccurrenceAllocations({ organizationId: league.organizationId, leagueId, amountMinor: amount, currency: 'USD', selections: occurrenceSelections, allowedBowlerIds: cleanPayees.map((payee) => payee.bowlerId), excludeOperationId: existingOperationForQuote?.id });
+        const quote = await quoteInteractiveOccurrenceAllocations({ organizationId: league.organizationId, leagueId, amountMinor: amount, currency: 'USD', selections: occurrenceSelections, allowedBowlerIds: cleanPayees.map((payee) => payee.bowlerId), excludeOperationId: existingOperationForQuote?.id });
+        validateInteractiveQuotePayees(quote, cleanPayees);
       } catch (error) {
         if (error instanceof InteractiveOccurrenceAllocationError) return sendError(res, 'Payment allocation could not be validated', 409, 'OCCURRENCE_ALLOCATION_CONFLICT');
         throw error;

@@ -29,11 +29,12 @@ import { useLocation } from "wouter";
 import { PaymentFormFields } from "@/components/payment-form-fields";
 import { PaymentMethodTabs } from "@/components/payment-method-tabs";
 import { usePaymentFormSubmit } from "@/hooks/use-payment-form-submit";
-import { beginPaymentIntent, clearPaymentIntent, paymentRequestHeaders } from "@/lib/payment-request-identity";
+import { beginPaymentIntent, clearPaymentIntent, paymentRequestHeaders, paymentRequestWithRecovery } from "@/lib/payment-request-identity";
 import { PaymentFeeInfoAlert } from "@/components/payment-fee-info-alert";
 import { PaymentCheckNumberField } from "@/components/payment-check-number-field";
 import { PaymentReceiptEmailField } from "@/components/payment-receipt-email-field";
 import { PaymentProviderNotConfiguredAlert } from "@/components/payment-provider-not-configured-alert";
+import { buildInteractiveOccurrenceFields, interactiveIntentSemanticKey } from "@/lib/interactive-payment-request";
 import { PaymentFormActions } from "@/components/payment-form-actions";
 import { InteractiveOccurrenceSelector } from "@/components/interactive-occurrence-selector";
 
@@ -274,9 +275,9 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
     }
     const overrideEmail = !selected?.email && trimmedReceiptEmail ? trimmedReceiptEmail : undefined;
     try {
-      const paymentScope = `admin-wallet:${bowlerId}:${currentLeagueId}:${amount}`;
+      const paymentScope = `admin-wallet:${bowlerId}:${currentLeagueId}:${amount}:${interactiveIntentSemanticKey(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
       const requestKey = walletRequestKeyRef.current ?? beginPaymentIntent(paymentScope);
-      const response = await csrfFetch('/api/payments-provider/payments', {
+      const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch('/api/payments-provider/payments', {
         method: 'POST',
         headers: paymentRequestHeaders(requestKey),
         body: JSON.stringify({
@@ -287,8 +288,9 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
           storeCard: false,
           sourceKind: 'wallet',
           ...(overrideEmail ? { buyerEmail: overrideEmail } : {}),
+          ...buildInteractiveOccurrenceFields(occurrenceAllocations, occurrenceQuoteFingerprint),
         }),
-      });
+      }));
       const responseData = await response.json();
       if (!response.ok) {
         throw makeApiError(responseData, response.status, 'Payment failed');
@@ -320,15 +322,15 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
       setPaymentError(errorMessage);
       toast({ title: "Error", description: errorMessage, variant: "destructive" });
     }
-  }, [form, toast, queryClient, onClose, bowlers, receiptEmail, navigate, leagueInfo?.locationId]);
+  }, [form, toast, queryClient, onClose, bowlers, receiptEmail, navigate, leagueInfo?.locationId, occurrenceAllocations, occurrenceQuoteFingerprint]);
 
   const beginWalletPayment = useCallback(() => {
     const values = form.getValues();
     if (!values.bowlerId || !values.leagueId || !values.amount) return;
     walletRequestKeyRef.current = beginPaymentIntent(
-      `admin-wallet:${values.bowlerId}:${values.leagueId}:${values.amount}`,
+      `admin-wallet:${values.bowlerId}:${values.leagueId}:${values.amount}:${interactiveIntentSemanticKey(occurrenceAllocations, occurrenceQuoteFingerprint)}`,
     );
-  }, [form]);
+  }, [form, occurrenceAllocations, occurrenceQuoteFingerprint]);
 
   const {
     applePayAvailable,
@@ -399,6 +401,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
             {paymentType === "credit_card" && selectedBowlerId && leagueInfo && (
               <InteractiveOccurrenceSelector
                 leagueId={leagueInfo.id}
+                organizationId={leagueInfo.organizationId ?? undefined}
                 amountMinor={watchedAmount || 0}
                 bowlerIds={[selectedBowlerId]}
                 enabled={open}

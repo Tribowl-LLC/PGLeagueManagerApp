@@ -41,8 +41,13 @@ import {
 import {
   getInteractiveOccurrenceActivation,
   InteractiveOccurrenceAllocationError,
+  persistInteractiveOccurrenceSnapshot,
 } from "../../server/services/interactive-occurrence-allocation";
 import { deleteOrganization } from "../../server/storage/organizations";
+import {
+  acquirePaymentOperationLease,
+  finalizePaymentOperationSuccess,
+} from "../../server/storage/payment-operations";
 import { getTestDb } from "../setup/test-db";
 
 const db = getTestDb();
@@ -333,6 +338,227 @@ describe("D2 occurrence financial foundation PostgreSQL contract", () => {
       organizationId: scope.organizationId,
       leagueId: scope.leagueId,
     })).rejects.toBeInstanceOf(InteractiveOccurrenceAllocationError);
+  });
+
+  it("finalizes a partial occurrence allocation once, advances an auditable revision, and replays idempotently", async () => {
+    const scope = await createFixture("F2Finalize");
+    const obligation = await insertObligation(scope, 0, 1_000);
+    const [operation] = await db.insert(paymentOperations).values({
+      organizationId: scope.organizationId,
+      authorizingUserId: scope.actorUserId,
+      operationType: "interactive_charge",
+      targetKey: `interactive-charge:f2-finalize-${suffix}`,
+      amountMinor: 400,
+      currency: "USD",
+      requestFingerprint: `lvpayreq:v1:${"f".repeat(64)}`,
+      providerIdempotencyKey: `f2-finalize-${suffix}`.slice(0, 45),
+      providerName: "square",
+    }).returning();
+    if (!operation) throw new Error("F2 finalization operation was not created");
+    const leased = await acquirePaymentOperationLease({
+      organizationId: scope.organizationId,
+      operationId: operation.id,
+      leaseOwner: "f2-finalizer-test",
+      leaseDurationMs: 60_000,
+    });
+    if (!leased?.leaseToken) throw new Error("F2 finalization lease was not acquired");
+    await db.transaction(async (tx) => {
+      await tx.insert(interactivePaymentOperationSnapshots).values({
+        operationId: operation.id,
+        snapshotVersion: 2,
+        snapshotFingerprint: `lvpayexecic:v2:${"f".repeat(64)}`,
+        leagueId: scope.leagueId,
+        locationId: scope.locationId,
+        payerBowlerId: scope.bowlerId,
+        requestKind: "direct",
+        encryptedSourceId: "F2_FINALIZE_SOURCE",
+        storeCard: false,
+        sourceKind: "new_card",
+        weekOf: "2038-01-01T00:00:00.000Z",
+      });
+      await tx.insert(interactivePaymentOperationAllocations).values({
+        operationId: operation.id,
+        allocationIndex: 0,
+        bowlerId: scope.bowlerId,
+        amountMinor: 400,
+        weekOf: "2038-01-01T00:00:00.000Z",
+      });
+      await tx.insert(paymentOperationOccurrenceSnapshots).values({
+        operationId: operation.id,
+        organizationId: scope.organizationId,
+        leagueId: scope.leagueId,
+        snapshotVersion: 1,
+        snapshotFingerprint: `lvpayocc:v1:${"f".repeat(64)}`,
+        amountMinor: 400,
+        currency: "USD",
+        allocationCount: 1,
+      });
+      await tx.insert(paymentOperationOccurrenceSnapshotAllocations).values({
+        operationId: operation.id,
+        snapshotVersion: 1,
+        allocationIndex: 0,
+        organizationId: scope.organizationId,
+        leagueId: scope.leagueId,
+        occurrenceId: obligation.occurrenceId,
+        bowlerId: scope.bowlerId,
+        obligationId: obligation.id,
+        amountMinor: 400,
+        currency: "USD",
+      });
+    });
+    const input = {
+      organizationId: scope.organizationId,
+      operationId: operation.id,
+      leaseToken: leased.leaseToken,
+      providerObjectId: `sq-f2-finalize-${suffix}`,
+      paymentRows: [{
+        allocationIndex: 0,
+        values: {
+          bowlerId: scope.bowlerId,
+          leagueId: scope.leagueId,
+          amount: 400,
+          weekOf: "2038-01-01T00:00:00.000Z",
+          status: "paid" as const,
+          type: "square" as const,
+          providerPaymentId: `sq-f2-finalize-${suffix}`,
+        },
+      }],
+    };
+    await finalizePaymentOperationSuccess(input);
+    await finalizePaymentOperationSuccess(input);
+    const allocations = await db.select().from(paymentOccurrenceAllocations)
+      .where(eq(paymentOccurrenceAllocations.allocationKey, `payment-operation:${operation.id}:0`));
+    const revisions = await db.select().from(paymentOccurrenceAllocationRevisions)
+      .where(eq(paymentOccurrenceAllocationRevisions.organizationId, scope.organizationId));
+    const [after] = await db.select().from(bowlerOccurrenceObligations).where(eq(bowlerOccurrenceObligations.id, obligation.id));
+    expect(allocations).toHaveLength(1);
+    expect(revisions.filter((row) => row.allocationId === allocations[0]?.id)).toHaveLength(1);
+    expect(after?.state).toBe("partially_settled");
+    expect(after?.currentRevision).toBe(2);
+
+    // The remaining amount must settle through the same common finalizer,
+    // producing one contiguous allocation/revision pair and preserving the
+    // F1-readable obligation state rather than creating a replacement row.
+    const [secondOperation] = await db.insert(paymentOperations).values({
+      organizationId: scope.organizationId,
+      authorizingUserId: scope.actorUserId,
+      operationType: "interactive_charge",
+      targetKey: `interactive-charge:f2-finalize-second-${suffix}`,
+      amountMinor: 600,
+      currency: "USD",
+      requestFingerprint: `lvpayreq:v1:${"b".repeat(64)}`,
+      providerIdempotencyKey: `f2-finalize-second-${suffix}`.slice(0, 45),
+      providerName: "square",
+    }).returning();
+    if (!secondOperation) throw new Error("second F2 finalization operation was not created");
+    const secondLease = await acquirePaymentOperationLease({
+      organizationId: scope.organizationId,
+      operationId: secondOperation.id,
+      leaseOwner: "f2-finalizer-test-second",
+      leaseDurationMs: 60_000,
+    });
+    if (!secondLease?.leaseToken) throw new Error("second F2 finalization lease was not acquired");
+    await db.transaction(async (tx) => {
+      await tx.insert(interactivePaymentOperationSnapshots).values({
+        operationId: secondOperation.id,
+        snapshotVersion: 2,
+        snapshotFingerprint: `lvpayexecic:v2:${"e".repeat(64)}`,
+        leagueId: scope.leagueId,
+        locationId: scope.locationId,
+        payerBowlerId: scope.bowlerId,
+        requestKind: "direct",
+        encryptedSourceId: "F2_FINALIZE_SOURCE_2",
+        storeCard: false,
+        sourceKind: "new_card",
+        weekOf: "2038-01-01T00:00:00.000Z",
+      });
+      await tx.insert(interactivePaymentOperationAllocations).values({
+        operationId: secondOperation.id,
+        allocationIndex: 0,
+        bowlerId: scope.bowlerId,
+        amountMinor: 600,
+        weekOf: "2038-01-01T00:00:00.000Z",
+      });
+      await tx.insert(paymentOperationOccurrenceSnapshots).values({
+        operationId: secondOperation.id,
+        organizationId: scope.organizationId,
+        leagueId: scope.leagueId,
+        snapshotVersion: 1,
+        snapshotFingerprint: `lvpayocc:v1:${"e".repeat(64)}`,
+        amountMinor: 600,
+        currency: "USD",
+        allocationCount: 1,
+      });
+      await tx.insert(paymentOperationOccurrenceSnapshotAllocations).values({
+        operationId: secondOperation.id,
+        snapshotVersion: 1,
+        allocationIndex: 0,
+        organizationId: scope.organizationId,
+        leagueId: scope.leagueId,
+        occurrenceId: obligation.occurrenceId,
+        bowlerId: scope.bowlerId,
+        obligationId: obligation.id,
+        amountMinor: 600,
+        currency: "USD",
+      });
+    });
+    const secondInput = {
+      organizationId: scope.organizationId,
+      operationId: secondOperation.id,
+      leaseToken: secondLease.leaseToken,
+      providerObjectId: `sq-f2-finalize-second-${suffix}`,
+      paymentRows: [{
+        allocationIndex: 0,
+        values: {
+          bowlerId: scope.bowlerId,
+          leagueId: scope.leagueId,
+          amount: 600,
+          weekOf: "2038-01-01T00:00:00.000Z",
+          status: "paid" as const,
+          type: "square" as const,
+          providerPaymentId: `sq-f2-finalize-second-${suffix}`,
+        },
+      }],
+    };
+    await finalizePaymentOperationSuccess(secondInput);
+    await finalizePaymentOperationSuccess(secondInput);
+    const allAllocations = await db.select().from(paymentOccurrenceAllocations)
+      .where(eq(paymentOccurrenceAllocations.obligationId, obligation.id));
+    const allRevisions = await db.select().from(paymentOccurrenceAllocationRevisions)
+      .where(eq(paymentOccurrenceAllocationRevisions.organizationId, scope.organizationId));
+    const [fullySettled] = await db.select().from(bowlerOccurrenceObligations).where(eq(bowlerOccurrenceObligations.id, obligation.id));
+    expect(allAllocations).toHaveLength(2);
+    expect(allRevisions.filter((row) => allAllocations.some((allocation) => allocation.id === row.allocationId))).toHaveLength(2);
+    expect(allAllocations.map((row) => row.currentRevision).sort()).toEqual([1, 1]);
+    expect(fullySettled?.state).toBe("settled");
+    expect(fullySettled?.currentRevision).toBe(3);
+    await deleteOrganization(scope.organizationId);
+  });
+
+  it("never retrofits a pre-F2 interactive operation with an occurrence supplement", async () => {
+    const scope = await createFixture("PreF2");
+    const [operation] = await db.insert(paymentOperations).values({
+      organizationId: scope.organizationId,
+      operationType: "interactive_charge",
+      targetKey: `interactive-charge:pre-f2-${suffix}`,
+      amountMinor: 500,
+      currency: "USD",
+      requestFingerprint: `lvpayreq:v1:${"a".repeat(64)}`,
+      providerIdempotencyKey: `pre-f2-${suffix}`.slice(0, 45),
+      providerName: "square",
+    }).returning();
+    if (!operation) throw new Error("pre-F2 operation was not created");
+    const selection = { obligationId: "11111111-1111-4111-8111-111111111111", amountMinor: 500 };
+    await expect(db.transaction((tx) => persistInteractiveOccurrenceSnapshot(tx, operation, {
+      leagueId: scope.leagueId,
+      selections: [selection],
+      quoteFingerprint: `lvpayquote:v1:${"q".repeat(64)}`,
+    }))).rejects.toMatchObject({ code: "PRE_F2_OPERATION" });
+    expect(await db.select().from(paymentOperationOccurrenceSnapshots)
+      .where(eq(paymentOperationOccurrenceSnapshots.operationId, operation.id))).toEqual([]);
+    expect(await db.select().from(paymentOperationOccurrenceSnapshotAllocations)
+      .where(eq(paymentOperationOccurrenceSnapshotAllocations.operationId, operation.id))).toEqual([]);
+    await deleteOrganization(scope.organizationId);
   });
 
   it("creates authoritative prepaid obligations before occurrence time without rewriting amount evidence", async () => {

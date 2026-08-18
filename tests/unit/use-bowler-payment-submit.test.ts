@@ -196,6 +196,22 @@ describe('useBowlerPaymentSubmit success toasts', () => {
     );
   });
 
+  it('passes occurrence selections through the upfront new-card path', async () => {
+    createPaymentMock.mockResolvedValueOnce({ status: 'COMPLETED' });
+    const occurrenceAllocations = [{ obligationId: '33333333-3333-4333-8333-333333333333', amountMinor: 30000 }];
+    const occurrenceQuoteFingerprint = `lvquote:v1:${'c'.repeat(64)}`;
+
+    await useBowlerPaymentSubmit(makeOptions({
+      league: makeLeague('upfront'), cardMode: 'new', card: makeCard(),
+      occurrenceAllocations, occurrenceQuoteFingerprint,
+    }))();
+
+    expect(createPaymentMock).toHaveBeenCalledWith(
+      30000, expect.anything(), 'bowler-1', 'league-1', false, undefined, expect.any(String),
+      occurrenceAllocations, occurrenceQuoteFingerprint,
+    );
+  });
+
   it('shows the custom one-time payment success toast with formatted amount', async () => {
     csrfFetchMock.mockResolvedValueOnce(await jsonResponse({ data: { id: 'pmt-1' } }));
 

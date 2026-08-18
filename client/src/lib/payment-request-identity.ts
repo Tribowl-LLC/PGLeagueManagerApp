@@ -64,3 +64,21 @@ export async function recoverPaymentIntent(requestKey: string): Promise<Response
     body: JSON.stringify({}),
   });
 }
+
+/**
+ * Reconcile a durable payment operation when the request carrying a provider
+ * token is lost to a network failure. The request key is the only recovery
+ * input; callers must not mint or tokenize a replacement payment here.
+ */
+export async function paymentRequestWithRecovery(
+  requestKey: string,
+  request: () => Promise<Response>,
+): Promise<Response> {
+  try {
+    return await request();
+  } catch (error) {
+    const recovered = await recoverPaymentIntent(requestKey).catch(() => null);
+    if (!recovered) throw error;
+    return recovered;
+  }
+}

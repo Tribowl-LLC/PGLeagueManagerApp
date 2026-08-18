@@ -9,12 +9,14 @@ type Quote = { rows: QuoteRow[]; fingerprint: string };
 
 export function InteractiveOccurrenceSelector({
   leagueId,
+  organizationId,
   amountMinor,
   bowlerIds,
   enabled,
   onChange,
 }: {
   leagueId: number;
+  organizationId?: number;
   amountMinor: number;
   bowlerIds: number[];
   enabled: boolean;
@@ -23,14 +25,14 @@ export function InteractiveOccurrenceSelector({
   const [selections, setSelections] = useState<Record<string, number>>({});
   const payees = useMemo(() => [...new Set(bowlerIds)].sort((a, b) => a - b), [bowlerIds]);
   const query = useQuery<Quote | null>({
-    queryKey: ["/api/payments-provider/payments/quote", leagueId, amountMinor, payees],
+    queryKey: ["/api/payments-provider/payments/quote", organizationId, leagueId, amountMinor, payees],
     enabled: enabled && amountMinor > 0 && payees.length > 0,
     staleTime: 0,
     retry: false,
     queryFn: async () => {
       const response = await csrfFetch("/api/payments-provider/payments/quote", {
         method: "POST",
-        body: JSON.stringify({ leagueId, amountMinor, payees: payees.map((bowlerId) => ({ bowlerId })) }),
+        body: JSON.stringify({ leagueId, ...(organizationId ? { organizationId } : {}), amountMinor, payees: payees.map((bowlerId) => ({ bowlerId })) }),
       });
       const body = await response.json() as { error?: { code?: string; message?: string } } & Partial<Quote>;
       if (!response.ok && body.error?.code === "OCCURRENCE_ALLOCATION_UNAVAILABLE") return null;

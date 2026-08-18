@@ -8,9 +8,11 @@ import { ErrorBoundary } from "@/components/error-boundary";
 import { BowlerPaymentTable } from "@/components/bowler-payment-table";
 import { BowlerPaymentDialog } from "@/components/bowler-payment-dialog";
 import { LeagueSwitcherSheet } from "@/components/league-switcher-sheet";
+import { InteractiveOccurrenceSelector } from "@/components/interactive-occurrence-selector";
 
 interface PaymentHistoryContentProps {
   bowlerName: string;
+  bowlerId: number;
   league: League;
   leagueId: number;
   hasMultipleLeagues: boolean;
@@ -58,10 +60,15 @@ interface PaymentHistoryContentProps {
   receiptEmail: string;
   onReceiptEmailChange: (email: string) => void;
   bowlerPayments: Payment[];
+  occurrenceAmountMinor?: number;
+  occurrenceAllocations: { obligationId: string; amountMinor: number }[];
+  occurrenceQuoteFingerprint?: string;
+  onOccurrenceChange: (selections: { obligationId: string; amountMinor: number }[], fingerprint?: string) => void;
 }
 
 export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
   bowlerName,
+  bowlerId,
   league,
   leagueId,
   hasMultipleLeagues,
@@ -109,6 +116,8 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
   receiptEmail,
   onReceiptEmailChange,
   bowlerPayments,
+  occurrenceAmountMinor,
+  onOccurrenceChange,
 }) => {
   return (
     <BowlerLayout bowlerName={bowlerName} leagueName={league.name} currentLeagueId={leagueId}>
@@ -148,6 +157,15 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
         </ErrorBoundary>
 
         <ErrorBoundary level="section">
+          {payDialogType && occurrenceAmountMinor && (
+            <InteractiveOccurrenceSelector
+              leagueId={league.id}
+              amountMinor={occurrenceAmountMinor}
+              bowlerIds={[bowlerId]}
+              enabled
+              onChange={onOccurrenceChange}
+            />
+          )}
           <BowlerPaymentDialog
             payDialogType={payDialogType}
             onClose={onCloseDialog}

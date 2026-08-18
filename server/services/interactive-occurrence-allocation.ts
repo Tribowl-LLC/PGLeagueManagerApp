@@ -258,6 +258,7 @@ async function lockCanonicalEvidence(
     obligationId: paymentOccurrenceAllocations.obligationId,
     amountMinor: paymentOccurrenceAllocations.amountMinor,
     paymentStatus: payments.status,
+    paymentOperationId: payments.paymentOperationId,
   }).from(paymentOccurrenceAllocations)
     .innerJoin(payments, eq(payments.id, paymentOccurrenceAllocations.paymentId))
     .where(and(
@@ -281,8 +282,14 @@ async function lockCanonicalEvidence(
   const byObligation = new Map<string, { allocated: number; reserved: number; review: boolean }>();
   for (const row of existing) {
     const prior = byObligation.get(row.obligationId) ?? { allocated: 0, reserved: 0, review: false };
-    if (row.paymentStatus === "paid") prior.allocated += row.amountMinor;
-    else prior.review = true;
+    // An exact replay of a completed operation must see its own settled
+    // amount restored while re-validating the immutable supplement. Other
+    // operations remain conservation evidence and cannot be excluded.
+    if (row.paymentStatus === "paid") {
+      if (row.paymentOperationId !== excludeOperationId) prior.allocated += row.amountMinor;
+    } else {
+      prior.review = true;
+    }
     byObligation.set(row.obligationId, prior);
   }
   for (const row of pending) {

@@ -13,7 +13,8 @@ import type { League, Bowler, Payment, SavedCard, ApiResponse, BowlerDetailsResp
 import { PaymentStatusView } from "@/components/payment-status-view";
 import { useBowlerPaymentSubmit } from "@/hooks/use-bowler-payment-submit";
 import type { AutopaySetupQuote } from "@/lib/autopay-setup";
-import { beginPaymentIntent, clearPaymentIntent, paymentRequestHeaders } from "@/lib/payment-request-identity";
+import { beginPaymentIntent, clearPaymentIntent, paymentRequestHeaders, paymentRequestWithRecovery } from "@/lib/payment-request-identity";
+import { buildInteractiveOccurrenceFields, interactiveIntentSemanticKey } from "@/lib/interactive-payment-request";
 
 interface BowlerLinkRow {
   id: number;
@@ -292,11 +293,16 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
       const totalPayees = 1 + additionalBowlerIds.length;
       const totalAmount = perAmount * totalPayees;
       const paymentScope = isCombined
-        ? `bowler-wallet:combined:${league.id}:${totalAmount}:${additionalBowlerIds.join(',')}`
-        : `bowler-wallet:${league.id}:${targetBowlerId}:${perAmount}`;
+        ? `bowler-wallet:combined:${league.id}:${totalAmount}:${additionalBowlerIds.join(',')}:${interactiveIntentSemanticKey(occurrenceAllocations, occurrenceQuoteFingerprint)}`
+        : `bowler-wallet:${league.id}:${targetBowlerId}:${perAmount}:${interactiveIntentSemanticKey(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
       const requestKey = walletRequestKeyRef.current ?? beginPaymentIntent(paymentScope);
-      const response = isCombined
-        ? await csrfFetch('/api/payments-provider/combined-payments', {
+      const occurrenceFields = buildInteractiveOccurrenceFields(
+        occurrenceAllocations,
+        occurrenceQuoteFingerprint,
+        paymentMode !== 'autopay',
+      );
+      const response = await paymentRequestWithRecovery(requestKey, () => isCombined
+        ? csrfFetch('/api/payments-provider/combined-payments', {
             method: 'POST',
             headers: paymentRequestHeaders(requestKey),
             body: JSON.stringify({
@@ -309,9 +315,10 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
                 { bowlerId: bowler.id, amount: perAmount },
                 ...additionalBowlerIds.map((id) => ({ bowlerId: id, amount: perAmount })),
               ],
+              ...occurrenceFields,
             }),
           })
-        : await csrfFetch('/api/payments-provider/payments', {
+        : csrfFetch('/api/payments-provider/payments', {
             method: 'POST',
             headers: paymentRequestHeaders(requestKey),
             body: JSON.stringify({
@@ -321,8 +328,9 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
               leagueId: league.id,
               storeCard: false,
               sourceKind: 'wallet',
+              ...occurrenceFields,
             }),
-          });
+          }));
       const amount = isCombined ? totalAmount : perAmount;
       const data = await response.json();
       if (!response.ok) {
@@ -367,17 +375,17 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
     } finally {
       setIsSubmitting(false);
     }
-  }, [bowler.id, league.id, targetBowlerId, additionalBowlerIds, calculateTotalAmount, toast, setIsSubmitting, setShowPaymentSetup]);
+  }, [bowler.id, league.id, targetBowlerId, additionalBowlerIds, calculateTotalAmount, toast, setIsSubmitting, setShowPaymentSetup, paymentMode, occurrenceAllocations, occurrenceQuoteFingerprint]);
 
   const beginWalletPayment = useCallback(() => {
     const perAmount = calculateTotalAmount();
     const isCombined = additionalBowlerIds.length > 0;
     const totalAmount = perAmount * (1 + additionalBowlerIds.length);
     const paymentScope = isCombined
-      ? `bowler-wallet:combined:${league.id}:${totalAmount}:${additionalBowlerIds.join(',')}`
-      : `bowler-wallet:${league.id}:${targetBowlerId}:${perAmount}`;
+    ? `bowler-wallet:combined:${league.id}:${totalAmount}:${additionalBowlerIds.join(',')}:${interactiveIntentSemanticKey(occurrenceAllocations, occurrenceQuoteFingerprint)}`
+    : `bowler-wallet:${league.id}:${targetBowlerId}:${perAmount}:${interactiveIntentSemanticKey(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
     walletRequestKeyRef.current = beginPaymentIntent(paymentScope);
-  }, [additionalBowlerIds, calculateTotalAmount, league.id, targetBowlerId]);
+  }, [additionalBowlerIds, calculateTotalAmount, league.id, targetBowlerId, occurrenceAllocations, occurrenceQuoteFingerprint]);
 
   const {
     applePayAvailable,

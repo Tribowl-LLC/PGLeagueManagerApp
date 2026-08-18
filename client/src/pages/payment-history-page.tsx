@@ -26,7 +26,8 @@ import { BowlerErrorView } from "./payment-history-page/bowler-error-view";
 import { NoLeaguesView } from "./payment-history-page/no-leagues-view";
 import { NoLeagueView } from "./payment-history-page/no-league-view";
 import { PaymentHistoryContent } from "./payment-history-page/payment-history-content";
-import { beginPaymentIntent, clearPaymentIntent, paymentRequestHeaders } from "@/lib/payment-request-identity";
+import { beginPaymentIntent, clearPaymentIntent, paymentRequestHeaders, paymentRequestWithRecovery } from "@/lib/payment-request-identity";
+import { buildInteractiveOccurrenceFields, interactiveIntentSemanticKey } from "@/lib/interactive-payment-request";
 
 export default function PaymentHistoryPage() {
   const { toast } = useToast();
@@ -43,6 +44,8 @@ export default function PaymentHistoryPage() {
   const [selectedSavedCardId, setSelectedSavedCardId] = useState<string>('');
   const [storeCard, setStoreCard] = useState(false);
   const [receiptEmail, setReceiptEmail] = useState('');
+  const [occurrenceAllocations, setOccurrenceAllocations] = useState<{ obligationId: string; amountMinor: number }[]>([]);
+  const [occurrenceQuoteFingerprint, setOccurrenceQuoteFingerprint] = useState<string | undefined>();
   const walletRequestKeyRef = useRef<string | null>(null);
 
   const [isWalletProcessing, setIsWalletProcessing] = useState(false);
@@ -207,9 +210,9 @@ export default function PaymentHistoryPage() {
     const overrideEmail = !bowlerEmail && trimmedReceiptEmail ? trimmedReceiptEmail : undefined;
     try {
       setIsWalletProcessing(true);
-      const paymentScope = `history-wallet:${bowlerId}:${leagueId}:${dialogAmountCents}`;
+      const paymentScope = `history-wallet:${bowlerId}:${leagueId}:${dialogAmountCents}:${interactiveIntentSemanticKey(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
       const requestKey = walletRequestKeyRef.current ?? beginPaymentIntent(paymentScope);
-      const response = await csrfFetch('/api/payments-provider/payments', {
+      const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch('/api/payments-provider/payments', {
         method: 'POST',
         headers: paymentRequestHeaders(requestKey),
         body: JSON.stringify({
@@ -220,8 +223,9 @@ export default function PaymentHistoryPage() {
           storeCard: false,
           sourceKind: 'wallet',
           ...(overrideEmail ? { buyerEmail: overrideEmail } : {}),
+          ...buildInteractiveOccurrenceFields(occurrenceAllocations, occurrenceQuoteFingerprint),
         }),
-      });
+      }));
       const data = await response.json();
       if (!response.ok) {
         throw makeApiError(data, response.status, `Payment failed (HTTP ${response.status})`);
@@ -255,14 +259,14 @@ export default function PaymentHistoryPage() {
     } finally {
       setIsWalletProcessing(false);
     }
-  }, [bowlerId, leagueId, dialogAmountCents, payDialogType, toast, bowlerEmail, receiptEmail, navigate, league?.locationId]);
+  }, [bowlerId, leagueId, dialogAmountCents, payDialogType, toast, bowlerEmail, receiptEmail, navigate, league?.locationId, occurrenceAllocations, occurrenceQuoteFingerprint]);
 
   const beginWalletPayment = useCallback(() => {
     if (!bowlerId || !leagueId || !dialogAmountCents) return;
     walletRequestKeyRef.current = beginPaymentIntent(
-      `history-wallet:${bowlerId}:${leagueId}:${dialogAmountCents}`,
+      `history-wallet:${bowlerId}:${leagueId}:${dialogAmountCents}:${interactiveIntentSemanticKey(occurrenceAllocations, occurrenceQuoteFingerprint)}`,
     );
-  }, [bowlerId, dialogAmountCents, leagueId]);
+  }, [bowlerId, dialogAmountCents, leagueId, occurrenceAllocations, occurrenceQuoteFingerprint]);
 
   const {
     applePayAvailable,
@@ -318,9 +322,9 @@ export default function PaymentHistoryPage() {
       const overrideEmail = !bowlerEmail && trimmedReceiptEmail ? trimmedReceiptEmail : undefined;
 
       if (cardMode === 'saved' && selectedSavedCardId) {
-        const paymentScope = `history:${bowlerId}:${leagueId}:${dialogAmount}:saved`;
+        const paymentScope = `history:${bowlerId}:${leagueId}:${dialogAmount}:saved:${interactiveIntentSemanticKey(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
         const requestKey = beginPaymentIntent(paymentScope);
-        const response = await csrfFetch('/api/payments-provider/payments', {
+          const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch('/api/payments-provider/payments', {
           method: 'POST',
           headers: paymentRequestHeaders(requestKey),
           body: JSON.stringify({
@@ -331,8 +335,9 @@ export default function PaymentHistoryPage() {
             storeCard: false,
             sourceKind: 'saved_card',
             ...(overrideEmail ? { buyerEmail: overrideEmail } : {}),
+            ...buildInteractiveOccurrenceFields(occurrenceAllocations, occurrenceQuoteFingerprint),
           }),
-        });
+          }));
         const responseData = await response.json();
         if (!response.ok) {
           throw makeApiError(responseData, response.status, 'Payment failed');
@@ -342,10 +347,10 @@ export default function PaymentHistoryPage() {
         }
         clearPaymentIntent(paymentScope);
       } else {
-        const paymentScope = `history:${bowlerId}:${leagueId}:${dialogAmount}:new:${storeCard}`;
+        const paymentScope = `history:${bowlerId}:${leagueId}:${dialogAmount}:new:${storeCard}:${interactiveIntentSemanticKey(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
         const requestKey = beginPaymentIntent(paymentScope);
         if (!card) throw new Error('Please enter your card details.');
-        await createPayment(dialogAmount, card, bowlerId, leagueId, storeCard, overrideEmail, requestKey);
+        await createPayment(dialogAmount, card, bowlerId, leagueId, storeCard, overrideEmail, requestKey, occurrenceAllocations, occurrenceQuoteFingerprint);
         clearPaymentIntent(paymentScope);
         if (storeCard) {
           queryClient.invalidateQueries({ queryKey: [`/api/payments-provider/cards/${bowlerId}`] });
@@ -370,6 +375,11 @@ export default function PaymentHistoryPage() {
       setIsSubmitting(false);
     }
   };
+
+  const handleOccurrenceChange = useCallback((next: { obligationId: string; amountMinor: number }[], fingerprint?: string) => {
+    setOccurrenceAllocations(next);
+    setOccurrenceQuoteFingerprint(fingerprint);
+  }, []);
 
   if (loadingUser || loadingBowlerDetails || (!hasPaymentsFromDetails && loadingPayments)) {
     return (
@@ -413,6 +423,7 @@ export default function PaymentHistoryPage() {
   return (
     <PaymentHistoryContent
       bowlerName={bowlerName}
+      bowlerId={bowlerId ?? 0}
       league={league}
       leagueId={leagueId}
       hasMultipleLeagues={hasMultipleLeagues}
@@ -460,6 +471,10 @@ export default function PaymentHistoryPage() {
       receiptEmail={receiptEmail}
       onReceiptEmailChange={setReceiptEmail}
       bowlerPayments={bowlerPayments}
+      occurrenceAmountMinor={dialogAmountCents}
+      occurrenceAllocations={occurrenceAllocations}
+      occurrenceQuoteFingerprint={occurrenceQuoteFingerprint}
+      onOccurrenceChange={handleOccurrenceChange}
     />
   );
 }
