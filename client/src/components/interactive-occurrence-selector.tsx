@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { formatInTimeZone } from "date-fns-tz";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { csrfFetch } from "@/lib/queryClient";
 
@@ -8,11 +9,37 @@ type QuoteRow = { obligationId: string; bowlerId: number; amountMinor: number; o
 type Quote = { rows: QuoteRow[]; fingerprint: string };
 export type InteractiveOccurrenceReadiness = 'loading' | 'ready' | 'empty' | 'error' | 'legacy' | 'disabled';
 
+const MAX_SAFE_MINOR_UNITS = Number.MAX_SAFE_INTEGER;
+
+/** Parse a user-entered dollar amount into exact positive minor units. */
+export function parseCurrencyToMinorUnits(value: string): number | null {
+  const trimmed = value.trim();
+  const match = /^(\d+)(?:\.(\d{0,2}))?$/.exec(trimmed);
+  if (!match) return null;
+  try {
+    const minor = BigInt(match[1]) * 100n + BigInt((match[2] ?? "").padEnd(2, "0") || "0");
+    if (minor <= 0n || minor > BigInt(MAX_SAFE_MINOR_UNITS)) return null;
+    return Number(minor);
+  } catch {
+    return null;
+  }
+}
+
+export function formatMinorUnitsAsDollars(amountMinor: number): string {
+  const safeAmount = Number.isSafeInteger(amountMinor) && amountMinor >= 0 ? amountMinor : 0;
+  return `${Math.floor(safeAmount / 100).toLocaleString("en-US")}.${String(safeAmount % 100).padStart(2, "0")}`;
+}
+
+export function formatOccurrenceDueDate(value: string, timezone: string): string {
+  return formatInTimeZone(new Date(value), timezone, "MMM d, yyyy");
+}
+
 export function InteractiveOccurrenceSelector({
   leagueId,
   organizationId,
   amountMinor,
   bowlerIds,
+  timezone,
   enabled,
   onChange,
   onReadinessChange,
@@ -21,6 +48,7 @@ export function InteractiveOccurrenceSelector({
   organizationId?: number;
   amountMinor: number;
   bowlerIds: number[];
+  timezone: string;
   enabled: boolean;
   onChange: (selections: Selection[], fingerprint?: string) => void;
   onReadinessChange?: (readiness: InteractiveOccurrenceReadiness) => void;
@@ -35,6 +63,7 @@ export function InteractiveOccurrenceSelector({
     queryFn: async () => {
       const response = await csrfFetch("/api/payments-provider/payments/quote", {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ leagueId, ...(organizationId ? { organizationId } : {}), amountMinor, payees: payees.map((bowlerId) => ({ bowlerId })) }),
       });
       const body = await response.json() as { error?: { code?: string; message?: string } } & Partial<Quote>;
@@ -87,12 +116,16 @@ export function InteractiveOccurrenceSelector({
         return (
           <label key={row.obligationId} className="flex items-center gap-3 text-sm">
             <input type="checkbox" checked={selected > 0} onChange={(event) => setSelections((current) => ({ ...current, ...(event.target.checked ? { [row.obligationId]: Math.min(row.outstandingMinor, amountMinor) } : (() => { const next = { ...current }; delete next[row.obligationId]; return next; })()) }))} />
-            <span className="flex-1">Bowler {row.bowlerId} · {row.dueAt ? new Date(row.dueAt).toLocaleDateString() : "No due date"} · outstanding ${(row.outstandingMinor / 100).toFixed(2)}</span>
-            {selected > 0 && <input aria-label={`Amount for obligation ${row.obligationId}`} className="w-24 rounded border px-2 py-1" type="number" min={1} max={row.outstandingMinor} value={selected} onChange={(event) => setSelections((current) => ({ ...current, [row.obligationId]: Math.min(row.outstandingMinor, Math.max(1, Number(event.target.value) || 1)) }))} />}
+            <span className="flex-1">Bowler {row.bowlerId} · {row.dueAt ? formatOccurrenceDueDate(row.dueAt, timezone) : "No due date"} · outstanding ${formatMinorUnitsAsDollars(row.outstandingMinor)}</span>
+            {selected > 0 && <input aria-label={`Amount for obligation ${row.obligationId}`} className="w-24 rounded border px-2 py-1" type="text" inputMode="decimal" maxLength={24} value={formatMinorUnitsAsDollars(selected)} onChange={(event) => setSelections((current) => {
+              const parsed = parseCurrencyToMinorUnits(event.target.value);
+              if (parsed === null) return current;
+              return { ...current, [row.obligationId]: Math.min(parsed, row.outstandingMinor, amountMinor) };
+            })} />}
           </label>
         );
       })}
-      <p className={selectedTotal === amountMinor ? "text-sm text-muted-foreground" : "text-sm text-destructive"} data-testid="occurrence-quote-total">Selected ${(selectedTotal / 100).toFixed(2)} of ${(amountMinor / 100).toFixed(2)}</p>
+      <p className={selectedTotal === amountMinor ? "text-sm text-muted-foreground" : "text-sm text-destructive"} data-testid="occurrence-quote-total">Selected ${formatMinorUnitsAsDollars(selectedTotal)} of ${formatMinorUnitsAsDollars(amountMinor)}</p>
     </section>
   );
 }

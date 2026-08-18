@@ -1,5 +1,6 @@
 import { FC, RefObject, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { DEFAULT_TIMEZONE } from "@shared/schema";
 import type { League, SavedCard } from "@shared/schema";
 import { PaymentCustomAmount } from "@/components/payment-custom-amount";
 import { PaymentSetupCardInput } from "@/components/payment-setup-card-input";
@@ -238,6 +239,7 @@ export const PaymentSetupForm: FC<PaymentSetupFormProps> = ({
           {paymentMode !== 'autopay' && (
             <InteractiveOccurrenceSelector
               leagueId={league.id}
+              timezone={league.timezone || DEFAULT_TIMEZONE}
               amountMinor={baseAmount * (hasCombinedPicks ? 1 + additionalBowlerIds.length : 1)}
               bowlerIds={hasCombinedPicks ? [selfBowler.id, ...additionalBowlerIds] : [targetBowlerId]}
               enabled

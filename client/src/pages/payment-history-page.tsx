@@ -30,6 +30,7 @@ import { PaymentHistoryContent } from "./payment-history-page/payment-history-co
 import { beginPaymentIntent, clearPaymentIntent, paymentRequestHeaders, paymentRequestWithRecovery } from "@/lib/payment-request-identity";
 import { buildInteractiveOccurrenceFields, interactiveIntentScopeSuffix } from "@/lib/interactive-payment-request";
 import { resolveInteractiveFinancialRead } from "@/lib/financial-read-contract";
+import { invalidatePaymentHistoryFinancials, paymentHistoryFinancialQueryKey } from "@/lib/payment-history-financial-query";
 import type { InteractiveOccurrenceReadiness } from "@/components/interactive-occurrence-selector";
 
 export default function PaymentHistoryPage() {
@@ -177,7 +178,7 @@ export default function PaymentHistoryPage() {
   // available, while selector state is reset whenever the dialog intent or
   // league changes so an old obligation set cannot ride into a new charge.
   const { data: canonicalFinancialResponse, isLoading: loadingFinancialRead, error: financialReadError } = useQuery<ApiResponse<FinancialReadContract>>({
-    queryKey: ["/api/financials/leagues", leagueId, "due-past-due", bowlerId],
+    queryKey: paymentHistoryFinancialQueryKey(leagueId ?? 0, bowlerId ?? 0),
     queryFn: async ({ signal }) => {
       const response = await fetch(`/api/financials/leagues/${leagueId}/due-past-due?bowlerId=${bowlerId}`, {
         credentials: "include",
@@ -284,6 +285,7 @@ export default function PaymentHistoryPage() {
       } else {
         toast({ title: "Payment Successful", description: `${walletLabel} payment of ${formatCurrency(dialogAmountCents)} ${dialogLabel} completed.` });
       }
+      await invalidatePaymentHistoryFinancials(queryClient, leagueId, bowlerId);
       setPayDialogType(null);
       queryClient.invalidateQueries({ queryKey: ["/api/payments", { bowlerId, leagueId }] });
       queryClient.invalidateQueries({ queryKey: [`/api/bowlers/${bowlerId}/details`] });
@@ -413,6 +415,7 @@ export default function PaymentHistoryPage() {
       }
 
       toast({ title: "Payment Successful", description: `${formatCurrency(dialogAmount)} ${dialogLabel} has been paid.` });
+      await invalidatePaymentHistoryFinancials(queryClient, leagueId, bowlerId);
       setPayDialogType(null);
       queryClient.invalidateQueries({ queryKey: ["/api/payments", { bowlerId, leagueId }] });
       queryClient.invalidateQueries({ queryKey: [`/api/bowlers/${bowlerId}/details`] });

@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BowlerPaymentDialog } from "@/components/bowler-payment-dialog";
-import { InteractiveOccurrenceSelector } from "@/components/interactive-occurrence-selector";
+import { InteractiveOccurrenceSelector, formatMinorUnitsAsDollars, parseCurrencyToMinorUnits } from "@/components/interactive-occurrence-selector";
 import { PaymentSubmitSection } from "@/components/payment-submit-section";
 import { PaymentFormActions } from "@/components/payment-form-actions";
 
@@ -43,7 +43,7 @@ describe("history payment dialog occurrence selector", () => {
           occurrenceReadiness="ready"
           initializeCard={vi.fn()}
           cleanupCard={vi.fn()}
-          occurrenceSelector={<InteractiveOccurrenceSelector leagueId={11} amountMinor={2000} bowlerIds={[7]} enabled onChange={onChange} />}
+          occurrenceSelector={<InteractiveOccurrenceSelector leagueId={11} timezone="America/Chicago" amountMinor={2000} bowlerIds={[7]} enabled onChange={onChange} />}
         />
       </QueryClientProvider>,
     );
@@ -52,6 +52,11 @@ describe("history payment dialog occurrence selector", () => {
     await waitFor(() => expect(onChange).toHaveBeenLastCalledWith([
       { obligationId: "11111111-1111-4111-8111-111111111111", amountMinor: 2000 },
     ], `lvpayquote:v1:${"a".repeat(64)}`));
+    expect(csrfFetchMock).toHaveBeenCalledWith("/api/payments-provider/payments/quote", expect.objectContaining({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ leagueId: 11, amountMinor: 2000, payees: [{ bowlerId: 7 }] }),
+    }));
     await userEvent.click(screen.getByRole("button", { name: /pay \$20\.00/i }));
     expect(onSubmit).toHaveBeenCalledOnce();
   });
@@ -63,6 +68,7 @@ describe("history payment dialog occurrence selector", () => {
       <QueryClientProvider client={client}>
         <InteractiveOccurrenceSelector
           leagueId={11}
+          timezone="America/Chicago"
           amountMinor={2000}
           bowlerIds={[7]}
           enabled
@@ -74,6 +80,60 @@ describe("history payment dialog occurrence selector", () => {
     await waitFor(() => expect(onReadinessChange).toHaveBeenLastCalledWith('empty'));
     await userEvent.click(await screen.findByRole('checkbox'));
     await waitFor(() => expect(onReadinessChange).toHaveBeenLastCalledWith('ready'));
+  });
+
+  it("keeps selection values in minor units while displaying and accepting dollars exactly", async () => {
+    expect(formatMinorUnitsAsDollars(2000)).toBe("20.00");
+    expect(parseCurrencyToMinorUnits("10.00")).toBe(1000);
+    expect(parseCurrencyToMinorUnits("10.001")).toBeNull();
+    expect(parseCurrencyToMinorUnits("0.00")).toBeNull();
+    const onChange = vi.fn();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <InteractiveOccurrenceSelector
+          leagueId={11}
+          timezone="America/Chicago"
+          amountMinor={2000}
+          bowlerIds={[7]}
+          enabled
+          onChange={onChange}
+        />
+      </QueryClientProvider>,
+    );
+    await userEvent.click(await screen.findByRole("checkbox"));
+    const input = await screen.findByRole("textbox", { name: /amount for obligation/i });
+    expect(input).toHaveValue("20.00");
+    fireEvent.change(input, { target: { value: "10.00" } });
+    await waitFor(() => expect(onChange).toHaveBeenLastCalledWith([
+      { obligationId: "11111111-1111-4111-8111-111111111111", amountMinor: 1000 },
+    ], `lvpayquote:v1:${"a".repeat(64)}`));
+    expect(input).toHaveValue("10.00");
+    fireEvent.change(input, { target: { value: "10.001" } });
+    expect(input).toHaveValue("10.00");
+    fireEvent.change(input, { target: { value: "30.00" } });
+    expect(input).toHaveValue("20.00");
+  });
+
+  it("formats due dates in the configured league timezone", async () => {
+    csrfFetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      rows: [{ obligationId: "11111111-1111-4111-8111-111111111111", bowlerId: 7, amountMinor: 2000, outstandingMinor: 2000, dueAt: "2030-01-01T01:30:00.000Z" }],
+      fingerprint: `lvpayquote:v1:${"a".repeat(64)}`,
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <InteractiveOccurrenceSelector
+          leagueId={11}
+          timezone="America/Los_Angeles"
+          amountMinor={2000}
+          bowlerIds={[7]}
+          enabled
+          onChange={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText(/Dec 31, 2029/)).toBeInTheDocument();
   });
 
   it("disables the payment submit control while canonical selection is incomplete", () => {
@@ -106,6 +166,7 @@ describe("history payment dialog occurrence selector", () => {
       <QueryClientProvider client={client}>
         <InteractiveOccurrenceSelector
           leagueId={11}
+          timezone="America/Chicago"
           amountMinor={2000}
           bowlerIds={[7]}
           enabled

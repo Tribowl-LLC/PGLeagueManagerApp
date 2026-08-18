@@ -1,5 +1,6 @@
 import { FC, RefObject } from "react";
 import { ChevronDown } from "lucide-react";
+import { DEFAULT_TIMEZONE } from "@shared/schema";
 import type { League, Payment, SavedCard, BowlerLeague } from "@shared/schema";
 import type { DoublePayStatus } from "@/lib/financial-utils";
 import { BowlerLayout } from "@/components/bowler-layout";
@@ -195,6 +196,7 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
               <InteractiveOccurrenceSelector
                 key={`${payDialogType}:${occurrenceAmountMinor}`}
                 leagueId={league.id}
+                timezone={league.timezone || DEFAULT_TIMEZONE}
                 amountMinor={occurrenceAmountMinor}
                 bowlerIds={[bowlerId]}
                 enabled

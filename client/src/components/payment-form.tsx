@@ -13,7 +13,7 @@ import { usePaymentProvider } from "@/hooks/use-payment-provider";
 import { useWalletPayments } from "@/hooks/use-wallet-payments";
 import { useSavedCardDefault } from "@/hooks/use-saved-card-default";
 import { Form } from "@/components/ui/form";
-import { insertPaymentSchema, DEFAULT_WEEKLY_FEE_CENTS } from "@shared/schema";
+import { insertPaymentSchema, DEFAULT_TIMEZONE, DEFAULT_WEEKLY_FEE_CENTS } from "@shared/schema";
 import type { InsertPaymentInput, InsertPayment, Bowler, League, User, ApiResponse } from "@shared/schema";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle } from "lucide-react";
@@ -412,6 +412,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
               <InteractiveOccurrenceSelector
                 leagueId={leagueInfo.id}
                 organizationId={leagueInfo.organizationId ?? undefined}
+                timezone={leagueInfo.timezone || DEFAULT_TIMEZONE}
                 amountMinor={watchedAmount || 0}
                 bowlerIds={[selectedBowlerId]}
                 enabled={open}
