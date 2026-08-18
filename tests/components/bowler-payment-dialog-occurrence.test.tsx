@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BowlerPaymentDialog } from "@/components/bowler-payment-dialog";
 import { InteractiveOccurrenceSelector } from "@/components/interactive-occurrence-selector";
 import { PaymentSubmitSection } from "@/components/payment-submit-section";
+import { PaymentFormActions } from "@/components/payment-form-actions";
 
 const { csrfFetchMock } = vi.hoisted(() => ({ csrfFetchMock: vi.fn() }));
 
@@ -115,5 +116,45 @@ describe("history payment dialog occurrence selector", () => {
     );
     await waitFor(() => expect(onReadinessChange).toHaveBeenLastCalledWith("legacy"));
     expect(screen.queryByTestId("interactive-occurrence-selector")).not.toBeInTheDocument();
+  });
+
+  it("does not let F2 readiness gate weekly auto-pay, which remains F3-owned", () => {
+    render(
+      <PaymentSubmitSection
+        league={{ paymentMode: 'weekly' }}
+        selectedSchedule="weekly"
+        fixedAmountType="remaining"
+        selectedWeeks={1}
+        calculateTotalAmount={() => 2000}
+        isSubmitting={false}
+        cardMode="saved"
+        isInitialized
+        selectedSavedCardId="card-1"
+        occurrenceReadiness="disabled"
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /set up automatic payments/i })).not.toBeDisabled();
+  });
+
+  it("fails closed in admin card actions until canonical readiness is verified", () => {
+    render(
+      <PaymentFormActions
+        onCancel={vi.fn()}
+        isSubmitting={false}
+        isWalletProcessing={false}
+        paymentType="credit_card"
+        providerNotFullyConfigured={false}
+        cardMode="saved"
+        isSquareReady
+        selectedSavedCardId="card-1"
+        selectedBowlerId={7}
+        bowlerHasEmail
+        receiptEmail=""
+        occurrenceReadiness="loading"
+      />,
+    );
+    expect(screen.getByRole('button', { name: /submit payment/i })).toBeDisabled();
   });
 });

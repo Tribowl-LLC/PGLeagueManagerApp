@@ -43,6 +43,8 @@ import {
 } from "@shared/schema";
 import { deleteOrganization } from "../../server/storage/organizations";
 import { activateCanonicalFinancials, getCanonicalActivationSource, readCanonicalDuePastDue } from "../../server/services/canonical-due-past-due";
+import { quoteInteractiveOccurrenceAllocations } from "../../server/services/interactive-occurrence-allocation";
+import { prepareInteractivePaymentOperation } from "../../server/services/interactive-payment-operation-preparation";
 import { buildCanonicalScheduleCommandFingerprint, cancelOccurrence } from "../../server/services/canonical-occurrence-transactions";
 import { getTestDb } from "../setup/test-db";
 import { apiDelete, login, TEST_ADMIN_EMAIL, TEST_ADMIN_PASSWORD } from "../helpers";
@@ -259,6 +261,66 @@ describe("F1 successful canonical activation and durable retry", () => {
     const [otherActor] = await db.insert(users).values({ email: `f1-other-actor-${Date.now()}@example.test`, password: "test", name: "F1 other actor", role: "org_admin", organizationId: fixture.organizationId }).returning({ id: users.id });
     await expect(activateCanonicalFinancials({ ...input, actorUserId: otherActor.id })).rejects.toMatchObject({ code: "idempotency_conflict" });
     expect(await db.select().from(financialActivations).where(and(eq(financialActivations.organizationId, fixture.organizationId), eq(financialActivations.leagueId, fixture.leagueId)))).toHaveLength(1);
+  });
+
+  it("serializes distinct F2 preparations against one obligation reservation", async () => {
+    const fixture = await operationalFixture("upfront", 3);
+    const source = await getCanonicalActivationSource(fixture);
+    const f2ReservationCommand = ["f2", "reservation", "race"].join("-");
+    await activateCanonicalFinancials({
+      ...fixture,
+      commandKey: f2ReservationCommand,
+      sourceFingerprint: source.sourceFingerprint,
+      payingLineupSize: 3 as const,
+      responsibilities: selections(fixture, 3),
+    });
+    expect((await getCanonicalActivationSource(fixture)).sourceFingerprint).toBe(source.sourceFingerprint);
+    const [obligation] = await db.select().from(bowlerOccurrenceObligations)
+      .where(and(eq(bowlerOccurrenceObligations.organizationId, fixture.organizationId), eq(bowlerOccurrenceObligations.leagueId, fixture.leagueId)));
+    if (!obligation) throw new Error("F2 reservation obligation fixture is missing");
+    const quote = await quoteInteractiveOccurrenceAllocations({
+      organizationId: fixture.organizationId,
+      leagueId: fixture.leagueId,
+      amountMinor: obligation.amountMinor,
+      currency: obligation.currency,
+      allowedBowlerIds: [obligation.bowlerId],
+    });
+    const input = (requestKey: string) => ({
+      organizationId: fixture.organizationId,
+      authorizingUserId: fixture.actorUserId,
+      requestKey,
+      amountMinor: obligation.amountMinor,
+      currency: obligation.currency,
+      providerName: "square",
+      leagueId: fixture.leagueId,
+      locationId: fixture.locationId,
+      providerLocationId: "f2-reservation-location",
+      payerBowlerId: obligation.bowlerId,
+      requestKind: "direct" as const,
+      sourceId: `cnon:f2-race-${requestKey}`,
+      customerId: null,
+      buyerEmail: "f2-race@example.test",
+      storeCard: false,
+      sourceKind: "new_card" as const,
+      weekOf: "2038-02-01T19:00:00.000Z",
+      combined: false,
+      allocations: [{ allocationIndex: 0, bowlerId: obligation.bowlerId, amountMinor: obligation.amountMinor, lineageAmountMinor: null, prizeFundAmountMinor: null, weekOf: "2038-02-01T19:00:00.000Z", notes: null, paidByUserId: fixture.actorUserId }],
+      lineItems: [],
+      occurrenceSelections: [{ obligationId: obligation.id, amountMinor: obligation.amountMinor }],
+      occurrenceQuoteFingerprint: quote.fingerprint,
+    });
+    const results = await Promise.allSettled([
+      prepareInteractivePaymentOperation(input("f2-race-request-a")),
+      prepareInteractivePaymentOperation(input("f2-race-request-b")),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect(await db.select().from(paymentOperationOccurrenceSnapshots)
+      .where(eq(paymentOperationOccurrenceSnapshots.organizationId, fixture.organizationId))).toHaveLength(1);
+    expect(await db.select().from(paymentOperationOccurrenceSnapshotAllocations)
+      .where(eq(paymentOperationOccurrenceSnapshotAllocations.organizationId, fixture.organizationId))).toHaveLength(1);
+    expect(await db.select().from(paymentOperations)
+      .where(eq(paymentOperations.organizationId, fixture.organizationId))).toHaveLength(1);
   });
 
   it("returns identical IDs for concurrent retries of the same command", async () => {

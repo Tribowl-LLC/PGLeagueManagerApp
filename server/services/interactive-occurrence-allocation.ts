@@ -121,6 +121,7 @@ async function lockCanonicalEvidence(
   const [activation] = await tx.select({
     id: financialActivations.id,
     sourceFingerprint: financialActivations.sourceFingerprint,
+    expectedGroupCount: financialActivations.expectedGroupCount,
     expectedResponsibilityCount: financialActivations.expectedResponsibilityCount,
     currentRevision: financialActivations.currentRevision,
   }).from(financialActivations).where(and(
@@ -172,7 +173,7 @@ async function lockCanonicalEvidence(
   try {
     const source = await loadOperationalActivationEvidence(tx, input);
     if (source.authoritativeSource !== "canonical" || source.sourceFingerprint !== activation.sourceFingerprint
-      || source.expected.length !== activation.expectedResponsibilityCount) {
+      || source.expected.length !== activation.expectedGroupCount) {
       throw new InteractiveOccurrenceAllocationError("CANONICAL_EVIDENCE_INCOMPATIBLE");
     }
   } catch (error) {

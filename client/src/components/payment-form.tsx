@@ -477,6 +477,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
               selectedBowlerId={selectedBowlerId}
               bowlerHasEmail={bowlerHasEmail}
               receiptEmail={receiptEmail}
+              occurrenceReadiness={occurrenceReadiness}
             />
           </form>
         </Form>

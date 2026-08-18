@@ -1811,6 +1811,58 @@ export type FinalizePaymentOperationSuccessInput = LeasedPaymentOperationInput &
   paymentRows?: PaymentOperationLinkedPaymentInput[];
 };
 
+// F2 supplement evidence must be checked before the operation transition or
+// linked payment inserts. Webhook reconciliation catches immutable mismatch
+// as a bounded inbox failure; preflighting here keeps that failure from
+// committing a succeeded operation/payment without its occurrence evidence.
+async function validateInteractiveOccurrenceSupplementBeforeWrites(
+  tx: PaymentOperationTransaction,
+  operation: PaymentOperation,
+): Promise<void> {
+  const [supplement] = await tx.select().from(paymentOperationOccurrenceSnapshots)
+    .where(eq(paymentOperationOccurrenceSnapshots.operationId, operation.id))
+    .limit(1).for("share");
+  if (!supplement) return;
+  if (operation.authorizingUserId === null || supplement.amountMinor !== operation.amountMinor || supplement.currency !== operation.currency) {
+    throw new PaymentOperationImmutableMismatchError();
+  }
+  const snapshotAllocations = await tx.select().from(paymentOperationOccurrenceSnapshotAllocations)
+    .where(eq(paymentOperationOccurrenceSnapshotAllocations.operationId, operation.id))
+    .orderBy(asc(paymentOperationOccurrenceSnapshotAllocations.allocationIndex));
+  if (snapshotAllocations.length !== supplement.allocationCount
+    || snapshotAllocations.reduce((sum, row) => sum + row.amountMinor, 0) !== operation.amountMinor) {
+    throw new PaymentOperationImmutableMismatchError();
+  }
+  try {
+    const semantic = validatePaymentOperationOccurrenceSnapshot({
+      contractVersion: PAYMENT_OPERATION_OCCURRENCE_SNAPSHOT_CONTRACT,
+      snapshotVersion: supplement.snapshotVersion,
+      operationId: operation.id,
+      operationType: operation.operationType,
+      organizationId: operation.organizationId,
+      leagueId: supplement.leagueId,
+      amountMinor: operation.amountMinor,
+      currency: operation.currency,
+      allocations: snapshotAllocations.map((row) => ({
+        allocationIndex: row.allocationIndex,
+        organizationId: row.organizationId,
+        leagueId: row.leagueId,
+        occurrenceId: row.occurrenceId,
+        bowlerId: row.bowlerId,
+        obligationId: row.obligationId,
+        amountMinor: row.amountMinor,
+        currency: row.currency,
+      })),
+    });
+    if (fingerprintPaymentOperationOccurrenceSnapshot(semantic) !== supplement.snapshotFingerprint) {
+      throw new PaymentOperationImmutableMismatchError();
+    }
+  } catch (error) {
+    if (error instanceof PaymentOperationImmutableMismatchError) throw error;
+    throw new PaymentOperationImmutableMismatchError({ cause: error });
+  }
+}
+
 async function finalizeInteractiveOccurrenceAllocations(
   tx: PaymentOperationTransaction,
   operation: PaymentOperation,
@@ -1989,6 +2041,10 @@ export async function finalizePaymentOperationSuccessInTransaction(
       if (interactiveSnapshot?.requestKind === "order") throw new PaymentOperationImmutableMismatchError();
     }
   }
+  const [preflightOperation] = await tx.select().from(paymentOperations)
+    .where(and(eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.id, input.operationId)))
+    .limit(1).for("update");
+  if (preflightOperation) await validateInteractiveOccurrenceSupplementBeforeWrites(tx, preflightOperation);
 
   const [transitioned] = await tx
     .update(paymentOperations)

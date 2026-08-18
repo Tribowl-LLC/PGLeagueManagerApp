@@ -48,6 +48,7 @@ export const PaymentSubmitSection: FC<PaymentSubmitSectionProps> = ({
   const displayAmount = useDueTodayOverride
     ? autopayDueTodayOverride
     : calculateTotalAmount() * multiplier;
+  const occurrenceSelectionRequired = league.paymentMode === 'upfront' || selectedSchedule === 'custom';
   return (
     <>
       {league.paymentMode !== 'upfront' && (
@@ -90,7 +91,7 @@ export const PaymentSubmitSection: FC<PaymentSubmitSectionProps> = ({
             isSubmitting
             || autopayQuoteLoading
             || autopayQuoteError !== null
-            || (occurrenceReadiness !== 'legacy' && occurrenceReadiness !== 'ready')
+            || (occurrenceSelectionRequired && occurrenceReadiness !== 'legacy' && occurrenceReadiness !== 'ready')
           }
           className="min-w-[200px]"
         >
