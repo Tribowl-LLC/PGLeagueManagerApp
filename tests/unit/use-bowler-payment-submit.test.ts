@@ -166,6 +166,36 @@ beforeEach(() => {
 });
 
 describe('useBowlerPaymentSubmit success toasts', () => {
+  it('binds occurrence selections and the base quote fingerprint on saved-card submits', async () => {
+    csrfFetchMock.mockResolvedValueOnce(await jsonResponse({ data: { id: 'pmt-1' } }));
+    const occurrenceAllocations = [{ obligationId: '11111111-1111-4111-8111-111111111111', amountMinor: 2000 }];
+    const occurrenceQuoteFingerprint = `lvquote:v1:${'a'.repeat(64)}`;
+
+    await useBowlerPaymentSubmit(makeOptions({
+      selectedSchedule: 'custom', occurrenceAllocations, occurrenceQuoteFingerprint,
+    }))();
+
+    const body = JSON.parse((csrfFetchMock.mock.calls[0]?.[1] as { body: string }).body);
+    expect(body.occurrenceAllocations).toEqual(occurrenceAllocations);
+    expect(body.occurrenceQuoteFingerprint).toBe(occurrenceQuoteFingerprint);
+  });
+
+  it('passes occurrence selections and the base quote fingerprint through new-card submits', async () => {
+    createPaymentMock.mockResolvedValueOnce({ status: 'COMPLETED' });
+    const occurrenceAllocations = [{ obligationId: '22222222-2222-4222-8222-222222222222', amountMinor: 2000 }];
+    const occurrenceQuoteFingerprint = `lvquote:v1:${'b'.repeat(64)}`;
+
+    await useBowlerPaymentSubmit(makeOptions({
+      cardMode: 'new', card: makeCard(), selectedSchedule: 'custom',
+      occurrenceAllocations, occurrenceQuoteFingerprint,
+    }))();
+
+    expect(createPaymentMock).toHaveBeenCalledWith(
+      2000, expect.anything(), 'bowler-1', 'league-1', false, undefined, expect.any(String),
+      occurrenceAllocations, occurrenceQuoteFingerprint,
+    );
+  });
+
   it('shows the custom one-time payment success toast with formatted amount', async () => {
     csrfFetchMock.mockResolvedValueOnce(await jsonResponse({ data: { id: 'pmt-1' } }));
 

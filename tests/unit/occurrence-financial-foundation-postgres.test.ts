@@ -38,6 +38,10 @@ import {
   fingerprintPaymentOperationOccurrenceSnapshot,
   type PaymentOperationOccurrenceSnapshotV1,
 } from "../../server/services/payment-operation-occurrence-snapshot";
+import {
+  getInteractiveOccurrenceActivation,
+  InteractiveOccurrenceAllocationError,
+} from "../../server/services/interactive-occurrence-allocation";
 import { deleteOrganization } from "../../server/storage/organizations";
 import { getTestDb } from "../setup/test-db";
 
@@ -314,6 +318,21 @@ describe("D2 occurrence financial foundation PostgreSQL contract", () => {
       reason: "Cross-league attempt",
       recordedByUserId: scope.actorUserId,
     })).rejects.toThrow();
+  });
+
+  it("distinguishes zero-evidence legacy fallback from partial canonical evidence", async () => {
+    const scope = fixture;
+    if (!scope) throw new Error("D2 fixture is missing");
+    // The fixture's other league has no D2 rows and remains an exact legacy
+    // fallback; the primary league now has partial D2 rows but no F1 activation.
+    expect(await getInteractiveOccurrenceActivation({
+      organizationId: scope.organizationId,
+      leagueId: scope.otherLeagueId,
+    })).toBe(false);
+    await expect(getInteractiveOccurrenceActivation({
+      organizationId: scope.organizationId,
+      leagueId: scope.leagueId,
+    })).rejects.toBeInstanceOf(InteractiveOccurrenceAllocationError);
   });
 
   it("creates authoritative prepaid obligations before occurrence time without rewriting amount evidence", async () => {

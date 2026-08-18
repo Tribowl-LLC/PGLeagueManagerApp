@@ -356,6 +356,7 @@ export function useBowlerPaymentSubmit({
             leagueId: league.id,
             storeCard: false,
             sourceKind: 'saved_card',
+            ...occurrenceFields,
             ...(trimmedBuyerEmail && !bowler.email ? { buyerEmail: trimmedBuyerEmail } : {}),
           }),
         });
@@ -372,7 +373,17 @@ export function useBowlerPaymentSubmit({
         if (!newCard) throw new Error('Please enter your card details before proceeding.');
         const paymentScope = `bowler:${league.id}:${chargeForBowlerId}:${amount}:new:${shouldStore}`;
         const requestKey = beginPaymentIntent(paymentScope);
-        await createPayment(amount, newCard, chargeForBowlerId, league.id, shouldStore, overrideEmail, requestKey);
+        await createPayment(
+          amount,
+          newCard,
+          chargeForBowlerId,
+          league.id,
+          shouldStore,
+          overrideEmail,
+          requestKey,
+          occurrenceAllocations,
+          occurrenceQuoteFingerprint,
+        );
         clearPaymentIntent(paymentScope);
         if (shouldStore) {
           queryClient.invalidateQueries({ queryKey: [`/api/payments-provider/cards/${bowler.id}`] });

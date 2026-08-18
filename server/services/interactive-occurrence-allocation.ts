@@ -322,6 +322,17 @@ export async function getInteractiveOccurrenceActivation(input: { organizationId
   if (row && (row.state !== "active" || row.completenessMarker !== true)) {
     throw new InteractiveOccurrenceAllocationError("CANONICAL_EVIDENCE_INCOMPATIBLE");
   }
+  if (!row) {
+    const evidence = await db.execute(sql`SELECT EXISTS (
+      SELECT 1 FROM financial_responsibilities WHERE organization_id = ${input.organizationId} AND league_id = ${input.leagueId}
+      UNION ALL SELECT 1 FROM bowler_occurrence_eligibilities WHERE organization_id = ${input.organizationId} AND league_id = ${input.leagueId}
+      UNION ALL SELECT 1 FROM bowler_occurrence_team_assignments WHERE organization_id = ${input.organizationId} AND league_id = ${input.leagueId}
+      UNION ALL SELECT 1 FROM bowler_occurrence_obligations WHERE organization_id = ${input.organizationId} AND league_id = ${input.leagueId}
+    ) AS present`);
+    if ((evidence.rows[0] as { present?: boolean } | undefined)?.present === true) {
+      throw new InteractiveOccurrenceAllocationError("CANONICAL_EVIDENCE_INCOMPATIBLE");
+    }
+  }
   return row !== undefined;
 }
 
@@ -364,7 +375,11 @@ async function buildQuote(tx: PaymentOperationTransaction, input: {
     activationSourceFingerprint: evidence.sourceFingerprint,
     rows: publicRows,
     selections,
-    fingerprint: fingerprint({ contractVersion: INTERACTIVE_OCCURRENCE_QUOTE_CONTRACT, orderVersion: INTERACTIVE_OCCURRENCE_QUOTE_ORDER, organizationId: input.organizationId, leagueId: input.leagueId, currency: input.currency, amountMinor: input.amountMinor, activationId: evidence.activationId, activationSourceFingerprint: evidence.sourceFingerprint, rows: publicRows, selections }),
+    // This is the immutable base-evidence fingerprint. Explicit selections
+    // are bound separately by the operation supplement and validated against
+    // these rows at preparation; excluding them lets the selector obtain a
+    // base quote before the user has finished choosing rows.
+    fingerprint: fingerprint({ contractVersion: INTERACTIVE_OCCURRENCE_QUOTE_CONTRACT, orderVersion: INTERACTIVE_OCCURRENCE_QUOTE_ORDER, organizationId: input.organizationId, leagueId: input.leagueId, currency: input.currency, amountMinor: input.amountMinor, activationId: evidence.activationId, activationSourceFingerprint: evidence.sourceFingerprint, rows: publicRows }),
   };
   return result;
 }
@@ -391,7 +406,10 @@ export async function persistInteractiveOccurrenceSnapshot(
     throw new InteractiveOccurrenceAllocationError("IMMUTABLE_SELECTION_MISMATCH");
   }
   const quote = await buildQuote(tx, { organizationId: operation.organizationId, leagueId: input.leagueId, amountMinor: operation.amountMinor, currency: operation.currency, selections: input.selections, excludeOperationId: operation.id, allowedBowlerIds: input.baseAllocations?.map((allocation) => allocation.bowlerId) });
-  if (input.quoteFingerprint !== undefined && input.quoteFingerprint !== quote.fingerprint) {
+  // Canonical F2 intent is always bound to the quote's immutable base
+  // evidence. A missing fingerprint is not a legacy fallback once a
+  // supplement is requested; it is an unbound/stale quote.
+  if (!input.quoteFingerprint || input.quoteFingerprint !== quote.fingerprint) {
     throw new InteractiveOccurrenceAllocationError("STALE_QUOTE");
   }
   if (quote.selections.length === 0) throw new InteractiveOccurrenceAllocationError("SELECTION_REQUIRED");

@@ -17,6 +17,7 @@ import {
 import express from 'express';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
+import { InteractiveOccurrenceAllocationError } from '../../server/services/interactive-occurrence-allocation';
 
 const mockStorage = {
   getLeague: vi.fn(),
@@ -98,9 +99,14 @@ vi.mock('../../server/services/interactive-payment-operation-preparation', () =>
 vi.mock('../../server/services/interactive-payment-operation-executor', () => ({
   interactivePaymentOperationExecutor: { execute: (...args: unknown[]) => mockInteractiveExecute(...args) },
 }));
+const { mockNotifyWake } = vi.hoisted(() => ({ mockNotifyWake: vi.fn() }));
+vi.mock('../../server/services/scheduled-payment-runtime', () => ({
+  notifyScheduledPaymentMutation: (...args: unknown[]) => mockNotifyWake(...args),
+}));
 
-// eslint-disable-next-line local/factory-must-use-schema -- mocked logger, not a schema row
-const fakeLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+const { fakeLogger } = vi.hoisted(() => ({
+  fakeLogger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+}));
 vi.mock('../../server/logger', () => ({ logger: fakeLogger, createLogger: () => fakeLogger }));
 
 const chargesRouter = (await import('../../server/routes/payments-provider/charges')).default;
@@ -144,6 +150,8 @@ beforeEach(() => {
   mockSquareProvider.saveCardOnFile.mockReset();
   mockPrepareInteractiveOperation.mockReset();
   mockInteractiveExecute.mockReset();
+  mockNotifyWake.mockReset();
+  mockNotifyWake.mockResolvedValue(undefined);
 
   mockHasAccessToLeague.mockResolvedValue(true);
   mockHasAccessToBowler.mockResolvedValue(true);
@@ -212,6 +220,19 @@ async function postCombined(body: Record<string, unknown>) {
 }
 
 describe('POST /api/payments-provider/combined-payments', () => {
+  it('maps a stale occurrence preparation to a bounded 409 without provider dispatch', async () => {
+    mockPrepareInteractiveOperation.mockRejectedValueOnce(new InteractiveOccurrenceAllocationError('STALE_QUOTE'));
+    const res = await postCombined({
+      sourceId: 'cnon:tok',
+      leagueId: 11,
+      amount: 4000,
+      payees: [{ bowlerId: 7, amount: 2000 }, { bowlerId: 8, amount: 2000 }],
+    });
+    expect(res.status).toBe(409);
+    expect((await res.json()).error?.code).toBe('OCCURRENCE_QUOTE_STALE');
+    expect(mockSquareProvider.processPayment).not.toHaveBeenCalled();
+  });
+
   it('rejects when payee amounts do not sum to total amount', async () => {
     const res = await postCombined({
       sourceId: 'cnon:tok',
@@ -279,6 +300,7 @@ describe('POST /api/payments-provider/combined-payments', () => {
     const body = await res.json();
     expect(mockPrepareInteractiveOperation).toHaveBeenCalledTimes(1);
     expect(mockInteractiveExecute).toHaveBeenCalledTimes(1);
+    expect(mockNotifyWake.mock.invocationCallOrder[0]).toBeLessThan(mockInteractiveExecute.mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER);
     expect(mockSquareProvider.processPayment).not.toHaveBeenCalled();
     expect(mockStorage.createCombinedPayments).not.toHaveBeenCalled();
     expect(body.combinedChargeGroupId).toBe('operation-combined-test');

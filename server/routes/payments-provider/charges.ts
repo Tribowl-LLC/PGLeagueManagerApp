@@ -65,6 +65,21 @@ function parseOccurrenceSelections(value: unknown): InteractiveOccurrenceSelecti
   return selections;
 }
 
+function occurrenceAllocationRouteError(error: unknown): { message: string; code: string } | undefined {
+  if (!(error instanceof InteractiveOccurrenceAllocationError)) return undefined;
+  switch (error.code) {
+    case 'IMMUTABLE_SELECTION_MISMATCH':
+    case 'PRE_F2_OPERATION':
+      return { message: 'This payment operation cannot be changed to use occurrence allocations.', code: 'OCCURRENCE_IDEMPOTENCY_CONFLICT' };
+    case 'STALE_QUOTE':
+      return { message: 'The payment allocation quote is stale. Refresh and select the obligations again.', code: 'OCCURRENCE_QUOTE_STALE' };
+    case 'CANONICAL_EVIDENCE_INCOMPATIBLE':
+      return { message: 'Payment allocation is unavailable for this league.', code: 'OCCURRENCE_ALLOCATION_CONFLICT' };
+    default:
+      return { message: 'Payment allocation could not be validated.', code: 'OCCURRENCE_ALLOCATION_CONFLICT' };
+  }
+}
+
 async function occurrenceQuote(req: Request, res: Response): Promise<void> {
   const leagueId = Number(req.body?.leagueId);
   const amountMinor = Number(req.body?.amountMinor ?? req.body?.amount);
@@ -284,6 +299,9 @@ async function respondWithInteractiveOperation(
   allowDueRecovery: boolean,
 ): Promise<void> {
   let current = operation;
+  // Arm the durable one-shot wake before any provider call. This ordering
+  // covers a worker crash or a hung provider after preparation commits.
+  await notifyScheduledPaymentMutation();
   if (allowDueRecovery && operationIsDue(current)) {
     current = await interactivePaymentOperationExecutor.execute({
       organizationId,
@@ -728,6 +746,8 @@ router.post('/combined-payments', paymentLimiter, async (req, res) => {
       operation.status === 'pending' && operation.attemptCount === 0,
     );
   } catch (error) {
+    const occurrenceError = occurrenceAllocationRouteError(error);
+    if (occurrenceError) return sendError(res, occurrenceError.message, 409, occurrenceError.code);
     if (error instanceof PaymentOperationImmutableMismatchError) {
       return sendError(res, 'This Idempotency-Key was already used for different payment details.', 409, 'IDEMPOTENCY_CONFLICT');
     }
@@ -1031,6 +1051,8 @@ router.post('/payments', paymentLimiter, async (req, res) => {
       operation.status === 'pending' && operation.attemptCount === 0,
     );
   } catch (error) {
+    const occurrenceError = occurrenceAllocationRouteError(error);
+    if (occurrenceError) return sendError(res, occurrenceError.message, 409, occurrenceError.code);
     if (error instanceof PaymentOperationImmutableMismatchError) {
       return sendError(res, 'This Idempotency-Key was already used for different payment details.', 409, 'IDEMPOTENCY_CONFLICT');
     }

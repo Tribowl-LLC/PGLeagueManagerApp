@@ -330,6 +330,8 @@ export async function createPayment(
   storeCard = false,
   buyerEmail?: string,
   requestKey?: string,
+  occurrenceAllocations?: Array<{ obligationId: string; amountMinor: number }>,
+  occurrenceQuoteFingerprint?: string,
 ): Promise<PaymentResult> {
   try {
     if (!cardInstance) {
@@ -400,6 +402,8 @@ export async function createPayment(
         storeCard,
         sourceKind: 'new_card',
         ...(buyerEmail ? { buyerEmail } : {}),
+        ...(occurrenceAllocations ? { occurrenceAllocations } : {}),
+        ...(occurrenceQuoteFingerprint ? { occurrenceQuoteFingerprint } : {}),
       };
 
       let response: Response;
