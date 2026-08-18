@@ -30,6 +30,12 @@ export function formatMinorUnitsAsDollars(amountMinor: number): string {
   return `${Math.floor(safeAmount / 100).toLocaleString("en-US")}.${String(safeAmount % 100).padStart(2, "0")}`;
 }
 
+/** Editable values omit grouping separators accepted nowhere by the parser. */
+export function formatMinorUnitsAsEditableDollars(amountMinor: number): string {
+  const safeAmount = Number.isSafeInteger(amountMinor) && amountMinor >= 0 ? amountMinor : 0;
+  return `${Math.floor(safeAmount / 100)}.${String(safeAmount % 100).padStart(2, "0")}`;
+}
+
 export function formatOccurrenceDueDate(value: string, timezone: string): string {
   return formatInTimeZone(new Date(value), timezone, "MMM d, yyyy");
 }
@@ -54,6 +60,10 @@ export function InteractiveOccurrenceSelector({
   onReadinessChange?: (readiness: InteractiveOccurrenceReadiness) => void;
 }) {
   const [selections, setSelections] = useState<Record<string, number>>({});
+  // Keep the editable dollar draft independent from validated minor-unit
+  // selections so clear/backspace and other intermediate keystrokes do not
+  // get reformatted or emitted as payment allocations.
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
   const payees = useMemo(() => [...new Set(bowlerIds)].sort((a, b) => a - b), [bowlerIds]);
   const query = useQuery<Quote | null>({
     queryKey: ["/api/payments-provider/payments/quote", organizationId, leagueId, amountMinor, payees],
@@ -76,14 +86,22 @@ export function InteractiveOccurrenceSelector({
   useEffect(() => {
     const valid = new Set((query.data?.rows ?? []).map((row) => row.obligationId));
     setSelections((current) => Object.fromEntries(Object.entries(current).filter(([id]) => valid.has(id))));
+    setDrafts((current) => Object.fromEntries(Object.entries(current).filter(([id]) => valid.has(id))));
   }, [query.data]);
 
   useEffect(() => {
-    const next = Object.entries(selections).map(([obligationId, value]) => ({ obligationId, amountMinor: value }));
+    const next = Object.entries(selections)
+      .filter(([, value]) => Number.isSafeInteger(value) && value > 0)
+      .map(([obligationId, value]) => ({ obligationId, amountMinor: value }));
     onChange(next, query.data?.fingerprint);
   }, [onChange, query.data?.fingerprint, selections]);
 
   const selectedTotal = Object.values(selections).reduce((sum, value) => sum + value, 0);
+  const invalidDraft = (query.data?.rows ?? []).some((row) => {
+    if (!Object.prototype.hasOwnProperty.call(drafts, row.obligationId)) return false;
+    const parsed = parseCurrencyToMinorUnits(drafts[row.obligationId]);
+    return parsed === null || parsed > Math.min(row.outstandingMinor, amountMinor);
+  });
   const readiness: InteractiveOccurrenceReadiness = !enabled || amountMinor <= 0 || payees.length === 0
     ? 'disabled'
     : query.isLoading || query.fetchStatus === 'fetching'
@@ -92,7 +110,9 @@ export function InteractiveOccurrenceSelector({
         ? 'error'
         : !query.data
           ? 'legacy'
-          : selectedTotal === amountMinor && selections && Object.keys(selections).length > 0
+          : invalidDraft
+            ? 'empty'
+            : selectedTotal === amountMinor && selections && Object.keys(selections).length > 0
             ? 'ready'
             : 'empty';
 
@@ -113,15 +133,40 @@ export function InteractiveOccurrenceSelector({
       </div>
       {query.data.rows.map((row) => {
         const selected = selections[row.obligationId] ?? 0;
+        const active = Object.prototype.hasOwnProperty.call(drafts, row.obligationId);
+        const draft = drafts[row.obligationId] ?? formatMinorUnitsAsEditableDollars(selected);
+        const maxMinor = Math.min(row.outstandingMinor, amountMinor);
         return (
           <label key={row.obligationId} className="flex items-center gap-3 text-sm">
-            <input type="checkbox" checked={selected > 0} onChange={(event) => setSelections((current) => ({ ...current, ...(event.target.checked ? { [row.obligationId]: Math.min(row.outstandingMinor, amountMinor) } : (() => { const next = { ...current }; delete next[row.obligationId]; return next; })()) }))} />
+            <input type="checkbox" checked={active} onChange={(event) => {
+              if (event.target.checked) {
+                const initial = Math.min(row.outstandingMinor, amountMinor);
+                setSelections((current) => ({ ...current, [row.obligationId]: initial }));
+                setDrafts((current) => ({ ...current, [row.obligationId]: formatMinorUnitsAsEditableDollars(initial) }));
+              } else {
+                setSelections((current) => { const next = { ...current }; delete next[row.obligationId]; return next; });
+                setDrafts((current) => { const next = { ...current }; delete next[row.obligationId]; return next; });
+              }
+            }} />
             <span className="flex-1">Bowler {row.bowlerId} · {row.dueAt ? formatOccurrenceDueDate(row.dueAt, timezone) : "No due date"} · outstanding ${formatMinorUnitsAsDollars(row.outstandingMinor)}</span>
-            {selected > 0 && <input aria-label={`Amount for obligation ${row.obligationId}`} className="w-24 rounded border px-2 py-1" type="text" inputMode="decimal" maxLength={24} value={formatMinorUnitsAsDollars(selected)} onChange={(event) => setSelections((current) => {
-              const parsed = parseCurrencyToMinorUnits(event.target.value);
-              if (parsed === null) return current;
-              return { ...current, [row.obligationId]: Math.min(parsed, row.outstandingMinor, amountMinor) };
-            })} />}
+            {active && <input aria-label={`Amount for obligation ${row.obligationId}`} className="w-24 rounded border px-2 py-1" type="text" inputMode="decimal" maxLength={24} value={draft} onChange={(event) => {
+              const raw = event.target.value;
+              setDrafts((current) => ({ ...current, [row.obligationId]: raw }));
+              const parsed = parseCurrencyToMinorUnits(raw);
+              if (parsed !== null && parsed > 0 && parsed <= maxMinor) {
+                setSelections((current) => ({ ...current, [row.obligationId]: parsed }));
+              }
+            }} onBlur={() => {
+              const parsed = parseCurrencyToMinorUnits(drafts[row.obligationId] ?? "");
+              const bounded = parsed === null ? selected : Math.min(parsed, maxMinor);
+              if (bounded > 0) {
+                setSelections((current) => ({ ...current, [row.obligationId]: bounded }));
+                setDrafts((current) => ({ ...current, [row.obligationId]: formatMinorUnitsAsEditableDollars(bounded) }));
+              } else {
+                setSelections((current) => { const next = { ...current }; delete next[row.obligationId]; return next; });
+                setDrafts((current) => { const next = { ...current }; delete next[row.obligationId]; return next; });
+              }
+            }} />}
           </label>
         );
       })}

@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BowlerPaymentDialog } from "@/components/bowler-payment-dialog";
-import { InteractiveOccurrenceSelector, formatMinorUnitsAsDollars, parseCurrencyToMinorUnits } from "@/components/interactive-occurrence-selector";
+import { InteractiveOccurrenceSelector, formatMinorUnitsAsDollars, formatMinorUnitsAsEditableDollars, parseCurrencyToMinorUnits } from "@/components/interactive-occurrence-selector";
 import { PaymentSubmitSection } from "@/components/payment-submit-section";
 import { PaymentFormActions } from "@/components/payment-form-actions";
 
@@ -84,10 +84,12 @@ describe("history payment dialog occurrence selector", () => {
 
   it("keeps selection values in minor units while displaying and accepting dollars exactly", async () => {
     expect(formatMinorUnitsAsDollars(2000)).toBe("20.00");
+    expect(formatMinorUnitsAsEditableDollars(100000)).toBe("1000.00");
     expect(parseCurrencyToMinorUnits("10.00")).toBe(1000);
     expect(parseCurrencyToMinorUnits("10.001")).toBeNull();
     expect(parseCurrencyToMinorUnits("0.00")).toBeNull();
     const onChange = vi.fn();
+    const onReadinessChange = vi.fn();
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
       <QueryClientProvider client={client}>
@@ -98,21 +100,28 @@ describe("history payment dialog occurrence selector", () => {
           bowlerIds={[7]}
           enabled
           onChange={onChange}
+          onReadinessChange={onReadinessChange}
         />
       </QueryClientProvider>,
     );
     await userEvent.click(await screen.findByRole("checkbox"));
     const input = await screen.findByRole("textbox", { name: /amount for obligation/i });
     expect(input).toHaveValue("20.00");
-    fireEvent.change(input, { target: { value: "10.00" } });
+    await userEvent.clear(input);
+    expect(input).toHaveValue("");
+    await waitFor(() => expect(onReadinessChange).toHaveBeenLastCalledWith("empty"));
+    await userEvent.type(input, "10.00");
     await waitFor(() => expect(onChange).toHaveBeenLastCalledWith([
       { obligationId: "11111111-1111-4111-8111-111111111111", amountMinor: 1000 },
     ], `lvpayquote:v1:${"a".repeat(64)}`));
     expect(input).toHaveValue("10.00");
-    fireEvent.change(input, { target: { value: "10.001" } });
-    expect(input).toHaveValue("10.00");
-    fireEvent.change(input, { target: { value: "30.00" } });
+    await userEvent.clear(input);
+    await userEvent.type(input, "1000.00");
+    expect(input).toHaveValue("1000.00");
+    await waitFor(() => expect(onReadinessChange).toHaveBeenLastCalledWith("empty"));
+    await userEvent.tab();
     expect(input).toHaveValue("20.00");
+    expect(onChange.mock.calls.flatMap(([rows]) => rows).every((row: { amountMinor: number }) => Number.isInteger(row.amountMinor) && row.amountMinor > 0)).toBe(true);
   });
 
   it("formats due dates in the configured league timezone", async () => {
