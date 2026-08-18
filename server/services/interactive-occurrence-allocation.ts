@@ -335,6 +335,13 @@ export async function getInteractiveOccurrenceActivation(input: { organizationId
       UNION ALL SELECT 1 FROM bowler_occurrence_eligibilities WHERE organization_id = ${input.organizationId} AND league_id = ${input.leagueId}
       UNION ALL SELECT 1 FROM bowler_occurrence_team_assignments WHERE organization_id = ${input.organizationId} AND league_id = ${input.leagueId}
       UNION ALL SELECT 1 FROM bowler_occurrence_obligations WHERE organization_id = ${input.organizationId} AND league_id = ${input.leagueId}
+      UNION ALL SELECT 1 FROM occurrence_collection_plans WHERE organization_id = ${input.organizationId} AND league_id = ${input.leagueId}
+      UNION ALL SELECT 1 FROM occurrence_collection_plan_items WHERE organization_id = ${input.organizationId} AND league_id = ${input.leagueId}
+      UNION ALL SELECT 1 FROM occurrence_collection_plan_revisions WHERE organization_id = ${input.organizationId} AND league_id = ${input.leagueId}
+      UNION ALL SELECT 1 FROM payment_occurrence_allocations WHERE organization_id = ${input.organizationId} AND league_id = ${input.leagueId}
+      UNION ALL SELECT 1 FROM payment_occurrence_allocation_revisions WHERE organization_id = ${input.organizationId} AND league_id = ${input.leagueId}
+      UNION ALL SELECT 1 FROM payment_operation_occurrence_snapshots WHERE organization_id = ${input.organizationId} AND league_id = ${input.leagueId}
+      UNION ALL SELECT 1 FROM payment_operation_occurrence_snapshot_allocations WHERE organization_id = ${input.organizationId} AND league_id = ${input.leagueId}
     ) AS present`);
     if ((evidence.rows[0] as { present?: boolean } | undefined)?.present === true) {
       throw new InteractiveOccurrenceAllocationError("CANONICAL_EVIDENCE_INCOMPATIBLE");

@@ -168,6 +168,30 @@ export default function PaymentHistoryPage() {
     }
   }, [payDialogType, cleanupCard]);
 
+  // A live F1 read is the amount authority for activated leagues. Legacy
+  // financial-utils remains the exact fallback until this versioned read is
+  // available, while selector state is reset whenever the dialog intent or
+  // league changes so an old obligation set cannot ride into a new charge.
+  const { data: canonicalFinancialResponse } = useQuery<ApiResponse<{
+    mode: string;
+    rows: Array<{ outstandingMinor: number; classification: string }>;
+    totals: { collectiblePastDueMinor: number };
+  }>>({
+    queryKey: ["/api/financials/leagues", leagueId, "due-past-due", bowlerId],
+    queryFn: async ({ signal }) => {
+      const response = await fetch(`/api/financials/leagues/${leagueId}/due-past-due?bowlerId=${bowlerId}`, {
+        credentials: "include",
+        headers: { Accept: "application/json" },
+        signal,
+      });
+      if (!response.ok) throw new Error("Financial evidence is unavailable");
+      return response.json();
+    },
+    enabled: !!bowlerId && !!leagueId,
+    staleTime: 30_000,
+    retry: false,
+  });
+
   const payments = hasPaymentsFromDetails ? allPaymentsFromDetails : (paymentsResponse?.data || []);
   const bowlerName = bowlerDetailsResponse?.data?.bowler?.name || '';
   const bowlerEmail = bowlerDetailsResponse?.data?.bowler?.email || '';
@@ -185,10 +209,18 @@ export default function PaymentHistoryPage() {
     remainingBalance,
     doublePay,
   } = financials;
+  const canonicalFinancials = canonicalFinancialResponse?.data?.mode === "canonical"
+    ? {
+      amountPastDue: canonicalFinancialResponse.data.totals.collectiblePastDueMinor,
+      remainingBalance: canonicalFinancialResponse.data.rows.reduce((sum, row) => sum + row.outstandingMinor, 0),
+    }
+    : null;
+  const displayAmountPastDue = canonicalFinancials?.amountPastDue ?? amountPastDue;
+  const displayRemainingBalance = canonicalFinancials?.remainingBalance ?? remainingBalance;
   const weeksDueCount = league?.weeklyFee ? Math.round(totalSeasonDues / league.weeklyFee) : 0;
   const weeksPaid = league?.weeklyFee ? Math.round(totalPaidAmount / league.weeklyFee) : 0;
 
-  const dialogAmountCents = payDialogType === 'pastdue' ? amountPastDue : remainingBalance;
+  const dialogAmountCents = payDialogType === 'pastdue' ? displayAmountPastDue : displayRemainingBalance;
 
   const handleWalletPayment = useCallback(async (token: string, walletType: 'apple_pay' | 'google_pay') => {
     if (!bowlerId || !leagueId || !dialogAmountCents) return;
@@ -381,6 +413,11 @@ export default function PaymentHistoryPage() {
     setOccurrenceQuoteFingerprint(fingerprint);
   }, []);
 
+  useEffect(() => {
+    setOccurrenceAllocations([]);
+    setOccurrenceQuoteFingerprint(undefined);
+  }, [payDialogType, leagueId]);
+
   if (loadingUser || loadingBowlerDetails || (!hasPaymentsFromDetails && loadingPayments)) {
     return (
       <BowlerLayout bowlerName={bowlerName || 'Loading...'} leagueName={league?.name || 'Loading...'}>
@@ -439,8 +476,8 @@ export default function PaymentHistoryPage() {
       totalSeasonDues={totalSeasonDues}
       weeksPaid={weeksPaid}
       totalPaidAmount={totalPaidAmount}
-      amountPastDue={amountPastDue}
-      remainingBalance={remainingBalance}
+      amountPastDue={displayAmountPastDue}
+      remainingBalance={displayRemainingBalance}
       doublePay={doublePay}
       onPayPastDue={() => setPayDialogType('pastdue')}
       onPayRemaining={() => setPayDialogType('remaining')}
