@@ -1,0 +1,3 @@
+ALTER TABLE "payment_operations" ADD COLUMN "authorizing_user_id" integer;--> statement-breakpoint
+ALTER TABLE "payment_operations" ADD CONSTRAINT "payment_operations_authorizing_user_id_users_id_fk" FOREIGN KEY ("authorizing_user_id") REFERENCES "public"."users"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+CREATE INDEX "payment_operations_authorizing_user_idx" ON "payment_operations" USING btree ("organization_id","authorizing_user_id");

@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { League, Payment, User, SavedCard, ApiResponse, BowlerDetailsResponse } from "@shared/schema";
+import type { FinancialReadContract } from "@shared/financial-contract";
 import { BowlerLayout } from "@/components/bowler-layout";
 import { PageLoadingState } from "@/components/page-states";
 import { useSearch, useLocation as useWouterLocation } from "wouter";
@@ -26,7 +27,11 @@ import { BowlerErrorView } from "./payment-history-page/bowler-error-view";
 import { NoLeaguesView } from "./payment-history-page/no-leagues-view";
 import { NoLeagueView } from "./payment-history-page/no-league-view";
 import { PaymentHistoryContent } from "./payment-history-page/payment-history-content";
-import { beginPaymentIntent, clearPaymentIntent, paymentRequestHeaders } from "@/lib/payment-request-identity";
+import { beginPaymentIntent, clearPaymentIntent, paymentRequestHeaders, paymentRequestWithRecovery } from "@/lib/payment-request-identity";
+import { buildInteractiveOccurrenceFields, interactiveIntentScopeSuffix } from "@/lib/interactive-payment-request";
+import { resolveInteractiveFinancialRead } from "@/lib/financial-read-contract";
+import { invalidatePaymentHistoryFinancials, paymentHistoryFinancialQueryKey } from "@/lib/payment-history-financial-query";
+import type { InteractiveOccurrenceReadiness } from "@/components/interactive-occurrence-selector";
 
 export default function PaymentHistoryPage() {
   const { toast } = useToast();
@@ -43,6 +48,9 @@ export default function PaymentHistoryPage() {
   const [selectedSavedCardId, setSelectedSavedCardId] = useState<string>('');
   const [storeCard, setStoreCard] = useState(false);
   const [receiptEmail, setReceiptEmail] = useState('');
+  const [occurrenceAllocations, setOccurrenceAllocations] = useState<{ obligationId: string; amountMinor: number }[]>([]);
+  const [occurrenceQuoteFingerprint, setOccurrenceQuoteFingerprint] = useState<string | undefined>();
+  const [occurrenceReadiness, setOccurrenceReadiness] = useState<InteractiveOccurrenceReadiness>('loading');
   const walletRequestKeyRef = useRef<string | null>(null);
 
   const [isWalletProcessing, setIsWalletProcessing] = useState(false);
@@ -165,13 +173,47 @@ export default function PaymentHistoryPage() {
     }
   }, [payDialogType, cleanupCard]);
 
+  // A live F1 read is the amount authority for activated leagues. Legacy
+  // financial-utils remains the exact fallback until this versioned read is
+  // available, while selector state is reset whenever the dialog intent or
+  // league changes so an old obligation set cannot ride into a new charge.
+  const { data: canonicalFinancialResponse, isLoading: loadingFinancialRead, error: financialReadError } = useQuery<ApiResponse<FinancialReadContract>>({
+    queryKey: paymentHistoryFinancialQueryKey(leagueId ?? 0, bowlerId ?? 0),
+    queryFn: async ({ signal }) => {
+      const response = await fetch(`/api/financials/leagues/${leagueId}/due-past-due?bowlerId=${bowlerId}`, {
+        credentials: "include",
+        headers: { Accept: "application/json" },
+        signal,
+      });
+      if (!response.ok) throw new Error("Financial evidence is unavailable");
+      return response.json();
+    },
+    enabled: !!bowlerId && !!leagueId,
+    staleTime: 30_000,
+    retry: false,
+  });
+
   const payments = hasPaymentsFromDetails ? allPaymentsFromDetails : (paymentsResponse?.data || []);
   const bowlerName = bowlerDetailsResponse?.data?.bowler?.name || '';
   const bowlerEmail = bowlerDetailsResponse?.data?.bowler?.email || '';
 
   const bowlerPayments = payments.filter(p => p.bowlerId === bowlerId && p.leagueId === leagueId);
 
-  const financials = calculateFinancials(league, bowlerPayments);
+  const resolvedFinancialRead = resolveInteractiveFinancialRead(canonicalFinancialResponse?.data);
+  const legacyFinancials = resolvedFinancialRead.status === "legacy_fallback"
+    ? calculateFinancials(league, bowlerPayments)
+    : null;
+  const canonicalRows = resolvedFinancialRead.status === "canonical" ? resolvedFinancialRead.rows : [];
+  const financials = legacyFinancials ?? {
+    weeksPassed: canonicalRows.filter((row) => row.classification !== "future").length,
+    totalWeeksInSeason: canonicalRows.length,
+    totalDueToDate: canonicalRows.filter((row) => row.classification !== "future").reduce((sum, row) => sum + row.amountMinor, 0),
+    totalPaid: canonicalRows.reduce((sum, row) => sum + row.allocatedMinor, 0),
+    amountPastDue: resolvedFinancialRead.amountPastDue,
+    fullSeasonAmount: canonicalRows.reduce((sum, row) => sum + row.amountMinor, 0),
+    remainingBalance: resolvedFinancialRead.remainingBalance,
+    doublePay: { dates: [], perWeekExtra: 0, totalExtra: 0, pastExtra: 0, isPaid: resolvedFinancialRead.remainingBalance <= 0 },
+  };
   const {
     weeksPassed: weeksDue,
     totalWeeksInSeason,
@@ -182,12 +224,16 @@ export default function PaymentHistoryPage() {
     remainingBalance,
     doublePay,
   } = financials;
+  const displayAmountPastDue = resolvedFinancialRead.amountPastDue;
+  const displayRemainingBalance = resolvedFinancialRead.remainingBalance;
   const weeksDueCount = league?.weeklyFee ? Math.round(totalSeasonDues / league.weeklyFee) : 0;
   const weeksPaid = league?.weeklyFee ? Math.round(totalPaidAmount / league.weeklyFee) : 0;
 
-  const dialogAmountCents = payDialogType === 'pastdue' ? amountPastDue : remainingBalance;
+  const dialogAmountCents = payDialogType === 'pastdue' ? displayAmountPastDue : displayRemainingBalance;
 
   const handleWalletPayment = useCallback(async (token: string, walletType: 'apple_pay' | 'google_pay') => {
+    if (resolvedFinancialRead.status === "unavailable" || loadingFinancialRead || financialReadError) return;
+    if (occurrenceReadiness !== 'legacy' && occurrenceReadiness !== 'ready') return;
     if (!bowlerId || !leagueId || !dialogAmountCents) return;
     // same inline email override as the card-form path so
     // Apple Pay / Google Pay charges also trigger Square's hosted
@@ -207,9 +253,9 @@ export default function PaymentHistoryPage() {
     const overrideEmail = !bowlerEmail && trimmedReceiptEmail ? trimmedReceiptEmail : undefined;
     try {
       setIsWalletProcessing(true);
-      const paymentScope = `history-wallet:${bowlerId}:${leagueId}:${dialogAmountCents}`;
+      const paymentScope = `history-wallet:${bowlerId}:${leagueId}:${dialogAmountCents}${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
       const requestKey = walletRequestKeyRef.current ?? beginPaymentIntent(paymentScope);
-      const response = await csrfFetch('/api/payments-provider/payments', {
+      const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch('/api/payments-provider/payments', {
         method: 'POST',
         headers: paymentRequestHeaders(requestKey),
         body: JSON.stringify({
@@ -220,8 +266,9 @@ export default function PaymentHistoryPage() {
           storeCard: false,
           sourceKind: 'wallet',
           ...(overrideEmail ? { buyerEmail: overrideEmail } : {}),
+          ...buildInteractiveOccurrenceFields(occurrenceAllocations, occurrenceQuoteFingerprint),
         }),
-      });
+      }), league?.organizationId);
       const data = await response.json();
       if (!response.ok) {
         throw makeApiError(data, response.status, `Payment failed (HTTP ${response.status})`);
@@ -238,6 +285,7 @@ export default function PaymentHistoryPage() {
       } else {
         toast({ title: "Payment Successful", description: `${walletLabel} payment of ${formatCurrency(dialogAmountCents)} ${dialogLabel} completed.` });
       }
+      await invalidatePaymentHistoryFinancials(queryClient, leagueId, bowlerId);
       setPayDialogType(null);
       queryClient.invalidateQueries({ queryKey: ["/api/payments", { bowlerId, leagueId }] });
       queryClient.invalidateQueries({ queryKey: [`/api/bowlers/${bowlerId}/details`] });
@@ -255,14 +303,16 @@ export default function PaymentHistoryPage() {
     } finally {
       setIsWalletProcessing(false);
     }
-  }, [bowlerId, leagueId, dialogAmountCents, payDialogType, toast, bowlerEmail, receiptEmail, navigate, league?.locationId]);
+  }, [bowlerId, leagueId, dialogAmountCents, payDialogType, toast, bowlerEmail, receiptEmail, navigate, league?.locationId, league?.organizationId, occurrenceAllocations, occurrenceQuoteFingerprint, occurrenceReadiness, resolvedFinancialRead.status, loadingFinancialRead, financialReadError]);
 
   const beginWalletPayment = useCallback(() => {
+    if (resolvedFinancialRead.status === "unavailable" || loadingFinancialRead || financialReadError) return;
+    if (occurrenceReadiness !== 'legacy' && occurrenceReadiness !== 'ready') return;
     if (!bowlerId || !leagueId || !dialogAmountCents) return;
     walletRequestKeyRef.current = beginPaymentIntent(
-      `history-wallet:${bowlerId}:${leagueId}:${dialogAmountCents}`,
+      `history-wallet:${bowlerId}:${leagueId}:${dialogAmountCents}${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`,
     );
-  }, [bowlerId, dialogAmountCents, leagueId]);
+  }, [bowlerId, dialogAmountCents, leagueId, occurrenceAllocations, occurrenceQuoteFingerprint, occurrenceReadiness, resolvedFinancialRead.status, loadingFinancialRead, financialReadError]);
 
   const {
     applePayAvailable,
@@ -278,7 +328,8 @@ export default function PaymentHistoryPage() {
   } = useWalletPayments({
     locationId: league?.locationId,
     amountCents: dialogAmountCents,
-    enabled: !!payDialogType && !!league?.locationId && supportsWallets,
+    enabled: !!payDialogType && !!league?.locationId && supportsWallets
+      && (occurrenceReadiness === 'ready' || occurrenceReadiness === 'legacy'),
     onPaymentStarted: beginWalletPayment,
     onTokenReceived: handleWalletPayment,
     onError: (error) => toast({ title: "Wallet Payment Error", description: error, variant: "destructive" }),
@@ -291,7 +342,17 @@ export default function PaymentHistoryPage() {
   }, [payDialogType, cleanupWallet]);
 
   const handleDialogPayment = async () => {
-    const dialogAmount = payDialogType === 'pastdue' ? amountPastDue : remainingBalance;
+    if (resolvedFinancialRead.status === "unavailable" || loadingFinancialRead || financialReadError) {
+      toast({ title: "Payment unavailable", description: "Financial evidence is still loading or requires review.", variant: "destructive" });
+      return;
+    }
+    if (occurrenceReadiness !== 'legacy' && occurrenceReadiness !== 'ready') {
+      toast({ title: "Payment unavailable", description: occurrenceReadiness === 'error'
+        ? "Current obligations could not be loaded. Refresh before paying."
+        : "Select obligations totaling the payment amount before paying.", variant: "destructive" });
+      return;
+    }
+    const dialogAmount = dialogAmountCents;
     const dialogLabel = payDialogType === 'pastdue' ? 'past due amount' : 'remaining balance';
 
     if (!bowlerId || !leagueId || !dialogAmount) {
@@ -318,9 +379,9 @@ export default function PaymentHistoryPage() {
       const overrideEmail = !bowlerEmail && trimmedReceiptEmail ? trimmedReceiptEmail : undefined;
 
       if (cardMode === 'saved' && selectedSavedCardId) {
-        const paymentScope = `history:${bowlerId}:${leagueId}:${dialogAmount}:saved`;
+        const paymentScope = `history:${bowlerId}:${leagueId}:${dialogAmount}:saved${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
         const requestKey = beginPaymentIntent(paymentScope);
-        const response = await csrfFetch('/api/payments-provider/payments', {
+          const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch('/api/payments-provider/payments', {
           method: 'POST',
           headers: paymentRequestHeaders(requestKey),
           body: JSON.stringify({
@@ -331,8 +392,9 @@ export default function PaymentHistoryPage() {
             storeCard: false,
             sourceKind: 'saved_card',
             ...(overrideEmail ? { buyerEmail: overrideEmail } : {}),
+            ...buildInteractiveOccurrenceFields(occurrenceAllocations, occurrenceQuoteFingerprint),
           }),
-        });
+          }), league?.organizationId);
         const responseData = await response.json();
         if (!response.ok) {
           throw makeApiError(responseData, response.status, 'Payment failed');
@@ -342,10 +404,10 @@ export default function PaymentHistoryPage() {
         }
         clearPaymentIntent(paymentScope);
       } else {
-        const paymentScope = `history:${bowlerId}:${leagueId}:${dialogAmount}:new:${storeCard}`;
+        const paymentScope = `history:${bowlerId}:${leagueId}:${dialogAmount}:new:${storeCard}${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
         const requestKey = beginPaymentIntent(paymentScope);
         if (!card) throw new Error('Please enter your card details.');
-        await createPayment(dialogAmount, card, bowlerId, leagueId, storeCard, overrideEmail, requestKey);
+        await createPayment(dialogAmount, card, bowlerId, leagueId, storeCard, overrideEmail, requestKey, occurrenceAllocations, occurrenceQuoteFingerprint);
         clearPaymentIntent(paymentScope);
         if (storeCard) {
           queryClient.invalidateQueries({ queryKey: [`/api/payments-provider/cards/${bowlerId}`] });
@@ -353,6 +415,7 @@ export default function PaymentHistoryPage() {
       }
 
       toast({ title: "Payment Successful", description: `${formatCurrency(dialogAmount)} ${dialogLabel} has been paid.` });
+      await invalidatePaymentHistoryFinancials(queryClient, leagueId, bowlerId);
       setPayDialogType(null);
       queryClient.invalidateQueries({ queryKey: ["/api/payments", { bowlerId, leagueId }] });
       queryClient.invalidateQueries({ queryKey: [`/api/bowlers/${bowlerId}/details`] });
@@ -370,6 +433,19 @@ export default function PaymentHistoryPage() {
       setIsSubmitting(false);
     }
   };
+
+  const handleOccurrenceChange = useCallback((next: { obligationId: string; amountMinor: number }[], fingerprint?: string) => {
+    setOccurrenceAllocations(next);
+    setOccurrenceQuoteFingerprint(fingerprint);
+  }, []);
+
+  useEffect(() => {
+    setOccurrenceAllocations([]);
+    setOccurrenceQuoteFingerprint(undefined);
+    setOccurrenceReadiness(payDialogType ? 'loading' : 'disabled');
+  }, [payDialogType, leagueId]);
+
+  const checkoutAvailable = resolvedFinancialRead.status !== "unavailable" && !loadingFinancialRead && !financialReadError;
 
   if (loadingUser || loadingBowlerDetails || (!hasPaymentsFromDetails && loadingPayments)) {
     return (
@@ -413,6 +489,7 @@ export default function PaymentHistoryPage() {
   return (
     <PaymentHistoryContent
       bowlerName={bowlerName}
+      bowlerId={bowlerId ?? 0}
       league={league}
       leagueId={leagueId}
       hasMultipleLeagues={hasMultipleLeagues}
@@ -428,11 +505,11 @@ export default function PaymentHistoryPage() {
       totalSeasonDues={totalSeasonDues}
       weeksPaid={weeksPaid}
       totalPaidAmount={totalPaidAmount}
-      amountPastDue={amountPastDue}
-      remainingBalance={remainingBalance}
+      amountPastDue={displayAmountPastDue}
+      remainingBalance={displayRemainingBalance}
       doublePay={doublePay}
-      onPayPastDue={() => setPayDialogType('pastdue')}
-      onPayRemaining={() => setPayDialogType('remaining')}
+      onPayPastDue={() => checkoutAvailable && setPayDialogType('pastdue')}
+      onPayRemaining={() => checkoutAvailable && setPayDialogType('remaining')}
       payDialogType={payDialogType}
       onCloseDialog={() => setPayDialogType(null)}
       savedCards={savedCards}
@@ -460,6 +537,12 @@ export default function PaymentHistoryPage() {
       receiptEmail={receiptEmail}
       onReceiptEmailChange={setReceiptEmail}
       bowlerPayments={bowlerPayments}
+      occurrenceAmountMinor={checkoutAvailable ? dialogAmountCents : 0}
+      occurrenceAllocations={occurrenceAllocations}
+      occurrenceQuoteFingerprint={occurrenceQuoteFingerprint}
+      onOccurrenceChange={handleOccurrenceChange}
+      onOccurrenceReadinessChange={setOccurrenceReadiness}
+      occurrenceReadiness={occurrenceReadiness}
     />
   );
 }

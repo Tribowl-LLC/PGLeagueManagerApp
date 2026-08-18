@@ -2,6 +2,7 @@ import { FC } from "react";
 import { Button } from "@/components/ui/button";
 import { Loader2 } from "lucide-react";
 import { formatCurrency } from "@/lib/utils";
+import type { InteractiveOccurrenceReadiness } from "@/components/interactive-occurrence-selector";
 
 interface PaymentSubmitSectionProps {
   league: { paymentMode: string | null };
@@ -18,6 +19,7 @@ interface PaymentSubmitSectionProps {
   autopayDueTodayOverride?: number | null;
   autopayQuoteLoading?: boolean;
   autopayQuoteError?: string | null;
+  occurrenceReadiness?: InteractiveOccurrenceReadiness;
   onSubmit: () => void;
   onCancel: () => void;
 }
@@ -36,6 +38,7 @@ export const PaymentSubmitSection: FC<PaymentSubmitSectionProps> = ({
   autopayDueTodayOverride = null,
   autopayQuoteLoading = false,
   autopayQuoteError = null,
+  occurrenceReadiness = 'loading',
   onSubmit,
   onCancel,
 }) => {
@@ -45,6 +48,7 @@ export const PaymentSubmitSection: FC<PaymentSubmitSectionProps> = ({
   const displayAmount = useDueTodayOverride
     ? autopayDueTodayOverride
     : calculateTotalAmount() * multiplier;
+  const occurrenceSelectionRequired = league.paymentMode === 'upfront' || selectedSchedule === 'custom';
   return (
     <>
       {league.paymentMode !== 'upfront' && (
@@ -87,6 +91,7 @@ export const PaymentSubmitSection: FC<PaymentSubmitSectionProps> = ({
             isSubmitting
             || autopayQuoteLoading
             || autopayQuoteError !== null
+            || (occurrenceSelectionRequired && occurrenceReadiness !== 'legacy' && occurrenceReadiness !== 'ready')
           }
           className="min-w-[200px]"
         >

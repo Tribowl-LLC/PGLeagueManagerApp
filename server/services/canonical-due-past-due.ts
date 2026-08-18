@@ -629,7 +629,7 @@ async function loadOperationalActivationSource(
   return loadLeagueOccurrenceScheduleSnapshot({ ...input, includeAdministratorEvidence: true }, tx);
 }
 
-async function loadOperationalActivationEvidence(
+export async function loadOperationalActivationEvidence(
   tx: ScheduleExecutor,
   input: { organizationId: number; leagueId: number },
 ): Promise<OperationalActivationEvidence> {

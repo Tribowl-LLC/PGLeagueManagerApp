@@ -150,6 +150,12 @@
       "tag": "0024_canonical_due_past_due_activation",
       "createdAt": 1786989649369,
       "hash": "fb70a30b34716b5bfd8bdcb815ce70da83233ae7be65cba8b24cfe0dda0b7488"
+    },
+    {
+      "idx": 25,
+      "tag": "0025_f2_interactive_occurrence_actor",
+      "createdAt": 1787070646978,
+      "hash": "7a44e0f20165c5d3be33b5e4e63692cca7b2224374af6a0b1d65fb1e32b5f712"
     }
   ]
 }

@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(25);
+    expect(migrations).toHaveLength(26);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -371,6 +371,14 @@ describe('normalized migration baseline tools', () => {
     expect(migrations[24]?.sql).toContain('CREATE TABLE "financial_responsibilities"');
     expect(migrations[24]?.sql).toContain('financial_activation_completeness_guard');
     expect(migrations[24]?.sql).not.toMatch(/(?:^|\n)\s*(?:DROP|RENAME|UPDATE|DELETE|INSERT)\b/);
+    expect(migrations[25]).toMatchObject({
+      idx: 25,
+      tag: '0025_f2_interactive_occurrence_actor',
+      createdAt: 1787070646978,
+      hash: '7a44e0f20165c5d3be33b5e4e63692cca7b2224374af6a0b1d65fb1e32b5f712',
+    });
+    expect(migrations[25]?.sql).toContain('authorizing_user_id');
+    expect(migrations[25]?.sql).not.toMatch(/(?:^|\n)\s*(?:DROP|RENAME|UPDATE|DELETE|INSERT)\b/);
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 

@@ -13,7 +13,7 @@ import { usePaymentProvider } from "@/hooks/use-payment-provider";
 import { useWalletPayments } from "@/hooks/use-wallet-payments";
 import { useSavedCardDefault } from "@/hooks/use-saved-card-default";
 import { Form } from "@/components/ui/form";
-import { insertPaymentSchema, DEFAULT_WEEKLY_FEE_CENTS } from "@shared/schema";
+import { insertPaymentSchema, DEFAULT_TIMEZONE, DEFAULT_WEEKLY_FEE_CENTS } from "@shared/schema";
 import type { InsertPaymentInput, InsertPayment, Bowler, League, User, ApiResponse } from "@shared/schema";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle } from "lucide-react";
@@ -29,12 +29,14 @@ import { useLocation } from "wouter";
 import { PaymentFormFields } from "@/components/payment-form-fields";
 import { PaymentMethodTabs } from "@/components/payment-method-tabs";
 import { usePaymentFormSubmit } from "@/hooks/use-payment-form-submit";
-import { beginPaymentIntent, clearPaymentIntent, paymentRequestHeaders } from "@/lib/payment-request-identity";
+import { beginPaymentIntent, clearPaymentIntent, paymentRequestHeaders, paymentRequestWithRecovery } from "@/lib/payment-request-identity";
 import { PaymentFeeInfoAlert } from "@/components/payment-fee-info-alert";
 import { PaymentCheckNumberField } from "@/components/payment-check-number-field";
 import { PaymentReceiptEmailField } from "@/components/payment-receipt-email-field";
 import { PaymentProviderNotConfiguredAlert } from "@/components/payment-provider-not-configured-alert";
+import { buildInteractiveOccurrenceFields, interactiveIntentScopeSuffix } from "@/lib/interactive-payment-request";
 import { PaymentFormActions } from "@/components/payment-form-actions";
+import { InteractiveOccurrenceSelector, type InteractiveOccurrenceReadiness } from "@/components/interactive-occurrence-selector";
 
 interface SavedCard {
   id: string;
@@ -63,6 +65,9 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
   const [squareLoadFailed, setSquareLoadFailed] = useState(false);
   const [cardMode, setCardMode] = useState<'new' | 'saved'>('new');
   const [selectedSavedCardId, setSelectedSavedCardId] = useState<string>('');
+  const [occurrenceAllocations, setOccurrenceAllocations] = useState<{ obligationId: string; amountMinor: number }[]>([]);
+  const [occurrenceQuoteFingerprint, setOccurrenceQuoteFingerprint] = useState<string | undefined>();
+  const [occurrenceReadiness, setOccurrenceReadiness] = useState<InteractiveOccurrenceReadiness>('loading');
   const [receiptEmail, setReceiptEmail] = useState<string>('');
   const initializationAttempted = useRef(false);
 
@@ -271,9 +276,9 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
     }
     const overrideEmail = !selected?.email && trimmedReceiptEmail ? trimmedReceiptEmail : undefined;
     try {
-      const paymentScope = `admin-wallet:${bowlerId}:${currentLeagueId}:${amount}`;
+      const paymentScope = `admin-wallet:${bowlerId}:${currentLeagueId}:${amount}${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
       const requestKey = walletRequestKeyRef.current ?? beginPaymentIntent(paymentScope);
-      const response = await csrfFetch('/api/payments-provider/payments', {
+      const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch('/api/payments-provider/payments', {
         method: 'POST',
         headers: paymentRequestHeaders(requestKey),
         body: JSON.stringify({
@@ -284,8 +289,9 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
           storeCard: false,
           sourceKind: 'wallet',
           ...(overrideEmail ? { buyerEmail: overrideEmail } : {}),
+          ...buildInteractiveOccurrenceFields(occurrenceAllocations, occurrenceQuoteFingerprint),
         }),
-      });
+      }), leagueInfo?.organizationId);
       const responseData = await response.json();
       if (!response.ok) {
         throw makeApiError(responseData, response.status, 'Payment failed');
@@ -317,15 +323,15 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
       setPaymentError(errorMessage);
       toast({ title: "Error", description: errorMessage, variant: "destructive" });
     }
-  }, [form, toast, queryClient, onClose, bowlers, receiptEmail, navigate, leagueInfo?.locationId]);
+  }, [form, toast, queryClient, onClose, bowlers, receiptEmail, navigate, leagueInfo?.locationId, leagueInfo?.organizationId, occurrenceAllocations, occurrenceQuoteFingerprint]);
 
   const beginWalletPayment = useCallback(() => {
     const values = form.getValues();
     if (!values.bowlerId || !values.leagueId || !values.amount) return;
     walletRequestKeyRef.current = beginPaymentIntent(
-      `admin-wallet:${values.bowlerId}:${values.leagueId}:${values.amount}`,
+      `admin-wallet:${values.bowlerId}:${values.leagueId}:${values.amount}${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`,
     );
-  }, [form]);
+  }, [form, occurrenceAllocations, occurrenceQuoteFingerprint]);
 
   const {
     applePayAvailable,
@@ -341,7 +347,8 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
   } = useWalletPayments({
     locationId: leagueInfo?.locationId ?? null,
     amountCents: watchedAmount || 0,
-    enabled: open && paymentType === 'credit_card' && supportsWallets,
+    enabled: open && paymentType === 'credit_card' && supportsWallets
+      && (occurrenceReadiness === 'ready' || occurrenceReadiness === 'legacy'),
     onPaymentStarted: beginWalletPayment,
     onTokenReceived: handleWalletPayment,
     onError: (error) => setPaymentError(error),
@@ -352,6 +359,12 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
       cleanupWallet();
     }
   }, [open, cleanupWallet]);
+
+  useEffect(() => {
+    setOccurrenceAllocations([]);
+    setOccurrenceQuoteFingerprint(undefined);
+    setOccurrenceReadiness(open && paymentType === 'credit_card' ? 'loading' : 'disabled');
+  }, [open, selectedBowlerId, leagueInfo?.id, paymentType]);
 
   // When the selected bowler has no email on file, capture one inline so
   // Square's hosted receipt still fires for this charge.
@@ -367,7 +380,15 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
     onClose,
     buyerEmail: !bowlerHasEmail ? receiptEmail : undefined,
     locationId: leagueInfo?.locationId ?? null,
+    organizationId: leagueInfo?.organizationId,
+    occurrenceAllocations,
+    occurrenceQuoteFingerprint,
+    occurrenceReadiness,
   });
+  const handleOccurrenceChange = useCallback((next: { obligationId: string; amountMinor: number }[], fingerprint?: string) => {
+    setOccurrenceAllocations(next);
+    setOccurrenceQuoteFingerprint(fingerprint);
+  }, []);
 
   return (
     <Dialog open={open} onOpenChange={(isOpen) => !isOpen && onClose()}>
@@ -387,6 +408,18 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
               </Alert>
             )}
             <PaymentFormFields form={form} bowlers={bowlers} />
+            {paymentType === "credit_card" && selectedBowlerId && leagueInfo && (
+              <InteractiveOccurrenceSelector
+                leagueId={leagueInfo.id}
+                organizationId={leagueInfo.organizationId ?? undefined}
+                timezone={leagueInfo.timezone || DEFAULT_TIMEZONE}
+                amountMinor={watchedAmount || 0}
+                bowlerIds={[selectedBowlerId]}
+                enabled={open}
+                onChange={handleOccurrenceChange}
+                onReadinessChange={setOccurrenceReadiness}
+              />
+            )}
             <PaymentMethodTabs
               form={form}
               paymentType={paymentType}
@@ -445,6 +478,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
               selectedBowlerId={selectedBowlerId}
               bowlerHasEmail={bowlerHasEmail}
               receiptEmail={receiptEmail}
+              occurrenceReadiness={occurrenceReadiness}
             />
           </form>
         </Form>

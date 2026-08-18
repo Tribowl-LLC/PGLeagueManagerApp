@@ -12,6 +12,7 @@ import {
   leagueScheduleExceptions,
   orphanCleanupAudits,
   paymentDisputeReplayAudits,
+  paymentOperations,
   type User,
   type InsertUser,
   type UpdateUser,
@@ -142,6 +143,10 @@ async function countCanonicalOccurrenceActorReferences(
     .select({ count: count() })
     .from(leagueOccurrenceBillingTerms)
     .where(eq(leagueOccurrenceBillingTerms.publishedByUserId, userId));
+  const [paymentOperationRows] = await tx
+    .select({ count: count() })
+    .from(paymentOperations)
+    .where(eq(paymentOperations.authorizingUserId, userId));
 
   return [
     commandRows,
@@ -150,6 +155,7 @@ async function countCanonicalOccurrenceActorReferences(
     exceptionRows,
     relationshipRows,
     billingTermRows,
+    paymentOperationRows,
   ].reduce((total, row) => total + Number(row?.count ?? 0), 0);
 }
 

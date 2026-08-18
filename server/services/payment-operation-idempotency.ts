@@ -105,6 +105,42 @@ export function canonicalizePaymentOperationInput(value: unknown): string {
   )).join(",")}}`;
 }
 
+/**
+ * Binds an occurrence-aware selection and its immutable base quote evidence to
+ * the logical operation fingerprint. The provider idempotency key remains the
+ * operation key, while same-key retries with changed F2 semantics conflict
+ * before any live balance quote or provider work is attempted.
+ */
+export function normalizeInteractiveOccurrenceSelections<T extends { obligationId: string; amountMinor: number }>(
+  selections: T[],
+): T[] {
+  return [...selections].sort((left, right) => left.obligationId.localeCompare(right.obligationId));
+}
+
+export function fingerprintInteractiveOccurrenceIntent(input: {
+  selections: Array<{ obligationId: string; amountMinor: number }>;
+  quoteFingerprint: string;
+}): string {
+  const digest = createHash("sha256")
+    .update(canonicalizePaymentOperationInput({
+      selections: normalizeInteractiveOccurrenceSelections(input.selections),
+      quoteFingerprint: input.quoteFingerprint,
+    }))
+    .digest("hex");
+  return `lvpayintent:v1:${digest}`;
+}
+
+export function bindInteractiveOccurrenceRequestFingerprint(
+  baseRequestFingerprint: string,
+  occurrenceIntentFingerprint?: string,
+): string {
+  if (!occurrenceIntentFingerprint) return baseRequestFingerprint;
+  const digest = createHash("sha256")
+    .update(canonicalizePaymentOperationInput({ baseRequestFingerprint, occurrenceIntentFingerprint }))
+    .digest("hex");
+  return `${PAYMENT_OPERATION_FINGERPRINT_PREFIX}${digest}`;
+}
+
 export function normalizePaymentOperationRequest(
   request: StablePaymentOperationRequest,
 ): NormalizedPaymentOperationRequest {

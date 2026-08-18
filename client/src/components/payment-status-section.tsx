@@ -13,7 +13,9 @@ import type { League, Bowler, Payment, SavedCard, ApiResponse, BowlerDetailsResp
 import { PaymentStatusView } from "@/components/payment-status-view";
 import { useBowlerPaymentSubmit } from "@/hooks/use-bowler-payment-submit";
 import type { AutopaySetupQuote } from "@/lib/autopay-setup";
-import { beginPaymentIntent, clearPaymentIntent, paymentRequestHeaders } from "@/lib/payment-request-identity";
+import { beginPaymentIntent, clearPaymentIntent, paymentRequestHeaders, paymentRequestWithRecovery } from "@/lib/payment-request-identity";
+import { buildInteractiveOccurrenceFields, interactiveIntentScopeSuffix } from "@/lib/interactive-payment-request";
+import type { InteractiveOccurrenceReadiness } from "@/components/interactive-occurrence-selector";
 
 interface BowlerLinkRow {
   id: number;
@@ -79,6 +81,9 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
   // the form closes or paymentMode flips so a stale combined-autopay
   // pick can never silently ride into the next checkout.
   const [additionalBowlerIds, setAdditionalBowlerIds] = useState<number[]>([]);
+  const [occurrenceAllocations, setOccurrenceAllocations] = useState<{ obligationId: string; amountMinor: number }[]>([]);
+  const [occurrenceQuoteFingerprint, setOccurrenceQuoteFingerprint] = useState<string | undefined>();
+  const [occurrenceReadiness, setOccurrenceReadiness] = useState<InteractiveOccurrenceReadiness>('loading');
   const quotePartnerKey = useMemo(
     () => [...additionalBowlerIds].sort((left, right) => left - right).join(','),
     [additionalBowlerIds],
@@ -290,11 +295,16 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
       const totalPayees = 1 + additionalBowlerIds.length;
       const totalAmount = perAmount * totalPayees;
       const paymentScope = isCombined
-        ? `bowler-wallet:combined:${league.id}:${totalAmount}:${additionalBowlerIds.join(',')}`
-        : `bowler-wallet:${league.id}:${targetBowlerId}:${perAmount}`;
+        ? `bowler-wallet:combined:${league.id}:${totalAmount}:${additionalBowlerIds.join(',')}${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`
+        : `bowler-wallet:${league.id}:${targetBowlerId}:${perAmount}${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
       const requestKey = walletRequestKeyRef.current ?? beginPaymentIntent(paymentScope);
-      const response = isCombined
-        ? await csrfFetch('/api/payments-provider/combined-payments', {
+      const occurrenceFields = buildInteractiveOccurrenceFields(
+        occurrenceAllocations,
+        occurrenceQuoteFingerprint,
+        paymentMode !== 'autopay',
+      );
+      const response = await paymentRequestWithRecovery(requestKey, () => isCombined
+        ? csrfFetch('/api/payments-provider/combined-payments', {
             method: 'POST',
             headers: paymentRequestHeaders(requestKey),
             body: JSON.stringify({
@@ -307,9 +317,10 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
                 { bowlerId: bowler.id, amount: perAmount },
                 ...additionalBowlerIds.map((id) => ({ bowlerId: id, amount: perAmount })),
               ],
+              ...occurrenceFields,
             }),
           })
-        : await csrfFetch('/api/payments-provider/payments', {
+        : csrfFetch('/api/payments-provider/payments', {
             method: 'POST',
             headers: paymentRequestHeaders(requestKey),
             body: JSON.stringify({
@@ -319,8 +330,9 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
               leagueId: league.id,
               storeCard: false,
               sourceKind: 'wallet',
+              ...occurrenceFields,
             }),
-          });
+          }));
       const amount = isCombined ? totalAmount : perAmount;
       const data = await response.json();
       if (!response.ok) {
@@ -365,17 +377,17 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
     } finally {
       setIsSubmitting(false);
     }
-  }, [bowler.id, league.id, targetBowlerId, additionalBowlerIds, calculateTotalAmount, toast, setIsSubmitting, setShowPaymentSetup]);
+  }, [bowler.id, league.id, targetBowlerId, additionalBowlerIds, calculateTotalAmount, toast, setIsSubmitting, setShowPaymentSetup, paymentMode, occurrenceAllocations, occurrenceQuoteFingerprint]);
 
   const beginWalletPayment = useCallback(() => {
     const perAmount = calculateTotalAmount();
     const isCombined = additionalBowlerIds.length > 0;
     const totalAmount = perAmount * (1 + additionalBowlerIds.length);
     const paymentScope = isCombined
-      ? `bowler-wallet:combined:${league.id}:${totalAmount}:${additionalBowlerIds.join(',')}`
-      : `bowler-wallet:${league.id}:${targetBowlerId}:${perAmount}`;
+    ? `bowler-wallet:combined:${league.id}:${totalAmount}:${additionalBowlerIds.join(',')}${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`
+    : `bowler-wallet:${league.id}:${targetBowlerId}:${perAmount}${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
     walletRequestKeyRef.current = beginPaymentIntent(paymentScope);
-  }, [additionalBowlerIds, calculateTotalAmount, league.id, targetBowlerId]);
+  }, [additionalBowlerIds, calculateTotalAmount, league.id, targetBowlerId, occurrenceAllocations, occurrenceQuoteFingerprint]);
 
   const {
     applePayAvailable,
@@ -393,7 +405,8 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
     // Wallet sheet must authorize the full combined total when partners
     // are selected so the device-sheet amount matches the server charge.
     amountCents: calculateTotalAmount() * (1 + additionalBowlerIds.length),
-    enabled: showPaymentSetup && supportsWallets && (selectedSchedule === 'custom' || league.paymentMode === 'upfront'),
+    enabled: showPaymentSetup && supportsWallets && (selectedSchedule === 'custom' || league.paymentMode === 'upfront')
+      && (occurrenceReadiness === 'ready' || occurrenceReadiness === 'legacy'),
     onPaymentStarted: beginWalletPayment,
     onTokenReceived: handleWalletPayment,
     // task #514: route the wallet hook's `onError` string through the
@@ -426,6 +439,9 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
     targetBowlerId,
     additionalBowlerIds,
     autopayQuote,
+    occurrenceAllocations: paymentMode === 'autopay' ? undefined : occurrenceAllocations,
+    occurrenceQuoteFingerprint: paymentMode === 'autopay' ? undefined : occurrenceQuoteFingerprint,
+    occurrenceReadiness: paymentMode === 'autopay' ? 'disabled' : occurrenceReadiness,
     financials,
     calculateTotalAmount,
     setIsSubmitting,
@@ -494,6 +510,10 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
       cleanupCard={cleanupCard}
       calculateTotalAmount={calculateTotalAmount}
       onSubmit={handleSubmitPayment}
+      setOccurrenceAllocations={setOccurrenceAllocations}
+      setOccurrenceQuoteFingerprint={setOccurrenceQuoteFingerprint}
+      occurrenceReadiness={occurrenceReadiness}
+      setOccurrenceReadiness={setOccurrenceReadiness}
       onCancel={() => {
         setShowPaymentSetup(false);
       }}
@@ -527,6 +547,9 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
         // used to be cleared by close/open effects.)
         setTargetBowlerId(bowler.id);
         setAdditionalBowlerIds([]);
+        setOccurrenceAllocations([]);
+        setOccurrenceQuoteFingerprint(undefined);
+        setOccurrenceReadiness(mode === 'autopay' ? 'disabled' : 'loading');
         setShowPaymentSetup(true);
       }}
     />

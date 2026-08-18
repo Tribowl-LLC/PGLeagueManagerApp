@@ -13,10 +13,14 @@ import {
   beginPaymentIntent,
   clearPaymentIntent,
   paymentRequestHeaders,
+  paymentRequestWithRecovery,
 } from "@/lib/payment-request-identity";
+import { buildInteractiveOccurrenceFields, interactiveIntentScopeSuffix } from "@/lib/interactive-payment-request";
+import type { InteractiveOccurrenceReadiness } from "@/components/interactive-occurrence-selector";
 import type { InsertPaymentInput, InsertPayment } from "@shared/schema";
 import type { SquareCard } from "@/hooks/use-square-payment";
 type PaymentCard = SquareCard | null;
+type InteractiveOccurrenceSelection = { obligationId: string; amountMinor: number };
 
 interface UsePaymentFormSubmitOptions {
   form: UseFormReturn<InsertPaymentInput, unknown, InsertPayment>;
@@ -31,6 +35,10 @@ interface UsePaymentFormSubmitOptions {
   buyerEmail?: string;
   /** Owning location used to deep-link the PROVIDER_NOT_CONFIGURED toast. */
   locationId?: number | null;
+  organizationId?: number | null;
+  occurrenceAllocations?: InteractiveOccurrenceSelection[];
+  occurrenceQuoteFingerprint?: string;
+  occurrenceReadiness?: InteractiveOccurrenceReadiness;
 }
 
 export function usePaymentFormSubmit({
@@ -42,6 +50,10 @@ export function usePaymentFormSubmit({
   onClose,
   buyerEmail,
   locationId,
+  organizationId,
+  occurrenceAllocations,
+  occurrenceQuoteFingerprint,
+  occurrenceReadiness,
 }: UsePaymentFormSubmitOptions) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -53,12 +65,20 @@ export function usePaymentFormSubmit({
 
       const trimmedBuyerEmail = (buyerEmail ?? '').trim();
       const buyerEmailField = trimmedBuyerEmail ? { buyerEmail: trimmedBuyerEmail } : {};
+      const occurrenceFields = buildInteractiveOccurrenceFields(occurrenceAllocations, occurrenceQuoteFingerprint);
 
       if (data.type === 'credit_card') {
-        const paymentScope = `admin:${data.bowlerId}:${data.leagueId}:${data.amount}:${cardMode}:${data.storeCard === true}`;
+        const f2IntentBound = occurrenceReadiness !== undefined
+          && (occurrenceAllocations !== undefined || occurrenceQuoteFingerprint !== undefined);
+        if (f2IntentBound && occurrenceReadiness !== 'legacy' && occurrenceReadiness !== 'ready') {
+          throw new Error(occurrenceReadiness === 'error'
+            ? 'Current payment obligations could not be loaded. Refresh before paying.'
+            : 'Select obligations totaling the payment amount before paying.');
+        }
+        const paymentScope = `admin:${data.bowlerId}:${data.leagueId}:${data.amount}:${cardMode}:${data.storeCard === true}${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
         const requestKey = beginPaymentIntent(paymentScope);
         if (cardMode === 'saved' && selectedSavedCardId) {
-          const response = await csrfFetch('/api/payments-provider/payments', {
+          const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch('/api/payments-provider/payments', {
             method: 'POST',
             headers: paymentRequestHeaders(requestKey),
             body: JSON.stringify({
@@ -69,8 +89,9 @@ export function usePaymentFormSubmit({
               storeCard: false,
               sourceKind: 'saved_card',
               ...buyerEmailField,
+              ...occurrenceFields,
             }),
-          });
+          }), organizationId);
 
           const responseData = await response.json();
           if (!response.ok) {
@@ -112,7 +133,7 @@ export function usePaymentFormSubmit({
         }
         sourceToken = result.token;
 
-        const response = await csrfFetch('/api/payments-provider/payments', {
+        const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch('/api/payments-provider/payments', {
           method: 'POST',
           headers: paymentRequestHeaders(requestKey),
           body: JSON.stringify({
@@ -123,8 +144,9 @@ export function usePaymentFormSubmit({
             storeCard: data.storeCard || false,
             sourceKind: 'new_card',
             ...buyerEmailField,
+            ...occurrenceFields,
           }),
-        });
+        }), organizationId);
 
         const responseData = await response.json();
         if (!response.ok) {

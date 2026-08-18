@@ -42,6 +42,11 @@ import {
 import {
   deriveSquareOperationIdempotencyKey,
 } from "../../server/services/payment-operation-idempotency";
+import {
+  bindInteractiveOccurrenceRequestFingerprint,
+  buildPaymentOperationIdentity,
+  fingerprintInteractiveOccurrenceIntent,
+} from "../../server/services/payment-operation-idempotency";
 import type { ScheduledPaymentSemanticSnapshot } from "../../server/services/scheduled-payment-operation-snapshot";
 import type { InteractivePaymentSemanticSnapshot } from "../../server/services/interactive-payment-operation-snapshot";
 import { encryptInteractivePaymentSnapshot } from "../../server/services/interactive-payment-operation-snapshot";
@@ -362,6 +367,45 @@ describe("general interactive payment operation foundation", () => {
       currency: "USD",
       providerName: "square",
     })).rejects.toBeInstanceOf(PaymentOperationImmutableMismatchError);
+  });
+
+  it("binds canonical occurrence intent into immutable request identity and serializes distinct reservations", async () => {
+    const requestKeyA = `f2-reservation-a-${randomUUID()}`;
+    const requestKeyB = `f2-reservation-b-${randomUUID()}`;
+    const selections = [{ obligationId: randomUUID(), amountMinor: 2_000 }];
+    const intentA = fingerprintInteractiveOccurrenceIntent({ selections, quoteFingerprint: `lvpayquote:v1:${'a'.repeat(64)}` });
+    const intentB = fingerprintInteractiveOccurrenceIntent({ selections, quoteFingerprint: `lvpayquote:v1:${'b'.repeat(64)}` });
+    const [first, second] = await Promise.all([
+      createOrGetGeneralInteractivePaymentOperation({ organizationId: orgAId, requestKey: requestKeyA, amountMinor: 2_000, currency: 'USD', providerName: 'square', immutableSemanticFingerprint: intentA }),
+      createOrGetGeneralInteractivePaymentOperation({ organizationId: orgAId, requestKey: requestKeyB, amountMinor: 2_000, currency: 'USD', providerName: 'square', immutableSemanticFingerprint: intentB }),
+    ]);
+    expect(first.id).not.toBe(second.id);
+    expect(first.requestFingerprint).not.toBe(second.requestFingerprint);
+    const baseIdentity = buildPaymentOperationIdentity({
+      organizationId: orgAId,
+      operationType: 'interactive_charge',
+      targetKey: first.targetKey,
+      amountMinor: 2_000,
+      currency: 'USD',
+      providerName: 'square',
+    });
+    expect(first.requestFingerprint).toBe(bindInteractiveOccurrenceRequestFingerprint(baseIdentity.requestFingerprint, intentA));
+    await expect(createOrGetGeneralInteractivePaymentOperation({
+      organizationId: orgAId,
+      requestKey: requestKeyA,
+      amountMinor: 2_000,
+      currency: 'USD',
+      providerName: 'square',
+      immutableSemanticFingerprint: intentB,
+    })).rejects.toBeInstanceOf(PaymentOperationImmutableMismatchError);
+  });
+
+  it("normalizes selection order for the semantic fingerprint", () => {
+    const first = { obligationId: '11111111-1111-4111-8111-111111111111', amountMinor: 500 };
+    const second = { obligationId: '22222222-2222-4222-8222-222222222222', amountMinor: 1_500 };
+    const quoteFingerprint = `lvpayquote:v1:${'c'.repeat(64)}`;
+    expect(fingerprintInteractiveOccurrenceIntent({ selections: [first, second], quoteFingerprint }))
+      .toBe(fingerprintInteractiveOccurrenceIntent({ selections: [second, first], quoteFingerprint }));
   });
 
   it("persists one encrypted, tenant-validated snapshot under concurrent duplicate preparation", async () => {

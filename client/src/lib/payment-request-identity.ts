@@ -57,10 +57,29 @@ export function paymentRequestHeaders(requestKey: string): Record<string, string
   };
 }
 
-export async function recoverPaymentIntent(requestKey: string): Promise<Response> {
+export async function recoverPaymentIntent(requestKey: string, organizationId?: number | null): Promise<Response> {
   return csrfFetch('/api/payments-provider/payment-operations/recover', {
     method: 'POST',
     headers: paymentRequestHeaders(requestKey),
-    body: JSON.stringify({}),
+    body: JSON.stringify(organizationId ? { organizationId } : {}),
   });
+}
+
+/**
+ * Reconcile a durable payment operation when the request carrying a provider
+ * token is lost to a network failure. The request key is the only recovery
+ * input; callers must not mint or tokenize a replacement payment here.
+ */
+export async function paymentRequestWithRecovery(
+  requestKey: string,
+  request: () => Promise<Response>,
+  organizationId?: number | null,
+): Promise<Response> {
+  try {
+    return await request();
+  } catch (error) {
+    const recovered = await recoverPaymentIntent(requestKey, organizationId).catch(() => null);
+    if (!recovered) throw error;
+    return recovered;
+  }
 }

@@ -20,6 +20,7 @@ import {
   applePayJobItems,
   deletionRequests,
   orphanCleanupAudits,
+  paymentOperations,
 } from '@shared/schema';
 import {
   deleteUser,
@@ -91,11 +92,16 @@ const createdUserIds: number[] = [];
 const createdJobIds: number[] = [];
 const createdDeletionRequestIds: number[] = [];
 const createdAuditIds: number[] = [];
+const createdOperationIds: string[] = [];
 
 beforeAll(purgeUsersDeleteApplePayLeaks);
 afterAll(purgeUsersDeleteApplePayLeaks);
 
 afterEach(async () => {
+  if (createdOperationIds.length > 0) {
+    await db.delete(paymentOperations).where(inArray(paymentOperations.id, createdOperationIds));
+    createdOperationIds.length = 0;
+  }
   if (createdAuditIds.length > 0) {
     await db
       .delete(orphanCleanupAudits)
@@ -193,6 +199,25 @@ describe('deleteUser — storage', () => {
 
     const [stillThere] = await db.select().from(users).where(eq(users.id, sysId));
     expect(stillThere).toBeDefined();
+  });
+
+  it('refuses to delete a user retained as an immutable payment actor', async () => {
+    const orgId = await makeOrg();
+    const userId = await makeUser({ role: 'user', organizationId: orgId });
+    const [operation] = await db.insert(paymentOperations).values({
+      organizationId: orgId,
+      authorizingUserId: userId,
+      operationType: 'interactive_charge',
+      targetKey: `interactive-charge:delete-actor-${userId}`,
+      amountMinor: 1,
+      currency: 'USD',
+      requestFingerprint: `lvpayreq:v1:${'a'.repeat(64)}`,
+      providerIdempotencyKey: `delete-actor-${userId}`,
+      providerName: 'square',
+    }).returning({ id: paymentOperations.id });
+    createdOperationIds.push(operation.id);
+    await expect(deleteUser(userId)).rejects.toBeInstanceOf(UserHasAuditTrailError);
+    expect(await db.select({ id: users.id }).from(users).where(eq(users.id, userId))).toHaveLength(1);
   });
 
   it('nullifies apple_pay_jobs.created_by for the deleted user', async () => {

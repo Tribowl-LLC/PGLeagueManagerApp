@@ -159,6 +159,10 @@ const PARALLEL_ISOLATED = [
   'tests/unit/email-block-domains.test.ts',
   'tests/unit/has-access-to-bowler.test.ts', // Task #720 hoist insufficient — vi.mock(server/storage) pollutes shared registry under isolate:false (#722). Reverted.
   'tests/unit/has-access-to-bowlers.test.ts', // Task #720 hoist insufficient — same storage-mock pollution as has-access-to-bowler (#722). Reverted.
+  // This route contract mocks server/storage and the occurrence service; keep
+  // its module registry isolated so parallel charge-route specs cannot reset
+  // the hoisted activation/quote fakes mid-request.
+  'tests/unit/interactive-occurrence-quote-api.test.ts',
   'tests/unit/league-mutation-resync.test.ts',
   // Canonical Fall service suites use isolated PostgreSQL transactions but
   // never call an HTTP endpoint, so they do not need a spawned Express app.

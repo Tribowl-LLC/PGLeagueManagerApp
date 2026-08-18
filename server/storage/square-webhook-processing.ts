@@ -673,11 +673,18 @@ export async function processSquareWebhookEvent(input: {
         receiptNumber: input.event.receiptNumber,
         now,
       };
-      if (input.event.eventType === "refund.updated") {
-        await finalizeRefundFromWebhookEvidenceInTransaction(tx, evidence);
-      } else {
-        await finalizeChargeFromWebhookEvidenceInTransaction(tx, evidence);
-      }
+      // Finalization can fail with a bounded immutable-evidence error after
+      // several ledger writes (for example a base-allocation mismatch). Keep
+      // those writes inside a savepoint so the outer transaction can still
+      // durably mark the inbox event failed without committing partial
+      // operation/payment state.
+      await tx.transaction(async (finalizerTx) => {
+        if (input.event.eventType === "refund.updated") {
+          await finalizeRefundFromWebhookEvidenceInTransaction(finalizerTx, evidence);
+        } else {
+          await finalizeChargeFromWebhookEvidenceInTransaction(finalizerTx, evidence);
+        }
+      });
       await finish(tx, row, { status: "processed", now: now.toISOString() });
       return {
         acknowledged: true,
