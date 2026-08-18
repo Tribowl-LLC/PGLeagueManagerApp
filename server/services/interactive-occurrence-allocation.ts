@@ -14,8 +14,8 @@ import {
   paymentOperationOccurrenceSnapshots,
   paymentOperations,
   payments,
-  f3AutopayPlanItems,
-  f3AutopayPlans,
+  occurrenceCollectionPlanItems,
+  occurrenceCollectionPlans,
 } from "@shared/schema";
 import type { PaymentOperationTransaction } from "../storage/payment-operations.js";
 import { db } from "../db.js";
@@ -288,19 +288,19 @@ async function lockCanonicalEvidence(
   // payment operation. F2 must include those reservations while holding the
   // same obligation locks, so a stale quote cannot bypass a ready plan.
   const f3Reservations = await tx.select({
-    obligationId: f3AutopayPlanItems.obligationId,
-    amountMinor: f3AutopayPlanItems.amountMinor,
-  }).from(f3AutopayPlanItems)
-    .innerJoin(f3AutopayPlans, and(
-      eq(f3AutopayPlans.id, f3AutopayPlanItems.planId),
-      eq(f3AutopayPlans.organizationId, input.organizationId),
-      eq(f3AutopayPlans.leagueId, input.leagueId),
-      eq(f3AutopayPlans.state, "ready"),
+    obligationId: occurrenceCollectionPlanItems.obligationId,
+    amountMinor: occurrenceCollectionPlanItems.amountMinor,
+  }).from(occurrenceCollectionPlanItems)
+    .innerJoin(occurrenceCollectionPlans, and(
+      eq(occurrenceCollectionPlans.id, occurrenceCollectionPlanItems.planId),
+      eq(occurrenceCollectionPlans.organizationId, input.organizationId),
+      eq(occurrenceCollectionPlans.leagueId, input.leagueId),
+      eq(occurrenceCollectionPlans.state, "ready"),
     ))
     .where(and(
-      eq(f3AutopayPlanItems.organizationId, input.organizationId),
-      eq(f3AutopayPlanItems.leagueId, input.leagueId),
-      inArray(f3AutopayPlanItems.obligationId, obligationIds),
+      eq(occurrenceCollectionPlanItems.organizationId, input.organizationId),
+      eq(occurrenceCollectionPlanItems.leagueId, input.leagueId),
+      inArray(occurrenceCollectionPlanItems.obligationId, obligationIds),
     )).for("share");
   const byObligation = new Map<string, { allocated: number; reserved: number; review: boolean }>();
   for (const row of existing) {

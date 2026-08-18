@@ -34,5 +34,17 @@ describe("F3 canonical contracts", () => {
     };
     expect(deriveF3ReadyPlan({ ...base, paymentMode: "weekly" })).toMatchObject({ totalAmountMinor: 650, items: [{ amountMinor: 650 }] });
     expect(() => deriveF3ReadyPlan({ ...base, paymentMode: "upfront" })).toThrowError(F3ReadinessError);
+    expect(() => deriveF3ReadyPlan({ ...base, paymentMode: "weekly", obligations: [{ ...base.obligations[0], dueAt: new Date(Date.now() - 1_000).toISOString() }] })).toThrowError(F3ReadinessError);
+    expect(() => deriveF3ReadyPlan({ ...base, paymentMode: "weekly", obligations: [...base.obligations, base.obligations[0]] })).toThrowError(F3ReadinessError);
+  });
+
+  it("requires reciprocal explicit double-pay pairing", () => {
+    const value = policy();
+    const pair = [
+      { occurrenceId: occurrenceA, groupKey: "double", groupRole: "trigger" as const, pairedOccurrenceId: occurrenceB, collectionPoint: { occurrenceId: occurrenceA } },
+      { occurrenceId: occurrenceB, groupKey: "double", groupRole: "paired" as const, pairedOccurrenceId: occurrenceA, collectionPoint: { occurrenceId: occurrenceA } },
+    ];
+    expect(() => validateF3PolicyShape({ ...value, collectionPoints: [{ occurrenceId: occurrenceA }, { occurrenceId: occurrenceB }], occurrences: pair })).not.toThrow();
+    expect(() => validateF3PolicyShape({ ...value, collectionPoints: [{ occurrenceId: occurrenceA }, { occurrenceId: occurrenceB }], occurrences: [{ ...pair[0], pairedOccurrenceId: occurrenceA }, pair[1]] })).toThrow(/PAIR_REQUIRED|PAIR_MISMATCH/);
   });
 });

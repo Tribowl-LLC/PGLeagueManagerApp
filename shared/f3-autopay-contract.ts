@@ -88,7 +88,10 @@ export function validateF3PolicyShape(input: F3PolicyInput): void {
     if (paired.length > 0 && (rows.length !== 2 || paired.length !== 2 || new Set(rows.map((row) => row.occurrenceId)).size !== 2)) {
       throw new Error("F3_POLICY_DOUBLE_PAY_GROUP");
     }
-    if (paired.length === 2 && new Set(rows.map((row) => row.pairedOccurrenceId)).size !== 2) throw new Error("F3_POLICY_PAIR_MISMATCH");
+    if (paired.length === 2) {
+      const [first, second] = rows;
+      if (first.pairedOccurrenceId !== second.occurrenceId || second.pairedOccurrenceId !== first.occurrenceId) throw new Error("F3_POLICY_PAIR_MISMATCH");
+    }
   }
   for (const row of policy.occurrences) {
     if (!occurrenceIds.has(row.collectionPoint.occurrenceId)) throw new Error("F3_POLICY_COLLECTION_POINT_UNKNOWN");
@@ -99,8 +102,13 @@ export function validateF3PolicyShape(input: F3PolicyInput): void {
   if (pointIds.size !== policy.collectionPoints.length || [...pointIds].some((id) => !occurrenceIds.has(id))) throw new Error("F3_POLICY_COLLECTION_POINTS_INVALID");
 }
 
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  return `{${Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
+}
 function fingerprint(prefix: string, value: unknown): string {
-  return `${prefix}${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
+  return `${prefix}${createHash("sha256").update(canonicalJson(value)).digest("hex")}`;
 }
 
 export function f3PolicyFingerprint(input: F3PolicyInput): string {

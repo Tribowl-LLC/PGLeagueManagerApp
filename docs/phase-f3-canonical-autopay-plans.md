@@ -20,13 +20,17 @@ unreserved obligation balance, including a balance left after a partial F2
 allocation. Settled, voided, review-required, missing, duplicate, or
 inconsistent evidence fails closed.
 
-Ready F3 items reserve their exact amounts. F2 canonical quotes and locked
-preparation include those reservations, so a manual payment cannot silently
-consume a ready plan's capacity. F4 will later revalidate the frozen policy,
-authorization, activation, location, partner, and collection-point evidence
-before unattended execution. F3 itself makes no provider calls and does not
-execute scheduled charges. Upfront leagues remain on F2 interactive one-time
-collection.
+Ready F3 items are persisted as D2 `occurrence_collection_plans` and
+`occurrence_collection_plan_items`; F3 stores provenance only and does not
+create a competing financial lifecycle. They reserve their exact amounts.
+F2 canonical quotes and locked preparation include those reservations, so a
+manual payment cannot silently consume a ready plan's capacity. F4 will later
+revalidate the frozen policy, authorization, activation, location, partner,
+and collection-point evidence before unattended execution. F3 itself makes no
+provider calls and does not execute scheduled charges. Upfront leagues remain
+on F2 interactive one-time collection. Any due or past-due item blocks
+readiness with an explicit F2 catch-up requirement; immediate collection uses
+the existing F2 quote, reservation, provider, and finalization flow.
 
 Migration 0026 is additive and contains no backfill or production rows. The
 tables use restrictive tenant-scoped foreign keys and immutable version and

@@ -49,9 +49,9 @@ import {
   paymentOccurrenceAllocationRevisions,
   paymentOperationOccurrenceSnapshots,
   paymentOperationOccurrenceSnapshotAllocations,
-  f3AutopayPlanItems,
-  f3AutopayPlans,
+  f3AutopayPlanProvenance,
   f3PayerAuthorizations,
+  f3PayerAuthorizationRevisions,
   f3CollectionPolicyOccurrences,
   f3CollectionPolicyRevisions,
   f3CollectionPolicies,
@@ -293,8 +293,9 @@ export async function deleteOrganization(id: number): Promise<void> {
 
     // F3 policy, payer authorization, and ready-plan evidence use restrictive
     // tenant links. Full teardown is the explicit retention exception.
-    await tx.delete(f3AutopayPlanItems).where(eq(f3AutopayPlanItems.organizationId, id));
-    await tx.delete(f3AutopayPlans).where(eq(f3AutopayPlans.organizationId, id));
+    await tx.execute(sql`SELECT set_config('app.organization_teardown', 'on', true)`);
+    await tx.delete(f3AutopayPlanProvenance).where(eq(f3AutopayPlanProvenance.organizationId, id));
+    await tx.delete(f3PayerAuthorizationRevisions).where(eq(f3PayerAuthorizationRevisions.organizationId, id));
     await tx.delete(f3PayerAuthorizations).where(eq(f3PayerAuthorizations.organizationId, id));
     await tx.delete(f3CollectionPolicyOccurrences).where(eq(f3CollectionPolicyOccurrences.organizationId, id));
     await tx.delete(f3CollectionPolicyRevisions).where(eq(f3CollectionPolicyRevisions.organizationId, id));

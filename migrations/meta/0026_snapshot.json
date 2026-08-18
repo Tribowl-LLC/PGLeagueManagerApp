@@ -1,5 +1,5 @@
 {
-  "id": "8717ac81-db88-4e13-ac99-f0ba3187a355",
+  "id": "b1da855a-193f-4547-bfd7-2b2d86687268",
   "prevId": "12926e19-2774-4012-88c0-648d727e68d0",
   "version": "7",
   "dialect": "postgresql",
@@ -3850,8 +3850,8 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.f3_canonical_autopay_plan_items": {
-      "name": "f3_canonical_autopay_plan_items",
+    "public.f3_autopay_plan_provenance": {
+      "name": "f3_autopay_plan_provenance",
       "schema": "",
       "columns": {
         "id": {
@@ -3873,235 +3873,9 @@
           "primaryKey": false,
           "notNull": true
         },
-        "plan_id": {
-          "name": "plan_id",
+        "d2_plan_id": {
+          "name": "d2_plan_id",
           "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "obligation_id": {
-          "name": "obligation_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "occurrence_id": {
-          "name": "occurrence_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "bowler_id": {
-          "name": "bowler_id",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "collection_point_occurrence_id": {
-          "name": "collection_point_occurrence_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "amount_minor": {
-          "name": "amount_minor",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "currency": {
-          "name": "currency",
-          "type": "varchar(3)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'USD'"
-        },
-        "item_index": {
-          "name": "item_index",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {
-        "f3_plan_items_obligation_unique": {
-          "name": "f3_plan_items_obligation_unique",
-          "columns": [
-            {
-              "expression": "plan_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "obligation_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "f3_plan_items_index_unique": {
-          "name": "f3_plan_items_index_unique",
-          "columns": [
-            {
-              "expression": "plan_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "item_index",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "f3_canonical_autopay_plan_items_organization_id_organizations_id_fk": {
-          "name": "f3_canonical_autopay_plan_items_organization_id_organizations_id_fk",
-          "tableFrom": "f3_canonical_autopay_plan_items",
-          "tableTo": "organizations",
-          "columnsFrom": [
-            "organization_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        },
-        "f3_plan_items_plan_fk": {
-          "name": "f3_plan_items_plan_fk",
-          "tableFrom": "f3_canonical_autopay_plan_items",
-          "tableTo": "f3_canonical_autopay_plans",
-          "columnsFrom": [
-            "plan_id",
-            "organization_id",
-            "league_id"
-          ],
-          "columnsTo": [
-            "id",
-            "organization_id",
-            "league_id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        },
-        "f3_plan_items_obligation_fk": {
-          "name": "f3_plan_items_obligation_fk",
-          "tableFrom": "f3_canonical_autopay_plan_items",
-          "tableTo": "bowler_occurrence_obligations",
-          "columnsFrom": [
-            "obligation_id",
-            "organization_id",
-            "league_id",
-            "occurrence_id",
-            "bowler_id",
-            "currency"
-          ],
-          "columnsTo": [
-            "id",
-            "organization_id",
-            "league_id",
-            "occurrence_id",
-            "bowler_id",
-            "currency"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        },
-        "f3_plan_items_occurrence_fk": {
-          "name": "f3_plan_items_occurrence_fk",
-          "tableFrom": "f3_canonical_autopay_plan_items",
-          "tableTo": "league_occurrences",
-          "columnsFrom": [
-            "occurrence_id",
-            "organization_id",
-            "league_id"
-          ],
-          "columnsTo": [
-            "id",
-            "organization_id",
-            "league_id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        },
-        "f3_plan_items_point_fk": {
-          "name": "f3_plan_items_point_fk",
-          "tableFrom": "f3_canonical_autopay_plan_items",
-          "tableTo": "league_occurrences",
-          "columnsFrom": [
-            "collection_point_occurrence_id",
-            "organization_id",
-            "league_id"
-          ],
-          "columnsTo": [
-            "id",
-            "organization_id",
-            "league_id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        },
-        "f3_plan_items_bowler_fk": {
-          "name": "f3_plan_items_bowler_fk",
-          "tableFrom": "f3_canonical_autopay_plan_items",
-          "tableTo": "bowlers",
-          "columnsFrom": [
-            "bowler_id",
-            "organization_id"
-          ],
-          "columnsTo": [
-            "id",
-            "organization_id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "f3_plan_items_amount_check": {
-          "name": "f3_plan_items_amount_check",
-          "value": "\"f3_canonical_autopay_plan_items\".\"amount_minor\" > 0 AND \"f3_canonical_autopay_plan_items\".\"item_index\" >= 0 AND \"f3_canonical_autopay_plan_items\".\"currency\" = 'USD'"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.f3_canonical_autopay_plans": {
-      "name": "f3_canonical_autopay_plans",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "organization_id": {
-          "name": "organization_id",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "league_id": {
-          "name": "league_id",
-          "type": "integer",
           "primaryKey": false,
           "notNull": true
         },
@@ -4135,15 +3909,15 @@
           "primaryKey": false,
           "notNull": true
         },
-        "plan_version": {
-          "name": "plan_version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
         "activation_id": {
           "name": "activation_id",
           "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "activation_revision": {
+          "name": "activation_revision",
+          "type": "integer",
           "primaryKey": false,
           "notNull": true
         },
@@ -4153,37 +3927,30 @@
           "primaryKey": false,
           "notNull": true
         },
+        "plan_version": {
+          "name": "plan_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
         "plan_fingerprint": {
           "name": "plan_fingerprint",
           "type": "varchar(80)",
           "primaryKey": false,
           "notNull": true
         },
-        "state": {
-          "name": "state",
+        "collection_point_occurrence_id": {
+          "name": "collection_point_occurrence_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "timing": {
+          "name": "timing",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "default": "'draft'"
-        },
-        "collection_points": {
-          "name": "collection_points",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "total_amount_minor": {
-          "name": "total_amount_minor",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "currency": {
-          "name": "currency",
-          "type": "varchar(3)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'USD'"
+          "default": "'at_collection_point'"
         },
         "created_at": {
           "name": "created_at",
@@ -4191,44 +3958,14 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "ready_at": {
-          "name": "ready_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "cancelled_at": {
-          "name": "cancelled_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
-        "f3_plans_version_unique": {
-          "name": "f3_plans_version_unique",
+        "f3_provenance_d2_plan_unique": {
+          "name": "f3_provenance_d2_plan_unique",
           "columns": [
             {
-              "expression": "organization_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "league_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "payer_bowler_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "plan_version",
+              "expression": "d2_plan_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -4239,8 +3976,8 @@
           "method": "btree",
           "with": {}
         },
-        "f3_plans_state_idx": {
-          "name": "f3_plans_state_idx",
+        "f3_provenance_fingerprint_unique": {
+          "name": "f3_provenance_fingerprint_unique",
           "columns": [
             {
               "expression": "organization_id",
@@ -4249,28 +3986,22 @@
               "nulls": "last"
             },
             {
-              "expression": "league_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "state",
+              "expression": "plan_fingerprint",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
             }
           ],
-          "isUnique": false,
+          "isUnique": true,
           "concurrently": false,
           "method": "btree",
           "with": {}
         }
       },
       "foreignKeys": {
-        "f3_canonical_autopay_plans_organization_id_organizations_id_fk": {
-          "name": "f3_canonical_autopay_plans_organization_id_organizations_id_fk",
-          "tableFrom": "f3_canonical_autopay_plans",
+        "f3_autopay_plan_provenance_organization_id_organizations_id_fk": {
+          "name": "f3_autopay_plan_provenance_organization_id_organizations_id_fk",
+          "tableFrom": "f3_autopay_plan_provenance",
           "tableTo": "organizations",
           "columnsFrom": [
             "organization_id"
@@ -4281,9 +4012,9 @@
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
-        "f3_plans_league_tenant_fk": {
-          "name": "f3_plans_league_tenant_fk",
-          "tableFrom": "f3_canonical_autopay_plans",
+        "f3_provenance_league_tenant_fk": {
+          "name": "f3_provenance_league_tenant_fk",
+          "tableFrom": "f3_autopay_plan_provenance",
           "tableTo": "leagues",
           "columnsFrom": [
             "league_id",
@@ -4296,9 +4027,26 @@
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
-        "f3_plans_payer_fk": {
-          "name": "f3_plans_payer_fk",
-          "tableFrom": "f3_canonical_autopay_plans",
+        "f3_provenance_d2_plan_fk": {
+          "name": "f3_provenance_d2_plan_fk",
+          "tableFrom": "f3_autopay_plan_provenance",
+          "tableTo": "occurrence_collection_plans",
+          "columnsFrom": [
+            "d2_plan_id",
+            "organization_id",
+            "league_id"
+          ],
+          "columnsTo": [
+            "id",
+            "organization_id",
+            "league_id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "f3_provenance_payer_fk": {
+          "name": "f3_provenance_payer_fk",
+          "tableFrom": "f3_autopay_plan_provenance",
           "tableTo": "bowlers",
           "columnsFrom": [
             "payer_bowler_id",
@@ -4311,9 +4059,9 @@
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
-        "f3_plans_policy_fk": {
-          "name": "f3_plans_policy_fk",
-          "tableFrom": "f3_canonical_autopay_plans",
+        "f3_provenance_policy_fk": {
+          "name": "f3_provenance_policy_fk",
+          "tableFrom": "f3_autopay_plan_provenance",
           "tableTo": "f3_collection_policies",
           "columnsFrom": [
             "policy_id",
@@ -4328,9 +4076,9 @@
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
-        "f3_plans_auth_fk": {
-          "name": "f3_plans_auth_fk",
-          "tableFrom": "f3_canonical_autopay_plans",
+        "f3_provenance_auth_fk": {
+          "name": "f3_provenance_auth_fk",
+          "tableFrom": "f3_autopay_plan_provenance",
           "tableTo": "f3_payer_autopay_authorizations",
           "columnsFrom": [
             "authorization_id",
@@ -4345,12 +4093,29 @@
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
-        "f3_plans_activation_fk": {
-          "name": "f3_plans_activation_fk",
-          "tableFrom": "f3_canonical_autopay_plans",
+        "f3_provenance_activation_fk": {
+          "name": "f3_provenance_activation_fk",
+          "tableFrom": "f3_autopay_plan_provenance",
           "tableTo": "financial_activations",
           "columnsFrom": [
             "activation_id",
+            "organization_id",
+            "league_id"
+          ],
+          "columnsTo": [
+            "id",
+            "organization_id",
+            "league_id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "f3_provenance_point_fk": {
+          "name": "f3_provenance_point_fk",
+          "tableFrom": "f3_autopay_plan_provenance",
+          "tableTo": "league_occurrences",
+          "columnsFrom": [
+            "collection_point_occurrence_id",
             "organization_id",
             "league_id"
           ],
@@ -4367,13 +4132,9 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
-        "f3_plans_fingerprint_check": {
-          "name": "f3_plans_fingerprint_check",
-          "value": "\"f3_canonical_autopay_plans\".\"plan_fingerprint\" ~ '^lvf3plan:v1:[0-9a-f]{64}$' AND \"f3_canonical_autopay_plans\".\"total_amount_minor\" > 0 AND \"f3_canonical_autopay_plans\".\"currency\" = 'USD' AND \"f3_canonical_autopay_plans\".\"plan_version\" > 0"
-        },
-        "f3_plans_state_check": {
-          "name": "f3_plans_state_check",
-          "value": "\"f3_canonical_autopay_plans\".\"state\" IN ('draft','ready','fulfilled','cancelled','superseded','review_required') AND ((\"f3_canonical_autopay_plans\".\"state\" = 'ready' AND \"f3_canonical_autopay_plans\".\"ready_at\" IS NOT NULL) OR \"f3_canonical_autopay_plans\".\"state\" <> 'ready')"
+        "f3_provenance_identity_check": {
+          "name": "f3_provenance_identity_check",
+          "value": "\"f3_autopay_plan_provenance\".\"plan_version\" > 0 AND \"f3_autopay_plan_provenance\".\"activation_revision\" > 0 AND \"f3_autopay_plan_provenance\".\"policy_version\" > 0 AND \"f3_autopay_plan_provenance\".\"authorization_version\" > 0 AND \"f3_autopay_plan_provenance\".\"activation_source_fingerprint\" ~ '^lvfinancialsource:v1:[0-9a-f]{64}$' AND \"f3_autopay_plan_provenance\".\"plan_fingerprint\" ~ '^lvf3plan:v1:[0-9a-f]{64}$' AND \"f3_autopay_plan_provenance\".\"timing\" = 'at_collection_point'"
         }
       },
       "isRLSEnabled": false
@@ -4428,6 +4189,12 @@
         "policy_fingerprint": {
           "name": "policy_fingerprint",
           "type": "varchar(80)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "command_key": {
+          "name": "command_key",
+          "type": "varchar(255)",
           "primaryKey": false,
           "notNull": true
         },
@@ -4498,6 +4265,33 @@
           "method": "btree",
           "with": {}
         },
+        "f3_policies_tenant_identity_unique": {
+          "name": "f3_policies_tenant_identity_unique",
+          "columns": [
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "league_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "f3_policies_fingerprint_unique": {
           "name": "f3_policies_fingerprint_unique",
           "columns": [
@@ -4509,6 +4303,33 @@
             },
             {
               "expression": "policy_fingerprint",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "f3_policies_command_unique": {
+          "name": "f3_policies_command_unique",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "league_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "command_key",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -4630,11 +4451,11 @@
         },
         "f3_policies_fingerprint_check": {
           "name": "f3_policies_fingerprint_check",
-          "value": "\"f3_collection_policies\".\"policy_fingerprint\" ~ '^lvf3policy:v1:[0-9a-f]{64}$'"
+          "value": "\"f3_collection_policies\".\"policy_fingerprint\" ~ '^lvf3policy:v1:[0-9a-f]{64}$' AND length(btrim(\"f3_collection_policies\".\"command_key\")) > 0"
         },
         "f3_policies_state_check": {
           "name": "f3_policies_state_check",
-          "value": "\"f3_collection_policies\".\"state\" IN ('draft','approved','superseded') AND (\"f3_collection_policies\".\"state\" <> 'approved' OR (\"f3_collection_policies\".\"approved_by_user_id\" IS NOT NULL AND \"f3_collection_policies\".\"approved_at\" IS NOT NULL))"
+          "value": "\"f3_collection_policies\".\"state\" IN ('draft','approved','superseded') AND f3_json_array_shape(\"f3_collection_policies\".\"collection_points\", 'occurrence-object') AND (\"f3_collection_policies\".\"state\" <> 'approved' OR (\"f3_collection_policies\".\"approved_by_user_id\" IS NOT NULL AND \"f3_collection_policies\".\"approved_at\" IS NOT NULL))"
         }
       },
       "isRLSEnabled": false
@@ -4803,6 +4624,23 @@
           "tableTo": "league_occurrences",
           "columnsFrom": [
             "collection_point_occurrence_id",
+            "organization_id",
+            "league_id"
+          ],
+          "columnsTo": [
+            "id",
+            "organization_id",
+            "league_id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "f3_policy_occurrences_pair_fk": {
+          "name": "f3_policy_occurrences_pair_fk",
+          "tableFrom": "f3_collection_policy_occurrences",
+          "tableTo": "league_occurrences",
+          "columnsFrom": [
+            "paired_occurrence_id",
             "organization_id",
             "league_id"
           ],
@@ -4984,6 +4822,164 @@
       },
       "isRLSEnabled": false
     },
+    "public.f3_payer_authorization_revisions": {
+      "name": "f3_payer_authorization_revisions",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "organization_id": {
+          "name": "organization_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "league_id": {
+          "name": "league_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "authorization_id": {
+          "name": "authorization_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revision_number": {
+          "name": "revision_number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "snapshot_schema_version": {
+          "name": "snapshot_schema_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "before_snapshot": {
+          "name": "before_snapshot",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "after_snapshot": {
+          "name": "after_snapshot",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "recorded_by_user_id": {
+          "name": "recorded_by_user_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "f3_auth_revisions_unique": {
+          "name": "f3_auth_revisions_unique",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "league_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "authorization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "revision_number",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "f3_payer_authorization_revisions_organization_id_organizations_id_fk": {
+          "name": "f3_payer_authorization_revisions_organization_id_organizations_id_fk",
+          "tableFrom": "f3_payer_authorization_revisions",
+          "tableTo": "organizations",
+          "columnsFrom": [
+            "organization_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "f3_payer_authorization_revisions_recorded_by_user_id_users_id_fk": {
+          "name": "f3_payer_authorization_revisions_recorded_by_user_id_users_id_fk",
+          "tableFrom": "f3_payer_authorization_revisions",
+          "tableTo": "users",
+          "columnsFrom": [
+            "recorded_by_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "f3_auth_revisions_parent_fk": {
+          "name": "f3_auth_revisions_parent_fk",
+          "tableFrom": "f3_payer_authorization_revisions",
+          "tableTo": "f3_payer_autopay_authorizations",
+          "columnsFrom": [
+            "authorization_id",
+            "organization_id",
+            "league_id"
+          ],
+          "columnsTo": [
+            "id",
+            "organization_id",
+            "league_id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "f3_auth_revisions_shape_check": {
+          "name": "f3_auth_revisions_shape_check",
+          "value": "\"f3_payer_authorization_revisions\".\"revision_number\" > 0 AND \"f3_payer_authorization_revisions\".\"snapshot_schema_version\" > 0 AND ((\"f3_payer_authorization_revisions\".\"revision_number\" = 1 AND \"f3_payer_authorization_revisions\".\"before_snapshot\" IS NULL) OR (\"f3_payer_authorization_revisions\".\"revision_number\" > 1 AND \"f3_payer_authorization_revisions\".\"before_snapshot\" IS NOT NULL))"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.f3_payer_autopay_authorizations": {
       "name": "f3_payer_autopay_authorizations",
       "schema": "",
@@ -5034,6 +5030,12 @@
         "authorization_fingerprint": {
           "name": "authorization_fingerprint",
           "type": "varchar(80)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "command_key": {
+          "name": "command_key",
+          "type": "varchar(255)",
           "primaryKey": false,
           "notNull": true
         },
@@ -5120,6 +5122,33 @@
         }
       },
       "indexes": {
+        "f3_auth_tenant_identity_unique": {
+          "name": "f3_auth_tenant_identity_unique",
+          "columns": [
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "league_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "f3_auth_version_unique": {
           "name": "f3_auth_version_unique",
           "columns": [
@@ -5143,6 +5172,33 @@
             },
             {
               "expression": "authorization_version",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "f3_auth_command_unique": {
+          "name": "f3_auth_command_unique",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "league_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "command_key",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -5244,6 +5300,21 @@
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
+        "f3_auth_location_fk": {
+          "name": "f3_auth_location_fk",
+          "tableFrom": "f3_payer_autopay_authorizations",
+          "tableTo": "locations",
+          "columnsFrom": [
+            "location_id",
+            "organization_id"
+          ],
+          "columnsTo": [
+            "id",
+            "organization_id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
         "f3_auth_policy_fk": {
           "name": "f3_auth_policy_fk",
           "tableFrom": "f3_payer_autopay_authorizations",
@@ -5268,7 +5339,7 @@
       "checkConstraints": {
         "f3_auth_fingerprint_check": {
           "name": "f3_auth_fingerprint_check",
-          "value": "\"f3_payer_autopay_authorizations\".\"authorization_fingerprint\" ~ '^lvf3auth:v1:[0-9a-f]{64}$' AND \"f3_payer_autopay_authorizations\".\"payment_method_fingerprint\" ~ '^[0-9a-f]{64}$' AND \"f3_payer_autopay_authorizations\".\"timing\" = 'at_collection_point' AND \"f3_payer_autopay_authorizations\".\"authorization_version\" > 0 AND \"f3_payer_autopay_authorizations\".\"policy_version\" > 0"
+          "value": "\"f3_payer_autopay_authorizations\".\"authorization_fingerprint\" ~ '^lvf3auth:v1:[0-9a-f]{64}$' AND \"f3_payer_autopay_authorizations\".\"payment_method_fingerprint\" ~ '^[0-9a-f]{64}$' AND \"f3_payer_autopay_authorizations\".\"timing\" = 'at_collection_point' AND \"f3_payer_autopay_authorizations\".\"authorization_version\" > 0 AND \"f3_payer_autopay_authorizations\".\"policy_version\" > 0 AND length(btrim(\"f3_payer_autopay_authorizations\".\"command_key\")) > 0 AND f3_json_array_shape(\"f3_payer_autopay_authorizations\".\"covered_bowler_ids\", 'number') AND f3_json_array_shape(\"f3_payer_autopay_authorizations\".\"collection_point_occurrence_ids\", 'string')"
         },
         "f3_auth_state_check": {
           "name": "f3_auth_state_check",

@@ -950,8 +950,9 @@ rollback means traffic pause and roll-forward with an F2-aware revision; do not
 run a pre-F2 application against F2 actor/supplement evidence.
 # F3 canonical plan boundary
 
-F3 policy and payer-plan rows are intent evidence only. A `ready` F3 plan
-reserves obligation capacity but does not create a payment operation, lease,
+F3 policy and payer-authorization rows are intent evidence only. A `ready`
+F3 plan is an authoritative D2 collection plan with an immutable F3 provenance
+link; it reserves obligation capacity but does not create a payment operation, lease,
 provider request, retry, webhook, refund, or dispute transition. F4 owns any
 future operation preparation/execution and must revalidate the frozen policy,
 authorization, activation, tenant, location, partner, and collection-point

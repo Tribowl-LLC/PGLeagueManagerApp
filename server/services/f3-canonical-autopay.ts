@@ -10,6 +10,7 @@ export type F3ObligationEvidence = {
   currency: string;
   state: "open" | "partially_settled" | "settled" | "voided";
   reviewRequired: boolean;
+  dueAt?: string | null;
 };
 
 export type F3ReadyPlanItem = {
@@ -68,15 +69,19 @@ export function deriveF3ReadyPlan(input: F3ReadyPlanInput): { contractVersion: t
   const authorizedPoints = new Set(auth.collectionPointOccurrenceIds);
   if (collectionPoints.size !== authorizedPoints.size || [...collectionPoints].some((id) => !authorizedPoints.has(id))) fail("COLLECTION_POINT_MISMATCH");
   const items: F3ReadyPlanItem[] = [];
+  const obligationByKey = new Map<string, F3ObligationEvidence>();
   for (const obligation of input.obligations) {
-    if (!auth.coveredBowlerIds.includes(obligation.bowlerId)) continue;
-    if (obligation.currency !== "USD" || obligation.reviewRequired || obligation.state === "settled" || obligation.state === "voided") fail("OBLIGATION_UNAVAILABLE");
+    const key = `${obligation.occurrenceId}:${obligation.bowlerId}`;
+    if (obligationByKey.has(key)) fail("OBLIGATION_EVIDENCE_INCONSISTENT");
+    obligationByKey.set(key, obligation);
+  }
+  for (const mapping of policy.occurrenceCollectionPoints) for (const bowlerId of auth.coveredBowlerIds) {
+    const obligation = obligationByKey.get(`${mapping.occurrenceId}:${bowlerId}`);
+    if (!obligation || obligation.currency !== "USD" || obligation.reviewRequired || obligation.state === "settled" || obligation.state === "voided") fail("OBLIGATION_UNAVAILABLE");
+    if (obligation.dueAt && new Date(obligation.dueAt).getTime() <= Date.now()) fail("IMMEDIATE_CATCHUP_REQUIRED");
     const remaining = obligation.amountMinor - obligation.allocatedMinor - obligation.reservedMinor;
-    if (!Number.isSafeInteger(remaining) || remaining <= 0) continue;
-    // Collection-point assignment is policy evidence, never a date match.
-    const point = policy.occurrenceCollectionPoints.find((row) => row.occurrenceId === obligation.occurrenceId)?.collectionPointOccurrenceId;
-    if (!point) fail("COLLECTION_POINT_MISSING");
-    items.push({ obligationId: obligation.obligationId, occurrenceId: obligation.occurrenceId, bowlerId: obligation.bowlerId, collectionPointOccurrenceId: point, amountMinor: remaining, itemIndex: items.length });
+    if (!Number.isSafeInteger(remaining) || remaining <= 0) fail("OBLIGATION_ALREADY_RESERVED");
+    items.push({ obligationId: obligation.obligationId, occurrenceId: obligation.occurrenceId, bowlerId, collectionPointOccurrenceId: mapping.collectionPointOccurrenceId, amountMinor: remaining, itemIndex: items.length });
   }
   if (items.length === 0) fail("NO_COLLECTABLE_OBLIGATIONS");
   const total = items.reduce((sum, row) => sum + row.amountMinor, 0);

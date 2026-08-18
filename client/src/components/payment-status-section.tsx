@@ -11,6 +11,7 @@ import { calculateFinancials } from "@/lib/financial-utils";
 import { sanitizePaymentErrorMessage } from "@/lib/payment-user-error";
 import type { League, Bowler, Payment, SavedCard, ApiResponse, BowlerDetailsResponse } from "@shared/schema";
 import { PaymentStatusView } from "@/components/payment-status-view";
+import { F3CanonicalAutopaySetup } from "@/components/f3-canonical-autopay-setup";
 import { useBowlerPaymentSubmit } from "@/hooks/use-bowler-payment-submit";
 import type { AutopaySetupQuote } from "@/lib/autopay-setup";
 import { beginPaymentIntent, clearPaymentIntent, paymentRequestHeaders, paymentRequestWithRecovery } from "@/lib/payment-request-identity";
@@ -471,7 +472,12 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
   });
   const activeSchedule = scheduleResponse?.success ? scheduleResponse.data ?? undefined : undefined;
 
+  const f3ClientEnabled = import.meta.env.VITE_LEAGUEVAULT_F3_CANONICAL_AUTOPAY_ENABLED === "1" || import.meta.env.VITE_LEAGUEVAULT_F3_CANONICAL_AUTOPAY_ENABLED === "true";
   return (
+    <>
+    {f3ClientEnabled && league.paymentMode === "weekly" && league.organizationId ? (
+      <F3CanonicalAutopaySetup leagueId={league.id} organizationId={league.organizationId} bowlerId={bowler.id} savedCards={savedCards} />
+    ) : null}
     <PaymentStatusView
       showPaymentSetup={showPaymentSetup}
       league={league}
@@ -553,5 +559,6 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
         setShowPaymentSetup(true);
       }}
     />
+    </>
   );
 };
