@@ -948,3 +948,14 @@ evidence for backward-compatible reads and a tenant lookup index. No historical
 operation is backfilled or linked to an obligation. After the first F2 row,
 rollback means traffic pause and roll-forward with an F2-aware revision; do not
 run a pre-F2 application against F2 actor/supplement evidence.
+# F3 canonical plan boundary
+
+F3 policy and payer-plan rows are intent evidence only. A `ready` F3 plan
+reserves obligation capacity but does not create a payment operation, lease,
+provider request, retry, webhook, refund, or dispute transition. F4 owns any
+future operation preparation/execution and must revalidate the frozen policy,
+authorization, activation, tenant, location, partner, and collection-point
+evidence. F2 interactive preparation includes ready F3 reservations while
+holding its normal obligation locks; stale manual quotes therefore fail
+closed. Existing `lvautopaysetup:v1` and v1 schedule operation identities are
+unchanged.

@@ -49,6 +49,12 @@ import {
   paymentOccurrenceAllocationRevisions,
   paymentOperationOccurrenceSnapshots,
   paymentOperationOccurrenceSnapshotAllocations,
+  f3AutopayPlanItems,
+  f3AutopayPlans,
+  f3PayerAuthorizations,
+  f3CollectionPolicyOccurrences,
+  f3CollectionPolicyRevisions,
+  f3CollectionPolicies,
   paymentSchedules,
   users,
   webhookEvents,
@@ -284,6 +290,15 @@ export async function deleteOrganization(id: number): Promise<void> {
     // Setup workflows retain restrictive operation/schedule references, so
     // explicit tenant teardown removes them before either referenced table.
     await tx.delete(autopaySetupRequests).where(eq(autopaySetupRequests.organizationId, id));
+
+    // F3 policy, payer authorization, and ready-plan evidence use restrictive
+    // tenant links. Full teardown is the explicit retention exception.
+    await tx.delete(f3AutopayPlanItems).where(eq(f3AutopayPlanItems.organizationId, id));
+    await tx.delete(f3AutopayPlans).where(eq(f3AutopayPlans.organizationId, id));
+    await tx.delete(f3PayerAuthorizations).where(eq(f3PayerAuthorizations.organizationId, id));
+    await tx.delete(f3CollectionPolicyOccurrences).where(eq(f3CollectionPolicyOccurrences.organizationId, id));
+    await tx.delete(f3CollectionPolicyRevisions).where(eq(f3CollectionPolicyRevisions.organizationId, id));
+    await tx.delete(f3CollectionPolicies).where(eq(f3CollectionPolicies.organizationId, id));
 
     // D2 financial evidence uses restrictive parent links. Full tenant
     // teardown is the explicit retention-policy exception and removes every

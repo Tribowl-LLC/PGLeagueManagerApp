@@ -19,6 +19,16 @@ reconciled and the product owner has approved activation of individual
 leagues. Migration 0024 may be installed while activation remains dormant;
 production D2 activation rows must remain zero until that approval.
 
+F3 canonical auto-pay plans are a separately gated, setup-only release. Keep
+`LEAGUEVAULT_F3_CANONICAL_AUTOPAY_ENABLED` unset or false by default. Migration
+0026 is additive and must be applied before any reviewed gate enablement; do
+not backfill v1 schedules or create production policy/authorization rows during
+deployment. F3 quote/read/setup operations make no provider calls and F4
+scheduled execution is not part of this release. Ready plans reserve exact
+obligation balances, so verify F2 manual quotes reject reserved capacity.
+After v2 evidence exists, rollback is a forward fix or traffic pause only;
+retain migration 0026 and its evidence.
+
 Production is hosted on Render and uses Neon PostgreSQL. GitHub `main` is the
 release source. This document covers the safe release path; it does not store
 credentials.
