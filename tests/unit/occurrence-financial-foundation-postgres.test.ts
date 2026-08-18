@@ -42,6 +42,7 @@ import {
   getInteractiveOccurrenceActivation,
   InteractiveOccurrenceAllocationError,
   persistInteractiveOccurrenceSnapshot,
+  validateInteractiveOccurrenceReplay,
 } from "../../server/services/interactive-occurrence-allocation";
 import { deleteOrganization } from "../../server/storage/organizations";
 import {
@@ -383,12 +384,32 @@ describe("D2 occurrence financial foundation PostgreSQL contract", () => {
         amountMinor: 400,
         weekOf: "2038-01-01T00:00:00.000Z",
       });
+      const firstOccurrenceSnapshot: PaymentOperationOccurrenceSnapshotV1 = {
+        contractVersion: PAYMENT_OPERATION_OCCURRENCE_SNAPSHOT_CONTRACT,
+        snapshotVersion: 1,
+        operationId: operation.id,
+        operationType: "interactive_charge",
+        organizationId: scope.organizationId,
+        leagueId: scope.leagueId,
+        amountMinor: 400,
+        currency: "USD",
+        allocations: [{
+          allocationIndex: 0,
+          organizationId: scope.organizationId,
+          leagueId: scope.leagueId,
+          occurrenceId: obligation.occurrenceId,
+          bowlerId: scope.bowlerId,
+          obligationId: obligation.id,
+          amountMinor: 400,
+          currency: "USD",
+        }],
+      };
       await tx.insert(paymentOperationOccurrenceSnapshots).values({
         operationId: operation.id,
         organizationId: scope.organizationId,
         leagueId: scope.leagueId,
         snapshotVersion: 1,
-        snapshotFingerprint: `lvpayocc:v1:${"f".repeat(64)}`,
+        snapshotFingerprint: fingerprintPaymentOperationOccurrenceSnapshot(firstOccurrenceSnapshot),
         amountMinor: 400,
         currency: "USD",
         allocationCount: 1,
@@ -532,6 +553,22 @@ describe("D2 occurrence financial foundation PostgreSQL contract", () => {
     expect(allAllocations.map((row) => row.currentRevision).sort()).toEqual([1, 1]);
     expect(fullySettled?.state).toBe("settled");
     expect(fullySettled?.currentRevision).toBe(3);
+    await expect(validateInteractiveOccurrenceReplay({
+      operationId: operation.id,
+      organizationId: scope.organizationId,
+      leagueId: scope.leagueId,
+      amountMinor: 400,
+      currency: "USD",
+      selections: [{ obligationId: obligation.id, amountMinor: 400 }],
+    })).resolves.toBeUndefined();
+    await expect(validateInteractiveOccurrenceReplay({
+      operationId: operation.id,
+      organizationId: scope.organizationId,
+      leagueId: scope.leagueId,
+      amountMinor: 400,
+      currency: "USD",
+      selections: [{ obligationId: obligation.id, amountMinor: 399 }],
+    })).rejects.toMatchObject({ code: "IMMUTABLE_SELECTION_MISMATCH" });
     await deleteOrganization(scope.organizationId);
   });
 

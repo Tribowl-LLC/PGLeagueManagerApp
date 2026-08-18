@@ -34,7 +34,7 @@ import { PaymentFeeInfoAlert } from "@/components/payment-fee-info-alert";
 import { PaymentCheckNumberField } from "@/components/payment-check-number-field";
 import { PaymentReceiptEmailField } from "@/components/payment-receipt-email-field";
 import { PaymentProviderNotConfiguredAlert } from "@/components/payment-provider-not-configured-alert";
-import { buildInteractiveOccurrenceFields, interactiveIntentSemanticKey } from "@/lib/interactive-payment-request";
+import { buildInteractiveOccurrenceFields, interactiveIntentScopeSuffix } from "@/lib/interactive-payment-request";
 import { PaymentFormActions } from "@/components/payment-form-actions";
 import { InteractiveOccurrenceSelector } from "@/components/interactive-occurrence-selector";
 
@@ -275,7 +275,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
     }
     const overrideEmail = !selected?.email && trimmedReceiptEmail ? trimmedReceiptEmail : undefined;
     try {
-      const paymentScope = `admin-wallet:${bowlerId}:${currentLeagueId}:${amount}:${interactiveIntentSemanticKey(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
+      const paymentScope = `admin-wallet:${bowlerId}:${currentLeagueId}:${amount}${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
       const requestKey = walletRequestKeyRef.current ?? beginPaymentIntent(paymentScope);
       const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch('/api/payments-provider/payments', {
         method: 'POST',
@@ -328,7 +328,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
     const values = form.getValues();
     if (!values.bowlerId || !values.leagueId || !values.amount) return;
     walletRequestKeyRef.current = beginPaymentIntent(
-      `admin-wallet:${values.bowlerId}:${values.leagueId}:${values.amount}:${interactiveIntentSemanticKey(occurrenceAllocations, occurrenceQuoteFingerprint)}`,
+      `admin-wallet:${values.bowlerId}:${values.leagueId}:${values.amount}${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`,
     );
   }, [form, occurrenceAllocations, occurrenceQuoteFingerprint]);
 

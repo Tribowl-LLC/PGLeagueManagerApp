@@ -1,6 +1,7 @@
 import { db } from "../db.js";
 import { storage } from "../storage/index.js";
 import { PaymentOperationValidationError, type PaymentOperationTransaction } from "../storage/payment-operations.js";
+import { fingerprintInteractiveOccurrenceIntent } from "./payment-operation-idempotency.js";
 import {
   buildSquarePaymentRequestIdentity,
 } from "./payment-operation-idempotency.js";
@@ -103,6 +104,9 @@ export async function prepareInteractivePaymentOperation(
       currency: input.currency,
       providerName: input.providerName,
       authorizingUserId: input.authorizingUserId,
+      immutableSemanticFingerprint: input.occurrenceSelections === undefined || !input.occurrenceQuoteFingerprint
+        ? undefined
+        : fingerprintInteractiveOccurrenceIntent({ selections: input.occurrenceSelections, quoteFingerprint: input.occurrenceQuoteFingerprint }),
       now: input.now,
     }, tx);
     await storage.persistInteractivePaymentOperationSnapshot(

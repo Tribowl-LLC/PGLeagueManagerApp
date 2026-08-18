@@ -14,7 +14,7 @@ import { PaymentStatusView } from "@/components/payment-status-view";
 import { useBowlerPaymentSubmit } from "@/hooks/use-bowler-payment-submit";
 import type { AutopaySetupQuote } from "@/lib/autopay-setup";
 import { beginPaymentIntent, clearPaymentIntent, paymentRequestHeaders, paymentRequestWithRecovery } from "@/lib/payment-request-identity";
-import { buildInteractiveOccurrenceFields, interactiveIntentSemanticKey } from "@/lib/interactive-payment-request";
+import { buildInteractiveOccurrenceFields, interactiveIntentScopeSuffix } from "@/lib/interactive-payment-request";
 
 interface BowlerLinkRow {
   id: number;
@@ -293,8 +293,8 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
       const totalPayees = 1 + additionalBowlerIds.length;
       const totalAmount = perAmount * totalPayees;
       const paymentScope = isCombined
-        ? `bowler-wallet:combined:${league.id}:${totalAmount}:${additionalBowlerIds.join(',')}:${interactiveIntentSemanticKey(occurrenceAllocations, occurrenceQuoteFingerprint)}`
-        : `bowler-wallet:${league.id}:${targetBowlerId}:${perAmount}:${interactiveIntentSemanticKey(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
+        ? `bowler-wallet:combined:${league.id}:${totalAmount}:${additionalBowlerIds.join(',')}${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`
+        : `bowler-wallet:${league.id}:${targetBowlerId}:${perAmount}${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
       const requestKey = walletRequestKeyRef.current ?? beginPaymentIntent(paymentScope);
       const occurrenceFields = buildInteractiveOccurrenceFields(
         occurrenceAllocations,
@@ -382,8 +382,8 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
     const isCombined = additionalBowlerIds.length > 0;
     const totalAmount = perAmount * (1 + additionalBowlerIds.length);
     const paymentScope = isCombined
-    ? `bowler-wallet:combined:${league.id}:${totalAmount}:${additionalBowlerIds.join(',')}:${interactiveIntentSemanticKey(occurrenceAllocations, occurrenceQuoteFingerprint)}`
-    : `bowler-wallet:${league.id}:${targetBowlerId}:${perAmount}:${interactiveIntentSemanticKey(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
+    ? `bowler-wallet:combined:${league.id}:${totalAmount}:${additionalBowlerIds.join(',')}${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`
+    : `bowler-wallet:${league.id}:${targetBowlerId}:${perAmount}${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
     walletRequestKeyRef.current = beginPaymentIntent(paymentScope);
   }, [additionalBowlerIds, calculateTotalAmount, league.id, targetBowlerId, occurrenceAllocations, occurrenceQuoteFingerprint]);
 

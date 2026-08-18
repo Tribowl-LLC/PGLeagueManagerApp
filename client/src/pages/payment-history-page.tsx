@@ -28,7 +28,7 @@ import { NoLeaguesView } from "./payment-history-page/no-leagues-view";
 import { NoLeagueView } from "./payment-history-page/no-league-view";
 import { PaymentHistoryContent } from "./payment-history-page/payment-history-content";
 import { beginPaymentIntent, clearPaymentIntent, paymentRequestHeaders, paymentRequestWithRecovery } from "@/lib/payment-request-identity";
-import { buildInteractiveOccurrenceFields, interactiveIntentSemanticKey } from "@/lib/interactive-payment-request";
+import { buildInteractiveOccurrenceFields, interactiveIntentScopeSuffix } from "@/lib/interactive-payment-request";
 import { resolveInteractiveFinancialRead } from "@/lib/financial-read-contract";
 
 export default function PaymentHistoryPage() {
@@ -249,7 +249,7 @@ export default function PaymentHistoryPage() {
     const overrideEmail = !bowlerEmail && trimmedReceiptEmail ? trimmedReceiptEmail : undefined;
     try {
       setIsWalletProcessing(true);
-      const paymentScope = `history-wallet:${bowlerId}:${leagueId}:${dialogAmountCents}:${interactiveIntentSemanticKey(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
+      const paymentScope = `history-wallet:${bowlerId}:${leagueId}:${dialogAmountCents}${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
       const requestKey = walletRequestKeyRef.current ?? beginPaymentIntent(paymentScope);
       const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch('/api/payments-provider/payments', {
         method: 'POST',
@@ -304,7 +304,7 @@ export default function PaymentHistoryPage() {
     if (resolvedFinancialRead.status === "unavailable" || loadingFinancialRead || financialReadError) return;
     if (!bowlerId || !leagueId || !dialogAmountCents) return;
     walletRequestKeyRef.current = beginPaymentIntent(
-      `history-wallet:${bowlerId}:${leagueId}:${dialogAmountCents}:${interactiveIntentSemanticKey(occurrenceAllocations, occurrenceQuoteFingerprint)}`,
+      `history-wallet:${bowlerId}:${leagueId}:${dialogAmountCents}${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`,
     );
   }, [bowlerId, dialogAmountCents, leagueId, occurrenceAllocations, occurrenceQuoteFingerprint, resolvedFinancialRead.status, loadingFinancialRead, financialReadError]);
 
@@ -366,7 +366,7 @@ export default function PaymentHistoryPage() {
       const overrideEmail = !bowlerEmail && trimmedReceiptEmail ? trimmedReceiptEmail : undefined;
 
       if (cardMode === 'saved' && selectedSavedCardId) {
-        const paymentScope = `history:${bowlerId}:${leagueId}:${dialogAmount}:saved:${interactiveIntentSemanticKey(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
+        const paymentScope = `history:${bowlerId}:${leagueId}:${dialogAmount}:saved${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
         const requestKey = beginPaymentIntent(paymentScope);
           const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch('/api/payments-provider/payments', {
           method: 'POST',
@@ -391,7 +391,7 @@ export default function PaymentHistoryPage() {
         }
         clearPaymentIntent(paymentScope);
       } else {
-        const paymentScope = `history:${bowlerId}:${leagueId}:${dialogAmount}:new:${storeCard}:${interactiveIntentSemanticKey(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
+        const paymentScope = `history:${bowlerId}:${leagueId}:${dialogAmount}:new:${storeCard}${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
         const requestKey = beginPaymentIntent(paymentScope);
         if (!card) throw new Error('Please enter your card details.');
         await createPayment(dialogAmount, card, bowlerId, leagueId, storeCard, overrideEmail, requestKey, occurrenceAllocations, occurrenceQuoteFingerprint);

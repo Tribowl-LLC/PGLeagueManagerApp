@@ -20,7 +20,9 @@ import { db } from "../db.js";
 import { canonicalizePaymentOperationInput } from "./payment-operation-idempotency.js";
 import { loadOperationalActivationEvidence } from "./canonical-due-past-due.js";
 import {
+  PAYMENT_OPERATION_OCCURRENCE_SNAPSHOT_CONTRACT,
   fingerprintPaymentOperationOccurrenceSnapshot,
+  validatePaymentOperationOccurrenceSnapshot,
   type PaymentOperationOccurrenceSnapshotV1,
 } from "./payment-operation-occurrence-snapshot.js";
 
@@ -453,4 +455,74 @@ export async function persistInteractiveOccurrenceSnapshot(
     operationId: operation.id,
     snapshotVersion: semantic.snapshotVersion,
   }))).onConflictDoNothing();
+}
+
+/**
+ * Validates a completed operation replay against its immutable supplement.
+ * This intentionally does not quote live outstanding balances: a later
+ * operation may have settled the same obligation while the original logical
+ * operation must still reconstruct its already-completed provider result.
+ */
+export async function validateInteractiveOccurrenceReplay(input: {
+  operationId: string;
+  organizationId: number;
+  leagueId: number;
+  amountMinor: number;
+  currency: string;
+  selections?: InteractiveOccurrenceSelection[];
+}): Promise<void> {
+  await db.transaction(async (tx) => {
+    const [supplement] = await tx.select().from(paymentOperationOccurrenceSnapshots)
+      .where(and(
+        eq(paymentOperationOccurrenceSnapshots.operationId, input.operationId),
+        eq(paymentOperationOccurrenceSnapshots.organizationId, input.organizationId),
+        eq(paymentOperationOccurrenceSnapshots.leagueId, input.leagueId),
+      )).limit(1).for("share");
+    if (!supplement) {
+      if (input.selections === undefined) return;
+      throw new InteractiveOccurrenceAllocationError("PRE_F2_OPERATION");
+    }
+    if (input.selections === undefined
+      || supplement.amountMinor !== input.amountMinor
+      || supplement.currency !== input.currency
+      || supplement.allocationCount !== input.selections.length) {
+      throw new InteractiveOccurrenceAllocationError("IMMUTABLE_SELECTION_MISMATCH");
+    }
+    const rows = await tx.select().from(paymentOperationOccurrenceSnapshotAllocations)
+      .where(and(
+        eq(paymentOperationOccurrenceSnapshotAllocations.operationId, input.operationId),
+        eq(paymentOperationOccurrenceSnapshotAllocations.organizationId, input.organizationId),
+        eq(paymentOperationOccurrenceSnapshotAllocations.leagueId, input.leagueId),
+      )).orderBy(asc(paymentOperationOccurrenceSnapshotAllocations.allocationIndex));
+    if (rows.length !== supplement.allocationCount || rows.some((row, index) => (
+      row.allocationIndex !== index
+      || row.obligationId !== input.selections?.[index]?.obligationId
+      || row.amountMinor !== input.selections?.[index]?.amountMinor
+    ))) {
+      throw new InteractiveOccurrenceAllocationError("IMMUTABLE_SELECTION_MISMATCH");
+    }
+    const semantic = validatePaymentOperationOccurrenceSnapshot({
+      contractVersion: PAYMENT_OPERATION_OCCURRENCE_SNAPSHOT_CONTRACT,
+      snapshotVersion: supplement.snapshotVersion,
+      operationId: input.operationId,
+      operationType: "interactive_charge",
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      amountMinor: input.amountMinor,
+      currency: input.currency,
+      allocations: rows.map((row) => ({
+        allocationIndex: row.allocationIndex,
+        organizationId: row.organizationId,
+        leagueId: row.leagueId,
+        occurrenceId: row.occurrenceId,
+        bowlerId: row.bowlerId,
+        obligationId: row.obligationId,
+        amountMinor: row.amountMinor,
+        currency: row.currency,
+      })),
+    });
+    if (fingerprintPaymentOperationOccurrenceSnapshot(semantic) !== supplement.snapshotFingerprint) {
+      throw new InteractiveOccurrenceAllocationError("CANONICAL_EVIDENCE_INCOMPATIBLE");
+    }
+  });
 }

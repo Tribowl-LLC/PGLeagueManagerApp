@@ -15,7 +15,7 @@ import {
   paymentRequestHeaders,
   paymentRequestWithRecovery,
 } from "@/lib/payment-request-identity";
-import { buildInteractiveOccurrenceFields, interactiveIntentSemanticKey } from "@/lib/interactive-payment-request";
+import { buildInteractiveOccurrenceFields, interactiveIntentScopeSuffix } from "@/lib/interactive-payment-request";
 import type { InsertPaymentInput, InsertPayment } from "@shared/schema";
 import type { SquareCard } from "@/hooks/use-square-payment";
 type PaymentCard = SquareCard | null;
@@ -63,10 +63,9 @@ export function usePaymentFormSubmit({
       const trimmedBuyerEmail = (buyerEmail ?? '').trim();
       const buyerEmailField = trimmedBuyerEmail ? { buyerEmail: trimmedBuyerEmail } : {};
       const occurrenceFields = buildInteractiveOccurrenceFields(occurrenceAllocations, occurrenceQuoteFingerprint);
-      const occurrenceIntent = interactiveIntentSemanticKey(occurrenceAllocations, occurrenceQuoteFingerprint);
 
       if (data.type === 'credit_card') {
-        const paymentScope = `admin:${data.bowlerId}:${data.leagueId}:${data.amount}:${cardMode}:${data.storeCard === true}:${occurrenceIntent}`;
+        const paymentScope = `admin:${data.bowlerId}:${data.leagueId}:${data.amount}:${cardMode}:${data.storeCard === true}${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
         const requestKey = beginPaymentIntent(paymentScope);
         if (cardMode === 'saved' && selectedSavedCardId) {
           const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch('/api/payments-provider/payments', {

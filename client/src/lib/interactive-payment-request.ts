@@ -21,3 +21,13 @@ export function interactiveIntentSemanticKey(
   const ordered = [...selections].sort((left, right) => left.obligationId.localeCompare(right.obligationId));
   return `${fingerprint ?? 'missing'}:${JSON.stringify(ordered)}`;
 }
+
+/** Empty suffix preserves every pre-F2 browser intent scope byte-for-byte. */
+export function interactiveIntentScopeSuffix(
+  selections: InteractivePaymentSelection[] | undefined,
+  fingerprint: string | undefined,
+): string {
+  return selections && selections.length > 0
+    ? `:${interactiveIntentSemanticKey(selections, fingerprint)}`
+    : '';
+}

@@ -35,6 +35,7 @@ import {
 } from "@shared/schema";
 import { db } from "../db.js";
 import {
+  bindInteractiveOccurrenceRequestFingerprint,
   buildPaymentOperationIdentity,
   INTERACTIVE_REQUEST_KEY_MAX_LENGTH,
   validateInteractiveRequestKey,
@@ -109,6 +110,7 @@ export interface CreateOrGetInteractivePaymentOperationInput {
   currency: string;
   providerName: string;
   authorizingUserId?: number | null;
+  immutableSemanticFingerprint?: string;
   now?: Date;
 }
 
@@ -119,6 +121,7 @@ export interface CreateOrGetGeneralInteractivePaymentOperationInput {
   currency: string;
   providerName: string;
   authorizingUserId?: number | null;
+  immutableSemanticFingerprint?: string;
   now?: Date;
 }
 
@@ -479,7 +482,7 @@ export async function createOrGetInteractivePaymentOperation(
   input: CreateOrGetInteractivePaymentOperationInput,
   existingTransaction?: PaymentOperationTransaction,
 ): Promise<PaymentOperation> {
-  const identity = buildPaymentOperationIdentity({
+  const baseIdentity = buildPaymentOperationIdentity({
     organizationId: input.organizationId,
     operationType: "interactive_charge",
     targetKey: input.targetKey,
@@ -487,6 +490,13 @@ export async function createOrGetInteractivePaymentOperation(
     currency: input.currency,
     providerName: input.providerName,
   });
+  const identity = {
+    ...baseIdentity,
+    requestFingerprint: bindInteractiveOccurrenceRequestFingerprint(
+      baseIdentity.requestFingerprint,
+      input.immutableSemanticFingerprint,
+    ),
+  };
   const request = identity.normalizedRequest;
   const nowDate = input.now ?? new Date();
   if (!Number.isFinite(nowDate.getTime())) {
@@ -573,6 +583,7 @@ export async function createOrGetGeneralInteractivePaymentOperation(
     currency: input.currency,
     providerName: input.providerName,
     authorizingUserId: input.authorizingUserId,
+    immutableSemanticFingerprint: input.immutableSemanticFingerprint,
     now: input.now,
   }, existingTransaction);
   // Existing pre-F2 operations have no actor evidence and retain their exact

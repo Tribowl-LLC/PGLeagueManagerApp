@@ -4,6 +4,7 @@ import { csrfFetch } from '@/lib/queryClient';
 import { makeApiError, type ApiErrorLike } from "@/lib/provider-not-configured";
 import type { SquareCard as SquareCardHook } from "@/hooks/use-square-payment";
 import { beginPaymentIntent, paymentRequestHeaders, recoverPaymentIntent } from "@/lib/payment-request-identity";
+import { interactiveIntentScopeSuffix } from "@/lib/interactive-payment-request";
 
 const SDK_LOAD_MAX_ATTEMPTS = 3;
 const SDK_LOAD_RETRY_DELAY_MS = 1000;
@@ -351,7 +352,7 @@ export async function createPayment(
     const effectiveRequestKey = requestKey ?? (
       typeof window === 'undefined'
         ? crypto.randomUUID()
-        : beginPaymentIntent(`square:${leagueId}:${bowlerId}:${amount}:new:${storeCard}`)
+        : beginPaymentIntent(`square:${leagueId}:${bowlerId}:${amount}:new:${storeCard}${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`)
     );
     let result;
 

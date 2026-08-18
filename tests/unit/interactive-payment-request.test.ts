@@ -3,7 +3,7 @@ import { describe, expect, it, beforeEach, vi } from 'vitest';
 const { csrfFetchMock } = vi.hoisted(() => ({ csrfFetchMock: vi.fn() }));
 vi.mock('@/lib/queryClient', () => ({ csrfFetch: csrfFetchMock }));
 
-import { buildInteractiveOccurrenceFields, interactiveIntentSemanticKey } from '../../client/src/lib/interactive-payment-request';
+import { buildInteractiveOccurrenceFields, interactiveIntentScopeSuffix, interactiveIntentSemanticKey } from '../../client/src/lib/interactive-payment-request';
 import { paymentRequestWithRecovery } from '../../client/src/lib/payment-request-identity';
 
 describe('interactive wallet request occurrence fields', () => {
@@ -33,6 +33,27 @@ describe('interactive wallet request occurrence fields', () => {
     const changedSelection = { ...selection, amountMinor: 1500 };
     expect(interactiveIntentSemanticKey([selection], fingerprint)).not.toBe(interactiveIntentSemanticKey([changedSelection], fingerprint));
     expect(interactiveIntentSemanticKey([selection], fingerprint)).not.toBe(interactiveIntentSemanticKey([selection], `${fingerprint.slice(0, -1)}e`));
+  });
+
+  it('preserves every pre-F2 scope exactly while suffixing canonical intents', () => {
+    expect(interactiveIntentScopeSuffix(undefined, undefined)).toBe('');
+    expect(interactiveIntentScopeSuffix([], undefined)).toBe('');
+    const suffix = interactiveIntentScopeSuffix([selection], fingerprint);
+    const legacyScopes = [
+      'bowler:combined:11:4000:[{"bowlerId":7,"amount":2000},{"bowlerId":8,"amount":2000}]:false',
+      'bowler:11:7:2000:saved',
+      'bowler:11:7:2000:new:true',
+      'bowler-wallet:11:7:2000',
+      'bowler-wallet:combined:11:4000:8',
+      'history-wallet:7:11:2000',
+      'history:7:11:2000:saved',
+      'history:7:11:2000:new:false',
+      'admin:7:11:2000:new:false',
+      'admin-wallet:7:11:2000',
+    ];
+    for (const scope of legacyScopes) expect(`${scope}${interactiveIntentScopeSuffix(undefined, undefined)}`).toBe(scope);
+    expect(`bowler:11:7:2000:saved${suffix}`).toContain(`:saved:${fingerprint}`);
+    expect(`admin-wallet:7:11:2000${suffix}`).toContain(`:2000:${fingerprint}`);
   });
 });
 

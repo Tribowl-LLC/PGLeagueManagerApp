@@ -17,7 +17,7 @@ import {
   paymentRequestHeaders,
   paymentRequestWithRecovery,
 } from "@/lib/payment-request-identity";
-import { buildInteractiveOccurrenceFields, interactiveIntentSemanticKey } from "@/lib/interactive-payment-request";
+import { buildInteractiveOccurrenceFields, interactiveIntentScopeSuffix } from "@/lib/interactive-payment-request";
 import type { League, Bowler } from "@shared/schema";
 import type { SquareCard } from "@/hooks/use-square-payment";
 import type { AutopaySetupQuote } from "@/lib/autopay-setup";
@@ -113,7 +113,6 @@ export function useBowlerPaymentSubmit({
     // `@typescript-eslint/no-non-null-assertion`).
     const newCard: NonNullable<PaymentCard> | null = cardMode === 'new' && card ? card : null;
     const occurrenceFields = buildInteractiveOccurrenceFields(occurrenceAllocations, occurrenceQuoteFingerprint);
-    const occurrenceIntent = interactiveIntentSemanticKey(occurrenceAllocations, occurrenceQuoteFingerprint);
 
     const isUpfront = league.paymentMode === 'upfront';
     const isAutoPay = !isUpfront && selectedSchedule !== 'custom';
@@ -143,7 +142,7 @@ export function useBowlerPaymentSubmit({
             { bowlerId: bowler.id, amount: upfrontAmount },
             ...partnerIds.map((id) => ({ bowlerId: id, amount: upfrontAmount })),
           ];
-          const paymentScope = `bowler:combined:${league.id}:${totalAmount}:${JSON.stringify(payees)}:${cardMode === 'new' && storeCard}:${occurrenceIntent}`;
+          const paymentScope = `bowler:combined:${league.id}:${totalAmount}:${JSON.stringify(payees)}:${cardMode === 'new' && storeCard}${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
           const requestKey = beginPaymentIntent(paymentScope);
           let sourceId = selectedSavedCardId;
           if (cardMode === 'new') {
@@ -183,7 +182,7 @@ export function useBowlerPaymentSubmit({
         }
 
         if (cardMode === 'saved' && selectedSavedCardId) {
-          const paymentScope = `bowler:${league.id}:${chargeForBowlerId}:${upfrontAmount}:saved:${occurrenceIntent}`;
+          const paymentScope = `bowler:${league.id}:${chargeForBowlerId}:${upfrontAmount}:saved${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
           const requestKey = beginPaymentIntent(paymentScope);
           const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch('/api/payments-provider/payments', {
             method: 'POST',
@@ -211,7 +210,7 @@ export function useBowlerPaymentSubmit({
         } else {
           const overrideEmail = trimmedBuyerEmail && !bowler.email ? trimmedBuyerEmail : undefined;
           if (!newCard) throw new Error('Please enter your card details before proceeding.');
-          const paymentScope = `bowler:${league.id}:${chargeForBowlerId}:${upfrontAmount}:new:${storeCard}:${occurrenceIntent}`;
+          const paymentScope = `bowler:${league.id}:${chargeForBowlerId}:${upfrontAmount}:new:${storeCard}${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
           const requestKey = beginPaymentIntent(paymentScope);
           await createPayment(
             upfrontAmount,
@@ -256,7 +255,7 @@ export function useBowlerPaymentSubmit({
           { bowlerId: bowler.id, amount },
           ...partnerIds.map((id) => ({ bowlerId: id, amount })),
         ];
-        const paymentScope = `bowler:combined:${league.id}:${totalAmount}:${JSON.stringify(payees)}:${cardMode === 'new' && storeCard}:${occurrenceIntent}`;
+        const paymentScope = `bowler:combined:${league.id}:${totalAmount}:${JSON.stringify(payees)}:${cardMode === 'new' && storeCard}${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
         const requestKey = beginPaymentIntent(paymentScope);
         const trimmedBuyerEmail = (buyerEmail ?? '').trim();
         let sourceId = selectedSavedCardId;
@@ -354,7 +353,7 @@ export function useBowlerPaymentSubmit({
       // One-time payments retain the established interactive charge path.
       if (cardMode === 'saved' && selectedSavedCardId) {
         const trimmedBuyerEmail = (buyerEmail ?? '').trim();
-        const paymentScope = `bowler:${league.id}:${chargeForBowlerId}:${amount}:saved:${occurrenceIntent}`;
+        const paymentScope = `bowler:${league.id}:${chargeForBowlerId}:${amount}:saved${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
         const requestKey = beginPaymentIntent(paymentScope);
         const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch('/api/payments-provider/payments', {
           method: 'POST',
@@ -382,7 +381,7 @@ export function useBowlerPaymentSubmit({
         const trimmedBuyerEmail = (buyerEmail ?? '').trim();
         const overrideEmail = trimmedBuyerEmail && !bowler.email ? trimmedBuyerEmail : undefined;
         if (!newCard) throw new Error('Please enter your card details before proceeding.');
-        const paymentScope = `bowler:${league.id}:${chargeForBowlerId}:${amount}:new:${shouldStore}:${occurrenceIntent}`;
+        const paymentScope = `bowler:${league.id}:${chargeForBowlerId}:${amount}:new:${shouldStore}${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
         const requestKey = beginPaymentIntent(paymentScope);
         await createPayment(
           amount,
