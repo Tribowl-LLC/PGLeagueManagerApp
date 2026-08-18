@@ -35,6 +35,7 @@ import { PaymentCheckNumberField } from "@/components/payment-check-number-field
 import { PaymentReceiptEmailField } from "@/components/payment-receipt-email-field";
 import { PaymentProviderNotConfiguredAlert } from "@/components/payment-provider-not-configured-alert";
 import { PaymentFormActions } from "@/components/payment-form-actions";
+import { InteractiveOccurrenceSelector } from "@/components/interactive-occurrence-selector";
 
 interface SavedCard {
   id: string;
@@ -63,6 +64,8 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
   const [squareLoadFailed, setSquareLoadFailed] = useState(false);
   const [cardMode, setCardMode] = useState<'new' | 'saved'>('new');
   const [selectedSavedCardId, setSelectedSavedCardId] = useState<string>('');
+  const [occurrenceAllocations, setOccurrenceAllocations] = useState<{ obligationId: string; amountMinor: number }[]>([]);
+  const [occurrenceQuoteFingerprint, setOccurrenceQuoteFingerprint] = useState<string | undefined>();
   const [receiptEmail, setReceiptEmail] = useState<string>('');
   const initializationAttempted = useRef(false);
 
@@ -367,7 +370,13 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
     onClose,
     buyerEmail: !bowlerHasEmail ? receiptEmail : undefined,
     locationId: leagueInfo?.locationId ?? null,
+    occurrenceAllocations,
+    occurrenceQuoteFingerprint,
   });
+  const handleOccurrenceChange = useCallback((next: { obligationId: string; amountMinor: number }[], fingerprint?: string) => {
+    setOccurrenceAllocations(next);
+    setOccurrenceQuoteFingerprint(fingerprint);
+  }, []);
 
   return (
     <Dialog open={open} onOpenChange={(isOpen) => !isOpen && onClose()}>
@@ -387,6 +396,15 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
               </Alert>
             )}
             <PaymentFormFields form={form} bowlers={bowlers} />
+            {paymentType === "credit_card" && selectedBowlerId && leagueInfo && (
+              <InteractiveOccurrenceSelector
+                leagueId={leagueInfo.id}
+                amountMinor={watchedAmount || 0}
+                bowlerIds={[selectedBowlerId]}
+                enabled={open}
+                onChange={handleOccurrenceChange}
+              />
+            )}
             <PaymentMethodTabs
               form={form}
               paymentType={paymentType}

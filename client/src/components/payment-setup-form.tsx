@@ -1,4 +1,4 @@
-import { FC, RefObject } from "react";
+import { FC, RefObject, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import type { League, SavedCard } from "@shared/schema";
 import { PaymentCustomAmount } from "@/components/payment-custom-amount";
@@ -8,6 +8,7 @@ import { PaymentSetupRecipientPicker } from "@/components/payment-setup-recipien
 import { PaymentSetupSummaryCard } from "@/components/payment-setup-summary-card";
 import { PaymentSetupCombinedPay } from "@/components/payment-setup-combined-pay";
 import type { AutopaySetupQuote } from "@/lib/autopay-setup";
+import { InteractiveOccurrenceSelector } from "@/components/interactive-occurrence-selector";
 
 type RefDiv = React.RefObject<HTMLDivElement | null>;
 
@@ -47,6 +48,8 @@ interface PaymentSetupFormProps {
   cleanupCard: () => void;
   calculateTotalAmount: () => number;
   onSubmit: () => void;
+  setOccurrenceAllocations: (value: { obligationId: string; amountMinor: number }[]) => void;
+  setOccurrenceQuoteFingerprint: (value?: string) => void;
   onCancel: () => void;
   applePayAvailable: boolean;
   googlePayAvailable: boolean;
@@ -118,6 +121,8 @@ export const PaymentSetupForm: FC<PaymentSetupFormProps> = ({
   cleanupCard,
   calculateTotalAmount,
   onSubmit,
+  setOccurrenceAllocations,
+  setOccurrenceQuoteFingerprint,
   onCancel,
   applePayAvailable,
   googlePayAvailable,
@@ -177,6 +182,10 @@ export const PaymentSetupForm: FC<PaymentSetupFormProps> = ({
       .reduce((sum, row) => sum + row.amountMinor, 0) ?? 0;
   const selfDueToday = immediateAmountForBowler(selfBowler.id);
   const partnerDueToday = immediateAmountForBowler;
+  const handleOccurrenceChange = useCallback((next: { obligationId: string; amountMinor: number }[], fingerprint?: string) => {
+    setOccurrenceAllocations(next);
+    setOccurrenceQuoteFingerprint(fingerprint);
+  }, [setOccurrenceAllocations, setOccurrenceQuoteFingerprint]);
   const togglePartner = (id: number, on: boolean) => {
     if (on) {
       if (!additionalBowlerIds.includes(id)) {
@@ -221,6 +230,16 @@ export const PaymentSetupForm: FC<PaymentSetupFormProps> = ({
             autopayQuoteLoading={autopayQuoteLoading}
             autopayQuoteError={autopayQuoteError}
           />
+
+          {paymentMode !== 'autopay' && (
+            <InteractiveOccurrenceSelector
+              leagueId={league.id}
+              amountMinor={baseAmount * (hasCombinedPicks ? 1 + additionalBowlerIds.length : 1)}
+              bowlerIds={hasCombinedPicks ? [selfBowler.id, ...additionalBowlerIds] : [targetBowlerId]}
+              enabled
+              onChange={handleOccurrenceChange}
+            />
+          )}
 
           {showCombinedPay && (
             <PaymentSetupCombinedPay

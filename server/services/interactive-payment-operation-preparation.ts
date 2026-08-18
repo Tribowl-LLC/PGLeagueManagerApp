@@ -115,6 +115,10 @@ export async function prepareInteractivePaymentOperation(
         leagueId: input.leagueId,
         selections: input.occurrenceSelections,
         quoteFingerprint: input.occurrenceQuoteFingerprint,
+        baseAllocations: input.allocations.map((allocation) => ({
+          bowlerId: allocation.bowlerId,
+          amountMinor: allocation.amountMinor,
+        })),
       });
     }
     return operation;

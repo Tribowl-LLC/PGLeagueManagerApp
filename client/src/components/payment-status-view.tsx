@@ -46,6 +46,8 @@ interface PaymentStatusViewProps {
   cleanupCard: () => void;
   calculateTotalAmount: () => number;
   onSubmit: () => void;
+  setOccurrenceAllocations: (value: { obligationId: string; amountMinor: number }[]) => void;
+  setOccurrenceQuoteFingerprint: (value?: string) => void;
   onCancel: () => void;
   applePayAvailable: boolean;
   googlePayAvailable: boolean;
@@ -98,6 +100,8 @@ export const PaymentStatusView: FC<PaymentStatusViewProps> = ({
   cleanupCard,
   calculateTotalAmount,
   onSubmit,
+  setOccurrenceAllocations,
+  setOccurrenceQuoteFingerprint,
   onCancel,
   applePayAvailable,
   googlePayAvailable,
@@ -149,6 +153,8 @@ export const PaymentStatusView: FC<PaymentStatusViewProps> = ({
         cleanupCard={cleanupCard}
         calculateTotalAmount={calculateTotalAmount}
         onSubmit={onSubmit}
+        setOccurrenceAllocations={setOccurrenceAllocations}
+        setOccurrenceQuoteFingerprint={setOccurrenceQuoteFingerprint}
         onCancel={onCancel}
         applePayAvailable={applePayAvailable}
         googlePayAvailable={googlePayAvailable}

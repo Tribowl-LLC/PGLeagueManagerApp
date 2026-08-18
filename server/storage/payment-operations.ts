@@ -21,6 +21,7 @@ import {
   paymentOperationOccurrenceSnapshots,
   paymentOperationOccurrenceSnapshotAllocations,
   bowlerOccurrenceObligations,
+  bowlerOccurrenceObligationRevisions,
   refundPaymentOperationSnapshots,
   users,
   PAYMENT_OPERATION_ERROR_CLASSIFICATIONS,
@@ -1817,6 +1818,11 @@ async function finalizeInteractiveOccurrenceAllocations(
   const linkedPayments = await tx.select().from(payments)
     .where(eq(payments.paymentOperationId, operation.id));
   const byBowler = new Map(linkedPayments.map((row) => [row.bowlerId, row]));
+  const snapshotByBowler = new Map<number, number>();
+  for (const row of snapshotAllocations) snapshotByBowler.set(row.bowlerId, (snapshotByBowler.get(row.bowlerId) ?? 0) + row.amountMinor);
+  if (byBowler.size !== snapshotByBowler.size || [...snapshotByBowler].some(([bowlerId, amountMinor]) => byBowler.get(bowlerId)?.amount !== amountMinor)) {
+    throw new PaymentOperationImmutableMismatchError();
+  }
   const obligationIds = [...new Set(snapshotAllocations.map((row) => row.obligationId))];
   const obligations = await tx.select().from(bowlerOccurrenceObligations).where(and(
     eq(bowlerOccurrenceObligations.organizationId, operation.organizationId),
@@ -1871,10 +1877,44 @@ async function finalizeInteractiveOccurrenceAllocations(
         eq(payments.status, "paid"),
       ));
     const total = Number(totals?.total ?? 0);
-    await tx.update(bowlerOccurrenceObligations).set({
-      state: total >= obligation.amountMinor ? "settled" : total > 0 ? "partially_settled" : "open",
-      updatedAt: now,
-    }).where(and(eq(bowlerOccurrenceObligations.id, obligation.id), eq(bowlerOccurrenceObligations.organizationId, operation.organizationId)));
+    const state = total >= obligation.amountMinor ? "settled" : total > 0 ? "partially_settled" : "open";
+    if (state !== obligation.state) {
+      const beforeSnapshot = {
+        occurrenceId: obligation.occurrenceId,
+        bowlerId: obligation.bowlerId,
+        purpose: obligation.purpose,
+        amountMinor: obligation.amountMinor,
+        currency: obligation.currency,
+        dueAt: obligation.dueAt,
+        pastDueAt: obligation.pastDueAt,
+        state: obligation.state,
+        billingTermId: obligation.billingTermId,
+        billingTermVersion: obligation.billingTermVersion,
+      };
+      const afterSnapshot = { ...beforeSnapshot, state };
+      const nextRevision = obligation.currentRevision + 1;
+      const [updated] = await tx.update(bowlerOccurrenceObligations).set({
+        state,
+        currentRevision: nextRevision,
+        updatedAt: now,
+      }).where(and(
+        eq(bowlerOccurrenceObligations.id, obligation.id),
+        eq(bowlerOccurrenceObligations.organizationId, operation.organizationId),
+        eq(bowlerOccurrenceObligations.currentRevision, obligation.currentRevision),
+      )).returning({ id: bowlerOccurrenceObligations.id });
+      if (!updated) throw new PaymentOperationImmutableMismatchError();
+      await tx.insert(bowlerOccurrenceObligationRevisions).values({
+        organizationId: operation.organizationId,
+        leagueId: obligation.leagueId,
+        obligationId: obligation.id,
+        revisionNumber: nextRevision,
+        snapshotSchemaVersion: 1,
+        beforeSnapshot,
+        afterSnapshot,
+        recordedByUserId: operation.authorizingUserId,
+        createdAt: now,
+      });
+    }
   }
 }
 

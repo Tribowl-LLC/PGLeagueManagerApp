@@ -35,6 +35,7 @@ import {
 import { validateInteractiveRequestKey } from '../../services/payment-operation-idempotency.js';
 import { prepareInteractivePaymentOperation } from '../../services/interactive-payment-operation-preparation.js';
 import { interactivePaymentOperationExecutor } from '../../services/interactive-payment-operation-executor.js';
+import { notifyScheduledPaymentMutation } from '../../services/scheduled-payment-runtime.js';
 import {
   getInteractiveOccurrenceActivation,
   InteractiveOccurrenceAllocationError,
@@ -76,13 +77,28 @@ async function occurrenceQuote(req: Request, res: Response): Promise<void> {
     sendError(res, 'You do not have access to this league', 403, 'FORBIDDEN');
     return;
   }
+  const requestedBowlers: number[] = Array.isArray(req.body?.payees)
+    ? req.body.payees.map((row: { bowlerId?: unknown }) => Number(row?.bowlerId))
+    : [Number(req.body?.bowlerId ?? req.body?.payerBowlerId)];
+  if (requestedBowlers.length === 0 || requestedBowlers.some((id: number) => !Number.isSafeInteger(id) || id <= 0)) {
+    sendError(res, 'A payment bowler is required for this quote', 400, 'VALIDATION_ERROR');
+    return;
+  }
+  for (const bowlerId of [...new Set(requestedBowlers)]) {
+    const authz = await canUserPayForBowler(req, bowlerId);
+    const adminScoped = !!req.user && isOrgOrHigher(req.user) && await hasAccessToBowler(req, bowlerId);
+    if (!authz.allowed && !adminScoped) {
+      sendError(res, 'Payment quote is unavailable', 404, 'NOT_FOUND');
+      return;
+    }
+  }
   try {
     if (!await getInteractiveOccurrenceActivation({ organizationId, leagueId })) {
       sendError(res, 'Occurrence allocation is unavailable for this league', 409, 'OCCURRENCE_ALLOCATION_UNAVAILABLE');
       return;
     }
     const selections = parseOccurrenceSelections(req.body?.occurrenceAllocations);
-    const quote = await quoteInteractiveOccurrenceAllocations({ organizationId, leagueId, amountMinor, currency: 'USD', selections });
+    const quote = await quoteInteractiveOccurrenceAllocations({ organizationId, leagueId, amountMinor, currency: 'USD', selections, allowedBowlerIds: [...new Set(requestedBowlers)] });
     res.json(quote);
   } catch (error) {
     if (error instanceof InteractiveOccurrenceAllocationError) {
@@ -274,6 +290,10 @@ async function respondWithInteractiveOperation(
       operationId: current.id,
     }) ?? current;
   }
+  // The operation and its immutable snapshots are committed before this
+  // response. Re-query the one-shot durable wake after every interactive
+  // create/recovery transition so a pending/unknown operation cannot strand.
+  await notifyScheduledPaymentMutation();
   if (current.status === 'succeeded') {
     const response = await reconstructInteractiveChargeResponse(organizationId, current);
     if (response.cardSaveStatus === 'saved' && response.savedCardId) {
@@ -532,29 +552,24 @@ router.post('/combined-payments', paymentLimiter, async (req, res) => {
     if (league.organizationId == null) {
       return sendError(res, 'League is not assigned to an organization', 400, 'LEAGUE_NOT_CONFIGURED');
     }
-    const canonicalOccurrenceActive = await getInteractiveOccurrenceActivation({ organizationId: league.organizationId, leagueId });
+    let canonicalOccurrenceActive: boolean;
+    try {
+      canonicalOccurrenceActive = await getInteractiveOccurrenceActivation({ organizationId: league.organizationId, leagueId });
+    } catch (error) {
+      if (error instanceof InteractiveOccurrenceAllocationError) return sendError(res, 'Payment allocation is unavailable for this league', 409, 'OCCURRENCE_ALLOCATION_CONFLICT');
+      throw error;
+    }
     if (canonicalOccurrenceActive && occurrenceSelections === undefined) {
       return sendError(res, 'Select one or more obligations before paying', 409, 'OCCURRENCE_SELECTION_REQUIRED');
     }
     if (!canonicalOccurrenceActive && occurrenceSelections !== undefined) {
       return sendError(res, 'Occurrence allocation is unavailable for this league', 409, 'OCCURRENCE_ALLOCATION_UNAVAILABLE');
     }
-    if (canonicalOccurrenceActive && occurrenceSelections) {
-      try {
-        await quoteInteractiveOccurrenceAllocations({ organizationId: league.organizationId, leagueId, amountMinor: amount, currency: 'USD', selections: occurrenceSelections });
-      } catch (error) {
-        if (error instanceof InteractiveOccurrenceAllocationError) return sendError(res, 'Payment allocation could not be validated', 409, 'OCCURRENCE_ALLOCATION_CONFLICT');
-        throw error;
-      }
-    }
-
-    const totalWeeks = league.totalBowlingWeeks != null
-      ? getEffectiveBowlingWeeks(league.totalBowlingWeeks, league.cancelledDates ?? [])
-      : Math.max(1, Math.ceil(
-          (new Date(league.seasonEnd).getTime() - new Date(league.seasonStart).getTime()) /
-            (7 * 24 * 60 * 60 * 1000),
-        ));
-    const fullSeasonAmount = league.weeklyFee * totalWeeks;
+    const fullSeasonAmount = canonicalOccurrenceActive ? null : league.weeklyFee * (
+      league.totalBowlingWeeks != null
+        ? getEffectiveBowlingWeeks(league.totalBowlingWeeks, league.cancelledDates ?? [])
+        : Math.max(1, Math.ceil((new Date(league.seasonEnd).getTime() - new Date(league.seasonStart).getTime()) / (7 * 24 * 60 * 60 * 1000)))
+    );
 
     // Authorize EACH payee independently. The actor must pass
     // canUserPayForBowler for every target — a since-revoked link or
@@ -565,7 +580,16 @@ router.post('/combined-payments', paymentLimiter, async (req, res) => {
       if (!authz.allowed) {
         return sendError(res, `You don't have access to bowler ${p.bowlerId}`, 403, 'FORBIDDEN');
       }
-      if (payerBowlerId === undefined) payerBowlerId = authz.payerBowlerId;
+    if (payerBowlerId === undefined) payerBowlerId = authz.payerBowlerId;
+    }
+    const existingOperationForQuote = await storage.getGeneralInteractivePaymentOperationForOrganization(league.organizationId, requestKey);
+    if (canonicalOccurrenceActive && occurrenceSelections) {
+      try {
+        await quoteInteractiveOccurrenceAllocations({ organizationId: league.organizationId, leagueId, amountMinor: amount, currency: 'USD', selections: occurrenceSelections, allowedBowlerIds: cleanPayees.map((payee) => payee.bowlerId), excludeOperationId: existingOperationForQuote?.id });
+      } catch (error) {
+        if (error instanceof InteractiveOccurrenceAllocationError) return sendError(res, 'Payment allocation could not be validated', 409, 'OCCURRENCE_ALLOCATION_CONFLICT');
+        throw error;
+      }
     }
     if (!payerBowlerId) {
       return sendError(res, 'Combined pay requires a payer bowler', 403, 'FORBIDDEN');
@@ -592,7 +616,7 @@ router.post('/combined-payments', paymentLimiter, async (req, res) => {
       }
       payeeBowlers[p.bowlerId] = b;
 
-      const existing = await storage.getPayments({
+      const existing = canonicalOccurrenceActive ? [] : await storage.getPayments({
         bowlerId: p.bowlerId,
         leagueId,
         organizationId: league.organizationId,
@@ -600,8 +624,8 @@ router.post('/combined-payments', paymentLimiter, async (req, res) => {
       const totalPaid = existing
         .filter((row) => row.status === 'paid')
         .reduce((s, r) => s + (r.amount || 0), 0);
-      const remaining = Math.max(0, fullSeasonAmount - totalPaid);
-      if (p.amount > remaining) {
+      const remaining = fullSeasonAmount === null ? null : Math.max(0, fullSeasonAmount - totalPaid);
+      if (remaining !== null && p.amount > remaining) {
         return sendError(
           res,
           `Amount for bowler ${p.bowlerId} ($${(p.amount / 100).toFixed(2)}) exceeds remaining balance ($${(remaining / 100).toFixed(2)})`,
@@ -803,23 +827,16 @@ router.post('/payments', paymentLimiter, async (req, res) => {
       return sendError(res, 'League has no season dates configured — cannot process payment', 400, 'LEAGUE_NOT_CONFIGURED');
     }
 
-    const seasonStart = new Date(league.seasonStart);
-    const seasonEnd = new Date(league.seasonEnd);
-    let totalWeeks: number;
-    if (league.totalBowlingWeeks != null) {
-      totalWeeks = getEffectiveBowlingWeeks(
-        league.totalBowlingWeeks,
-        league.cancelledDates ?? []
-      );
-    } else {
-      totalWeeks = Math.max(1, Math.ceil((seasonEnd.getTime() - seasonStart.getTime()) / (7 * 24 * 60 * 60 * 1000)));
-    }
-    const fullSeasonAmount = league.weeklyFee * totalWeeks;
-
     if (league.organizationId == null) {
       return sendError(res, 'League is not assigned to an organization', 400, 'LEAGUE_NOT_CONFIGURED');
     }
-    const canonicalOccurrenceActive = await getInteractiveOccurrenceActivation({ organizationId: league.organizationId, leagueId });
+    let canonicalOccurrenceActive: boolean;
+    try {
+      canonicalOccurrenceActive = await getInteractiveOccurrenceActivation({ organizationId: league.organizationId, leagueId });
+    } catch (error) {
+      if (error instanceof InteractiveOccurrenceAllocationError) return sendError(res, 'Payment allocation is unavailable for this league', 409, 'OCCURRENCE_ALLOCATION_CONFLICT');
+      throw error;
+    }
     if (canonicalOccurrenceActive && occurrenceSelections === undefined) {
       return sendError(res, 'Select one or more obligations before paying', 409, 'OCCURRENCE_SELECTION_REQUIRED');
     }
@@ -828,12 +845,23 @@ router.post('/payments', paymentLimiter, async (req, res) => {
     }
     if (canonicalOccurrenceActive && occurrenceSelections) {
       try {
-        await quoteInteractiveOccurrenceAllocations({ organizationId: league.organizationId, leagueId, amountMinor: amount, currency: 'USD', selections: occurrenceSelections });
+        const existingOperationForQuote = await storage.getGeneralInteractivePaymentOperationForOrganization(league.organizationId, requestKey);
+        await quoteInteractiveOccurrenceAllocations({ organizationId: league.organizationId, leagueId, amountMinor: amount, currency: 'USD', selections: occurrenceSelections, allowedBowlerIds: [bowlerId], excludeOperationId: existingOperationForQuote?.id });
       } catch (error) {
         if (error instanceof InteractiveOccurrenceAllocationError) return sendError(res, 'Payment allocation could not be validated', 409, 'OCCURRENCE_ALLOCATION_CONFLICT');
         throw error;
       }
     }
+
+    let totalWeeks = 0;
+    if (!canonicalOccurrenceActive) {
+      const seasonStart = new Date(league.seasonStart);
+      const seasonEnd = new Date(league.seasonEnd);
+      totalWeeks = league.totalBowlingWeeks != null
+        ? getEffectiveBowlingWeeks(league.totalBowlingWeeks, league.cancelledDates ?? [])
+        : Math.max(1, Math.ceil((seasonEnd.getTime() - seasonStart.getTime()) / (7 * 24 * 60 * 60 * 1000)));
+    }
+    const fullSeasonAmount = canonicalOccurrenceActive ? null : league.weeklyFee * totalWeeks;
     // P1 security: the recipient bowler must belong to the league's org
     // AND be actively rostered in this league before we charge a card and
     // write a payment row for the (bowler, league) pair.
@@ -843,14 +871,14 @@ router.post('/payments', paymentLimiter, async (req, res) => {
     if (!(await storage.isBowlerActiveInLeague(bowlerId, leagueId))) {
       return sendError(res, 'Bowler is not rostered in this league', 400, 'BOWLER_NOT_IN_LEAGUE');
     }
-    const existingPayments = await storage.getPayments({ bowlerId, leagueId, organizationId: league.organizationId });
+    const existingPayments = canonicalOccurrenceActive ? [] : await storage.getPayments({ bowlerId, leagueId, organizationId: league.organizationId });
     const totalPaid = existingPayments
       .filter((p) => p.status === 'paid')
       .reduce((sum, p) => sum + (p.amount || 0), 0);
 
-    const remainingBalance = Math.max(0, fullSeasonAmount - totalPaid);
+    const remainingBalance = fullSeasonAmount === null ? null : Math.max(0, fullSeasonAmount - totalPaid);
 
-    if (amount > remainingBalance) {
+    if (remainingBalance !== null && amount > remainingBalance) {
       return sendError(res, `Amount ($${(amount / 100).toFixed(2)}) exceeds remaining balance ($${(remainingBalance / 100).toFixed(2)})`, 400, 'AMOUNT_EXCEEDS_BALANCE');
     }
 

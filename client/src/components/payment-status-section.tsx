@@ -79,6 +79,8 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
   // the form closes or paymentMode flips so a stale combined-autopay
   // pick can never silently ride into the next checkout.
   const [additionalBowlerIds, setAdditionalBowlerIds] = useState<number[]>([]);
+  const [occurrenceAllocations, setOccurrenceAllocations] = useState<{ obligationId: string; amountMinor: number }[]>([]);
+  const [occurrenceQuoteFingerprint, setOccurrenceQuoteFingerprint] = useState<string | undefined>();
   const quotePartnerKey = useMemo(
     () => [...additionalBowlerIds].sort((left, right) => left - right).join(','),
     [additionalBowlerIds],
@@ -426,6 +428,8 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
     targetBowlerId,
     additionalBowlerIds,
     autopayQuote,
+    occurrenceAllocations: paymentMode === 'autopay' ? undefined : occurrenceAllocations,
+    occurrenceQuoteFingerprint: paymentMode === 'autopay' ? undefined : occurrenceQuoteFingerprint,
     financials,
     calculateTotalAmount,
     setIsSubmitting,
@@ -494,6 +498,8 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
       cleanupCard={cleanupCard}
       calculateTotalAmount={calculateTotalAmount}
       onSubmit={handleSubmitPayment}
+      setOccurrenceAllocations={setOccurrenceAllocations}
+      setOccurrenceQuoteFingerprint={setOccurrenceQuoteFingerprint}
       onCancel={() => {
         setShowPaymentSetup(false);
       }}
@@ -527,6 +533,8 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
         // used to be cleared by close/open effects.)
         setTargetBowlerId(bowler.id);
         setAdditionalBowlerIds([]);
+        setOccurrenceAllocations([]);
+        setOccurrenceQuoteFingerprint(undefined);
         setShowPaymentSetup(true);
       }}
     />
