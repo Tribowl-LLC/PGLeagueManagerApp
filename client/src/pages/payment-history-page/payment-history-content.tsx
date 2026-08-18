@@ -157,15 +157,6 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
         </ErrorBoundary>
 
         <ErrorBoundary level="section">
-          {payDialogType && occurrenceAmountMinor && (
-            <InteractiveOccurrenceSelector
-              leagueId={league.id}
-              amountMinor={occurrenceAmountMinor}
-              bowlerIds={[bowlerId]}
-              enabled
-              onChange={onOccurrenceChange}
-            />
-          )}
           <BowlerPaymentDialog
             payDialogType={payDialogType}
             onClose={onCloseDialog}
@@ -195,6 +186,16 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
             bowlerHasEmail={bowlerHasEmail}
             receiptEmail={receiptEmail}
             onReceiptEmailChange={onReceiptEmailChange}
+            occurrenceSelector={payDialogType && occurrenceAmountMinor ? (
+              <InteractiveOccurrenceSelector
+                key={`${payDialogType}:${occurrenceAmountMinor}`}
+                leagueId={league.id}
+                amountMinor={occurrenceAmountMinor}
+                bowlerIds={[bowlerId]}
+                enabled
+                onChange={onOccurrenceChange}
+              />
+            ) : null}
           />
         </ErrorBoundary>
 

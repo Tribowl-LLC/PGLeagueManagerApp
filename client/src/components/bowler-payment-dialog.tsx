@@ -1,4 +1,4 @@
-import { FC, useRef, type CSSProperties, type RefObject } from "react";
+import { FC, useRef, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -82,6 +82,7 @@ interface BowlerPaymentDialogProps {
   bowlerHasEmail?: boolean;
   receiptEmail?: string;
   onReceiptEmailChange?: (value: string) => void;
+  occurrenceSelector?: ReactNode;
 }
 
 export const BowlerPaymentDialog: FC<BowlerPaymentDialogProps> = ({
@@ -113,6 +114,7 @@ export const BowlerPaymentDialog: FC<BowlerPaymentDialogProps> = ({
   bowlerHasEmail = true,
   receiptEmail = "",
   onReceiptEmailChange,
+  occurrenceSelector,
 }) => {
   const showWallet = applePayAvailable || googlePayAvailable;
   const cardCallbackRef = useRef<(el: HTMLDivElement | null) => void>(() => {});
@@ -142,6 +144,8 @@ export const BowlerPaymentDialog: FC<BowlerPaymentDialogProps> = ({
               <span className="text-lg font-bold">{formatCurrency(dialogAmount)}</span>
             </div>
           </div>
+
+          {occurrenceSelector}
 
           {/*
            * Always-mounted Apple Pay container. Square's `applePay.attach()`
