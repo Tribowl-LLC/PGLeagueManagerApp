@@ -60,4 +60,11 @@ describe('interactive request-key recovery', () => {
     await expect(paymentRequestWithRecovery('request-key-123456', request)).resolves.toBe(response);
     expect(csrfFetchMock).not.toHaveBeenCalled();
   });
+
+  it('includes explicit organization scope for an org-less scoped admin recovery', async () => {
+    const recovered = new Response(null, { status: 202 });
+    csrfFetchMock.mockResolvedValueOnce(recovered);
+    await expect(paymentRequestWithRecovery('request-key-123456', () => Promise.reject(new Error('connection reset')), 42)).resolves.toBe(recovered);
+    expect(csrfFetchMock.mock.calls[0]?.[1]?.body).toBe(JSON.stringify({ organizationId: 42 }));
+  });
 });

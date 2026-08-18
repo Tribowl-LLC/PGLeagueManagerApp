@@ -290,7 +290,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
           ...(overrideEmail ? { buyerEmail: overrideEmail } : {}),
           ...buildInteractiveOccurrenceFields(occurrenceAllocations, occurrenceQuoteFingerprint),
         }),
-      }));
+      }), leagueInfo?.organizationId);
       const responseData = await response.json();
       if (!response.ok) {
         throw makeApiError(responseData, response.status, 'Payment failed');
@@ -322,7 +322,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
       setPaymentError(errorMessage);
       toast({ title: "Error", description: errorMessage, variant: "destructive" });
     }
-  }, [form, toast, queryClient, onClose, bowlers, receiptEmail, navigate, leagueInfo?.locationId, occurrenceAllocations, occurrenceQuoteFingerprint]);
+  }, [form, toast, queryClient, onClose, bowlers, receiptEmail, navigate, leagueInfo?.locationId, leagueInfo?.organizationId, occurrenceAllocations, occurrenceQuoteFingerprint]);
 
   const beginWalletPayment = useCallback(() => {
     const values = form.getValues();
@@ -372,6 +372,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
     onClose,
     buyerEmail: !bowlerHasEmail ? receiptEmail : undefined,
     locationId: leagueInfo?.locationId ?? null,
+    organizationId: leagueInfo?.organizationId,
     occurrenceAllocations,
     occurrenceQuoteFingerprint,
   });

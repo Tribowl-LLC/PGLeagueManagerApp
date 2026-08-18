@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { League, Payment, User, SavedCard, ApiResponse, BowlerDetailsResponse } from "@shared/schema";
+import type { FinancialReadContract } from "@shared/financial-contract";
 import { BowlerLayout } from "@/components/bowler-layout";
 import { PageLoadingState } from "@/components/page-states";
 import { useSearch, useLocation as useWouterLocation } from "wouter";
@@ -28,6 +29,7 @@ import { NoLeagueView } from "./payment-history-page/no-league-view";
 import { PaymentHistoryContent } from "./payment-history-page/payment-history-content";
 import { beginPaymentIntent, clearPaymentIntent, paymentRequestHeaders, paymentRequestWithRecovery } from "@/lib/payment-request-identity";
 import { buildInteractiveOccurrenceFields, interactiveIntentSemanticKey } from "@/lib/interactive-payment-request";
+import { resolveInteractiveFinancialRead } from "@/lib/financial-read-contract";
 
 export default function PaymentHistoryPage() {
   const { toast } = useToast();
@@ -172,11 +174,7 @@ export default function PaymentHistoryPage() {
   // financial-utils remains the exact fallback until this versioned read is
   // available, while selector state is reset whenever the dialog intent or
   // league changes so an old obligation set cannot ride into a new charge.
-  const { data: canonicalFinancialResponse } = useQuery<ApiResponse<{
-    mode: string;
-    rows: Array<{ outstandingMinor: number; classification: string }>;
-    totals: { collectiblePastDueMinor: number };
-  }>>({
+  const { data: canonicalFinancialResponse, isLoading: loadingFinancialRead, error: financialReadError } = useQuery<ApiResponse<FinancialReadContract>>({
     queryKey: ["/api/financials/leagues", leagueId, "due-past-due", bowlerId],
     queryFn: async ({ signal }) => {
       const response = await fetch(`/api/financials/leagues/${leagueId}/due-past-due?bowlerId=${bowlerId}`, {
@@ -198,7 +196,21 @@ export default function PaymentHistoryPage() {
 
   const bowlerPayments = payments.filter(p => p.bowlerId === bowlerId && p.leagueId === leagueId);
 
-  const financials = calculateFinancials(league, bowlerPayments);
+  const resolvedFinancialRead = resolveInteractiveFinancialRead(canonicalFinancialResponse?.data);
+  const legacyFinancials = resolvedFinancialRead.status === "legacy_fallback"
+    ? calculateFinancials(league, bowlerPayments)
+    : null;
+  const canonicalRows = resolvedFinancialRead.status === "canonical" ? resolvedFinancialRead.rows : [];
+  const financials = legacyFinancials ?? {
+    weeksPassed: canonicalRows.filter((row) => row.classification !== "future").length,
+    totalWeeksInSeason: canonicalRows.length,
+    totalDueToDate: canonicalRows.filter((row) => row.classification !== "future").reduce((sum, row) => sum + row.amountMinor, 0),
+    totalPaid: canonicalRows.reduce((sum, row) => sum + row.allocatedMinor, 0),
+    amountPastDue: resolvedFinancialRead.amountPastDue,
+    fullSeasonAmount: canonicalRows.reduce((sum, row) => sum + row.amountMinor, 0),
+    remainingBalance: resolvedFinancialRead.remainingBalance,
+    doublePay: { dates: [], perWeekExtra: 0, totalExtra: 0, pastExtra: 0, isPaid: resolvedFinancialRead.remainingBalance <= 0 },
+  };
   const {
     weeksPassed: weeksDue,
     totalWeeksInSeason,
@@ -209,20 +221,15 @@ export default function PaymentHistoryPage() {
     remainingBalance,
     doublePay,
   } = financials;
-  const canonicalFinancials = canonicalFinancialResponse?.data?.mode === "canonical"
-    ? {
-      amountPastDue: canonicalFinancialResponse.data.totals.collectiblePastDueMinor,
-      remainingBalance: canonicalFinancialResponse.data.rows.reduce((sum, row) => sum + row.outstandingMinor, 0),
-    }
-    : null;
-  const displayAmountPastDue = canonicalFinancials?.amountPastDue ?? amountPastDue;
-  const displayRemainingBalance = canonicalFinancials?.remainingBalance ?? remainingBalance;
+  const displayAmountPastDue = resolvedFinancialRead.amountPastDue;
+  const displayRemainingBalance = resolvedFinancialRead.remainingBalance;
   const weeksDueCount = league?.weeklyFee ? Math.round(totalSeasonDues / league.weeklyFee) : 0;
   const weeksPaid = league?.weeklyFee ? Math.round(totalPaidAmount / league.weeklyFee) : 0;
 
   const dialogAmountCents = payDialogType === 'pastdue' ? displayAmountPastDue : displayRemainingBalance;
 
   const handleWalletPayment = useCallback(async (token: string, walletType: 'apple_pay' | 'google_pay') => {
+    if (resolvedFinancialRead.status === "unavailable" || loadingFinancialRead || financialReadError) return;
     if (!bowlerId || !leagueId || !dialogAmountCents) return;
     // same inline email override as the card-form path so
     // Apple Pay / Google Pay charges also trigger Square's hosted
@@ -257,7 +264,7 @@ export default function PaymentHistoryPage() {
           ...(overrideEmail ? { buyerEmail: overrideEmail } : {}),
           ...buildInteractiveOccurrenceFields(occurrenceAllocations, occurrenceQuoteFingerprint),
         }),
-      }));
+      }), league?.organizationId);
       const data = await response.json();
       if (!response.ok) {
         throw makeApiError(data, response.status, `Payment failed (HTTP ${response.status})`);
@@ -291,14 +298,15 @@ export default function PaymentHistoryPage() {
     } finally {
       setIsWalletProcessing(false);
     }
-  }, [bowlerId, leagueId, dialogAmountCents, payDialogType, toast, bowlerEmail, receiptEmail, navigate, league?.locationId, occurrenceAllocations, occurrenceQuoteFingerprint]);
+  }, [bowlerId, leagueId, dialogAmountCents, payDialogType, toast, bowlerEmail, receiptEmail, navigate, league?.locationId, league?.organizationId, occurrenceAllocations, occurrenceQuoteFingerprint, resolvedFinancialRead.status, loadingFinancialRead, financialReadError]);
 
   const beginWalletPayment = useCallback(() => {
+    if (resolvedFinancialRead.status === "unavailable" || loadingFinancialRead || financialReadError) return;
     if (!bowlerId || !leagueId || !dialogAmountCents) return;
     walletRequestKeyRef.current = beginPaymentIntent(
       `history-wallet:${bowlerId}:${leagueId}:${dialogAmountCents}:${interactiveIntentSemanticKey(occurrenceAllocations, occurrenceQuoteFingerprint)}`,
     );
-  }, [bowlerId, dialogAmountCents, leagueId, occurrenceAllocations, occurrenceQuoteFingerprint]);
+  }, [bowlerId, dialogAmountCents, leagueId, occurrenceAllocations, occurrenceQuoteFingerprint, resolvedFinancialRead.status, loadingFinancialRead, financialReadError]);
 
   const {
     applePayAvailable,
@@ -327,7 +335,11 @@ export default function PaymentHistoryPage() {
   }, [payDialogType, cleanupWallet]);
 
   const handleDialogPayment = async () => {
-    const dialogAmount = payDialogType === 'pastdue' ? amountPastDue : remainingBalance;
+    if (resolvedFinancialRead.status === "unavailable" || loadingFinancialRead || financialReadError) {
+      toast({ title: "Payment unavailable", description: "Financial evidence is still loading or requires review.", variant: "destructive" });
+      return;
+    }
+    const dialogAmount = dialogAmountCents;
     const dialogLabel = payDialogType === 'pastdue' ? 'past due amount' : 'remaining balance';
 
     if (!bowlerId || !leagueId || !dialogAmount) {
@@ -369,7 +381,7 @@ export default function PaymentHistoryPage() {
             ...(overrideEmail ? { buyerEmail: overrideEmail } : {}),
             ...buildInteractiveOccurrenceFields(occurrenceAllocations, occurrenceQuoteFingerprint),
           }),
-          }));
+          }), league?.organizationId);
         const responseData = await response.json();
         if (!response.ok) {
           throw makeApiError(responseData, response.status, 'Payment failed');
@@ -417,6 +429,8 @@ export default function PaymentHistoryPage() {
     setOccurrenceAllocations([]);
     setOccurrenceQuoteFingerprint(undefined);
   }, [payDialogType, leagueId]);
+
+  const checkoutAvailable = resolvedFinancialRead.status !== "unavailable" && !loadingFinancialRead && !financialReadError;
 
   if (loadingUser || loadingBowlerDetails || (!hasPaymentsFromDetails && loadingPayments)) {
     return (
@@ -479,8 +493,8 @@ export default function PaymentHistoryPage() {
       amountPastDue={displayAmountPastDue}
       remainingBalance={displayRemainingBalance}
       doublePay={doublePay}
-      onPayPastDue={() => setPayDialogType('pastdue')}
-      onPayRemaining={() => setPayDialogType('remaining')}
+      onPayPastDue={() => checkoutAvailable && setPayDialogType('pastdue')}
+      onPayRemaining={() => checkoutAvailable && setPayDialogType('remaining')}
       payDialogType={payDialogType}
       onCloseDialog={() => setPayDialogType(null)}
       savedCards={savedCards}
@@ -508,7 +522,7 @@ export default function PaymentHistoryPage() {
       receiptEmail={receiptEmail}
       onReceiptEmailChange={setReceiptEmail}
       bowlerPayments={bowlerPayments}
-      occurrenceAmountMinor={dialogAmountCents}
+      occurrenceAmountMinor={checkoutAvailable ? dialogAmountCents : 0}
       occurrenceAllocations={occurrenceAllocations}
       occurrenceQuoteFingerprint={occurrenceQuoteFingerprint}
       onOccurrenceChange={handleOccurrenceChange}

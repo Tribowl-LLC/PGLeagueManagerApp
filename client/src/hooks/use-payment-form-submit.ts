@@ -34,6 +34,7 @@ interface UsePaymentFormSubmitOptions {
   buyerEmail?: string;
   /** Owning location used to deep-link the PROVIDER_NOT_CONFIGURED toast. */
   locationId?: number | null;
+  organizationId?: number | null;
   occurrenceAllocations?: InteractiveOccurrenceSelection[];
   occurrenceQuoteFingerprint?: string;
 }
@@ -47,6 +48,7 @@ export function usePaymentFormSubmit({
   onClose,
   buyerEmail,
   locationId,
+  organizationId,
   occurrenceAllocations,
   occurrenceQuoteFingerprint,
 }: UsePaymentFormSubmitOptions) {
@@ -80,7 +82,7 @@ export function usePaymentFormSubmit({
               ...buyerEmailField,
               ...occurrenceFields,
             }),
-          }));
+          }), organizationId);
 
           const responseData = await response.json();
           if (!response.ok) {
@@ -135,7 +137,7 @@ export function usePaymentFormSubmit({
             ...buyerEmailField,
             ...occurrenceFields,
           }),
-        }));
+        }), organizationId);
 
         const responseData = await response.json();
         if (!response.ok) {
