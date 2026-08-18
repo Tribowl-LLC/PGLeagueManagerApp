@@ -4,6 +4,7 @@ import type { FinancialCalculation } from "@/lib/financial-utils";
 import { PaymentOverviewCard } from "@/components/payment-overview-card";
 import { PaymentSetupForm } from "@/components/payment-setup-form";
 import type { AutopaySetupQuote } from "@/lib/autopay-setup";
+import type { InteractiveOccurrenceReadiness } from "@/components/interactive-occurrence-selector";
 
 type PaymentSchedule = "weekly" | "custom";
 
@@ -48,6 +49,8 @@ interface PaymentStatusViewProps {
   onSubmit: () => void;
   setOccurrenceAllocations: (value: { obligationId: string; amountMinor: number }[]) => void;
   setOccurrenceQuoteFingerprint: (value?: string) => void;
+  occurrenceReadiness: InteractiveOccurrenceReadiness;
+  setOccurrenceReadiness: (value: InteractiveOccurrenceReadiness) => void;
   onCancel: () => void;
   applePayAvailable: boolean;
   googlePayAvailable: boolean;
@@ -102,6 +105,8 @@ export const PaymentStatusView: FC<PaymentStatusViewProps> = ({
   onSubmit,
   setOccurrenceAllocations,
   setOccurrenceQuoteFingerprint,
+  occurrenceReadiness,
+  setOccurrenceReadiness,
   onCancel,
   applePayAvailable,
   googlePayAvailable,
@@ -155,6 +160,8 @@ export const PaymentStatusView: FC<PaymentStatusViewProps> = ({
         onSubmit={onSubmit}
         setOccurrenceAllocations={setOccurrenceAllocations}
         setOccurrenceQuoteFingerprint={setOccurrenceQuoteFingerprint}
+        occurrenceReadiness={occurrenceReadiness}
+        setOccurrenceReadiness={setOccurrenceReadiness}
         onCancel={onCancel}
         applePayAvailable={applePayAvailable}
         googlePayAvailable={googlePayAvailable}

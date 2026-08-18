@@ -8,7 +8,7 @@ import { PaymentSetupRecipientPicker } from "@/components/payment-setup-recipien
 import { PaymentSetupSummaryCard } from "@/components/payment-setup-summary-card";
 import { PaymentSetupCombinedPay } from "@/components/payment-setup-combined-pay";
 import type { AutopaySetupQuote } from "@/lib/autopay-setup";
-import { InteractiveOccurrenceSelector } from "@/components/interactive-occurrence-selector";
+import { InteractiveOccurrenceSelector, type InteractiveOccurrenceReadiness } from "@/components/interactive-occurrence-selector";
 
 type RefDiv = React.RefObject<HTMLDivElement | null>;
 
@@ -50,6 +50,8 @@ interface PaymentSetupFormProps {
   onSubmit: () => void;
   setOccurrenceAllocations: (value: { obligationId: string; amountMinor: number }[]) => void;
   setOccurrenceQuoteFingerprint: (value?: string) => void;
+  occurrenceReadiness: InteractiveOccurrenceReadiness;
+  setOccurrenceReadiness: (value: InteractiveOccurrenceReadiness) => void;
   onCancel: () => void;
   applePayAvailable: boolean;
   googlePayAvailable: boolean;
@@ -123,6 +125,8 @@ export const PaymentSetupForm: FC<PaymentSetupFormProps> = ({
   onSubmit,
   setOccurrenceAllocations,
   setOccurrenceQuoteFingerprint,
+  occurrenceReadiness,
+  setOccurrenceReadiness,
   onCancel,
   applePayAvailable,
   googlePayAvailable,
@@ -238,6 +242,7 @@ export const PaymentSetupForm: FC<PaymentSetupFormProps> = ({
               bowlerIds={hasCombinedPicks ? [selfBowler.id, ...additionalBowlerIds] : [targetBowlerId]}
               enabled
               onChange={handleOccurrenceChange}
+              onReadinessChange={setOccurrenceReadiness}
             />
           )}
 
@@ -312,6 +317,7 @@ export const PaymentSetupForm: FC<PaymentSetupFormProps> = ({
             autopayDueTodayOverride={isAutopayMode && autopayQuote ? autopayDueTodayTotal : null}
             autopayQuoteLoading={isAutopayMode && autopayQuoteLoading}
             autopayQuoteError={isAutopayMode ? autopayQuoteError : null}
+            occurrenceReadiness={isAutopayMode ? 'disabled' : occurrenceReadiness}
             onSubmit={onSubmit}
             onCancel={onCancel}
           />

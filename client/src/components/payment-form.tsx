@@ -36,7 +36,7 @@ import { PaymentReceiptEmailField } from "@/components/payment-receipt-email-fie
 import { PaymentProviderNotConfiguredAlert } from "@/components/payment-provider-not-configured-alert";
 import { buildInteractiveOccurrenceFields, interactiveIntentScopeSuffix } from "@/lib/interactive-payment-request";
 import { PaymentFormActions } from "@/components/payment-form-actions";
-import { InteractiveOccurrenceSelector } from "@/components/interactive-occurrence-selector";
+import { InteractiveOccurrenceSelector, type InteractiveOccurrenceReadiness } from "@/components/interactive-occurrence-selector";
 
 interface SavedCard {
   id: string;
@@ -67,6 +67,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
   const [selectedSavedCardId, setSelectedSavedCardId] = useState<string>('');
   const [occurrenceAllocations, setOccurrenceAllocations] = useState<{ obligationId: string; amountMinor: number }[]>([]);
   const [occurrenceQuoteFingerprint, setOccurrenceQuoteFingerprint] = useState<string | undefined>();
+  const [occurrenceReadiness, setOccurrenceReadiness] = useState<InteractiveOccurrenceReadiness>('loading');
   const [receiptEmail, setReceiptEmail] = useState<string>('');
   const initializationAttempted = useRef(false);
 
@@ -346,7 +347,8 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
   } = useWalletPayments({
     locationId: leagueInfo?.locationId ?? null,
     amountCents: watchedAmount || 0,
-    enabled: open && paymentType === 'credit_card' && supportsWallets,
+    enabled: open && paymentType === 'credit_card' && supportsWallets
+      && (occurrenceReadiness === 'ready' || occurrenceReadiness === 'legacy'),
     onPaymentStarted: beginWalletPayment,
     onTokenReceived: handleWalletPayment,
     onError: (error) => setPaymentError(error),
@@ -357,6 +359,12 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
       cleanupWallet();
     }
   }, [open, cleanupWallet]);
+
+  useEffect(() => {
+    setOccurrenceAllocations([]);
+    setOccurrenceQuoteFingerprint(undefined);
+    setOccurrenceReadiness(open && paymentType === 'credit_card' ? 'loading' : 'disabled');
+  }, [open, selectedBowlerId, leagueInfo?.id, paymentType]);
 
   // When the selected bowler has no email on file, capture one inline so
   // Square's hosted receipt still fires for this charge.
@@ -375,6 +383,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
     organizationId: leagueInfo?.organizationId,
     occurrenceAllocations,
     occurrenceQuoteFingerprint,
+    occurrenceReadiness,
   });
   const handleOccurrenceChange = useCallback((next: { obligationId: string; amountMinor: number }[], fingerprint?: string) => {
     setOccurrenceAllocations(next);
@@ -407,6 +416,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
                 bowlerIds={[selectedBowlerId]}
                 enabled={open}
                 onChange={handleOccurrenceChange}
+                onReadinessChange={setOccurrenceReadiness}
               />
             )}
             <PaymentMethodTabs

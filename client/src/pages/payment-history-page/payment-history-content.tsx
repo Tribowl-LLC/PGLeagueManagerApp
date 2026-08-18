@@ -9,6 +9,7 @@ import { BowlerPaymentTable } from "@/components/bowler-payment-table";
 import { BowlerPaymentDialog } from "@/components/bowler-payment-dialog";
 import { LeagueSwitcherSheet } from "@/components/league-switcher-sheet";
 import { InteractiveOccurrenceSelector } from "@/components/interactive-occurrence-selector";
+import type { InteractiveOccurrenceReadiness } from "@/components/interactive-occurrence-selector";
 
 interface PaymentHistoryContentProps {
   bowlerName: string;
@@ -64,6 +65,8 @@ interface PaymentHistoryContentProps {
   occurrenceAllocations: { obligationId: string; amountMinor: number }[];
   occurrenceQuoteFingerprint?: string;
   onOccurrenceChange: (selections: { obligationId: string; amountMinor: number }[], fingerprint?: string) => void;
+  onOccurrenceReadinessChange: (readiness: InteractiveOccurrenceReadiness) => void;
+  occurrenceReadiness: InteractiveOccurrenceReadiness;
 }
 
 export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
@@ -118,6 +121,8 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
   bowlerPayments,
   occurrenceAmountMinor,
   onOccurrenceChange,
+  onOccurrenceReadinessChange,
+  occurrenceReadiness,
 }) => {
   return (
     <BowlerLayout bowlerName={bowlerName} leagueName={league.name} currentLeagueId={leagueId}>
@@ -186,7 +191,7 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
             bowlerHasEmail={bowlerHasEmail}
             receiptEmail={receiptEmail}
             onReceiptEmailChange={onReceiptEmailChange}
-            occurrenceSelector={payDialogType && occurrenceAmountMinor ? (
+              occurrenceSelector={payDialogType && occurrenceAmountMinor ? (
               <InteractiveOccurrenceSelector
                 key={`${payDialogType}:${occurrenceAmountMinor}`}
                 leagueId={league.id}
@@ -194,8 +199,10 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
                 bowlerIds={[bowlerId]}
                 enabled
                 onChange={onOccurrenceChange}
+                onReadinessChange={onOccurrenceReadinessChange}
               />
-            ) : null}
+              ) : null}
+              occurrenceReadiness={occurrenceReadiness}
           />
         </ErrorBoundary>
 

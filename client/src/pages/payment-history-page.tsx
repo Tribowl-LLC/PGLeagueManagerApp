@@ -30,6 +30,7 @@ import { PaymentHistoryContent } from "./payment-history-page/payment-history-co
 import { beginPaymentIntent, clearPaymentIntent, paymentRequestHeaders, paymentRequestWithRecovery } from "@/lib/payment-request-identity";
 import { buildInteractiveOccurrenceFields, interactiveIntentScopeSuffix } from "@/lib/interactive-payment-request";
 import { resolveInteractiveFinancialRead } from "@/lib/financial-read-contract";
+import type { InteractiveOccurrenceReadiness } from "@/components/interactive-occurrence-selector";
 
 export default function PaymentHistoryPage() {
   const { toast } = useToast();
@@ -48,6 +49,7 @@ export default function PaymentHistoryPage() {
   const [receiptEmail, setReceiptEmail] = useState('');
   const [occurrenceAllocations, setOccurrenceAllocations] = useState<{ obligationId: string; amountMinor: number }[]>([]);
   const [occurrenceQuoteFingerprint, setOccurrenceQuoteFingerprint] = useState<string | undefined>();
+  const [occurrenceReadiness, setOccurrenceReadiness] = useState<InteractiveOccurrenceReadiness>('loading');
   const walletRequestKeyRef = useRef<string | null>(null);
 
   const [isWalletProcessing, setIsWalletProcessing] = useState(false);
@@ -230,6 +232,7 @@ export default function PaymentHistoryPage() {
 
   const handleWalletPayment = useCallback(async (token: string, walletType: 'apple_pay' | 'google_pay') => {
     if (resolvedFinancialRead.status === "unavailable" || loadingFinancialRead || financialReadError) return;
+    if (occurrenceReadiness !== 'legacy' && occurrenceReadiness !== 'ready') return;
     if (!bowlerId || !leagueId || !dialogAmountCents) return;
     // same inline email override as the card-form path so
     // Apple Pay / Google Pay charges also trigger Square's hosted
@@ -298,15 +301,16 @@ export default function PaymentHistoryPage() {
     } finally {
       setIsWalletProcessing(false);
     }
-  }, [bowlerId, leagueId, dialogAmountCents, payDialogType, toast, bowlerEmail, receiptEmail, navigate, league?.locationId, league?.organizationId, occurrenceAllocations, occurrenceQuoteFingerprint, resolvedFinancialRead.status, loadingFinancialRead, financialReadError]);
+  }, [bowlerId, leagueId, dialogAmountCents, payDialogType, toast, bowlerEmail, receiptEmail, navigate, league?.locationId, league?.organizationId, occurrenceAllocations, occurrenceQuoteFingerprint, occurrenceReadiness, resolvedFinancialRead.status, loadingFinancialRead, financialReadError]);
 
   const beginWalletPayment = useCallback(() => {
     if (resolvedFinancialRead.status === "unavailable" || loadingFinancialRead || financialReadError) return;
+    if (occurrenceReadiness !== 'legacy' && occurrenceReadiness !== 'ready') return;
     if (!bowlerId || !leagueId || !dialogAmountCents) return;
     walletRequestKeyRef.current = beginPaymentIntent(
       `history-wallet:${bowlerId}:${leagueId}:${dialogAmountCents}${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`,
     );
-  }, [bowlerId, dialogAmountCents, leagueId, occurrenceAllocations, occurrenceQuoteFingerprint, resolvedFinancialRead.status, loadingFinancialRead, financialReadError]);
+  }, [bowlerId, dialogAmountCents, leagueId, occurrenceAllocations, occurrenceQuoteFingerprint, occurrenceReadiness, resolvedFinancialRead.status, loadingFinancialRead, financialReadError]);
 
   const {
     applePayAvailable,
@@ -322,7 +326,8 @@ export default function PaymentHistoryPage() {
   } = useWalletPayments({
     locationId: league?.locationId,
     amountCents: dialogAmountCents,
-    enabled: !!payDialogType && !!league?.locationId && supportsWallets,
+    enabled: !!payDialogType && !!league?.locationId && supportsWallets
+      && (occurrenceReadiness === 'ready' || occurrenceReadiness === 'legacy'),
     onPaymentStarted: beginWalletPayment,
     onTokenReceived: handleWalletPayment,
     onError: (error) => toast({ title: "Wallet Payment Error", description: error, variant: "destructive" }),
@@ -337,6 +342,12 @@ export default function PaymentHistoryPage() {
   const handleDialogPayment = async () => {
     if (resolvedFinancialRead.status === "unavailable" || loadingFinancialRead || financialReadError) {
       toast({ title: "Payment unavailable", description: "Financial evidence is still loading or requires review.", variant: "destructive" });
+      return;
+    }
+    if (occurrenceReadiness !== 'legacy' && occurrenceReadiness !== 'ready') {
+      toast({ title: "Payment unavailable", description: occurrenceReadiness === 'error'
+        ? "Current obligations could not be loaded. Refresh before paying."
+        : "Select obligations totaling the payment amount before paying.", variant: "destructive" });
       return;
     }
     const dialogAmount = dialogAmountCents;
@@ -428,6 +439,7 @@ export default function PaymentHistoryPage() {
   useEffect(() => {
     setOccurrenceAllocations([]);
     setOccurrenceQuoteFingerprint(undefined);
+    setOccurrenceReadiness(payDialogType ? 'loading' : 'disabled');
   }, [payDialogType, leagueId]);
 
   const checkoutAvailable = resolvedFinancialRead.status !== "unavailable" && !loadingFinancialRead && !financialReadError;
@@ -526,6 +538,8 @@ export default function PaymentHistoryPage() {
       occurrenceAllocations={occurrenceAllocations}
       occurrenceQuoteFingerprint={occurrenceQuoteFingerprint}
       onOccurrenceChange={handleOccurrenceChange}
+      onOccurrenceReadinessChange={setOccurrenceReadiness}
+      occurrenceReadiness={occurrenceReadiness}
     />
   );
 }

@@ -18,6 +18,7 @@ import {
   paymentRequestWithRecovery,
 } from "@/lib/payment-request-identity";
 import { buildInteractiveOccurrenceFields, interactiveIntentScopeSuffix } from "@/lib/interactive-payment-request";
+import type { InteractiveOccurrenceReadiness } from "@/components/interactive-occurrence-selector";
 import type { League, Bowler } from "@shared/schema";
 import type { SquareCard } from "@/hooks/use-square-payment";
 import type { AutopaySetupQuote } from "@/lib/autopay-setup";
@@ -51,6 +52,7 @@ interface UseBowlerPaymentSubmitOptions {
   autopayQuote?: AutopaySetupQuote;
   occurrenceAllocations?: InteractiveOccurrenceSelection[];
   occurrenceQuoteFingerprint?: string;
+  occurrenceReadiness?: InteractiveOccurrenceReadiness;
   financials: {
     fullSeasonAmount: number;
     remainingBalance: number;
@@ -75,6 +77,7 @@ export function useBowlerPaymentSubmit({
   autopayQuote,
   occurrenceAllocations,
   occurrenceQuoteFingerprint,
+  occurrenceReadiness,
   financials,
   calculateTotalAmount,
   setIsSubmitting,
@@ -120,6 +123,14 @@ export function useBowlerPaymentSubmit({
 
     try {
       setIsSubmitting(true);
+
+      const f2IntentBound = occurrenceReadiness !== undefined
+        && (occurrenceAllocations !== undefined || occurrenceQuoteFingerprint !== undefined);
+      if (f2IntentBound && occurrenceReadiness !== 'legacy' && occurrenceReadiness !== 'ready') {
+        throw new Error(occurrenceReadiness === 'error'
+          ? 'Current payment obligations could not be loaded. Refresh before paying.'
+          : 'Select obligations totaling the payment amount before paying.');
+      }
 
       if (isUpfront) {
         // Preserve the established combined-upfront behavior. For one
@@ -438,6 +449,6 @@ export function useBowlerPaymentSubmit({
     card, cardMode, selectedSavedCardId, league, bowler,
     selectedSchedule, storeCard,
     buyerEmail, chargeForBowlerId, additionalBowlerIds, financials, calculateTotalAmount, toast, navigate,
-    setIsSubmitting, setShowPaymentSetup, autopayQuote, occurrenceAllocations, occurrenceQuoteFingerprint,
+    setIsSubmitting, setShowPaymentSetup, autopayQuote, occurrenceAllocations, occurrenceQuoteFingerprint, occurrenceReadiness,
   ]);
 }

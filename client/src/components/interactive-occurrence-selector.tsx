@@ -6,6 +6,7 @@ import { csrfFetch } from "@/lib/queryClient";
 type Selection = { obligationId: string; amountMinor: number };
 type QuoteRow = { obligationId: string; bowlerId: number; amountMinor: number; outstandingMinor: number; dueAt: string | null };
 type Quote = { rows: QuoteRow[]; fingerprint: string };
+export type InteractiveOccurrenceReadiness = 'loading' | 'ready' | 'empty' | 'error' | 'legacy' | 'disabled';
 
 export function InteractiveOccurrenceSelector({
   leagueId,
@@ -14,6 +15,7 @@ export function InteractiveOccurrenceSelector({
   bowlerIds,
   enabled,
   onChange,
+  onReadinessChange,
 }: {
   leagueId: number;
   organizationId?: number;
@@ -21,6 +23,7 @@ export function InteractiveOccurrenceSelector({
   bowlerIds: number[];
   enabled: boolean;
   onChange: (selections: Selection[], fingerprint?: string) => void;
+  onReadinessChange?: (readiness: InteractiveOccurrenceReadiness) => void;
 }) {
   const [selections, setSelections] = useState<Record<string, number>>({});
   const payees = useMemo(() => [...new Set(bowlerIds)].sort((a, b) => a - b), [bowlerIds]);
@@ -51,12 +54,28 @@ export function InteractiveOccurrenceSelector({
     onChange(next, query.data?.fingerprint);
   }, [onChange, query.data?.fingerprint, selections]);
 
+  const selectedTotal = Object.values(selections).reduce((sum, value) => sum + value, 0);
+  const readiness: InteractiveOccurrenceReadiness = !enabled || amountMinor <= 0 || payees.length === 0
+    ? 'disabled'
+    : query.isLoading || query.fetchStatus === 'fetching'
+      ? 'loading'
+      : query.error
+        ? 'error'
+        : !query.data
+          ? 'legacy'
+          : selectedTotal === amountMinor && selections && Object.keys(selections).length > 0
+            ? 'ready'
+            : 'empty';
+
+  useEffect(() => {
+    onReadinessChange?.(readiness);
+  }, [onReadinessChange, readiness]);
+
   if (!enabled || (!query.data && !query.isLoading && !query.error)) return null;
   if (query.isLoading) return <p className="text-sm text-muted-foreground" data-testid="occurrence-quote-loading">Loading current obligations…</p>;
   if (query.error) return <Alert variant="destructive"><AlertDescription>Current obligations could not be loaded. Refresh before paying.</AlertDescription></Alert>;
   if (!query.data) return null;
 
-  const selectedTotal = Object.values(selections).reduce((sum, value) => sum + value, 0);
   return (
     <section aria-label="Payment obligations" className="space-y-3 rounded-md border p-4" data-testid="interactive-occurrence-selector">
       <div>

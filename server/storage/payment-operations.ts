@@ -55,6 +55,11 @@ import {
 } from "../services/interactive-payment-operation-snapshot.js";
 import { deriveSquareCardSaveIdempotencyKey } from "../services/payment-operation-idempotency.js";
 import {
+  PAYMENT_OPERATION_OCCURRENCE_SNAPSHOT_CONTRACT,
+  fingerprintPaymentOperationOccurrenceSnapshot,
+  validatePaymentOperationOccurrenceSnapshot,
+} from "../services/payment-operation-occurrence-snapshot.js";
+import {
   encryptRefundPaymentSnapshot,
   fingerprintRefundPaymentSnapshot,
   reconstructRefundPaymentSnapshot,
@@ -1825,6 +1830,34 @@ async function finalizeInteractiveOccurrenceAllocations(
   if (snapshotAllocations.length !== supplement.allocationCount
     || snapshotAllocations.reduce((sum, row) => sum + row.amountMinor, 0) !== operation.amountMinor) {
     throw new PaymentOperationImmutableMismatchError();
+  }
+  try {
+    const semantic = validatePaymentOperationOccurrenceSnapshot({
+      contractVersion: PAYMENT_OPERATION_OCCURRENCE_SNAPSHOT_CONTRACT,
+      snapshotVersion: supplement.snapshotVersion,
+      operationId: operation.id,
+      operationType: operation.operationType,
+      organizationId: operation.organizationId,
+      leagueId: supplement.leagueId,
+      amountMinor: operation.amountMinor,
+      currency: operation.currency,
+      allocations: snapshotAllocations.map((row) => ({
+        allocationIndex: row.allocationIndex,
+        organizationId: row.organizationId,
+        leagueId: row.leagueId,
+        occurrenceId: row.occurrenceId,
+        bowlerId: row.bowlerId,
+        obligationId: row.obligationId,
+        amountMinor: row.amountMinor,
+        currency: row.currency,
+      })),
+    });
+    if (fingerprintPaymentOperationOccurrenceSnapshot(semantic) !== supplement.snapshotFingerprint) {
+      throw new PaymentOperationImmutableMismatchError();
+    }
+  } catch (error) {
+    if (error instanceof PaymentOperationImmutableMismatchError) throw error;
+    throw new PaymentOperationImmutableMismatchError({ cause: error });
   }
   const linkedPayments = await tx.select().from(payments)
     .where(eq(payments.paymentOperationId, operation.id));

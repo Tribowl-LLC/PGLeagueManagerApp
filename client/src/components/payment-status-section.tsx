@@ -15,6 +15,7 @@ import { useBowlerPaymentSubmit } from "@/hooks/use-bowler-payment-submit";
 import type { AutopaySetupQuote } from "@/lib/autopay-setup";
 import { beginPaymentIntent, clearPaymentIntent, paymentRequestHeaders, paymentRequestWithRecovery } from "@/lib/payment-request-identity";
 import { buildInteractiveOccurrenceFields, interactiveIntentScopeSuffix } from "@/lib/interactive-payment-request";
+import type { InteractiveOccurrenceReadiness } from "@/components/interactive-occurrence-selector";
 
 interface BowlerLinkRow {
   id: number;
@@ -82,6 +83,7 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
   const [additionalBowlerIds, setAdditionalBowlerIds] = useState<number[]>([]);
   const [occurrenceAllocations, setOccurrenceAllocations] = useState<{ obligationId: string; amountMinor: number }[]>([]);
   const [occurrenceQuoteFingerprint, setOccurrenceQuoteFingerprint] = useState<string | undefined>();
+  const [occurrenceReadiness, setOccurrenceReadiness] = useState<InteractiveOccurrenceReadiness>('loading');
   const quotePartnerKey = useMemo(
     () => [...additionalBowlerIds].sort((left, right) => left - right).join(','),
     [additionalBowlerIds],
@@ -403,7 +405,8 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
     // Wallet sheet must authorize the full combined total when partners
     // are selected so the device-sheet amount matches the server charge.
     amountCents: calculateTotalAmount() * (1 + additionalBowlerIds.length),
-    enabled: showPaymentSetup && supportsWallets && (selectedSchedule === 'custom' || league.paymentMode === 'upfront'),
+    enabled: showPaymentSetup && supportsWallets && (selectedSchedule === 'custom' || league.paymentMode === 'upfront')
+      && (occurrenceReadiness === 'ready' || occurrenceReadiness === 'legacy'),
     onPaymentStarted: beginWalletPayment,
     onTokenReceived: handleWalletPayment,
     // task #514: route the wallet hook's `onError` string through the
@@ -438,6 +441,7 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
     autopayQuote,
     occurrenceAllocations: paymentMode === 'autopay' ? undefined : occurrenceAllocations,
     occurrenceQuoteFingerprint: paymentMode === 'autopay' ? undefined : occurrenceQuoteFingerprint,
+    occurrenceReadiness: paymentMode === 'autopay' ? 'disabled' : occurrenceReadiness,
     financials,
     calculateTotalAmount,
     setIsSubmitting,
@@ -508,6 +512,8 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
       onSubmit={handleSubmitPayment}
       setOccurrenceAllocations={setOccurrenceAllocations}
       setOccurrenceQuoteFingerprint={setOccurrenceQuoteFingerprint}
+      occurrenceReadiness={occurrenceReadiness}
+      setOccurrenceReadiness={setOccurrenceReadiness}
       onCancel={() => {
         setShowPaymentSetup(false);
       }}
@@ -543,6 +549,7 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
         setAdditionalBowlerIds([]);
         setOccurrenceAllocations([]);
         setOccurrenceQuoteFingerprint(undefined);
+        setOccurrenceReadiness(mode === 'autopay' ? 'disabled' : 'loading');
         setShowPaymentSetup(true);
       }}
     />

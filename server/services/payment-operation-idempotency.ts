@@ -111,13 +111,19 @@ export function canonicalizePaymentOperationInput(value: unknown): string {
  * operation key, while same-key retries with changed F2 semantics conflict
  * before any live balance quote or provider work is attempted.
  */
+export function normalizeInteractiveOccurrenceSelections<T extends { obligationId: string; amountMinor: number }>(
+  selections: T[],
+): T[] {
+  return [...selections].sort((left, right) => left.obligationId.localeCompare(right.obligationId));
+}
+
 export function fingerprintInteractiveOccurrenceIntent(input: {
   selections: Array<{ obligationId: string; amountMinor: number }>;
   quoteFingerprint: string;
 }): string {
   const digest = createHash("sha256")
     .update(canonicalizePaymentOperationInput({
-      selections: input.selections,
+      selections: normalizeInteractiveOccurrenceSelections(input.selections),
       quoteFingerprint: input.quoteFingerprint,
     }))
     .digest("hex");

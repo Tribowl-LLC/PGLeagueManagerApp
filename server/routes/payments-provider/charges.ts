@@ -36,6 +36,7 @@ import {
   bindInteractiveOccurrenceRequestFingerprint,
   buildPaymentOperationIdentity,
   fingerprintInteractiveOccurrenceIntent,
+  normalizeInteractiveOccurrenceSelections,
   validateInteractiveRequestKey,
 } from '../../services/payment-operation-idempotency.js';
 import { prepareInteractivePaymentOperation } from '../../services/interactive-payment-operation-preparation.js';
@@ -69,7 +70,7 @@ function parseOccurrenceSelections(value: unknown): InteractiveOccurrenceSelecti
     seen.add(row.obligationId);
     selections.push({ obligationId: row.obligationId, amountMinor: Number(row.amountMinor) });
   }
-  return selections;
+  return normalizeInteractiveOccurrenceSelections(selections);
 }
 
 function occurrenceAllocationRouteError(error: unknown): { message: string; code: string } | undefined {

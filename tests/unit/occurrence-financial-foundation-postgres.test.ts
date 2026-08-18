@@ -46,6 +46,7 @@ import {
 } from "../../server/services/interactive-occurrence-allocation";
 import { deleteOrganization } from "../../server/storage/organizations";
 import {
+  PaymentOperationImmutableMismatchError,
   acquirePaymentOperationLease,
   finalizePaymentOperationSuccess,
 } from "../../server/storage/payment-operations";
@@ -363,6 +364,26 @@ describe("D2 occurrence financial foundation PostgreSQL contract", () => {
       leaseDurationMs: 60_000,
     });
     if (!leased?.leaseToken) throw new Error("F2 finalization lease was not acquired");
+    const firstOccurrenceSnapshot: PaymentOperationOccurrenceSnapshotV1 = {
+      contractVersion: PAYMENT_OPERATION_OCCURRENCE_SNAPSHOT_CONTRACT,
+      snapshotVersion: 1,
+      operationId: operation.id,
+      operationType: "interactive_charge",
+      organizationId: scope.organizationId,
+      leagueId: scope.leagueId,
+      amountMinor: 400,
+      currency: "USD",
+      allocations: [{
+        allocationIndex: 0,
+        organizationId: scope.organizationId,
+        leagueId: scope.leagueId,
+        occurrenceId: obligation.occurrenceId,
+        bowlerId: scope.bowlerId,
+        obligationId: obligation.id,
+        amountMinor: 400,
+        currency: "USD",
+      }],
+    };
     await db.transaction(async (tx) => {
       await tx.insert(interactivePaymentOperationSnapshots).values({
         operationId: operation.id,
@@ -384,26 +405,6 @@ describe("D2 occurrence financial foundation PostgreSQL contract", () => {
         amountMinor: 400,
         weekOf: "2038-01-01T00:00:00.000Z",
       });
-      const firstOccurrenceSnapshot: PaymentOperationOccurrenceSnapshotV1 = {
-        contractVersion: PAYMENT_OPERATION_OCCURRENCE_SNAPSHOT_CONTRACT,
-        snapshotVersion: 1,
-        operationId: operation.id,
-        operationType: "interactive_charge",
-        organizationId: scope.organizationId,
-        leagueId: scope.leagueId,
-        amountMinor: 400,
-        currency: "USD",
-        allocations: [{
-          allocationIndex: 0,
-          organizationId: scope.organizationId,
-          leagueId: scope.leagueId,
-          occurrenceId: obligation.occurrenceId,
-          bowlerId: scope.bowlerId,
-          obligationId: obligation.id,
-          amountMinor: 400,
-          currency: "USD",
-        }],
-      };
       await tx.insert(paymentOperationOccurrenceSnapshots).values({
         operationId: operation.id,
         organizationId: scope.organizationId,
@@ -445,6 +446,14 @@ describe("D2 occurrence financial foundation PostgreSQL contract", () => {
         },
       }],
     };
+    await db.update(paymentOperationOccurrenceSnapshots).set({
+      snapshotFingerprint: `lvpayocc:v1:${"8".repeat(64)}`,
+    }).where(eq(paymentOperationOccurrenceSnapshots.operationId, operation.id));
+    await expect(finalizePaymentOperationSuccess(input)).rejects.toBeInstanceOf(PaymentOperationImmutableMismatchError);
+    expect(await db.select().from(paymentOccurrenceAllocations).where(eq(paymentOccurrenceAllocations.allocationKey, `payment-operation:${operation.id}:0`))).toHaveLength(0);
+    await db.update(paymentOperationOccurrenceSnapshots).set({
+      snapshotFingerprint: fingerprintPaymentOperationOccurrenceSnapshot(firstOccurrenceSnapshot),
+    }).where(eq(paymentOperationOccurrenceSnapshots.operationId, operation.id));
     await finalizePaymentOperationSuccess(input);
     await finalizePaymentOperationSuccess(input);
     const allocations = await db.select().from(paymentOccurrenceAllocations)
@@ -479,6 +488,26 @@ describe("D2 occurrence financial foundation PostgreSQL contract", () => {
       leaseDurationMs: 60_000,
     });
     if (!secondLease?.leaseToken) throw new Error("second F2 finalization lease was not acquired");
+    const secondOccurrenceSnapshot: PaymentOperationOccurrenceSnapshotV1 = {
+      contractVersion: PAYMENT_OPERATION_OCCURRENCE_SNAPSHOT_CONTRACT,
+      snapshotVersion: 1,
+      operationId: secondOperation.id,
+      operationType: "interactive_charge",
+      organizationId: scope.organizationId,
+      leagueId: scope.leagueId,
+      amountMinor: 600,
+      currency: "USD",
+      allocations: [{
+        allocationIndex: 0,
+        organizationId: scope.organizationId,
+        leagueId: scope.leagueId,
+        occurrenceId: obligation.occurrenceId,
+        bowlerId: scope.bowlerId,
+        obligationId: obligation.id,
+        amountMinor: 600,
+        currency: "USD",
+      }],
+    };
     await db.transaction(async (tx) => {
       await tx.insert(interactivePaymentOperationSnapshots).values({
         operationId: secondOperation.id,
@@ -505,7 +534,7 @@ describe("D2 occurrence financial foundation PostgreSQL contract", () => {
         organizationId: scope.organizationId,
         leagueId: scope.leagueId,
         snapshotVersion: 1,
-        snapshotFingerprint: `lvpayocc:v1:${"e".repeat(64)}`,
+        snapshotFingerprint: fingerprintPaymentOperationOccurrenceSnapshot(secondOccurrenceSnapshot),
         amountMinor: 600,
         currency: "USD",
         allocationCount: 1,
@@ -569,6 +598,17 @@ describe("D2 occurrence financial foundation PostgreSQL contract", () => {
       currency: "USD",
       selections: [{ obligationId: obligation.id, amountMinor: 399 }],
     })).rejects.toMatchObject({ code: "IMMUTABLE_SELECTION_MISMATCH" });
+    await db.update(paymentOperationOccurrenceSnapshots).set({
+      snapshotFingerprint: `lvpayocc:v1:${"9".repeat(64)}`,
+    }).where(eq(paymentOperationOccurrenceSnapshots.operationId, operation.id));
+    await expect(validateInteractiveOccurrenceReplay({
+      operationId: operation.id,
+      organizationId: scope.organizationId,
+      leagueId: scope.leagueId,
+      amountMinor: 400,
+      currency: "USD",
+      selections: [{ obligationId: obligation.id, amountMinor: 400 }],
+    })).rejects.toMatchObject({ code: "CANONICAL_EVIDENCE_INCOMPATIBLE" });
     await deleteOrganization(scope.organizationId);
   });
 

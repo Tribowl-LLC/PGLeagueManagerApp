@@ -18,6 +18,19 @@ import express from 'express';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 import { InteractiveOccurrenceAllocationError } from '../../server/services/interactive-occurrence-allocation';
+import {
+  bindInteractiveOccurrenceRequestFingerprint,
+  buildPaymentOperationIdentity,
+  fingerprintInteractiveOccurrenceIntent,
+} from '../../server/services/payment-operation-idempotency';
+
+const { mockValidateInteractiveOccurrenceReplay } = vi.hoisted(() => ({
+  mockValidateInteractiveOccurrenceReplay: vi.fn(),
+}));
+vi.mock('../../server/services/interactive-occurrence-allocation', async () => {
+  const actual = await vi.importActual<typeof import('../../server/services/interactive-occurrence-allocation')>('../../server/services/interactive-occurrence-allocation');
+  return { ...actual, validateInteractiveOccurrenceReplay: (...args: unknown[]) => mockValidateInteractiveOccurrenceReplay(...args) };
+});
 
 const mockStorage = {
   getLeague: vi.fn(),
@@ -151,6 +164,8 @@ beforeEach(() => {
   mockSquareProvider.saveCardOnFile.mockReset();
   mockPrepareInteractiveOperation.mockReset();
   mockInteractiveExecute.mockReset();
+  mockValidateInteractiveOccurrenceReplay.mockReset();
+  mockValidateInteractiveOccurrenceReplay.mockResolvedValue(undefined);
   mockNotifyWake.mockReset();
   mockNotifyWake.mockResolvedValue(undefined);
 
@@ -208,16 +223,39 @@ afterEach(() => vi.clearAllMocks());
 
 const PAYER = { id: 1, role: 'bowler', organizationId: 1, bowlerId: 7 };
 
-async function postCombined(body: Record<string, unknown>) {
+async function postCombined(body: Record<string, unknown>, requestKey = '00000000-0000-4000-8000-000000000003', user = PAYER) {
   return fetch(`${baseUrl}/api/payments-provider/combined-payments`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      'Idempotency-Key': '00000000-0000-4000-8000-000000000003',
-      'x-test-user': JSON.stringify(PAYER),
+      'Idempotency-Key': requestKey,
+      'x-test-user': JSON.stringify(user),
     },
     body: JSON.stringify({ sourceKind: 'new_card', ...body }),
   });
+}
+
+const REPLAY_SELECTIONS = [{ obligationId: '11111111-1111-4111-8111-111111111111', amountMinor: 4000 }];
+const REPLAY_QUOTE_FINGERPRINT = `lvpayquote:v1:${'b'.repeat(64)}`;
+function replayOperation(status: 'succeeded' | 'pending' | 'provider_unknown' = 'succeeded') {
+  const requestKey = '00000000-0000-4000-8000-000000000003';
+  const operation = {
+    id: 'operation-replay-test', organizationId: 1, operationType: 'interactive_charge' as const,
+    targetKey: `interactive-charge:${requestKey}`, paymentScheduleId: null, billingCycleAt: null,
+    amountMinor: 4000, currency: 'USD', requestFingerprint: '', providerIdempotencyKey: 'lv-replay-provider-key',
+    providerName: 'square', providerObjectId: status === 'succeeded' ? 'sq_replay' : null, providerOrderId: null,
+    status, attemptCount: status === 'pending' ? 0 : 1, nextAttemptAt: new Date().toISOString(), leaseOwner: null,
+    leaseToken: null, leaseExpiresAt: null, leaseRecoveryCount: 0, lastLeaseRecoveredAt: null,
+    errorClassification: status === 'provider_unknown' ? 'provider_unknown' as const : null, errorCode: null,
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), startedAt: null, completedAt: null,
+    authorizingUserId: 1,
+  };
+  const base = buildPaymentOperationIdentity({ organizationId: 1, operationType: 'interactive_charge', targetKey: operation.targetKey, amountMinor: 4000, currency: 'USD', providerName: 'square' });
+  operation.requestFingerprint = bindInteractiveOccurrenceRequestFingerprint(
+    base.requestFingerprint,
+    fingerprintInteractiveOccurrenceIntent({ selections: REPLAY_SELECTIONS, quoteFingerprint: REPLAY_QUOTE_FINGERPRINT }),
+  );
+  return operation;
 }
 
 describe('POST /api/payments-provider/combined-payments', () => {
@@ -250,6 +288,93 @@ describe('POST /api/payments-provider/combined-payments', () => {
     });
     expect(res.status).toBe(409);
     expect((await res.json()).error?.code).toBe('OCCURRENCE_QUOTE_STALE');
+    expect(mockSquareProvider.processPayment).not.toHaveBeenCalled();
+  });
+
+  it('reconstructs an exact completed F2 replay without preparation, execution, or provider work', async () => {
+    const operation = replayOperation('succeeded');
+    mockStorage.getGeneralInteractivePaymentOperationForOrganization.mockResolvedValue(operation);
+    mockStorage.getInteractivePaymentOperationSnapshotForOrganization.mockResolvedValue({
+      operationId: operation.id, organizationId: 1, leagueId: 11, sourceId: 'cnon:tok', sourceKind: 'new_card',
+      storeCard: false, buyerEmail: 'pat@example.com', payerBowlerId: 7,
+      allocations: [{ allocationIndex: 0, bowlerId: 7, amountMinor: 2000 }, { allocationIndex: 1, bowlerId: 8, amountMinor: 2000 }],
+    });
+    mockStorage.getPaymentsByPaymentOperationId.mockResolvedValue([
+      { id: 100, bowlerId: 7, amount: 2000, combinedChargeGroupId: operation.id, receiptUrl: null, receiptNumber: null },
+      { id: 101, bowlerId: 8, amount: 2000, combinedChargeGroupId: operation.id, receiptUrl: null, receiptNumber: null },
+    ]);
+    const res = await postCombined({
+      sourceId: 'cnon:tok', leagueId: 11, amount: 4000,
+      payees: [{ bowlerId: 7, amount: 2000 }, { bowlerId: 8, amount: 2000 }],
+      occurrenceAllocations: REPLAY_SELECTIONS, occurrenceQuoteFingerprint: REPLAY_QUOTE_FINGERPRINT,
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).id).toBe('sq_replay');
+    expect(mockValidateInteractiveOccurrenceReplay).toHaveBeenCalledOnce();
+    expect(mockPrepareInteractiveOperation).not.toHaveBeenCalled();
+    expect(mockInteractiveExecute).not.toHaveBeenCalled();
+    expect(mockSquareProvider.processPayment).not.toHaveBeenCalled();
+  });
+
+  it('returns bounded conflict for changed selection and hides the operation from an unauthorized actor', async () => {
+    const operation = replayOperation('provider_unknown');
+    mockStorage.getGeneralInteractivePaymentOperationForOrganization.mockResolvedValue(operation);
+    mockStorage.getInteractivePaymentOperationSnapshotForOrganization.mockResolvedValue({
+      operationId: operation.id, organizationId: 1, leagueId: 11, sourceId: 'cnon:tok', sourceKind: 'new_card',
+      storeCard: false, buyerEmail: 'pat@example.com', payerBowlerId: 7,
+      allocations: [{ allocationIndex: 0, bowlerId: 7, amountMinor: 2000 }, { allocationIndex: 1, bowlerId: 8, amountMinor: 2000 }],
+    });
+    const exactUnknown = await postCombined({
+      sourceId: 'cnon:tok', leagueId: 11, amount: 4000,
+      payees: [{ bowlerId: 7, amount: 2000 }, { bowlerId: 8, amount: 2000 }],
+      occurrenceAllocations: REPLAY_SELECTIONS, occurrenceQuoteFingerprint: REPLAY_QUOTE_FINGERPRINT,
+    });
+    expect(exactUnknown.status).toBe(202);
+    expect(mockInteractiveExecute).not.toHaveBeenCalled();
+    mockValidateInteractiveOccurrenceReplay.mockClear();
+    const changed = await postCombined({
+      sourceId: 'cnon:tok', leagueId: 11, amount: 4000,
+      payees: [{ bowlerId: 7, amount: 2000 }, { bowlerId: 8, amount: 2000 }],
+      occurrenceAllocations: [{ obligationId: REPLAY_SELECTIONS[0].obligationId, amountMinor: 3999 }],
+      occurrenceQuoteFingerprint: REPLAY_QUOTE_FINGERPRINT,
+    });
+    expect(changed.status).toBe(409);
+    expect((await changed.json()).error?.code).toBe('IDEMPOTENCY_CONFLICT');
+    expect(mockValidateInteractiveOccurrenceReplay).not.toHaveBeenCalled();
+    const changedSource = await postCombined({
+      sourceId: 'cnon:different-source', leagueId: 11, amount: 4000,
+      payees: [{ bowlerId: 7, amount: 2000 }, { bowlerId: 8, amount: 2000 }],
+      occurrenceAllocations: REPLAY_SELECTIONS, occurrenceQuoteFingerprint: REPLAY_QUOTE_FINGERPRINT,
+    });
+    expect(changedSource.status).toBe(409);
+    const unauthorized = await postCombined({
+      sourceId: 'cnon:tok', leagueId: 11, amount: 4000,
+      payees: [{ bowlerId: 7, amount: 2000 }, { bowlerId: 8, amount: 2000 }],
+      occurrenceAllocations: REPLAY_SELECTIONS, occurrenceQuoteFingerprint: REPLAY_QUOTE_FINGERPRINT,
+    }, undefined, { id: 2, role: 'bowler', organizationId: 1, bowlerId: 7 });
+    expect(unauthorized.status).toBe(404);
+    expect(mockPrepareInteractiveOperation).not.toHaveBeenCalled();
+    expect(mockInteractiveExecute).not.toHaveBeenCalled();
+    expect(mockSquareProvider.processPayment).not.toHaveBeenCalled();
+  });
+
+  it('replays an exact pending F2 intent without dispatching or acquiring a new provider request', async () => {
+    const operation = replayOperation('pending');
+    mockStorage.getGeneralInteractivePaymentOperationForOrganization.mockResolvedValue(operation);
+    mockStorage.getInteractivePaymentOperationSnapshotForOrganization.mockResolvedValue({
+      operationId: operation.id, organizationId: 1, leagueId: 11, sourceId: 'cnon:tok', sourceKind: 'new_card',
+      storeCard: false, buyerEmail: 'pat@example.com', payerBowlerId: 7,
+      allocations: [{ allocationIndex: 0, bowlerId: 7, amountMinor: 2000 }, { allocationIndex: 1, bowlerId: 8, amountMinor: 2000 }],
+    });
+    const response = await postCombined({
+      sourceId: 'cnon:tok', leagueId: 11, amount: 4000,
+      payees: [{ bowlerId: 7, amount: 2000 }, { bowlerId: 8, amount: 2000 }],
+      occurrenceAllocations: REPLAY_SELECTIONS, occurrenceQuoteFingerprint: REPLAY_QUOTE_FINGERPRINT,
+    });
+    expect(response.status).toBe(202);
+    expect(mockValidateInteractiveOccurrenceReplay).toHaveBeenCalledOnce();
+    expect(mockPrepareInteractiveOperation).not.toHaveBeenCalled();
+    expect(mockInteractiveExecute).toHaveBeenCalledOnce();
     expect(mockSquareProvider.processPayment).not.toHaveBeenCalled();
   });
 

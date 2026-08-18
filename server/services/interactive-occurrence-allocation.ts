@@ -17,7 +17,7 @@ import {
 } from "@shared/schema";
 import type { PaymentOperationTransaction } from "../storage/payment-operations.js";
 import { db } from "../db.js";
-import { canonicalizePaymentOperationInput } from "./payment-operation-idempotency.js";
+import { canonicalizePaymentOperationInput, normalizeInteractiveOccurrenceSelections } from "./payment-operation-idempotency.js";
 import { loadOperationalActivationEvidence } from "./canonical-due-past-due.js";
 import {
   PAYMENT_OPERATION_OCCURRENCE_SNAPSHOT_CONTRACT,
@@ -405,6 +405,7 @@ export async function persistInteractiveOccurrenceSnapshot(
   operation: { id: string; organizationId: number; amountMinor: number; currency: string; operationType: string; authorizingUserId?: number | null },
   input: { leagueId: number; selections: InteractiveOccurrenceSelection[]; quoteFingerprint?: string; baseAllocations?: Array<{ bowlerId: number; amountMinor: number }> },
 ): Promise<void> {
+  const normalizedSelections = normalizeInteractiveOccurrenceSelections(input.selections);
   if (operation.operationType !== "interactive_charge") throw new InteractiveOccurrenceAllocationError("INVALID_OPERATION");
   const [existingSupplement] = await tx.select().from(paymentOperationOccurrenceSnapshots)
     .where(eq(paymentOperationOccurrenceSnapshots.operationId, operation.id)).limit(1).for("update");
@@ -417,11 +418,11 @@ export async function persistInteractiveOccurrenceSnapshot(
       .where(eq(paymentOperationOccurrenceSnapshotAllocations.operationId, operation.id))
       .orderBy(asc(paymentOperationOccurrenceSnapshotAllocations.allocationIndex))
     : [];
-  if (existingSupplement && (storedSelections.length !== input.selections.length
-    || storedSelections.some((row, index) => row.obligationId !== input.selections[index]?.obligationId || row.amountMinor !== input.selections[index]?.amountMinor))) {
+  if (existingSupplement && (storedSelections.length !== normalizedSelections.length
+    || storedSelections.some((row, index) => row.obligationId !== normalizedSelections[index]?.obligationId || row.amountMinor !== normalizedSelections[index]?.amountMinor))) {
     throw new InteractiveOccurrenceAllocationError("IMMUTABLE_SELECTION_MISMATCH");
   }
-  const quote = await buildQuote(tx, { organizationId: operation.organizationId, leagueId: input.leagueId, amountMinor: operation.amountMinor, currency: operation.currency, selections: input.selections, excludeOperationId: operation.id, allowedBowlerIds: input.baseAllocations?.map((allocation) => allocation.bowlerId) });
+  const quote = await buildQuote(tx, { organizationId: operation.organizationId, leagueId: input.leagueId, amountMinor: operation.amountMinor, currency: operation.currency, selections: normalizedSelections, excludeOperationId: operation.id, allowedBowlerIds: input.baseAllocations?.map((allocation) => allocation.bowlerId) });
   // Canonical F2 intent is always bound to the quote's immutable base
   // evidence. A missing fingerprint is not a legacy fallback once a
   // supplement is requested; it is an unbound/stale quote.
@@ -471,6 +472,9 @@ export async function validateInteractiveOccurrenceReplay(input: {
   currency: string;
   selections?: InteractiveOccurrenceSelection[];
 }): Promise<void> {
+  const normalizedSelections = input.selections === undefined
+    ? undefined
+    : normalizeInteractiveOccurrenceSelections(input.selections);
   await db.transaction(async (tx) => {
     const [supplement] = await tx.select().from(paymentOperationOccurrenceSnapshots)
       .where(and(
@@ -482,10 +486,10 @@ export async function validateInteractiveOccurrenceReplay(input: {
       if (input.selections === undefined) return;
       throw new InteractiveOccurrenceAllocationError("PRE_F2_OPERATION");
     }
-    if (input.selections === undefined
+    if (normalizedSelections === undefined
       || supplement.amountMinor !== input.amountMinor
       || supplement.currency !== input.currency
-      || supplement.allocationCount !== input.selections.length) {
+      || supplement.allocationCount !== normalizedSelections.length) {
       throw new InteractiveOccurrenceAllocationError("IMMUTABLE_SELECTION_MISMATCH");
     }
     const rows = await tx.select().from(paymentOperationOccurrenceSnapshotAllocations)
@@ -496,8 +500,8 @@ export async function validateInteractiveOccurrenceReplay(input: {
       )).orderBy(asc(paymentOperationOccurrenceSnapshotAllocations.allocationIndex));
     if (rows.length !== supplement.allocationCount || rows.some((row, index) => (
       row.allocationIndex !== index
-      || row.obligationId !== input.selections?.[index]?.obligationId
-      || row.amountMinor !== input.selections?.[index]?.amountMinor
+      || row.obligationId !== normalizedSelections?.[index]?.obligationId
+      || row.amountMinor !== normalizedSelections?.[index]?.amountMinor
     ))) {
       throw new InteractiveOccurrenceAllocationError("IMMUTABLE_SELECTION_MISMATCH");
     }

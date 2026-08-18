@@ -16,6 +16,7 @@ import {
   paymentRequestWithRecovery,
 } from "@/lib/payment-request-identity";
 import { buildInteractiveOccurrenceFields, interactiveIntentScopeSuffix } from "@/lib/interactive-payment-request";
+import type { InteractiveOccurrenceReadiness } from "@/components/interactive-occurrence-selector";
 import type { InsertPaymentInput, InsertPayment } from "@shared/schema";
 import type { SquareCard } from "@/hooks/use-square-payment";
 type PaymentCard = SquareCard | null;
@@ -37,6 +38,7 @@ interface UsePaymentFormSubmitOptions {
   organizationId?: number | null;
   occurrenceAllocations?: InteractiveOccurrenceSelection[];
   occurrenceQuoteFingerprint?: string;
+  occurrenceReadiness?: InteractiveOccurrenceReadiness;
 }
 
 export function usePaymentFormSubmit({
@@ -51,6 +53,7 @@ export function usePaymentFormSubmit({
   organizationId,
   occurrenceAllocations,
   occurrenceQuoteFingerprint,
+  occurrenceReadiness,
 }: UsePaymentFormSubmitOptions) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -65,6 +68,13 @@ export function usePaymentFormSubmit({
       const occurrenceFields = buildInteractiveOccurrenceFields(occurrenceAllocations, occurrenceQuoteFingerprint);
 
       if (data.type === 'credit_card') {
+        const f2IntentBound = occurrenceReadiness !== undefined
+          && (occurrenceAllocations !== undefined || occurrenceQuoteFingerprint !== undefined);
+        if (f2IntentBound && occurrenceReadiness !== 'legacy' && occurrenceReadiness !== 'ready') {
+          throw new Error(occurrenceReadiness === 'error'
+            ? 'Current payment obligations could not be loaded. Refresh before paying.'
+            : 'Select obligations totaling the payment amount before paying.');
+        }
         const paymentScope = `admin:${data.bowlerId}:${data.leagueId}:${data.amount}:${cardMode}:${data.storeCard === true}${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
         const requestKey = beginPaymentIntent(paymentScope);
         if (cardMode === 'saved' && selectedSavedCardId) {

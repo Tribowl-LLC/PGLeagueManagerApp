@@ -14,6 +14,7 @@ import {
 import { Loader2, CreditCard, Wallet } from "lucide-react";
 import { formatCurrency } from "@/lib/utils";
 import type { SavedCard } from "@shared/schema";
+import type { InteractiveOccurrenceReadiness } from "@/components/interactive-occurrence-selector";
 
 // Apple Pay / Google Pay buttons use pure black (#000) by brand requirement.
 // Hoisted to module scope so the exhaustive style object isn't reallocated per
@@ -83,6 +84,7 @@ interface BowlerPaymentDialogProps {
   receiptEmail?: string;
   onReceiptEmailChange?: (value: string) => void;
   occurrenceSelector?: ReactNode;
+  occurrenceReadiness?: InteractiveOccurrenceReadiness;
 }
 
 export const BowlerPaymentDialog: FC<BowlerPaymentDialogProps> = ({
@@ -115,6 +117,7 @@ export const BowlerPaymentDialog: FC<BowlerPaymentDialogProps> = ({
   receiptEmail = "",
   onReceiptEmailChange,
   occurrenceSelector,
+  occurrenceReadiness = 'loading',
 }) => {
   const showWallet = applePayAvailable || googlePayAvailable;
   const cardCallbackRef = useRef<(el: HTMLDivElement | null) => void>(() => {});
@@ -167,7 +170,7 @@ export const BowlerPaymentDialog: FC<BowlerPaymentDialogProps> = ({
             <button
               type="button"
               onClick={onApplePayClick}
-              disabled={isWalletProcessing}
+              disabled={isWalletProcessing || (occurrenceReadiness !== 'legacy' && occurrenceReadiness !== 'ready')}
               style={{ ...APPLE_PAY_BUTTON_BASE_STYLE, opacity: isWalletProcessing ? 0.5 : 1 }}
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="19" height="24" viewBox="0 0 17 20" fill="white" style={{ position: 'relative', top: '-1px' }}>
@@ -201,7 +204,7 @@ export const BowlerPaymentDialog: FC<BowlerPaymentDialogProps> = ({
               type="button"
               aria-label="Pay with Google Pay"
               onClick={onGooglePayClick}
-              disabled={isWalletProcessing}
+              disabled={isWalletProcessing || (occurrenceReadiness !== 'legacy' && occurrenceReadiness !== 'ready')}
               style={{ ...GOOGLE_PAY_BUTTON_BASE_STYLE, opacity: isWalletProcessing ? 0.5 : 1 }}
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="41" height="17" viewBox="0 0 41 17" fill="none">
@@ -329,6 +332,7 @@ export const BowlerPaymentDialog: FC<BowlerPaymentDialogProps> = ({
               // receipt" input is empty. Square will hard-reject the
               // request server-side; gating here gives instant UX.
               (!bowlerHasEmail && !receiptEmail.trim())
+              || (occurrenceReadiness !== 'legacy' && occurrenceReadiness !== 'ready')
             }
             className="w-full"
           >
