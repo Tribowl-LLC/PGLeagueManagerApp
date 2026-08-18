@@ -81,6 +81,10 @@ export const paymentOperations = pgTable("payment_operations", {
   organizationId: integer("organization_id")
     .notNull()
     .references(() => organizations.id, { onDelete: "cascade" }),
+  // Frozen actor evidence for interactive intent. Nullable preserves exact
+  // recovery semantics for pre-F2 rows; new F2 preparation always supplies it.
+  authorizingUserId: integer("authorizing_user_id")
+    .references(() => users.id, { onDelete: "restrict" }),
   operationType: text("operation_type", { enum: PAYMENT_OPERATION_TYPES }).notNull(),
   targetKey: varchar("target_key", { length: 128 }).notNull(),
   paymentScheduleId: integer("payment_schedule_id")
@@ -134,6 +138,8 @@ export const paymentOperations = pgTable("payment_operations", {
     .where(sql`${table.operationType} = 'refund'`),
   tenantLookupIdx: index("payment_operations_tenant_created_idx")
     .on(table.organizationId, table.createdAt.desc()),
+  authorizingUserIdx: index("payment_operations_authorizing_user_idx")
+    .on(table.organizationId, table.authorizingUserId),
   providerObjectLookupIdx: index("payment_operations_provider_object_idx")
     .on(table.providerName, table.providerObjectId)
     .where(sql`${table.providerObjectId} IS NOT NULL`),

@@ -17,6 +17,7 @@ import {
 import type { InsertPaymentInput, InsertPayment } from "@shared/schema";
 import type { SquareCard } from "@/hooks/use-square-payment";
 type PaymentCard = SquareCard | null;
+type InteractiveOccurrenceSelection = { obligationId: string; amountMinor: number };
 
 interface UsePaymentFormSubmitOptions {
   form: UseFormReturn<InsertPaymentInput, unknown, InsertPayment>;
@@ -31,6 +32,8 @@ interface UsePaymentFormSubmitOptions {
   buyerEmail?: string;
   /** Owning location used to deep-link the PROVIDER_NOT_CONFIGURED toast. */
   locationId?: number | null;
+  occurrenceAllocations?: InteractiveOccurrenceSelection[];
+  occurrenceQuoteFingerprint?: string;
 }
 
 export function usePaymentFormSubmit({
@@ -42,6 +45,8 @@ export function usePaymentFormSubmit({
   onClose,
   buyerEmail,
   locationId,
+  occurrenceAllocations,
+  occurrenceQuoteFingerprint,
 }: UsePaymentFormSubmitOptions) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -53,6 +58,9 @@ export function usePaymentFormSubmit({
 
       const trimmedBuyerEmail = (buyerEmail ?? '').trim();
       const buyerEmailField = trimmedBuyerEmail ? { buyerEmail: trimmedBuyerEmail } : {};
+      const occurrenceFields = occurrenceAllocations
+        ? { occurrenceAllocations, ...(occurrenceQuoteFingerprint ? { occurrenceQuoteFingerprint } : {}) }
+        : {};
 
       if (data.type === 'credit_card') {
         const paymentScope = `admin:${data.bowlerId}:${data.leagueId}:${data.amount}:${cardMode}:${data.storeCard === true}`;
@@ -69,6 +77,7 @@ export function usePaymentFormSubmit({
               storeCard: false,
               sourceKind: 'saved_card',
               ...buyerEmailField,
+              ...occurrenceFields,
             }),
           });
 
@@ -123,6 +132,7 @@ export function usePaymentFormSubmit({
             storeCard: data.storeCard || false,
             sourceKind: 'new_card',
             ...buyerEmailField,
+            ...occurrenceFields,
           }),
         });
 

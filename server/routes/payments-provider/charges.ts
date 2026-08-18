@@ -35,10 +35,66 @@ import {
 import { validateInteractiveRequestKey } from '../../services/payment-operation-idempotency.js';
 import { prepareInteractivePaymentOperation } from '../../services/interactive-payment-operation-preparation.js';
 import { interactivePaymentOperationExecutor } from '../../services/interactive-payment-operation-executor.js';
+import {
+  getInteractiveOccurrenceActivation,
+  InteractiveOccurrenceAllocationError,
+  quoteInteractiveOccurrenceAllocations,
+  type InteractiveOccurrenceSelection,
+} from '../../services/interactive-occurrence-allocation.js';
 
 const log = createLogger('Payments');
 
 const router = Router();
+
+function parseOccurrenceSelections(value: unknown): InteractiveOccurrenceSelection[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length === 0 || value.length > 100) throw new InteractiveOccurrenceAllocationError('INVALID_SELECTION');
+  const selections: InteractiveOccurrenceSelection[] = [];
+  const seen = new Set<string>();
+  for (const raw of value) {
+    if (!raw || typeof raw !== 'object') throw new InteractiveOccurrenceAllocationError('INVALID_SELECTION');
+    const row = raw as { obligationId?: unknown; amountMinor?: unknown };
+    if (typeof row.obligationId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(row.obligationId)
+      || !Number.isSafeInteger(row.amountMinor) || Number(row.amountMinor) <= 0 || seen.has(row.obligationId)) {
+      throw new InteractiveOccurrenceAllocationError('INVALID_SELECTION');
+    }
+    seen.add(row.obligationId);
+    selections.push({ obligationId: row.obligationId, amountMinor: Number(row.amountMinor) });
+  }
+  return selections;
+}
+
+async function occurrenceQuote(req: Request, res: Response): Promise<void> {
+  const leagueId = Number(req.body?.leagueId);
+  const amountMinor = Number(req.body?.amountMinor ?? req.body?.amount);
+  const organizationId = req.user?.organizationId;
+  if (!organizationId || !Number.isSafeInteger(leagueId) || leagueId <= 0 || !Number.isSafeInteger(amountMinor) || amountMinor <= 0) {
+    sendError(res, 'Invalid payment quote request', 400, 'VALIDATION_ERROR');
+    return;
+  }
+  if (!await hasAccessToLeague(req, leagueId)) {
+    sendError(res, 'You do not have access to this league', 403, 'FORBIDDEN');
+    return;
+  }
+  try {
+    if (!await getInteractiveOccurrenceActivation({ organizationId, leagueId })) {
+      sendError(res, 'Occurrence allocation is unavailable for this league', 409, 'OCCURRENCE_ALLOCATION_UNAVAILABLE');
+      return;
+    }
+    const selections = parseOccurrenceSelections(req.body?.occurrenceAllocations);
+    const quote = await quoteInteractiveOccurrenceAllocations({ organizationId, leagueId, amountMinor, currency: 'USD', selections });
+    res.json(quote);
+  } catch (error) {
+    if (error instanceof InteractiveOccurrenceAllocationError) {
+      sendError(res, 'Payment allocation could not be validated', 409, 'OCCURRENCE_ALLOCATION_CONFLICT');
+      return;
+    }
+    sendError(res, 'Payment quote is unavailable', 500, 'INTERNAL_ERROR');
+  }
+}
+
+router.post('/payments/quote', paymentLimiter, occurrenceQuote);
+router.post('/combined-payments/quote', paymentLimiter, occurrenceQuote);
 
 type InteractiveChargeResponse = {
   status: 'COMPLETED';
@@ -171,6 +227,19 @@ async function reconstructInteractiveChargeResponse(
   };
 }
 
+async function canRecoverInteractiveOperation(req: Request, operation: PaymentOperation): Promise<boolean> {
+  const user = req.user;
+  if (!user) return false;
+  if (user.role === 'system_admin') return true;
+  if (user.role === 'org_admin' && user.organizationId === operation.organizationId) return true;
+  if (operation.authorizingUserId !== null) return operation.authorizingUserId === user.id;
+  const snapshot = await storage.getInteractivePaymentOperationSnapshotForOrganization(operation.organizationId, operation.id);
+  if (!snapshot) return false;
+  if (user.organizationId !== operation.organizationId) return false;
+  if (snapshot.payerBowlerId === user.bowlerId) return true;
+  return (await canUserPayForBowler(req, snapshot.payerBowlerId)).allowed;
+}
+
 function terminalOperationError(operation: PaymentOperation): {
   status: number;
   message: string;
@@ -251,6 +320,9 @@ router.get('/payment-operations/status', async (req, res) => {
     if (operation.targetKey !== getGeneralInteractiveTargetKey(requestKey)) {
       return sendError(res, 'Payment operation not found', 404, 'NOT_FOUND');
     }
+    if (!await canRecoverInteractiveOperation(req, operation)) {
+      return sendError(res, 'Payment operation not found', 404, 'NOT_FOUND');
+    }
     if (operation.status === 'succeeded') {
       return res.json(await reconstructInteractiveChargeResponse(organizationId, operation));
     }
@@ -280,6 +352,9 @@ router.post('/payment-operations/recover', paymentLimiter, async (req, res) => {
       requestKey,
     );
     if (!operation) return sendError(res, 'Payment operation not found', 404, 'NOT_FOUND');
+    if (!await canRecoverInteractiveOperation(req, operation)) {
+      return sendError(res, 'Payment operation not found', 404, 'NOT_FOUND');
+    }
     return respondWithInteractiveOperation(res, organizationId, operation, true);
   } catch (error) {
     log.error('Interactive payment recovery failed', {
@@ -386,6 +461,9 @@ router.post('/combined-payments', paymentLimiter, async (req, res) => {
     if (!requestKey) return;
     const sourceKind = requireInteractiveSourceKind(req, res);
     if (!sourceKind) return;
+    const occurrenceSelections = parseOccurrenceSelections(req.body?.occurrenceAllocations);
+    const occurrenceQuoteFingerprint = typeof req.body?.occurrenceQuoteFingerprint === 'string'
+      ? req.body.occurrenceQuoteFingerprint : undefined;
     const { sourceId, amount, leagueId, payees } = req.body as {
       sourceId?: string;
       amount?: number;
@@ -453,6 +531,21 @@ router.post('/combined-payments', paymentLimiter, async (req, res) => {
     }
     if (league.organizationId == null) {
       return sendError(res, 'League is not assigned to an organization', 400, 'LEAGUE_NOT_CONFIGURED');
+    }
+    const canonicalOccurrenceActive = await getInteractiveOccurrenceActivation({ organizationId: league.organizationId, leagueId });
+    if (canonicalOccurrenceActive && occurrenceSelections === undefined) {
+      return sendError(res, 'Select one or more obligations before paying', 409, 'OCCURRENCE_SELECTION_REQUIRED');
+    }
+    if (!canonicalOccurrenceActive && occurrenceSelections !== undefined) {
+      return sendError(res, 'Occurrence allocation is unavailable for this league', 409, 'OCCURRENCE_ALLOCATION_UNAVAILABLE');
+    }
+    if (canonicalOccurrenceActive && occurrenceSelections) {
+      try {
+        await quoteInteractiveOccurrenceAllocations({ organizationId: league.organizationId, leagueId, amountMinor: amount, currency: 'USD', selections: occurrenceSelections });
+      } catch (error) {
+        if (error instanceof InteractiveOccurrenceAllocationError) return sendError(res, 'Payment allocation could not be validated', 409, 'OCCURRENCE_ALLOCATION_CONFLICT');
+        throw error;
+      }
     }
 
     const totalWeeks = league.totalBowlingWeeks != null
@@ -564,6 +657,7 @@ router.post('/combined-payments', paymentLimiter, async (req, res) => {
       : await storage.getLocationSquareConfig(league.locationId);
     const operation = await prepareInteractivePaymentOperation({
       organizationId,
+      authorizingUserId: req.user?.id ?? 0,
       requestKey,
       amountMinor: amount,
       currency: 'USD',
@@ -600,6 +694,8 @@ router.post('/combined-payments', paymentLimiter, async (req, res) => {
         catalogObjectId: item.catalogObjectId,
         quantity: item.quantity,
       })),
+      occurrenceSelections,
+      occurrenceQuoteFingerprint,
     });
     return respondWithInteractiveOperation(
       res,
@@ -633,6 +729,9 @@ router.post('/payments', paymentLimiter, async (req, res) => {
     if (!requestKey) return;
     const sourceKind = requireInteractiveSourceKind(req, res);
     if (!sourceKind) return;
+    const occurrenceSelections = parseOccurrenceSelections(req.body?.occurrenceAllocations);
+    const occurrenceQuoteFingerprint = typeof req.body?.occurrenceQuoteFingerprint === 'string'
+      ? req.body.occurrenceQuoteFingerprint : undefined;
     const { sourceId, amount, bowlerId, leagueId } = req.body;
 
     if (isDev) log.info('Payment request received:', {
@@ -719,6 +818,21 @@ router.post('/payments', paymentLimiter, async (req, res) => {
 
     if (league.organizationId == null) {
       return sendError(res, 'League is not assigned to an organization', 400, 'LEAGUE_NOT_CONFIGURED');
+    }
+    const canonicalOccurrenceActive = await getInteractiveOccurrenceActivation({ organizationId: league.organizationId, leagueId });
+    if (canonicalOccurrenceActive && occurrenceSelections === undefined) {
+      return sendError(res, 'Select one or more obligations before paying', 409, 'OCCURRENCE_SELECTION_REQUIRED');
+    }
+    if (!canonicalOccurrenceActive && occurrenceSelections !== undefined) {
+      return sendError(res, 'Occurrence allocation is unavailable for this league', 409, 'OCCURRENCE_ALLOCATION_UNAVAILABLE');
+    }
+    if (canonicalOccurrenceActive && occurrenceSelections) {
+      try {
+        await quoteInteractiveOccurrenceAllocations({ organizationId: league.organizationId, leagueId, amountMinor: amount, currency: 'USD', selections: occurrenceSelections });
+      } catch (error) {
+        if (error instanceof InteractiveOccurrenceAllocationError) return sendError(res, 'Payment allocation could not be validated', 409, 'OCCURRENCE_ALLOCATION_CONFLICT');
+        throw error;
+      }
     }
     // P1 security: the recipient bowler must belong to the league's org
     // AND be actively rostered in this league before we charge a card and
@@ -844,6 +958,7 @@ router.post('/payments', paymentLimiter, async (req, res) => {
       : await storage.getLocationSquareConfig(league.locationId);
     const operation = await prepareInteractivePaymentOperation({
       organizationId,
+      authorizingUserId: req.user?.id ?? 0,
       requestKey,
       amountMinor: amount,
       currency: 'USD',
@@ -878,6 +993,8 @@ router.post('/payments', paymentLimiter, async (req, res) => {
         catalogObjectId: item.catalogObjectId,
         quantity: item.quantity,
       })),
+      occurrenceSelections,
+      occurrenceQuoteFingerprint,
     });
     return respondWithInteractiveOperation(
       res,

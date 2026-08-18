@@ -473,3 +473,23 @@ Permanent organization deletion is not available for a tenant with F1 activation
 evidence. The API returns a generic `409 FINANCIAL_ACTIVATION_RETENTION_REQUIRED`;
 archive or retain that tenant and preserve the immutable audit rows. A separately
 approved retention/deletion workflow is required before any irreversible removal.
+# F2 interactive occurrence allocation (migration-first, dormant)
+
+F2 is not activated by this change. Before any separately authorized rollout,
+apply and verify migration `0025_f2_interactive_occurrence_actor` on the target
+database, deploy the exact CI-verified commit, and confirm
+`LEAGUEVAULT_F1_ACTIVATION_ENABLED` remains off unless the operational gate is
+explicitly approved. No historical payment or operation may be backfilled or
+linked to an obligation.
+
+The first smoke check must use a disposable canonical-active test league and
+explicit obligation UUID selection. Verify quote fingerprint replay, partial
+allocation, duplicate-key replay, and that two distinct keys cannot reserve the
+same outstanding obligation. Confirm provider location, Square amount/order
+and payment keys, actor-restricted status/recovery, atomic settlement evidence,
+duplicate webhook behavior, and unchanged receipt/refund/dispute/reporting
+surfaces. Do not use a real customer, card, webhook payload, or production
+payment as a test target.
+
+Once an F2 supplement exists, rollback is traffic pause plus roll-forward to an
+F2-aware application. A pre-F2 application is not an approved rollback target.

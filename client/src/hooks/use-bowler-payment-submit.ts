@@ -20,6 +20,7 @@ import type { League, Bowler } from "@shared/schema";
 import type { SquareCard } from "@/hooks/use-square-payment";
 import type { AutopaySetupQuote } from "@/lib/autopay-setup";
 type PaymentCard = SquareCard | null;
+type InteractiveOccurrenceSelection = { obligationId: string; amountMinor: number };
 
 interface UseBowlerPaymentSubmitOptions {
   league: League;
@@ -46,6 +47,8 @@ interface UseBowlerPaymentSubmitOptions {
   // every selected partner. Ignored unless `isAutoPay`.
   additionalBowlerIds?: number[];
   autopayQuote?: AutopaySetupQuote;
+  occurrenceAllocations?: InteractiveOccurrenceSelection[];
+  occurrenceQuoteFingerprint?: string;
   financials: {
     fullSeasonAmount: number;
     remainingBalance: number;
@@ -68,6 +71,8 @@ export function useBowlerPaymentSubmit({
   targetBowlerId,
   additionalBowlerIds,
   autopayQuote,
+  occurrenceAllocations,
+  occurrenceQuoteFingerprint,
   financials,
   calculateTotalAmount,
   setIsSubmitting,
@@ -105,6 +110,9 @@ export function useBowlerPaymentSubmit({
     // a `card!` non-null assertion (lint forbids
     // `@typescript-eslint/no-non-null-assertion`).
     const newCard: NonNullable<PaymentCard> | null = cardMode === 'new' && card ? card : null;
+    const occurrenceFields = occurrenceAllocations
+      ? { occurrenceAllocations, ...(occurrenceQuoteFingerprint ? { occurrenceQuoteFingerprint } : {}) }
+      : {};
 
     const isUpfront = league.paymentMode === 'upfront';
     const isAutoPay = !isUpfront && selectedSchedule !== 'custom';
@@ -152,6 +160,7 @@ export function useBowlerPaymentSubmit({
               sourceKind: cardMode === 'new' ? 'new_card' : 'saved_card',
               payees,
               ...(trimmedBuyerEmail && !bowler.email ? { buyerEmail: trimmedBuyerEmail } : {}),
+              ...occurrenceFields,
             }),
           });
           const data = await response.json();
@@ -189,6 +198,7 @@ export function useBowlerPaymentSubmit({
               storeCard: false,
               sourceKind: 'saved_card',
               ...(trimmedBuyerEmail && !bowler.email ? { buyerEmail: trimmedBuyerEmail } : {}),
+              ...occurrenceFields,
             }),
           });
           const responseData = await response.json();
@@ -254,6 +264,7 @@ export function useBowlerPaymentSubmit({
             sourceKind: cardMode === 'new' ? 'new_card' : 'saved_card',
             payees,
             ...(trimmedBuyerEmail && !bowler.email ? { buyerEmail: trimmedBuyerEmail } : {}),
+            ...occurrenceFields,
           }),
         });
         const data = await response.json();
@@ -406,6 +417,6 @@ export function useBowlerPaymentSubmit({
     card, cardMode, selectedSavedCardId, league, bowler,
     selectedSchedule, storeCard,
     buyerEmail, chargeForBowlerId, additionalBowlerIds, financials, calculateTotalAmount, toast, navigate,
-    setIsSubmitting, setShowPaymentSetup, autopayQuote,
+    setIsSubmitting, setShowPaymentSetup, autopayQuote, occurrenceAllocations, occurrenceQuoteFingerprint,
   ]);
 }

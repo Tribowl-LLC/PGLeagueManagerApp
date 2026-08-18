@@ -16,6 +16,11 @@ import {
   interactivePaymentOperationAllocations,
   interactivePaymentOperationLineItems,
   interactivePaymentOperationSnapshots,
+  paymentOccurrenceAllocations,
+  paymentOccurrenceAllocationRevisions,
+  paymentOperationOccurrenceSnapshots,
+  paymentOperationOccurrenceSnapshotAllocations,
+  bowlerOccurrenceObligations,
   refundPaymentOperationSnapshots,
   users,
   PAYMENT_OPERATION_ERROR_CLASSIFICATIONS,
@@ -102,6 +107,7 @@ export interface CreateOrGetInteractivePaymentOperationInput {
   amountMinor: number;
   currency: string;
   providerName: string;
+  authorizingUserId?: number | null;
   now?: Date;
 }
 
@@ -111,6 +117,7 @@ export interface CreateOrGetGeneralInteractivePaymentOperationInput {
   amountMinor: number;
   currency: string;
   providerName: string;
+  authorizingUserId?: number | null;
   now?: Date;
 }
 
@@ -506,6 +513,7 @@ export async function createOrGetInteractivePaymentOperation(
         requestFingerprint: identity.requestFingerprint,
         providerIdempotencyKey: identity.providerIdempotencyKey,
         providerName: request.providerName,
+        authorizingUserId: input.authorizingUserId ?? null,
         status: "pending",
         nextAttemptAt: now,
         createdAt: now,
@@ -557,14 +565,23 @@ export async function createOrGetGeneralInteractivePaymentOperation(
   input: CreateOrGetGeneralInteractivePaymentOperationInput,
   existingTransaction?: PaymentOperationTransaction,
 ): Promise<PaymentOperation> {
-  return createOrGetInteractivePaymentOperation({
+  const operation = await createOrGetInteractivePaymentOperation({
     organizationId: input.organizationId,
     targetKey: buildGeneralInteractiveTargetKey(input.requestKey),
     amountMinor: input.amountMinor,
     currency: input.currency,
     providerName: input.providerName,
+    authorizingUserId: input.authorizingUserId,
     now: input.now,
   }, existingTransaction);
+  // Existing pre-F2 operations have no actor evidence and retain their exact
+  // recovery behavior. Once actor evidence exists it is immutable.
+  if (operation.authorizingUserId !== null
+    && input.authorizingUserId != null
+    && operation.authorizingUserId !== input.authorizingUserId) {
+    throw new PaymentOperationImmutableMismatchError();
+  }
+  return operation;
 }
 
 export async function createOrGetRefundPaymentOperation(
@@ -1777,6 +1794,90 @@ export type FinalizePaymentOperationSuccessInput = LeasedPaymentOperationInput &
   paymentRows?: PaymentOperationLinkedPaymentInput[];
 };
 
+async function finalizeInteractiveOccurrenceAllocations(
+  tx: PaymentOperationTransaction,
+  operation: PaymentOperation,
+  paymentRows: PaymentOperationLinkedPaymentInput[] | undefined,
+  now: string,
+): Promise<void> {
+  const [supplement] = await tx.select().from(paymentOperationOccurrenceSnapshots)
+    .where(eq(paymentOperationOccurrenceSnapshots.operationId, operation.id))
+    .limit(1).for("update");
+  if (!supplement) return;
+  if (operation.authorizingUserId === null || supplement.amountMinor !== operation.amountMinor || supplement.currency !== operation.currency) {
+    throw new PaymentOperationImmutableMismatchError();
+  }
+  const snapshotAllocations = await tx.select().from(paymentOperationOccurrenceSnapshotAllocations)
+    .where(eq(paymentOperationOccurrenceSnapshotAllocations.operationId, operation.id))
+    .orderBy(asc(paymentOperationOccurrenceSnapshotAllocations.allocationIndex));
+  if (snapshotAllocations.length !== supplement.allocationCount
+    || snapshotAllocations.reduce((sum, row) => sum + row.amountMinor, 0) !== operation.amountMinor) {
+    throw new PaymentOperationImmutableMismatchError();
+  }
+  const linkedPayments = await tx.select().from(payments)
+    .where(eq(payments.paymentOperationId, operation.id));
+  const byBowler = new Map(linkedPayments.map((row) => [row.bowlerId, row]));
+  const obligationIds = [...new Set(snapshotAllocations.map((row) => row.obligationId))];
+  const obligations = await tx.select().from(bowlerOccurrenceObligations).where(and(
+    eq(bowlerOccurrenceObligations.organizationId, operation.organizationId),
+    inArray(bowlerOccurrenceObligations.id, obligationIds),
+  )).for("update");
+  if (obligations.length !== obligationIds.length) throw new PaymentOperationImmutableMismatchError();
+  for (const row of snapshotAllocations) {
+    const payment = byBowler.get(row.bowlerId);
+    if (!payment || payment.status !== "paid" || payment.amount < row.amountMinor) {
+      throw new PaymentOperationImmutableMismatchError();
+    }
+    const allocationKey = `payment-operation:${operation.id}:${row.allocationIndex}`;
+    const [created] = await tx.insert(paymentOccurrenceAllocations).values({
+      organizationId: operation.organizationId,
+      leagueId: supplement.leagueId,
+      paymentId: payment.id,
+      obligationId: row.obligationId,
+      occurrenceId: row.occurrenceId,
+      bowlerId: row.bowlerId,
+      amountMinor: row.amountMinor,
+      currency: row.currency,
+      state: "active",
+      allocationKey,
+      currentRevision: 1,
+      recordedByUserId: operation.authorizingUserId,
+      createdAt: now,
+      updatedAt: now,
+    }).onConflictDoNothing().returning();
+    if (created) {
+      await tx.insert(paymentOccurrenceAllocationRevisions).values({
+        organizationId: operation.organizationId,
+        leagueId: supplement.leagueId,
+        allocationId: created.id,
+        revisionNumber: 1,
+        snapshotSchemaVersion: 1,
+        beforeSnapshot: null,
+        afterSnapshot: {
+          state: "active", amountMinor: row.amountMinor, currency: row.currency,
+          paymentId: payment.id, obligationId: row.obligationId,
+          occurrenceId: row.occurrenceId, bowlerId: row.bowlerId,
+        },
+        recordedByUserId: operation.authorizingUserId,
+        createdAt: now,
+      });
+    }
+  }
+  for (const obligation of obligations) {
+    const [totals] = await tx.select({ total: sql<number>`COALESCE(SUM(${paymentOccurrenceAllocations.amountMinor}), 0)` })
+      .from(paymentOccurrenceAllocations).innerJoin(payments, eq(payments.id, paymentOccurrenceAllocations.paymentId)).where(and(
+        eq(paymentOccurrenceAllocations.obligationId, obligation.id),
+        eq(paymentOccurrenceAllocations.state, "active"),
+        eq(payments.status, "paid"),
+      ));
+    const total = Number(totals?.total ?? 0);
+    await tx.update(bowlerOccurrenceObligations).set({
+      state: total >= obligation.amountMinor ? "settled" : total > 0 ? "partially_settled" : "open",
+      updatedAt: now,
+    }).where(and(eq(bowlerOccurrenceObligations.id, obligation.id), eq(bowlerOccurrenceObligations.organizationId, operation.organizationId)));
+  }
+}
+
 /**
  * Transaction-scoped success finalization. Interactive setup uses this to
  * commit the provider outcome, exact payment allocations, future schedule,
@@ -1791,6 +1892,19 @@ export async function finalizePaymentOperationSuccessInTransaction(
   validateLinkedPaymentRows(input.paymentRows);
   if (input.providerOrderId != null) validateProviderOrderId(input.providerOrderId);
   const now = toIso(input.now ?? new Date(), "now");
+  if (input.providerOrderId == null) {
+    const [supplement] = await tx.select({ operationId: paymentOperationOccurrenceSnapshots.operationId })
+      .from(paymentOperationOccurrenceSnapshots)
+      .where(eq(paymentOperationOccurrenceSnapshots.operationId, input.operationId))
+      .limit(1);
+    if (supplement) {
+      const [interactiveSnapshot] = await tx.select({ requestKind: interactivePaymentOperationSnapshots.requestKind })
+        .from(interactivePaymentOperationSnapshots)
+        .where(eq(interactivePaymentOperationSnapshots.operationId, input.operationId))
+        .limit(1);
+      if (interactiveSnapshot?.requestKind === "order") throw new PaymentOperationImmutableMismatchError();
+    }
+  }
 
   const [transitioned] = await tx
     .update(paymentOperations)
@@ -1826,6 +1940,7 @@ export async function finalizePaymentOperationSuccessInTransaction(
       input.operationId,
       input.paymentRows,
     );
+    await finalizeInteractiveOccurrenceAllocations(tx, transitioned, input.paymentRows, now);
     await deactivatePaidInFullSchedule(tx, input.operationId, now);
     return transitioned;
   }

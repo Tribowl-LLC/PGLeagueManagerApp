@@ -21,7 +21,7 @@ import { eq, and, gte, lte, sql } from 'drizzle-orm';
 import { payments as paymentsTable } from '@shared/schema';
 import { createLogger } from '../../logger';
 import { getPgErrorCode } from '../../utils/db-errors';
-import { PaymentDisputeEvidenceExistsError } from '../../storage/payments.js';
+import { PaymentDisputeEvidenceExistsError, PaymentOccurrenceEvidenceExistsError } from '../../storage/payments.js';
 
 const log = createLogger("Payments");
 
@@ -242,6 +242,9 @@ router.delete("/:id", paymentWriteLimiter, async (req, res) => {
         409,
         'PAYMENT_DISPUTE_EVIDENCE_EXISTS',
       );
+    }
+    if (error instanceof PaymentOccurrenceEvidenceExistsError) {
+      return sendError(res, 'This payment is retained as occurrence allocation evidence and cannot be deleted.', 409, 'PAYMENT_EVIDENCE_RETAINED');
     }
     log.error('Delete error:', error);
     sendError(res, 'Failed to delete payment');

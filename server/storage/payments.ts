@@ -2,7 +2,7 @@ import { eq, and, desc, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   payments, paymentSchedules, leagues, bowlerLeagues,
-  paymentDisputes, paymentOperations,
+  paymentDisputes, paymentOperations, paymentOccurrenceAllocations,
   type Payment, type InsertPayment, type UpdatePayment,
   type PaymentSchedule, type InsertPaymentSchedule, type UpdatePaymentSchedule,
   type PaginatedResult,
@@ -22,6 +22,13 @@ export class PaymentDisputeEvidenceExistsError extends Error {
   constructor() {
     super("Payment cannot be deleted while retained dispute evidence exists");
     this.name = "PaymentDisputeEvidenceExistsError";
+  }
+}
+
+export class PaymentOccurrenceEvidenceExistsError extends Error {
+  constructor() {
+    super("Payment cannot be deleted while occurrence allocation evidence exists");
+    this.name = "PaymentOccurrenceEvidenceExistsError";
   }
 }
 
@@ -310,6 +317,12 @@ export async function deletePayment(id: number): Promise<void> {
         .limit(1);
       if (retainedDispute) throw new PaymentDisputeEvidenceExistsError();
     }
+
+    const [occurrenceEvidence] = await tx.select({ id: paymentOccurrenceAllocations.id })
+      .from(paymentOccurrenceAllocations)
+      .where(eq(paymentOccurrenceAllocations.paymentId, id))
+      .limit(1);
+    if (occurrenceEvidence) throw new PaymentOccurrenceEvidenceExistsError();
 
     await tx.delete(payments).where(eq(payments.id, id));
   });

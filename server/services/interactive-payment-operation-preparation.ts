@@ -1,6 +1,6 @@
 import { db } from "../db.js";
 import { storage } from "../storage/index.js";
-import type { PaymentOperationTransaction } from "../storage/payment-operations.js";
+import { PaymentOperationValidationError, type PaymentOperationTransaction } from "../storage/payment-operations.js";
 import {
   buildSquarePaymentRequestIdentity,
 } from "./payment-operation-idempotency.js";
@@ -10,6 +10,7 @@ import {
   type PaymentOperation,
 } from "@shared/schema";
 import type { InteractivePaymentSemanticSnapshot } from "./interactive-payment-operation-snapshot.js";
+import { persistInteractiveOccurrenceSnapshot, type InteractiveOccurrenceSelection } from "./interactive-occurrence-allocation.js";
 
 export interface InteractivePaymentAllocationInput {
   allocationIndex: number;
@@ -24,6 +25,7 @@ export interface InteractivePaymentAllocationInput {
 
 export interface InteractivePaymentOperationPreparationInput {
   organizationId: number;
+  authorizingUserId: number;
   requestKey: string;
   amountMinor: number;
   currency: string;
@@ -47,6 +49,8 @@ export interface InteractivePaymentOperationPreparationInput {
     catalogObjectId: string;
     quantity: string;
   }>;
+  occurrenceSelections?: InteractiveOccurrenceSelection[];
+  occurrenceQuoteFingerprint?: string;
 }
 
 export function buildInteractivePaymentSnapshot(
@@ -86,6 +90,11 @@ export function buildInteractivePaymentSnapshot(
 export async function prepareInteractivePaymentOperation(
   input: InteractivePaymentOperationPreparationInput,
 ): Promise<PaymentOperation> {
+  if (input.occurrenceSelections !== undefined
+    && input.providerName === "square"
+    && !input.providerLocationId?.trim()) {
+    throw new PaymentOperationValidationError("Square provider location is required for occurrence-aware interactive payments");
+  }
   return db.transaction(async (tx: PaymentOperationTransaction) => {
     const operation = await storage.createOrGetGeneralInteractivePaymentOperation({
       organizationId: input.organizationId,
@@ -93,6 +102,7 @@ export async function prepareInteractivePaymentOperation(
       amountMinor: input.amountMinor,
       currency: input.currency,
       providerName: input.providerName,
+      authorizingUserId: input.authorizingUserId,
       now: input.now,
     }, tx);
     await storage.persistInteractivePaymentOperationSnapshot(
@@ -100,6 +110,13 @@ export async function prepareInteractivePaymentOperation(
       buildInteractivePaymentSnapshot(operation, input),
       tx,
     );
+    if (input.occurrenceSelections !== undefined) {
+      await persistInteractiveOccurrenceSnapshot(tx, operation, {
+        leagueId: input.leagueId,
+        selections: input.occurrenceSelections,
+        quoteFingerprint: input.occurrenceQuoteFingerprint,
+      });
+    }
     return operation;
   });
 }

@@ -924,3 +924,27 @@ after the exact merged commit is deployed and Render, Neon, webhook,
 dispute-visibility, payment/refund, tenant-isolation, and POS-origin-prefilter
 audits pass. See
 [`phase4b3a-dispute-visibility.md`](./phase4b3a-dispute-visibility.md).
+
+## Phase F2 interactive occurrence-allocation cutover
+
+F2 is limited to general interactive `/payments-provider/payments` and
+`/combined-payments`. A complete active F1 canonical activation selects the
+`interactive-obligation-quote/1` contract; all other leagues stay on the exact
+legacy path and create no occurrence supplement. The client supplies explicit
+obligation UUIDs and positive minor amounts, and the server persists the
+semantic quote fingerprint plus immutable `authorizing_user_id` evidence.
+
+Preparation locks activation and obligations, then accounts for settled rows
+and all nonterminal occurrence supplements as reserved capacity. A second
+request key therefore cannot over-allocate an obligation. Provider calls stay
+outside transactions. Success and signed webhook reconciliation share the
+fenced transaction finalizer, which inserts bowler-level payment rows,
+occurrence allocations, and revision-1 evidence atomically. Existing v1/v2,
+auto-pay, scheduled, refund, dispute, receipt, and report behavior remains
+unchanged.
+
+Migration `0025_f2_interactive_occurrence_actor` adds only nullable actor
+evidence for backward-compatible reads and a tenant lookup index. No historical
+operation is backfilled or linked to an obligation. After the first F2 row,
+rollback means traffic pause and roll-forward with an F2-aware revision; do not
+run a pre-F2 application against F2 actor/supplement evidence.
