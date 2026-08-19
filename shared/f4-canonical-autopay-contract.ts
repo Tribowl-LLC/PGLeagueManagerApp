@@ -51,7 +51,11 @@ export function canonicalAutopayProviderIdempotencyKey(input: { organizationId: 
 }
 
 export function f4ExecutionSnapshotFingerprint(snapshot: Omit<F4ExecutionSnapshot, "snapshotFingerprint">): string {
-  const parsed = f4ExecutionSnapshotSchema.omit({ snapshotFingerprint: true }).parse(snapshot);
+  // The complete schema has refinements, and Zod does not permit `.omit()`
+  // after a refinement. The fingerprint input intentionally omits the
+  // fingerprint, while the same complete semantic validation still applies.
+  const { snapshotFingerprint: _snapshotFingerprint, ...withoutFingerprint } = snapshot as F4ExecutionSnapshot;
+  const parsed = f4ExecutionSnapshotSchema.parse(withoutFingerprint);
   return `${F4_EXECUTION_SNAPSHOT_FINGERPRINT_PREFIX}${createHash("sha256").update(canonicalJson(parsed)).digest("hex")}`;
 }
 

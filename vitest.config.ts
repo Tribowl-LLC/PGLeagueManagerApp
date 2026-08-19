@@ -90,6 +90,7 @@ const PARALLEL_ISOLATED_WITH_APP = [
  */
 const UNIT_NO_DB = [
   'tests/unit/f3-autopay-contract.test.ts',
+  'tests/unit/f4-canonical-autopay-contract.test.ts',
   'tests/unit/f3-provider-ownership.test.ts',
   'tests/unit/canonical-due-past-due.test.ts',
   'tests/unit/neon-branches-reveal-password.test.ts',
