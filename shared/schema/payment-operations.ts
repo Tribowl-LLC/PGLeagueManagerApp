@@ -195,6 +195,17 @@ export const paymentOperations = pgTable("payment_operations", {
     "payment_operations_status_check",
     sql`${table.status} IN ('pending', 'leased', 'provider_unknown', 'retry_scheduled', 'succeeded', 'action_required', 'reconciliation_required', 'failed_terminal', 'canceled')`,
   ),
+  dispatchClaimStateCheck: check(
+    "payment_operations_dispatch_claim_state_check",
+    sql`(
+      (${table.operationType} = 'canonical_autopay_charge'
+        AND (
+          (${table.status} IN ('pending', 'retry_scheduled') AND ${table.dispatchClaimedAt} IS NULL)
+          OR ${table.status} IN ('leased', 'provider_unknown', 'reconciliation_required', 'succeeded', 'action_required', 'failed_terminal', 'canceled')
+        ))
+      OR (${table.operationType} <> 'canonical_autopay_charge' AND ${table.dispatchClaimedAt} IS NULL)
+    )`,
+  ),
   amountCheck: check("payment_operations_amount_minor_check", sql`${table.amountMinor} > 0`),
   currencyCheck: check("payment_operations_currency_check", sql`${table.currency} ~ '^[A-Z]{3}$'`),
   targetKeyCheck: check("payment_operations_target_key_check", sql`length(${table.targetKey}) > 0`),

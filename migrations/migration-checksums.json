@@ -171,9 +171,9 @@
     },
     {
       "idx": 28,
-      "tag": "0028_remove_legacy_invite_tokens",
-      "createdAt": 1787270862813,
-      "hash": "89930b8cb9a586f560a03b42ed44fa69ed80709657e45cc6c35807ec5fb1a260"
+      "tag": "0028_phase_f4_canonical_scheduled_execution",
+      "createdAt": 1787174270776,
+      "hash": "838445c14baa2e47c953b078cd60a157bd942dfa704c44796d0855cc94415d49"
     }
   ]
 }

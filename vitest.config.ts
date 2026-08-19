@@ -199,6 +199,7 @@ const PARALLEL_ISOLATED = [
   'tests/unit/scheduled-payment-ledger-cutover.test.ts',
   'tests/unit/payment-provider-error-mapping.test.ts',
   'tests/unit/f3-workflow-postgres.test.ts',
+  'tests/unit/f4-canonical-autopay-integration-postgres.test.ts',
   'tests/api/f3-autopay-enabled-router.test.ts',
   'tests/unit/payment-refunds-receipt-dependency.test.ts',
   'tests/unit/payment-scheduler.test.ts',

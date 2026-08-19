@@ -80,7 +80,11 @@ export async function prepareCanonicalAutopayPlan(input: { organizationId: numbe
     const authorizedItems = authorization.authorizedItems.filter((item) => item.collectionPointOccurrenceId === provenance.collectionPointOccurrenceId).sort((a, b) => a.itemIndex - b.itemIndex);
     if (authorizedItems.length !== items.length || authorizedItems.some((authorizedItem, index) => {
       const item = items[index];
-      return !item || authorizedItem.itemIndex !== item.itemIndex || authorizedItem.obligationId !== item.obligationId
+      // F3 authorization item indexes are global to the quote, while each
+      // D2 collection-point plan stores a zero-based local order. Sorting the
+      // exact point subset preserves consent order without treating that
+      // harmless numbering boundary as semantic drift.
+      return !item || authorizedItem.obligationId !== item.obligationId
         || authorizedItem.occurrenceId !== item.occurrenceId || authorizedItem.bowlerId !== item.bowlerId
         || authorizedItem.amountMinor !== item.amountMinor;
     }) || !authorization.collectionPointOccurrenceIds.includes(provenance.collectionPointOccurrenceId)) fail("AUTHORIZATION_ITEMS_DRIFT");

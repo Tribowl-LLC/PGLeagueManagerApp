@@ -64,6 +64,13 @@ CREATE INDEX "payment_operations_canonical_plan_idx" ON "payment_operations" USI
 CREATE UNIQUE INDEX "payment_operations_canonical_plan_unique" ON "payment_operations" USING btree ("organization_id","league_id","canonical_plan_id") WHERE "payment_operations"."operation_type" = 'canonical_autopay_charge';--> statement-breakpoint
 CREATE UNIQUE INDEX "payment_operations_canonical_target_unique" ON "payment_operations" USING btree ("organization_id","target_key") WHERE "payment_operations"."operation_type" = 'canonical_autopay_charge';--> statement-breakpoint
 ALTER TABLE "payment_operations" ADD CONSTRAINT "payment_operations_operation_type_check" CHECK ("payment_operations"."operation_type" IN ('scheduled_charge', 'interactive_charge', 'refund', 'canonical_autopay_charge'));--> statement-breakpoint
+CREATE INDEX "collection_plans_canonical_wake_idx" ON "occurrence_collection_plans" USING btree ("organization_id","league_id","state","trigger_occurrence_id") WHERE "occurrence_collection_plans"."state" = 'ready' AND "occurrence_collection_plans"."trigger_occurrence_id" IS NOT NULL;--> statement-breakpoint
+ALTER TABLE "payment_operations" ADD CONSTRAINT "payment_operations_dispatch_claim_state_check" CHECK ((
+      ("payment_operations"."operation_type" = 'canonical_autopay_charge'
+        AND (("payment_operations"."status" IN ('pending', 'retry_scheduled') AND "payment_operations"."dispatch_claimed_at" IS NULL)
+          OR "payment_operations"."status" IN ('leased', 'provider_unknown', 'reconciliation_required', 'succeeded', 'action_required', 'failed_terminal', 'canceled')))
+      OR ("payment_operations"."operation_type" <> 'canonical_autopay_charge' AND "payment_operations"."dispatch_claimed_at" IS NULL)
+    ));--> statement-breakpoint
 ALTER TABLE "payment_operations" ADD CONSTRAINT "payment_operations_scheduled_cycle_check" CHECK ((
       "payment_operations"."operation_type" = 'scheduled_charge'
       AND "payment_operations"."payment_schedule_id" IS NOT NULL

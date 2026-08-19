@@ -12192,6 +12192,20 @@
           "method": "btree",
           "with": {}
         },
+        "collection_plans_canonical_wake_idx": {
+          "name": "collection_plans_canonical_wake_idx",
+          "columns": [
+            { "expression": "organization_id", "isExpression": false, "asc": true, "nulls": "last" },
+            { "expression": "league_id", "isExpression": false, "asc": true, "nulls": "last" },
+            { "expression": "state", "isExpression": false, "asc": true, "nulls": "last" },
+            { "expression": "trigger_occurrence_id", "isExpression": false, "asc": true, "nulls": "last" }
+          ],
+          "isUnique": false,
+          "where": "\"occurrence_collection_plans\".\"state\" = 'ready' AND \"occurrence_collection_plans\".\"trigger_occurrence_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "collection_plans_trigger_idx": {
           "name": "collection_plans_trigger_idx",
           "columns": [
@@ -14861,6 +14875,10 @@
         "payment_operations_status_check": {
           "name": "payment_operations_status_check",
           "value": "\"payment_operations\".\"status\" IN ('pending', 'leased', 'provider_unknown', 'retry_scheduled', 'succeeded', 'action_required', 'reconciliation_required', 'failed_terminal', 'canceled')"
+        },
+        "payment_operations_dispatch_claim_state_check": {
+          "name": "payment_operations_dispatch_claim_state_check",
+          "value": "(\n      (\"payment_operations\".\"operation_type\" = 'canonical_autopay_charge'\n        AND ((\"payment_operations\".\"status\" IN ('pending', 'retry_scheduled') AND \"payment_operations\".\"dispatch_claimed_at\" IS NULL)\n          OR \"payment_operations\".\"status\" IN ('leased', 'provider_unknown', 'reconciliation_required', 'succeeded', 'action_required', 'failed_terminal', 'canceled')))\n      OR (\"payment_operations\".\"operation_type\" <> 'canonical_autopay_charge' AND \"payment_operations\".\"dispatch_claimed_at\" IS NULL)\n    )"
         },
         "payment_operations_amount_minor_check": {
           "name": "payment_operations_amount_minor_check",

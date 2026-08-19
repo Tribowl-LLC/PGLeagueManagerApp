@@ -1680,7 +1680,7 @@ export async function acquireCanonicalAutopayDispatchCutoff(input: {
     if (authorizedItems.length !== snapshotItems.length || authorizedItems.some((item, index) => {
       const expected = snapshotItems[index];
       return !expected || item.collectionPointOccurrenceId !== snapshot.collectionPointOccurrenceId
-        || item.itemIndex !== expected.itemIndex || item.obligationId !== expected.obligationId
+        || item.obligationId !== expected.obligationId
         || item.occurrenceId !== expected.occurrenceId || item.bowlerId !== expected.bowlerId
         || item.amountMinor !== expected.amountMinor;
     })) return false;
