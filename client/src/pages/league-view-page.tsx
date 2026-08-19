@@ -63,6 +63,7 @@ export default function LeagueViewPage() {
     staleTime: 5 * 60 * 1000,
   });
   const currentUser = currentUserResponse?.data;
+  const canManageLeague = currentUser?.role === "system_admin" || currentUser?.role === "org_admin";
 
   const { data: seasonHistoryResponse } = useQuery<{ success: true; data: League[] }>({
     queryKey: ['/api/leagues', leagueId, 'season-history'],
@@ -184,7 +185,7 @@ export default function LeagueViewPage() {
             )}
           </div>
           <div className="flex items-center gap-2">
-          <AlertDialog>
+          {canManageLeague && <AlertDialog>
             <AlertDialogTrigger asChild>
               <Button variant="outline" disabled={sendInvitesMutation.isPending}>
                 {sendInvitesMutation.isPending ? (
@@ -209,14 +210,14 @@ export default function LeagueViewPage() {
                 </AlertDialogAction>
               </AlertDialogFooter>
             </AlertDialogContent>
-          </AlertDialog>
+          </AlertDialog>}
           </div>
         </div>
 
         {inviteResult && <InviteResultCard inviteResult={inviteResult} />}
 
         <ErrorBoundary level="section">
-          <LeagueActionCards leagueId={leagueId} />
+          <LeagueActionCards leagueId={leagueId} canManageRoster={canManageLeague} />
           {(currentUser?.role === "org_admin" || currentUser?.role === "system_admin") && league?.organizationId && <F3PolicyReview leagueId={leagueId} organizationId={league.organizationId} />}
         </ErrorBoundary>
 
@@ -231,7 +232,7 @@ export default function LeagueViewPage() {
         )}
 
         <ErrorBoundary level="section">
-        {league.active && (
+        {league.active && canManageLeague && (
           <div className="flex justify-end">
             <Button variant="outline" onClick={() => setShowNewSeason(true)}>
               <RefreshCw className="size-4 mr-2" />
@@ -244,14 +245,14 @@ export default function LeagueViewPage() {
           <SeasonHistoryCard seasonHistory={seasonHistory} leagueId={leagueId} />
         )}
 
-        <NewSeasonDialog
-          league={league}
-          showNewSeason={showNewSeason}
-          setShowNewSeason={setShowNewSeason}
-          onCreate={(values) => newSeasonMutation.mutate(values)}
-          isPending={newSeasonMutation.isPending}
-          isSystemAdmin={currentUser?.role === "system_admin"}
-        />
+        {canManageLeague && <NewSeasonDialog
+            league={league}
+            showNewSeason={showNewSeason}
+            setShowNewSeason={setShowNewSeason}
+            onCreate={(values) => newSeasonMutation.mutate(values)}
+            isPending={newSeasonMutation.isPending}
+            isSystemAdmin={currentUser?.role === "system_admin"}
+          />}
         </ErrorBoundary>
       </div>
       </ErrorBoundary>

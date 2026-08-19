@@ -7,6 +7,7 @@ import { PAYMENT_SYNC_MAX_ATTEMPTS, type Bowler } from '@shared/schema';
 import type { PaymentProvider } from './payment-provider';
 import { syncBowlerLeagueAttributesToProvider } from './bowler-attributes';
 import { decideBowlerPhoneSync } from './bowler-phone-sync';
+import { linkUserToBowler } from './identity-link';
 
 const log = createLogger("BowlerSync");
 
@@ -31,9 +32,17 @@ export async function runBowlerPostCreateSync(
   let squareCustomerLinked = false;
   if (bowlerEmail) {
     try {
-      const matchingUser = await storage.getUserByEmail(bowlerEmail);
-      if (matchingUser && !matchingUser.bowlerId) {
-        await storage.linkUserToBowler(matchingUser.id, current.id);
+      const matchingUser = await storage.getUserByEmail(bowlerEmail.trim().toLowerCase());
+      if (matchingUser && matchingUser.bowlerId === null) {
+        await linkUserToBowler({
+          organizationId: organizationId ?? current.organizationId,
+          userId: matchingUser.id,
+          bowlerId: current.id,
+          actorUserId: null,
+          eventType: 'admin_assignment',
+          source: 'bowler-post-create-email-auto-link',
+          reason: 'email-match-after-bowler-create',
+        });
         log.info(`Auto-linked user ${matchingUser.id} to bowler ${current.id}`);
 
         // Task #677: user wins for `phone`. Apply the overwrite

@@ -36,4 +36,12 @@ describe('buildPaymentConditions — emitted SQL shape', () => {
     expect(sqlText).not.toMatch(/"league_id" in \(select/i);
     expect(sqlText).not.toMatch(/is not null/i);
   });
+
+  it('correlates a team membership to the payment league', () => {
+    const sqlText = sqlFor(buildPaymentConditions({ organizationId: 42, teamId: 7 }));
+    expect(sqlText).toMatch(/exists \(\s*select 1\s*from "bowler_leagues"/i);
+    expect(sqlText).toMatch(/"bowler_leagues"\."bowler_id" = "payments"\."bowler_id"/i);
+    expect(sqlText).toMatch(/"bowler_leagues"\."team_id" = \$2/i);
+    expect(sqlText).toMatch(/"bowler_leagues"\."league_id" = "payments"\."league_id"/i);
+  });
 });

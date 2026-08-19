@@ -61,6 +61,15 @@ vi.mock('../../server/storage', () => ({
   },
 }));
 
+vi.mock('../../server/services/identity-link.js', () => ({
+  linkUserToBowler: vi.fn(async () => ({ user: null, bowler: null, oldBowler: null, event: null })),
+  isIdentityLinkError: () => false,
+}));
+vi.mock('../../server/services/identity-link', () => ({
+  linkUserToBowler: vi.fn(async () => ({ user: null, bowler: null, oldBowler: null, event: null })),
+  isIdentityLinkError: () => false,
+}));
+
 vi.mock('../../server/services/email', () => ({
   sendTemplatedEmail: vi.fn(async () => true),
   sendPasswordChangedNotification: vi.fn(async () => true),
@@ -166,8 +175,8 @@ function makeUserBowlersApp(sessionUser: unknown) {
 
 beforeAll(async () => {
   const [authApp, ubApp] = [
-    makeAuthApp(ORG_5, { id: 1, email: 'attacker@example.com', organizationId: 5, bowlerId: null }),
-    makeUserBowlersApp({ id: 1, email: 'attacker@example.com', organizationId: 5, bowlerId: null }),
+    makeAuthApp(ORG_5, { id: 1, email: 'attacker@example.com', role: 'user', organizationId: 5, bowlerId: null }),
+    makeUserBowlersApp({ id: 1, email: 'attacker@example.com', role: 'user', organizationId: 5, bowlerId: null }),
   ];
   await Promise.all([
     new Promise<void>(resolve => {
@@ -410,5 +419,31 @@ describe('POST /api/user-bowlers/link-bowler — authorization boundaries', () =
     expect(res.status).toBe(400);
     const data = await res.json();
     expect(data.error?.code).toBe('ALREADY_LINKED');
+  });
+
+  it('rejects a payment-manager account before reading the target bowler', async () => {
+    const staffApp = makeUserBowlersApp({
+      id: 2,
+      email: 'staff@example.com',
+      role: 'payment_manager',
+      organizationId: 5,
+      locationId: 7,
+      bowlerId: null,
+    });
+    const server = await new Promise<Server>((resolve) => {
+      const started = staffApp.listen(0, '127.0.0.1', () => resolve(started));
+    });
+    try {
+      const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      const response = await fetch(`${base}/api/user-bowlers/link-bowler`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bowlerId: 33 }),
+      });
+      expect(response.status).toBe(403);
+      expect(mockGetBowler).not.toHaveBeenCalled();
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });

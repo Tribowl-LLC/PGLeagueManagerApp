@@ -491,6 +491,18 @@ export function handleUserOrgError(res: Response, error: unknown): boolean {
     sendError(res, message, 400, 'ORG_REQUIRED');
     return true;
   }
+  if (name === 'ElevatedRoleBowlerLinkError') {
+    const message = (error as { message?: string }).message ||
+      'Staff accounts cannot be linked to bowler records.';
+    sendError(res, message, 409, 'STAFF_BOWLER_CONFLICT');
+    return true;
+  }
+  if (name === 'PaymentManagerScopeError') {
+    const message = (error as { message?: string }).message ||
+      'Payment managers must have an organization and location.';
+    sendError(res, message, 400, 'LOCATION_REQUIRED');
+    return true;
+  }
   return false;
 }
 

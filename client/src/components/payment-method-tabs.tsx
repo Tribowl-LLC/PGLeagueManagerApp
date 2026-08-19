@@ -15,12 +15,14 @@ interface PaymentMethodTabsProps {
   form: UseFormReturn<InsertPaymentInput, unknown, InsertPayment>;
   paymentType: string;
   squareLoadFailed: boolean;
+  allowCard?: boolean;
 }
 
 export const PaymentMethodTabs: FC<PaymentMethodTabsProps> = ({
   form,
   paymentType,
   squareLoadFailed,
+  allowCard = true,
 }) => {
   return (
     <>
@@ -38,7 +40,7 @@ export const PaymentMethodTabs: FC<PaymentMethodTabsProps> = ({
           }}
           className="w-full"
         >
-          <TabsList className="grid w-full grid-cols-3">
+          <TabsList className={`grid w-full ${allowCard ? "grid-cols-3" : "grid-cols-2"}`}>
             <TabsTrigger 
               value="cash" 
               className="flex items-center gap-2"
@@ -51,17 +53,19 @@ export const PaymentMethodTabs: FC<PaymentMethodTabsProps> = ({
             >
               Check
             </TabsTrigger>
-            <TabsTrigger 
-              disabled={squareLoadFailed}
-              value="credit" 
-              className="flex items-center gap-2"
-            >
-              <CreditCard className="size-4" />
-              Credit Card
-            </TabsTrigger>
+            {allowCard && (
+              <TabsTrigger
+                disabled={squareLoadFailed}
+                value="credit"
+                className="flex items-center gap-2"
+              >
+                <CreditCard className="size-4" />
+                Credit Card
+              </TabsTrigger>
+            )}
           </TabsList>
           
-          <TabsContent value="credit">
+          {allowCard && <TabsContent value="credit">
             {squareLoadFailed ? (
               <Alert variant="destructive" className="mb-4">
                 <AlertTriangle className="size-4" />
@@ -71,7 +75,7 @@ export const PaymentMethodTabs: FC<PaymentMethodTabsProps> = ({
                 </AlertDescription>
               </Alert>
             ) : null}
-          </TabsContent>
+          </TabsContent>}
           
           <TabsContent value="cash">
             <Alert className="mb-4">

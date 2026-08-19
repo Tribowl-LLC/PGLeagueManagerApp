@@ -29,7 +29,7 @@ const mockGetUser = vi.fn<(id: number) => Promise<unknown>>();
 const mockGetBowler = vi.fn<(id: number) => Promise<unknown>>();
 const mockUpdateBowler = vi.fn<(id: number, patch: unknown) => Promise<unknown>>();
 const mockGetUserByEmail = vi.fn<(email: string) => Promise<unknown>>();
-const mockLinkUserToBowler = vi.fn<(userId: number, bowlerId: number) => Promise<unknown>>();
+const mockLinkUserToBowler = vi.fn<(input: unknown) => Promise<unknown>>();
 const mockGetBowlerLeagues = vi.fn<(filter: unknown) => Promise<unknown[]>>(async () => []);
 const mockGetLeague = vi.fn<(id: number) => Promise<unknown>>(async () => null);
 const mockSetUserOrganization = vi.fn<(userId: number, orgId: number) => Promise<unknown>>();
@@ -41,12 +41,15 @@ vi.mock('../../server/storage', () => ({
     getBowler: (id: number) => mockGetBowler(id),
     updateBowler: (id: number, patch: unknown) => mockUpdateBowler(id, patch),
     getUserByEmail: (email: string) => mockGetUserByEmail(email),
-    linkUserToBowler: (userId: number, bowlerId: number) => mockLinkUserToBowler(userId, bowlerId),
     getBowlerLeagues: (filter: unknown) => mockGetBowlerLeagues(filter),
     getLeague: (id: number) => mockGetLeague(id),
     setUserOrganization: (userId: number, orgId: number) => mockSetUserOrganization(userId, orgId),
     getFirstSquareConfiguredLocation: (orgId: number) => mockGetFirstSquareConfiguredLocation(orgId),
   },
+}));
+
+vi.mock('../../server/services/identity-link', () => ({
+  linkUserToBowler: (input: unknown) => mockLinkUserToBowler(input),
 }));
 
 vi.mock('../../server/services/payment-provider-factory', () => ({

@@ -18,6 +18,7 @@ import { testBypassSkip } from '../middleware/rate-limit';
 import { syncBowlerForUser } from '../services/payment-customer-sync';
 import { maskEmail } from '../utils/pii';
 import { getPgErrorCode } from '../utils/db-errors';
+import { isPaymentManager } from '../utils/access-control.js';
 import { type PaymentSyncStatus } from '@shared/schema';
 import {
   markAdminEmailChangeAuditConfirmed,
@@ -259,7 +260,9 @@ router.post('/confirm-email-change', confirmEmailChangeLimiter, async (req: Requ
     const updatedUser = outcome.user;
 
     let paymentSyncStatus: PaymentSyncStatus = 'not_applicable';
-    if (updatedUser.bowlerId) {
+    // Staff accounts are never bowlers. A stale legacy link must not let an
+    // email confirmation mutate a global bowler profile via provider sync.
+    if (updatedUser.bowlerId && !isPaymentManager(updatedUser)) {
       const result = await syncBowlerForUser(updatedUser, {
         nameChanged: false,
         emailChanged: true,

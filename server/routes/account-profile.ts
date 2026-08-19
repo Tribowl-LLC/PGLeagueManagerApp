@@ -11,6 +11,7 @@ import {
   getBaseUrl,
 } from '../services/email';
 import { requireSystemAdmin } from '../middleware/auth';
+import { isPaymentManager } from '../utils/access-control.js';
 import { syncBowlerForUser } from '../services/payment-customer-sync';
 import { maskEmail } from '../utils/pii';
 import { randomBytes } from 'crypto';
@@ -234,7 +235,10 @@ router.patch('/profile/:id', requireAuth, async (req: Request, res: Response) =>
 
     let paymentSyncStatus: PaymentSyncStatus = 'not_applicable';
 
-    if (updatedUser.bowlerId) {
+    // Staff accounts are never bowlers. If a legacy payment-manager row still
+    // carries a stale bowlerId, a profile edit must not mutate that global
+    // bowler record through the payment-customer sync path.
+    if (updatedUser.bowlerId && !isPaymentManager(user)) {
       const nameChanged =
         updateData.name !== undefined && updateData.name !== existingUser.name;
       const phoneChanged =
@@ -380,6 +384,9 @@ router.post(
           'NO_LINKED_USER',
         );
       }
+      if (isPaymentManager(linkedUser)) {
+        return sendError(res, 'Staff accounts cannot sync bowler profiles', 403, 'FORBIDDEN');
+      }
 
       // Task #682: the bowler must have an email — `syncBowlerForUser`
       // returns `'skipped'` for emailless bowlers (nothing to push to
@@ -489,6 +496,9 @@ router.post(
   async (req: Request, res: Response) => {
     try {
       const user = req.user!;
+      if (isPaymentManager(user)) {
+        return sendError(res, 'Staff accounts cannot sync bowler profiles', 403, 'FORBIDDEN');
+      }
       const bowlerId = (user as { bowlerId?: number | null }).bowlerId ?? null;
 
       // Same 422 contract the admin endpoint uses when no bowler is

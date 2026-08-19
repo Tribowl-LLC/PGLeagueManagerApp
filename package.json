@@ -20,6 +20,8 @@
     "db:adopt-baseline": "tsx scripts/db-adopt-baseline.ts",
     "db:check": "tsx scripts/db-check.ts",
     "db:audit:organization-hostnames": "tsx scripts/audit-organization-hostname-collisions.ts",
+    "db:preflight:identity-integrity": "tsx scripts/identity-integrity-preflight.ts",
+    "db:migrate:legacy-account-actions": "tsx scripts/migrate-legacy-account-actions.ts",
     "db:inventory": "tsx scripts/db-inventory.ts",
     "db:inventory:compare": "tsx scripts/db-inventory-compare.ts",
     "db:inventory:validate-local": "tsx scripts/db-inventory-validate-local.ts",

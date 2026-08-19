@@ -104,17 +104,17 @@ export default function HomePage() {
       if (!response.ok) throw new Error("Financial evidence requires review");
       return response.json();
     },
-    enabled: userResponse?.data?.role === "org_admin" || userResponse?.data?.role === "system_admin",
+    enabled: userResponse?.data?.role === "org_admin" || userResponse?.data?.role === "system_admin" || String(userResponse?.data?.role) === "payment_manager",
     staleTime: 1000 * 30,
     retry: false,
   });
 
-  const adminFinancialLoading = (userResponse?.data?.role === "org_admin" || userResponse?.data?.role === "system_admin") && loadingFinancialReport;
+  const adminFinancialLoading = (userResponse?.data?.role === "org_admin" || userResponse?.data?.role === "system_admin" || String(userResponse?.data?.role) === "payment_manager") && loadingFinancialReport;
   if (loadingLeagues || loadingPayments || loadingBowlerLeagues || adminFinancialLoading) {
     return <Layout><DashboardSkeleton /></Layout>;
   }
 
-  const error = leaguesError || paymentsError || bowlerLeaguesError || (userResponse?.data?.role === "org_admin" || userResponse?.data?.role === "system_admin" ? financialReportError : null);
+  const error = leaguesError || paymentsError || bowlerLeaguesError || (userResponse?.data?.role === "org_admin" || userResponse?.data?.role === "system_admin" || String(userResponse?.data?.role) === "payment_manager" ? financialReportError : null);
   if (error) {
     return <Layout><PageErrorState message={`Error loading data: ${(error as Error).message}`} onRetry={() => { refetchLeagues(); refetchPayments(); refetchBowlerLeagues(); refetchFinancialReport(); }} /></Layout>;
   }
@@ -277,7 +277,7 @@ export default function HomePage() {
           </div>
 
           <ErrorBoundary level="section">
-            <PastDueBowlersSection enabled={userResponse?.data?.role === "org_admin" || userResponse?.data?.role === "system_admin"} organizationId={userResponse?.data?.role === "system_admin" ? userResponse.data.organizationId : null} />
+            <PastDueBowlersSection enabled={userResponse?.data?.role === "org_admin" || userResponse?.data?.role === "system_admin" || String(userResponse?.data?.role) === "payment_manager"} organizationId={userResponse?.data?.role === "system_admin" ? userResponse.data.organizationId : null} />
           </ErrorBoundary>
 
           {leagueHealthData.length > 0 && (

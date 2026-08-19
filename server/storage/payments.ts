@@ -1,4 +1,4 @@
-import { eq, and, desc, sql } from "drizzle-orm";
+import { eq, and, desc, inArray, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   payments, paymentSchedules, leagues, bowlerLeagues,
@@ -35,6 +35,7 @@ export class PaymentOccurrenceEvidenceExistsError extends Error {
 interface PaymentFilters {
   bowlerId?: number;
   leagueId?: number;
+  leagueIds?: number[];
   teamId?: number;
   weekOf?: Date;
   organizationId: number;
@@ -67,17 +68,22 @@ export function buildPaymentConditions(filters: AllPaymentFilters, options?: { e
   if (filters.leagueId !== undefined) {
     conditions.push(eq(payments.leagueId, filters.leagueId));
   }
+  if (filters.leagueIds !== undefined) {
+    conditions.push(filters.leagueIds.length > 0
+      ? inArray(payments.leagueId, filters.leagueIds)
+      : sql`FALSE`);
+  }
   if (filters.teamId !== undefined) {
-    const bowlerLeaguesSubquery = db
-      .select({ bowler_id: bowlerLeagues.bowlerId })
-      .from(bowlerLeagues)
-      .where(and(
-        eq(bowlerLeagues.teamId, filters.teamId),
-        filters.leagueId !== undefined ? eq(bowlerLeagues.leagueId, filters.leagueId) : undefined
-      ))
-      .as('bl');
-
-    conditions.push(sql`${payments.bowlerId} IN (SELECT "bowler_id" FROM ${bowlerLeaguesSubquery})`);
+    // A team membership is league-specific. Correlate both halves of that
+    // identity so a bowler on the requested team in league A cannot make the
+    // same bowler's payment in league B appear in a team-scoped report.
+    conditions.push(sql`EXISTS (
+      SELECT 1
+      FROM ${bowlerLeagues}
+      WHERE ${bowlerLeagues.bowlerId} = ${payments.bowlerId}
+        AND ${bowlerLeagues.teamId} = ${filters.teamId}
+        AND ${bowlerLeagues.leagueId} = ${payments.leagueId}
+    )`);
   }
   if (filters.weekOf !== undefined) {
     const startDate = new Date(filters.weekOf);

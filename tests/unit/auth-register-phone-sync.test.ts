@@ -44,9 +44,12 @@ const mockCreateUser = vi.fn<(data: unknown) => Promise<unknown>>();
 const mockGetBowlerByEmail = vi.fn<(email: string, orgId: number) => Promise<unknown>>();
 const mockGetBowlerByEmailSystemAdmin = vi.fn<(email: string) => Promise<unknown>>();
 const mockIsBowlerLinked = vi.fn<(id: number) => Promise<boolean>>();
-const mockLinkUserToBowler = vi.fn<(userId: number, bowlerId: number) => Promise<undefined>>(
-  async () => undefined,
-);
+const mockIdentityLink = vi.fn(async (input: unknown) => ({
+  user: { id: (input as { userId: number }).userId },
+  bowler: null,
+  oldBowler: null,
+  event: { id: 1 },
+}));
 const mockGetBowlerLeagues = vi.fn<(filter: unknown) => Promise<unknown[]>>(async () => []);
 const mockGetBowler = vi.fn<(id: number) => Promise<unknown>>();
 const mockUpdateBowler = vi.fn<(id: number, patch: unknown) => Promise<unknown>>();
@@ -60,8 +63,6 @@ vi.mock('../../server/storage', () => ({
     getBowlerByEmail: (email: string, orgId: number) => mockGetBowlerByEmail(email, orgId),
     getBowlerByEmailSystemAdmin: (email: string) => mockGetBowlerByEmailSystemAdmin(email),
     isBowlerLinked: (id: number) => mockIsBowlerLinked(id),
-    linkUserToBowler: (userId: number, bowlerId: number) =>
-      mockLinkUserToBowler(userId, bowlerId),
     getBowlerLeagues: (filter: unknown) => mockGetBowlerLeagues(filter),
     getBowler: (id: number) => mockGetBowler(id),
     updateBowler: (id: number, patch: unknown) => mockUpdateBowler(id, patch),
@@ -78,6 +79,21 @@ vi.mock('../../server/storage', () => ({
     setUserInviteToken: vi.fn(async () => undefined),
     getUserByInviteToken: vi.fn(async () => null),
   },
+}));
+
+vi.mock('../../server/db', () => ({
+  db: {
+    transaction: async (callback: (tx: unknown) => Promise<unknown>) => callback({}),
+  },
+}));
+
+vi.mock('../../server/services/identity-link.js', () => ({
+  linkUserToBowler: (input: unknown) => mockIdentityLink(input),
+  isIdentityLinkError: () => false,
+}));
+vi.mock('../../server/services/identity-link', () => ({
+  linkUserToBowler: (input: unknown) => mockIdentityLink(input),
+  isIdentityLinkError: () => false,
 }));
 
 vi.mock('../../server/services/email', () => ({
@@ -235,7 +251,14 @@ describe('POST /api/auth/register — phone sync to linked bowler', () => {
       body: JSON.stringify({ ...REG_BODY_BASE, phone: '5559876' }),
     });
     expect(res.status).toBe(201);
-    expect(mockLinkUserToBowler).toHaveBeenCalledWith(99, 42);
+    expect(mockIdentityLink).toHaveBeenCalledWith(expect.objectContaining({
+      organizationId: 5,
+      userId: 99,
+      bowlerId: 42,
+      actorUserId: 99,
+      source: 'auth.register',
+      eventType: 'link',
+    }));
     expect(mockUpdateBowler).toHaveBeenCalledWith(42, { phone: '5559876' });
     expect(mockFireBowlerExternalResync).toHaveBeenCalledWith(42, 5);
   });
@@ -271,7 +294,12 @@ describe('POST /api/auth/register — phone sync to linked bowler', () => {
       body: JSON.stringify({ ...REG_BODY_BASE, phone: '5551111' }),
     });
     expect(res.status).toBe(201);
-    expect(mockLinkUserToBowler).toHaveBeenCalledWith(100, 43);
+    expect(mockIdentityLink).toHaveBeenCalledWith(expect.objectContaining({
+      organizationId: 5,
+      userId: 100,
+      bowlerId: 43,
+      source: 'auth.register',
+    }));
     expect(mockUpdateBowler).not.toHaveBeenCalled();
     expect(mockFireBowlerExternalResync).not.toHaveBeenCalled();
   });
@@ -303,7 +331,12 @@ describe('POST /api/auth/register — phone sync to linked bowler', () => {
       body: JSON.stringify({ ...REG_BODY_BASE, phone: undefined }),
     });
     expect(res.status).toBe(201);
-    expect(mockLinkUserToBowler).toHaveBeenCalledWith(101, 44);
+    expect(mockIdentityLink).toHaveBeenCalledWith(expect.objectContaining({
+      organizationId: 5,
+      userId: 101,
+      bowlerId: 44,
+      source: 'auth.register',
+    }));
     expect(mockUpdateBowler).not.toHaveBeenCalled();
     expect(mockFireBowlerExternalResync).not.toHaveBeenCalled();
   });

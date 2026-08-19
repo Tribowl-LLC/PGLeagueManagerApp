@@ -59,20 +59,25 @@ vi.mock('../../server/logger', () => ({
 // --- External dep mocks. Hoisted by vitest. ----------------------
 
 const mockGetUserByEmail = vi.fn();
-const mockGetUserByInviteToken = vi.fn();
-const mockSetUserInviteToken = vi.fn(
-  async (_userId: number, _token: string, _expiry?: Date | string): Promise<void> => undefined,
-);
+const mockGetAccountActionByToken = vi.fn();
+const mockConsumeAccountAction = vi.fn();
+const mockIssueAccountAction = vi.fn();
+const mockUpdateAccountActionDeliveryStatus = vi.fn(async () => undefined);
+const mockFallbackSend = vi.fn(async () => true);
 const mockGetOrganization = vi.fn(async () => null);
 
 vi.mock('../../server/storage', () => ({
   storage: {
     getUserByEmail: (...a: unknown[]) =>
       mockGetUserByEmail.apply(null, a as never),
-    getUserByInviteToken: (...a: unknown[]) =>
-      mockGetUserByInviteToken.apply(null, a as never),
-    setUserInviteToken: (...a: unknown[]) =>
-      mockSetUserInviteToken.apply(null, a as never),
+    getAccountActionByToken: (...a: unknown[]) =>
+      mockGetAccountActionByToken.apply(null, a as never),
+    consumeAccountActionAndSetPassword: (...a: unknown[]) =>
+      mockConsumeAccountAction.apply(null, a as never),
+    issueAccountAction: (...a: unknown[]) =>
+      mockIssueAccountAction.apply(null, a as never),
+    updateAccountActionDeliveryStatus: (...a: unknown[]) =>
+      mockUpdateAccountActionDeliveryStatus.apply(null, a as never),
     getOrganization: (...a: unknown[]) =>
       mockGetOrganization.apply(null, a as never),
     // Defensively stub the surfaces auth.ts also touches in success
@@ -95,6 +100,19 @@ vi.mock('../../server/storage', () => ({
   },
 }));
 
+vi.mock('../../server/storage/account-action-requests.js', () => ({
+  withAccountActionDeliveryLock: async (
+    _userId: number,
+    _action: string,
+    operation: () => Promise<unknown>,
+  ) => operation(),
+}));
+
+vi.mock('../../server/services/identity-link.js', () => ({
+  linkUserToBowler: vi.fn(async () => ({ user: null, bowler: null, oldBowler: null, event: null })),
+  isIdentityLinkError: () => false,
+}));
+
 const mockSendTemplatedEmail = vi.fn(async () => true);
 const mockSendPasswordChangedNotification = vi.fn(async () => true);
 
@@ -105,10 +123,20 @@ vi.mock('../../server/services/email', () => ({
     mockSendPasswordChangedNotification.apply(null, a as never),
   getBaseUrl: () => 'https://test.example',
   // Used by some success branches we don't drive but defensively stubbed.
-  sendPasswordResetFallbackEmail: vi.fn(async () => true),
+  sendPasswordResetFallbackEmail: (...a: unknown[]) => mockFallbackSend.apply(null, a as never),
   // Pulled in transitively via bowler-resync → square-provider →
   // square-catalog-cap-alerts. We don't drive this branch in this
   // test; defensive stub keeps the module graph resolvable.
+  sendSquareCatalogCapAlert: vi.fn(async () => undefined),
+}));
+
+vi.mock('../../server/services/email.js', () => ({
+  sendTemplatedEmail: (...a: unknown[]) =>
+    mockSendTemplatedEmail.apply(null, a as never),
+  sendPasswordChangedNotification: (...a: unknown[]) =>
+    mockSendPasswordChangedNotification.apply(null, a as never),
+  getBaseUrl: () => 'https://test.example',
+  sendPasswordResetFallbackEmail: (...a: unknown[]) => mockFallbackSend.apply(null, a as never),
   sendSquareCatalogCapAlert: vi.fn(async () => undefined),
 }));
 
@@ -205,6 +233,12 @@ beforeEach(() => {
   passportAuthState.err = undefined;
   passportAuthState.user = false;
   passportAuthState.info = undefined;
+  mockGetAccountActionByToken.mockReset();
+  mockConsumeAccountAction.mockReset();
+  mockIssueAccountAction.mockReset();
+  mockUpdateAccountActionDeliveryStatus.mockClear();
+  mockFallbackSend.mockReset();
+  mockFallbackSend.mockResolvedValue(true);
 });
 
 afterEach(() => {
@@ -268,7 +302,7 @@ describe('POST /api/auth/login does not leak the password to logs', () => {
 
 describe('POST /api/auth/set-password does not leak the reset/invite token to logs', () => {
   it('rejects an unknown token without leaking the request token bytes', async () => {
-    mockGetUserByInviteToken.mockResolvedValueOnce(null);
+    mockGetAccountActionByToken.mockResolvedValueOnce(null);
 
     const res = await fetch(`${baseUrl}/api/auth/set-password`, {
       method: 'POST',
@@ -280,12 +314,18 @@ describe('POST /api/auth/set-password does not leak the reset/invite token to lo
   });
 
   it('rejects a token that does not constant-time-match the stored hash without leaking either token', async () => {
-    mockGetUserByInviteToken.mockResolvedValueOnce({
-      id: 7,
-      email: 'leak-test@vitest.local',
-      name: 'Leak Test',
-      inviteToken: STORED_TOKEN,
-      inviteTokenExpiry: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    mockGetAccountActionByToken.mockResolvedValueOnce({
+      request: {
+        id: 7,
+        action: 'password_reset',
+        status: 'pending',
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      },
+      user: {
+        id: 7,
+        email: 'leak-test@vitest.local',
+        name: 'Leak Test',
+      },
     });
 
     const res = await fetch(`${baseUrl}/api/auth/set-password`, {
@@ -298,12 +338,18 @@ describe('POST /api/auth/set-password does not leak the reset/invite token to lo
   });
 
   it('rejects an expired token without leaking the request token bytes', async () => {
-    mockGetUserByInviteToken.mockResolvedValueOnce({
-      id: 7,
-      email: 'leak-test@vitest.local',
-      name: 'Leak Test',
-      inviteToken: RESET_TOKEN,
-      inviteTokenExpiry: new Date(Date.now() - 1000).toISOString(),
+    mockGetAccountActionByToken.mockResolvedValueOnce({
+      request: {
+        id: 7,
+        action: 'password_reset',
+        status: 'expired',
+        expiresAt: new Date(Date.now() - 1000).toISOString(),
+      },
+      user: {
+        id: 7,
+        email: 'leak-test@vitest.local',
+        name: 'Leak Test',
+      },
     });
 
     const res = await fetch(`${baseUrl}/api/auth/set-password`, {
@@ -331,7 +377,7 @@ describe('POST /api/auth/set-password does not leak the reset/invite token to lo
     // token, so the test pins a future contract violation (e.g.
     // adding `{ token }` to the error context) rather than the
     // current shape.
-    mockGetUserByInviteToken.mockRejectedValueOnce(
+    mockGetAccountActionByToken.mockRejectedValueOnce(
       new Error('synthetic storage failure (no token inside)'),
     );
 
@@ -353,17 +399,16 @@ describe('POST /api/auth/forgot-password does not leak the issued reset token to
   // The handler responds with the generic "if an account exists ..."
   // message immediately and runs the rest in the background. We
   // intercept the moment the token is generated by stubbing
-  // `setUserInviteToken` so we can reuse THAT exact value as the
+  // `issueAccountAction` so we can reuse THAT exact value as the
   // "must not appear in logs" assertion target.
   let capturedToken: string | null = null;
 
   beforeEach(() => {
     capturedToken = null;
-    mockSetUserInviteToken.mockImplementation(
-      async (_userId: number, token: string) => {
-        capturedToken = token;
-      },
-    );
+    mockIssueAccountAction.mockImplementation(async () => {
+      capturedToken = RESET_TOKEN;
+      return { request: { id: 1 }, token: RESET_TOKEN };
+    });
   });
 
   it('does not include the issued token in any log line on the success path', async () => {
@@ -406,10 +451,7 @@ describe('POST /api/auth/forgot-password does not leak the issued reset token to
     // Force the fallback path to throw so the catch (which logs
     // `log.error('Failed to process forgot-password request:', bgError)`)
     // fires.
-    const fallback = (
-      await import('../../server/services/email')
-    ).sendPasswordResetFallbackEmail as unknown as ReturnType<typeof vi.fn>;
-    fallback.mockRejectedValueOnce(
+    mockFallbackSend.mockRejectedValueOnce(
       new Error('synthetic SMTP failure (no token inside)'),
     );
 
@@ -424,6 +466,61 @@ describe('POST /api/auth/forgot-password does not leak the issued reset token to
 
     expect(capturedToken).toBeTruthy();
     assertNoSecretLeak(capturedToken ? [capturedToken] : []);
+  });
+
+  it('records failed delivery after both the templated and fallback sends fail', async () => {
+    mockGetUserByEmail.mockResolvedValueOnce({
+      id: 13,
+      email: 'forgot-delivery-fail@vitest.local',
+      name: 'Forgot Delivery Fail',
+      password: 'hashed:something',
+      organizationId: null,
+    });
+    mockIssueAccountAction.mockResolvedValueOnce({
+      request: { id: 1301 },
+      token: RESET_TOKEN,
+    });
+    mockSendTemplatedEmail.mockResolvedValueOnce(false);
+    mockFallbackSend.mockResolvedValueOnce(false);
+
+    const res = await fetch(`${baseUrl}/api/auth/forgot-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'forgot-delivery-fail@vitest.local' }),
+    });
+    expect(res.status).toBe(200);
+    for (let i = 0; i < 8; i++) await new Promise(r => setImmediate(r));
+
+    expect(mockUpdateAccountActionDeliveryStatus).toHaveBeenCalledWith(1301, 'failed');
+    assertNoSecretLeak([RESET_TOKEN]);
+  });
+
+  it('issues a fresh action on resend and records each successful delivery', async () => {
+    mockGetUserByEmail.mockResolvedValue({
+      id: 14,
+      email: 'forgot-resend@vitest.local',
+      name: 'Forgot Resend',
+      password: 'hashed:something',
+      organizationId: null,
+    });
+    mockIssueAccountAction
+      .mockResolvedValueOnce({ request: { id: 1401 }, token: RESET_TOKEN })
+      .mockResolvedValueOnce({ request: { id: 1402 }, token: STORED_TOKEN });
+
+    for (let i = 0; i < 2; i++) {
+      const res = await fetch(`${baseUrl}/api/auth/forgot-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 'forgot-resend@vitest.local' }),
+      });
+      expect(res.status).toBe(200);
+    }
+    for (let i = 0; i < 8; i++) await new Promise(r => setImmediate(r));
+
+    expect(mockIssueAccountAction).toHaveBeenCalledTimes(2);
+    expect(mockUpdateAccountActionDeliveryStatus).toHaveBeenCalledWith(1401, 'sent');
+    expect(mockUpdateAccountActionDeliveryStatus).toHaveBeenCalledWith(1402, 'sent');
+    assertNoSecretLeak([RESET_TOKEN, STORED_TOKEN]);
   });
 
   it('rejects a missing email without leaking anything', async () => {

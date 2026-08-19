@@ -3,7 +3,7 @@ import { storage } from '../storage';
 import { insertBowlerLeagueSchema, updateBowlerLeagueSchema } from "@shared/schema";
 import { z } from "zod";
 import { sendSuccess, sendError, handleZodError } from '../utils/api';
-import { hasAccessToLeague, hasAccessToTeam, hasAccessToBowler, isOrgOrHigher, isSystemAdmin } from '../utils/access-control.js';
+import { hasAccessToLeague, hasAccessToTeam, hasAccessToBowler, getPaymentManagerAccessibleLeagueIds, hasAdminAccessToLeague, isOrgOrHigher, isPaymentManager, isSystemAdmin } from '../utils/access-control.js';
 import { createLogger } from '../logger';
 import { fireBowlerExternalResync } from '../services/bowler-resync';
 
@@ -41,6 +41,15 @@ router.get("/", async (req, res) => {
 
     let bowlerLeagues = await storage.getBowlerLeagues(filters);
 
+    // A filtered bowler request still returns all of that bowler's
+    // memberships from storage. Payment managers may only see the rows in
+    // their assigned-location leagues; do this post-filter for every query
+    // shape, not just the unfiltered organization list.
+    if (isPaymentManager(req.user)) {
+      const accessibleLeagueIds = new Set(await getPaymentManagerAccessibleLeagueIds(req));
+      bowlerLeagues = bowlerLeagues.filter((bl) => accessibleLeagueIds.has(bl.leagueId));
+    }
+
     // When fetching all bowler-leagues with no specific filters, scope to the user's org.
     // This applies to org admins AND system admins that belong to an org.
     // Only a truly unaffiliated system admin (no organizationId) sees all entries.
@@ -52,7 +61,11 @@ router.get("/", async (req, res) => {
         // no filtering needed
       } else if (scopedOrgId !== null) {
         const orgLeagues = await storage.getLeagues(scopedOrgId);
-        const orgLeagueIds = new Set(orgLeagues.map(l => l.id));
+        const orgLeagueIds = new Set(
+          isPaymentManager(req.user)
+            ? await getPaymentManagerAccessibleLeagueIds(req)
+            : orgLeagues.map(l => l.id),
+        );
         bowlerLeagues = bowlerLeagues.filter(bl => orgLeagueIds.has(bl.leagueId));
       } else {
         bowlerLeagues = [];
@@ -100,12 +113,16 @@ router.post("/", async (req, res) => {
   try {
     const data = insertBowlerLeagueSchema.parse(req.body);
 
-    if (!(await hasAccessToLeague(req, data.leagueId))) {
+    if (!(await hasAdminAccessToLeague(req, data.leagueId))) {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
 
     if (!(await hasAccessToTeam(req, data.teamId))) {
       return sendError(res, "You don't have access to this team", 403, 'FORBIDDEN');
+    }
+    const targetTeam = await storage.getTeam(data.teamId);
+    if (!targetTeam || targetTeam.leagueId !== data.leagueId) {
+      return sendError(res, 'Team does not belong to the selected league', 400, 'TEAM_LEAGUE_MISMATCH');
     }
 
     let bootstrapPath = false;
@@ -240,7 +257,7 @@ router.patch("/:id", async (req, res) => {
       return sendError(res, "Bowler league not found", 404, 'NOT_FOUND');
     }
 
-    if (!(await hasAccessToLeague(req, bowlerLeague.leagueId))) {
+    if (!(await hasAdminAccessToLeague(req, bowlerLeague.leagueId))) {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
 
@@ -254,8 +271,23 @@ router.patch("/:id", async (req, res) => {
 
     const update = updateBowlerLeagueSchema.parse(req.body);
 
-    if (update.teamId && !(await hasAccessToTeam(req, update.teamId))) {
+    const effectiveLeagueId = update.leagueId ?? bowlerLeague.leagueId;
+    const effectiveTeamId = update.teamId ?? bowlerLeague.teamId;
+    const effectiveBowlerId = update.bowlerId ?? bowlerLeague.bowlerId;
+
+    if (!(await hasAdminAccessToLeague(req, effectiveLeagueId))) {
+      return sendError(res, "You don't have access to the target league", 403, 'FORBIDDEN');
+    }
+
+    if (!(await hasAccessToTeam(req, effectiveTeamId))) {
       return sendError(res, "You don't have access to the target team", 403, 'FORBIDDEN');
+    }
+    const effectiveTeam = await storage.getTeam(effectiveTeamId);
+    if (!effectiveTeam || effectiveTeam.leagueId !== effectiveLeagueId) {
+      return sendError(res, 'Team does not belong to the selected league', 400, 'TEAM_LEAGUE_MISMATCH');
+    }
+    if (update.bowlerId !== undefined && !(await hasAccessToBowler(req, effectiveBowlerId))) {
+      return sendError(res, "You don't have access to the target bowler", 403, 'FORBIDDEN');
     }
 
     const updated = await storage.updateBowlerLeague(id, update);
@@ -288,7 +320,7 @@ router.delete("/:id", async (req, res) => {
       return sendError(res, "Bowler league not found", 404, 'NOT_FOUND');
     }
 
-    if (!(await hasAccessToLeague(req, bowlerLeague.leagueId))) {
+    if (!(await hasAdminAccessToLeague(req, bowlerLeague.leagueId))) {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
 
@@ -339,7 +371,7 @@ router.patch("/:id/order", async (req, res) => {
       return sendError(res, "Bowler league not found", 404, 'NOT_FOUND');
     }
 
-    if (!(await hasAccessToLeague(req, bowlerLeague.leagueId))) {
+    if (!(await hasAdminAccessToLeague(req, bowlerLeague.leagueId))) {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
 

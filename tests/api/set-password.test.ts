@@ -9,7 +9,6 @@
  * caller's", since the caller has no current session here.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { randomBytes } from 'crypto';
 import { eq, inArray } from 'drizzle-orm';
 import { db } from '../../server/db';
 import { users } from '@shared/schema';
@@ -65,10 +64,13 @@ async function loggedInSession(email: string): Promise<AuthSession> {
 }
 
 async function issueResetToken(userId: number): Promise<string> {
-  const token = randomBytes(32).toString('hex');
-  const expiry = new Date(Date.now() + 60 * 60 * 1000);
-  await storage.setUserInviteToken(userId, token, expiry);
-  return token;
+  const issued = await storage.issueAccountAction({
+    userId,
+    action: 'password_reset',
+    expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    organizationId: testOrgId,
+  });
+  return issued.token;
 }
 
 async function callSetPassword(token: string, password: string) {

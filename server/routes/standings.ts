@@ -13,6 +13,7 @@ import {
 import { storage } from "../storage/index.js";
 import { sendError, sendSuccess } from "../utils/api.js";
 import { singleRouteParam } from "../utils/route-params.js";
+import { hasPaymentManagerAccessToLeague, isPaymentManager } from "../utils/access-control.js";
 
 const log = createLogger("LeagueStandingsRoutes");
 const router = Router();
@@ -54,6 +55,11 @@ async function authorizedStandingsScope(req: Request): Promise<{
 
   const league = await storage.getLeague(leagueId);
   if (!league || league.organizationId !== organizationId) return "not_found";
+  if (isPaymentManager(req.user)) {
+    return await hasPaymentManagerAccessToLeague(req, leagueId)
+      ? { organizationId, leagueId }
+      : "not_found";
+  }
   if (req.user.role === "system_admin" || req.user.role === "org_admin") {
     return { organizationId, leagueId };
   }

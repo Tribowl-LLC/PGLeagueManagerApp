@@ -122,6 +122,8 @@ const UNIT_NO_DB = [
   'tests/unit/completed-summer-materialization.test.ts',
   'tests/unit/fall-draft-generation.test.ts',
   'tests/unit/fall-draft-review.test.ts',
+  'tests/unit/account-invitation-state.test.ts',
+  'tests/unit/payment-manager-access-control.test.ts',
   'tests/unit/test-template-migration-source.test.ts',
   'tests/unit/zod-v4-migration-contracts.test.ts',
 ];
@@ -138,6 +140,7 @@ const PARALLEL_ISOLATED = [
   'tests/api/payment-sync-retry-race.test.ts',
   'tests/api/payment-sync-state-transitions.test.ts',
   'tests/unit/admin-reset-password-notification.test.ts',
+  'tests/unit/account-action-requests-postgres.test.ts',
   'tests/unit/admin-role-change-audit.test.ts',
   'tests/unit/app-domain-mixed-case-pins.test.ts',
   'tests/unit/app-domain-runtime.test.ts',
@@ -170,6 +173,8 @@ const PARALLEL_ISOLATED = [
   // never call an HTTP endpoint, so they do not need a spawned Express app.
   'tests/unit/fall-draft-generation-postgres.test.ts',
   'tests/unit/fall-draft-review-postgres.test.ts',
+  'tests/unit/identity-link-service-postgres.test.ts',
+  'tests/unit/users-identity-integrity-postgres.test.ts',
   'tests/unit/canonical-occurrence-compatibility-postgres.test.ts',
   'tests/unit/list-routes-filter-validation.test.ts',
   'tests/unit/locked-sweep.test.ts', // Task #720 moved to parallel as factory-safe; reverted defensively after sibling regressions (#722).
@@ -181,6 +186,10 @@ const PARALLEL_ISOLATED = [
   'tests/unit/payment-execution-error-mapping.test.ts',
   'tests/unit/payment-execution-receipt-warn.test.ts',
   'tests/unit/payment-lifecycle-receipt-persistence.test.ts',
+  // This suite mocks both `server/db` exports, including the advisory-lock
+  // pool. Under isolate:false a sibling's narrower db mock can remain cached
+  // and remove `pool` before the scheduled-cycle lock is imported.
+  'tests/unit/payment-lifecycle-combined-autopay.test.ts',
   // Storage-only PostgreSQL race suite; it needs an isolated database but no
   // spawned Express process or mutable application singleton state.
   'tests/unit/payment-operations.test.ts',

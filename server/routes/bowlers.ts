@@ -17,12 +17,13 @@ import {
 } from '../utils/api.js';
 import { getPaymentProvider, ProviderNotConfiguredError } from '../services/payment-provider-factory';
 import type { PaymentProvider } from '../services/payment-provider';
-import { hasAccessToTeam, hasAccessToBowler, hasAccessToBowlers, hasSelfOrAdminAccessToBowler, isOrgOrHigher } from '../utils/access-control.js';
+import { getPaymentManagerAccessibleBowlerIds, getPaymentManagerAccessibleLeagueIds, hasAccessToTeam, hasAccessToBowler, hasAccessToBowlers, hasPaymentManagerAccessToBowler, hasSelfOrAdminAccessToBowler, isOrgOrHigher, isPaymentManager } from '../utils/access-control.js';
 import { canUserPayForBowler } from '../utils/bowler-payment-authz.js';
 import { bowlerSearchLimiter } from '../middleware/rate-limit.js';
 import { runBowlerPostCreateSync } from '../services/bowler-sync.js';
 import { syncBowlerLeagueAttributesToProvider } from '../services/bowler-attributes';
 import { notifyPaymentSyncRetryChanged } from '../services/payment-sync-retry-scheduler';
+import { linkUserToBowler } from '../services/identity-link';
 import { createLogger } from '../logger';
 import { isDev } from '../config';
 // reuse the same payer-name lookup the
@@ -73,6 +74,11 @@ router.get("/unlinked", async (req, res) => {
       return sendSuccess(res, []);
     }
 
+    if (isPaymentManager(req.user)) {
+      const accessibleIds = new Set(await getPaymentManagerAccessibleBowlerIds(req));
+      scopedBowlers = scopedBowlers.filter((bowler) => accessibleIds.has(bowler.id));
+    }
+
     const linkedBowlerIdsList = await storage.getLinkedBowlerIds();
     const linkedBowlerIds = new Set(linkedBowlerIdsList);
 
@@ -84,6 +90,9 @@ router.get("/unlinked", async (req, res) => {
     const bowlerLeagueEntries = bowlerIds.length > 0
       ? await storage.getBowlerLeaguesByBowlerIds(bowlerIds)
       : [];
+    const visibleLeagueIds = isPaymentManager(req.user)
+      ? new Set(await getPaymentManagerAccessibleLeagueIds(req))
+      : null;
 
     const leagueIds = [...new Set(bowlerLeagueEntries.map(bl => bl.leagueId))];
     const teamIds = [...new Set(bowlerLeagueEntries.map(bl => bl.teamId))];
@@ -101,6 +110,7 @@ router.get("/unlinked", async (req, res) => {
     for (const bowler of unlinkedBowlers) {
       const bowlerEntries = bowlerLeagueEntries.filter(bl => bl.bowlerId === bowler.id);
       for (const entry of bowlerEntries) {
+        if (visibleLeagueIds && !visibleLeagueIds.has(entry.leagueId)) continue;
         const league = leagueMap.get(entry.leagueId);
         const team = teamMap.get(entry.teamId);
         if (!league || !team) continue;
@@ -184,6 +194,9 @@ router.get("/", async (req, res) => {
     if (isSystemAdmin && effectiveOrgId === null) {
       bowlers = await storage.getAllBowlersSystemAdmin();
     } else if (effectiveOrgId !== null) {
+      if (isPaymentManager(req.user) && !teamId) {
+        const accessibleIds = await getPaymentManagerAccessibleBowlerIds(req);
+        bowlers = accessibleIds.length > 0 ? await storage.getBowlersByIds(accessibleIds) : [];
       // A non-admin "user"-role caller must not see every bowler in
       // the organization. SQL-scope
       // the result to bowlers rostered into:
@@ -193,7 +206,7 @@ router.get("/", async (req, res) => {
       // legitimate roster surface in this org.
       // Admin callers (and a `teamId` filter, which already gates via
       // hasAccessToTeam above) keep the unscoped org-wide query.
-      if (req.user && !isSystemAdmin && !isOrgOrHigher(req.user) && !teamId) {
+      } else if (req.user && !isSystemAdmin && !isOrgOrHigher(req.user) && !teamId) {
         const selfLeagueIds: number[] = req.user?.bowlerId
           ? (await storage.getBowlerLeagues({ bowlerId: req.user.bowlerId })).map((bl) => bl.leagueId)
           : [];
@@ -282,6 +295,11 @@ router.get("/search", bowlerSearchLimiter, async (req, res) => {
       ? results.filter((r) => !excludeIds.includes(r.id))
       : results;
 
+    if (isPaymentManager(user)) {
+      const accessibleIds = new Set(await getPaymentManagerAccessibleBowlerIds(req));
+      filtered = filtered.filter((row) => accessibleIds.has(row.id));
+    }
+
     // Scope the search result. A non-admin
     // caller may only see bowlers rostered into a league they have
     // direct visibility into through their own bowler-leagues.
@@ -342,9 +360,11 @@ router.get("/:id/details", async (req, res) => {
       // -link rules used everywhere else partner-pay is gated.
       const selfOrAdmin = await hasSelfOrAdminAccessToBowler(req, id);
       if (!selfOrAdmin) {
-        const payAuthz = await canUserPayForBowler(req, id);
-        if (!payAuthz.allowed) {
-          return sendError(res, "You don't have access to this bowler's payment data", 403, 'FORBIDDEN');
+        if (!(isPaymentManager(req.user) && await hasPaymentManagerAccessToBowler(req, id))) {
+          const payAuthz = await canUserPayForBowler(req, id);
+          if (!payAuthz.allowed) {
+            return sendError(res, "You don't have access to this bowler's payment data", 403, 'FORBIDDEN');
+          }
         }
       }
     } else if (req.user?.role !== 'system_admin') {
@@ -371,7 +391,10 @@ router.get("/:id/details", async (req, res) => {
     const callerIsAdmin =
       req.user?.role === 'system_admin' || req.user?.role === 'org_admin';
     const callerIsSelf = req.user?.bowlerId === id;
-    if (req.user && !callerIsAdmin && !callerIsSelf) {
+    if (isPaymentManager(req.user)) {
+      const visibleLeagueIds = new Set(await getPaymentManagerAccessibleLeagueIds(req));
+      bowlerLeagues = bowlerLeaguesAll.filter((bl) => visibleLeagueIds.has(bl.leagueId));
+    } else if (req.user && !callerIsAdmin && !callerIsSelf) {
       const selfLeagueIds: number[] = req.user.bowlerId
         ? (await storage.getBowlerLeagues({ bowlerId: req.user.bowlerId })).map((bl) => bl.leagueId)
         : [];
@@ -406,7 +429,14 @@ router.get("/:id/details", async (req, res) => {
       // above already enforces that the requester may see this bowler.
       const orgId = bowler.organizationId;
       if (orgId) {
-        const payments = await storage.getPayments({ bowlerId: id, organizationId: orgId });
+        const paymentManagerLeagueIds = isPaymentManager(req.user)
+          ? await getPaymentManagerAccessibleLeagueIds(req)
+          : undefined;
+        const payments = await storage.getPayments({
+          bowlerId: id,
+          organizationId: orgId,
+          ...(paymentManagerLeagueIds ? { leagueIds: paymentManagerLeagueIds } : {}),
+        });
         // Same payer-name enrichment as /api/payments so the recipient's
         // history surfaces render the "Paid by …" badge identically.
         const nameMap = await buildPayerNameMap(payments, orgId);
@@ -451,17 +481,22 @@ router.get("/:id", async (req, res) => {
 
 router.post("/", async (req, res) => {
   try {
+    if (isPaymentManager(req.user)) {
+      return sendError(res, "Payment managers cannot create bowler records", 403, 'FORBIDDEN');
+    }
+    const requestedTeamId = req.body.teamId === undefined
+      ? null
+      : Number(req.body.teamId);
     const bowler = insertBowlerSchema.parse(req.body);
     
     // If teamId is provided in the request, verify organization access
-    if (req.body.teamId && req.user?.role !== 'system_admin') {
-      const teamId = parseInt(req.body.teamId);
-      
-      if (!isNaN(teamId)) {
-        const hasAccess = await hasAccessToTeam(req, teamId);
-        if (!hasAccess) {
-          return sendError(res, "You don't have access to add bowlers to this team", 403, 'FORBIDDEN');
-        }
+    if (requestedTeamId !== null && req.user?.role !== 'system_admin') {
+      if (!Number.isSafeInteger(requestedTeamId) || requestedTeamId <= 0) {
+        return sendError(res, 'Invalid team ID', 400, 'VALIDATION_ERROR');
+      }
+      const hasAccess = await hasAccessToTeam(req, requestedTeamId);
+      if (!hasAccess) {
+        return sendError(res, "You don't have access to add bowlers to this team", 403, 'FORBIDDEN');
       }
     }
 
@@ -605,9 +640,17 @@ router.patch("/:id", async (req, res) => {
 
       if (emailChanged) {
         try {
-          const matchingUser = await storage.getUserByEmail(updated.email);
-          if (matchingUser && !matchingUser.bowlerId) {
-            await storage.linkUserToBowler(matchingUser.id, id);
+          const matchingUser = await storage.getUserByEmail(updated.email.trim().toLowerCase());
+          if (matchingUser && matchingUser.bowlerId === null) {
+            await linkUserToBowler({
+              organizationId: updated.organizationId,
+              userId: matchingUser.id,
+              bowlerId: id,
+              actorUserId: req.user?.id ?? null,
+              eventType: req.user?.role === 'user' ? 'link' : 'admin_assignment',
+              source: 'bowler-profile-email-auto-link',
+              reason: 'email-match-after-bowler-update',
+            });
             log.info(`Auto-linked user ${matchingUser.id} to updated bowler ${id}`);
           }
         } catch (linkError) {

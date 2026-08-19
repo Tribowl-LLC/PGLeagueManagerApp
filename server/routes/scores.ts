@@ -3,7 +3,7 @@ import { storage } from '../storage';
 import { sendSuccess, sendError, handleZodError } from '../utils/api.js';
 import { z } from 'zod';
 import { insertScoreSchema } from '@shared/schema';
-import { hasAccessToBowler, hasAccessToLeague } from '../utils/access-control.js';
+import { getPaymentManagerAccessibleLeagueIds, hasAccessToBowler, hasAccessToLeague, isPaymentManager } from '../utils/access-control.js';
 import { createLogger } from '../logger';
 import {
   CanonicalGamesScoresError,
@@ -81,7 +81,13 @@ router.get('/history', async (req, res) => {
       || req.user?.role === "org_admin"
       || req.user?.bowlerId === bowlerId;
     let allowedLeagueIds: number[] | undefined;
-    if (!canReadRetainedTenantHistory) {
+    if (isPaymentManager(req.user)) {
+      const accessibleLeagueIds = new Set(await getPaymentManagerAccessibleLeagueIds(req));
+      const targetMemberships = await storage.getBowlerLeagues({ bowlerId });
+      allowedLeagueIds = targetMemberships
+        .filter((row) => row.active && accessibleLeagueIds.has(row.leagueId))
+        .map((row) => row.leagueId);
+    } else if (!canReadRetainedTenantHistory) {
       const targetMemberships = await storage.getBowlerLeagues({ bowlerId });
       const ownMemberships = req.user?.bowlerId
         ? await storage.getBowlerLeagues({ bowlerId: req.user.bowlerId })

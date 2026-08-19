@@ -188,6 +188,8 @@ describe.skipIf(!RUN)('payment-sync retry sweep — multi-process race coverage'
       if (!linkedBowlerIds.has(bowlerId)) return null;
       return {
         id: 1_000_000 + bowlerId,
+        role: 'user',
+        bowlerId,
         name: 'Linked Race User',
         email: `linked-${bowlerId}@vitest.local`,
         phone: null,

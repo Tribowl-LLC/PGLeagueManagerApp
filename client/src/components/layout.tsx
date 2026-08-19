@@ -55,6 +55,7 @@ interface NavItem {
   hasDropdown?: boolean;
   adminOnly?: boolean;
   orgAdminOnly?: boolean;
+  paymentManagerAllowed?: boolean;
   // When present, this item renders as a parent row that toggles a
   // nested list of sub-items rather than navigating directly.
   subItems?: NavItem[];
@@ -83,13 +84,13 @@ const navItems: NavItem[] = [
     icon: MapPin,
     label: "Locations",
     href: "/locations",
-    adminOnly: true
+    orgAdminOnly: true,
   },
   {
     icon: Users,
     label: "Users",
     href: "/users",
-    adminOnly: true
+    orgAdminOnly: true,
   },
   {
     icon: Trophy,
@@ -105,12 +106,15 @@ const navItems: NavItem[] = [
     icon: CreditCard,
     label: "Payments",
     href: "/payments",
-    orgAdminOnly: true
+    orgAdminOnly: true,
+    paymentManagerAllowed: true,
   },
   {
     icon: ClipboardPlus,
     label: "Reports",
-    href: "/reports"
+    href: "/reports",
+    orgAdminOnly: true,
+    paymentManagerAllowed: true,
   },
   {
     icon: Plug,
@@ -543,6 +547,7 @@ function SidebarNav({
   navItems,
   isAdmin,
   canSeeOrgAdminItems,
+  isPaymentManager,
   isCollapsed,
   location,
   onNavigate,
@@ -551,6 +556,7 @@ function SidebarNav({
   navItems: NavItem[];
   isAdmin: boolean;
   canSeeOrgAdminItems: boolean;
+  isPaymentManager: boolean;
   isCollapsed: boolean;
   location: string;
   onNavigate?: () => void;
@@ -558,7 +564,7 @@ function SidebarNav({
 }) {
   const renderItem = (item: NavItem) => {
     if (item.adminOnly && !isAdmin) return null;
-    if (item.orgAdminOnly && !canSeeOrgAdminItems) return null;
+    if (item.orgAdminOnly && !canSeeOrgAdminItems && !(item.paymentManagerAllowed && isPaymentManager)) return null;
 
     if (item.subItems && item.subItems.length > 0) {
       return (
@@ -665,6 +671,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const isAdmin = userRole === 'system_admin';
   const isSystemAdmin = userRole === 'system_admin';
   const isOrgAdmin = userRole === 'org_admin';
+  const isPaymentManager = String(userRole) === 'payment_manager';
   const canSeeOrgAdminItems = isSystemAdmin || (isOrgAdmin && !!userOrgId);
 
   // Load the pending-deletion-request count for the sidebar badge on mount
@@ -766,6 +773,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
               navItems={navItems}
               isAdmin={isAdmin}
               canSeeOrgAdminItems={canSeeOrgAdminItems}
+              isPaymentManager={isPaymentManager}
               isCollapsed={isCollapsed}
               location={location}
               badgeCounts={badgeCounts}
@@ -807,6 +815,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
                 navItems={navItems}
                 isAdmin={isAdmin}
                 canSeeOrgAdminItems={canSeeOrgAdminItems}
+                isPaymentManager={isPaymentManager}
                 isCollapsed={false}
                 location={location}
                 onNavigate={() => setMobileMenuOpen(false)}

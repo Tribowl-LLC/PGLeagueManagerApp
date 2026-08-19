@@ -39,3 +39,13 @@ export function getPgErrorConstraint(err: unknown): string | undefined {
   }
   return undefined;
 }
+
+export function isNormalizedUserEmailConflict(err: unknown): boolean {
+  if (getPgErrorCode(err) !== '23505') return false;
+  const constraint = getPgErrorConstraint(err);
+  // Application writes normalize before insertion, so an exact concurrent
+  // duplicate may be reported by the legacy column UNIQUE constraint before
+  // PostgreSQL reaches the normalized expression index.
+  return constraint === 'users_email_normalized_unique'
+    || constraint === 'users_email_unique';
+}

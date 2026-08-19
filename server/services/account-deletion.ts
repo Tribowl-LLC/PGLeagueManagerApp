@@ -229,7 +229,7 @@ export async function executeAccountDeletion(
     summary.emailChangeRequestsDeleted = ecrRows.length;
 
     try {
-      await storage.deleteUser(user.id);
+      await storage.deleteUser(user.id, undefined, reviewerId);
       summary.user.deleted = true;
     } catch (error) {
       summary.user.reason = error instanceof Error ? error.message : String(error);

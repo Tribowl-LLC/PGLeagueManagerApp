@@ -4,7 +4,7 @@ import { storage } from "../storage";
 import * as links from "../storage/bowler-payment-links";
 import { sendSuccess, sendError, handleZodError } from "../utils/api.js";
 import { adminWriteLimiter, inviteLimiter } from "../middleware/rate-limit.js";
-import { isOrgOrHigher, isSystemAdmin } from "../utils/access-control.js";
+import { isOrgOrHigher, isPaymentManager, isSystemAdmin } from "../utils/access-control.js";
 import { signLinkActionToken } from "../utils/bowler-link-tokens.js";
 import { getBaseUrl, sendTemplatedEmail } from "../services/email";
 import { env } from "../config";
@@ -95,6 +95,16 @@ async function sendPartnerInviteEmail(opts: {
 
 const log = createLogger("BowlerLinks");
 const router = Router();
+
+// Payment managers are staff operators, never bowlers. This route manages
+// bowler-to-bowler payment links and therefore must not become reachable from
+// a stale bowlerId on a staff account while identity data is being migrated.
+router.use((req, res, next) => {
+  if (isPaymentManager(req.user)) {
+    return sendError(res, "Bowler link access is not available to staff accounts", 403, "FORBIDDEN");
+  }
+  next();
+});
 
 const inviteSchema = z
   .object({

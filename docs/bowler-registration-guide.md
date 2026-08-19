@@ -95,7 +95,9 @@ Instead of (or in addition to) QR codes, you can send email invites to all bowle
 2. Click "Send Registration Invites"
 3. The system will send an invite email to every bowler who has an email address but does not yet have an account
 
-The invite email contains a link for the bowler to set up their password. When they do, their account is automatically linked to their bowler profile.
+The invite email contains a link for the bowler to set up their password. The
+new account is linked to the roster profile as part of issuing the invitation;
+setting the password activates the account.
 
 After sending, you will see a summary:
 - How many invites were sent
@@ -122,7 +124,7 @@ On the Users management page, a "Linked Bowler" column shows which user accounts
 | Bowler registers with an email that matches their bowler profile | Automatically linked — goes straight to dashboard |
 | Bowler registers with a different email than what's on file | Not auto-linked — goes to Claim Bowler page to find their name |
 | Bowler registers but has no bowler profile yet | Goes to Claim Bowler page — can skip if not on a roster |
-| Admin sends bulk invites to a league | All bowlers with emails get invite emails — auto-linked when they set their password |
+| Admin sends bulk invites to a league | Bowlers with emails and no existing account get an invitation and are linked to their roster profile atomically |
 | Bowler with no email on file scans the QR code | Registers, then manually selects their name on the Claim Bowler page |
 | Admin adds an email to a bowler profile that matches an existing user | Automatically linked at that point |
 

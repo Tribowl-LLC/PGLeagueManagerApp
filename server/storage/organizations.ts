@@ -40,6 +40,8 @@ import {
   orphanCleanupAudits,
   paymentDisputeNotifications,
   paymentDisputeReplayAudits,
+  identityLinkEvents,
+  accountActionRequests,
   paymentDisputes,
   paymentOperations,
   occurrenceCollectionPlans,
@@ -59,6 +61,10 @@ import { createLogger } from '../logger';
 import { cacheInvalidate } from '../utils/cache';
 import { NonAdminMissingOrgError } from './users';
 import { getPgErrorCode, getPgErrorConstraint } from '../utils/db-errors';
+
+export type OrganizationDbExecutor =
+  | typeof db
+  | Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 const log = createLogger("StorageOrgs");
 
@@ -114,9 +120,12 @@ export async function getOrganizationBySubdomain(subdomain: string): Promise<Org
   return result;
 }
 
-export async function createOrganization(organization: InsertOrganization): Promise<Organization> {
+export async function createOrganization(
+  organization: InsertOrganization,
+  executor: OrganizationDbExecutor = db,
+): Promise<Organization> {
   try {
-    const [result] = await db.insert(organizations).values(organization).returning();
+    const [result] = await executor.insert(organizations).values(organization).returning();
     return result;
   } catch (error) {
     rethrowOrganizationHostnameConflict(error);
@@ -206,6 +215,8 @@ export async function deleteOrganization(id: number): Promise<void> {
     await tx.delete(applePayJobItems).where(eq(applePayJobItems.organizationId, id));
     await tx.delete(adminRoleChangeAudits).where(eq(adminRoleChangeAudits.organizationId, id));
     await tx.delete(adminPasswordResetAudits).where(eq(adminPasswordResetAudits.organizationId, id));
+    await tx.delete(identityLinkEvents).where(eq(identityLinkEvents.organizationId, id));
+    await tx.delete(accountActionRequests).where(eq(accountActionRequests.organizationId, id));
     await tx
       .delete(orphanCleanupAudits)
       .where(or(
@@ -407,14 +418,18 @@ export async function getUserOrganizations(userId: number): Promise<Organization
   return [];
 }
 
-export async function setUserOrganization(userId: number, organizationId: number | null): Promise<User> {
+export async function setUserOrganization(
+  userId: number,
+  organizationId: number | null,
+  executor: OrganizationDbExecutor = db,
+): Promise<User> {
   if (organizationId === null) {
-    const [existing] = await db.select({ role: users.role }).from(users).where(eq(users.id, userId));
+    const [existing] = await executor.select({ role: users.role }).from(users).where(eq(users.id, userId));
     if (existing && existing.role !== 'system_admin') {
       throw new NonAdminMissingOrgError();
     }
   }
-  const [updatedUser] = await db
+  const [updatedUser] = await executor
     .update(users)
     .set({
       organizationId: organizationId,
@@ -438,7 +453,7 @@ export async function getOrganizationUsers(organizationId: number): Promise<User
     .from(users)
     .where(and(
       eq(users.organizationId, organizationId),
-      inArray(users.role, ['org_admin', 'system_admin']),
+      inArray(users.role, ['org_admin', 'payment_manager', 'system_admin']),
     ))
     .orderBy(users.name);
 }

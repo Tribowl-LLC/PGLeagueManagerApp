@@ -175,9 +175,9 @@ export default function UsersPage() {
         <div className="container py-6">
           <div className="flex items-start justify-between mb-6 gap-4">
             <div>
-              <h1 className="text-4xl font-bold">Organization Admins</h1>
-              <p className="text-muted-foreground mt-1">
-                Manage the administrators for your organization. Looking for
+                <h1 className="text-4xl font-bold">Organization Accounts</h1>
+                <p className="text-muted-foreground mt-1">
+                Manage administrators and location-scoped payment managers for your organization. Looking for
                 bowler accounts that signed up themselves?{' '}
                 <Link
                   href="/admin/unclaimed-users"
@@ -190,13 +190,13 @@ export default function UsersPage() {
             </div>
             <Button onClick={() => setAddDialogOpen(true)}>
               <Plus className="size-4 mr-2" />
-              Add Admin
+              Add Account
             </Button>
           </div>
 
           <Card>
             <CardHeader>
-              <CardTitle>Organization Admins</CardTitle>
+              <CardTitle>Organization Accounts</CardTitle>
             </CardHeader>
             <CardContent>
               {orgUsersLoading ? (

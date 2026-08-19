@@ -34,14 +34,14 @@ export function AddUserDialog({ open, onClose, orgLocations }: Props) {
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [email, setEmail] = useState("");
-  const [role, setRole] = useState<string>("user");
+  const [role, setRole] = useState<string>("admin");
   const [locationId, setLocationId] = useState<string>("none");
 
   const reset = () => {
     setFirstName("");
     setLastName("");
     setEmail("");
-    setRole("user");
+    setRole("admin");
     setLocationId("none");
   };
 
@@ -55,6 +55,7 @@ export function AddUserDialog({ open, onClose, orgLocations }: Props) {
       firstName: string;
       lastName: string;
       email: string;
+      role: string;
       makeOrgAdmin: boolean;
       locationId: number | null;
     }): Promise<{ emailSent?: boolean }> => {
@@ -80,9 +81,9 @@ export function AddUserDialog({ open, onClose, orgLocations }: Props) {
     <Dialog open={open} onOpenChange={(o) => { if (!o) handleClose(); }}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>Add New User</DialogTitle>
+          <DialogTitle>Add Organization Account</DialogTitle>
           <DialogDescription>
-            Create a new user account. They will receive an email to set up their password.
+            Invite an administrator or a location-scoped payment manager. Bowler accounts are created from league rosters or self-registration.
           </DialogDescription>
         </DialogHeader>
 
@@ -129,21 +130,20 @@ export function AddUserDialog({ open, onClose, orgLocations }: Props) {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="user">End User: can only access their assigned location</SelectItem>
-                <SelectItem value="admin">Admin: can access all locations</SelectItem>
+                <SelectItem value="payment_manager">Payment Manager: record assigned-location payments</SelectItem>
+                <SelectItem value="admin">Organization Admin: can access all locations</SelectItem>
               </SelectContent>
             </Select>
           </div>
 
-          {role === "user" && (
+          {role === "payment_manager" && (
             <div>
-              <Label>Assign Location</Label>
+              <Label>Assign Location{role === "payment_manager" ? " (required)" : ""}</Label>
               <Select value={locationId} onValueChange={setLocationId}>
                 <SelectTrigger className="mt-1">
                   <SelectValue placeholder="Select location" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="none">No location</SelectItem>
                   {orgLocations.map((loc) => (
                     <SelectItem key={loc.id} value={String(loc.id)}>{loc.name}</SelectItem>
                   ))}
@@ -156,14 +156,17 @@ export function AddUserDialog({ open, onClose, orgLocations }: Props) {
         <DialogFooter>
           <Button variant="outline" onClick={handleClose}>Cancel</Button>
           <Button
-            disabled={!firstName.trim() || !lastName.trim() || !email.trim() || createUserMutation.isPending}
+            disabled={!firstName.trim() || !lastName.trim() || !email.trim()
+              || (role === "payment_manager" && locationId === "none")
+              || createUserMutation.isPending}
             onClick={() => {
               createUserMutation.mutate({
                 firstName: firstName.trim(),
                 lastName: lastName.trim(),
                 email: email.trim(),
+                role,
                 makeOrgAdmin: role === "admin",
-                locationId: role === "admin" || locationId === "none" ? null : parseInt(locationId),
+                locationId: role === "admin" ? null : parseInt(locationId),
               });
             }}
           >

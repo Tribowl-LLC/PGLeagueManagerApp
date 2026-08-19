@@ -30,7 +30,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Plus, ArrowLeft, ArrowUpDown, MoreHorizontal, Archive, ArchiveRestore, Trash2, Loader2 } from "lucide-react";
 import { PageLoadingState } from "@/components/page-states";
-import type { Team, League } from "@shared/schema";
+import type { ApiResponse, Team, League, User } from "@shared/schema";
 import { useParams, Link } from "wouter";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -44,6 +44,12 @@ export default function TeamsPage() {
   const { toast } = useToast();
   const params = useParams();
   const leagueId = parseInt(params.leagueId!);
+  const { data: currentUserResponse } = useQuery<ApiResponse<User>>({
+    queryKey: ["/api/user"],
+    staleTime: 5 * 60 * 1000,
+  });
+  const canManageRoster = currentUserResponse?.data?.role === "org_admin"
+    || currentUserResponse?.data?.role === "system_admin";
 
   const { data: leagueResponse, isLoading: loadingLeague } = useQuery<{ data: League }>({
     queryKey: [`/api/leagues/${leagueId}`],
@@ -156,7 +162,7 @@ export default function TeamsPage() {
 
         <div className="space-y-4 mb-6">
           <h1 className="text-2xl font-bold">{league.name}</h1>
-          <div className="flex items-center gap-2">
+          {canManageRoster && <div className="flex items-center gap-2">
             <Button onClick={() => setShowForm(true)}>
               <Plus className="size-4 mr-2" />
               Add Team
@@ -167,7 +173,7 @@ export default function TeamsPage() {
                 Reorder Teams
               </Button>
             )}
-          </div>
+          </div>}
           {archivedCount > 0 && (
             <Button
               variant="ghost"
@@ -186,7 +192,7 @@ export default function TeamsPage() {
                 <TableHead>Number</TableHead>
                 <TableHead>Name</TableHead>
                 <TableHead>Status</TableHead>
-                <TableHead className="w-[50px]"></TableHead>
+                {canManageRoster && <TableHead className="w-[50px]"></TableHead>}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -203,7 +209,7 @@ export default function TeamsPage() {
                       {team.active ? "Active" : "Archived"}
                     </Badge>
                   </TableCell>
-                  <TableCell>
+                  {canManageRoster && <TableCell>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button variant="ghost" size="sm" className="size-8 p-0">
@@ -233,27 +239,27 @@ export default function TeamsPage() {
                         </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
-                  </TableCell>
+                  </TableCell>}
                 </TableRow>
               ))}
             </TableBody>
           </Table>
         </div>
 
-        <TeamForm
+        {canManageRoster && <TeamForm
           open={showForm}
           onClose={() => setShowForm(false)}
           leagueId={leagueId}
-        />
+        />}
 
-        <ReorderTeamsDialog
+        {canManageRoster && <ReorderTeamsDialog
           open={showReorder}
           onClose={() => setShowReorder(false)}
           teams={activeTeams}
           leagueId={leagueId}
-        />
+        />}
 
-        <Dialog open={!!archiveTeam} onOpenChange={() => setArchiveTeam(null)}>
+        {canManageRoster && <Dialog open={!!archiveTeam} onOpenChange={() => setArchiveTeam(null)}>
           <DialogContent>
             <DialogHeader>
               <DialogTitle>
@@ -278,9 +284,9 @@ export default function TeamsPage() {
               </Button>
             </DialogFooter>
           </DialogContent>
-        </Dialog>
+        </Dialog>}
 
-        <Dialog open={!!deleteTeam} onOpenChange={() => setDeleteTeam(null)}>
+        {canManageRoster && <Dialog open={!!deleteTeam} onOpenChange={() => setDeleteTeam(null)}>
           <DialogContent>
             <DialogHeader>
               <DialogTitle>Delete Team</DialogTitle>
@@ -302,7 +308,7 @@ export default function TeamsPage() {
               </Button>
             </DialogFooter>
           </DialogContent>
-        </Dialog>
+        </Dialog>}
       </div>
       </ErrorBoundary>
     </Layout>

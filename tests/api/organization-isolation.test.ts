@@ -55,11 +55,15 @@ function collectIds(data: unknown): number[] {
 describe('Organization Isolation', () => {
   let sessionA: AuthSession;
   let sessionB: AuthSession;
+  let orgALeagueId: number | null = null;
   let orgBLeagueId: number | null = null;
 
   beforeAll(async () => {
     sessionA = await login(TEST_ORG_A_EMAIL, TEST_ORG_PASSWORD);
     sessionB = await login(TEST_ORG_B_EMAIL, TEST_ORG_PASSWORD);
+
+    const orgALeagues = await apiGet<League[]>('/api/leagues', sessionA);
+    orgALeagueId = orgALeagues.data.data?.[0]?.id ?? null;
 
     // Make sure org B owns at least one league so we can test cross-org
     // fetch-by-id as org A. Reuse the first existing league when present.
@@ -376,6 +380,24 @@ describe('Organization Isolation', () => {
           .returning({ id: bowlerLeagues.id });
         bowlerLeagueId = row?.id ?? null;
       }
+    });
+
+    it('cannot move an owned team into a league outside the administrator scope', async () => {
+      expect(orgBTeamId).not.toBeNull();
+      expect(orgALeagueId).not.toBeNull();
+      if (orgBTeamId === null || orgALeagueId === null) {
+        throw new Error('cross-organization team and league fixtures are required');
+      }
+      const response = await apiPatch(
+        `/api/teams/${orgBTeamId}`,
+        { leagueId: orgALeagueId },
+        sessionB,
+      );
+      expect(response.status).toBe(403);
+      const [unchanged] = await db.select({ leagueId: teamsTable.leagueId })
+        .from(teamsTable)
+        .where(eq(teamsTable.id, orgBTeamId));
+      expect(unchanged?.leagueId).toBe(orgBLeagueId);
     });
 
     afterAll(async () => {

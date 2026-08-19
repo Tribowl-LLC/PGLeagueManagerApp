@@ -13,6 +13,7 @@ import * as locationStorage from "./locations";
 import * as emailTemplateStorage from "./email-templates";
 import * as deletionRequestStorage from "./deletion-requests";
 import * as emailChangeRequestStorage from "./email-change-requests";
+import * as accountActionStorage from "./account-action-requests";
 import * as applePayJobStorage from "./apple-pay-jobs";
 import * as alerterStateStorage from "./alerter-state";
 
@@ -143,7 +144,6 @@ export class DatabaseStorage implements IStorage {
   updateUser!: IStorage["updateUser"];
   updateUserRole!: IStorage["updateUserRole"];
   deleteUser!: IStorage["deleteUser"];
-  linkUserToBowler!: IStorage["linkUserToBowler"];
   getLinkedBowlerIds!: IStorage["getLinkedBowlerIds"];
   isBowlerLinked!: IStorage["isBowlerLinked"];
   getUserByBowlerId!: IStorage["getUserByBowlerId"];
@@ -151,9 +151,6 @@ export class DatabaseStorage implements IStorage {
   countOrgAdmins!: IStorage["countOrgAdmins"];
   getOrgAdmins!: IStorage["getOrgAdmins"];
   setUserLocation!: IStorage["setUserLocation"];
-  getUserByInviteToken!: IStorage["getUserByInviteToken"];
-  setUserInviteToken!: IStorage["setUserInviteToken"];
-  clearUserInviteToken!: IStorage["clearUserInviteToken"];
   recordFailedPasswordChangeAttempt!: IStorage["recordFailedPasswordChangeAttempt"];
   resetFailedPasswordChangeAttempts!: IStorage["resetFailedPasswordChangeAttempts"];
 
@@ -201,6 +198,13 @@ export class DatabaseStorage implements IStorage {
   consumeEmailChangeRequest!: IStorage["consumeEmailChangeRequest"];
   claimEmailChangeRequest!: IStorage["claimEmailChangeRequest"];
   invalidatePendingEmailChangeRequestsForUser!: IStorage["invalidatePendingEmailChangeRequestsForUser"];
+
+  issueAccountAction!: IStorage["issueAccountAction"];
+  getAccountActionByToken!: IStorage["getAccountActionByToken"];
+  consumeAccountActionAndSetPassword!: IStorage["consumeAccountActionAndSetPassword"];
+  updateAccountActionDeliveryStatus!: IStorage["updateAccountActionDeliveryStatus"];
+  getLatestAccountInvitationsForUsers!: IStorage["getLatestAccountInvitationsForUsers"];
+  revokeAccountAction!: IStorage["revokeAccountAction"];
 
   bootstrapFirstAdmin!: IStorage["bootstrapFirstAdmin"];
   promoteFirstAdmin!: IStorage["promoteFirstAdmin"];
@@ -251,6 +255,7 @@ export class DatabaseStorage implements IStorage {
       ...emailTemplateStorage,
       ...deletionRequestStorage,
       ...emailChangeRequestStorage,
+      ...accountActionStorage,
       ...applePayJobStorage,
       ...alerterStateStorage,
     });

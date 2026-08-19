@@ -37,6 +37,7 @@ interface Props {
   filteredPayments: PaymentWithDisputes[];
   bowlers: Bowler[];
   isAdmin: boolean;
+  isPaymentManager?: boolean;
   onRefund: (payment: Payment) => void;
   onDelete: (id: number) => void;
   isRefundPending: boolean;
@@ -58,6 +59,7 @@ export function PaymentsTable({
   filteredPayments,
   bowlers,
   isAdmin,
+  isPaymentManager = false,
   onRefund,
   onDelete,
   isRefundPending,
@@ -168,7 +170,7 @@ export function PaymentsTable({
                           <Send className="size-4" />
                         </Button>
                       )}
-                      {payment.status === "paid" && isCardPaymentType(payment.type) && isAdmin && (
+                      {payment.status === "paid" && isCardPaymentType(payment.type) && isAdmin && !isPaymentManager && (
                         <Button
                           size="icon"
                           variant="ghost"
@@ -179,7 +181,7 @@ export function PaymentsTable({
                           <RotateCcw className="size-4 text-destructive" />
                         </Button>
                       )}
-                      {(!isCardPaymentType(payment.type) || isAdmin) && (
+                      {(!isCardPaymentType(payment.type) || (isAdmin && !isPaymentManager)) && (
                         <Button
                           size="icon"
                           variant="ghost"

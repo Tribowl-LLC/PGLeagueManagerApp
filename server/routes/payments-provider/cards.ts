@@ -9,7 +9,7 @@
 import { Router } from 'express';
 import { storage } from '../../storage';
 import { sendSuccess, sendError, parseOptionalIntParam } from '../../utils/api.js';
-import { hasSelfOrAdminAccessToBowler } from '../../utils/access-control.js';
+import { getPaymentManagerAccessibleLeagueIds, hasPaymentManagerAccessToBowler, hasPaymentManagerAccessToLeague, hasSelfOrAdminAccessToBowler } from '../../utils/access-control.js';
 import { createLogger } from '../../logger';
 import {
   getPaymentProvider,
@@ -102,8 +102,14 @@ router.get('/cards/:bowlerId', async (req, res) => {
       return sendError(res, 'Invalid bowler ID', 400);
     }
 
-    // Sensitive read (card vault): requires self-access or admin role (task #732).
-    if (!await hasSelfOrAdminAccessToBowler(req, bowlerId)) {
+    // Sensitive read (card vault): payment managers may list cards only for a
+    // rostered bowler in one of their assigned-location leagues. Mutation
+    // routes below intentionally keep the stricter self/admin helper.
+    const isPaymentManagerRole = (req.user?.role as string | undefined) === 'payment_manager';
+    const canRead = isPaymentManagerRole
+      ? await hasPaymentManagerAccessToBowler(req, bowlerId)
+      : await hasSelfOrAdminAccessToBowler(req, bowlerId);
+    if (!canRead) {
       return sendError(res, "You don't have access to this bowler", 403, 'FORBIDDEN');
     }
 
@@ -122,9 +128,22 @@ router.get('/cards/:bowlerId', async (req, res) => {
       return sendError(res, "Invalid league ID format", 400);
     }
     let resolvedLeagueId: number | null = listLeagueIdParsed ?? null;
+    if (isPaymentManagerRole && resolvedLeagueId !== null
+      && !(await hasPaymentManagerAccessToLeague(req, resolvedLeagueId))) {
+      return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
+    }
+    if (isPaymentManagerRole && resolvedLeagueId !== null
+      && !(await storage.isBowlerActiveInLeague(bowlerId, resolvedLeagueId))) {
+      return sendError(res, "You don't have access to this bowler in this league", 403, 'FORBIDDEN');
+    }
     if (!resolvedLeagueId) {
       const bowlerLeagues = await storage.getBowlerLeagues({ bowlerId: bowlerId });
-      if (bowlerLeagues.length > 0) {
+      if (isPaymentManagerRole) {
+        const accessibleLeagueIds = new Set(await getPaymentManagerAccessibleLeagueIds(req));
+        resolvedLeagueId = bowlerLeagues.find((membership) =>
+          membership.active && accessibleLeagueIds.has(membership.leagueId),
+        )?.leagueId ?? null;
+      } else if (bowlerLeagues.length > 0) {
         resolvedLeagueId = bowlerLeagues[0].leagueId;
       }
     }

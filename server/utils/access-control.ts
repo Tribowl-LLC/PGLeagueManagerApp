@@ -42,6 +42,119 @@ export function isOrgOrHigher(user: Express.User | undefined): boolean {
   return user?.role === 'org_admin' || user?.role === 'system_admin';
 }
 
+/**
+ * Payment managers are location-scoped operators.  Keep this check separate
+ * from `isOrgOrHigher`: a payment manager may operate the configured leagues
+ * at their assigned location, but is not an organization administrator.
+ *
+ * The role is intentionally compared as a string so this helper remains
+ * source-compatible while deployments roll out the shared role enum.
+ */
+export function isPaymentManager(user: Express.User | undefined): boolean {
+  return (user?.role as string | undefined) === 'payment_manager';
+}
+
+function hasPaymentManagerScope(user: Express.User | undefined): user is Express.User {
+  if (!isPaymentManager(user) || !user) return false;
+  return Number.isSafeInteger(user.organizationId)
+    && (user.organizationId ?? 0) > 0
+    && Number.isSafeInteger(user.locationId)
+    && (user.locationId ?? 0) > 0;
+}
+
+/** Return the configured league IDs a payment manager may operate. */
+export async function getPaymentManagerAccessibleLeagueIds(req: Request): Promise<number[]> {
+  const user = req.user;
+  if (!hasPaymentManagerScope(user)) return [];
+  const organizationId = user.organizationId;
+  const locationId = user.locationId;
+  if (organizationId === null || locationId === null) return [];
+  const leagues = await storage.getLeagues(organizationId);
+  return leagues
+    .filter((league) =>
+      league.organizationId !== null
+      && league.locationId !== null
+      && league.organizationId === organizationId
+      && league.locationId === locationId,
+    )
+    .map((league) => league.id);
+}
+
+/**
+ * Location-scoped league access for payment-manager operations.
+ *
+ * A missing organization, missing assigned location, null league location,
+ * null league organization, or either tenant mismatch fails closed.  This is
+ * deliberately not folded into `hasAdminAccessToLeague`, because financial
+ * activation and other administrator-only routes must continue to reject
+ * payment managers.
+ */
+export async function hasPaymentManagerAccessToLeague(req: Request, leagueId: number): Promise<boolean> {
+  const user = req.user;
+  if (!hasPaymentManagerScope(user)) return false;
+  const league = await storage.getLeague(leagueId);
+  if (!league || league.organizationId === null || league.locationId === null) {
+    return false;
+  }
+  return league.organizationId === user.organizationId
+    && league.locationId === user.locationId;
+}
+
+/** Access to a team whose parent league is assigned to the payment manager. */
+export async function hasPaymentManagerAccessToTeam(req: Request, teamId: number): Promise<boolean> {
+  if (!isPaymentManager(req.user)) return false;
+  const team = await storage.getTeam(teamId);
+  return !!team && hasPaymentManagerAccessToLeague(req, team.leagueId);
+}
+
+/**
+ * Access to a rostered bowler for a payment manager.  A bowler is reachable
+ * only through an active membership in a configured league at the assigned
+ * location; an organization stamp alone is never sufficient.
+ */
+export async function hasPaymentManagerAccessToBowler(req: Request, bowlerId: number): Promise<boolean> {
+  const user = req.user;
+  if (!isPaymentManager(user)) return false;
+  const bowler = await storage.getBowler(bowlerId);
+  if (!bowler || bowler.organizationId === null || bowler.organizationId !== user?.organizationId) {
+    return false;
+  }
+  const accessibleLeagueIds = new Set(await getPaymentManagerAccessibleLeagueIds(req));
+  if (accessibleLeagueIds.size === 0) return false;
+  const memberships = await storage.getBowlerLeagues({ bowlerId });
+  return memberships.some((membership) => membership.active && accessibleLeagueIds.has(membership.leagueId));
+}
+
+/** Return rostered bowler IDs visible to a payment manager's location. */
+export async function getPaymentManagerAccessibleBowlerIds(req: Request): Promise<number[]> {
+  const user = req.user;
+  if (!hasPaymentManagerScope(user)) return [];
+  const leagueIds = await getPaymentManagerAccessibleLeagueIds(req);
+  if (leagueIds.length === 0) return [];
+  const memberships = (await Promise.all(
+    leagueIds.map((leagueId) => storage.getBowlerLeagues({ leagueId })),
+  )).flat();
+  const ids = [...new Set(memberships.filter((membership) => membership.active).map((membership) => membership.bowlerId))];
+  if (ids.length === 0) return [];
+  const bowlers = await storage.getBowlersByIds(ids);
+  return bowlers
+    .filter((bowler) => bowler.organizationId === user.organizationId)
+    .map((bowler) => bowler.id);
+}
+
+/** Payment-row access for location-scoped bookkeeping and receipts. */
+export async function hasPaymentManagerAccessToPayment(req: Request, paymentId: number): Promise<boolean> {
+  if (!isPaymentManager(req.user)) return false;
+  const payment = await storage.getPaymentById(paymentId);
+  return !!payment && hasPaymentManagerAccessToLeague(req, payment.leagueId);
+}
+
+/** Administrator or location-scoped payment-manager league operations. */
+export async function hasLeagueOperationsAccess(req: Request, leagueId: number): Promise<boolean> {
+  if (await hasAdminAccessToLeague(req, leagueId)) return true;
+  return hasPaymentManagerAccessToLeague(req, leagueId);
+}
+
 export function requireOrganizationAccess(req: Request, resourceOrgId: number | null, resourceType?: string, resourceId?: number | string): boolean {
   if (!req.user) return false;
   if (resourceOrgId === null) {
@@ -85,6 +198,16 @@ export async function hasAccessToLeague(req: Request, leagueId: number): Promise
   if (league.organizationId === null) {
     log.debug(`league ${leagueId} has no organization — denying access to user ${req.user.id} (role=${req.user.role})`);
     return false;
+  }
+
+  // Payment managers are not bowlers and therefore cannot qualify through
+  // the rostered-bowler branch below. Their league visibility is explicitly
+  // constrained to the assigned location.
+  if (isPaymentManager(req.user)) {
+    return league.locationId !== null
+      && req.user.organizationId === league.organizationId
+      && req.user.locationId === league.locationId
+      && hasPaymentManagerScope(req.user);
   }
 
   if (isSystemAdmin(req.user)) {
@@ -141,6 +264,12 @@ export async function hasAccessToTeam(req: Request, teamId: number): Promise<boo
 export async function hasAccessToBowler(req: Request, bowlerId: number): Promise<boolean> {
   if (!req.user) {
     return false;
+  }
+
+  // Staff accounts must never be represented as bowlers. Do not let a stale
+  // bowlerId on a payment-manager row activate the ordinary self-access path.
+  if (isPaymentManager(req.user)) {
+    return hasPaymentManagerAccessToBowler(req, bowlerId);
   }
 
   // Self-access shortcut: a user may always read their own linked bowler
@@ -286,6 +415,12 @@ export async function hasAccessToBowlers(
   }
 
   if (!req.user) {
+    return result;
+  }
+
+  if (isPaymentManager(req.user)) {
+    const accessibleIds = new Set(await getPaymentManagerAccessibleBowlerIds(req));
+    for (const id of uniqueIds) result.set(id, accessibleIds.has(id));
     return result;
   }
 
@@ -485,6 +620,11 @@ export async function hasAccessToBowlers(
 export async function hasSelfOrAdminAccessToBowler(req: Request, bowlerId: number): Promise<boolean> {
   if (!req.user) return false;
 
+  // Payment managers may read roster data through the dedicated location
+  // helper, but never mutate a global bowler profile or manage its sensitive
+  // vault/autopay data through this broad helper.
+  if (isPaymentManager(req.user)) return false;
+
   // Self-access: the caller IS the target bowler — always allowed regardless
   // of role so a linked user can always manage their own record.
   if (req.user.bowlerId === bowlerId) return true;
@@ -510,6 +650,10 @@ export async function hasSelfOrAdminAccessToBowler(req: Request, bowlerId: numbe
 export async function hasAccessToPayment(req: Request, paymentId: number): Promise<boolean> {
   if (!req.user) {
     return false;
+  }
+
+  if (isPaymentManager(req.user)) {
+    return hasPaymentManagerAccessToPayment(req, paymentId);
   }
 
   try {

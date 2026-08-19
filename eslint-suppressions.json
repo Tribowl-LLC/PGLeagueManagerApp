@@ -503,7 +503,7 @@
   },
   "tests/unit/auth-no-token-leak.test.ts": {
     "no-restricted-syntax": {
-      "count": 3
+      "count": 2
     }
   },
   "tests/unit/auth-user-payment-sync-status.test.ts": {

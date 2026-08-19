@@ -417,35 +417,15 @@ describe('POST /api/bowler-leagues — bootstrap path for fresh bowlers', () => 
     }
   });
 
-  it('blocks a cross-org admin who has league self-membership in the bowler\'s org from bootstrap-hijacking a fresh bowler (#474 caller-org gate)', async () => {
-    // Architect-found regression scenario for the post-#474 bootstrap
-    // gates. Setup mirrors a real attack:
-    //   - Alice is `org_admin` of org A (`sessionA`).
-    //   - Alice's user row carries `bowlerId = X`, where bowler X is a
-    //     legitimate member of one of org B's leagues. (In production
-    //     this can happen via auto-link by email match, manual link by
-    //     a sysadmin, or Alice having previously been a regular bowler
-    //     in org B before being promoted to admin in org A.)
-    //   - Bob (org B admin, `sessionB`) freshly creates bowler V in
-    //     org B (no league entries yet — eligible for the bootstrap
-    //     branch).
-    //   - Alice POSTs `/api/bowler-leagues` to bootstrap-link V into
-    //     org B's league/team.
-    //
-    // Pre-#474 the claim-token denied this: the claim was registered
-    // for Bob's user/org B and Alice's `u.organizationId` (org A) did
-    // not match. The initial #474 patch left the bootstrap branch with
-    // only the `bowler.org === league.org` gate — both equal to org B
-    // here — so Alice would have hijacked V. The new caller-org
-    // alignment gate (`!isSystemAdmin && req.user.org === bowler.org`)
-    // is what closes that hole; this test pins it.
+  it('rejects the stale staff-to-bowler state that previously enabled cross-org bootstrap hijacking', async () => {
+    // This used to stage an org-A administrator with an org-B bowler
+    // identity, then prove the route's caller-org gate rejected a bootstrap
+    // hijack. Identity hardening now rejects that prerequisite at the data
+    // boundary, before a session can carry it into access control.
     expect(leagueId).not.toBeNull();
     expect(teamId).not.toBeNull();
 
-    // Step 1: create a "shadow" bowler in org B that we'll point
-    // sessionA's user.bowlerId at, then link it to org B's league so
-    // sessionA gains league self-membership access via
-    // access-control.ts:74-79.
+    // Create the org-B bowler identity used by the historical attack setup.
     const shadowRes = await apiPost<Bowler>(
       '/api/bowlers',
       {
@@ -467,10 +447,7 @@ describe('POST /api/bowler-leagues — bootstrap path for fresh bowlers', () => 
     expect(shadowLink.status, JSON.stringify(shadowLink.data)).toBe(201);
     createdBowlerLeagueIds.push((shadowLink.data.data as BowlerLeague).id);
 
-    // Step 2: stamp sessionA's user.bowlerId so the next request
-    // deserialized for sessionA carries that bowlerId. Bust the
-    // 60-second user-deserialization cache (server/auth.ts:159) so the
-    // next request actually re-reads the user row from the DB.
+    // Attempt to stamp the org-A administrator with that bowler identity.
     const aliceUserId = sessionA.user.id;
     const originalBowlerIdRow = await db
       .select({ bowlerId: users.bowlerId })
@@ -478,49 +455,24 @@ describe('POST /api/bowler-leagues — bootstrap path for fresh bowlers', () => 
       .where(eq(users.id, aliceUserId));
     const originalBowlerId = originalBowlerIdRow[0]?.bowlerId ?? null;
 
-    await db.update(users).set({ bowlerId: shadowBowlerId }).where(eq(users.id, aliceUserId));
-    cacheInvalidate('user:');
-
+    let rejected: unknown;
     try {
-      // Step 3: Bob freshly creates the victim bowler V in org B (no
-      // league entries — bootstrap-eligible).
-      const victimRes = await apiPost<Bowler>(
-        '/api/bowlers',
-        {
-          name: `Vitest Bootstrap Victim ${stamp}-6`,
-          email: `vitest-bootstrap-${stamp}-6-victim@example.com`,
-          active: true,
-        },
-        sessionB,
-      );
-      expect(victimRes.status).toBe(201);
-      const victimBowlerId = (victimRes.data.data as Bowler).id;
-      createdBowlerIds.push(victimBowlerId);
-
-      // Step 4: Alice (org A admin, league self-member of org B's
-      // league) attempts to bootstrap-link the victim into the same
-      // org B league/team. Must be denied.
-      const hijack = await apiPost(
-        '/api/bowler-leagues',
-        { bowlerId: victimBowlerId, leagueId, teamId, active: true, order: 0 },
-        sessionA,
-      );
-      expect(hijack.status, JSON.stringify(hijack.data)).toBe(403);
-
-      // Defense-in-depth: also assert no row landed for the victim.
-      const landed = await db
-        .select({ id: bowlerLeagues.id })
-        .from(bowlerLeagues)
-        .where(eq(bowlerLeagues.bowlerId, victimBowlerId));
-      expect(landed).toHaveLength(0);
-    } finally {
-      // Restore Alice's user row so subsequent test runs (and other
-      // tests sharing this user) are not poisoned by a stray bowlerId.
-      await db
-        .update(users)
-        .set({ bowlerId: originalBowlerId })
-        .where(eq(users.id, aliceUserId));
-      cacheInvalidate('user:');
+      await db.update(users).set({ bowlerId: shadowBowlerId }).where(eq(users.id, aliceUserId));
+    } catch (error) {
+      rejected = error;
     }
+
+    // Identity hardening makes the historical attack prerequisite
+    // unrepresentable: administrators cannot carry bowler identity, and the
+    // cross-organization composite key independently rejects this link.
+    expect((rejected as { cause?: { code?: string; constraint?: string } })?.cause)
+      .toMatchObject({ code: '23514', constraint: 'users_elevated_role_bowler_check' });
+
+    const currentBowlerIdRow = await db
+      .select({ bowlerId: users.bowlerId })
+      .from(users)
+      .where(eq(users.id, aliceUserId));
+    expect(currentBowlerIdRow[0]?.bowlerId ?? null).toBe(originalBowlerId);
+    cacheInvalidate('user:');
   });
 });

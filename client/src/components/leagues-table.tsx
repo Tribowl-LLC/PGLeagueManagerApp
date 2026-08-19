@@ -23,6 +23,7 @@ interface Props {
   onRestore: (id: number) => void;
   onDelete: (id: number) => void;
   isRestorePending: boolean;
+  canManage?: boolean;
 }
 
 export function LeaguesTable({
@@ -34,6 +35,7 @@ export function LeaguesTable({
   onRestore,
   onDelete,
   isRestorePending,
+  canManage = true,
 }: Props) {
   return (
     <Table>
@@ -86,26 +88,28 @@ export function LeaguesTable({
               </TableCell>
               <TableCell>
                 <div className="flex gap-x-2">
-                  <Button variant="outline" size="sm" onClick={() => onEdit(league)}>
-                    <Pencil className="size-4" />
-                  </Button>
-                  {league.active ? (
-                    <Button variant="outline" size="sm" onClick={() => onArchive(league.id)}>
-                      <Archive className="size-4" />
+                  {canManage && <>
+                    <Button variant="outline" size="sm" onClick={() => onEdit(league)}>
+                      <Pencil className="size-4" />
                     </Button>
-                  ) : (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => onRestore(league.id)}
-                      disabled={isRestorePending}
-                    >
-                      <RotateCcw className="size-4" />
+                    {league.active ? (
+                      <Button variant="outline" size="sm" onClick={() => onArchive(league.id)}>
+                        <Archive className="size-4" />
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => onRestore(league.id)}
+                        disabled={isRestorePending}
+                      >
+                        <RotateCcw className="size-4" />
+                      </Button>
+                    )}
+                    <Button variant="destructive" size="sm" onClick={() => onDelete(league.id)}>
+                      <Trash className="size-4" />
                     </Button>
-                  )}
-                  <Button variant="destructive" size="sm" onClick={() => onDelete(league.id)}>
-                    <Trash className="size-4" />
-                  </Button>
+                  </>}
                 </div>
               </TableCell>
             </TableRow>

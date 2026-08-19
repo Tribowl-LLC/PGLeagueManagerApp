@@ -21,6 +21,8 @@ import {
   deletionRequests,
   orphanCleanupAudits,
   paymentOperations,
+  bowlers,
+  identityLinkEvents,
 } from '@shared/schema';
 import {
   deleteUser,
@@ -93,11 +95,16 @@ const createdJobIds: number[] = [];
 const createdDeletionRequestIds: number[] = [];
 const createdAuditIds: number[] = [];
 const createdOperationIds: string[] = [];
+const createdBowlerIds: number[] = [];
 
 beforeAll(purgeUsersDeleteApplePayLeaks);
 afterAll(purgeUsersDeleteApplePayLeaks);
 
 afterEach(async () => {
+  if (createdUserIds.length > 0) {
+    await db.delete(identityLinkEvents)
+      .where(inArray(identityLinkEvents.subjectUserId, createdUserIds));
+  }
   if (createdOperationIds.length > 0) {
     await db.delete(paymentOperations).where(inArray(paymentOperations.id, createdOperationIds));
     createdOperationIds.length = 0;
@@ -121,6 +128,10 @@ afterEach(async () => {
   if (createdUserIds.length > 0) {
     await db.delete(users).where(inArray(users.id, createdUserIds));
     createdUserIds.length = 0;
+  }
+  if (createdBowlerIds.length > 0) {
+    await db.delete(bowlers).where(inArray(bowlers.id, createdBowlerIds));
+    createdBowlerIds.length = 0;
   }
   // Baseline org is preserved across runs (Task #607).
 });
@@ -286,6 +297,37 @@ describe('deleteUser — storage', () => {
     expect(after).toBeUndefined();
 
     await expect(deleteUser(userId)).rejects.toThrow(/not found/i);
+  });
+
+  it('retains a stable audit subject and unlink snapshot after deleting a linked user', async () => {
+    const orgId = await makeOrg();
+    const userId = await makeUser({ role: 'user', organizationId: orgId });
+    const [bowler] = await db.insert(bowlers).values({
+      name: `Delete Linked Bowler ${userId}`,
+      organizationId: orgId,
+      active: true,
+    }).returning();
+    createdBowlerIds.push(bowler.id);
+    await db.update(users).set({ bowlerId: bowler.id }).where(eq(users.id, userId));
+
+    await deleteUser(userId);
+
+    const [event] = await db.select().from(identityLinkEvents)
+      .where(eq(identityLinkEvents.subjectUserId, userId));
+    expect(event).toMatchObject({
+      subjectUserId: userId,
+      userId: null,
+      eventType: 'access_cleanup',
+      oldBowlerId: bowler.id,
+      source: 'storage.delete-user',
+      reason: 'account_deleted',
+    });
+    expect(event?.oldBowlerSnapshot).toMatchObject({
+      id: bowler.id,
+      name: bowler.name,
+      organizationId: orgId,
+      active: true,
+    });
   });
 
   it('nullifies BOTH apple_pay_jobs.created_by and deletion_requests.reviewed_by atomically', async () => {

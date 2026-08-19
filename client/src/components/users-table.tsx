@@ -28,6 +28,19 @@ interface UsersTableLinkedBowler {
   teamName: string | null;
 }
 
+/** Public invitation lifecycle state returned by the organization users API. */
+export interface UsersTableInvitation {
+  id: number;
+  action: "account_invite" | "password_reset";
+  status: "pending" | "consumed" | "superseded" | "revoked" | "expired";
+  deliveryStatus: "not_attempted" | "sent" | "failed";
+  expiresAt: string;
+  deliveryAttemptedAt: string | null;
+  deliveredAt: string | null;
+  expiredAt: string | null;
+  createdAt: string;
+}
+
 export interface UsersTableUser {
   id: number;
   email: string;
@@ -36,7 +49,7 @@ export interface UsersTableUser {
   organizationId: number | null;
   locationId: number | null;
   bowlerId: number | null;
-  inviteToken: string | null;
+  invitation: UsersTableInvitation | null;
   createdAt: string;
   linkedBowler: UsersTableLinkedBowler | null;
 }
@@ -56,7 +69,18 @@ interface Props {
   onChangeEmail: (id: number) => void;
 }
 
-const hasPendingInvite = (user: UsersTableUser) => !!user.inviteToken;
+const hasPendingInvite = (user: UsersTableUser) => user.invitation?.status === "pending";
+const canResendInvite = (user: UsersTableUser) =>
+  user.invitation?.status === "pending"
+  || user.invitation?.status === "expired"
+  || user.invitation?.status === "revoked";
+
+const invitationStatusLabel = (user: UsersTableUser) => {
+  if (user.invitation?.status === "expired") return "Invite expired";
+  if (user.invitation?.status === "revoked") return "Invite revoked";
+  if (!hasPendingInvite(user)) return "Active";
+  return user.invitation?.deliveryStatus === "failed" ? "Invite failed" : "Pending";
+};
 
 export function UsersTable({ users, currentUser, orgLocations, onDeleteUser, onResetPassword, onChangeEmail }: Props) {
   const { toast } = useToast();
@@ -64,11 +88,13 @@ export function UsersTable({ users, currentUser, orgLocations, onDeleteUser, onR
   // NOTE (react-doctor audit): react-doctor reports the role/location
   // mutations below as missing cache invalidation. False positive —
   // invalidation is delegated to the shared invalidateOrgAdminUsers() helper
-  // in each onSuccess. (resendInviteMutation intentionally skips it; see its
-  // own note.) Audited; leave as-is.
+  // in each onSuccess. Audited; leave as-is.
   const updateRoleMutation = useMutation({
-    mutationFn: async ({ userId, makeOrgAdmin }: { userId: number; makeOrgAdmin: boolean }) => {
-      return apiRequest(`/api/org-admin/users/${userId}/admin-status`, "PATCH", { makeOrgAdmin });
+    mutationFn: async ({ userId, role, makeOrgAdmin }: { userId: number; role: string; makeOrgAdmin: boolean }) => {
+      // `makeOrgAdmin` remains for the current endpoint contract; `role` is
+      // sent alongside it so the server can persist payment_manager without
+      // requiring a second client contract during rollout.
+      return apiRequest(`/api/org-admin/users/${userId}/admin-status`, "PATCH", { role, makeOrgAdmin });
     },
     onSuccess: () => {
       invalidateOrgAdminUsers();
@@ -94,13 +120,18 @@ export function UsersTable({ users, currentUser, orgLocations, onDeleteUser, onR
 
   const resendInviteMutation = useMutation({
     mutationFn: async (userId: number) => {
-      return apiRequest(`/api/org-admin/users/${userId}/resend-invite`, "POST");
+      return apiRequest<{ emailSent: boolean }>(`/api/org-admin/users/${userId}/resend-invite`, "POST");
     },
-    // No cache invalidation needed: re-sending the invite email does not
-    // change any visible row data (the user stays "Pending" with the same
-    // fields), so there is nothing to refetch.
-    onSuccess: () => {
-      toast({ title: "Invite sent", description: "A new invitation email has been sent." });
+    onSuccess: (response) => {
+      invalidateOrgAdminUsers();
+      const emailSent = response?.data?.emailSent !== false;
+      toast({
+        title: emailSent ? "Invite sent" : "Invite delivery failed",
+        description: emailSent
+          ? "A new invitation email has been sent."
+          : "A new invitation is active, but email delivery failed. You can retry safely.",
+        variant: emailSent ? "default" : "destructive",
+      });
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
@@ -125,21 +156,25 @@ export function UsersTable({ users, currentUser, orgLocations, onDeleteUser, onR
             <TableCell className="font-medium">{user.name || "—"}</TableCell>
             <TableCell>{user.email}</TableCell>
             <TableCell>
-              {hasPendingInvite(user) ? (
-                <Badge variant="outline" className="text-amber-600 border-amber-300">Pending</Badge>
+              {user.invitation && user.invitation.status !== "consumed" && user.invitation.status !== "superseded" ? (
+                <Badge variant="outline" className="text-amber-600 border-amber-300">{invitationStatusLabel(user)}</Badge>
               ) : (
                 <Badge variant="outline" className="text-green-600 border-green-300">Active</Badge>
               )}
             </TableCell>
             <TableCell>
               <Select
-                value={user.role === "org_admin" || user.role === "system_admin" ? "admin" : "user"}
+                value={user.role === "org_admin" || user.role === "system_admin" ? "admin" : user.role === "payment_manager" ? "payment_manager" : "user"}
                 onValueChange={(value) => {
                   if (user.id === currentUser?.id) {
                     toast({ title: "Error", description: "You cannot change your own role.", variant: "destructive" });
                     return;
                   }
-                  updateRoleMutation.mutate({ userId: user.id, makeOrgAdmin: value === "admin" });
+                  if (value === "payment_manager" && user.locationId === null) {
+                    toast({ title: "Location required", description: "Assign a location before making this user a payment manager.", variant: "destructive" });
+                    return;
+                  }
+                  updateRoleMutation.mutate({ userId: user.id, role: value, makeOrgAdmin: value === "admin" });
                 }}
                 disabled={user.id === currentUser?.id}
               >
@@ -150,13 +185,19 @@ export function UsersTable({ users, currentUser, orgLocations, onDeleteUser, onR
                   <SelectItem value="user">
                     <span className="flex items-center gap-1.5">
                       <MapPin className="size-3.5" />
-                      End User
+                      Bowler Account
                     </span>
                   </SelectItem>
                   <SelectItem value="admin">
                     <span className="flex items-center gap-1.5">
                       <Shield className="size-3.5" />
                       Admin
+                    </span>
+                  </SelectItem>
+                  <SelectItem value="payment_manager">
+                    <span className="flex items-center gap-1.5">
+                      <MapPin className="size-3.5" />
+                      Payment Manager
                     </span>
                   </SelectItem>
                 </SelectContent>
@@ -189,7 +230,7 @@ export function UsersTable({ users, currentUser, orgLocations, onDeleteUser, onR
             </TableCell>
             <TableCell>
               <div className="flex items-center gap-1">
-                {hasPendingInvite(user) && (
+                {canResendInvite(user) && (
                   <Button
                     variant="ghost"
                     size="icon"

@@ -4,6 +4,7 @@ import { emailChangeRequests, users, type User } from '@shared/schema';
 import { storage } from '../storage';
 import { recordAdminEmailChangeAudit } from '../storage/admin-email-change-audits';
 import { recordAdminProfileEditAudit } from '../storage/admin-profile-edit-audits';
+import { normalizeAccountEmail } from '../storage/users';
 
 /**
  * Atomic write of a new email-change request, optionally accompanied
@@ -35,6 +36,7 @@ export async function applyEmailChangeRequestTxn(opts: {
     newEmailMasked: string;
   } | null;
 }): Promise<void> {
+  const normalizedEmail = normalizeAccountEmail(opts.newEmail);
   await db.transaction(async (tx) => {
     await tx
       .update(emailChangeRequests)
@@ -54,7 +56,7 @@ export async function applyEmailChangeRequestTxn(opts: {
     // before the previous link is confirmed.
     const [insertedRequest] = await tx.insert(emailChangeRequests).values({
       userId: opts.userId,
-      newEmail: opts.newEmail,
+      newEmail: normalizedEmail,
       tokenHash: opts.tokenHash,
       expiresAt: opts.expiresAt,
     }).returning({ id: emailChangeRequests.id });
@@ -210,7 +212,7 @@ export async function applyConfirmEmailChangeTxn(
     // retry once the conflict is resolved.
     const [updated] = await tx
       .update(users)
-      .set({ email: claimed.newEmail })
+      .set({ email: normalizeAccountEmail(claimed.newEmail) })
       .where(eq(users.id, claimed.userId))
       .returning();
 

@@ -171,6 +171,28 @@ export async function runPaymentSyncRetrySweep(now: Date = new Date()): Promise<
 
     const linkedUser = await storage.getUserByBowlerId(bowler.id);
 
+    // Staff identities must never be treated as bowler profile authority.
+    // The schema prevents new staff links, but a legacy/manual row must fail
+    // closed and be parked for explicit integrity repair rather than pushing
+    // staff PII into a bowler/customer record.
+    if (linkedUser && linkedUser.role !== 'user') {
+      result.skippedNoUser++;
+      log.warn('Skipping payment-sync retry: staff account linked to bowler', {
+        bowlerId: bowler.id,
+        userId: linkedUser.id,
+        role: linkedUser.role,
+      });
+      await db
+        .update(bowlers)
+        .set({ paymentSyncNextRetryAt: null })
+        .where(and(
+          eq(bowlers.id, bowler.id),
+          eq(bowlers.paymentSyncLastAttemptAt, claimAttemptedAt),
+          eq(bowlers.paymentSyncNextRetryAt, claimLeaseUntil),
+        ));
+      continue;
+    }
+
     // Task #705: unclaimed-bowler path. Previously the sweep skipped
     // any flagged row that had no linked user, which left bowlers
     // stuck in `payment_sync_pending_at` forever any time the

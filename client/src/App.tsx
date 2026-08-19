@@ -31,7 +31,6 @@ const LeaguePastDuePage = lazy(() => import("@/pages/league-past-due-page"));
 const PastDuePage = lazy(() => import("@/pages/past-due-page"));
 const SignUpPage = lazy(() => import("@/pages/sign-up-page"));
 const BowlerDashboardPage = lazy(() => import("@/pages/bowler-dashboard-page"));
-const AdminLinkBowlerPage = lazy(() => import("@/pages/admin-link-bowler"));
 const OrganizationsPage = lazy(() => import("@/pages/organizations-page"));
 const LocationsPage = lazy(() => import("@/pages/locations-page"));
 const UsersPage = lazy(() => import("@/pages/users-page"));
@@ -119,7 +118,7 @@ function Router() {
     if (userData?.data) {
       const user = userData.data;
       const isAdmin = user.role === 'system_admin' || user.role === 'org_admin';
-      if (isAdmin) {
+      if (isAdmin || String(user.role) === 'payment_manager') {
         prefetchQueries('admin').catch((error) => logger.error('App', 'Failed to prefetch admin queries', error));
       } else if (user.bowlerId) {
         prefetchQueries('bowler').catch((error) => logger.error('App', 'Failed to prefetch bowler queries', error));
@@ -157,7 +156,7 @@ function Router() {
 
         {/* Organization-member routes */}
         <Route path="/home">{guard('org', <HomePage />)}</Route>
-        <Route path="/locations">{guard('org', <LocationsPage />)}</Route>
+        <Route path="/locations">{guard('orgAdmin', <LocationsPage />)}</Route>
         <Route path="/leagues">{guard('org', <LeaguesPage />)}</Route>
         <Route path="/leagues/:leagueId">{guard('org', <LeagueViewPage />)}</Route>
         <Route path="/leagues/:leagueId/teams">{guard('org', <TeamsPage />)}</Route>
@@ -168,19 +167,18 @@ function Router() {
         <Route path="/bowlers/:bowlerId/scores">{guard('org', <BowlerScoresPage />)}</Route>
 
         {/* Organization Admin routes */}
-        <Route path="/leagues/:leagueId/weekly-payments">{guard('orgAdmin', <WeeklyPaymentsPage />)}</Route>
-        <Route path="/payments">{guard('orgAdmin', <PaymentsPage />)}</Route>
-        <Route path="/reports">{guard('orgAdmin', <ReportsPage />)}</Route>
-        <Route path="/reports/leagues/:leagueId/past-due">{guard('orgAdmin', <LeaguePastDuePage />)}</Route>
-        <Route path="/reports/past-due">{guard('orgAdmin', <PastDuePage />)}</Route>
+        <Route path="/leagues/:leagueId/weekly-payments">{guard('paymentManager', <WeeklyPaymentsPage />)}</Route>
+        <Route path="/payments">{guard('paymentManager', <PaymentsPage />)}</Route>
+        <Route path="/reports">{guard('paymentManager', <ReportsPage />)}</Route>
+        <Route path="/reports/leagues/:leagueId/past-due">{guard('paymentManager', <LeaguePastDuePage />)}</Route>
+        <Route path="/reports/past-due">{guard('paymentManager', <PastDuePage />)}</Route>
         <Route path="/leagues/:leagueId/financial-activation">{guard('orgAdmin', <FinancialActivationPage />)}</Route>
         <Route path="/integrations">{guard('orgAdmin', <IntegrationsPage />)}</Route>
         <Route path="/messaging">{guard('orgAdmin', <MessagingPage />)}</Route>
         <Route path="/admin/unclaimed-users">{guard('orgAdmin', <AdminUnclaimedUsersPage />)}</Route>
         {/* System Admin routes */}
         <Route path="/organizations">{guard('systemAdmin', <OrganizationsPage />)}</Route>
-        <Route path="/admin/link-bowler">{guard('systemAdmin', <AdminLinkBowlerPage />)}</Route>
-        <Route path="/users">{guard('systemAdmin', <UsersPage />)}</Route>
+        <Route path="/users">{guard('orgAdmin', <UsersPage />)}</Route>
         <Route path="/email-templates">{guard('systemAdmin', <EmailTemplatesPage />)}</Route>
         <Route path="/admin/deletion-requests">{guard('systemAdmin', <DeletionRequestsPage />)}</Route>
         <Route path="/admin/apple-pay-jobs">{guard('systemAdmin', <ApplePayJobsPage />)}</Route>

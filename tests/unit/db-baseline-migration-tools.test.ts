@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(27);
+    expect(migrations).toHaveLength(28);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -379,6 +379,23 @@ describe('normalized migration baseline tools', () => {
     });
     expect(migrations[25]?.sql).toContain('authorizing_user_id');
     expect(migrations[25]?.sql).not.toMatch(/(?:^|\n)\s*(?:DROP|RENAME|UPDATE|DELETE|INSERT)\b/);
+    expect(migrations[26]).toMatchObject({
+      idx: 26,
+      tag: '0026_f3_canonical_autopay_plans',
+      createdAt: 1787092953649,
+      hash: '41f4fd8fd191aa5a48cc699abd0b146684ee64729a46762b5aebdc79d7649b37',
+    });
+    expect(migrations[26]?.sql).toContain('CREATE TABLE "f3_collection_policies"');
+    expect(migrations[27]).toMatchObject({
+      idx: 27,
+      tag: '0027_identity_integrity_hardening',
+      createdAt: 1787174183637,
+      hash: '60ed7e6bbae6c7b498d8cc8563aa4724e555fc99986150b24f45750f2e31bd9f',
+    });
+    expect(migrations[27]?.sql).toContain('CREATE TABLE "account_action_requests"');
+    expect(migrations[27]?.sql).toContain('CREATE TABLE "identity_link_events"');
+    expect(migrations[27]?.sql).toContain('identity_link_events_subject_user_idx');
+    expect(migrations[27]?.sql).toContain('users_payment_manager_scope_check');
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 
