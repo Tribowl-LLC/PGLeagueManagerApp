@@ -16,6 +16,7 @@ import { useBowlerPaymentSubmit } from "@/hooks/use-bowler-payment-submit";
 import type { AutopaySetupQuote } from "@/lib/autopay-setup";
 import { beginPaymentIntent, clearPaymentIntent, paymentRequestHeaders, paymentRequestWithRecovery } from "@/lib/payment-request-identity";
 import { buildInteractiveOccurrenceFields, interactiveIntentScopeSuffix } from "@/lib/interactive-payment-request";
+import { invalidateF3AfterInteractivePayment } from "@/lib/f3-autopay";
 import type { InteractiveOccurrenceReadiness } from "@/components/interactive-occurrence-selector";
 
 interface BowlerLinkRow {
@@ -351,6 +352,7 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
         toast({ title: "Payment Successful", description: `${walletLabel} payment of $${(amount / 100).toFixed(2)} completed.` });
       }
       queryClient.invalidateQueries({ queryKey: ['/api/payments'] });
+      invalidateF3AfterInteractivePayment(queryClient, league.id, league.organizationId);
       queryClient.invalidateQueries({ queryKey: [`/api/payment-schedules/${bowler.id}/${league.id}`] });
       queryClient.invalidateQueries({ queryKey: [`/api/payments-provider/cards/${bowler.id}`, league.id] });
       // when paying for a partner, refresh THEIR bowler-details
@@ -378,7 +380,7 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
     } finally {
       setIsSubmitting(false);
     }
-  }, [bowler.id, league.id, targetBowlerId, additionalBowlerIds, calculateTotalAmount, toast, setIsSubmitting, setShowPaymentSetup, paymentMode, occurrenceAllocations, occurrenceQuoteFingerprint]);
+  }, [bowler.id, league.id, league.organizationId, targetBowlerId, additionalBowlerIds, calculateTotalAmount, toast, setIsSubmitting, setShowPaymentSetup, paymentMode, occurrenceAllocations, occurrenceQuoteFingerprint]);
 
   const beginWalletPayment = useCallback(() => {
     const perAmount = calculateTotalAmount();
@@ -472,11 +474,10 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
   });
   const activeSchedule = scheduleResponse?.success ? scheduleResponse.data ?? undefined : undefined;
 
-  const f3ClientEnabled = import.meta.env.VITE_LEAGUEVAULT_F3_CANONICAL_AUTOPAY_ENABLED === "1" || import.meta.env.VITE_LEAGUEVAULT_F3_CANONICAL_AUTOPAY_ENABLED === "true";
   return (
     <>
-    {f3ClientEnabled && league.paymentMode === "weekly" && league.organizationId ? (
-      <F3CanonicalAutopaySetup leagueId={league.id} organizationId={league.organizationId} bowlerId={bowler.id} savedCards={savedCards} />
+    {league.paymentMode === "weekly" && league.organizationId ? (
+      <F3CanonicalAutopaySetup leagueId={league.id} organizationId={league.organizationId} bowlerId={bowler.id} savedCards={savedCards} acceptedPartners={partnerOptions} onCatchUp={() => { window.location.hash = '#interactive-occurrence-selector'; document.getElementById('interactive-occurrence-selector')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }} />
     ) : null}
     <PaymentStatusView
       showPaymentSetup={showPaymentSetup}

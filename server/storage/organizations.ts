@@ -49,12 +49,6 @@ import {
   paymentOccurrenceAllocationRevisions,
   paymentOperationOccurrenceSnapshots,
   paymentOperationOccurrenceSnapshotAllocations,
-  f3AutopayPlanProvenance,
-  f3PayerAuthorizations,
-  f3PayerAuthorizationRevisions,
-  f3CollectionPolicyOccurrences,
-  f3CollectionPolicyRevisions,
-  f3CollectionPolicies,
   paymentSchedules,
   users,
   webhookEvents,
@@ -291,15 +285,9 @@ export async function deleteOrganization(id: number): Promise<void> {
     // explicit tenant teardown removes them before either referenced table.
     await tx.delete(autopaySetupRequests).where(eq(autopaySetupRequests.organizationId, id));
 
-    // F3 policy, payer authorization, and ready-plan evidence use restrictive
-    // tenant links. Full teardown is the explicit retention exception.
-    await tx.execute(sql`SELECT set_config('app.organization_teardown', 'on', true)`);
-    await tx.delete(f3AutopayPlanProvenance).where(eq(f3AutopayPlanProvenance.organizationId, id));
-    await tx.delete(f3PayerAuthorizationRevisions).where(eq(f3PayerAuthorizationRevisions.organizationId, id));
-    await tx.delete(f3PayerAuthorizations).where(eq(f3PayerAuthorizations.organizationId, id));
-    await tx.delete(f3CollectionPolicyOccurrences).where(eq(f3CollectionPolicyOccurrences.organizationId, id));
-    await tx.delete(f3CollectionPolicyRevisions).where(eq(f3CollectionPolicyRevisions.organizationId, id));
-    await tx.delete(f3CollectionPolicies).where(eq(f3CollectionPolicies.organizationId, id));
+    // F3 policy, payer authorization, and ready-plan evidence is immutable
+    // financial evidence. The F1 retention gate prevents hard tenant removal
+    // while this evidence exists; never bypass the database guard here.
 
     // D2 financial evidence uses restrictive parent links. Full tenant
     // teardown is the explicit retention-policy exception and removes every

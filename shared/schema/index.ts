@@ -189,7 +189,6 @@ export {
   f3PayerAuthorizationRevisions,
   F3_POLICY_STATES,
   F3_AUTHORIZATION_STATES,
-  F3_PLAN_STATES,
 } from "./f3-autopay";
 export type {
   F3CollectionPolicy,
@@ -198,7 +197,6 @@ export type {
   F3AutopayPlanProvenance,
   F3PolicyState,
   F3AuthorizationState,
-  F3PlanState,
 } from "./f3-autopay";
 
 

@@ -18,6 +18,7 @@ import {
   paymentRequestWithRecovery,
 } from "@/lib/payment-request-identity";
 import { buildInteractiveOccurrenceFields, interactiveIntentScopeSuffix } from "@/lib/interactive-payment-request";
+import { invalidateF3AfterInteractivePayment } from "@/lib/f3-autopay";
 import type { InteractiveOccurrenceReadiness } from "@/components/interactive-occurrence-selector";
 import type { League, Bowler } from "@shared/schema";
 import type { SquareCard } from "@/hooks/use-square-payment";
@@ -186,6 +187,7 @@ export function useBowlerPaymentSubmit({
           });
           setShowPaymentSetup(false);
           queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
+          invalidateF3AfterInteractivePayment(queryClient, league.id, league.organizationId);
           partnerIds.forEach((id) =>
             queryClient.invalidateQueries({ queryKey: [`/api/bowlers/${id}/details`] }),
           );
@@ -250,6 +252,7 @@ export function useBowlerPaymentSubmit({
         });
         setShowPaymentSetup(false);
         queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
+        invalidateF3AfterInteractivePayment(queryClient, league.id, league.organizationId);
         return;
       }
 
@@ -303,6 +306,7 @@ export function useBowlerPaymentSubmit({
         });
         setShowPaymentSetup(false);
         queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
+        invalidateF3AfterInteractivePayment(queryClient, league.id, league.organizationId);
         partnerIds.forEach((id) =>
           queryClient.invalidateQueries({ queryKey: [`/api/bowlers/${id}/details`] }),
         );
@@ -354,6 +358,7 @@ export function useBowlerPaymentSubmit({
         });
         setShowPaymentSetup(false);
         queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
+        invalidateF3AfterInteractivePayment(queryClient, league.id, league.organizationId);
         queryClient.invalidateQueries({ queryKey: [`/api/payment-schedules/${bowler.id}/${league.id}`] });
         (additionalBowlerIds ?? []).forEach((id) =>
           queryClient.invalidateQueries({ queryKey: [`/api/bowlers/${id}/details`] }),
@@ -417,6 +422,7 @@ export function useBowlerPaymentSubmit({
 
       setShowPaymentSetup(false);
       queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
+      invalidateF3AfterInteractivePayment(queryClient, league.id, league.organizationId);
       // Refresh the recipient's bowler details so payment-history
       // surfaces (which read /api/bowlers/:id/details?includePayments=true)
       // pick up the new "Paid by …" attribution immediately.

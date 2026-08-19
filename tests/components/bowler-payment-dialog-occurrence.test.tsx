@@ -145,6 +145,22 @@ describe("history payment dialog occurrence selector", () => {
     expect(await screen.findByText(/Dec 31, 2029/)).toBeInTheDocument();
   });
 
+  it("explains ready automatic-plan reservations before manual collection", async () => {
+    csrfFetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      rows: [{ obligationId: "11111111-1111-4111-8111-111111111111", bowlerId: 7, amountMinor: 2000, outstandingMinor: 2000, dueAt: null }],
+      reservedByReadyAutopayPlan: [{ obligationId: "11111111-1111-4111-8111-111111111111", amountMinor: 2000, disposition: "reserved_by_ready_autopay_plan" }],
+      fingerprint: `lvpayquote:v1:${"a".repeat(64)}`,
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <InteractiveOccurrenceSelector leagueId={11} timezone="America/Chicago" amountMinor={2000} bowlerIds={[7]} enabled onChange={vi.fn()} />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByTestId("ready-autopay-reservation")).toHaveTextContent("$20.00");
+    expect(screen.getByText(/cancelling or superseding that plan first/i)).toBeInTheDocument();
+  });
+
   it("disables the payment submit control while canonical selection is incomplete", () => {
     render(
       <PaymentSubmitSection
