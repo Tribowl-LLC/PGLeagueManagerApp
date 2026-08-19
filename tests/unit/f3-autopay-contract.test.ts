@@ -54,7 +54,7 @@ describe("F3 canonical contracts", () => {
       contractVersion: "canonical-autopay-preauthorization-quote/1" as const,
       organizationId: 1, leagueId: 2,
       policy: { id: policyId, version: 1, activationRevision: 1, activationSourceFingerprint: `lvfinancialsource:v1:${"a".repeat(64)}` },
-      authorization: { payerBowlerId: 10, nextAuthorizationVersion: 1, coveredBowlerIds: [10], acceptedPartnerIds: [], collectionPointOccurrenceIds: [occurrenceA] },
+      authorization: { payerBowlerId: 10, nextAuthorizationVersion: 1, coveredBowlerIds: [10], acceptedPartnerIds: [], collectionPointOccurrenceIds: [occurrenceA], payees: [{ bowlerId: 10, name: "Payer" }] },
       items: [quoteItem], groups: [{ occurrenceId: occurrenceA, groupKey: "normal", groupRole: "normal" as const, pairedOccurrenceId: null, collectionPointOccurrenceId: occurrenceA }], timing: "at_collection_point" as const, totalAmountMinor: 650, catchUpRequired: false, fingerprint: `lvf3quote:v1:${"c".repeat(64)}`,
     };
     expect(f3PreauthorizationQuoteSchema.parse(valid).authorization.nextAuthorizationVersion).toBe(1);

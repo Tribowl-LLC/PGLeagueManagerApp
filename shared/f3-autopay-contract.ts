@@ -41,6 +41,7 @@ export const f3QuoteItemSchema = z.object({
 export const f3QuoteGroupSchema = z.object({
   occurrenceId: z.string().uuid(), groupKey: z.string().min(1), groupRole: z.enum(["normal", "trigger", "paired"]), pairedOccurrenceId: z.string().uuid().nullable(), collectionPointOccurrenceId: z.string().uuid(), localDate: z.string().nullable().optional(), localStartTime: z.string().nullable().optional(), timezone: z.string().nullable().optional(), ordinal: z.number().int().nullable().optional(),
 }).strict();
+export const f3PayeeDisplaySchema = z.object({ bowlerId: z.number().int().positive(), name: z.string().trim().min(1).max(200) }).strict();
 
 export const f3AuthorizationInputSchema = z.object({
   organizationId: z.number().int().positive(),
@@ -64,7 +65,7 @@ export const f3AuthorizationInputSchema = z.object({
 export const f3PreauthorizationQuoteSchema = z.object({
   contractVersion: z.literal(F3_PREAUTHORIZATION_QUOTE_CONTRACT), organizationId: z.number().int().positive(), leagueId: z.number().int().positive(),
   policy: z.object({ id: z.string().uuid(), version: z.number().int().positive(), activationRevision: z.number().int().positive(), activationSourceFingerprint: z.string().regex(/^lvfinancialsource:v1:[0-9a-f]{64}$/) }).strict(),
-  authorization: z.object({ payerBowlerId: z.number().int().positive(), nextAuthorizationVersion: z.number().int().positive(), coveredBowlerIds: z.array(z.number().int().positive()).min(1), acceptedPartnerIds: z.array(z.number().int().positive()), collectionPointOccurrenceIds: z.array(z.string().uuid()).min(1) }).strict(),
+  authorization: z.object({ payerBowlerId: z.number().int().positive(), nextAuthorizationVersion: z.number().int().positive(), coveredBowlerIds: z.array(z.number().int().positive()).min(1), acceptedPartnerIds: z.array(z.number().int().positive()), collectionPointOccurrenceIds: z.array(z.string().uuid()).min(1), payees: z.array(f3PayeeDisplaySchema).min(1) }).strict(),
   items: z.array(f3QuoteItemSchema).min(1), groups: z.array(f3QuoteGroupSchema).min(1), timing: z.literal("at_collection_point"), totalAmountMinor: z.number().int().nonnegative(), catchUpRequired: z.boolean(), fingerprint: z.string().regex(/^lvf3quote:v1:[0-9a-f]{64}$/),
 }).strict();
 
@@ -73,6 +74,7 @@ export type F3PolicyInput = z.infer<typeof f3PolicyInputSchema>;
 export type F3AuthorizationInput = z.infer<typeof f3AuthorizationInputSchema>;
 export type F3QuoteItem = z.infer<typeof f3QuoteItemSchema>;
 export type F3QuoteGroup = z.infer<typeof f3QuoteGroupSchema>;
+export type F3PayeeDisplay = z.infer<typeof f3PayeeDisplaySchema>;
 export type F3PreauthorizationQuote = z.infer<typeof f3PreauthorizationQuoteSchema>;
 
 /** Immutable post-authorization evidence. This is deliberately distinct from
@@ -81,7 +83,7 @@ export type F3PreauthorizationQuote = z.infer<typeof f3PreauthorizationQuoteSche
 export const f3ReadyPlanSchema = z.object({
   contractVersion: z.literal(F3_PLAN_CONTRACT),
   policy: z.object({ id: z.string().uuid(), version: z.number().int().positive() }).strict(),
-  authorization: z.object({ id: z.string().uuid(), version: z.number().int().positive(), coveredBowlerIds: z.array(z.number().int().positive()).min(1), collectionPointOccurrenceIds: z.array(z.string().uuid()).min(1) }).strict(),
+  authorization: z.object({ id: z.string().uuid(), version: z.number().int().positive(), coveredBowlerIds: z.array(z.number().int().positive()).min(1), collectionPointOccurrenceIds: z.array(z.string().uuid()).min(1), payees: z.array(f3PayeeDisplaySchema).min(1) }).strict(),
   items: z.array(f3QuoteItemSchema).min(1),
   groups: z.array(f3QuoteGroupSchema).min(1),
   totalAmountMinor: z.number().int().nonnegative(),

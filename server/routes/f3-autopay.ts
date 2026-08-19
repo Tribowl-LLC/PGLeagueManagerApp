@@ -8,6 +8,7 @@ import { sendError, sendSuccess } from "../utils/api.js";
 import { f3AuthorizationInputSchema, f3PolicyInputSchema } from "@shared/f3-autopay-contract";
 import { approveF3Policy, authorizeF3Payer, createF3Policy, F3WorkflowError, f3PaymentSourceFingerprint, readF3AuthorizationReplay, readF3PolicyCandidates, readF3PreauthorizationQuote, readF3ReadyPlan, revokeF3Authorization, validateF3PaymentMethodOwnership } from "../services/f3-workflow.js";
 import { getAcceptedPartnerBowlerIds } from "../storage/bowler-payment-links.js";
+import { acquireF3AuthorizationCommandLock, type F3AuthorizationCommandLock } from "../storage/f3-command-lock.js";
 import { canonicalF3AutopayEnabled } from "../config.js";
 
 const router = Router();
@@ -55,10 +56,24 @@ router.post("/leagues/:leagueId/authorize", async (req, res) => {
   const payerBowlerId = positiveId(req.body?.payerBowlerId);
   if (!leagueId || !organizationId || !payerBowlerId || !req.user || req.user.bowlerId !== payerBowlerId) return sendError(res, "Not found", 404, "NOT_FOUND");
   if (!canonicalF3AutopayEnabled) return sendError(res, "Canonical auto-pay is unavailable", 409, "F3_DISABLED");
+  const commandKey = typeof req.body.commandKey === "string" ? req.body.commandKey : "";
+  if (!commandKey.trim() || commandKey.length > 255) return sendError(res, "Authorization command key is invalid", 400, "INVALID_COMMAND");
+  let commandLock: F3AuthorizationCommandLock | undefined;
+  type AuthorizationResponse =
+    | { kind: "success"; data: unknown; status?: number }
+    | { kind: "error"; message: string; status: number; code: string };
+  let authorizationResponse: AuthorizationResponse | undefined;
   try {
+    // Acquire the distributed command lock before any provider lookup. The
+    // session remains pinned through replay, ownership verification, and the
+    // authorization transaction; the provider itself is never called in a
+    // database transaction.
+    commandLock = await acquireF3AuthorizationCommandLock(organizationId, leagueId, commandKey);
     const [league] = await db.select().from(leagues).where(and(eq(leagues.id, leagueId), eq(leagues.organizationId, organizationId))).limit(1);
     const [payer] = await db.select().from(bowlers).where(and(eq(bowlers.id, payerBowlerId), eq(bowlers.organizationId, organizationId), eq(bowlers.active, true))).limit(1);
-    if (!league || !league.active || !payer || !league.locationId) return sendError(res, "Not found", 404, "NOT_FOUND");
+    if (!league || !league.active || !payer || !league.locationId) {
+      authorizationResponse = { kind: "error", message: "Not found", status: 404, code: "NOT_FOUND" };
+    } else {
     const coveredBowlerIds = Array.isArray(req.body.coveredBowlerIds) ? req.body.coveredBowlerIds.map(Number) : [payerBowlerId];
     const uniqueCovered: number[] = Array.from(new Set<number>(coveredBowlerIds));
     const memberships = await db.select({ bowlerId: bowlerLeagues.bowlerId }).from(bowlerLeagues).innerJoin(bowlers, and(eq(bowlers.id, bowlerLeagues.bowlerId), eq(bowlers.organizationId, organizationId), eq(bowlers.active, true))).where(and(eq(bowlerLeagues.leagueId, leagueId), eq(bowlerLeagues.active, true), inArray(bowlerLeagues.bowlerId, uniqueCovered)));
@@ -74,13 +89,29 @@ router.post("/leagues/:leagueId/authorize", async (req, res) => {
     const sourceId = typeof req.body.sourceId === "string" ? req.body.sourceId : "";
     const expectedVersion = req.body.authorizationVersion === undefined ? undefined : Number(req.body.authorizationVersion);
     const parsed = f3AuthorizationInputSchema.safeParse({ organizationId, leagueId, payerBowlerId, authorizationVersion: expectedVersion, policyId: req.body.policyId, policyVersion: Number(req.body.policyVersion), coveredBowlerIds: uniqueCovered, acceptedPartnerIds: acceptedPartnerIds.filter((id) => uniqueCovered.includes(id)), paymentMethodFingerprint: f3PaymentSourceFingerprint(sourceId, league.locationId), locationId: league.locationId, collectionPointOccurrenceIds: req.body.collectionPointOccurrenceIds, timing: "at_collection_point", preauthorizationFingerprint: req.body.preauthorizationFingerprint, authorizedItems: req.body.authorizedItems });
-    if (!parsed.success) return sendError(res, "Invalid payer authorization", 400, "INVALID_AUTHORIZATION");
-    const commandKey = typeof req.body.commandKey === "string" ? req.body.commandKey : "";
-    const replay = await readF3AuthorizationReplay({ ...parsed.data, commandKey });
-    if (replay) return sendSuccess(res, replay);
-    const owned = await validateF3PaymentMethodOwnership({ league, payer, sourceId });
-    return sendSuccess(res, await authorizeF3Payer({ ...parsed.data, sourceId, customerId: owned.customerId, actorUserId: req.user.id, providerValidated: true, payerOwnedPaymentMethod: true, leagueLocationId: league.locationId, commandKey }), 201);
-  } catch (error) { if (error instanceof F3WorkflowError) return sendError(res, error.message, error.status, error.code); return sendError(res, "Payer authorization could not be completed", 409, "AUTHORIZATION_UNAVAILABLE"); }
+    if (!parsed.success) authorizationResponse = { kind: "error", message: "Invalid payer authorization", status: 400, code: "INVALID_AUTHORIZATION" };
+    else {
+      const replay = await readF3AuthorizationReplay({ ...parsed.data, commandKey });
+      if (replay) authorizationResponse = { kind: "success", data: replay };
+      else {
+        const owned = await validateF3PaymentMethodOwnership({ league, payer, sourceId });
+        authorizationResponse = { kind: "success", data: await authorizeF3Payer({ ...parsed.data, sourceId, customerId: owned.customerId, actorUserId: req.user.id, providerValidated: true, payerOwnedPaymentMethod: true, leagueLocationId: league.locationId, commandKey }), status: 201 };
+      }
+    }
+    }
+  } catch (error) {
+    authorizationResponse = error instanceof F3WorkflowError
+      ? { kind: "error", message: error.message, status: error.status, code: error.code }
+      : { kind: "error", message: "Payer authorization could not be completed", status: 409, code: "AUTHORIZATION_UNAVAILABLE" };
+  } finally {
+    if (commandLock) {
+      try { await commandLock.release(); }
+      catch { if (!authorizationResponse) authorizationResponse = { kind: "error", message: "Payer authorization could not be completed", status: 409, code: "AUTHORIZATION_UNAVAILABLE" }; }
+    }
+  }
+  if (!authorizationResponse) return sendError(res, "Payer authorization could not be completed", 409, "AUTHORIZATION_UNAVAILABLE");
+  if (authorizationResponse.kind === "success") return sendSuccess(res, authorizationResponse.data, authorizationResponse.status);
+  return sendError(res, authorizationResponse.message, authorizationResponse.status, authorizationResponse.code);
 });
 
 /** First-time setup quote. This is intentionally provider-free: the payer

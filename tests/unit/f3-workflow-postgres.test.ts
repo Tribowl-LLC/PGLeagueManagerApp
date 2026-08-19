@@ -107,7 +107,7 @@ describe("F3 real PostgreSQL workflow", () => {
     await expect(workflow.readF3PreauthorizationQuote({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, payerBowlerId: fixture.roster[0].id, coveredBowlerIds: fixture.roster.slice(0, 2).map((row) => row.id) })).rejects.toMatchObject({ code: "OBLIGATION_RESERVED_BY_F2_OPERATION" });
     expect(await db.select().from(f3PayerAuthorizations).where(eq(f3PayerAuthorizations.leagueId, fixture.leagueId))).toHaveLength(beforePending);
     await db.update(paymentOperations).set({ status: "canceled", completedAt: new Date().toISOString(), nextAttemptAt: null }).where(eq(paymentOperations.id, pendingOperation.id));
-    await expect(workflow.readF3PreauthorizationQuote({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, payerBowlerId: fixture.roster[0].id, coveredBowlerIds: fixture.roster.slice(0, 2).map((row) => row.id) })).resolves.toMatchObject({ organizationId: fixture.organizationId });
+    await expect(workflow.readF3PreauthorizationQuote({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, payerBowlerId: fixture.roster[0].id, coveredBowlerIds: fixture.roster.slice(0, 2).map((row) => row.id) })).resolves.toMatchObject({ organizationId: fixture.organizationId, authorization: { payees: [{ bowlerId: fixture.roster[0].id, name: expect.stringContaining("F3 bowler 0") }, { bowlerId: fixture.roster[1].id, name: expect.stringContaining("F3 bowler 1") }] } });
     obligations = await db.select().from(bowlerOccurrenceObligations).where(and(eq(bowlerOccurrenceObligations.organizationId, fixture.organizationId), eq(bowlerOccurrenceObligations.leagueId, fixture.leagueId)));
     const allocations = await db.select().from(paymentOccurrenceAllocations).where(eq(paymentOccurrenceAllocations.organizationId, fixture.organizationId));
     const policyOrder = [...rows].sort((a, b) => a.itemIndex - b.itemIndex);
@@ -177,7 +177,7 @@ describe("F3 real PostgreSQL workflow", () => {
     await db.update(bowlers).set({ paymentProviderLocationId: fixture.locationId }).where(eq(bowlers.id, fixture.roster[0].id));
     expect(await db.select().from(f3PayerAuthorizations).where(eq(f3PayerAuthorizations.leagueId, fixture.leagueId))).toHaveLength(1);
     await db.update(leagues).set({ active: false }).where(eq(leagues.id, fixture.leagueId));
-    await expect(workflow.readF3ReadyPlan({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, payerBowlerId: fixture.roster[0].id, authorizationId: result.authorizationId })).resolves.toMatchObject({ authorization: { id: result.authorizationId } });
+    await expect(workflow.readF3ReadyPlan({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, payerBowlerId: fixture.roster[0].id, authorizationId: result.authorizationId })).resolves.toMatchObject({ authorization: { id: result.authorizationId, payees: [{ bowlerId: fixture.roster[0].id, name: expect.stringContaining("F3 bowler 0") }, { bowlerId: fixture.roster[1].id, name: expect.stringContaining("F3 bowler 1") }] } });
     const revoked = await workflow.revokeF3Authorization({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, authorizationId: result.authorizationId, actorUserId: fixture.actorUserId, actorBowlerId: fixture.roster[0].id });
     expect(revoked.state).toBe("revoked");
     await db.update(leagues).set({ active: true }).where(eq(leagues.id, fixture.leagueId));

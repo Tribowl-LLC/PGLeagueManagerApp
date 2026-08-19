@@ -14,7 +14,7 @@ import {
 import { db } from "../db.js";
 import { encrypt } from "../utils/crypto.js";
 import { canonicalizePaymentOperationInput } from "./payment-operation-idempotency.js";
-import { canonicalizeF3QuoteItems, f3AggregatePlanFingerprint, f3AuthorizationFingerprint, f3PolicyFingerprint, f3PreauthorizationFingerprint, f3SemanticPlanFingerprint, normalizeF3Policy, validateF3PolicyShape, F3_PREAUTHORIZATION_QUOTE_CONTRACT, type F3AuthorizationInput, type F3PolicyInput, type F3QuoteItem } from "@shared/f3-autopay-contract";
+import { canonicalizeF3QuoteItems, f3AggregatePlanFingerprint, f3AuthorizationFingerprint, f3PolicyFingerprint, f3PreauthorizationFingerprint, f3SemanticPlanFingerprint, normalizeF3Policy, validateF3PolicyShape, F3_PREAUTHORIZATION_QUOTE_CONTRACT, type F3AuthorizationInput, type F3PayeeDisplay, type F3PolicyInput, type F3QuoteItem } from "@shared/f3-autopay-contract";
 import { getPaymentProvider } from "./payment-provider-factory.js";
 import { getProviderCustomerId } from "./payment-utils.js";
 import { canonicalF3AutopayEnabled } from "../config.js";
@@ -25,6 +25,19 @@ export class F3WorkflowError extends Error { constructor(public readonly code: s
 const fail = (code: string, message?: string, status = 409): never => { throw new F3WorkflowError(code, message, status); };
 const hash = (value: unknown): string => createHash("sha256").update(canonicalizePaymentOperationInput(value)).digest("hex");
 export const f3PaymentSourceFingerprint = (sourceId: string, locationId: number): string => hash({ sourceId, locationId });
+
+async function loadF3PayeeDisplay(tx: F3DbTransaction, organizationId: number, coveredBowlerIds: number[]): Promise<F3PayeeDisplay[]> {
+  const normalizedIds = [...new Set(coveredBowlerIds)].sort((a, b) => a - b);
+  const rows = await tx.select({ bowlerId: bowlers.id, name: bowlers.name }).from(bowlers).where(and(
+    eq(bowlers.organizationId, organizationId),
+    inArray(bowlers.id, normalizedIds),
+  ));
+  const payees = rows.map((row) => ({ bowlerId: row.bowlerId, name: row.name.trim() })).sort((a, b) => a.bowlerId - b.bowlerId);
+  if (payees.length !== normalizedIds.length || new Set(payees.map((row) => row.bowlerId)).size !== payees.length || payees.some((row) => !row.name) || payees.some((row, index) => row.bowlerId !== normalizedIds[index])) {
+    fail("PAYEE_EVIDENCE_INCOMPLETE");
+  }
+  return payees;
+}
 
 type F3ActivationEvidenceRow = Pick<typeof financialActivations.$inferSelect, "id" | "currentRevision" | "sourceFingerprint" | "expectedGroupCount" | "expectedResponsibilityCount">;
 
@@ -172,6 +185,7 @@ export async function readF3PreauthorizationQuote(input: { organizationId: numbe
     if (league.paymentMode !== "weekly") fail("UPFRONT_NOT_SUPPORTED", "Interactive F2 collection is required for upfront leagues");
     const memberships = await tx.select({ bowlerId: bowlerLeagues.bowlerId }).from(bowlerLeagues).innerJoin(bowlers, and(eq(bowlers.id, bowlerLeagues.bowlerId), eq(bowlers.organizationId, input.organizationId), eq(bowlers.active, true))).where(and(eq(bowlerLeagues.leagueId, input.leagueId), eq(bowlerLeagues.active, true), inArray(bowlerLeagues.bowlerId, coveredBowlerIds)));
     if (new Set(memberships.map((row) => row.bowlerId)).size !== coveredBowlerIds.length) fail("ACTIVE_MEMBERSHIP_REQUIRED", "Not found", 404);
+    const payees = await loadF3PayeeDisplay(tx, input.organizationId, coveredBowlerIds);
     const legacySchedules = await tx.select({ bowlerId: paymentSchedules.bowlerId, additionalBowlerIds: paymentSchedules.additionalBowlerIds }).from(paymentSchedules).where(and(eq(paymentSchedules.leagueId, input.leagueId), eq(paymentSchedules.active, true)));
     if (legacySchedules.some((schedule) => coveredBowlerIds.includes(schedule.bowlerId) || (schedule.additionalBowlerIds ?? []).some((id) => coveredBowlerIds.includes(id)))) fail("LEGACY_SCHEDULE_CONFLICT");
     const links = await tx.select({ a: bowlerPaymentLinks.bowlerAId, b: bowlerPaymentLinks.bowlerBId }).from(bowlerPaymentLinks).where(and(eq(bowlerPaymentLinks.organizationId, input.organizationId), eq(bowlerPaymentLinks.status, "accepted"), or(eq(bowlerPaymentLinks.bowlerAId, input.payerBowlerId), eq(bowlerPaymentLinks.bowlerBId, input.payerBowlerId))));
@@ -202,7 +216,7 @@ export async function readF3PreauthorizationQuote(input: { organizationId: numbe
     const nextAuthorizationVersion = Number((nextVersionRows.rows[0] as { next_version: string | number }).next_version);
     const quoteBase = { organizationId: input.organizationId, leagueId: input.leagueId, payerBowlerId: input.payerBowlerId, policyId: policy.id, policyVersion: policy.policyVersion, activationRevision: policy.activationRevision, activationSourceFingerprint: policy.activationSourceFingerprint, coveredBowlerIds, acceptedPartnerIds, collectionPointOccurrenceIds, items: quoteEvidence.items, timing: "at_collection_point" as const, totalAmountMinor: quoteEvidence.items.reduce((total, row) => total + row.amountMinor, 0), nextAuthorizationVersion };
     const groups = policyRows.map((row) => ({ occurrenceId: row.occurrenceId, groupKey: row.groupKey, groupRole: row.groupRole, pairedOccurrenceId: row.pairedOccurrenceId, collectionPointOccurrenceId: row.collectionPointOccurrenceId, ...labelById.get(row.occurrenceId) }));
-    return { contractVersion: F3_PREAUTHORIZATION_QUOTE_CONTRACT, organizationId: input.organizationId, leagueId: input.leagueId, policy: { id: policy.id, version: policy.policyVersion, activationRevision: policy.activationRevision, activationSourceFingerprint: policy.activationSourceFingerprint }, authorization: { payerBowlerId: input.payerBowlerId, nextAuthorizationVersion, coveredBowlerIds, acceptedPartnerIds, collectionPointOccurrenceIds }, items: quoteEvidence.items, timing: "at_collection_point" as const, totalAmountMinor: quoteBase.totalAmountMinor, catchUpRequired: quoteEvidence.catchUpRequired, fingerprint: f3PreauthorizationFingerprint(quoteBase), groups };
+    return { contractVersion: F3_PREAUTHORIZATION_QUOTE_CONTRACT, organizationId: input.organizationId, leagueId: input.leagueId, policy: { id: policy.id, version: policy.policyVersion, activationRevision: policy.activationRevision, activationSourceFingerprint: policy.activationSourceFingerprint }, authorization: { payerBowlerId: input.payerBowlerId, nextAuthorizationVersion, coveredBowlerIds, acceptedPartnerIds, collectionPointOccurrenceIds, payees }, items: quoteEvidence.items, timing: "at_collection_point" as const, totalAmountMinor: quoteBase.totalAmountMinor, catchUpRequired: quoteEvidence.catchUpRequired, fingerprint: f3PreauthorizationFingerprint(quoteBase), groups };
   }, { isolationLevel: "repeatable read", accessMode: "read only" });
 }
 
@@ -219,6 +233,7 @@ export async function readF3ReadyPlan(input: { organizationId: number; leagueId:
     const policyRows = await tx.select().from(f3CollectionPolicyOccurrences).where(and(eq(f3CollectionPolicyOccurrences.organizationId, input.organizationId), eq(f3CollectionPolicyOccurrences.leagueId, input.leagueId), eq(f3CollectionPolicyOccurrences.policyId, policy.id))).orderBy(asc(f3CollectionPolicyOccurrences.itemIndex), asc(f3CollectionPolicyOccurrences.occurrenceId));
     const [authorization] = await tx.select().from(f3PayerAuthorizations).where(and(eq(f3PayerAuthorizations.organizationId, input.organizationId), eq(f3PayerAuthorizations.leagueId, input.leagueId), eq(f3PayerAuthorizations.payerBowlerId, input.payerBowlerId), input.authorizationId ? eq(f3PayerAuthorizations.id, input.authorizationId) : eq(f3PayerAuthorizations.state, "authorized"))).orderBy(desc(f3PayerAuthorizations.authorizationVersion), desc(f3PayerAuthorizations.currentRevision), asc(f3PayerAuthorizations.id)).limit(1);
     if (!authorization) fail("PAYER_AUTHORIZATION_REQUIRED");
+    const payees = await loadF3PayeeDisplay(tx, input.organizationId, authorization.coveredBowlerIds);
     const expectedPoints = policy.collectionPoints.map((row) => row.occurrenceId);
     const persisted = await tx.select({ planId: f3AutopayPlanProvenance.d2PlanId, planFingerprint: f3AutopayPlanProvenance.planFingerprint, point: f3AutopayPlanProvenance.collectionPointOccurrenceId, planVersion: f3AutopayPlanProvenance.planVersion }).from(f3AutopayPlanProvenance).innerJoin(occurrenceCollectionPlans, and(eq(occurrenceCollectionPlans.id, f3AutopayPlanProvenance.d2PlanId), eq(occurrenceCollectionPlans.organizationId, input.organizationId), eq(occurrenceCollectionPlans.leagueId, input.leagueId), eq(occurrenceCollectionPlans.state, "ready"))).where(and(eq(f3AutopayPlanProvenance.organizationId, input.organizationId), eq(f3AutopayPlanProvenance.leagueId, input.leagueId), eq(f3AutopayPlanProvenance.authorizationId, authorization.id))).orderBy(asc(f3AutopayPlanProvenance.collectionPointOccurrenceId), asc(f3AutopayPlanProvenance.d2PlanId));
     if (persisted.length !== expectedPoints.length || new Set(persisted.map((row) => row.point)).size !== persisted.length || expectedPoints.some((point) => !persisted.some((row) => row.point === point))) fail("PLAN_EVIDENCE_INCOMPLETE");
@@ -237,7 +252,7 @@ export async function readF3ReadyPlan(input: { organizationId: number; leagueId:
     const labels = await tx.select({ id: leagueOccurrences.id, localDate: leagueOccurrences.authoritativeLocalDate, localStartTime: leagueOccurrences.authoritativeLocalStartTime, timezone: leagueOccurrences.timezone, ordinal: leagueOccurrences.plannedOrdinal }).from(leagueOccurrences).where(and(eq(leagueOccurrences.organizationId, input.organizationId), eq(leagueOccurrences.leagueId, input.leagueId), inArray(leagueOccurrences.id, [...new Set(policyRows.map((row) => row.occurrenceId))])));
     const labelById = new Map(labels.map((row) => [row.id, row]));
     const groups = policyRows.map((row) => ({ occurrenceId: row.occurrenceId, groupKey: row.groupKey, groupRole: row.groupRole as "normal" | "trigger" | "paired", pairedOccurrenceId: row.pairedOccurrenceId, collectionPointOccurrenceId: row.collectionPointOccurrenceId, ...labelById.get(row.occurrenceId) }));
-    return { contractVersion: "canonical-autopay-plan/1", policy: { id: policy.id, version: policy.policyVersion }, authorization: { id: authorization.id, version: authorization.authorizationVersion, coveredBowlerIds: authorization.coveredBowlerIds, collectionPointOccurrenceIds: authorization.collectionPointOccurrenceIds }, items: readableItems, groups, totalAmountMinor: readableItems.reduce((total, item) => total + item.amountMinor, 0), fingerprint: aggregateFingerprint, aggregateFingerprint };
+    return { contractVersion: "canonical-autopay-plan/1", policy: { id: policy.id, version: policy.policyVersion }, authorization: { id: authorization.id, version: authorization.authorizationVersion, coveredBowlerIds: authorization.coveredBowlerIds, collectionPointOccurrenceIds: authorization.collectionPointOccurrenceIds, payees }, items: readableItems, groups, totalAmountMinor: readableItems.reduce((total, item) => total + item.amountMinor, 0), fingerprint: aggregateFingerprint, aggregateFingerprint };
   }, { isolationLevel: "repeatable read", accessMode: "read only" });
 }
 

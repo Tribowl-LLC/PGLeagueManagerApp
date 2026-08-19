@@ -102,15 +102,42 @@ describe("enabled F3 canonical router contract", () => {
     const payload = await prequote.json();
     expect(payload.data.items).toHaveLength(4);
     expect(payload.data.groups).toHaveLength(2);
+    expect(payload.data.authorization.payees).toEqual(expect.arrayContaining([
+      expect.objectContaining({ bowlerId: payerBowlerId, name: expect.any(String) }),
+      expect.objectContaining({ bowlerId: fixture.roster[1].id, name: expect.any(String) }),
+    ]));
     expect(providerFactory).not.toHaveBeenCalled();
 
     const policy = payload.data.policy;
     const authorization = payload.data.authorization;
-    providerFactory.mockResolvedValue({ providerName: "square", validateCardId: vi.fn().mockReturnValue(true), hasCardOnFile: vi.fn().mockResolvedValue(true) });
     const authorizationBody = { payerBowlerId, policyId: policy.id, policyVersion: policy.version, authorizationVersion: authorization.nextAuthorizationVersion, coveredBowlerIds: authorization.coveredBowlerIds, sourceId: "card-route", collectionPointOccurrenceIds: authorization.collectionPointOccurrenceIds, preauthorizationFingerprint: payload.data.fingerprint, authorizedItems: payload.data.items, commandKey: crypto.randomUUID() };
-    const authorized = await request(`/api/financials/f3/leagues/${league().id}/authorize`, { method: "POST", body: JSON.stringify(authorizationBody) }, payer());
+    let releaseOwnership!: () => void;
+    const ownershipBarrier = new Promise<void>((resolve) => { releaseOwnership = resolve; });
+    const hasCardOnFile = vi.fn(async () => { await ownershipBarrier; return true; });
+    providerFactory.mockResolvedValue({ providerName: "square", validateCardId: vi.fn().mockReturnValue(true), hasCardOnFile });
+    const firstAuthorization = request(`/api/financials/f3/leagues/${league().id}/authorize`, { method: "POST", body: JSON.stringify(authorizationBody) }, payer());
+    await vi.waitFor(() => expect(hasCardOnFile).toHaveBeenCalledTimes(1));
+    const concurrentAuthorization = request(`/api/financials/f3/leagues/${league().id}/authorize`, { method: "POST", body: JSON.stringify(authorizationBody) }, payer());
+    const crossPayerBody = { ...authorizationBody, payerBowlerId: fixture.roster[1].id, coveredBowlerIds: [fixture.roster[1].id, payerBowlerId] };
+    const crossPayerUser = { id: fixture.actorUserId, role: "bowler", organizationId: fixture.organizationId, bowlerId: fixture.roster[1].id };
+    const crossPayerReplay = request(`/api/financials/f3/leagues/${league().id}/authorize`, { method: "POST", body: JSON.stringify(crossPayerBody) }, crossPayerUser);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(hasCardOnFile).toHaveBeenCalledTimes(1);
+    releaseOwnership();
+    const [authorized, concurrentReplay, crossPayerResult] = await Promise.all([firstAuthorization, concurrentAuthorization, crossPayerReplay]);
     expect(authorized.status).toBe(201);
+    expect(concurrentReplay.status).toBe(200);
+    expect(crossPayerResult.status).toBe(409);
+    expect(bodyCode(await crossPayerResult.json())).toBe("IDEMPOTENCY_CONFLICT");
     const authorizationId = (await authorized.json()).data.authorizationId as string;
+    const ready = await request(`/api/financials/f3/leagues/${league().id}/quote?bowlerId=${payerBowlerId}`, {}, payer());
+    expect(ready.status).toBe(200);
+    expect((await ready.json()).data.authorization.payees).toEqual(expect.arrayContaining([
+      expect.objectContaining({ bowlerId: payerBowlerId, name: expect.any(String) }),
+      expect.objectContaining({ bowlerId: fixture.roster[1].id, name: expect.any(String) }),
+    ]));
+    expect((await concurrentReplay.json()).data).toMatchObject({ authorizationId, replay: true });
+    expect(hasCardOnFile).toHaveBeenCalledTimes(1);
     // A retry after the provider response is lost must use the durable,
     // tenant/league/command-key replay evidence before contacting Square.
     providerFactory.mockClear();
@@ -147,7 +174,7 @@ describe("enabled F3 canonical router contract", () => {
     providerFactory.mockClear();
     await testDb.update(leagues).set({ active: false }).where(eq(leagues.id, fixture.leagueId));
     try {
-      const response = await request(`/api/financials/f3/leagues/${league().id}/authorize`, { method: "POST", body: JSON.stringify({ payerBowlerId }) }, payer());
+      const response = await request(`/api/financials/f3/leagues/${league().id}/authorize`, { method: "POST", body: JSON.stringify({ payerBowlerId, commandKey: crypto.randomUUID() }) }, payer());
       expect(response.status).toBe(404);
       expect(bodyCode(await response.json())).toBe("NOT_FOUND");
       expect(providerFactory).not.toHaveBeenCalled();
