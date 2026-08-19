@@ -27,6 +27,9 @@ import {
   canonicalAutopayExecutionSnapshots,
   f3PayerAuthorizations,
   f3AutopayPlanProvenance,
+  f3CollectionPolicies,
+  financialActivations,
+  bowlerPaymentLinks,
   occurrenceCollectionPlanItems,
   occurrenceCollectionPlanRevisions,
   refundPaymentOperationSnapshots,
@@ -39,6 +42,7 @@ import {
   type Payment,
   type InteractiveCardSaveStatus,
   type PaymentOperationErrorClassification,
+  locationSquareCredentialsSchema,
 } from "@shared/schema";
 import { db } from "../db.js";
 import {
@@ -77,6 +81,7 @@ import { decrypt, encrypt } from "../utils/crypto.js";
 import { providerNameToPaymentType } from "@shared/schema/constants";
 import { canonicalAutopayProviderIdempotencyKey, canonicalAutopayTargetKey, validateF4ExecutionSnapshot } from "@shared/f4-canonical-autopay-contract";
 import { canonicalF3AutopayEnabled, canonicalF4AutopayExecutionEnabled } from "../config.js";
+import { requireLiveF1ActivationEvidence } from "../services/f3-workflow.js";
 
 export class PaymentOperationNotFoundError extends Error {
   constructor() {
@@ -161,6 +166,31 @@ export interface CreateOrGetRefundPaymentOperationInput {
 }
 
 export type PaymentOperationTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Canonical mutation lock order: advisory organization/league, D2 plan row,
+ * then payment operation row. Revocation uses this same order. The initial
+ * operation read is deliberately unlocked and only identifies the scope.
+ */
+async function lockCanonicalMutationScope(
+  tx: PaymentOperationTransaction,
+  organizationId: number,
+  operationId: string,
+): Promise<PaymentOperation | undefined> {
+  const [candidate] = await tx.select({ operationType: paymentOperations.operationType, leagueId: paymentOperations.leagueId, canonicalPlanId: paymentOperations.canonicalPlanId })
+    .from(paymentOperations)
+    .where(and(eq(paymentOperations.organizationId, organizationId), eq(paymentOperations.id, operationId)))
+    .limit(1);
+  if (!candidate || candidate.operationType !== "canonical_autopay_charge" || candidate.leagueId === null || candidate.canonicalPlanId === null) {
+    if (!candidate) return undefined;
+    const [legacyOperation] = await tx.select().from(paymentOperations).where(and(eq(paymentOperations.organizationId, organizationId), eq(paymentOperations.id, operationId))).limit(1).for("update");
+    return legacyOperation;
+  }
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(${organizationId}::integer, ${candidate.leagueId}::integer)`);
+  await tx.select({ id: occurrenceCollectionPlans.id }).from(occurrenceCollectionPlans).where(and(eq(occurrenceCollectionPlans.id, candidate.canonicalPlanId), eq(occurrenceCollectionPlans.organizationId, organizationId), eq(occurrenceCollectionPlans.leagueId, candidate.leagueId))).limit(1).for("update");
+  const [operation] = await tx.select().from(paymentOperations).where(and(eq(paymentOperations.organizationId, organizationId), eq(paymentOperations.id, operationId))).limit(1).for("update");
+  return operation;
+}
 
 export interface PaymentOperationLinkedPaymentInput {
   allocationIndex: number;
@@ -1607,11 +1637,57 @@ export async function acquireCanonicalAutopayDispatchCutoff(input: {
 }): Promise<boolean> {
   return db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(${input.organizationId}::integer, ${input.leagueId}::integer)`);
+    const [scope] = await tx.select({ canonicalPlanId: paymentOperations.canonicalPlanId }).from(paymentOperations).where(and(eq(paymentOperations.id, input.operationId), eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.leagueId, input.leagueId), eq(paymentOperations.operationType, "canonical_autopay_charge"))).limit(1);
+    if (!scope?.canonicalPlanId) return false;
+    const [plan] = await tx.select().from(occurrenceCollectionPlans).where(and(eq(occurrenceCollectionPlans.id, scope.canonicalPlanId), eq(occurrenceCollectionPlans.organizationId, input.organizationId), eq(occurrenceCollectionPlans.leagueId, input.leagueId))).limit(1).for("update");
     const [operation] = await tx.select().from(paymentOperations).where(and(eq(paymentOperations.id, input.operationId), eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.leagueId, input.leagueId), eq(paymentOperations.operationType, "canonical_autopay_charge"))).limit(1).for("update");
     if (!operation || operation.status !== "leased" || operation.leaseToken !== input.leaseToken || operation.canonicalPlanId === null) return false;
-    const [plan] = await tx.select({ state: occurrenceCollectionPlans.state }).from(occurrenceCollectionPlans).where(and(eq(occurrenceCollectionPlans.id, operation.canonicalPlanId), eq(occurrenceCollectionPlans.organizationId, input.organizationId), eq(occurrenceCollectionPlans.leagueId, input.leagueId))).limit(1).for("update");
-    const [snapshotAuth] = await tx.select({ state: f3PayerAuthorizations.state }).from(canonicalAutopayExecutionSnapshots).innerJoin(f3PayerAuthorizations, and(eq(f3PayerAuthorizations.id, canonicalAutopayExecutionSnapshots.authorizationId), eq(f3PayerAuthorizations.organizationId, input.organizationId), eq(f3PayerAuthorizations.leagueId, input.leagueId))).where(and(eq(canonicalAutopayExecutionSnapshots.operationId, operation.id), eq(canonicalAutopayExecutionSnapshots.organizationId, input.organizationId))).limit(1).for("share");
-    if (plan?.state !== "ready" || snapshotAuth?.state !== "authorized") return false;
+    const [snapshot] = await tx.select().from(canonicalAutopayExecutionSnapshots).where(and(eq(canonicalAutopayExecutionSnapshots.operationId, operation.id), eq(canonicalAutopayExecutionSnapshots.organizationId, input.organizationId), eq(canonicalAutopayExecutionSnapshots.leagueId, input.leagueId))).limit(1).for("share");
+    if (!plan || !snapshot || plan.state !== "ready" || plan.version !== snapshot.planVersion || plan.currency !== snapshot.currency || plan.triggerOccurrenceId !== snapshot.triggerOccurrenceId || operation.amountMinor !== snapshot.amountMinor || operation.currency !== snapshot.currency) return false;
+    const [provenance] = await tx.select().from(f3AutopayPlanProvenance).where(and(eq(f3AutopayPlanProvenance.d2PlanId, plan.id), eq(f3AutopayPlanProvenance.organizationId, input.organizationId), eq(f3AutopayPlanProvenance.leagueId, input.leagueId))).limit(1).for("share");
+    const [policy] = await tx.select().from(f3CollectionPolicies).where(and(eq(f3CollectionPolicies.id, snapshot.policyId), eq(f3CollectionPolicies.organizationId, input.organizationId), eq(f3CollectionPolicies.leagueId, input.leagueId))).limit(1).for("share");
+    const [authorization] = await tx.select().from(f3PayerAuthorizations).where(and(eq(f3PayerAuthorizations.id, snapshot.authorizationId), eq(f3PayerAuthorizations.organizationId, input.organizationId), eq(f3PayerAuthorizations.leagueId, input.leagueId))).limit(1).for("share");
+    const [activation] = await tx.select().from(financialActivations).where(and(eq(financialActivations.id, snapshot.activationId), eq(financialActivations.organizationId, input.organizationId), eq(financialActivations.leagueId, input.leagueId))).limit(1).for("share");
+    const [occurrence] = await tx.select().from(leagueOccurrences).where(and(eq(leagueOccurrences.id, snapshot.triggerOccurrenceId), eq(leagueOccurrences.organizationId, input.organizationId), eq(leagueOccurrences.leagueId, input.leagueId))).limit(1).for("share");
+    if (!provenance || !policy || !authorization || !activation || !occurrence
+      || authorization.state !== "authorized" || authorization.authorizationVersion !== snapshot.authorizationVersion
+      || authorization.authorizationFingerprint !== snapshot.authorizationFingerprint || authorization.encryptedSourceId !== snapshot.encryptedSourceId
+      || authorization.encryptedCustomerId !== snapshot.encryptedCustomerId || authorization.locationId !== snapshot.locationId
+      || authorization.payerBowlerId !== snapshot.payerBowlerId || authorization.policyId !== snapshot.policyId
+      || authorization.policyVersion !== snapshot.policyVersion || authorization.createdByUserId !== operation.authorizingUserId
+      || provenance.policyId !== snapshot.policyId || provenance.policyVersion !== snapshot.policyVersion
+      || provenance.authorizationId !== snapshot.authorizationId || provenance.authorizationVersion !== snapshot.authorizationVersion
+      || provenance.activationId !== snapshot.activationId || provenance.activationRevision !== snapshot.activationRevision
+      || provenance.activationSourceFingerprint !== snapshot.activationSourceFingerprint || provenance.planVersion !== snapshot.planVersion
+      || provenance.planFingerprint !== snapshot.planFingerprint || provenance.collectionPointOccurrenceId !== snapshot.collectionPointOccurrenceId
+      || policy.state !== "approved" || policy.policyVersion !== snapshot.policyVersion || policy.policyFingerprint !== snapshot.policyFingerprint
+      || !policy.collectionPoints.some((point) => point.occurrenceId === snapshot.collectionPointOccurrenceId)
+      || activation.currentRevision !== snapshot.activationRevision || activation.sourceFingerprint !== snapshot.activationSourceFingerprint
+      || activation.state !== "active" || activation.completenessMarker !== true
+      || !["published", "locked"].includes(occurrence.lifecycle) || !["scheduled", "completed"].includes(occurrence.status)
+      || new Date(occurrence.startAt).toISOString() !== new Date(snapshot.triggerStartAt).toISOString()) return false;
+    try { await requireLiveF1ActivationEvidence(tx, { organizationId: input.organizationId, leagueId: input.leagueId }, activation); } catch { return false; }
+    const itemRows = await tx.select().from(occurrenceCollectionPlanItems).where(and(eq(occurrenceCollectionPlanItems.planId, plan.id), eq(occurrenceCollectionPlanItems.organizationId, input.organizationId), eq(occurrenceCollectionPlanItems.leagueId, input.leagueId))).orderBy(asc(occurrenceCollectionPlanItems.itemIndex)).for("share");
+    const snapshotItems = Array.isArray(snapshot.items) ? snapshot.items as Array<{ obligationId: string; occurrenceId: string; bowlerId: number; amountMinor: number; currency: string; itemIndex: number }> : [];
+    if (itemRows.length !== snapshotItems.length || itemRows.some((row, index) => {
+      const expected = snapshotItems[index];
+      return !expected || row.itemIndex !== expected.itemIndex || row.obligationId !== expected.obligationId || row.occurrenceId !== expected.occurrenceId || row.bowlerId !== expected.bowlerId || row.amountMinor !== expected.amountMinor || row.currency !== expected.currency;
+    })) return false;
+    const expectedBowlers = [...new Set(snapshotItems.map((item) => item.bowlerId))].sort((a, b) => a - b);
+    const covered = [...new Set(authorization.coveredBowlerIds)].sort((a, b) => a - b);
+    if (covered.length !== expectedBowlers.length || covered.some((id, index) => id !== expectedBowlers[index]) || !authorization.collectionPointOccurrenceIds.includes(snapshot.collectionPointOccurrenceId)) return false;
+    const memberships = await tx.select({ bowlerId: bowlerLeagues.bowlerId }).from(bowlerLeagues).innerJoin(bowlers, and(eq(bowlers.id, bowlerLeagues.bowlerId), eq(bowlers.organizationId, input.organizationId), eq(bowlers.active, true))).where(and(eq(bowlerLeagues.leagueId, input.leagueId), eq(bowlerLeagues.active, true), inArray(bowlerLeagues.bowlerId, expectedBowlers))).for("share");
+    if (new Set(memberships.map((row) => row.bowlerId)).size !== expectedBowlers.length) return false;
+    const links = await tx.select({ a: bowlerPaymentLinks.bowlerAId, b: bowlerPaymentLinks.bowlerBId }).from(bowlerPaymentLinks).where(and(eq(bowlerPaymentLinks.organizationId, input.organizationId), eq(bowlerPaymentLinks.status, "accepted"), or(eq(bowlerPaymentLinks.bowlerAId, authorization.payerBowlerId), eq(bowlerPaymentLinks.bowlerBId, authorization.payerBowlerId)))).for("share");
+    const linkedPartners = new Set(links.map((row) => row.a === authorization.payerBowlerId ? row.b : row.a));
+    if (expectedBowlers.some((id) => id !== authorization.payerBowlerId && (!authorization.acceptedPartnerIds.includes(id) || !linkedPartners.has(id)))) return false;
+    const [payer] = await tx.select({ paymentCustomerId: bowlers.paymentCustomerId, paymentProviderLocationId: bowlers.paymentProviderLocationId }).from(bowlers).where(and(eq(bowlers.id, authorization.payerBowlerId), eq(bowlers.organizationId, input.organizationId), eq(bowlers.active, true))).limit(1).for("share");
+    let customerId: string;
+    try { customerId = (snapshot.encryptedCustomerId ? decrypt(snapshot.encryptedCustomerId) : null) ?? ""; } catch { return false; }
+    if (!payer || !customerId || payer.paymentCustomerId !== customerId || payer.paymentProviderLocationId !== snapshot.locationId) return false;
+    const [location] = await tx.select({ squareCredentials: locations.squareCredentials }).from(locations).where(and(eq(locations.id, snapshot.locationId), eq(locations.organizationId, input.organizationId))).limit(1).for("share");
+    const locationCredentials = locationSquareCredentialsSchema.safeParse(location?.squareCredentials);
+    if (!locationCredentials.success || locationCredentials.data?.locationId !== snapshot.providerLocationId) return false;
     const [claimed] = await tx.update(paymentOperations).set({ dispatchClaimedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }).where(and(eq(paymentOperations.id, operation.id), eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.status, "leased"), eq(paymentOperations.leaseToken, input.leaseToken), isNull(paymentOperations.dispatchClaimedAt))).returning({ id: paymentOperations.id });
     return Boolean(claimed);
   });
@@ -1633,6 +1709,7 @@ export async function schedulePaymentOperationRetry(
   const errorCode = validateErrorDetails(input.errorClassification, input.errorCode);
 
   const updated = await db.transaction(async (tx) => {
+    await lockCanonicalMutationScope(tx, input.organizationId, input.operationId);
     const [transitioned] = await tx
       .update(paymentOperations)
       .set({
@@ -1836,6 +1913,7 @@ async function recordTerminalErrorOutcome(
   const errorCode = validateErrorDetails(input.errorClassification, input.errorCode);
 
   const updated = await db.transaction(async (tx) => {
+    await lockCanonicalMutationScope(tx, input.organizationId, input.operationId);
     const [transitioned] = await tx
       .update(paymentOperations)
       .set({
@@ -1934,6 +2012,36 @@ export async function recordPaymentOperationFailedTerminal(
   input: ErrorOutcomeInput & { errorClassification: PaymentOperationErrorClassification },
 ): Promise<PaymentOperation> {
   return recordTerminalErrorOutcome({ ...input, status: "failed_terminal" });
+}
+
+/**
+ * Terminalize deterministic F4 evidence drift and release the exact D2
+ * reservation in one serialized transaction. Provider-uncertain outcomes do
+ * not use this path: they remain reconciliation_required with their identity.
+ */
+export async function recordCanonicalAutopayPreDispatchFailure(
+  input: LeasedPaymentOperationInput & { errorCode?: string | null },
+): Promise<PaymentOperation | undefined> {
+  validateLeaseToken(input.leaseToken);
+  const now = toIso(input.now ?? new Date(), "now");
+  const errorCode = validateErrorDetails("invalid_request", input.errorCode);
+  return db.transaction(async (tx) => {
+    const [candidate] = await tx.select({ leagueId: paymentOperations.leagueId, canonicalPlanId: paymentOperations.canonicalPlanId, operationType: paymentOperations.operationType }).from(paymentOperations).where(and(eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.id, input.operationId))).limit(1);
+    if (candidate?.operationType !== "canonical_autopay_charge" || candidate.leagueId === null || candidate.canonicalPlanId === null) return undefined;
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(${input.organizationId}::integer, ${candidate.leagueId}::integer)`);
+    const [plan] = await tx.select().from(occurrenceCollectionPlans).where(and(eq(occurrenceCollectionPlans.id, candidate.canonicalPlanId), eq(occurrenceCollectionPlans.organizationId, input.organizationId), eq(occurrenceCollectionPlans.leagueId, candidate.leagueId))).limit(1).for("update");
+    const [operation] = await tx.select().from(paymentOperations).where(and(eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.id, input.operationId), eq(paymentOperations.operationType, "canonical_autopay_charge"))).limit(1).for("update");
+    if (!operation || operation.status !== "leased" || operation.leaseToken !== input.leaseToken) return undefined;
+    const [failed] = await tx.update(paymentOperations).set({ status: "failed_terminal", nextAttemptAt: null, leaseOwner: null, leaseExpiresAt: null, errorClassification: "invalid_request", errorCode, completedAt: now, updatedAt: now }).where(and(eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.id, input.operationId), eq(paymentOperations.status, "leased"), eq(paymentOperations.leaseToken, input.leaseToken))).returning();
+    if (!failed) return undefined;
+    if (plan?.state === "ready") {
+      const [cancelled] = await tx.update(occurrenceCollectionPlans).set({ state: "cancelled", currentRevision: plan.currentRevision + 1, updatedAt: now }).where(and(eq(occurrenceCollectionPlans.id, plan.id), eq(occurrenceCollectionPlans.organizationId, input.organizationId), eq(occurrenceCollectionPlans.leagueId, candidate.leagueId), eq(occurrenceCollectionPlans.state, "ready"), eq(occurrenceCollectionPlans.currentRevision, plan.currentRevision))).returning();
+      if (!cancelled) throw new PaymentOperationImmutableMismatchError();
+      const items = await tx.select().from(occurrenceCollectionPlanItems).where(and(eq(occurrenceCollectionPlanItems.planId, plan.id), eq(occurrenceCollectionPlanItems.organizationId, input.organizationId), eq(occurrenceCollectionPlanItems.leagueId, candidate.leagueId)));
+      await tx.insert(occurrenceCollectionPlanRevisions).values({ organizationId: input.organizationId, leagueId: candidate.leagueId, planId: plan.id, revisionNumber: cancelled.currentRevision, snapshotSchemaVersion: 1, beforeSnapshot: { state: plan.state, plan, items }, afterSnapshot: { state: cancelled.state, plan: cancelled, items, reason: errorCode }, recordedByUserId: plan.recordedByUserId, createdAt: now });
+    }
+    return failed;
+  });
 }
 
 export type FinalizePaymentOperationSuccessInput = LeasedPaymentOperationInput & {
@@ -2467,9 +2575,7 @@ export async function finalizePaymentOperationSuccessInTransaction(
       if (interactiveSnapshot?.requestKind === "order") throw new PaymentOperationImmutableMismatchError();
     }
   }
-  const [preflightOperation] = await tx.select().from(paymentOperations)
-    .where(and(eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.id, input.operationId)))
-    .limit(1).for("update");
+  const preflightOperation = await lockCanonicalMutationScope(tx, input.organizationId, input.operationId);
   if (preflightOperation) {
     if (preflightOperation.operationType === "canonical_autopay_charge") {
       // The canonical finalizer repeats the immutable validation immediately
@@ -2703,10 +2809,7 @@ export async function finalizeChargeFromWebhookEvidenceInTransaction(
   }
   if (input.providerOrderId != null) validateProviderOrderId(input.providerOrderId);
   const now = toIso(input.now ?? new Date(), "now");
-  const [operation] = await tx.select().from(paymentOperations).where(and(
-    eq(paymentOperations.organizationId, input.organizationId),
-    eq(paymentOperations.id, input.operationId),
-  )).limit(1).for("update");
+  const operation = await lockCanonicalMutationScope(tx, input.organizationId, input.operationId);
   if (!operation || !["scheduled_charge", "interactive_charge", "canonical_autopay_charge"].includes(operation.operationType)) {
     throw new PaymentOperationNotFoundError();
   }
@@ -2958,6 +3061,7 @@ export function buildNextPaymentOperationWakeQuery() {
         AND canonical_provenance.organization_id = ${occurrenceCollectionPlans.organizationId}
         AND canonical_provenance.league_id = ${occurrenceCollectionPlans.leagueId}
       LEFT JOIN ${paymentOperations} AS canonical_operation ON canonical_operation.organization_id = ${occurrenceCollectionPlans.organizationId}
+        AND canonical_operation.league_id = ${occurrenceCollectionPlans.leagueId}
         AND canonical_operation.canonical_plan_id = ${occurrenceCollectionPlans.id}
         AND canonical_operation.operation_type = 'canonical_autopay_charge'
       WHERE ${sql.raw(canonicalF3AutopayEnabled && canonicalF4AutopayExecutionEnabled ? "TRUE" : "FALSE")}
@@ -2971,6 +3075,7 @@ export function buildNextPaymentOperationWakeQuery() {
           FROM canonical_autopay_execution_snapshots blocked_snapshot
           INNER JOIN payment_operations blocked_operation ON blocked_operation.id = blocked_snapshot.operation_id
             AND blocked_operation.organization_id = blocked_snapshot.organization_id
+            AND blocked_operation.league_id = blocked_snapshot.league_id
           WHERE blocked_snapshot.authorization_id = canonical_provenance.authorization_id
             AND blocked_snapshot.organization_id = canonical_provenance.organization_id
             AND blocked_snapshot.league_id = canonical_provenance.league_id
@@ -3159,6 +3264,7 @@ export async function recordExpiredPaymentOperationAttemptExhausted(input: {
   validateFailedPaymentRows(input.failedPaymentRows);
   const now = toIso(input.now ?? new Date(), "now");
   return db.transaction(async (tx) => {
+    await lockCanonicalMutationScope(tx, input.organizationId, input.operationId);
     const [updated] = await tx
       .update(paymentOperations)
       .set({

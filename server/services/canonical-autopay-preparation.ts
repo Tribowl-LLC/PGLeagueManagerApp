@@ -11,6 +11,7 @@ import { f3SemanticPlanFingerprint } from "@shared/f3-autopay-contract";
 import { f4ExecutionSnapshotFingerprint, type F4ExecutionSnapshot, validateF4ExecutionSnapshot } from "@shared/f4-canonical-autopay-contract";
 import { createOrGetCanonicalAutopayPaymentOperation, type PaymentOperationTransaction } from "../storage/payment-operations.js";
 import { fingerprintPaymentOperationOccurrenceSnapshot, validatePaymentOperationOccurrenceSnapshot } from "./payment-operation-occurrence-snapshot.js";
+import { requireLiveF1ActivationEvidence } from "./f3-workflow.js";
 
 export class CanonicalAutopayPreparationError extends Error {
   constructor(public readonly code: string, message = "Canonical auto-pay preparation is unavailable") { super(message); this.name = "CanonicalAutopayPreparationError"; }
@@ -62,6 +63,11 @@ export async function prepareCanonicalAutopayPlan(input: { organizationId: numbe
     const [authorization] = await tx.select().from(f3PayerAuthorizations).where(and(eq(f3PayerAuthorizations.id, provenance.authorizationId), eq(f3PayerAuthorizations.organizationId, input.organizationId), eq(f3PayerAuthorizations.leagueId, input.leagueId), eq(f3PayerAuthorizations.state, "authorized"), eq(f3PayerAuthorizations.authorizationVersion, provenance.authorizationVersion))).limit(1).for("share");
     const [activation] = await tx.select().from(financialActivations).where(and(eq(financialActivations.id, provenance.activationId), eq(financialActivations.organizationId, input.organizationId), eq(financialActivations.leagueId, input.leagueId), eq(financialActivations.currentRevision, provenance.activationRevision), eq(financialActivations.sourceFingerprint, provenance.activationSourceFingerprint), eq(financialActivations.state, "active"), eq(financialActivations.completenessMarker, true))).limit(1).for("share");
     if (!policy || !authorization || !activation || authorization.locationId === null) fail("F3_EVIDENCE_DRIFT");
+    try {
+      await requireLiveF1ActivationEvidence(tx, input, activation);
+    } catch {
+      fail("ACTIVATION_SOURCE_DRIFT");
+    }
     const [blockedAuthorizationOperation] = await tx.select({ id: paymentOperations.id }).from(paymentOperations).innerJoin(canonicalAutopayExecutionSnapshots, and(eq(canonicalAutopayExecutionSnapshots.operationId, paymentOperations.id), eq(canonicalAutopayExecutionSnapshots.organizationId, paymentOperations.organizationId), eq(canonicalAutopayExecutionSnapshots.authorizationId, authorization.id))).where(and(eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.leagueId, input.leagueId), eq(paymentOperations.operationType, "canonical_autopay_charge"), inArray(paymentOperations.status, ["action_required", "leased", "provider_unknown", "reconciliation_required"]))).limit(1).for("share");
     if (blockedAuthorizationOperation) fail("AUTHORIZATION_BLOCKED");
     const [location] = await tx.select().from(locations).where(and(eq(locations.id, authorization.locationId), eq(locations.organizationId, input.organizationId))).limit(1).for("share");

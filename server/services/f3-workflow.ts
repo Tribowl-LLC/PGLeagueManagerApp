@@ -41,7 +41,7 @@ async function loadF3PayeeDisplay(tx: F3DbTransaction, organizationId: number, c
 
 type F3ActivationEvidenceRow = Pick<typeof financialActivations.$inferSelect, "id" | "currentRevision" | "sourceFingerprint" | "expectedGroupCount" | "expectedResponsibilityCount">;
 
-async function requireLiveF1ActivationEvidence(
+export async function requireLiveF1ActivationEvidence(
   tx: F3DbTransaction,
   input: { organizationId: number; leagueId: number },
   activation: F3ActivationEvidenceRow,
