@@ -64,7 +64,10 @@ export default function WeeklyPaymentsPage() {
     queryKey: ["/api/user"],
     staleTime: 1000 * 60 * 5,
   });
-  const isAdmin = userResponse?.data?.role === 'system_admin' || userResponse?.data?.role === 'org_admin';
+  const isAdmin = userResponse?.data?.role === 'system_admin'
+    || userResponse?.data?.role === 'org_admin'
+    || String(userResponse?.data?.role) === 'payment_manager';
+  const isPaymentManager = String(userResponse?.data?.role) === 'payment_manager';
 
   const { data: leagueResponse, isLoading: loadingLeague } = useQuery<{ data: League }>({
     queryKey: [`/api/leagues/${leagueId}`],
@@ -306,6 +309,7 @@ export default function WeeklyPaymentsPage() {
                         onDelete={setPaymentToDelete}
                         isDeletePending={deletePaymentMutation.isPending}
                         isAdmin={isAdmin}
+                        isPaymentManager={isPaymentManager}
                         bowlerHrefSuffix={`?from=weekly-payments&fromLeagueId=${leagueId}`}
                         locationId={league?.locationId ?? null}
                       />

@@ -63,16 +63,16 @@ describe("F1 financial API boundary", () => {
     expect((await apiGet("/api/financials/due-past-due?organizationId%5Bfoo%5D=1", orgAdmin)).status).toBe(400);
   });
 
-  it("fails closed for a corrupted cross-tenant bowler linkage", async () => {
+  it("fails closed for a cross-tenant bowler scope", async () => {
     const suffix = `${Date.now()}-${Math.floor(Math.random() * 100000)}`;
     const [foreignOrganization] = await db.insert(organizations).values({ name: `F1 foreign ${suffix}`, slug: `f1-foreign-${suffix}` }).returning({ id: organizations.id });
     if (!foreignOrganization) throw new Error("foreign organization fixture failed");
     try {
-      await db.update(bowlers).set({ organizationId: foreignOrganization.id }).where(eq(bowlers.id, memberFixture.bowlerId));
-      const result = await apiGet(`/api/financials/leagues/${memberFixture.leagueId}/due-past-due?bowlerId=${memberFixture.bowlerId}`, memberFixture.member);
+      const [foreignBowler] = await db.insert(bowlers).values({ name: `F1 foreign bowler ${suffix}`, organizationId: foreignOrganization.id }).returning({ id: bowlers.id });
+      if (!foreignBowler) throw new Error("foreign bowler fixture failed");
+      const result = await apiGet(`/api/financials/leagues/${memberFixture.leagueId}/due-past-due?bowlerId=${foreignBowler.id}`, memberFixture.member);
       expect(result.status).toBe(404);
     } finally {
-      await db.update(bowlers).set({ organizationId: memberFixture.organizationId }).where(eq(bowlers.id, memberFixture.bowlerId));
       await deleteOrganization(foreignOrganization.id).catch(() => undefined);
     }
   });

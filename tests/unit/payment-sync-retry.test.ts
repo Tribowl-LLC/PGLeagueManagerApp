@@ -175,6 +175,7 @@ describe('runPaymentSyncRetrySweep', () => {
     ]);
     mockGetUserByBowlerId.mockResolvedValue({
       id: 9,
+      role: 'user',
       name: 'Linked User',
       email: 'linked@example.com',
       phone: '5555550000',
@@ -199,6 +200,7 @@ describe('runPaymentSyncRetrySweep', () => {
     mockSelect.mockResolvedValue([bowler({ paymentSyncAttempts: 0 })]);
     mockGetUserByBowlerId.mockResolvedValue({
       id: 9,
+      role: 'user',
       name: 'Linked User',
       email: 'linked@example.com',
       phone: null,
@@ -212,6 +214,30 @@ describe('runPaymentSyncRetrySweep', () => {
     expect(result.retried).toBe(1);
     expect(result.pendingAgain).toBe(1);
     expect(result.succeeded).toBe(0);
+  });
+
+  it('parks a stale staff-to-bowler link without syncing staff identity data', async () => {
+    mockSelect.mockResolvedValue([bowler()]);
+    mockGetUserByBowlerId.mockResolvedValue({
+      id: 9,
+      role: 'payment_manager',
+      name: 'Staff Account',
+      email: 'staff@example.com',
+      phone: null,
+      locationId: 7,
+      organizationId: 3,
+    });
+
+    const result = await runPaymentSyncRetrySweep(NOW);
+
+    expect(result.retried).toBe(0);
+    expect(result.skippedNoUser).toBe(1);
+    expect(mockSyncBowlerForUser).not.toHaveBeenCalled();
+    expect(mockSyncUnclaimedBowler).not.toHaveBeenCalled();
+    expect(mockUpdatePark).toHaveBeenCalledTimes(1);
+    expect(mockUpdatePark.mock.calls[0]?.[0].values).toMatchObject({
+      paymentSyncNextRetryAt: null,
+    });
   });
 
   it('routes unclaimed bowlers through syncUnclaimedBowler and counts skipped (no email/no Square location) without bumping retried (task #705)', async () => {
@@ -286,7 +312,7 @@ describe('runPaymentSyncRetrySweep', () => {
       bowler({ id: 101 }),
     ]);
     mockGetUserByBowlerId.mockResolvedValue({
-      id: 9, name: 'L', email: 'l@x.io', phone: null, locationId: null, organizationId: 3,
+      id: 9, role: 'user', name: 'L', email: 'l@x.io', phone: null, locationId: null, organizationId: 3,
     });
     mockSyncBowlerForUser
       .mockRejectedValueOnce(new Error('boom'))
@@ -312,7 +338,7 @@ describe('runPaymentSyncRetrySweep', () => {
       bowler({ id: 101, paymentSyncAttempts: 1 }),
     ]);
     mockGetUserByBowlerId.mockResolvedValue({
-      id: 9, name: 'L', email: 'l@x.io', phone: null, locationId: null, organizationId: 3,
+      id: 9, role: 'user', name: 'L', email: 'l@x.io', phone: null, locationId: null, organizationId: 3,
     });
     mockSyncBowlerForUser.mockResolvedValue('synced');
 

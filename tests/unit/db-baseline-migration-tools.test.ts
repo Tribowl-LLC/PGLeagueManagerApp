@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(26);
+    expect(migrations).toHaveLength(27);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -379,6 +379,15 @@ describe('normalized migration baseline tools', () => {
     });
     expect(migrations[25]?.sql).toContain('authorizing_user_id');
     expect(migrations[25]?.sql).not.toMatch(/(?:^|\n)\s*(?:DROP|RENAME|UPDATE|DELETE|INSERT)\b/);
+    expect(migrations[26]).toMatchObject({
+      idx: 26,
+      tag: '0026_identity_integrity_hardening',
+      createdAt: 1787101376855,
+      hash: '5bcf6677e9a793822bb54259854fa9bf313633124439cef5f7604676ce873f11',
+    });
+    expect(migrations[26]?.sql).toContain('CREATE TABLE "account_action_requests"');
+    expect(migrations[26]?.sql).toContain('CREATE TABLE "identity_link_events"');
+    expect(migrations[26]?.sql).toContain('users_payment_manager_scope_check');
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 

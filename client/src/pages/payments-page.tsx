@@ -60,7 +60,10 @@ export default function PaymentsPage() {
     queryKey: ["/api/user"],
     staleTime: 1000 * 60 * 5,
   });
-  const isAdmin = userResponse?.data?.role === 'system_admin' || userResponse?.data?.role === 'org_admin';
+  const isAdmin = userResponse?.data?.role === 'system_admin'
+    || userResponse?.data?.role === 'org_admin'
+    || String(userResponse?.data?.role) === 'payment_manager';
+  const isPaymentManager = String(userResponse?.data?.role) === 'payment_manager';
 
   const { data: leaguesResponse } = useQuery<{ data: League[] }>({
     queryKey: ["/api/leagues"],
@@ -219,6 +222,7 @@ export default function PaymentsPage() {
             filteredPayments={filteredPayments}
             bowlers={bowlers}
             isAdmin={isAdmin}
+            isPaymentManager={isPaymentManager}
             onRefund={setPaymentToRefund}
             onDelete={setPaymentToDelete}
             isRefundPending={refundPaymentMutation.isPending}
@@ -244,6 +248,7 @@ export default function PaymentsPage() {
             onClose={() => setShowForm(false)}
             bowlers={bowlers}
             leagueId={defaultLeagueId}
+            paymentManager={isPaymentManager}
           />
 
           <Dialog open={paymentToDelete !== null} onOpenChange={(open) => { if (!open) setPaymentToDelete(null); }}>

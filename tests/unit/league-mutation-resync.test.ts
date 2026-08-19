@@ -68,6 +68,7 @@ const mockStorage = {
   createLeague: vi.fn(),
   getActiveSchedulesByLeague: vi.fn(),
   // Teams
+  getTeam: vi.fn(),
   getTeams: vi.fn(),
   createTeam: vi.fn(),
   deleteTeam: vi.fn(),
@@ -119,6 +120,9 @@ vi.mock('../../server/utils/access-control', () => ({
   hasAccessToBowler: () => Promise.resolve(true),
   hasSelfOrAdminAccessToBowler: () => Promise.resolve(true),
   isOrgOrHigher: () => true,
+  isPaymentManager: () => false,
+  isSystemAdmin: () => false,
+  getPaymentManagerAccessibleLeagueIds: () => Promise.resolve([]),
 }));
 
 vi.mock('../../server/middleware/organization', () => ({
@@ -859,6 +863,7 @@ describe('POST /api/bowler-leagues → fires resync for the bowler that just joi
     };
 
     mockStorage.getLeague.mockResolvedValue(league);
+    mockStorage.getTeam.mockResolvedValue({ id: newBlRow.teamId, leagueId: league.id });
     mockStorage.getBowler.mockResolvedValue(bowler);
     mockStorage.getBowlerLeagues.mockImplementation(
       async (f: { leagueId?: number; bowlerId?: number }) => {
@@ -917,6 +922,7 @@ describe('PATCH /api/bowler-leagues/:id → fires resync (covers active-flip and
     const moved = { ...existing, teamId: 276 };
 
     mockStorage.getBowlerLeague.mockResolvedValue(existing);
+    mockStorage.getTeam.mockResolvedValue({ id: 276, leagueId: league.id });
     mockStorage.updateBowlerLeague.mockResolvedValue(moved);
     mockStorage.getLeague.mockResolvedValue(league);
     mockStorage.getBowler.mockResolvedValue(bowler);
@@ -958,6 +964,7 @@ describe('PATCH /api/bowler-leagues/:id → fires resync (covers active-flip and
     const updated = { ...existing, active: false };
 
     mockStorage.getBowlerLeague.mockResolvedValue(existing);
+    mockStorage.getTeam.mockResolvedValue({ id: existing.teamId, leagueId: league.id });
     mockStorage.updateBowlerLeague.mockResolvedValue(updated);
     mockStorage.getLeague.mockResolvedValue(league);
     mockStorage.getBowler.mockResolvedValue(bowler);
@@ -1000,6 +1007,7 @@ describe('DELETE /api/bowler-leagues/:id → fires resync against the pre-captur
     };
 
     mockStorage.getBowlerLeague.mockResolvedValue(existing);
+    mockStorage.getTeam.mockResolvedValue({ id: existing.teamId, leagueId: league.id });
     mockStorage.deleteBowlerLeague.mockResolvedValue(true);
     mockStorage.getLeague.mockResolvedValue(league);
     mockStorage.getBowler.mockResolvedValue(bowler);
@@ -1045,6 +1053,7 @@ describe('bowler-resync helper guarantees (exercised via a bowler-leagues mutati
       order: 0,
     };
     mockStorage.getLeague.mockResolvedValue(league);
+    mockStorage.getTeam.mockResolvedValue({ id: newBlRow.teamId, leagueId: league.id });
     mockStorage.getBowler.mockResolvedValue(bowler);
     mockStorage.getBowlerLeagues.mockResolvedValue([]);
     mockStorage.createBowlerLeague.mockResolvedValue(newBlRow);
@@ -1080,6 +1089,7 @@ describe('bowler-resync helper guarantees (exercised via a bowler-leagues mutati
     };
 
     mockStorage.getBowlerLeague.mockResolvedValue(existing);
+    mockStorage.getTeam.mockResolvedValue({ id: existing.teamId, leagueId: league.id });
     mockStorage.deleteBowlerLeague.mockResolvedValue(true);
     mockStorage.getLeague.mockResolvedValue(league);
     mockStorage.getBowler.mockResolvedValue(bowler);

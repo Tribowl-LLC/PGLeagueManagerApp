@@ -12,6 +12,7 @@ import {
   AdminAlreadyExistsError,
   FirstAdminEmailExistsError,
   FirstAdminUserNotFoundError,
+  ElevatedRoleBowlerLinkError,
 } from '../storage/users';
 
 const log = createLogger("SetupAdmin");
@@ -113,6 +114,14 @@ router.post('/first-system-admin/:id', setupAdminLimiter, async (req: Request, r
     }
     if (error instanceof FirstAdminUserNotFoundError) {
       return sendError(res, 'User not found', 404, 'USER_NOT_FOUND');
+    }
+    if (error instanceof ElevatedRoleBowlerLinkError) {
+      return sendError(
+        res,
+        'Bowler accounts cannot be promoted to system administrator. Create a separate staff account.',
+        409,
+        'STAFF_BOWLER_CONFLICT',
+      );
     }
     log.error('Error creating first system admin:', error);
     sendError(res, 'Failed to create first system admin', 500, 'SERVER_ERROR');

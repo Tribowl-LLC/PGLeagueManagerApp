@@ -36,6 +36,7 @@ interface PaymentHistoryTableProps {
   onDelete: (paymentId: number) => void;
   isDeletePending: boolean;
   isAdmin?: boolean;
+  isPaymentManager?: boolean;
   bowlerHrefSuffix?: string;
   /**
    * Owning location for these payments. Forwarded to the receipt
@@ -53,6 +54,7 @@ export const PaymentHistoryTable = memo(function PaymentHistoryTable({
   onDelete,
   isDeletePending,
   isAdmin = false,
+  isPaymentManager = false,
   bowlerHrefSuffix = "",
   locationId,
 }: PaymentHistoryTableProps) {
@@ -135,16 +137,18 @@ export const PaymentHistoryTable = memo(function PaymentHistoryTable({
                         <Send className="size-4" />
                       </Button>
                     )}
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      onClick={() => onStartEdit(payment)}
-                    >
-                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="size-4 text-primary">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L6.832 19.82a4.5 4.5 0 01-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 011.13-1.897L16.863 4.487zm0 0L19.5 7.125" />
-                      </svg>
-                    </Button>
-                    {(!isCardPaymentType(payment.type) || isAdmin) && (
+                    {(!isCardPaymentType(payment.type) || !isPaymentManager) && (
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        onClick={() => onStartEdit(payment)}
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="size-4 text-primary">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L6.832 19.82a4.5 4.5 0 01-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 01-1.897 1.13L16.863 4.487zm0 0L19.5 7.125" />
+                        </svg>
+                      </Button>
+                    )}
+                    {(!isCardPaymentType(payment.type) || (isAdmin && !isPaymentManager)) && (
                       <Button
                         size="icon"
                         variant="ghost"

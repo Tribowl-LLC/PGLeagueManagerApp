@@ -10,6 +10,7 @@ export type RouteRequirement =
   | 'auth'
   | 'org'
   | 'orgAdmin'
+  | 'paymentManager'
   | 'systemAdmin';
 
 interface ProtectedRouteProps {
@@ -33,6 +34,11 @@ const DENY_MESSAGES: Record<RouteRequirement, { title: string; description: stri
     description: 'You need organization administrator privileges to access this page.',
     redirectTo: '/',
   },
+  paymentManager: {
+    title: 'Access Denied',
+    description: 'You need an administrator or assigned payment-manager account to access this page.',
+    redirectTo: '/',
+  },
   systemAdmin: {
     title: 'Access Denied',
     description: 'This feature is only available to system administrators.',
@@ -49,6 +55,11 @@ function userMeetsRequirement(user: User | undefined | null, requirement: RouteR
       return user.organizationId !== null;
     case 'orgAdmin':
       return user.role === 'system_admin' || user.role === 'org_admin';
+    case 'paymentManager':
+      return (user.role === 'system_admin' || user.role === 'org_admin')
+        || (String(user.role) === 'payment_manager'
+          && user.organizationId !== null
+          && user.locationId !== null);
     case 'systemAdmin':
       return user.role === 'system_admin';
   }

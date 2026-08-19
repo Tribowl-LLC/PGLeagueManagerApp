@@ -74,7 +74,7 @@ export default function LeaguePastDuePage() {
       }
       return response.json();
     },
-    enabled: !!leagueId && (userResponse?.data?.role === "org_admin" || userResponse?.data?.role === "system_admin" || userResponse?.data?.role === "user"),
+    enabled: !!leagueId && (userResponse?.data?.role === "org_admin" || userResponse?.data?.role === "system_admin" || userResponse?.data?.role === "user" || String(userResponse?.data?.role) === "payment_manager"),
   });
 
   if (loadingLeague || loadingTeams || loadingBowlers || loadingFinancials || loadingBowlerLeagues) {

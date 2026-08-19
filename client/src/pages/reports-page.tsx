@@ -84,7 +84,7 @@ export default function ReportsPage() {
       if (!response.ok) throw new Error('Canonical financial evidence requires review');
       return response.json();
     },
-    enabled: userResponse?.data?.role === "org_admin" || userResponse?.data?.role === "system_admin",
+    enabled: userResponse?.data?.role === "org_admin" || userResponse?.data?.role === "system_admin" || String(userResponse?.data?.role) === "payment_manager",
   });
 
   const { data: bowlerLeaguesResponse, isLoading: loadingBowlerLeagues } = useQuery<{ data: BowlerLeague[] }>({

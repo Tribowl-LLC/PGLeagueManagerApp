@@ -20,7 +20,7 @@ function makeUser(overrides: Partial<UsersTableUser> = {}): UsersTableUser {
     organizationId: ORG_ID,
     locationId: null,
     bowlerId: null,
-    inviteToken: null,
+    invitation: null,
     createdAt: '2026-01-01T00:00:00Z',
     linkedBowler: null,
     ...overrides,
@@ -97,7 +97,17 @@ describe('UsersTable — Reset Password button', () => {
     const pending = makeUser({
       id: 100,
       role: 'user',
-      inviteToken: 'still-pending-token',
+      invitation: {
+        id: 7,
+        action: 'account_invite',
+        status: 'pending',
+        deliveryStatus: 'failed',
+        expiresAt: '2026-01-08T00:00:00Z',
+        deliveryAttemptedAt: '2026-01-01T00:00:00Z',
+        deliveredAt: null,
+        expiredAt: null,
+        createdAt: '2026-01-01T00:00:00Z',
+      },
     });
     renderTable({ users: [pending] });
     expect(screen.getByTestId(`button-reset-password-${pending.id}`)).toBeInTheDocument();

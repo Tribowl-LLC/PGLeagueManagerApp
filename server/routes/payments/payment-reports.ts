@@ -18,7 +18,7 @@ import {
   parseOptionalDateParam,
   sanitizePayments,
 } from '../../utils/api.js';
-import { hasAdminAccessToLeague } from '../../utils/access-control.js';
+import { getPaymentManagerAccessibleLeagueIds, hasAdminAccessToLeague, hasPaymentManagerAccessToBowler, hasPaymentManagerAccessToLeague, hasPaymentManagerAccessToTeam, isPaymentManager } from '../../utils/access-control.js';
 import { createLogger } from '../../logger';
 import { listPaymentDisputeSummariesForPayments } from '../../storage/payment-dispute-operations.js';
 
@@ -148,13 +148,19 @@ router.get("/", async (req, res) => {
       ? (rawQueryOrgId ?? req.user?.organizationId ?? null)
       : (req.user?.organizationId ?? null);
 
+    const paymentManagerLeagueIds = isPaymentManager(req.user)
+      ? await getPaymentManagerAccessibleLeagueIds(req)
+      : undefined;
+
     if (leagueId) {
       const league = await storage.getLeague(leagueId);
       if (!league) {
         return sendError(res, "League not found", 404, 'NOT_FOUND');
       }
       // Payment reports require administrator access to the league.
-      if (!(await hasAdminAccessToLeague(req, leagueId))) {
+      const allowed = await hasAdminAccessToLeague(req, leagueId)
+        || await hasPaymentManagerAccessToLeague(req, leagueId);
+      if (!allowed) {
         return sendError(res, "You don't have access to this league's payments", 403, 'FORBIDDEN');
       }
     }
@@ -165,7 +171,29 @@ router.get("/", async (req, res) => {
 
     // Plain users may only list their own bowler payments.
     let scopedBowlerId: number | null | undefined = bowlerId;
-    if (!isSystemAdmin && req.user?.role !== 'org_admin' && req.user?.id) {
+    if (isPaymentManager(req.user)) {
+      if (paymentManagerLeagueIds === undefined || paymentManagerLeagueIds.length === 0) {
+        return sendSuccess(res, []);
+      }
+      if (leagueId !== undefined && !paymentManagerLeagueIds.includes(leagueId)) {
+        return sendError(res, "You don't have access to this league's payments", 403, 'FORBIDDEN');
+      }
+      if (teamId !== undefined && !(await hasPaymentManagerAccessToTeam(req, teamId))) {
+        return sendError(res, "You don't have access to this team's payments", 403, 'FORBIDDEN');
+      }
+      if (bowlerId !== undefined) {
+        if (!(await hasPaymentManagerAccessToBowler(req, bowlerId))) {
+          return sendError(res, "You don't have access to this bowler's payments", 403, 'FORBIDDEN');
+        }
+        // A bowler can be rostered at more than one assigned location league.
+        // When the caller names a specific league, require membership in that
+        // exact league too; otherwise a stale payment row could be selected
+        // for a bowler who is only accessible through a different league.
+        if (leagueId !== undefined && !(await storage.isBowlerActiveInLeague(bowlerId, leagueId))) {
+          return sendError(res, "You don't have access to this bowler's payments", 403, 'FORBIDDEN');
+        }
+      }
+    } else if (!isSystemAdmin && req.user?.role !== 'org_admin' && req.user?.id) {
       if (leagueId === undefined) {
         if (!req.user.bowlerId) {
           return sendSuccess(res, []);
@@ -180,6 +208,7 @@ router.get("/", async (req, res) => {
     const baseFilters = {
       bowlerId: scopedBowlerId,
       leagueId,
+      leagueIds: paymentManagerLeagueIds,
       teamId,
       weekOf,
     };

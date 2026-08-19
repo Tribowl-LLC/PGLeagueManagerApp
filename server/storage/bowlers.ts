@@ -373,13 +373,19 @@ export async function getBowlerLeaguesByBowlerIds(bowlerIds: number[]): Promise<
 }
 
 export async function getBowlerByEmail(email: string, organizationId: number): Promise<Bowler | undefined> {
+  const normalizedEmail = email.trim().toLowerCase();
   const results = await db
-    .select({ bowler: bowlers })
+    .select()
     .from(bowlers)
-    .innerJoin(bowlerLeagues, eq(bowlers.id, bowlerLeagues.bowlerId))
-    .innerJoin(leagues, eq(bowlerLeagues.leagueId, leagues.id))
-    .where(and(eq(bowlers.email, email), eq(leagues.organizationId, organizationId)));
-  return results[0]?.bowler;
+    .where(and(
+      sql`lower(btrim(${bowlers.email})) = ${normalizedEmail}`,
+      eq(bowlers.organizationId, organizationId),
+    ))
+    .limit(2);
+  // Shared family addresses and legacy duplicates are allowed on roster
+  // records, but are not sufficient proof for an automatic identity claim.
+  // Administrators must resolve an ambiguous match explicitly.
+  return results.length === 1 ? results[0] : undefined;
 }
 
 /**
@@ -392,12 +398,7 @@ export async function getBowlerByEmailInOrg(
   email: string,
   organizationId: number,
 ): Promise<Bowler | undefined> {
-  const [row] = await db
-    .select()
-    .from(bowlers)
-    .where(and(eq(bowlers.email, email), eq(bowlers.organizationId, organizationId)))
-    .limit(1);
-  return row;
+  return getBowlerByEmail(email, organizationId);
 }
 
 /**
@@ -490,18 +491,25 @@ export async function searchBowlersByName(
 }
 
 export async function getBowlerByEmailSystemAdmin(email: string): Promise<Bowler | undefined> {
-  const [result] = await db.select().from(bowlers).where(eq(bowlers.email, email));
-  return result;
+  const rows = await db
+    .select()
+    .from(bowlers)
+    .where(sql`lower(btrim(${bowlers.email})) = ${email.trim().toLowerCase()}`)
+    .limit(2);
+  return rows.length === 1 ? rows[0] : undefined;
 }
 
 /**
  * Find every bowler row whose email matches the supplied address (case
- * sensitive — emails are normalised on insert). Used by the account-data
+ * insensitive and whitespace-normalized. Used by the account-data
  * deletion flow which needs to scrub all bowler records tied to a single
  * email, even if duplicated across orgs.
  */
 export async function getBowlersByEmailSystemAdmin(email: string): Promise<Bowler[]> {
-  return db.select().from(bowlers).where(eq(bowlers.email, email));
+  return db
+    .select()
+    .from(bowlers)
+    .where(sql`lower(btrim(${bowlers.email})) = ${email.trim().toLowerCase()}`);
 }
 
 /**

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Layout } from "@/components/layout";
 import { BowlerForm } from "@/components/bowler-form";
@@ -21,6 +22,7 @@ import { Input } from "@/components/ui/input";
 import { Link } from "wouter";
 import { useBowlers } from "@/hooks/use-bowlers";
 import { PaymentSyncRetryStatus } from "@/components/payment-sync-retry-status";
+import type { ApiResponse, User } from "@shared/schema";
 
 function BowlerTableSkeleton() {
   return (
@@ -54,6 +56,11 @@ export default function BowlersPage() {
   const [editingBowler, setEditingBowler] = useState<Bowler | null>(null);
   const [showInactive, setShowInactive] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const { data: currentUserResponse } = useQuery<ApiResponse<User>>({
+    queryKey: ["/api/user"],
+    staleTime: 5 * 60 * 1000,
+  });
+  const isPaymentManager = String(currentUserResponse?.data?.role) === "payment_manager";
 
   const {
     bowlers: filteredBowlers,
@@ -72,10 +79,10 @@ export default function BowlersPage() {
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-2xl font-bold">Bowlers</h1>
         <div className="flex items-center gap-2">
-          <Button onClick={() => setShowForm(true)}>
-            <Plus className="size-4 mr-2" />
-            Add Bowler
-          </Button>
+          {!isPaymentManager && <Button onClick={() => setShowForm(true)}>
+              <Plus className="size-4 mr-2" />
+              Add Bowler
+            </Button>}
         </div>
       </div>
 
@@ -184,15 +191,15 @@ export default function BowlersPage() {
                         </div>
                       </TableCell>
                       <TableCell>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => setEditingBowler(bowler)}
-                          aria-label={`Edit ${bowler.name}`}
-                          data-testid={`button-edit-bowler-${bowler.id}`}
-                        >
-                          <Pencil className="size-4" />
-                        </Button>
+                        {!isPaymentManager && <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => setEditingBowler(bowler)}
+                            aria-label={`Edit ${bowler.name}`}
+                            data-testid={`button-edit-bowler-${bowler.id}`}
+                          >
+                            <Pencil className="size-4" />
+                          </Button>}
                       </TableCell>
                     </TableRow>
                   );
@@ -203,12 +210,12 @@ export default function BowlersPage() {
         )}
       </div>
 
-      <BowlerForm
-        open={showForm}
-        onClose={() => {
-          setShowForm(false);
-        }}
-      />
+      {!isPaymentManager && <BowlerForm
+          open={showForm}
+          onClose={() => {
+            setShowForm(false);
+          }}
+        />}
 
       <BowlerForm
         key={editingBowler?.id ?? "edit-none"}

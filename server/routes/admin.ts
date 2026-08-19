@@ -18,6 +18,10 @@ import { sendTestEmail, sendTemplatedEmail, getBaseUrl, getOrgLogoUrl } from '..
 import { emailTestLimiter, adminWriteLimiter } from '../middleware/rate-limit';
 import { cacheInvalidate } from '../utils/cache';
 import { createLogger } from '../logger';
+import {
+  IdentityLinkError,
+  linkUserToBowler,
+} from '../services/identity-link.js';
 
 const log = createLogger("Admin");
 
@@ -287,6 +291,13 @@ const linkExistingBowlerSchema = z.object({
   { message: 'leagueId and teamId must be provided together', path: ['teamId'] },
 );
 
+function rethrowIdentityLinkAsHttp(error: unknown): never {
+  if (error instanceof IdentityLinkError) {
+    throw new HttpError(error.status, error.code, error.message);
+  }
+  throw error;
+}
+
 interface UnlinkedUserRow {
   id: number;
   name: string;
@@ -442,12 +453,25 @@ router.post('/unclaimed-users/:userId/create-bowler', async (req, res) => {
         order,
       });
 
-      await tx
-        .update(users)
-        .set({ bowlerId: newBowler.id })
-        .where(eq(users.id, userId));
+      let linked;
+      try {
+        linked = await linkUserToBowler({
+          organizationId: ctx.orgId,
+          userId,
+          bowlerId: newBowler.id,
+          actorUserId: req.user?.id ?? null,
+          source: 'admin-unclaimed-create',
+          reason: 'admin-assigned-new-bowler',
+          eventType: 'admin_assignment',
+        }, tx);
+      } catch (error) {
+        rethrowIdentityLinkAsHttp(error);
+      }
+      if (!linked.bowler) {
+        throw new Error('Identity link did not return the newly-created bowler');
+      }
 
-      return { user: targetUser, bowler: newBowler, league, team };
+      return { user: linked.user, bowler: linked.bowler, league, team };
     });
 
     cacheInvalidate('bowlers:');
@@ -572,12 +596,25 @@ router.post('/unclaimed-users/:userId/link-existing', async (req, res) => {
         }
       }
 
-      await tx
-        .update(users)
-        .set({ bowlerId: body.bowlerId })
-        .where(eq(users.id, userId));
+      let linked;
+      try {
+        linked = await linkUserToBowler({
+          organizationId: ctx.orgId,
+          userId,
+          bowlerId: body.bowlerId,
+          actorUserId: req.user?.id ?? null,
+          source: 'admin-unclaimed-link',
+          reason: 'admin-assigned-existing-bowler',
+          eventType: 'admin_assignment',
+        }, tx);
+      } catch (error) {
+        rethrowIdentityLinkAsHttp(error);
+      }
+      if (!linked.bowler) {
+        throw new Error('Identity link did not return the linked bowler');
+      }
 
-      return { user: targetUser, bowler: targetBowler, league: assignedLeague, team: assignedTeam };
+      return { user: linked.user, bowler: linked.bowler, league: assignedLeague, team: assignedTeam };
     });
 
     cacheInvalidate('bowlers:');

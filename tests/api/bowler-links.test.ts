@@ -45,17 +45,19 @@ interface LinksList {
  * run, which means `user:<id>` is already cached with `bowlerId =
  * null` for them.
  *
- * To sidestep that we provision two FRESH org_admin users (alice and
+ * To sidestep that we provision two FRESH ordinary users (alice and
  * bob, in their respective orgs) with `bowlerId` already set BEFORE
- * the very first login. The first deserialize on each session
- * primes the cache with the correct bowlerId, and we tear them down
- * in afterAll.
+ * the very first login. Elevated staff roles are intentionally barred
+ * from carrying a bowler identity. A separate, unlinked org admin is
+ * used only for the admin direct-link endpoint.
  */
 describe('Bowler payment links — lifecycle + cross-org denial', () => {
   let sessionA: AuthSession;
   let sessionB: AuthSession;
+  let adminSessionA: AuthSession;
   let aliceUserId = 0;
   let bobUserId = 0;
+  let adminUserId = 0;
   let aliceBowlerId = 0;
   let avivBowlerId = 0;
   let bobBowlerId = 0;
@@ -66,6 +68,7 @@ describe('Bowler payment links — lifecycle + cross-org denial', () => {
   const aliceEmail = `vitest-link-alice-${stamp}@example.com`;
   const avivEmail = `vitest-link-aviv-${stamp}@example.com`;
   const bobEmail = `vitest-link-bob-${stamp}@example.com`;
+  const adminEmail = `vitest-link-admin-${stamp}@example.com`;
   const password = 'link-test-pw-vitest-678';
 
   beforeAll(async () => {
@@ -117,7 +120,7 @@ describe('Bowler payment links — lifecycle + cross-org denial', () => {
         email: aliceEmail,
         password: password_hash,
         name: `Vitest Link Alice User ${stamp}`,
-        role: 'org_admin',
+        role: 'user',
         organizationId: orgAId,
         bowlerId: aliceBowlerId,
       })
@@ -128,7 +131,7 @@ describe('Bowler payment links — lifecycle + cross-org denial', () => {
         email: bobEmail,
         password: password_hash,
         name: `Vitest Link Bob User ${stamp}`,
-        role: 'org_admin',
+        role: 'user',
         organizationId: orgBId,
         bowlerId: bobBowlerId,
       })
@@ -138,6 +141,23 @@ describe('Bowler payment links — lifecycle + cross-org denial', () => {
     }
     aliceUserId = aliceUser.id;
     bobUserId = bobUser.id;
+
+    // Staff accounts must not carry a bowlerId. Keep an unlinked org admin
+    // session for the admin-only direct-link endpoint below.
+    const [adminUser] = await db
+      .insert(users)
+      .values({
+        email: adminEmail,
+        password: password_hash,
+        name: `Vitest Link Admin ${stamp}`,
+        role: 'org_admin',
+        organizationId: orgAId,
+      })
+      .returning({ id: users.id });
+    if (!adminUser) {
+      throw new Error('Failed to provision fresh admin test user');
+    }
+    adminUserId = adminUser.id;
 
     // 2b) Wire alice + aviv into a league/team in org A so the
     // invite route's `getBowlerByEmail` (which inner-joins through
@@ -182,6 +202,7 @@ describe('Bowler payment links — lifecycle + cross-org denial', () => {
     // bowlerId we stamped at insert time.
     sessionA = await login(aliceEmail, password);
     sessionB = await login(bobEmail, password);
+    adminSessionA = await login(adminEmail, password);
   });
 
   afterAll(async () => {
@@ -201,7 +222,7 @@ describe('Bowler payment links — lifecycle + cross-org denial', () => {
     }
     // Null out users.bowlerId before deleting bowlers so the FK doesn't
     // block the bowler delete.
-    const userIds = [aliceUserId, bobUserId].filter((n) => n > 0);
+    const userIds = [aliceUserId, bobUserId, adminUserId].filter((n) => n > 0);
     if (userIds.length > 0) {
       await db
         .update(users)
@@ -497,12 +518,12 @@ describe('Bowler payment links — lifecycle + cross-org denial', () => {
   });
 
   it('admin direct-link succeeds within org and refuses cross-org pairs', async () => {
-    // sessionA is the org-A org_admin. Linking alice + aviv (both
-    // org A) must land an `accepted` row directly.
+    // The unlinked org-A org_admin session is authorized for direct links.
+    // Linking alice + aviv (both org A) must land an `accepted` row directly.
     const ok = await apiPost<LinkRow>('/api/bowler-links/admin', {
       bowlerAId: aliceBowlerId,
       bowlerBId: avivBowlerId,
-    }, sessionA);
+    }, adminSessionA);
     expect(ok.status, JSON.stringify(ok.data)).toBe(201);
     const okRow = ok.data.data as LinkRow;
     createdLinkIds.push(okRow.id);
@@ -515,7 +536,7 @@ describe('Bowler payment links — lifecycle + cross-org denial', () => {
     const crossOrg = await apiPost('/api/bowler-links/admin', {
       bowlerAId: aliceBowlerId,
       bowlerBId: bobBowlerId,
-    }, sessionA);
+    }, adminSessionA);
     expect([403, 404]).toContain(crossOrg.status);
 
     const landed = await db

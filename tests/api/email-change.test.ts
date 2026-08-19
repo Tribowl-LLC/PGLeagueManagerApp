@@ -466,12 +466,12 @@ describe('POST /api/auth/set-password invalidates pending email-change requests'
     const rawToken = `setpw-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
     // Stage an invite/reset token on the user, then a pending email-change.
-    const inviteToken = `inv-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    await storage.setUserInviteToken(
+    const inviteAction = await storage.issueAccountAction({
       userId,
-      inviteToken,
-      new Date(Date.now() + 60_000),
-    );
+      action: 'password_reset',
+      expiresAt: new Date(Date.now() + 60_000),
+      organizationId: testOrgId,
+    });
     await db.insert(emailChangeRequests).values({
       userId,
       newEmail,
@@ -480,7 +480,7 @@ describe('POST /api/auth/set-password invalidates pending email-change requests'
     });
 
     const setRes = await apiPost(`/api/auth/set-password`, {
-      token: inviteToken,
+      token: inviteAction.token,
       password: 'AfterReset!2026XX',
     });
     expect(setRes.status).toBe(200);

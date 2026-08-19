@@ -115,6 +115,21 @@ export type {
 export { users, insertUserSchema, updateUserSchema, updateUserSchemaBase } from "./users";
 export type { User, InsertUser, UpdateUser } from "./users";
 
+export {
+  accountActionRequests,
+  ACCOUNT_ACTION_TYPES,
+  ACCOUNT_ACTION_STATUSES,
+  ACCOUNT_ACTION_DELIVERY_STATUSES,
+  insertAccountActionRequestSchema,
+} from "./account-action-requests";
+export type {
+  AccountActionType,
+  AccountActionStatus,
+  AccountActionDeliveryStatus,
+  AccountActionRequest,
+  InsertAccountActionRequest,
+} from "./account-action-requests";
+
 export { games, scores, insertGameSchema, insertScoreSchema, updateGameSchema, updateScoreSchema } from "./games";
 export type { Game, InsertGame, UpdateGame, Score, InsertScore, UpdateScore } from "./games";
 
@@ -151,6 +166,18 @@ export type {
   OrphanCleanupResourceType,
   OrphanCleanupAction,
 } from "./orphan-cleanup-audits";
+
+export {
+  identityLinkEvents,
+  insertIdentityLinkEventSchema,
+  IDENTITY_LINK_EVENT_TYPES,
+} from "./identity-link-events";
+export type {
+  IdentityLinkEvent,
+  InsertIdentityLinkEvent,
+  IdentityLinkEventType,
+  IdentityLinkBowlerSnapshot,
+} from "./identity-link-events";
 
 export {
   applePayJobs,

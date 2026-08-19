@@ -54,6 +54,7 @@ export default function LeaguesPage() {
     staleTime: 5 * 60 * 1000,
   });
   const currentUser = currentUserResponse?.data;
+  const canManageLeagues = currentUser?.role === "system_admin" || currentUser?.role === "org_admin";
 
   const { data: locationsResponse } = useQuery<{ data: Location[] }>({
     queryKey: ["/api/locations"],
@@ -159,10 +160,10 @@ export default function LeaguesPage() {
         <div className="flex justify-between items-center mb-6">
           <h1 className="text-2xl font-bold">Leagues</h1>
           <div className="flex gap-2">
-            <Button onClick={() => { setSelectedLeague(undefined); setShowForm(true); }}>
-              <Plus className="size-4 mr-2" />
-              Add League
-            </Button>
+            {canManageLeagues && <Button onClick={() => { setSelectedLeague(undefined); setShowForm(true); }}>
+                <Plus className="size-4 mr-2" />
+                Add League
+              </Button>}
           </div>
         </div>
 
@@ -210,6 +211,7 @@ export default function LeaguesPage() {
             onRestore={(id) => restoreMutation.mutate(id)}
             onDelete={setDeleteConfirmId}
             isRestorePending={restoreMutation.isPending}
+            canManage={canManageLeagues}
           />
         </div>
 

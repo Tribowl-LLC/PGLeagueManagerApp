@@ -53,6 +53,13 @@ const log = createLogger("PaymentSchedules");
 
 const router = Router();
 
+router.use((req, res, next) => {
+  if ((req.user?.role as string | undefined) === 'payment_manager') {
+    return sendError(res, 'Payment managers cannot access autopay schedules', 403, 'FORBIDDEN');
+  }
+  next();
+});
+
 function handleAutopaySetupError(res: Parameters<typeof sendError>[0], error: unknown) {
   if (error instanceof AutopaySetupError) {
     return sendError(res, error.message, error.statusCode, error.code);

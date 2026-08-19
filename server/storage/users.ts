@@ -71,6 +71,41 @@ export class NonAdminMissingOrgError extends Error {
   }
 }
 
+export class ElevatedRoleBowlerLinkError extends Error {
+  constructor(message = 'Staff accounts cannot be linked to bowler records') {
+    super(message);
+    this.name = 'ElevatedRoleBowlerLinkError';
+  }
+}
+
+export class PaymentManagerScopeError extends Error {
+  constructor(message = 'Payment managers must have an organization and location') {
+    super(message);
+    this.name = 'PaymentManagerScopeError';
+  }
+}
+
+export function normalizeAccountEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+function assertUserIdentityState(user: {
+  role: UserRole;
+  organizationId?: number | null;
+  locationId?: number | null;
+  bowlerId?: number | null;
+}): void {
+  if (user.role !== 'system_admin' && user.organizationId == null) {
+    throw new NonAdminMissingOrgError();
+  }
+  if (user.role !== 'user' && user.bowlerId != null) {
+    throw new ElevatedRoleBowlerLinkError();
+  }
+  if (user.role === 'payment_manager' && (user.organizationId == null || user.locationId == null)) {
+    throw new PaymentManagerScopeError();
+  }
+}
+
 /**
  * Thrown by `deleteUser` when the target is a system_admin. System admins
  * are never deletable through the user-admin UI — that would let any
@@ -289,16 +324,22 @@ export async function resetFailedPasswordChangeAttempts(userId: number): Promise
 }
 
 export async function getUserByEmail(email: string): Promise<User | undefined> {
-  const [user] = await db.select().from(users).where(eq(users.email, email));
+  const normalizedEmail = normalizeAccountEmail(email);
+  const [user] = await db
+    .select()
+    .from(users)
+    .where(sql`lower(btrim(${users.email})) = ${normalizedEmail}`)
+    .limit(1);
   return user;
 }
 
-export async function createUser(user: InsertUser): Promise<User> {
+export async function createUser(user: InsertUser, executor: UserDbExecutor = db): Promise<User> {
   const role = user.role ?? 'user';
-  if (role !== 'system_admin' && (user.organizationId === null || user.organizationId === undefined)) {
-    throw new NonAdminMissingOrgError();
-  }
-  const [result] = await db.insert(users).values(user).returning();
+  assertUserIdentityState({ ...user, role });
+  const [result] = await executor
+    .insert(users)
+    .values({ ...user, email: normalizeAccountEmail(user.email) })
+    .returning();
   return result;
 }
 
@@ -307,11 +348,38 @@ export async function updateUser(
   userData: UpdateUser,
   executor: UserDbExecutor = db,
 ): Promise<User> {
-  log.info('Updating user:', { id, userData });
+  log.info('Updating user:', { id, fields: Object.keys(userData) });
+
+  const [existingUser] = await executor
+    .select()
+    .from(users)
+    .where(eq(users.id, id))
+    .limit(1);
+  if (!existingUser) {
+    throw new Error(`Failed to update user with ID ${id}`);
+  }
+  const normalizedPatch = {
+    ...userData,
+    ...(userData.email !== undefined
+      ? { email: normalizeAccountEmail(userData.email) }
+      : {}),
+  };
+  assertUserIdentityState({
+    role: normalizedPatch.role ?? existingUser.role,
+    organizationId: normalizedPatch.organizationId === undefined
+      ? existingUser.organizationId
+      : normalizedPatch.organizationId,
+    locationId: normalizedPatch.locationId === undefined
+      ? existingUser.locationId
+      : normalizedPatch.locationId,
+    bowlerId: normalizedPatch.bowlerId === undefined
+      ? existingUser.bowlerId
+      : normalizedPatch.bowlerId,
+  });
 
   const [updatedUser] = await executor
     .update(users)
-    .set(userData)
+    .set(normalizedPatch)
     .where(eq(users.id, id))
     .returning();
 
@@ -326,16 +394,6 @@ export async function updateUser(
   });
 
   cacheInvalidate(`user:${id}`);
-  return updatedUser;
-}
-
-export async function linkUserToBowler(userId: number, bowlerId: number | undefined): Promise<User> {
-  const [updatedUser] = await db
-    .update(users)
-    .set({ bowlerId: bowlerId ?? null })
-    .where(eq(users.id, userId))
-    .returning();
-  cacheInvalidate(`user:${userId}`);
   return updatedUser;
 }
 
@@ -413,6 +471,12 @@ export async function updateUserRole(
   if (role !== 'system_admin' && existingUser.organizationId === null) {
     throw new NonAdminMissingOrgError();
   }
+  assertUserIdentityState({
+    role,
+    organizationId: existingUser.organizationId,
+    locationId: existingUser.locationId,
+    bowlerId: existingUser.bowlerId,
+  });
 
   const [updatedUser] = await executor
     .update(users)
@@ -460,10 +524,11 @@ export async function bootstrapFirstAdmin(input: {
       throw new AdminAlreadyExistsError();
     }
 
+    const normalizedEmail = normalizeAccountEmail(input.email);
     const [existingEmail] = await tx
       .select({ id: users.id })
       .from(users)
-      .where(eq(users.email, input.email))
+      .where(sql`lower(btrim(${users.email})) = ${normalizedEmail}`)
       .limit(1);
     if (existingEmail) {
       throw new FirstAdminEmailExistsError();
@@ -472,7 +537,7 @@ export async function bootstrapFirstAdmin(input: {
     const [created] = await tx
       .insert(users)
       .values({
-        email: input.email,
+        email: normalizedEmail,
         password: input.hashedPassword,
         name: input.name,
         phone: input.phone ?? undefined,
@@ -503,12 +568,15 @@ export async function promoteFirstAdmin(userId: number): Promise<User> {
     }
 
     const [target] = await tx
-      .select({ id: users.id })
+      .select({ id: users.id, bowlerId: users.bowlerId })
       .from(users)
       .where(eq(users.id, userId))
       .limit(1);
     if (!target) {
       throw new FirstAdminUserNotFoundError();
+    }
+    if (target.bowlerId !== null) {
+      throw new ElevatedRoleBowlerLinkError();
     }
 
     const [promoted] = await tx
@@ -531,23 +599,6 @@ export async function setUserLocation(userId: number, locationId: number | null)
     throw new Error(`User with ID ${userId} not found`);
   }
   cacheInvalidate(`user:${userId}`);
-  return updatedUser;
-}
-
-export async function getUserByInviteToken(token: string): Promise<User | undefined> {
-  const [user] = await db.select().from(users).where(eq(users.inviteToken, token));
-  return user;
-}
-
-export async function setUserInviteToken(userId: number, token: string, expiry: Date): Promise<User> {
-  const [updatedUser] = await db
-    .update(users)
-    .set({ inviteToken: token, inviteTokenExpiry: expiry.toISOString() })
-    .where(eq(users.id, userId))
-    .returning();
-  if (!updatedUser) {
-    throw new Error(`User with ID ${userId} not found`);
-  }
   return updatedUser;
 }
 
@@ -627,16 +678,4 @@ export async function deleteUser(
     return run(executor);
   }
   return db.transaction(async (tx) => run(tx));
-}
-
-export async function clearUserInviteToken(userId: number): Promise<User> {
-  const [updatedUser] = await db
-    .update(users)
-    .set({ inviteToken: null, inviteTokenExpiry: null })
-    .where(eq(users.id, userId))
-    .returning();
-  if (!updatedUser) {
-    throw new Error(`User with ID ${userId} not found`);
-  }
-  return updatedUser;
 }

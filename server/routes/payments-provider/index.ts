@@ -14,6 +14,8 @@
  */
 import { Router } from 'express';
 import { requireAuthenticated } from './shared.js';
+import { isPaymentManager } from '../../utils/access-control.js';
+import { sendError } from '../../utils/api.js';
 import chargesRouter from './charges.js';
 import customersRouter from './customers.js';
 import catalogRouter from './catalog.js';
@@ -28,6 +30,21 @@ import receiptsRouter from './receipts.js';
 const router = Router();
 
 router.use(requireAuthenticated);
+
+// Payment managers have a deliberately narrow provider surface: they may
+// read saved cards and resend hosted receipts, but may not charge cards,
+// mutate the vault, configure providers/catalogs, or run customer/autopay
+// operations. Keep this deny-by-default at the composition boundary so a new
+// provider sub-route cannot accidentally widen the role.
+router.use((req, res, next) => {
+  if (!isPaymentManager(req.user)) return next();
+  const path = req.path;
+  const allowedRead = req.method === 'GET' && /^\/cards\/\d+$/.test(path);
+  const allowedResend = req.method === 'POST' && /^\/payments\/\d+\/resend-receipt$/.test(path);
+  const allowedReceiptRead = req.method === 'GET' && /^\/payments\/\d+\/receipt$/.test(path);
+  if (allowedRead || allowedResend || allowedReceiptRead) return next();
+  return sendError(res, 'Payment manager provider access is restricted', 403, 'FORBIDDEN');
+});
 
 router.use(chargesRouter);
 router.use(customersRouter);

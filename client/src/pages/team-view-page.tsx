@@ -7,7 +7,7 @@ import { ErrorBoundary } from "@/components/error-boundary";
 import { AssignBowlerForm } from "@/components/assign-bowler-form";
 import { ReorderBowlersDialog } from "@/components/reorder-bowlers-dialog";
 import { PageLoadingState, PageErrorState } from "@/components/page-states";
-import type { Bowler, BowlerLeague, ApiResponse, TeamDetailsResponse } from "@shared/schema";
+import type { Bowler, BowlerLeague, ApiResponse, TeamDetailsResponse, User } from "@shared/schema";
 import { useParams } from "wouter";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -34,6 +34,11 @@ export default function TeamViewPage() {
   const { toast } = useToast();
   const params = useParams();
   const teamId = params.teamId ? parseInt(params.teamId) : undefined;
+  const { data: currentUserResponse } = useQuery<ApiResponse<User>>({
+    queryKey: ["/api/user"],
+    staleTime: 5 * 60 * 1000,
+  });
+  const isPaymentManager = String(currentUserResponse?.data?.role) === "payment_manager";
 
   // Form for editing team name
   const editForm = useForm({
@@ -186,10 +191,10 @@ export default function TeamViewPage() {
         teamBowlers={teamBowlers}
         league={league}
         teamId={teamId}
-        onEditBowler={(bowler) => {
+        onEditBowler={!isPaymentManager ? (bowler) => {
           setSelectedBowler(bowler);
           setShowForm(true);
-        }}
+        } : undefined}
         onRemoveBowler={(target) => setShowRemoveDialog(target)}
       />
 
@@ -212,14 +217,14 @@ export default function TeamViewPage() {
 
       {/* Bowler Forms */}
       <BowlerForm
-        open={showForm}
-        onClose={() => {
-          setShowForm(false);
-          setSelectedBowler(undefined);
-        }}
-        defaultTeamId={teamId}
-        bowler={selectedBowler}
-      />
+          open={showForm}
+          onClose={() => {
+            setShowForm(false);
+            setSelectedBowler(undefined);
+          }}
+          defaultTeamId={teamId}
+          bowler={selectedBowler}
+        />
 
       <AssignBowlerForm
         open={showAssignForm}

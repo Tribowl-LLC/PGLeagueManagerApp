@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { randomBytes } from 'crypto';
-import { eq } from 'drizzle-orm';
+import { db } from '../db.js';
 import { sendSuccess, sendError, sanitizeUser, sanitizeOrg, sanitizeOrgs, handleZodError, handleUserOrgError } from '../utils/api.js';
 import { singleRouteParam } from '../utils/route-params';
 import { validateDataUri } from '../utils/image-magic-bytes.js';
@@ -9,12 +9,11 @@ import { storage } from '../storage';
 import { 
   insertOrganizationSchema, 
   updateOrganizationSchema, 
-  users,
   type Organization
 } from '@shared/schema';
 import { requireAdmin } from '../middleware/admin.js';
 import { hashPassword } from '../auth.js';
-import { requireOrganizationAccess } from '../utils/access-control.js';
+import { isPaymentManager, requireOrganizationAccess } from '../utils/access-control.js';
 import { sendTemplatedEmail, getBaseUrl, getOrgLogoUrl } from '../services/email.js';
 import { adminWriteLimiter, inviteLimiter } from '../middleware/rate-limit.js';
 import { createLogger } from '../logger';
@@ -22,6 +21,8 @@ import { getPaymentProvider, ProviderNotConfiguredError } from '../services/paym
 import { hasWalletSupport } from '../services/payment-provider';
 import { canonicalApplePayDomain } from '../services/apple-pay-domains';
 import { OrganizationFinancialActivationRetentionError, OrganizationHostnameConflictError } from '../storage/organizations';
+import { publicAccountInvitation } from '../services/account-invitation.js';
+import { getPgErrorCode } from '../utils/db-errors.js';
 
 const log = createLogger("Organizations");
 
@@ -136,66 +137,94 @@ router.post('/', requireAdmin, adminWriteLimiter, inviteLimiter, async (req, res
     const { adminData, ...orgData } = req.body;
     log.debug('Create request body keys:', Object.keys(orgData));
     const validatedData = insertOrganizationSchema.parse(orgData);
-    
-    const organization = await storage.createOrganization(validatedData);
 
-    if (organization.subdomain || organization.slug) {
-      autoRegisterApplePayDomain(organization).catch(() => {});
-    }
+    const parsedAdmin = adminData == null
+      ? null
+      : z.object({
+        email: z.string().email('Invalid administrator email address'),
+        name: z.string().trim().min(2, 'Administrator name is required').max(100),
+        phone: z.string().trim().max(30).nullable().optional(),
+      }).parse(adminData);
 
-    if (adminData && adminData.email && adminData.name) {
-      try {
-        const existingUser = await storage.getUserByEmail(adminData.email);
-        if (existingUser) {
-          if (existingUser.role !== 'org_admin' && existingUser.role !== 'system_admin') {
-            await storage.updateUserRole(existingUser.id, 'org_admin');
-          }
-          await storage.setUserOrganization(existingUser.id, organization.id);
-          return sendSuccess(res, { organization: sanitizeOrg(organization), adminUser: sanitizeUser(existingUser) }, 201);
-        }
-        
-        const placeholderPassword = await hashPassword(randomBytes(32).toString('hex'));
-        const newAdminUser = await storage.createUser({
-          email: adminData.email,
-          name: adminData.name,
-          password: placeholderPassword,
-          phone: adminData.phone || null,
-          role: 'org_admin',
-          organizationId: organization.id
-        });
-
-        const inviteToken = randomBytes(32).toString('hex');
-        const inviteTokenExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-        await storage.setUserInviteToken(newAdminUser.id, inviteToken, inviteTokenExpiry);
-
-        const firstName = adminData.name.split(' ')[0];
-        const baseUrl = getBaseUrl(organization);
-        const setupUrl = `${baseUrl}/set-password?token=${inviteToken}`;
-        const variables: Record<string, string> = {
-          admin_name: firstName,
-          invite_link: setupUrl,
-          organization_name: organization.name,
-          organization_logo_url: getOrgLogoUrl(organization),
-        };
-        await sendTemplatedEmail('org_admin_invite', adminData.email, variables);
-        
-        return sendSuccess(res, { organization: sanitizeOrg(organization), adminUser: sanitizeUser(newAdminUser) }, 201);
-      } catch (adminError) {
-        log.error('Error creating admin user:', adminError);
-        return sendSuccess(res, { 
-          organization: sanitizeOrg(organization), 
-          warning: 'Organization created but there was an error creating the admin user'
-        }, 201);
+    if (!parsedAdmin) {
+      const organization = await storage.createOrganization(validatedData);
+      if (organization.subdomain || organization.slug) {
+        autoRegisterApplePayDomain(organization).catch(() => {});
       }
+      return sendSuccess(res, sanitizeOrg(organization), 201);
     }
 
-    sendSuccess(res, sanitizeOrg(organization), 201);
+    const adminEmail = parsedAdmin.email.trim().toLowerCase();
+    if (await storage.getUserByEmail(adminEmail)) {
+      return sendError(
+        res,
+        'An account with this administrator email already exists. Use a separate staff email.',
+        409,
+        'EMAIL_EXISTS',
+      );
+    }
+
+    const placeholderPassword = await hashPassword(randomBytes(32).toString('hex'));
+    // Organization, staff account, tenant assignment, and invitation action
+    // are one commit. Email is deliberately sent only after that commit.
+    const created = await db.transaction(async (tx) => {
+      const organization = await storage.createOrganization(validatedData, tx);
+      const adminUser = await storage.createUser({
+        email: adminEmail,
+        name: parsedAdmin.name,
+        password: placeholderPassword,
+        phone: parsedAdmin.phone ?? undefined,
+        role: 'org_admin',
+        organizationId: organization.id,
+        locationId: null,
+      }, tx);
+      const invitation = await storage.issueAccountAction({
+        userId: adminUser.id,
+        action: 'account_invite',
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        organizationId: organization.id,
+        createdByUserId: req.user?.id ?? null,
+      }, tx);
+      return { organization, adminUser, invitation };
+    });
+
+    if (created.organization.subdomain || created.organization.slug) {
+      autoRegisterApplePayDomain(created.organization).catch(() => {});
+    }
+
+    const firstName = parsedAdmin.name.split(' ')[0];
+    const setupUrl = `${getBaseUrl(created.organization)}/set-password?token=${created.invitation.token}`;
+    let emailSent = false;
+    try {
+      emailSent = await sendTemplatedEmail('org_admin_invite', adminEmail, {
+        admin_name: firstName,
+        invite_link: setupUrl,
+        organization_name: created.organization.name,
+        organization_logo_url: getOrgLogoUrl(created.organization),
+      });
+    } catch (deliveryError) {
+      log.warn('Organization admin invitation email failed:', deliveryError);
+    }
+    const delivery = await storage.updateAccountActionDeliveryStatus(
+      created.invitation.request.id,
+      emailSent ? 'sent' : 'failed',
+    ) ?? created.invitation.request;
+
+    return sendSuccess(res, {
+      organization: sanitizeOrg(created.organization),
+      adminUser: sanitizeUser(created.adminUser),
+      emailSent,
+      invitation: publicAccountInvitation(delivery),
+    }, 201);
   } catch (error) {
     if (error instanceof z.ZodError) {
       return handleZodError(res, error);
     }
     if (error instanceof OrganizationHostnameConflictError) {
       return sendError(res, error.message, 409, 'ORG_HOSTNAME_CONFLICT');
+    }
+    if (getPgErrorCode(error) === '23505') {
+      return sendError(res, 'An account with this email already exists', 409, 'EMAIL_EXISTS');
     }
     if (handleUserOrgError(res, error)) return;
     log.error('Error creating organization:', error);
@@ -391,7 +420,14 @@ router.get('/:id/leagues', async (req, res) => {
     }
 
     const leagues = await storage.getLeagues(id);
-    sendSuccess(res, leagues);
+    const visibleLeagues = isPaymentManager(req.user)
+      ? leagues.filter((league) =>
+          req.user?.organizationId === id
+          && req.user.locationId !== null
+          && league.organizationId === id
+          && league.locationId === req.user.locationId)
+      : leagues;
+    sendSuccess(res, visibleLeagues);
   } catch (error) {
     log.error(`Error fetching leagues for organization ${req.params.id}:`, error);
     sendError(res, 'Failed to fetch organization leagues', 500, 'ServerError');

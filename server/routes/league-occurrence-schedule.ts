@@ -10,6 +10,7 @@ import {
 import { sendError, sendSuccess } from "../utils/api.js";
 import { singleRouteParam } from "../utils/route-params.js";
 import { createLogger } from "../logger.js";
+import { hasPaymentManagerAccessToLeague, isPaymentManager } from "../utils/access-control.js";
 
 const log = createLogger("LeagueOccurrenceScheduleRoutes");
 const router = Router();
@@ -38,6 +39,11 @@ async function authorizedReadScope(req: Request): Promise<{
   }
   const organizationId = req.user.organizationId;
   if (!organizationId || !Number.isSafeInteger(organizationId) || organizationId <= 0) return null;
+  if (isPaymentManager(req.user)) {
+    return await hasPaymentManagerAccessToLeague(req, leagueId)
+      ? { organizationId, leagueId, includeAdministratorEvidence: true }
+      : null;
+  }
   if (req.user.role === "org_admin") {
     return { organizationId, leagueId, includeAdministratorEvidence: true };
   }

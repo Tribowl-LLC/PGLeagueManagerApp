@@ -3,7 +3,7 @@ import { storage } from '../storage';
 import { insertTeamSchema, updateTeamSchema, reorderTeamsSchema, type Team } from "@shared/schema";
 import { z } from "zod";
 import { sendSuccess, sendError, handleZodError, parseOptionalIntParam, sanitizeBowler } from '../utils/api.js';
-import { hasAdminAccessToLeague, isOrgOrHigher } from '../utils/access-control.js';
+import { hasLeagueOperationsAccess, isOrgOrHigher, isPaymentManager } from '../utils/access-control.js';
 import { createLogger } from '../logger';
 
 const log = createLogger("Teams");
@@ -37,7 +37,7 @@ router.get("/", async (req, res) => {
       }
 
       // Team lists require administrative access to the league.
-      const userHasAccess = await hasAdminAccessToLeague(req, leagueId);
+      const userHasAccess = await hasLeagueOperationsAccess(req, leagueId);
       if (userHasAccess) {
         teams = await storage.getTeams(leagueId);
       } else {
@@ -62,7 +62,14 @@ router.get("/", async (req, res) => {
       } else if (scopedOrgId !== null) {
         // Org admins and affiliated system admins see all teams across the org.
         // Plain users cannot use this organization-wide listing surface.
-        if (isOrgOrHigher(req.user)) {
+        if (isPaymentManager(req.user)) {
+          const leagues = (await storage.getLeagues(scopedOrgId)).filter(
+            (league) => league.locationId !== null && league.locationId === req.user?.locationId,
+          );
+          const teamPromises = leagues.map((league) => storage.getTeams(league.id));
+          const teamsArrays = await Promise.all(teamPromises);
+          teams = teamsArrays.flat();
+        } else if (isOrgOrHigher(req.user)) {
           const leagues = await storage.getLeagues(scopedOrgId);
           const teamPromises = leagues.map(league => storage.getTeams(league.id));
           const teamsArrays = await Promise.all(teamPromises);
@@ -118,7 +125,7 @@ router.patch("/reorder", async (req, res) => {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
 
-    if (!(await hasAdminAccessToLeague(req, leagueId))) {
+    if (!(await hasLeagueOperationsAccess(req, leagueId))) {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
 
@@ -153,7 +160,7 @@ router.get("/:id/details", async (req, res) => {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
 
-    if (!(await hasAdminAccessToLeague(req, team.leagueId))) {
+    if (!(await hasLeagueOperationsAccess(req, team.leagueId))) {
       return sendError(res, "You don't have access to this team", 403, 'FORBIDDEN');
     }
 
@@ -200,7 +207,7 @@ router.get("/:id", async (req, res) => {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
 
-    if (!(await hasAdminAccessToLeague(req, team.leagueId))) {
+    if (!(await hasLeagueOperationsAccess(req, team.leagueId))) {
       return sendError(res, "You don't have access to this team", 403, 'FORBIDDEN');
     }
     
@@ -227,7 +234,7 @@ router.post("/", async (req, res) => {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
 
-    if (!(await hasAdminAccessToLeague(req, team.leagueId))) {
+    if (!(await hasLeagueOperationsAccess(req, team.leagueId))) {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
     
@@ -265,7 +272,7 @@ router.patch("/:id", async (req, res) => {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
 
-    if (!(await hasAdminAccessToLeague(req, team.leagueId))) {
+    if (!(await hasLeagueOperationsAccess(req, team.leagueId))) {
       return sendError(res, "You don't have access to this team", 403, 'FORBIDDEN');
     }
     
@@ -309,7 +316,7 @@ router.delete("/:id", async (req, res) => {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
 
-    if (!(await hasAdminAccessToLeague(req, team.leagueId))) {
+    if (!(await hasLeagueOperationsAccess(req, team.leagueId))) {
       return sendError(res, "You don't have access to this team", 403, 'FORBIDDEN');
     }
     

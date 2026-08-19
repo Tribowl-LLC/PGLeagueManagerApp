@@ -239,7 +239,7 @@ export function LeagueOccurrenceScheduleCard({
           </ol>
         )}
 
-        {schedule?.administrator && (
+        {schedule?.administrator && isAdministrator && (
           <section className="space-y-4 border-t pt-5" aria-labelledby="schedule-administration-heading">
             <div>
               <h3 id="schedule-administration-heading" className="text-lg font-semibold">Schedule administration</h3>

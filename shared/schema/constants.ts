@@ -16,7 +16,7 @@ export const WeekDay = {
   SUNDAY: WEEKDAYS[6],
 } as const;
 
-export const USER_ROLES = ['system_admin', 'org_admin', 'user'] as const;
+export const USER_ROLES = ['system_admin', 'org_admin', 'payment_manager', 'user'] as const;
 export const userRoleEnum = pgEnum('user_role', USER_ROLES);
 export type UserRole = (typeof USER_ROLES)[number];
 

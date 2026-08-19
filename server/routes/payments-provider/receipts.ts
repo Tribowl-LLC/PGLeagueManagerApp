@@ -123,7 +123,7 @@ router.post('/payments/:id/resend-receipt', paymentWriteLimiter, async (req, res
       return sendError(res, 'Invalid payment ID', 400, 'INVALID_ID');
     }
 
-    if (req.user?.role !== 'system_admin' && req.user?.role !== 'org_admin') {
+    if (req.user?.role !== 'system_admin' && req.user?.role !== 'org_admin' && (req.user?.role as string | undefined) !== 'payment_manager') {
       return sendError(res, 'Admin access required', 403, 'FORBIDDEN');
     }
 
@@ -133,7 +133,7 @@ router.post('/payments/:id/resend-receipt', paymentWriteLimiter, async (req, res
     }
     const overrideEmail = parsed.data.email?.trim() || '';
 
-    if (req.user.role !== 'system_admin') {
+    if (req.user?.role !== 'system_admin') {
       const hasAccess = await hasAccessToPayment(req, id);
       if (!hasAccess) {
         return sendError(res, "You don't have access to this payment", 403, 'FORBIDDEN');

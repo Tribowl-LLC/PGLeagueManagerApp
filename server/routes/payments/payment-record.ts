@@ -11,7 +11,7 @@ import { isCardPaymentType } from "@shared/schema/constants";
 import { z } from "zod";
 import { sendSuccess, sendError, handleZodError, sanitizePayment } from '../../utils/api.js';
 import { singleRouteParam } from '../../utils/route-params';
-import { hasAccessToPayment, hasAdminAccessToLeague, isSystemAdmin } from '../../utils/access-control.js';
+import { hasAccessToPayment, hasAdminAccessToLeague, hasPaymentManagerAccessToLeague, hasPaymentManagerAccessToPayment, isPaymentManager, isSystemAdmin } from '../../utils/access-control.js';
 import { paymentWriteLimiter } from '../../middleware/rate-limit.js';
 import { differenceInWeeks } from 'date-fns';
 import { paymentScheduler } from '../../services/payment-scheduler.js';
@@ -36,6 +36,23 @@ router.post("/", paymentWriteLimiter, async (req, res) => {
     if (payment.type === 'check' && !payment.checkNumber) {
       return sendError(res, 'Check number is required for check payments', 400, 'VALIDATION_ERROR');
     }
+
+    if (isPaymentManager(req.user)) {
+      const allowedFields = new Set([
+        'bowlerId', 'leagueId', 'amount', 'weekOf', 'status', 'type',
+        'checkNumber', 'notes', 'idempotencyKey',
+      ]);
+      const hasSensitiveField = Object.keys(req.body as Record<string, unknown>)
+        .some((field) => !allowedFields.has(field));
+      if (isCardPaymentType(payment.type) || payment.status !== 'paid' || hasSensitiveField) {
+        return sendError(
+          res,
+          'Payment managers may create paid cash or check bookkeeping records only',
+          403,
+          'FORBIDDEN',
+        );
+      }
+    }
     
     const league = await storage.getLeague(payment.leagueId);
     if (!league) {
@@ -43,7 +60,9 @@ router.post("/", paymentWriteLimiter, async (req, res) => {
     }
     // Cash/check payment recording requires administrator access to the
     // league and still respects the org-less deny rule.
-    if (!(await hasAdminAccessToLeague(req, payment.leagueId))) {
+    const hasLeagueAccess = await hasAdminAccessToLeague(req, payment.leagueId)
+      || await hasPaymentManagerAccessToLeague(req, payment.leagueId);
+    if (!hasLeagueAccess) {
       return sendError(res, "You don't have access to create payments for this league", 403, 'FORBIDDEN');
     }
 
@@ -177,6 +196,26 @@ router.patch("/:id", paymentWriteLimiter, async (req, res) => {
       Object.entries(parsed).map(([k, v]) => [k, v === null ? undefined : v])
     ) as z.infer<typeof updatePaymentSchema>;
 
+    const existingPayment = await storage.getPaymentById(id);
+    if (isPaymentManager(req.user)) {
+      // Payment ownership is immutable from the bookkeeping surface.  The
+      // current update schema does not expose leagueId/bowlerId, but reject
+      // those keys explicitly as well so a future schema extension cannot
+      // let a location-scoped operator move a row across a league or bowler
+      // boundary without a corresponding scoped authorization check.
+      const allowedFields = new Set(['amount', 'weekOf', 'type', 'checkNumber', 'notes']);
+      if (req.body && typeof req.body === 'object'
+        && Object.keys(req.body as Record<string, unknown>).some((field) => !allowedFields.has(field))) {
+        return sendError(res, 'Payment managers may edit cash/check bookkeeping fields only', 403, 'FORBIDDEN');
+      }
+      if (!existingPayment || !(await hasPaymentManagerAccessToPayment(req, id))) {
+        return sendError(res, "You don't have access to update this payment", 403, 'FORBIDDEN');
+      }
+      if (isCardPaymentType(existingPayment.type) || (update.type !== undefined && isCardPaymentType(update.type))) {
+        return sendError(res, 'Payment managers may update cash or check payments only', 403, 'FORBIDDEN');
+      }
+    }
+
     // If updating to check payment type, ensure check number is provided
     if (update.type === 'check' && !update.checkNumber) {
       return sendError(res, 'Check number is required for check payments', 400, 'VALIDATION_ERROR');
@@ -184,7 +223,7 @@ router.patch("/:id", paymentWriteLimiter, async (req, res) => {
     
     // Check if the user is a system administrator or an organization
     // administrator for the payment's organization.
-    if (!isSystemAdmin(req.user)) {
+    if (!isSystemAdmin(req.user) && !isPaymentManager(req.user)) {
       const hasAccess = await hasAccessToPayment(req, id);
       if (!hasAccess) {
         return sendError(res, "You don't have access to update this payment", 403, 'FORBIDDEN');
@@ -224,7 +263,11 @@ router.delete("/:id", paymentWriteLimiter, async (req, res) => {
       return sendError(res, "Only admins can delete card payments", 403, "FORBIDDEN");
     }
 
-    if (!isSystemAdmin(req.user)) {
+    if (isPaymentManager(req.user) && !(await hasPaymentManagerAccessToPayment(req, id))) {
+      return sendError(res, "You don't have access to delete this payment", 403, 'FORBIDDEN');
+    }
+
+    if (!isSystemAdmin(req.user) && !isPaymentManager(req.user)) {
       const hasAccess = await hasAccessToPayment(req, id);
       if (!hasAccess) {
         return sendError(res, "You don't have access to delete this payment", 403, 'FORBIDDEN');

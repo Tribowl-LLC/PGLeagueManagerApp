@@ -1,23 +1,28 @@
 import { Express, Router } from "express";
 import passport from "passport";
 import rateLimit from "express-rate-limit";
-import { randomBytes } from "crypto";
 import { z } from "zod";
 import { storage } from "../storage";
-import { User as SelectUser, insertUserSchema } from "@shared/schema";
+import { db } from "../db.js";
+import { ACCOUNT_ACTION_TYPES, User as SelectUser, insertUserSchema } from "@shared/schema";
 import { passwordSchema } from "@shared/password-validation";
 import { sanitizeUser, sendSuccess, sendError, handleUserOrgError } from "../utils/api.js";
 import { isDev } from "../config";
 import { checkUserBelongsToOrg } from "../middleware/subdomain";
 import { csrfProtection } from "../middleware/csrf";
 import { createLogger } from "../logger";
-import { hashPassword, safeTokenCompare } from "../lib/password";
+import { hashPassword } from "../lib/password";
 import { destroyOtherSessionsForUser } from "../auth";
 import { sendTemplatedEmail, getBaseUrl, getOrgLogoUrl, sendPasswordChangedNotification } from "../services/email.js";
 import { syncUserPhoneToBowler } from "../services/bowler-phone-sync.js";
 import { fireBowlerExternalResync } from "../services/bowler-resync.js";
 import { maskEmail } from "../utils/pii.js";
+import { cacheInvalidate } from "../utils/cache.js";
 import { createSharedRateLimitStore } from "../utils/rate-limit-store";
+import {
+  linkUserToBowler as linkIdentityUserToBowler,
+  isIdentityLinkError,
+} from "../services/identity-link.js";
 // Same allowlist account.ts uses for /api/account/profile (task #420).
 // We pull it from the password-changed email bundle directly rather
 // than re-importing it from `./account` so the unauthenticated
@@ -173,31 +178,61 @@ export function registerAuthRoutes(app: Express): void {
       }
 
       const hashedPassword = await hashPassword(result.data.password);
+      const matchingBowler = await storage.getBowlerByEmail(result.data.email, organizationId);
 
       let user;
+      let bowlerLinked = false;
       try {
-        user = await storage.createUser({
-          ...result.data,
-          password: hashedPassword,
-          role: 'user',
-          organizationId,
+        user = await db.transaction(async (tx) => {
+          let createdUser = await storage.createUser({
+            ...result.data,
+            password: hashedPassword,
+            role: 'user',
+            organizationId,
+          }, tx);
+
+          if (matchingBowler) {
+            try {
+              const linked = await linkIdentityUserToBowler({
+                organizationId,
+                userId: createdUser.id,
+                bowlerId: matchingBowler.id,
+                actorUserId: createdUser.id,
+                source: "auth.register",
+                reason: "email_match_auto_link",
+                eventType: "link",
+              }, tx);
+              // Return the row updated by the identity service so the new
+              // login session and registration response immediately reflect
+              // the committed bowler claim.
+              createdUser = linked.user;
+              bowlerLinked = true;
+            } catch (linkError) {
+              // A racing registration/invite may claim the roster row first.
+              // Keep this new account unlinked, matching the historical
+              // behavior, while all successful create+link writes remain one
+              // transaction.
+              if (!isIdentityLinkError(linkError)
+                || (linkError.code !== "BOWLER_TAKEN" && linkError.code !== "ALREADY_LINKED")) {
+                throw linkError;
+              }
+            }
+          }
+          return createdUser;
         });
       } catch (createError) {
         if (handleUserOrgError(res, createError)) return;
         throw createError;
       }
+      if (bowlerLinked) {
+        // The link was performed with the registration transaction's
+        // executor, so the identity service deliberately deferred cache
+        // invalidation until the caller's commit completed.
+        cacheInvalidate(`user:${user.id}`);
+      }
 
-      let bowlerLinked = false;
       try {
-        const bowler = organizationId
-          ? await storage.getBowlerByEmail(result.data.email, organizationId)
-          : await storage.getBowlerByEmailSystemAdmin(result.data.email);
-        if (bowler) {
-          const alreadyLinked = await storage.isBowlerLinked(bowler.id);
-          if (!alreadyLinked) {
-            await storage.linkUserToBowler(user.id, bowler.id);
-            bowlerLinked = true;
-
+        if (matchingBowler && bowlerLinked) {
             // Task #677: copy the freshly-registered user's phone
             // onto the linked bowler row (user wins, since the
             // bowler typed it themselves at sign-up). Then kick the
@@ -206,25 +241,22 @@ export function registerAuthRoutes(app: Express): void {
             // their own errors — they must NEVER block the
             // registration response.
             try {
-              const syncResult = await syncUserPhoneToBowler(user.id, bowler.id);
+              const syncResult = await syncUserPhoneToBowler(user.id, matchingBowler.id);
               if (syncResult.outcome === 'updated') {
-                fireBowlerExternalResync(bowler.id, bowler.organizationId ?? organizationId);
+                fireBowlerExternalResync(matchingBowler.id, matchingBowler.organizationId);
               }
             } catch (phoneErr) {
               log.error('Failed to sync user phone to bowler at registration:', phoneErr);
             }
 
-            const bowlerLeagueEntries = await storage.getBowlerLeagues({ bowlerId: bowler.id });
+            const bowlerLeagueEntries = await storage.getBowlerLeagues({ bowlerId: matchingBowler.id });
             if (bowlerLeagueEntries.length > 0) {
               const league = await storage.getLeague(bowlerLeagueEntries[0].leagueId);
               if (league?.organizationId) {
-                const [, org] = await Promise.all([
-                  storage.setUserOrganization(user.id, league.organizationId),
-                  storage.getOrganization(league.organizationId),
-                ]);
+                const org = await storage.getOrganization(league.organizationId);
                 const baseUrl = getBaseUrl(org ?? req.orgSlug);
                 sendTemplatedEmail('self_register_linked', result.data.email, {
-                  bowler_name: bowler.name,
+                  bowler_name: matchingBowler.name,
                   organization_name: org?.name || '',
                   organization_logo_url: org?.logo ? getOrgLogoUrl(org) : '',
                   league_name: league.name,
@@ -232,7 +264,6 @@ export function registerAuthRoutes(app: Express): void {
                 }).catch(err => log.error('Failed to send self_register_linked email:', err));
               }
             }
-          }
         }
 
         if (!bowlerLinked) {
@@ -371,7 +402,7 @@ export function registerAuthRoutes(app: Express): void {
     try {
       const { token, password } = req.body;
 
-      if (!token || !password) {
+      if (typeof token !== "string" || token.length === 0 || !password) {
         return sendError(res, "Token and password are required", 400, "VALIDATION_ERROR");
       }
 
@@ -419,53 +450,39 @@ export function registerAuthRoutes(app: Express): void {
         );
       }
 
-      const user = await storage.getUserByInviteToken(token);
-      if (!user || !user.inviteToken || !safeTokenCompare(token, user.inviteToken)) {
+      const actionRecord = await storage.getAccountActionByToken(token);
+      if (
+        !actionRecord ||
+        !ACCOUNT_ACTION_TYPES.includes(actionRecord.request.action)
+      ) {
         return sendError(res, "Invalid or expired invitation link", 400, "INVALID_TOKEN");
       }
 
-      if (user.inviteTokenExpiry && new Date(user.inviteTokenExpiry) < new Date()) {
+      if (
+        actionRecord.request.status === "expired" ||
+        (actionRecord.request.status === "pending" && new Date(actionRecord.request.expiresAt) <= new Date())
+      ) {
         return sendError(res, "This invitation link has expired. Please ask your administrator to resend the invite.", 400, "TOKEN_EXPIRED");
+      }
+      if (actionRecord.request.status !== "pending") {
+        return sendError(res, "Invalid or expired invitation link", 400, "INVALID_TOKEN");
       }
 
       const hashedPassword = await hashPassword(password);
-      // Persist the language choice in the SAME updateUser call as
-      // the password so we don't burn a second round trip, and so a
-      // crash between the two writes can't leave the user with a
-      // rotated password but a stale (English-only) language column.
-      //
-      // Task #455: clear `mustChangePassword` here too. If an admin
-      // had reset this user's password and the user instead used
-      // the forgot-password / invite-token flow to recover (a
-      // perfectly legitimate path — they may not have remembered
-      // the temporary password the admin emailed them), they HAVE
-      // chosen a fresh password and the impersonation window is
-      // closed. Without this clear, requirePasswordRotated would
-      // keep them trapped on /change-password-required even though
-      // the credential the admin knew is now dead. Bundled into the
-      // same updateUser write as the hash so a crash between writes
-      // can't leave the row "rotated but still flagged."
-      const userPatch: {
-        password: string;
-        preferredLanguage?: string | null;
-        mustChangePassword: boolean;
-      } = {
-        password: hashedPassword,
-        mustChangePassword: false,
-      };
-      if (preferredLanguage !== undefined) {
-        userPatch.preferredLanguage = preferredLanguage;
+      // Claiming the action and rotating the password are one transaction.
+      // This also supersedes every other pending credential action and
+      // invalidates pending email changes. Legacy invite columns are
+      // deliberately untouched during this compatibility release.
+      const completed = await storage.consumeAccountActionAndSetPassword({
+        token,
+        passwordHash: hashedPassword,
+        ...(preferredLanguage !== undefined ? { preferredLanguage } : {}),
+      });
+      if (!completed) {
+        return sendError(res, "Invalid or expired invitation link", 400, "INVALID_TOKEN");
       }
-      await Promise.all([
-        storage.updateUser(user.id, userPatch),
-        storage.clearUserInviteToken(user.id),
-        // A password set/reset must invalidate any in-flight email-change
-        // confirmation token — same defense-in-depth as the authenticated
-        // change-password endpoint. Otherwise a hijacker could pre-issue a
-        // confirmation link and silently swap the email after the legitimate
-        // owner reclaims their account via reset.
-        storage.invalidatePendingEmailChangeRequestsForUser(user.id),
-      ]);
+      const user = completed.user;
+      let authenticatedUser = user;
 
       // Task #352: force-log-out every existing session for this user.
       // The reset/set-password flow runs unauthenticated, so unlike the
@@ -533,20 +550,40 @@ export function registerAuthRoutes(app: Express): void {
       }
 
       try {
-        const bowler = await storage.getBowlerByEmailSystemAdmin(user.email);
+        const bowler = user.organizationId
+          ? await storage.getBowlerByEmail(user.email, user.organizationId)
+          : await storage.getBowlerByEmailSystemAdmin(user.email);
         if (bowler) {
           const alreadyLinked = await storage.isBowlerLinked(bowler.id);
           if (!alreadyLinked) {
-            await storage.linkUserToBowler(user.id, bowler.id);
-
-            if (!user.organizationId) {
-              const bowlerLeagueEntries = await storage.getBowlerLeagues({ bowlerId: bowler.id });
-              if (bowlerLeagueEntries.length > 0) {
-                const league = await storage.getLeague(bowlerLeagueEntries[0].leagueId);
-                if (league?.organizationId) {
-                  await storage.setUserOrganization(user.id, league.organizationId);
-                }
-              }
+            const linkOrganizationId = user.organizationId ?? bowler.organizationId;
+            if (!linkOrganizationId) {
+              throw new Error("Cannot auto-link a bowler without organization context");
+            }
+            const linkInput = {
+              organizationId: linkOrganizationId,
+              userId: user.id,
+              bowlerId: bowler.id,
+              actorUserId: user.id,
+              source: "auth.set-password",
+              reason: "email_match_auto_link",
+              eventType: "link",
+            } as const;
+            if (user.organizationId) {
+              authenticatedUser = (await linkIdentityUserToBowler(linkInput)).user;
+            } else {
+              // One-release legacy recovery: tenant assignment, bowler link,
+              // and audit event commit together instead of leaving an
+              // org-bound but unlinked half-state on failure.
+              authenticatedUser = await db.transaction(async (tx) => {
+                await storage.setUserOrganization(user.id, linkOrganizationId, tx);
+                return (await linkIdentityUserToBowler(linkInput, tx)).user;
+              });
+              // The identity service cannot invalidate while it is using a
+              // caller-owned transaction. Invalidate only after the outer
+              // transaction has committed so readers do not observe a stale
+              // org/bowler association.
+              cacheInvalidate(`user:${authenticatedUser.id}`);
             }
           }
         }
@@ -554,12 +591,12 @@ export function registerAuthRoutes(app: Express): void {
         log.error('Auto-link bowler after set-password failed:', linkError);
       }
 
-      req.login(user, (err) => {
+      req.login(authenticatedUser, (err) => {
         if (err) {
           log.error('Auto-login after password set failed:', err);
           return sendSuccess(res, { message: "Password set successfully. Please log in." });
         }
-        sendSuccess(res, sanitizeUser(user));
+        sendSuccess(res, sanitizeUser(authenticatedUser));
       });
     } catch (error) {
       log.error('Set password error:', error);
@@ -581,9 +618,14 @@ export function registerAuthRoutes(app: Express): void {
         if (!user) return;
         if (!user.password) return;
 
-        const token = randomBytes(32).toString("hex");
         const expiry = new Date(Date.now() + 60 * 60 * 1000);
-        await storage.setUserInviteToken(user.id, token, expiry);
+        const issued = await storage.issueAccountAction({
+          userId: user.id,
+          action: "password_reset",
+          expiresAt: expiry,
+          organizationId: user.organizationId,
+        });
+        const token = issued.token;
 
         const org = user.organizationId ? await storage.getOrganization(user.organizationId) : null;
         const baseUrl = getBaseUrl(org);
@@ -591,21 +633,35 @@ export function registerAuthRoutes(app: Express): void {
 
         const firstName = user.name?.split(' ')[0] || user.email;
 
-        const sent = await sendTemplatedEmail('password_reset', email, {
-          bowler_name: firstName,
-          reset_link: resetUrl,
-          // Existing password_reset templates may use the legacy invite
-          // variable shared with onboarding emails.
-          invite_link: resetUrl,
-          organization_name: org?.name || 'LeagueVault',
-        });
+        let sent = false;
+        try {
+          sent = await sendTemplatedEmail('password_reset', user.email, {
+            bowler_name: firstName,
+            reset_link: resetUrl,
+            // Existing password_reset templates may use the legacy invite
+            // variable shared with onboarding emails.
+            invite_link: resetUrl,
+            organization_name: org?.name || 'LeagueVault',
+          });
+        } catch (deliveryError) {
+          log.error('Password reset templated delivery failed:', deliveryError);
+        }
 
         if (!sent) {
           const { sendPasswordResetFallbackEmail } = await import('../services/email.js');
-          await sendPasswordResetFallbackEmail(email, firstName || 'there', token, org?.subdomain || org?.slug);
+          try {
+            sent = await sendPasswordResetFallbackEmail(user.email, firstName || 'there', token, org?.subdomain || org?.slug);
+          } catch (deliveryError) {
+            log.error('Password reset fallback delivery failed:', deliveryError);
+          }
         }
 
-        log.info('Password reset email sent', { userId: user.id, email });
+        await storage.updateAccountActionDeliveryStatus(
+          issued.request.id,
+          sent ? "sent" : "failed",
+        );
+
+        log.info('Password reset delivery attempted', { userId: user.id, sent });
       } catch (bgError) {
         log.error('Failed to process forgot-password request:', bgError);
       }
@@ -657,10 +713,31 @@ export function registerAuthRoutes(app: Express): void {
         return sendError(res, "This bowler is already linked to another account", 400, "ALREADY_LINKED");
       }
 
-      await Promise.all([
-        storage.linkUserToBowler(user.id, bowlerId),
-        storage.updateBowler(bowlerId, { ...bowler, email: user.email }),
-      ]);
+      try {
+        await linkIdentityUserToBowler({
+          organizationId: user.organizationId,
+          userId: user.id,
+          bowlerId,
+          actorUserId: user.id,
+          source: "auth.claim-bowler",
+          reason: "email_ownership_claim",
+          eventType: "link",
+        });
+      } catch (linkError) {
+        if (isIdentityLinkError(linkError)) {
+          if (linkError.code === "BOWLER_TAKEN" || linkError.code === "ALREADY_LINKED") {
+            return sendError(res, "This bowler is already linked to another account", 400, "ALREADY_LINKED");
+          }
+          if (linkError.code === "CROSS_ORG_DENIED" || linkError.code === "ORG_REQUIRED" || linkError.code === "ELEVATED_ROLE_DENIED") {
+            return sendError(res, "You don't have access to this bowler", 403, "FORBIDDEN");
+          }
+          if (linkError.code === "BOWLER_NOT_FOUND") {
+            return sendError(res, "Bowler not found", 404, "NOT_FOUND");
+          }
+        }
+        throw linkError;
+      }
+      await storage.updateBowler(bowlerId, { ...bowler, email: user.email });
 
       const bowlerLeagueEntries = await storage.getBowlerLeagues({ bowlerId });
       if (bowlerLeagueEntries.length > 0) {
@@ -694,17 +771,26 @@ export function registerAuthRoutes(app: Express): void {
   authRouter.get("/validate-invite", async (req, res) => {
     try {
       const token = req.query.token as string;
-      if (!token) {
+      if (typeof token !== "string" || token.length === 0) {
         return sendError(res, "Token is required", 400, "VALIDATION_ERROR");
       }
 
-      const user = await storage.getUserByInviteToken(token);
-      if (!user || !user.inviteToken || !safeTokenCompare(token, user.inviteToken)) {
+      const actionRecord = await storage.getAccountActionByToken(token);
+      if (
+        !actionRecord ||
+        actionRecord.request.action !== "account_invite"
+      ) {
         return sendError(res, "Invalid invitation link", 400, "INVALID_TOKEN");
       }
 
-      if (user.inviteTokenExpiry && new Date(user.inviteTokenExpiry) < new Date()) {
+      if (
+        actionRecord.request.status === "expired" ||
+        (actionRecord.request.status === "pending" && new Date(actionRecord.request.expiresAt) <= new Date())
+      ) {
         return sendError(res, "This invitation link has expired", 400, "TOKEN_EXPIRED");
+      }
+      if (actionRecord.request.status !== "pending") {
+        return sendError(res, "Invalid invitation link", 400, "INVALID_TOKEN");
       }
 
       // Token-gated, but the link can still be forwarded (family
@@ -714,7 +800,7 @@ export function registerAuthRoutes(app: Express): void {
       // user's name to anyone who reads the URL over their
       // shoulder. The bearer of a valid token can already complete
       // signup; this avoids broadening that disclosure.
-      return sendSuccess(res, { email: maskEmail(user.email) });
+      return sendSuccess(res, { email: maskEmail(actionRecord.user.email) });
     } catch (error) {
       log.error('Validate invite error:', error);
       sendError(res, "Failed to validate invite", 500, "SERVER_ERROR");

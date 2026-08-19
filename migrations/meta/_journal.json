@@ -183,6 +183,13 @@
       "when": 1787070646978,
       "tag": "0025_f2_interactive_occurrence_actor",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1787101376855,
+      "tag": "0026_identity_integrity_hardening",
+      "breakpoints": true
     }
   ]
 }

@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { getCanonicalActivationSource, activateCanonicalFinancials, FinancialActivationError, FinancialReadIncompatibilityError, readCanonicalDuePastDue } from "../services/canonical-due-past-due.js";
-import { hasAdminAccessToLeague } from "../utils/access-control.js";
+import { getPaymentManagerAccessibleLeagueIds, hasAdminAccessToLeague, hasPaymentManagerAccessToLeague, isPaymentManager } from "../utils/access-control.js";
 import { sendError, sendSuccess } from "../utils/api.js";
 import { storage } from "../storage/index.js";
 import { db } from "../db.js";
@@ -44,13 +44,20 @@ router.get("/due-past-due", async (req, res) => {
   const requestedOrganizationId = queryPositiveInt(req.query.organizationId);
   if (requestedOrganizationId === null) return sendError(res, "Invalid scope", 400, "INVALID_SCOPE");
   if (req.user?.role === "system_admin" && (requestedOrganizationId === undefined || !Number.isSafeInteger(requestedOrganizationId) || requestedOrganizationId <= 0)) return sendError(res, "Organization scope is required", 400, "INVALID_SCOPE");
-  if (req.user?.role !== "system_admin" && req.user?.role !== "org_admin") return sendError(res, "Not found", 404, "NOT_FOUND");
+  if (req.user?.role !== "system_admin" && req.user?.role !== "org_admin" && !isPaymentManager(req.user)) return sendError(res, "Not found", 404, "NOT_FOUND");
   if (req.user?.role !== "system_admin" && requestedOrganizationId !== undefined && requestedOrganizationId !== req.user?.organizationId) return sendError(res, "Not found", 404, "NOT_FOUND");
   const organizationId = req.user?.role === "system_admin" ? requestedOrganizationId : req.user?.organizationId;
   if (!organizationId || !Number.isSafeInteger(organizationId) || organizationId <= 0) return sendError(res, "Not found", 404, "NOT_FOUND");
   try {
     const leagues = await storage.getLeagues(organizationId);
-    const reports = await Promise.all(leagues.filter((league) => league.organizationId === organizationId).sort((a, b) => a.id - b.id).map(async (league) => ({ leagueId: league.id, name: league.name, report: await readCanonicalDuePastDue({ organizationId, leagueId: league.id, bowlerId: undefined }) })));
+    const paymentManagerLeagueIds = isPaymentManager(req.user)
+      ? new Set(await getPaymentManagerAccessibleLeagueIds(req))
+      : null;
+    const reports = await Promise.all(leagues
+      .filter((league) => league.organizationId === organizationId)
+      .filter((league) => paymentManagerLeagueIds === null || paymentManagerLeagueIds.has(league.id))
+      .sort((a, b) => a.id - b.id)
+      .map(async (league) => ({ leagueId: league.id, name: league.name, report: await readCanonicalDuePastDue({ organizationId, leagueId: league.id, bowlerId: undefined }) })));
     const response: FinancialOrganizationDuePastDueContract = { contractVersion: "canonical-due-past-due/1", orderVersion: "due-at,bowler,occurrence,obligation/1", organizationId, authoritativeSource: "per-league-snapshots", leagues: reports };
     return sendSuccess(res, response);
   } catch (error) {
@@ -128,10 +135,27 @@ router.get("/leagues/:leagueId/due-past-due", async (req, res) => {
   const league = await storage.getLeague(leagueId);
   if (!league || league.organizationId === null || (requestedOrganizationId !== undefined && requestedOrganizationId !== league.organizationId)) return sendError(res, "Not found", 404, "NOT_FOUND");
   if (req.user.role !== "system_admin" && req.user.organizationId !== league.organizationId) return sendError(res, "Not found", 404, "NOT_FOUND");
-  const isAdmin = await hasAdminAccessToLeague(req, leagueId);
+  const isAdmin = await hasAdminAccessToLeague(req, leagueId)
+    || await hasPaymentManagerAccessToLeague(req, leagueId);
+  if (isPaymentManager(req.user) && !await hasPaymentManagerAccessToLeague(req, leagueId)) {
+    return sendError(res, "Not found", 404, "NOT_FOUND");
+  }
   const requestedBowler = queryPositiveInt(req.query.bowlerId);
   if (requestedBowler === null) return sendError(res, "Not found", 404, "NOT_FOUND");
   if (requestedBowler !== undefined && (!Number.isSafeInteger(requestedBowler) || requestedBowler <= 0)) return sendError(res, "Not found", 404, "NOT_FOUND");
+  if (isPaymentManager(req.user) && requestedBowler !== undefined) {
+    const [membership] = await db.select({ bowlerId: bowlerLeagues.bowlerId })
+      .from(bowlerLeagues)
+      .innerJoin(bowlers, and(eq(bowlers.id, bowlerLeagues.bowlerId), eq(bowlers.organizationId, league.organizationId)))
+      .where(and(
+        eq(bowlerLeagues.leagueId, leagueId),
+        eq(bowlerLeagues.bowlerId, requestedBowler),
+        eq(bowlerLeagues.active, true),
+        eq(bowlers.active, true),
+      ))
+      .limit(1);
+    if (!membership) return sendError(res, "Not found", 404, "NOT_FOUND");
+  }
   if (!isAdmin) {
     if (!req.user.bowlerId || (requestedBowler !== undefined && requestedBowler !== req.user.bowlerId)) return sendError(res, "Not found", 404, "NOT_FOUND");
     const [membership] = await db.select({ bowlerId: bowlerLeagues.bowlerId }).from(bowlerLeagues)

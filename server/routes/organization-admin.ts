@@ -19,6 +19,7 @@ import { createLogger } from '../logger';
 import { recordAdminPasswordResetAudit } from '../storage/admin-password-reset-audits';
 import { recordAdminRoleChangeAudit } from '../storage/admin-role-change-audits';
 import type { User, UserRole } from '@shared/schema';
+import { publicAccountInvitation } from '../services/account-invitation.js';
 
 const log = createLogger("OrgAdmin");
 
@@ -179,6 +180,10 @@ router.get('/users', requireOrgAdminOrSystemAdmin, async (req: Request, res: Res
     }
     
     const users = await storage.getOrganizationUsers(organizationId);
+    const latestInvitations = await storage.getLatestAccountInvitationsForUsers(
+      users.map((user) => user.id),
+      organizationId,
+    );
     
     const bowlerIds = users
       .map((u) => u.bowlerId)
@@ -189,16 +194,23 @@ router.get('/users', requireOrgAdminOrSystemAdmin, async (req: Request, res: Res
       storage.getBowlerLeaguesByBowlerIds(bowlerIds),
     ]);
 
-    const bowlerMap = new Map(allBowlers.map(b => [b.id, b]));
+    // The composite users→bowlers FK prevents this mismatch after the
+    // identity migration, but keep this read path fail-closed for legacy or
+    // manually repaired rows: an org admin must never see a linked bowler
+    // from another tenant through a stale users.bowler_id.
+    const scopedBowlers = allBowlers.filter((bowler) => bowler.organizationId === organizationId);
+    const scopedBowlerIds = new Set(scopedBowlers.map((bowler) => bowler.id));
+    const scopedBowlerLeagueEntries = allBowlerLeagueEntries.filter((entry) => scopedBowlerIds.has(entry.bowlerId));
+    const bowlerMap = new Map(scopedBowlers.map(b => [b.id, b]));
     const blByBowler = new Map<number, typeof allBowlerLeagueEntries>();
-    for (const bl of allBowlerLeagueEntries) {
+    for (const bl of scopedBowlerLeagueEntries) {
       const bowlerLeagueEntries = blByBowler.get(bl.bowlerId) ?? [];
       bowlerLeagueEntries.push(bl);
       blByBowler.set(bl.bowlerId, bowlerLeagueEntries);
     }
 
-    const leagueIds = [...new Set(allBowlerLeagueEntries.map(bl => bl.leagueId))];
-    const teamIds = [...new Set(allBowlerLeagueEntries.map(bl => bl.teamId))];
+    const leagueIds = [...new Set(scopedBowlerLeagueEntries.map(bl => bl.leagueId))];
+    const teamIds = [...new Set(scopedBowlerLeagueEntries.map(bl => bl.teamId))];
     const [allLeagues, allTeams] = await Promise.all([
       storage.getLeaguesByIds(leagueIds),
       storage.getTeamsByIds(teamIds),
@@ -209,13 +221,22 @@ router.get('/users', requireOrgAdminOrSystemAdmin, async (req: Request, res: Res
     const usersWithBowlerInfo = users.map((user) => {
       const safeUser = sanitizeUser(user);
       if (!user.bowlerId) {
-        return { ...safeUser, linkedBowler: null };
+        return {
+          ...safeUser,
+          linkedBowler: null,
+          invitation: publicAccountInvitation(latestInvitations.get(user.id)),
+        };
       }
       const bowler = bowlerMap.get(user.bowlerId);
       if (!bowler) {
-        return { ...safeUser, linkedBowler: null };
+        return {
+          ...safeUser,
+          linkedBowler: null,
+          invitation: publicAccountInvitation(latestInvitations.get(user.id)),
+        };
       }
-      const entries = blByBowler.get(bowler.id) || [];
+      const entries = (blByBowler.get(bowler.id) || [])
+        .filter((entry) => leagueMap.get(entry.leagueId)?.organizationId === organizationId);
       let leagueName: string | null = null;
       let teamName: string | null = null;
       if (entries.length > 0) {
@@ -231,6 +252,7 @@ router.get('/users', requireOrgAdminOrSystemAdmin, async (req: Request, res: Res
           leagueName,
           teamName,
         },
+        invitation: publicAccountInvitation(latestInvitations.get(user.id)),
       };
     });
 
@@ -256,17 +278,26 @@ router.patch('/users/:id/admin-status', requireOrgAdminOrSystemAdmin, adminWrite
     
     // Validate request body
     const schema = z.object({
-      makeOrgAdmin: z.boolean(),
+      makeOrgAdmin: z.boolean().optional(),
+      role: z.enum(['user', 'org_admin', 'payment_manager', 'admin']).optional(),
+    }).refine((value) => value.makeOrgAdmin !== undefined || value.role !== undefined, {
+      message: 'A target role is required',
     });
     
     const parseResult = schema.safeParse({
-      makeOrgAdmin: req.body.isOrganizationAdmin ?? req.body.makeOrgAdmin
+      makeOrgAdmin: req.body.isOrganizationAdmin ?? req.body.makeOrgAdmin,
+      role: req.body.role,
     });
     if (!parseResult.success) {
       return handleZodError(res, parseResult.error);
     }
     
-    const { makeOrgAdmin } = parseResult.data;
+    const roleInput = parseResult.data.role;
+    const newRole: UserRole = roleInput === 'admin' || roleInput === 'org_admin' || parseResult.data.makeOrgAdmin === true
+      ? 'org_admin'
+      : roleInput === 'payment_manager'
+        ? 'payment_manager'
+        : 'user';
     
     const user = await storage.getUser(userId);
     if (!user) {
@@ -306,9 +337,11 @@ router.patch('/users/:id/admin-status', requireOrgAdminOrSystemAdmin, adminWrite
       }
     }
     
-    const newRole = makeOrgAdmin ? 'org_admin' : 'user';
+    if (newRole === 'payment_manager' && user.locationId === null) {
+      return sendError(res, 'Payment managers must be assigned to a location before promotion', 400, 'LOCATION_REQUIRED');
+    }
 
-    if (!makeOrgAdmin && user.role === 'org_admin' && user.organizationId) {
+    if (newRole !== 'org_admin' && user.role === 'org_admin' && user.organizationId) {
       const adminCount = await storage.countOrgAdmins(user.organizationId);
       if (adminCount <= 1) {
         return sendError(res, 'Cannot remove the last administrator from this organization', 400, 'bad_request');
@@ -587,6 +620,9 @@ router.patch('/users/:id/location', requireOrgAdminOrSystemAdmin, adminWriteLimi
     // and 500s, and a wrong-tenant id would silently cross the org
     // boundary.
     const newLocationId = parseResult.data.locationId;
+    if (user.role === 'payment_manager' && newLocationId === null) {
+      return sendError(res, 'Payment managers must remain assigned to a location', 400, 'LOCATION_REQUIRED');
+    }
     if (newLocationId !== null) {
       const locationRow = await storage.getLocation(newLocationId);
       if (
@@ -617,6 +653,9 @@ router.post('/users/create', requireOrgAdminOrSystemAdmin, inviteLimiter, async 
       lastName: z.string().min(1, 'Last name is required').max(50),
       email: z.string().email('Invalid email address'),
       makeOrgAdmin: z.boolean().default(false),
+      // `admin` remains accepted as the historical client label; all writes
+      // are normalized to the explicit persisted role `org_admin`.
+      role: z.enum(['user', 'org_admin', 'payment_manager', 'admin']).optional(),
       locationId: z.number().int().positive().nullable().optional(),
     });
 
@@ -625,8 +664,16 @@ router.post('/users/create', requireOrgAdminOrSystemAdmin, inviteLimiter, async 
       return handleZodError(res, parseResult.error);
     }
 
-    const { firstName, lastName, email, makeOrgAdmin, locationId } = parseResult.data;
+    const { firstName, lastName, makeOrgAdmin, locationId } = parseResult.data;
+    const email = parseResult.data.email.trim().toLowerCase();
     const fullName = `${firstName} ${lastName}`;
+    const requestedRole = parseResult.data.role;
+    const role: 'user' | 'org_admin' | 'payment_manager' =
+      requestedRole === 'admin' || requestedRole === 'org_admin' || makeOrgAdmin
+        ? 'org_admin'
+        : requestedRole === 'payment_manager'
+          ? 'payment_manager'
+          : 'user';
 
     let organizationId: number;
     if (actingUser.role === 'system_admin' && req.body.organizationId) {
@@ -662,34 +709,45 @@ router.post('/users/create', requireOrgAdminOrSystemAdmin, inviteLimiter, async 
       }
     }
 
+    if (role === 'payment_manager' && (locationId === null || locationId === undefined)) {
+      return sendError(res, 'Payment managers must be assigned to a location', 400, 'bad_request');
+    }
+
     const existingUser = await storage.getUserByEmail(email);
     if (existingUser) {
       return sendError(res, 'A user with this email address already exists', 409, 'conflict');
     }
 
     const placeholderPassword = await hashPassword(randomBytes(32).toString('hex'));
+    const assignedLocationId = role === 'org_admin' ? null : (locationId ?? null);
+    const invitationExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
-    const inviteToken = randomBytes(32).toString('hex');
-    const inviteTokenExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-
-    const newUser = await storage.createUser({
-      email,
-      password: placeholderPassword,
-      name: fullName,
-      role: makeOrgAdmin ? 'org_admin' : 'user',
-      organizationId,
+    // User creation and action issuance share the same transaction. The raw
+    // token exists only in this return value so the email can be sent after
+    // commit; neither its value nor its hash is returned to the client.
+    const created = await db.transaction(async (tx) => {
+      const newUser = await storage.createUser({
+        email,
+        password: placeholderPassword,
+        name: fullName,
+        role,
+        organizationId,
+        locationId: assignedLocationId,
+      }, tx);
+      const issued = await storage.issueAccountAction({
+        userId: newUser.id,
+        action: 'account_invite',
+        expiresAt: invitationExpiry,
+        organizationId,
+        createdByUserId: actingUser.id,
+      }, tx);
+      return { newUser, issued };
     });
 
-    await storage.setUserInviteToken(newUser.id, inviteToken, inviteTokenExpiry);
-
-    if (locationId && !makeOrgAdmin) {
-      await storage.setUserLocation(newUser.id, locationId);
-    }
-
-    const organization = await storage.getOrganization(organizationId);
+    const organization = orgRow;
 
     const baseUrl = getBaseUrl(organization);
-    const setupUrl = `${baseUrl}/set-password?token=${inviteToken}`;
+    const setupUrl = `${baseUrl}/set-password?token=${created.issued.token}`;
     const variables: Record<string, string> = {
       user_name: firstName,
       invite_link: setupUrl,
@@ -698,14 +756,27 @@ router.post('/users/create', requireOrgAdminOrSystemAdmin, inviteLimiter, async 
     if (organization?.slug) {
       variables.organization_logo_url = getOrgLogoUrl(organization);
     }
-    const emailSent = await sendTemplatedEmail('org_end_user_invite', email, variables);
+    let emailSent = false;
+    try {
+      emailSent = await sendTemplatedEmail('org_end_user_invite', email, variables);
+    } catch (error) {
+      log.warn('Invitation email failed after account creation:', error);
+    }
+    const invitation = await storage.updateAccountActionDeliveryStatus(
+      created.issued.request.id,
+      emailSent ? 'sent' : 'failed',
+    ) ?? created.issued.request;
 
-    const finalUser = await storage.getUser(newUser.id);
+    const finalUser = await storage.getUser(created.newUser.id);
 
     if (!finalUser) {
       return sendError(res, 'User not found after creation', 500, 'internal_error');
     }
-    return sendSuccess(res, { user: sanitizeUser(finalUser), emailSent });
+    return sendSuccess(res, {
+      user: sanitizeUser(finalUser),
+      emailSent,
+      invitation: publicAccountInvitation(invitation),
+    });
   } catch (error) {
     if (handleUserOrgError(res, error)) return;
     log.error('Error creating user:', error);
@@ -939,17 +1010,40 @@ router.post('/users/:id/resend-invite', requireOrgAdminOrSystemAdmin, inviteLimi
       }
     }
 
-    const inviteToken = randomBytes(32).toString('hex');
-    const inviteTokenExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-    await storage.setUserInviteToken(userId, inviteToken, inviteTokenExpiry);
+    const invitation = await storage.issueAccountAction({
+      userId,
+      action: 'account_invite',
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      organizationId: user.organizationId,
+      createdByUserId: actingUser.id,
+    });
 
     let organizationId = user.organizationId;
     const organization = organizationId ? await storage.getOrganization(organizationId) : null;
 
     const firstName = user.name.split(' ')[0];
-    const emailSent = await sendInviteEmail(user.email, firstName, inviteToken, organization?.name, organization?.id, organization?.slug);
+    let emailSent = false;
+    try {
+      emailSent = await sendInviteEmail(
+        user.email.trim().toLowerCase(),
+        firstName,
+        invitation.token,
+        organization?.name,
+        organization?.id,
+        organization?.slug,
+      );
+    } catch (error) {
+      log.warn('Invitation resend email failed:', error);
+    }
+    const delivery = await storage.updateAccountActionDeliveryStatus(
+      invitation.request.id,
+      emailSent ? 'sent' : 'failed',
+    ) ?? invitation.request;
 
-    return sendSuccess(res, { emailSent });
+    return sendSuccess(res, {
+      emailSent,
+      invitation: publicAccountInvitation(delivery),
+    });
   } catch (error) {
     log.error('Error resending invite:', error);
     return sendError(res, 'Failed to resend invite', 500, 'internal_error');

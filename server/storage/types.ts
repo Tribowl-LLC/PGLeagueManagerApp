@@ -19,6 +19,7 @@ import type {
   DeletionRequest, InsertDeletionRequest, DeletionRequestStatus,
   EmailChangeRequest, InsertEmailChangeRequest,
   ApplePayJob, ApplePayJobItem, ApplePayJobStatus, ApplePayJobItemStatus,
+  AccountActionRequest, AccountActionType, AccountActionDeliveryStatus,
 } from "@shared/schema";
 
 export interface IFirstAdminBootstrapStorage {
@@ -82,10 +83,10 @@ export interface IBowlerStorage {
 }
 
 export interface IPaymentStorage {
-  getPayments(filters: { bowlerId?: number; leagueId?: number; teamId?: number; weekOf?: Date; organizationId: number }): Promise<Payment[]>;
+  getPayments(filters: { bowlerId?: number; leagueId?: number; leagueIds?: number[]; teamId?: number; weekOf?: Date; organizationId: number }): Promise<Payment[]>;
   getAllPaymentsSystemAdmin(filters?: { bowlerId?: number; leagueId?: number; teamId?: number; weekOf?: Date }): Promise<Payment[]>;
   getAllPaymentsPaginatedSystemAdmin(filters: { bowlerId?: number; leagueId?: number; teamId?: number; weekOf?: Date }, page: number, limit: number): Promise<PaginatedResult<Payment>>;
-  getPaymentsPaginated(filters: { bowlerId?: number; leagueId?: number; teamId?: number; weekOf?: Date; organizationId: number }, page: number, limit: number): Promise<PaginatedResult<Payment>>;
+  getPaymentsPaginated(filters: { bowlerId?: number; leagueId?: number; leagueIds?: number[]; teamId?: number; weekOf?: Date; organizationId: number }, page: number, limit: number): Promise<PaginatedResult<Payment>>;
   getPaymentById(id: number): Promise<Payment | undefined>;
   getPaymentByIdempotencyKey(key: string): Promise<Payment | undefined>;
   getPaymentsByPaymentOperationId(organizationId: number, operationId: string): Promise<Payment[]>;
@@ -285,11 +286,10 @@ export interface IUserStorage {
   getUser(id: number): Promise<User | undefined>;
   getUserByEmail(email: string): Promise<User | undefined>;
   getUsers(): Promise<User[]>;
-  createUser(user: InsertUser): Promise<User>;
+  createUser(user: InsertUser, executor?: import('./users').UserDbExecutor): Promise<User>;
   updateUser(id: number, userData: UpdateUser, executor?: import('./users').UserDbExecutor): Promise<User>;
   updateUserRole(userId: number, role: UserRole, executor?: import('./users').UserDbExecutor): Promise<User>;
   deleteUser(userId: number, executor?: import('./users').UserDbExecutor): Promise<User>;
-  linkUserToBowler(userId: number, bowlerId: number | undefined): Promise<User>;
   getLinkedBowlerIds(): Promise<number[]>;
   isBowlerLinked(bowlerId: number): Promise<boolean>;
   getUserByBowlerId(bowlerId: number): Promise<User | undefined>;
@@ -297,9 +297,6 @@ export interface IUserStorage {
   countOrgAdmins(organizationId: number): Promise<number>;
   getOrgAdmins(organizationId: number): Promise<User[]>;
   setUserLocation(userId: number, locationId: number | null): Promise<User>;
-  getUserByInviteToken(token: string): Promise<User | undefined>;
-  setUserInviteToken(userId: number, token: string, expiry: Date): Promise<User>;
-  clearUserInviteToken(userId: number): Promise<User>;
   // Task #357: change-password lockout
   recordFailedPasswordChangeAttempt(userId: number): Promise<{
     count: number;
@@ -314,13 +311,13 @@ export interface IOrganizationStorage {
   getOrganization(id: number): Promise<Organization | undefined>;
   getOrganizationBySlug(slug: string): Promise<Organization | undefined>;
   getOrganizationBySubdomain(subdomain: string): Promise<Organization | undefined>;
-  createOrganization(organization: InsertOrganization): Promise<Organization>;
+  createOrganization(organization: InsertOrganization, executor?: import('./organizations').OrganizationDbExecutor): Promise<Organization>;
   updateOrganization(id: number, organization: UpdateOrganization): Promise<Organization>;
   deleteOrganization(id: number): Promise<void>;
   archiveOrganization(id: number): Promise<Organization>;
   restoreOrganization(id: number): Promise<Organization>;
   getUserOrganizations(userId: number): Promise<Organization[]>;
-  setUserOrganization(userId: number, organizationId: number | null): Promise<User>;
+  setUserOrganization(userId: number, organizationId: number | null, executor?: import('./organizations').OrganizationDbExecutor): Promise<User>;
   getOrganizationUsers(organizationId: number): Promise<User[]>;
 }
 
@@ -373,6 +370,37 @@ export interface IEmailChangeRequestStorage {
   consumeEmailChangeRequest(id: number): Promise<void>;
   claimEmailChangeRequest(tokenHash: string): Promise<EmailChangeRequest | undefined>;
   invalidatePendingEmailChangeRequestsForUser(userId: number): Promise<number>;
+}
+
+export interface IAccountActionStorage {
+  issueAccountAction(input: {
+    userId: number;
+    action: AccountActionType;
+    expiresAt: Date;
+    organizationId?: number | null;
+    createdByUserId?: number | null;
+  }, executor?: import('./account-action-requests').AccountActionExecutor): Promise<{
+    request: AccountActionRequest;
+    token: string;
+  }>;
+  getAccountActionByToken(token: string): Promise<{
+    request: AccountActionRequest;
+    user: User;
+  } | undefined>;
+  consumeAccountActionAndSetPassword(input: {
+    token: string;
+    passwordHash: string;
+    preferredLanguage?: string | null;
+  }): Promise<{
+    request: AccountActionRequest;
+    user: User;
+  } | undefined>;
+  updateAccountActionDeliveryStatus(
+    requestId: number,
+    deliveryStatus: AccountActionDeliveryStatus,
+  ): Promise<AccountActionRequest | undefined>;
+  getLatestAccountInvitationsForUsers(userIds: number[], organizationId: number): Promise<Map<number, AccountActionRequest>>;
+  revokeAccountAction(requestId: number): Promise<AccountActionRequest | undefined>;
 }
 
 export interface IApplePayJobStorage {
@@ -479,6 +507,7 @@ export interface IStorage extends
   IEmailTemplateStorage,
   IDeletionRequestStorage,
   IEmailChangeRequestStorage,
+  IAccountActionStorage,
   IFirstAdminBootstrapStorage,
   IApplePayJobStorage,
   IAlerterStateStorage {}

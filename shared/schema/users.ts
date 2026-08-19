@@ -1,4 +1,4 @@
-import { pgTable, text, serial, integer, boolean, timestamp, index } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, integer, boolean, timestamp, index, uniqueIndex, foreignKey, check } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -19,6 +19,10 @@ export const users = pgTable("users", {
   role: userRoleEnum('role').notNull().default('user'),
   organizationId: integer("organization_id").references(() => organizations.id),
   locationId: integer("location_id").references(() => locations.id),
+  // Legacy onboarding/reset columns. Keep these columns for one release so
+  // the rollout remains backward-compatible with existing databases and
+  // registration/admin invite callers. New credential authority lives in
+  // account_action_requests and must not read or write these columns.
   inviteToken: text("invite_token"),
   inviteTokenExpiry: timestamp("invite_token_expiry", { mode: "string" }),
   // Two-letter ISO 639-1 code (e.g. 'en', 'es') used to localize
@@ -64,6 +68,40 @@ export const users = pgTable("users", {
   organizationIdx: index("users_organization_idx").on(table.organizationId),
   bowlerIdx: index("users_bowler_idx").on(table.bowlerId),
   locationIdx: index("users_location_idx").on(table.locationId),
+  // Account email is an identity key, so case-only variants must not create
+  // separate users. Application writes normalize too; this index is the
+  // final concurrency-safe boundary for legacy or direct SQL callers.
+  normalizedEmailUnique: uniqueIndex("users_email_normalized_unique")
+    .on(sql`lower(btrim(${table.email}))`),
+  // A bowler account can have at most one user. The predicate preserves the
+  // normal PostgreSQL behavior for unlinked users (multiple NULL values).
+  bowlerUnique: uniqueIndex("users_bowler_id_unique")
+    .on(table.bowlerId)
+    .where(sql`${table.bowlerId} IS NOT NULL`),
+  // Both tenant-bound references carry the user's organization stamp. A
+  // mismatched organization therefore fails at the database boundary even
+  // when an application caller bypasses the storage layer.
+  bowlerOrganizationFk: foreignKey({
+    columns: [table.bowlerId, table.organizationId],
+    foreignColumns: [bowlers.id, bowlers.organizationId],
+    name: "users_bowler_organization_fk",
+  }),
+  locationOrganizationFk: foreignKey({
+    columns: [table.locationId, table.organizationId],
+    foreignColumns: [locations.id, locations.organizationId],
+    name: "users_location_organization_fk",
+  }),
+  paymentManagerScopeCheck: check(
+    "users_payment_manager_scope_check",
+    // Cast to text so the forward migration can add the enum value and this
+    // constraint in the same transaction without PostgreSQL rejecting use of
+    // a newly-added enum label before commit.
+    sql`${table.role}::text <> 'payment_manager' OR (${table.organizationId} IS NOT NULL AND ${table.locationId} IS NOT NULL)`,
+  ),
+  elevatedRoleBowlerCheck: check(
+    "users_elevated_role_bowler_check",
+    sql`${table.role}::text NOT IN ('system_admin', 'org_admin', 'payment_manager') OR ${table.bowlerId} IS NULL`,
+  ),
   // The role/org invariant — every non-admin user must be attached to
   // an organization — is enforced by a DB-side TRIGGER named
   // `users_role_org_required`, installed idempotently by
@@ -82,7 +120,7 @@ export const users = pgTable("users", {
 const baseUserSchema = createInsertSchema(users);
 
 const requireOrgForNonAdmin = (
-  data: { role?: string | null; organizationId?: number | null },
+  data: { role?: string | null; organizationId?: number | null; locationId?: number | null; bowlerId?: number | null },
   ctx: z.RefinementCtx,
 ) => {
   const role = data.role ?? 'user';
@@ -93,6 +131,32 @@ const requireOrgForNonAdmin = (
       message: 'organizationId is required for non-admin users',
     });
   }
+  if (
+    (role === 'system_admin' || role === 'org_admin' || role === 'payment_manager') &&
+    data.bowlerId !== null && data.bowlerId !== undefined
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['bowlerId'],
+      message: 'Elevated-role users cannot be linked to a bowler',
+    });
+  }
+  if (role === 'payment_manager') {
+    if (data.organizationId === null || data.organizationId === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['organizationId'],
+        message: 'payment_manager users require an organization',
+      });
+    }
+    if (data.locationId === null || data.locationId === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['locationId'],
+        message: 'payment_manager users require a location',
+      });
+    }
+  }
 };
 
 export const insertUserSchema = baseUserSchema.extend({
@@ -101,6 +165,7 @@ export const insertUserSchema = baseUserSchema.extend({
   phone: z.string().optional(),
   role: z.enum(USER_ROLES).optional().default('user'),
   organizationId: z.number().nullable().optional(),
+  locationId: z.number().nullable().optional(),
   password: passwordSchema,
   bowlerId: z.number().nullable().optional(),
 }).omit({ id: true, createdAt: true }).superRefine(requireOrgForNonAdmin);
@@ -143,6 +208,32 @@ export const updateUserSchema = updateUserSchemaBase.superRefine((data, ctx) => 
   if (settingNullOrg && data.role === undefined) {
     // We can't know the resulting role here without the DB row, so leave
     // this case to the storage-layer guard which has the existing role.
+  }
+  if (
+    (data.role === 'system_admin' || data.role === 'org_admin' || data.role === 'payment_manager') &&
+    data.bowlerId !== undefined && data.bowlerId !== null
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['bowlerId'],
+      message: 'Elevated-role users cannot be linked to a bowler',
+    });
+  }
+  if (data.role === 'payment_manager') {
+    if (data.organizationId === null || data.organizationId === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['organizationId'],
+        message: 'payment_manager users require an organization',
+      });
+    }
+    if (data.locationId === null || data.locationId === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['locationId'],
+        message: 'payment_manager users require a location',
+      });
+    }
   }
 });
 

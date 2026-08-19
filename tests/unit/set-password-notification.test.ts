@@ -38,6 +38,7 @@ const TEST_USER = {
   organizationId: 11,
   bowlerId: null,
   password: 'hashed:original',
+  preferredLanguage: null as string | null,
   inviteToken: 'valid-token-1234',
   inviteTokenExpiry: FUTURE_EXPIRY,
 };
@@ -58,24 +59,27 @@ vi.mock('../../server/services/email.js', () => ({
   sendSquareCatalogCapAlert: vi.fn(async () => undefined),
 }));
 
-const mockGetUserByInviteToken = vi.fn();
-const mockUpdateUser = vi.fn();
-const mockClearUserInviteToken = vi.fn(async () => undefined);
-const mockInvalidatePending = vi.fn(async () => 0);
+const mockGetAccountActionByToken = vi.fn();
+const mockConsumeAccountAction = vi.fn();
+let currentActionUser = TEST_USER;
 const mockGetBowlerByEmailSystemAdmin = vi.fn(async () => undefined);
+const mockGetBowlerByEmail = vi.fn(async () => undefined);
 
 vi.mock('../../server/storage', () => ({
   storage: {
-    getUserByInviteToken: (...a: unknown[]) =>
-      mockGetUserByInviteToken.apply(null, a as never),
-    updateUser: (...a: unknown[]) => mockUpdateUser.apply(null, a as never),
-    clearUserInviteToken: (...a: unknown[]) =>
-      mockClearUserInviteToken.apply(null, a as never),
-    invalidatePendingEmailChangeRequestsForUser: (...a: unknown[]) =>
-      mockInvalidatePending.apply(null, a as never),
+    getAccountActionByToken: (...a: unknown[]) =>
+      mockGetAccountActionByToken.apply(null, a as never),
+    consumeAccountActionAndSetPassword: (...a: unknown[]) =>
+      mockConsumeAccountAction.apply(null, a as never),
+    getBowlerByEmail: (...a: unknown[]) => mockGetBowlerByEmail.apply(null, a as never),
     getBowlerByEmailSystemAdmin: (...a: unknown[]) =>
       mockGetBowlerByEmailSystemAdmin.apply(null, a as never),
   },
+}));
+
+vi.mock('../../server/services/identity-link.js', () => ({
+  linkUserToBowler: vi.fn(async () => ({ user: null, bowler: null, oldBowler: null, event: null })),
+  isIdentityLinkError: () => false,
 }));
 
 const mockHashPassword = vi.fn(async (pw: string) => `hashed:${pw}`);
@@ -161,16 +165,29 @@ afterAll(async () => {
 });
 
 beforeEach(() => {
+  currentActionUser = TEST_USER;
   mockSendPasswordChangedNotification.mockClear();
   mockSendPasswordChangedNotification.mockResolvedValue(true);
-  mockGetUserByInviteToken.mockReset();
-  mockGetUserByInviteToken.mockResolvedValue({ ...TEST_USER });
-  mockUpdateUser.mockReset();
-  mockUpdateUser.mockResolvedValue({ ...TEST_USER, password: 'hashed:new' });
-  mockClearUserInviteToken.mockClear();
-  mockInvalidatePending.mockClear();
+  mockGetAccountActionByToken.mockReset();
+  mockGetAccountActionByToken.mockResolvedValue({
+    request: { id: 1, action: 'password_reset', status: 'pending', expiresAt: FUTURE_EXPIRY },
+    user: { ...TEST_USER },
+  });
+  mockConsumeAccountAction.mockReset();
+  mockConsumeAccountAction.mockImplementation(async (input: { preferredLanguage?: string | null }) => ({
+    request: { id: 1, action: 'password_reset', status: 'consumed', expiresAt: FUTURE_EXPIRY },
+    user: {
+      ...currentActionUser,
+      password: 'hashed:new',
+      preferredLanguage: input.preferredLanguage === undefined
+        ? currentActionUser.preferredLanguage
+        : input.preferredLanguage,
+    },
+  }));
   mockGetBowlerByEmailSystemAdmin.mockClear();
   mockGetBowlerByEmailSystemAdmin.mockResolvedValue(undefined);
+  mockGetBowlerByEmail.mockClear();
+  mockGetBowlerByEmail.mockResolvedValue(undefined);
   mockHashPassword.mockClear();
   mockSafeTokenCompare.mockClear();
 });
@@ -228,7 +245,7 @@ describe('POST /api/auth/set-password — password-changed email dispatch (task 
     // Strict ordering: the password row must be persisted BEFORE we
     // dispatch the notice. Otherwise a crash between the two could
     // send a misleading "your password was just changed" email.
-    const updateOrder = mockUpdateUser.mock.invocationCallOrder[0];
+    const updateOrder = mockConsumeAccountAction.mock.invocationCallOrder[0];
     const notifyOrder =
       mockSendPasswordChangedNotification.mock.invocationCallOrder[0];
     expect(updateOrder).toBeLessThan(notifyOrder);
@@ -239,7 +256,7 @@ describe('POST /api/auth/set-password — password-changed email dispatch (task 
     expect(res.status).toBe(400);
     await flushFireAndForget();
     expect(mockSendPasswordChangedNotification).not.toHaveBeenCalled();
-    expect(mockUpdateUser).not.toHaveBeenCalled();
+    expect(mockConsumeAccountAction).not.toHaveBeenCalled();
   });
 
   it('does NOT invoke the helper when the new password fails the strength check', async () => {
@@ -250,11 +267,11 @@ describe('POST /api/auth/set-password — password-changed email dispatch (task 
     expect(res.status).toBe(400);
     await flushFireAndForget();
     expect(mockSendPasswordChangedNotification).not.toHaveBeenCalled();
-    expect(mockUpdateUser).not.toHaveBeenCalled();
+    expect(mockConsumeAccountAction).not.toHaveBeenCalled();
   });
 
   it('does NOT invoke the helper when the token is unknown', async () => {
-    mockGetUserByInviteToken.mockResolvedValueOnce(undefined);
+    mockGetAccountActionByToken.mockResolvedValueOnce(undefined);
     const res = await postSetPassword({
       token: 'wrong-token',
       password: 'BrandNewPw!2026XX',
@@ -262,13 +279,13 @@ describe('POST /api/auth/set-password — password-changed email dispatch (task 
     expect(res.status).toBe(400);
     await flushFireAndForget();
     expect(mockSendPasswordChangedNotification).not.toHaveBeenCalled();
-    expect(mockUpdateUser).not.toHaveBeenCalled();
+    expect(mockConsumeAccountAction).not.toHaveBeenCalled();
   });
 
   it('does NOT invoke the helper when the token is expired', async () => {
-    mockGetUserByInviteToken.mockResolvedValueOnce({
-      ...TEST_USER,
-      inviteTokenExpiry: PAST_EXPIRY,
+    mockGetAccountActionByToken.mockResolvedValueOnce({
+      request: { id: 1, action: 'password_reset', status: 'expired', expiresAt: PAST_EXPIRY },
+      user: { ...TEST_USER },
     });
     const res = await postSetPassword({
       token: 'valid-token-1234',
@@ -277,8 +294,26 @@ describe('POST /api/auth/set-password — password-changed email dispatch (task 
     expect(res.status).toBe(400);
     await flushFireAndForget();
     expect(mockSendPasswordChangedNotification).not.toHaveBeenCalled();
-    expect(mockUpdateUser).not.toHaveBeenCalled();
+    expect(mockConsumeAccountAction).not.toHaveBeenCalled();
   });
+
+  it.each(['consumed', 'superseded', 'revoked'] as const)(
+    'rejects a %s token as non-replayable without rotating the password',
+    async (status) => {
+      mockGetAccountActionByToken.mockResolvedValueOnce({
+        request: { id: 1, action: 'password_reset', status, expiresAt: FUTURE_EXPIRY },
+        user: { ...TEST_USER },
+      });
+      const res = await postSetPassword({
+        token: 'valid-token-1234',
+        password: 'BrandNewPw!2026XX',
+      });
+      expect(res.status).toBe(400);
+      await flushFireAndForget();
+      expect(mockConsumeAccountAction).not.toHaveBeenCalled();
+      expect(mockSendPasswordChangedNotification).not.toHaveBeenCalled();
+    },
+  );
 
   it('still returns 200 when the email helper rejects (best-effort contract)', async () => {
     // The route logs the swallowed email failure at [ERROR] on purpose.
@@ -293,7 +328,7 @@ describe('POST /api/auth/set-password — password-changed email dispatch (task 
     expect(res.status).toBe(200);
     await flushFireAndForget();
     expect(mockSendPasswordChangedNotification).toHaveBeenCalledTimes(1);
-    expect(mockUpdateUser).toHaveBeenCalledTimes(1);
+    expect(mockConsumeAccountAction).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -320,13 +355,13 @@ describe('POST /api/auth/set-password — preferred-language capture (task #420)
     // (a) — both fields land in one updateUser call. Two calls
     // would let a crash between them leave the password rotated
     // but the language column stale.
-    expect(mockUpdateUser).toHaveBeenCalledTimes(1);
-    const [, patch] = mockUpdateUser.mock.calls[0] as unknown as [
-      number,
-      { password: string; preferredLanguage?: string | null },
-    ];
-    expect(patch.password).toMatch(/^hashed:/);
-    expect(patch.preferredLanguage).toBe('es');
+    expect(mockConsumeAccountAction).toHaveBeenCalledTimes(1);
+    const [resetInput] = mockConsumeAccountAction.mock.calls[0] as unknown as [{
+      passwordHash: string;
+      preferredLanguage?: string | null;
+    }];
+    expect(resetInput.passwordHash).toMatch(/^hashed:/);
+    expect(resetInput.preferredLanguage).toBe('es');
 
     // (b) — the email helper sees the JUST-submitted locale, not
     // the (null) value the user row was loaded with before the
@@ -354,11 +389,10 @@ describe('POST /api/auth/set-password — preferred-language capture (task #420)
     expect(res.status).toBe(200);
     await flushFireAndForget();
 
-    const [, patch] = mockUpdateUser.mock.calls[0] as unknown as [
-      number,
-      { password: string; preferredLanguage?: string | null },
-    ];
-    expect(patch.preferredLanguage).toBeNull();
+    const [resetInput] = mockConsumeAccountAction.mock.calls[0] as unknown as [{
+      preferredLanguage?: string | null;
+    }];
+    expect(resetInput.preferredLanguage).toBeNull();
 
     const [, , ctx] = mockSendPasswordChangedNotification.mock.calls[0] as unknown as [
       string,
@@ -383,7 +417,7 @@ describe('POST /api/auth/set-password — preferred-language capture (task #420)
     expect(res.status).toBe(400);
     await flushFireAndForget();
 
-    expect(mockUpdateUser).not.toHaveBeenCalled();
+    expect(mockConsumeAccountAction).not.toHaveBeenCalled();
     expect(mockSendPasswordChangedNotification).not.toHaveBeenCalled();
   });
 
@@ -403,12 +437,11 @@ describe('POST /api/auth/set-password — preferred-language capture (task #420)
     expect(res.status).toBe(200);
     await flushFireAndForget();
 
-    expect(mockUpdateUser).toHaveBeenCalledTimes(1);
-    const [, patch] = mockUpdateUser.mock.calls[0] as unknown as [
-      number,
-      Record<string, unknown>,
-    ];
-    expect('preferredLanguage' in patch).toBe(false);
+    expect(mockConsumeAccountAction).toHaveBeenCalledTimes(1);
+    const [resetInput] = mockConsumeAccountAction.mock.calls[0] as unknown as [{
+      preferredLanguage?: unknown;
+    }];
+    expect('preferredLanguage' in resetInput).toBe(false);
   });
 
   it('falls back to the user row\'s stored language when the body omits preferredLanguage', async () => {
@@ -418,10 +451,11 @@ describe('POST /api/auth/set-password — preferred-language capture (task #420)
     // the body omits preferredLanguage. The notice email must
     // still render in their stored language — NOT silently
     // English-fallback because the body didn't carry the field.
-    mockGetUserByInviteToken.mockResolvedValueOnce({
-      ...TEST_USER,
-      preferredLanguage: 'es',
+    mockGetAccountActionByToken.mockResolvedValueOnce({
+      request: { id: 1, action: 'password_reset', status: 'pending', expiresAt: FUTURE_EXPIRY },
+      user: { ...TEST_USER, preferredLanguage: 'es' },
     });
+    currentActionUser = { ...TEST_USER, preferredLanguage: 'es' };
 
     const res = await postSetPassword({
       token: 'valid-token-1234',

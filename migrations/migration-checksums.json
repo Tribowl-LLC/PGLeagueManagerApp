@@ -156,6 +156,12 @@
       "tag": "0025_f2_interactive_occurrence_actor",
       "createdAt": 1787070646978,
       "hash": "7a44e0f20165c5d3be33b5e4e63692cca7b2224374af6a0b1d65fb1e32b5f712"
+    },
+    {
+      "idx": 26,
+      "tag": "0026_identity_integrity_hardening",
+      "createdAt": 1787101376855,
+      "hash": "5bcf6677e9a793822bb54259854fa9bf313633124439cef5f7604676ce873f11"
     }
   ]
 }

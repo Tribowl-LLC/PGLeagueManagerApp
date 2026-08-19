@@ -51,9 +51,10 @@ interface PaymentFormProps {
   onClose: () => void;
   bowlers: Bowler[];
   leagueId?: number;
+  paymentManager?: boolean;
 }
 
-export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormProps) {
+export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager = false }: PaymentFormProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [, navigate] = useLocation();
@@ -424,6 +425,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId }: PaymentFormPro
               form={form}
               paymentType={paymentType}
               squareLoadFailed={squareLoadFailed}
+              allowCard={!paymentManager}
             />
             {paymentType === "check" && <PaymentCheckNumberField form={form} />}
             {/* Square requires a buyer email for hosted receipts. */}

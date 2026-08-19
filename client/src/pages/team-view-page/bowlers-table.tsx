@@ -17,7 +17,7 @@ interface TeamViewBowlersTableProps {
   teamBowlers: TeamBowlerEntry<BowlerWithAccount>[];
   league: League | undefined;
   teamId: number;
-  onEditBowler: (bowler: Bowler) => void;
+  onEditBowler?: (bowler: Bowler) => void;
   onRemoveBowler: (target: { bowlerId: number; name: string }) => void;
 }
 
@@ -59,14 +59,14 @@ export function TeamViewBowlersTable({
                 </TableCell>
                 <TableCell>
                   <div className="flex items-center gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => onEditBowler(bowler)}
-                    >
-                      <Pencil className="size-4 mr-2" />
-                      Edit
-                    </Button>
+                    {onEditBowler && <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => onEditBowler(bowler)}
+                      >
+                        <Pencil className="size-4 mr-2" />
+                        Edit
+                      </Button>}
                     <Button
                       variant="ghost"
                       size="sm"

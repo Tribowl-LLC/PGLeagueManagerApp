@@ -6,6 +6,10 @@ import { bowlers, bowlerLeagues } from '@shared/schema';
 import { ilike, eq, or, and, inArray } from 'drizzle-orm';
 import { sendSuccess, sendError } from '../utils/api.js';
 import { createLogger } from '../logger';
+import {
+  getPaymentManagerAccessibleLeagueIds,
+  isPaymentManager,
+} from '../utils/access-control.js';
 
 const log = createLogger("Search");
 const router = Router();
@@ -26,13 +30,29 @@ router.get("/", async (req, res) => {
     }
 
     const pattern = `%${q}%`;
+    // Search is a convenience endpoint, but it still returns tenant data.
+    // Organization membership is not enough for a payment manager: their
+    // results must be limited to configured leagues at the assigned location.
+    // Resolve this once and reuse the same scope for every category so a
+    // league result can never be paired with an out-of-scope team or bowler.
+    const paymentManagerLeagueIds = isPaymentManager(req.user)
+      ? await getPaymentManagerAccessibleLeagueIds(req)
+      : null;
+
+    if (paymentManagerLeagueIds && paymentManagerLeagueIds.length === 0) {
+      return sendSuccess(res, { leagues: [], teams: [], bowlers: [] });
+    }
+
+    const leagueScope = paymentManagerLeagueIds
+      ? inArray(leagues.id, paymentManagerLeagueIds)
+      : eq(leagues.organizationId, organizationId);
 
     const matchedLeagues = await db
       .select({ id: leagues.id, name: leagues.name, active: leagues.active })
       .from(leagues)
       .where(and(
         ilike(leagues.name, pattern),
-        eq(leagues.organizationId, organizationId)
+        leagueScope,
       ))
       .limit(MAX_RESULTS_PER_CATEGORY);
 
@@ -48,22 +68,25 @@ router.get("/", async (req, res) => {
       .innerJoin(leagues, eq(teams.leagueId, leagues.id))
       .where(and(
         ilike(teams.name, pattern),
-        eq(leagues.organizationId, organizationId)
+        leagueScope,
       ))
       .limit(MAX_RESULTS_PER_CATEGORY);
 
     let matchedBowlers: { id: number; name: string; email: string | null }[] = [];
-    const orgLeagues = await db
+    const scopedLeagues = await db
       .select({ id: leagues.id })
       .from(leagues)
-      .where(eq(leagues.organizationId, organizationId));
-    const orgLeagueIds = orgLeagues.map(l => l.id);
+      .where(leagueScope);
+    const scopedLeagueIds = scopedLeagues.map(l => l.id);
 
-    if (orgLeagueIds.length > 0) {
+    if (scopedLeagueIds.length > 0) {
       const orgBowlerRows = await db
         .selectDistinct({ bowlerId: bowlerLeagues.bowlerId })
         .from(bowlerLeagues)
-        .where(inArray(bowlerLeagues.leagueId, orgLeagueIds));
+        .where(and(
+          inArray(bowlerLeagues.leagueId, scopedLeagueIds),
+          eq(bowlerLeagues.active, true),
+        ));
       const orgBowlerIds = orgBowlerRows.map(r => r.bowlerId);
 
       if (orgBowlerIds.length > 0) {
@@ -72,6 +95,7 @@ router.get("/", async (req, res) => {
           .from(bowlers)
           .where(and(
             inArray(bowlers.id, orgBowlerIds),
+            eq(bowlers.organizationId, organizationId),
             or(
               ilike(bowlers.name, pattern),
               ilike(bowlers.email, pattern)
