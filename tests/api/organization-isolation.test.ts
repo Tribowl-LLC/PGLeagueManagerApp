@@ -464,18 +464,39 @@ describe('Organization Isolation', () => {
       expect([403, 404]).toContain(reportGuard.status);
     });
 
-    it('F3 policy, prequote, and quote routes disclose no foreign league evidence', async () => {
+    it('org A GET /api/financials/f3/leagues/:leagueId/policy/candidates?organizationId=<orgB> must fail closed', async () => {
       expect(orgBLeagueId).not.toBeNull();
-      const paths = [
+      const response = await apiGet(
         `/api/financials/f3/leagues/${orgBLeagueId}/policy/candidates?organizationId=${sessionB.user.organizationId}`,
+        sessionA,
+      );
+      expect([403, 404]).toContain(response.status);
+      expect(JSON.stringify(response.data)).not.toContain(String(orgBLeagueId));
+      expect(JSON.stringify(response.data)).not.toContain(`"organizationId":${sessionB.user.organizationId}`);
+    });
+
+    it('org A GET /api/financials/f3/leagues/:leagueId/prequote?organizationId=<orgB>&bowlerId=<orgB> must fail closed', async () => {
+      expect(orgBLeagueId).not.toBeNull();
+      expect(orgBBowlerId).not.toBeNull();
+      const response = await apiGet(
         `/api/financials/f3/leagues/${orgBLeagueId}/prequote?organizationId=${sessionB.user.organizationId}&bowlerId=${orgBBowlerId}`,
+        sessionA,
+      );
+      expect([403, 404]).toContain(response.status);
+      expect(JSON.stringify(response.data)).not.toContain(String(orgBLeagueId));
+      expect(JSON.stringify(response.data)).not.toContain(`"organizationId":${sessionB.user.organizationId}`);
+    });
+
+    it('org A GET /api/financials/f3/leagues/:leagueId/quote?organizationId=<orgB>&bowlerId=<orgB> must fail closed', async () => {
+      expect(orgBLeagueId).not.toBeNull();
+      expect(orgBBowlerId).not.toBeNull();
+      const response = await apiGet(
         `/api/financials/f3/leagues/${orgBLeagueId}/quote?organizationId=${sessionB.user.organizationId}&bowlerId=${orgBBowlerId}`,
-      ];
-      for (const path of paths) {
-        const response = await apiGet(path, sessionA);
-        expect([403, 404]).toContain(response.status);
-        expect(JSON.stringify(response.data)).not.toContain(String(orgBLeagueId));
-      }
+        sessionA,
+      );
+      expect([403, 404]).toContain(response.status);
+      expect(JSON.stringify(response.data)).not.toContain(String(orgBLeagueId));
+      expect(JSON.stringify(response.data)).not.toContain(`"organizationId":${sessionB.user.organizationId}`);
     });
 
     it('org A GET /api/teams listing must not include the org B team id', async () => {
