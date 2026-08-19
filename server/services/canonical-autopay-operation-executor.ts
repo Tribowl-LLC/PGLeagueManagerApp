@@ -41,7 +41,7 @@ export async function executeCanonicalAutopayOperation(input: { organizationId: 
   const [currentLocation] = await db.select({ squareCredentials: locations.squareCredentials }).from(locations).where(and(eq(locations.id, snapshot.locationId), eq(locations.organizationId, input.organizationId))).limit(1);
   const currentCredentials = currentLocation ? locationSquareCredentialsSchema.safeParse(currentLocation.squareCredentials) : null;
   if (!currentCredentials?.success || currentCredentials.data?.locationId !== snapshot.providerLocationId) { await recordCanonicalAutopayPreDispatchFailure({ organizationId: input.organizationId, operationId: operation.id, leaseToken: operation.leaseToken, errorCode: "F4_PROVIDER_LOCATION_DRIFT", now }); return; }
-  if (operation.leagueId === null || !(await acquireCanonicalAutopayDispatchCutoff({ organizationId: input.organizationId, leagueId: operation.leagueId, operationId: operation.id, leaseToken: operation.leaseToken }))) {
+  if (operation.leagueId === null || !(await acquireCanonicalAutopayDispatchCutoff({ organizationId: input.organizationId, leagueId: operation.leagueId, operationId: operation.id, leaseToken: operation.leaseToken, now }))) {
     await recordCanonicalAutopayPreDispatchFailure({ organizationId: input.organizationId, operationId: operation.id, leaseToken: operation.leaseToken, errorCode: "F4_DISPATCH_CUTOFF_LOST", now });
     return;
   }
@@ -78,7 +78,7 @@ export async function executeCanonicalAutopayOperation(input: { organizationId: 
   if (!providerSucceeded || !providerObjectId) return;
   try {
     await finalizePaymentOperationSuccess({ organizationId: input.organizationId, operationId: operation.id, leaseToken: operation.leaseToken, providerObjectId, providerOrderId, paymentRows, now });
-  } catch {
+  } catch (error) {
     // Provider success is deliberately not reclassified. The lease, exact
     // provider object, and idempotency key remain recoverable for explicit
     // reconciliation or a same-key retry.

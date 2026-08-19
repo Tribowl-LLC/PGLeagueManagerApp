@@ -6,6 +6,7 @@ import { deleteOrganization } from "../../server/storage/organizations";
 import {
   leagueOccurrences,
   leagues,
+  leagueScheduleCommands,
   locations,
   occurrenceCollectionPlanRevisions,
   occurrenceCollectionPlans,
@@ -27,10 +28,11 @@ async function makeFixture() {
   const [actor] = await db.insert(users).values({ email: `f4-race-${suffix}@example.test`, password: "test", name: "F4 race actor", role: "org_admin", organizationId: organization.id }).returning({ id: users.id });
   const [location] = await db.insert(locations).values({ name: "F4 race location", organizationId: organization.id }).returning({ id: locations.id });
   const [league] = await db.insert(leagues).values({ name: `F4 race league ${suffix}`, organizationId: organization.id, locationId: location.id, seasonStart: "2038-01-01", seasonEnd: "2038-12-31", weekDay: "Sunday", competitionStartTime: "19:00", timezone: "UTC", totalBowlingWeeks: 2, weeklyFee: 500, paymentMode: "weekly" }).returning({ id: leagues.id });
-  const [occurrence] = await db.insert(leagueOccurrences).values({ organizationId: organization.id, leagueId: league.id, locationId: location.id, generationKey: `f4-race-occurrence-${suffix}`, kind: "regular", status: "scheduled", lifecycle: "published", authoritativeLocalDate: "2038-02-01", authoritativeLocalStartTime: "19:00:00", timezone: "UTC", startAt: "2038-02-01T19:00:00.000Z", selectedUtcOffsetMinutes: 0, foldResolution: "unambiguous", resolverVersion: "f4-race/1", plannedOrdinal: 1, competitionNumber: 1, currentRevision: 1, publishedAt: "2037-12-01T00:00:00.000Z", publishedByUserId: actor.id }).returning({ id: leagueOccurrences.id });
+  const [command] = await db.insert(leagueScheduleCommands).values({ organizationId: organization.id, leagueId: league.id, actorUserId: actor.id, commandType: "publish", reason: "F4 race fixture", idempotencyKey: `f4-race-publish-${suffix}`, requestFingerprint: `lvf4race:${suffix}` }).returning({ id: leagueScheduleCommands.id });
+  const [occurrence] = await db.insert(leagueOccurrences).values({ organizationId: organization.id, leagueId: league.id, locationId: location.id, generationKey: `f4-race-occurrence-${suffix}`, kind: "regular", status: "scheduled", lifecycle: "published", authoritativeLocalDate: "2038-02-01", authoritativeLocalStartTime: "19:00:00", timezone: "UTC", startAt: "2038-02-01T19:00:00.000Z", selectedUtcOffsetMinutes: 0, foldResolution: "unambiguous", resolverVersion: "f4-race/1", plannedOrdinal: 1, competitionNumber: 1, currentRevision: 1, lastCommandId: command.id, publishedAt: "2037-12-01T00:00:00.000Z", publishedByUserId: actor.id, publicationCommandId: command.id }).returning({ id: leagueOccurrences.id });
   const [plan] = await db.insert(occurrenceCollectionPlans).values({ organizationId: organization.id, leagueId: league.id, planKey: `f4-race-plan-${suffix}`, triggerOccurrenceId: occurrence.id, currency: "USD", state: "ready", version: 1, currentRevision: 1, recordedByUserId: actor.id }).returning({ id: occurrenceCollectionPlans.id });
   const token = randomUUID();
-  const [operation] = await db.insert(paymentOperations).values({ organizationId: organization.id, authorizingUserId: actor.id, operationType: "canonical_autopay_charge", targetKey: `canonical-autopay-plan:${plan.id}`, leagueId: league.id, canonicalPlanId: plan.id, triggerOccurrenceId: occurrence.id, amountMinor: 500, currency: "USD", requestFingerprint: `lvf4req:${"a".repeat(64)}`, providerIdempotencyKey: `lv-f4-pay-${suffix}`.slice(0, 45), providerName: "square", status: "leased", attemptCount: 1, nextAttemptAt: null, leaseOwner: "f4-test", leaseToken: token, leaseExpiresAt: "2038-02-01T20:00:00.000Z", startedAt: "2038-02-01T19:00:00.000Z" }).returning({ id: paymentOperations.id });
+  const [operation] = await db.insert(paymentOperations).values({ organizationId: organization.id, authorizingUserId: actor.id, operationType: "canonical_autopay_charge", targetKey: `canonical-autopay-plan:${plan.id}`, leagueId: league.id, canonicalPlanId: plan.id, triggerOccurrenceId: occurrence.id, amountMinor: 500, currency: "USD", requestFingerprint: `lvpayreq:v1:${"a".repeat(64)}`, providerIdempotencyKey: `lv-f4-pay-${suffix}`.slice(0, 45), providerName: "square", status: "leased", attemptCount: 1, nextAttemptAt: null, leaseOwner: "f4-test", leaseToken: token, leaseExpiresAt: "2038-02-01T20:00:00.000Z", startedAt: "2038-02-01T19:00:00.000Z" }).returning({ id: paymentOperations.id });
   return { organizationId: organization.id, leagueId: league.id, operationId: operation.id, planId: plan.id, leaseToken: token };
 }
 
@@ -44,6 +46,7 @@ describe("F4 canonical pre-dispatch PostgreSQL serialization", () => {
   });
 
   afterAll(async () => {
+    if (operationId) await db.delete(paymentOperations).where(and(eq(paymentOperations.id, operationId), eq(paymentOperations.organizationId, organizationId)));
     if (organizationId) await deleteOrganization(organizationId);
   });
 
@@ -74,6 +77,7 @@ describe("F4 canonical pre-dispatch PostgreSQL serialization", () => {
     expect(results.filter(Boolean)).toHaveLength(1);
     const revisions = await db.select().from(occurrenceCollectionPlanRevisions).where(and(eq(occurrenceCollectionPlanRevisions.planId, second.planId), eq(occurrenceCollectionPlanRevisions.organizationId, second.organizationId)));
     expect(revisions).toHaveLength(1);
+    await db.delete(paymentOperations).where(and(eq(paymentOperations.organizationId, second.organizationId), eq(paymentOperations.id, second.operationId)));
     await deleteOrganization(second.organizationId);
   });
 });

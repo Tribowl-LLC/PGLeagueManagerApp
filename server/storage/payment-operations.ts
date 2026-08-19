@@ -1634,6 +1634,7 @@ export async function acquireCanonicalAutopayDispatchCutoff(input: {
   leagueId: number;
   operationId: string;
   leaseToken: string;
+  now?: Date;
 }): Promise<boolean> {
   return db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(${input.organizationId}::integer, ${input.leagueId}::integer)`);
@@ -1688,7 +1689,8 @@ export async function acquireCanonicalAutopayDispatchCutoff(input: {
     const [location] = await tx.select({ squareCredentials: locations.squareCredentials }).from(locations).where(and(eq(locations.id, snapshot.locationId), eq(locations.organizationId, input.organizationId))).limit(1).for("share");
     const locationCredentials = locationSquareCredentialsSchema.safeParse(location?.squareCredentials);
     if (!locationCredentials.success || locationCredentials.data?.locationId !== snapshot.providerLocationId) return false;
-    const [claimed] = await tx.update(paymentOperations).set({ dispatchClaimedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }).where(and(eq(paymentOperations.id, operation.id), eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.status, "leased"), eq(paymentOperations.leaseToken, input.leaseToken), isNull(paymentOperations.dispatchClaimedAt))).returning({ id: paymentOperations.id });
+    const claimedAt = (input.now ?? new Date()).toISOString();
+    const [claimed] = await tx.update(paymentOperations).set({ dispatchClaimedAt: claimedAt, updatedAt: claimedAt }).where(and(eq(paymentOperations.id, operation.id), eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.status, "leased"), eq(paymentOperations.leaseToken, input.leaseToken), isNull(paymentOperations.dispatchClaimedAt))).returning({ id: paymentOperations.id });
     return Boolean(claimed);
   });
 }
@@ -2159,7 +2161,7 @@ async function finalizeCanonicalAutopayInTransaction(
       d2PlanId: storedSnapshot.d2PlanId,
       collectionPointOccurrenceId: storedSnapshot.collectionPointOccurrenceId,
       triggerOccurrenceId: storedSnapshot.triggerOccurrenceId,
-      triggerStartAt: storedSnapshot.triggerStartAt,
+      triggerStartAt: new Date(storedSnapshot.triggerStartAt).toISOString(),
       payerBowlerId: storedSnapshot.payerBowlerId,
       locationId: storedSnapshot.locationId,
       providerLocationId: storedSnapshot.providerLocationId,
