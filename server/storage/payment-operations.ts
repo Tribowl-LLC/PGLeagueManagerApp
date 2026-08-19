@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, gte, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
 import {
   bowlers,
   bowlerLeagues,
@@ -1674,6 +1674,57 @@ export async function acquireCanonicalAutopayDispatchCutoff(input: {
       const expected = snapshotItems[index];
       return !expected || row.itemIndex !== expected.itemIndex || row.obligationId !== expected.obligationId || row.occurrenceId !== expected.occurrenceId || row.bowlerId !== expected.bowlerId || row.amountMinor !== expected.amountMinor || row.currency !== expected.currency;
     })) return false;
+    const authorizedItems = authorization.authorizedItems
+      .filter((item) => item.collectionPointOccurrenceId === snapshot.collectionPointOccurrenceId)
+      .sort((left, right) => left.itemIndex - right.itemIndex);
+    if (authorizedItems.length !== snapshotItems.length || authorizedItems.some((item, index) => {
+      const expected = snapshotItems[index];
+      return !expected || item.collectionPointOccurrenceId !== snapshot.collectionPointOccurrenceId
+        || item.itemIndex !== expected.itemIndex || item.obligationId !== expected.obligationId
+        || item.occurrenceId !== expected.occurrenceId || item.bowlerId !== expected.bowlerId
+        || item.amountMinor !== expected.amountMinor;
+    })) return false;
+    const obligationIds = snapshotItems.map((item) => item.obligationId);
+    const obligations = await tx.select().from(bowlerOccurrenceObligations).where(and(
+      eq(bowlerOccurrenceObligations.organizationId, input.organizationId),
+      eq(bowlerOccurrenceObligations.leagueId, input.leagueId),
+      inArray(bowlerOccurrenceObligations.id, obligationIds),
+    )).for("update");
+    if (obligations.length !== obligationIds.length) return false;
+    const activeAllocations = await tx.select({ obligationId: paymentOccurrenceAllocations.obligationId, amountMinor: paymentOccurrenceAllocations.amountMinor, status: payments.status, refundedAt: payments.refundedAt, disputedAt: payments.disputedAt, paymentOperationId: payments.paymentOperationId }).from(paymentOccurrenceAllocations)
+      .innerJoin(payments, eq(payments.id, paymentOccurrenceAllocations.paymentId))
+      .where(and(
+        eq(paymentOccurrenceAllocations.organizationId, input.organizationId),
+        eq(paymentOccurrenceAllocations.leagueId, input.leagueId),
+        inArray(paymentOccurrenceAllocations.obligationId, obligationIds),
+        eq(paymentOccurrenceAllocations.state, "active"),
+      )).for("share");
+    const allocationOperationIds = [...new Set(activeAllocations.map((row) => row.paymentOperationId).filter((id): id is string => id !== null))];
+    const disputedOperationIds = allocationOperationIds.length
+      ? new Set((await tx.select({ operationId: paymentDisputes.paymentOperationId }).from(paymentDisputes).where(and(eq(paymentDisputes.organizationId, input.organizationId), inArray(paymentDisputes.paymentOperationId, allocationOperationIds)))).map((row) => row.operationId))
+      : new Set<string>();
+    if (activeAllocations.some((row) => row.status !== "paid" || row.refundedAt !== null || row.disputedAt !== null || (row.paymentOperationId !== null && disputedOperationIds.has(row.paymentOperationId)))) return false;
+    const paidByObligation = new Map<string, number>();
+    for (const row of activeAllocations) if (row.status === "paid") paidByObligation.set(row.obligationId, (paidByObligation.get(row.obligationId) ?? 0) + row.amountMinor);
+    const otherReservations = await tx.select({ obligationId: paymentOperationOccurrenceSnapshotAllocations.obligationId, amountMinor: paymentOperationOccurrenceSnapshotAllocations.amountMinor }).from(paymentOperationOccurrenceSnapshotAllocations)
+      .innerJoin(paymentOperations, and(eq(paymentOperations.id, paymentOperationOccurrenceSnapshotAllocations.operationId), eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.leagueId, input.leagueId)))
+      .where(and(inArray(paymentOperationOccurrenceSnapshotAllocations.obligationId, obligationIds), ne(paymentOperationOccurrenceSnapshotAllocations.operationId, operation.id), inArray(paymentOperations.status, ["pending", "leased", "provider_unknown", "retry_scheduled", "reconciliation_required"]))).for("share");
+    const otherPlanReservations = await tx.select({ obligationId: occurrenceCollectionPlanItems.obligationId, amountMinor: occurrenceCollectionPlanItems.amountMinor }).from(occurrenceCollectionPlanItems)
+      .innerJoin(occurrenceCollectionPlans, and(eq(occurrenceCollectionPlans.id, occurrenceCollectionPlanItems.planId), eq(occurrenceCollectionPlans.organizationId, input.organizationId), eq(occurrenceCollectionPlans.leagueId, input.leagueId), eq(occurrenceCollectionPlans.state, "ready")))
+      .where(and(inArray(occurrenceCollectionPlanItems.obligationId, obligationIds), ne(occurrenceCollectionPlanItems.planId, plan.id))).for("share");
+    const reservedByObligation = new Map<string, number>();
+    for (const row of [...otherReservations, ...otherPlanReservations]) reservedByObligation.set(row.obligationId, (reservedByObligation.get(row.obligationId) ?? 0) + row.amountMinor);
+    const obligationById = new Map(obligations.map((row) => [row.id, row]));
+    for (const item of snapshotItems) {
+      const obligation = obligationById.get(item.obligationId);
+      const paid = paidByObligation.get(item.obligationId) ?? 0;
+      const reserved = reservedByObligation.get(item.obligationId) ?? 0;
+      if (!obligation || obligation.occurrenceId !== item.occurrenceId || obligation.bowlerId !== item.bowlerId || obligation.currency !== item.currency
+        || ["voided", "settled", "refunded", "disputed", "review_required"].includes(obligation.state)
+        || paid + reserved + item.amountMinor !== obligation.amountMinor
+        || (paid === 0 && obligation.state !== "open")
+        || (paid > 0 && paid < obligation.amountMinor && obligation.state !== "partially_settled")) return false;
+    }
     const expectedBowlers = [...new Set(snapshotItems.map((item) => item.bowlerId))].sort((a, b) => a - b);
     const covered = [...new Set(authorization.coveredBowlerIds)].sort((a, b) => a - b);
     if (covered.length !== expectedBowlers.length || covered.some((id, index) => id !== expectedBowlers[index]) || !authorization.collectionPointOccurrenceIds.includes(snapshot.collectionPointOccurrenceId)) return false;
@@ -1732,6 +1783,11 @@ export async function schedulePaymentOperationRetry(
           ELSE NULL
         END`,
         leaseExpiresAt: null,
+        dispatchClaimedAt: sql`CASE
+          WHEN ${paymentOperations.operationType} = 'canonical_autopay_charge'
+          THEN NULL
+          ELSE ${paymentOperations.dispatchClaimedAt}
+        END`,
         providerObjectId: input.providerObjectId ?? undefined,
         providerOrderId: input.providerOrderId ?? undefined,
         errorClassification: input.errorClassification,
@@ -1770,6 +1826,9 @@ export async function schedulePaymentOperationRetry(
         input.operationId,
         input.failedPaymentRows,
       );
+      if (transitioned.operationType === "canonical_autopay_charge") {
+        await cancelCanonicalPlanAfterDefinitiveFailure(tx, transitioned, now, "ATTEMPTS_EXHAUSTED");
+      }
     }
     return transitioned;
   });
@@ -1877,6 +1936,11 @@ export async function recordPaymentOperationConfigurationRetry(
       leaseOwner: null,
       leaseToken: null,
       leaseExpiresAt: null,
+      dispatchClaimedAt: sql`CASE
+        WHEN ${paymentOperations.operationType} = 'canonical_autopay_charge'
+        THEN NULL
+        ELSE ${paymentOperations.dispatchClaimedAt}
+      END`,
       providerObjectId: input.providerObjectId ?? undefined,
       providerOrderId: input.providerOrderId ?? undefined,
       errorClassification: "configuration",
@@ -1953,6 +2017,9 @@ async function recordTerminalErrorOutcome(
       input.operationId,
       input.failedPaymentRows,
     );
+    if (transitioned.operationType === "canonical_autopay_charge" && input.status === "failed_terminal") {
+      await cancelCanonicalPlanAfterDefinitiveFailure(tx, transitioned, now, errorCode ?? "F4_PROVIDER_REQUEST_REJECTED");
+    }
     if (transitioned.operationType === "canonical_autopay_charge" && input.status === "action_required" && transitioned.leagueId !== null) {
       const [canonicalSnapshot] = await tx.select({ authorizationId: canonicalAutopayExecutionSnapshots.authorizationId }).from(canonicalAutopayExecutionSnapshots).where(and(eq(canonicalAutopayExecutionSnapshots.operationId, transitioned.id), eq(canonicalAutopayExecutionSnapshots.organizationId, transitioned.organizationId), eq(canonicalAutopayExecutionSnapshots.leagueId, transitioned.leagueId))).limit(1).for("share");
       if (canonicalSnapshot) {
@@ -1984,6 +2051,46 @@ async function recordTerminalErrorOutcome(
     return existing;
   }
   throw new PaymentOperationInvalidTransitionError(existing.status);
+}
+
+async function cancelCanonicalPlanAfterDefinitiveFailure(
+  tx: PaymentOperationTransaction,
+  operation: PaymentOperation,
+  now: string,
+  reason: string,
+): Promise<void> {
+  if (operation.operationType !== "canonical_autopay_charge" || operation.leagueId === null || operation.canonicalPlanId === null) return;
+  const [plan] = await tx.select().from(occurrenceCollectionPlans).where(and(
+    eq(occurrenceCollectionPlans.id, operation.canonicalPlanId),
+    eq(occurrenceCollectionPlans.organizationId, operation.organizationId),
+    eq(occurrenceCollectionPlans.leagueId, operation.leagueId),
+  )).limit(1).for("update");
+  if (!plan || plan.state !== "ready") return;
+  const revisionNumber = plan.currentRevision + 1;
+  const [cancelled] = await tx.update(occurrenceCollectionPlans).set({ state: "cancelled", currentRevision: revisionNumber, updatedAt: now }).where(and(
+    eq(occurrenceCollectionPlans.id, plan.id),
+    eq(occurrenceCollectionPlans.organizationId, operation.organizationId),
+    eq(occurrenceCollectionPlans.leagueId, operation.leagueId),
+    eq(occurrenceCollectionPlans.state, "ready"),
+    eq(occurrenceCollectionPlans.currentRevision, plan.currentRevision),
+  )).returning();
+  if (!cancelled) throw new PaymentOperationImmutableMismatchError();
+  const items = await tx.select().from(occurrenceCollectionPlanItems).where(and(
+    eq(occurrenceCollectionPlanItems.planId, plan.id),
+    eq(occurrenceCollectionPlanItems.organizationId, operation.organizationId),
+    eq(occurrenceCollectionPlanItems.leagueId, operation.leagueId),
+  ));
+  await tx.insert(occurrenceCollectionPlanRevisions).values({
+    organizationId: operation.organizationId,
+    leagueId: operation.leagueId,
+    planId: plan.id,
+    revisionNumber,
+    snapshotSchemaVersion: 1,
+    beforeSnapshot: { state: plan.state, plan, items },
+    afterSnapshot: { state: "cancelled", reason, operationId: operation.id, plan: cancelled, items },
+    recordedByUserId: plan.recordedByUserId,
+    createdAt: now,
+  });
 }
 
 export async function recordPaymentOperationActionRequired(
@@ -2123,11 +2230,15 @@ async function verifyCanonicalAutopayCompletionInTransaction(
   const allocations = await tx.select().from(paymentOccurrenceAllocations).where(and(eq(paymentOccurrenceAllocations.organizationId, operation.organizationId), eq(paymentOccurrenceAllocations.leagueId, operation.leagueId), sql`${paymentOccurrenceAllocations.allocationKey} LIKE ${`payment-operation:${operation.id}:%`}`));
   const supplementAllocations = await tx.select().from(paymentOperationOccurrenceSnapshotAllocations).where(and(eq(paymentOperationOccurrenceSnapshotAllocations.operationId, operation.id), eq(paymentOperationOccurrenceSnapshotAllocations.organizationId, operation.organizationId), eq(paymentOperationOccurrenceSnapshotAllocations.leagueId, operation.leagueId))).orderBy(asc(paymentOperationOccurrenceSnapshotAllocations.allocationIndex));
   if (allocations.length !== supplementAllocations.length || allocations.some((allocation) => allocation.state !== "active" || !supplementAllocations.some((item) => allocation.allocationKey === `payment-operation:${operation.id}:${item.allocationIndex}` && allocation.obligationId === item.obligationId && allocation.amountMinor === item.amountMinor && allocation.currency === item.currency))) throw new PaymentOperationImmutableMismatchError();
+  const allocationRevisionRows = allocations.length === 0 ? [] : await tx.select({ allocationId: paymentOccurrenceAllocationRevisions.allocationId, revisionNumber: paymentOccurrenceAllocationRevisions.revisionNumber }).from(paymentOccurrenceAllocationRevisions).where(and(eq(paymentOccurrenceAllocationRevisions.organizationId, operation.organizationId), eq(paymentOccurrenceAllocationRevisions.leagueId, operation.leagueId), inArray(paymentOccurrenceAllocationRevisions.allocationId, allocations.map((allocation) => allocation.id))));
+  const allocationRevisionKeys = new Set(allocationRevisionRows.map((row) => `${row.allocationId}:${row.revisionNumber}`));
+  if (allocations.some((allocation) => !allocationRevisionKeys.has(`${allocation.id}:${allocation.currentRevision}`))) throw new PaymentOperationImmutableMismatchError();
   const obligationIds = supplementAllocations.map((item) => item.obligationId);
   const obligations = await tx.select().from(bowlerOccurrenceObligations).where(and(eq(bowlerOccurrenceObligations.organizationId, operation.organizationId), eq(bowlerOccurrenceObligations.leagueId, operation.leagueId), inArray(bowlerOccurrenceObligations.id, obligationIds))).for("share");
   if (obligations.length !== obligationIds.length || obligations.some((obligation) => obligation.state !== "settled")) throw new PaymentOperationImmutableMismatchError();
-  const [obligationRevision] = await tx.select({ id: bowlerOccurrenceObligationRevisions.id }).from(bowlerOccurrenceObligationRevisions).where(and(eq(bowlerOccurrenceObligationRevisions.organizationId, operation.organizationId), eq(bowlerOccurrenceObligationRevisions.leagueId, operation.leagueId), inArray(bowlerOccurrenceObligationRevisions.obligationId, obligationIds))).limit(1);
-  if (!obligationRevision) throw new PaymentOperationImmutableMismatchError();
+  const obligationRevisionRows = await tx.select({ obligationId: bowlerOccurrenceObligationRevisions.obligationId, revisionNumber: bowlerOccurrenceObligationRevisions.revisionNumber }).from(bowlerOccurrenceObligationRevisions).where(and(eq(bowlerOccurrenceObligationRevisions.organizationId, operation.organizationId), eq(bowlerOccurrenceObligationRevisions.leagueId, operation.leagueId), inArray(bowlerOccurrenceObligationRevisions.obligationId, obligationIds)));
+  const obligationRevisionKeys = new Set(obligationRevisionRows.map((row) => `${row.obligationId}:${row.revisionNumber}`));
+  if (obligations.some((obligation) => !obligationRevisionKeys.has(`${obligation.id}:${obligation.currentRevision}`))) throw new PaymentOperationImmutableMismatchError();
   const [revision] = await tx.select({ id: occurrenceCollectionPlanRevisions.id }).from(occurrenceCollectionPlanRevisions).where(and(eq(occurrenceCollectionPlanRevisions.organizationId, operation.organizationId), eq(occurrenceCollectionPlanRevisions.leagueId, operation.leagueId), eq(occurrenceCollectionPlanRevisions.planId, plan.id), eq(occurrenceCollectionPlanRevisions.revisionNumber, plan.currentRevision))).limit(1);
   if (!revision) throw new PaymentOperationImmutableMismatchError();
 }
@@ -2349,6 +2460,13 @@ async function finalizeCanonicalAutopayInTransaction(
         eq(paymentOccurrenceAllocations.allocationKey, allocationKey),
       )).limit(1).for("share");
       if (!existing || existing.paymentId !== payment.id || existing.obligationId !== row.obligationId || existing.occurrenceId !== row.occurrenceId || existing.bowlerId !== row.bowlerId || existing.amountMinor !== row.amountMinor || existing.currency !== row.currency || existing.state !== "active") throw new PaymentOperationImmutableMismatchError();
+      const [existingRevision] = await tx.select({ id: paymentOccurrenceAllocationRevisions.id }).from(paymentOccurrenceAllocationRevisions).where(and(
+        eq(paymentOccurrenceAllocationRevisions.organizationId, operation.organizationId),
+        eq(paymentOccurrenceAllocationRevisions.leagueId, operation.leagueId),
+        eq(paymentOccurrenceAllocationRevisions.allocationId, existing.id),
+        eq(paymentOccurrenceAllocationRevisions.revisionNumber, existing.currentRevision),
+      )).limit(1);
+      if (!existingRevision) throw new PaymentOperationImmutableMismatchError();
     }
   }
   for (const obligation of obligations) {

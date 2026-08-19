@@ -7,7 +7,7 @@ import { decrypt } from "../utils/crypto.js";
 import { canonicalF4AutopayExecutionEnabled } from "../config.js";
 import { getPaymentProvider } from "./payment-provider-factory.js";
 import { PaymentProviderError, ProviderNotConfiguredError, sanitizeProviderErrorCode } from "./payment-errors.js";
-import { acquireCanonicalAutopayDispatchCutoff, acquirePaymentOperationLease, finalizePaymentOperationSuccess, recordCanonicalAutopayPreDispatchFailure, recordPaymentOperationActionRequired, recordPaymentOperationFailedTerminal, recordPaymentOperationProviderUnknown, recordPaymentOperationReconciliationRequired, schedulePaymentOperationRetry, type PaymentOperationLinkedPaymentInput } from "../storage/payment-operations.js";
+import { acquireCanonicalAutopayDispatchCutoff, acquirePaymentOperationLease, finalizePaymentOperationSuccess, recordCanonicalAutopayPreDispatchFailure, recordPaymentOperationActionRequired, recordPaymentOperationConfigurationRetry, recordPaymentOperationFailedTerminal, recordPaymentOperationProviderUnknown, recordPaymentOperationReconciliationRequired, schedulePaymentOperationRetry, type PaymentOperationLinkedPaymentInput } from "../storage/payment-operations.js";
 import { canonicalProviderResultDisposition, canonicalRetryAt } from "@shared/f4-canonical-autopay-contract";
 
 const LEASE_MS = 15 * 60 * 1000;
@@ -50,11 +50,13 @@ export async function executeCanonicalAutopayOperation(input: { organizationId: 
   let providerOrderId: string | undefined;
   let paymentRows: PaymentOperationLinkedPaymentInput[] = [];
   let providerSucceeded = false;
+  let providerDispatchStarted = false;
   try {
     provider = await getPaymentProvider(snapshot.locationId);
     if (provider.providerName !== operation.providerName || !provider.validateCardId(sourceId)) throw new PaymentProviderError("Payment request is invalid.", "INVALID_REQUEST", undefined, { disposition: "invalid_request", providerCode: "F4_CARD_INVALID" });
     if (!provider.hasCardOnFile || !(await provider.hasCardOnFile(customerId, sourceId))) throw new PaymentProviderError("Payment request is invalid.", "INVALID_REQUEST", undefined, { disposition: "action_required", providerCode: "F4_CARD_OWNERSHIP_DRIFT" });
-    const result = await provider.processPayment(sourceId, operation.amountMinor, false, customerId ?? undefined, undefined, { paymentKey: operation.providerIdempotencyKey, providerLocationId: snapshot.providerLocationId === "pending" ? undefined : snapshot.providerLocationId, referenceId: operation.id });
+    providerDispatchStarted = true;
+    const result = await provider.processPayment(sourceId, operation.amountMinor, false, customerId ?? undefined, undefined, { paymentKey: operation.providerIdempotencyKey, providerLocationId: snapshot.providerLocationId, referenceId: operation.id });
     if (result.status !== "COMPLETED") {
       const outcome = canonicalProviderResultDisposition(result.status ?? "");
       if (outcome === "completed") throw new Error("unreachable provider outcome");
@@ -68,12 +70,13 @@ export async function executeCanonicalAutopayOperation(input: { organizationId: 
     [...byBowler.entries()].sort(([a], [b]) => a - b).forEach(([bowlerId, amount], allocationIndex) => paymentRows.push({ allocationIndex, values: { bowlerId, leagueId: snapshot.leagueId, amount, lineageAmount: null, prizeFundAmount: null, weekOf: snapshot.triggerStartAt, status: "paid", type: providerNameToPaymentType(operation.providerName), providerPaymentId: result.id, receiptUrl: result.receiptUrl, receiptNumber: result.receiptNumber, receiptEmailMissing: true, notes: null, paidByUserId: operation.authorizingUserId, combinedChargeGroupId: byBowler.size > 1 ? operation.id : null } }));
     providerSucceeded = true;
   } catch (error) {
-    const disposition = error instanceof PaymentProviderError ? error.disposition : error instanceof ProviderNotConfiguredError ? "configuration" : "provider_unknown";
+    const disposition = error instanceof PaymentProviderError ? error.disposition : error instanceof ProviderNotConfiguredError || (error instanceof Error && error.name === "ProviderNotConfiguredError") ? "configuration" : providerDispatchStarted ? "provider_unknown" : "invalid_request";
     const code = sanitizeProviderErrorCode(error instanceof PaymentProviderError || error instanceof ProviderNotConfiguredError ? error.providerCode : "F4_PROVIDER_UNKNOWN", "F4_PROVIDER_UNKNOWN");
     if (disposition === "provider_unknown") await recordPaymentOperationProviderUnknown({ organizationId: input.organizationId, operationId: operation.id, leaseToken: operation.leaseToken, errorCode: code, recoveryAt: canonicalRetryAt(operation.attemptCount, now), now });
     else if (disposition === "transient") await schedulePaymentOperationRetry({ organizationId: input.organizationId, operationId: operation.id, leaseToken: operation.leaseToken, errorClassification: "transient", errorCode: code, nextAttemptAt: canonicalRetryAt(operation.attemptCount, now), now });
     else if (disposition === "action_required") await recordPaymentOperationActionRequired({ organizationId: input.organizationId, operationId: operation.id, leaseToken: operation.leaseToken, errorCode: code, now });
-    else await recordPaymentOperationFailedTerminal({ organizationId: input.organizationId, operationId: operation.id, leaseToken: operation.leaseToken, errorClassification: disposition === "configuration" ? "configuration" : "invalid_request", errorCode: code, now });
+    else if (disposition === "configuration") await recordPaymentOperationConfigurationRetry({ organizationId: input.organizationId, operationId: operation.id, leaseToken: operation.leaseToken, errorCode: code, recoveryAt: canonicalRetryAt(operation.attemptCount, now), now });
+    else await recordPaymentOperationFailedTerminal({ organizationId: input.organizationId, operationId: operation.id, leaseToken: operation.leaseToken, errorClassification: disposition === "invalid_request" ? "invalid_request" : "internal", errorCode: code, now });
   }
   if (!providerSucceeded || !providerObjectId) return;
   try {
