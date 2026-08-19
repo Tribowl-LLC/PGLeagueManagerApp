@@ -17,6 +17,7 @@ CREATE TABLE "canonical_autopay_execution_snapshots" (
 	"plan_version" integer NOT NULL,
 	"plan_fingerprint" varchar(80) NOT NULL,
 	"trigger_occurrence_id" uuid NOT NULL,
+	"trigger_start_at" timestamp with time zone NOT NULL,
 	"location_id" integer NOT NULL,
 	"provider_location_id" varchar(255) NOT NULL,
 	"encrypted_source_id" text NOT NULL,
@@ -37,6 +38,7 @@ ALTER TABLE "payment_operations" DROP CONSTRAINT "payment_operations_scheduled_c
 ALTER TABLE "payment_operations" DROP CONSTRAINT "payment_operations_trigger_occurrence_check";--> statement-breakpoint
 ALTER TABLE "payment_operations" ADD COLUMN "league_id" integer;--> statement-breakpoint
 ALTER TABLE "payment_operations" ADD COLUMN "canonical_plan_id" uuid;--> statement-breakpoint
+ALTER TABLE "payment_operations" ADD COLUMN "dispatch_claimed_at" timestamp with time zone;--> statement-breakpoint
 ALTER TABLE "canonical_autopay_execution_snapshots" ADD CONSTRAINT "canonical_autopay_execution_snapshots_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 CREATE UNIQUE INDEX "payment_operations_tenant_identity_unique" ON "payment_operations" USING btree ("id","organization_id");--> statement-breakpoint
 ALTER TABLE "canonical_autopay_execution_snapshots" ADD CONSTRAINT "canonical_autopay_snapshots_operation_fk" FOREIGN KEY ("operation_id","organization_id") REFERENCES "public"."payment_operations"("id","organization_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
@@ -51,6 +53,7 @@ ALTER TABLE "canonical_autopay_execution_snapshots" ADD CONSTRAINT "canonical_au
 ALTER TABLE "canonical_autopay_execution_snapshots" ADD CONSTRAINT "canonical_autopay_snapshots_trigger_fk" FOREIGN KEY ("trigger_occurrence_id","organization_id","league_id") REFERENCES "public"."league_occurrences"("id","organization_id","league_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "canonical_autopay_execution_snapshots" ADD CONSTRAINT "canonical_autopay_snapshots_location_fk" FOREIGN KEY ("location_id","organization_id") REFERENCES "public"."locations"("id","organization_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "canonical_autopay_execution_snapshots" ADD CONSTRAINT "canonical_autopay_snapshots_payer_fk" FOREIGN KEY ("payer_bowler_id","organization_id") REFERENCES "public"."bowlers"("id","organization_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+CREATE INDEX "canonical_autopay_snapshots_authorization_idx" ON "canonical_autopay_execution_snapshots" USING btree ("organization_id","league_id","authorization_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "canonical_autopay_snapshots_identity_unique" ON "canonical_autopay_execution_snapshots" USING btree ("operation_id","organization_id","league_id","d2_plan_id");--> statement-breakpoint
 CREATE INDEX "canonical_autopay_snapshots_plan_idx" ON "canonical_autopay_execution_snapshots" USING btree ("organization_id","league_id","d2_plan_id");--> statement-breakpoint
 CREATE OR REPLACE FUNCTION canonical_autopay_snapshot_immutable_guard() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'F4 execution snapshot is immutable'; END $$;--> statement-breakpoint
@@ -71,6 +74,7 @@ ALTER TABLE "payment_operations" ADD CONSTRAINT "payment_operations_scheduled_cy
       AND "payment_operations"."billing_cycle_at" IS NULL
       AND "payment_operations"."league_id" IS NOT NULL
       AND "payment_operations"."canonical_plan_id" IS NOT NULL
+      AND "payment_operations"."authorizing_user_id" IS NOT NULL
     ) OR (
       "payment_operations"."operation_type" IN ('interactive_charge', 'refund')
       AND "payment_operations"."payment_schedule_id" IS NULL

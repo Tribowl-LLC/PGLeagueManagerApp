@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import {
   bowlerLeagues, bowlers, bowlerOccurrenceObligations, financialActivations,
   bowlerPaymentLinks,
@@ -519,7 +519,10 @@ async function supersedeAuthorizationPlans(tx: F3DbTransaction, authorization: t
       eq(paymentOperations.leagueId, authorization.leagueId),
       eq(paymentOperations.canonicalPlanId, plan.id),
       eq(paymentOperations.operationType, "canonical_autopay_charge"),
-      inArray(paymentOperations.status, ["pending", "retry_scheduled"]),
+      or(
+        inArray(paymentOperations.status, ["pending", "retry_scheduled"]),
+        and(eq(paymentOperations.status, "leased"), isNull(paymentOperations.dispatchClaimedAt)),
+      ),
     ));
   }
 }

@@ -6,6 +6,18 @@ export const F4_EXECUTION_SNAPSHOT_VERSION = 1 as const;
 export const F4_EXECUTION_SNAPSHOT_FINGERPRINT_PREFIX = "lvf4exec:v1:" as const;
 export const F4_PROVIDER_IDEMPOTENCY_PREFIX = "lv-f4-pay-" as const;
 export const F4_OPERATION_TARGET_PREFIX = "canonical-autopay-plan:" as const;
+export const F4_MIN_RETRY_MS = 60_000;
+export const F4_MAX_RETRY_MS = 6 * 60 * 60 * 1000;
+
+export function canonicalRetryAt(attemptCount: number, now: Date): Date {
+  return new Date(now.getTime() + Math.min(F4_MAX_RETRY_MS, F4_MIN_RETRY_MS * (2 ** Math.max(0, attemptCount - 1))));
+}
+
+export function canonicalProviderResultDisposition(status: string): "completed" | "action_required" | "provider_unknown" {
+  if (status === "COMPLETED") return "completed";
+  if (status === "FAILED" || status === "CANCELED") return "action_required";
+  return "provider_unknown";
+}
 
 export const f4PlanItemSchema = z.object({
   obligationId: z.string().uuid(), occurrenceId: z.string().uuid(), bowlerId: z.number().int().positive(),
@@ -15,7 +27,7 @@ export const f4PlanItemSchema = z.object({
 export const f4ExecutionSnapshotSchema = z.object({
   contractVersion: z.literal(F4_EXECUTION_CONTRACT), snapshotVersion: z.literal(F4_EXECUTION_SNAPSHOT_VERSION),
   operationId: z.string().uuid(), organizationId: z.number().int().positive(), leagueId: z.number().int().positive(),
-  d2PlanId: z.string().uuid(), collectionPointOccurrenceId: z.string().uuid(), triggerOccurrenceId: z.string().uuid(),
+  d2PlanId: z.string().uuid(), collectionPointOccurrenceId: z.string().uuid(), triggerOccurrenceId: z.string().uuid(), triggerStartAt: z.string().datetime({ offset: true }),
   payerBowlerId: z.number().int().positive(), locationId: z.number().int().positive(), providerLocationId: z.string().trim().min(1).max(255),
   activationId: z.string().uuid(), activationRevision: z.number().int().positive(), activationSourceFingerprint: z.string().regex(/^lvfinancialsource:v1:[0-9a-f]{64}$/),
   policyId: z.string().uuid(), policyVersion: z.number().int().positive(), policyFingerprint: z.string().regex(/^lvf3policy:v1:[0-9a-f]{64}$/),

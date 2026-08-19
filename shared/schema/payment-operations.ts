@@ -119,6 +119,10 @@ export const paymentOperations = pgTable("payment_operations", {
   leaseOwner: varchar("lease_owner", { length: 128 }),
   leaseToken: uuid("lease_token"),
   leaseExpiresAt: timestamp("lease_expires_at", { mode: "string" }),
+  // Set atomically under the org/league serialization lock immediately
+  // before provider dispatch.  A non-null value means revoke may not cancel
+  // this exact in-flight attempt, but still blocks later plans.
+  dispatchClaimedAt: timestamp("dispatch_claimed_at", { mode: "string" }),
   leaseRecoveryCount: integer("lease_recovery_count").notNull().default(0),
   lastLeaseRecoveredAt: timestamp("last_lease_recovered_at", { mode: "string" }),
   errorClassification: text("error_classification", {
@@ -266,6 +270,7 @@ export const paymentOperations = pgTable("payment_operations", {
       AND ${table.billingCycleAt} IS NULL
       AND ${table.leagueId} IS NOT NULL
       AND ${table.canonicalPlanId} IS NOT NULL
+      AND ${table.authorizingUserId} IS NOT NULL
     ) OR (
       ${table.operationType} IN ('interactive_charge', 'refund')
       AND ${table.paymentScheduleId} IS NULL

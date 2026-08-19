@@ -208,7 +208,7 @@ async function findChargeOperationId(
 ): Promise<string | null | "ambiguous"> {
   const base = and(
     eq(paymentOperations.organizationId, row.organizationId),
-    inArray(paymentOperations.operationType, ["scheduled_charge", "interactive_charge"]),
+    inArray(paymentOperations.operationType, ["scheduled_charge", "interactive_charge", "canonical_autopay_charge"]),
     eq(paymentOperations.providerName, "square"),
   );
   const referenceId = event.providerReferenceId;

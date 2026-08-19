@@ -4,6 +4,8 @@ import {
   canonicalAutopayTargetKey,
   f4ExecutionSnapshotFingerprint,
   validateF4ExecutionSnapshot,
+  canonicalProviderResultDisposition,
+  canonicalRetryAt,
 } from "@shared/f4-canonical-autopay-contract";
 
 const base = {
@@ -15,6 +17,7 @@ const base = {
   d2PlanId: "00000000-0000-4000-8000-000000000002",
   collectionPointOccurrenceId: "00000000-0000-4000-8000-000000000003",
   triggerOccurrenceId: "00000000-0000-4000-8000-000000000003",
+  triggerStartAt: "2032-01-06T00:00:00.000Z",
   payerBowlerId: 3,
   locationId: 4,
   providerLocationId: "L1",
@@ -50,5 +53,20 @@ describe("F4 canonical autopay identity and immutable snapshot", () => {
     expect(validateF4ExecutionSnapshot({ ...base, snapshotFingerprint: fingerprint }).snapshotFingerprint).toBe(fingerprint);
     expect(() => f4ExecutionSnapshotFingerprint({ ...base, amountMinor: 999 })).toThrow();
     expect(() => validateF4ExecutionSnapshot({ ...base, snapshotFingerprint: fingerprint, items: [{ ...base.items[0], amountMinor: 999 }] })).toThrow();
+  });
+
+  it("fails closed on every non-completed provider result", () => {
+    expect(canonicalProviderResultDisposition("COMPLETED")).toBe("completed");
+    expect(canonicalProviderResultDisposition("FAILED")).toBe("action_required");
+    expect(canonicalProviderResultDisposition("CANCELED")).toBe("action_required");
+    expect(canonicalProviderResultDisposition("PENDING")).toBe("provider_unknown");
+    expect(canonicalProviderResultDisposition("UNKNOWN")).toBe("provider_unknown");
+  });
+
+  it("uses the shared bounded exponential retry schedule", () => {
+    const now = new Date("2032-01-01T00:00:00.000Z");
+    expect(canonicalRetryAt(1, now).getTime() - now.getTime()).toBe(60_000);
+    expect(canonicalRetryAt(3, now).getTime() - now.getTime()).toBe(240_000);
+    expect(canonicalRetryAt(99, now).getTime() - now.getTime()).toBe(6 * 60 * 60 * 1000);
   });
 });
