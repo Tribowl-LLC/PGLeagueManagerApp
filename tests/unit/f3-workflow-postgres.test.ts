@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { getTestDb } from "../setup/test-db";
-import { bowlerLeagues, bowlers, bowlerPaymentLinks, leagueOccurrenceBillingTerms, leagueOccurrenceBillingTermRevisions, leagueOccurrenceGenerationRuns, leagueOccurrenceRevisions, leagueOccurrences, leagueScheduleCommands, leagues, locations, organizations, teams, users, bowlerOccurrenceObligations, bowlerOccurrenceObligationRevisions, f3CollectionPolicies, f3CollectionPolicyOccurrences, f3CollectionPolicyRevisions, f3PayerAuthorizations, f3PayerAuthorizationRevisions, f3AutopayPlanProvenance, occurrenceCollectionPlans, occurrenceCollectionPlanItems, payments, paymentOccurrenceAllocations, paymentOccurrenceAllocationRevisions, paymentOperations, paymentOperationOccurrenceSnapshots, paymentOperationOccurrenceSnapshotAllocations, interactivePaymentOperationSnapshots } from "@shared/schema";
+import { bowlerLeagues, bowlers, bowlerPaymentLinks, leagueOccurrenceBillingTerms, leagueOccurrenceBillingTermRevisions, leagueOccurrenceGenerationRuns, leagueOccurrenceRevisions, leagueOccurrences, leagueScheduleCommands, leagues, locations, organizations, teams, users, bowlerOccurrenceObligations, bowlerOccurrenceObligationRevisions, f3CollectionPolicies, f3CollectionPolicyOccurrences, f3CollectionPolicyRevisions, f3PayerAuthorizations, f3PayerAuthorizationRevisions, f3AutopayPlanProvenance, occurrenceCollectionPlans, occurrenceCollectionPlanItems, occurrenceCollectionPlanRevisions, payments, paymentOccurrenceAllocations, paymentOccurrenceAllocationRevisions, paymentOperations, paymentOperationOccurrenceSnapshots, paymentOperationOccurrenceSnapshotAllocations, interactivePaymentOperationSnapshots } from "@shared/schema";
 import { getCanonicalActivationSource, activateCanonicalFinancials } from "../../server/services/canonical-due-past-due";
 import { canonicalizeF3QuoteItems, f3PreauthorizationFingerprint } from "@shared/f3-autopay-contract";
 
@@ -39,6 +39,7 @@ async function makeFixture() {
 describe("F3 real PostgreSQL workflow", () => {
   it("pure quote evidence rejects extra responsibilities, lifecycle drift, over-allocation, and over-reservation", async () => {
     const { buildF3QuoteEvidence } = await import("../../server/services/f3-workflow");
+    const { hasReadyAutopayReservationConflict } = await import("../../server/services/interactive-occurrence-allocation");
     const occurrence = "00000000-0000-4000-8000-000000000001";
     const obligation = "00000000-0000-4000-8000-000000000002";
     const base = { policyRows: [{ occurrenceId: occurrence, collectionPointOccurrenceId: occurrence }], coveredBowlerIds: [7], responsibilities: [{ occurrenceId: occurrence, bowlerId: 7, obligationId: obligation, amountMinor: 1000, currency: "USD" }], obligations: [{ id: obligation, occurrenceId: occurrence, bowlerId: 7, amountMinor: 1000, currency: "USD", state: "open", dueAt: null }], allocations: [], reservations: [], transactionNow: Date.now(), allowDueItems: true };
@@ -48,6 +49,10 @@ describe("F3 real PostgreSQL workflow", () => {
     await expect(Promise.resolve().then(() => buildF3QuoteEvidence({ ...base, allocations: [{ obligationId: obligation, amountMinor: 1100, status: "paid" }] }))).rejects.toMatchObject({ code: "OBLIGATION_EVIDENCE_INCONSISTENT" });
     await expect(Promise.resolve().then(() => buildF3QuoteEvidence({ ...base, reservations: [{ obligationId: obligation, amountMinor: 1001 }] }))).rejects.toMatchObject({ code: "OBLIGATION_EVIDENCE_INCONSISTENT" });
     await expect(Promise.resolve().then(() => buildF3QuoteEvidence({ ...base, allocations: [{ obligationId: obligation, amountMinor: 100, status: "paid", disputeEvidence: true }] }))).rejects.toMatchObject({ code: "OBLIGATION_REVIEW_REQUIRED" });
+    const reservedRow = [{ obligationId: obligation, outstandingMinor: 200, f3ReservedMinor: 300 }];
+    expect(hasReadyAutopayReservationConflict(reservedRow, [{ obligationId: obligation, amountMinor: 200 }])).toBe(false);
+    expect(hasReadyAutopayReservationConflict(reservedRow, [{ obligationId: obligation, amountMinor: 300 }])).toBe(true);
+    expect(hasReadyAutopayReservationConflict(reservedRow, [{ obligationId: obligation, amountMinor: 301 }])).toBe(true);
   });
 
   it("creates/approves/authorizes/revokes exact double-pay evidence and rejects stale consent without writes", async () => {
@@ -139,8 +144,31 @@ describe("F3 real PostgreSQL workflow", () => {
     expect((await workflow.authorizeF3Payer(winningInput)).replay).toBe(true);
     expect(await db.select().from(f3PayerAuthorizations).where(eq(f3PayerAuthorizations.leagueId, fixture.leagueId))).toHaveLength(replayBefore);
     await expect(workflow.authorizeF3Payer({ ...winningInput, acceptedPartnerIds: [], commandKey: winningInput.commandKey })).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+    // The database key is tenant/league/command, not payer/command. A
+    // cross-payer reuse must therefore conflict before any provider or insert.
+    await expect(workflow.authorizeF3Payer({
+      ...winningInput,
+      payerBowlerId: fixture.roster[1].id,
+      coveredBowlerIds: [fixture.roster[1].id],
+      acceptedPartnerIds: [],
+      sourceId: "card-2",
+      customerId: "customer-1",
+      commandKey: winningInput.commandKey,
+    })).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
     const { quoteInteractiveOccurrenceAllocations } = await import("../../server/services/interactive-occurrence-allocation");
     await expect(quoteInteractiveOccurrenceAllocations({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, amountMinor: ordered[0].amountMinor, currency: "USD", allowedBowlerIds: [fixture.roster[0].id], selections: [{ obligationId: ordered[0].obligationId, amountMinor: ordered[0].amountMinor }] })).rejects.toMatchObject({ code: "OBLIGATION_RESERVED_BY_AUTOPAY" });
+    // A partial ready-plan reservation leaves a real unreserved remainder for
+    // F2. Exact remainder is valid; selecting the reserved portion or more is
+    // an explicit automatic-plan conflict.
+    const thirdObligation = obligations.find((row) => row.bowlerId === fixture.roster[2].id && row.amountMinor === 500);
+    if (!thirdObligation) throw new Error("partial reservation obligation fixture missing");
+    const [partialPlan] = await db.insert(occurrenceCollectionPlans).values({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, planKey: `f3-partial-plan-${fixture.organizationId}`, triggerOccurrenceId: thirdObligation.occurrenceId, currency: "USD", state: "ready", version: 1, recordedByUserId: fixture.actorUserId }).returning();
+    if (!partialPlan) throw new Error("partial reservation plan fixture missing");
+    await db.insert(occurrenceCollectionPlanItems).values({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, planId: partialPlan.id, obligationId: thirdObligation.id, occurrenceId: thirdObligation.occurrenceId, bowlerId: thirdObligation.bowlerId, amountMinor: 300, currency: "USD", itemIndex: 0 });
+    await db.insert(occurrenceCollectionPlanRevisions).values({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, planId: partialPlan.id, revisionNumber: 1, snapshotSchemaVersion: 1, afterSnapshot: { state: "ready", obligationIds: [thirdObligation.id] }, recordedByUserId: fixture.actorUserId });
+    await expect(quoteInteractiveOccurrenceAllocations({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, amountMinor: 200, currency: "USD", allowedBowlerIds: [thirdObligation.bowlerId], selections: [{ obligationId: thirdObligation.id, amountMinor: 200 }] })).resolves.toMatchObject({ selections: [{ obligationId: thirdObligation.id, amountMinor: 200 }] });
+    await expect(quoteInteractiveOccurrenceAllocations({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, amountMinor: 300, currency: "USD", allowedBowlerIds: [thirdObligation.bowlerId], selections: [{ obligationId: thirdObligation.id, amountMinor: 300 }] })).rejects.toMatchObject({ code: "OBLIGATION_RESERVED_BY_AUTOPAY" });
+    await expect(quoteInteractiveOccurrenceAllocations({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, amountMinor: 301, currency: "USD", allowedBowlerIds: [thirdObligation.bowlerId], selections: [{ obligationId: thirdObligation.id, amountMinor: 301 }] })).rejects.toMatchObject({ code: "OBLIGATION_RESERVED_BY_AUTOPAY" });
     const beforeDrift = (await db.select().from(f3PayerAuthorizations).where(eq(f3PayerAuthorizations.leagueId, fixture.leagueId))).length;
     const [driftLocation] = await db.insert(locations).values({ name: "F3 drift location", organizationId: fixture.organizationId }).returning({ id: locations.id });
     await db.update(bowlers).set({ paymentProviderLocationId: driftLocation.id }).where(eq(bowlers.id, fixture.roster[0].id));
@@ -154,5 +182,29 @@ describe("F3 real PostgreSQL workflow", () => {
     expect(revoked.state).toBe("revoked");
     await db.update(leagues).set({ active: true }).where(eq(leagues.id, fixture.leagueId));
     expect((await db.select().from(f3PayerAuthorizationRevisions).where(eq(f3PayerAuthorizationRevisions.leagueId, fixture.leagueId))).length).toBeGreaterThanOrEqual(2);
+
+    // A changed canonical billing-term revision invalidates the activation
+    // source. New policy/quote evidence must fail closed without writes.
+    const [termRevision] = await db.select({ revision: leagueOccurrenceBillingTermRevisions })
+      .from(leagueOccurrenceBillingTermRevisions)
+      .innerJoin(leagueOccurrenceBillingTerms, eq(leagueOccurrenceBillingTermRevisions.billingTermId, leagueOccurrenceBillingTerms.id))
+      .where(and(eq(leagueOccurrenceBillingTerms.occurrenceId, fixture.occurrenceIds[0]), eq(leagueOccurrenceBillingTerms.organizationId, fixture.organizationId), eq(leagueOccurrenceBillingTerms.leagueId, fixture.leagueId)))
+      .limit(1);
+    if (!termRevision) throw new Error("billing-term revision fixture missing");
+    const beforeSourceDrift = {
+      policies: (await db.select().from(f3CollectionPolicies).where(eq(f3CollectionPolicies.leagueId, fixture.leagueId))).length,
+      authorizations: (await db.select().from(f3PayerAuthorizations).where(eq(f3PayerAuthorizations.leagueId, fixture.leagueId))).length,
+      plans: (await db.select().from(occurrenceCollectionPlans).where(eq(occurrenceCollectionPlans.leagueId, fixture.leagueId))).length,
+    };
+    await db.update(leagueOccurrenceBillingTermRevisions).set({
+      afterSnapshot: { ...(termRevision.revision.afterSnapshot as Record<string, unknown>), defaultAmountMinor: 501 },
+    }).where(eq(leagueOccurrenceBillingTermRevisions.id, termRevision.revision.id));
+    await expect(workflow.readF3PreauthorizationQuote({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, payerBowlerId: fixture.roster[0].id, coveredBowlerIds: [fixture.roster[0].id] })).rejects.toMatchObject({ code: "ACTIVATION_SOURCE_DRIFT" });
+    await expect(workflow.createF3Policy({ ...policyInput, policyVersion: 2, actorUserId: fixture.actorUserId, commandKey: `f3-source-drift-${fixture.organizationId}` })).rejects.toMatchObject({ code: "ACTIVATION_SOURCE_DRIFT" });
+    expect({
+      policies: (await db.select().from(f3CollectionPolicies).where(eq(f3CollectionPolicies.leagueId, fixture.leagueId))).length,
+      authorizations: (await db.select().from(f3PayerAuthorizations).where(eq(f3PayerAuthorizations.leagueId, fixture.leagueId))).length,
+      plans: (await db.select().from(occurrenceCollectionPlans).where(eq(occurrenceCollectionPlans.leagueId, fixture.leagueId))).length,
+    }).toEqual(beforeSourceDrift);
   });
 });

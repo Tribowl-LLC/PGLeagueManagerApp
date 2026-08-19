@@ -107,9 +107,22 @@ describe("enabled F3 canonical router contract", () => {
     const policy = payload.data.policy;
     const authorization = payload.data.authorization;
     providerFactory.mockResolvedValue({ providerName: "square", validateCardId: vi.fn().mockReturnValue(true), hasCardOnFile: vi.fn().mockResolvedValue(true) });
-    const authorized = await request(`/api/financials/f3/leagues/${league().id}/authorize`, { method: "POST", body: JSON.stringify({ payerBowlerId, policyId: policy.id, policyVersion: policy.version, authorizationVersion: authorization.nextAuthorizationVersion, coveredBowlerIds: authorization.coveredBowlerIds, sourceId: "card-route", collectionPointOccurrenceIds: authorization.collectionPointOccurrenceIds, preauthorizationFingerprint: payload.data.fingerprint, authorizedItems: payload.data.items, commandKey: crypto.randomUUID() }) }, payer());
+    const authorizationBody = { payerBowlerId, policyId: policy.id, policyVersion: policy.version, authorizationVersion: authorization.nextAuthorizationVersion, coveredBowlerIds: authorization.coveredBowlerIds, sourceId: "card-route", collectionPointOccurrenceIds: authorization.collectionPointOccurrenceIds, preauthorizationFingerprint: payload.data.fingerprint, authorizedItems: payload.data.items, commandKey: crypto.randomUUID() };
+    const authorized = await request(`/api/financials/f3/leagues/${league().id}/authorize`, { method: "POST", body: JSON.stringify(authorizationBody) }, payer());
     expect(authorized.status).toBe(201);
     const authorizationId = (await authorized.json()).data.authorizationId as string;
+    // A retry after the provider response is lost must use the durable,
+    // tenant/league/command-key replay evidence before contacting Square.
+    providerFactory.mockClear();
+    providerFactory.mockRejectedValue(new Error("provider unavailable"));
+    const replay = await request(`/api/financials/f3/leagues/${league().id}/authorize`, { method: "POST", body: JSON.stringify(authorizationBody) }, payer());
+    expect(replay.status).toBe(200);
+    expect((await replay.json()).data).toMatchObject({ authorizationId, replay: true });
+    expect(providerFactory).not.toHaveBeenCalled();
+    const changedReplay = await request(`/api/financials/f3/leagues/${league().id}/authorize`, { method: "POST", body: JSON.stringify({ ...authorizationBody, sourceId: "different-card" }) }, payer());
+    expect(changedReplay.status).toBe(409);
+    expect(bodyCode(await changedReplay.json())).toBe("IDEMPOTENCY_CONFLICT");
+    expect(providerFactory).not.toHaveBeenCalled();
     const revoked = await request(`/api/financials/f3/leagues/${league().id}/authorize/${authorizationId}/revoke`, { method: "POST", body: "{}" }, payer());
     expect(revoked.status).toBe(200);
   });

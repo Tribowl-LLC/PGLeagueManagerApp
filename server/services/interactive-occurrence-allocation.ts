@@ -115,6 +115,20 @@ export function validateInteractiveOccurrenceSelections(
   if (selections.length > 0 && total !== amountMinor) throw new InteractiveOccurrenceAllocationError("AMOUNT_MISMATCH");
 }
 
+/** A ready F3 plan owns only its reserved slice. F2 may still collect an
+ * exact positive unreserved remainder, but any attempt to consume the
+ * reserved slice (or a larger amount) must stop explicitly. */
+export function hasReadyAutopayReservationConflict(
+  rows: Array<{ obligationId: string; outstandingMinor: number; f3ReservedMinor: number }>,
+  selections: InteractiveOccurrenceSelection[],
+): boolean {
+  const byId = new Map(rows.map((row) => [row.obligationId, row]));
+  return selections.some((selection) => {
+    const row = byId.get(selection.obligationId);
+    return row !== undefined && row.f3ReservedMinor > 0 && selection.amountMinor > row.outstandingMinor;
+  });
+}
+
 type LockedObligation = InteractiveOccurrenceQuoteRow & { state: string; reviewRequired: boolean; reservedMinor: number; f3ReservedMinor: number };
 
 async function lockCanonicalEvidence(
@@ -411,8 +425,7 @@ async function buildQuote(tx: PaymentOperationTransaction, input: {
   const publicRows: InteractiveOccurrenceQuoteRow[] = rows.map(({ reviewRequired: _reviewRequired, reservedMinor: _reservedMinor, f3ReservedMinor: _f3ReservedMinor, ...row }) => ({ ...row, disposition: "available" as const }));
   const reservedByReadyAutopayPlan = evidence.obligations.filter((row) => row.f3ReservedMinor > 0).map((row) => ({ obligationId: row.obligationId, amountMinor: row.f3ReservedMinor, disposition: "reserved_by_ready_autopay_plan" as const }));
   const selections = (input.selections ?? []).map((row) => ({ obligationId: row.obligationId, amountMinor: row.amountMinor }));
-  const reservedIds = new Set(evidence.obligations.filter((row) => row.f3ReservedMinor > 0).map((row) => row.obligationId));
-  if (selections.some((selection) => reservedIds.has(selection.obligationId))) throw new InteractiveOccurrenceAllocationError("OBLIGATION_RESERVED_BY_AUTOPAY");
+  if (hasReadyAutopayReservationConflict(evidence.obligations, selections)) throw new InteractiveOccurrenceAllocationError("OBLIGATION_RESERVED_BY_AUTOPAY");
   validateInteractiveOccurrenceSelections(publicRows, selections, input.amountMinor);
   const result: InteractiveOccurrenceQuote = {
     contractVersion: INTERACTIVE_OCCURRENCE_QUOTE_CONTRACT,

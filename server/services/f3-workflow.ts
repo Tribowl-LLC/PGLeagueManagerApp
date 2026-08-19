@@ -18,12 +18,35 @@ import { canonicalizeF3QuoteItems, f3AggregatePlanFingerprint, f3AuthorizationFi
 import { getPaymentProvider } from "./payment-provider-factory.js";
 import { getProviderCustomerId } from "./payment-utils.js";
 import { canonicalF3AutopayEnabled } from "../config.js";
+import { loadOperationalActivationEvidence } from "./canonical-due-past-due.js";
 type F3DbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 export class F3WorkflowError extends Error { constructor(public readonly code: string, message = "F3 workflow is unavailable", public readonly status = 409) { super(message); this.name = "F3WorkflowError"; } }
 const fail = (code: string, message?: string, status = 409): never => { throw new F3WorkflowError(code, message, status); };
 const hash = (value: unknown): string => createHash("sha256").update(canonicalizePaymentOperationInput(value)).digest("hex");
 export const f3PaymentSourceFingerprint = (sourceId: string, locationId: number): string => hash({ sourceId, locationId });
+
+type F3ActivationEvidenceRow = Pick<typeof financialActivations.$inferSelect, "id" | "currentRevision" | "sourceFingerprint" | "expectedGroupCount" | "expectedResponsibilityCount">;
+
+async function requireLiveF1ActivationEvidence(
+  tx: F3DbTransaction,
+  input: { organizationId: number; leagueId: number },
+  activation: F3ActivationEvidenceRow,
+): Promise<void> {
+  try {
+    const live = await loadOperationalActivationEvidence(tx, input);
+    if (live.authoritativeSource !== "canonical"
+      || live.sourceFingerprint !== activation.sourceFingerprint
+      || live.expected.length !== activation.expectedGroupCount
+      || activation.expectedGroupCount <= 0
+      || activation.expectedResponsibilityCount <= 0) {
+      fail("ACTIVATION_SOURCE_DRIFT");
+    }
+  } catch (error) {
+    if (error instanceof F3WorkflowError) throw error;
+    fail("ACTIVATION_SOURCE_DRIFT");
+  }
+}
 
 /** Stable, non-sensitive policy revision evidence. Every policy revision uses
  * this exact shape so the audit stream always contains the durable lifecycle
@@ -58,8 +81,9 @@ export async function readF3PolicyCandidates(input: { organizationId: number; le
     if (!candidateLeague) fail("NOT_FOUND", undefined, 404);
     if (!candidateLeague.active) fail("NOT_FOUND", undefined, 404);
     if (candidateLeague.paymentMode !== "weekly") fail("UPFRONT_NOT_SUPPORTED", "Interactive F2 collection is required for upfront leagues");
-    const [activation] = await tx.select({ id: financialActivations.id, revision: financialActivations.currentRevision, sourceFingerprint: financialActivations.sourceFingerprint }).from(financialActivations).where(and(eq(financialActivations.organizationId, input.organizationId), eq(financialActivations.leagueId, input.leagueId), eq(financialActivations.state, "active"), eq(financialActivations.completenessMarker, true))).limit(1);
+    const [activation] = await tx.select({ id: financialActivations.id, revision: financialActivations.currentRevision, sourceFingerprint: financialActivations.sourceFingerprint, expectedGroupCount: financialActivations.expectedGroupCount, expectedResponsibilityCount: financialActivations.expectedResponsibilityCount }).from(financialActivations).where(and(eq(financialActivations.organizationId, input.organizationId), eq(financialActivations.leagueId, input.leagueId), eq(financialActivations.state, "active"), eq(financialActivations.completenessMarker, true))).limit(1);
     if (!activation) fail("F1_ACTIVATION_REQUIRED");
+    await requireLiveF1ActivationEvidence(tx, input, { id: activation.id, currentRevision: activation.revision, sourceFingerprint: activation.sourceFingerprint, expectedGroupCount: activation.expectedGroupCount, expectedResponsibilityCount: activation.expectedResponsibilityCount });
     const occurrences = await tx.select({ id: leagueOccurrences.id, startAt: leagueOccurrences.startAt, lifecycle: leagueOccurrences.lifecycle, localDate: leagueOccurrences.authoritativeLocalDate, localStartTime: leagueOccurrences.authoritativeLocalStartTime, timezone: leagueOccurrences.timezone, ordinal: leagueOccurrences.plannedOrdinal }).from(leagueOccurrences).innerJoin(leagueOccurrenceBillingTerms, and(eq(leagueOccurrenceBillingTerms.occurrenceId, leagueOccurrences.id), eq(leagueOccurrenceBillingTerms.organizationId, input.organizationId), eq(leagueOccurrenceBillingTerms.leagueId, input.leagueId), eq(leagueOccurrenceBillingTerms.state, "published"), eq(leagueOccurrenceBillingTerms.obligationPolicy, "eligible_bowlers"))).where(and(eq(leagueOccurrences.organizationId, input.organizationId), eq(leagueOccurrences.leagueId, input.leagueId), inArray(leagueOccurrences.lifecycle, ["published", "locked"]))).orderBy(asc(leagueOccurrences.plannedOrdinal), asc(leagueOccurrences.authoritativeLocalDate), asc(leagueOccurrences.id));
     const policySummaries = await tx.select({ id: f3CollectionPolicies.id, policyVersion: f3CollectionPolicies.policyVersion, state: f3CollectionPolicies.state, policyFingerprint: f3CollectionPolicies.policyFingerprint }).from(f3CollectionPolicies).where(and(eq(f3CollectionPolicies.organizationId, input.organizationId), eq(f3CollectionPolicies.leagueId, input.leagueId), sql`${f3CollectionPolicies.state} IN ('approved','draft')`)).orderBy(desc(f3CollectionPolicies.policyVersion), desc(f3CollectionPolicies.currentRevision), asc(f3CollectionPolicies.id));
     const draftSummary = policySummaries.find((policy) => policy.state === "draft") ?? null;
@@ -157,6 +181,7 @@ export async function readF3PreauthorizationQuote(input: { organizationId: numbe
     if (!policy) fail("POLICY_NOT_APPROVED");
     const [activation] = await tx.select().from(financialActivations).where(and(eq(financialActivations.id, policy.activationId), eq(financialActivations.organizationId, input.organizationId), eq(financialActivations.leagueId, input.leagueId), eq(financialActivations.currentRevision, policy.activationRevision), eq(financialActivations.sourceFingerprint, policy.activationSourceFingerprint), eq(financialActivations.state, "active"), eq(financialActivations.completenessMarker, true))).limit(1);
     if (!activation) fail("ACTIVATION_DRIFT");
+    await requireLiveF1ActivationEvidence(tx, input, activation);
     const policyRows = await tx.select().from(f3CollectionPolicyOccurrences).where(and(eq(f3CollectionPolicyOccurrences.organizationId, input.organizationId), eq(f3CollectionPolicyOccurrences.leagueId, input.leagueId), eq(f3CollectionPolicyOccurrences.policyId, policy.id))).orderBy(asc(f3CollectionPolicyOccurrences.itemIndex), asc(f3CollectionPolicyOccurrences.occurrenceId));
     const nowRows = await tx.execute(sql`select current_timestamp as now`);
     const responsibilities = await tx.select({ occurrenceId: financialResponsibilities.occurrenceId, bowlerId: financialResponsibilities.bowlerId, obligationId: financialResponsibilities.obligationId, amountMinor: financialResponsibilities.amountMinor, currency: financialResponsibilities.currency }).from(financialResponsibilities).where(and(eq(financialResponsibilities.organizationId, input.organizationId), eq(financialResponsibilities.leagueId, input.leagueId), eq(financialResponsibilities.activationId, activation.id), inArray(financialResponsibilities.bowlerId, coveredBowlerIds)));
@@ -235,6 +260,26 @@ function f3AuthorizationSemanticInput(input: F3AuthorizationInput & { authorizat
   } satisfies F3AuthorizationInput;
 }
 
+/** Provider-free exact retry lookup. This is intentionally scoped to the
+ * caller's organization, league, and payer; a command key reused by another
+ * payer is a deterministic semantic conflict, matching the database key. */
+export async function readF3AuthorizationReplay(input: F3AuthorizationInput & { commandKey: string }): Promise<{ authorizationId: string; replay: true } | null> {
+  if (!canonicalF3AutopayEnabled) fail("F3_DISABLED");
+  if (!input.commandKey.trim()) fail("INVALID_COMMAND", undefined, 400);
+  return db.transaction(async (tx) => {
+    const [existing] = await tx.select().from(f3PayerAuthorizations).where(and(
+      eq(f3PayerAuthorizations.organizationId, input.organizationId),
+      eq(f3PayerAuthorizations.leagueId, input.leagueId),
+      eq(f3PayerAuthorizations.commandKey, input.commandKey),
+    )).limit(1);
+    if (!existing) return null;
+    if (existing.payerBowlerId !== input.payerBowlerId || (input.authorizationVersion !== undefined && input.authorizationVersion !== existing.authorizationVersion)) fail("IDEMPOTENCY_CONFLICT");
+    const replayFingerprint = f3AuthorizationFingerprint(f3AuthorizationSemanticInput({ ...input, authorizationVersion: existing.authorizationVersion, paymentMethodFingerprint: input.paymentMethodFingerprint }));
+    if (existing.authorizationFingerprint !== replayFingerprint) fail("IDEMPOTENCY_CONFLICT");
+    return { authorizationId: existing.id, replay: true };
+  }, { isolationLevel: "repeatable read", accessMode: "read only" });
+}
+
 /** Strict ownership check used only by payer authorization. Quote/policy/read
  * paths never call this or any provider. */
 export async function validateF3PaymentMethodOwnership(input: { league: Pick<typeof leagues.$inferSelect, "locationId">; payer: Pick<typeof bowlers.$inferSelect, "paymentProviderLocationId" | "paymentCustomerId">; sourceId: string }): Promise<{ customerId: string }> {
@@ -270,6 +315,7 @@ export async function createF3Policy(input: F3PolicyInput & { actorUserId: numbe
     if (league.paymentMode !== "weekly") fail("UPFRONT_NOT_SUPPORTED", undefined, 409);
     const [activation] = await tx.select().from(financialActivations).where(and(eq(financialActivations.organizationId, policy.organizationId), eq(financialActivations.leagueId, policy.leagueId), eq(financialActivations.id, policy.activationId), eq(financialActivations.currentRevision, policy.activationRevision), eq(financialActivations.sourceFingerprint, policy.activationSourceFingerprint), eq(financialActivations.state, "active"), eq(financialActivations.completenessMarker, true))).limit(1);
     if (!activation) fail("F1_ACTIVATION_DRIFT");
+    await requireLiveF1ActivationEvidence(tx, policy, activation);
     const expected = await tx.select({ id: leagueOccurrences.id, termId: leagueOccurrenceBillingTerms.id, termVersion: leagueOccurrenceBillingTerms.version }).from(leagueOccurrences).innerJoin(leagueOccurrenceBillingTerms, and(eq(leagueOccurrenceBillingTerms.occurrenceId, leagueOccurrences.id), eq(leagueOccurrenceBillingTerms.organizationId, policy.organizationId), eq(leagueOccurrenceBillingTerms.leagueId, policy.leagueId), eq(leagueOccurrenceBillingTerms.obligationPolicy, "eligible_bowlers"), eq(leagueOccurrenceBillingTerms.state, "published"))).where(and(eq(leagueOccurrences.organizationId, policy.organizationId), eq(leagueOccurrences.leagueId, policy.leagueId), inArray(leagueOccurrences.lifecycle, ["published", "locked"])));
     const expectedOccurrences = new Set<string>();
     for (const row of expected) {
@@ -300,8 +346,9 @@ export async function approveF3Policy(input: { organizationId: number; leagueId:
     if (league.paymentMode !== "weekly") fail("UPFRONT_NOT_SUPPORTED", undefined, 409);
     const [policy] = await tx.select().from(f3CollectionPolicies).where(and(eq(f3CollectionPolicies.id, input.policyId), eq(f3CollectionPolicies.organizationId, input.organizationId), eq(f3CollectionPolicies.leagueId, input.leagueId))).limit(1).for("update");
     if (!policy || policy.state !== "draft") fail("POLICY_VERSION_CONFLICT");
-    const [activation] = await tx.select({ id: financialActivations.id, revision: financialActivations.currentRevision, source: financialActivations.sourceFingerprint }).from(financialActivations).where(and(eq(financialActivations.id, policy.activationId), eq(financialActivations.organizationId, input.organizationId), eq(financialActivations.leagueId, input.leagueId), eq(financialActivations.state, "active"), eq(financialActivations.completenessMarker, true))).limit(1);
+    const [activation] = await tx.select({ id: financialActivations.id, revision: financialActivations.currentRevision, source: financialActivations.sourceFingerprint, expectedGroupCount: financialActivations.expectedGroupCount, expectedResponsibilityCount: financialActivations.expectedResponsibilityCount }).from(financialActivations).where(and(eq(financialActivations.id, policy.activationId), eq(financialActivations.organizationId, input.organizationId), eq(financialActivations.leagueId, input.leagueId), eq(financialActivations.state, "active"), eq(financialActivations.completenessMarker, true))).limit(1);
     if (!activation || activation.revision !== policy.activationRevision || activation.source !== policy.activationSourceFingerprint) fail("POLICY_ACTIVATION_DRIFT");
+    await requireLiveF1ActivationEvidence(tx, input, { id: activation.id, currentRevision: activation.revision, sourceFingerprint: activation.source, expectedGroupCount: activation.expectedGroupCount, expectedResponsibilityCount: activation.expectedResponsibilityCount });
     const [current] = await tx.select().from(f3CollectionPolicies).where(and(eq(f3CollectionPolicies.organizationId, input.organizationId), eq(f3CollectionPolicies.leagueId, input.leagueId), eq(f3CollectionPolicies.state, "approved"))).limit(1);
     if (current && policy.policyVersion <= current.policyVersion) fail("POLICY_VERSION_CONFLICT");
     if (current && current.id !== policy.id) {
@@ -351,11 +398,13 @@ export async function authorizeF3Payer(input: F3AuthorizationInput & { sourceId:
     if (!policy) fail("POLICY_NOT_APPROVED");
     const policyRows = await tx.select().from(f3CollectionPolicyOccurrences).where(and(eq(f3CollectionPolicyOccurrences.policyId, policy.id), eq(f3CollectionPolicyOccurrences.organizationId, input.organizationId), eq(f3CollectionPolicyOccurrences.leagueId, input.leagueId))).orderBy(asc(f3CollectionPolicyOccurrences.itemIndex));
     if (new Set(input.collectionPointOccurrenceIds).size !== input.collectionPointOccurrenceIds.length || input.collectionPointOccurrenceIds.length !== new Set(policyRows.map((r) => r.collectionPointOccurrenceId)).size || input.collectionPointOccurrenceIds.some((id) => !policyRows.some((r) => r.collectionPointOccurrenceId === id))) fail("COLLECTION_POINT_MISMATCH");
-    const [activation] = await tx.select({ id: financialActivations.id, revision: financialActivations.currentRevision, source: financialActivations.sourceFingerprint }).from(financialActivations).where(and(eq(financialActivations.id, policy.activationId), eq(financialActivations.organizationId, input.organizationId), eq(financialActivations.leagueId, input.leagueId), eq(financialActivations.state, "active"), eq(financialActivations.completenessMarker, true))).limit(1);
+    const [activation] = await tx.select({ id: financialActivations.id, revision: financialActivations.currentRevision, source: financialActivations.sourceFingerprint, expectedGroupCount: financialActivations.expectedGroupCount, expectedResponsibilityCount: financialActivations.expectedResponsibilityCount }).from(financialActivations).where(and(eq(financialActivations.id, policy.activationId), eq(financialActivations.organizationId, input.organizationId), eq(financialActivations.leagueId, input.leagueId), eq(financialActivations.state, "active"), eq(financialActivations.completenessMarker, true))).limit(1);
     if (!activation || activation.revision !== policy.activationRevision || activation.source !== policy.activationSourceFingerprint) fail("ACTIVATION_DRIFT");
-    const authorizationCandidates = await tx.select().from(f3PayerAuthorizations).where(and(eq(f3PayerAuthorizations.organizationId, input.organizationId), eq(f3PayerAuthorizations.leagueId, input.leagueId), eq(f3PayerAuthorizations.payerBowlerId, input.payerBowlerId), eq(f3PayerAuthorizations.commandKey, input.commandKey))).limit(1);
+    await requireLiveF1ActivationEvidence(tx, input, { id: activation.id, currentRevision: activation.revision, sourceFingerprint: activation.source, expectedGroupCount: activation.expectedGroupCount, expectedResponsibilityCount: activation.expectedResponsibilityCount });
+    const authorizationCandidates = await tx.select().from(f3PayerAuthorizations).where(and(eq(f3PayerAuthorizations.organizationId, input.organizationId), eq(f3PayerAuthorizations.leagueId, input.leagueId), eq(f3PayerAuthorizations.commandKey, input.commandKey))).limit(1);
     const existing = authorizationCandidates[0];
     if (existing) {
+      if (existing.payerBowlerId !== input.payerBowlerId || (input.authorizationVersion !== undefined && input.authorizationVersion !== existing.authorizationVersion)) fail("IDEMPOTENCY_CONFLICT");
       const replayFingerprint = f3AuthorizationFingerprint(f3AuthorizationSemanticInput({ ...input, authorizationVersion: existing.authorizationVersion, paymentMethodFingerprint }));
       if (existing.authorizationFingerprint !== replayFingerprint) fail("IDEMPOTENCY_CONFLICT");
       return { authorizationId: existing.id, replay: true };

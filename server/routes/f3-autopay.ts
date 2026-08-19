@@ -6,7 +6,7 @@ import { db } from "../db.js";
 import { hasAccessToLeague } from "../utils/access-control.js";
 import { sendError, sendSuccess } from "../utils/api.js";
 import { f3AuthorizationInputSchema, f3PolicyInputSchema } from "@shared/f3-autopay-contract";
-import { approveF3Policy, authorizeF3Payer, createF3Policy, F3WorkflowError, f3PaymentSourceFingerprint, readF3PolicyCandidates, readF3PreauthorizationQuote, readF3ReadyPlan, revokeF3Authorization, validateF3PaymentMethodOwnership } from "../services/f3-workflow.js";
+import { approveF3Policy, authorizeF3Payer, createF3Policy, F3WorkflowError, f3PaymentSourceFingerprint, readF3AuthorizationReplay, readF3PolicyCandidates, readF3PreauthorizationQuote, readF3ReadyPlan, revokeF3Authorization, validateF3PaymentMethodOwnership } from "../services/f3-workflow.js";
 import { getAcceptedPartnerBowlerIds } from "../storage/bowler-payment-links.js";
 import { canonicalF3AutopayEnabled } from "../config.js";
 
@@ -75,8 +75,11 @@ router.post("/leagues/:leagueId/authorize", async (req, res) => {
     const expectedVersion = req.body.authorizationVersion === undefined ? undefined : Number(req.body.authorizationVersion);
     const parsed = f3AuthorizationInputSchema.safeParse({ organizationId, leagueId, payerBowlerId, authorizationVersion: expectedVersion, policyId: req.body.policyId, policyVersion: Number(req.body.policyVersion), coveredBowlerIds: uniqueCovered, acceptedPartnerIds: acceptedPartnerIds.filter((id) => uniqueCovered.includes(id)), paymentMethodFingerprint: f3PaymentSourceFingerprint(sourceId, league.locationId), locationId: league.locationId, collectionPointOccurrenceIds: req.body.collectionPointOccurrenceIds, timing: "at_collection_point", preauthorizationFingerprint: req.body.preauthorizationFingerprint, authorizedItems: req.body.authorizedItems });
     if (!parsed.success) return sendError(res, "Invalid payer authorization", 400, "INVALID_AUTHORIZATION");
+    const commandKey = typeof req.body.commandKey === "string" ? req.body.commandKey : "";
+    const replay = await readF3AuthorizationReplay({ ...parsed.data, commandKey });
+    if (replay) return sendSuccess(res, replay);
     const owned = await validateF3PaymentMethodOwnership({ league, payer, sourceId });
-    return sendSuccess(res, await authorizeF3Payer({ ...parsed.data, sourceId, customerId: owned.customerId, actorUserId: req.user.id, providerValidated: true, payerOwnedPaymentMethod: true, leagueLocationId: league.locationId, commandKey: typeof req.body.commandKey === "string" ? req.body.commandKey : "" }), 201);
+    return sendSuccess(res, await authorizeF3Payer({ ...parsed.data, sourceId, customerId: owned.customerId, actorUserId: req.user.id, providerValidated: true, payerOwnedPaymentMethod: true, leagueLocationId: league.locationId, commandKey }), 201);
   } catch (error) { if (error instanceof F3WorkflowError) return sendError(res, error.message, error.status, error.code); return sendError(res, "Payer authorization could not be completed", 409, "AUTHORIZATION_UNAVAILABLE"); }
 });
 
