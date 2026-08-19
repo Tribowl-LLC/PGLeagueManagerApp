@@ -514,5 +514,12 @@ async function supersedeAuthorizationPlans(tx: F3DbTransaction, authorization: t
     const [supersededPlan] = await tx.update(occurrenceCollectionPlans).set({ state: "superseded", currentRevision: plan.currentRevision + 1, updatedAt: new Date().toISOString() }).where(and(eq(occurrenceCollectionPlans.id, plan.id), eq(occurrenceCollectionPlans.currentRevision, plan.currentRevision))).returning();
     const planItems = await tx.select().from(occurrenceCollectionPlanItems).where(and(eq(occurrenceCollectionPlanItems.planId, plan.id), eq(occurrenceCollectionPlanItems.organizationId, authorization.organizationId), eq(occurrenceCollectionPlanItems.leagueId, authorization.leagueId)));
     await tx.insert(occurrenceCollectionPlanRevisions).values({ organizationId: authorization.organizationId, leagueId: authorization.leagueId, planId: plan.id, revisionNumber: supersededPlan.currentRevision, snapshotSchemaVersion: 1, beforeSnapshot: { state: plan.state, plan, items: planItems }, afterSnapshot: { state: supersededPlan.state, plan: supersededPlan, items: planItems }, recordedByUserId: authorization.createdByUserId });
+    await tx.update(paymentOperations).set({ status: "canceled", nextAttemptAt: null, errorClassification: null, errorCode: null, completedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }).where(and(
+      eq(paymentOperations.organizationId, authorization.organizationId),
+      eq(paymentOperations.leagueId, authorization.leagueId),
+      eq(paymentOperations.canonicalPlanId, plan.id),
+      eq(paymentOperations.operationType, "canonical_autopay_charge"),
+      inArray(paymentOperations.status, ["pending", "retry_scheduled"]),
+    ));
   }
 }

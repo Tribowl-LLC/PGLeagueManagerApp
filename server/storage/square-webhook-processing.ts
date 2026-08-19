@@ -10,6 +10,7 @@ import {
   payments,
   refundPaymentOperationSnapshots,
   scheduledPaymentOperationSnapshots,
+  canonicalAutopayExecutionSnapshots,
   webhookEvents,
   WEBHOOK_EVENT_MAX_ATTEMPTS,
   type WebhookEvent,
@@ -247,6 +248,8 @@ async function findDisputeOperation(
     currency: paymentOperations.currency,
     scheduledLocationId: scheduledPaymentOperationSnapshots.locationId,
     scheduledProviderLocationId: scheduledPaymentOperationSnapshots.providerLocationId,
+    canonicalLocationId: canonicalAutopayExecutionSnapshots.locationId,
+    canonicalProviderLocationId: canonicalAutopayExecutionSnapshots.providerLocationId,
     interactiveLocationId: interactivePaymentOperationSnapshots.locationId,
     interactiveProviderLocationId: interactivePaymentOperationSnapshots.providerLocationId,
   }).from(paymentOperations)
@@ -258,9 +261,13 @@ async function findDisputeOperation(
       interactivePaymentOperationSnapshots,
       eq(interactivePaymentOperationSnapshots.operationId, paymentOperations.id),
     )
+    .leftJoin(
+      canonicalAutopayExecutionSnapshots,
+      eq(canonicalAutopayExecutionSnapshots.operationId, paymentOperations.id),
+    )
     .where(and(
       eq(paymentOperations.organizationId, row.organizationId),
-      inArray(paymentOperations.operationType, ["scheduled_charge", "interactive_charge"]),
+      inArray(paymentOperations.operationType, ["scheduled_charge", "interactive_charge", "canonical_autopay_charge"]),
       eq(paymentOperations.providerName, "square"),
       eq(paymentOperations.providerObjectId, event.providerPaymentId),
     )).limit(2).for("update", { of: paymentOperations });
@@ -274,7 +281,10 @@ async function findDisputeOperation(
         operation.scheduledProviderLocationId === null
         || operation.scheduledProviderLocationId === row.providerLocationId
       )
-    : operation.interactiveLocationId === row.locationId
+    : operation.operationType === "canonical_autopay_charge"
+      ? operation.canonicalLocationId === row.locationId
+        && operation.canonicalProviderLocationId === row.providerLocationId
+      : operation.interactiveLocationId === row.locationId
       && (
         operation.interactiveProviderLocationId === null
         || operation.interactiveProviderLocationId === row.providerLocationId

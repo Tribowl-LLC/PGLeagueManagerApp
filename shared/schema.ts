@@ -3,3 +3,4 @@
 // single entry point. Keep both — see `server/storage.ts` for the matching
 // convention on the server side.
 export * from "./schema/index";
+export * from "./f4-canonical-autopay-contract";

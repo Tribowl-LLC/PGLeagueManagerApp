@@ -17,6 +17,7 @@ import {
   interactivePaymentOperationLineItems,
   interactivePaymentOperationSnapshots,
   paymentOccurrenceAllocations,
+  occurrenceCollectionPlans,
   paymentOccurrenceAllocationRevisions,
   paymentOperationOccurrenceSnapshots,
   paymentOperationOccurrenceSnapshotAllocations,
@@ -68,6 +69,8 @@ import {
 } from "../services/refund-payment-operation-snapshot.js";
 import { decrypt, encrypt } from "../utils/crypto.js";
 import { providerNameToPaymentType } from "@shared/schema/constants";
+import { canonicalAutopayProviderIdempotencyKey, canonicalAutopayTargetKey } from "@shared/f4-canonical-autopay-contract";
+import { canonicalF3AutopayEnabled, canonicalF4AutopayExecutionEnabled } from "../config.js";
 
 export class PaymentOperationNotFoundError extends Error {
   constructor() {
@@ -106,6 +109,17 @@ export interface CreateOrGetScheduledPaymentOperationInput {
   providerName: string;
   /** Server-resolved D1 trigger identity; never part of provider identity. */
   triggerOccurrenceId?: string | null;
+}
+
+export interface CreateOrGetCanonicalAutopayPaymentOperationInput {
+  organizationId: number;
+  leagueId: number;
+  d2PlanId: string;
+  triggerOccurrenceId: string;
+  amountMinor: number;
+  currency: string;
+  providerName: string;
+  now?: Date;
 }
 
 export interface CreateOrGetInteractivePaymentOperationInput {
@@ -763,6 +777,76 @@ export async function createOrGetScheduledPaymentOperation(
       throw new PaymentOperationImmutableMismatchError();
     }
     return existing;
+  };
+  return existingTransaction ? run(existingTransaction) : db.transaction(run);
+}
+
+/** F4 preparation identity. Exactly one operation is linked to one immutable
+ * D2 plan; this namespace cannot collide with any legacy schedule or F2 key. */
+export async function createOrGetCanonicalAutopayPaymentOperation(
+  input: CreateOrGetCanonicalAutopayPaymentOperationInput,
+  existingTransaction?: PaymentOperationTransaction,
+): Promise<PaymentOperation> {
+  const targetKey = canonicalAutopayTargetKey(input.d2PlanId);
+  const providerIdempotencyKey = canonicalAutopayProviderIdempotencyKey(input);
+  const identity = buildPaymentOperationIdentity({
+    organizationId: input.organizationId,
+    operationType: "canonical_autopay_charge",
+    targetKey,
+    amountMinor: input.amountMinor,
+    currency: input.currency,
+    providerName: input.providerName,
+  });
+  const now = toIso(input.now ?? new Date(), "now");
+  const run = async (tx: PaymentOperationTransaction): Promise<PaymentOperation> => {
+    const [plan] = await tx.select({ id: occurrenceCollectionPlans.id }).from(occurrenceCollectionPlans).where(and(
+      eq(occurrenceCollectionPlans.id, input.d2PlanId),
+      eq(occurrenceCollectionPlans.organizationId, input.organizationId),
+      eq(occurrenceCollectionPlans.leagueId, input.leagueId),
+      eq(occurrenceCollectionPlans.state, "ready"),
+    )).limit(1).for("share");
+    if (!plan) throw new PaymentOperationNotFoundError();
+    const [existing] = await tx.select().from(paymentOperations).where(and(
+      eq(paymentOperations.organizationId, input.organizationId),
+      eq(paymentOperations.operationType, "canonical_autopay_charge"),
+      eq(paymentOperations.targetKey, targetKey),
+    )).limit(1);
+    if (existing) {
+      if (existing.leagueId !== input.leagueId || existing.canonicalPlanId !== input.d2PlanId
+        || existing.triggerOccurrenceId !== input.triggerOccurrenceId
+        || existing.amountMinor !== input.amountMinor || existing.currency !== input.currency.toUpperCase()
+        || existing.providerName !== input.providerName || existing.requestFingerprint !== identity.requestFingerprint
+        || existing.providerIdempotencyKey !== providerIdempotencyKey) throw new PaymentOperationImmutableMismatchError();
+      return existing;
+    }
+    const [created] = await tx.insert(paymentOperations).values({
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      canonicalPlanId: input.d2PlanId,
+      operationType: "canonical_autopay_charge",
+      targetKey,
+      triggerOccurrenceId: input.triggerOccurrenceId,
+      amountMinor: input.amountMinor,
+      currency: input.currency.toUpperCase(),
+      requestFingerprint: identity.requestFingerprint,
+      providerIdempotencyKey,
+      providerName: input.providerName,
+      status: "pending",
+      nextAttemptAt: now,
+      createdAt: now,
+      updatedAt: now,
+    }).onConflictDoNothing().returning();
+    if (created) return created;
+    const [winner] = await tx.select().from(paymentOperations).where(and(
+      eq(paymentOperations.organizationId, input.organizationId),
+      eq(paymentOperations.operationType, "canonical_autopay_charge"),
+      eq(paymentOperations.targetKey, targetKey),
+    )).limit(1);
+    if (!winner || winner.leagueId !== input.leagueId || winner.canonicalPlanId !== input.d2PlanId
+      || winner.requestFingerprint !== identity.requestFingerprint || winner.providerIdempotencyKey !== providerIdempotencyKey) {
+      throw new PaymentOperationImmutableMismatchError();
+    }
+    return winner;
   };
   return existingTransaction ? run(existingTransaction) : db.transaction(run);
 }
@@ -2393,6 +2477,12 @@ export type PaymentOperationWake = {
   attemptCount: number;
   dueAt: string;
 } | {
+  kind: "canonical_plan";
+  organizationId: number;
+  leagueId: number;
+  d2PlanId: string;
+  dueAt: string;
+} | {
   kind: "schedule";
   organizationId: number;
   paymentScheduleId: number;
@@ -2410,6 +2500,7 @@ export function buildNextPaymentOperationWakeQuery() {
         NULL::text AS operation_type,
         NULL::text AS status,
         NULL::integer AS attempt_count,
+        NULL::integer AS league_id,
         ${paymentSchedules.nextPaymentDate} AS due_at
       FROM ${paymentSchedules}
       INNER JOIN ${leagues} ON ${paymentSchedules.leagueId} = ${leagues.id}
@@ -2425,19 +2516,42 @@ export function buildNextPaymentOperationWakeQuery() {
         ${paymentOperations.operationType} AS operation_type,
         ${paymentOperations.status} AS status,
         ${paymentOperations.attemptCount} AS attempt_count,
+        NULL::integer AS league_id,
         CASE
           WHEN ${paymentOperations.status} = 'leased' THEN ${paymentOperations.leaseExpiresAt}
           ELSE ${paymentOperations.nextAttemptAt}
         END AS due_at
-      FROM ${paymentOperations}
       WHERE (
-        ${paymentOperations.status} IN ('pending', 'provider_unknown', 'retry_scheduled')
-        AND ${paymentOperations.nextAttemptAt} IS NOT NULL
-      ) OR (
-        ${paymentOperations.status} = 'leased'
-        AND ${paymentOperations.leaseExpiresAt} IS NOT NULL
+        (${paymentOperations.operationType} <> 'canonical_autopay_charge'
+          OR ${sql.raw(canonicalF3AutopayEnabled && canonicalF4AutopayExecutionEnabled ? "TRUE" : "FALSE")})
+        AND (
+          (${paymentOperations.status} IN ('pending', 'provider_unknown', 'retry_scheduled')
+            AND ${paymentOperations.nextAttemptAt} IS NOT NULL)
+          OR (${paymentOperations.status} = 'leased'
+            AND ${paymentOperations.leaseExpiresAt} IS NOT NULL)
+        )
       )
-      ORDER BY due_at ASC
+        ${occurrenceCollectionPlans.organizationId} AS organization_id,
+        ${occurrenceCollectionPlans.leagueId} AS league_id,
+        ${occurrenceCollectionPlans.id}::text AS work_id,
+        NULL::text AS operation_type,
+        NULL::text AS status,
+        NULL::integer AS attempt_count,
+        ${leagueOccurrences.startAt} AS due_at
+      FROM ${occurrenceCollectionPlans}
+      INNER JOIN ${leagueOccurrences} ON ${occurrenceCollectionPlans.triggerOccurrenceId} = ${leagueOccurrences.id}
+        AND ${occurrenceCollectionPlans.organizationId} = ${leagueOccurrences.organizationId}
+        AND ${occurrenceCollectionPlans.leagueId} = ${leagueOccurrences.leagueId}
+      LEFT JOIN ${paymentOperations} AS canonical_operation ON canonical_operation.organization_id = ${occurrenceCollectionPlans.organizationId}
+        AND canonical_operation.canonical_plan_id = ${occurrenceCollectionPlans.id}
+        AND canonical_operation.operation_type = 'canonical_autopay_charge'
+      WHERE ${sql.raw(canonicalF3AutopayEnabled && canonicalF4AutopayExecutionEnabled ? "TRUE" : "FALSE")}
+        AND ${occurrenceCollectionPlans.state} = 'ready'
+        AND ${occurrenceCollectionPlans.triggerOccurrenceId} IS NOT NULL
+        AND ${leagueOccurrences.lifecycle} IN ('published', 'locked')
+        AND ${leagueOccurrences.status} IN ('scheduled', 'completed')
+        AND canonical_operation.id IS NULL
+      ORDER BY ${leagueOccurrences.startAt} ASC, ${occurrenceCollectionPlans.id} ASC
       LIMIT 1
     )
     SELECT
@@ -2447,11 +2561,14 @@ export function buildNextPaymentOperationWakeQuery() {
       operation_type,
       status,
       attempt_count,
+      league_id,
       (due_at AT TIME ZONE 'UTC')::text AS due_at
     FROM (
       SELECT * FROM next_schedule
       UNION ALL
       SELECT * FROM next_operation
+      UNION ALL
+      SELECT * FROM next_canonical_plan
     ) AS scheduled_payment_work
     ORDER BY scheduled_payment_work.due_at ASC
     LIMIT 1
@@ -2461,16 +2578,27 @@ export function buildNextPaymentOperationWakeQuery() {
 /** One indexed query for the earliest schedule preparation or operation work. */
 export async function getNextPaymentOperationWake(): Promise<PaymentOperationWake | undefined> {
   const result = await db.execute<{
-    kind: "operation" | "schedule";
+    kind: "operation" | "schedule" | "canonical_plan";
     organization_id: number;
     work_id: string;
     operation_type: PaymentOperation["operationType"] | null;
     status: PaymentOperation["status"] | null;
     attempt_count: number | null;
+    league_id: number | null;
     due_at: string;
   }>(buildNextPaymentOperationWakeQuery());
   const row = result.rows[0];
   if (!row) return undefined;
+  if (row.kind === "canonical_plan") {
+    if (row.league_id === null) throw new PaymentOperationValidationError("canonical plan wake row is incomplete");
+    return {
+      kind: "canonical_plan",
+      organizationId: Number(row.organization_id),
+      leagueId: Number(row.league_id),
+      d2PlanId: row.work_id,
+      dueAt: row.due_at,
+    };
+  }
   if (row.kind === "schedule") {
     return {
       kind: "schedule",

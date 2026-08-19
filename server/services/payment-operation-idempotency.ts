@@ -33,6 +33,7 @@ const KEY_PREFIX_BY_TYPE: Record<PaymentOperationType, string> = {
   scheduled_charge: "lv-op1-sc-",
   interactive_charge: "lv-op1-ic-",
   refund: "lv-op1-rf-",
+  canonical_autopay_charge: "lv-f4-pay-",
 };
 
 export interface StablePaymentOperationRequest {

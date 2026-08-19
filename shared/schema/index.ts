@@ -55,6 +55,12 @@ export {
   INTERACTIVE_PAYMENT_SOURCE_KINDS,
   REFUND_PAYMENT_SNAPSHOT_VERSION,
 } from "./payment-operations";
+export {
+  canonicalAutopayExecutionSnapshots,
+  CANONICAL_AUTOPAY_EXECUTION_SNAPSHOT_VERSION,
+  CANONICAL_AUTOPAY_EXECUTION_SNAPSHOT_CONTRACT,
+} from "./canonical-autopay";
+export type { CanonicalAutopayExecutionSnapshot } from "./canonical-autopay";
 
 export {
   webhookEvents,

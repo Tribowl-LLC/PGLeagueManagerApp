@@ -23,7 +23,7 @@ const snapshotV1Schema = z.object({
   contractVersion: z.literal(PAYMENT_OPERATION_OCCURRENCE_SNAPSHOT_CONTRACT),
   snapshotVersion: z.literal(PAYMENT_OPERATION_OCCURRENCE_SNAPSHOT_VERSION),
   operationId: z.string().uuid(),
-  operationType: z.enum(["scheduled_charge", "interactive_charge"]),
+  operationType: z.enum(["scheduled_charge", "interactive_charge", "canonical_autopay_charge"]),
   organizationId: z.number().int().positive(),
   leagueId: z.number().int().positive(),
   amountMinor: z.number().int().positive(),
