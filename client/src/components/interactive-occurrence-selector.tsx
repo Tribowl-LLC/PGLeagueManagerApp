@@ -6,7 +6,7 @@ import { csrfFetch } from "@/lib/queryClient";
 
 type Selection = { obligationId: string; amountMinor: number };
 type QuoteRow = { obligationId: string; bowlerId: number; amountMinor: number; outstandingMinor: number; dueAt: string | null };
-type Quote = { rows: QuoteRow[]; fingerprint: string };
+type Quote = { rows: QuoteRow[]; fingerprint: string; reservedByReadyAutopayPlan?: Array<{ obligationId: string; amountMinor: number; disposition: "reserved_by_ready_autopay_plan" }> };
 export type InteractiveOccurrenceReadiness = 'loading' | 'ready' | 'empty' | 'error' | 'legacy' | 'disabled';
 
 const MAX_SAFE_MINOR_UNITS = Number.MAX_SAFE_INTEGER;
@@ -124,13 +124,18 @@ export function InteractiveOccurrenceSelector({
   if (query.isLoading) return <p className="text-sm text-muted-foreground" data-testid="occurrence-quote-loading">Loading current obligations…</p>;
   if (query.error) return <Alert variant="destructive"><AlertDescription>Current obligations could not be loaded. Refresh before paying.</AlertDescription></Alert>;
   if (!query.data) return null;
+  const readyAutopayReservations = query.data.reservedByReadyAutopayPlan ?? [];
+  const readyAutopayReservedMinor = readyAutopayReservations.reduce((sum, row) => sum + row.amountMinor, 0);
 
   return (
-    <section aria-label="Payment obligations" className="space-y-3 rounded-md border p-4" data-testid="interactive-occurrence-selector">
+    <section id="interactive-occurrence-selector" aria-label="Payment obligations" className="space-y-3 rounded-md border p-4" data-testid="interactive-occurrence-selector">
       <div>
         <h3 className="font-medium">Choose what this payment covers</h3>
         <p className="text-sm text-muted-foreground">Select specific obligations. Partial amounts and future prepayments are allowed.</p>
       </div>
+      {readyAutopayReservations.length > 0 && <Alert data-testid="ready-autopay-reservation"><AlertDescription>
+        Exact amount{readyAutopayReservations.length === 1 ? "" : "s"} totaling ${formatMinorUnitsAsDollars(readyAutopayReservedMinor)} {readyAutopayReservations.length === 1 ? "is" : "are"} reserved by a ready automatic plan. Manual collection requires cancelling or superseding that plan first.
+      </AlertDescription></Alert>}
       {query.data.rows.map((row) => {
         const selected = selections[row.obligationId] ?? 0;
         const active = Object.prototype.hasOwnProperty.call(drafts, row.obligationId);

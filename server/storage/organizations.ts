@@ -285,6 +285,10 @@ export async function deleteOrganization(id: number): Promise<void> {
     // explicit tenant teardown removes them before either referenced table.
     await tx.delete(autopaySetupRequests).where(eq(autopaySetupRequests.organizationId, id));
 
+    // F3 policy, payer authorization, and ready-plan evidence is immutable
+    // financial evidence. The F1 retention gate prevents hard tenant removal
+    // while this evidence exists; never bypass the database guard here.
+
     // D2 financial evidence uses restrictive parent links. Full tenant
     // teardown is the explicit retention-policy exception and removes every
     // revision and child before current rows, operations, payments, bowlers,

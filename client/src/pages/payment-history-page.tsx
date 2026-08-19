@@ -31,6 +31,7 @@ import { beginPaymentIntent, clearPaymentIntent, paymentRequestHeaders, paymentR
 import { buildInteractiveOccurrenceFields, interactiveIntentScopeSuffix } from "@/lib/interactive-payment-request";
 import { resolveInteractiveFinancialRead } from "@/lib/financial-read-contract";
 import { invalidatePaymentHistoryFinancials, paymentHistoryFinancialQueryKey } from "@/lib/payment-history-financial-query";
+import { invalidateF3AfterInteractivePayment } from "@/lib/f3-autopay";
 import type { InteractiveOccurrenceReadiness } from "@/components/interactive-occurrence-selector";
 
 export default function PaymentHistoryPage() {
@@ -288,6 +289,7 @@ export default function PaymentHistoryPage() {
       await invalidatePaymentHistoryFinancials(queryClient, leagueId, bowlerId);
       setPayDialogType(null);
       queryClient.invalidateQueries({ queryKey: ["/api/payments", { bowlerId, leagueId }] });
+      await invalidateF3AfterInteractivePayment(queryClient, leagueId, league?.organizationId);
       queryClient.invalidateQueries({ queryKey: [`/api/bowlers/${bowlerId}/details`] });
       queryClient.invalidateQueries({ queryKey: [`/api/payments-provider/cards/${bowlerId}`] });
     } catch (error) {
@@ -418,6 +420,7 @@ export default function PaymentHistoryPage() {
       await invalidatePaymentHistoryFinancials(queryClient, leagueId, bowlerId);
       setPayDialogType(null);
       queryClient.invalidateQueries({ queryKey: ["/api/payments", { bowlerId, leagueId }] });
+      await invalidateF3AfterInteractivePayment(queryClient, leagueId, league?.organizationId);
       queryClient.invalidateQueries({ queryKey: [`/api/bowlers/${bowlerId}/details`] });
     } catch (error) {
       logger.error('Payment', 'Payment failed', error);
