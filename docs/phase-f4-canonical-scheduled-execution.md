@@ -63,11 +63,13 @@ next cutoff. Provider-unknown and reconciliation-required states retain it.
 
 ## Migration and rollout
 
-Migration `0028_phase_f4_canonical_scheduled_execution` is additive and has no
-backfill, destructive statement, or down migration. It adds tenant-scoped F4
-operation/snapshot linkage, immutable snapshot guards, occurrence evidence,
-  and tenant-scoped operation/snapshot indexes used by the canonical wake
-  anti-join without changing prior operation domains. A
+Migration `0028_phase_f4_canonical_scheduled_execution` is forward-only: it
+has no backfill or down migration, and transactionally replaces the three
+pre-existing operation-type, scheduled-cycle, and trigger-occurrence CHECKs
+with widened equivalents so the new domain can be represented. It adds
+tenant-scoped F4 operation/snapshot linkage, immutable snapshot guards,
+occurrence evidence, and tenant-scoped operation/snapshot indexes used by the
+canonical wake anti-join without changing prior operation domains. A
 deployment does not authorize enabling either gate. Before the first F4 row,
 rollback is ordinary code rollback; after F4 evidence exists, rollback is a
 traffic pause and forward fix that preserves the evidence and original key.

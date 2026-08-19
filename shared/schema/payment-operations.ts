@@ -187,6 +187,11 @@ export const paymentOperations = pgTable("payment_operations", {
     columns: [table.triggerOccurrenceId, table.organizationId],
     foreignColumns: [leagueOccurrences.id, leagueOccurrences.organizationId],
   }).onDelete("restrict"),
+  triggerOccurrenceLeagueTenantFk: foreignKey({
+    name: "payment_operations_trigger_occurrence_league_tenant_fk",
+    columns: [table.triggerOccurrenceId, table.organizationId, table.leagueId],
+    foreignColumns: [leagueOccurrences.id, leagueOccurrences.organizationId, leagueOccurrences.leagueId],
+  }).onDelete("restrict"),
   operationTypeCheck: check(
     "payment_operations_operation_type_check",
     sql`${table.operationType} IN ('scheduled_charge', 'interactive_charge', 'refund', 'canonical_autopay_charge')`,

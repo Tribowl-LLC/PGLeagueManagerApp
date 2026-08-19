@@ -14862,6 +14862,23 @@
           ],
           "onDelete": "restrict",
           "onUpdate": "no action"
+        },
+        "payment_operations_trigger_occurrence_league_tenant_fk": {
+          "name": "payment_operations_trigger_occurrence_league_tenant_fk",
+          "tableFrom": "payment_operations",
+          "tableTo": "league_occurrences",
+          "columnsFrom": [
+            "trigger_occurrence_id",
+            "organization_id",
+            "league_id"
+          ],
+          "columnsTo": [
+            "id",
+            "organization_id",
+            "league_id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},

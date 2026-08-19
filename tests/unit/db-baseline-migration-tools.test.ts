@@ -398,17 +398,13 @@ describe('normalized migration baseline tools', () => {
     expect(migrations[27]?.sql).toContain('users_payment_manager_scope_check');
     expect(migrations[28]).toMatchObject({
       idx: 28,
-      tag: '0028_remove_legacy_invite_tokens',
-      createdAt: 1787270862813,
-      hash: '89930b8cb9a586f560a03b42ed44fa69ed80709657e45cc6c35807ec5fb1a260',
+      tag: '0028_phase_f4_canonical_scheduled_execution',
+      createdAt: 1787174270776,
+      hash: '38b91ff9313d20e73e96ac0656620f492d093a66fc704c61674b5508a12130d9',
     });
-    expect(migrations[28]?.sql).toContain(
-      'legacy invitation cleanup incomplete',
-    );
-    expect(migrations[28]?.sql).toContain('DROP COLUMN "invite_token"');
-    expect(migrations[28]?.sql).toContain(
-      'DROP COLUMN "invite_token_expiry"',
-    );
+    expect(migrations[28]?.sql).toContain('CREATE TABLE "canonical_autopay_execution_snapshots"');
+    expect(migrations[28]?.sql).toContain('canonical_autopay_snapshot_immutable_guard');
+    expect(migrations[28]?.sql).toContain('payment_occurrence_canonical_base_snapshot_consistency');
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 

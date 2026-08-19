@@ -10,6 +10,7 @@ import {
   bowlerPaymentLinks,
   leagueOccurrences,
   locations,
+  leagues,
   occurrenceCollectionPlanRevisions,
   occurrenceCollectionPlans,
   occurrenceCollectionPlanItems,
@@ -25,6 +26,8 @@ import {
   acquirePaymentOperationLease,
   finalizeChargeFromWebhookEvidenceInTransaction,
   finalizePaymentOperationSuccess,
+  reconcilePaymentOperationSuccess,
+  recordPaymentOperationReconciliationRequired,
 } from "../../server/storage/payment-operations";
 import { PaymentProviderError } from "../../server/services/payment-errors";
 
@@ -406,6 +409,19 @@ describe("F4 canonical autopay PostgreSQL/provider integration", () => {
     expect(pending?.status).toBe("pending");
   });
 
+  it("rejects a canonical trigger occurrence from another league in the same tenant", async () => {
+    const { fixture, planId, now } = await makeCanonicalFixture();
+    const { prepareCanonicalAutopayPlan } = await import("../../server/services/canonical-autopay-preparation");
+    const prepared = await prepareCanonicalAutopayPlan({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, d2PlanId: planId, now });
+    if (!prepared.operation) throw new Error("F4 operation was not prepared");
+    const [otherLeague] = await db.insert(leagues).values({ name: "F4 cross-league", organizationId: fixture.organizationId, locationId: fixture.locationId, seasonStart: "2038-01-01", seasonEnd: "2038-12-31", weekDay: "Sunday", competitionStartTime: "19:00", timezone: "UTC", totalBowlingWeeks: 2, weeklyFee: 500, paymentMode: "weekly" }).returning({ id: leagues.id });
+    const [otherOccurrence] = await db.insert(leagueOccurrences).values({ organizationId: fixture.organizationId, leagueId: otherLeague.id, locationId: fixture.locationId, generationKey: `f4-cross-league-${otherLeague.id}`, kind: "regular", status: "scheduled", lifecycle: "draft", authoritativeLocalDate: "2038-03-01", authoritativeLocalStartTime: "19:00:00", timezone: "UTC", startAt: "2038-03-01T19:00:00.000Z", selectedUtcOffsetMinutes: 0, foldResolution: "unambiguous", resolverVersion: "f4-test/1", plannedOrdinal: 1, competitionNumber: 1, competitive: true, countsInStandings: true }).returning({ id: leagueOccurrences.id });
+    await expect(db.update(paymentOperations).set({ triggerOccurrenceId: otherOccurrence.id }).where(and(eq(paymentOperations.id, prepared.operation.id), eq(paymentOperations.organizationId, fixture.organizationId)))).rejects.toThrow();
+    const [unchanged] = await db.select({ triggerOccurrenceId: paymentOperations.triggerOccurrenceId, leagueId: paymentOperations.leagueId }).from(paymentOperations).where(eq(paymentOperations.id, prepared.operation.id));
+    expect(unchanged?.leagueId).toBe(fixture.leagueId);
+    expect(unchanged?.triggerOccurrenceId).toBe(fixture.occurrenceIds[1]);
+  });
+
   it("keeps configuration outages recoverable and clears the dispatch claim for a same-key retry", async () => {
     const { fixture, planId, now } = await makeCanonicalFixture();
     const { prepareCanonicalAutopayPlan } = await import("../../server/services/canonical-autopay-preparation");
@@ -517,6 +533,69 @@ describe("F4 canonical autopay PostgreSQL/provider integration", () => {
     expect(linkedPayments).toHaveLength(2);
   });
 
+  it("rejects retained provider identity replacement during canonical reconciliation", async () => {
+    const { fixture, planId, now } = await makeCanonicalFixture();
+    const { prepareCanonicalAutopayPlan } = await import("../../server/services/canonical-autopay-preparation");
+    const prepared = await prepareCanonicalAutopayPlan({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, d2PlanId: planId, now });
+    if (!prepared.operation) throw new Error("F4 operation was not prepared");
+    const leased = await acquirePaymentOperationLease({ organizationId: fixture.organizationId, operationId: prepared.operation.id, leaseOwner: "identity-regression", leaseDurationMs: 300_000, now });
+    if (!leased?.leaseToken) throw new Error("F4 operation was not leased");
+    expect(await acquireCanonicalAutopayDispatchCutoff({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, operationId: leased.id, leaseToken: leased.leaseToken, now })).toBe(true);
+    await recordPaymentOperationReconciliationRequired({ organizationId: fixture.organizationId, operationId: leased.id, leaseToken: leased.leaseToken, providerObjectId: "f4-provider-a", providerOrderId: "f4-order-a", errorCode: "OUTCOME_UNKNOWN", now });
+    await expect(reconcilePaymentOperationSuccess({ organizationId: fixture.organizationId, operationId: leased.id, leaseToken: leased.leaseToken, providerObjectId: "f4-provider-b", providerOrderId: "f4-order-b", now })).rejects.toThrow();
+    const [retained] = await db.select({ providerObjectId: paymentOperations.providerObjectId, providerOrderId: paymentOperations.providerOrderId, status: paymentOperations.status }).from(paymentOperations).where(eq(paymentOperations.id, leased.id));
+    expect(retained).toEqual({ providerObjectId: "f4-provider-a", providerOrderId: "f4-order-a", status: "reconciliation_required" });
+  });
+
+  it("serializes explicit reconciliation and revocation through the canonical scope", async () => {
+    const { fixture, planId, now } = await makeCanonicalFixture();
+    const workflow = await import("../../server/services/f3-workflow");
+    const { prepareCanonicalAutopayPlan } = await import("../../server/services/canonical-autopay-preparation");
+    const prepared = await prepareCanonicalAutopayPlan({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, d2PlanId: planId, now });
+    if (!prepared.operation) throw new Error("F4 operation was not prepared");
+    const leased = await acquirePaymentOperationLease({ organizationId: fixture.organizationId, operationId: prepared.operation.id, leaseOwner: "reconciliation-race", leaseDurationMs: 300_000, now });
+    if (!leased?.leaseToken) throw new Error("F4 operation was not leased");
+    expect(await acquireCanonicalAutopayDispatchCutoff({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, operationId: leased.id, leaseToken: leased.leaseToken, now })).toBe(true);
+    await recordPaymentOperationReconciliationRequired({ organizationId: fixture.organizationId, operationId: leased.id, leaseToken: leased.leaseToken, providerObjectId: "race-provider-a", providerOrderId: "race-order-a", errorCode: "OUTCOME_UNKNOWN", now });
+    const [snapshot] = await db.select().from(canonicalAutopayExecutionSnapshots).where(and(eq(canonicalAutopayExecutionSnapshots.operationId, leased.id), eq(canonicalAutopayExecutionSnapshots.organizationId, fixture.organizationId)));
+    if (!snapshot) throw new Error("F4 execution snapshot was not persisted");
+    const items = snapshot.items as Array<{ bowlerId: number; amountMinor: number }>;
+    const amounts = new Map<number, number>();
+    for (const item of items) amounts.set(item.bowlerId, (amounts.get(item.bowlerId) ?? 0) + item.amountMinor);
+    const paymentRows = [...amounts.entries()].sort(([left], [right]) => left - right).map(([bowlerId, amount], allocationIndex) => ({
+      allocationIndex,
+      values: {
+        bowlerId, leagueId: fixture.leagueId, amount, lineageAmount: null, prizeFundAmount: null,
+        weekOf: snapshot.triggerStartAt, status: "paid" as const, type: "square" as const,
+        providerPaymentId: "race-provider-a", receiptEmailMissing: true, notes: null,
+        paidByUserId: prepared.operation?.authorizingUserId ?? fixture.actorUserId,
+        combinedChargeGroupId: items.length > 1 ? leased.id : null,
+      },
+    }));
+    const [authorization] = await db.select().from(f3PayerAuthorizations).where(and(eq(f3PayerAuthorizations.organizationId, fixture.organizationId), eq(f3PayerAuthorizations.leagueId, fixture.leagueId)));
+    if (!authorization) throw new Error("F4 authorization was not persisted");
+    const holder = await getTestPool().connect();
+    try {
+      await holder.query("BEGIN");
+      await holder.query("SELECT pg_advisory_xact_lock($1::integer, $2::integer)", [fixture.organizationId, fixture.leagueId]);
+      const reconciliation = reconcilePaymentOperationSuccess({ organizationId: fixture.organizationId, operationId: leased.id, leaseToken: leased.leaseToken, providerObjectId: "race-provider-a", providerOrderId: "race-order-a", paymentRows, now });
+      await waitForAdvisoryWaiter(fixture.organizationId, fixture.leagueId);
+      const revocation = workflow.revokeF3Authorization({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, authorizationId: authorization.id, actorUserId: fixture.actorUserId, actorBowlerId: fixture.roster[0].id });
+      await waitForAdvisoryWaiter(fixture.organizationId, fixture.leagueId, 2);
+      await holder.query("COMMIT");
+      const [reconciled] = await Promise.all([reconciliation, revocation]);
+      expect(reconciled.status).toBe("succeeded");
+      const [operation] = await db.select({ status: paymentOperations.status }).from(paymentOperations).where(eq(paymentOperations.id, leased.id));
+      const [plan] = await db.select({ state: occurrenceCollectionPlans.state }).from(occurrenceCollectionPlans).where(eq(occurrenceCollectionPlans.id, planId));
+      expect(operation?.status).toBe("succeeded");
+      expect(plan?.state).toBe("fulfilled");
+      expect(provider.requests).toHaveLength(0);
+    } finally {
+      await holder.query("ROLLBACK").catch(() => undefined);
+      holder.release();
+    }
+  });
+
   it("keeps the canonical wake future-due and tenant scoped, with the composite index in the plan", async () => {
     const { buildNextPaymentOperationWakeQuery } = await import("../../server/storage/payment-operations");
     const first = await makeCanonicalFixture();
@@ -529,14 +608,11 @@ describe("F4 canonical autopay PostgreSQL/provider integration", () => {
     expect(Number(canonicalWake?.organization_id)).toBe(second.fixture.organizationId);
     expect(canonicalWake?.work_id).toBe(second.planId);
     expect(new Date(String(canonicalWake?.due_at)).getTime()).toBeGreaterThan(Date.now());
-    const explain = await db.transaction(async (tx) => {
-      await tx.execute(sql`SET LOCAL enable_seqscan = off`);
-      return tx.execute(sql`EXPLAIN (COSTS OFF) ${buildNextPaymentOperationWakeQuery()}`);
-    });
+    const explain = await db.execute(sql`EXPLAIN (COSTS OFF) ${buildNextPaymentOperationWakeQuery()}`);
     expect(explain.rows.length).toBeGreaterThan(0);
     const explainText = explain.rows.map((row) => Object.values(row).join(" ")).join("\n");
     expect(explainText).toContain("collection_plans_canonical_wake_idx");
-    expect(explainText).toContain("payment_operations_canonical_plan");
+    expect(explainText).toContain("payment_operations_canonical_plan_unique");
     const indexes = await db.execute(sql`SELECT indexname FROM pg_indexes WHERE indexname IN ('collection_plans_canonical_wake_idx', 'payment_operations_canonical_plan_idx', 'payment_operations_canonical_plan_unique')`);
     expect(indexes.rows.map((row) => row.indexname)).toEqual(expect.arrayContaining(["collection_plans_canonical_wake_idx", "payment_operations_canonical_plan_idx", "payment_operations_canonical_plan_unique"]));
   });

@@ -1644,7 +1644,7 @@ export async function acquireCanonicalAutopayDispatchCutoff(input: {
     const [operation] = await tx.select().from(paymentOperations).where(and(eq(paymentOperations.id, input.operationId), eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.leagueId, input.leagueId), eq(paymentOperations.operationType, "canonical_autopay_charge"))).limit(1).for("update");
     if (!operation || operation.status !== "leased" || operation.leaseToken !== input.leaseToken || operation.canonicalPlanId === null) return false;
     const [snapshot] = await tx.select().from(canonicalAutopayExecutionSnapshots).where(and(eq(canonicalAutopayExecutionSnapshots.operationId, operation.id), eq(canonicalAutopayExecutionSnapshots.organizationId, input.organizationId), eq(canonicalAutopayExecutionSnapshots.leagueId, input.leagueId))).limit(1).for("share");
-    if (!plan || !snapshot || plan.state !== "ready" || plan.version !== snapshot.planVersion || plan.currency !== snapshot.currency || plan.triggerOccurrenceId !== snapshot.triggerOccurrenceId || operation.amountMinor !== snapshot.amountMinor || operation.currency !== snapshot.currency) return false;
+    if (!plan || !snapshot || plan.state !== "ready" || plan.version !== snapshot.planVersion || plan.currency !== snapshot.currency || plan.triggerOccurrenceId !== snapshot.triggerOccurrenceId || operation.triggerOccurrenceId !== snapshot.triggerOccurrenceId || operation.amountMinor !== snapshot.amountMinor || operation.currency !== snapshot.currency) return false;
     const [provenance] = await tx.select().from(f3AutopayPlanProvenance).where(and(eq(f3AutopayPlanProvenance.d2PlanId, plan.id), eq(f3AutopayPlanProvenance.organizationId, input.organizationId), eq(f3AutopayPlanProvenance.leagueId, input.leagueId))).limit(1).for("share");
     const [policy] = await tx.select().from(f3CollectionPolicies).where(and(eq(f3CollectionPolicies.id, snapshot.policyId), eq(f3CollectionPolicies.organizationId, input.organizationId), eq(f3CollectionPolicies.leagueId, input.leagueId))).limit(1).for("share");
     const [authorization] = await tx.select().from(f3PayerAuthorizations).where(and(eq(f3PayerAuthorizations.id, snapshot.authorizationId), eq(f3PayerAuthorizations.organizationId, input.organizationId), eq(f3PayerAuthorizations.leagueId, input.leagueId))).limit(1).for("share");
@@ -2697,6 +2697,15 @@ export async function finalizePaymentOperationSuccessInTransaction(
   }
   const preflightOperation = await lockCanonicalMutationScope(tx, input.organizationId, input.operationId);
   if (preflightOperation) {
+    // Provider identities are immutable evidence. A reclaim/finalization may
+    // fill a previously empty identity, but it may never replace one retained
+    // from an earlier dispatch or reconciliation attempt.
+    if ((preflightOperation.providerObjectId !== null
+      && preflightOperation.providerObjectId !== input.providerObjectId)
+      || (preflightOperation.providerOrderId !== null
+        && preflightOperation.providerOrderId !== input.providerOrderId)) {
+      throw new PaymentOperationImmutableMismatchError();
+    }
     if (preflightOperation.operationType === "canonical_autopay_charge") {
       // The canonical finalizer repeats the immutable validation immediately
       // before writes and owns plan/allocation completion atomically.
@@ -3291,10 +3300,17 @@ export async function reconcilePaymentOperationSuccess(
   const now = toIso(input.now ?? new Date(), "now");
 
   const updated = await db.transaction(async (tx) => {
-    const [current] = await tx.select().from(paymentOperations).where(and(
-      eq(paymentOperations.organizationId, input.organizationId),
-      eq(paymentOperations.id, input.operationId),
-    )).limit(1).for("update");
+    // Canonical reconciliation must enter through the same advisory → plan
+    // → operation lock order as dispatch and revocation. The helper performs
+    // only an unlocked scope read, then takes the canonical lock; legacy
+    // operations retain their historical operation-row lock behavior.
+    const current = await lockCanonicalMutationScope(tx, input.organizationId, input.operationId);
+    if (current
+      && current.operationType === "canonical_autopay_charge"
+      && ((current.providerObjectId !== null && current.providerObjectId !== input.providerObjectId)
+        || (current.providerOrderId !== null && current.providerOrderId !== input.providerOrderId))) {
+      throw new PaymentOperationImmutableMismatchError();
+    }
     if (current?.operationType === "canonical_autopay_charge") {
       if (current.status !== "reconciliation_required" || current.leaseToken !== input.leaseToken) return undefined;
       const [reclaimed] = await tx.update(paymentOperations).set({
@@ -3323,6 +3339,7 @@ export async function reconcilePaymentOperationSuccess(
         now: input.now,
       });
     }
+    if (!current) return undefined;
     const [transitioned] = await tx
       .update(paymentOperations)
       .set({
