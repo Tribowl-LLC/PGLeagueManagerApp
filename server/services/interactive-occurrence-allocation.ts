@@ -14,6 +14,8 @@ import {
   paymentOperationOccurrenceSnapshots,
   paymentOperations,
   payments,
+  occurrenceCollectionPlanItems,
+  occurrenceCollectionPlans,
 } from "@shared/schema";
 import type { PaymentOperationTransaction } from "../storage/payment-operations.js";
 import { db } from "../db.js";
@@ -43,6 +45,7 @@ export type InteractiveOccurrenceQuoteRow = {
   outstandingMinor: number;
   currency: string;
   dueAt: string | null;
+  disposition?: "available" | "reserved_by_ready_autopay_plan";
 };
 
 export type InteractiveOccurrenceQuote = {
@@ -55,6 +58,7 @@ export type InteractiveOccurrenceQuote = {
   activationId: string;
   activationSourceFingerprint: string;
   rows: InteractiveOccurrenceQuoteRow[];
+  reservedByReadyAutopayPlan?: Array<{ obligationId: string; amountMinor: number; disposition: "reserved_by_ready_autopay_plan" }>;
   selections: InteractiveOccurrenceSelection[];
   fingerprint: string;
 };
@@ -111,7 +115,21 @@ export function validateInteractiveOccurrenceSelections(
   if (selections.length > 0 && total !== amountMinor) throw new InteractiveOccurrenceAllocationError("AMOUNT_MISMATCH");
 }
 
-type LockedObligation = InteractiveOccurrenceQuoteRow & { state: string; reviewRequired: boolean };
+/** A ready F3 plan owns only its reserved slice. F2 may still collect an
+ * exact positive unreserved remainder, but any attempt to consume the
+ * reserved slice (or a larger amount) must stop explicitly. */
+export function hasReadyAutopayReservationConflict(
+  rows: Array<{ obligationId: string; outstandingMinor: number; f3ReservedMinor: number }>,
+  selections: InteractiveOccurrenceSelection[],
+): boolean {
+  const byId = new Map(rows.map((row) => [row.obligationId, row]));
+  return selections.some((selection) => {
+    const row = byId.get(selection.obligationId);
+    return row !== undefined && row.f3ReservedMinor > 0 && selection.amountMinor > row.outstandingMinor;
+  });
+}
+
+type LockedObligation = InteractiveOccurrenceQuoteRow & { state: string; reviewRequired: boolean; reservedMinor: number; f3ReservedMinor: number };
 
 async function lockCanonicalEvidence(
   tx: PaymentOperationTransaction,
@@ -282,9 +300,27 @@ async function lockCanonicalEvidence(
       inArray(paymentOperations.status, ["pending", "leased", "provider_unknown", "retry_scheduled", "reconciliation_required"]),
       excludeOperationId ? ne(paymentOperationOccurrenceSnapshotAllocations.operationId, excludeOperationId) : undefined,
     )).for("share");
-  const byObligation = new Map<string, { allocated: number; reserved: number; review: boolean }>();
+  // Canonical F3 ready plans reserve exact capacity independently of a
+  // payment operation. F2 must include those reservations while holding the
+  // same obligation locks, so a stale quote cannot bypass a ready plan.
+  const f3Reservations = await tx.select({
+    obligationId: occurrenceCollectionPlanItems.obligationId,
+    amountMinor: occurrenceCollectionPlanItems.amountMinor,
+  }).from(occurrenceCollectionPlanItems)
+    .innerJoin(occurrenceCollectionPlans, and(
+      eq(occurrenceCollectionPlans.id, occurrenceCollectionPlanItems.planId),
+      eq(occurrenceCollectionPlans.organizationId, input.organizationId),
+      eq(occurrenceCollectionPlans.leagueId, input.leagueId),
+      eq(occurrenceCollectionPlans.state, "ready"),
+    ))
+    .where(and(
+      eq(occurrenceCollectionPlanItems.organizationId, input.organizationId),
+      eq(occurrenceCollectionPlanItems.leagueId, input.leagueId),
+      inArray(occurrenceCollectionPlanItems.obligationId, obligationIds),
+    )).for("share");
+  const byObligation = new Map<string, { allocated: number; reserved: number; f3Reserved: number; review: boolean }>();
   for (const row of existing) {
-    const prior = byObligation.get(row.obligationId) ?? { allocated: 0, reserved: 0, review: false };
+    const prior = byObligation.get(row.obligationId) ?? { allocated: 0, reserved: 0, f3Reserved: 0, review: false };
     // An exact replay of a completed operation must see its own settled
     // amount restored while re-validating the immutable supplement. Other
     // operations remain conservation evidence and cannot be excluded.
@@ -296,7 +332,13 @@ async function lockCanonicalEvidence(
     byObligation.set(row.obligationId, prior);
   }
   for (const row of pending) {
-    const prior = byObligation.get(row.obligationId) ?? { allocated: 0, reserved: 0, review: false };
+    const prior = byObligation.get(row.obligationId) ?? { allocated: 0, reserved: 0, f3Reserved: 0, review: false };
+    prior.reserved += row.amountMinor;
+    byObligation.set(row.obligationId, prior);
+  }
+  for (const row of f3Reservations) {
+    const prior = byObligation.get(row.obligationId) ?? { allocated: 0, reserved: 0, f3Reserved: 0, review: false };
+    prior.f3Reserved += row.amountMinor;
     prior.reserved += row.amountMinor;
     byObligation.set(row.obligationId, prior);
   }
@@ -304,7 +346,7 @@ async function lockCanonicalEvidence(
   const rows: LockedObligation[] = [];
   for (const obligation of obligations) {
     const responsibility = responsibilityByObligation.get(obligation.id);
-    const prior = byObligation.get(obligation.id) ?? { allocated: 0, reserved: 0, review: false };
+    const prior = byObligation.get(obligation.id) ?? { allocated: 0, reserved: 0, f3Reserved: 0, review: false };
     if (!responsibility || responsibility.amountMinor !== obligation.amountMinor || responsibility.currency !== obligation.currency) {
       throw new InteractiveOccurrenceAllocationError("CANONICAL_EVIDENCE_INCOMPATIBLE");
     }
@@ -315,6 +357,8 @@ async function lockCanonicalEvidence(
       amountMinor: obligation.amountMinor,
       allocatedMinor: prior.allocated,
       outstandingMinor: Math.max(0, obligation.amountMinor - prior.allocated - prior.reserved),
+      reservedMinor: prior.reserved,
+      f3ReservedMinor: prior.f3Reserved,
       currency: obligation.currency,
       dueAt: obligation.dueAt,
       state: obligation.state,
@@ -378,8 +422,10 @@ async function buildQuote(tx: PaymentOperationTransaction, input: {
   const evidence = await lockCanonicalEvidence(tx, input, input.excludeOperationId);
   const allowed = input.allowedBowlerIds ? new Set(input.allowedBowlerIds) : undefined;
   const rows = evidence.obligations.filter((row) => row.state !== "voided" && !row.reviewRequired && row.outstandingMinor > 0 && (!allowed || allowed.has(row.bowlerId)));
-  const publicRows: InteractiveOccurrenceQuoteRow[] = rows.map(({ reviewRequired: _reviewRequired, ...row }) => row);
+  const publicRows: InteractiveOccurrenceQuoteRow[] = rows.map(({ reviewRequired: _reviewRequired, reservedMinor: _reservedMinor, f3ReservedMinor: _f3ReservedMinor, ...row }) => ({ ...row, disposition: "available" as const }));
+  const reservedByReadyAutopayPlan = evidence.obligations.filter((row) => row.f3ReservedMinor > 0).map((row) => ({ obligationId: row.obligationId, amountMinor: row.f3ReservedMinor, disposition: "reserved_by_ready_autopay_plan" as const }));
   const selections = (input.selections ?? []).map((row) => ({ obligationId: row.obligationId, amountMinor: row.amountMinor }));
+  if (hasReadyAutopayReservationConflict(evidence.obligations, selections)) throw new InteractiveOccurrenceAllocationError("OBLIGATION_RESERVED_BY_AUTOPAY");
   validateInteractiveOccurrenceSelections(publicRows, selections, input.amountMinor);
   const result: InteractiveOccurrenceQuote = {
     contractVersion: INTERACTIVE_OCCURRENCE_QUOTE_CONTRACT,
@@ -391,6 +437,7 @@ async function buildQuote(tx: PaymentOperationTransaction, input: {
     activationId: evidence.activationId,
     activationSourceFingerprint: evidence.sourceFingerprint,
     rows: publicRows,
+    reservedByReadyAutopayPlan,
     selections,
     // This is the immutable base-evidence fingerprint. Explicit selections
     // are bound separately by the operation supplement and validated against

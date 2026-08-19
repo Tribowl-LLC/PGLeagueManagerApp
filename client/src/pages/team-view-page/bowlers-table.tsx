@@ -18,7 +18,7 @@ interface TeamViewBowlersTableProps {
   league: League | undefined;
   teamId: number;
   onEditBowler?: (bowler: Bowler) => void;
-  onRemoveBowler: (target: { bowlerId: number; name: string }) => void;
+  onRemoveBowler?: (target: { bowlerId: number; name: string }) => void;
 }
 
 export function TeamViewBowlersTable({
@@ -67,14 +67,14 @@ export function TeamViewBowlersTable({
                         <Pencil className="size-4 mr-2" />
                         Edit
                       </Button>}
-                    <Button
+                    {onRemoveBowler && <Button
                       variant="ghost"
                       size="sm"
                       onClick={() => onRemoveBowler({ bowlerId: bowler.id, name: bowler.name })}
                     >
                       <Trash2 className="size-4 mr-2" />
                       Remove
-                    </Button>
+                    </Button>}
                   </div>
                 </TableCell>
               </TableRow>

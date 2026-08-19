@@ -696,7 +696,7 @@ router.delete('/unclaimed-users/:userId', adminWriteLimiter, async (req, res) =>
       if (row.bowlerId !== null) {
         throw new HttpError(409, 'ALREADY_LINKED', 'User has already been linked to a bowler');
       }
-      return storage.deleteUser(row.id, tx);
+      return storage.deleteUser(row.id, tx, req.user?.id ?? null);
     });
 
     cacheInvalidate(`user:${userId}`);

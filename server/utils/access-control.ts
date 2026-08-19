@@ -151,7 +151,8 @@ export async function hasPaymentManagerAccessToPayment(req: Request, paymentId: 
 
 /** Administrator or location-scoped payment-manager league operations. */
 export async function hasLeagueOperationsAccess(req: Request, leagueId: number): Promise<boolean> {
-  return hasAdminAccessToLeague(req, leagueId) || hasPaymentManagerAccessToLeague(req, leagueId);
+  if (await hasAdminAccessToLeague(req, leagueId)) return true;
+  return hasPaymentManagerAccessToLeague(req, leagueId);
 }
 
 export function requireOrganizationAccess(req: Request, resourceOrgId: number | null, resourceType?: string, resourceId?: number | string): boolean {

@@ -5,9 +5,9 @@ import { ArrowLeft, Pencil, Plus } from "lucide-react";
 interface TeamViewHeaderProps {
   teamName: string;
   leagueId: number;
-  onEditClick: () => void;
-  onCreateBowler: () => void;
-  onAddExistingBowler: () => void;
+  onEditClick?: () => void;
+  onCreateBowler?: () => void;
+  onAddExistingBowler?: () => void;
 }
 
 export function TeamViewHeader({
@@ -29,21 +29,21 @@ export function TeamViewHeader({
       <div className="flex flex-col gap-4 mb-6">
         <div className="flex items-center gap-2">
           <h1 className="text-2xl font-bold flex-1">{teamName}</h1>
-          <Button variant="ghost" size="sm" onClick={onEditClick}>
+          {onEditClick && <Button variant="ghost" size="sm" onClick={onEditClick}>
             <Pencil className="size-4" />
             <span className="sr-only">Edit team name</span>
-          </Button>
+          </Button>}
         </div>
-        <div className="flex gap-2">
-          <Button onClick={onCreateBowler}>
+        {(onCreateBowler || onAddExistingBowler) && <div className="flex gap-2">
+          {onCreateBowler && <Button onClick={onCreateBowler}>
             <Plus className="size-4 mr-2" />
             Create New Bowler
-          </Button>
-          <Button onClick={onAddExistingBowler}>
+          </Button>}
+          {onAddExistingBowler && <Button onClick={onAddExistingBowler}>
             <Plus className="size-4 mr-2" />
             Add Existing Bowler
-          </Button>
-        </div>
+          </Button>}
+        </div>}
       </div>
     </div>
   );

@@ -14,9 +14,12 @@ import {
 import {
   consumeAccountActionAndSetPassword,
   getAccountActionByToken,
+  getLatestAccountInvitationsForUsers,
   hashAccountActionToken,
   issueAccountAction,
   revokeAccountAction,
+  updateAccountActionDeliveryStatus,
+  withAccountActionDeliveryLock,
 } from "../../server/storage/account-action-requests";
 import { getBaselineOrgAId } from "../helpers";
 
@@ -177,5 +180,63 @@ describe("account action request storage", () => {
       token: revoked.token,
       passwordHash: "must-not-be-used",
     })).toBeUndefined();
+
+    const delivery = await updateAccountActionDeliveryStatus(revoked.request.id, "sent");
+    expect(delivery?.status).toBe("revoked");
+    expect(delivery?.deliveryStatus).toBe("sent");
+    expect(delivery?.deliveredAt).not.toBeNull();
+  });
+
+  it("expires overdue invitations before returning admin lifecycle state", async () => {
+    const user = await createFixtureUser("Action Admin Expiry", false);
+    const [request] = await db.insert(accountActionRequests).values({
+      userId: user.id,
+      organizationId,
+      action: "account_invite",
+      tokenHash: hashAccountActionToken(`admin-expiry-${suffix}`),
+      expiresAt: new Date(Date.now() - 60_000).toISOString(),
+      status: "pending",
+      deliveryStatus: "sent",
+      deliveryAttemptedAt: new Date(Date.now() - 120_000).toISOString(),
+      deliveredAt: new Date(Date.now() - 120_000).toISOString(),
+    }).returning();
+    if (!request) throw new Error("admin expiry fixture was not created");
+
+    const latest = await getLatestAccountInvitationsForUsers([user.id], organizationId);
+    expect(latest.get(user.id)?.status).toBe("expired");
+    expect(latest.get(user.id)?.expiredAt).not.toBeNull();
+
+    const [persisted] = await db.select().from(accountActionRequests)
+      .where(eq(accountActionRequests.id, request.id));
+    expect(persisted?.status).toBe("expired");
+  });
+
+  it("serializes delivery for concurrent resends of the same action", async () => {
+    const user = await createFixtureUser("Action Delivery Lock", false);
+    const order: string[] = [];
+    let releaseFirst!: () => void;
+    let markFirstEntered!: () => void;
+    const firstEntered = new Promise<void>((resolve) => { markFirstEntered = resolve; });
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+
+    const first = withAccountActionDeliveryLock(user.id, "account_invite", async () => {
+      order.push("first-enter");
+      markFirstEntered();
+      await firstGate;
+      order.push("first-exit");
+    });
+    await firstEntered;
+
+    let secondEntered = false;
+    const second = withAccountActionDeliveryLock(user.id, "account_invite", async () => {
+      secondEntered = true;
+      order.push("second-enter");
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(secondEntered).toBe(false);
+
+    releaseFirst();
+    await Promise.all([first, second]);
+    expect(order).toEqual(["first-enter", "first-exit", "second-enter"]);
   });
 });

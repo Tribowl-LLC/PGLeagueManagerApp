@@ -64,6 +64,7 @@ export default function PaymentsPage() {
     || userResponse?.data?.role === 'org_admin'
     || String(userResponse?.data?.role) === 'payment_manager';
   const isPaymentManager = String(userResponse?.data?.role) === 'payment_manager';
+  const includeDisputes = !isPaymentManager;
 
   const { data: leaguesResponse } = useQuery<{ data: League[] }>({
     queryKey: ["/api/leagues"],
@@ -71,10 +72,11 @@ export default function PaymentsPage() {
   });
 
   const { data: paymentsResponse, isLoading: loadingPayments } = useQuery<PaginatedPaymentsResponse>({
-    queryKey: ["/api/payments", "paginated", "with-disputes", page, pageSize],
+    queryKey: ["/api/payments", "paginated", includeDisputes ? "with-disputes" : "without-disputes", page, pageSize],
     queryFn: async () => {
+      const disputeQuery = includeDisputes ? "&includeDisputes=true" : "";
       const res = await fetch(
-        `/api/payments?page=${page}&limit=${pageSize}&includeDisputes=true`,
+        `/api/payments?page=${page}&limit=${pageSize}${disputeQuery}`,
         {
         credentials: "include",
         headers: { "Accept": "application/json" },
@@ -85,6 +87,7 @@ export default function PaymentsPage() {
     },
     refetchOnWindowFocus: "always",
     staleTime: 1000 * 60,
+    enabled: !!userResponse?.data,
   });
 
   const { data: bowlersResponse, isLoading: loadingBowlers } = useQuery<{ data: Bowler[] }>({

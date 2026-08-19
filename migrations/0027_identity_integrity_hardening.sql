@@ -106,6 +106,7 @@ CREATE TABLE "identity_link_events" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"organization_id" integer NOT NULL,
 	"actor_user_id" integer,
+	"subject_user_id" integer NOT NULL,
 	"user_id" integer,
 	"bowler_id" integer,
 	"old_bowler_id" integer,
@@ -132,6 +133,7 @@ CREATE INDEX "account_action_requests_user_idx" ON "account_action_requests" USI
 CREATE UNIQUE INDEX "account_action_requests_pending_user_action_unique" ON "account_action_requests" USING btree ("user_id","action") WHERE "account_action_requests"."status" = 'pending';--> statement-breakpoint
 CREATE INDEX "identity_link_events_org_created_at_idx" ON "identity_link_events" USING btree ("organization_id","created_at");--> statement-breakpoint
 CREATE INDEX "identity_link_events_user_idx" ON "identity_link_events" USING btree ("user_id");--> statement-breakpoint
+CREATE INDEX "identity_link_events_subject_user_idx" ON "identity_link_events" USING btree ("subject_user_id");--> statement-breakpoint
 CREATE INDEX "identity_link_events_bowler_idx" ON "identity_link_events" USING btree ("bowler_id");--> statement-breakpoint
 ALTER TABLE "users" ADD CONSTRAINT "users_bowler_organization_fk" FOREIGN KEY ("bowler_id","organization_id") REFERENCES "public"."bowlers"("id","organization_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "users" ADD CONSTRAINT "users_location_organization_fk" FOREIGN KEY ("location_id","organization_id") REFERENCES "public"."locations"("id","organization_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint

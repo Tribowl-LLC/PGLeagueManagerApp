@@ -2,6 +2,8 @@ import { eq, and, count, isNotNull, or, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   users,
+  bowlers,
+  identityLinkEvents,
   applePayJobs,
   deletionRequests,
   leagueOccurrenceBillingTerms,
@@ -620,12 +622,14 @@ export async function setUserLocation(userId: number, locationId: number | null)
 export async function deleteUser(
   userId: number,
   executor?: UserDbExecutor,
+  actorUserId: number | null = null,
 ): Promise<User> {
   // When the caller passes their own transaction executor we run the
   // deletion inside that transaction so any row locks they took remain
   // held end-to-end (avoids the TOCTOU window between a precondition
   // check and the actual delete). Otherwise we open our own txn.
   const run = async (tx: UserDbExecutor): Promise<User> => {
+    await tx.execute(sql`SELECT id FROM ${users} WHERE id = ${userId} FOR UPDATE`);
     const [target] = await tx.select().from(users).where(eq(users.id, userId));
     if (!target) {
       throw new Error(`User with ID ${userId} not found`);
@@ -648,6 +652,35 @@ export async function deleteUser(
       + canonicalOccurrenceAuditCount;
     if (auditCount > 0) {
       throw new UserHasAuditTrailError(auditCount);
+    }
+
+    if (target.bowlerId !== null && target.organizationId !== null) {
+      await tx.execute(sql`SELECT id FROM ${bowlers} WHERE id = ${target.bowlerId} FOR UPDATE`);
+      const [bowler] = await tx
+        .select()
+        .from(bowlers)
+        .where(eq(bowlers.id, target.bowlerId))
+        .limit(1);
+      if (!bowler) {
+        throw new Error(`Linked bowler ${target.bowlerId} not found`);
+      }
+      await tx.insert(identityLinkEvents).values({
+        organizationId: target.organizationId,
+        actorUserId,
+        subjectUserId: target.id,
+        userId: target.id,
+        bowlerId: bowler.id,
+        oldBowlerId: bowler.id,
+        eventType: 'access_cleanup',
+        oldBowlerSnapshot: {
+          id: bowler.id,
+          name: bowler.name,
+          organizationId: bowler.organizationId,
+          active: bowler.active,
+        },
+        source: 'storage.delete-user',
+        reason: 'account_deleted',
+      });
     }
 
     await tx

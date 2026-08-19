@@ -3,7 +3,7 @@ import { storage } from '../storage';
 import { insertTeamSchema, updateTeamSchema, reorderTeamsSchema, type Team } from "@shared/schema";
 import { z } from "zod";
 import { sendSuccess, sendError, handleZodError, parseOptionalIntParam, sanitizeBowler } from '../utils/api.js';
-import { hasLeagueOperationsAccess, isOrgOrHigher, isPaymentManager } from '../utils/access-control.js';
+import { hasAdminAccessToLeague, hasLeagueOperationsAccess, isOrgOrHigher, isPaymentManager } from '../utils/access-control.js';
 import { createLogger } from '../logger';
 
 const log = createLogger("Teams");
@@ -125,7 +125,7 @@ router.patch("/reorder", async (req, res) => {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
 
-    if (!(await hasLeagueOperationsAccess(req, leagueId))) {
+    if (!(await hasAdminAccessToLeague(req, leagueId))) {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
 
@@ -234,7 +234,7 @@ router.post("/", async (req, res) => {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
 
-    if (!(await hasLeagueOperationsAccess(req, team.leagueId))) {
+    if (!(await hasAdminAccessToLeague(req, team.leagueId))) {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
     
@@ -272,14 +272,21 @@ router.patch("/:id", async (req, res) => {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
 
-    if (!(await hasLeagueOperationsAccess(req, team.leagueId))) {
+    if (!(await hasAdminAccessToLeague(req, team.leagueId))) {
       return sendError(res, "You don't have access to this team", 403, 'FORBIDDEN');
     }
     
     const update = updateTeamSchema.parse(req.body);
+    const targetLeagueId = update.leagueId ?? team.leagueId;
+    if (!(await hasAdminAccessToLeague(req, targetLeagueId))) {
+      return sendError(res, "You don't have access to the target league", 403, 'FORBIDDEN');
+    }
     const updated = await storage.updateTeam(id, update);
 
-    if ('active' in update) {
+    if (targetLeagueId !== team.leagueId) {
+      await storage.renumberActiveTeams(team.leagueId);
+      await storage.renumberActiveTeams(targetLeagueId);
+    } else if ('active' in update) {
       await storage.renumberActiveTeams(team.leagueId);
     }
 
@@ -316,7 +323,7 @@ router.delete("/:id", async (req, res) => {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
 
-    if (!(await hasLeagueOperationsAccess(req, team.leagueId))) {
+    if (!(await hasAdminAccessToLeague(req, team.leagueId))) {
       return sendError(res, "You don't have access to this team", 403, 'FORBIDDEN');
     }
     

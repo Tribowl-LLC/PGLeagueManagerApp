@@ -30,6 +30,7 @@ import bowlerLinksRouter from './bowler-links.js';
 import bowlerLinkRespondRouter from './bowler-link-respond.js';
 import paymentDisputesRouter from './payment-disputes.js';
 import financialsRouter from './financials.js';
+import f3AutopayRouter from './f3-autopay.js';
 import { requireAuth, requireOrgAdmin, requireSystemAdmin, requirePasswordRotated } from '../middleware/auth.js';
 import { createLogger } from '../logger';
 
@@ -132,6 +133,7 @@ export function registerRoutes(app: Express): void {
   app.use('/api/bowler-leagues', requireAuth, bowlerLeaguesRouter);
   app.use('/api/payments', requireAuth, paymentsRouter);
   app.use('/api/financials', requireAuth, financialsRouter);
+  app.use('/api/financials/f3', requireAuth, f3AutopayRouter);
   app.use('/api/scores', requireAuth, scoresRouter);
   app.use('/api/games', requireAuth, gamesRouter);
   // The disabled-by-default Square receiver is registered earlier in

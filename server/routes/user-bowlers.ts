@@ -84,6 +84,8 @@ router.post('/link-bowler', requireAuth, async (req, res) => {
       bowlerId,
       actorUserId: user.id,
       source: 'user-bowler-link',
+      reason: 'email_ownership_claim',
+      requireEmailMatch: true,
     });
     sendSuccess(res, sanitizeUser(updated.user));
   } catch (error) {

@@ -41,12 +41,12 @@ async function createUser(name: string, role: "user" | "org_admin" = "user") {
   return user;
 }
 
-async function createBowler(name: string, org = organizationId) {
+async function createBowler(name: string, org = organizationId, email?: string) {
   const [bowler] = await db
     .insert(bowlers)
     .values({
       name: `${name} ${suffix}`,
-      email: `${name.toLowerCase()}-${suffix}@example.com`,
+      email: email ?? `${name.toLowerCase()}-${suffix}@example.com`,
       organizationId: org,
     })
     .returning();
@@ -159,6 +159,32 @@ describe("identity-link service", () => {
     const [unchanged] = await db.select({ bowlerId: users.bowlerId }).from(users).where(eq(users.id, user.id));
     expect(unchanged?.bowlerId).toBeNull();
     const events = await db.select().from(identityLinkEvents).where(eq(identityLinkEvents.userId, user.id));
+    expect(events).toHaveLength(0);
+  });
+
+  it("rechecks self-service email ownership while both identity rows are locked", async () => {
+    const user = await createUser("Email Proof User");
+    const bowler = await createBowler("Email Proof Target", organizationId, user.email);
+
+    // Simulate the bowler email changing after a route-level compatibility
+    // read but before the transactional claim begins.
+    await db.update(bowlers)
+      .set({ email: `changed-${suffix}@example.com` })
+      .where(eq(bowlers.id, bowler.id));
+
+    await expect(linkUserToBowler({
+      organizationId,
+      userId: user.id,
+      bowlerId: bowler.id,
+      source: "test-email-proof",
+      requireEmailMatch: true,
+    })).rejects.toMatchObject({ code: "EMAIL_MISMATCH" });
+
+    const [unchanged] = await db.select({ bowlerId: users.bowlerId })
+      .from(users).where(eq(users.id, user.id));
+    expect(unchanged?.bowlerId).toBeNull();
+    const events = await db.select().from(identityLinkEvents)
+      .where(eq(identityLinkEvents.subjectUserId, user.id));
     expect(events).toHaveLength(0);
   });
 

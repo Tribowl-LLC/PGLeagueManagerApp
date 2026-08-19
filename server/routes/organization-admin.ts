@@ -20,6 +20,8 @@ import { recordAdminPasswordResetAudit } from '../storage/admin-password-reset-a
 import { recordAdminRoleChangeAudit } from '../storage/admin-role-change-audits';
 import type { User, UserRole } from '@shared/schema';
 import { publicAccountInvitation } from '../services/account-invitation.js';
+import { withAccountActionDeliveryLock } from '../storage/account-action-requests.js';
+import { isNormalizedUserEmailConflict } from '../utils/db-errors.js';
 
 const log = createLogger("OrgAdmin");
 
@@ -556,7 +558,7 @@ router.delete('/users/:id', requireOrgAdminOrSystemAdmin, adminWriteLimiter, asy
       }
     }
 
-    const deleted = await storage.deleteUser(userId);
+    const deleted = await storage.deleteUser(userId, undefined, actingUser.id);
     log.info('User permanently deleted', {
       deletedUserId: deleted.id,
       deletedEmail: deleted.email,
@@ -778,6 +780,9 @@ router.post('/users/create', requireOrgAdminOrSystemAdmin, inviteLimiter, async 
       invitation: publicAccountInvitation(invitation),
     });
   } catch (error) {
+    if (isNormalizedUserEmailConflict(error)) {
+      return sendError(res, 'A user with this email address already exists', 409, 'conflict');
+    }
     if (handleUserOrgError(res, error)) return;
     log.error('Error creating user:', error);
     return sendError(res, 'Failed to create user', 500, 'internal_error');
@@ -1010,35 +1015,36 @@ router.post('/users/:id/resend-invite', requireOrgAdminOrSystemAdmin, inviteLimi
       }
     }
 
-    const invitation = await storage.issueAccountAction({
-      userId,
-      action: 'account_invite',
-      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-      organizationId: user.organizationId,
-      createdByUserId: actingUser.id,
+    const { delivery, emailSent } = await withAccountActionDeliveryLock(userId, 'account_invite', async () => {
+      const invitation = await storage.issueAccountAction({
+        userId,
+        action: 'account_invite',
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        organizationId: user.organizationId,
+        createdByUserId: actingUser.id,
+      });
+
+      const organization = user.organizationId ? await storage.getOrganization(user.organizationId) : null;
+      const firstName = user.name.split(' ')[0];
+      let emailSent = false;
+      try {
+        emailSent = await sendInviteEmail(
+          user.email.trim().toLowerCase(),
+          firstName,
+          invitation.token,
+          organization?.name,
+          organization?.id,
+          organization?.slug,
+        );
+      } catch (error) {
+        log.warn('Invitation resend email failed:', error);
+      }
+      const delivery = await storage.updateAccountActionDeliveryStatus(
+        invitation.request.id,
+        emailSent ? 'sent' : 'failed',
+      ) ?? invitation.request;
+      return { delivery, emailSent };
     });
-
-    let organizationId = user.organizationId;
-    const organization = organizationId ? await storage.getOrganization(organizationId) : null;
-
-    const firstName = user.name.split(' ')[0];
-    let emailSent = false;
-    try {
-      emailSent = await sendInviteEmail(
-        user.email.trim().toLowerCase(),
-        firstName,
-        invitation.token,
-        organization?.name,
-        organization?.id,
-        organization?.slug,
-      );
-    } catch (error) {
-      log.warn('Invitation resend email failed:', error);
-    }
-    const delivery = await storage.updateAccountActionDeliveryStatus(
-      invitation.request.id,
-      emailSent ? 'sent' : 'failed',
-    ) ?? invitation.request;
 
     return sendSuccess(res, {
       emailSent,

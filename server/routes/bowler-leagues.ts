@@ -3,24 +3,13 @@ import { storage } from '../storage';
 import { insertBowlerLeagueSchema, updateBowlerLeagueSchema } from "@shared/schema";
 import { z } from "zod";
 import { sendSuccess, sendError, handleZodError } from '../utils/api';
-import { hasAccessToLeague, hasAccessToTeam, hasAccessToBowler, getPaymentManagerAccessibleLeagueIds, isOrgOrHigher, isPaymentManager, isSystemAdmin } from '../utils/access-control.js';
+import { hasAccessToLeague, hasAccessToTeam, hasAccessToBowler, getPaymentManagerAccessibleLeagueIds, hasAdminAccessToLeague, isOrgOrHigher, isPaymentManager, isSystemAdmin } from '../utils/access-control.js';
 import { createLogger } from '../logger';
 import { fireBowlerExternalResync } from '../services/bowler-resync';
 
 const log = createLogger("BowlerLeagues");
 
 const router = Router();
-
-async function hasRosterBowlerAccess(req: Parameters<typeof hasAccessToBowler>[0], bowlerId: number, leagueId: number): Promise<boolean> {
-  if (!isPaymentManager(req.user)) return hasAccessToBowler(req, bowlerId);
-  const [bowler, league] = await Promise.all([
-    storage.getBowler(bowlerId),
-    storage.getLeague(leagueId),
-  ]);
-  return !!bowler && !!league
-    && bowler.organizationId === league.organizationId
-    && await hasAccessToLeague(req, leagueId);
-}
 
 router.get("/", async (req, res) => {
   try {
@@ -124,7 +113,7 @@ router.post("/", async (req, res) => {
   try {
     const data = insertBowlerLeagueSchema.parse(req.body);
 
-    if (!(await hasAccessToLeague(req, data.leagueId))) {
+    if (!(await hasAdminAccessToLeague(req, data.leagueId))) {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
 
@@ -188,7 +177,7 @@ router.post("/", async (req, res) => {
       // Every failure mode collapses to the same 403 to avoid leaking
       // which gate denied (existence oracle, org-mismatch oracle,
       // etc.).
-      if (!isOrgOrHigher(req.user) && !isPaymentManager(req.user)) {
+      if (!isOrgOrHigher(req.user)) {
         return sendError(res, "You don't have access to this bowler", 403, 'FORBIDDEN');
       }
       const bowlerRow = await storage.getBowler(data.bowlerId);
@@ -268,7 +257,7 @@ router.patch("/:id", async (req, res) => {
       return sendError(res, "Bowler league not found", 404, 'NOT_FOUND');
     }
 
-    if (!(await hasAccessToLeague(req, bowlerLeague.leagueId))) {
+    if (!(await hasAdminAccessToLeague(req, bowlerLeague.leagueId))) {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
 
@@ -276,21 +265,17 @@ router.patch("/:id", async (req, res) => {
       return sendError(res, "You don't have access to this team", 403, 'FORBIDDEN');
     }
 
-    if (!(await hasRosterBowlerAccess(req, bowlerLeague.bowlerId, bowlerLeague.leagueId))) {
+    if (!(await hasAccessToBowler(req, bowlerLeague.bowlerId))) {
       return sendError(res, "You don't have access to this bowler", 403, 'FORBIDDEN');
     }
 
     const update = updateBowlerLeagueSchema.parse(req.body);
 
-    if (isPaymentManager(req.user) && update.bowlerId !== undefined) {
-      return sendError(res, 'Payment managers cannot reassign a roster row to another bowler', 403, 'FORBIDDEN');
-    }
-
     const effectiveLeagueId = update.leagueId ?? bowlerLeague.leagueId;
     const effectiveTeamId = update.teamId ?? bowlerLeague.teamId;
     const effectiveBowlerId = update.bowlerId ?? bowlerLeague.bowlerId;
 
-    if (!(await hasAccessToLeague(req, effectiveLeagueId))) {
+    if (!(await hasAdminAccessToLeague(req, effectiveLeagueId))) {
       return sendError(res, "You don't have access to the target league", 403, 'FORBIDDEN');
     }
 
@@ -301,7 +286,7 @@ router.patch("/:id", async (req, res) => {
     if (!effectiveTeam || effectiveTeam.leagueId !== effectiveLeagueId) {
       return sendError(res, 'Team does not belong to the selected league', 400, 'TEAM_LEAGUE_MISMATCH');
     }
-    if (update.bowlerId !== undefined && !(await hasRosterBowlerAccess(req, effectiveBowlerId, effectiveLeagueId))) {
+    if (update.bowlerId !== undefined && !(await hasAccessToBowler(req, effectiveBowlerId))) {
       return sendError(res, "You don't have access to the target bowler", 403, 'FORBIDDEN');
     }
 
@@ -335,7 +320,7 @@ router.delete("/:id", async (req, res) => {
       return sendError(res, "Bowler league not found", 404, 'NOT_FOUND');
     }
 
-    if (!(await hasAccessToLeague(req, bowlerLeague.leagueId))) {
+    if (!(await hasAdminAccessToLeague(req, bowlerLeague.leagueId))) {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
 
@@ -343,7 +328,7 @@ router.delete("/:id", async (req, res) => {
       return sendError(res, "You don't have access to this team", 403, 'FORBIDDEN');
     }
 
-    if (!(await hasRosterBowlerAccess(req, bowlerLeague.bowlerId, bowlerLeague.leagueId))) {
+    if (!(await hasAccessToBowler(req, bowlerLeague.bowlerId))) {
       return sendError(res, "You don't have access to this bowler", 403, 'FORBIDDEN');
     }
 
@@ -386,7 +371,7 @@ router.patch("/:id/order", async (req, res) => {
       return sendError(res, "Bowler league not found", 404, 'NOT_FOUND');
     }
 
-    if (!(await hasAccessToLeague(req, bowlerLeague.leagueId))) {
+    if (!(await hasAdminAccessToLeague(req, bowlerLeague.leagueId))) {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
 

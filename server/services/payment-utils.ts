@@ -5,7 +5,7 @@ import { createLogger } from "../logger";
 
 const log = createLogger('PaymentUtils');
 
-export function getProviderCustomerId(bowler: Bowler, _provider: PaymentProvider): string | undefined {
+export function getProviderCustomerId(bowler: Pick<Bowler, "paymentCustomerId">, _provider: PaymentProvider): string | undefined {
   return bowler.paymentCustomerId || undefined;
 }
 

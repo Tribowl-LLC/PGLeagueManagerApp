@@ -100,6 +100,14 @@ vi.mock('../../server/storage', () => ({
   },
 }));
 
+vi.mock('../../server/storage/account-action-requests.js', () => ({
+  withAccountActionDeliveryLock: async (
+    _userId: number,
+    _action: string,
+    operation: () => Promise<unknown>,
+  ) => operation(),
+}));
+
 vi.mock('../../server/services/identity-link.js', () => ({
   linkUserToBowler: vi.fn(async () => ({ user: null, bowler: null, oldBowler: null, event: null })),
   isIdentityLinkError: () => false,

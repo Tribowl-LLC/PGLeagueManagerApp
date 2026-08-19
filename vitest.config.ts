@@ -89,6 +89,8 @@ const PARALLEL_ISOLATED_WITH_APP = [
  * error-log guard, so nothing preloads `pg` ahead of the mock.
  */
 const UNIT_NO_DB = [
+  'tests/unit/f3-autopay-contract.test.ts',
+  'tests/unit/f3-provider-ownership.test.ts',
   'tests/unit/canonical-due-past-due.test.ts',
   'tests/unit/neon-branches-reveal-password.test.ts',
   'tests/unit/cleanup-connection-aware-sweep.test.ts',
@@ -195,6 +197,8 @@ const PARALLEL_ISOLATED = [
   'tests/unit/refund-payment-operation-executor.test.ts',
   'tests/unit/scheduled-payment-ledger-cutover.test.ts',
   'tests/unit/payment-provider-error-mapping.test.ts',
+  'tests/unit/f3-workflow-postgres.test.ts',
+  'tests/api/f3-autopay-enabled-router.test.ts',
   'tests/unit/payment-refunds-receipt-dependency.test.ts',
   'tests/unit/payment-scheduler.test.ts',
   'tests/unit/payment-sync-retry-scheduler.test.ts',

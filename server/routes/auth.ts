@@ -23,6 +23,8 @@ import {
   linkUserToBowler as linkIdentityUserToBowler,
   isIdentityLinkError,
 } from "../services/identity-link.js";
+import { withAccountActionDeliveryLock } from "../storage/account-action-requests.js";
+import { isNormalizedUserEmailConflict } from "../utils/db-errors.js";
 // Same allowlist account.ts uses for /api/account/profile (task #420).
 // We pull it from the password-changed email bundle directly rather
 // than re-importing it from `./account` so the unauthenticated
@@ -201,6 +203,7 @@ export function registerAuthRoutes(app: Express): void {
                 source: "auth.register",
                 reason: "email_match_auto_link",
                 eventType: "link",
+                requireEmailMatch: true,
               }, tx);
               // Return the row updated by the identity service so the new
               // login session and registration response immediately reflect
@@ -213,7 +216,7 @@ export function registerAuthRoutes(app: Express): void {
               // behavior, while all successful create+link writes remain one
               // transaction.
               if (!isIdentityLinkError(linkError)
-                || (linkError.code !== "BOWLER_TAKEN" && linkError.code !== "ALREADY_LINKED")) {
+                || !["BOWLER_TAKEN", "ALREADY_LINKED", "EMAIL_MISMATCH"].includes(linkError.code)) {
                 throw linkError;
               }
             }
@@ -221,6 +224,9 @@ export function registerAuthRoutes(app: Express): void {
           return createdUser;
         });
       } catch (createError) {
+        if (isNormalizedUserEmailConflict(createError)) {
+          return sendError(res, "Email already registered", 400, "DUPLICATE_EMAIL");
+        }
         if (handleUserOrgError(res, createError)) return;
         throw createError;
       }
@@ -568,6 +574,7 @@ export function registerAuthRoutes(app: Express): void {
               source: "auth.set-password",
               reason: "email_match_auto_link",
               eventType: "link",
+              requireEmailMatch: true,
             } as const;
             if (user.organizationId) {
               authenticatedUser = (await linkIdentityUserToBowler(linkInput)).user;
@@ -618,50 +625,50 @@ export function registerAuthRoutes(app: Express): void {
         if (!user) return;
         if (!user.password) return;
 
-        const expiry = new Date(Date.now() + 60 * 60 * 1000);
-        const issued = await storage.issueAccountAction({
-          userId: user.id,
-          action: "password_reset",
-          expiresAt: expiry,
-          organizationId: user.organizationId,
-        });
-        const token = issued.token;
-
-        const org = user.organizationId ? await storage.getOrganization(user.organizationId) : null;
-        const baseUrl = getBaseUrl(org);
-        const resetUrl = `${baseUrl}/set-password?token=${token}`;
-
-        const firstName = user.name?.split(' ')[0] || user.email;
-
-        let sent = false;
-        try {
-          sent = await sendTemplatedEmail('password_reset', user.email, {
-            bowler_name: firstName,
-            reset_link: resetUrl,
-            // Existing password_reset templates may use the legacy invite
-            // variable shared with onboarding emails.
-            invite_link: resetUrl,
-            organization_name: org?.name || 'LeagueVault',
+        await withAccountActionDeliveryLock(user.id, "password_reset", async () => {
+          const expiry = new Date(Date.now() + 60 * 60 * 1000);
+          const issued = await storage.issueAccountAction({
+            userId: user.id,
+            action: "password_reset",
+            expiresAt: expiry,
+            organizationId: user.organizationId,
           });
-        } catch (deliveryError) {
-          log.error('Password reset templated delivery failed:', deliveryError);
-        }
+          const token = issued.token;
 
-        if (!sent) {
-          const { sendPasswordResetFallbackEmail } = await import('../services/email.js');
+          const org = user.organizationId ? await storage.getOrganization(user.organizationId) : null;
+          const baseUrl = getBaseUrl(org);
+          const resetUrl = `${baseUrl}/set-password?token=${token}`;
+          const firstName = user.name?.split(' ')[0] || user.email;
+
+          let sent = false;
           try {
-            sent = await sendPasswordResetFallbackEmail(user.email, firstName || 'there', token, org?.subdomain || org?.slug);
+            sent = await sendTemplatedEmail('password_reset', user.email, {
+              bowler_name: firstName,
+              reset_link: resetUrl,
+              // Existing password_reset templates may use the legacy invite
+              // variable shared with onboarding emails.
+              invite_link: resetUrl,
+              organization_name: org?.name || 'LeagueVault',
+            });
           } catch (deliveryError) {
-            log.error('Password reset fallback delivery failed:', deliveryError);
+            log.error('Password reset templated delivery failed:', deliveryError);
           }
-        }
 
-        await storage.updateAccountActionDeliveryStatus(
-          issued.request.id,
-          sent ? "sent" : "failed",
-        );
+          if (!sent) {
+            const { sendPasswordResetFallbackEmail } = await import('../services/email.js');
+            try {
+              sent = await sendPasswordResetFallbackEmail(user.email, firstName || 'there', token, org?.subdomain || org?.slug);
+            } catch (deliveryError) {
+              log.error('Password reset fallback delivery failed:', deliveryError);
+            }
+          }
 
-        log.info('Password reset delivery attempted', { userId: user.id, sent });
+          await storage.updateAccountActionDeliveryStatus(
+            issued.request.id,
+            sent ? "sent" : "failed",
+          );
+          log.info('Password reset delivery attempted', { userId: user.id, sent });
+        });
       } catch (bgError) {
         log.error('Failed to process forgot-password request:', bgError);
       }
@@ -722,13 +729,14 @@ export function registerAuthRoutes(app: Express): void {
           source: "auth.claim-bowler",
           reason: "email_ownership_claim",
           eventType: "link",
+          requireEmailMatch: true,
         });
       } catch (linkError) {
         if (isIdentityLinkError(linkError)) {
           if (linkError.code === "BOWLER_TAKEN" || linkError.code === "ALREADY_LINKED") {
             return sendError(res, "This bowler is already linked to another account", 400, "ALREADY_LINKED");
           }
-          if (linkError.code === "CROSS_ORG_DENIED" || linkError.code === "ORG_REQUIRED" || linkError.code === "ELEVATED_ROLE_DENIED") {
+          if (linkError.code === "CROSS_ORG_DENIED" || linkError.code === "ORG_REQUIRED" || linkError.code === "ELEVATED_ROLE_DENIED" || linkError.code === "EMAIL_MISMATCH") {
             return sendError(res, "You don't have access to this bowler", 403, "FORBIDDEN");
           }
           if (linkError.code === "BOWLER_NOT_FOUND") {

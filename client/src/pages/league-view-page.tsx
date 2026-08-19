@@ -33,6 +33,7 @@ import {
   type AnyLeagueSetupIntegrationResult,
 } from "@shared/league-setup-integration";
 import { createSetupIdempotencyKeyRetainer } from "./league-view-page/fall-draft-secure-id";
+import { F3PolicyReview } from "@/components/f3-policy-review";
 
 export default function LeagueViewPage() {
   const params = useParams();
@@ -216,7 +217,8 @@ export default function LeagueViewPage() {
         {inviteResult && <InviteResultCard inviteResult={inviteResult} />}
 
         <ErrorBoundary level="section">
-          <LeagueActionCards leagueId={leagueId} />
+          <LeagueActionCards leagueId={leagueId} canManageRoster={canManageLeague} />
+          {(currentUser?.role === "org_admin" || currentUser?.role === "system_admin") && league?.organizationId && <F3PolicyReview leagueId={leagueId} organizationId={league.organizationId} />}
         </ErrorBoundary>
 
         {league.organizationId && (

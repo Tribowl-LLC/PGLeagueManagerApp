@@ -2,7 +2,7 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/com
 import { Users, CircleDollarSign } from "lucide-react";
 import { Link } from "wouter";
 
-export function LeagueActionCards({ leagueId }: { leagueId: number }) {
+export function LeagueActionCards({ leagueId, canManageRoster }: { leagueId: number; canManageRoster: boolean }) {
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
       <Link href={`/leagues/${leagueId}/teams`} className="block">
@@ -11,9 +11,9 @@ export function LeagueActionCards({ leagueId }: { leagueId: number }) {
             <div className="flex justify-center mb-2">
               <Users className="size-6" />
             </div>
-            <CardTitle>Roster Management</CardTitle>
+            <CardTitle>{canManageRoster ? "Roster Management" : "Team Rosters"}</CardTitle>
             <CardDescription>
-              Manage bowlers and teams in your league
+              {canManageRoster ? "Manage bowlers and teams in your league" : "View bowlers and teams in your league"}
             </CardDescription>
           </CardHeader>
           <CardContent>

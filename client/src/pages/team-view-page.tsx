@@ -38,7 +38,8 @@ export default function TeamViewPage() {
     queryKey: ["/api/user"],
     staleTime: 5 * 60 * 1000,
   });
-  const isPaymentManager = String(currentUserResponse?.data?.role) === "payment_manager";
+  const canManageRoster = currentUserResponse?.data?.role === "org_admin"
+    || currentUserResponse?.data?.role === "system_admin";
 
   // Form for editing team name
   const editForm = useForm({
@@ -181,9 +182,9 @@ export default function TeamViewPage() {
       <TeamViewHeader
         teamName={team.name}
         leagueId={team.leagueId}
-        onEditClick={handleEditClick}
-        onCreateBowler={() => setShowForm(true)}
-        onAddExistingBowler={() => setShowAssignForm(true)}
+        onEditClick={canManageRoster ? handleEditClick : undefined}
+        onCreateBowler={canManageRoster ? () => setShowForm(true) : undefined}
+        onAddExistingBowler={canManageRoster ? () => setShowAssignForm(true) : undefined}
       />
 
 
@@ -191,14 +192,14 @@ export default function TeamViewPage() {
         teamBowlers={teamBowlers}
         league={league}
         teamId={teamId}
-        onEditBowler={!isPaymentManager ? (bowler) => {
+        onEditBowler={canManageRoster ? (bowler) => {
           setSelectedBowler(bowler);
           setShowForm(true);
         } : undefined}
-        onRemoveBowler={(target) => setShowRemoveDialog(target)}
+        onRemoveBowler={canManageRoster ? (target) => setShowRemoveDialog(target) : undefined}
       />
 
-      {teamBowlers.length > 1 && (
+      {canManageRoster && teamBowlers.length > 1 && (
         <div className="mt-4">
           <Button variant="outline" onClick={() => setShowReorderDialog(true)}>
             Reorder Bowlers
@@ -207,16 +208,16 @@ export default function TeamViewPage() {
       )}
 
       {/* Edit Team Dialog */}
-      <TeamViewEditDialog
+      {canManageRoster && <TeamViewEditDialog
         open={showEditDialog}
         onOpenChange={setShowEditDialog}
         form={editForm}
         onSubmit={onEditTeam}
         isPending={updateTeamMutation.isPending}
-      />
+      />}
 
       {/* Bowler Forms */}
-      <BowlerForm
+      {canManageRoster && <BowlerForm
           open={showForm}
           onClose={() => {
             setShowForm(false);
@@ -224,32 +225,32 @@ export default function TeamViewPage() {
           }}
           defaultTeamId={teamId}
           bowler={selectedBowler}
-        />
+        />}
 
-      <AssignBowlerForm
+      {canManageRoster && <AssignBowlerForm
         open={showAssignForm}
         onClose={() => setShowAssignForm(false)}
         teamId={teamId}
         leagueId={team?.leagueId}
-      />
+      />}
 
-      <ReorderBowlersDialog
+      {canManageRoster && <ReorderBowlersDialog
         open={showReorderDialog}
         onClose={() => setShowReorderDialog(false)}
         bowlers={bowlers}
         bowlerLeagues={bowlerLeagues}
         teamId={teamId}
         leagueId={team?.leagueId}
-      />
+      />}
 
       {/* Remove Bowler Confirmation Dialog */}
-      <TeamViewRemoveBowlerDialog
+      {canManageRoster && <TeamViewRemoveBowlerDialog
         target={showRemoveDialog}
         onOpenChange={(open) => !open && setShowRemoveDialog(null)}
         onCancel={() => setShowRemoveDialog(null)}
         onConfirm={handleRemoveBowler}
         isPending={removeBowlerMutation.isPending}
-      />
+      />}
       </ErrorBoundary>
     </Layout>
   );

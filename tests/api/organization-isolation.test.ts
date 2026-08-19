@@ -55,11 +55,15 @@ function collectIds(data: unknown): number[] {
 describe('Organization Isolation', () => {
   let sessionA: AuthSession;
   let sessionB: AuthSession;
+  let orgALeagueId: number | null = null;
   let orgBLeagueId: number | null = null;
 
   beforeAll(async () => {
     sessionA = await login(TEST_ORG_A_EMAIL, TEST_ORG_PASSWORD);
     sessionB = await login(TEST_ORG_B_EMAIL, TEST_ORG_PASSWORD);
+
+    const orgALeagues = await apiGet<League[]>('/api/leagues', sessionA);
+    orgALeagueId = orgALeagues.data.data?.[0]?.id ?? null;
 
     // Make sure org B owns at least one league so we can test cross-org
     // fetch-by-id as org A. Reuse the first existing league when present.
@@ -378,6 +382,24 @@ describe('Organization Isolation', () => {
       }
     });
 
+    it('cannot move an owned team into a league outside the administrator scope', async () => {
+      expect(orgBTeamId).not.toBeNull();
+      expect(orgALeagueId).not.toBeNull();
+      if (orgBTeamId === null || orgALeagueId === null) {
+        throw new Error('cross-organization team and league fixtures are required');
+      }
+      const response = await apiPatch(
+        `/api/teams/${orgBTeamId}`,
+        { leagueId: orgALeagueId },
+        sessionB,
+      );
+      expect(response.status).toBe(403);
+      const [unchanged] = await db.select({ leagueId: teamsTable.leagueId })
+        .from(teamsTable)
+        .where(eq(teamsTable.id, orgBTeamId));
+      expect(unchanged?.leagueId).toBe(orgBLeagueId);
+    });
+
     afterAll(async () => {
       // Cleanup contract (#615): every row inserted in `beforeAll`
       // above MUST be deleted here, with per-call-site labels and a
@@ -462,6 +484,41 @@ describe('Organization Isolation', () => {
       expect([403, 404]).toContain(rosterGuard.status);
       const reportGuard = await apiGet(`/api/financials/leagues/${orgBLeagueId}/due-past-due?organizationId=${sessionB.user.organizationId}`, sessionA);
       expect([403, 404]).toContain(reportGuard.status);
+    });
+
+    it('org A GET /api/financials/f3/leagues/:leagueId/policy/candidates?organizationId=<orgB> must fail closed', async () => {
+      expect(orgBLeagueId).not.toBeNull();
+      const response = await apiGet(
+        `/api/financials/f3/leagues/${orgBLeagueId}/policy/candidates?organizationId=${sessionB.user.organizationId}`,
+        sessionA,
+      );
+      expect([403, 404]).toContain(response.status);
+      expect(JSON.stringify(response.data)).not.toContain(String(orgBLeagueId));
+      expect(JSON.stringify(response.data)).not.toContain(`"organizationId":${sessionB.user.organizationId}`);
+    });
+
+    it('org A GET /api/financials/f3/leagues/:leagueId/prequote?organizationId=<orgB>&bowlerId=<orgB> must fail closed', async () => {
+      expect(orgBLeagueId).not.toBeNull();
+      expect(orgBBowlerId).not.toBeNull();
+      const response = await apiGet(
+        `/api/financials/f3/leagues/${orgBLeagueId}/prequote?organizationId=${sessionB.user.organizationId}&bowlerId=${orgBBowlerId}`,
+        sessionA,
+      );
+      expect([403, 404]).toContain(response.status);
+      expect(JSON.stringify(response.data)).not.toContain(String(orgBLeagueId));
+      expect(JSON.stringify(response.data)).not.toContain(`"organizationId":${sessionB.user.organizationId}`);
+    });
+
+    it('org A GET /api/financials/f3/leagues/:leagueId/quote?organizationId=<orgB>&bowlerId=<orgB> must fail closed', async () => {
+      expect(orgBLeagueId).not.toBeNull();
+      expect(orgBBowlerId).not.toBeNull();
+      const response = await apiGet(
+        `/api/financials/f3/leagues/${orgBLeagueId}/quote?organizationId=${sessionB.user.organizationId}&bowlerId=${orgBBowlerId}`,
+        sessionA,
+      );
+      expect([403, 404]).toContain(response.status);
+      expect(JSON.stringify(response.data)).not.toContain(String(orgBLeagueId));
+      expect(JSON.stringify(response.data)).not.toContain(`"organizationId":${sessionB.user.organizationId}`);
     });
 
     it('org A GET /api/teams listing must not include the org B team id', async () => {

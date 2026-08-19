@@ -45,10 +45,20 @@ async function getCandidates(): Promise<LegacyAccountActionCandidate[]> {
   }));
 }
 
-function isActiveLegacyAction(candidate: LegacyAccountActionCandidate, now: number): boolean {
+export function isActiveLegacyAction(candidate: LegacyAccountActionCandidate, now: number): boolean {
   if (!candidate.hasInviteToken || candidate.inviteTokenExpiry === null) return false;
   const expiry = Date.parse(candidate.inviteTokenExpiry);
   return Number.isFinite(expiry) && expiry > now;
+}
+
+export function getActiveLegacyExpiry(
+  candidate: LegacyAccountActionCandidate,
+  now: number,
+): Date | null {
+  const expiryText = candidate.inviteTokenExpiry;
+  if (!candidate.hasInviteToken || expiryText === null) return null;
+  const expiry = new Date(expiryText);
+  return Number.isFinite(expiry.getTime()) && expiry.getTime() > now ? expiry : null;
 }
 
 /**
@@ -79,13 +89,18 @@ export async function migrateLegacyAccountActions(execute: boolean): Promise<{
   }
 
   let deliveryFailures = 0;
+  let activeReissued = 0;
+  let staleCleared = 0;
   for (const candidate of candidates) {
-    if (isActiveLegacyAction(candidate, now)) {
+    // Recheck against the current clock: a token can expire while an earlier
+    // candidate is being delivered. Never extend the legacy lifetime.
+    const expiresAt = getActiveLegacyExpiry(candidate, Date.now());
+    if (expiresAt) {
       const invitation = await storage.issueAccountAction({
         userId: candidate.userId,
         organizationId: candidate.organizationId,
         action: 'account_invite',
-        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        expiresAt,
       });
       let sent = false;
       try {
@@ -108,6 +123,9 @@ export async function migrateLegacyAccountActions(execute: boolean): Promise<{
         sent ? 'sent' : 'failed',
       );
       if (!sent) deliveryFailures += 1;
+      activeReissued += 1;
+    } else {
+      staleCleared += 1;
     }
 
     // Clear only after a replacement action has been committed (when active).
@@ -121,8 +139,8 @@ export async function migrateLegacyAccountActions(execute: boolean): Promise<{
 
   return {
     candidates: candidates.length,
-    activeReissued: active.length,
-    staleCleared: stale.length,
+    activeReissued,
+    staleCleared,
     deliveryFailures,
   };
 }

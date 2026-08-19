@@ -481,12 +481,12 @@ router.get("/:id", async (req, res) => {
 
 router.post("/", async (req, res) => {
   try {
+    if (isPaymentManager(req.user)) {
+      return sendError(res, "Payment managers cannot create bowler records", 403, 'FORBIDDEN');
+    }
     const requestedTeamId = req.body.teamId === undefined
       ? null
       : Number(req.body.teamId);
-    if (isPaymentManager(req.user) && (!Number.isSafeInteger(requestedTeamId) || (requestedTeamId ?? 0) <= 0)) {
-      return sendError(res, "A team is required to add a bowler", 403, 'FORBIDDEN');
-    }
     const bowler = insertBowlerSchema.parse(req.body);
     
     // If teamId is provided in the request, verify organization access

@@ -26,6 +26,8 @@ export interface IdentityLinkInput {
   actorUserId?: number | null;
   source?: IdentityLinkSource | null;
   reason?: string | null;
+  /** Require the locked user and bowler rows to prove the same email. */
+  requireEmailMatch?: boolean;
   /** `link` is the ordinary self-service event. */
   eventType?: "link" | "admin_assignment";
 }
@@ -58,7 +60,7 @@ export interface IdentityLinkMutation {
 export interface IdentityLinkEventInput {
   organizationId: number;
   actorUserId?: number | null;
-  userId?: number | null;
+  userId: number;
   bowlerId?: number | null;
   oldBowlerId?: number | null;
   newBowlerId?: number | null;
@@ -79,6 +81,7 @@ export class IdentityLinkError extends Error {
       | "CROSS_ORG_DENIED"
       | "ALREADY_LINKED"
       | "BOWLER_TAKEN"
+      | "EMAIL_MISMATCH"
       | "ORG_REQUIRED"
       | "INVALID_INPUT",
     public readonly status: 400 | 403 | 404 | 409,
@@ -221,7 +224,8 @@ export async function recordIdentityLinkEvent(
     .values({
       organizationId: input.organizationId,
       actorUserId: input.actorUserId ?? null,
-      userId: input.userId ?? null,
+      subjectUserId: input.userId,
+      userId: input.userId,
       bowlerId: input.bowlerId ?? null,
       oldBowlerId: input.oldBowlerId ?? null,
       newBowlerId: input.newBowlerId ?? null,
@@ -260,6 +264,17 @@ async function linkInTransaction(
 
   const bowler = await lockBowler(executor, input.bowlerId);
   assertBowlerOrganization(bowler, input.organizationId);
+  if (input.requireEmailMatch) {
+    const userEmail = user.email.trim().toLowerCase();
+    const bowlerEmail = bowler.email?.trim().toLowerCase() ?? "";
+    if (bowlerEmail.length === 0 || bowlerEmail !== userEmail) {
+      throw new IdentityLinkError(
+        "Bowler email does not match the user account",
+        "EMAIL_MISMATCH",
+        403,
+      );
+    }
+  }
   await assertBowlerUnclaimed(executor, bowler.id);
 
   const [updatedUser] = await executor

@@ -159,9 +159,15 @@
     },
     {
       "idx": 26,
-      "tag": "0026_identity_integrity_hardening",
-      "createdAt": 1787101376855,
-      "hash": "5bcf6677e9a793822bb54259854fa9bf313633124439cef5f7604676ce873f11"
+      "tag": "0026_f3_canonical_autopay_plans",
+      "createdAt": 1787092953649,
+      "hash": "41f4fd8fd191aa5a48cc699abd0b146684ee64729a46762b5aebdc79d7649b37"
+    },
+    {
+      "idx": 27,
+      "tag": "0027_identity_integrity_hardening",
+      "createdAt": 1787174183637,
+      "hash": "60ed7e6bbae6c7b498d8cc8563aa4724e555fc99986150b24f45750f2e31bd9f"
     }
   ]
 }

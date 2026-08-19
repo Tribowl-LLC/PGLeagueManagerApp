@@ -115,6 +115,7 @@ vi.mock('../../server/services/league-setup-integration.js', () => ({
 // ---------------------------------------------------------------------------
 vi.mock('../../server/utils/access-control', () => ({
   requireOrganizationAccess: () => true,
+  hasAdminAccessToLeague: () => Promise.resolve(true),
   hasAccessToLeague: () => Promise.resolve(true),
   hasAccessToTeam: () => Promise.resolve(true),
   hasAccessToBowler: () => Promise.resolve(true),

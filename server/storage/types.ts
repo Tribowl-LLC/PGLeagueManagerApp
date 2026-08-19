@@ -289,7 +289,7 @@ export interface IUserStorage {
   createUser(user: InsertUser, executor?: import('./users').UserDbExecutor): Promise<User>;
   updateUser(id: number, userData: UpdateUser, executor?: import('./users').UserDbExecutor): Promise<User>;
   updateUserRole(userId: number, role: UserRole, executor?: import('./users').UserDbExecutor): Promise<User>;
-  deleteUser(userId: number, executor?: import('./users').UserDbExecutor): Promise<User>;
+  deleteUser(userId: number, executor?: import('./users').UserDbExecutor, actorUserId?: number | null): Promise<User>;
   getLinkedBowlerIds(): Promise<number[]>;
   isBowlerLinked(bowlerId: number): Promise<boolean>;
   getUserByBowlerId(bowlerId: number): Promise<User | undefined>;

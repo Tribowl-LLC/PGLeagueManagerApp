@@ -130,7 +130,7 @@ export function AddUserDialog({ open, onClose, orgLocations }: Props) {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="payment_manager">Payment Manager: run assigned-location leagues</SelectItem>
+                <SelectItem value="payment_manager">Payment Manager: record assigned-location payments</SelectItem>
                 <SelectItem value="admin">Organization Admin: can access all locations</SelectItem>
               </SelectContent>
             </Select>

@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { and, desc, eq, gt, inArray, isNull, lte, ne, sql } from "drizzle-orm";
-import { db } from "../db.js";
+import { db, pool } from "../db.js";
 import {
   accountActionRequests,
   emailChangeRequests,
@@ -34,6 +34,37 @@ export interface AccountActionWithUser {
 }
 
 export interface CompletedPasswordAction extends AccountActionWithUser {}
+
+/**
+ * Serialize issuance and delivery for a user's action type. The transaction
+ * lock in `issueAccountAction` protects database state; this session lock is
+ * deliberately held until delivery status is recorded so an older email can
+ * never be sent after a newer resend.
+ */
+export async function withAccountActionDeliveryLock<T>(
+  userId: number,
+  action: AccountActionType,
+  operation: () => Promise<T>,
+): Promise<T> {
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
+    throw new Error("A positive user ID is required for account-action delivery");
+  }
+  const client = await pool.connect();
+  const lockKey = `account-action-delivery:${userId}:${action}`;
+  let destroyClient = false;
+  try {
+    await client.query("SELECT pg_advisory_lock(hashtext($1))", [lockKey]);
+    return await operation();
+  } finally {
+    try {
+      await client.query("SELECT pg_advisory_unlock(hashtext($1))", [lockKey]);
+    } catch {
+      // A session-level lock must never return to the pool if unlock fails.
+      destroyClient = true;
+    }
+    client.release(destroyClient);
+  }
+}
 
 /**
  * Issue a one-time action and supersede the user's prior pending action of
@@ -214,10 +245,7 @@ export async function updateAccountActionDeliveryStatus(
       deliveryAttemptedAt: sql`now()`,
       deliveredAt: deliveryStatus === "sent" ? sql`now()` : null,
       })
-    .where(and(
-      eq(accountActionRequests.id, requestId),
-      eq(accountActionRequests.status, "pending"),
-    ))
+    .where(eq(accountActionRequests.id, requestId))
     .returning();
   return updated;
 }
@@ -228,15 +256,26 @@ export async function getLatestAccountInvitationsForUsers(
   organizationId: number,
 ): Promise<Map<number, AccountActionRequest>> {
   if (userIds.length === 0) return new Map();
-  const rows = await db
-    .select()
-    .from(accountActionRequests)
-    .where(and(
+  const rows = await db.transaction(async (tx) => {
+    const scope = and(
       inArray(accountActionRequests.userId, userIds),
       eq(accountActionRequests.action, "account_invite"),
       eq(accountActionRequests.organizationId, organizationId),
-    ))
-    .orderBy(desc(accountActionRequests.createdAt), desc(accountActionRequests.id));
+    );
+    await tx
+      .update(accountActionRequests)
+      .set({ status: "expired", expiredAt: sql`now()` })
+      .where(and(
+        scope,
+        eq(accountActionRequests.status, "pending"),
+        lte(accountActionRequests.expiresAt, sql`now()`),
+      ));
+    return tx
+      .select()
+      .from(accountActionRequests)
+      .where(scope)
+      .orderBy(desc(accountActionRequests.createdAt), desc(accountActionRequests.id));
+  });
   const latest = new Map<number, AccountActionRequest>();
   for (const row of rows) {
     if (!latest.has(row.userId)) latest.set(row.userId, row);

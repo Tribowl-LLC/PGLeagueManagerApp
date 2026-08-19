@@ -35,6 +35,9 @@ export const identityLinkEvents = pgTable("identity_link_events", {
     .references(() => organizations.id, { onDelete: "restrict" }),
   actorUserId: integer("actor_user_id")
     .references(() => users.id, { onDelete: "set null" }),
+  // Immutable subject identifier retained even after the live user row is
+  // deleted. `userId` remains a nullable FK for convenient joins.
+  subjectUserId: integer("subject_user_id").notNull(),
   userId: integer("user_id")
     .references(() => users.id, { onDelete: "set null" }),
   // `bowlerId` is the primary/current bowler involved in the event. The
@@ -56,6 +59,7 @@ export const identityLinkEvents = pgTable("identity_link_events", {
   organizationCreatedAtIdx: index("identity_link_events_org_created_at_idx")
     .on(table.organizationId, table.createdAt),
   userIdx: index("identity_link_events_user_idx").on(table.userId),
+  subjectUserIdx: index("identity_link_events_subject_user_idx").on(table.subjectUserId),
   bowlerIdx: index("identity_link_events_bowler_idx").on(table.bowlerId),
   eventTypeCheck: check(
     "identity_link_events_event_type_check",
@@ -67,6 +71,7 @@ export const insertIdentityLinkEventSchema = createInsertSchema(identityLinkEven
   .extend({
     organizationId: z.number().int().positive(),
     actorUserId: z.number().int().positive().nullable().optional(),
+    subjectUserId: z.number().int().positive(),
     userId: z.number().int().positive().nullable().optional(),
     bowlerId: z.number().int().positive().nullable().optional(),
     oldBowlerId: z.number().int().positive().nullable().optional(),
