@@ -608,7 +608,10 @@ describe("F4 canonical autopay PostgreSQL/provider integration", () => {
     expect(Number(canonicalWake?.organization_id)).toBe(second.fixture.organizationId);
     expect(canonicalWake?.work_id).toBe(second.planId);
     expect(new Date(String(canonicalWake?.due_at)).getTime()).toBeGreaterThan(Date.now());
-    const explain = await db.execute(sql`EXPLAIN (COSTS OFF) ${buildNextPaymentOperationWakeQuery()}`);
+    const explain = await db.transaction(async (tx) => {
+      await tx.execute(sql`SET LOCAL enable_seqscan = off`);
+      return tx.execute(sql`EXPLAIN (COSTS OFF) ${buildNextPaymentOperationWakeQuery()}`);
+    });
     expect(explain.rows.length).toBeGreaterThan(0);
     const explainText = explain.rows.map((row) => Object.values(row).join(" ")).join("\n");
     expect(explainText).toContain("collection_plans_canonical_wake_idx");
