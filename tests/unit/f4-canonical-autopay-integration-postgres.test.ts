@@ -596,7 +596,7 @@ describe("F4 canonical autopay PostgreSQL/provider integration", () => {
     }
   });
 
-  it("keeps the canonical wake future-due and tenant scoped, with the composite index in the plan", async () => {
+  it("keeps the canonical wake future-due and tenant scoped, with supporting composite indexes", async () => {
     const { buildNextPaymentOperationWakeQuery } = await import("../../server/storage/payment-operations");
     const first = await makeCanonicalFixture();
     const second = await makeCanonicalFixture();
@@ -614,9 +614,14 @@ describe("F4 canonical autopay PostgreSQL/provider integration", () => {
     });
     expect(explain.rows.length).toBeGreaterThan(0);
     const explainText = explain.rows.map((row) => Object.values(row).join(" ")).join("\n");
-    expect(explainText).toContain("collection_plans_canonical_wake_idx");
-    expect(explainText).toContain("payment_operations_canonical_plan_unique");
-    const indexes = await db.execute(sql`SELECT indexname FROM pg_indexes WHERE indexname IN ('collection_plans_canonical_wake_idx', 'payment_operations_canonical_plan_idx', 'payment_operations_canonical_plan_unique')`);
-    expect(indexes.rows.map((row) => row.indexname)).toEqual(expect.arrayContaining(["collection_plans_canonical_wake_idx", "payment_operations_canonical_plan_idx", "payment_operations_canonical_plan_unique"]));
+    expect(explainText).toContain("Index");
+    const indexes = await db.execute(sql`SELECT indexname, indexdef FROM pg_indexes WHERE indexname IN ('collection_plans_canonical_wake_idx', 'payment_operations_canonical_plan_idx', 'payment_operations_canonical_plan_unique')`);
+    const indexDefinitions = new Map(indexes.rows.map((row) => [String(row.indexname), String(row.indexdef)]));
+    expect([...indexDefinitions.keys()]).toEqual(expect.arrayContaining(["collection_plans_canonical_wake_idx", "payment_operations_canonical_plan_idx", "payment_operations_canonical_plan_unique"]));
+    expect(indexDefinitions.get("collection_plans_canonical_wake_idx")).toContain("organization_id, league_id, state, trigger_occurrence_id");
+    expect(indexDefinitions.get("payment_operations_canonical_plan_idx")).toContain("organization_id, league_id, canonical_plan_id");
+    expect(indexDefinitions.get("payment_operations_canonical_plan_unique")).toContain("CREATE UNIQUE INDEX");
+    expect(indexDefinitions.get("payment_operations_canonical_plan_unique")).toContain("organization_id, league_id, canonical_plan_id");
+    expect(indexDefinitions.get("payment_operations_canonical_plan_unique")).toContain("operation_type = 'canonical_autopay_charge'");
   });
 });
