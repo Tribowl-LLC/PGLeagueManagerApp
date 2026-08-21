@@ -189,8 +189,8 @@ export default function PaymentsPage() {
   const paymentBusinessDates = (() => {
     const map = new Map<number, string>();
     for (const report of financialReportData) {
-      for (const row of report?.rows ?? []) if (row.paymentId !== null) map.set(row.paymentId, row.businessDate);
-      for (const row of report?.unlinkedHistory ?? []) if (row.paymentId !== null) map.set(row.paymentId, row.businessDate);
+      for (const row of report?.rows ?? []) if (row.paymentId !== null) map.set(row.paymentId, row.authoritativeLocalDate);
+      for (const row of report?.unlinkedHistory ?? []) if (row.paymentId !== null) map.set(row.paymentId, row.authoritativeLocalDate);
     }
     return map;
   })();
@@ -199,6 +199,15 @@ export default function PaymentsPage() {
     for (const report of financialReportData) {
       for (const row of report?.rows ?? []) if (row.paymentId !== null) map.set(row.paymentId, row.status);
       for (const row of report?.unlinkedHistory ?? []) if (row.paymentId !== null) map.set(row.paymentId, row.status);
+    }
+    return map;
+  })();
+  const paymentCanonicalRows = (() => {
+    const map = new Map<number, CanonicalPaymentReport["rows"][number]>();
+    for (const report of financialReportData) {
+      for (const row of [...(report?.rows ?? []), ...(report?.unlinkedHistory ?? [])]) {
+        if (row.paymentId !== null) map.set(row.paymentId, row);
+      }
     }
     return map;
   })();
@@ -280,6 +289,7 @@ export default function PaymentsPage() {
             leagues={leagues}
             paymentBusinessDates={paymentBusinessDates}
             paymentEvidenceStatuses={paymentEvidenceStatuses}
+            paymentCanonicalRows={paymentCanonicalRows}
           />
 
           {pagination && (

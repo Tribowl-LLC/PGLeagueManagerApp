@@ -10,6 +10,7 @@ import {
   CanonicalPaymentReportIncompatibilityError,
   readCanonicalPaymentReport,
 } from "../services/canonical-payment-report.js";
+import { canonicalPaymentReportFingerprint } from "@shared/canonical-payment-report";
 
 const router = Router();
 
@@ -73,20 +74,37 @@ router.get("/payments", async (req, res) => {
     // Ordinary users receive their authorized financial rows and safe status
     // labels only. Provider IDs, operation IDs, and immutable execution
     // internals stay within admin/reconciliation scopes.
-    const redact = (row: typeof report.rows[number]) => ({
+    const redact = (row: typeof report.rows[number]) => {
+      const ownAllocations = row.allocations.filter((allocation) => allocation.bowlerId === req.user?.bowlerId);
+      const authorizedAmount = ownAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0);
+      const hasCanonicalOwnership = ownAllocations.length > 0;
+      const safeAmount = hasCanonicalOwnership ? authorizedAmount : row.amountMinor;
+      return {
       ...row,
+      bowlerId: req.user?.bowlerId ?? row.bowlerId,
+      amountMinor: safeAmount,
+      allocatedMinor: hasCanonicalOwnership ? authorizedAmount : Math.min(row.allocatedMinor, safeAmount),
+      unallocatedMinor: hasCanonicalOwnership ? 0 : row.unallocatedMinor,
       providerPaymentId: null,
       paymentOperationId: null,
       operationType: null,
       operationStatus: null,
-      receipt: { ...row.receipt, paymentOperationId: null, operationStatus: null, sharedTransaction: null, canResend: false },
-    });
-    return sendSuccess(res, {
+      allocations: ownAllocations,
+      refund: { ...row.refund, providerRefundId: null },
+      dispute: { ...row.dispute, disputeId: null },
+      receipt: { ...row.receipt, paymentId: null, paymentOperationId: null, operationStatus: null, amountMinor: safeAmount, allocations: ownAllocations, sharedTransaction: null, canResend: false, receiptUrl: null, receiptNumber: null },
+    }; };
+    const redactedReport = {
       ...report,
       rows: report.rows.map(redact),
       unlinkedHistory: report.unlinkedHistory.map(redact),
-      transactions: report.transactions.map((transaction) => ({ ...transaction, paymentOperationId: null, rows: transaction.rows.map(redact) })),
-    });
+      transactions: report.transactions.map((transaction, index) => {
+        const rows = transaction.rows.map(redact);
+        const amountMinor = rows.reduce((sum, row) => sum + row.amountMinor, 0);
+        return { ...transaction, groupKey: `transaction:${report.page}:${index + 1}`, paymentOperationId: null, combinedChargeGroupId: null, paymentIds: [], amountMinor, rows };
+      }),
+    };
+    return sendSuccess(res, { ...redactedReport, fingerprint: canonicalPaymentReportFingerprint(redactedReport) });
   } catch (error) {
     if (error instanceof CanonicalPaymentReportIncompatibilityError) {
       return sendError(res, "Financial evidence requires review", 409, "FINANCIAL_EVIDENCE_INCOMPATIBLE");

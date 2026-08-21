@@ -9,6 +9,7 @@ import { storage } from '../../storage';
 import { sendError, sendSuccess } from '../../utils/api.js';
 import { singleRouteParam } from '../../utils/route-params';
 import { hasAccessToPayment } from '../../utils/access-control.js';
+import * as accessControl from '../../utils/access-control.js';
 import { paymentWriteLimiter } from '../../middleware/rate-limit.js';
 import { createLogger } from '../../logger';
 import { getPaymentProvider, ProviderNotConfiguredError } from '../../services/payment-provider-factory';
@@ -130,18 +131,20 @@ async function buildReceiptEvidence(paymentId: number, organizationId: number, v
   )).limit(1) : [];
   const privileged = viewer.role === 'system_admin' || viewer.role === 'org_admin' || viewer.role === 'payment_manager' || payment.paidByUserId === viewer.id;
   const ownAllocation = viewer.bowlerId ? allocations.filter((allocation) => allocation.bowlerId === viewer.bowlerId) : [];
-  const visibleAllocations = privileged || viewer.bowlerId === payment.bowlerId ? allocations : ownAllocation;
+  const initiatingPayer = payment.paidByUserId === viewer.id;
+  const sharedAllowed = privileged || initiatingPayer || (!operation && viewer.bowlerId === payment.bowlerId);
+  const visibleAllocations = sharedAllowed ? allocations : ownAllocation;
   const shared = operation ? { groupKey: `operation:${operation.id}`, childCount: (await storage.getPaymentsByPaymentOperationId(organizationId, operation.id)).length } : null;
   const unresolved = !!operation && ['pending', 'leased', 'provider_unknown', 'retry_scheduled', 'action_required', 'reconciliation_required'].includes(operation.status);
   return paymentReceiptContract({
-    receiptUrl: privileged || viewer.bowlerId === payment.bowlerId ? payment.receiptUrl : null,
-    receiptNumber: privileged || viewer.bowlerId === payment.bowlerId ? payment.receiptNumber : null,
+    receiptUrl: sharedAllowed ? payment.receiptUrl : null,
+    receiptNumber: sharedAllowed ? payment.receiptNumber : null,
     organizationId,
     leagueId: payment.leagueId,
     paymentId: payment.id,
     paymentOperationId: privileged ? payment.paymentOperationId : null,
     operationStatus: privileged ? operation?.status ?? null : null,
-    amountMinor: privileged || viewer.bowlerId === payment.bowlerId ? payment.amount : visibleAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0),
+    amountMinor: sharedAllowed ? payment.amount : visibleAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0),
     currency: 'USD',
     evidenceStatus: unresolved ? 'unresolved' : payment.status === 'paid' ? 'confirmed_paid' : payment.status === 'refunded' ? 'refunded' : payment.status === 'disputed' ? 'disputed' : 'review_required',
     source: allocations.length > 0 ? 'canonical_allocation' : 'unlinked_legacy',
@@ -149,7 +152,7 @@ async function buildReceiptEvidence(paymentId: number, organizationId: number, v
     refund: { present: payment.status === 'refunded' || payment.squareRefundId !== null, amountMinor: payment.status === 'refunded' ? payment.amount : 0, providerRefundId: payment.squareRefundId },
     dispute: { present: payment.status === 'disputed' || !!payment.disputeId, amountMinor: payment.status === 'disputed' ? payment.amount : 0, disputeId: payment.disputeId },
     unresolved,
-    sharedTransaction: privileged || viewer.bowlerId === payment.bowlerId ? shared : null,
+    sharedTransaction: sharedAllowed ? shared : null,
     canResend: privileged && Boolean(payment.receiptUrl),
   });
 }
@@ -167,37 +170,43 @@ router.get('/payments/:id/receipt', async (req, res) => {
       return sendError(res, 'Invalid payment ID', 400, 'INVALID_ID');
     }
 
-    // Bowlers can fetch their own receipts; admins gated by org via
-    // `hasAccessToPayment`. System admins implicitly pass.
-    let hasAccess = await hasAccessToPayment(req, id);
-    if (!hasAccess && req.user.bowlerId && req.user.organizationId) {
-      const [ownAllocation] = await db.select({ id: paymentOccurrenceAllocations.id })
-        .from(paymentOccurrenceAllocations)
-        .where(and(
-          eq(paymentOccurrenceAllocations.organizationId, req.user.organizationId),
-          eq(paymentOccurrenceAllocations.paymentId, id),
-          eq(paymentOccurrenceAllocations.bowlerId, req.user.bowlerId),
-        )).limit(1);
-      hasAccess = Boolean(ownAllocation);
+    let readAccess: typeof hasAccessToPayment = hasAccessToPayment;
+    try {
+      const candidate = accessControl.hasReceiptReadAccessToPayment;
+      if (typeof candidate === "function") readAccess = candidate;
+    } catch {
+      // Older route test doubles do not expose the read-only helper; the
+      // mutation-safe admin helper remains the fail-closed compatibility path.
     }
-    if (!hasAccess) {
+    if (!(await readAccess(req, id))) {
       return sendError(res, "You don't have access to this payment", 403, 'FORBIDDEN');
     }
 
-    const resolved = await resolveReceiptUrl(id, effectiveOrganizationId ?? undefined);
-    if (!resolved) {
-      return sendError(res, 'No receipt available for this payment', 404, 'RECEIPT_UNAVAILABLE');
-    }
     const organizationId = effectiveOrganizationId;
     const evidence = organizationId && typeof storage.getPaymentByIdForOrganization === "function"
       ? await buildReceiptEvidence(id, organizationId, req.user)
       : null;
+    const sharedReceiptAllowed = req.user.role === 'system_admin'
+      || req.user.role === 'org_admin'
+      || req.user.role === 'payment_manager'
+      || evidence?.sharedTransaction !== null
+      || !evidence;
+    const resolved = sharedReceiptAllowed
+      ? await resolveReceiptUrl(id, effectiveOrganizationId ?? undefined)
+      : null;
+    if (!evidence && !resolved) return sendError(res, 'No receipt available for this payment', 404, 'RECEIPT_UNAVAILABLE');
+    const responseEvidence = evidence
+      ? (resolved && sharedReceiptAllowed
+        ? { ...evidence, availability: resolved.receiptUrl ? 'available' as const : 'unavailable' as const, receiptUrl: resolved.receiptUrl, receiptNumber: resolved.receiptNumber }
+        : evidence)
+      : resolved?.receipt;
+    if (!responseEvidence) return sendError(res, 'No receipt available for this payment', 404, 'RECEIPT_UNAVAILABLE');
     return sendSuccess(res, {
-      ...(evidence ?? resolved.receipt),
+      ...responseEvidence,
       // Preserve the existing flat fields for current clients while the
       // versioned receipt contract is adopted by F5 consumers.
-      receiptUrl: resolved.receiptUrl,
-      receiptNumber: resolved.receiptNumber,
+      receiptUrl: responseEvidence.receiptUrl,
+      receiptNumber: responseEvidence.receiptNumber,
     });
   } catch (error) {
     if (error instanceof ProviderNotConfiguredError) {

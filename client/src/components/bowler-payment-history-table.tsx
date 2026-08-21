@@ -1,4 +1,3 @@
-import { format } from "date-fns";
 import { ExternalLink } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -12,6 +11,11 @@ interface Props {
   locationId?: number | null;
   paymentBusinessDates?: Map<number, string>;
   paymentEvidenceStatuses?: Map<number, CanonicalPaymentRow["status"]>;
+}
+
+function formatAuthoritativeLocalDate(value: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
+  return match ? `${match[2]}/${match[3]}/${match[1]}` : value;
 }
 
 export function BowlerPaymentHistoryTable({ payments, locationId, paymentBusinessDates, paymentEvidenceStatuses }: Props) {
@@ -36,7 +40,7 @@ export function BowlerPaymentHistoryTable({ payments, locationId, paymentBusines
           ) : (
             payments.map((payment) => (
               <TableRow key={payment.id}>
-                <TableCell>{format(new Date(paymentBusinessDates?.get(payment.id) ?? payment.weekOf), "MMM d, yyyy")}</TableCell>
+                <TableCell>{formatAuthoritativeLocalDate(paymentBusinessDates?.get(payment.id) ?? payment.weekOf)}</TableCell>
                 <TableCell className="capitalize">{payment.type.replace(/_/g, " ")}</TableCell>
                 <TableCell>${(payment.amount / 100).toFixed(2)}</TableCell>
                 <TableCell>

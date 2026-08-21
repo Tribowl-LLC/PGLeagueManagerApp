@@ -1,6 +1,6 @@
 import { FC } from "react";
 import { CreditCard, Banknote, FileText, Receipt } from "lucide-react";
-import { differenceInWeeks, format } from "date-fns";
+import { differenceInWeeks } from "date-fns";
 import { formatCurrency } from "@/lib/utils";
 import { isCardPaymentType } from "@shared/schema/constants";
 import { ViewReceiptButton } from "@/components/view-receipt-button";
@@ -59,6 +59,11 @@ function getStatusLabel(status: string) {
   }
 }
 
+function formatAuthoritativeLocalDate(value: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
+  return match ? `${match[2]}/${match[3]}/${match[1]}` : value;
+}
+
 export const BowlerPaymentTable: FC<BowlerPaymentTableProps> = ({ payments, league, paymentBusinessDates, paymentEvidenceStatuses }) => {
   return (
     <div>
@@ -91,7 +96,7 @@ export const BowlerPaymentTable: FC<BowlerPaymentTableProps> = ({ payments, leag
                     <div>
                       <div className="font-semibold text-slate-900">{formatCurrency(payment.amount)}</div>
                       <div className="text-sm text-slate-500">
-                        {format(new Date(businessDate), 'MMM d, yyyy')}
+                        {formatAuthoritativeLocalDate(businessDate)}
                         {weekNumber && <> &bull; Week {weekNumber}</>}
                         {' '}&bull; {getPaymentMethodLabel(payment)}
                       </div>

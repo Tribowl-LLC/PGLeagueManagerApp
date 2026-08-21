@@ -155,8 +155,8 @@ export default function BowlerViewPage() {
   });
   const paymentBusinessDates = useMemo(() => {
     const map = new Map<number, string>();
-    for (const row of paymentReportResponse?.data?.rows ?? []) if (row.paymentId !== null) map.set(row.paymentId, row.businessDate);
-    for (const row of paymentReportResponse?.data?.unlinkedHistory ?? []) if (row.paymentId !== null) map.set(row.paymentId, row.businessDate);
+    for (const row of paymentReportResponse?.data?.rows ?? []) if (row.paymentId !== null) map.set(row.paymentId, row.authoritativeLocalDate);
+    for (const row of paymentReportResponse?.data?.unlinkedHistory ?? []) if (row.paymentId !== null) map.set(row.paymentId, row.authoritativeLocalDate);
     return map;
   }, [paymentReportResponse?.data]);
   const paymentEvidenceStatuses = useMemo(() => {

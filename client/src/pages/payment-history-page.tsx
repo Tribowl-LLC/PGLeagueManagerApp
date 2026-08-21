@@ -227,7 +227,7 @@ export default function PaymentHistoryPage() {
   const canonicalPaymentReport = canonicalPaymentReportResponse?.data;
   for (const row of [...(canonicalPaymentReport?.rows ?? []), ...(canonicalPaymentReport?.unlinkedHistory ?? [])]) {
     if (row.paymentId !== null) {
-      paymentBusinessDates.set(row.paymentId, row.businessDate);
+      paymentBusinessDates.set(row.paymentId, row.authoritativeLocalDate);
       paymentEvidenceStatuses.set(row.paymentId, row.status);
     }
   }

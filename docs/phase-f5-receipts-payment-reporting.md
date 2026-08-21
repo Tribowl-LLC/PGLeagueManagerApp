@@ -77,11 +77,14 @@ providers only; the smoke must prove zero `processPayment` calls and zero
 report writes. After canonical evidence exists, rollback is traffic pause and
 forward fix, never a down migration or historical relinking.
 
-Focused coverage currently includes canonical partial and settled/voided
-allocation reports, combined-operation conservation, unlinked Summer history,
-legacy fallback, incompatibility/no-fallback, semantic fingerprint stability,
-receipt cache/lazy lookup contract, tenant scope, immutable payment mutation,
-F1-active generic-create rejection, and unchanged legacy payment/refund/dispute
-behavior. Full CI additionally exercises the reviewed F4 webhook/reconciliation
-and race suites. Any future report/receipt behavior must add a focused
-PostgreSQL or fake-provider regression before being described here.
+Focused coverage currently includes bounded parent pagination with atomic
+combined-operation children, canonical partial and settled/voided allocation
+reports, zero-payment unresolved operation participants, unlinked Summer
+history, legacy fallback, incompatibility/no-fallback, semantic fingerprint
+stability, cross-tenant bowler corruption, tampered revision snapshots, receipt
+cache/lazy lookup contract, tenant scope, immutable payment mutation, F1-active
+generic-create rejection, and unchanged legacy payment/refund/dispute behavior.
+Full CI additionally exercises the reviewed F4 webhook/reconciliation and race
+suites (308 files, 2,882 tests in the current local run; four intentionally
+skipped files and 15 skipped tests). Any future report/receipt behavior must add
+a focused PostgreSQL or fake-provider regression before being described here.

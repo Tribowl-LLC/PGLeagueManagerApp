@@ -55,6 +55,22 @@ describe("F5 canonical payment reporting PostgreSQL evidence", () => {
     })).rejects.toBeInstanceOf(CanonicalPaymentReportIncompatibilityError);
   });
 
+  it("fails closed instead of dropping a league payment whose bowler is cross-tenant", async () => {
+    const fixture = await makeF3WorkflowFixture();
+    const other = await makeF3WorkflowFixture();
+    organizations.push(fixture.organizationId, other.organizationId);
+    await db.insert(payments).values({
+      bowlerId: other.roster[0].id,
+      leagueId: fixture.leagueId,
+      amount: 500,
+      weekOf: "2038-02-01T19:00:00.000Z",
+      status: "paid",
+      type: "cash",
+    });
+    await expect(readCanonicalPaymentReport({ organizationId: fixture.organizationId, leagueId: fixture.leagueId }))
+      .rejects.toBeInstanceOf(CanonicalPaymentReportIncompatibilityError);
+  });
+
   it("keeps the semantic fingerprint stable when only generated asOf changes", async () => {
     const fixture = await makeF3WorkflowFixture();
     organizations.push(fixture.organizationId);
@@ -121,5 +137,19 @@ describe("F5 canonical payment reporting PostgreSQL evidence", () => {
     expect(report.rows[0]).toMatchObject({ paymentId: payment.id, allocatedMinor: obligation.amountMinor, status: "confirmed_paid" });
     expect(report.totals.activeAllocatedMinor).toBe(obligation.amountMinor);
     expect(report.rows[0]?.allocations).toEqual([expect.objectContaining({ allocationId: allocation.id, obligationId: obligation.id, amountMinor: obligation.amountMinor })]);
+  });
+
+  it("fails closed when the current allocation revision snapshot is tampered", async () => {
+    const fixture = await makeF3WorkflowFixture();
+    organizations.push(fixture.organizationId);
+    const [obligation] = await db.select().from(bowlerOccurrenceObligations).where(and(
+      eq(bowlerOccurrenceObligations.organizationId, fixture.organizationId),
+      eq(bowlerOccurrenceObligations.leagueId, fixture.leagueId),
+    )).limit(1);
+    if (!obligation) throw new Error("F1 fixture obligation missing");
+    const [payment] = await db.insert(payments).values({ bowlerId: obligation.bowlerId, leagueId: fixture.leagueId, amount: obligation.amountMinor, weekOf: obligation.dueAt ?? "2038-02-01T19:00:00.000Z", status: "paid", type: "cash" }).returning();
+    const [allocation] = await db.insert(paymentOccurrenceAllocations).values({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, paymentId: payment.id, obligationId: obligation.id, occurrenceId: obligation.occurrenceId, bowlerId: obligation.bowlerId, amountMinor: obligation.amountMinor, currency: obligation.currency, allocationKey: `f5-tamper-${fixture.organizationId}`, recordedByUserId: fixture.actorUserId }).returning();
+    await db.insert(paymentOccurrenceAllocationRevisions).values({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, allocationId: allocation.id, revisionNumber: 1, snapshotSchemaVersion: 1, afterSnapshot: { state: "active", amountMinor: allocation.amountMinor + 1 }, recordedByUserId: fixture.actorUserId });
+    await expect(readCanonicalPaymentReport({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, limit: 10 })).rejects.toBeInstanceOf(CanonicalPaymentReportIncompatibilityError);
   });
 });

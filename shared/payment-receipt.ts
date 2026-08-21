@@ -1,7 +1,7 @@
 export const PAYMENT_RECEIPT_CONTRACT = "payment-receipt/1" as const;
 
 export type PaymentReceiptAvailability = "available" | "unavailable";
-export type PaymentReceiptSource = "canonical_allocation" | "unlinked_legacy";
+export type PaymentReceiptSource = "canonical_allocation" | "unlinked_legacy" | "unresolved_operation";
 export type PaymentReceiptEvidenceStatus = "confirmed_paid" | "refunded" | "disputed" | "review_required" | "unresolved" | "pending" | "failed";
 
 export interface PaymentReceiptAllocation {
