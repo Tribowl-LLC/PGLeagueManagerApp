@@ -39,9 +39,10 @@ const row = (overrides: Partial<CanonicalPaymentRow> = {}): CanonicalPaymentRow 
 
 describe("CanonicalPaymentEvidenceTable", () => {
   it("renders null-payment unresolved evidence and exact allocation details", () => {
-    render(<CanonicalPaymentEvidenceTable rows={[row({ collectionEvidence: { d2PlanId: "plan-1", planVersion: 2, collectionPointOccurrenceId: "occ-1", coveredOccurrenceIds: ["occ-1", "occ-2"], timing: "at_collection_point", grouping: "double_pay" } })]} mode="canonical_with_unlinked_history" paymentTiming={{ paymentMode: "upfront", upfrontDueAt: "2038-02-01T00:00:00.000Z", source: "canonical_activation" }} organizationId={11} />);
+    render(<CanonicalPaymentEvidenceTable rows={[row({ collectionEvidence: { d2PlanId: "plan-1", planVersion: 2, collectionPointOccurrenceId: "occ-1", coveredOccurrenceIds: ["occ-1", "occ-2"], timing: "at_collection_point", grouping: "double_pay" } })]} mode="canonical_with_unlinked_history" paymentTiming={{ paymentMode: "upfront", upfrontDueAt: "2038-02-01T00:00:00.000Z", timezone: "America/Los_Angeles", source: "canonical_activation" }} organizationId={11} />);
     expect(screen.getByText(/canonical_with_unlinked_history/)).toBeInTheDocument();
     expect(screen.getByTestId("payment-timing")).toHaveTextContent("Upfront payment");
+    expect(screen.getByTestId("payment-timing")).toHaveTextContent("timezone America/Los_Angeles");
     expect(screen.getByText(/double-pay collection/)).toBeInTheDocument();
     expect(screen.getByText(/operation evidence/)).toBeInTheDocument();
     expect(screen.getByText(/\$20\.00 · active · occurrence occ-1/)).toBeInTheDocument();

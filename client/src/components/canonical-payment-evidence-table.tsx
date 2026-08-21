@@ -34,6 +34,7 @@ export function CanonicalPaymentEvidenceTable({ rows, mode, paymentTiming, organ
       {paymentTiming && <div className="text-xs text-muted-foreground" data-testid="payment-timing">
         {paymentTiming.paymentMode === "upfront" ? "Upfront payment" : "Weekly payment"}
         {paymentTiming.upfrontDueAt ? ` · due ${paymentTiming.upfrontDueAtLocal ?? paymentTiming.upfrontDueAt}` : ""}
+        {` · timezone ${paymentTiming.timezone ?? "UTC"}`}
         {` · ${paymentTiming.source === "canonical_activation" ? "canonical activation" : "legacy league timing"}`}
       </div>}
       {rows.length === 0 ? (

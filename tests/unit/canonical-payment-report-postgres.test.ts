@@ -12,6 +12,7 @@ import {
   paymentOperations,
   interactivePaymentOperationSnapshots,
   interactivePaymentOperationAllocations,
+  users,
 } from "@shared/schema";
 import { CanonicalPaymentReportIncompatibilityError, readCanonicalPaymentReport, readPaymentReceiptProjection } from "../../server/services/canonical-payment-report";
 import { encryptInteractivePaymentSnapshot } from "../../server/services/interactive-payment-operation-snapshot";
@@ -302,6 +303,41 @@ describe("F5 canonical payment reporting PostgreSQL evidence", () => {
     expect(report.rows[0]).toMatchObject({ paymentId: payment.id, allocatedMinor: obligation.amountMinor, status: "confirmed_paid" });
     expect(report.totals.activeAllocatedMinor).toBe(obligation.amountMinor);
     expect(report.rows[0]?.allocations).toEqual([expect.objectContaining({ allocationId: allocation.id, obligationId: obligation.id, amountMinor: obligation.amountMinor })]);
+  });
+
+  it("scopes shared no-operation refund totals to an explicit paidBy payer", async () => {
+    const fixture = await makeF3WorkflowFixture();
+    organizations.push(fixture.organizationId);
+    const occurrenceId = fixture.occurrenceIds[0];
+    if (!occurrenceId) throw new Error("shared refund fixture occurrence missing");
+    const obligations = await db.select().from(bowlerOccurrenceObligations).where(and(
+      eq(bowlerOccurrenceObligations.organizationId, fixture.organizationId),
+      eq(bowlerOccurrenceObligations.leagueId, fixture.leagueId),
+      eq(bowlerOccurrenceObligations.occurrenceId, occurrenceId),
+    )).limit(2);
+    if (obligations.length !== 2) throw new Error("shared refund fixture obligations missing");
+    const firstObligation = obligations[0];
+    const secondObligation = obligations[1];
+    if (!firstObligation || !secondObligation) throw new Error("shared refund fixture obligations missing");
+    const [payer] = await db.insert(users).values({ email: `f5-payer-${fixture.organizationId}@example.test`, password: "test", name: "F5 payer", role: "user", organizationId: fixture.organizationId, bowlerId: firstObligation.bowlerId }).returning({ id: users.id });
+    if (!payer) throw new Error("shared refund fixture payer missing");
+    const insertedPayments = await db.insert(payments).values(obligations.map((obligation) => ({ bowlerId: obligation.bowlerId, leagueId: fixture.leagueId, amount: obligation.amountMinor, weekOf: "2038-02-01T19:00:00.000Z", status: "refunded" as const, type: "square" as const, paidByUserId: payer.id, refundedAt: "2038-02-02T19:00:00.000Z" }))).returning();
+    if (insertedPayments.length !== obligations.length) throw new Error("shared refund fixture payments missing");
+    for (const [index, obligation] of obligations.entries()) {
+      const payment = insertedPayments[index];
+      if (!payment) throw new Error("shared refund fixture payment missing");
+      const [allocation] = await db.insert(paymentOccurrenceAllocations).values({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, paymentId: payment.id, obligationId: obligation.id, occurrenceId: obligation.occurrenceId, bowlerId: obligation.bowlerId, amountMinor: obligation.amountMinor, currency: obligation.currency, allocationKey: `f5-shared-refund-${fixture.organizationId}-${obligation.id}`, recordedByUserId: fixture.actorUserId }).returning();
+      if (!allocation) throw new Error("shared refund fixture allocation missing");
+      await db.insert(paymentOccurrenceAllocationRevisions).values({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, allocationId: allocation.id, revisionNumber: allocation.currentRevision, snapshotSchemaVersion: 1, afterSnapshot: { state: allocation.state, amountMinor: allocation.amountMinor, currency: allocation.currency, paymentId: allocation.paymentId, obligationId: allocation.obligationId, occurrenceId: allocation.occurrenceId, bowlerId: allocation.bowlerId }, recordedByUserId: fixture.actorUserId });
+      const revisionNumber = obligation.currentRevision + 1;
+      const [settled] = await db.update(bowlerOccurrenceObligations).set({ state: "settled", currentRevision: revisionNumber }).where(eq(bowlerOccurrenceObligations.id, obligation.id)).returning();
+      if (!settled) throw new Error("shared refund fixture obligation update missing");
+      await db.insert(bowlerOccurrenceObligationRevisions).values({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, obligationId: obligation.id, revisionNumber, snapshotSchemaVersion: 1, beforeSnapshot: obligation, afterSnapshot: settled, recordedByUserId: fixture.actorUserId });
+    }
+    const payerReport = await readCanonicalPaymentReport({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, bowlerId: firstObligation.bowlerId, limit: 10 });
+    const partnerReport = await readCanonicalPaymentReport({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, bowlerId: secondObligation.bowlerId, limit: 10 });
+    expect(payerReport.totals.refundedMinor).toBe(insertedPayments.reduce((sum, payment) => sum + payment.amount, 0));
+    expect(partnerReport.totals.refundedMinor).toBe(0);
   });
 
   it("fails closed when the current allocation revision snapshot is tampered", async () => {

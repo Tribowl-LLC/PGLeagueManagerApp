@@ -17,9 +17,11 @@ import {
   paymentOperationOccurrenceSnapshotAllocations,
   paymentOperations,
   paymentOccurrenceAllocations,
+  paymentDisputes,
   payments,
   bowlerOccurrenceObligations,
   bowlers,
+  webhookEvents,
 } from "@shared/schema";
 import {
   acquireCanonicalAutopayDispatchCutoff,
@@ -30,7 +32,7 @@ import {
   recordPaymentOperationReconciliationRequired,
 } from "../../server/storage/payment-operations";
 import { PaymentProviderError } from "../../server/services/payment-errors";
-import { readPaymentReceiptProjection } from "../../server/services/canonical-payment-report";
+import { readCanonicalPaymentReport, readPaymentReceiptProjection } from "../../server/services/canonical-payment-report";
 
 vi.hoisted(() => {
   process.env.LEAGUEVAULT_F3_CANONICAL_AUTOPAY_ENABLED = "1";
@@ -186,6 +188,52 @@ describe("F4 canonical autopay PostgreSQL/provider integration", () => {
     expect(obligations.filter((row) => row.state === "settled")).toHaveLength(4);
     expect(plan?.state).toBe("fulfilled");
     expect(await db.select().from(occurrenceCollectionPlanRevisions).where(eq(occurrenceCollectionPlanRevisions.planId, planId))).toHaveLength(2);
+
+    const [disputeEvent] = await db.insert(webhookEvents).values({
+      provider: "square",
+      providerEventId: `f4-dispute-${fixture.organizationId}`,
+      eventType: "payment.dispute.created",
+      providerCreatedAt: now.toISOString(),
+      organizationId: fixture.organizationId,
+      locationId: fixture.locationId,
+      providerApplicationId: "f4-test-app",
+      providerMerchantId: "f4-test-merchant",
+      providerLocationId,
+      providerObjectType: "dispute",
+      providerObjectId: `f4-dispute-object-${fixture.organizationId}`,
+      providerPaymentId: "f4-test-payment-1",
+      providerApiVersion: "2024-01",
+      payloadHash: "a".repeat(64),
+      encryptedPayload: "f4-test-payload",
+    }).returning({ id: webhookEvents.id });
+    if (!disputeEvent) throw new Error("F4 dispute webhook fixture missing");
+    await db.insert(paymentDisputes).values({
+      organizationId: fixture.organizationId,
+      locationId: fixture.locationId,
+      paymentOperationId: prepared.operation.id,
+      provider: "square",
+      providerApplicationId: "f4-test-app",
+      providerMerchantId: "f4-test-merchant",
+      providerLocationId,
+      providerDisputeId: `f4-dispute-${fixture.organizationId}`,
+      providerPaymentId: "f4-test-payment-1",
+      amountMinor: prepared.operation.amountMinor,
+      currency: prepared.operation.currency,
+      reason: "CUSTOMER_REQUESTS_CREDIT",
+      state: "EVIDENCE_REQUIRED",
+      providerCreatedAt: now.toISOString(),
+      providerUpdatedAt: now.toISOString(),
+      providerVersion: 1,
+      firstWebhookEventId: disputeEvent.id,
+      lastWebhookEventId: disputeEvent.id,
+    });
+    const payerBowler = fixture.roster[0];
+    const partnerBowler = fixture.roster[1];
+    if (!payerBowler || !partnerBowler) throw new Error("F4 dispute fixture participants missing");
+    const payerReport = await readCanonicalPaymentReport({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, bowlerId: payerBowler.id, limit: 10 });
+    const partnerReport = await readCanonicalPaymentReport({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, bowlerId: partnerBowler.id, limit: 10 });
+    expect(payerReport.totals.disputedReviewRequiredMinor).toBe(prepared.operation.amountMinor);
+    expect(partnerReport.totals.disputedReviewRequiredMinor).toBe(0);
 
     const linkedPayment = linkedPayments[0];
     if (!linkedPayment) throw new Error("F4 linked payment was not persisted");

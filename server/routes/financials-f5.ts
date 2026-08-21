@@ -76,12 +76,13 @@ router.get("/payments", async (req, res) => {
     // internals stay within admin/reconciliation scopes.
     const redact = (row: typeof report.rows[number]) => {
       const ownAllocations = row.allocations.filter((allocation) => allocation.bowlerId === req.user?.bowlerId);
-      const authorizedAmount = ownAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0);
-      const hasCanonicalOwnership = ownAllocations.length > 0;
-      const safeAmount = hasCanonicalOwnership ? authorizedAmount : row.amountMinor;
       const isInitiatingPayer = row.initiatingPayerBowlerId !== null
         && row.initiatingPayerBowlerId !== undefined
         && row.initiatingPayerBowlerId === req.user?.bowlerId;
+      const visibleAllocations = isInitiatingPayer ? row.allocations : ownAllocations;
+      const authorizedAmount = visibleAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0);
+      const hasCanonicalOwnership = visibleAllocations.length > 0;
+      const safeAmount = isInitiatingPayer ? row.amountMinor : (hasCanonicalOwnership ? authorizedAmount : row.amountMinor);
       const safeRefundAmount = isInitiatingPayer ? row.refund.amountMinor : 0;
       const safeDisputeAmount = isInitiatingPayer ? row.dispute.amountMinor : 0;
       const { initiatingPayerBowlerId: _initiatingPayerBowlerId, ...safeRow } = row;
@@ -95,10 +96,11 @@ router.get("/payments", async (req, res) => {
       paymentOperationId: null,
       operationType: null,
       operationStatus: null,
-      allocations: ownAllocations,
+      sharedTransaction: null,
+      allocations: visibleAllocations,
       refund: { ...row.refund, amountMinor: safeRefundAmount, providerRefundId: null },
       dispute: { ...row.dispute, amountMinor: safeDisputeAmount, disputeId: null },
-      receipt: { ...row.receipt, paymentId: null, paymentOperationId: null, operationStatus: null, amountMinor: safeAmount, allocations: ownAllocations, sharedTransaction: null, canResend: false, receiptUrl: null, receiptNumber: null, refund: { ...(row.receipt.refund ?? row.refund), amountMinor: safeRefundAmount, providerRefundId: null }, dispute: { ...(row.receipt.dispute ?? row.dispute), amountMinor: safeDisputeAmount, disputeId: null } },
+      receipt: { ...row.receipt, paymentId: null, paymentOperationId: null, operationStatus: null, amountMinor: safeAmount, allocations: visibleAllocations, sharedTransaction: null, canResend: false, receiptUrl: null, receiptNumber: null, refund: { ...(row.receipt.refund ?? row.refund), amountMinor: safeRefundAmount, providerRefundId: null }, dispute: { ...(row.receipt.dispute ?? row.dispute), amountMinor: safeDisputeAmount, disputeId: null } },
     }; };
     const redactedReport = {
       ...report,
