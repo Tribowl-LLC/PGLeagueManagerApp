@@ -246,6 +246,38 @@ const nullableSnapshotFieldTypes: Record<string, "string" | "number" | "boolean"
   upfrontDueAt: "string",
 };
 
+type SnapshotArraySchema = "positiveInteger" | "string" | "authorizedItem" | "collectionPoint" | "policyOccurrence";
+const snapshotArraySchemas: Record<string, SnapshotArraySchema> = {
+  acceptedPartnerIds: "positiveInteger",
+  coveredBowlerIds: "positiveInteger",
+  collectionPointOccurrenceIds: "string",
+  authorizedItems: "authorizedItem",
+  collectionPoints: "collectionPoint",
+  occurrences: "policyOccurrence",
+};
+
+function snapshotArrayEntryCompatible(value: unknown, schema: SnapshotArraySchema): boolean {
+  if (schema === "positiveInteger") return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+  if (schema === "string") return typeof value === "string" && value.length > 0;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if (schema === "collectionPoint") return typeof record.occurrenceId === "string" && record.occurrenceId.length > 0;
+  if (schema === "policyOccurrence") {
+    return typeof record.occurrenceId === "string"
+      && typeof record.groupKey === "string"
+      && typeof record.groupRole === "string"
+      && (record.pairedOccurrenceId === null || typeof record.pairedOccurrenceId === "string")
+      && typeof record.collectionPointOccurrenceId === "string"
+      && typeof record.itemIndex === "number" && Number.isSafeInteger(record.itemIndex) && record.itemIndex >= 0;
+  }
+  return typeof record.obligationId === "string"
+    && typeof record.occurrenceId === "string"
+    && typeof record.collectionPointOccurrenceId === "string"
+    && typeof record.bowlerId === "number" && Number.isSafeInteger(record.bowlerId) && record.bowlerId > 0
+    && typeof record.amountMinor === "number" && Number.isSafeInteger(record.amountMinor) && record.amountMinor > 0
+    && typeof record.itemIndex === "number" && Number.isSafeInteger(record.itemIndex) && record.itemIndex >= 0;
+}
+
 function snapshotShapeCompatible(value: unknown, template: unknown, fieldName?: string): boolean {
   if (template === null || template === undefined) {
     if (value === null || value === undefined) return true;
@@ -255,7 +287,9 @@ function snapshotShapeCompatible(value: unknown, template: unknown, fieldName?: 
   }
   if (Array.isArray(template)) {
     if (!Array.isArray(value)) return false;
-    if (template.length === 0) return true;
+    const arraySchema = fieldName ? snapshotArraySchemas[fieldName] : undefined;
+    if (arraySchema) return value.length === template.length && value.every((entry) => snapshotArrayEntryCompatible(entry, arraySchema));
+    if (template.length === 0) return value.length === 0;
     return value.every((entry) => template.some((example) => snapshotShapeCompatible(entry, example, fieldName)));
   }
   if (typeof template === "object") {

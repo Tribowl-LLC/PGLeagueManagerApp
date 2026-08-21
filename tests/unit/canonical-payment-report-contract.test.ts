@@ -102,4 +102,94 @@ describe("F5 canonical payment and receipt contracts", () => {
     ];
     expect(completeVersionedRevisionChains([parent], revisions, () => expected)).toBe(false);
   });
+
+  it.each([
+    [
+      "empty acceptedPartnerIds rejects a malformed historical element",
+      {
+        id: "auth-array-empty",
+        state: "authorized",
+        payerBowlerId: 1,
+        acceptedPartnerIds: [],
+        coveredBowlerIds: [1],
+        collectionPointOccurrenceIds: ["occ-1"],
+        authorizedItems: [{ obligationId: "ob-1", occurrenceId: "occ-1", collectionPointOccurrenceId: "occ-1", bowlerId: 1, amountMinor: 500, itemIndex: 0 }],
+      },
+      (snapshot: Record<string, unknown>) => { snapshot.acceptedPartnerIds = [{}]; },
+    ],
+    [
+      "typed acceptedPartnerIds rejects a malformed historical element",
+      {
+        id: "auth-array-typed",
+        state: "authorized",
+        payerBowlerId: 1,
+        acceptedPartnerIds: [2],
+        coveredBowlerIds: [1, 2],
+        collectionPointOccurrenceIds: ["occ-1"],
+        authorizedItems: [{ obligationId: "ob-1", occurrenceId: "occ-1", collectionPointOccurrenceId: "occ-1", bowlerId: 1, amountMinor: 500, itemIndex: 0 }],
+      },
+      (snapshot: Record<string, unknown>) => { snapshot.acceptedPartnerIds = ["not-a-bowler-id"]; },
+    ],
+    [
+      "nonempty coveredBowlerIds rejects a vacuous historical array",
+      {
+        id: "auth-array-vacuous",
+        state: "authorized",
+        payerBowlerId: 1,
+        acceptedPartnerIds: [],
+        coveredBowlerIds: [1],
+        collectionPointOccurrenceIds: ["occ-1"],
+        authorizedItems: [{ obligationId: "ob-1", occurrenceId: "occ-1", collectionPointOccurrenceId: "occ-1", bowlerId: 1, amountMinor: 500, itemIndex: 0 }],
+      },
+      (snapshot: Record<string, unknown>) => { snapshot.coveredBowlerIds = []; },
+    ],
+    [
+      "collectionPointOccurrenceIds rejects a wrong historical element type",
+      {
+        id: "auth-array-occurrences",
+        state: "authorized",
+        payerBowlerId: 1,
+        acceptedPartnerIds: [],
+        coveredBowlerIds: [1],
+        collectionPointOccurrenceIds: ["occ-1"],
+        authorizedItems: [{ obligationId: "ob-1", occurrenceId: "occ-1", collectionPointOccurrenceId: "occ-1", bowlerId: 1, amountMinor: 500, itemIndex: 0 }],
+      },
+      (snapshot: Record<string, unknown>) => { snapshot.collectionPointOccurrenceIds = [123]; },
+    ],
+    [
+      "authorizedItems rejects a malformed historical item",
+      {
+        id: "auth-array-items",
+        state: "authorized",
+        payerBowlerId: 1,
+        acceptedPartnerIds: [],
+        coveredBowlerIds: [1],
+        collectionPointOccurrenceIds: ["occ-1"],
+        authorizedItems: [{ obligationId: "ob-1", occurrenceId: "occ-1", collectionPointOccurrenceId: "occ-1", bowlerId: 1, amountMinor: 500, itemIndex: 0 }],
+      },
+      (snapshot: Record<string, unknown>) => { snapshot.authorizedItems = [{ obligationId: "ob-1", occurrenceId: "occ-1", collectionPointOccurrenceId: "occ-1", bowlerId: 1, amountMinor: "500", itemIndex: 0 }]; },
+    ],
+    [
+      "policy collection points and occurrences reject malformed historical arrays",
+      {
+        contractVersion: "canonical-collection-policy/1",
+        policy: { approvedByUserId: null },
+        collectionPoints: [{ occurrenceId: "occ-1" }],
+        occurrences: [{ occurrenceId: "occ-1", groupKey: "group-1", groupRole: "normal", pairedOccurrenceId: null, collectionPointOccurrenceId: "occ-1", itemIndex: 0 }],
+      },
+      (snapshot: Record<string, unknown>) => {
+        snapshot.collectionPoints = [{ occurrenceId: 123 }];
+        snapshot.occurrences = [{ occurrenceId: "occ-1", groupKey: "group-1", groupRole: 42, pairedOccurrenceId: null, collectionPointOccurrenceId: "occ-1", itemIndex: 0 }];
+      },
+    ],
+  ] as const)("rejects %s", (_label, expected, corrupt) => {
+    const parent = { id: "parent-array", currentRevision: 2 };
+    const malformed = JSON.parse(JSON.stringify(expected)) as Record<string, unknown>;
+    corrupt(malformed);
+    const revisions = [
+      { parentId: parent.id, revisionNumber: 1, snapshotSchemaVersion: 1, beforeSnapshot: null, afterSnapshot: malformed },
+      { parentId: parent.id, revisionNumber: 2, snapshotSchemaVersion: 1, beforeSnapshot: malformed, afterSnapshot: expected },
+    ];
+    expect(completeVersionedRevisionChains([parent], revisions, () => expected)).toBe(false);
+  });
 });
