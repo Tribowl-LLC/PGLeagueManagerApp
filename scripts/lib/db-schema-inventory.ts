@@ -640,11 +640,6 @@ export function assertExpectedConnectionUrlTarget(
   }
 }
 
-export function postgresqlSupportsMaintainPrivilege(serverVersionNumber: string): boolean {
-  const parsedVersion = Number.parseInt(serverVersionNumber, 10);
-  return Number.isFinite(parsedVersion) && parsedVersion >= 170000;
-}
-
 export function determineConnectedRoleRlsMode(input: {
   rowSecurity: boolean;
   forceRowSecurity: boolean;
@@ -942,9 +937,6 @@ async function collectDatabaseInventoryInternal(
       ORDER BY n.nspname
     `);
 
-    const maintainPrivilegeExpression = postgresqlSupportsMaintainPrivilege(target.server_version_number)
-      ? "CASE WHEN pg_catalog.has_table_privilege(c.oid, 'MAINTAIN') THEN 'maintain' END,"
-      : '';
     const tablesResult = await client.query<TableRow>(`
       SELECT
         n.nspname AS schema_name,
@@ -963,7 +955,7 @@ async function collectDatabaseInventoryInternal(
         ARRAY_REMOVE(ARRAY[
           CASE WHEN pg_catalog.has_table_privilege(c.oid, 'DELETE') THEN 'delete' END,
           CASE WHEN pg_catalog.has_table_privilege(c.oid, 'INSERT') THEN 'insert' END,
-          ${maintainPrivilegeExpression}
+          CASE WHEN pg_catalog.has_table_privilege(c.oid, 'MAINTAIN') THEN 'maintain' END,
           CASE WHEN pg_catalog.has_table_privilege(c.oid, 'REFERENCES') THEN 'references' END,
           CASE WHEN pg_catalog.has_table_privilege(c.oid, 'SELECT') THEN 'select' END,
           CASE WHEN pg_catalog.has_table_privilege(c.oid, 'TRIGGER') THEN 'trigger' END,

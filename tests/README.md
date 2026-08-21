@@ -200,7 +200,7 @@ during the `npm test` step. The minimal job ordering looks like:
 ## Database schema inventory validation
 
 Run `npm run db:check` for the authoritative normalized migration gate. It
-uses owned disposable PostgreSQL 16 and 17 containers to replay the active
+uses an owned disposable PostgreSQL 17 container to replay the active
 baseline, verify exact LF SQL bytes and the checked-in format-version-2
 fingerprint (including 26 owned sequences), exercise guarded local adoption,
 concurrent/atomic registration and every refusal class, and prove later
@@ -209,7 +209,7 @@ fixture. The fixture is combined
 with active migrations only under ignored run artifacts; it is not deployable
 SQL and creates no production object.
 
-The migration matrix also proves that empty databases execute the baseline,
+The migration validation also proves that empty databases execute the baseline,
 matching existing databases register only the baseline journal record, adopted
 databases skip baseline application DDL, exact adopted journals are no-ops,
 conflicting journals are refused, and all migration/adoption reruns are safe.

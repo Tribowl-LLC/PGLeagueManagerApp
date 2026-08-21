@@ -12,7 +12,6 @@ import {
   fingerprintDatabaseHost,
   parseMigrationJournalRelation,
   parseRequiredExpectedTargetEnvironment,
-  postgresqlSupportsMaintainPrivilege,
   redactConnectionDetails,
   resolveApprovedMigrationJournal,
   type DatabaseInventory,
@@ -43,8 +42,8 @@ function emptyInventory(database: string): DatabaseInventory {
       hostFingerprint: 'sha256:test',
       database,
       role: 'inventory_reader',
-      serverVersion: '16.9',
-      serverVersionNumber: '160009',
+      serverVersion: '17.0',
+      serverVersionNumber: '170000',
       transactionIsolation: 'repeatable read',
       transactionReadOnly: true,
       roleSuperuser: false,
@@ -85,7 +84,7 @@ function testTable(name: string, rowSecurity = false): TableInfo {
     forceRowSecurity: false,
     owner: 'inventory_reader',
     connectedRoleOwnsTable: true,
-    connectedRolePrivileges: ['delete', 'insert', 'references', 'select', 'trigger', 'truncate', 'update'],
+    connectedRolePrivileges: ['delete', 'insert', 'maintain', 'references', 'select', 'trigger', 'truncate', 'update'],
     connectedRoleRlsMode: rowSecurity ? 'bypass-owner' : 'not-enabled',
   };
 }
@@ -413,13 +412,6 @@ describe('database schema inventory tools', () => {
     expect(() => assertInventoryTransactionMode('on', 'repeatable read')).not.toThrow();
     expect(() => assertInventoryTransactionMode('off', 'repeatable read')).toThrow('read-only');
     expect(() => assertInventoryTransactionMode('on', 'read committed')).toThrow('repeatable-read');
-  });
-
-  it('queries the MAINTAIN table privilege only on PostgreSQL versions that support it', () => {
-    expect(postgresqlSupportsMaintainPrivilege('160014')).toBe(false);
-    expect(postgresqlSupportsMaintainPrivilege('170000')).toBe(true);
-    expect(postgresqlSupportsMaintainPrivilege('170010')).toBe(true);
-    expect(postgresqlSupportsMaintainPrivilege('invalid')).toBe(false);
   });
 
   it('requires independently supplied Neon target metadata and distinct branch identifiers', () => {

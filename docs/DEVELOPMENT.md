@@ -59,7 +59,7 @@ Install the following tools before setting up the repository:
 | Node.js | `22.22.x`; `package.json` accepts `>=22.22.0 <23` and `.node-version` pins `22.22.0` | CI and Render use the pinned Node.js version. Matching it avoids runtime and dependency differences. |
 | npm | Use the npm version bundled with the repository-supported Node.js installation unless the repository explicitly pins a different version | The repository uses npm and a lockfile version 3. Do not upgrade npm independently as part of unrelated work, and do not add a Yarn or pnpm lockfile. |
 | Git | A current version with support for worktrees and normal branch workflows | `main` is protected and changes are reviewed through pull requests. |
-| PostgreSQL | PostgreSQL 17 for the normal persistent development database | This is the standard local runtime and the version used by the full local test wrapper. Migration validation also exercises PostgreSQL 16 for rollback compatibility. |
+| PostgreSQL | PostgreSQL 17 for the normal persistent development database | This is the standard local runtime and the version used by the full local test wrapper and migration validation. |
 | Docker | Docker Desktop on Windows or macOS, or a compatible Docker Engine on Linux | `npm run test:local` and `npm run db:check` create or reuse local PostgreSQL containers. |
 | Bash | Required only for `npm run test:race` | The race-suite wrapper is a Bash script. On Windows, run it from Git Bash or WSL with Docker access. |
 
@@ -178,7 +178,7 @@ Use the database commands for distinct purposes:
 | --- | --- |
 | `npm run db:generate -- --name <lowercase_description>` | After changing declarations under `shared/schema/`; generates SQL and metadata for review without connecting to PostgreSQL. |
 | `npm run db:migrate` | After pulling new migrations or creating a fresh local database; applies the checked-in history in journal order. Re-running an exact history is a no-op. |
-| `npm run db:check` | Before a pull request that changes schema declarations, migrations, database invariants, or migration infrastructure; replays and validates the migration system on disposable PostgreSQL 16 and 17 databases. |
+| `npm run db:check` | Before a pull request that changes schema declarations, migrations, database invariants, or migration infrastructure; replays and validates the migration system on a disposable PostgreSQL 17 database. |
 | `npm run db:migration-bytes:check` | When diagnosing migration checksum, line-ending, UTF-8, or metadata failures. It is also covered by `db:check`. |
 | `npm run seed` | When manual browser testing needs the deterministic local development users and organizations described in `tests/README.md`. |
 
@@ -242,7 +242,7 @@ repository wrappers for isolated PostgreSQL and race coverage.
 | `npm test` | Raw one-shot Vitest run across the configured default projects. It expects its database, environment, and any required app server to have been prepared. Prefer `test:local` for normal full validation. |
 | `npm run test:local` | Recommended complete local suite. It verifies Node.js, starts or reuses the local PostgreSQL 17 test container, applies migrations, builds an exact test template, and runs isolated worker databases. Docker must be available. |
 | `npm run test:race` | Separate serial coverage for shared-state concurrency behavior. It requires Bash, a prepared test database/application environment, and `SETUP_SECRET`; run it when changing the covered bootstrap, locking, payment retry, or shared-state behavior. Never point it at production. |
-| `npm run db:check` | Migration suite. It validates replay, fingerprints, ordering, adoption/refusal safeguards, and PostgreSQL 16/17 compatibility on disposable containers. |
+| `npm run db:check` | Migration suite. It validates replay, fingerprints, ordering, adoption/refusal safeguards, and PostgreSQL 17 compatibility on a disposable container. |
 | `npm run test:template:build` | Test-infrastructure diagnostic that rebuilds the canonical test template. Routine contributors should normally let `test:local` manage it. |
 | `npm run db:inventory:validate-local` | Specialized legacy-schema reproduction. Run only when working on the schema inventory/legacy evidence tooling; it is intentionally separate from the normal suite. |
 
@@ -271,7 +271,7 @@ migrations, database invariants, migration/adoption/fingerprint/inventory
 tooling, or test-template schema construction. For an unrelated documentation,
 frontend-only, or isolated code change that demonstrably cannot affect those
 surfaces, a local `db:check` run may be recorded as inapplicable; CI still runs
-the PostgreSQL 16/17 migration matrix for the pull request. When uncertain,
+the PostgreSQL 17 migration check for the pull request. When uncertain,
 run it.
 
 Run `npm run test:race` as well when the changed behavior is race-sensitive.

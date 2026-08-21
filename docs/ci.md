@@ -17,12 +17,12 @@ push workflow then certifies the exact `main` tree without repeating that suite.
 | `gitleaks.yml`, `hounddog.yml`, `semgrep.yml` | Security scan names | Every PR to `main`, weekly schedule, and `workflow_dispatch` | Diff-aware PR scans and recurring/manual full-history or full-tree scans |
 | `post-deploy-trust-proxy.yml` | `Probe trust-proxy on live deploy` | Daily (cron) and on `workflow_dispatch` | `scripts/verify-trust-proxy-deploy.ts` against the live deploy (task #379) — see [Post-deploy trust-proxy probe](#post-deploy-trust-proxy-probe) below |
 
-The jobs in `ci.yml` (`Type check & lint`, the two-version database
-migration matrix, and `Tests`) run in parallel, so total wall-clock for a PR is
+The jobs in `ci.yml` (`Type check & lint`, the PostgreSQL 17 database
+migration check, and `Tests`) run in parallel, so total wall-clock for a PR is
 roughly the slowest job — not the sum. The race suite is its own parallel
 workflow because it needs a backgrounded dev server and serial execution.
 
-> Job names (`Type check & lint`, `Tests`, both database-migration names,
+> Job names (`Type check & lint`, `Tests`, the database-migration job,
 > `Race suite`, and `Exact main certification`) are the
 > values branch-protection rules will match against. **Don't rename
 > them** without updating branch protection — append a step to an
@@ -167,8 +167,8 @@ section. It does not run again on the resulting push to `main`.
 clean worktree correspond to that SHA, and finds the pull request recorded by
 GitHub as producing the main commit. `scripts/verify-exact-main-provenance.ts`
 then requires the main commit tree to equal the merged PR head tree and requires
-successful PR runs containing `Type check & lint`, `Tests`, both PostgreSQL
-migration jobs, and `Race suite` for that head SHA. It prints the PR number,
+successful PR runs containing `Type check & lint`, `Tests`, the PostgreSQL 17
+migration job, and `Race suite` for that head SHA. It prints the PR number,
 tree SHA, and Actions run URLs as auditable evidence.
 
 After provenance succeeds, the job re-checks exact LF/UTF-8 migration bytes and

@@ -5,8 +5,9 @@ Detailed architecture notes for the Vitest per-worker test-DB / Neon-branch infr
 ## Schema inventory validation
 
 `npm run db:check` is the authoritative migration-infrastructure gate. By
-default it owns separate ephemeral `postgres:16` and `postgres:17` containers;
-CI runs the same command as a two-version matrix. For each version it:
+default it owns an ephemeral `postgres:17` container; CI runs the same command
+against PostgreSQL 17. The version option remains a matrix-shaped extension
+point for a future PostgreSQL release. It:
 
 - replays the active baseline from zero and verifies the exact approved
   fingerprint and journal row;
@@ -27,8 +28,8 @@ CI runs the same command as a two-version matrix. For each version it:
 The proof marker is never part of `migrations/` and therefore cannot create a
 meaningless production object. Containers and artifacts use per-run ownership
 identities and checked cleanup. No Neon or production credentials are used.
-The matrix also verifies exact LF migration bytes in the checked-out tree and a
-clean `core.autocrlf=true` clone. PostgreSQL 16 and 17 must produce the same
+The validation also verifies exact LF migration bytes in the checked-out tree
+and a clean `core.autocrlf=true` clone. PostgreSQL 17 produces the approved
 format-version-2 fingerprint, including all 26 application-owned sequences.
 
 `npm run test:local` builds the canonical behavioral-test template as an empty

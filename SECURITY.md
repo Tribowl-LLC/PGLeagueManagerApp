@@ -606,7 +606,7 @@ The repository's current automated controls include:
 | Production build and trust-proxy checks | Buildability and configured proxy assumptions in code and the deployed probe. | End-to-end production security. |
 
 PR CI currently runs dependency audits, type checking, lint and repository
-policy guards, the production build, PostgreSQL 16/17 migration checks, the
+policy guards, the production build, PostgreSQL 17 migration checks, the
 full test suite, and the separate race suite. Semgrep, Gitleaks, and HoundDog
 run as separate PR and scheduled workflows. Exact job layout and branch
 protection guidance are in [docs/ci.md](docs/ci.md).

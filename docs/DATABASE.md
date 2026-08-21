@@ -33,7 +33,7 @@ The canonical set is
 `users_role_org_required_fn()` / `users.users_role_org_required`. Its function body, trigger
 timing/events, conditions, arguments, and enabled state in the baseline must
 remain identical to the shared compatibility definitions used by startup;
-`db:check` compares both paths on PostgreSQL 16 and 17.
+`db:check` compares both paths on PostgreSQL 17.
 
 The routines under [`server/migrations/`](../server/migrations/) are narrow
 startup or data-backfill routines. They are not a replacement for the schema
@@ -142,7 +142,7 @@ npm run db:migration-bytes:check
 # Produce or verify the exact versioned application fingerprint.
 npm run db:fingerprint -- --verify
 
-# Replay/adopt/check disposable PostgreSQL 16 and 17 databases.
+# Replay/adopt/check a disposable PostgreSQL 17 database.
 npm run db:check
 ```
 
@@ -228,9 +228,9 @@ they do not automatically declare application ownership.
 
 PostgreSQL 17 and newer add the `MAINTAIN` table privilege. Inventory format
 version 3 records it from ACLs on every supported server and includes it in
-the connected role's effective privileges on PostgreSQL 17 and newer. The
-effective-privilege query omits that token on PostgreSQL 16 and older, where
-asking `has_table_privilege` about `MAINTAIN` is itself an error.
+the connected role's effective privileges. The supported inventory target is
+PostgreSQL 17+, so the effective-privilege query always asks
+`has_table_privilege` about `MAINTAIN`.
 
 Format version 3 also inventories sequences. For each sequence it records the
 schema/name, permanent/unlogged persistence, integer type and numeric settings,
@@ -372,8 +372,8 @@ PostgreSQL unique indexes treat nulls as distinct unless `NULLS NOT DISTINCT`
 is specified, so both the partial definition and the current full source index
 allow multiple null subdomains and reject duplicate non-null subdomains. The
 application lookup is equality on `organizations.subdomain`; there is no
-application `IS NULL` lookup. A PostgreSQL 16 generic prepared-plan probe
-confirmed that equality lookup can use the partial index. The partial form
+application `IS NULL` lookup. A generic prepared-plan probe confirmed that
+equality lookup can use the partial index. The partial form
 stores and maintains only assigned subdomains, while the full form additionally
 stores null entries and could serve a future `IS NULL` lookup or full index
 ordering. Those unused capabilities do not justify production index churn or
