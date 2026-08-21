@@ -37,9 +37,12 @@ F4 canonical scheduled execution is independently gated. Keep
 `LEAGUEVAULT_F4_CANONICAL_AUTOPAY_EXECUTION_ENABLED` unset or false and leave
 `SCHEDULED_PAYMENT_EXECUTION_MODE` at `ledger_paused` (or `legacy`) until F1,
 F3, and F4 have separate approvals. Automatic F4 work is permitted only with
-`ledger_execute` and both F3/F4 gates enabled. Migration 0027 is additive with
-zero backfill; deployment and migration never authorize provider calls. If a
-cutover issue occurs, pause traffic/disable the gate and retain uncertain F4
+`ledger_execute` and both F3/F4 gates enabled. Migration
+`0029_phase_f4_canonical_scheduled_execution` is forward-only with no
+backfill; it transactionally widens the three payment-operation CHECK
+constraints needed for the canonical domain and adds its tenant-scoped
+evidence/indexes. Deployment and migration never authorize provider calls. If
+a cutover issue occurs, pause traffic/disable the gate and retain uncertain F4
 operations for exact-key reconciliation; do not bulk-cancel or reinterpret
 legacy scheduled work.
 
