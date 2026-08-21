@@ -6,6 +6,8 @@ import { deleteOrganization } from "../../server/storage/organizations";
 import {
   canonicalAutopayExecutionSnapshots,
   f3PayerAuthorizations,
+  bowlerOccurrenceEligibilities,
+  bowlerOccurrenceEligibilityRevisions,
   bowlerLeagues,
   bowlerPaymentLinks,
   leagueOccurrences,
@@ -251,6 +253,29 @@ describe("F4 canonical autopay PostgreSQL/provider integration", () => {
       coveredOccurrenceIds: expect.arrayContaining(fixture.occurrenceIds.slice(0, 2)),
     });
     expect(receiptProjection.report.fingerprint).toMatch(/^lvpaymentreport:v1:/);
+  });
+
+  it("fails closed when an earlier F1 eligibility revision is consistently malformed", async () => {
+    const { fixture, planId, now } = await makeCanonicalFixture();
+    const { prepareCanonicalAutopayPlan } = await import("../../server/services/canonical-autopay-preparation");
+    const { executeCanonicalAutopayOperation } = await import("../../server/services/canonical-autopay-operation-executor");
+    const prepared = await prepareCanonicalAutopayPlan({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, d2PlanId: planId, now });
+    if (!prepared.operation) throw new Error("F1 revision fixture operation missing");
+    await executeCanonicalAutopayOperation({ organizationId: fixture.organizationId, operationId: prepared.operation.id, now });
+    const eligibilities = await db.select().from(bowlerOccurrenceEligibilities).where(and(eq(bowlerOccurrenceEligibilities.organizationId, fixture.organizationId), eq(bowlerOccurrenceEligibilities.leagueId, fixture.leagueId)));
+    const revisions = await db.select().from(bowlerOccurrenceEligibilityRevisions).where(and(eq(bowlerOccurrenceEligibilityRevisions.organizationId, fixture.organizationId), eq(bowlerOccurrenceEligibilityRevisions.leagueId, fixture.leagueId)));
+    const target = eligibilities[0];
+    if (!target) throw new Error("F1 eligibility revision fixture missing");
+    for (const eligibility of eligibilities) {
+      const revision = revisions.find((row) => row.eligibilityId === eligibility.id && row.revisionNumber === 1);
+      if (!revision || !revision.afterSnapshot || typeof revision.afterSnapshot !== "object") throw new Error("F1 eligibility revision chain incomplete");
+      const original = JSON.parse(JSON.stringify(revision.afterSnapshot)) as Record<string, unknown>;
+      const before = eligibility.id === target.id ? (() => { const value = { ...original }; delete value.reason; return value; })() : original;
+      await db.update(bowlerOccurrenceEligibilities).set({ currentRevision: 2 }).where(eq(bowlerOccurrenceEligibilities.id, eligibility.id));
+      if (eligibility.id === target.id) await db.update(bowlerOccurrenceEligibilityRevisions).set({ afterSnapshot: before }).where(eq(bowlerOccurrenceEligibilityRevisions.id, revision.id));
+      await db.insert(bowlerOccurrenceEligibilityRevisions).values({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, eligibilityId: eligibility.id, revisionNumber: 2, snapshotSchemaVersion: 1, beforeSnapshot: before, afterSnapshot: original, recordedByUserId: fixture.actorUserId });
+    }
+    await expect(readCanonicalPaymentReport({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, limit: 10 })).rejects.toBeInstanceOf(Error);
   });
 
   it("returns exact normal collection evidence for a separate collection-point plan", async () => {

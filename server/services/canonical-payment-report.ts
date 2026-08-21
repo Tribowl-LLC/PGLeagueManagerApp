@@ -220,6 +220,34 @@ function revisionSemanticsCoverage(
   });
 }
 
+/**
+ * Revision chains are immutable evidence, so every historical snapshot must
+ * retain the contract shape even when its values legitimately changed.  A
+ * latest-row equality check alone permits a consistently rewritten historical
+ * chain (for example, dropping `reason` from both rev1.after and rev2.before)
+ * to pass.  Nullable scalar transitions are valid; missing keys, container
+ * type changes, and malformed scalar values are not.
+ */
+function snapshotShapeCompatible(value: unknown, template: unknown): boolean {
+  if (template === null || template === undefined) {
+    return value === null || value === undefined || (typeof value !== "object" && typeof value !== "function");
+  }
+  if (Array.isArray(template)) {
+    if (!Array.isArray(value)) return false;
+    if (template.length === 0) return true;
+    return value.every((entry) => template.some((example) => snapshotShapeCompatible(entry, example)));
+  }
+  if (typeof template === "object") {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const valueRecord = value as Record<string, unknown>;
+    return Object.entries(template as Record<string, unknown>).every(([key, example]) => key in valueRecord && snapshotShapeCompatible(valueRecord[key], example));
+  }
+  if (value === null) return true;
+  if (typeof value !== typeof template) return false;
+  if (typeof template === "number") return Number.isFinite(value) && Number.isSafeInteger(value);
+  return true;
+}
+
 function completeVersionedRevisionChains<T extends { id: string; currentRevision: number }, R extends { parentId: string; revisionNumber: number; snapshotSchemaVersion: number; beforeSnapshot: unknown; afterSnapshot: unknown }>(parents: T[], revisions: R[], expectedAfterSnapshot?: (parent: T) => unknown): boolean {
   const byParent = new Map<string, R[]>();
   for (const revision of revisions) byParent.set(revision.parentId, [...(byParent.get(revision.parentId) ?? []), revision]);
@@ -229,7 +257,14 @@ function completeVersionedRevisionChains<T extends { id: string; currentRevision
     if (chain[0]?.beforeSnapshot !== null && chain[0]?.beforeSnapshot !== undefined) return false;
     if (!chain.slice(1).every((row, index) => sameEvidenceValue(row.beforeSnapshot, chain[index]?.afterSnapshot))) return false;
     const latest = chain.at(-1)?.afterSnapshot;
-    return expectedAfterSnapshot === undefined || sameEvidenceValue(latest, expectedAfterSnapshot(parent));
+    if (expectedAfterSnapshot === undefined) return true;
+    const expected = expectedAfterSnapshot(parent);
+    if (!snapshotShapeCompatible(latest, expected)) return false;
+    for (const [index, revision] of chain.entries()) {
+      if (!snapshotShapeCompatible(revision.afterSnapshot, expected)) return false;
+      if (index > 0 && !snapshotShapeCompatible(revision.beforeSnapshot, expected)) return false;
+    }
+    return sameEvidenceValue(latest, expected);
   });
 }
 

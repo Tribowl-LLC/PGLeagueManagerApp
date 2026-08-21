@@ -235,6 +235,36 @@ describe('GET /payments/:id/receipt (Task #503)', () => {
     expect(mockProvider.getPayment).not.toHaveBeenCalled();
   });
 
+  it('does not give a no-operation row owner a shared receipt when active allocations name another bowler', async () => {
+    const payment = {
+      id: 151, leagueId: 11, bowlerId: 42, paidByUserId: null, paymentOperationId: null,
+      amount: 4000, status: 'paid', providerPaymentId: 'sq_noop_shared',
+      receiptUrl: 'https://cached/noop-shared', receiptNumber: 'N-noop-shared',
+    };
+    mockStorage.getPaymentByIdForOrganization.mockResolvedValue(payment);
+    mockStorage.getPaymentById.mockResolvedValue(payment);
+    mockReadCanonicalReport.mockResolvedValue({
+      rows: [{
+        paymentId: 151, bowlerId: 42, source: 'canonical_allocation', amountMinor: 4000, currency: 'USD',
+        allocations: [
+          { allocationId: 'alloc-owner', obligationId: 'ob-owner', occurrenceId: 'occ-owner', bowlerId: 42, amountMinor: 2000, currency: 'USD', state: 'active' },
+          { allocationId: 'alloc-other', obligationId: 'ob-other', occurrenceId: 'occ-other', bowlerId: 43, amountMinor: 2000, currency: 'USD', state: 'active' },
+        ],
+        refund: { present: false, amountMinor: 0, providerRefundId: null },
+        dispute: { present: false, amountMinor: 0, disputeId: null, scope: 'transaction', state: null, reviewRequired: false },
+      }],
+      unlinkedHistory: [],
+      transactions: [],
+      paymentTiming: { paymentMode: 'weekly', upfrontDueAt: null, upfrontDueAtLocal: null, timezone: 'UTC', source: 'legacy_league' },
+    });
+    const response = await get('/api/payments-provider/payments/151/receipt', BOWLER);
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.data).toMatchObject({ receiptUrl: null, receiptNumber: null, amountMinor: 2000, sharedTransaction: null, paymentOperationId: null });
+    expect(body.data.allocations).toEqual([expect.objectContaining({ bowlerId: 42, amountMinor: 2000 })]);
+    expect(mockProvider.getPayment).not.toHaveBeenCalled();
+  });
+
   it.each([
     { label: 'scheduled nullable league', operationType: 'scheduled', operationLeagueId: null },
     { label: 'interactive exact league', operationType: 'interactive', operationLeagueId: 11 },
