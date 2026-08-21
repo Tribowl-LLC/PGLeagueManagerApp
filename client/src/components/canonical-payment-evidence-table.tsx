@@ -5,6 +5,7 @@ import { csrfFetch } from "@/lib/queryClient";
 type Props = {
   rows: CanonicalPaymentRow[];
   mode?: string;
+  organizationId?: number | null;
   title?: string;
 };
 
@@ -13,12 +14,13 @@ type Props = {
  * particular, a row with no payment id is still a real unresolved/legacy
  * operation participant and must not be converted into a synthetic Payment.
  */
-export function CanonicalPaymentEvidenceTable({ rows, mode, title = "Payment evidence" }: Props) {
+export function CanonicalPaymentEvidenceTable({ rows, mode, organizationId, title = "Payment evidence" }: Props) {
   const [receiptLoading, setReceiptLoading] = useState<number | null>(null);
   const openReceipt = async (paymentId: number) => {
     setReceiptLoading(paymentId);
     try {
-      const response = await csrfFetch(`/api/payments-provider/payments/${paymentId}/receipt`);
+      const scope = organizationId !== null && organizationId !== undefined ? `?organizationId=${encodeURIComponent(organizationId)}` : "";
+      const response = await csrfFetch(`/api/payments-provider/payments/${paymentId}/receipt${scope}`);
       const body = await response.json() as { data?: { receiptUrl?: string | null } };
       if (response.ok && body.data?.receiptUrl) window.open(body.data.receiptUrl, "_blank", "noopener,noreferrer");
     } finally {
@@ -44,7 +46,7 @@ export function CanonicalPaymentEvidenceTable({ rows, mode, title = "Payment evi
                 </div>
                 <div className="text-xs text-muted-foreground">
                   {row.allocations.length > 0
-                    ? row.allocations.map((allocation) => `${allocation.amountMinor} ${allocation.currency} · ${allocation.state ?? "unresolved"} · occurrence ${allocation.occurrenceId ?? "unlinked"} · obligation ${allocation.obligationId ?? "unlinked"}`).join("; ")
+                    ? row.allocations.map((allocation) => `${new Intl.NumberFormat("en-US", { style: "currency", currency: allocation.currency }).format(allocation.amountMinor / 100)} · ${allocation.state ?? "unresolved"} · occurrence ${allocation.occurrenceId ?? "unlinked"} · obligation ${allocation.obligationId ?? "unlinked"}`).join("; ")
                     : "No item allocation recorded"}
                   {row.refund.present ? ` · refunded $${(row.refund.amountMinor / 100).toFixed(2)}` : ""}
                   {row.dispute.present ? ` · dispute/review evidence${row.dispute.scope === "transaction" ? " (transaction)" : ""}${row.dispute.state ? ` · ${row.dispute.state}` : ""}${row.dispute.amountMinor > 0 ? ` · $${(row.dispute.amountMinor / 100).toFixed(2)}` : ""}` : ""}

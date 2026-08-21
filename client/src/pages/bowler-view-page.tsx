@@ -297,6 +297,7 @@ export default function BowlerViewPage() {
         {paymentReportLoading ? <div className="text-sm text-muted-foreground">Loading canonical payment evidence…</div> : paymentReportError ? <div className="text-sm text-destructive">Financial evidence requires review; payment history is unavailable.</div> : <CanonicalPaymentEvidenceTable
           rows={[...(paymentReportResponse?.data?.rows ?? []), ...(paymentReportResponse?.data?.unlinkedHistory ?? [])]}
           mode={paymentReportResponse?.data?.mode}
+          organizationId={bowler?.organizationId ?? null}
           title="Payment history"
         />}
         {!paymentReportLoading && !paymentReportError && paymentReportResponse?.data && <div className="mt-3 flex gap-3 text-sm">

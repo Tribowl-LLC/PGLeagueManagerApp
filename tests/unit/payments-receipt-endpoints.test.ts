@@ -189,6 +189,52 @@ describe('GET /payments/:id/receipt (Task #503)', () => {
     expect(mockProvider.getPayment).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { label: 'scheduled nullable league', operationType: 'scheduled', operationLeagueId: null },
+    { label: 'interactive exact league', operationType: 'interactive', operationLeagueId: 11 },
+  ])('applies payer/partner receipt privacy to $label legacy evidence', async ({ operationType, operationLeagueId }) => {
+    const payment = {
+      id: 16, leagueId: 11, bowlerId: 43, paidByUserId: 100, paymentOperationId: `legacy-${operationType}`,
+      amount: 2000, status: 'paid', providerPaymentId: 'sq_legacy', receiptUrl: 'https://cached/legacy', receiptNumber: 'N-legacy',
+    };
+    mockStorage.getPaymentByIdForOrganization.mockResolvedValue(payment);
+    mockStorage.getPaymentsByPaymentOperationId.mockResolvedValue([payment]);
+    const legacyRows = [[{ leagueId: 11, paidByUserId: 100, bowlerId: 43, amountMinor: 2000, allocationIndex: 0 }]];
+    const makeQueryResults = () => [
+      [{ organizationId: 1 }], [],
+      [{ id: payment.paymentOperationId, leagueId: operationLeagueId, status: 'succeeded', currency: 'USD', amountMinor: 2000 }],
+      ...(operationType === 'scheduled' ? [legacyRows[0]] : [[]]),
+      ...(operationType === 'scheduled' ? [] : [legacyRows[0]]),
+      [],
+    ];
+    const payerQueryResults = makeQueryResults();
+    mockDb.select.mockImplementation(() => dbResult(payerQueryResults.shift() ?? []));
+    const payerResponse = await get('/api/payments-provider/payments/16/receipt', PAYER);
+    expect(payerResponse.status).toBe(200);
+    expect((await payerResponse.json()).data).toMatchObject({ receiptUrl: 'https://cached/legacy', amountMinor: 2000, sharedTransaction: { childCount: 1 } });
+
+    const partnerQueryResults = makeQueryResults();
+    mockDb.select.mockImplementation(() => dbResult(partnerQueryResults.shift() ?? []));
+    const partnerResponse = await get('/api/payments-provider/payments/16/receipt', PARTNER);
+    expect(partnerResponse.status).toBe(200);
+    const partnerBody = await partnerResponse.json();
+    expect(partnerBody.data).toMatchObject({ receiptUrl: null, receiptNumber: null, paymentOperationId: null, amountMinor: 2000, sharedTransaction: null });
+    expect(partnerBody.data.allocations).toEqual([expect.objectContaining({ bowlerId: 43, amountMinor: 2000, source: 'unlinked_legacy' })]);
+  });
+
+  it('fails closed on a cross-league operation instead of resolving a raw cached receipt', async () => {
+    const payment = { id: 17, leagueId: 11, bowlerId: 43, paymentOperationId: 'cross-league-op', amount: 2000, status: 'paid', providerPaymentId: 'sq-cross', receiptUrl: 'https://cached/cross', receiptNumber: 'N-cross' };
+    mockStorage.getPaymentByIdForOrganization.mockResolvedValue(payment);
+    const queryResults = [
+      [{ organizationId: 1 }], [],
+      [{ id: 'cross-league-op', leagueId: 99, status: 'succeeded', currency: 'USD', amountMinor: 2000 }], [], [], [],
+    ];
+    mockDb.select.mockImplementation(() => dbResult(queryResults.shift() ?? []));
+    const response = await get('/api/payments-provider/payments/17/receipt', ADMIN);
+    expect(response.status).toBe(404);
+    expect(mockProvider.getPayment).not.toHaveBeenCalled();
+  });
+
   it('lazy-backfills from provider and caches the URL when none is stored yet', async () => {
     mockStorage.getPaymentById.mockResolvedValue({
       id: 6, leagueId: 11, providerPaymentId: 'sq_2',

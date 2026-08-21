@@ -134,7 +134,14 @@ async function buildReceiptEvidence(paymentId: number, organizationId: number, v
   const legacyScope = legacyScheduledRows[0];
   const interactiveLegacyScope = legacyInteractiveRows[0];
   if (operation && operation.leagueId !== null && operation.leagueId !== payment.leagueId && !legacyScope && !interactiveLegacyScope) return null;
-  const [durableDispute] = operation ? await db.select({ id: paymentDisputes.id, amountMinor: paymentDisputes.amountMinor, currency: paymentDisputes.currency, state: paymentDisputes.state }).from(paymentDisputes).where(and(eq(paymentDisputes.organizationId, organizationId), eq(paymentDisputes.paymentOperationId, operation.id))).limit(1) : [];
+  const durableDisputes = operation ? await db.select({ id: paymentDisputes.id, amountMinor: paymentDisputes.amountMinor, currency: paymentDisputes.currency, state: paymentDisputes.state }).from(paymentDisputes).where(and(eq(paymentDisputes.organizationId, organizationId), eq(paymentDisputes.paymentOperationId, operation.id))).orderBy(paymentDisputes.id) : [];
+  let durableDispute: typeof durableDisputes[number] | undefined;
+  for (const candidate of durableDisputes) {
+    if (candidate.amountMinor <= 0 || candidate.currency !== operation?.currency || (durableDispute && durableDispute.state !== candidate.state)) throw new Error('incompatible dispute evidence');
+    if (!durableDispute) durableDispute = { ...candidate };
+    else durableDispute.amountMinor += candidate.amountMinor;
+  }
+  if (durableDispute && operation && durableDispute.amountMinor > operation.amountMinor) throw new Error('dispute exceeds operation');
   const adminPrivilege = viewer.role === 'system_admin' || viewer.role === 'org_admin' || viewer.role === 'payment_manager';
   const initiatingPayer = payment.paidByUserId === viewer.id || legacyRows.some((row) => row.paidByUserId === viewer.id);
   const legacyReceiptAllocations = legacyRows.map((row) => ({ allocationId: null, obligationId: null, occurrenceId: null, bowlerId: row.bowlerId, amountMinor: row.amountMinor, currency: 'USD', state: null, source: 'unlinked_legacy' as const }));
@@ -195,14 +202,20 @@ router.get('/payments/:id/receipt', async (req, res) => {
     }
 
     const organizationId = effectiveOrganizationId;
+    const scopedPayment = organizationId && typeof storage.getPaymentByIdForOrganization === "function"
+      ? await storage.getPaymentByIdForOrganization(id, organizationId)
+      : null;
     const evidence = organizationId && typeof storage.getPaymentByIdForOrganization === "function"
       ? await buildReceiptEvidence(id, organizationId, req.user)
       : null;
+    if (!scopedPayment || (!evidence && scopedPayment.paymentOperationId != null)) {
+      return sendError(res, 'No receipt available for this payment', 404, 'RECEIPT_UNAVAILABLE');
+    }
     const sharedReceiptAllowed = req.user.role === 'system_admin'
       || req.user.role === 'org_admin'
       || req.user.role === 'payment_manager'
       || evidence?.sharedTransaction !== null
-      || !evidence;
+      || scopedPayment.paymentOperationId == null;
     const resolved = sharedReceiptAllowed
       ? await resolveReceiptUrl(id, effectiveOrganizationId ?? undefined)
       : null;

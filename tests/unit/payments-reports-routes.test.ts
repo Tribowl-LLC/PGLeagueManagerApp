@@ -169,6 +169,31 @@ describe('GET /api/payments — caller scope', () => {
     expect(mockListPaymentDisputeSummariesForPayments).not.toHaveBeenCalled();
   });
 
+  it('redacts provider and hosted-receipt identities from ordinary payment-list callers', async () => {
+    const ordinaryUser = { id: 44, role: 'user' as TestRole, organizationId: 1, bowlerId: 77 };
+    mockStorage.getPayments.mockResolvedValue([{
+      id: 94,
+      leagueId: ORG_A_LEAGUE.id,
+      providerPaymentId: 'provider-private',
+      idempotencyKey: 'key-private',
+      squareRefundId: 'refund-private',
+      disputeId: 'dispute-private',
+      receiptUrl: 'https://square.example/private',
+      receiptNumber: 'R-94',
+    }]);
+    const res = await get('/api/payments', ordinaryUser);
+    expect(res.status).toBe(200);
+    expect((await res.json()).data[0]).toMatchObject({
+      id: 94,
+      providerPaymentId: null,
+      idempotencyKey: null,
+      squareRefundId: null,
+      disputeId: null,
+      receiptUrl: null,
+      receiptNumber: null,
+    });
+  });
+
   it('limits a system-admin all-organization projection to the payment rows already selected', async () => {
     const row = {
       id: 93,

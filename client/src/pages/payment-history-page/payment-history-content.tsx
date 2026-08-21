@@ -230,7 +230,7 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
         </ErrorBoundary>
 
         <ErrorBoundary level="section">
-          {canonicalPaymentLoading ? <div className="text-sm text-muted-foreground">Loading canonical payment evidence…</div> : canonicalPaymentError ? <div className="text-sm text-destructive">Financial evidence requires review; payment history is unavailable.</div> : <CanonicalPaymentEvidenceTable rows={canonicalRows} mode={canonicalMode} title="Payment history" />}
+          {canonicalPaymentLoading ? <div className="text-sm text-muted-foreground">Loading canonical payment evidence…</div> : canonicalPaymentError ? <div className="text-sm text-destructive">Financial evidence requires review; payment history is unavailable.</div> : <CanonicalPaymentEvidenceTable rows={canonicalRows} mode={canonicalMode} organizationId={league.organizationId} title="Payment history" />}
           {!canonicalPaymentLoading && !canonicalPaymentError && canonicalReportPage !== undefined && canonicalReportTotalPages !== undefined && canonicalReportTotalPages > 1 && onCanonicalReportPageChange && (
             <div className="mt-3 flex items-center justify-between text-sm">
               <span>Canonical payment page {canonicalReportPage} of {canonicalReportTotalPages}</span>

@@ -1,7 +1,15 @@
-import { describe, expect, it } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { CanonicalPaymentEvidenceTable } from "@/components/canonical-payment-evidence-table";
 import type { CanonicalPaymentRow } from "@shared/canonical-payment-report";
+
+const { csrfFetchMock } = vi.hoisted(() => ({ csrfFetchMock: vi.fn() }));
+vi.mock("@/lib/queryClient", () => ({ csrfFetch: csrfFetchMock }));
+
+beforeEach(() => {
+  csrfFetchMock.mockReset();
+  csrfFetchMock.mockResolvedValue(new Response(JSON.stringify({ data: { receiptUrl: "https://receipt.example" } }), { status: 200 }));
+});
 
 const row = (overrides: Partial<CanonicalPaymentRow> = {}): CanonicalPaymentRow => ({
   paymentId: null,
@@ -31,11 +39,34 @@ const row = (overrides: Partial<CanonicalPaymentRow> = {}): CanonicalPaymentRow 
 
 describe("CanonicalPaymentEvidenceTable", () => {
   it("renders null-payment unresolved evidence and exact allocation details", () => {
-    render(<CanonicalPaymentEvidenceTable rows={[row()]} mode="canonical_with_unlinked_history" />);
+    render(<CanonicalPaymentEvidenceTable rows={[row()]} mode="canonical_with_unlinked_history" organizationId={11} />);
     expect(screen.getByText(/canonical_with_unlinked_history/)).toBeInTheDocument();
     expect(screen.getByText(/operation evidence/)).toBeInTheDocument();
-    expect(screen.getByText(/occurrence occ-1/)).toBeInTheDocument();
+    expect(screen.getByText(/\$20\.00 · active · occurrence occ-1/)).toBeInTheDocument();
     expect(screen.getByText(/\$20\.00 USD/)).toBeInTheDocument();
     expect(screen.getByText(/dispute\/review evidence/)).toBeInTheDocument();
+  });
+
+  it("formats every allocation, preserves evidence labels, and scopes receipt lookup", async () => {
+    render(<CanonicalPaymentEvidenceTable rows={[row({
+      paymentId: 12,
+      status: "refunded",
+      unresolved: false,
+      source: "canonical_allocation",
+      amountMinor: 3000,
+      allocations: [
+        { allocationId: "a1", obligationId: "ob-1", occurrenceId: "occ-1", bowlerId: 42, amountMinor: 2000, currency: "USD", state: "active" },
+        { allocationId: "a2", obligationId: "ob-2", occurrenceId: "occ-2", bowlerId: 42, amountMinor: 1000, currency: "USD", state: "voided" },
+      ],
+      refund: { present: true, amountMinor: 1000, providerRefundId: null },
+      dispute: { present: true, amountMinor: 0, disputeId: null, scope: "transaction", state: "OPEN", reviewRequired: true },
+      receipt: { ...row().receipt, source: "canonical_allocation", availability: "available", receiptUrl: "https://cached", receiptNumber: "R-1" },
+    })]} organizationId={11} mode="canonical" />);
+    expect(screen.getByText(/\$20\.00 · active/)).toBeInTheDocument();
+    expect(screen.getByText(/\$10\.00 · voided/)).toBeInTheDocument();
+    expect(screen.getByText(/refunded \$10\.00/)).toBeInTheDocument();
+    expect(screen.getByText(/dispute\/review evidence \(transaction\) · OPEN/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Receipt" }));
+    await waitFor(() => expect(csrfFetchMock).toHaveBeenCalledWith("/api/payments-provider/payments/12/receipt?organizationId=11"));
   });
 });
