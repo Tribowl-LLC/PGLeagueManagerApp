@@ -68,7 +68,7 @@ async function recreateLegacyTemplateDb(): Promise<void> {
   const adminPool = new pg.Pool({ connectionString: adminDatabaseUrl(), max: 2 });
   try {
     // Forcibly disconnect any lingering sessions, then drop + create.
-    // `WITH (FORCE)` is supported on PG 13+; Neon is on 16/17.
+    // `WITH (FORCE)` is supported on PG 13+; the supported Neon target is PG 17+.
     await adminPool.query(
       `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
        WHERE datname = $1 AND pid <> pg_backend_pid()`,

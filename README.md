@@ -292,7 +292,7 @@ databases.
 | `npm run db:migration-bytes:check` | Verify exact LF migration bytes, metadata, and the checksum manifest. |
 | `npm run db:fingerprint` | Produce the versioned exact application-schema fingerprint from read-only catalog inventory. |
 | `npm run db:adopt-baseline` | Register a matching tool-owned local disposable database after all target and safety gates pass; remote and production adoption are disabled. |
-| `npm run db:check` | Replay, fingerprint, adopt, prove ordering, and exercise refusal cases on disposable PostgreSQL 16 and 17. |
+| `npm run db:check` | Replay, fingerprint, adopt, prove ordering, and exercise refusal cases on disposable PostgreSQL 17. |
 | `npm run db:inventory` | Collect normalized PostgreSQL catalog state plus the approved Drizzle journal in a read-only transaction. |
 | `npm run db:inventory:compare` | Compare two normalized schema inventory files. |
 | `npm run db:inventory:validate-local` | Reproduce the preserved legacy-history mismatch in an ephemeral local container. |

@@ -63,9 +63,11 @@ const POSTGRES_USER = 'postgres';
 const POSTGRES_PASSWORD = 'leaguevault-db-check-local-only';
 const SOURCE_COMMIT = '0000000000000000000000000000000000000000';
 const activeConnectionStrings = new Set<string>();
+const SUPPORTED_POSTGRES_VERSIONS = ['17'] as const;
+type SupportedPostgresVersion = typeof SUPPORTED_POSTGRES_VERSIONS[number];
 
 interface CheckOptions {
-  postgresVersions: Array<'16' | '17'>;
+  postgresVersions: SupportedPostgresVersion[];
 }
 
 interface ProofMetadata {
@@ -78,21 +80,26 @@ interface DbCheckContainer extends OwnedInventoryContainer {
 }
 
 function parseOptions(args: string[]): CheckOptions {
-  const versions: Array<'16' | '17'> = [];
+  const versions: SupportedPostgresVersion[] = [];
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
     if (argument === '--postgres-version') {
       const version = args[index + 1];
-      if (version !== '16' && version !== '17') {
-        throw new Error('--postgres-version must be 16 or 17.');
+      const supportedVersion = SUPPORTED_POSTGRES_VERSIONS.find((candidate) => candidate === version);
+      if (!supportedVersion) {
+        throw new Error(
+          `--postgres-version must be one of: ${SUPPORTED_POSTGRES_VERSIONS.join(', ')}.`,
+        );
       }
-      versions.push(version);
+      versions.push(supportedVersion);
       index += 1;
       continue;
     }
     throw new Error(`Unknown db:check option: ${argument ?? ''}`);
   }
-  return { postgresVersions: versions.length > 0 ? versions : ['16', '17'] };
+  return {
+    postgresVersions: versions.length > 0 ? versions : [...SUPPORTED_POSTGRES_VERSIONS],
+  };
 }
 
 function redact(message: string): string {
@@ -146,7 +153,7 @@ function run(command: string, args: string[], environment = process.env): string
 
 function createContainer(
   runId: string,
-  version: '16' | '17',
+  version: SupportedPostgresVersion,
   approvedDatabases: readonly string[],
 ): DbCheckContainer {
   const ownedRunId = `${runId}-${version}`;
@@ -835,7 +842,7 @@ async function expectAdoptionRefusal(
 }
 
 async function validateVersion(
-  version: '16' | '17',
+  version: SupportedPostgresVersion,
   runId: string,
   artifactDirectory: string,
 ): Promise<void> {
