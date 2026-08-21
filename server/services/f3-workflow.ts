@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import {
   bowlerLeagues, bowlers, bowlerOccurrenceObligations, financialActivations,
   bowlerPaymentLinks,
@@ -41,7 +41,7 @@ async function loadF3PayeeDisplay(tx: F3DbTransaction, organizationId: number, c
 
 type F3ActivationEvidenceRow = Pick<typeof financialActivations.$inferSelect, "id" | "currentRevision" | "sourceFingerprint" | "expectedGroupCount" | "expectedResponsibilityCount">;
 
-async function requireLiveF1ActivationEvidence(
+export async function requireLiveF1ActivationEvidence(
   tx: F3DbTransaction,
   input: { organizationId: number; leagueId: number },
   activation: F3ActivationEvidenceRow,
@@ -514,5 +514,15 @@ async function supersedeAuthorizationPlans(tx: F3DbTransaction, authorization: t
     const [supersededPlan] = await tx.update(occurrenceCollectionPlans).set({ state: "superseded", currentRevision: plan.currentRevision + 1, updatedAt: new Date().toISOString() }).where(and(eq(occurrenceCollectionPlans.id, plan.id), eq(occurrenceCollectionPlans.currentRevision, plan.currentRevision))).returning();
     const planItems = await tx.select().from(occurrenceCollectionPlanItems).where(and(eq(occurrenceCollectionPlanItems.planId, plan.id), eq(occurrenceCollectionPlanItems.organizationId, authorization.organizationId), eq(occurrenceCollectionPlanItems.leagueId, authorization.leagueId)));
     await tx.insert(occurrenceCollectionPlanRevisions).values({ organizationId: authorization.organizationId, leagueId: authorization.leagueId, planId: plan.id, revisionNumber: supersededPlan.currentRevision, snapshotSchemaVersion: 1, beforeSnapshot: { state: plan.state, plan, items: planItems }, afterSnapshot: { state: supersededPlan.state, plan: supersededPlan, items: planItems }, recordedByUserId: authorization.createdByUserId });
+    await tx.update(paymentOperations).set({ status: "canceled", nextAttemptAt: null, leaseOwner: null, leaseToken: null, leaseExpiresAt: null, dispatchClaimedAt: null, errorClassification: null, errorCode: null, completedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }).where(and(
+      eq(paymentOperations.organizationId, authorization.organizationId),
+      eq(paymentOperations.leagueId, authorization.leagueId),
+      eq(paymentOperations.canonicalPlanId, plan.id),
+      eq(paymentOperations.operationType, "canonical_autopay_charge"),
+      or(
+        inArray(paymentOperations.status, ["pending", "retry_scheduled"]),
+        and(eq(paymentOperations.status, "leased"), isNull(paymentOperations.dispatchClaimedAt)),
+      ),
+    ));
   }
 }

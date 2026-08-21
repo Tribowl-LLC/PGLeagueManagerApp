@@ -379,6 +379,9 @@ export const occurrenceCollectionPlans = pgTable("occurrence_collection_plans", 
     .where(sql`${table.state} <> 'superseded'`),
   leagueStateIdx: index("collection_plans_league_state_idx")
     .on(table.organizationId, table.leagueId, table.state),
+  canonicalWakeIdx: index("collection_plans_canonical_wake_idx")
+    .on(table.organizationId, table.leagueId, table.state, table.triggerOccurrenceId)
+    .where(sql`${table.state} = 'ready' AND ${table.triggerOccurrenceId} IS NOT NULL`),
   triggerIdx: index("collection_plans_trigger_idx").on(table.triggerOccurrenceId),
   collectAtIdx: index("collection_plans_collect_at_idx")
     .on(table.organizationId, table.leagueId, table.collectAt),

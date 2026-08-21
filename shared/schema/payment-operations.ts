@@ -20,11 +20,13 @@ import { locations } from "./locations";
 import { payments, paymentSchedules } from "./payments";
 import { users } from "./users";
 import { leagueOccurrences } from "./canonical-occurrences";
+import { occurrenceCollectionPlans } from "./occurrence-financials";
 
 export const PAYMENT_OPERATION_TYPES = [
   "scheduled_charge",
   "interactive_charge",
   "refund",
+  "canonical_autopay_charge",
 ] as const;
 export type PaymentOperationType = (typeof PAYMENT_OPERATION_TYPES)[number];
 
@@ -91,6 +93,11 @@ export const paymentOperations = pgTable("payment_operations", {
     .references(() => paymentSchedules.id, { onDelete: "restrict" }),
   billingCycleAt: timestamp("billing_cycle_at", { mode: "string" }),
   triggerOccurrenceId: uuid("trigger_occurrence_id"),
+  // F4 linkage is nullable for all pre-F4 operations.  The composite
+  // references below make a canonical operation impossible to point at a
+  // plan in another tenant or league.
+  leagueId: integer("league_id"),
+  canonicalPlanId: uuid("canonical_plan_id"),
   amountMinor: integer("amount_minor").notNull(),
   currency: varchar("currency", { length: 3 }).notNull(),
   requestFingerprint: varchar("request_fingerprint", { length: 76 }).notNull(),
@@ -112,6 +119,10 @@ export const paymentOperations = pgTable("payment_operations", {
   leaseOwner: varchar("lease_owner", { length: 128 }),
   leaseToken: uuid("lease_token"),
   leaseExpiresAt: timestamp("lease_expires_at", { mode: "string" }),
+  // Set atomically under the org/league serialization lock immediately
+  // before provider dispatch.  A non-null value means revoke may not cancel
+  // this exact in-flight attempt, but still blocks later plans.
+  dispatchClaimedAt: timestamp("dispatch_claimed_at", { mode: "string" }),
   leaseRecoveryCount: integer("lease_recovery_count").notNull().default(0),
   lastLeaseRecoveredAt: timestamp("last_lease_recovered_at", { mode: "string" }),
   errorClassification: text("error_classification", {
@@ -125,6 +136,8 @@ export const paymentOperations = pgTable("payment_operations", {
 }, (table) => ({
   tenantCurrencyReferenceUnique: uniqueIndex("payment_operations_tenant_currency_reference_unique")
     .on(table.id, table.organizationId, table.currency),
+  tenantIdentityUnique: uniqueIndex("payment_operations_tenant_identity_unique")
+    .on(table.id, table.organizationId),
   providerIdempotencyUnique: uniqueIndex("payment_operations_provider_idempotency_key_unique")
     .on(table.providerIdempotencyKey),
   recurringCycleUnique: uniqueIndex("payment_operations_recurring_cycle_unique")
@@ -151,18 +164,52 @@ export const paymentOperations = pgTable("payment_operations", {
     .where(sql`${table.status} = 'leased'`),
   triggerOccurrenceIdx: index("payment_operations_trigger_occurrence_idx")
     .on(table.triggerOccurrenceId),
+  canonicalPlanIdx: index("payment_operations_canonical_plan_idx")
+    .on(table.organizationId, table.leagueId, table.canonicalPlanId),
+  canonicalPlanUnique: uniqueIndex("payment_operations_canonical_plan_unique")
+    .on(table.organizationId, table.leagueId, table.canonicalPlanId)
+    .where(sql`${table.operationType} = 'canonical_autopay_charge'`),
+  canonicalTargetUnique: uniqueIndex("payment_operations_canonical_target_unique")
+    .on(table.organizationId, table.targetKey)
+    .where(sql`${table.operationType} = 'canonical_autopay_charge'`),
+  leagueTenantFk: foreignKey({
+    name: "payment_operations_league_tenant_fk",
+    columns: [table.leagueId, table.organizationId],
+    foreignColumns: [leagues.id, leagues.organizationId],
+  }).onDelete("restrict"),
+  canonicalPlanTenantFk: foreignKey({
+    name: "payment_operations_canonical_plan_tenant_fk",
+    columns: [table.canonicalPlanId, table.organizationId, table.leagueId],
+    foreignColumns: [occurrenceCollectionPlans.id, occurrenceCollectionPlans.organizationId, occurrenceCollectionPlans.leagueId],
+  }).onDelete("restrict"),
   triggerOccurrenceTenantFk: foreignKey({
     name: "payment_operations_trigger_occurrence_tenant_fk",
     columns: [table.triggerOccurrenceId, table.organizationId],
     foreignColumns: [leagueOccurrences.id, leagueOccurrences.organizationId],
   }).onDelete("restrict"),
+  triggerOccurrenceLeagueTenantFk: foreignKey({
+    name: "payment_operations_trigger_occurrence_league_tenant_fk",
+    columns: [table.triggerOccurrenceId, table.organizationId, table.leagueId],
+    foreignColumns: [leagueOccurrences.id, leagueOccurrences.organizationId, leagueOccurrences.leagueId],
+  }).onDelete("restrict"),
   operationTypeCheck: check(
     "payment_operations_operation_type_check",
-    sql`${table.operationType} IN ('scheduled_charge', 'interactive_charge', 'refund')`,
+    sql`${table.operationType} IN ('scheduled_charge', 'interactive_charge', 'refund', 'canonical_autopay_charge')`,
   ),
   statusCheck: check(
     "payment_operations_status_check",
     sql`${table.status} IN ('pending', 'leased', 'provider_unknown', 'retry_scheduled', 'succeeded', 'action_required', 'reconciliation_required', 'failed_terminal', 'canceled')`,
+  ),
+  dispatchClaimStateCheck: check(
+    "payment_operations_dispatch_claim_state_check",
+    sql`(
+      (${table.operationType} = 'canonical_autopay_charge'
+        AND (
+          (${table.status} IN ('pending', 'retry_scheduled') AND ${table.dispatchClaimedAt} IS NULL)
+          OR ${table.status} IN ('leased', 'provider_unknown', 'reconciliation_required', 'succeeded', 'action_required', 'failed_terminal', 'canceled')
+        ))
+      OR (${table.operationType} <> 'canonical_autopay_charge' AND ${table.dispatchClaimedAt} IS NULL)
+    )`,
   ),
   amountCheck: check("payment_operations_amount_minor_check", sql`${table.amountMinor} > 0`),
   currencyCheck: check("payment_operations_currency_check", sql`${table.currency} ~ '^[A-Z]{3}$'`),
@@ -234,16 +281,35 @@ export const paymentOperations = pgTable("payment_operations", {
       AND ${table.paymentScheduleId} IS NOT NULL
       AND ${table.billingCycleAt} IS NOT NULL
     ) OR (
-      ${table.operationType} <> 'scheduled_charge'
+      ${table.operationType} = 'canonical_autopay_charge'
+      AND ${table.paymentScheduleId} IS NULL
       AND ${table.billingCycleAt} IS NULL
+      AND ${table.leagueId} IS NOT NULL
+      AND ${table.canonicalPlanId} IS NOT NULL
+      AND ${table.authorizingUserId} IS NOT NULL
+    ) OR (
+      ${table.operationType} IN ('interactive_charge', 'refund')
+      AND ${table.paymentScheduleId} IS NULL
+      AND ${table.billingCycleAt} IS NULL
+      AND ${table.leagueId} IS NULL
+      AND ${table.canonicalPlanId} IS NULL
     )`,
   ),
   triggerOccurrenceCheck: check(
     "payment_operations_trigger_occurrence_check",
-    sql`${table.triggerOccurrenceId} IS NULL OR (
+    sql`(
       ${table.operationType} = 'scheduled_charge'
-      AND ${table.paymentScheduleId} IS NOT NULL
-      AND ${table.billingCycleAt} IS NOT NULL
+      AND (${table.triggerOccurrenceId} IS NULL OR (
+        ${table.paymentScheduleId} IS NOT NULL AND ${table.billingCycleAt} IS NOT NULL
+      ))
+    ) OR (
+      ${table.operationType} = 'canonical_autopay_charge'
+      AND ${table.triggerOccurrenceId} IS NOT NULL
+      AND ${table.canonicalPlanId} IS NOT NULL
+      AND ${table.leagueId} IS NOT NULL
+    ) OR (
+      ${table.operationType} IN ('interactive_charge', 'refund')
+      AND ${table.triggerOccurrenceId} IS NULL
     )`,
   ),
   dueStateCheck: check(
