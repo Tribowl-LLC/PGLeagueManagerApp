@@ -129,10 +129,10 @@ async function buildReceiptEvidence(paymentId: number, organizationId: number, v
     eq(paymentOperations.leagueId, payment.leagueId),
     eq(paymentOperations.id, payment.paymentOperationId),
   )).limit(1) : [];
-  const privileged = viewer.role === 'system_admin' || viewer.role === 'org_admin' || viewer.role === 'payment_manager' || payment.paidByUserId === viewer.id;
-  const ownAllocation = viewer.bowlerId ? allocations.filter((allocation) => allocation.bowlerId === viewer.bowlerId) : [];
+  const adminPrivilege = viewer.role === 'system_admin' || viewer.role === 'org_admin' || viewer.role === 'payment_manager';
   const initiatingPayer = payment.paidByUserId === viewer.id;
-  const sharedAllowed = privileged || initiatingPayer || (!operation && viewer.bowlerId === payment.bowlerId);
+  const ownAllocation = viewer.bowlerId ? allocations.filter((allocation) => allocation.bowlerId === viewer.bowlerId) : [];
+  const sharedAllowed = adminPrivilege || initiatingPayer || (!operation && viewer.bowlerId === payment.bowlerId);
   const visibleAllocations = sharedAllowed ? allocations : ownAllocation;
   const shared = operation ? { groupKey: `operation:${operation.id}`, childCount: (await storage.getPaymentsByPaymentOperationId(organizationId, operation.id)).length } : null;
   const unresolved = !!operation && ['pending', 'leased', 'provider_unknown', 'retry_scheduled', 'action_required', 'reconciliation_required'].includes(operation.status);
@@ -142,18 +142,18 @@ async function buildReceiptEvidence(paymentId: number, organizationId: number, v
     organizationId,
     leagueId: payment.leagueId,
     paymentId: payment.id,
-    paymentOperationId: privileged ? payment.paymentOperationId : null,
-    operationStatus: privileged ? operation?.status ?? null : null,
+    paymentOperationId: adminPrivilege ? payment.paymentOperationId : null,
+    operationStatus: adminPrivilege ? operation?.status ?? null : null,
     amountMinor: sharedAllowed ? payment.amount : visibleAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0),
     currency: 'USD',
     evidenceStatus: unresolved ? 'unresolved' : payment.status === 'paid' ? 'confirmed_paid' : payment.status === 'refunded' ? 'refunded' : payment.status === 'disputed' ? 'disputed' : 'review_required',
     source: allocations.length > 0 ? 'canonical_allocation' : 'unlinked_legacy',
     allocations: visibleAllocations.map((allocation) => ({ allocationId: allocation.id, obligationId: allocation.obligationId, occurrenceId: allocation.occurrenceId, bowlerId: allocation.bowlerId, amountMinor: allocation.amountMinor, currency: allocation.currency, state: allocation.state, source: 'canonical_allocation' as const })),
-    refund: { present: payment.status === 'refunded' || payment.squareRefundId !== null, amountMinor: payment.status === 'refunded' ? payment.amount : 0, providerRefundId: payment.squareRefundId },
-    dispute: { present: payment.status === 'disputed' || !!payment.disputeId, amountMinor: payment.status === 'disputed' ? payment.amount : 0, disputeId: payment.disputeId },
+    refund: { present: payment.status === 'refunded' || payment.squareRefundId !== null, amountMinor: payment.status === 'refunded' ? payment.amount : 0, providerRefundId: adminPrivilege ? payment.squareRefundId : null },
+    dispute: { present: payment.status === 'disputed' || !!payment.disputeId, amountMinor: payment.status === 'disputed' ? payment.amount : 0, disputeId: adminPrivilege ? payment.disputeId : null },
     unresolved,
     sharedTransaction: sharedAllowed ? shared : null,
-    canResend: privileged && Boolean(payment.receiptUrl),
+    canResend: adminPrivilege && Boolean(payment.receiptUrl),
   });
 }
 
@@ -190,6 +190,7 @@ router.get('/payments/:id/receipt', async (req, res) => {
       || req.user.role === 'org_admin'
       || req.user.role === 'payment_manager'
       || evidence?.sharedTransaction !== null
+      || (evidence?.source === 'unlinked_legacy' && req.user.bowlerId !== null && req.user.bowlerId !== undefined)
       || !evidence;
     const resolved = sharedReceiptAllowed
       ? await resolveReceiptUrl(id, effectiveOrganizationId ?? undefined)

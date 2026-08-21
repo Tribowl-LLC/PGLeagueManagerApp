@@ -101,10 +101,14 @@ router.get("/payments", async (req, res) => {
       transactions: report.transactions.map((transaction, index) => {
         const rows = transaction.rows.map(redact);
         const amountMinor = rows.reduce((sum, row) => sum + row.amountMinor, 0);
-        return { ...transaction, groupKey: `transaction:${report.page}:${index + 1}`, paymentOperationId: null, combinedChargeGroupId: null, paymentIds: [], amountMinor, rows };
+        const dispute = transaction.dispute
+          ? { ...transaction.dispute, amountMinor: 0, disputeId: null }
+          : undefined;
+        return { ...transaction, groupKey: `transaction:${report.page}:${index + 1}`, paymentOperationId: null, combinedChargeGroupId: null, paymentIds: [], amountMinor, dispute, rows };
       }),
     };
-    return sendSuccess(res, { ...redactedReport, fingerprint: canonicalPaymentReportFingerprint(redactedReport) });
+    const { fingerprint: _privilegedFingerprint, ...redactedSemantic } = redactedReport;
+    return sendSuccess(res, { ...redactedReport, fingerprint: canonicalPaymentReportFingerprint(redactedSemantic) });
   } catch (error) {
     if (error instanceof CanonicalPaymentReportIncompatibilityError) {
       return sendError(res, "Financial evidence requires review", 409, "FINANCIAL_EVIDENCE_INCOMPATIBLE");

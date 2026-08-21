@@ -36,6 +36,7 @@ import {
 import { PaymentsTable } from "@/components/payments-table";
 import { RefundPaymentDialog } from "@/components/refund-payment-dialog";
 import { PaginationControls } from "@/components/pagination-controls";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { CanonicalPaymentReport } from "@shared/canonical-payment-report";
 
 const PAGE_SIZE_OPTIONS = [25, 50, 100];
@@ -54,6 +55,7 @@ export default function PaymentsPage() {
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [selectedLeagueId, setSelectedLeagueId] = useState<number | undefined>();
   const { toast } = useToast();
   const [, navigate] = useLocation();
 
@@ -161,11 +163,11 @@ export default function PaymentsPage() {
   });
 
   const payments = useMemo(() => paymentsResponse?.data || [], [paymentsResponse?.data]);
-  const pagination = paymentsResponse?.pagination;
   const bowlers = useMemo(() => bowlersResponse?.data || [], [bowlersResponse?.data]);
   const leagues = leaguesResponse?.data || [];
+  const reportLeagues = selectedLeagueId === undefined ? leagues.slice(0, 1) : leagues.filter((league) => league.id === selectedLeagueId);
   const financialReports = useQueries({
-    queries: leagues.map((league) => ({
+    queries: reportLeagues.map((league) => ({
       queryKey: ["/api/financials/f5/payments", league.id, page, pageSize, userResponse?.data?.organizationId, userResponse?.data?.role],
       queryFn: async ({ signal }: { signal: AbortSignal }) => {
         const organizationScope = userResponse?.data?.role === "system_admin" && userResponse.data.organizationId
@@ -211,18 +213,58 @@ export default function PaymentsPage() {
     }
     return map;
   })();
-  const defaultLeagueId = leagues.length > 0 ? leagues[0].id : undefined;
+  const defaultLeagueId = reportLeagues.length > 0 ? reportLeagues[0].id : undefined;
 
-  const projectedPayments = useMemo(() => payments.filter((payment) => paymentBusinessDates.has(payment.id)), [payments, paymentBusinessDates]);
+  // The visible table is projection-owned. Raw payment rows are retained only
+  // as optional action metadata; a canonical row is never hidden because the
+  // legacy endpoint happened to paginate differently.
+  const projectionPayments = useMemo(() => {
+    const rawById = new Map(payments.map((payment) => [payment.id, payment]));
+    return [...paymentCanonicalRows.values()].map((row) => {
+      if (row.paymentId !== null) {
+        const existing = rawById.get(row.paymentId);
+        if (existing) return existing;
+      }
+      const synthetic: Payment = {
+        id: row.paymentId ?? 0,
+        bowlerId: row.bowlerId,
+        leagueId: row.leagueId,
+        amount: row.amountMinor,
+        status: row.status === "confirmed_paid" ? "paid" : row.status === "disputed" || row.status === "failed" || row.status === "pending" || row.status === "refunded" ? row.status : "pending",
+        type: row.paymentType,
+        weekOf: row.businessDate,
+        providerPaymentId: null,
+        receiptUrl: null,
+        receiptNumber: null,
+        receiptEmailMissing: true,
+        squareRefundId: row.refund.providerRefundId,
+        disputeId: row.dispute.disputeId,
+        lineageAmount: null,
+        prizeFundAmount: null,
+        checkNumber: null,
+        idempotencyKey: null,
+        refundReason: null,
+        refundedAt: null,
+        disputedAt: null,
+        notes: null,
+        paidByUserId: null,
+        combinedChargeGroupId: null,
+        paymentOperationId: null,
+        paymentOperationAllocationIndex: null,
+        createdAt: row.businessDate,
+      };
+      return synthetic;
+    });
+  }, [payments, paymentCanonicalRows]);
   const filteredPayments = useMemo(() => {
-    const source = projectedPayments;
+    const source = projectionPayments;
     if (!searchQuery.trim()) return source;
     const searchLower = searchQuery.toLowerCase();
     return source.filter((payment) => {
       const bowler = bowlers.find((b) => b.id === payment.bowlerId);
       return bowler?.name?.toLowerCase().includes(searchLower);
     });
-  }, [projectedPayments, bowlers, searchQuery]);
+  }, [projectionPayments, bowlers, searchQuery]);
 
   const handlePageChange = useCallback((newPage: number) => {
     setPage(newPage);
@@ -234,7 +276,7 @@ export default function PaymentsPage() {
     setPage(1);
   }, []);
 
-  if ((loadingPayments || loadingBowlers) && !payments.length) {
+  if ((loadingPayments || loadingBowlers) && !projectionPayments.length) {
     return (
       <Layout>
         <PageLoadingState />
@@ -261,6 +303,12 @@ export default function PaymentsPage() {
           </div>
 
           <div className="flex items-center gap-x-2 mb-6">
+            {leagues.length > 0 && (
+              <Select value={String(defaultLeagueId ?? "")} onValueChange={(value) => { setSelectedLeagueId(Number(value)); setPage(1); }}>
+                <SelectTrigger className="w-56" aria-label="Financial league scope"><SelectValue placeholder="Select league" /></SelectTrigger>
+                <SelectContent>{leagues.map((league) => <SelectItem key={league.id} value={String(league.id)}>{league.name}</SelectItem>)}</SelectContent>
+              </Select>
+            )}
             <div className="relative w-full max-w-sm">
               <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
               <Input
@@ -277,7 +325,7 @@ export default function PaymentsPage() {
           </div>
 
           <PaymentsTable
-            payments={payments}
+            payments={projectionPayments}
             filteredPayments={filteredPayments}
             bowlers={bowlers}
             isAdmin={isAdmin}
@@ -292,12 +340,12 @@ export default function PaymentsPage() {
             paymentCanonicalRows={paymentCanonicalRows}
           />
 
-          {pagination && (
+          {financialReportData.length > 0 && (
             <PaginationControls
               page={page}
               pageSize={pageSize}
-              total={pagination.total}
-              totalPages={pagination.totalPages}
+              total={financialReportData.reduce((sum, report) => sum + (report?.totalTransactions ?? 0), 0)}
+              totalPages={Math.max(1, Math.ceil(financialReportData.reduce((sum, report) => sum + (report?.totalTransactions ?? 0), 0) / pageSize))}
               pageSizeOptions={PAGE_SIZE_OPTIONS}
               itemLabel="payments"
               onPageChange={handlePageChange}

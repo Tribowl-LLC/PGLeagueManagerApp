@@ -28,6 +28,7 @@ export default function BowlerViewPage() {
   const params = useParams();
   const bowlerId = parseInt(params.bowlerId!);
   const [selectedLeagueId, setSelectedLeagueId] = useState<number | null>(null);
+  const [paymentReportPage, setPaymentReportPage] = useState(1);
   const [showEditDialog, setShowEditDialog] = useState(false);
 
   const { data: currentUserResponse } = useQuery<ApiResponse<User>>({
@@ -133,15 +134,15 @@ export default function BowlerViewPage() {
     retry: false,
   });
 
-  const payments = paymentsResponse?.data || [];
+  const payments = useMemo(() => paymentsResponse?.data ?? [], [paymentsResponse?.data]);
 
-  const { data: paymentReportResponse } = useQuery<{ data: CanonicalPaymentReport }>({
-    queryKey: ["/api/financials/f5/payments", effectiveLeagueId, bowlerId, currentUserRole, currentUserResponse?.data?.organizationId],
+  const { data: paymentReportResponse, isLoading: paymentReportLoading, error: paymentReportError } = useQuery<{ data: CanonicalPaymentReport }>({
+    queryKey: ["/api/financials/f5/payments", effectiveLeagueId, bowlerId, paymentReportPage, currentUserRole, currentUserResponse?.data?.organizationId],
     queryFn: async ({ signal }) => {
       const scope = currentUserRole === "system_admin" && currentUserResponse?.data?.organizationId
         ? `&organizationId=${encodeURIComponent(currentUserResponse.data.organizationId)}`
         : "";
-      const response = await fetch(`/api/financials/f5/payments?leagueId=${effectiveLeagueId}&bowlerId=${bowlerId}&page=1&limit=200${scope}`, {
+      const response = await fetch(`/api/financials/f5/payments?leagueId=${effectiveLeagueId}&bowlerId=${bowlerId}&page=${paymentReportPage}&limit=200${scope}`, {
         credentials: "include",
         headers: { Accept: "application/json" },
         signal,
@@ -165,6 +166,20 @@ export default function BowlerViewPage() {
     for (const row of paymentReportResponse?.data?.unlinkedHistory ?? []) if (row.paymentId !== null) map.set(row.paymentId, row.status);
     return map;
   }, [paymentReportResponse?.data]);
+  const projectedPayments = useMemo(() => {
+    const rawById = new Map(payments.map((payment) => [payment.id, payment]));
+    return [...(paymentReportResponse?.data?.rows ?? []), ...(paymentReportResponse?.data?.unlinkedHistory ?? [])]
+      .filter((row) => row.paymentId !== null)
+      .map((row) => {
+        if (row.paymentId !== null) {
+          const existing = rawById.get(row.paymentId);
+          if (existing) return existing;
+        }
+        const displayStatus = row.status === "confirmed_paid" ? "paid" : row.status === "disputed" || row.status === "failed" || row.status === "pending" || row.status === "refunded" ? row.status : "pending";
+        const synthetic: Payment = { id: row.paymentId ?? 0, bowlerId: row.bowlerId, leagueId: row.leagueId, amount: row.amountMinor, lineageAmount: null, prizeFundAmount: null, weekOf: row.businessDate, status: displayStatus, type: row.paymentType, checkNumber: null, providerPaymentId: null, idempotencyKey: null, squareRefundId: null, refundReason: null, refundedAt: null, disputeId: null, disputedAt: null, receiptUrl: null, receiptNumber: null, receiptEmailMissing: true, notes: null, paidByUserId: null, combinedChargeGroupId: null, paymentOperationId: null, paymentOperationAllocationIndex: null, createdAt: row.businessDate };
+        return synthetic;
+      });
+  }, [payments, paymentReportResponse?.data]);
 
   const { data: financialResponse, isLoading: loadingFinancials, error: financialError } = useQuery<ApiResponse<{
     mode: string;
@@ -265,7 +280,7 @@ export default function BowlerViewPage() {
           <div className="flex flex-col gap-1">
             <Select
               value={effectiveLeagueId?.toString() || ""}
-              onValueChange={(value) => setSelectedLeagueId(parseInt(value))}
+              onValueChange={(value) => { setSelectedLeagueId(parseInt(value)); setPaymentReportPage(1); }}
             >
               <SelectTrigger className="w-[300px]">
                 <SelectValue placeholder="Select a league" />
@@ -293,12 +308,13 @@ export default function BowlerViewPage() {
       </div>
 
       <ErrorBoundary level="section">
-        <BowlerPaymentHistoryTable
-          payments={payments}
+        {paymentReportLoading ? <div className="text-sm text-muted-foreground">Loading canonical payment evidence…</div> : paymentReportError ? <div className="text-sm text-destructive">Financial evidence requires review; payment history is unavailable.</div> : <BowlerPaymentHistoryTable
+          payments={projectedPayments}
           locationId={league?.locationId ?? null}
           paymentBusinessDates={paymentBusinessDates}
           paymentEvidenceStatuses={paymentEvidenceStatuses}
-        />
+        />}
+        {!paymentReportLoading && !paymentReportError && paymentReportResponse?.data && paymentReportResponse.data.totalRows > paymentReportPage * 200 && <button type="button" className="mt-3 text-sm underline" onClick={() => setPaymentReportPage((page) => page + 1)}>Next canonical payment page</button>}
       </ErrorBoundary>
 
       {canManagePaymentLinks && bowler && (

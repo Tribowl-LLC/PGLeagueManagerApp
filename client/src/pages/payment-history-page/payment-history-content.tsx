@@ -63,6 +63,12 @@ interface PaymentHistoryContentProps {
   receiptEmail: string;
   onReceiptEmailChange: (email: string) => void;
   bowlerPayments: Payment[];
+  canonicalPayments: Payment[];
+  canonicalPaymentLoading: boolean;
+  canonicalPaymentError: Error | null;
+  canonicalReportPage?: number;
+  canonicalReportTotalPages?: number;
+  onCanonicalReportPageChange?: (page: number) => void;
   paymentBusinessDates: Map<number, string>;
   paymentEvidenceStatuses: Map<number, CanonicalPaymentRow["status"]>;
   occurrenceAmountMinor?: number;
@@ -123,6 +129,12 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
   receiptEmail,
   onReceiptEmailChange,
   bowlerPayments,
+  canonicalPayments,
+  canonicalPaymentLoading,
+  canonicalPaymentError,
+  canonicalReportPage,
+  canonicalReportTotalPages,
+  onCanonicalReportPageChange,
   paymentBusinessDates,
   paymentEvidenceStatuses,
   occurrenceAmountMinor,
@@ -214,7 +226,13 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
         </ErrorBoundary>
 
         <ErrorBoundary level="section">
-          <BowlerPaymentTable payments={bowlerPayments} league={league} paymentBusinessDates={paymentBusinessDates} paymentEvidenceStatuses={paymentEvidenceStatuses} />
+          {canonicalPaymentLoading ? <div className="text-sm text-muted-foreground">Loading canonical payment evidence…</div> : canonicalPaymentError ? <div className="text-sm text-destructive">Financial evidence requires review; payment history is unavailable.</div> : <BowlerPaymentTable payments={canonicalPayments} league={league} paymentBusinessDates={paymentBusinessDates} paymentEvidenceStatuses={paymentEvidenceStatuses} />}
+          {!canonicalPaymentLoading && !canonicalPaymentError && canonicalReportPage !== undefined && canonicalReportTotalPages !== undefined && canonicalReportTotalPages > 1 && onCanonicalReportPageChange && (
+            <div className="mt-3 flex items-center justify-between text-sm">
+              <span>Canonical payment page {canonicalReportPage} of {canonicalReportTotalPages}</span>
+              <button type="button" className="underline" disabled={canonicalReportPage >= canonicalReportTotalPages} onClick={() => onCanonicalReportPageChange(canonicalReportPage + 1)}>Next page</button>
+            </div>
+          )}
         </ErrorBoundary>
       </div>
 

@@ -15,6 +15,12 @@ import {
   paymentOperationOccurrenceSnapshots,
   paymentOperations,
   payments,
+  scheduledPaymentOperationAllocations,
+  scheduledPaymentOperationLineItems,
+  scheduledPaymentOperationSnapshots,
+  interactivePaymentOperationAllocations,
+  interactivePaymentOperationLineItems,
+  interactivePaymentOperationSnapshots,
   type Payment,
 } from "@shared/schema";
 import {
@@ -26,6 +32,9 @@ import {
 } from "@shared/canonical-payment-report";
 import { paymentReceiptContract } from "@shared/payment-receipt";
 import { validateF4ExecutionSnapshot } from "@shared/f4-canonical-autopay-contract";
+import { fingerprintPaymentOperationOccurrenceSnapshot, validatePaymentOperationOccurrenceSnapshot } from "../services/payment-operation-occurrence-snapshot.js";
+import { reconstructScheduledPaymentSnapshot } from "../services/scheduled-payment-operation-snapshot.js";
+import { reconstructInteractivePaymentSnapshot } from "../services/interactive-payment-operation-snapshot.js";
 
 export const F5_PAGE_DEFAULT = 50;
 export const F5_PAGE_MAX = 200;
@@ -117,7 +126,7 @@ function revisionSemanticsCoverage(
     if (!revision || revision.revisionNumber !== parent.currentRevision || !revision.afterSnapshot || typeof revision.afterSnapshot !== "object") return false;
     const snapshot = revision.afterSnapshot as Record<string, unknown>;
     if (!("state" in snapshot) || snapshot.state !== parent.state) return false;
-    return Object.entries(expected(parent)).filter(([key]) => key in snapshot).every(([key, value]) => snapshot[key] === value);
+    return Object.entries(expected(parent)).every(([key, value]) => key in snapshot && snapshot[key] === value);
   });
 }
 
@@ -137,17 +146,23 @@ function groupKey(payment: Payment): { key: string; operationId: string | null; 
   return { key: `payment:${payment.id}`, operationId: null, combinedId: null };
 }
 
-function buildTransactions(rows: CanonicalPaymentRow[], paymentsById: Map<number, Payment>, operationsById: Map<string, Operation>): CanonicalPaymentTransactionGroup[] {
+type DurableOperationDispute = { amountMinor: number; disputeId: string; state: string; currency: string };
+
+function buildTransactions(rows: CanonicalPaymentRow[], paymentsById: Map<number, Payment>, operationsById: Map<string, Operation>, disputesByOperation: Map<string, DurableOperationDispute>): CanonicalPaymentTransactionGroup[] {
   const groups = new Map<string, CanonicalPaymentTransactionGroup>();
   for (const row of rows) {
     const payment = row.paymentId === null ? undefined : paymentsById.get(row.paymentId);
     const identity = payment
       ? groupKey(payment)
       : { key: `operation:${row.paymentOperationId ?? row.paymentId ?? row.bowlerId}`, operationId: row.paymentOperationId, combinedId: null };
+    const durable = identity.operationId ? disputesByOperation.get(identity.operationId) : undefined;
     const existing = groups.get(identity.key);
     if (existing) {
       if (!existing.paymentOperationId) existing.amountMinor += row.amountMinor;
       if (row.paymentId !== null) existing.paymentIds = [...new Set([...existing.paymentIds, row.paymentId])].sort((a, b) => a - b);
+      if (!existing.dispute && row.dispute.present) existing.dispute = durable
+        ? { present: true, amountMinor: durable.amountMinor, disputeId: durable.disputeId, currency: durable.currency, state: durable.state, reviewRequired: true }
+        : { ...row.dispute, currency: row.currency, state: "review_required", reviewRequired: true };
       existing.rows.push(row);
     } else {
       groups.set(identity.key, {
@@ -157,6 +172,9 @@ function buildTransactions(rows: CanonicalPaymentRow[], paymentsById: Map<number
         amountMinor: identity.operationId ? (operationsById.get(identity.operationId)?.amountMinor ?? row.amountMinor) : row.amountMinor,
         currency: row.currency,
         paymentIds: row.paymentId === null ? [] : [row.paymentId],
+        dispute: row.dispute.present ? (durable
+          ? { present: true, amountMinor: durable.amountMinor, disputeId: durable.disputeId, currency: durable.currency, state: durable.state, reviewRequired: true }
+          : { ...row.dispute, currency: row.currency, state: "review_required", reviewRequired: true }) : undefined,
         rows: [row],
       });
     }
@@ -282,21 +300,37 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
       ), operation_parents AS (
         SELECT
           'operation:' || op.id::text AS parent_key,
-          op.created_at AS business_at,
-          COALESCE(cs.payer_bowler_id, osa.bowler_id, 0) AS bowler_id
+          COALESCE(cs.trigger_start_at, osa.business_at, legacy_osa.business_at, op.created_at) AS business_at,
+          COALESCE(cs.payer_bowler_id, osa.bowler_id, legacy_osa.bowler_id, 0) AS bowler_id
         FROM payment_operations op
         LEFT JOIN canonical_autopay_execution_snapshots cs ON cs.operation_id = op.id
           AND cs.organization_id = ${input.organizationId} AND cs.league_id = ${input.leagueId}
         LEFT JOIN LATERAL (
-          SELECT bowler_id FROM payment_operation_occurrence_snapshot_allocations
-          WHERE operation_id = op.id AND organization_id = ${input.organizationId} AND league_id = ${input.leagueId}
-          ORDER BY allocation_index ASC LIMIT 1
+          SELECT MIN(o.start_at) AS business_at, MIN(sa.bowler_id) AS bowler_id
+          FROM payment_operation_occurrence_snapshot_allocations sa
+          LEFT JOIN league_occurrences o ON o.id = sa.occurrence_id
+            AND o.organization_id = ${input.organizationId} AND o.league_id = ${input.leagueId}
+          WHERE sa.operation_id = op.id AND sa.organization_id = ${input.organizationId} AND sa.league_id = ${input.leagueId}
         ) osa ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT MIN(legacy_date) AS business_at, MIN(legacy_bowler_id) AS bowler_id
+          FROM (
+            SELECT s.created_at AS legacy_date, a.bowler_id AS legacy_bowler_id
+            FROM scheduled_payment_operation_snapshots s
+            INNER JOIN scheduled_payment_operation_allocations a ON a.operation_id = s.operation_id
+            WHERE s.operation_id = op.id AND s.league_id = ${input.leagueId}
+            UNION ALL
+            SELECT i.week_of AS legacy_date, a.bowler_id AS legacy_bowler_id
+            FROM interactive_payment_operation_snapshots i
+            INNER JOIN interactive_payment_operation_allocations a ON a.operation_id = i.operation_id
+            WHERE i.operation_id = op.id AND i.league_id = ${input.leagueId}
+          ) legacy_rows
+        ) legacy_osa ON TRUE
         WHERE op.organization_id = ${input.organizationId}
-          AND op.league_id = ${input.leagueId}
+          AND (op.league_id = ${input.leagueId} OR EXISTS (SELECT 1 FROM scheduled_payment_operation_snapshots scoped_ss WHERE scoped_ss.operation_id = op.id AND scoped_ss.league_id = ${input.leagueId}) OR EXISTS (SELECT 1 FROM interactive_payment_operation_snapshots scoped_is WHERE scoped_is.operation_id = op.id AND scoped_is.league_id = ${input.leagueId}))
           AND op.status IN ('pending','leased','provider_unknown','retry_scheduled','action_required','reconciliation_required')
           AND NOT EXISTS (SELECT 1 FROM payments op_payment WHERE op_payment.payment_operation_id = op.id)
-          AND (${input.bowlerId === undefined ? sql`TRUE` : sql`COALESCE(cs.payer_bowler_id, osa.bowler_id, 0) = ${input.bowlerId}`})
+          AND (${input.bowlerId === undefined ? sql`TRUE` : sql`EXISTS (SELECT 1 FROM payment_operation_occurrence_snapshot_allocations participant_sa WHERE participant_sa.operation_id = op.id AND participant_sa.organization_id = ${input.organizationId} AND participant_sa.league_id = ${input.leagueId} AND participant_sa.bowler_id = ${input.bowlerId}) OR cs.items @> jsonb_build_array(jsonb_build_object('bowlerId', ${input.bowlerId})) OR EXISTS (SELECT 1 FROM scheduled_payment_operation_allocations lsa INNER JOIN scheduled_payment_operation_snapshots lss ON lss.operation_id = lsa.operation_id AND lss.league_id = ${input.leagueId} WHERE lsa.operation_id = op.id AND lsa.bowler_id = ${input.bowlerId}) OR EXISTS (SELECT 1 FROM interactive_payment_operation_allocations lia INNER JOIN interactive_payment_operation_snapshots lis ON lis.operation_id = lia.operation_id AND lis.league_id = ${input.leagueId} WHERE lia.operation_id = op.id AND lia.bowler_id = ${input.bowlerId})`})
       )
       SELECT parent_key
       FROM (SELECT * FROM parents UNION ALL SELECT * FROM operation_parents) all_parents
@@ -307,6 +341,9 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
     const parentKeys = parentRows.rows
       .map((row) => String((row as { parent_key: string }).parent_key));
     const scopedBowlerPredicate = input.bowlerId === undefined ? sql`TRUE` : sql`p.bowler_id = ${input.bowlerId}`;
+    const scopedOperationPredicate = input.bowlerId === undefined
+      ? sql`TRUE`
+      : sql`EXISTS (SELECT 1 FROM payment_operation_occurrence_snapshot_allocations scope_sa WHERE scope_sa.operation_id = dop.id AND scope_sa.organization_id = ${input.organizationId} AND scope_sa.league_id = ${input.leagueId} AND scope_sa.bowler_id = ${input.bowlerId}) OR EXISTS (SELECT 1 FROM canonical_autopay_execution_snapshots scope_cs WHERE scope_cs.operation_id = dop.id AND scope_cs.organization_id = ${input.organizationId} AND scope_cs.league_id = ${input.leagueId} AND scope_cs.items @> jsonb_build_array(jsonb_build_object('bowlerId', ${input.bowlerId}))) OR EXISTS (SELECT 1 FROM scheduled_payment_operation_allocations scope_lsa INNER JOIN scheduled_payment_operation_snapshots scope_lss ON scope_lss.operation_id = scope_lsa.operation_id AND scope_lss.league_id = ${input.leagueId} WHERE scope_lsa.operation_id = dop.id AND scope_lsa.bowler_id = ${input.bowlerId}) OR EXISTS (SELECT 1 FROM interactive_payment_operation_allocations scope_lia INNER JOIN interactive_payment_operation_snapshots scope_lis ON scope_lis.operation_id = scope_lia.operation_id AND scope_lis.league_id = ${input.leagueId} WHERE scope_lia.operation_id = dop.id AND scope_lia.bowler_id = ${input.bowlerId})`;
     const aggregateResult = await tx.execute(sql`
       WITH scoped_payments AS (
         SELECT p.*
@@ -340,15 +377,23 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
               AND NOT EXISTS (SELECT 1 FROM payments sp WHERE sp.payment_operation_id = sop.id)
               AND (${input.bowlerId === undefined ? sql`TRUE` : sql`sa.bowler_id = ${input.bowlerId}`})), 0)::integer AS total_rows,
         (SELECT total_transactions FROM parent_totals)
-          + (SELECT COUNT(*) FROM payment_operations op WHERE op.organization_id = ${input.organizationId} AND op.league_id = ${input.leagueId} AND op.status IN ('pending','leased','provider_unknown','retry_scheduled','action_required','reconciliation_required') AND NOT EXISTS (SELECT 1 FROM payments p2 WHERE p2.payment_operation_id = op.id))::integer AS total_transactions,
+          + (SELECT COUNT(*) FROM payment_operations op WHERE op.organization_id = ${input.organizationId} AND op.league_id = ${input.leagueId} AND op.status IN ('pending','leased','provider_unknown','retry_scheduled','action_required','reconciliation_required') AND NOT EXISTS (SELECT 1 FROM payments p2 WHERE p2.payment_operation_id = op.id) AND (${input.bowlerId === undefined ? sql`TRUE` : sql`EXISTS (SELECT 1 FROM payment_operation_occurrence_snapshot_allocations scope_sa WHERE scope_sa.operation_id = op.id AND scope_sa.organization_id = ${input.organizationId} AND scope_sa.league_id = ${input.leagueId} AND scope_sa.bowler_id = ${input.bowlerId}) OR EXISTS (SELECT 1 FROM canonical_autopay_execution_snapshots scope_cs WHERE scope_cs.operation_id = op.id AND scope_cs.organization_id = ${input.organizationId} AND scope_cs.league_id = ${input.leagueId} AND scope_cs.items @> jsonb_build_array(jsonb_build_object('bowlerId', ${input.bowlerId})))`}))::integer AS total_transactions,
         COALESCE((SELECT SUM(p.amount) FROM scoped_payments p WHERE p.status = 'paid' AND ${activation ? sql`EXISTS (SELECT 1 FROM payment_occurrence_allocations ca WHERE ca.payment_id = p.id AND ca.organization_id = ${input.organizationId} AND ca.league_id = ${input.leagueId})` : sql`TRUE`} AND (p.payment_operation_id IS NULL OR NOT EXISTS (SELECT 1 FROM payment_operations op WHERE op.id = p.payment_operation_id AND op.status IN ('pending','leased','provider_unknown','retry_scheduled','action_required','reconciliation_required'))) AND NOT EXISTS (SELECT 1 FROM payment_disputes pd WHERE pd.payment_operation_id = p.payment_operation_id)), 0)::integer AS gross_paid,
         COALESCE((SELECT SUM(a.amount_minor) FROM payment_occurrence_allocations a INNER JOIN scoped_payments p ON p.id = a.payment_id WHERE a.organization_id = ${input.organizationId} AND a.league_id = ${input.leagueId} AND a.state = 'active'), 0)::integer AS allocated,
         COALESCE((SELECT SUM(p.amount) FROM scoped_payments p WHERE p.status = 'refunded' AND ${activation ? sql`EXISTS (SELECT 1 FROM payment_occurrence_allocations ca WHERE ca.payment_id = p.id AND ca.organization_id = ${input.organizationId} AND ca.league_id = ${input.leagueId})` : sql`TRUE`}), 0)::integer AS refunded,
         COALESCE((SELECT SUM(amount) FROM scoped_payments WHERE status = 'disputed' AND payment_operation_id IS NULL), 0)::integer
-          + COALESCE((SELECT SUM(pd.amount_minor) FROM payment_disputes pd WHERE pd.organization_id = ${input.organizationId} AND pd.payment_operation_id IN (SELECT id FROM payment_operations WHERE organization_id = ${input.organizationId} AND league_id = ${input.leagueId})), 0)::integer AS disputed,
+          + COALESCE((SELECT SUM(pd.amount_minor) FROM payment_disputes pd INNER JOIN payment_operations dop ON dop.id = pd.payment_operation_id AND dop.organization_id = ${input.organizationId} AND dop.league_id = ${input.leagueId} WHERE pd.organization_id = ${input.organizationId} AND (${scopedOperationPredicate})), 0)::integer AS disputed,
         COALESCE((SELECT SUM(op.amount_minor) FROM payment_operations op WHERE op.organization_id = ${input.organizationId} AND op.league_id = ${input.leagueId} AND op.status IN ('pending','leased','provider_unknown','retry_scheduled','action_required','reconciliation_required') AND (${input.bowlerId === undefined ? sql`TRUE` : sql`EXISTS (SELECT 1 FROM payment_operation_occurrence_snapshot_allocations sb WHERE sb.operation_id = op.id AND sb.organization_id = ${input.organizationId} AND sb.league_id = ${input.leagueId} AND sb.bowler_id = ${input.bowlerId})`})), 0)::integer AS unresolved,
         COALESCE((SELECT SUM(p.amount) FROM scoped_payments p WHERE p.status = 'paid' AND NOT EXISTS (SELECT 1 FROM payment_occurrence_allocations a WHERE a.payment_id = p.id AND a.organization_id = ${input.organizationId} AND a.league_id = ${input.leagueId})), 0)::integer AS unallocated_legacy,
-        (SELECT COUNT(*)::integer FROM scoped_payments p WHERE NOT EXISTS (SELECT 1 FROM payment_occurrence_allocations a WHERE a.payment_id = p.id AND a.organization_id = ${input.organizationId} AND a.league_id = ${input.leagueId})) AS unlinked_count
+        COALESCE((SELECT SUM(p.amount) FROM scoped_payments p WHERE p.status NOT IN ('paid','pending','refunded','disputed') AND NOT EXISTS (SELECT 1 FROM payment_operations rop WHERE rop.id = p.payment_operation_id AND rop.status IN ('action_required','provider_unknown','reconciliation_required'))), 0)::integer AS review_required,
+        (SELECT COUNT(*)::integer FROM scoped_payments p WHERE NOT EXISTS (SELECT 1 FROM payment_occurrence_allocations a WHERE a.payment_id = p.id AND a.organization_id = ${input.organizationId} AND a.league_id = ${input.leagueId}))
+          + (SELECT COUNT(*)::integer FROM payment_operations lop
+             WHERE lop.organization_id = ${input.organizationId} AND (lop.league_id = ${input.leagueId} OR EXISTS (SELECT 1 FROM scheduled_payment_operation_snapshots lscope_s WHERE lscope_s.operation_id = lop.id AND lscope_s.league_id = ${input.leagueId}) OR EXISTS (SELECT 1 FROM interactive_payment_operation_snapshots lscope_i WHERE lscope_i.operation_id = lop.id AND lscope_i.league_id = ${input.leagueId}))
+               AND lop.operation_type IN ('scheduled_charge','interactive_charge')
+               AND lop.status IN ('pending','leased','provider_unknown','retry_scheduled','action_required','reconciliation_required')
+               AND NOT EXISTS (SELECT 1 FROM payments lp WHERE lp.payment_operation_id = lop.id)
+               AND (EXISTS (SELECT 1 FROM scheduled_payment_operation_snapshots ls WHERE ls.operation_id = lop.id)
+                 OR EXISTS (SELECT 1 FROM interactive_payment_operation_snapshots li WHERE li.operation_id = lop.id))) AS unlinked_count
     `);
     const aggregate = aggregateResult.rows[0] as Record<string, unknown> | undefined;
     const aggregateNumber = (key: string): number => Number(aggregate?.[key] ?? 0);
@@ -359,7 +404,7 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
         LEFT JOIN payments p ON p.payment_operation_id = op.id
         WHERE op.organization_id = ${input.organizationId}
           AND op.league_id = ${input.leagueId}
-          AND op.status = 'succeeded'
+          AND EXISTS (SELECT 1 FROM payments linked_p WHERE linked_p.payment_operation_id = op.id)
         GROUP BY op.id, op.amount_minor
         HAVING COALESCE(SUM(p.amount), 0) <> op.amount_minor
       ) AS present
@@ -442,10 +487,13 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
     const operationIds = linkedOperationIds;
     const operations = await tx.select().from(paymentOperations).where(and(
       eq(paymentOperations.organizationId, input.organizationId),
-      eq(paymentOperations.leagueId, input.leagueId),
       inArray(paymentOperations.id, operationIds.length > 0 ? operationIds : ["00000000-0000-0000-0000-000000000000"]),
     ));
     if (operations.length !== operationIds.length) throw new CanonicalPaymentReportIncompatibilityError();
+    const linkedLegacyScopeRows = operationIds.length === 0 ? [] : await tx.select({ operationId: interactivePaymentOperationSnapshots.operationId, leagueId: interactivePaymentOperationSnapshots.leagueId }).from(interactivePaymentOperationSnapshots).where(inArray(interactivePaymentOperationSnapshots.operationId, operationIds));
+    const linkedScheduledScopeRows = operationIds.length === 0 ? [] : await tx.select({ operationId: scheduledPaymentOperationSnapshots.operationId, leagueId: scheduledPaymentOperationSnapshots.leagueId }).from(scheduledPaymentOperationSnapshots).where(inArray(scheduledPaymentOperationSnapshots.operationId, operationIds));
+    const linkedScopeByOperation = new Map([...linkedLegacyScopeRows, ...linkedScheduledScopeRows].map((row) => [row.operationId, row.leagueId]));
+    if (operations.some((operation) => operation.leagueId !== input.leagueId && linkedScopeByOperation.get(operation.id) !== input.leagueId)) throw new CanonicalPaymentReportIncompatibilityError();
     const operationsById = new Map(operations.map((operation) => [operation.id, operation]));
     if (paymentRows.some((payment) => payment.paymentOperationId && !allocations.some((allocation) => allocation.paymentId === payment.id))) {
       throw new CanonicalPaymentReportIncompatibilityError();
@@ -464,7 +512,6 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
       .map((key) => key.slice("operation:".length));
     const unresolvedOperations = unresolvedOperationIds.length === 0 ? [] : await tx.select().from(paymentOperations).where(and(
       eq(paymentOperations.organizationId, input.organizationId),
-      eq(paymentOperations.leagueId, input.leagueId),
       inArray(paymentOperations.id, unresolvedOperationIds),
     ));
     const allOperations = [...new Map([...operations, ...unresolvedOperations].map((operation) => [operation.id, operation])).values()];
@@ -485,14 +532,20 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
     const disputeRows = allOperationIds.length === 0 ? [] : await tx.select({ operationId: paymentDisputes.paymentOperationId, amountMinor: paymentDisputes.amountMinor, currency: paymentDisputes.currency, state: paymentDisputes.state, id: paymentDisputes.id })
       .from(paymentDisputes)
       .where(and(eq(paymentDisputes.organizationId, input.organizationId), inArray(paymentDisputes.paymentOperationId, allOperationIds)));
-    const disputesByOperation = new Map<string, { amountMinor: number; disputeId: string }>();
+    const disputesByOperation = new Map<string, DurableOperationDispute>();
     for (const dispute of disputeRows) {
       const operation = allOperationsById.get(dispute.operationId);
       if (!operation || dispute.currency !== operation.currency || dispute.amountMinor <= 0) throw new CanonicalPaymentReportIncompatibilityError();
       const previous = disputesByOperation.get(dispute.operationId);
+      if (previous && (previous.state !== dispute.state || previous.currency !== dispute.currency)) throw new CanonicalPaymentReportIncompatibilityError();
       const amountMinor = (previous?.amountMinor ?? 0) + dispute.amountMinor;
       if (amountMinor > operation.amountMinor) throw new CanonicalPaymentReportIncompatibilityError();
-      disputesByOperation.set(dispute.operationId, { amountMinor, disputeId: previous?.disputeId ?? dispute.id });
+      disputesByOperation.set(dispute.operationId, {
+        amountMinor,
+        disputeId: previous?.disputeId ?? dispute.id,
+        state: dispute.state,
+        currency: dispute.currency,
+      });
     }
     const disputedOperationIds = new Set(disputesByOperation.keys());
     const allocationsByPayment = new Map<number, Allocation[]>();
@@ -579,6 +632,7 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
         const snapshotRows = occurrenceSnapshotAllocations.filter((row) => row.operationId === snapshot.operationId);
         const operation = allOperationsById.get(snapshot.operationId);
         if (!operation
+          || !["scheduled_charge", "interactive_charge", "canonical_autopay_charge"].includes(operation.operationType)
           || snapshot.snapshotVersion !== 1
           || snapshot.leagueId !== input.leagueId
           || snapshot.currency !== operation.currency
@@ -586,6 +640,24 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
           || snapshotRows.length !== snapshot.allocationCount
           || snapshotRows.reduce((sum, row) => sum + row.amountMinor, 0) !== snapshot.amountMinor
           || snapshotRows.some((row) => row.currency !== snapshot.currency || row.leagueId !== snapshot.leagueId)) {
+          throw new CanonicalPaymentReportIncompatibilityError();
+        }
+        try {
+          const semantic = validatePaymentOperationOccurrenceSnapshot({
+            contractVersion: "payment-operation-occurrence-snapshot/1",
+            snapshotVersion: snapshot.snapshotVersion,
+            operationId: snapshot.operationId,
+            operationType: operation.operationType,
+            organizationId: snapshot.organizationId,
+            leagueId: snapshot.leagueId,
+            amountMinor: snapshot.amountMinor,
+            currency: snapshot.currency,
+            allocations: snapshotRows
+              .sort((a, b) => a.allocationIndex - b.allocationIndex)
+              .map((row) => ({ allocationIndex: row.allocationIndex, organizationId: row.organizationId, leagueId: row.leagueId, occurrenceId: row.occurrenceId, bowlerId: row.bowlerId, obligationId: row.obligationId, amountMinor: row.amountMinor, currency: row.currency })),
+          });
+          if (fingerprintPaymentOperationOccurrenceSnapshot(semantic) !== snapshot.snapshotFingerprint) throw new Error("occurrence fingerprint mismatch");
+        } catch {
           throw new CanonicalPaymentReportIncompatibilityError();
         }
       }
@@ -616,7 +688,8 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
       const businessDate = startTimes[0] ?? payment.weekOf;
       const refund = { present: payment.status === "refunded" || payment.squareRefundId !== null, amountMinor: payment.status === "refunded" ? payment.amount : 0, providerRefundId: payment.squareRefundId };
       const durableDispute = operation ? disputesByOperation.get(operation.id) : undefined;
-      const dispute = { present: payment.status === "disputed" || Boolean(durableDispute), amountMinor: durableDispute?.amountMinor ?? (payment.status === "disputed" ? payment.amount : 0), disputeId: durableDispute?.disputeId ?? payment.disputeId };
+      const activeAllocatedMinor = paymentAllocations.filter((allocation) => allocation.state === "active").reduce((sum, allocation) => sum + allocation.amountMinor, 0);
+      const dispute = { present: payment.status === "disputed" || Boolean(durableDispute), amountMinor: durableDispute ? 0 : (payment.status === "disputed" ? Math.min(payment.amount, activeAllocatedMinor || payment.amount) : 0), disputeId: durableDispute?.disputeId ?? payment.disputeId };
       const unresolved = !!operation && unresolvedOperationStatuses.has(operation.status);
       const reviewRequired = dispute.present || (payment.status !== "paid" && payment.status !== "pending") || unresolved;
       const status = statusForPayment(payment, operation, disputedOperationIds.has(operation?.id ?? ""));
@@ -634,8 +707,8 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
         paymentOperationId: payment.paymentOperationId,
         operationType: operation?.operationType ?? null,
         operationStatus: operation?.status ?? null,
-        allocatedMinor: paymentAllocations.filter((allocation) => allocation.state === "active").reduce((sum, allocation) => sum + allocation.amountMinor, 0),
-        unallocatedMinor: Math.max(0, payment.amount - paymentAllocations.filter((allocation) => allocation.state === "active").reduce((sum, allocation) => sum + allocation.amountMinor, 0)),
+        allocatedMinor: activeAllocatedMinor,
+        unallocatedMinor: Math.max(0, payment.amount - activeAllocatedMinor),
         reviewRequired,
         source: paymentAllocations.length > 0 ? "canonical_allocation" : "unlinked_legacy",
         refund,
@@ -672,6 +745,16 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
       };
     });
 
+    const legacyOperationIds = allOperations
+      .filter((operation) => operation.operationType === "scheduled_charge" || operation.operationType === "interactive_charge")
+      .map((operation) => operation.id);
+    const legacyScheduledSnapshots = legacyOperationIds.length === 0 ? [] : await tx.select().from(scheduledPaymentOperationSnapshots).where(inArray(scheduledPaymentOperationSnapshots.operationId, legacyOperationIds));
+    const legacyScheduledAllocations = legacyOperationIds.length === 0 ? [] : await tx.select().from(scheduledPaymentOperationAllocations).where(inArray(scheduledPaymentOperationAllocations.operationId, legacyOperationIds)).orderBy(asc(scheduledPaymentOperationAllocations.allocationIndex));
+    const legacyScheduledLineItems = legacyOperationIds.length === 0 ? [] : await tx.select().from(scheduledPaymentOperationLineItems).where(inArray(scheduledPaymentOperationLineItems.operationId, legacyOperationIds)).orderBy(asc(scheduledPaymentOperationLineItems.lineItemIndex));
+    const legacyInteractiveSnapshots = legacyOperationIds.length === 0 ? [] : await tx.select().from(interactivePaymentOperationSnapshots).where(inArray(interactivePaymentOperationSnapshots.operationId, legacyOperationIds));
+    const legacyInteractiveAllocations = legacyOperationIds.length === 0 ? [] : await tx.select().from(interactivePaymentOperationAllocations).where(inArray(interactivePaymentOperationAllocations.operationId, legacyOperationIds)).orderBy(asc(interactivePaymentOperationAllocations.allocationIndex));
+    const legacyInteractiveLineItems = legacyOperationIds.length === 0 ? [] : await tx.select().from(interactivePaymentOperationLineItems).where(inArray(interactivePaymentOperationLineItems.operationId, legacyOperationIds)).orderBy(asc(interactivePaymentOperationLineItems.lineItemIndex));
+    const legacyParticipants = new Map<string, { bowlerId: number; amountMinor: number; currency: string; businessDate: string }[]>();
     for (const operation of allOperations) {
       if (!unresolvedOperationStatuses.has(operation.status) || paymentRows.some((payment) => payment.paymentOperationId === operation.id)) continue;
       const snapshot = (await tx.select().from(paymentOperationOccurrenceSnapshots).where(and(
@@ -686,7 +769,6 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
           eq(canonicalAutopayExecutionSnapshots.operationId, operation.id),
         )).then((found) => found[0]))
         : undefined;
-      if (operation.operationType !== "canonical_autopay_charge" && !snapshot) continue;
       if (operation.operationType === "canonical_autopay_charge" && !canonicalSnapshot) throw new CanonicalPaymentReportIncompatibilityError();
       const snapshotAllocationRows = snapshot
         ? await tx.select().from(paymentOperationOccurrenceSnapshotAllocations).where(and(
@@ -695,7 +777,32 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
           eq(paymentOperationOccurrenceSnapshotAllocations.operationId, operation.id),
         ))
         : [];
-      const businessDate = canonicalSnapshot?.triggerStartAt ?? snapshot?.createdAt ?? operation.createdAt;
+      let legacySnapshotBusinessDate: string | undefined;
+      if (!snapshot && operation.operationType !== "canonical_autopay_charge") {
+        try {
+          if (operation.operationType === "scheduled_charge") {
+            const stored = legacyScheduledSnapshots.find((row) => row.operationId === operation.id);
+            if (!stored || operation.paymentScheduleId === null || operation.billingCycleAt === null) throw new Error("missing scheduled evidence");
+            const allocationRows = legacyScheduledAllocations.filter((row) => row.operationId === operation.id).map((row) => ({ allocationIndex: row.allocationIndex, bowlerId: row.bowlerId, amountMinor: row.amountMinor, lineageAmountMinor: row.lineageAmountMinor, prizeFundAmountMinor: row.prizeFundAmountMinor, notes: row.notes, paidByUserId: row.paidByUserId }));
+            const lineItemRows = legacyScheduledLineItems.filter((row) => row.operationId === operation.id).map((row) => ({ lineItemIndex: row.lineItemIndex, catalogObjectId: row.catalogObjectId, quantity: row.quantity }));
+            const reconstructed = reconstructScheduledPaymentSnapshot({ organizationId: input.organizationId, paymentScheduleId: operation.paymentScheduleId, billingCycleAt: operation.billingCycleAt, amountMinor: operation.amountMinor, currency: operation.currency, providerName: operation.providerName, providerIdempotencyKey: operation.providerIdempotencyKey, stored, allocations: allocationRows, lineItems: lineItemRows });
+            legacyParticipants.set(operation.id, reconstructed.allocations.map((row) => ({ bowlerId: row.bowlerId, amountMinor: row.amountMinor, currency: reconstructed.currency, businessDate: reconstructed.billingCycleAt })));
+            legacySnapshotBusinessDate = reconstructed.billingCycleAt;
+          } else {
+            const stored = legacyInteractiveSnapshots.find((row) => row.operationId === operation.id);
+            if (!stored) throw new Error("missing interactive evidence");
+            const allocationRows = legacyInteractiveAllocations.filter((row) => row.operationId === operation.id).map((row) => ({ allocationIndex: row.allocationIndex, bowlerId: row.bowlerId, amountMinor: row.amountMinor, lineageAmountMinor: row.lineageAmountMinor, prizeFundAmountMinor: row.prizeFundAmountMinor, weekOf: new Date(row.weekOf).toISOString(), notes: row.notes, paidByUserId: row.paidByUserId }));
+            const lineItemRows = legacyInteractiveLineItems.filter((row) => row.operationId === operation.id).map((row) => ({ lineItemIndex: row.lineItemIndex, catalogObjectId: row.catalogObjectId, quantity: row.quantity }));
+            const reconstructed = reconstructInteractivePaymentSnapshot({ organizationId: input.organizationId, amountMinor: operation.amountMinor, currency: operation.currency, providerName: operation.providerName, providerIdempotencyKey: operation.providerIdempotencyKey, stored, allocations: allocationRows, lineItems: lineItemRows });
+            legacyParticipants.set(operation.id, reconstructed.allocations.map((row) => ({ bowlerId: row.bowlerId, amountMinor: row.amountMinor, currency: reconstructed.currency, businessDate: reconstructed.weekOf })));
+            legacySnapshotBusinessDate = reconstructed.weekOf;
+          }
+        } catch {
+          throw new CanonicalPaymentReportIncompatibilityError();
+        }
+      }
+      if (!snapshot && operation.operationType === "canonical_autopay_charge") throw new CanonicalPaymentReportIncompatibilityError();
+      const businessDate = canonicalSnapshot?.triggerStartAt ?? legacySnapshotBusinessDate ?? snapshot?.createdAt ?? operation.createdAt;
       const participantRows = canonicalSnapshot?.items && Array.isArray(canonicalSnapshot.items)
         ? canonicalSnapshot.items.map((item) => ({
           allocationId: null,
@@ -717,10 +824,12 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
           state: "active" as const,
           source: "canonical_allocation" as const,
         }));
-      if (participantRows.length === 0) throw new CanonicalPaymentReportIncompatibilityError();
-      const participantAmount = participantRows.reduce((sum, item) => sum + item.amountMinor, 0);
+      const legacyRows = legacyParticipants.get(operation.id);
+      const effectiveParticipantRows = participantRows.length > 0 ? participantRows : (legacyRows ?? []).map((item) => ({ allocationId: null, obligationId: null, occurrenceId: null, bowlerId: item.bowlerId, amountMinor: item.amountMinor, currency: item.currency, state: "active" as const, source: "unlinked_legacy" as const }));
+      if (effectiveParticipantRows.length === 0) throw new CanonicalPaymentReportIncompatibilityError();
+      const participantAmount = effectiveParticipantRows.reduce((sum, item) => sum + item.amountMinor, 0);
       if (participantAmount !== operation.amountMinor) throw new CanonicalPaymentReportIncompatibilityError();
-      for (const participant of participantRows) rows.push({
+      for (const participant of effectiveParticipantRows) rows.push({
         paymentId: null,
         leagueId: input.leagueId,
         bowlerId: participant.bowlerId,
@@ -737,7 +846,7 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
         allocatedMinor: 0,
         unallocatedMinor: participant.amountMinor,
         reviewRequired: true,
-        source: "unresolved_operation",
+        source: participant.source === "unlinked_legacy" ? "unlinked_legacy" : "unresolved_operation",
         refund: { present: false, amountMinor: 0, providerRefundId: null },
         dispute: { present: false, amountMinor: 0, disputeId: null },
         unresolved: true,
@@ -763,16 +872,15 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
       activeAllocatedMinor: aggregateNumber("allocated"),
       refundedMinor: aggregateNumber("refunded"),
       disputedReviewRequiredMinor: aggregateNumber("disputed"),
-      reviewRequiredMinor: visibleRows.filter((row) => row.reviewRequired && !row.dispute.present && !row.unresolved).reduce((sum, row) => sum + row.amountMinor, 0),
+      reviewRequiredMinor: aggregateNumber("review_required"),
       unresolvedOperationMinor: aggregateNumber("unresolved"),
       unallocatedLegacyMinor: aggregateNumber("unallocated_legacy"),
     };
-    const pageOffset = (page - 1) * limit;
     const sortedRows = [...visibleRows].sort((left, right) => left.authoritativeLocalDate.localeCompare(right.authoritativeLocalDate) || left.bowlerId - right.bowlerId || String(left.paymentOperationId ?? left.paymentId).localeCompare(String(right.paymentOperationId ?? right.paymentId)));
-    const allTransactions = buildTransactions(sortedRows, paymentsById, allOperationsById);
-    const pagedTransactions = allTransactions.slice(pageOffset, pageOffset + limit);
+    const allTransactions = buildTransactions(sortedRows, paymentsById, allOperationsById, disputesByOperation);
+    const pagedTransactions = allTransactions;
     const pagedRows = pagedTransactions.flatMap((transaction) => transaction.rows);
-    const pagedUnlinkedHistory = visibleUnlinkedHistory.slice(pageOffset, pageOffset + limit);
+    const pagedUnlinkedHistory = visibleUnlinkedHistory;
     const withoutFingerprint = {
       contractVersion: "canonical-payment-report/1" as const,
       orderVersion: "league,business-date,bowler,occurrence,allocation,payment/1" as const,

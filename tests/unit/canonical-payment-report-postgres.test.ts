@@ -9,8 +9,13 @@ import {
   paymentOccurrenceAllocationRevisions,
   paymentOccurrenceAllocations,
   payments,
+  paymentOperations,
+  interactivePaymentOperationSnapshots,
+  interactivePaymentOperationAllocations,
 } from "@shared/schema";
 import { CanonicalPaymentReportIncompatibilityError, readCanonicalPaymentReport } from "../../server/services/canonical-payment-report";
+import { encryptInteractivePaymentSnapshot } from "../../server/services/interactive-payment-operation-snapshot";
+import { deriveSquareOperationIdempotencyKey } from "../../server/services/payment-operation-idempotency";
 
 const db = getTestDb();
 const organizations: number[] = [];
@@ -44,6 +49,82 @@ describe("F5 canonical payment reporting PostgreSQL evidence", () => {
     expect(report.unlinkedHistory[0]).toMatchObject({ paymentId: payment.id, amountMinor: 750, businessDate: payment.weekOf });
     expect(report.totals).toMatchObject({ grossConfirmedPaidMinor: 0, activeAllocatedMinor: 0, unallocatedLegacyMinor: 750 });
     expect(report.fingerprint).toMatch(/^lvpaymentreport:v1:[0-9a-f]{64}$/);
+  });
+
+  it("keeps database parent pagination intact across page 2 and page 3", async () => {
+    const fixture = await makeF3WorkflowFixture();
+    organizations.push(fixture.organizationId);
+    await db.insert(payments).values([1, 2, 3].map((amount) => ({
+      bowlerId: fixture.roster[0].id,
+      leagueId: fixture.leagueId,
+      amount: amount * 100,
+      weekOf: `2038-02-0${amount}T19:00:00.000Z`,
+      status: "paid" as const,
+      type: "cash" as const,
+    })));
+    const pageOne = await readCanonicalPaymentReport({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, page: 1, limit: 1 });
+    const pageTwo = await readCanonicalPaymentReport({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, page: 2, limit: 1 });
+    const pageThree = await readCanonicalPaymentReport({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, page: 3, limit: 1 });
+    expect(pageOne.unlinkedHistory).toHaveLength(1);
+    expect(pageTwo.unlinkedHistory).toHaveLength(1);
+    expect(pageThree.unlinkedHistory).toHaveLength(1);
+    expect(new Set([pageOne.unlinkedHistory[0]?.paymentId, pageTwo.unlinkedHistory[0]?.paymentId, pageThree.unlinkedHistory[0]?.paymentId]).size).toBe(3);
+  });
+
+  it("projects zero-row legacy interactive evidence for every snapshot participant", async () => {
+    const fixture = await makeF3WorkflowFixture();
+    organizations.push(fixture.organizationId);
+    const weekOf = "2038-02-03T19:00:00.000Z";
+    const amountMinor = 500;
+    const [operation] = await db.insert(paymentOperations).values({
+      organizationId: fixture.organizationId,
+      operationType: "interactive_charge",
+      targetKey: `interactive:legacy-report:${fixture.organizationId}`,
+      amountMinor,
+      currency: "USD",
+      requestFingerprint: `lvpayreq:v1:${"1".repeat(64)}`,
+      providerIdempotencyKey: `f5-legacy-${fixture.organizationId}`,
+      providerName: "square",
+      status: "provider_unknown",
+      attemptCount: 1,
+      nextAttemptAt: "2038-02-03T19:00:00.000Z",
+      startedAt: "2038-02-03T19:00:00.000Z",
+      errorClassification: "provider_unknown",
+      errorCode: "PROVIDER_UNKNOWN",
+    }).returning();
+    const semantic = {
+      snapshotVersion: 2 as const,
+      organizationId: fixture.organizationId,
+      amountMinor,
+      currency: "USD",
+      providerName: "square",
+      leagueId: fixture.leagueId,
+      locationId: null,
+      providerLocationId: null,
+      payerBowlerId: fixture.roster[0].id,
+      requestKind: "direct" as const,
+      squarePaymentIdempotencyKey: deriveSquareOperationIdempotencyKey(`f5-legacy-${fixture.organizationId}`, "payment"),
+      squareOrderIdempotencyKey: null,
+      sourceId: "legacy-source",
+      customerId: null,
+      buyerEmail: null,
+      storeCard: false,
+      sourceKind: "new_card" as const,
+      weekOf,
+      combinedChargeGroupId: null,
+      allocations: [
+        { allocationIndex: 0, bowlerId: fixture.roster[0].id, amountMinor: 250, lineageAmountMinor: null, prizeFundAmountMinor: null, weekOf, notes: null, paidByUserId: null },
+        { allocationIndex: 1, bowlerId: fixture.roster[1].id, amountMinor: 250, lineageAmountMinor: null, prizeFundAmountMinor: null, weekOf, notes: null, paidByUserId: null },
+      ],
+      lineItems: [],
+    };
+    const stored = encryptInteractivePaymentSnapshot(semantic);
+    await db.insert(interactivePaymentOperationSnapshots).values({ operationId: operation.id, ...stored });
+    await db.insert(interactivePaymentOperationAllocations).values(semantic.allocations.map((row) => ({ operationId: operation.id, ...row })));
+    const report = await readCanonicalPaymentReport({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, limit: 10 });
+    expect(report.mode).toBe("canonical_with_unlinked_history");
+    expect(report.unlinkedHistory.filter((row) => row.paymentOperationId === operation.id)).toHaveLength(2);
+    expect(report.unlinkedHistory.filter((row) => row.paymentOperationId === operation.id).map((row) => row.amountMinor)).toEqual([250, 250]);
   });
 
   it("fails closed on a cross-tenant league scope", async () => {
@@ -115,7 +196,7 @@ describe("F5 canonical payment reporting PostgreSQL evidence", () => {
       allocationId: allocation.id,
       revisionNumber: allocation.currentRevision,
       snapshotSchemaVersion: 1,
-      afterSnapshot: { state: allocation.state, amountMinor: allocation.amountMinor },
+      afterSnapshot: { state: allocation.state, amountMinor: allocation.amountMinor, currency: allocation.currency, paymentId: allocation.paymentId, obligationId: allocation.obligationId, occurrenceId: allocation.occurrenceId, bowlerId: allocation.bowlerId },
       recordedByUserId: fixture.actorUserId,
     });
     const nextRevision = obligation.currentRevision + 1;
@@ -127,7 +208,7 @@ describe("F5 canonical payment reporting PostgreSQL evidence", () => {
       revisionNumber: nextRevision,
       snapshotSchemaVersion: 1,
       beforeSnapshot: { state: obligation.state },
-      afterSnapshot: { state: "settled" },
+      afterSnapshot: { state: "settled", amountMinor: obligation.amountMinor, currency: obligation.currency },
       recordedByUserId: fixture.actorUserId,
     });
 

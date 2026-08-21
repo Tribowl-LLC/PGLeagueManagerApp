@@ -80,6 +80,7 @@ export interface CanonicalPaymentTransactionGroup {
   amountMinor: number;
   currency: string;
   paymentIds: number[];
+  dispute?: { present: boolean; amountMinor: number; disputeId: string | null; currency: string; state: string; reviewRequired: boolean };
   rows: CanonicalPaymentRow[];
 }
 
