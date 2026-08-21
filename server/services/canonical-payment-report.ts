@@ -248,7 +248,7 @@ function snapshotShapeCompatible(value: unknown, template: unknown): boolean {
   return true;
 }
 
-function completeVersionedRevisionChains<T extends { id: string; currentRevision: number }, R extends { parentId: string; revisionNumber: number; snapshotSchemaVersion: number; beforeSnapshot: unknown; afterSnapshot: unknown }>(parents: T[], revisions: R[], expectedAfterSnapshot?: (parent: T) => unknown): boolean {
+export function completeVersionedRevisionChains<T extends { id: string; currentRevision: number }, R extends { parentId: string; revisionNumber: number; snapshotSchemaVersion: number; beforeSnapshot: unknown; afterSnapshot: unknown }>(parents: T[], revisions: R[], expectedAfterSnapshot?: (parent: T) => unknown): boolean {
   const byParent = new Map<string, R[]>();
   for (const revision of revisions) byParent.set(revision.parentId, [...(byParent.get(revision.parentId) ?? []), revision]);
   return parents.every((parent) => {

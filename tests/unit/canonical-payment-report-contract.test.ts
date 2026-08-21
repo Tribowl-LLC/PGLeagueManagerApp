@@ -5,6 +5,7 @@ import {
   type CanonicalPaymentReport,
 } from "@shared/canonical-payment-report";
 import { paymentReceiptContract, PAYMENT_RECEIPT_CONTRACT } from "@shared/payment-receipt";
+import { completeVersionedRevisionChains } from "../../server/services/canonical-payment-report";
 
 const base: Omit<CanonicalPaymentReport, "fingerprint"> = {
   contractVersion: CANONICAL_PAYMENT_REPORT_CONTRACT,
@@ -51,5 +52,23 @@ describe("F5 canonical payment and receipt contracts", () => {
       availability: "unavailable",
       deliveryEvidence: "delivery_not_recorded",
     });
+  });
+
+  it.each([
+    ["F1 eligibility", { state: "eligible", reason: "explicit_admin_selection" }],
+    ["F1 assignment", { state: "assigned", teamId: 7, reason: "explicit_admin_selection" }],
+    ["F3 policy", { contractVersion: "canonical-collection-policy/1", policy: { id: "policy-1", state: "approved", policyVersion: 1 }, occurrences: [{ occurrenceId: "occ-1", groupRole: "normal", itemIndex: 0 }] }],
+    ["F3 authorization", { id: "auth-1", state: "authorized", payerBowlerId: 1, authorizedItems: [{ obligationId: "ob-1", occurrenceId: "occ-1", bowlerId: 1, amountMinor: 500 }] }],
+  ] as const)("rejects a consistently malformed historical %s snapshot", (_label, expected) => {
+    const parent = { id: "parent-1", currentRevision: 2 };
+    const malformed = JSON.parse(JSON.stringify(expected)) as Record<string, unknown>;
+    const missingKey = Object.keys(malformed).find((key) => key !== "contractVersion") ?? Object.keys(malformed)[0];
+    if (!missingKey) throw new Error("revision fixture has no semantic key");
+    delete malformed[missingKey];
+    const revisions = [
+      { parentId: parent.id, revisionNumber: 1, snapshotSchemaVersion: 1, beforeSnapshot: null, afterSnapshot: malformed },
+      { parentId: parent.id, revisionNumber: 2, snapshotSchemaVersion: 1, beforeSnapshot: malformed, afterSnapshot: expected },
+    ];
+    expect(completeVersionedRevisionChains([parent], revisions, () => expected)).toBe(false);
   });
 });
