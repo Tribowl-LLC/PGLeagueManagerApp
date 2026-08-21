@@ -83,6 +83,7 @@ router.get("/payments", async (req, res) => {
         && row.initiatingPayerBowlerId !== undefined
         && row.initiatingPayerBowlerId === req.user?.bowlerId;
       const safeRefundAmount = isInitiatingPayer ? row.refund.amountMinor : 0;
+      const safeDisputeAmount = isInitiatingPayer ? row.dispute.amountMinor : 0;
       const { initiatingPayerBowlerId: _initiatingPayerBowlerId, ...safeRow } = row;
       return {
       ...safeRow,
@@ -96,8 +97,8 @@ router.get("/payments", async (req, res) => {
       operationStatus: null,
       allocations: ownAllocations,
       refund: { ...row.refund, amountMinor: safeRefundAmount, providerRefundId: null },
-      dispute: { ...row.dispute, disputeId: null },
-      receipt: { ...row.receipt, paymentId: null, paymentOperationId: null, operationStatus: null, amountMinor: safeAmount, allocations: ownAllocations, sharedTransaction: null, canResend: false, receiptUrl: null, receiptNumber: null },
+      dispute: { ...row.dispute, amountMinor: safeDisputeAmount, disputeId: null },
+      receipt: { ...row.receipt, paymentId: null, paymentOperationId: null, operationStatus: null, amountMinor: safeAmount, allocations: ownAllocations, sharedTransaction: null, canResend: false, receiptUrl: null, receiptNumber: null, refund: { ...(row.receipt.refund ?? row.refund), amountMinor: safeRefundAmount, providerRefundId: null }, dispute: { ...(row.receipt.dispute ?? row.dispute), amountMinor: safeDisputeAmount, disputeId: null } },
     }; };
     const redactedReport = {
       ...report,
@@ -116,7 +117,8 @@ router.get("/payments", async (req, res) => {
     // authorized tenant/league/bowler scope, not over the selected page.
     // Keep that scope for ordinary readers; only transaction-level dispute
     // amount is withheld because a partner has no exact child apportionment.
-    redactedReport.totals = { ...report.totals, disputedReviewRequiredMinor: 0 };
+    const hasDurableInitiator = [...report.rows, ...report.unlinkedHistory].some((row) => row.initiatingPayerBowlerId === req.user?.bowlerId);
+    redactedReport.totals = { ...report.totals, disputedReviewRequiredMinor: hasDurableInitiator ? report.totals.disputedReviewRequiredMinor : 0 };
     const { fingerprint: _privilegedFingerprint, ...redactedSemantic } = redactedReport;
     return sendSuccess(res, { ...redactedReport, fingerprint: canonicalPaymentReportFingerprint(redactedSemantic) });
   } catch (error) {

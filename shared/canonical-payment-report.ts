@@ -25,11 +25,18 @@ export interface CanonicalPaymentReceiptSummary {
   receiptNumber: string | null;
   deliveryEvidence: "delivery_not_recorded";
   source?: "canonical_allocation" | "unlinked_legacy" | "unresolved_operation" | null;
+  refund?: CanonicalPaymentRefundEvidence;
+  dispute?: CanonicalPaymentDisputeEvidence;
+  paymentTiming?: CanonicalPaymentTiming;
+  collectionEvidence?: CanonicalCollectionEvidence;
 }
 
 export interface CanonicalPaymentTiming {
   paymentMode: "weekly" | "upfront";
   upfrontDueAt: string | null;
+  /** Date-only rendering in the league timezone; the instant above remains the audit value. */
+  upfrontDueAtLocal?: string | null;
+  timezone?: string;
   source: "canonical_activation" | "legacy_league";
 }
 

@@ -331,6 +331,7 @@ export default function PaymentsPage() {
           <CanonicalPaymentEvidenceTable
             rows={financialRows}
             mode={financialReportData[0]?.mode}
+            paymentTiming={financialReportData[0]?.paymentTiming}
             organizationId={financialReportData[0]?.organizationId ?? userResponse?.data?.organizationId ?? null}
             title="Financial payment evidence"
           />

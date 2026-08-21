@@ -26,10 +26,21 @@ canonical obligations. No canonical activation and no partial evidence uses
 `legacy_fallback`. Partial or inconsistent canonical evidence returns
 `FINANCIAL_EVIDENCE_INCOMPATIBLE` and never falls back.
 
+The report also carries authoritative payment timing (`weekly` or `upfront`,
+including an activation-sourced upfront due instant when present). Canonical
+autopay rows carry collection-point evidence only after the persisted F3 policy,
+D2 plan/provenance, and F4 snapshot identities and fingerprints have been
+revalidated. This evidence identifies the D2 plan/version, collection point,
+ordered covered occurrences, `at_collection_point` timing, and the approved
+`normal` or `double_pay` grouping. Grouping is never inferred from amount, date,
+or item count. Active UIs display these labels and currency-formatted
+allocation amounts without exposing provider payloads or IDs.
+
 The receipt contract is `payment-receipt/1`. It carries scoped payment and
 operation identity, amount/currency, canonical or unlinked source, exact
 allocation children, refund/dispute/unresolved state, shared-transaction
-grouping, hosted availability, resend capability, and delivery evidence.
+grouping, hosted availability, resend capability, delivery evidence, and the
+same payment-timing/collection evidence when applicable.
 Hosted receipt availability is separate from delivery evidence, which is
 `delivery_not_recorded` unless a future provider-delivery ledger is explicitly
 added. Initiating payers and scoped administrators may see a shared hosted
@@ -83,7 +94,9 @@ reports, zero-payment unresolved operation participants, unlinked Summer
 history, legacy fallback, incompatibility/no-fallback, semantic fingerprint
 stability, cross-tenant bowler corruption, tampered revision snapshots, receipt
 cache/lazy lookup contract, tenant scope, immutable payment mutation, F1-active
-generic-create rejection, and unchanged legacy payment/refund/dispute behavior.
+generic-create rejection, payer/partner privacy totals, payment timing and
+normal/double-pay grouping labels, and unchanged legacy payment/refund/dispute
+behavior.
 Full CI additionally exercises the reviewed F4 webhook/reconciliation and race
 suites; the exact file/test count is emitted by the validation run and is not a
 contract claim. Any future report/receipt behavior must add a focused

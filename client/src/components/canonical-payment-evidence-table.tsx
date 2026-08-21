@@ -1,10 +1,11 @@
 import { useState } from "react";
-import type { CanonicalPaymentRow } from "@shared/canonical-payment-report";
+import type { CanonicalPaymentRow, CanonicalPaymentTiming } from "@shared/canonical-payment-report";
 import { csrfFetch } from "@/lib/queryClient";
 
 type Props = {
   rows: CanonicalPaymentRow[];
   mode?: string;
+  paymentTiming?: CanonicalPaymentTiming;
   organizationId?: number | null;
   title?: string;
 };
@@ -14,7 +15,7 @@ type Props = {
  * particular, a row with no payment id is still a real unresolved/legacy
  * operation participant and must not be converted into a synthetic Payment.
  */
-export function CanonicalPaymentEvidenceTable({ rows, mode, organizationId, title = "Payment evidence" }: Props) {
+export function CanonicalPaymentEvidenceTable({ rows, mode, paymentTiming, organizationId, title = "Payment evidence" }: Props) {
   const [receiptLoading, setReceiptLoading] = useState<number | null>(null);
   const openReceipt = async (paymentId: number) => {
     setReceiptLoading(paymentId);
@@ -30,6 +31,11 @@ export function CanonicalPaymentEvidenceTable({ rows, mode, organizationId, titl
   return (
     <section aria-label={title} data-testid="canonical-payment-evidence-table" className="space-y-2">
       <div className="text-sm font-medium">{title}{mode ? ` · ${mode}` : ""}</div>
+      {paymentTiming && <div className="text-xs text-muted-foreground" data-testid="payment-timing">
+        {paymentTiming.paymentMode === "upfront" ? "Upfront payment" : "Weekly payment"}
+        {paymentTiming.upfrontDueAt ? ` · due ${paymentTiming.upfrontDueAtLocal ?? paymentTiming.upfrontDueAt}` : ""}
+        {` · ${paymentTiming.source === "canonical_activation" ? "canonical activation" : "legacy league timing"}`}
+      </div>}
       {rows.length === 0 ? (
         <p className="text-sm text-muted-foreground">No payment evidence for this page.</p>
       ) : (
@@ -48,11 +54,12 @@ export function CanonicalPaymentEvidenceTable({ rows, mode, organizationId, titl
                   {row.allocations.length > 0
                     ? row.allocations.map((allocation) => `${new Intl.NumberFormat("en-US", { style: "currency", currency: allocation.currency }).format(allocation.amountMinor / 100)} · ${allocation.state ?? "unresolved"} · occurrence ${allocation.occurrenceId ?? "unlinked"} · obligation ${allocation.obligationId ?? "unlinked"}`).join("; ")
                     : "No item allocation recorded"}
+                  {row.collectionEvidence ? ` · ${row.collectionEvidence.grouping === "double_pay" ? "double-pay" : "normal"} collection · ${row.collectionEvidence.timing.replaceAll("_", " ")} · collection point ${row.collectionEvidence.collectionPointOccurrenceId} · ${row.collectionEvidence.coveredOccurrenceIds.length} covered occurrence${row.collectionEvidence.coveredOccurrenceIds.length === 1 ? "" : "s"}` : ""}
                   {row.refund.present ? ` · refunded $${(row.refund.amountMinor / 100).toFixed(2)}` : ""}
                   {row.dispute.present ? ` · dispute/review evidence${row.dispute.scope === "transaction" ? " (transaction)" : ""}${row.dispute.state ? ` · ${row.dispute.state}` : ""}${row.dispute.amountMinor > 0 ? ` · $${(row.dispute.amountMinor / 100).toFixed(2)}` : ""}` : ""}
                 </div>
               </div>
-              <span className="font-mono">${(row.amountMinor / 100).toFixed(2)} {row.currency}</span>
+              <span className="font-mono">{new Intl.NumberFormat("en-US", { style: "currency", currency: row.currency }).format(row.amountMinor / 100)}</span>
               <span className="text-xs text-muted-foreground">{row.paymentId === null ? "operation evidence" : `payment #${row.paymentId}`}</span>
               {paymentId !== null && ["confirmed_paid", "refunded", "disputed"].includes(row.status) && <button type="button" className="text-xs underline" disabled={receiptLoading === paymentId} onClick={() => void openReceipt(paymentId)}>{receiptLoading === paymentId ? "Loading receipt…" : "Receipt"}</button>}
             </article>

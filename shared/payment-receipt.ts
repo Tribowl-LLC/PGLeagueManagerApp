@@ -4,6 +4,23 @@ export type PaymentReceiptAvailability = "available" | "unavailable";
 export type PaymentReceiptSource = "canonical_allocation" | "unlinked_legacy" | "unresolved_operation";
 export type PaymentReceiptEvidenceStatus = "confirmed_paid" | "refunded" | "disputed" | "review_required" | "unresolved" | "pending" | "failed";
 
+export interface PaymentReceiptTiming {
+  paymentMode: "weekly" | "upfront";
+  upfrontDueAt: string | null;
+  upfrontDueAtLocal?: string | null;
+  timezone?: string;
+  source: "canonical_activation" | "legacy_league";
+}
+
+export interface PaymentReceiptCollectionEvidence {
+  d2PlanId: string;
+  planVersion: number;
+  collectionPointOccurrenceId: string;
+  coveredOccurrenceIds: string[];
+  timing: "at_collection_point";
+  grouping: "normal" | "double_pay";
+}
+
 export interface PaymentReceiptAllocation {
   allocationId: string | null;
   obligationId: string | null;
@@ -38,6 +55,8 @@ export interface PaymentReceiptContract {
   dispute: { present: boolean; amountMinor: number; disputeId: string | null; scope?: "transaction" | "allocation" | "legacy_payment_row"; state?: string | null; reviewRequired?: boolean };
   unresolved: boolean;
   sharedTransaction: { groupKey: string | null; childCount: number } | null;
+  paymentTiming?: PaymentReceiptTiming;
+  collectionEvidence?: PaymentReceiptCollectionEvidence;
   canResend: boolean;
 }
 
@@ -58,6 +77,8 @@ export function paymentReceiptContract(input: {
   dispute?: PaymentReceiptContract["dispute"];
   unresolved?: boolean;
   sharedTransaction?: PaymentReceiptContract["sharedTransaction"];
+  paymentTiming?: PaymentReceiptTiming;
+  collectionEvidence?: PaymentReceiptCollectionEvidence;
   canResend?: boolean;
 }): PaymentReceiptContract {
   const receiptUrl = input.receiptUrl ?? null;
@@ -81,6 +102,8 @@ export function paymentReceiptContract(input: {
     dispute: input.dispute ?? { present: false, amountMinor: 0, disputeId: null },
     unresolved: input.unresolved ?? false,
     sharedTransaction: input.sharedTransaction ?? null,
+    ...(input.paymentTiming ? { paymentTiming: input.paymentTiming } : {}),
+    ...(input.collectionEvidence ? { collectionEvidence: input.collectionEvidence } : {}),
     canResend: input.canResend ?? Boolean(receiptUrl),
   };
 }

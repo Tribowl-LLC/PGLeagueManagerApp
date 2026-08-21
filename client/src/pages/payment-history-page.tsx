@@ -601,6 +601,7 @@ export default function PaymentHistoryPage() {
       paymentEvidenceStatuses={paymentEvidenceStatuses}
       canonicalRows={[...(canonicalPaymentReport?.rows ?? []), ...(canonicalPaymentReport?.unlinkedHistory ?? [])]}
       canonicalMode={canonicalPaymentReport?.mode}
+      canonicalPaymentTiming={canonicalPaymentReport?.paymentTiming}
       occurrenceAmountMinor={checkoutAvailable ? dialogAmountCents : 0}
       occurrenceAllocations={occurrenceAllocations}
       occurrenceQuoteFingerprint={occurrenceQuoteFingerprint}
