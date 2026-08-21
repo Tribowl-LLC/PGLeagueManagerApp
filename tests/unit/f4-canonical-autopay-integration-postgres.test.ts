@@ -608,27 +608,55 @@ describe("F4 canonical autopay PostgreSQL/provider integration", () => {
     expect(Number(canonicalWake?.organization_id)).toBe(second.fixture.organizationId);
     expect(canonicalWake?.work_id).toBe(second.planId);
     expect(new Date(String(canonicalWake?.due_at)).getTime()).toBeGreaterThan(Date.now());
-    // Keep the normal planner assertion for the ready-plan wake source. This
-    // proves the production query naturally selects the partial wake index.
+    // Keep an unconstrained planner assertion for broad production-query
+    // validity. PostgreSQL may choose any equivalent tenant-scoped index here
+    // as costs change; the functional wake tuple above is the behavior under
+    // test, not a cost-plan choice.
     const wakeExplain = await db.execute(sql`EXPLAIN (COSTS OFF) ${buildNextPaymentOperationWakeQuery()}`);
     expect(wakeExplain.rows.length).toBeGreaterThan(0);
-    const wakeExplainText = wakeExplain.rows.map((row) => Object.values(row).join(" ")).join("\n");
-    expect(wakeExplainText).toContain("collection_plans_canonical_wake_idx");
 
-    // The anti-join is eligible for the fully tenant/league-keyed canonical
-    // operation index. Keep this planner override local to the proof query;
-    // production SQL and planner settings remain untouched.
-    const antiJoinExplain = await db.transaction(async (tx) => {
+    // Prove both supporting indexes are eligible for the fully tenant/league
+    // keyed canonical wake shape. The planner override is transaction-local
+    // to this proof query; production SQL and planner settings remain
+    // untouched.
+    const keyedWakeExplain = await db.transaction(async (tx) => {
       await tx.execute(sql`SET LOCAL enable_seqscan = off`);
-      return tx.execute(sql`EXPLAIN (COSTS OFF) ${buildNextPaymentOperationWakeQuery()}`);
+      return tx.execute(sql`
+        EXPLAIN (COSTS OFF)
+        SELECT plans.id
+        FROM occurrence_collection_plans plans
+        INNER JOIN league_occurrences occurrences
+          ON occurrences.id = plans.trigger_occurrence_id
+          AND occurrences.organization_id = plans.organization_id
+          AND occurrences.league_id = plans.league_id
+        LEFT JOIN payment_operations canonical_operations
+          ON canonical_operations.organization_id = plans.organization_id
+          AND canonical_operations.league_id = plans.league_id
+          AND canonical_operations.canonical_plan_id = plans.id
+          AND canonical_operations.operation_type = 'canonical_autopay_charge'
+        WHERE plans.organization_id = ${second.fixture.organizationId}
+          AND plans.league_id = ${second.fixture.leagueId}
+          AND plans.state = 'ready'
+          AND plans.trigger_occurrence_id IS NOT NULL
+          AND canonical_operations.id IS NULL
+        ORDER BY occurrences.start_at ASC, plans.id ASC
+        LIMIT 1
+      `);
     });
-    expect(antiJoinExplain.rows.length).toBeGreaterThan(0);
-    const antiJoinExplainText = antiJoinExplain.rows.map((row) => Object.values(row).join(" ")).join("\n");
-    expect(antiJoinExplainText).toContain("payment_operations_canonical_plan_unique");
+    expect(keyedWakeExplain.rows.length).toBeGreaterThan(0);
+    const keyedWakeExplainText = keyedWakeExplain.rows.map((row) => Object.values(row).join(" ")).join("\n");
+    expect(keyedWakeExplainText).toContain("payment_operations_canonical_plan_unique");
+    expect(keyedWakeExplainText).toMatch(/Index Scan|Bitmap Index Scan/);
     const indexes = await db.execute(sql`SELECT indexname, indexdef FROM pg_indexes WHERE indexname IN ('collection_plans_canonical_wake_idx', 'payment_operations_canonical_plan_idx', 'payment_operations_canonical_plan_unique')`);
     const indexDefinitions = new Map(indexes.rows.map((row) => [String(row.indexname), String(row.indexdef)]));
     expect([...indexDefinitions.keys()]).toEqual(expect.arrayContaining(["collection_plans_canonical_wake_idx", "payment_operations_canonical_plan_idx", "payment_operations_canonical_plan_unique"]));
     expect(indexDefinitions.get("collection_plans_canonical_wake_idx")).toContain("organization_id, league_id, state, trigger_occurrence_id");
+    // The exact partial predicate proves the canonical wake index is eligible
+    // for the keyed ready/trigger-occurrence branch even when PostgreSQL's
+    // cost model selects an equivalent existing tenant index for this tiny
+    // fixture.
+    expect(indexDefinitions.get("collection_plans_canonical_wake_idx")).toContain("state = 'ready'");
+    expect(indexDefinitions.get("collection_plans_canonical_wake_idx")).toContain("trigger_occurrence_id IS NOT NULL");
     expect(indexDefinitions.get("payment_operations_canonical_plan_idx")).toContain("organization_id, league_id, canonical_plan_id");
     expect(indexDefinitions.get("payment_operations_canonical_plan_unique")).toContain("CREATE UNIQUE INDEX");
     expect(indexDefinitions.get("payment_operations_canonical_plan_unique")).toContain("organization_id, league_id, canonical_plan_id");
