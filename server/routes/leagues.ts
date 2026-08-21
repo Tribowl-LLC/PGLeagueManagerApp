@@ -580,11 +580,26 @@ router.patch("/:id", async (req: Request, res) => {
       "doublePayDates", "skipDates", "cancelledDates", "seasonStart", "seasonEnd",
       "weekDay", "competitionStartTime", "timezone", "totalBowlingWeeks",
     ].some((field) => Object.prototype.hasOwnProperty.call(req.body ?? {}, field));
-    const hasCanonicalScheduleEvidence = canonicalScheduleFieldChanged && league.organizationId !== null
+    const canonicalMetadataFieldChanged = [
+      "name", "description", "active", "allowPublicSignup", "practiceStartTime",
+      "lineageFee", "prizeFundFee", "squareLineageItemId", "lineageItemVariationId",
+      "squareLineageItemName", "squarePrizeFundItemId", "prizeFundItemVariationId",
+      "squarePrizeFundItemName", "squareCategoryId",
+    ].some((field) => Object.prototype.hasOwnProperty.call(req.body ?? {}, field));
+    const canonicalScheduleMutationChanged = canonicalScheduleFieldChanged || canonicalMetadataFieldChanged;
+    const hasCanonicalScheduleEvidence = canonicalScheduleMutationChanged && league.organizationId !== null
       ? await hasOperationalLeagueOccurrenceEvidence(db, league.organizationId, id)
       : false;
+    let updated = league;
+    let canonicalScheduleResponse: { state: "published"; collectionGroups: unknown[] } | undefined;
     if (hasCanonicalScheduleEvidence
-      && canonicalScheduleFieldChanged) {
+      && canonicalScheduleMutationChanged) {
+      for (const field of ["organizationId", "locationId", "weeklyFee", "paymentMode"] as const) {
+        if (Object.prototype.hasOwnProperty.call(req.body ?? {}, field)
+          && (update[field] as unknown) !== (league[field] as unknown)) {
+          return sendError(res, `${field} cannot be changed on an authoritative canonical league`, 409, "CANONICAL_SCHEDULE_LOCKED_FIELD");
+        }
+      }
       const rawRevision = req.body.scheduleRevision ?? req.get("if-match")?.replace(/^W\//, "").replace(/^"|"$/g, "");
       const expectedScheduleRevision = typeof rawRevision === "string" ? Number(rawRevision) : rawRevision;
       const idempotencyKey = typeof req.body.idempotencyKey === "string" ? req.body.idempotencyKey : req.get("idempotency-key");
@@ -596,6 +611,17 @@ router.patch("/:id", async (req: Request, res) => {
       if (organizationId === null || actorUserId === undefined) {
         return sendError(res, "Canonical schedule tenant context is required", 403, "FORBIDDEN");
       }
+      // The existing builder always submits its display-only derived
+      // seasonEnd.  A cancellation/skip changes that preview date, but it is
+      // not an audited physical regeneration and must not become a scalar
+      // canonical edit.  Preserve the durable canonical end when the
+      // submitted value is exactly this derived preview; a genuinely
+      // different scalar still reaches the fail-closed editor below.
+      const derivedBuilderSeasonEnd = mergedTotalBowlingWeeks != null && mergedWeekDay
+        ? calculateSeasonEnd(new Date(mergedSeasonStart), mergedWeekDay, Number(mergedTotalBowlingWeeks), mergedSkipDates, mergedCancelledDates)
+        : null;
+      const seasonEndIsBuilderDerived = update.seasonEnd !== undefined && derivedBuilderSeasonEnd !== null
+        && new Date(update.seasonEnd).toISOString().slice(0, 10) === derivedBuilderSeasonEnd.toISOString().slice(0, 10);
       const edited = await editCanonicalLeagueSchedule({
         organizationId,
         leagueId: id,
@@ -607,30 +633,34 @@ router.patch("/:id", async (req: Request, res) => {
         skipDates: update.skipDates ?? league.skipDates,
         cancelledDates: update.cancelledDates ?? league.cancelledDates,
         seasonStart: update.seasonStart === undefined ? undefined : new Date(update.seasonStart).toISOString(),
-        seasonEnd: update.seasonEnd === undefined ? undefined : new Date(update.seasonEnd).toISOString(),
+        seasonEnd: seasonEndIsBuilderDerived ? undefined : (update.seasonEnd === undefined ? undefined : new Date(update.seasonEnd).toISOString()),
         weekDay: update.weekDay,
         competitionStartTime: update.competitionStartTime,
         timezone: update.timezone,
         totalBowlingWeeks: update.totalBowlingWeeks,
+        metadata: {
+          ...(update.name === undefined ? {} : { name: update.name }),
+          ...(update.description === undefined ? {} : { description: update.description }),
+          ...(update.active === undefined ? {} : { active: update.active }),
+          ...(update.allowPublicSignup === undefined ? {} : { allowPublicSignup: update.allowPublicSignup }),
+          ...(update.practiceStartTime === undefined ? {} : { practiceStartTime: update.practiceStartTime }),
+          ...(update.lineageFee === undefined ? {} : { lineageFee: update.lineageFee }),
+          ...(update.prizeFundFee === undefined ? {} : { prizeFundFee: update.prizeFundFee }),
+          ...(update.squareLineageItemId === undefined ? {} : { squareLineageItemId: update.squareLineageItemId }),
+          ...(update.lineageItemVariationId === undefined ? {} : { lineageItemVariationId: update.lineageItemVariationId }),
+          ...(update.squareLineageItemName === undefined ? {} : { squareLineageItemName: update.squareLineageItemName }),
+          ...(update.squarePrizeFundItemId === undefined ? {} : { squarePrizeFundItemId: update.squarePrizeFundItemId }),
+          ...(update.prizeFundItemVariationId === undefined ? {} : { prizeFundItemVariationId: update.prizeFundItemVariationId }),
+          ...(update.squarePrizeFundItemName === undefined ? {} : { squarePrizeFundItemName: update.squarePrizeFundItemName }),
+          ...(update.squareCategoryId === undefined ? {} : { squareCategoryId: update.squareCategoryId }),
+        },
       });
-      const editedLeague = {
-        ...league,
-        doublePayDates: edited.doublePayDates,
-        skipDates: update.skipDates ?? league.skipDates,
-        cancelledDates: update.cancelledDates ?? league.cancelledDates,
-        ...(update.seasonStart === undefined ? {} : { seasonStart: update.seasonStart }),
-        ...(update.seasonEnd === undefined ? {} : { seasonEnd: update.seasonEnd }),
-        ...(update.weekDay === undefined ? {} : { weekDay: update.weekDay }),
-        ...(update.competitionStartTime === undefined ? {} : { competitionStartTime: update.competitionStartTime }),
-        ...(update.timezone === undefined ? {} : { timezone: update.timezone }),
-        ...(update.totalBowlingWeeks === undefined ? {} : { totalBowlingWeeks: update.totalBowlingWeeks }),
-        canonicalScheduleRevision: edited.scheduleRevision,
-      };
-      res.setHeader("ETag", `\"${edited.scheduleRevision}\"`);
-      return sendSuccess(res, { ...editedLeague, canonicalSchedule: { state: "published", collectionGroups: edited.collectionGroups } });
+      updated = edited.league;
+      cacheInvalidate('leagues:');
+      canonicalScheduleResponse = { state: "published", collectionGroups: edited.collectionGroups };
     }
 
-    const updated = await storage.updateLeague(id, update);
+    if (!canonicalScheduleResponse) updated = await storage.updateLeague(id, update);
 
     // Task #429: a name change moves the bowler between Smart Lists
     // (the `league_name` Square attribute string changes); a season-
@@ -641,7 +671,7 @@ router.patch("/:id", async (req: Request, res) => {
     const seasonStartChanged =
       update.seasonStart !== undefined &&
       new Date(update.seasonStart).getTime() !== new Date(league.seasonStart).getTime();
-    const seasonEndChanged =
+    const seasonEndChanged = !canonicalScheduleResponse &&
       update.seasonEnd !== undefined &&
       new Date(update.seasonEnd).getTime() !== new Date(league.seasonEnd).getTime();
     const activeChanged = update.active !== undefined && update.active !== league.active;
@@ -707,6 +737,10 @@ router.patch("/:id", async (req: Request, res) => {
       }
     }
 
+    if (canonicalScheduleResponse) {
+      res.setHeader("ETag", `\"${updated.canonicalScheduleRevision}\"`);
+      return sendSuccess(res, { ...updated, canonicalSchedule: canonicalScheduleResponse });
+    }
     sendSuccess(res, updated);
   } catch (error) {
     if (error instanceof z.ZodError) {
@@ -731,6 +765,7 @@ router.patch("/:id", async (req: Request, res) => {
     if (error instanceof CanonicalLeagueScheduleEditError) {
       if (error.code === "stale_revision") return sendError(res, error.message, 409, "CANONICAL_SCHEDULE_STALE_REVISION");
       if (error.code === "financial_conflict") return sendError(res, error.message, 409, "CANONICAL_SCHEDULE_FINANCIAL_CONFLICT");
+      if (error.code === "unsupported_edit") return sendError(res, error.message, 409, "CANONICAL_SCHEDULE_UNSUPPORTED_EDIT");
       return sendError(res, error.message, 400, "CANONICAL_SCHEDULE_EDIT_INVALID");
     }
     sendError(res, 'Failed to update league');

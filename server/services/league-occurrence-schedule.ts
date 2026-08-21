@@ -375,6 +375,52 @@ function assertOperationalSetIntegrity(
     if (group.generationRunId !== currentRun.id || !["published", "revoked"].includes(group.state)) {
       throw new LeagueOccurrenceScheduleError("incompatible_canonical_state", "collection group evidence is not operational");
     }
+    if (group.kind !== "double_pay" || group.triggerLocalDate >= group.pairedLocalDate
+      || group.currentRevision < 1 || group.sourceScheduleRevision < 1) {
+      throw new LeagueOccurrenceScheduleError("incompatible_canonical_state", "collection group has invalid kind, dates, or revision evidence");
+    }
+    const groupMembers = collectionGroupMembers.filter((member) => member.groupId === group.id);
+    if (groupMembers.length !== 2 || new Set(groupMembers.map((member) => member.occurrenceId)).size !== 2
+      || new Set(groupMembers.map((member) => member.billingTermId)).size !== 2
+      || groupMembers.some((member) => member.organizationId !== input.organizationId
+        || member.leagueId !== input.leagueId
+        || member.generationRunId !== currentRun.id
+        || member.amountMinor <= 0
+        || member.billingOrdinal <= 0
+        || !/^[A-Z]{3}$/.test(member.currency)
+        || (member.role === "trigger" && member.memberOrdinal !== 1)
+        || (member.role === "paired" && member.memberOrdinal !== 2)
+        || !["trigger", "paired"].includes(member.role))) {
+      throw new LeagueOccurrenceScheduleError("incompatible_canonical_state", "collection group must contain exactly one strict trigger and paired member");
+    }
+    const triggerMember = groupMembers.find((member) => member.role === "trigger");
+    const pairedMember = groupMembers.find((member) => member.role === "paired");
+    if (!triggerMember || !pairedMember
+      || triggerMember.localDate !== group.triggerLocalDate
+      || pairedMember.localDate !== group.pairedLocalDate
+      || (group.state === "published" && groupMembers.some((member) => !member.active))
+      || (group.state === "revoked" && groupMembers.some((member) => member.active))) {
+      throw new LeagueOccurrenceScheduleError("incompatible_canonical_state", "collection group lifecycle and member activity are inconsistent");
+    }
+    if (group.state === "published") {
+      const occurrenceById = new Map(operational.map((row) => [row.id, row]));
+      const termById = new Map(input.canonical.billingTerms.map((term) => [term.id, term]));
+      for (const member of [triggerMember, pairedMember]) {
+        const occurrence = occurrenceById.get(member.occurrenceId);
+        const term = termById.get(member.billingTermId);
+        if (!occurrence || occurrence.authoritativeLocalDate !== member.localDate
+          || !["published", "locked"].includes(occurrence.lifecycle)
+          || !["scheduled", "completed"].includes(occurrence.status)
+          || !term || term.occurrenceId !== member.occurrenceId
+          || term.state !== "published"
+          || term.obligationPolicy !== "eligible_bowlers"
+          || term.billingOrdinal !== member.billingOrdinal
+          || term.defaultAmountMinor !== member.amountMinor
+          || term.currency !== member.currency) {
+          throw new LeagueOccurrenceScheduleError("incompatible_canonical_state", "published collection group member does not match its current occurrence and billing term");
+        }
+      }
+    }
   }
   for (const row of operational) {
     if (row.generationRunId === currentRun.id) continue;

@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import {
   canonicalCollectionGroupMemberRevisions,
   canonicalCollectionGroupMembers,
@@ -16,6 +16,7 @@ import {
   leagueOccurrenceGenerationRuns,
   leagueOccurrences,
 } from "@shared/schema/canonical-occurrences";
+import { leagues } from "@shared/schema";
 import { db } from "../db.js";
 import { lockLeagueSchedule } from "../storage/league-schedule-lock.js";
 import {
@@ -60,6 +61,11 @@ export async function repairCanonicalCollectionGroups(
 ): Promise<CanonicalCollectionGroupRepairResult> {
   return db.transaction(async (tx) => {
     await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
+    const [league] = await tx.select().from(leagues).where(and(
+      eq(leagues.id, input.leagueId),
+      eq(leagues.organizationId, input.organizationId),
+    )).for("update");
+    if (!league) throw new Error("repair league is outside the requested tenant");
     await assertCanonicalScheduleTenantAndActor(tx, {
       organizationId: input.organizationId,
       leagueId: input.leagueId,
@@ -71,15 +77,39 @@ export async function repairCanonicalCollectionGroups(
     });
     if (!input.reason || input.reason.trim() !== input.reason) throw new Error("repair reason must be nonempty and trimmed");
     if (input.pairs.length === 0 || input.pairs.length > 2) throw new Error("repair requires one or two explicit pairs");
-    const [run] = await tx.select().from(leagueOccurrenceGenerationRuns).where(and(
-      eq(leagueOccurrenceGenerationRuns.id, input.generationRunId),
+    if (!Number.isSafeInteger(input.sourceScheduleRevision) || input.sourceScheduleRevision <= 0) throw new Error("repair source schedule revision is invalid");
+    const currentRuns = await tx.select().from(leagueOccurrenceGenerationRuns).where(and(
       eq(leagueOccurrenceGenerationRuns.organizationId, input.organizationId),
       eq(leagueOccurrenceGenerationRuns.leagueId, input.leagueId),
-      eq(leagueOccurrenceGenerationRuns.sourceScheduleRevision, input.sourceScheduleRevision),
       inArray(leagueOccurrenceGenerationRuns.state, ["approved", "applied"]),
-    )).for("update");
-    if (!run) throw new Error("repair generation run is not the explicitly selected current tenant run");
+    )).orderBy(desc(leagueOccurrenceGenerationRuns.sourceScheduleRevision), desc(leagueOccurrenceGenerationRuns.id)).limit(2).for("update");
+    if (currentRuns.length !== 1) {
+      throw new Error("repair requires exactly one current approved/applied operational run");
+    }
+    const [run] = currentRuns;
+    if (!run || run.id !== input.generationRunId || run.sourceScheduleRevision !== input.sourceScheduleRevision) {
+      throw new Error("repair generation run is not the current operational tenant run");
+    }
+    if (league.canonicalScheduleRevision !== 0 && league.canonicalScheduleRevision !== input.sourceScheduleRevision) {
+      throw new Error("repair canonical schedule revision conflicts with the current league revision");
+    }
+    const configuredTriggerDates = [...league.doublePayDates].sort();
+    if (configuredTriggerDates.length !== input.pairs.length) {
+      throw new Error("repair pair count does not exactly match configured double-pay triggers");
+    }
     const pairRows = [...input.pairs].sort((left, right) => left.triggerLocalDate.localeCompare(right.triggerLocalDate) || left.triggerOccurrenceId.localeCompare(right.triggerOccurrenceId));
+    if (input.pairs.some((pair, index) => {
+      const ordered = pairRows[index];
+      return !ordered || pair.triggerOccurrenceId !== ordered.triggerOccurrenceId
+        || pair.pairedOccurrenceId !== ordered.pairedOccurrenceId
+        || pair.triggerLocalDate !== ordered.triggerLocalDate
+        || pair.pairedLocalDate !== ordered.pairedLocalDate;
+    })) {
+      throw new Error("repair pairs must be supplied in deterministic chronological order");
+    }
+    if (pairRows.some((pair, index) => pair.triggerLocalDate !== configuredTriggerDates[index])) {
+      throw new Error("repair trigger dates do not exactly match configured double-pay order");
+    }
     const occurrenceIds = pairRows.flatMap((pair) => [pair.triggerOccurrenceId, pair.pairedOccurrenceId]);
     if (new Set(occurrenceIds).size !== occurrenceIds.length) throw new Error("repair pairs must not reuse an occurrence");
     const occurrences = await tx.select().from(leagueOccurrences).where(and(
@@ -100,6 +130,15 @@ export async function repairCanonicalCollectionGroups(
     const groupIds: string[] = [];
     const commandIds: string[] = [];
     let writesPerformed = false;
+    const currentGroups = await tx.select().from(canonicalCollectionGroups).where(and(
+      eq(canonicalCollectionGroups.organizationId, input.organizationId),
+      eq(canonicalCollectionGroups.leagueId, input.leagueId),
+      eq(canonicalCollectionGroups.generationRunId, input.generationRunId),
+      eq(canonicalCollectionGroups.state, "published"),
+    )).orderBy(asc(canonicalCollectionGroups.groupOrdinal), asc(canonicalCollectionGroups.id)).for("update");
+    if (currentGroups.length > pairRows.length || currentGroups.some((group) => group.groupOrdinal < 1 || group.groupOrdinal > pairRows.length)) {
+      throw new Error("repair found conflicting published collection-group evidence");
+    }
     for (const [index, pair] of pairRows.entries()) {
       const trigger = occurrenceById.get(pair.triggerOccurrenceId);
       const paired = occurrenceById.get(pair.pairedOccurrenceId);
@@ -113,7 +152,8 @@ export async function repairCanonicalCollectionGroups(
         || !["published", "locked"].includes(trigger.lifecycle) || !["published", "locked"].includes(paired.lifecycle)
         || triggerTerm.obligationPolicy !== "eligible_bowlers" || pairedTerm.obligationPolicy !== "eligible_bowlers"
         || triggerTerm.billingOrdinal === null || pairedTerm.billingOrdinal === null
-        || triggerTerm.defaultAmountMinor <= 0 || pairedTerm.defaultAmountMinor <= 0) {
+        || triggerTerm.defaultAmountMinor <= 0 || pairedTerm.defaultAmountMinor <= 0
+        || triggerTerm.currency !== pairedTerm.currency) {
         throw new Error("repair pair failed explicit date, lifecycle, status, or billable-term preconditions");
       }
       const memberEvidence = {
@@ -143,6 +183,46 @@ export async function repairCanonicalCollectionGroups(
       )).for("update");
       if (existing) {
         if (existing.fingerprint !== fingerprint || existing.publicationCommandId !== command.command.id || existing.state !== "published") throw new Error("repair idempotency evidence conflicts");
+        const existingMembers = await tx.select().from(canonicalCollectionGroupMembers).where(and(
+          eq(canonicalCollectionGroupMembers.organizationId, input.organizationId),
+          eq(canonicalCollectionGroupMembers.leagueId, input.leagueId),
+          eq(canonicalCollectionGroupMembers.groupId, existing.id),
+        )).orderBy(asc(canonicalCollectionGroupMembers.memberOrdinal), asc(canonicalCollectionGroupMembers.id)).for("update");
+        if (existingMembers.length !== 2 || existingMembers.some((member) => !member.active || member.currentRevision !== 1)
+          || existingMembers[0]?.occurrenceId !== trigger.id
+          || existingMembers[0]?.billingTermId !== triggerTerm.id
+          || existingMembers[0]?.role !== "trigger"
+          || existingMembers[0]?.memberOrdinal !== 1
+          || existingMembers[0]?.localDate !== pair.triggerLocalDate
+          || existingMembers[0]?.billingOrdinal !== triggerTerm.billingOrdinal
+          || existingMembers[0]?.amountMinor !== triggerTerm.defaultAmountMinor
+          || existingMembers[0]?.currency !== triggerTerm.currency
+          || existingMembers[1]?.occurrenceId !== paired.id
+          || existingMembers[1]?.billingTermId !== pairedTerm.id
+          || existingMembers[1]?.role !== "paired"
+          || existingMembers[1]?.memberOrdinal !== 2
+          || existingMembers[1]?.localDate !== pair.pairedLocalDate
+          || existingMembers[1]?.billingOrdinal !== pairedTerm.billingOrdinal
+          || existingMembers[1]?.amountMinor !== pairedTerm.defaultAmountMinor
+          || existingMembers[1]?.currency !== pairedTerm.currency) {
+          throw new Error("repair retry evidence has incomplete or conflicting group membership");
+        }
+        const [groupRevision] = await tx.select({ revisionNumber: canonicalCollectionGroupRevisions.revisionNumber })
+          .from(canonicalCollectionGroupRevisions).where(and(
+            eq(canonicalCollectionGroupRevisions.organizationId, input.organizationId),
+            eq(canonicalCollectionGroupRevisions.leagueId, input.leagueId),
+            eq(canonicalCollectionGroupRevisions.groupId, existing.id),
+            eq(canonicalCollectionGroupRevisions.revisionNumber, existing.currentRevision),
+          )).limit(1);
+        const memberRevisionRows = await tx.select({ memberId: canonicalCollectionGroupMemberRevisions.memberId, revisionNumber: canonicalCollectionGroupMemberRevisions.revisionNumber })
+          .from(canonicalCollectionGroupMemberRevisions).where(and(
+            eq(canonicalCollectionGroupMemberRevisions.organizationId, input.organizationId),
+            eq(canonicalCollectionGroupMemberRevisions.leagueId, input.leagueId),
+            inArray(canonicalCollectionGroupMemberRevisions.memberId, existingMembers.map((member) => member.id)),
+          ));
+        if (!groupRevision || memberRevisionRows.length !== 2 || memberRevisionRows.some((revision) => revision.revisionNumber !== 1)) {
+          throw new Error("repair retry evidence is missing complete group revisions");
+        }
         groupIds.push(existing.id);
         continue;
       }
@@ -158,6 +238,15 @@ export async function repairCanonicalCollectionGroups(
       await tx.insert(canonicalCollectionGroupRevisions).values({ organizationId: input.organizationId, leagueId: input.leagueId, groupId: group.id, commandId: command.command.id, revisionNumber: 1, snapshotSchemaVersion: CANONICAL_COLLECTION_GROUP_REVISION_SNAPSHOT_VERSION, beforeSnapshot: null, afterSnapshot: group });
       await tx.insert(canonicalCollectionGroupMemberRevisions).values([triggerMember, pairedMember].map((member) => ({ organizationId: input.organizationId, leagueId: input.leagueId, memberId: member.id, commandId: command.command.id, revisionNumber: 1, snapshotSchemaVersion: 1, beforeSnapshot: null, afterSnapshot: member })));
       groupIds.push(group.id);
+      writesPerformed = true;
+    }
+    if (league.canonicalScheduleRevision === 0) {
+      const [initialized] = await tx.update(leagues).set({ canonicalScheduleRevision: input.sourceScheduleRevision }).where(and(
+        eq(leagues.id, input.leagueId),
+        eq(leagues.organizationId, input.organizationId),
+        eq(leagues.canonicalScheduleRevision, 0),
+      )).returning({ canonicalScheduleRevision: leagues.canonicalScheduleRevision });
+      if (!initialized) throw new Error("repair canonical schedule revision initialization raced");
       writesPerformed = true;
     }
     return { mode: writesPerformed ? "applied" : "idempotent_retry", groupIds, commandIds, writesPerformed };

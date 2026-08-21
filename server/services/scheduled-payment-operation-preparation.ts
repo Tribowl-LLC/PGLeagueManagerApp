@@ -418,9 +418,7 @@ export async function prepareScheduledPaymentCycle(input: {
         .update(paymentSchedules)
         .set({
           nextPaymentDate,
-          nextOccurrenceId: nextComparison.classification === "exact_match"
-            ? nextComparison.occurrenceId
-            : null,
+          nextOccurrenceId: nextComparison.classification === "exact_match" ? nextComparison.occurrenceId : null,
           lastPaymentDate: expectedCycleAt,
         })
         .where(and(
@@ -513,12 +511,18 @@ export async function prepareScheduledPaymentCycle(input: {
         legacyStartAt: nextPaymentDate,
         immediateUpfront: false,
         eligibilityNow: now.toISOString(),
-        existingReferenceId: schedule.nextOccurrenceId,
+        // The cursor currently names the paired occurrence. Resolve the next
+        // physical occurrence from its date, then require exact identity so a
+        // paired-cycle skip can never silently advance to an inferred row.
+        existingReferenceId: null,
       });
       assertNoOccurrenceReferenceConflict(nextComparison);
+      if (nextComparison.classification !== "exact_match" || !nextComparison.occurrenceId) {
+        throw new ScheduledPaymentPreparationError("paired canonical cycle has no exact next occurrence");
+      }
       const [advanced] = await tx.update(paymentSchedules).set({
         nextPaymentDate,
-        nextOccurrenceId: nextComparison.classification === "exact_match" ? nextComparison.occurrenceId : null,
+        nextOccurrenceId: nextComparison.occurrenceId,
         lastPaymentDate: expectedCycleAt,
       }).where(and(
         eq(paymentSchedules.id, schedule.id),

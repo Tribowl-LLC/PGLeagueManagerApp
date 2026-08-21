@@ -417,7 +417,7 @@ describe('normalized migration baseline tools', () => {
       idx: 30,
       tag: '0030_canonical_collection_groups',
       createdAt: 1787340597942,
-      hash: '250dac1885a3a775ff4d90139cc5379c6c3f576e9dd69d8ab3df1db8440be10d',
+      hash: '9e9b22a8bda1366c7404efd9890c9f0ab9ad69a6b072e7c64a242e8dd94b87a4',
     });
     expect(migrations[30]?.sql).toContain('CREATE TABLE "canonical_collection_groups"');
     expect(migrations[30]?.sql).toContain('canonical_collection_group_members');

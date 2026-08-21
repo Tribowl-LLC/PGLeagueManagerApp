@@ -12,6 +12,7 @@ import {
   leagueScheduleExceptions,
   games,
   paymentOperations,
+  scheduledPaymentOperationSnapshots,
   bowlerOccurrenceEligibilities,
   bowlerOccurrenceTeamAssignments,
   bowlerOccurrenceObligations,
@@ -1312,30 +1313,89 @@ export async function cancelOccurrenceInTransaction(tx: LeagueScheduleTransactio
         eq(paymentOperationOccurrenceSnapshotAllocations.occurrenceId, occurrence.id),
       ));
     const operationIds = [...new Set(snapshotOperationRows.map((row) => row.operationId))];
-    const triggerOperations = await tx.select({ id: paymentOperations.id, status: paymentOperations.status, dispatchClaimedAt: paymentOperations.dispatchClaimedAt })
+    // Scheduled-charge ledger rows predate the league_id column and are
+    // therefore tenant-scoped through their immutable snapshot.  Lock the
+    // exact trigger rows as well as F2 snapshot allocations before deciding
+    // whether cancellation wins the dispatch race.
+    const scheduledTriggerOperations = await tx.select({
+      id: paymentOperations.id,
+      operationType: paymentOperations.operationType,
+      status: paymentOperations.status,
+      dispatchClaimedAt: paymentOperations.dispatchClaimedAt,
+    }).from(paymentOperations).innerJoin(
+      scheduledPaymentOperationSnapshots,
+      eq(scheduledPaymentOperationSnapshots.operationId, paymentOperations.id),
+    ).where(and(
+      eq(paymentOperations.organizationId, request.organizationId),
+      eq(scheduledPaymentOperationSnapshots.leagueId, request.leagueId),
+      eq(paymentOperations.operationType, "scheduled_charge"),
+      eq(paymentOperations.triggerOccurrenceId, occurrence.id),
+    )).orderBy(asc(paymentOperations.id)).for("update");
+    const directTriggerOperations = await tx.select({ id: paymentOperations.id, operationType: paymentOperations.operationType, status: paymentOperations.status, dispatchClaimedAt: paymentOperations.dispatchClaimedAt })
       .from(paymentOperations).where(and(
         eq(paymentOperations.organizationId, request.organizationId),
         eq(paymentOperations.leagueId, request.leagueId),
         eq(paymentOperations.triggerOccurrenceId, occurrence.id),
-      ));
-    const reconciliationRequired = [...triggerOperations].some((operation) =>
+      )).orderBy(asc(paymentOperations.id)).for("update");
+    const operationRows = [...new Map(
+      [...scheduledTriggerOperations, ...directTriggerOperations].map((row) => [row.id, row]),
+    ).values()];
+    const snapshotOperationRowsWithState = operationIds.length === 0 ? [] : await tx.select({
+      id: paymentOperations.id,
+      operationType: paymentOperations.operationType,
+      status: paymentOperations.status,
+      dispatchClaimedAt: paymentOperations.dispatchClaimedAt,
+    }).from(paymentOperations).where(and(
+      eq(paymentOperations.organizationId, request.organizationId),
+      inArray(paymentOperations.id, operationIds),
+    )).orderBy(asc(paymentOperations.id)).for("update");
+    const allOperationRows = [...new Map(
+      [...operationRows, ...snapshotOperationRowsWithState].map((row) => [row.id, row]),
+    ).values()];
+    const reconciliationRequired = allOperationRows.some((operation) =>
       ["provider_unknown", "reconciliation_required"].includes(operation.status)
-      || (operation.status === "leased" && operation.dispatchClaimedAt !== null));
-    if (operationIds.length > 0) {
-      await tx.update(paymentOperations).set({
-        status: "canceled",
-        nextAttemptAt: null,
-        leaseOwner: null,
-        leaseExpiresAt: null,
-        completedAt: request.now,
-        updatedAt: request.now,
-      }).where(and(
-        eq(paymentOperations.organizationId, request.organizationId),
-        eq(paymentOperations.leagueId, request.leagueId),
-        inArray(paymentOperations.id, operationIds),
-        inArray(paymentOperations.status, ["pending", "retry_scheduled", "leased"]),
-        isNull(paymentOperations.dispatchClaimedAt),
-      ));
+      || (operation.status === "leased" && (operation.dispatchClaimedAt !== null || operation.operationType === "interactive_charge")));
+    for (const operation of allOperationRows) {
+      const claimFirstInteractive = operation.operationType === "interactive_charge"
+        && operation.status === "leased";
+      if (["pending", "retry_scheduled", "leased"].includes(operation.status)
+        && operation.dispatchClaimedAt === null && !claimFirstInteractive) {
+        await tx.update(paymentOperations).set({
+          status: "canceled",
+          nextAttemptAt: null,
+          leaseOwner: null,
+          leaseExpiresAt: null,
+          completedAt: request.now,
+          updatedAt: request.now,
+        }).where(and(
+          eq(paymentOperations.organizationId, request.organizationId),
+          eq(paymentOperations.id, operation.id),
+          eq(paymentOperations.status, operation.status),
+          isNull(paymentOperations.dispatchClaimedAt),
+        ));
+      } else if (claimFirstInteractive || (operation.status === "leased" && operation.dispatchClaimedAt !== null)) {
+        // Claim-first means the provider request may already be in flight.
+        // Keep the exact lease/dispatch identity untouched until the shared
+        // finalizer records the provider result. The cancellation command and
+        // revoked group carry the review marker; changing this row here would
+        // make a successful provider response impossible to finalize.
+      } else if (operation.status === "provider_unknown") {
+        // Unknown provider outcome is already durable evidence, but it must
+        // not remain in the automatic due/retry set after its occurrence is
+        // cancelled. Preserve the operation/provider identity and stop the
+        // retry cursor with an explicit reconciliation marker.
+        await tx.update(paymentOperations).set({
+          status: "reconciliation_required",
+          nextAttemptAt: null,
+          errorCode: "CANCELLATION_REVIEW",
+          completedAt: request.now,
+          updatedAt: request.now,
+        }).where(and(
+          eq(paymentOperations.organizationId, request.organizationId),
+          eq(paymentOperations.id, operation.id),
+          eq(paymentOperations.status, "provider_unknown"),
+        ));
+      }
     }
     for (const { group } of affectedGroups) {
       const revokeRequest: MaterializationScheduleCommandRequest = {

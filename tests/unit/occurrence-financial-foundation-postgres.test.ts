@@ -12,6 +12,7 @@ import {
   interactivePaymentOperationSnapshots,
   leagueOccurrenceBillingTerms,
   leagueOccurrences,
+  leagueScheduleCommands,
   leagues,
   locations,
   occurrenceCollectionPlanItems,
@@ -30,6 +31,7 @@ import {
 } from "@shared/schema";
 import {
   buildCanonicalScheduleCommandFingerprint,
+  cancelOccurrence,
   rescheduleOccurrence,
   type CanonicalScheduleCommandFingerprintRequest,
 } from "../../server/services/canonical-occurrence-transactions";
@@ -609,6 +611,162 @@ describe("D2 occurrence financial foundation PostgreSQL contract", () => {
       currency: "USD",
       selections: [{ obligationId: obligation.id, amountMinor: 400 }],
     })).rejects.toMatchObject({ code: "CANONICAL_EVIDENCE_INCOMPATIBLE" });
+    await deleteOrganization(scope.organizationId);
+  });
+
+  it("retains provider identity and payment evidence when cancellation wins after an interactive claim", async () => {
+    const scope = await createFixture("F2CancelClaim");
+    const occurrenceId = scope.occurrenceIds[0];
+    const testNow = "2038-01-01T00:00:00.000Z";
+    const [publishCommand] = await db.insert(leagueScheduleCommands).values({
+      organizationId: scope.organizationId,
+      leagueId: scope.leagueId,
+      actorUserId: scope.actorUserId,
+      commandType: "publish",
+      reason: "F2 claim/cancel race fixture",
+      idempotencyKey: `f2-cancel-publish-${suffix}-${Date.now()}`,
+      requestFingerprint: `lvf2publish:${"a".repeat(56)}`,
+    }).returning({ id: leagueScheduleCommands.id });
+    if (!publishCommand) throw new Error("F2 publish command was not created");
+    // The fixture rows are intentionally draft. Publish through a valid
+    // command identity before exercising the cancellation/dispatch race.
+    const [occurrence] = await db.update(leagueOccurrences).set({
+      lifecycle: "published",
+      plannedOrdinal: 1,
+      competitionNumber: 1,
+      competitive: true,
+      countsInStandings: true,
+      publishedAt: testNow,
+      publishedByUserId: scope.actorUserId,
+      publicationCommandId: publishCommand.id,
+    }).where(eq(leagueOccurrences.id, occurrenceId)).returning();
+    if (!occurrence) throw new Error("F2 cancellation occurrence was not created");
+    const obligation = await insertObligation(scope, 0, 1_000);
+    const [operation] = await db.insert(paymentOperations).values({
+      organizationId: scope.organizationId,
+      authorizingUserId: scope.actorUserId,
+      operationType: "interactive_charge",
+      targetKey: `interactive-charge:f2-cancel-claim-${suffix}`,
+      amountMinor: 400,
+      currency: "USD",
+      requestFingerprint: `lvpayreq:v1:${"c".repeat(64)}`,
+      providerIdempotencyKey: `f2-cancel-claim-${suffix}`.slice(0, 45),
+      providerName: "square",
+    }).returning();
+    if (!operation) throw new Error("F2 cancellation operation was not created");
+    const leased = await acquirePaymentOperationLease({
+      organizationId: scope.organizationId,
+      operationId: operation.id,
+      leaseOwner: "f2-cancel-claim",
+      leaseDurationMs: 60_000,
+      now: new Date(testNow),
+    });
+    if (!leased?.leaseToken) throw new Error("F2 cancellation lease was not acquired");
+    const snapshot: PaymentOperationOccurrenceSnapshotV1 = {
+      contractVersion: PAYMENT_OPERATION_OCCURRENCE_SNAPSHOT_CONTRACT,
+      snapshotVersion: 1,
+      operationId: operation.id,
+      operationType: "interactive_charge",
+      organizationId: scope.organizationId,
+      leagueId: scope.leagueId,
+      amountMinor: 400,
+      currency: "USD",
+      allocations: [{
+        allocationIndex: 0,
+        organizationId: scope.organizationId,
+        leagueId: scope.leagueId,
+        occurrenceId,
+        bowlerId: scope.bowlerId,
+        obligationId: obligation.id,
+        amountMinor: 400,
+        currency: "USD",
+      }],
+    };
+    await db.transaction(async (tx) => {
+      await tx.insert(interactivePaymentOperationSnapshots).values({
+        operationId: operation.id,
+        snapshotVersion: 2,
+        snapshotFingerprint: `lvpayexecic:v2:${"d".repeat(64)}`,
+        leagueId: scope.leagueId,
+        locationId: scope.locationId,
+        payerBowlerId: scope.bowlerId,
+        requestKind: "direct",
+        encryptedSourceId: "F2_CANCEL_SOURCE",
+        storeCard: false,
+        sourceKind: "new_card",
+        weekOf: testNow,
+      });
+      await tx.insert(interactivePaymentOperationAllocations).values({
+        operationId: operation.id,
+        allocationIndex: 0,
+        bowlerId: scope.bowlerId,
+        amountMinor: 400,
+        weekOf: testNow,
+      });
+      await tx.insert(paymentOperationOccurrenceSnapshots).values({
+        operationId: operation.id,
+        organizationId: scope.organizationId,
+        leagueId: scope.leagueId,
+        snapshotVersion: 1,
+        snapshotFingerprint: fingerprintPaymentOperationOccurrenceSnapshot(snapshot),
+        amountMinor: 400,
+        currency: "USD",
+        allocationCount: 1,
+      });
+      await tx.insert(paymentOperationOccurrenceSnapshotAllocations).values({
+        operationId: operation.id,
+        snapshotVersion: 1,
+        allocationIndex: 0,
+        organizationId: scope.organizationId,
+        leagueId: scope.leagueId,
+        occurrenceId,
+        bowlerId: scope.bowlerId,
+        obligationId: obligation.id,
+        amountMinor: 400,
+        currency: "USD",
+      });
+    });
+    await cancelOccurrence(withFingerprint({
+      organizationId: scope.organizationId,
+      leagueId: scope.leagueId,
+      actorUserId: scope.actorUserId,
+      commandType: "cancel" as const,
+      idempotencyKey: `f2-cancel-claim-${suffix}`,
+      requestFingerprint: "",
+      reason: "Cancel the physical session after provider claim",
+      occurrenceId,
+      now: testNow,
+    }));
+    const [retainedLease] = await db.select().from(paymentOperations).where(eq(paymentOperations.id, operation.id));
+    expect(retainedLease).toMatchObject({ status: "leased", dispatchClaimedAt: null, providerObjectId: null });
+    await finalizePaymentOperationSuccess({
+      organizationId: scope.organizationId,
+      operationId: operation.id,
+      leaseToken: leased.leaseToken,
+      providerObjectId: "f2-cancel-provider",
+      providerOrderId: "f2-cancel-order",
+      paymentRows: [{
+        allocationIndex: 0,
+        values: {
+          bowlerId: scope.bowlerId,
+          leagueId: scope.leagueId,
+          amount: 400,
+          weekOf: testNow,
+          status: "paid",
+          type: "square",
+          providerPaymentId: "f2-cancel-provider",
+        },
+      }],
+      now: new Date(testNow),
+    });
+    const [after] = await db.select().from(paymentOperations).where(eq(paymentOperations.id, operation.id));
+    const linkedPayments = await db.select().from(payments).where(eq(payments.paymentOperationId, operation.id));
+    const allocations = await db.select().from(paymentOccurrenceAllocations).where(eq(paymentOccurrenceAllocations.obligationId, obligation.id));
+    const [voided] = await db.select().from(bowlerOccurrenceObligations).where(eq(bowlerOccurrenceObligations.id, obligation.id));
+    expect(after).toMatchObject({ status: "reconciliation_required", providerObjectId: "f2-cancel-provider", providerOrderId: "f2-cancel-order" });
+    expect(linkedPayments).toHaveLength(1);
+    expect(allocations).toHaveLength(0);
+    expect(voided?.state).toBe("voided");
     await deleteOrganization(scope.organizationId);
   });
 

@@ -460,6 +460,13 @@ describe("F1 successful canonical activation and durable retry", () => {
     expect((await db.select({ currentRevision: leagueOccurrences.currentRevision }).from(leagueOccurrences).where(eq(leagueOccurrences.id, occurrenceId)))[0]?.currentRevision).toBe(2);
     expect((await db.select({ state: bowlerOccurrenceObligations.state }).from(bowlerOccurrenceObligations).where(eq(bowlerOccurrenceObligations.occurrenceId, occurrenceId))).every((obligation) => obligation.state === "voided")).toBe(true);
     expect(await db.select().from(financialActivationCancellationSuppressions).where(and(eq(financialActivationCancellationSuppressions.organizationId, fixture.organizationId), eq(financialActivationCancellationSuppressions.occurrenceId, occurrenceId)))).toHaveLength(1);
+    const [suppression] = await db.select({ id: financialActivationCancellationSuppressions.id }).from(financialActivationCancellationSuppressions).where(and(
+      eq(financialActivationCancellationSuppressions.organizationId, fixture.organizationId),
+      eq(financialActivationCancellationSuppressions.occurrenceId, occurrenceId),
+    ));
+    if (!suppression) throw new Error("cancellation suppression fixture is missing");
+    await expect(db.update(financialActivationCancellationSuppressions).set({ cancellationReviewRequired: true }).where(eq(financialActivationCancellationSuppressions.id, suppression.id))).rejects.toThrow();
+    await expect(db.delete(financialActivationCancellationSuppressions).where(eq(financialActivationCancellationSuppressions.id, suppression.id))).rejects.toThrow();
     const afterCancellation = await readCanonicalDuePastDue({ organizationId: fixture.organizationId, leagueId: fixture.leagueId });
     expect(afterCancellation.rows.filter((row) => row.occurrenceId === occurrenceId).every((row) => row.state === "voided")).toBe(true);
     await db.update(leagues).set({ paymentMode: "weekly" }).where(eq(leagues.id, fixture.leagueId));
