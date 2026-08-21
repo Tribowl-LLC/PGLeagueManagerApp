@@ -168,6 +168,12 @@
       "tag": "0027_identity_integrity_hardening",
       "createdAt": 1787174183637,
       "hash": "60ed7e6bbae6c7b498d8cc8563aa4724e555fc99986150b24f45750f2e31bd9f"
+    },
+    {
+      "idx": 28,
+      "tag": "0028_remove_legacy_invite_tokens",
+      "createdAt": 1787270862813,
+      "hash": "89930b8cb9a586f560a03b42ed44fa69ed80709657e45cc6c35807ec5fb1a260"
     }
   ]
 }

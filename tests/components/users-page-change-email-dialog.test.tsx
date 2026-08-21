@@ -23,7 +23,6 @@ const ADMIN = {
   organizationId: 7,
   locationId: null,
   bowlerId: null,
-  inviteToken: null,
   createdAt: '2026-01-01T00:00:00Z',
   linkedBowler: null,
 };
@@ -36,7 +35,6 @@ const TARGET = {
   organizationId: 7,
   locationId: null,
   bowlerId: 42,
-  inviteToken: null,
   createdAt: '2026-01-01T00:00:00Z',
   linkedBowler: null,
 };

@@ -106,8 +106,6 @@ const systemAdmin = {
   role: 'system_admin',
   organizationId: null,
   locationId: null,
-  inviteToken: null,
-  inviteTokenExpiry: null,
   preferredLanguage: null,
   failedPasswordChangeAttempts: 0,
   passwordChangeLockedUntil: null,

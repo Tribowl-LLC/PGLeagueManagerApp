@@ -43,28 +43,21 @@ older resend cannot deliver a token after a newer token supersedes it.
 
 Email is attempted after the account/action transaction commits. The action's
 delivery state (`not_attempted`, `sent`, or `failed`) is durable and exposed to
-the admin UI without either the raw token or its digest. This is deliberately
-a focused hardening step, not a general email outbox; a process crash in the
-small post-commit/pre-send window leaves a visible `not_attempted` invitation
-that an administrator can resend.
+the admin UI without either the raw token or its digest. A general email outbox
+is intentionally out of scope; a process crash in the small
+post-commit/pre-send window leaves a visible `not_attempted` invitation that an
+administrator can resend.
 
-The legacy `users.invite_token` columns remain for one compatibility release,
-but application code neither accepts nor writes them. The release order is:
+The one-release compatibility bridge has completed. Migration
+`0028_remove_legacy_invite_tokens` fails closed if any legacy marker remains,
+then drops `users.invite_token` and `users.invite_token_expiry`. The bridge
+command and its application schema fields are retired with that migration.
+`account_action_requests` is now the only credential-action authority.
 
-```bash
-# Before the migration, against the intended database:
-npm run db:preflight:identity-integrity
-npm run db:migrate
-
-# After deploying the matching application build:
-npm run db:migrate:legacy-account-actions
-npm run db:migrate:legacy-account-actions -- --execute
-```
-
-The first legacy-action command is a PII-free dry run. `--execute` reissues
-active legacy actions into hashed invitations, records email delivery, clears
-all plaintext/stale legacy markers, preserves each active token's original
-expiration, and exits nonzero when any delivery fails.
-Failed rows remain visible for administrator resend. Back up and verify the
-target database before the schema migration and execute the bridge against the
-same target immediately after deploying the matching application build.
+Because the preceding application build still declared the legacy columns in
+its Drizzle user shape, 0028 is a contract migration. Deploy the matching
+0028-compatible application while the columns still exist, verify
+authentication and account workflows, create a fresh database backup, and
+only then run `npm run db:migrate`. After 0028 commits, restoring the database
+backup is required before rolling back to an application build that still
+declares the removed columns.

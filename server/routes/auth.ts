@@ -477,8 +477,7 @@ export function registerAuthRoutes(app: Express): void {
       const hashedPassword = await hashPassword(password);
       // Claiming the action and rotating the password are one transaction.
       // This also supersedes every other pending credential action and
-      // invalidates pending email changes. Legacy invite columns are
-      // deliberately untouched during this compatibility release.
+      // invalidates pending email changes.
       const completed = await storage.consumeAccountActionAndSetPassword({
         token,
         passwordHash: hashedPassword,

@@ -504,7 +504,10 @@ Follow the schema-release procedure in
 5. Run `npm run db:migrate` with one migration executor. Abort for an
    unexpected journal or migration failure and record the result.
 6. Deploy the matching CI-verified application commit after the schema change
-   is applied successfully.
+   is applied successfully. For a destructive contract migration whose prior
+   application still selects the retiring objects, follow the migration's
+   reviewed expand-contract sequence in `production-runbook.md`; deploy the
+   compatible reader first and contract only after its health/workflow gate.
 7. Verify `/api/health`, authentication, the affected workflow, and any
    relevant payment-provider or webhook behavior. Confirm that Render is
    running the expected commit.

@@ -19,12 +19,6 @@ export const users = pgTable("users", {
   role: userRoleEnum('role').notNull().default('user'),
   organizationId: integer("organization_id").references(() => organizations.id),
   locationId: integer("location_id").references(() => locations.id),
-  // Legacy onboarding/reset columns. Keep these columns for one release so
-  // the rollout remains backward-compatible with existing databases and
-  // registration/admin invite callers. New credential authority lives in
-  // account_action_requests and must not read or write these columns.
-  inviteToken: text("invite_token"),
-  inviteTokenExpiry: timestamp("invite_token_expiry", { mode: "string" }),
   // Two-letter ISO 639-1 code (e.g. 'en', 'es') used to localize
   // user-facing notifications (security emails, etc.). Nullable; the
   // email helpers fall back to English when this is null/unset/

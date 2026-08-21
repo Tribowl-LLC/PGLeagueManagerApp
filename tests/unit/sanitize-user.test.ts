@@ -43,8 +43,6 @@ function makeFullyPopulatedUser(): User {
     role: 'user',
     organizationId: 7,
     locationId: 3,
-    inviteToken: 'invite-token-do-not-leak',
-    inviteTokenExpiry: '2099-01-01T00:00:00.000Z',
     preferredLanguage: 'en',
     mustChangePassword: false,
     failedPasswordChangeAttempts: 0,
@@ -55,7 +53,14 @@ function makeFullyPopulatedUser(): User {
   // object literal) keeps the lint rule against object-literal `as`
   // casts happy.
   return Object.assign(
-    { id: 1, createdAt: '2024-01-01T00:00:00.000Z' },
+    {
+      id: 1,
+      createdAt: '2024-01-01T00:00:00.000Z',
+      // Preserve defense-in-depth coverage for a stale object supplied by an
+      // older caller even though these fields no longer exist in the schema.
+      inviteToken: 'invite-token-do-not-leak',
+      inviteTokenExpiry: '2099-01-01T00:00:00.000Z',
+    },
     parsed,
   ) as User;
 }

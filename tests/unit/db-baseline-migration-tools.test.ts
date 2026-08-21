@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(28);
+    expect(migrations).toHaveLength(29);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -396,6 +396,19 @@ describe('normalized migration baseline tools', () => {
     expect(migrations[27]?.sql).toContain('CREATE TABLE "identity_link_events"');
     expect(migrations[27]?.sql).toContain('identity_link_events_subject_user_idx');
     expect(migrations[27]?.sql).toContain('users_payment_manager_scope_check');
+    expect(migrations[28]).toMatchObject({
+      idx: 28,
+      tag: '0028_remove_legacy_invite_tokens',
+      createdAt: 1787270862813,
+      hash: '89930b8cb9a586f560a03b42ed44fa69ed80709657e45cc6c35807ec5fb1a260',
+    });
+    expect(migrations[28]?.sql).toContain(
+      'legacy invitation cleanup incomplete',
+    );
+    expect(migrations[28]?.sql).toContain('DROP COLUMN "invite_token"');
+    expect(migrations[28]?.sql).toContain(
+      'DROP COLUMN "invite_token_expiry"',
+    );
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 
