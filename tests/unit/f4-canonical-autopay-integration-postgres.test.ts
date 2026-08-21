@@ -6,6 +6,8 @@ import { deleteOrganization } from "../../server/storage/organizations";
 import {
   canonicalAutopayExecutionSnapshots,
   f3PayerAuthorizations,
+  bowlerOccurrenceEligibilities,
+  bowlerOccurrenceEligibilityRevisions,
   bowlerLeagues,
   bowlerPaymentLinks,
   leagueOccurrences,
@@ -17,9 +19,11 @@ import {
   paymentOperationOccurrenceSnapshotAllocations,
   paymentOperations,
   paymentOccurrenceAllocations,
+  paymentDisputes,
   payments,
   bowlerOccurrenceObligations,
   bowlers,
+  webhookEvents,
 } from "@shared/schema";
 import {
   acquireCanonicalAutopayDispatchCutoff,
@@ -30,6 +34,7 @@ import {
   recordPaymentOperationReconciliationRequired,
 } from "../../server/storage/payment-operations";
 import { PaymentProviderError } from "../../server/services/payment-errors";
+import { readCanonicalPaymentReport, readPaymentReceiptProjection } from "../../server/services/canonical-payment-report";
 
 vi.hoisted(() => {
   process.env.LEAGUEVAULT_F3_CANONICAL_AUTOPAY_ENABLED = "1";
@@ -185,6 +190,108 @@ describe("F4 canonical autopay PostgreSQL/provider integration", () => {
     expect(obligations.filter((row) => row.state === "settled")).toHaveLength(4);
     expect(plan?.state).toBe("fulfilled");
     expect(await db.select().from(occurrenceCollectionPlanRevisions).where(eq(occurrenceCollectionPlanRevisions.planId, planId))).toHaveLength(2);
+
+    const [disputeEvent] = await db.insert(webhookEvents).values({
+      provider: "square",
+      providerEventId: `f4-dispute-${fixture.organizationId}`,
+      eventType: "payment.dispute.created",
+      providerCreatedAt: now.toISOString(),
+      organizationId: fixture.organizationId,
+      locationId: fixture.locationId,
+      providerApplicationId: "f4-test-app",
+      providerMerchantId: "f4-test-merchant",
+      providerLocationId,
+      providerObjectType: "dispute",
+      providerObjectId: `f4-dispute-object-${fixture.organizationId}`,
+      providerPaymentId: "f4-test-payment-1",
+      providerApiVersion: "2024-01",
+      payloadHash: "a".repeat(64),
+      encryptedPayload: "f4-test-payload",
+    }).returning({ id: webhookEvents.id });
+    if (!disputeEvent) throw new Error("F4 dispute webhook fixture missing");
+    await db.insert(paymentDisputes).values({
+      organizationId: fixture.organizationId,
+      locationId: fixture.locationId,
+      paymentOperationId: prepared.operation.id,
+      provider: "square",
+      providerApplicationId: "f4-test-app",
+      providerMerchantId: "f4-test-merchant",
+      providerLocationId,
+      providerDisputeId: `f4-dispute-${fixture.organizationId}`,
+      providerPaymentId: "f4-test-payment-1",
+      amountMinor: prepared.operation.amountMinor,
+      currency: prepared.operation.currency,
+      reason: "CUSTOMER_REQUESTS_CREDIT",
+      state: "EVIDENCE_REQUIRED",
+      providerCreatedAt: now.toISOString(),
+      providerUpdatedAt: now.toISOString(),
+      providerVersion: 1,
+      firstWebhookEventId: disputeEvent.id,
+      lastWebhookEventId: disputeEvent.id,
+    });
+    const payerBowler = fixture.roster[0];
+    const partnerBowler = fixture.roster[1];
+    if (!payerBowler || !partnerBowler) throw new Error("F4 dispute fixture participants missing");
+    const payerReport = await readCanonicalPaymentReport({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, bowlerId: payerBowler.id, limit: 10 });
+    const partnerReport = await readCanonicalPaymentReport({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, bowlerId: partnerBowler.id, limit: 10 });
+    expect(payerReport.totals.disputedReviewRequiredMinor).toBe(prepared.operation.amountMinor);
+    expect(partnerReport.totals.disputedReviewRequiredMinor).toBe(0);
+
+    const linkedPayment = linkedPayments[0];
+    if (!linkedPayment) throw new Error("F4 linked payment was not persisted");
+    const receiptProjection = await readPaymentReceiptProjection({
+      organizationId: fixture.organizationId,
+      paymentId: linkedPayment.id,
+    });
+    expect(receiptProjection.payment.id).toBe(linkedPayment.id);
+    expect(receiptProjection.row.paymentId).toBe(linkedPayment.id);
+    expect(receiptProjection.row.paymentTiming).toMatchObject({ source: "canonical_activation", paymentMode: "weekly" });
+    expect(receiptProjection.row.collectionEvidence).toMatchObject({
+      d2PlanId: planId,
+      grouping: "double_pay",
+      timing: "at_collection_point",
+      coveredOccurrenceIds: expect.arrayContaining(fixture.occurrenceIds.slice(0, 2)),
+    });
+    expect(receiptProjection.report.fingerprint).toMatch(/^lvpaymentreport:v1:/);
+  });
+
+  it("fails closed when an earlier F1 eligibility revision is consistently malformed", async () => {
+    const { fixture, planId, now } = await makeCanonicalFixture();
+    const { prepareCanonicalAutopayPlan } = await import("../../server/services/canonical-autopay-preparation");
+    const { executeCanonicalAutopayOperation } = await import("../../server/services/canonical-autopay-operation-executor");
+    const prepared = await prepareCanonicalAutopayPlan({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, d2PlanId: planId, now });
+    if (!prepared.operation) throw new Error("F1 revision fixture operation missing");
+    await executeCanonicalAutopayOperation({ organizationId: fixture.organizationId, operationId: prepared.operation.id, now });
+    const eligibilities = await db.select().from(bowlerOccurrenceEligibilities).where(and(eq(bowlerOccurrenceEligibilities.organizationId, fixture.organizationId), eq(bowlerOccurrenceEligibilities.leagueId, fixture.leagueId)));
+    const revisions = await db.select().from(bowlerOccurrenceEligibilityRevisions).where(and(eq(bowlerOccurrenceEligibilityRevisions.organizationId, fixture.organizationId), eq(bowlerOccurrenceEligibilityRevisions.leagueId, fixture.leagueId)));
+    const target = eligibilities[0];
+    if (!target) throw new Error("F1 eligibility revision fixture missing");
+    for (const eligibility of eligibilities) {
+      const revision = revisions.find((row) => row.eligibilityId === eligibility.id && row.revisionNumber === 1);
+      if (!revision || !revision.afterSnapshot || typeof revision.afterSnapshot !== "object") throw new Error("F1 eligibility revision chain incomplete");
+      const original = JSON.parse(JSON.stringify(revision.afterSnapshot)) as Record<string, unknown>;
+      const before = eligibility.id === target.id ? (() => { const value = { ...original }; delete value.reason; return value; })() : original;
+      await db.update(bowlerOccurrenceEligibilities).set({ currentRevision: 2 }).where(eq(bowlerOccurrenceEligibilities.id, eligibility.id));
+      if (eligibility.id === target.id) await db.update(bowlerOccurrenceEligibilityRevisions).set({ afterSnapshot: before }).where(eq(bowlerOccurrenceEligibilityRevisions.id, revision.id));
+      await db.insert(bowlerOccurrenceEligibilityRevisions).values({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, eligibilityId: eligibility.id, revisionNumber: 2, snapshotSchemaVersion: 1, beforeSnapshot: before, afterSnapshot: original, recordedByUserId: fixture.actorUserId });
+    }
+    await expect(readCanonicalPaymentReport({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, limit: 10 })).rejects.toBeInstanceOf(Error);
+  });
+
+  it("returns exact normal collection evidence for a separate collection-point plan", async () => {
+    const { fixture, planId, now } = await makeCanonicalFixture({ twoCollectionPoints: true });
+    const { prepareCanonicalAutopayPlan } = await import("../../server/services/canonical-autopay-preparation");
+    const { executeCanonicalAutopayOperation } = await import("../../server/services/canonical-autopay-operation-executor");
+    const prepared = await prepareCanonicalAutopayPlan({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, d2PlanId: planId, now });
+    if (!prepared.operation) throw new Error("F4 operation was not prepared");
+    await executeCanonicalAutopayOperation({ organizationId: fixture.organizationId, operationId: prepared.operation.id, now });
+    const [payment] = await db.select().from(payments).where(eq(payments.paymentOperationId, prepared.operation.id));
+    if (!payment) throw new Error("F4 payment was not persisted");
+    const projection = await readPaymentReceiptProjection({ organizationId: fixture.organizationId, paymentId: payment.id });
+    const collectionEvidence = projection.row.collectionEvidence;
+    expect(collectionEvidence).toMatchObject({ d2PlanId: planId, grouping: "normal", timing: "at_collection_point" });
+    if (!collectionEvidence) throw new Error("normal collection evidence missing");
+    expect(collectionEvidence.coveredOccurrenceIds).toEqual([collectionEvidence.collectionPointOccurrenceId]);
   });
 
   it("fails closed for ownership, membership, partner, and location drift before provider dispatch", async () => {

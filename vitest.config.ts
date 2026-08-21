@@ -104,6 +104,8 @@ const UNIT_NO_DB = [
   'tests/unit/passive-database-polling.test.ts',
   'tests/unit/payment-disputes-routes.test.ts',
   'tests/unit/payment-operation-idempotency.test.ts',
+  'tests/unit/canonical-payment-report-contract.test.ts',
+  'tests/unit/financials-f5-route.test.ts',
   'tests/unit/payment-operation-wake-scheduler.test.ts',
   'tests/unit/square-webhook.test.ts',
   'tests/unit/rate-limit-environment.test.ts',
@@ -130,6 +132,7 @@ const UNIT_NO_DB = [
 ];
 
 const PARALLEL_ISOLATED = [
+  'tests/unit/canonical-payment-report-postgres.test.ts',
   'server/routes/__tests__/leagues-square-missing-alerts.test.ts',
   'server/services/__tests__/apple-pay-worker.test.ts',
   'server/services/__tests__/square.test.ts',

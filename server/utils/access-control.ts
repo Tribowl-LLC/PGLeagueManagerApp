@@ -1,6 +1,9 @@
 import { Request } from 'express';
 import { storage } from '../storage';
 import { createLogger } from '../logger';
+import { db } from '../db.js';
+import { and, eq } from 'drizzle-orm';
+import { leagues, paymentOccurrenceAllocations } from '@shared/schema';
 
 const log = createLogger("AccessControl");
 
@@ -145,7 +148,9 @@ export async function getPaymentManagerAccessibleBowlerIds(req: Request): Promis
 /** Payment-row access for location-scoped bookkeeping and receipts. */
 export async function hasPaymentManagerAccessToPayment(req: Request, paymentId: number): Promise<boolean> {
   if (!isPaymentManager(req.user)) return false;
-  const payment = await storage.getPaymentById(paymentId);
+  const payment = req.user?.organizationId && typeof storage.getPaymentByIdForOrganization === "function"
+    ? await storage.getPaymentByIdForOrganization(paymentId, req.user.organizationId)
+    : await storage.getPaymentById(paymentId);
   return !!payment && hasPaymentManagerAccessToLeague(req, payment.leagueId);
 }
 
@@ -311,6 +316,7 @@ export async function hasAccessToBowler(req: Request, bowlerId: number): Promise
     if (isSystemAdmin(req.user)) {
       return true;
     }
+
     // Organization stamp match alone is NOT sufficient
     // for plain `user`-role callers. Previously any user whose
     // `organizationId` matched the bowler's org could read every
@@ -657,7 +663,9 @@ export async function hasAccessToPayment(req: Request, paymentId: number): Promi
   }
 
   try {
-    const payment = await storage.getPaymentById(paymentId);
+    const payment = req.user.organizationId && typeof storage.getPaymentByIdForOrganization === "function"
+      ? await storage.getPaymentByIdForOrganization(paymentId, req.user.organizationId)
+      : await storage.getPaymentById(paymentId);
     if (!payment) {
       return false;
     }
@@ -694,6 +702,36 @@ export async function hasAccessToPayment(req: Request, paymentId: number): Promi
     log.error(`Error checking payment access:`, error);
     return false;
   }
+}
+
+/**
+ * Read-only receipt access. This intentionally remains separate from
+ * hasAccessToPayment: payment PATCH/DELETE must never inherit payer or
+ * allocation-participant read access.
+ */
+export async function hasReceiptReadAccessToPayment(req: Request, paymentId: number): Promise<boolean> {
+  if (!req.user) return false;
+  if (isSystemAdmin(req.user) || isOrgOrHigher(req.user) || isPaymentManager(req.user)) {
+    return hasAccessToPayment(req, paymentId);
+  }
+  const organizationId = req.user.organizationId;
+  if (!organizationId) return false;
+  const payment = typeof storage.getPaymentByIdForOrganization === "function"
+    ? await storage.getPaymentByIdForOrganization(paymentId, organizationId)
+    : await storage.getPaymentById(paymentId);
+  if (!payment || payment.paidByUserId === req.user.id || payment.bowlerId === req.user.bowlerId) return Boolean(payment);
+  const [allocation] = await db.select({ id: paymentOccurrenceAllocations.id })
+    .from(paymentOccurrenceAllocations)
+    .innerJoin(leagues, and(
+      eq(leagues.id, paymentOccurrenceAllocations.leagueId),
+      eq(leagues.organizationId, organizationId),
+    ))
+    .where(and(
+      eq(paymentOccurrenceAllocations.paymentId, paymentId),
+      eq(paymentOccurrenceAllocations.organizationId, organizationId),
+      eq(paymentOccurrenceAllocations.bowlerId, req.user.bowlerId ?? -1),
+    )).limit(1);
+  return Boolean(allocation);
 }
 
 /**

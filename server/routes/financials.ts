@@ -9,8 +9,10 @@ import { bowlers, bowlerLeagues, teams } from "@shared/schema";
 import { and, eq } from "drizzle-orm";
 import { financialActivationEnabled } from "../config.js";
 import type { FinancialOrganizationDuePastDueContract } from "@shared/financial-contract";
+import f5PaymentReportsRouter from "./financials-f5.js";
 
 const router = Router();
+router.use("/f5", f5PaymentReportsRouter);
 // F1 activation is deliberately dormant until legacy payment reconciliation and
 // the operational rollout gate are separately approved. No production env change
 // enables this flag.

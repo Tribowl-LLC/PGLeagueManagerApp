@@ -46,6 +46,14 @@ a cutover issue occurs, pause traffic/disable the gate and retain uncertain F4
 operations for exact-key reconciliation; do not bulk-cancel or reinterpret
 legacy scheduled work.
 
+F5 canonical receipts and payment reporting are read-only and migration-free
+on top of the existing F1/F2/F3/F4 evidence and migration `0029`. Deploy only
+the tested application commit; do not enable an execution gate or change
+webhook mode. The F5 smoke uses an isolated database and fake provider,
+verifies zero `processPayment` calls and zero report writes, and checks
+explicit tenant scope. A post-evidence rollback is a traffic pause and
+forward fix; never down-migrate or relink ambiguous historical payments.
+
 Production is hosted on Render and uses Neon PostgreSQL. GitHub `main` is the
 release source. This document covers the safe release path; it does not store
 credentials.

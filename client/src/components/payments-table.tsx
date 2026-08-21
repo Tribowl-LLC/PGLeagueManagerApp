@@ -1,6 +1,5 @@
 import { Fragment, useState } from "react";
 import { ChevronDown, ChevronRight, Loader2, Trash2, RotateCcw, Send } from "lucide-react";
-import { format } from "date-fns";
 import {
   Table,
   TableBody,
@@ -19,8 +18,14 @@ import {
   PaymentDisputeDetails,
 } from "@/components/payment-dispute-details";
 import type { Payment, PaymentRowDisputeSummary, Bowler, League } from "@shared/schema";
+import type { CanonicalPaymentRow } from "@shared/canonical-payment-report";
 
 type PaymentWithDisputes = Payment & { disputes?: PaymentRowDisputeSummary[] };
+
+function formatAuthoritativeLocalDate(value: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
+  return match ? `${match[2]}/${match[3]}/${match[1]}` : value;
+}
 
 function paymentTypeLabel(payment: Payment): string {
   switch (payment.type) {
@@ -48,6 +53,9 @@ interface Props {
    * deep-links to that location's settings card.
    */
   leagues?: League[];
+  paymentBusinessDates?: Map<number, string>;
+  paymentEvidenceStatuses?: Map<number, CanonicalPaymentRow["status"]>;
+  paymentCanonicalRows?: Map<number, CanonicalPaymentRow>;
 }
 
 // Stable default reference so the optional `leagues` prop doesn't create a
@@ -65,6 +73,9 @@ export function PaymentsTable({
   isRefundPending,
   isDeletePending,
   leagues = EMPTY_LEAGUES,
+  paymentBusinessDates,
+  paymentEvidenceStatuses,
+  paymentCanonicalRows,
 }: Props) {
   const [resendTarget, setResendTarget] = useState<Payment | null>(null);
   const [expandedPaymentIds, setExpandedPaymentIds] = useState<Set<number>>(new Set());
@@ -113,20 +124,20 @@ export function PaymentsTable({
                 <Fragment key={payment.id}>
                 <TableRow>
                   <TableCell>{bowler?.name || "Unknown Bowler"}</TableCell>
-                  <TableCell>{format(new Date(payment.weekOf), "MMM d, yyyy")}</TableCell>
-                  <TableCell>${(payment.amount / 100).toFixed(2)}</TableCell>
+                  <TableCell>{formatAuthoritativeLocalDate(paymentCanonicalRows?.get(payment.id)?.authoritativeLocalDate ?? paymentBusinessDates?.get(payment.id) ?? payment.weekOf)}</TableCell>
+                  <TableCell>${((paymentCanonicalRows?.get(payment.id)?.amountMinor ?? payment.amount) / 100).toFixed(2)}</TableCell>
                   <TableCell>
                     <div className="flex flex-wrap items-center gap-2">
                       <Badge
                         variant={
-                          payment.status === "paid" ? "default" :
-                          payment.status === "pending" ? "secondary" :
-                          payment.status === "failed" ? "destructive" :
+                          (paymentCanonicalRows?.get(payment.id)?.status ?? payment.status) === "confirmed_paid" || payment.status === "paid" ? "default" :
+                          (paymentCanonicalRows?.get(payment.id)?.status ?? payment.status) === "pending" ? "secondary" :
+                          (paymentCanonicalRows?.get(payment.id)?.status ?? payment.status) === "failed" ? "destructive" :
                           "outline"
                         }
                         className={payment.status === "refunded" ? "border-destructive text-destructive" : ""}
                       >
-                        {payment.status}
+                        {paymentEvidenceStatuses?.get(payment.id) === "unresolved" ? "Review required" : (paymentCanonicalRows?.get(payment.id)?.source === "unlinked_legacy" ? "Legacy history" : paymentCanonicalRows?.get(payment.id)?.source === "unresolved_operation" ? "Unresolved" : paymentCanonicalRows?.get(payment.id)?.status ?? payment.status)}
                       </Badge>
                       {disputes.map((dispute) => (
                         <PaymentDisputeBadge key={dispute.id} dispute={dispute} />

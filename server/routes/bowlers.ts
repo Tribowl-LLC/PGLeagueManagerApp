@@ -440,7 +440,20 @@ router.get("/:id/details", async (req, res) => {
         // Same payer-name enrichment as /api/payments so the recipient's
         // history surfaces render the "Paid by …" badge identically.
         const nameMap = await buildPayerNameMap(payments, orgId);
-        response.payments = sanitizePayments(payments, nameMap);
+        const sanitizedPayments = sanitizePayments(payments, nameMap);
+        response.payments = callerIsAdmin || isPaymentManager(req.user)
+          ? sanitizedPayments
+          : sanitizedPayments.map((payment) => ({
+            ...payment,
+            providerPaymentId: null,
+            idempotencyKey: null,
+            squareRefundId: null,
+            disputeId: null,
+            receiptUrl: null,
+            receiptNumber: null,
+            paidByUserId: null,
+            paidByName: null,
+          }));
       }
     }
 

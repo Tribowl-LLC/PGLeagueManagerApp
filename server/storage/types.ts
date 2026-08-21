@@ -88,6 +88,7 @@ export interface IPaymentStorage {
   getAllPaymentsPaginatedSystemAdmin(filters: { bowlerId?: number; leagueId?: number; teamId?: number; weekOf?: Date }, page: number, limit: number): Promise<PaginatedResult<Payment>>;
   getPaymentsPaginated(filters: { bowlerId?: number; leagueId?: number; leagueIds?: number[]; teamId?: number; weekOf?: Date; organizationId: number }, page: number, limit: number): Promise<PaginatedResult<Payment>>;
   getPaymentById(id: number): Promise<Payment | undefined>;
+  getPaymentByIdForOrganization(id: number, organizationId: number): Promise<Payment | undefined>;
   getPaymentByIdempotencyKey(key: string): Promise<Payment | undefined>;
   getPaymentsByPaymentOperationId(organizationId: number, operationId: string): Promise<Payment[]>;
   getPaymentByDisputeId(disputeId: string): Promise<Payment | undefined>;
@@ -96,6 +97,7 @@ export interface IPaymentStorage {
   createCombinedPayments(rows: InsertPayment[]): Promise<Array<{ id: number; bowlerId: number; amount: number }>>;
   getPaymentsByCombinedGroupId(groupId: string): Promise<Payment[]>;
   updatePayment(id: number, payment: UpdatePayment): Promise<Payment>;
+  updatePaymentReceiptCacheForOrganization(id: number, organizationId: number, fields: Pick<UpdatePayment, "receiptUrl" | "receiptNumber">): Promise<Payment | undefined>;
   refundPayment(id: number, providerRefundId?: string, reason?: string): Promise<Payment>;
   openDispute(id: number, disputeId: string): Promise<Payment>;
   deletePayment(id: number): Promise<void>;

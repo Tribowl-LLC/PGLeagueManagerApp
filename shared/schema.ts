@@ -4,3 +4,5 @@
 // convention on the server side.
 export * from "./schema/index";
 export * from "./f4-canonical-autopay-contract";
+export * from "./canonical-payment-report";
+export * from "./payment-receipt";

@@ -3,10 +3,11 @@ import { ChevronDown } from "lucide-react";
 import { DEFAULT_TIMEZONE } from "@shared/schema";
 import type { League, Payment, SavedCard, BowlerLeague } from "@shared/schema";
 import type { DoublePayStatus } from "@/lib/financial-utils";
+import type { CanonicalPaymentRow, CanonicalPaymentTiming } from "@shared/canonical-payment-report";
+import { CanonicalPaymentEvidenceTable } from "@/components/canonical-payment-evidence-table";
 import { BowlerLayout } from "@/components/bowler-layout";
 import { PaymentSummaryCards } from "@/components/payment-summary-cards";
 import { ErrorBoundary } from "@/components/error-boundary";
-import { BowlerPaymentTable } from "@/components/bowler-payment-table";
 import { BowlerPaymentDialog } from "@/components/bowler-payment-dialog";
 import { LeagueSwitcherSheet } from "@/components/league-switcher-sheet";
 import { InteractiveOccurrenceSelector } from "@/components/interactive-occurrence-selector";
@@ -62,6 +63,17 @@ interface PaymentHistoryContentProps {
   receiptEmail: string;
   onReceiptEmailChange: (email: string) => void;
   bowlerPayments: Payment[];
+  canonicalPayments: Payment[];
+  canonicalPaymentLoading: boolean;
+  canonicalPaymentError: Error | null;
+  canonicalReportPage?: number;
+  canonicalReportTotalPages?: number;
+  onCanonicalReportPageChange?: (page: number) => void;
+  paymentBusinessDates: Map<number, string>;
+  paymentEvidenceStatuses: Map<number, CanonicalPaymentRow["status"]>;
+  canonicalRows?: CanonicalPaymentRow[];
+  canonicalMode?: string;
+  canonicalPaymentTiming?: CanonicalPaymentTiming;
   occurrenceAmountMinor?: number;
   occurrenceAllocations: { obligationId: string; amountMinor: number }[];
   occurrenceQuoteFingerprint?: string;
@@ -120,6 +132,17 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
   receiptEmail,
   onReceiptEmailChange,
   bowlerPayments,
+  canonicalPayments,
+  canonicalPaymentLoading,
+  canonicalPaymentError,
+  canonicalReportPage,
+  canonicalReportTotalPages,
+  onCanonicalReportPageChange,
+  paymentBusinessDates,
+  paymentEvidenceStatuses,
+  canonicalRows = [],
+  canonicalMode,
+  canonicalPaymentTiming,
   occurrenceAmountMinor,
   onOccurrenceChange,
   onOccurrenceReadinessChange,
@@ -209,7 +232,13 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
         </ErrorBoundary>
 
         <ErrorBoundary level="section">
-          <BowlerPaymentTable payments={bowlerPayments} league={league} />
+          {canonicalPaymentLoading ? <div className="text-sm text-muted-foreground">Loading canonical payment evidence…</div> : canonicalPaymentError ? <div className="text-sm text-destructive">Financial evidence requires review; payment history is unavailable.</div> : <CanonicalPaymentEvidenceTable rows={canonicalRows} mode={canonicalMode} paymentTiming={canonicalPaymentTiming} organizationId={league.organizationId} title="Payment history" />}
+          {!canonicalPaymentLoading && !canonicalPaymentError && canonicalReportPage !== undefined && canonicalReportTotalPages !== undefined && canonicalReportTotalPages > 1 && onCanonicalReportPageChange && (
+            <div className="mt-3 flex items-center justify-between text-sm">
+              <span>Canonical payment page {canonicalReportPage} of {canonicalReportTotalPages}</span>
+              <button type="button" className="underline" disabled={canonicalReportPage >= canonicalReportTotalPages} onClick={() => onCanonicalReportPageChange(canonicalReportPage + 1)}>Next page</button>
+            </div>
+          )}
         </ErrorBoundary>
       </div>
 

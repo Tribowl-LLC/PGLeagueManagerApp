@@ -21,7 +21,8 @@ import { eq, and, gte, lte, sql } from 'drizzle-orm';
 import { payments as paymentsTable } from '@shared/schema';
 import { createLogger } from '../../logger';
 import { getPgErrorCode } from '../../utils/db-errors';
-import { PaymentDisputeEvidenceExistsError, PaymentOccurrenceEvidenceExistsError } from '../../storage/payments.js';
+import { CanonicalAllocationRequiredError, FinancialEvidenceIncompatibleError, PaymentDisputeEvidenceExistsError, PaymentEvidenceImmutableError, PaymentOccurrenceEvidenceExistsError } from '../../storage/payments.js';
+import { financialActivations } from '@shared/schema';
 
 const log = createLogger("Payments");
 
@@ -64,6 +65,37 @@ router.post("/", paymentWriteLimiter, async (req, res) => {
       || await hasPaymentManagerAccessToLeague(req, payment.leagueId);
     if (!hasLeagueAccess) {
       return sendError(res, "You don't have access to create payments for this league", 403, 'FORBIDDEN');
+    }
+
+    {
+      // Once canonical F1 evidence exists, no generic payment row (including
+      // raw card/square bookkeeping) can be safely associated with an
+      // obligation by amount, week, or roster. The dedicated canonical
+      // allocation workflow is intentionally outside F5. The same check is
+      // repeated inside storage.createPayment under the lock to close the
+      // activation-vs-create race.
+      const [activeActivation] = league.organizationId === null ? [] : await db.select({
+        id: financialActivations.id,
+        completenessMarker: financialActivations.completenessMarker,
+      }).from(financialActivations).where(and(
+        eq(financialActivations.organizationId, league.organizationId),
+        eq(financialActivations.leagueId, payment.leagueId),
+        eq(financialActivations.state, 'active'),
+      ));
+      if (activeActivation?.completenessMarker === true) {
+        return sendError(res, 'Canonical allocation is required for this league', 409, 'CANONICAL_ALLOCATION_REQUIRED');
+      }
+      const [partialEvidence] = league.organizationId === null ? [] : await db.execute(sql`
+        SELECT EXISTS (
+          SELECT 1 FROM bowler_occurrence_obligations WHERE organization_id = ${league.organizationId} AND league_id = ${payment.leagueId}
+          UNION ALL SELECT 1 FROM occurrence_collection_plans WHERE organization_id = ${league.organizationId} AND league_id = ${payment.leagueId}
+          UNION ALL SELECT 1 FROM occurrence_collection_plan_items WHERE organization_id = ${league.organizationId} AND league_id = ${payment.leagueId}
+          UNION ALL SELECT 1 FROM payment_occurrence_allocations WHERE organization_id = ${league.organizationId} AND league_id = ${payment.leagueId}
+        ) AS present
+      `).then((result) => result.rows as Array<{ present: boolean }>);
+      if (partialEvidence?.present) {
+        return sendError(res, 'Financial evidence requires review', 409, 'FINANCIAL_EVIDENCE_INCOMPATIBLE');
+      }
     }
 
     // Task #454: existence pre-check for the admin-supplied bowlerId.
@@ -182,6 +214,8 @@ router.post("/", paymentWriteLimiter, async (req, res) => {
     if (error instanceof z.ZodError) {
       return handleZodError(res, error);
     }
+    if (error instanceof CanonicalAllocationRequiredError) return sendError(res, 'Canonical allocation is required for this league', 409, 'CANONICAL_ALLOCATION_REQUIRED');
+    if (error instanceof FinancialEvidenceIncompatibleError) return sendError(res, 'Financial evidence requires review', 409, 'FINANCIAL_EVIDENCE_INCOMPATIBLE');
     sendError(res, 'Failed to create payment');
   }
 });
@@ -240,6 +274,9 @@ router.patch("/:id", paymentWriteLimiter, async (req, res) => {
     log.error('Update error:', error);
     if (error instanceof z.ZodError) {
       return handleZodError(res, error);
+    }
+    if (error instanceof PaymentEvidenceImmutableError) {
+      return sendError(res, 'Payment evidence is immutable', 409, 'PAYMENT_EVIDENCE_RETAINED');
     }
     sendError(res, 'Failed to update payment');
   }

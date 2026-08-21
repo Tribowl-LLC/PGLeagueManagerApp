@@ -69,6 +69,7 @@ export class DatabaseStorage implements IStorage {
   getAllPaymentsPaginatedSystemAdmin!: IStorage["getAllPaymentsPaginatedSystemAdmin"];
   getPaymentsPaginated!: IStorage["getPaymentsPaginated"];
   getPaymentById!: IStorage["getPaymentById"];
+  getPaymentByIdForOrganization!: IStorage["getPaymentByIdForOrganization"];
   getPaymentByIdempotencyKey!: IStorage["getPaymentByIdempotencyKey"];
   getPaymentsByPaymentOperationId!: IStorage["getPaymentsByPaymentOperationId"];
   getPaymentByDisputeId!: IStorage["getPaymentByDisputeId"];
@@ -77,6 +78,7 @@ export class DatabaseStorage implements IStorage {
   createCombinedPayments!: IStorage["createCombinedPayments"];
   getPaymentsByCombinedGroupId!: IStorage["getPaymentsByCombinedGroupId"];
   updatePayment!: IStorage["updatePayment"];
+  updatePaymentReceiptCacheForOrganization!: IStorage["updatePaymentReceiptCacheForOrganization"];
   refundPayment!: IStorage["refundPayment"];
   openDispute!: IStorage["openDispute"];
   deletePayment!: IStorage["deletePayment"];

@@ -484,6 +484,15 @@ describe('Organization Isolation', () => {
       expect([403, 404]).toContain(rosterGuard.status);
       const reportGuard = await apiGet(`/api/financials/leagues/${orgBLeagueId}/due-past-due?organizationId=${sessionB.user.organizationId}`, sessionA);
       expect([403, 404]).toContain(reportGuard.status);
+
+      // F5 canonical payment reports are explicitly organization/league
+      // scoped; cross-tenant callers receive a nondisclosing denial.
+      const f5OrgScope = await apiGet(`/api/financials/f5/payments?organizationId=${sessionB.user.organizationId}&leagueId=${orgBLeagueId}`, sessionA);
+      expect([403, 404]).toContain(f5OrgScope.status);
+      const f5LeagueScope = await apiGet(`/api/financials/f5/payments?leagueId=${orgBLeagueId}`, sessionA);
+      expect([403, 404]).toContain(f5LeagueScope.status);
+      const f5BowlerScope = await apiGet(`/api/financials/f5/payments?leagueId=${orgBLeagueId}&bowlerId=${orgBBowlerId}`, sessionA);
+      expect([403, 404]).toContain(f5BowlerScope.status);
     });
 
     it('org A GET /api/financials/f3/leagues/:leagueId/policy/candidates?organizationId=<orgB> must fail closed', async () => {

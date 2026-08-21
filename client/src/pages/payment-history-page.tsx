@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { League, Payment, User, SavedCard, ApiResponse, BowlerDetailsResponse } from "@shared/schema";
+import type { CanonicalPaymentReport, CanonicalPaymentRow } from "@shared/canonical-payment-report";
 import type { FinancialReadContract } from "@shared/financial-contract";
 import { BowlerLayout } from "@/components/bowler-layout";
 import { PageLoadingState } from "@/components/page-states";
@@ -52,6 +53,7 @@ export default function PaymentHistoryPage() {
   const [occurrenceAllocations, setOccurrenceAllocations] = useState<{ obligationId: string; amountMinor: number }[]>([]);
   const [occurrenceQuoteFingerprint, setOccurrenceQuoteFingerprint] = useState<string | undefined>();
   const [occurrenceReadiness, setOccurrenceReadiness] = useState<InteractiveOccurrenceReadiness>('loading');
+  const [canonicalReportPage, setCanonicalReportPage] = useState(1);
   const walletRequestKeyRef = useRef<string | null>(null);
 
   const [isWalletProcessing, setIsWalletProcessing] = useState(false);
@@ -148,7 +150,29 @@ export default function PaymentHistoryPage() {
     enabled: !!bowlerId && !!leagueId && detailsLoaded && !hasPaymentsFromDetails,
   });
 
-  const league = leagueMap.get(leagueId!);
+  const { data: canonicalPaymentReportResponse, isLoading: loadingCanonicalPaymentReport, error: canonicalPaymentReportError } = useQuery<ApiResponse<CanonicalPaymentReport>>({
+    queryKey: ["/api/financials/f5/payments", { bowlerId, leagueId, page: canonicalReportPage }],
+    queryFn: async ({ signal }) => {
+      const params = new URLSearchParams({
+        leagueId: String(leagueId),
+        bowlerId: String(bowlerId),
+        page: String(canonicalReportPage),
+        limit: "200",
+      });
+      const response = await fetch(`/api/financials/f5/payments?${params.toString()}`, {
+        credentials: "include",
+        headers: { Accept: "application/json" },
+        signal,
+      });
+      if (!response.ok) throw new Error("Payment evidence requires review");
+      return response.json();
+    },
+    enabled: !!bowlerId && !!leagueId,
+    staleTime: 30_000,
+    retry: false,
+  });
+
+  const league = leagueId === undefined ? undefined : leagueMap.get(leagueId);
 
   const { supportsWallets, isLoading: providerLoading } = usePaymentProvider(league?.locationId ?? null);
 
@@ -199,6 +223,29 @@ export default function PaymentHistoryPage() {
   const bowlerEmail = bowlerDetailsResponse?.data?.bowler?.email || '';
 
   const bowlerPayments = payments.filter(p => p.bowlerId === bowlerId && p.leagueId === leagueId);
+  const canonicalPaymentReport = canonicalPaymentReportResponse?.data;
+  const canonicalPayments = useMemo(() => {
+    const rawById = new Map(bowlerPayments.map((payment) => [payment.id, payment]));
+    return [...(canonicalPaymentReport?.rows ?? []), ...(canonicalPaymentReport?.unlinkedHistory ?? [])]
+      .filter((row) => row.paymentId !== null && row.bowlerId === bowlerId)
+      .map((row) => {
+        if (row.paymentId !== null) {
+          const existing = rawById.get(row.paymentId);
+          if (existing) return existing;
+        }
+        const displayStatus = row.status === "confirmed_paid" ? "paid" : row.status === "disputed" || row.status === "failed" || row.status === "pending" || row.status === "refunded" ? row.status : "pending";
+        const synthetic: Payment = { id: row.paymentId ?? 0, bowlerId: row.bowlerId, leagueId: row.leagueId, amount: row.amountMinor, lineageAmount: null, prizeFundAmount: null, weekOf: row.businessDate, status: displayStatus, type: row.paymentType, checkNumber: null, providerPaymentId: null, idempotencyKey: null, squareRefundId: null, refundReason: null, refundedAt: null, disputeId: null, disputedAt: null, receiptUrl: null, receiptNumber: null, receiptEmailMissing: true, notes: null, paidByUserId: null, combinedChargeGroupId: null, paymentOperationId: null, paymentOperationAllocationIndex: null, createdAt: row.businessDate };
+        return synthetic;
+      });
+  }, [bowlerPayments, canonicalPaymentReport, bowlerId]);
+  const paymentBusinessDates = new Map<number, string>();
+  const paymentEvidenceStatuses = new Map<number, CanonicalPaymentRow["status"]>();
+  for (const row of [...(canonicalPaymentReport?.rows ?? []), ...(canonicalPaymentReport?.unlinkedHistory ?? [])]) {
+    if (row.paymentId !== null) {
+      paymentBusinessDates.set(row.paymentId, row.authoritativeLocalDate);
+      paymentEvidenceStatuses.set(row.paymentId, row.status);
+    }
+  }
 
   const resolvedFinancialRead = resolveInteractiveFinancialRead(canonicalFinancialResponse?.data);
   const legacyFinancials = resolvedFinancialRead.status === "legacy_fallback"
@@ -450,7 +497,7 @@ export default function PaymentHistoryPage() {
 
   const checkoutAvailable = resolvedFinancialRead.status !== "unavailable" && !loadingFinancialRead && !financialReadError;
 
-  if (loadingUser || loadingBowlerDetails || (!hasPaymentsFromDetails && loadingPayments)) {
+  if (loadingUser || loadingBowlerDetails || loadingCanonicalPaymentReport || (!hasPaymentsFromDetails && loadingPayments)) {
     return (
       <BowlerLayout bowlerName={bowlerName || 'Loading...'} leagueName={league?.name || 'Loading...'}>
         <PageLoadingState />
@@ -473,6 +520,10 @@ export default function PaymentHistoryPage() {
 
   if (bowlerId && bowlerError) {
     return <BowlerErrorView />;
+  }
+
+  if (canonicalPaymentReportError) {
+    return <BowlerLayout bowlerName={bowlerName} leagueName={league?.name || 'Payment history'}><p className="p-6 text-destructive">Payment evidence requires review; no canonical history is shown.</p></BowlerLayout>;
   }
 
   if (!bowlerDetailsResponse?.data?.bowlerLeagues?.length) {
@@ -501,7 +552,7 @@ export default function PaymentHistoryPage() {
       onCloseLeagueSheet={() => setLeagueSheetOpen(false)}
       bowlerLeagues={bowlerLeagues}
       leagueMap={leagueMap}
-      onSelectLeague={setSelectedLeagueId}
+      onSelectLeague={(nextLeagueId) => { setSelectedLeagueId(nextLeagueId); setCanonicalReportPage(1); }}
       totalWeeksInSeason={totalWeeksInSeason}
       fullSeasonAmount={fullSeasonAmount}
       weeksDueCount={weeksDueCount}
@@ -540,6 +591,17 @@ export default function PaymentHistoryPage() {
       receiptEmail={receiptEmail}
       onReceiptEmailChange={setReceiptEmail}
       bowlerPayments={bowlerPayments}
+      canonicalPayments={canonicalPayments}
+      canonicalPaymentLoading={loadingCanonicalPaymentReport}
+      canonicalPaymentError={canonicalPaymentReportError}
+      canonicalReportPage={canonicalReportPage}
+      canonicalReportTotalPages={canonicalPaymentReport ? Math.max(1, Math.ceil(canonicalPaymentReport.totalTransactions / canonicalPaymentReport.limit)) : undefined}
+      onCanonicalReportPageChange={setCanonicalReportPage}
+      paymentBusinessDates={paymentBusinessDates}
+      paymentEvidenceStatuses={paymentEvidenceStatuses}
+      canonicalRows={[...(canonicalPaymentReport?.rows ?? []), ...(canonicalPaymentReport?.unlinkedHistory ?? [])]}
+      canonicalMode={canonicalPaymentReport?.mode}
+      canonicalPaymentTiming={canonicalPaymentReport?.paymentTiming}
       occurrenceAmountMinor={checkoutAvailable ? dialogAmountCents : 0}
       occurrenceAllocations={occurrenceAllocations}
       occurrenceQuoteFingerprint={occurrenceQuoteFingerprint}

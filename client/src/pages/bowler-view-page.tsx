@@ -19,14 +19,16 @@ import { Badge } from "@/components/ui/badge";
 import type { Payment, BowlerDetailsResponse, ApiResponse } from "@shared/schema";
 import { filterActiveBowlerLeagues } from "@/lib/bowler-league-utils";
 import { BowlerFinancialSummary } from "@/components/bowler-financial-summary";
-import { BowlerPaymentHistoryTable } from "@/components/bowler-payment-history-table";
 import { PaymentSyncRetryStatus } from "@/components/payment-sync-retry-status";
 import { AdminBowlerLinkPanel } from "@/components/admin-bowler-link-panel";
+import type { CanonicalPaymentReport } from "@shared/canonical-payment-report";
+import { CanonicalPaymentEvidenceTable } from "@/components/canonical-payment-evidence-table";
 
 export default function BowlerViewPage() {
   const params = useParams();
   const bowlerId = parseInt(params.bowlerId!);
   const [selectedLeagueId, setSelectedLeagueId] = useState<number | null>(null);
+  const [paymentReportPage, setPaymentReportPage] = useState(1);
   const [showEditDialog, setShowEditDialog] = useState(false);
 
   const { data: currentUserResponse } = useQuery<ApiResponse<User>>({
@@ -132,7 +134,38 @@ export default function BowlerViewPage() {
     retry: false,
   });
 
-  const payments = paymentsResponse?.data || [];
+  const payments = useMemo(() => paymentsResponse?.data ?? [], [paymentsResponse?.data]);
+
+  const { data: paymentReportResponse, isLoading: paymentReportLoading, error: paymentReportError } = useQuery<{ data: CanonicalPaymentReport }>({
+    queryKey: ["/api/financials/f5/payments", effectiveLeagueId, bowlerId, paymentReportPage, currentUserRole, currentUserResponse?.data?.organizationId],
+    queryFn: async ({ signal }) => {
+      const scope = currentUserRole === "system_admin" && currentUserResponse?.data?.organizationId
+        ? `&organizationId=${encodeURIComponent(currentUserResponse.data.organizationId)}`
+        : "";
+      const response = await fetch(`/api/financials/f5/payments?leagueId=${effectiveLeagueId}&bowlerId=${bowlerId}&page=${paymentReportPage}&limit=200${scope}`, {
+        credentials: "include",
+        headers: { Accept: "application/json" },
+        signal,
+      });
+      if (!response.ok) throw new Error("Financial evidence requires review");
+      return response.json();
+    },
+    enabled: !!effectiveLeagueId && !!bowlerId && !!currentUserResponse?.data,
+    staleTime: 1000 * 60,
+    retry: false,
+  });
+  const paymentBusinessDates = useMemo(() => {
+    const map = new Map<number, string>();
+    for (const row of paymentReportResponse?.data?.rows ?? []) if (row.paymentId !== null) map.set(row.paymentId, row.authoritativeLocalDate);
+    for (const row of paymentReportResponse?.data?.unlinkedHistory ?? []) if (row.paymentId !== null) map.set(row.paymentId, row.authoritativeLocalDate);
+    return map;
+  }, [paymentReportResponse?.data]);
+  const paymentEvidenceStatuses = useMemo(() => {
+    const map = new Map<number, CanonicalPaymentReport["rows"][number]["status"]>();
+    for (const row of paymentReportResponse?.data?.rows ?? []) if (row.paymentId !== null) map.set(row.paymentId, row.status);
+    for (const row of paymentReportResponse?.data?.unlinkedHistory ?? []) if (row.paymentId !== null) map.set(row.paymentId, row.status);
+    return map;
+  }, [paymentReportResponse?.data]);
 
   const { data: financialResponse, isLoading: loadingFinancials, error: financialError } = useQuery<ApiResponse<{
     mode: string;
@@ -233,7 +266,7 @@ export default function BowlerViewPage() {
           <div className="flex flex-col gap-1">
             <Select
               value={effectiveLeagueId?.toString() || ""}
-              onValueChange={(value) => setSelectedLeagueId(parseInt(value))}
+              onValueChange={(value) => { setSelectedLeagueId(parseInt(value)); setPaymentReportPage(1); }}
             >
               <SelectTrigger className="w-[300px]">
                 <SelectValue placeholder="Select a league" />
@@ -261,10 +294,18 @@ export default function BowlerViewPage() {
       </div>
 
       <ErrorBoundary level="section">
-        <BowlerPaymentHistoryTable
-          payments={payments}
-          locationId={league?.locationId ?? null}
-        />
+        {paymentReportLoading ? <div className="text-sm text-muted-foreground">Loading canonical payment evidence…</div> : paymentReportError ? <div className="text-sm text-destructive">Financial evidence requires review; payment history is unavailable.</div> : <CanonicalPaymentEvidenceTable
+          rows={[...(paymentReportResponse?.data?.rows ?? []), ...(paymentReportResponse?.data?.unlinkedHistory ?? [])]}
+          mode={paymentReportResponse?.data?.mode}
+          paymentTiming={paymentReportResponse?.data?.paymentTiming}
+          organizationId={bowler?.organizationId ?? null}
+          title="Payment history"
+        />}
+        {!paymentReportLoading && !paymentReportError && paymentReportResponse?.data && <div className="mt-3 flex gap-3 text-sm">
+          <button type="button" className="underline disabled:opacity-50" disabled={paymentReportPage <= 1} onClick={() => setPaymentReportPage((page) => Math.max(1, page - 1))}>Previous</button>
+          <span>Page {paymentReportPage} of {Math.max(1, Math.ceil(paymentReportResponse.data.totalTransactions / 200))}</span>
+          <button type="button" className="underline disabled:opacity-50" disabled={paymentReportPage >= Math.ceil(paymentReportResponse.data.totalTransactions / 200)} onClick={() => setPaymentReportPage((page) => page + 1)}>Next</button>
+        </div>}
       </ErrorBoundary>
 
       {canManagePaymentLinks && bowler && (

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import { Layout } from "@/components/layout";
 import { ErrorBoundary } from "@/components/error-boundary";
 import {
@@ -21,7 +21,8 @@ import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { PageLoadingState } from "@/components/page-states";
-import type { League, Team, Bowler, Payment, BowlerLeague, User } from "@shared/schema"; // Added BowlerLeague type
+import type { League, Team, Bowler, BowlerLeague, User } from "@shared/schema"; // Added BowlerLeague type
+import type { CanonicalPaymentReport } from "@shared/canonical-payment-report";
 import { Link } from "wouter";
 
 export default function ReportsPage() {
@@ -65,17 +66,29 @@ export default function ReportsPage() {
   });
   const bowlers = bowlersResponse?.data || [];
 
-  const { data: paymentsResponse, isLoading: loadingPayments } = useQuery<{ data: Payment[] }>({
-    queryKey: ["/api/payments"],
-    queryFn: async () => {
-      const response = await fetch('/api/payments');
-      if (!response.ok) {
-        throw new Error('Failed to fetch payments');
-      }
-      return response.json();
-    }
+  const paymentReportQueries = useQueries({
+    queries: leagues.map((league) => ({
+      queryKey: ["/api/financials/f5/payments", league.id, systemScope],
+      queryFn: async (): Promise<{ data: CanonicalPaymentReport }> => {
+        const params = new URLSearchParams(systemScope.replace(/^\?/, ""));
+        params.set("leagueId", String(league.id));
+        params.set("page", "1");
+        params.set("limit", "200");
+        const response = await fetch(`/api/financials/f5/payments?${params.toString()}`);
+        if (!response.ok) throw new Error("Payment evidence requires review");
+        return response.json();
+      },
+      enabled: leagues.length > 0,
+      staleTime: 30_000,
+    })),
   });
-  const payments = paymentsResponse?.data || [];
+  const loadingPayments = paymentReportQueries.some((query) => query.isLoading);
+  const paymentReportError = paymentReportQueries.find((query) => query.error)?.error;
+  const paymentReports = new Map<number, CanonicalPaymentReport>();
+  leagues.forEach((league, index) => {
+    const report = paymentReportQueries[index]?.data?.data;
+    if (report) paymentReports.set(league.id, report);
+  });
 
   const { data: financialResponse, isLoading: loadingFinancials, error: financialError } = useQuery<{ data: { leagues: Array<{ leagueId: number; report: { mode: string; rows: Array<{ bowlerId?: number; teamId?: number | null; outstandingMinor: number; classification: string; reviewRequired: boolean }> } }> } }>({
     queryKey: ["/api/financials/due-past-due", systemScope],
@@ -99,6 +112,10 @@ export default function ReportsPage() {
   });
   const bowlerLeagues = bowlerLeaguesResponse?.data || [];
 
+  if (userResponse?.data?.role === "system_admin" && !userResponse.data.organizationId) {
+    return <Layout><p className="p-6 text-destructive">Select an organization before viewing financial reports.</p></Layout>;
+  }
+
 
   if (loadingLeagues || loadingTeams || loadingBowlers || loadingPayments || loadingBowlerLeagues || loadingFinancials) {
     return (
@@ -107,7 +124,7 @@ export default function ReportsPage() {
       </Layout>
     );
   }
-  if (financialError || !financialResponse?.data?.leagues) return <Layout><p className="p-6 text-destructive">Financial evidence requires review; no balance is shown.</p></Layout>;
+  if (financialError || paymentReportError || !financialResponse?.data?.leagues) return <Layout><p className="p-6 text-destructive">Financial evidence requires review; no balance is shown.</p></Layout>;
 
   // Fix the bowler-team relationship logic
   const financialLeagues = financialResponse?.data.leagues || [];
@@ -123,13 +140,9 @@ export default function ReportsPage() {
       )
     );
 
-    const leaguePayments = payments.filter(payment =>
-      payment.leagueId === league.id &&
-      leagueBowlers.some(bowler => bowler.id === payment.bowlerId)
-    );
-
-    const collected = leaguePayments.reduce((sum, payment) =>
-      payment.status === 'paid' ? sum + payment.amount : sum, 0);
+    const paymentReport = paymentReports.get(league.id);
+    const collected = paymentReport?.totals.grossConfirmedPaidMinor ?? 0;
+    const unallocatedLegacy = paymentReport?.totals.unallocatedLegacyMinor ?? 0;
 
     const canonicalReport = financialLeagues.find((entry) => entry.leagueId === league.id)?.report;
     const pastDueBalance = canonicalReport?.rows.filter((row) => row.classification === "past_due").reduce((sum, row) => sum + row.outstandingMinor, 0) ?? 0;
@@ -138,6 +151,7 @@ export default function ReportsPage() {
     return {
       ...league,
       collected,
+      unallocatedLegacy,
       pastDueBalance,
       reviewCount,
       activeBowlerCount: leagueBowlers.filter(b => b.active).length,
@@ -165,11 +179,12 @@ export default function ReportsPage() {
           <div className="grid gap-4 md:grid-cols-2">
             <Card>
               <CardHeader>
-                <CardTitle>Total Collections</CardTitle>
-                <CardDescription>Total amount collected across all leagues</CardDescription>
+                  <CardTitle>Confirmed Collections</CardTitle>
+                  <CardDescription>Provider/local paid evidence, counted once per payment row</CardDescription>
               </CardHeader>
               <CardContent>
                 <p className="text-2xl font-bold">${(totalCollected / 100).toFixed(2)}</p>
+                <p className="text-xs text-muted-foreground mt-2">Unallocated legacy history is shown separately below.</p>
               </CardContent>
             </Card>
 
@@ -211,6 +226,7 @@ export default function ReportsPage() {
                   <TableHead>Active Bowlers</TableHead>
                   <TableHead>Teams</TableHead>
                   <TableHead>Collections</TableHead>
+                  <TableHead>Unlinked history</TableHead>
                   <TableHead>Past Due</TableHead>
                   <TableHead>Review</TableHead>
                   <TableHead>Status</TableHead>
@@ -230,6 +246,7 @@ export default function ReportsPage() {
                     <TableCell>{league.activeBowlerCount}</TableCell>
                     <TableCell>{league.teamCount}</TableCell>
                     <TableCell>${(league.collected / 100).toFixed(2)}</TableCell>
+                    <TableCell>${(league.unallocatedLegacy / 100).toFixed(2)}</TableCell>
                     <TableCell className="text-destructive">
                       ${(league.pastDueBalance / 100).toFixed(2)}
                     </TableCell>

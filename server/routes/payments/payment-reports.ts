@@ -213,12 +213,33 @@ router.get("/", async (req, res) => {
       weekOf,
     };
 
+    // The compatibility list endpoint predates the scoped F5 receipt
+    // contract.  Ordinary callers may still use it, so keep its shape but
+    // remove hosted-receipt/provider identities that are only meaningful to
+    // the explicit role-aware receipt endpoint.  Administrators and payment
+    // managers retain the operational fields needed by their existing tools.
+    const ordinaryReader = !isSystemAdmin
+      && req.user?.role !== 'org_admin'
+      && !isPaymentManager(req.user);
+    const redactOrdinaryPayments = <T extends Record<string, unknown>>(rows: T[]): T[] => {
+      if (!ordinaryReader) return rows;
+      return rows.map((row) => ({
+        ...row,
+        providerPaymentId: null,
+        idempotencyKey: null,
+        squareRefundId: null,
+        disputeId: null,
+        receiptUrl: null,
+        receiptNumber: null,
+      }));
+    };
+
     const preparePayments = async (
       rows: Payment[],
       organizationId: number | null,
     ) => {
       const nameMap = await buildPayerNameMap(rows, organizationId);
-      const sanitized = sanitizePayments(rows, nameMap);
+      const sanitized = redactOrdinaryPayments(sanitizePayments(rows, nameMap));
       if (!includeDisputes) return sanitized;
       const disputesByPaymentId = await listPaymentDisputeSummariesForPayments({
         paymentRows: rows,
@@ -226,7 +247,13 @@ router.get("/", async (req, res) => {
       });
       return sanitized.map((payment) => ({
         ...payment,
-        disputes: disputesByPaymentId.get(payment.id) ?? [],
+        disputes: ordinaryReader
+          ? (disputesByPaymentId.get(payment.id) ?? []).map((dispute) => ({
+            present: true,
+            state: dispute.state,
+            reviewRequired: true,
+          }))
+          : disputesByPaymentId.get(payment.id) ?? [],
       }));
     };
 

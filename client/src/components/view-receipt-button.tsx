@@ -45,12 +45,6 @@ export function ViewReceiptButton({ payment, variant = "icon", locationId }: Pro
     return variant === "link" ? <span className="text-muted-foreground">-</span> : null;
   }
 
-  const openCached = () => {
-    if (payment.receiptUrl) {
-      window.open(payment.receiptUrl, "_blank", "noopener,noreferrer");
-    }
-  };
-
   const fetchAndOpen = async () => {
     try {
       setIsFetching(true);
@@ -99,7 +93,10 @@ export function ViewReceiptButton({ payment, variant = "icon", locationId }: Pro
     }
   };
 
-  const onClick = hasReceipt ? openCached : fetchAndOpen;
+  // Always use the scoped receipt endpoint, even when a URL is cached on the
+  // compatibility payment row.  Opening the raw cached URL would bypass the
+  // F5 payer/partner/admin privacy decision.
+  const onClick = fetchAndOpen;
   const title = hasReceipt ? "View receipt" : "Look up receipt";
 
   if (variant === "link") {

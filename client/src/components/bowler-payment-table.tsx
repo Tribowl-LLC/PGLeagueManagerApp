@@ -1,10 +1,11 @@
 import { FC } from "react";
 import { CreditCard, Banknote, FileText, Receipt } from "lucide-react";
-import { differenceInWeeks, format } from "date-fns";
+import { differenceInWeeks } from "date-fns";
 import { formatCurrency } from "@/lib/utils";
 import { isCardPaymentType } from "@shared/schema/constants";
 import { ViewReceiptButton } from "@/components/view-receipt-button";
 import type { Payment, League } from "@shared/schema";
+import type { CanonicalPaymentRow } from "@shared/canonical-payment-report";
 
 // server-sanitized rows on /api/payments + bowler-details may
 // include the optional `paidByName` enrichment when a linked partner
@@ -15,6 +16,8 @@ type BowlerPayment = Payment & { paidByName?: string | null };
 interface BowlerPaymentTableProps {
   payments: BowlerPayment[];
   league: League;
+  paymentBusinessDates?: Map<number, string>;
+  paymentEvidenceStatuses?: Map<number, CanonicalPaymentRow["status"]>;
 }
 
 function getPaymentIcon(type: string) {
@@ -56,7 +59,12 @@ function getStatusLabel(status: string) {
   }
 }
 
-export const BowlerPaymentTable: FC<BowlerPaymentTableProps> = ({ payments, league }) => {
+function formatAuthoritativeLocalDate(value: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
+  return match ? `${match[2]}/${match[3]}/${match[1]}` : value;
+}
+
+export const BowlerPaymentTable: FC<BowlerPaymentTableProps> = ({ payments, league, paymentBusinessDates, paymentEvidenceStatuses }) => {
   return (
     <div>
       <div className="flex items-center justify-between mb-3 px-1">
@@ -73,7 +81,9 @@ export const BowlerPaymentTable: FC<BowlerPaymentTableProps> = ({ payments, leag
           <div className="divide-y divide-slate-100">
             {payments.map((payment) => {
               const Icon = getPaymentIcon(payment.type);
-              const weekNumber = league.seasonStart
+              const businessDate = paymentBusinessDates?.get(payment.id) ?? payment.weekOf;
+              const evidenceStatus = paymentEvidenceStatuses?.get(payment.id);
+              const weekNumber = evidenceStatus === undefined && league.seasonStart
                 ? Math.max(1, differenceInWeeks(new Date(payment.weekOf), new Date(league.seasonStart)) + 1)
                 : null;
 
@@ -86,7 +96,7 @@ export const BowlerPaymentTable: FC<BowlerPaymentTableProps> = ({ payments, leag
                     <div>
                       <div className="font-semibold text-slate-900">{formatCurrency(payment.amount)}</div>
                       <div className="text-sm text-slate-500">
-                        {format(new Date(payment.weekOf), 'MMM d, yyyy')}
+                        {formatAuthoritativeLocalDate(businessDate)}
                         {weekNumber && <> &bull; Week {weekNumber}</>}
                         {' '}&bull; {getPaymentMethodLabel(payment)}
                       </div>
@@ -112,7 +122,7 @@ export const BowlerPaymentTable: FC<BowlerPaymentTableProps> = ({ payments, leag
                       locationId={league?.locationId ?? null}
                     />
                     <span className={`px-2.5 py-1 rounded-md text-xs font-medium ${getStatusStyle(payment.status)}`}>
-                      {getStatusLabel(payment.status)}
+                      {evidenceStatus === "confirmed_paid" ? "Paid" : evidenceStatus === "unresolved" ? "Review required" : getStatusLabel(payment.status)}
                     </span>
                   </div>
                 </div>
