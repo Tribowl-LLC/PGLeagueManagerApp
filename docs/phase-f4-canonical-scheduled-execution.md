@@ -63,7 +63,7 @@ next cutoff. Provider-unknown and reconciliation-required states retain it.
 
 ## Migration and rollout
 
-Migration `0028_phase_f4_canonical_scheduled_execution` is forward-only: it
+Migration `0029_phase_f4_canonical_scheduled_execution` is forward-only: it
 has no backfill or down migration, and transactionally replaces the three
 pre-existing operation-type, scheduled-cycle, and trigger-occurrence CHECKs
 with widened equivalents so the new domain can be represented. It adds
