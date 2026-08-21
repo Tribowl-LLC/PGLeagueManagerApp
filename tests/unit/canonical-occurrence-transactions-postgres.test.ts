@@ -5,6 +5,7 @@ import { and, eq, sql } from "drizzle-orm";
 import {
   leagueOccurrenceBillingTermRevisions,
   leagueOccurrenceBillingTerms,
+  leagueOccurrenceGenerationRuns,
   leagueOccurrenceRelationships,
   leagueOccurrenceRevisions,
   leagueOccurrences,
@@ -30,6 +31,7 @@ import {
   withLockedOccurrencePlacementMutation,
   type CanonicalScheduleCommandFingerprintRequest,
 } from "../../server/services/canonical-occurrence-transactions";
+import { repairCanonicalCollectionGroups } from "../../server/services/canonical-collection-group-repair";
 import { getTestDb } from "../setup/test-db";
 
 const db = getTestDb();
@@ -192,6 +194,95 @@ afterAll(async () => {
 });
 
 describe("A2 transactional occurrence invariants", () => {
+  it("repairs only the explicit current run/configuration and converges complete retries", async () => {
+    const f = await fixture("repair-contract");
+    const generation = await createGenerationRevision(withFingerprint({
+      organizationId: f.organizationId,
+      leagueId: f.leagueId,
+      actorUserId: f.actorUserId,
+      commandType: "generate" as const,
+      idempotencyKey: "repair-current-run-generation",
+      requestFingerprint: "",
+      generatorVersion: "repair-test-generator",
+      inputFingerprint: fingerprint("repair-input"),
+      normalizedInputSnapshot: { repair: true },
+      rangeStartDate: "2035-01-01",
+      rangeEndDate: "2035-01-31",
+      candidateOccurrenceCount: 2,
+      generatedOccurrenceCount: 2,
+      skippedDateCount: 0,
+      discrepancyCount: 0,
+    }));
+    const approval = await command(f, "publish", "repair-approval");
+    await db.update(leagueOccurrenceGenerationRuns).set({
+      state: "approved",
+      approvedAt: "2034-12-01T00:00:00.000Z",
+      approvedByUserId: f.actorUserId,
+      approvalCommandId: approval.id,
+    }).where(eq(leagueOccurrenceGenerationRuns.id, generation.generationRun.id));
+    const trigger = await occurrence(f, "repair-trigger", {
+      lifecycle: "published",
+      localDate: "2035-01-05",
+      startAt: "2035-01-06T00:00:00.000Z",
+    });
+    const paired = await occurrence(f, "repair-paired", {
+      lifecycle: "published",
+      localDate: "2035-01-12",
+      startAt: "2035-01-13T00:00:00.000Z",
+      plannedOrdinal: 2,
+      competitionNumber: 2,
+    });
+    await db.update(leagueOccurrences).set({ generationRunId: generation.generationRun.id })
+      .where(eq(leagueOccurrences.id, trigger.id));
+    await db.update(leagueOccurrences).set({ generationRunId: generation.generationRun.id })
+      .where(eq(leagueOccurrences.id, paired.id));
+    for (const row of [trigger, paired]) {
+      const [term] = await db.insert(leagueOccurrenceBillingTerms).values({
+        organizationId: f.organizationId,
+        leagueId: f.leagueId,
+        occurrenceId: row.id,
+        purpose: "league_weekly_fee",
+        obligationPolicy: "eligible_bowlers",
+        defaultAmountMinor: 2_000,
+        currency: "USD",
+        billingOrdinal: row.authoritativeLocalDate === "2035-01-05" ? 1 : 2,
+        version: 1,
+        state: "published",
+        publishedAt: "2034-12-01T00:00:00.000Z",
+        publishedByUserId: f.actorUserId,
+        publicationCommandId: row.lastCommandId,
+      }).returning();
+      if (!term) throw new Error("repair term was not created");
+    }
+    const [triggerTerm, pairedTerm] = await db.select().from(leagueOccurrenceBillingTerms)
+      .where(eq(leagueOccurrenceBillingTerms.leagueId, f.leagueId))
+      .orderBy(leagueOccurrenceBillingTerms.billingOrdinal);
+    if (!triggerTerm || !pairedTerm) throw new Error("repair terms are missing");
+    const input = {
+      organizationId: f.organizationId,
+      leagueId: f.leagueId,
+      actorUserId: f.actorUserId,
+      generationRunId: generation.generationRun.id,
+      sourceScheduleRevision: generation.generationRun.sourceScheduleRevision,
+      idempotencyKey: "repair-explicit-contract",
+      reason: "Repair proven historical canonical pair",
+      pairs: [{
+        triggerOccurrenceId: trigger.id,
+        pairedOccurrenceId: paired.id,
+        triggerLocalDate: "2035-01-05",
+        pairedLocalDate: "2035-01-12",
+      }],
+    } as const;
+    await expect(repairCanonicalCollectionGroups({ ...input, pairs: [{ ...input.pairs[0], pairedLocalDate: "2035-01-19" }] }))
+      .rejects.toThrow(/explicit date|preconditions|configured/);
+    const applied = await repairCanonicalCollectionGroups(input);
+    expect(applied).toMatchObject({ mode: "applied", writesPerformed: true, groupIds: [expect.any(String)] });
+    const retry = await repairCanonicalCollectionGroups(input);
+    expect(retry).toMatchObject({ mode: "idempotent_retry", writesPerformed: false, groupIds: applied.groupIds, commandIds: applied.commandIds });
+    expect(triggerTerm.id).toBeDefined();
+    expect(pairedTerm.id).toBeDefined();
+  });
+
   it("serializes source revisions, converges idempotent retries, and rejects fingerprint reuse", async () => {
     const f = await fixture("revision");
     const base = withFingerprint({

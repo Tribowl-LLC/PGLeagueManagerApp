@@ -7,6 +7,7 @@ import {
 import { providerNameToPaymentType } from "@shared/schema/constants";
 import {
   acquirePaymentOperationLease,
+  acquireInteractivePaymentOperationDispatchCutoff,
   finalizeInteractiveCardSave,
   finalizePaymentOperationSuccess,
   getInteractivePaymentOperationSnapshotForOrganization,
@@ -247,6 +248,20 @@ export class InteractivePaymentOperationExecutor {
     let result: PaymentResult;
     let paymentSourceId = snapshot.sourceId;
     let paymentStoreCard = snapshot.storeCard;
+    let dispatchCutoffClaimed = false;
+    const claimDispatchCutoff = async (): Promise<boolean> => {
+      if (dispatchCutoffClaimed) return true;
+      const cutoff = await acquireInteractivePaymentOperationDispatchCutoff({
+        organizationId: operation.organizationId,
+        operationId: operation.id,
+        leaseToken,
+        now: this.now(),
+      });
+      // null is the intentional pre-F2/legacy path, which has no occurrence
+      // supplement and therefore keeps its existing provider behavior.
+      dispatchCutoffClaimed = cutoff === null || cutoff;
+      return dispatchCutoffClaimed;
+    };
 
     const sourceIsProviderCard = provider.validateCardId(snapshot.sourceId);
     if (
@@ -379,6 +394,13 @@ export class InteractivePaymentOperationExecutor {
         }
         let savedCard: Awaited<ReturnType<PaymentProvider["saveCardOnFile"]>>;
         try {
+          // The cutoff is the transactionally locked boundary between local
+          // validation and every provider-side mutation. Cancellation that
+          // commits first makes this operation ineligible without invoking
+          // the provider; claim-first preserves the exact request identity.
+          if (!(await claimDispatchCutoff())) {
+            return (await getPaymentOperationForOrganization(operation.organizationId, operation.id)) ?? operation;
+          }
           savedCard = await provider.saveCardOnFile(
             snapshot.sourceId,
             snapshot.customerId,
@@ -417,6 +439,9 @@ export class InteractivePaymentOperationExecutor {
     }
 
     try {
+      if (!(await claimDispatchCutoff())) {
+        return (await getPaymentOperationForOrganization(operation.organizationId, operation.id)) ?? operation;
+      }
       const identity = {
         paymentKey: snapshot.squarePaymentIdempotencyKey,
         orderKey: snapshot.squareOrderIdempotencyKey ?? undefined,

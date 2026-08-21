@@ -126,11 +126,11 @@ ALTER TABLE "canonical_collection_groups" ADD CONSTRAINT "collection_groups_revo
 ALTER TABLE "leagues" ADD COLUMN "canonical_schedule_revision" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
 ALTER TABLE "payment_operations" DROP CONSTRAINT "payment_operations_dispatch_claim_state_check";--> statement-breakpoint
 ALTER TABLE "payment_operations" ADD CONSTRAINT "payment_operations_dispatch_claim_state_check" CHECK ((
-      ("payment_operations"."operation_type" IN ('canonical_autopay_charge', 'scheduled_charge') AND (
+      ("payment_operations"."operation_type" IN ('canonical_autopay_charge', 'scheduled_charge', 'interactive_charge') AND (
         ("payment_operations"."status" IN ('pending', 'retry_scheduled') AND "payment_operations"."dispatch_claimed_at" IS NULL)
         OR "payment_operations"."status" IN ('leased', 'provider_unknown', 'reconciliation_required', 'succeeded', 'action_required', 'failed_terminal', 'canceled')
       ))
-      OR ("payment_operations"."operation_type" NOT IN ('canonical_autopay_charge', 'scheduled_charge') AND "payment_operations"."dispatch_claimed_at" IS NULL)
+      OR ("payment_operations"."operation_type" NOT IN ('canonical_autopay_charge', 'scheduled_charge', 'interactive_charge') AND "payment_operations"."dispatch_claimed_at" IS NULL)
     ));--> statement-breakpoint
 ALTER TABLE "league_schedule_commands" DROP CONSTRAINT "schedule_commands_type_check";--> statement-breakpoint
 ALTER TABLE "league_schedule_commands" ADD CONSTRAINT "schedule_commands_type_check" CHECK ("league_schedule_commands"."command_type" IN ('generate', 'compare', 'approve_generation', 'publish', 'reschedule', 'cancel', 'discard_draft', 'create_exception', 'revoke_exception', 'create_makeup_relationship', 'revoke_makeup_relationship', 'revise_billing_terms', 'repair', 'reject_generation', 'restore_cancelled_draft', 'publish_collection_group', 'revoke_collection_group', 'repair_collection_group', 'edit_schedule'));

@@ -49,6 +49,7 @@ import {
 import { deleteOrganization } from "../../server/storage/organizations";
 import {
   PaymentOperationImmutableMismatchError,
+  acquireInteractivePaymentOperationDispatchCutoff,
   acquirePaymentOperationLease,
   finalizePaymentOperationSuccess,
 } from "../../server/storage/payment-operations";
@@ -726,6 +727,18 @@ describe("D2 occurrence financial foundation PostgreSQL contract", () => {
         currency: "USD",
       });
     });
+    expect(await acquireInteractivePaymentOperationDispatchCutoff({
+      organizationId: scope.organizationId,
+      operationId: operation.id,
+      leaseToken: leased.leaseToken,
+      now: new Date(testNow),
+    })).toBe(true);
+    expect(await acquireInteractivePaymentOperationDispatchCutoff({
+      organizationId: scope.organizationId,
+      operationId: operation.id,
+      leaseToken: leased.leaseToken,
+      now: new Date(testNow),
+    })).toBe(false);
     await cancelOccurrence(withFingerprint({
       organizationId: scope.organizationId,
       leagueId: scope.leagueId,
@@ -738,7 +751,8 @@ describe("D2 occurrence financial foundation PostgreSQL contract", () => {
       now: testNow,
     }));
     const [retainedLease] = await db.select().from(paymentOperations).where(eq(paymentOperations.id, operation.id));
-    expect(retainedLease).toMatchObject({ status: "leased", dispatchClaimedAt: null, providerObjectId: null });
+    expect(retainedLease).toMatchObject({ status: "leased", providerObjectId: null });
+    expect(retainedLease?.dispatchClaimedAt).not.toBeNull();
     await finalizePaymentOperationSuccess({
       organizationId: scope.organizationId,
       operationId: operation.id,

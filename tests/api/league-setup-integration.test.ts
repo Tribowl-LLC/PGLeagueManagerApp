@@ -158,6 +158,25 @@ describe("league setup integration API", () => {
     }, admin);
     expect(builderPatch.status).toBe(200);
     expect(builderPatch.data.data).toMatchObject({ id: result.id, name: "API builder-shaped metadata edit", description: "metadata survives canonical schedule mutation" });
+    const [durableBuilderEdit] = await db.select().from(leagues).where(eq(leagues.id, result.id));
+    expect(durableBuilderEdit).toMatchObject({
+      name: "API builder-shaped metadata edit",
+      description: "metadata survives canonical schedule mutation",
+    });
+    const unsupportedSkip = await apiPatch(`/api/leagues/${result.id}`, {
+      skipDates: [...(durableBuilderEdit?.skipDates ?? []), "2032-03-21"],
+      scheduleRevision: durableBuilderEdit?.canonicalScheduleRevision,
+      idempotencyKey: "e4-api-unsupported-skip-1",
+    }, admin);
+    expect(unsupportedSkip.status).toBe(409);
+    expect(unsupportedSkip.data.error?.code).toBe("CANONICAL_SCHEDULE_UNSUPPORTED_EDIT");
+    const unsupportedScalar = await apiPatch(`/api/leagues/${result.id}`, {
+      timezone: "UTC",
+      scheduleRevision: durableBuilderEdit?.canonicalScheduleRevision,
+      idempotencyKey: "e4-api-unsupported-scalar-1",
+    }, admin);
+    expect(unsupportedScalar.status).toBe(409);
+    expect(unsupportedScalar.data.error?.code).toBe("CANONICAL_SCHEDULE_UNSUPPORTED_EDIT");
     const schedule = await apiGet(`/api/leagues/${result.id}/occurrence-schedule`, admin);
     expect(schedule.status).toBe(200);
     expect(schedule.data.data).toMatchObject({ authoritativeSource: "canonical", operationalCanonicalStateExists: true });

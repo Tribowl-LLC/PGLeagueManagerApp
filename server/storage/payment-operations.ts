@@ -25,6 +25,8 @@ import {
   bowlerOccurrenceObligations,
   bowlerOccurrenceObligationRevisions,
   canonicalAutopayExecutionSnapshots,
+  canonicalCollectionGroups,
+  canonicalCollectionGroupMembers,
   f3PayerAuthorizations,
   f3AutopayPlanProvenance,
   f3CollectionPolicies,
@@ -195,6 +197,19 @@ async function lockCanonicalMutationScope(
         .limit(1);
       if (supplementScope) {
         await tx.execute(sql`SELECT pg_advisory_xact_lock(${organizationId}::integer, ${supplementScope.leagueId}::integer)`);
+      }
+    }
+    if (candidate.operationType === "scheduled_charge") {
+      // Scheduled ledger rows retain a nullable legacy league_id; the
+      // immutable scheduled snapshot is the tenant-scoped source of the
+      // canonical league lock.  Finalization must serialize with occurrence
+      // cancellation before it records a provider success.
+      const [scheduledScope] = await tx.select({ leagueId: scheduledPaymentOperationSnapshots.leagueId })
+        .from(scheduledPaymentOperationSnapshots)
+        .where(eq(scheduledPaymentOperationSnapshots.operationId, operationId))
+        .limit(1);
+      if (scheduledScope?.leagueId != null) {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(${organizationId}::integer, ${scheduledScope.leagueId}::integer)`);
       }
     }
     const [legacyOperation] = await tx.select().from(paymentOperations).where(and(eq(paymentOperations.organizationId, organizationId), eq(paymentOperations.id, operationId))).limit(1).for("update");
@@ -1481,6 +1496,31 @@ export async function getScheduledPaymentOperationSnapshotForOrganization(
   return loadScheduledPaymentOperationSnapshot(db, operation);
 }
 
+/**
+ * Compare a scheduled operation's immutable Square seller-location identity
+ * with the tenant-scoped credential currently configured for its location.
+ * A null pre-cutover snapshot identity is deliberately accepted so legacy
+ * operations retain their historical compatibility behavior.
+ */
+export async function isScheduledPaymentProviderLocationCurrent(input: {
+  organizationId: number;
+  locationId: number | null;
+  providerLocationId: string | null;
+}): Promise<boolean> {
+  if (input.providerLocationId === null) return true;
+  if (input.locationId === null) return false;
+  const [location] = await db
+    .select({ squareCredentials: locations.squareCredentials })
+    .from(locations)
+    .where(and(
+      eq(locations.id, input.locationId),
+      eq(locations.organizationId, input.organizationId),
+    ))
+    .limit(1);
+  const credentials = locationSquareCredentialsSchema.safeParse(location?.squareCredentials);
+  return credentials.success && credentials.data?.locationId === input.providerLocationId;
+}
+
 export async function getPaymentOperationForOrganization(
   organizationId: number,
   operationId: string,
@@ -1819,6 +1859,65 @@ export async function acquireScheduledPaymentOperationDispatchCutoff(input: {
       // and retry transitions clear the claim before issuing a fresh lease;
       // a repeated call with the same token can therefore never re-authorize
       // a provider request.
+      isNull(paymentOperations.dispatchClaimedAt),
+    )).returning({ id: paymentOperations.id });
+    return Boolean(claimed);
+  });
+}
+
+/**
+ * Claim the one-shot F2 interactive dispatch window under the same
+ * organization/league advisory lock used by occurrence cancellation. A
+ * leased row without this marker is still cancellable; once the marker is
+ * committed, cancellation preserves the exact in-flight identity for
+ * provider reconciliation.
+ */
+export async function acquireInteractivePaymentOperationDispatchCutoff(input: {
+  organizationId: number;
+  operationId: string;
+  leaseToken: string;
+  now?: Date;
+}): Promise<boolean | null> {
+  return db.transaction(async (tx) => {
+    const [scope] = await tx.select({ leagueId: paymentOperationOccurrenceSnapshots.leagueId })
+      .from(paymentOperations)
+      .innerJoin(
+        paymentOperationOccurrenceSnapshots,
+        and(
+          eq(paymentOperationOccurrenceSnapshots.operationId, paymentOperations.id),
+          eq(paymentOperationOccurrenceSnapshots.organizationId, paymentOperations.organizationId),
+        ),
+      )
+      .where(and(
+        eq(paymentOperations.organizationId, input.organizationId),
+        eq(paymentOperations.id, input.operationId),
+        eq(paymentOperations.operationType, "interactive_charge"),
+      ))
+      .limit(1);
+    // A missing occurrence supplement is the explicit pre-F2/legacy path;
+    // callers must retain its historical dispatch behavior. Once a
+    // supplement exists, false means the canonical cutoff was lost.
+    if (!scope) return null;
+    if (!scope.leagueId) return false;
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(${input.organizationId}::integer, ${scope.leagueId}::integer)`);
+    const [operation] = await tx.select({
+      status: paymentOperations.status,
+      leaseToken: paymentOperations.leaseToken,
+    }).from(paymentOperations).where(and(
+      eq(paymentOperations.organizationId, input.organizationId),
+      eq(paymentOperations.id, input.operationId),
+      eq(paymentOperations.operationType, "interactive_charge"),
+    )).for("update");
+    if (!operation || operation.status !== "leased" || operation.leaseToken !== input.leaseToken) return false;
+    const claimedAt = (input.now ?? new Date()).toISOString();
+    const [claimed] = await tx.update(paymentOperations).set({
+      dispatchClaimedAt: claimedAt,
+      updatedAt: claimedAt,
+    }).where(and(
+      eq(paymentOperations.organizationId, input.organizationId),
+      eq(paymentOperations.id, input.operationId),
+      eq(paymentOperations.status, "leased"),
+      eq(paymentOperations.leaseToken, input.leaseToken),
       isNull(paymentOperations.dispatchClaimedAt),
     )).returning({ id: paymentOperations.id });
     return Boolean(claimed);
@@ -2776,6 +2875,79 @@ async function interactiveCancellationWonInTransaction(
 }
 
 /**
+ * A scheduled double-pay operation is prepared against the trigger UUID but
+ * its immutable snapshot amount covers both members of the collection group.
+ * Therefore cancellation of either physical member must be visible to the
+ * claim-first finalizer.  The advisory lock is acquired by
+ * lockCanonicalMutationScope before this check, matching cancelOccurrence's
+ * lock order.
+ */
+async function scheduledCancellationWonInTransaction(
+  tx: PaymentOperationTransaction,
+  operation: PaymentOperation,
+): Promise<boolean> {
+  if (operation.operationType !== "scheduled_charge" || operation.triggerOccurrenceId === null) return false;
+  const [scope] = await tx.select({
+    leagueId: scheduledPaymentOperationSnapshots.leagueId,
+    isDoublePay: scheduledPaymentOperationSnapshots.isDoublePay,
+  })
+    .from(scheduledPaymentOperationSnapshots)
+    .where(and(
+      eq(scheduledPaymentOperationSnapshots.operationId, operation.id),
+    )).limit(1);
+  if (!scope) return false;
+  if (!scope.isDoublePay) {
+    const [trigger] = await tx.select({ status: leagueOccurrences.status })
+      .from(leagueOccurrences)
+      .where(and(
+        eq(leagueOccurrences.id, operation.triggerOccurrenceId),
+        eq(leagueOccurrences.organizationId, operation.organizationId),
+        eq(leagueOccurrences.leagueId, scope.leagueId),
+      )).limit(1).for("update");
+    return trigger?.status === "cancelled";
+  }
+  const groupIds = await tx.selectDistinct({ groupId: canonicalCollectionGroupMembers.groupId })
+    .from(canonicalCollectionGroupMembers)
+    .innerJoin(canonicalCollectionGroups, and(
+      eq(canonicalCollectionGroups.id, canonicalCollectionGroupMembers.groupId),
+      eq(canonicalCollectionGroups.organizationId, operation.organizationId),
+      eq(canonicalCollectionGroups.leagueId, scope.leagueId),
+    ))
+    .where(and(
+      eq(canonicalCollectionGroupMembers.organizationId, operation.organizationId),
+      eq(canonicalCollectionGroupMembers.leagueId, scope.leagueId),
+      eq(canonicalCollectionGroupMembers.occurrenceId, operation.triggerOccurrenceId),
+    ));
+  if (groupIds.length === 0) {
+    const [trigger] = await tx.select({ status: leagueOccurrences.status })
+      .from(leagueOccurrences)
+      .where(and(
+        eq(leagueOccurrences.id, operation.triggerOccurrenceId),
+        eq(leagueOccurrences.organizationId, operation.organizationId),
+        eq(leagueOccurrences.leagueId, scope.leagueId),
+      )).limit(1).for("update");
+    return trigger?.status === "cancelled";
+  }
+  const memberRows = await tx.select({ occurrenceId: canonicalCollectionGroupMembers.occurrenceId })
+    .from(canonicalCollectionGroupMembers)
+    .where(and(
+      eq(canonicalCollectionGroupMembers.organizationId, operation.organizationId),
+      eq(canonicalCollectionGroupMembers.leagueId, scope.leagueId),
+      inArray(canonicalCollectionGroupMembers.groupId, groupIds.map((row) => row.groupId)),
+    ));
+  const occurrenceIds = [...new Set(memberRows.map((row) => row.occurrenceId))];
+  if (occurrenceIds.length === 0) return false;
+  const occurrences = await tx.select({ status: leagueOccurrences.status })
+    .from(leagueOccurrences)
+    .where(and(
+      eq(leagueOccurrences.organizationId, operation.organizationId),
+      eq(leagueOccurrences.leagueId, scope.leagueId),
+      inArray(leagueOccurrences.id, occurrenceIds),
+    )).orderBy(asc(leagueOccurrences.id)).for("update");
+  return occurrences.some((row) => row.status === "cancelled");
+}
+
+/**
  * Transaction-scoped success finalization. Interactive setup uses this to
  * commit the provider outcome, exact payment allocations, future schedule,
  * and setup completion atomically after the provider call.
@@ -2805,7 +2977,9 @@ export async function finalizePaymentOperationSuccessInTransaction(
   const preflightOperation = await lockCanonicalMutationScope(tx, input.organizationId, input.operationId);
   const cancellationReviewRequired = preflightOperation?.operationType === "interactive_charge"
     ? await interactiveCancellationWonInTransaction(tx, preflightOperation)
-    : false;
+    : preflightOperation?.operationType === "scheduled_charge"
+      ? await scheduledCancellationWonInTransaction(tx, preflightOperation)
+      : false;
   if (preflightOperation) {
     // Provider identities are immutable evidence. A reclaim/finalization may
     // fill a previously empty identity, but it may never replace one retained

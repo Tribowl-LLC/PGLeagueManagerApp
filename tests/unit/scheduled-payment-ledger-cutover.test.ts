@@ -2,12 +2,24 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import {
   bowlers,
+  bowlerPaymentLinks,
+  canonicalCollectionGroupMemberRevisions,
+  canonicalCollectionGroupMembers,
+  canonicalCollectionGroupRevisions,
+  canonicalCollectionGroups,
+  leagueOccurrenceBillingTerms,
+  leagueOccurrenceGenerationRuns,
+  leagueOccurrences,
+  leagueScheduleCommands,
   leagues,
   locations,
   organizations,
   paymentOperations,
   paymentSchedules,
   payments,
+  paymentOccurrenceAllocations,
+  scheduledPaymentOperationAllocations,
+  users,
 } from "@shared/schema";
 import { getTestDb } from "../setup/test-db";
 import { expectErrorLog } from "../helpers/expected-error-logs";
@@ -28,11 +40,16 @@ import {
 import {
   prepareScheduledPaymentCycle,
 } from "../../server/services/scheduled-payment-operation-preparation";
+import { persistCanonicalCollectionGroupsInTransaction } from "../../server/services/canonical-collection-groups";
 import {
   buildPaymentOperationIdentity,
   buildSquarePaymentRequestIdentity,
 } from "../../server/services/payment-operation-idempotency";
 import { ScheduledPaymentOperationExecutor } from "../../server/services/scheduled-payment-operation-executor";
+import {
+  buildCanonicalScheduleCommandFingerprint,
+  cancelOccurrence,
+} from "../../server/services/canonical-occurrence-transactions";
 import { PaymentProviderError } from "../../server/services/payment-errors";
 import type {
   OrderLineItem,
@@ -131,6 +148,7 @@ async function createSchedule(input: {
   frequency?: "weekly" | "upfront";
   nextPaymentDate?: string;
   order?: boolean;
+  combined?: boolean;
 } = {}) {
   const [league] = await db.insert(leagues).values({
     name: `Scheduled Ledger ${Math.random()}`,
@@ -154,6 +172,23 @@ async function createSchedule(input: {
     organizationId,
   }).returning();
   if (!bowler) throw new Error("bowler fixture was not created");
+  let partnerId: number | null = null;
+  if (input.combined) {
+    const [partner] = await db.insert(bowlers).values({
+      name: `Scheduled Ledger Partner ${Math.random()}`,
+      email: `scheduled-partner-${Math.random()}@example.test`,
+      paymentCustomerId: `customer-partner-${Math.random()}`,
+      organizationId,
+    }).returning({ id: bowlers.id });
+    if (!partner) throw new Error("partner fixture was not created");
+    partnerId = partner.id;
+    await db.insert(bowlerPaymentLinks).values({
+      bowlerAId: bowler.id,
+      bowlerBId: partner.id,
+      organizationId,
+      status: "accepted",
+    });
+  }
   const [schedule] = await db.insert(paymentSchedules).values({
     bowlerId: bowler.id,
     leagueId: league.id,
@@ -161,9 +196,154 @@ async function createSchedule(input: {
     amount: 2_000,
     nextPaymentDate: input.nextPaymentDate ?? cycleAt,
     paymentCardId: "ccof:scheduled-ledger-test",
+    additionalBowlerIds: partnerId === null ? null : [partnerId],
   }).returning();
   if (!schedule) throw new Error("schedule fixture was not created");
   return { schedule, league, bowler };
+}
+
+async function createCanonicalCursorEvidence(leagueId: number): Promise<{
+  triggerId: string;
+  pairedId: string;
+  followingId: string;
+  actorUserId: number;
+}> {
+  const [actor] = await db.insert(users).values({
+    email: `scheduled-cursor-${Math.random()}@example.test`,
+    password: "scheduled-cursor-test-password-hash",
+    name: "Scheduled cursor actor",
+    role: "org_admin",
+    organizationId,
+  }).returning({ id: users.id });
+  if (!actor) throw new Error("scheduled cursor actor was not created");
+  const [generationCommand] = await db.insert(leagueScheduleCommands).values({
+    organizationId,
+    leagueId,
+    actorUserId: actor.id,
+    commandType: "generate",
+    idempotencyKey: `scheduled-cursor-generate-${Math.random()}`,
+    requestFingerprint: `lvcanoncmd:v1:${"1".repeat(64)}`,
+  }).returning({ id: leagueScheduleCommands.id });
+  if (!generationCommand) throw new Error("scheduled cursor generation command was not created");
+  const [run] = await db.insert(leagueOccurrenceGenerationRuns).values({
+    organizationId,
+    leagueId,
+    originatingCommandId: generationCommand.id,
+    generatorVersion: "scheduled-cursor-test/1",
+    inputFingerprint: "2".repeat(64),
+    sourceScheduleRevision: 1,
+    normalizedInputSnapshot: { cursor: true },
+    rangeStartDate: "2032-01-01",
+    rangeEndDate: "2032-03-01",
+    candidateOccurrenceCount: 4,
+    generatedOccurrenceCount: 4,
+  }).returning({ id: leagueOccurrenceGenerationRuns.id });
+  if (!run) throw new Error("scheduled cursor generation run was not created");
+  const [publicationCommand] = await db.insert(leagueScheduleCommands).values({
+    organizationId,
+    leagueId,
+    actorUserId: actor.id,
+    commandType: "publish",
+    idempotencyKey: `scheduled-cursor-publish-${Math.random()}`,
+    requestFingerprint: `lvcanoncmd:v1:${"3".repeat(64)}`,
+  }).returning({ id: leagueScheduleCommands.id });
+  if (!publicationCommand) throw new Error("scheduled cursor publication command was not created");
+  const rows = [
+    ["2032-01-05", "2032-01-05T18:30:00.000Z", 1],
+    ["2032-01-12", "2032-01-12T18:30:00.000Z", 2],
+    ["2032-01-19", "2032-01-19T18:30:00.000Z", 3],
+    ["2032-01-26", "2032-01-26T18:30:00.000Z", 4],
+  ] as const;
+  const occurrences = await db.insert(leagueOccurrences).values(rows.map(([date, startAt, ordinal]) => ({
+    organizationId,
+    leagueId,
+    locationId,
+    generationKey: `scheduled-cursor-${date}-${Math.random()}`,
+    generationRunId: run.id,
+    kind: "regular" as const,
+    status: "scheduled" as const,
+    lifecycle: "published" as const,
+    authoritativeLocalDate: date,
+    authoritativeLocalStartTime: "18:30:00",
+    timezone: "UTC",
+    startAt,
+    selectedUtcOffsetMinutes: 0,
+    foldResolution: "unambiguous" as const,
+    resolverVersion: "scheduled-cursor-test/1",
+    plannedOrdinal: ordinal,
+    competitionNumber: ordinal,
+    competitive: true,
+    countsInStandings: true,
+    lastCommandId: publicationCommand.id,
+    publishedAt: "2032-01-01T00:00:00.000Z",
+    publishedByUserId: actor.id,
+    publicationCommandId: publicationCommand.id,
+  }))).returning({ id: leagueOccurrences.id, authoritativeLocalDate: leagueOccurrences.authoritativeLocalDate });
+  if (occurrences.length !== 4) throw new Error("scheduled cursor occurrences were not created");
+  await db.insert(leagueOccurrenceBillingTerms).values(occurrences.map((occurrence, index) => ({
+    organizationId,
+    leagueId,
+    occurrenceId: occurrence.id,
+    purpose: "league_weekly_fee" as const,
+    obligationPolicy: "eligible_bowlers" as const,
+    defaultAmountMinor: 2_000,
+    currency: "USD",
+    billingOrdinal: index + 1,
+    version: 1,
+    state: "published" as const,
+    publishedAt: "2032-01-01T00:00:00.000Z",
+    publishedByUserId: actor.id,
+    publicationCommandId: publicationCommand.id,
+  })));
+  await db.transaction(async (tx) => {
+    await persistCanonicalCollectionGroupsInTransaction(tx, {
+      organizationId,
+      leagueId,
+      actorUserId: actor.id,
+      generationRunId: run.id,
+      generationRunSourceScheduleRevision: 1,
+      sourceScheduleRevision: 1,
+      doublePayDates: ["2032-01-05", "2032-01-19"],
+      idempotencyKey: `scheduled-cursor-groups-${Math.random()}`,
+      reason: "Persist scheduled cursor test grouping",
+    });
+  });
+  await db.update(leagues).set({ canonicalScheduleRevision: 1 })
+    .where(eq(leagues.id, leagueId));
+  const trigger = occurrences[0];
+  const paired = occurrences[1];
+  const following = occurrences[2];
+  if (!trigger || !paired || !following) throw new Error("scheduled cursor occurrence identity is incomplete");
+  return {
+    triggerId: trigger.id,
+    pairedId: paired.id,
+    followingId: following.id,
+    actorUserId: actor.id,
+  };
+}
+
+async function cancelCursorOccurrence(input: {
+  leagueId: number;
+  occurrenceId: string;
+  actorUserId: number;
+  key: string;
+  now?: Date;
+}): Promise<void> {
+  const request = {
+    organizationId,
+    leagueId: input.leagueId,
+    actorUserId: input.actorUserId,
+    commandType: "cancel" as const,
+    idempotencyKey: input.key,
+    requestFingerprint: "",
+    reason: "Cancel exact canonical collection member",
+    occurrenceId: input.occurrenceId,
+    now: (input.now ?? dueNow).toISOString(),
+  };
+  await cancelOccurrence({
+    ...request,
+    requestFingerprint: buildCanonicalScheduleCommandFingerprint(request),
+  });
 }
 
 beforeAll(async () => {
@@ -190,7 +370,13 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (organizationId) await deleteOrganization(organizationId);
+  if (organizationId) {
+    await db.delete(canonicalCollectionGroupMemberRevisions).where(eq(canonicalCollectionGroupMemberRevisions.organizationId, organizationId));
+    await db.delete(canonicalCollectionGroupRevisions).where(eq(canonicalCollectionGroupRevisions.organizationId, organizationId));
+    await db.delete(canonicalCollectionGroupMembers).where(eq(canonicalCollectionGroupMembers.organizationId, organizationId));
+    await db.delete(canonicalCollectionGroups).where(eq(canonicalCollectionGroups.organizationId, organizationId));
+    await deleteOrganization(organizationId);
+  }
 });
 
 describe("scheduled payment ledger cutover PostgreSQL behavior", () => {
@@ -202,6 +388,260 @@ describe("scheduled payment ledger cutover PostgreSQL behavior", () => {
     if (!leased?.leaseToken) throw new Error("scheduled operation was not leased");
     expect(await acquireScheduledPaymentOperationDispatchCutoff({ organizationId, operationId: leased.id, leaseToken: leased.leaseToken, now: dueNow })).toBe(true);
     expect(await acquireScheduledPaymentOperationDispatchCutoff({ organizationId, operationId: leased.id, leaseToken: leased.leaseToken, now: dueNow })).toBe(false);
+  });
+
+  it("fails closed on tenant-scoped Square seller-location drift before dispatch", async () => {
+    const { schedule } = await createSchedule();
+    const prepared = await prepareScheduledPaymentCycle({
+      paymentScheduleId: schedule.id,
+      billingCycleAt: cycleAt,
+      now: dueNow,
+    });
+    if (!("operation" in prepared) || !prepared.operation) throw new Error("drift operation was not prepared");
+    const provider = new DeterministicSquareProvider(locationId);
+    await db.update(locations).set({
+      squareCredentials: {
+        appId: "sandbox-app",
+        accessToken: "deterministic-test-token",
+        locationId: "SQUARE_LOCATION_DRIFTED",
+      },
+    }).where(eq(locations.id, locationId));
+    try {
+      const executor = new ScheduledPaymentOperationExecutor({
+        now: () => dueNow,
+        leaseOwner: "scheduled-location-drift-worker",
+        getProvider: async () => provider,
+      });
+      await executor.handleWake({
+        kind: "operation",
+        organizationId,
+        operationId: prepared.operation.id,
+        operationType: "scheduled_charge",
+        status: prepared.operation.status,
+        attemptCount: prepared.operation.attemptCount,
+        dueAt: prepared.operation.nextAttemptAt ?? dueNow.toISOString(),
+      });
+      const operation = await getPaymentOperationForOrganization(organizationId, prepared.operation.id);
+      expect(operation).toMatchObject({ status: "failed_terminal", errorCode: "PROVIDER_LOCATION_DRIFT" });
+      expect(provider.requests).toHaveLength(0);
+    } finally {
+      await db.update(locations).set({
+        squareCredentials: {
+          appId: "sandbox-app",
+          accessToken: "deterministic-test-token",
+          locationId: "SQUARE_LOCATION_TEST",
+        },
+      }).where(eq(locations.id, locationId));
+    }
+  });
+
+  it("advances a canonical trigger to its paired occurrence and then the exact following UUID", async () => {
+    const { schedule, league } = await createSchedule({ nextPaymentDate: cycleAt });
+    const cursor = await createCanonicalCursorEvidence(league.id);
+    await db.update(paymentSchedules).set({ nextOccurrenceId: cursor.triggerId })
+      .where(eq(paymentSchedules.id, schedule.id));
+    const first = await prepareScheduledPaymentCycle({
+      paymentScheduleId: schedule.id,
+      billingCycleAt: cycleAt,
+      now: dueNow,
+    });
+    if (!("operation" in first) || !first.operation) throw new Error("canonical trigger was not prepared");
+    expect(first.operation.triggerOccurrenceId).toBe(cursor.triggerId);
+    const afterTrigger = await db.select().from(paymentSchedules).where(eq(paymentSchedules.id, schedule.id)).then((rows) => rows[0]);
+    expect(afterTrigger?.nextOccurrenceId).toBe(cursor.pairedId);
+    expect(afterTrigger?.nextPaymentDate).toContain("2032-01-12 18:30:00");
+    const paired = await prepareScheduledPaymentCycle({
+      paymentScheduleId: schedule.id,
+      billingCycleAt: afterTrigger?.nextPaymentDate ?? "",
+      now: new Date("2032-01-13T00:00:00.000Z"),
+    });
+    expect(paired.kind).toBe("skipped");
+    if (paired.kind !== "skipped") throw new Error("paired canonical cycle did not skip");
+    expect(paired.schedule.nextOccurrenceId).toBe(cursor.followingId);
+    expect(paired.schedule.nextPaymentDate).toContain("2032-01-19 18:30:00");
+  });
+
+  it("cancels a prepared shared trigger operation when its paired member is cancelled", async () => {
+    const { schedule, league } = await createSchedule({ nextPaymentDate: cycleAt, combined: true });
+    const cursor = await createCanonicalCursorEvidence(league.id);
+    await db.update(paymentSchedules).set({ nextOccurrenceId: cursor.triggerId })
+      .where(eq(paymentSchedules.id, schedule.id));
+    const prepared = await prepareScheduledPaymentCycle({
+      paymentScheduleId: schedule.id,
+      billingCycleAt: cycleAt,
+      now: dueNow,
+    });
+    if (!("operation" in prepared) || !prepared.operation) throw new Error("shared trigger operation was not prepared");
+    expect(prepared.operation.amountMinor).toBe(8_000);
+    expect(await db.select().from(scheduledPaymentOperationAllocations)
+      .where(eq(scheduledPaymentOperationAllocations.operationId, prepared.operation.id))).toHaveLength(2);
+    await cancelCursorOccurrence({
+      leagueId: league.id,
+      occurrenceId: cursor.pairedId,
+      actorUserId: cursor.actorUserId,
+      key: `cancel-paired-before-dispatch-${Math.random()}`,
+    });
+    const cancelled = await getPaymentOperationForOrganization(organizationId, prepared.operation.id);
+    expect(cancelled).toMatchObject({ status: "canceled", dispatchClaimedAt: null });
+    const provider = new DeterministicSquareProvider(locationId);
+    const executor = new ScheduledPaymentOperationExecutor({
+      now: () => dueNow,
+      leaseOwner: "paired-cancel-before-dispatch",
+      getProvider: async () => provider,
+    });
+    await executor.handleWake({
+      kind: "operation",
+      organizationId,
+      operationId: prepared.operation.id,
+      operationType: "scheduled_charge",
+      status: prepared.operation.status,
+      attemptCount: prepared.operation.attemptCount,
+      dueAt: prepared.operation.nextAttemptAt ?? dueNow.toISOString(),
+    });
+    expect(provider.requests).toHaveLength(0);
+  });
+
+  it("retains claim-first scheduled success as review evidence after trigger/paired cancellation", async () => {
+    const { schedule, league } = await createSchedule({ nextPaymentDate: cycleAt });
+    const cursor = await createCanonicalCursorEvidence(league.id);
+    await db.update(paymentSchedules).set({ nextOccurrenceId: cursor.triggerId })
+      .where(eq(paymentSchedules.id, schedule.id));
+    const prepared = await prepareScheduledPaymentCycle({
+      paymentScheduleId: schedule.id,
+      billingCycleAt: cycleAt,
+      now: dueNow,
+    });
+    if (!("operation" in prepared) || !prepared.operation) throw new Error("claim-first operation was not prepared");
+    const provider = new DeterministicSquareProvider(locationId);
+    let cancelledAfterProviderSuccess = false;
+    const executor = new ScheduledPaymentOperationExecutor({
+      now: () => dueNow,
+      leaseOwner: "paired-cancel-after-provider-success",
+      getProvider: async () => provider,
+      finalizeSuccess: async (input) => {
+        if (!cancelledAfterProviderSuccess) {
+          cancelledAfterProviderSuccess = true;
+          await cancelCursorOccurrence({
+            leagueId: league.id,
+            occurrenceId: cursor.pairedId,
+            actorUserId: cursor.actorUserId,
+            key: `cancel-paired-after-provider-success-${Math.random()}`,
+          });
+        }
+        return finalizePaymentOperationSuccess(input);
+      },
+    });
+    await executor.handleWake({
+      kind: "operation",
+      organizationId,
+      operationId: prepared.operation.id,
+      operationType: "scheduled_charge",
+      status: prepared.operation.status,
+      attemptCount: prepared.operation.attemptCount,
+      dueAt: prepared.operation.nextAttemptAt ?? dueNow.toISOString(),
+    });
+    const completed = await getPaymentOperationForOrganization(organizationId, prepared.operation.id);
+    expect(completed).toMatchObject({
+      status: "reconciliation_required",
+      providerObjectId: "square-payment-1",
+      errorCode: "CANCELLATION_REVIEW",
+    });
+    expect(provider.requests).toHaveLength(1);
+    const linkedPayments = await db.select({ id: payments.id }).from(payments)
+      .where(eq(payments.paymentOperationId, prepared.operation.id));
+    expect(linkedPayments).toHaveLength(1);
+    const linkedPayment = linkedPayments[0];
+    if (!linkedPayment) throw new Error("claim-first provider payment was not linked");
+    expect(await db.select().from(paymentOccurrenceAllocations)
+      .where(eq(paymentOccurrenceAllocations.paymentId, linkedPayment.id))).toHaveLength(0);
+    const [storedSchedule] = await db.select().from(paymentSchedules).where(eq(paymentSchedules.id, schedule.id));
+    expect(storedSchedule?.active).toBe(true);
+  });
+
+  it("moves a persisted shared success to cancellation review when the paired member is cancelled", async () => {
+    const { schedule, league } = await createSchedule({ nextPaymentDate: cycleAt });
+    const cursor = await createCanonicalCursorEvidence(league.id);
+    await db.update(paymentSchedules).set({ nextOccurrenceId: cursor.triggerId })
+      .where(eq(paymentSchedules.id, schedule.id));
+    const prepared = await prepareScheduledPaymentCycle({
+      paymentScheduleId: schedule.id,
+      billingCycleAt: cycleAt,
+      now: dueNow,
+    });
+    if (!("operation" in prepared) || !prepared.operation) throw new Error("persisted pair operation was not prepared");
+    const provider = new DeterministicSquareProvider(locationId);
+    const executor = new ScheduledPaymentOperationExecutor({
+      now: () => dueNow,
+      leaseOwner: "paired-persisted-success",
+      getProvider: async () => provider,
+    });
+    await executor.handleWake({
+      kind: "operation",
+      organizationId,
+      operationId: prepared.operation.id,
+      operationType: "scheduled_charge",
+      status: prepared.operation.status,
+      attemptCount: prepared.operation.attemptCount,
+      dueAt: prepared.operation.nextAttemptAt ?? dueNow.toISOString(),
+    });
+    const succeeded = await getPaymentOperationForOrganization(organizationId, prepared.operation.id);
+    expect(succeeded?.status).toBe("succeeded");
+    if (!succeeded?.completedAt) throw new Error("persisted pair success has no completion timestamp");
+    await cancelCursorOccurrence({
+      leagueId: league.id,
+      occurrenceId: cursor.pairedId,
+      actorUserId: cursor.actorUserId,
+      key: `cancel-paired-after-persisted-success-${Math.random()}`,
+      now: new Date("2032-01-01T00:00:00.000Z"),
+    });
+    const reviewed = await getPaymentOperationForOrganization(organizationId, prepared.operation.id);
+    expect(reviewed).toMatchObject({ status: "reconciliation_required", errorCode: "CANCELLATION_REVIEW" });
+    expect(reviewed?.completedAt).toBe(succeeded.completedAt);
+    expect(Date.parse(reviewed?.updatedAt ?? "invalid")).toBeGreaterThanOrEqual(Date.parse(reviewed?.completedAt ?? "invalid"));
+    expect(await db.select().from(payments).where(eq(payments.paymentOperationId, prepared.operation.id))).toHaveLength(1);
+  });
+
+  it("moves a persisted shared success to cancellation review when the trigger is cancelled", async () => {
+    const { schedule, league } = await createSchedule({ nextPaymentDate: cycleAt });
+    const cursor = await createCanonicalCursorEvidence(league.id);
+    await db.update(paymentSchedules).set({ nextOccurrenceId: cursor.triggerId })
+      .where(eq(paymentSchedules.id, schedule.id));
+    const prepared = await prepareScheduledPaymentCycle({
+      paymentScheduleId: schedule.id,
+      billingCycleAt: cycleAt,
+      now: dueNow,
+    });
+    if (!("operation" in prepared) || !prepared.operation) throw new Error("persisted trigger operation was not prepared");
+    const provider = new DeterministicSquareProvider(locationId);
+    const executor = new ScheduledPaymentOperationExecutor({
+      now: () => dueNow,
+      leaseOwner: "trigger-persisted-success",
+      getProvider: async () => provider,
+    });
+    await executor.handleWake({
+      kind: "operation",
+      organizationId,
+      operationId: prepared.operation.id,
+      operationType: "scheduled_charge",
+      status: prepared.operation.status,
+      attemptCount: prepared.operation.attemptCount,
+      dueAt: prepared.operation.nextAttemptAt ?? dueNow.toISOString(),
+    });
+    const succeeded = await getPaymentOperationForOrganization(organizationId, prepared.operation.id);
+    expect(succeeded?.status).toBe("succeeded");
+    if (!succeeded?.completedAt) throw new Error("persisted trigger success has no completion timestamp");
+    await cancelCursorOccurrence({
+      leagueId: league.id,
+      occurrenceId: cursor.triggerId,
+      actorUserId: cursor.actorUserId,
+      key: `cancel-trigger-after-persisted-success-${Math.random()}`,
+      now: new Date("2032-01-01T00:00:00.000Z"),
+    });
+    const reviewed = await getPaymentOperationForOrganization(organizationId, prepared.operation.id);
+    expect(reviewed).toMatchObject({ status: "reconciliation_required", errorCode: "CANCELLATION_REVIEW" });
+    expect(reviewed?.completedAt).toBe(succeeded.completedAt);
+    expect(Date.parse(reviewed?.updatedAt ?? "invalid")).toBeGreaterThanOrEqual(Date.parse(reviewed?.completedAt ?? "invalid"));
+    expect(await db.select().from(payments).where(eq(payments.paymentOperationId, prepared.operation.id))).toHaveLength(1);
   });
 
   it("prepares one exact cycle under two concurrent workers", async () => {

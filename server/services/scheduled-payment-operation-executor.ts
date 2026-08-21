@@ -15,6 +15,7 @@ import {
   getNextPaymentOperationWake,
   getPaymentOperationForOrganization,
   getScheduledPaymentOperationSnapshotForOrganization,
+  isScheduledPaymentProviderLocationCurrent,
   recordExpiredPaymentOperationAttemptExhausted,
   recordPaymentOperationActionRequired,
   recordPaymentOperationFailedTerminal,
@@ -299,6 +300,26 @@ export class ScheduledPaymentOperationExecutor {
         errorCode: "SNAPSHOT_INVALID",
       });
       log.error("Scheduled operation snapshot failed closed", operationContext(operation));
+      return;
+    }
+
+    // Seller-location identity is immutable operation evidence. Resolve the
+    // current credential through the same tenant scope before acquiring the
+    // dispatch cutoff or obtaining a provider; relocation fails closed with
+    // zero provider-side calls.
+    if (!(await isScheduledPaymentProviderLocationCurrent({
+      organizationId: operation.organizationId,
+      locationId: snapshot.locationId,
+      providerLocationId: snapshot.providerLocationId,
+    }))) {
+      await recordPaymentOperationFailedTerminal({
+        organizationId: operation.organizationId,
+        operationId: operation.id,
+        leaseToken,
+        now: this.now(),
+        errorClassification: "invalid_request",
+        errorCode: "PROVIDER_LOCATION_DRIFT",
+      });
       return;
     }
 

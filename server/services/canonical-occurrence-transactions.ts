@@ -1331,6 +1331,56 @@ export async function cancelOccurrenceInTransaction(tx: LeagueScheduleTransactio
       eq(paymentOperations.operationType, "scheduled_charge"),
       eq(paymentOperations.triggerOccurrenceId, occurrence.id),
     )).orderBy(asc(paymentOperations.id)).for("update");
+    // A paired member is collected by the already-prepared trigger operation;
+    // its scheduled snapshot has the combined group amount even though the
+    // operation's triggerOccurrenceId names only the trigger UUID.  Resolve
+    // those exact trigger operations before revoking group membership so a
+    // paired cancellation also wins the pre-dispatch race.
+    const affectedGroupIds = affectedGroups.map(({ group }) => group.id);
+    const activeGroupMembers = affectedGroupIds.length === 0 ? [] : await tx.select({
+      groupId: canonicalCollectionGroupMembers.groupId,
+      occurrenceId: canonicalCollectionGroupMembers.occurrenceId,
+      role: canonicalCollectionGroupMembers.role,
+      amountMinor: canonicalCollectionGroupMembers.amountMinor,
+    }).from(canonicalCollectionGroupMembers).where(and(
+      eq(canonicalCollectionGroupMembers.organizationId, request.organizationId),
+      eq(canonicalCollectionGroupMembers.leagueId, request.leagueId),
+      inArray(canonicalCollectionGroupMembers.groupId, affectedGroupIds),
+      eq(canonicalCollectionGroupMembers.active, true),
+    )).orderBy(asc(canonicalCollectionGroupMembers.groupId), asc(canonicalCollectionGroupMembers.memberOrdinal));
+    const triggerGroupByOccurrence = new Map<string, string>();
+    for (const member of activeGroupMembers) {
+      if (member.role === "trigger") triggerGroupByOccurrence.set(member.occurrenceId, member.groupId);
+    }
+    const groupTriggerOccurrenceIds = [...triggerGroupByOccurrence.keys()];
+    const groupedTriggerCandidates = groupTriggerOccurrenceIds.length === 0 ? [] : await tx.select({
+      id: paymentOperations.id,
+      operationType: paymentOperations.operationType,
+      status: paymentOperations.status,
+      dispatchClaimedAt: paymentOperations.dispatchClaimedAt,
+      triggerOccurrenceId: paymentOperations.triggerOccurrenceId,
+      isDoublePay: scheduledPaymentOperationSnapshots.isDoublePay,
+    }).from(paymentOperations).innerJoin(
+      scheduledPaymentOperationSnapshots,
+      eq(scheduledPaymentOperationSnapshots.operationId, paymentOperations.id),
+    ).where(and(
+      eq(paymentOperations.organizationId, request.organizationId),
+      eq(scheduledPaymentOperationSnapshots.leagueId, request.leagueId),
+      eq(paymentOperations.operationType, "scheduled_charge"),
+      inArray(paymentOperations.triggerOccurrenceId, groupTriggerOccurrenceIds),
+    )).orderBy(asc(paymentOperations.id)).for("update");
+    const groupedTriggerOperations = groupedTriggerCandidates
+      .filter((candidate) => {
+        const groupId = candidate.triggerOccurrenceId === null
+          ? undefined
+          : triggerGroupByOccurrence.get(candidate.triggerOccurrenceId);
+        // isDoublePay is immutable snapshot evidence that this operation's
+        // amount covers the exact trigger+paired collection group.  Do not
+        // compare raw operation totals: combined/partner schedules multiply
+        // the same group amount across their allocation set.
+        return groupId !== undefined && candidate.isDoublePay;
+      })
+      .map(({ id, operationType, status, dispatchClaimedAt }) => ({ id, operationType, status, dispatchClaimedAt }));
     const directTriggerOperations = await tx.select({ id: paymentOperations.id, operationType: paymentOperations.operationType, status: paymentOperations.status, dispatchClaimedAt: paymentOperations.dispatchClaimedAt })
       .from(paymentOperations).where(and(
         eq(paymentOperations.organizationId, request.organizationId),
@@ -1338,7 +1388,7 @@ export async function cancelOccurrenceInTransaction(tx: LeagueScheduleTransactio
         eq(paymentOperations.triggerOccurrenceId, occurrence.id),
       )).orderBy(asc(paymentOperations.id)).for("update");
     const operationRows = [...new Map(
-      [...scheduledTriggerOperations, ...directTriggerOperations].map((row) => [row.id, row]),
+      [...scheduledTriggerOperations, ...groupedTriggerOperations, ...directTriggerOperations].map((row) => [row.id, row]),
     ).values()];
     const snapshotOperationRowsWithState = operationIds.length === 0 ? [] : await tx.select({
       id: paymentOperations.id,
@@ -1352,12 +1402,18 @@ export async function cancelOccurrenceInTransaction(tx: LeagueScheduleTransactio
     const allOperationRows = [...new Map(
       [...operationRows, ...snapshotOperationRowsWithState].map((row) => [row.id, row]),
     ).values()];
+    // Cancellation requests may carry an authoritative schedule timestamp
+    // earlier than a provider attempt that already completed.  Preserve the
+    // ledger timestamp order rather than rewinding completed/updated fields.
+    const cancellationReviewTimestamp = sql`GREATEST(COALESCE(${paymentOperations.completedAt}, ${paymentOperations.startedAt}, ${request.now}::timestamp), ${request.now}::timestamp)`;
     const reconciliationRequired = allOperationRows.some((operation) =>
       ["provider_unknown", "reconciliation_required"].includes(operation.status)
-      || (operation.status === "leased" && (operation.dispatchClaimedAt !== null || operation.operationType === "interactive_charge")));
+      || (operation.status === "leased" && operation.dispatchClaimedAt !== null)
+      || (operation.operationType === "scheduled_charge" && operation.status === "succeeded"));
     for (const operation of allOperationRows) {
       const claimFirstInteractive = operation.operationType === "interactive_charge"
-        && operation.status === "leased";
+        && operation.status === "leased"
+        && operation.dispatchClaimedAt !== null;
       if (["pending", "retry_scheduled", "leased"].includes(operation.status)
         && operation.dispatchClaimedAt === null && !claimFirstInteractive) {
         await tx.update(paymentOperations).set({
@@ -1388,12 +1444,30 @@ export async function cancelOccurrenceInTransaction(tx: LeagueScheduleTransactio
           status: "reconciliation_required",
           nextAttemptAt: null,
           errorCode: "CANCELLATION_REVIEW",
-          completedAt: request.now,
-          updatedAt: request.now,
+          completedAt: cancellationReviewTimestamp,
+          updatedAt: cancellationReviewTimestamp,
         }).where(and(
           eq(paymentOperations.organizationId, request.organizationId),
           eq(paymentOperations.id, operation.id),
           eq(paymentOperations.status, "provider_unknown"),
+        ));
+      } else if (operation.operationType === "scheduled_charge" && operation.status === "succeeded") {
+        // A provider success already committed before cancellation is
+        // immutable payment evidence, not a reason to issue a refund. Keep
+        // the linked payment/provider IDs, but move the operation into the
+        // explicit review state so reports never treat the cancelled group
+        // as an ordinary successful collection.
+        await tx.update(paymentOperations).set({
+          status: "reconciliation_required",
+          nextAttemptAt: null,
+          errorClassification: "provider_unknown",
+          errorCode: "CANCELLATION_REVIEW",
+          completedAt: cancellationReviewTimestamp,
+          updatedAt: cancellationReviewTimestamp,
+        }).where(and(
+          eq(paymentOperations.organizationId, request.organizationId),
+          eq(paymentOperations.id, operation.id),
+          eq(paymentOperations.status, "succeeded"),
         ));
       }
     }
