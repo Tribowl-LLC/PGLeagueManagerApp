@@ -125,6 +125,17 @@ describe("F5 canonical payment reporting PostgreSQL evidence", () => {
     expect(report.mode).toBe("canonical_with_unlinked_history");
     expect(report.unlinkedHistory.filter((row) => row.paymentOperationId === operation.id)).toHaveLength(2);
     expect(report.unlinkedHistory.filter((row) => row.paymentOperationId === operation.id).map((row) => row.amountMinor)).toEqual([250, 250]);
+    expect(report.totalRows).toBe(2);
+    expect(report.totalTransactions).toBe(1);
+    expect(report.totals.unresolvedOperationMinor).toBe(amountMinor);
+    expect(report.unlinkedHistory.filter((row) => row.paymentOperationId === operation.id).every((row) => row.receipt.source === "unlinked_legacy")).toBe(true);
+    for (const participant of fixture.roster.slice(0, 2)) {
+      const participantReport = await readCanonicalPaymentReport({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, bowlerId: participant.id, limit: 10 });
+      expect(participantReport.totalRows).toBe(1);
+      expect(participantReport.totalTransactions).toBe(1);
+      expect(participantReport.totals.unresolvedOperationMinor).toBe(amountMinor);
+      expect(participantReport.unlinkedHistory).toHaveLength(1);
+    }
   });
 
   it("fails closed on a cross-tenant league scope", async () => {
@@ -207,8 +218,8 @@ describe("F5 canonical payment reporting PostgreSQL evidence", () => {
       obligationId: obligation.id,
       revisionNumber: nextRevision,
       snapshotSchemaVersion: 1,
-      beforeSnapshot: { state: obligation.state },
-      afterSnapshot: { state: "settled", amountMinor: obligation.amountMinor, currency: obligation.currency },
+      beforeSnapshot: { state: obligation.state, amountMinor: obligation.amountMinor, currency: obligation.currency, billingTermId: obligation.billingTermId, billingTermVersion: obligation.billingTermVersion, dueAt: obligation.dueAt, pastDueAt: obligation.pastDueAt },
+      afterSnapshot: { state: "settled", amountMinor: obligation.amountMinor, currency: obligation.currency, billingTermId: obligation.billingTermId, billingTermVersion: obligation.billingTermVersion, dueAt: obligation.dueAt, pastDueAt: obligation.pastDueAt },
       recordedByUserId: fixture.actorUserId,
     });
 

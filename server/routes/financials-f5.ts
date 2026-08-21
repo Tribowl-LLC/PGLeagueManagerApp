@@ -107,6 +107,18 @@ router.get("/payments", async (req, res) => {
         return { ...transaction, groupKey: `transaction:${report.page}:${index + 1}`, paymentOperationId: null, combinedChargeGroupId: null, paymentIds: [], amountMinor, dispute, rows };
       }),
     };
+    const redactedRows = [...redactedReport.rows, ...redactedReport.unlinkedHistory];
+    const redactedTransactions = redactedReport.transactions;
+    const redactedReportTotals = {
+      grossConfirmedPaidMinor: redactedTransactions.reduce((sum, transaction) => sum + (transaction.rows.some((row) => row.status === "confirmed_paid") ? transaction.amountMinor : 0), 0),
+      activeAllocatedMinor: redactedRows.reduce((sum, row) => sum + row.allocatedMinor, 0),
+      refundedMinor: redactedRows.reduce((sum, row) => sum + row.refund.amountMinor, 0),
+      disputedReviewRequiredMinor: redactedTransactions.reduce((sum, transaction) => sum + (transaction.dispute?.reviewRequired ? transaction.dispute.amountMinor : 0), 0),
+      reviewRequiredMinor: redactedRows.reduce((sum, row) => sum + (row.reviewRequired ? row.amountMinor : 0), 0),
+      unresolvedOperationMinor: redactedRows.reduce((sum, row) => sum + (row.unresolved ? row.amountMinor : 0), 0),
+      unallocatedLegacyMinor: redactedReport.unlinkedHistory.reduce((sum, row) => sum + row.amountMinor, 0),
+    };
+    redactedReport.totals = redactedReportTotals;
     const { fingerprint: _privilegedFingerprint, ...redactedSemantic } = redactedReport;
     return sendSuccess(res, { ...redactedReport, fingerprint: canonicalPaymentReportFingerprint(redactedSemantic) });
   } catch (error) {

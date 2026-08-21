@@ -24,6 +24,7 @@ export interface CanonicalPaymentReceiptSummary {
   receiptUrl: string | null;
   receiptNumber: string | null;
   deliveryEvidence: "delivery_not_recorded";
+  source?: "canonical_allocation" | "unlinked_legacy" | "unresolved_operation" | null;
 }
 
 export interface CanonicalPaymentRefundEvidence {

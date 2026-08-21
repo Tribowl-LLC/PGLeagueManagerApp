@@ -19,10 +19,10 @@ import { Badge } from "@/components/ui/badge";
 import type { Payment, BowlerDetailsResponse, ApiResponse } from "@shared/schema";
 import { filterActiveBowlerLeagues } from "@/lib/bowler-league-utils";
 import { BowlerFinancialSummary } from "@/components/bowler-financial-summary";
-import { BowlerPaymentHistoryTable } from "@/components/bowler-payment-history-table";
 import { PaymentSyncRetryStatus } from "@/components/payment-sync-retry-status";
 import { AdminBowlerLinkPanel } from "@/components/admin-bowler-link-panel";
 import type { CanonicalPaymentReport } from "@shared/canonical-payment-report";
+import { CanonicalPaymentEvidenceTable } from "@/components/canonical-payment-evidence-table";
 
 export default function BowlerViewPage() {
   const params = useParams();
@@ -166,20 +166,6 @@ export default function BowlerViewPage() {
     for (const row of paymentReportResponse?.data?.unlinkedHistory ?? []) if (row.paymentId !== null) map.set(row.paymentId, row.status);
     return map;
   }, [paymentReportResponse?.data]);
-  const projectedPayments = useMemo(() => {
-    const rawById = new Map(payments.map((payment) => [payment.id, payment]));
-    return [...(paymentReportResponse?.data?.rows ?? []), ...(paymentReportResponse?.data?.unlinkedHistory ?? [])]
-      .filter((row) => row.paymentId !== null)
-      .map((row) => {
-        if (row.paymentId !== null) {
-          const existing = rawById.get(row.paymentId);
-          if (existing) return existing;
-        }
-        const displayStatus = row.status === "confirmed_paid" ? "paid" : row.status === "disputed" || row.status === "failed" || row.status === "pending" || row.status === "refunded" ? row.status : "pending";
-        const synthetic: Payment = { id: row.paymentId ?? 0, bowlerId: row.bowlerId, leagueId: row.leagueId, amount: row.amountMinor, lineageAmount: null, prizeFundAmount: null, weekOf: row.businessDate, status: displayStatus, type: row.paymentType, checkNumber: null, providerPaymentId: null, idempotencyKey: null, squareRefundId: null, refundReason: null, refundedAt: null, disputeId: null, disputedAt: null, receiptUrl: null, receiptNumber: null, receiptEmailMissing: true, notes: null, paidByUserId: null, combinedChargeGroupId: null, paymentOperationId: null, paymentOperationAllocationIndex: null, createdAt: row.businessDate };
-        return synthetic;
-      });
-  }, [payments, paymentReportResponse?.data]);
 
   const { data: financialResponse, isLoading: loadingFinancials, error: financialError } = useQuery<ApiResponse<{
     mode: string;
@@ -308,13 +294,16 @@ export default function BowlerViewPage() {
       </div>
 
       <ErrorBoundary level="section">
-        {paymentReportLoading ? <div className="text-sm text-muted-foreground">Loading canonical payment evidence…</div> : paymentReportError ? <div className="text-sm text-destructive">Financial evidence requires review; payment history is unavailable.</div> : <BowlerPaymentHistoryTable
-          payments={projectedPayments}
-          locationId={league?.locationId ?? null}
-          paymentBusinessDates={paymentBusinessDates}
-          paymentEvidenceStatuses={paymentEvidenceStatuses}
+        {paymentReportLoading ? <div className="text-sm text-muted-foreground">Loading canonical payment evidence…</div> : paymentReportError ? <div className="text-sm text-destructive">Financial evidence requires review; payment history is unavailable.</div> : <CanonicalPaymentEvidenceTable
+          rows={[...(paymentReportResponse?.data?.rows ?? []), ...(paymentReportResponse?.data?.unlinkedHistory ?? [])]}
+          mode={paymentReportResponse?.data?.mode}
+          title="Payment history"
         />}
-        {!paymentReportLoading && !paymentReportError && paymentReportResponse?.data && paymentReportResponse.data.totalRows > paymentReportPage * 200 && <button type="button" className="mt-3 text-sm underline" onClick={() => setPaymentReportPage((page) => page + 1)}>Next canonical payment page</button>}
+        {!paymentReportLoading && !paymentReportError && paymentReportResponse?.data && <div className="mt-3 flex gap-3 text-sm">
+          <button type="button" className="underline disabled:opacity-50" disabled={paymentReportPage <= 1} onClick={() => setPaymentReportPage((page) => Math.max(1, page - 1))}>Previous</button>
+          <span>Page {paymentReportPage} of {Math.max(1, Math.ceil(paymentReportResponse.data.totalTransactions / 200))}</span>
+          <button type="button" className="underline disabled:opacity-50" disabled={paymentReportPage >= Math.ceil(paymentReportResponse.data.totalTransactions / 200)} onClick={() => setPaymentReportPage((page) => page + 1)}>Next</button>
+        </div>}
       </ErrorBoundary>
 
       {canManagePaymentLinks && bowler && (

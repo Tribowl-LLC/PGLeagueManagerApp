@@ -34,6 +34,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { PaymentsTable } from "@/components/payments-table";
+import { CanonicalPaymentEvidenceTable } from "@/components/canonical-payment-evidence-table";
 import { RefundPaymentDialog } from "@/components/refund-payment-dialog";
 import { PaginationControls } from "@/components/pagination-controls";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -214,6 +215,9 @@ export default function PaymentsPage() {
     return map;
   })();
   const defaultLeagueId = reportLeagues.length > 0 ? reportLeagues[0].id : undefined;
+  const financialRows = financialReportData.length > 0
+    ? [...(financialReportData[0]?.rows ?? []), ...(financialReportData[0]?.unlinkedHistory ?? [])]
+    : [];
 
   // The visible table is projection-owned. Raw payment rows are retained only
   // as optional action metadata; a canonical row is never hidden because the
@@ -324,6 +328,13 @@ export default function PaymentsPage() {
             )}
           </div>
 
+          <CanonicalPaymentEvidenceTable
+            rows={financialRows}
+            mode={financialReportData[0]?.mode}
+            title="Financial payment evidence"
+          />
+
+          <div aria-label="Payment management actions">
           <PaymentsTable
             payments={projectionPayments}
             filteredPayments={filteredPayments}
@@ -339,6 +350,7 @@ export default function PaymentsPage() {
             paymentEvidenceStatuses={paymentEvidenceStatuses}
             paymentCanonicalRows={paymentCanonicalRows}
           />
+          </div>
 
           {financialReportData.length > 0 && (
             <PaginationControls
