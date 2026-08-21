@@ -16,10 +16,7 @@ import { getPaymentProvider, ProviderNotConfiguredError } from '../../services/p
 import { buildPaymentErrorResponse } from '../../utils/payment-error-response.js';
 import { sendReceiptResendEmail } from '../../services/email';
 import { paymentReceiptContract, type PaymentReceiptContract } from '@shared/payment-receipt';
-import { CanonicalPaymentReportIncompatibilityError, readCanonicalPaymentReport } from '../../services/canonical-payment-report.js';
-import { db } from '../../db.js';
-import { and, eq, inArray } from 'drizzle-orm';
-import { leagues, paymentDisputes, paymentOccurrenceAllocations, paymentOperations, scheduledPaymentOperationAllocations, scheduledPaymentOperationSnapshots, interactivePaymentOperationAllocations, interactivePaymentOperationSnapshots } from '@shared/schema';
+import { CanonicalPaymentReportIncompatibilityError, readPaymentReceiptProjection } from '../../services/canonical-payment-report.js';
 
 const log = createLogger('PaymentReceipts');
 
@@ -114,101 +111,53 @@ async function resolveReceiptUrl(paymentId: number, organizationId?: number): Pr
   };
 }
 
-async function buildReceiptEvidence(paymentId: number, organizationId: number, viewer: Express.User): Promise<PaymentReceiptContract | null> {
-  const payment = await storage.getPaymentByIdForOrganization(paymentId, organizationId);
-  if (!payment) return null;
-  const [league] = await db.select({ organizationId: leagues.organizationId, paymentMode: leagues.paymentMode, timezone: leagues.timezone }).from(leagues)
-    .where(and(eq(leagues.id, payment.leagueId), eq(leagues.organizationId, organizationId))).limit(1);
-  if (!league) return null;
-  const allocations = await db.select().from(paymentOccurrenceAllocations).where(and(
-    eq(paymentOccurrenceAllocations.organizationId, organizationId),
-    eq(paymentOccurrenceAllocations.leagueId, payment.leagueId),
-    eq(paymentOccurrenceAllocations.paymentId, payment.id),
-  ));
-  const [operation] = payment.paymentOperationId ? await db.select().from(paymentOperations).where(and(
-    eq(paymentOperations.organizationId, organizationId),
-    eq(paymentOperations.id, payment.paymentOperationId),
-  )).limit(1) : [];
-  let collectionEvidence;
-  let canonicalReportRow: Awaited<ReturnType<typeof readCanonicalPaymentReport>>['rows'][number] | undefined;
-  let canonicalTiming: { paymentMode: 'weekly' | 'upfront'; upfrontDueAt: string | null; upfrontDueAtLocal?: string | null; timezone?: string; source: 'canonical_activation' | 'legacy_league' } = {
-    paymentMode: (league.paymentMode === 'upfront' ? 'upfront' : 'weekly'),
-    upfrontDueAt: null,
-    upfrontDueAtLocal: null,
-    timezone: league.timezone ?? 'UTC',
-    source: 'legacy_league',
-  };
-  // Any payment with exact D2/F2 allocation evidence is a canonical report
-  // parent, even when its provider operation is a pre-F4 scheduled/interactive
-  // operation. F4 additionally requires its immutable collection grouping.
-  if (operation?.operationType === 'canonical_autopay_charge' || allocations.length > 0) {
-    let report;
-    let reportRow;
-    report = await readCanonicalPaymentReport({ organizationId, leagueId: payment.leagueId, paymentId: payment.id, page: 1, limit: 1 });
-    reportRow = [...report.rows, ...report.unlinkedHistory].find((row) => row.paymentId === payment.id);
-    if (!reportRow || reportRow.source !== 'canonical_allocation' || (operation?.operationType === 'canonical_autopay_charge' && !reportRow.collectionEvidence)) throw new Error('canonical receipt evidence unavailable');
-    canonicalReportRow = reportRow;
-    collectionEvidence = reportRow.collectionEvidence;
-    if (!report) throw new Error('canonical receipt report unavailable');
-    canonicalTiming = report.paymentTiming;
-  }
-  // Once the exact canonical projection exists, do not reconstruct its
-  // allocations or operation evidence from later autocommit reads. Legacy
-  // versioned snapshots retain their established compatibility path.
-  const legacyScheduledRows = canonicalReportRow ? [] : payment.paymentOperationId ? await db.select({ leagueId: scheduledPaymentOperationSnapshots.leagueId, paidByUserId: scheduledPaymentOperationAllocations.paidByUserId, bowlerId: scheduledPaymentOperationAllocations.bowlerId, amountMinor: scheduledPaymentOperationAllocations.amountMinor, allocationIndex: scheduledPaymentOperationAllocations.allocationIndex }).from(scheduledPaymentOperationSnapshots).innerJoin(scheduledPaymentOperationAllocations, eq(scheduledPaymentOperationAllocations.operationId, scheduledPaymentOperationSnapshots.operationId)).where(and(eq(scheduledPaymentOperationSnapshots.operationId, payment.paymentOperationId), eq(scheduledPaymentOperationSnapshots.leagueId, payment.leagueId))).orderBy(scheduledPaymentOperationAllocations.allocationIndex) : [];
-  const legacyInteractiveRows = canonicalReportRow ? [] : payment.paymentOperationId && legacyScheduledRows.length === 0 ? await db.select({ leagueId: interactivePaymentOperationSnapshots.leagueId, paidByUserId: interactivePaymentOperationAllocations.paidByUserId, bowlerId: interactivePaymentOperationAllocations.bowlerId, amountMinor: interactivePaymentOperationAllocations.amountMinor, allocationIndex: interactivePaymentOperationAllocations.allocationIndex }).from(interactivePaymentOperationSnapshots).innerJoin(interactivePaymentOperationAllocations, eq(interactivePaymentOperationAllocations.operationId, interactivePaymentOperationSnapshots.operationId)).where(and(eq(interactivePaymentOperationSnapshots.operationId, payment.paymentOperationId), eq(interactivePaymentOperationSnapshots.leagueId, payment.leagueId))).orderBy(interactivePaymentOperationAllocations.allocationIndex) : [];
-  const legacyRows = [...legacyScheduledRows, ...legacyInteractiveRows];
-  const legacyScope = legacyScheduledRows[0];
-  const interactiveLegacyScope = legacyInteractiveRows[0];
-  if (operation && operation.leagueId !== null && operation.leagueId !== payment.leagueId && !legacyScope && !interactiveLegacyScope) return null;
-  const durableDisputes = canonicalReportRow ? [] : operation ? await db.select({ id: paymentDisputes.id, amountMinor: paymentDisputes.amountMinor, currency: paymentDisputes.currency, state: paymentDisputes.state }).from(paymentDisputes).where(and(eq(paymentDisputes.organizationId, organizationId), eq(paymentDisputes.paymentOperationId, operation.id))).orderBy(paymentDisputes.id) : [];
-  let durableDispute: typeof durableDisputes[number] | undefined;
-  for (const candidate of durableDisputes) {
-    if (candidate.amountMinor <= 0 || candidate.currency !== operation?.currency || (durableDispute && durableDispute.state !== candidate.state)) throw new Error('incompatible dispute evidence');
-    if (!durableDispute) durableDispute = { ...candidate };
-    else durableDispute.amountMinor += candidate.amountMinor;
-  }
-  if (durableDispute && operation && durableDispute.amountMinor > operation.amountMinor) throw new Error('dispute exceeds operation');
+async function buildReceiptEvidence(paymentId: number, organizationId: number, viewer: Express.User): Promise<{ evidence: PaymentReceiptContract; sharedReceiptAllowed: boolean } | null> {
+  const projection = await readPaymentReceiptProjection({ organizationId, paymentId });
+  const { payment, report, row } = projection;
+  const transaction = report.transactions.find((candidate) => candidate.rows.some((candidateRow) => candidateRow.paymentId === payment.id));
   const adminPrivilege = viewer.role === 'system_admin' || viewer.role === 'org_admin' || viewer.role === 'payment_manager';
-  const initiatingPayer = payment.paidByUserId === viewer.id || legacyRows.some((row) => row.paidByUserId === viewer.id);
-  const legacyReceiptAllocations = legacyRows.map((row) => ({ allocationId: null, obligationId: null, occurrenceId: null, bowlerId: row.bowlerId, amountMinor: row.amountMinor, currency: 'USD', state: null, source: 'unlinked_legacy' as const }));
-  const evidenceAllocations = canonicalReportRow
-    ? canonicalReportRow.allocations.map((allocation) => ({ ...allocation, source: 'canonical_allocation' as const }))
-    : allocations.length > 0 ? allocations.map((allocation) => ({ allocationId: allocation.id, obligationId: allocation.obligationId, occurrenceId: allocation.occurrenceId, bowlerId: allocation.bowlerId, amountMinor: allocation.amountMinor, currency: allocation.currency, state: allocation.state, source: 'canonical_allocation' as const })) : legacyReceiptAllocations;
-  const ownEvidenceAllocations = evidenceAllocations.filter((allocation) => allocation.bowlerId === viewer.bowlerId);
-  const sharedAllowed = adminPrivilege || initiatingPayer || (!operation && viewer.bowlerId === payment.bowlerId);
-  const visibleAllocations = sharedAllowed ? evidenceAllocations : ownEvidenceAllocations;
-  const shared = canonicalReportRow?.sharedTransaction ?? (operation ? { groupKey: `operation:${operation.id}`, childCount: (await storage.getPaymentsByPaymentOperationId(organizationId, operation.id)).length || evidenceAllocations.length } : null);
-  const transactionDispute = canonicalReportRow?.dispute ?? (durableDispute
-    ? { present: true, amountMinor: sharedAllowed ? durableDispute.amountMinor : 0, disputeId: adminPrivilege ? durableDispute.id : null, scope: 'transaction' as const, state: durableDispute.state, reviewRequired: true }
-    : { present: payment.status === 'disputed' || !!payment.disputeId, amountMinor: sharedAllowed && payment.status === 'disputed' ? payment.amount : 0, disputeId: adminPrivilege ? payment.disputeId : null, scope: 'legacy_payment_row' as const, state: payment.status === 'disputed' ? 'review_required' : null, reviewRequired: payment.status === 'disputed' || !!payment.disputeId });
-  const receiptRefund = canonicalReportRow?.refund ?? { present: payment.status === 'refunded' || payment.squareRefundId !== null, amountMinor: payment.status === 'refunded' ? payment.amount : 0, providerRefundId: payment.squareRefundId };
-  const transactionVisible = sharedAllowed ? (shared ?? { groupKey: null, childCount: 1 }) : null;
-  const unresolved = canonicalReportRow?.unresolved ?? (!!operation && ['pending', 'leased', 'provider_unknown', 'retry_scheduled', 'action_required', 'reconciliation_required'].includes(operation.status));
-  const validatedReceipt = canonicalReportRow?.receipt;
-  const validatedReceiptUrl = validatedReceipt?.receiptUrl ?? payment.receiptUrl;
-  const validatedReceiptNumber = validatedReceipt?.receiptNumber ?? payment.receiptNumber;
-  return paymentReceiptContract({
-    receiptUrl: sharedAllowed ? validatedReceiptUrl : null,
-    receiptNumber: sharedAllowed ? validatedReceiptNumber : null,
+  const initiatingPayer = payment.paidByUserId === viewer.id || (row.initiatingPayerBowlerId !== null && row.initiatingPayerBowlerId !== undefined && row.initiatingPayerBowlerId === viewer.bowlerId);
+  const sharedAllowed = adminPrivilege || initiatingPayer || (row.paymentOperationId === null && (payment.combinedChargeGroupId ?? null) === null && viewer.bowlerId === payment.bowlerId);
+  const evidenceAllocations = row.allocations.map((allocation) => ({ ...allocation, source: row.source }));
+  const visibleAllocations = sharedAllowed ? evidenceAllocations : evidenceAllocations.filter((allocation) => allocation.bowlerId === viewer.bowlerId);
+  const transactionDispute = transaction?.dispute ?? row.dispute;
+  const visibleDispute = {
+    ...transactionDispute,
+    amountMinor: sharedAllowed ? transactionDispute.amountMinor : 0,
+    disputeId: adminPrivilege ? transactionDispute.disputeId : null,
+  };
+  const visibleRefund = {
+    ...row.refund,
+    amountMinor: sharedAllowed ? row.refund.amountMinor : 0,
+    providerRefundId: adminPrivilege ? row.refund.providerRefundId : null,
+  };
+  const sharedTransaction = sharedAllowed
+    ? (transaction ? { groupKey: transaction.groupKey, childCount: transaction.rows.length } : row.sharedTransaction ?? null)
+    : null;
+  const receiptUrl = sharedAllowed ? payment.receiptUrl : null;
+  const receiptNumber = sharedAllowed ? payment.receiptNumber : null;
+  const evidence = paymentReceiptContract({
+    receiptUrl,
+    receiptNumber,
     organizationId,
     leagueId: payment.leagueId,
     paymentId: payment.id,
-    paymentOperationId: adminPrivilege ? (canonicalReportRow?.paymentOperationId ?? payment.paymentOperationId) : null,
-    operationStatus: adminPrivilege ? operation?.status ?? null : null,
-    amountMinor: sharedAllowed ? (canonicalReportRow?.amountMinor ?? payment.amount) : visibleAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0),
-    currency: canonicalReportRow?.currency ?? 'USD',
-    evidenceStatus: canonicalReportRow?.status ?? (unresolved ? 'unresolved' : payment.status === 'paid' ? 'confirmed_paid' : payment.status === 'refunded' ? 'refunded' : payment.status === 'disputed' ? 'disputed' : 'review_required'),
-    source: canonicalReportRow?.source ?? (allocations.length > 0 ? 'canonical_allocation' : 'unlinked_legacy'),
+    paymentOperationId: adminPrivilege ? row.paymentOperationId : null,
+    operationStatus: adminPrivilege ? row.operationStatus : null,
+    amountMinor: sharedAllowed ? row.amountMinor : visibleAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0),
+    currency: row.currency,
+    evidenceStatus: row.status,
+    source: row.source,
     allocations: visibleAllocations,
-    refund: { ...receiptRefund, amountMinor: sharedAllowed ? receiptRefund.amountMinor : 0, providerRefundId: adminPrivilege ? receiptRefund.providerRefundId : null },
-    dispute: transactionDispute,
-    unresolved,
-    sharedTransaction: transactionVisible,
-    paymentTiming: canonicalTiming,
-    ...(collectionEvidence ? { collectionEvidence } : {}),
-    canResend: adminPrivilege && Boolean(validatedReceiptUrl),
+    refund: visibleRefund,
+    dispute: visibleDispute,
+    unresolved: row.unresolved,
+    sharedTransaction,
+    paymentTiming: report.paymentTiming,
+    ...(row.collectionEvidence ? { collectionEvidence: row.collectionEvidence } : {}),
+    canResend: adminPrivilege && Boolean(receiptUrl),
   });
+  return { evidence, sharedReceiptAllowed: sharedAllowed };
 }
 
 router.get('/payments/:id/receipt', async (req, res) => {
@@ -237,20 +186,13 @@ router.get('/payments/:id/receipt', async (req, res) => {
     }
 
     const organizationId = effectiveOrganizationId;
-    const scopedPayment = organizationId && typeof storage.getPaymentByIdForOrganization === "function"
-      ? await storage.getPaymentByIdForOrganization(id, organizationId)
-      : null;
-    const evidence = organizationId && typeof storage.getPaymentByIdForOrganization === "function"
+    const evidenceResult = organizationId && typeof storage.getPaymentByIdForOrganization === "function"
       ? await buildReceiptEvidence(id, organizationId, req.user)
       : null;
-    if (!scopedPayment || (!evidence && scopedPayment.paymentOperationId != null)) {
+    if (!evidenceResult) {
       return sendError(res, 'No receipt available for this payment', 404, 'RECEIPT_UNAVAILABLE');
     }
-    const sharedReceiptAllowed = req.user.role === 'system_admin'
-      || req.user.role === 'org_admin'
-      || req.user.role === 'payment_manager'
-      || evidence?.sharedTransaction !== null
-      || scopedPayment.paymentOperationId == null;
+    const { evidence, sharedReceiptAllowed } = evidenceResult;
     const resolved = sharedReceiptAllowed
       ? await resolveReceiptUrl(id, effectiveOrganizationId ?? undefined)
       : null;
@@ -261,6 +203,7 @@ router.get('/payments/:id/receipt', async (req, res) => {
         : evidence)
       : resolved?.receipt;
     if (!responseEvidence) return sendError(res, 'No receipt available for this payment', 404, 'RECEIPT_UNAVAILABLE');
+    if (sharedReceiptAllowed && !responseEvidence.receiptUrl && !resolved) return sendError(res, 'No receipt available for this payment', 404, 'RECEIPT_UNAVAILABLE');
     return sendSuccess(res, {
       ...responseEvidence,
       // Preserve the existing flat fields for current clients while the

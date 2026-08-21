@@ -13,7 +13,7 @@ import {
   interactivePaymentOperationSnapshots,
   interactivePaymentOperationAllocations,
 } from "@shared/schema";
-import { CanonicalPaymentReportIncompatibilityError, readCanonicalPaymentReport } from "../../server/services/canonical-payment-report";
+import { CanonicalPaymentReportIncompatibilityError, readCanonicalPaymentReport, readPaymentReceiptProjection } from "../../server/services/canonical-payment-report";
 import { encryptInteractivePaymentSnapshot } from "../../server/services/interactive-payment-operation-snapshot";
 import { deriveSquareOperationIdempotencyKey } from "../../server/services/payment-operation-idempotency";
 
@@ -327,5 +327,23 @@ describe("F5 canonical payment reporting PostgreSQL evidence", () => {
     const report = await readCanonicalPaymentReport({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, paymentId: exactPaymentId, page: 1, limit: 1 });
     expect(report.unlinkedHistory.map((row) => row.paymentId)).toEqual([exactPaymentId]);
     expect(report.totalTransactions).toBe(3);
+  });
+
+  it("returns the complete exact-payment receipt projection from one validated read-only snapshot", async () => {
+    const fixture = await makeF3WorkflowFixture();
+    organizations.push(fixture.organizationId);
+    const [payment] = await db.insert(payments).values({
+      bowlerId: fixture.roster[0].id,
+      leagueId: fixture.leagueId,
+      amount: 500,
+      weekOf: "2038-04-01T19:00:00.000Z",
+      status: "paid",
+      type: "cash",
+    }).returning();
+    const projection = await readPaymentReceiptProjection({ organizationId: fixture.organizationId, paymentId: payment.id });
+    expect(projection.payment.id).toBe(payment.id);
+    expect(projection.row.paymentId).toBe(payment.id);
+    expect([...projection.report.rows, ...projection.report.unlinkedHistory].some((row) => row.paymentId === payment.id)).toBe(true);
+    expect(projection.report.fingerprint).toMatch(/^lvpaymentreport:v1:/);
   });
 });

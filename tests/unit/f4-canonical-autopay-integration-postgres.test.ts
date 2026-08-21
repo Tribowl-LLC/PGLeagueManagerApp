@@ -30,6 +30,7 @@ import {
   recordPaymentOperationReconciliationRequired,
 } from "../../server/storage/payment-operations";
 import { PaymentProviderError } from "../../server/services/payment-errors";
+import { readPaymentReceiptProjection } from "../../server/services/canonical-payment-report";
 
 vi.hoisted(() => {
   process.env.LEAGUEVAULT_F3_CANONICAL_AUTOPAY_ENABLED = "1";
@@ -185,6 +186,39 @@ describe("F4 canonical autopay PostgreSQL/provider integration", () => {
     expect(obligations.filter((row) => row.state === "settled")).toHaveLength(4);
     expect(plan?.state).toBe("fulfilled");
     expect(await db.select().from(occurrenceCollectionPlanRevisions).where(eq(occurrenceCollectionPlanRevisions.planId, planId))).toHaveLength(2);
+
+    const linkedPayment = linkedPayments[0];
+    if (!linkedPayment) throw new Error("F4 linked payment was not persisted");
+    const receiptProjection = await readPaymentReceiptProjection({
+      organizationId: fixture.organizationId,
+      paymentId: linkedPayment.id,
+    });
+    expect(receiptProjection.payment.id).toBe(linkedPayment.id);
+    expect(receiptProjection.row.paymentId).toBe(linkedPayment.id);
+    expect(receiptProjection.row.paymentTiming).toMatchObject({ source: "canonical_activation", paymentMode: "weekly" });
+    expect(receiptProjection.row.collectionEvidence).toMatchObject({
+      d2PlanId: planId,
+      grouping: "double_pay",
+      timing: "at_collection_point",
+      coveredOccurrenceIds: expect.arrayContaining(fixture.occurrenceIds.slice(0, 2)),
+    });
+    expect(receiptProjection.report.fingerprint).toMatch(/^lvpaymentreport:v1:/);
+  });
+
+  it("returns exact normal collection evidence for a separate collection-point plan", async () => {
+    const { fixture, planId, now } = await makeCanonicalFixture({ twoCollectionPoints: true });
+    const { prepareCanonicalAutopayPlan } = await import("../../server/services/canonical-autopay-preparation");
+    const { executeCanonicalAutopayOperation } = await import("../../server/services/canonical-autopay-operation-executor");
+    const prepared = await prepareCanonicalAutopayPlan({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, d2PlanId: planId, now });
+    if (!prepared.operation) throw new Error("F4 operation was not prepared");
+    await executeCanonicalAutopayOperation({ organizationId: fixture.organizationId, operationId: prepared.operation.id, now });
+    const [payment] = await db.select().from(payments).where(eq(payments.paymentOperationId, prepared.operation.id));
+    if (!payment) throw new Error("F4 payment was not persisted");
+    const projection = await readPaymentReceiptProjection({ organizationId: fixture.organizationId, paymentId: payment.id });
+    const collectionEvidence = projection.row.collectionEvidence;
+    expect(collectionEvidence).toMatchObject({ d2PlanId: planId, grouping: "normal", timing: "at_collection_point" });
+    if (!collectionEvidence) throw new Error("normal collection evidence missing");
+    expect(collectionEvidence.coveredOccurrenceIds).toEqual([collectionEvidence.collectionPointOccurrenceId]);
   });
 
   it("fails closed for ownership, membership, partner, and location drift before provider dispatch", async () => {

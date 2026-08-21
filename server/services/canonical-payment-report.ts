@@ -77,6 +77,7 @@ export interface CanonicalPaymentReportInput {
 type Allocation = typeof paymentOccurrenceAllocations.$inferSelect;
 type Operation = typeof paymentOperations.$inferSelect;
 type CanonicalSnapshot = typeof canonicalAutopayExecutionSnapshots.$inferSelect;
+type ReportDbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 export function collectionEvidenceForSnapshot(snapshot: CanonicalSnapshot, policyOccurrences: Array<typeof f3CollectionPolicyOccurrences.$inferSelect>): CanonicalCollectionEvidence {
   const items = Array.isArray(snapshot.items) ? snapshot.items as Array<Record<string, unknown>> : [];
@@ -232,6 +233,68 @@ function completeVersionedRevisionChains<T extends { id: string; currentRevision
   });
 }
 
+function planRevisionMatchesCurrent(
+  snapshot: unknown,
+  plan: typeof occurrenceCollectionPlans.$inferSelect,
+  items: Array<typeof occurrenceCollectionPlanItems.$inferSelect>,
+): boolean {
+  if (!snapshot || typeof snapshot !== "object") return false;
+  const value = snapshot as { state?: unknown; plan?: unknown; items?: unknown };
+  if (value.state !== plan.state || !value.plan || typeof value.plan !== "object" || !Array.isArray(value.items)) return false;
+  const persistedPlan = value.plan as Record<string, unknown>;
+  const planKeys = ["id", "organizationId", "leagueId", "version", "triggerOccurrenceId", "collectAt", "currency", "state", "currentRevision"] as const;
+  for (const key of planKeys) {
+    if (!(key in persistedPlan) || !sameEvidenceValue(persistedPlan[key], plan[key])) return false;
+  }
+  const persistedItems = value.items as Array<Record<string, unknown>>;
+  if (persistedItems.length !== items.length) return false;
+  const expectedItems = [...items].sort((left, right) => left.itemIndex - right.itemIndex);
+  const actualItems = [...persistedItems].sort((left, right) => Number(left.itemIndex) - Number(right.itemIndex));
+  return actualItems.every((item, index) => {
+    const expected = expectedItems[index];
+    if (!expected) return false;
+    const itemKeys = ["organizationId", "leagueId", "planId", "obligationId", "occurrenceId", "bowlerId", "amountMinor", "currency", "itemIndex"] as const;
+    return itemKeys.every((key) => key in item && sameEvidenceValue(item[key], expected[key]));
+  });
+}
+
+function planRevisionSnapshotsEquivalent(left: unknown, right: unknown): boolean {
+  if (!left || !right || typeof left !== "object" || typeof right !== "object") return false;
+  const leftValue = left as { state?: unknown; plan?: unknown; items?: unknown };
+  const rightValue = right as { state?: unknown; plan?: unknown; items?: unknown };
+  if (leftValue.state !== rightValue.state || !leftValue.plan || !rightValue.plan || typeof leftValue.plan !== "object" || typeof rightValue.plan !== "object" || !Array.isArray(leftValue.items) || !Array.isArray(rightValue.items)) return false;
+  const leftPlan = leftValue.plan as Record<string, unknown>;
+  const rightPlan = rightValue.plan as Record<string, unknown>;
+  for (const key of ["id", "organizationId", "leagueId", "version", "triggerOccurrenceId", "collectAt", "currency", "state"]) {
+    if (!(key in leftPlan) || !(key in rightPlan) || !sameEvidenceValue(leftPlan[key], rightPlan[key])) return false;
+  }
+  const semanticKeys = ["organizationId", "leagueId", "planId", "obligationId", "occurrenceId", "bowlerId", "amountMinor", "currency", "itemIndex"] as const;
+  const leftItems = [...leftValue.items as Array<Record<string, unknown>>].sort((a, b) => Number(a.itemIndex) - Number(b.itemIndex));
+  const rightItems = [...rightValue.items as Array<Record<string, unknown>>].sort((a, b) => Number(a.itemIndex) - Number(b.itemIndex));
+  return leftItems.length === rightItems.length && leftItems.every((item, index) => semanticKeys.every((key) => {
+    const rightItem = rightItems[index];
+    const result = key in item && rightItem !== undefined && key in rightItem && sameEvidenceValue(item[key], rightItem[key]);
+    return result;
+  }));
+}
+
+function completePlanRevisionChains(
+  plans: Array<typeof occurrenceCollectionPlans.$inferSelect>,
+  revisions: Array<{ parentId: string; revisionNumber: number; snapshotSchemaVersion: number; beforeSnapshot: unknown; afterSnapshot: unknown }>,
+  items: Array<typeof occurrenceCollectionPlanItems.$inferSelect>,
+): boolean {
+  return plans.every((plan) => {
+    const chain = revisions.filter((revision) => revision.parentId === plan.id).sort((left, right) => left.revisionNumber - right.revisionNumber);
+    if (chain.length !== plan.currentRevision || chain.some((revision, index) => revision.revisionNumber !== index + 1 || revision.snapshotSchemaVersion !== 1 || !revision.afterSnapshot || typeof revision.afterSnapshot !== "object")) return false;
+    if (chain[0]?.beforeSnapshot !== null && chain[0]?.beforeSnapshot !== undefined) return false;
+    for (let index = 1; index < chain.length; index += 1) {
+      if (!planRevisionSnapshotsEquivalent(chain[index - 1]?.afterSnapshot, chain[index]?.beforeSnapshot)) return false;
+    }
+    const result = planRevisionMatchesCurrent(chain.at(-1)?.afterSnapshot, plan, items.filter((item) => item.planId === plan.id));
+    return result;
+  });
+}
+
 function policyRevisionSnapshotForReport(policy: typeof f3CollectionPolicies.$inferSelect, occurrences: Array<{ occurrenceId: string; groupKey: string; groupRole: string; pairedOccurrenceId: string | null; collectionPointOccurrenceId: string; itemIndex: number }>) {
   return {
     contractVersion: "canonical-collection-policy/1",
@@ -325,13 +388,11 @@ function buildTransactions(rows: CanonicalPaymentRow[], paymentsById: Map<number
   });
 }
 
-export async function readCanonicalPaymentReport(input: CanonicalPaymentReportInput): Promise<CanonicalPaymentReport> {
+async function readCanonicalPaymentReportInTransaction(tx: ReportDbTransaction, input: CanonicalPaymentReportInput): Promise<CanonicalPaymentReport> {
   const page = safePage(input.page);
   const limit = safeLimit(input.limit);
-  return db.transaction(async (tx) => {
-    await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`);
-    const asOfResult = await tx.execute(sql`SELECT transaction_timestamp()::text AS now`);
-    const asOf = String((asOfResult.rows[0] as { now?: string } | undefined)?.now ?? new Date().toISOString());
+  const asOfResult = await tx.execute(sql`SELECT transaction_timestamp()::text AS now`);
+  const asOf = String((asOfResult.rows[0] as { now?: string } | undefined)?.now ?? new Date().toISOString());
 
     const [league] = await tx.select({ id: leagues.id, organizationId: leagues.organizationId, timezone: leagues.timezone, paymentMode: leagues.paymentMode })
       .from(leagues)
@@ -419,17 +480,22 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
         expectedGroupCount: activation.expected_group_count,
       };
       if (!activationSnapshot || Object.entries(activationExpected).some(([key, value]) => !(key in activationSnapshot) || activationSnapshot[key] !== value)) throw new CanonicalPaymentReportIncompatibilityError();
-      const persistedResponsibilities = await tx.select({ occurrenceId: financialResponsibilities.occurrenceId, teamId: financialResponsibilities.teamId, slotIndex: financialResponsibilities.slotIndex, bowlerId: financialResponsibilities.bowlerId, role: financialResponsibilities.role, provenance: financialResponsibilities.provenance }).from(financialResponsibilities).where(and(eq(financialResponsibilities.organizationId, input.organizationId), eq(financialResponsibilities.leagueId, input.leagueId), eq(financialResponsibilities.activationId, activation.id))).orderBy(asc(financialResponsibilities.occurrenceId), asc(financialResponsibilities.teamId), asc(financialResponsibilities.slotIndex), asc(financialResponsibilities.bowlerId));
+      const persistedResponsibilities = await tx.select({ occurrenceId: financialResponsibilities.occurrenceId, teamId: financialResponsibilities.teamId, slotIndex: financialResponsibilities.slotIndex, bowlerId: financialResponsibilities.bowlerId, obligationId: financialResponsibilities.obligationId, role: financialResponsibilities.role, provenance: financialResponsibilities.provenance }).from(financialResponsibilities).where(and(eq(financialResponsibilities.organizationId, input.organizationId), eq(financialResponsibilities.leagueId, input.leagueId), eq(financialResponsibilities.activationId, activation.id))).orderBy(asc(financialResponsibilities.occurrenceId), asc(financialResponsibilities.teamId), asc(financialResponsibilities.slotIndex), asc(financialResponsibilities.bowlerId));
       const snapshotResponsibilities = Array.isArray(activationSnapshot.responsibilities) ? [...activationSnapshot.responsibilities as Array<Record<string, unknown>>].sort((left, right) => `${String(left.occurrenceId)}:${String(left.teamId)}:${String(left.slotIndex)}:${String(left.bowlerId)}`.localeCompare(`${String(right.occurrenceId)}:${String(right.teamId)}:${String(right.slotIndex)}:${String(right.bowlerId)}`)) : [];
-      const expectedResponsibilities = persistedResponsibilities.map((row) => ({ occurrenceId: row.occurrenceId, teamId: row.teamId, slotIndex: row.slotIndex, bowlerId: row.bowlerId, role: row.role, provenance: row.provenance }));
-      if (snapshotResponsibilities.length !== expectedResponsibilities.length || snapshotResponsibilities.some((row, index) => !sameEvidenceValue(row, expectedResponsibilities[index]))) throw new CanonicalPaymentReportIncompatibilityError();
+      const snapshotCarriesObligationIds = snapshotResponsibilities.every((row) => Object.prototype.hasOwnProperty.call(row, "obligationId"));
+      const expectedResponsibilities = persistedResponsibilities.map((row) => ({ occurrenceId: row.occurrenceId, teamId: row.teamId, slotIndex: row.slotIndex, bowlerId: row.bowlerId, ...(snapshotCarriesObligationIds ? { obligationId: row.obligationId } : {}), role: row.role, provenance: row.provenance }));
+      if (new Set(persistedResponsibilities.map((row) => row.obligationId)).size !== persistedResponsibilities.length
+        || snapshotResponsibilities.length !== expectedResponsibilities.length
+        || snapshotResponsibilities.some((row, index) => !sameEvidenceValue(row, expectedResponsibilities[index]))) throw new CanonicalPaymentReportIncompatibilityError();
       const eligibilityIds = [...new Set((await tx.select({ id: financialResponsibilities.eligibilityId }).from(financialResponsibilities).where(and(eq(financialResponsibilities.organizationId, input.organizationId), eq(financialResponsibilities.leagueId, input.leagueId), eq(financialResponsibilities.activationId, activation.id)))).map((row) => row.id))];
       const assignmentIds = [...new Set((await tx.select({ id: financialResponsibilities.assignmentId }).from(financialResponsibilities).where(and(eq(financialResponsibilities.organizationId, input.organizationId), eq(financialResponsibilities.leagueId, input.leagueId), eq(financialResponsibilities.activationId, activation.id)))).map((row) => row.id))];
-      const eligibilityParents = eligibilityIds.length === 0 ? [] : await tx.select({ id: bowlerOccurrenceEligibilities.id, currentRevision: bowlerOccurrenceEligibilities.currentRevision }).from(bowlerOccurrenceEligibilities).where(and(eq(bowlerOccurrenceEligibilities.organizationId, input.organizationId), eq(bowlerOccurrenceEligibilities.leagueId, input.leagueId), inArray(bowlerOccurrenceEligibilities.id, eligibilityIds)));
-      const assignmentParents = assignmentIds.length === 0 ? [] : await tx.select({ id: bowlerOccurrenceTeamAssignments.id, currentRevision: bowlerOccurrenceTeamAssignments.currentRevision }).from(bowlerOccurrenceTeamAssignments).where(and(eq(bowlerOccurrenceTeamAssignments.organizationId, input.organizationId), eq(bowlerOccurrenceTeamAssignments.leagueId, input.leagueId), inArray(bowlerOccurrenceTeamAssignments.id, assignmentIds)));
+      const eligibilityParents = eligibilityIds.length === 0 ? [] : await tx.select({ id: bowlerOccurrenceEligibilities.id, currentRevision: bowlerOccurrenceEligibilities.currentRevision, state: bowlerOccurrenceEligibilities.state, reason: bowlerOccurrenceEligibilities.reason }).from(bowlerOccurrenceEligibilities).where(and(eq(bowlerOccurrenceEligibilities.organizationId, input.organizationId), eq(bowlerOccurrenceEligibilities.leagueId, input.leagueId), inArray(bowlerOccurrenceEligibilities.id, eligibilityIds)));
+      const assignmentParents = assignmentIds.length === 0 ? [] : await tx.select({ id: bowlerOccurrenceTeamAssignments.id, currentRevision: bowlerOccurrenceTeamAssignments.currentRevision, state: bowlerOccurrenceTeamAssignments.state, teamId: bowlerOccurrenceTeamAssignments.teamId, reason: bowlerOccurrenceTeamAssignments.reason }).from(bowlerOccurrenceTeamAssignments).where(and(eq(bowlerOccurrenceTeamAssignments.organizationId, input.organizationId), eq(bowlerOccurrenceTeamAssignments.leagueId, input.leagueId), inArray(bowlerOccurrenceTeamAssignments.id, assignmentIds)));
       const eligibilityRevisions = eligibilityIds.length === 0 ? [] : await tx.select({ parentId: bowlerOccurrenceEligibilityRevisions.eligibilityId, revisionNumber: bowlerOccurrenceEligibilityRevisions.revisionNumber, snapshotSchemaVersion: bowlerOccurrenceEligibilityRevisions.snapshotSchemaVersion, beforeSnapshot: bowlerOccurrenceEligibilityRevisions.beforeSnapshot, afterSnapshot: bowlerOccurrenceEligibilityRevisions.afterSnapshot }).from(bowlerOccurrenceEligibilityRevisions).where(and(eq(bowlerOccurrenceEligibilityRevisions.organizationId, input.organizationId), eq(bowlerOccurrenceEligibilityRevisions.leagueId, input.leagueId), inArray(bowlerOccurrenceEligibilityRevisions.eligibilityId, eligibilityIds)));
       const assignmentRevisions = assignmentIds.length === 0 ? [] : await tx.select({ parentId: bowlerOccurrenceTeamAssignmentRevisions.assignmentId, revisionNumber: bowlerOccurrenceTeamAssignmentRevisions.revisionNumber, snapshotSchemaVersion: bowlerOccurrenceTeamAssignmentRevisions.snapshotSchemaVersion, beforeSnapshot: bowlerOccurrenceTeamAssignmentRevisions.beforeSnapshot, afterSnapshot: bowlerOccurrenceTeamAssignmentRevisions.afterSnapshot }).from(bowlerOccurrenceTeamAssignmentRevisions).where(and(eq(bowlerOccurrenceTeamAssignmentRevisions.organizationId, input.organizationId), eq(bowlerOccurrenceTeamAssignmentRevisions.leagueId, input.leagueId), inArray(bowlerOccurrenceTeamAssignmentRevisions.assignmentId, assignmentIds)));
-      if (eligibilityParents.length !== eligibilityIds.length || assignmentParents.length !== assignmentIds.length || !completeVersionedRevisionChains(eligibilityParents, eligibilityRevisions) || !completeVersionedRevisionChains(assignmentParents, assignmentRevisions)) throw new CanonicalPaymentReportIncompatibilityError();
+      if (eligibilityParents.length !== eligibilityIds.length || assignmentParents.length !== assignmentIds.length
+        || !completeVersionedRevisionChains(eligibilityParents, eligibilityRevisions, (parent) => ({ state: parent.state, reason: parent.reason }))
+        || !completeVersionedRevisionChains(assignmentParents, assignmentRevisions, (parent) => ({ state: parent.state, teamId: parent.teamId, reason: parent.reason }))) throw new CanonicalPaymentReportIncompatibilityError();
 
       const [activationShape] = await tx.execute(sql`
         SELECT (
@@ -492,12 +558,17 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
         eq(f3CollectionPolicyOccurrences.leagueId, input.leagueId),
         inArray(f3CollectionPolicyOccurrences.policyId, canonicalSnapshotsForReport.map((snapshot) => snapshot.policyId)),
       ));
+      const triggerOccurrenceRows = await tx.select({ id: leagueOccurrences.id, startAt: leagueOccurrences.startAt }).from(leagueOccurrences).where(and(
+        eq(leagueOccurrences.organizationId, input.organizationId),
+        eq(leagueOccurrences.leagueId, input.leagueId),
+        inArray(leagueOccurrences.id, canonicalSnapshotsForReport.map((snapshot) => snapshot.triggerOccurrenceId)),
+      ));
       const policyRevisionRows = await tx.select({ parentId: f3CollectionPolicyRevisions.policyId, revisionNumber: f3CollectionPolicyRevisions.revisionNumber, snapshotSchemaVersion: f3CollectionPolicyRevisions.snapshotSchemaVersion, beforeSnapshot: f3CollectionPolicyRevisions.beforeSnapshot, afterSnapshot: f3CollectionPolicyRevisions.afterSnapshot }).from(f3CollectionPolicyRevisions).where(and(eq(f3CollectionPolicyRevisions.organizationId, input.organizationId), eq(f3CollectionPolicyRevisions.leagueId, input.leagueId), inArray(f3CollectionPolicyRevisions.policyId, canonicalSnapshotsForReport.map((snapshot) => snapshot.policyId))));
       const authorizationRevisionRows = await tx.select({ parentId: f3PayerAuthorizationRevisions.authorizationId, revisionNumber: f3PayerAuthorizationRevisions.revisionNumber, snapshotSchemaVersion: f3PayerAuthorizationRevisions.snapshotSchemaVersion, beforeSnapshot: f3PayerAuthorizationRevisions.beforeSnapshot, afterSnapshot: f3PayerAuthorizationRevisions.afterSnapshot }).from(f3PayerAuthorizationRevisions).where(and(eq(f3PayerAuthorizationRevisions.organizationId, input.organizationId), eq(f3PayerAuthorizationRevisions.leagueId, input.leagueId), inArray(f3PayerAuthorizationRevisions.authorizationId, canonicalSnapshotsForReport.map((snapshot) => snapshot.authorizationId))));
       const planRevisionRows = await tx.select({ parentId: occurrenceCollectionPlanRevisions.planId, revisionNumber: occurrenceCollectionPlanRevisions.revisionNumber, snapshotSchemaVersion: occurrenceCollectionPlanRevisions.snapshotSchemaVersion, beforeSnapshot: occurrenceCollectionPlanRevisions.beforeSnapshot, afterSnapshot: occurrenceCollectionPlanRevisions.afterSnapshot }).from(occurrenceCollectionPlanRevisions).where(and(eq(occurrenceCollectionPlanRevisions.organizationId, input.organizationId), eq(occurrenceCollectionPlanRevisions.leagueId, input.leagueId), inArray(occurrenceCollectionPlanRevisions.planId, canonicalSnapshotsForReport.map((snapshot) => snapshot.d2PlanId))));
       if (!completeVersionedRevisionChains(policyRows, policyRevisionRows, (policy) => policyRevisionSnapshotForReport(policy, policyOccurrenceRows.filter((row) => row.policyId === policy.id)))
         || !completeVersionedRevisionChains(authorizationRows, authorizationRevisionRows, (authorization) => authorization)
-        || !completeVersionedRevisionChains(planRows, planRevisionRows, (plan) => ({ state: plan.state, plan, items: planItemRows.filter((item) => item.planId === plan.id).map((item) => ({ organizationId: item.organizationId, leagueId: item.leagueId, planId: item.planId, obligationId: item.obligationId, occurrenceId: item.occurrenceId, bowlerId: item.bowlerId, amountMinor: item.amountMinor, currency: item.currency, itemIndex: item.itemIndex })) }))) throw new CanonicalPaymentReportIncompatibilityError();
+        || !completePlanRevisionChains(planRows, planRevisionRows, planItemRows)) throw new CanonicalPaymentReportIncompatibilityError();
       for (const row of policyOccurrenceRows) canonicalPolicyOccurrencesByPolicy.set(row.policyId, [...(canonicalPolicyOccurrencesByPolicy.get(row.policyId) ?? []), row]);
       for (const snapshot of canonicalSnapshotsForReport) {
         const operation = operationById.get(snapshot.operationId);
@@ -505,12 +576,15 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
         const plan = planById.get(snapshot.d2PlanId);
         const policy = policyById.get(snapshot.policyId);
         const authorization = authorizationById.get(snapshot.authorizationId);
+        const triggerOccurrence = triggerOccurrenceRows.find((row) => row.id === snapshot.triggerOccurrenceId);
         if (!operation || operation.operationType !== "canonical_autopay_charge" || operation.leagueId !== snapshot.leagueId || operation.canonicalPlanId !== snapshot.d2PlanId || operation.triggerOccurrenceId !== snapshot.triggerOccurrenceId || operation.amountMinor !== snapshot.amountMinor || operation.currency !== snapshot.currency || !provenance || !plan
           || !policy || !authorization
           || provenance.planVersion !== snapshot.planVersion || provenance.planFingerprint !== snapshot.planFingerprint || provenance.policyId !== snapshot.policyId || provenance.policyVersion !== snapshot.policyVersion || provenance.authorizationId !== snapshot.authorizationId || provenance.authorizationVersion !== snapshot.authorizationVersion || provenance.collectionPointOccurrenceId !== snapshot.collectionPointOccurrenceId || provenance.activationId !== snapshot.activationId || provenance.activationRevision !== snapshot.activationRevision || provenance.activationSourceFingerprint !== snapshot.activationSourceFingerprint
-          || policy.policyVersion !== snapshot.policyVersion || policy.policyFingerprint !== snapshot.policyFingerprint
-          || authorization.authorizationVersion !== snapshot.authorizationVersion || authorization.authorizationFingerprint !== snapshot.authorizationFingerprint
-          || plan.version !== snapshot.planVersion || plan.currency !== snapshot.currency) throw new CanonicalPaymentReportIncompatibilityError();
+          || provenance.payerBowlerId !== snapshot.payerBowlerId || provenance.timing !== "at_collection_point"
+          || policy.policyVersion !== snapshot.policyVersion || policy.policyFingerprint !== snapshot.policyFingerprint || !policy.collectionPoints.some((point) => point.occurrenceId === snapshot.collectionPointOccurrenceId)
+          || authorization.payerBowlerId !== snapshot.payerBowlerId || authorization.policyId !== snapshot.policyId || authorization.policyVersion !== snapshot.policyVersion || authorization.authorizationVersion !== snapshot.authorizationVersion || authorization.authorizationFingerprint !== snapshot.authorizationFingerprint || !authorization.collectionPointOccurrenceIds.includes(snapshot.collectionPointOccurrenceId)
+          || plan.version !== snapshot.planVersion || plan.currency !== snapshot.currency || plan.triggerOccurrenceId !== snapshot.triggerOccurrenceId || plan.collectAt !== null
+          || !triggerOccurrence || new Date(triggerOccurrence.startAt).toISOString() !== new Date(snapshot.triggerStartAt).toISOString()) throw new CanonicalPaymentReportIncompatibilityError();
         try {
           validateF4ExecutionSnapshot({
             contractVersion: "canonical-autopay-execution/1", snapshotVersion: snapshot.snapshotVersion,
@@ -649,6 +723,7 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
           ) legacy_rows
         ) legacy_osa ON TRUE
         WHERE op.organization_id = ${input.organizationId}
+          AND (${input.paymentId === undefined ? sql`TRUE` : sql`EXISTS (SELECT 1 FROM payments exact_payment WHERE exact_payment.id = ${input.paymentId} AND exact_payment.payment_operation_id = op.id)`})
           AND (op.league_id = ${input.leagueId} OR EXISTS (SELECT 1 FROM payment_operation_occurrence_snapshots scoped_os WHERE scoped_os.operation_id = op.id AND scoped_os.organization_id = ${input.organizationId} AND scoped_os.league_id = ${input.leagueId}) OR EXISTS (SELECT 1 FROM scheduled_payment_operation_snapshots scoped_ss WHERE scoped_ss.operation_id = op.id AND scoped_ss.league_id = ${input.leagueId}) OR EXISTS (SELECT 1 FROM interactive_payment_operation_snapshots scoped_is WHERE scoped_is.operation_id = op.id AND scoped_is.league_id = ${input.leagueId}))
           AND op.status IN ('pending','leased','provider_unknown','retry_scheduled','action_required','reconciliation_required')
           AND NOT EXISTS (SELECT 1 FROM payments op_payment WHERE op_payment.payment_operation_id = op.id)
@@ -1287,6 +1362,7 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
         refund,
         dispute,
         unresolved,
+        ...(paymentTiming ? { paymentTiming } : {}),
         receipt: paymentReceiptContract({
           receiptUrl: payment.receiptUrl,
           receiptNumber: payment.receiptNumber,
@@ -1491,6 +1567,32 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
       transactions: pagedTransactions,
       unlinkedHistory: pagedUnlinkedHistory,
     };
-    return { ...withoutFingerprint, fingerprint: canonicalPaymentReportFingerprint(withoutFingerprint) };
+  return { ...withoutFingerprint, fingerprint: canonicalPaymentReportFingerprint(withoutFingerprint) };
+}
+
+export async function readCanonicalPaymentReport(input: CanonicalPaymentReportInput): Promise<CanonicalPaymentReport> {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`);
+    return readCanonicalPaymentReportInTransaction(tx, input);
+  });
+}
+
+export async function readPaymentReceiptProjection(input: { organizationId: number; paymentId: number }): Promise<{
+  payment: Payment;
+  report: CanonicalPaymentReport;
+  row: CanonicalPaymentRow;
+}> {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`);
+    const [payment] = await tx.select({ payment: payments }).from(payments).innerJoin(leagues, and(eq(leagues.id, payments.leagueId), eq(leagues.organizationId, input.organizationId))).where(eq(payments.id, input.paymentId)).limit(1).then((rows) => rows.map((row) => row.payment));
+    if (!payment) throw new CanonicalPaymentReportIncompatibilityError();
+    // The exact parent selector is already restricted to this payment's
+    // operation. Load the bounded parent page so every child of a combined
+    // transaction is available for privacy/conservation projection; unrelated
+    // zero-payment operation parents are excluded by the paymentId predicate.
+    const report = await readCanonicalPaymentReportInTransaction(tx, { organizationId: input.organizationId, leagueId: payment.leagueId, paymentId: payment.id, page: 1, limit: F5_PAGE_MAX });
+    const row = [...report.rows, ...report.unlinkedHistory].find((candidate) => candidate.paymentId === payment.id);
+    if (!row) throw new CanonicalPaymentReportIncompatibilityError();
+    return { payment, report, row };
   });
 }

@@ -93,6 +93,7 @@ export interface CanonicalPaymentRow {
   unallocatedMinor: number;
   reviewRequired: boolean;
   source: "canonical_allocation" | "unlinked_legacy" | "unresolved_operation";
+  paymentTiming?: CanonicalPaymentTiming;
   refund: CanonicalPaymentRefundEvidence;
   dispute: CanonicalPaymentDisputeEvidence;
   unresolved: boolean;

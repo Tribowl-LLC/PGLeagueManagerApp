@@ -37,8 +37,10 @@ vi.mock('../../server/storage', () => ({ storage: mockStorage }));
 const mockDb = vi.hoisted(() => ({ select: vi.fn() }));
 vi.mock('../../server/db.js', () => ({ db: mockDb }));
 const mockReadCanonicalReport = vi.hoisted(() => vi.fn());
+const mockReadPaymentReceiptProjection = vi.hoisted(() => vi.fn());
 vi.mock('../../server/services/canonical-payment-report.js', () => ({
   readCanonicalPaymentReport: (...args: unknown[]) => mockReadCanonicalReport(...args),
+  readPaymentReceiptProjection: (...args: unknown[]) => mockReadPaymentReceiptProjection(...args),
   CanonicalPaymentReportIncompatibilityError: class extends Error {},
 }));
 
@@ -103,6 +105,7 @@ beforeEach(() => {
   mockSendReceiptResend.mockReset();
   mockDb.select.mockReset();
   mockReadCanonicalReport.mockReset();
+  mockReadPaymentReceiptProjection.mockReset();
 
   mockHasAccessToPayment.mockResolvedValue(true);
   mockGetPaymentProvider.mockResolvedValue(mockProvider);
@@ -113,6 +116,38 @@ beforeEach(() => {
   mockStorage.getPaymentByIdForOrganization.mockImplementation((paymentId: number) => mockStorage.getPaymentById(paymentId));
   mockStorage.getPaymentsByPaymentOperationId.mockResolvedValue([]);
   mockDb.select.mockImplementation(() => dbResult([]));
+  mockReadPaymentReceiptProjection.mockImplementation(async ({ paymentId }: { paymentId: number }) => {
+    const payment = await mockStorage.getPaymentByIdForOrganization(paymentId, 1);
+    if (!payment) throw new Error('missing payment');
+    const configured = await mockReadCanonicalReport();
+    const row = configured?.rows?.find((candidate: { paymentId: number | null }) => candidate.paymentId === paymentId) ?? {
+      paymentId: payment.id,
+      leagueId: payment.leagueId,
+      bowlerId: payment.bowlerId,
+      amountMinor: payment.amount ?? 0,
+      currency: 'USD',
+      status: payment.status === 'paid' ? 'confirmed_paid' : payment.status === 'refunded' ? 'refunded' : 'review_required',
+      paymentType: payment.type ?? 'square',
+      businessDate: payment.weekOf ?? '2038-01-01T00:00:00.000Z',
+      authoritativeLocalDate: '2038-01-01',
+      providerPaymentId: payment.providerPaymentId ?? null,
+      paymentOperationId: payment.paymentOperationId ?? null,
+      operationType: null,
+      operationStatus: null,
+      allocatedMinor: 0,
+      unallocatedMinor: payment.amount ?? 0,
+      reviewRequired: false,
+      source: payment.paymentOperationId ? 'unlinked_legacy' : 'unlinked_legacy',
+      refund: { present: payment.status === 'refunded', amountMinor: payment.status === 'refunded' ? payment.amount : 0, providerRefundId: payment.squareRefundId ?? null },
+      dispute: { present: Boolean(payment.disputeId), amountMinor: 0, disputeId: null, scope: 'legacy_payment_row', state: null, reviewRequired: Boolean(payment.disputeId) },
+      unresolved: false,
+      receipt: {},
+      allocations: [{ allocationId: null, obligationId: null, occurrenceId: null, bowlerId: payment.bowlerId, amountMinor: payment.amount ?? 0, currency: 'USD', state: null }],
+      sharedTransaction: payment.paymentOperationId ? { groupKey: `operation:${payment.paymentOperationId}`, childCount: 1 } : null,
+    };
+    const report = configured ?? { rows: [row], unlinkedHistory: [], transactions: [], paymentTiming: { paymentMode: 'weekly', upfrontDueAt: null, timezone: 'UTC', source: 'legacy_league' } };
+    return { payment, report: { ...report, transactions: report.transactions ?? [] }, row };
+  });
 });
 
 afterEach(() => vi.clearAllMocks());
@@ -148,7 +183,7 @@ function post(path: string, body: unknown, user: object) {
 describe('GET /payments/:id/receipt (Task #503)', () => {
   it('returns cached receiptUrl without calling the provider', async () => {
     mockStorage.getPaymentById.mockResolvedValue({
-      id: 5, leagueId: 11, providerPaymentId: 'sq_1',
+      id: 5, leagueId: 11, bowlerId: 42, providerPaymentId: 'sq_1',
       receiptUrl: 'https://cached/receipt', receiptNumber: 'N-1',
     });
 
@@ -236,13 +271,15 @@ describe('GET /payments/:id/receipt (Task #503)', () => {
   it('fails closed on a cross-league operation instead of resolving a raw cached receipt', async () => {
     const payment = { id: 17, leagueId: 11, bowlerId: 43, paymentOperationId: 'cross-league-op', amount: 2000, status: 'paid', providerPaymentId: 'sq-cross', receiptUrl: 'https://cached/cross', receiptNumber: 'N-cross' };
     mockStorage.getPaymentByIdForOrganization.mockResolvedValue(payment);
+    mockReadPaymentReceiptProjection.mockRejectedValue(new Error('canonical receipt evidence unavailable'));
     const queryResults = [
       [{ organizationId: 1 }], [],
       [{ id: 'cross-league-op', leagueId: 99, status: 'succeeded', currency: 'USD', amountMinor: 2000 }], [], [], [],
     ];
     mockDb.select.mockImplementation(() => dbResult(queryResults.shift() ?? []));
     const response = await get('/api/payments-provider/payments/17/receipt', ADMIN);
-    expect(response.status).toBe(404);
+    expect(response.status).toBe(409);
+    expect((await response.json()).error?.code).toBe('FINANCIAL_EVIDENCE_INCOMPATIBLE');
     expect(mockProvider.getPayment).not.toHaveBeenCalled();
   });
 
@@ -280,7 +317,7 @@ describe('GET /payments/:id/receipt (Task #503)', () => {
 
   it('lazy-backfills from provider and caches the URL when none is stored yet', async () => {
     mockStorage.getPaymentById.mockResolvedValue({
-      id: 6, leagueId: 11, providerPaymentId: 'sq_2',
+      id: 6, leagueId: 11, bowlerId: 42, providerPaymentId: 'sq_2',
       receiptUrl: null, receiptNumber: null,
     });
     mockProvider.getPayment.mockResolvedValue({
@@ -302,7 +339,7 @@ describe('GET /payments/:id/receipt (Task #503)', () => {
 
   it('returns 404 RECEIPT_UNAVAILABLE for cash/check rows without a providerPaymentId', async () => {
     mockStorage.getPaymentById.mockResolvedValue({
-      id: 7, leagueId: 11, providerPaymentId: null, receiptUrl: null, receiptNumber: null,
+      id: 7, leagueId: 11, bowlerId: 42, providerPaymentId: null, receiptUrl: null, receiptNumber: null,
     });
 
     const res = await get('/api/payments-provider/payments/7/receipt', BOWLER);
