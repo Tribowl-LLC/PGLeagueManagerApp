@@ -35,7 +35,7 @@ export interface PaymentReceiptContract {
   source: PaymentReceiptSource | null;
   allocations: PaymentReceiptAllocation[];
   refund: { present: boolean; amountMinor: number; providerRefundId: string | null };
-  dispute: { present: boolean; amountMinor: number; disputeId: string | null };
+  dispute: { present: boolean; amountMinor: number; disputeId: string | null; scope?: "transaction" | "allocation" | "legacy_payment_row"; state?: string | null; reviewRequired?: boolean };
   unresolved: boolean;
   sharedTransaction: { groupKey: string | null; childCount: number } | null;
   canResend: boolean;

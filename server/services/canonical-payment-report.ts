@@ -91,6 +91,21 @@ function ids<T extends { id: string }>(rows: T[]): string[] {
   return [...new Set(rows.map((row) => row.id))];
 }
 
+function sameEvidenceValue(left: unknown, right: unknown): boolean {
+  if (typeof left === "string" && typeof right === "string") {
+    const leftTime = Date.parse(left);
+    const rightTime = Date.parse(right);
+    if (Number.isFinite(leftTime) && Number.isFinite(rightTime)) return leftTime === rightTime;
+  }
+  if (left && right && typeof left === "object" && typeof right === "object") {
+    const leftRecord = left as Record<string, unknown>;
+    const rightRecord = right as Record<string, unknown>;
+    const keys = new Set([...Object.keys(leftRecord), ...Object.keys(rightRecord)]);
+    return [...keys].every((key) => sameEvidenceValue(leftRecord[key], rightRecord[key]));
+  }
+  return left === right;
+}
+
 function revisionCoverage<T extends { id: string; currentRevision: number }>(
   parents: T[],
   revisions: Array<{ parentId: string; revisionNumber: number }>,
@@ -133,14 +148,14 @@ function revisionSemanticsCoverage(
         const before = chain[index].beforeSnapshot;
         const prior = chain[index - 1]?.afterSnapshot;
         if (!before || typeof before !== "object" || !prior || typeof prior !== "object"
-          || Object.keys(expectedFields).some((key) => !(key in before) || !(key in prior) || JSON.stringify((before as Record<string, unknown>)[key]) !== JSON.stringify((prior as Record<string, unknown>)[key]))) return false;
+          || Object.keys(expectedFields).some((key) => !(key in before) || !(key in prior) || !sameEvidenceValue((before as Record<string, unknown>)[key], (prior as Record<string, unknown>)[key]))) return false;
       }
     }
     const revision = latest.get(parent.id);
     if (!revision || revision.revisionNumber !== parent.currentRevision || !revision.afterSnapshot || typeof revision.afterSnapshot !== "object") return false;
     const snapshot = revision.afterSnapshot as Record<string, unknown>;
     if (!("state" in snapshot) || snapshot.state !== parent.state) return false;
-    return Object.entries(expectedFields).every(([key, value]) => key in snapshot && JSON.stringify(snapshot[key]) === JSON.stringify(value));
+    return Object.entries(expectedFields).every(([key, value]) => key in snapshot && sameEvidenceValue(snapshot[key], value));
   });
 }
 
@@ -176,8 +191,8 @@ function buildTransactions(rows: CanonicalPaymentRow[], paymentsById: Map<number
       if (!existing.paymentOperationId) existing.amountMinor += row.amountMinor;
       if (row.paymentId !== null) existing.paymentIds = [...new Set([...existing.paymentIds, row.paymentId])].sort((a, b) => a - b);
       if (!existing.dispute && row.dispute.present) existing.dispute = durable
-        ? { present: true, amountMinor: durable.amountMinor, disputeId: durable.disputeId, currency: durable.currency, state: durable.state, reviewRequired: true }
-        : { ...row.dispute, currency: row.currency, state: "review_required", reviewRequired: true };
+        ? { present: true, amountMinor: durable.amountMinor, disputeId: durable.disputeId, currency: durable.currency, state: durable.state, reviewRequired: true, scope: "transaction" }
+        : { ...row.dispute, currency: row.currency, state: "review_required", reviewRequired: true, scope: "transaction" };
       existing.rows.push(row);
     } else {
       groups.set(identity.key, {
@@ -188,8 +203,8 @@ function buildTransactions(rows: CanonicalPaymentRow[], paymentsById: Map<number
         currency: row.currency,
         paymentIds: row.paymentId === null ? [] : [row.paymentId],
         dispute: row.dispute.present ? (durable
-          ? { present: true, amountMinor: durable.amountMinor, disputeId: durable.disputeId, currency: durable.currency, state: durable.state, reviewRequired: true }
-          : { ...row.dispute, currency: row.currency, state: "review_required", reviewRequired: true }) : undefined,
+          ? { present: true, amountMinor: durable.amountMinor, disputeId: durable.disputeId, currency: durable.currency, state: durable.state, reviewRequired: true, scope: "transaction" }
+          : { ...row.dispute, currency: row.currency, state: "review_required", reviewRequired: true, scope: "transaction" }) : undefined,
         rows: [row],
       });
     }
@@ -198,8 +213,7 @@ function buildTransactions(rows: CanonicalPaymentRow[], paymentsById: Map<number
     const leftRow = left.rows[0];
     const rightRow = right.rows[0];
     return leftRow.authoritativeLocalDate.localeCompare(rightRow.authoritativeLocalDate)
-      || leftRow.bowlerId - rightRow.bowlerId
-      || left.groupKey.localeCompare(right.groupKey);
+      || leftRow.bowlerId - rightRow.bowlerId;
   });
 }
 
@@ -233,6 +247,7 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
         SELECT 1 FROM bowler_occurrence_obligations WHERE organization_id = ${input.organizationId} AND league_id = ${input.leagueId}
         UNION ALL SELECT 1 FROM occurrence_collection_plans WHERE organization_id = ${input.organizationId} AND league_id = ${input.leagueId}
         UNION ALL SELECT 1 FROM occurrence_collection_plan_items WHERE organization_id = ${input.organizationId} AND league_id = ${input.leagueId}
+        UNION ALL SELECT 1 FROM payment_operation_occurrence_snapshots WHERE organization_id = ${input.organizationId} AND league_id = ${input.leagueId}
         UNION ALL SELECT 1 FROM payment_occurrence_allocations WHERE organization_id = ${input.organizationId} AND league_id = ${input.leagueId}
       ) AS present
     `).then((result) => result.rows as Array<{ present: boolean }>);
@@ -364,10 +379,10 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
           ) legacy_rows
         ) legacy_osa ON TRUE
         WHERE op.organization_id = ${input.organizationId}
-          AND (op.league_id = ${input.leagueId} OR EXISTS (SELECT 1 FROM scheduled_payment_operation_snapshots scoped_ss WHERE scoped_ss.operation_id = op.id AND scoped_ss.league_id = ${input.leagueId}) OR EXISTS (SELECT 1 FROM interactive_payment_operation_snapshots scoped_is WHERE scoped_is.operation_id = op.id AND scoped_is.league_id = ${input.leagueId}))
+          AND (op.league_id = ${input.leagueId} OR EXISTS (SELECT 1 FROM payment_operation_occurrence_snapshots scoped_os WHERE scoped_os.operation_id = op.id AND scoped_os.organization_id = ${input.organizationId} AND scoped_os.league_id = ${input.leagueId}) OR EXISTS (SELECT 1 FROM scheduled_payment_operation_snapshots scoped_ss WHERE scoped_ss.operation_id = op.id AND scoped_ss.league_id = ${input.leagueId}) OR EXISTS (SELECT 1 FROM interactive_payment_operation_snapshots scoped_is WHERE scoped_is.operation_id = op.id AND scoped_is.league_id = ${input.leagueId}))
           AND op.status IN ('pending','leased','provider_unknown','retry_scheduled','action_required','reconciliation_required')
           AND NOT EXISTS (SELECT 1 FROM payments op_payment WHERE op_payment.payment_operation_id = op.id)
-          AND (${input.bowlerId === undefined ? sql`TRUE` : sql`EXISTS (SELECT 1 FROM payment_operation_occurrence_snapshot_allocations participant_sa WHERE participant_sa.operation_id = op.id AND participant_sa.organization_id = ${input.organizationId} AND participant_sa.league_id = ${input.leagueId} AND participant_sa.bowler_id = ${input.bowlerId}) OR cs.items @> jsonb_build_array(jsonb_build_object('bowlerId', ${input.bowlerId})) OR EXISTS (SELECT 1 FROM scheduled_payment_operation_allocations lsa INNER JOIN scheduled_payment_operation_snapshots lss ON lss.operation_id = lsa.operation_id AND lss.league_id = ${input.leagueId} WHERE lsa.operation_id = op.id AND lsa.bowler_id = ${input.bowlerId}) OR EXISTS (SELECT 1 FROM interactive_payment_operation_allocations lia INNER JOIN interactive_payment_operation_snapshots lis ON lis.operation_id = lia.operation_id AND lis.league_id = ${input.leagueId} WHERE lia.operation_id = op.id AND lia.bowler_id = ${input.bowlerId})`})
+          AND (${input.bowlerId === undefined ? sql`TRUE` : sql`EXISTS (SELECT 1 FROM payment_operation_occurrence_snapshot_allocations participant_sa WHERE participant_sa.operation_id = op.id AND participant_sa.organization_id = ${input.organizationId} AND participant_sa.league_id = ${input.leagueId} AND participant_sa.bowler_id = ${input.bowlerId}) OR cs.items @> jsonb_build_array(jsonb_build_object('bowlerId', ${input.bowlerId}::integer)) OR EXISTS (SELECT 1 FROM scheduled_payment_operation_allocations lsa INNER JOIN scheduled_payment_operation_snapshots lss ON lss.operation_id = lsa.operation_id AND lss.league_id = ${input.leagueId} WHERE lsa.operation_id = op.id AND lsa.bowler_id = ${input.bowlerId}) OR EXISTS (SELECT 1 FROM interactive_payment_operation_allocations lia INNER JOIN interactive_payment_operation_snapshots lis ON lis.operation_id = lia.operation_id AND lis.league_id = ${input.leagueId} WHERE lia.operation_id = op.id AND lia.bowler_id = ${input.bowlerId})`})
       )
       SELECT parent_key
       FROM (SELECT * FROM parents UNION ALL SELECT * FROM operation_parents) all_parents
@@ -380,7 +395,31 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
     const scopedBowlerPredicate = input.bowlerId === undefined ? sql`TRUE` : sql`p.bowler_id = ${input.bowlerId}`;
     const scopedOperationPredicate = input.bowlerId === undefined
       ? sql`TRUE`
-      : sql`EXISTS (SELECT 1 FROM payment_operation_occurrence_snapshot_allocations scope_sa WHERE scope_sa.operation_id = dop.id AND scope_sa.organization_id = ${input.organizationId} AND scope_sa.league_id = ${input.leagueId} AND scope_sa.bowler_id = ${input.bowlerId}) OR EXISTS (SELECT 1 FROM canonical_autopay_execution_snapshots scope_cs WHERE scope_cs.operation_id = dop.id AND scope_cs.organization_id = ${input.organizationId} AND scope_cs.league_id = ${input.leagueId} AND scope_cs.items @> jsonb_build_array(jsonb_build_object('bowlerId', ${input.bowlerId}))) OR EXISTS (SELECT 1 FROM scheduled_payment_operation_allocations scope_lsa INNER JOIN scheduled_payment_operation_snapshots scope_lss ON scope_lss.operation_id = scope_lsa.operation_id AND scope_lss.league_id = ${input.leagueId} WHERE scope_lsa.operation_id = dop.id AND scope_lsa.bowler_id = ${input.bowlerId}) OR EXISTS (SELECT 1 FROM interactive_payment_operation_allocations scope_lia INNER JOIN interactive_payment_operation_snapshots scope_lis ON scope_lis.operation_id = scope_lia.operation_id AND scope_lis.league_id = ${input.leagueId} WHERE scope_lia.operation_id = dop.id AND scope_lia.bowler_id = ${input.bowlerId})`;
+      : sql`EXISTS (SELECT 1 FROM payment_operation_occurrence_snapshot_allocations scope_sa WHERE scope_sa.operation_id = dop.id AND scope_sa.organization_id = ${input.organizationId} AND scope_sa.league_id = ${input.leagueId} AND scope_sa.bowler_id = ${input.bowlerId}) OR EXISTS (SELECT 1 FROM canonical_autopay_execution_snapshots scope_cs WHERE scope_cs.operation_id = dop.id AND scope_cs.organization_id = ${input.organizationId} AND scope_cs.league_id = ${input.leagueId} AND scope_cs.items @> jsonb_build_array(jsonb_build_object('bowlerId', ${input.bowlerId}::integer))) OR EXISTS (SELECT 1 FROM scheduled_payment_operation_allocations scope_lsa INNER JOIN scheduled_payment_operation_snapshots scope_lss ON scope_lss.operation_id = scope_lsa.operation_id AND scope_lss.league_id = ${input.leagueId} WHERE scope_lsa.operation_id = dop.id AND scope_lsa.bowler_id = ${input.bowlerId}) OR EXISTS (SELECT 1 FROM interactive_payment_operation_allocations scope_lia INNER JOIN interactive_payment_operation_snapshots scope_lis ON scope_lis.operation_id = scope_lia.operation_id AND scope_lia.league_id = ${input.leagueId} WHERE scope_lia.operation_id = dop.id AND scope_lia.bowler_id = ${input.bowlerId})`;
+    // A zero-payment operation is still one transaction parent, but a
+    // bowler-scoped report may expose only that participant's immutable
+    // snapshot allocation. Never charge the entire combined amount to a
+    // partner merely because the operation has no payment row yet.
+    const unresolvedAmountExpression = input.bowlerId === undefined
+      ? sql`op.amount_minor`
+      : sql`COALESCE(
+          (SELECT SUM(sa.amount_minor) FROM payment_operation_occurrence_snapshot_allocations sa
+            WHERE sa.operation_id = op.id AND sa.organization_id = ${input.organizationId}
+              AND sa.league_id = ${input.leagueId} AND sa.bowler_id = ${input.bowlerId}),
+          (SELECT SUM((item->>'amountMinor')::integer) FROM canonical_autopay_execution_snapshots f4
+            CROSS JOIN LATERAL jsonb_array_elements(f4.items) item
+            WHERE f4.operation_id = op.id AND f4.organization_id = ${input.organizationId}
+              AND f4.league_id = ${input.leagueId}
+              AND (item->>'bowlerId')::integer = ${input.bowlerId}),
+          (SELECT SUM(sa.amount_minor) FROM scheduled_payment_operation_allocations sa
+            INNER JOIN scheduled_payment_operation_snapshots ss ON ss.operation_id = sa.operation_id
+              AND ss.league_id = ${input.leagueId}
+            WHERE sa.operation_id = op.id AND sa.bowler_id = ${input.bowlerId}),
+          (SELECT SUM(ia.amount_minor) FROM interactive_payment_operation_allocations ia
+            INNER JOIN interactive_payment_operation_snapshots isnap ON isnap.operation_id = ia.operation_id
+              AND isnap.league_id = ${input.leagueId}
+            WHERE ia.operation_id = op.id AND ia.bowler_id = ${input.bowlerId}),
+          0)`;
     const aggregateResult = await tx.execute(sql`
       WITH scoped_payments AS (
         SELECT p.*
@@ -395,7 +434,7 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
               AND participant_a.bowler_id = ${input.bowlerId ?? -1}
           ))
       ), parent_totals AS (
-        SELECT COUNT(*)::integer AS total_transactions
+        SELECT COUNT(DISTINCT parent_key)::integer AS total_transactions
         FROM (
           SELECT CASE
             WHEN payment_operation_id IS NOT NULL THEN 'operation:' || payment_operation_id::text
@@ -404,13 +443,25 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
           END AS parent_key
           FROM scoped_payments
           GROUP BY 1
+          UNION ALL
+          SELECT 'operation:' || op.id::text AS parent_key
+          FROM payment_operations op
+          WHERE op.organization_id = ${input.organizationId}
+            AND (op.league_id = ${input.leagueId}
+              OR EXISTS (SELECT 1 FROM payment_operation_occurrence_snapshots po_scope WHERE po_scope.operation_id = op.id AND po_scope.organization_id = ${input.organizationId} AND po_scope.league_id = ${input.leagueId})
+              OR EXISTS (SELECT 1 FROM scheduled_payment_operation_snapshots ps WHERE ps.operation_id = op.id AND ps.league_id = ${input.leagueId})
+              OR EXISTS (SELECT 1 FROM interactive_payment_operation_snapshots pi WHERE pi.operation_id = op.id AND pi.league_id = ${input.leagueId}))
+            AND op.status IN ('pending','leased','provider_unknown','retry_scheduled','action_required','reconciliation_required')
+            AND NOT EXISTS (SELECT 1 FROM payments p2 WHERE p2.payment_operation_id = op.id)
+            AND (${input.bowlerId === undefined ? sql`TRUE` : sql`EXISTS (SELECT 1 FROM payment_operation_occurrence_snapshot_allocations sa WHERE sa.operation_id = op.id AND sa.organization_id = ${input.organizationId} AND sa.league_id = ${input.leagueId} AND sa.bowler_id = ${input.bowlerId}) OR EXISTS (SELECT 1 FROM canonical_autopay_execution_snapshots cs WHERE cs.operation_id = op.id AND cs.organization_id = ${input.organizationId} AND cs.league_id = ${input.leagueId} AND cs.items @> jsonb_build_array(jsonb_build_object('bowlerId', ${input.bowlerId}::integer))) OR EXISTS (SELECT 1 FROM scheduled_payment_operation_allocations sa INNER JOIN scheduled_payment_operation_snapshots ss ON ss.operation_id = sa.operation_id AND ss.league_id = ${input.leagueId} WHERE sa.operation_id = op.id AND sa.bowler_id = ${input.bowlerId}) OR EXISTS (SELECT 1 FROM interactive_payment_operation_allocations ia INNER JOIN interactive_payment_operation_snapshots isnap ON isnap.operation_id = ia.operation_id AND isnap.league_id = ${input.leagueId} WHERE ia.operation_id = op.id AND ia.bowler_id = ${input.bowlerId})`})
         ) grouped_parents
       )
       SELECT
         (SELECT COUNT(*)::integer FROM scoped_payments)
           + COALESCE((SELECT COUNT(*) FROM payment_operation_occurrence_snapshot_allocations sa
-            INNER JOIN payment_operations sop ON sop.id = sa.operation_id AND sop.organization_id = ${input.organizationId} AND sop.league_id = ${input.leagueId}
-            WHERE sop.status IN ('pending','leased','provider_unknown','retry_scheduled','action_required','reconciliation_required')
+            INNER JOIN payment_operations sop ON sop.id = sa.operation_id AND sop.organization_id = ${input.organizationId}
+            WHERE (sop.league_id = ${input.leagueId} OR EXISTS (SELECT 1 FROM payment_operation_occurrence_snapshots ss_scope WHERE ss_scope.operation_id = sop.id AND ss_scope.organization_id = ${input.organizationId} AND ss_scope.league_id = ${input.leagueId}))
+              AND sop.status IN ('pending','leased','provider_unknown','retry_scheduled','action_required','reconciliation_required')
               AND NOT EXISTS (SELECT 1 FROM payments sp WHERE sp.payment_operation_id = sop.id)
               AND (${input.bowlerId === undefined ? sql`TRUE` : sql`sa.bowler_id = ${input.bowlerId}`})), 0)
           + COALESCE((SELECT COUNT(*) FROM (
@@ -422,20 +473,18 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
               INNER JOIN payment_operations lop ON lop.id = a.operation_id AND lop.organization_id = ${input.organizationId}
               WHERE NOT EXISTS (SELECT 1 FROM payments lp WHERE lp.payment_operation_id = a.operation_id)
             ) legacy_participants WHERE (${input.bowlerId === undefined ? sql`TRUE` : sql`legacy_participants.bowler_id = ${input.bowlerId}`})), 0)::integer AS total_rows,
-        (SELECT total_transactions FROM parent_totals)
-          + (SELECT COUNT(*) FROM payment_operations op WHERE op.organization_id = ${input.organizationId} AND op.league_id = ${input.leagueId} AND op.status IN ('pending','leased','provider_unknown','retry_scheduled','action_required','reconciliation_required') AND NOT EXISTS (SELECT 1 FROM payments p2 WHERE p2.payment_operation_id = op.id) AND (${input.bowlerId === undefined ? sql`TRUE` : sql`EXISTS (SELECT 1 FROM payment_operation_occurrence_snapshot_allocations scope_sa WHERE scope_sa.operation_id = op.id AND scope_sa.organization_id = ${input.organizationId} AND scope_sa.league_id = ${input.leagueId} AND scope_sa.bowler_id = ${input.bowlerId}) OR EXISTS (SELECT 1 FROM canonical_autopay_execution_snapshots scope_cs WHERE scope_cs.operation_id = op.id AND scope_cs.organization_id = ${input.organizationId} AND scope_cs.league_id = ${input.leagueId} AND scope_cs.items @> jsonb_build_array(jsonb_build_object('bowlerId', ${input.bowlerId})))`}))
-          + (SELECT COUNT(*) FROM payment_operations lop WHERE lop.organization_id = ${input.organizationId} AND (lop.league_id = ${input.leagueId} OR EXISTS (SELECT 1 FROM scheduled_payment_operation_snapshots lsx WHERE lsx.operation_id = lop.id AND lsx.league_id = ${input.leagueId}) OR EXISTS (SELECT 1 FROM interactive_payment_operation_snapshots lix WHERE lix.operation_id = lop.id AND lix.league_id = ${input.leagueId})) AND lop.operation_type IN ('scheduled_charge','interactive_charge') AND lop.status IN ('pending','leased','provider_unknown','retry_scheduled','action_required','reconciliation_required') AND NOT EXISTS (SELECT 1 FROM payments p2 WHERE p2.payment_operation_id = lop.id) AND ((${input.bowlerId === undefined ? sql`TRUE` : sql`EXISTS (SELECT 1 FROM scheduled_payment_operation_allocations lpa INNER JOIN scheduled_payment_operation_snapshots lps ON lps.operation_id = lpa.operation_id AND lps.league_id = ${input.leagueId} WHERE lpa.operation_id = lop.id AND lpa.bowler_id = ${input.bowlerId}) OR EXISTS (SELECT 1 FROM interactive_payment_operation_allocations lpa INNER JOIN interactive_payment_operation_snapshots lps ON lps.operation_id = lpa.operation_id AND lps.league_id = ${input.leagueId} WHERE lpa.operation_id = lop.id AND lpa.bowler_id = ${input.bowlerId})`}) ))::integer AS total_transactions,
+        (SELECT total_transactions FROM parent_totals) AS total_transactions,
         COALESCE((SELECT SUM(p.amount) FROM scoped_payments p WHERE p.status = 'paid' AND ${activation ? sql`EXISTS (SELECT 1 FROM payment_occurrence_allocations ca WHERE ca.payment_id = p.id AND ca.organization_id = ${input.organizationId} AND ca.league_id = ${input.leagueId})` : sql`TRUE`} AND (p.payment_operation_id IS NULL OR NOT EXISTS (SELECT 1 FROM payment_operations op WHERE op.id = p.payment_operation_id AND op.status IN ('pending','leased','provider_unknown','retry_scheduled','action_required','reconciliation_required'))) AND NOT EXISTS (SELECT 1 FROM payment_disputes pd WHERE pd.payment_operation_id = p.payment_operation_id)), 0)::integer AS gross_paid,
         COALESCE((SELECT SUM(a.amount_minor) FROM payment_occurrence_allocations a INNER JOIN scoped_payments p ON p.id = a.payment_id WHERE a.organization_id = ${input.organizationId} AND a.league_id = ${input.leagueId} AND a.state = 'active'), 0)::integer AS allocated,
         COALESCE((SELECT SUM(p.amount) FROM scoped_payments p WHERE p.status = 'refunded' AND ${activation ? sql`EXISTS (SELECT 1 FROM payment_occurrence_allocations ca WHERE ca.payment_id = p.id AND ca.organization_id = ${input.organizationId} AND ca.league_id = ${input.leagueId})` : sql`TRUE`}), 0)::integer AS refunded,
         COALESCE((SELECT SUM(amount) FROM scoped_payments WHERE status = 'disputed' AND payment_operation_id IS NULL), 0)::integer
-          + COALESCE((SELECT SUM(pd.amount_minor) FROM payment_disputes pd INNER JOIN payment_operations dop ON dop.id = pd.payment_operation_id AND dop.organization_id = ${input.organizationId} AND dop.league_id = ${input.leagueId} WHERE pd.organization_id = ${input.organizationId} AND (${scopedOperationPredicate})), 0)::integer AS disputed,
-        COALESCE((SELECT SUM(op.amount_minor) FROM payment_operations op WHERE op.organization_id = ${input.organizationId} AND (op.league_id = ${input.leagueId} OR EXISTS (SELECT 1 FROM scheduled_payment_operation_snapshots uss WHERE uss.operation_id = op.id AND uss.league_id = ${input.leagueId}) OR EXISTS (SELECT 1 FROM interactive_payment_operation_snapshots uis WHERE uis.operation_id = op.id AND uis.league_id = ${input.leagueId})) AND op.status IN ('pending','leased','provider_unknown','retry_scheduled','action_required','reconciliation_required') AND (${input.bowlerId === undefined ? sql`TRUE` : sql`EXISTS (SELECT 1 FROM payment_operation_occurrence_snapshot_allocations sb WHERE sb.operation_id = op.id AND sb.organization_id = ${input.organizationId} AND sb.league_id = ${input.leagueId} AND sb.bowler_id = ${input.bowlerId}) OR EXISTS (SELECT 1 FROM scheduled_payment_operation_allocations usb INNER JOIN scheduled_payment_operation_snapshots usbs ON usbs.operation_id = usb.operation_id AND usbs.league_id = ${input.leagueId} WHERE usb.operation_id = op.id AND usb.bowler_id = ${input.bowlerId}) OR EXISTS (SELECT 1 FROM interactive_payment_operation_allocations uib INNER JOIN interactive_payment_operation_snapshots uibs ON uibs.operation_id = uib.operation_id AND uibs.league_id = ${input.leagueId} WHERE uib.operation_id = op.id AND uib.bowler_id = ${input.bowlerId})`})), 0)::integer AS unresolved,
+          + COALESCE((SELECT SUM(pd.amount_minor) FROM payment_disputes pd INNER JOIN payment_operations dop ON dop.id = pd.payment_operation_id AND dop.organization_id = ${input.organizationId} AND (dop.league_id = ${input.leagueId} OR EXISTS (SELECT 1 FROM payment_operation_occurrence_snapshots dscope WHERE dscope.operation_id = dop.id AND dscope.organization_id = ${input.organizationId} AND dscope.league_id = ${input.leagueId}) OR EXISTS (SELECT 1 FROM scheduled_payment_operation_snapshots dlegacy WHERE dlegacy.operation_id = dop.id AND dlegacy.league_id = ${input.leagueId}) OR EXISTS (SELECT 1 FROM interactive_payment_operation_snapshots ilegacy WHERE ilegacy.operation_id = dop.id AND ilegacy.league_id = ${input.leagueId})) WHERE pd.organization_id = ${input.organizationId} AND (${scopedOperationPredicate})), 0)::integer AS disputed,
+        COALESCE((SELECT SUM(${unresolvedAmountExpression}) FROM payment_operations op WHERE op.organization_id = ${input.organizationId} AND (op.league_id = ${input.leagueId} OR EXISTS (SELECT 1 FROM payment_operation_occurrence_snapshots uos WHERE uos.operation_id = op.id AND uos.organization_id = ${input.organizationId} AND uos.league_id = ${input.leagueId}) OR EXISTS (SELECT 1 FROM scheduled_payment_operation_snapshots uss WHERE uss.operation_id = op.id AND uss.league_id = ${input.leagueId}) OR EXISTS (SELECT 1 FROM interactive_payment_operation_snapshots uis WHERE uis.operation_id = op.id AND uis.league_id = ${input.leagueId})) AND op.status IN ('pending','leased','provider_unknown','retry_scheduled','action_required','reconciliation_required') AND NOT EXISTS (SELECT 1 FROM payments unresolved_payment WHERE unresolved_payment.payment_operation_id = op.id) AND (${input.bowlerId === undefined ? sql`TRUE` : sql`EXISTS (SELECT 1 FROM payment_operation_occurrence_snapshot_allocations sb WHERE sb.operation_id = op.id AND sb.organization_id = ${input.organizationId} AND sb.league_id = ${input.leagueId} AND sb.bowler_id = ${input.bowlerId}) OR EXISTS (SELECT 1 FROM canonical_autopay_execution_snapshots usf4 WHERE usf4.operation_id = op.id AND usf4.organization_id = ${input.organizationId} AND usf4.league_id = ${input.leagueId} AND usf4.items @> jsonb_build_array(jsonb_build_object('bowlerId', ${input.bowlerId}::integer))) OR EXISTS (SELECT 1 FROM scheduled_payment_operation_allocations usb INNER JOIN scheduled_payment_operation_snapshots usbs ON usbs.operation_id = usb.operation_id AND usbs.league_id = ${input.leagueId} WHERE usb.operation_id = op.id AND usb.bowler_id = ${input.bowlerId}) OR EXISTS (SELECT 1 FROM interactive_payment_operation_allocations uib INNER JOIN interactive_payment_operation_snapshots uibs ON uibs.operation_id = op.id AND uibs.league_id = ${input.leagueId} WHERE uib.operation_id = op.id AND uib.bowler_id = ${input.bowlerId})` })), 0)::integer AS unresolved,
         COALESCE((SELECT SUM(p.amount) FROM scoped_payments p WHERE p.status = 'paid' AND NOT EXISTS (SELECT 1 FROM payment_occurrence_allocations a WHERE a.payment_id = p.id AND a.organization_id = ${input.organizationId} AND a.league_id = ${input.leagueId})), 0)::integer AS unallocated_legacy,
         COALESCE((SELECT SUM(p.amount) FROM scoped_payments p WHERE (p.status NOT IN ('paid','pending','refunded','disputed') OR (p.status = 'disputed' AND p.payment_operation_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM payment_disputes legacy_pd WHERE legacy_pd.payment_operation_id = p.payment_operation_id))) AND NOT EXISTS (SELECT 1 FROM payment_operations rop WHERE rop.id = p.payment_operation_id AND rop.status IN ('action_required','provider_unknown','reconciliation_required'))), 0)::integer AS review_required,
         (SELECT COUNT(*)::integer FROM scoped_payments p WHERE NOT EXISTS (SELECT 1 FROM payment_occurrence_allocations a WHERE a.payment_id = p.id AND a.organization_id = ${input.organizationId} AND a.league_id = ${input.leagueId}))
           + (SELECT COUNT(*)::integer FROM payment_operations lop
-             WHERE lop.organization_id = ${input.organizationId} AND (lop.league_id = ${input.leagueId} OR EXISTS (SELECT 1 FROM scheduled_payment_operation_snapshots lscope_s WHERE lscope_s.operation_id = lop.id AND lscope_s.league_id = ${input.leagueId}) OR EXISTS (SELECT 1 FROM interactive_payment_operation_snapshots lscope_i WHERE lscope_i.operation_id = lop.id AND lscope_i.league_id = ${input.leagueId}))
+             WHERE lop.organization_id = ${input.organizationId} AND (lop.league_id = ${input.leagueId} OR EXISTS (SELECT 1 FROM payment_operation_occurrence_snapshots lscope_o WHERE lscope_o.operation_id = lop.id AND lscope_o.organization_id = ${input.organizationId} AND lscope_o.league_id = ${input.leagueId}) OR EXISTS (SELECT 1 FROM scheduled_payment_operation_snapshots lscope_s WHERE lscope_s.operation_id = lop.id AND lscope_s.league_id = ${input.leagueId}) OR EXISTS (SELECT 1 FROM interactive_payment_operation_snapshots lscope_i WHERE lscope_i.operation_id = lop.id AND lscope_i.league_id = ${input.leagueId}))
                AND lop.operation_type IN ('scheduled_charge','interactive_charge')
                AND lop.status IN ('pending','leased','provider_unknown','retry_scheduled','action_required','reconciliation_required')
                AND NOT EXISTS (SELECT 1 FROM payments lp WHERE lp.payment_operation_id = lop.id)
@@ -450,7 +499,7 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
         FROM payment_operations op
         LEFT JOIN payments p ON p.payment_operation_id = op.id
         WHERE op.organization_id = ${input.organizationId}
-          AND op.league_id = ${input.leagueId}
+          AND (op.league_id = ${input.leagueId} OR EXISTS (SELECT 1 FROM payment_operation_occurrence_snapshots oscope WHERE oscope.operation_id = op.id AND oscope.organization_id = ${input.organizationId} AND oscope.league_id = ${input.leagueId}))
           AND EXISTS (SELECT 1 FROM payments linked_p WHERE linked_p.payment_operation_id = op.id)
         GROUP BY op.id, op.amount_minor
         HAVING COALESCE(SUM(p.amount), 0) <> op.amount_minor
@@ -498,13 +547,56 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
          AND os.organization_id = op.organization_id
          AND os.league_id = op.league_id
         WHERE op.organization_id = ${input.organizationId}
-          AND op.league_id = ${input.leagueId}
+          AND (op.league_id = ${input.leagueId} OR EXISTS (SELECT 1 FROM payment_operation_occurrence_snapshots oscope WHERE oscope.operation_id = op.id AND oscope.organization_id = ${input.organizationId} AND oscope.league_id = ${input.leagueId}))
           AND op.operation_type IN ('scheduled_charge', 'interactive_charge')
           AND os.operation_id IS NOT NULL
           AND (os.amount_minor IS DISTINCT FROM op.amount_minor OR os.currency IS DISTINCT FROM op.currency)
       ) AS present
     `).then((result) => result.rows as Array<{ present: boolean }>);
     if (globalOperationEvidence?.present) throw new CanonicalPaymentReportIncompatibilityError();
+    const [globalRevisionIntegrity] = await tx.execute(sql`
+      SELECT EXISTS (
+        SELECT 1
+        FROM bowler_occurrence_obligations o
+        WHERE o.organization_id = ${input.organizationId}
+          AND o.league_id = ${input.leagueId}
+          AND (SELECT COUNT(*) FROM bowler_occurrence_obligation_revisions r WHERE r.organization_id = o.organization_id AND r.league_id = o.league_id AND r.obligation_id = o.id) <> o.current_revision
+        UNION ALL
+        SELECT 1
+        FROM payment_occurrence_allocations a
+          WHERE a.organization_id = ${input.organizationId}
+          AND a.league_id = ${input.leagueId}
+          AND (SELECT COUNT(*) FROM payment_occurrence_allocation_revisions r WHERE r.organization_id = a.organization_id AND r.league_id = a.league_id AND r.allocation_id = a.id) <> a.current_revision
+        UNION ALL
+        SELECT 1
+        FROM bowler_occurrence_obligations o
+        LEFT JOIN bowler_occurrence_obligation_revisions r
+          ON r.organization_id = o.organization_id AND r.league_id = o.league_id
+         AND r.obligation_id = o.id AND r.revision_number = o.current_revision
+        WHERE o.organization_id = ${input.organizationId} AND o.league_id = ${input.leagueId}
+          AND (r.id IS NULL OR r.snapshot_schema_version <> 1
+            OR r.after_snapshot->>'state' IS DISTINCT FROM o.state
+            OR CASE WHEN r.after_snapshot->>'amountMinor' ~ '^-?[0-9]+$' THEN (r.after_snapshot->>'amountMinor')::integer END IS DISTINCT FROM o.amount_minor
+            OR r.after_snapshot->>'currency' IS DISTINCT FROM o.currency
+            OR r.after_snapshot->>'billingTermId' IS DISTINCT FROM o.billing_term_id)
+        UNION ALL
+        SELECT 1
+        FROM payment_occurrence_allocations a
+        LEFT JOIN payment_occurrence_allocation_revisions r
+          ON r.organization_id = a.organization_id AND r.league_id = a.league_id
+         AND r.allocation_id = a.id AND r.revision_number = a.current_revision
+        WHERE a.organization_id = ${input.organizationId} AND a.league_id = ${input.leagueId}
+          AND (r.id IS NULL OR r.snapshot_schema_version <> 1
+            OR r.after_snapshot->>'state' IS DISTINCT FROM a.state
+            OR CASE WHEN r.after_snapshot->>'amountMinor' ~ '^-?[0-9]+$' THEN (r.after_snapshot->>'amountMinor')::integer END IS DISTINCT FROM a.amount_minor
+            OR r.after_snapshot->>'currency' IS DISTINCT FROM a.currency
+            OR r.after_snapshot->>'paymentId' IS DISTINCT FROM a.payment_id::text
+            OR r.after_snapshot->>'obligationId' IS DISTINCT FROM a.obligation_id
+            OR r.after_snapshot->>'occurrenceId' IS DISTINCT FROM a.occurrence_id
+            OR CASE WHEN r.after_snapshot->>'bowlerId' ~ '^-?[0-9]+$' THEN (r.after_snapshot->>'bowlerId')::integer END IS DISTINCT FROM a.bowler_id)
+      ) AS present
+    `).then((result) => result.rows as Array<{ present: boolean }>);
+    if (globalRevisionIntegrity?.present) throw new CanonicalPaymentReportIncompatibilityError();
     const parentConditions = parentKeys.map((parentKey) => {
       const [kind, value] = parentKey.split(":", 2);
       if (kind === "operation") return eq(payments.paymentOperationId, value);
@@ -595,7 +687,8 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
     if (operations.length !== operationIds.length) throw new CanonicalPaymentReportIncompatibilityError();
     const linkedLegacyScopeRows = operationIds.length === 0 ? [] : await tx.select({ operationId: interactivePaymentOperationSnapshots.operationId, leagueId: interactivePaymentOperationSnapshots.leagueId }).from(interactivePaymentOperationSnapshots).where(inArray(interactivePaymentOperationSnapshots.operationId, operationIds));
     const linkedScheduledScopeRows = operationIds.length === 0 ? [] : await tx.select({ operationId: scheduledPaymentOperationSnapshots.operationId, leagueId: scheduledPaymentOperationSnapshots.leagueId }).from(scheduledPaymentOperationSnapshots).where(inArray(scheduledPaymentOperationSnapshots.operationId, operationIds));
-    const linkedScopeByOperation = new Map([...linkedLegacyScopeRows, ...linkedScheduledScopeRows].map((row) => [row.operationId, row.leagueId]));
+    const linkedOccurrenceScopeRows = operationIds.length === 0 ? [] : await tx.select({ operationId: paymentOperationOccurrenceSnapshots.operationId, leagueId: paymentOperationOccurrenceSnapshots.leagueId }).from(paymentOperationOccurrenceSnapshots).where(inArray(paymentOperationOccurrenceSnapshots.operationId, operationIds));
+    const linkedScopeByOperation = new Map([...linkedLegacyScopeRows, ...linkedScheduledScopeRows, ...linkedOccurrenceScopeRows].map((row) => [row.operationId, row.leagueId]));
     if (operations.some((operation) => operation.leagueId !== input.leagueId && linkedScopeByOperation.get(operation.id) !== input.leagueId)) throw new CanonicalPaymentReportIncompatibilityError();
     const operationsById = new Map(operations.map((operation) => [operation.id, operation]));
     const legacyBusinessDates = new Map<string, string>();
@@ -648,7 +741,7 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
     const allOperationIds = allOperations.map((operation) => operation.id);
 
     const occurrenceIds = [...new Set(allocations.map((allocation) => allocation.occurrenceId))];
-    const occurrences = occurrenceIds.length === 0 ? [] : await tx.select({ id: leagueOccurrences.id, startAt: leagueOccurrences.startAt })
+    const occurrences = occurrenceIds.length === 0 ? [] : await tx.select({ id: leagueOccurrences.id, startAt: leagueOccurrences.startAt, plannedOrdinal: leagueOccurrences.plannedOrdinal })
       .from(leagueOccurrences)
       .where(and(
         eq(leagueOccurrences.organizationId, input.organizationId),
@@ -657,6 +750,7 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
       ));
     if (occurrences.length !== occurrenceIds.length) throw new CanonicalPaymentReportIncompatibilityError();
     const occurrenceStartById = new Map(occurrences.map((occurrence) => [occurrence.id, occurrence.startAt]));
+    const occurrenceOrdinalById = new Map(occurrences.map((occurrence) => [occurrence.id, occurrence.plannedOrdinal ?? Number.MAX_SAFE_INTEGER]));
 
     const disputeRows = allOperationIds.length === 0 ? [] : await tx.select({ operationId: paymentDisputes.paymentOperationId, amountMinor: paymentDisputes.amountMinor, currency: paymentDisputes.currency, state: paymentDisputes.state, id: paymentDisputes.id })
       .from(paymentDisputes)
@@ -819,7 +913,7 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
       const durableDispute = operation ? disputesByOperation.get(operation.id) : undefined;
       if (payment.status === "disputed" && operation && !durableDispute && paymentAllocations.length > 0) throw new CanonicalPaymentReportIncompatibilityError();
       const activeAllocatedMinor = paymentAllocations.filter((allocation) => allocation.state === "active").reduce((sum, allocation) => sum + allocation.amountMinor, 0);
-      const dispute = { present: payment.status === "disputed" || Boolean(durableDispute), amountMinor: durableDispute ? 0 : (payment.status === "disputed" ? Math.min(payment.amount, activeAllocatedMinor || payment.amount) : 0), disputeId: durableDispute?.disputeId ?? payment.disputeId };
+      const dispute = { present: payment.status === "disputed" || Boolean(durableDispute), amountMinor: durableDispute ? 0 : (payment.status === "disputed" ? Math.min(payment.amount, activeAllocatedMinor || payment.amount) : 0), disputeId: durableDispute?.disputeId ?? payment.disputeId, scope: durableDispute ? "transaction" as const : "legacy_payment_row" as const, state: durableDispute?.state ?? (payment.status === "disputed" ? "review_required" : null), reviewRequired: payment.status === "disputed" || Boolean(durableDispute) };
       const unresolved = !!operation && unresolvedOperationStatuses.has(operation.status);
       const reviewRequired = dispute.present || (payment.status !== "paid" && payment.status !== "pending") || unresolved;
       const status = statusForPayment(payment, operation, disputedOperationIds.has(operation?.id ?? ""));
@@ -1006,7 +1100,9 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
       unresolvedOperationMinor: aggregateNumber("unresolved"),
       unallocatedLegacyMinor: aggregateNumber("unallocated_legacy"),
     };
-    const sortedRows = [...visibleRows].sort((left, right) => left.authoritativeLocalDate.localeCompare(right.authoritativeLocalDate) || left.bowlerId - right.bowlerId || String(left.paymentOperationId ?? left.paymentId).localeCompare(String(right.paymentOperationId ?? right.paymentId)));
+    const rowOccurrenceOrder = (row: CanonicalPaymentRow): number => Math.min(...row.allocations.map((allocation) => occurrenceOrdinalById.get(allocation.occurrenceId ?? "") ?? Number.MAX_SAFE_INTEGER));
+    const rowAllocationOrder = (row: CanonicalPaymentRow): string => row.allocations.map((allocation) => `${allocation.obligationId ?? ""}:${allocation.amountMinor}:${allocation.state ?? ""}`).sort().join("|");
+    const sortedRows = [...visibleRows].sort((left, right) => left.authoritativeLocalDate.localeCompare(right.authoritativeLocalDate) || left.bowlerId - right.bowlerId || rowOccurrenceOrder(left) - rowOccurrenceOrder(right) || rowAllocationOrder(left).localeCompare(rowAllocationOrder(right)) || String(left.paymentOperationId ?? left.paymentId).localeCompare(String(right.paymentOperationId ?? right.paymentId)));
     const allTransactions = buildTransactions(sortedRows, paymentsById, allOperationsById, disputesByOperation);
     const pagedTransactions = allTransactions;
     const pagedRows = pagedTransactions.flatMap((transaction) => transaction.rows);

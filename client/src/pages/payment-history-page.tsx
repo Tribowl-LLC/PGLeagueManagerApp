@@ -595,7 +595,7 @@ export default function PaymentHistoryPage() {
       canonicalPaymentLoading={loadingCanonicalPaymentReport}
       canonicalPaymentError={canonicalPaymentReportError}
       canonicalReportPage={canonicalReportPage}
-      canonicalReportTotalPages={canonicalPaymentReport ? Math.max(1, Math.ceil(canonicalPaymentReport.totalRows / canonicalPaymentReport.limit)) : undefined}
+      canonicalReportTotalPages={canonicalPaymentReport ? Math.max(1, Math.ceil(canonicalPaymentReport.totalTransactions / canonicalPaymentReport.limit)) : undefined}
       onCanonicalReportPageChange={setCanonicalReportPage}
       paymentBusinessDates={paymentBusinessDates}
       paymentEvidenceStatuses={paymentEvidenceStatuses}

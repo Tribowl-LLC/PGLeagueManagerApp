@@ -18,7 +18,7 @@ import { sendReceiptResendEmail } from '../../services/email';
 import { paymentReceiptContract, type PaymentReceiptContract } from '@shared/payment-receipt';
 import { db } from '../../db.js';
 import { and, eq, inArray } from 'drizzle-orm';
-import { leagues, paymentOccurrenceAllocations, paymentOperations } from '@shared/schema';
+import { leagues, paymentDisputes, paymentOccurrenceAllocations, paymentOperations, scheduledPaymentOperationAllocations, scheduledPaymentOperationSnapshots, interactivePaymentOperationAllocations, interactivePaymentOperationSnapshots } from '@shared/schema';
 
 const log = createLogger('PaymentReceipts');
 
@@ -126,15 +126,27 @@ async function buildReceiptEvidence(paymentId: number, organizationId: number, v
   ));
   const [operation] = payment.paymentOperationId ? await db.select().from(paymentOperations).where(and(
     eq(paymentOperations.organizationId, organizationId),
-    eq(paymentOperations.leagueId, payment.leagueId),
     eq(paymentOperations.id, payment.paymentOperationId),
   )).limit(1) : [];
+  const legacyScheduledRows = payment.paymentOperationId ? await db.select({ leagueId: scheduledPaymentOperationSnapshots.leagueId, paidByUserId: scheduledPaymentOperationAllocations.paidByUserId, bowlerId: scheduledPaymentOperationAllocations.bowlerId, amountMinor: scheduledPaymentOperationAllocations.amountMinor, allocationIndex: scheduledPaymentOperationAllocations.allocationIndex }).from(scheduledPaymentOperationSnapshots).innerJoin(scheduledPaymentOperationAllocations, eq(scheduledPaymentOperationAllocations.operationId, scheduledPaymentOperationSnapshots.operationId)).where(and(eq(scheduledPaymentOperationSnapshots.operationId, payment.paymentOperationId), eq(scheduledPaymentOperationSnapshots.leagueId, payment.leagueId))).orderBy(scheduledPaymentOperationAllocations.allocationIndex) : [];
+  const legacyInteractiveRows = payment.paymentOperationId && legacyScheduledRows.length === 0 ? await db.select({ leagueId: interactivePaymentOperationSnapshots.leagueId, paidByUserId: interactivePaymentOperationAllocations.paidByUserId, bowlerId: interactivePaymentOperationAllocations.bowlerId, amountMinor: interactivePaymentOperationAllocations.amountMinor, allocationIndex: interactivePaymentOperationAllocations.allocationIndex }).from(interactivePaymentOperationSnapshots).innerJoin(interactivePaymentOperationAllocations, eq(interactivePaymentOperationAllocations.operationId, interactivePaymentOperationSnapshots.operationId)).where(and(eq(interactivePaymentOperationSnapshots.operationId, payment.paymentOperationId), eq(interactivePaymentOperationSnapshots.leagueId, payment.leagueId))).orderBy(interactivePaymentOperationAllocations.allocationIndex) : [];
+  const legacyRows = [...legacyScheduledRows, ...legacyInteractiveRows];
+  const legacyScope = legacyScheduledRows[0];
+  const interactiveLegacyScope = legacyInteractiveRows[0];
+  if (operation && operation.leagueId !== null && operation.leagueId !== payment.leagueId && !legacyScope && !interactiveLegacyScope) return null;
+  const [durableDispute] = operation ? await db.select({ id: paymentDisputes.id, amountMinor: paymentDisputes.amountMinor, currency: paymentDisputes.currency, state: paymentDisputes.state }).from(paymentDisputes).where(and(eq(paymentDisputes.organizationId, organizationId), eq(paymentDisputes.paymentOperationId, operation.id))).limit(1) : [];
   const adminPrivilege = viewer.role === 'system_admin' || viewer.role === 'org_admin' || viewer.role === 'payment_manager';
-  const initiatingPayer = payment.paidByUserId === viewer.id;
-  const ownAllocation = viewer.bowlerId ? allocations.filter((allocation) => allocation.bowlerId === viewer.bowlerId) : [];
+  const initiatingPayer = payment.paidByUserId === viewer.id || legacyRows.some((row) => row.paidByUserId === viewer.id);
+  const legacyReceiptAllocations = legacyRows.map((row) => ({ allocationId: null, obligationId: null, occurrenceId: null, bowlerId: row.bowlerId, amountMinor: row.amountMinor, currency: 'USD', state: null, source: 'unlinked_legacy' as const }));
+  const evidenceAllocations = allocations.length > 0 ? allocations.map((allocation) => ({ allocationId: allocation.id, obligationId: allocation.obligationId, occurrenceId: allocation.occurrenceId, bowlerId: allocation.bowlerId, amountMinor: allocation.amountMinor, currency: allocation.currency, state: allocation.state, source: 'canonical_allocation' as const })) : legacyReceiptAllocations;
+  const ownEvidenceAllocations = evidenceAllocations.filter((allocation) => allocation.bowlerId === viewer.bowlerId);
   const sharedAllowed = adminPrivilege || initiatingPayer || (!operation && viewer.bowlerId === payment.bowlerId);
-  const visibleAllocations = sharedAllowed ? allocations : ownAllocation;
-  const shared = operation ? { groupKey: `operation:${operation.id}`, childCount: (await storage.getPaymentsByPaymentOperationId(organizationId, operation.id)).length } : null;
+  const visibleAllocations = sharedAllowed ? evidenceAllocations : ownEvidenceAllocations;
+  const shared = operation ? { groupKey: `operation:${operation.id}`, childCount: (await storage.getPaymentsByPaymentOperationId(organizationId, operation.id)).length || evidenceAllocations.length } : null;
+  const transactionDispute = durableDispute
+    ? { present: true, amountMinor: sharedAllowed ? durableDispute.amountMinor : 0, disputeId: adminPrivilege ? durableDispute.id : null, scope: 'transaction' as const, state: durableDispute.state, reviewRequired: true }
+    : { present: payment.status === 'disputed' || !!payment.disputeId, amountMinor: payment.status === 'disputed' ? payment.amount : 0, disputeId: adminPrivilege ? payment.disputeId : null, scope: 'legacy_payment_row' as const, state: payment.status === 'disputed' ? 'review_required' : null, reviewRequired: payment.status === 'disputed' || !!payment.disputeId };
+  const transactionVisible = sharedAllowed ? (shared ?? { groupKey: null, childCount: 1 }) : null;
   const unresolved = !!operation && ['pending', 'leased', 'provider_unknown', 'retry_scheduled', 'action_required', 'reconciliation_required'].includes(operation.status);
   return paymentReceiptContract({
     receiptUrl: sharedAllowed ? payment.receiptUrl : null,
@@ -148,11 +160,11 @@ async function buildReceiptEvidence(paymentId: number, organizationId: number, v
     currency: 'USD',
     evidenceStatus: unresolved ? 'unresolved' : payment.status === 'paid' ? 'confirmed_paid' : payment.status === 'refunded' ? 'refunded' : payment.status === 'disputed' ? 'disputed' : 'review_required',
     source: allocations.length > 0 ? 'canonical_allocation' : 'unlinked_legacy',
-    allocations: visibleAllocations.map((allocation) => ({ allocationId: allocation.id, obligationId: allocation.obligationId, occurrenceId: allocation.occurrenceId, bowlerId: allocation.bowlerId, amountMinor: allocation.amountMinor, currency: allocation.currency, state: allocation.state, source: 'canonical_allocation' as const })),
+    allocations: visibleAllocations,
     refund: { present: payment.status === 'refunded' || payment.squareRefundId !== null, amountMinor: payment.status === 'refunded' ? payment.amount : 0, providerRefundId: adminPrivilege ? payment.squareRefundId : null },
-    dispute: { present: payment.status === 'disputed' || !!payment.disputeId, amountMinor: payment.status === 'disputed' ? payment.amount : 0, disputeId: adminPrivilege ? payment.disputeId : null },
+    dispute: transactionDispute,
     unresolved,
-    sharedTransaction: sharedAllowed ? shared : null,
+    sharedTransaction: transactionVisible,
     canResend: adminPrivilege && Boolean(payment.receiptUrl),
   });
 }
@@ -190,7 +202,6 @@ router.get('/payments/:id/receipt', async (req, res) => {
       || req.user.role === 'org_admin'
       || req.user.role === 'payment_manager'
       || evidence?.sharedTransaction !== null
-      || (evidence?.source === 'unlinked_legacy' && req.user.bowlerId !== null && req.user.bowlerId !== undefined)
       || !evidence;
     const resolved = sharedReceiptAllowed
       ? await resolveReceiptUrl(id, effectiveOrganizationId ?? undefined)

@@ -37,6 +37,10 @@ export interface CanonicalPaymentDisputeEvidence {
   present: boolean;
   amountMinor: number;
   disputeId: string | null;
+  /** Durable disputes are transaction-scoped; child rows carry presence only. */
+  scope?: "transaction" | "allocation" | "legacy_payment_row";
+  state?: string | null;
+  reviewRequired?: boolean;
 }
 
 export interface CanonicalPaymentAllocationRow {
@@ -81,7 +85,7 @@ export interface CanonicalPaymentTransactionGroup {
   amountMinor: number;
   currency: string;
   paymentIds: number[];
-  dispute?: { present: boolean; amountMinor: number; disputeId: string | null; currency: string; state: string; reviewRequired: boolean };
+  dispute?: { present: boolean; amountMinor: number; disputeId: string | null; currency: string; state: string; reviewRequired: boolean; scope: "transaction" };
   rows: CanonicalPaymentRow[];
 }
 
