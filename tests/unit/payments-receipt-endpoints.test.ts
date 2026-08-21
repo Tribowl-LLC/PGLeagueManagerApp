@@ -127,6 +127,7 @@ describe('GET /payments/:id/receipt (Task #503)', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.receiptUrl).toBe('https://cached/receipt');
+    expect(body.data).toMatchObject({ contractVersion: 'payment-receipt/1', availability: 'available', deliveryEvidence: 'delivery_not_recorded' });
     expect(mockProvider.getPayment).not.toHaveBeenCalled();
     expect(mockStorage.updatePayment).not.toHaveBeenCalled();
   });

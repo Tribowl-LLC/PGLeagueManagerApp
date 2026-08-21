@@ -22,6 +22,7 @@ import { BowlerFinancialSummary } from "@/components/bowler-financial-summary";
 import { BowlerPaymentHistoryTable } from "@/components/bowler-payment-history-table";
 import { PaymentSyncRetryStatus } from "@/components/payment-sync-retry-status";
 import { AdminBowlerLinkPanel } from "@/components/admin-bowler-link-panel";
+import type { CanonicalPaymentReport } from "@shared/canonical-payment-report";
 
 export default function BowlerViewPage() {
   const params = useParams();
@@ -133,6 +134,37 @@ export default function BowlerViewPage() {
   });
 
   const payments = paymentsResponse?.data || [];
+
+  const { data: paymentReportResponse } = useQuery<{ data: CanonicalPaymentReport }>({
+    queryKey: ["/api/financials/f5/payments", effectiveLeagueId, bowlerId, currentUserRole, currentUserResponse?.data?.organizationId],
+    queryFn: async ({ signal }) => {
+      const scope = currentUserRole === "system_admin" && currentUserResponse?.data?.organizationId
+        ? `&organizationId=${encodeURIComponent(currentUserResponse.data.organizationId)}`
+        : "";
+      const response = await fetch(`/api/financials/f5/payments?leagueId=${effectiveLeagueId}&bowlerId=${bowlerId}&page=1&limit=200${scope}`, {
+        credentials: "include",
+        headers: { Accept: "application/json" },
+        signal,
+      });
+      if (!response.ok) throw new Error("Financial evidence requires review");
+      return response.json();
+    },
+    enabled: !!effectiveLeagueId && !!bowlerId && !!currentUserResponse?.data,
+    staleTime: 1000 * 60,
+    retry: false,
+  });
+  const paymentBusinessDates = useMemo(() => {
+    const map = new Map<number, string>();
+    for (const row of paymentReportResponse?.data?.rows ?? []) map.set(row.paymentId, row.businessDate);
+    for (const row of paymentReportResponse?.data?.unlinkedHistory ?? []) map.set(row.paymentId, row.businessDate);
+    return map;
+  }, [paymentReportResponse?.data]);
+  const paymentEvidenceStatuses = useMemo(() => {
+    const map = new Map<number, CanonicalPaymentReport["rows"][number]["status"]>();
+    for (const row of paymentReportResponse?.data?.rows ?? []) map.set(row.paymentId, row.status);
+    for (const row of paymentReportResponse?.data?.unlinkedHistory ?? []) map.set(row.paymentId, row.status);
+    return map;
+  }, [paymentReportResponse?.data]);
 
   const { data: financialResponse, isLoading: loadingFinancials, error: financialError } = useQuery<ApiResponse<{
     mode: string;
@@ -264,6 +296,8 @@ export default function BowlerViewPage() {
         <BowlerPaymentHistoryTable
           payments={payments}
           locationId={league?.locationId ?? null}
+          paymentBusinessDates={paymentBusinessDates}
+          paymentEvidenceStatuses={paymentEvidenceStatuses}
         />
       </ErrorBoundary>
 

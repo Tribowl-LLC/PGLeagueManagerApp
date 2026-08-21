@@ -4,14 +4,17 @@ import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ViewReceiptButton } from "@/components/view-receipt-button";
 import type { Payment } from "@shared/schema";
+import type { CanonicalPaymentRow } from "@shared/canonical-payment-report";
 
 interface Props {
   payments: Payment[];
   /** Owning location used to deep-link the PROVIDER_NOT_CONFIGURED toast. */
   locationId?: number | null;
+  paymentBusinessDates?: Map<number, string>;
+  paymentEvidenceStatuses?: Map<number, CanonicalPaymentRow["status"]>;
 }
 
-export function BowlerPaymentHistoryTable({ payments, locationId }: Props) {
+export function BowlerPaymentHistoryTable({ payments, locationId, paymentBusinessDates, paymentEvidenceStatuses }: Props) {
   return (
     <div className="rounded-md border">
       <Table>
@@ -33,12 +36,12 @@ export function BowlerPaymentHistoryTable({ payments, locationId }: Props) {
           ) : (
             payments.map((payment) => (
               <TableRow key={payment.id}>
-                <TableCell>{format(new Date(payment.weekOf), "MMM d, yyyy")}</TableCell>
+                <TableCell>{format(new Date(paymentBusinessDates?.get(payment.id) ?? payment.weekOf), "MMM d, yyyy")}</TableCell>
                 <TableCell className="capitalize">{payment.type.replace(/_/g, " ")}</TableCell>
                 <TableCell>${(payment.amount / 100).toFixed(2)}</TableCell>
                 <TableCell>
                   <Badge variant={payment.status === "paid" ? "default" : "secondary"}>
-                    {payment.status}
+                    {paymentEvidenceStatuses?.get(payment.id) === "unresolved" ? "Review required" : payment.status}
                   </Badge>
                 </TableCell>
                 <TableCell>

@@ -14,6 +14,7 @@ import { createLogger } from '../../logger';
 import { getPaymentProvider, ProviderNotConfiguredError } from '../../services/payment-provider-factory';
 import { buildPaymentErrorResponse } from '../../utils/payment-error-response.js';
 import { sendReceiptResendEmail } from '../../services/email';
+import { paymentReceiptContract, type PaymentReceiptContract } from '@shared/payment-receipt';
 
 const log = createLogger('PaymentReceipts');
 
@@ -43,11 +44,14 @@ const resendBodySchema = z.object({
  * configuration errors propagate as `ProviderNotConfiguredError` so
  * the caller can map them to 422.
  */
-async function resolveReceiptUrl(paymentId: number): Promise<{
+async function resolveReceiptUrl(paymentId: number, organizationId?: number): Promise<{
   receiptUrl: string;
   receiptNumber: string | null;
+  receipt: PaymentReceiptContract;
 } | null> {
-  const payment = await storage.getPaymentById(paymentId);
+  const payment = organizationId && typeof storage.getPaymentByIdForOrganization === "function"
+    ? await storage.getPaymentByIdForOrganization(paymentId, organizationId)
+    : await storage.getPaymentById(paymentId);
   if (!payment) {
     return null;
   }
@@ -58,6 +62,7 @@ async function resolveReceiptUrl(paymentId: number): Promise<{
     return {
       receiptUrl: payment.receiptUrl,
       receiptNumber: payment.receiptNumber,
+      receipt: paymentReceiptContract(payment),
     };
   }
 
@@ -84,6 +89,10 @@ async function resolveReceiptUrl(paymentId: number): Promise<{
   return {
     receiptUrl: verification.receiptUrl,
     receiptNumber: verification.receiptNumber ?? null,
+    receipt: paymentReceiptContract({
+      receiptUrl: verification.receiptUrl ?? null,
+      receiptNumber: verification.receiptNumber ?? null,
+    }),
   };
 }
 
@@ -101,12 +110,18 @@ router.get('/payments/:id/receipt', async (req, res) => {
       return sendError(res, "You don't have access to this payment", 403, 'FORBIDDEN');
     }
 
-    const resolved = await resolveReceiptUrl(id);
+    const resolved = await resolveReceiptUrl(id, req.user?.organizationId ?? undefined);
     if (!resolved) {
       return sendError(res, 'No receipt available for this payment', 404, 'RECEIPT_UNAVAILABLE');
     }
 
-    return sendSuccess(res, resolved);
+    return sendSuccess(res, {
+      ...resolved.receipt,
+      // Preserve the existing flat fields for current clients while the
+      // versioned receipt contract is adopted by F5 consumers.
+      receiptUrl: resolved.receiptUrl,
+      receiptNumber: resolved.receiptNumber,
+    });
   } catch (error) {
     if (error instanceof ProviderNotConfiguredError) {
       return sendError(res, 'Payment provider not configured for this location', 422, 'PROVIDER_NOT_CONFIGURED');
@@ -140,12 +155,14 @@ router.post('/payments/:id/resend-receipt', paymentWriteLimiter, async (req, res
       }
     }
 
-    const resolved = await resolveReceiptUrl(id);
+    const resolved = await resolveReceiptUrl(id, req.user?.organizationId ?? undefined);
     if (!resolved) {
       return sendError(res, 'No receipt available for this payment', 404, 'RECEIPT_UNAVAILABLE');
     }
 
-    const payment = await storage.getPaymentById(id);
+    const payment = req.user?.organizationId && typeof storage.getPaymentByIdForOrganization === "function"
+      ? await storage.getPaymentByIdForOrganization(id, req.user.organizationId)
+      : await storage.getPaymentById(id);
     if (!payment) {
       return sendError(res, 'Payment not found', 404, 'NOT_FOUND');
     }

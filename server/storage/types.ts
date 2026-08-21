@@ -88,6 +88,7 @@ export interface IPaymentStorage {
   getAllPaymentsPaginatedSystemAdmin(filters: { bowlerId?: number; leagueId?: number; teamId?: number; weekOf?: Date }, page: number, limit: number): Promise<PaginatedResult<Payment>>;
   getPaymentsPaginated(filters: { bowlerId?: number; leagueId?: number; leagueIds?: number[]; teamId?: number; weekOf?: Date; organizationId: number }, page: number, limit: number): Promise<PaginatedResult<Payment>>;
   getPaymentById(id: number): Promise<Payment | undefined>;
+  getPaymentByIdForOrganization(id: number, organizationId: number): Promise<Payment | undefined>;
   getPaymentByIdempotencyKey(key: string): Promise<Payment | undefined>;
   getPaymentsByPaymentOperationId(organizationId: number, operationId: string): Promise<Payment[]>;
   getPaymentByDisputeId(disputeId: string): Promise<Payment | undefined>;

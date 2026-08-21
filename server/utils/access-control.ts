@@ -145,7 +145,9 @@ export async function getPaymentManagerAccessibleBowlerIds(req: Request): Promis
 /** Payment-row access for location-scoped bookkeeping and receipts. */
 export async function hasPaymentManagerAccessToPayment(req: Request, paymentId: number): Promise<boolean> {
   if (!isPaymentManager(req.user)) return false;
-  const payment = await storage.getPaymentById(paymentId);
+  const payment = req.user?.organizationId && typeof storage.getPaymentByIdForOrganization === "function"
+    ? await storage.getPaymentByIdForOrganization(paymentId, req.user.organizationId)
+    : await storage.getPaymentById(paymentId);
   return !!payment && hasPaymentManagerAccessToLeague(req, payment.leagueId);
 }
 
@@ -657,7 +659,9 @@ export async function hasAccessToPayment(req: Request, paymentId: number): Promi
   }
 
   try {
-    const payment = await storage.getPaymentById(paymentId);
+    const payment = req.user.organizationId && typeof storage.getPaymentByIdForOrganization === "function"
+      ? await storage.getPaymentByIdForOrganization(paymentId, req.user.organizationId)
+      : await storage.getPaymentById(paymentId);
     if (!payment) {
       return false;
     }

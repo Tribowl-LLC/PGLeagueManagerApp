@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { League, Payment, User, SavedCard, ApiResponse, BowlerDetailsResponse } from "@shared/schema";
+import type { CanonicalPaymentReport, CanonicalPaymentRow } from "@shared/canonical-payment-report";
 import type { FinancialReadContract } from "@shared/financial-contract";
 import { BowlerLayout } from "@/components/bowler-layout";
 import { PageLoadingState } from "@/components/page-states";
@@ -148,6 +149,28 @@ export default function PaymentHistoryPage() {
     enabled: !!bowlerId && !!leagueId && detailsLoaded && !hasPaymentsFromDetails,
   });
 
+  const { data: canonicalPaymentReportResponse, isLoading: loadingCanonicalPaymentReport, error: canonicalPaymentReportError } = useQuery<ApiResponse<CanonicalPaymentReport>>({
+    queryKey: ["/api/financials/f5/payments", { bowlerId, leagueId }],
+    queryFn: async ({ signal }) => {
+      const params = new URLSearchParams({
+        leagueId: String(leagueId),
+        bowlerId: String(bowlerId),
+        page: "1",
+        limit: "200",
+      });
+      const response = await fetch(`/api/financials/f5/payments?${params.toString()}`, {
+        credentials: "include",
+        headers: { Accept: "application/json" },
+        signal,
+      });
+      if (!response.ok) throw new Error("Payment evidence requires review");
+      return response.json();
+    },
+    enabled: !!bowlerId && !!leagueId,
+    staleTime: 30_000,
+    retry: false,
+  });
+
   const league = leagueMap.get(leagueId!);
 
   const { supportsWallets, isLoading: providerLoading } = usePaymentProvider(league?.locationId ?? null);
@@ -199,6 +222,13 @@ export default function PaymentHistoryPage() {
   const bowlerEmail = bowlerDetailsResponse?.data?.bowler?.email || '';
 
   const bowlerPayments = payments.filter(p => p.bowlerId === bowlerId && p.leagueId === leagueId);
+  const paymentBusinessDates = new Map<number, string>();
+  const paymentEvidenceStatuses = new Map<number, CanonicalPaymentRow["status"]>();
+  const canonicalPaymentReport = canonicalPaymentReportResponse?.data;
+  for (const row of [...(canonicalPaymentReport?.rows ?? []), ...(canonicalPaymentReport?.unlinkedHistory ?? [])]) {
+    paymentBusinessDates.set(row.paymentId, row.businessDate);
+    paymentEvidenceStatuses.set(row.paymentId, row.status);
+  }
 
   const resolvedFinancialRead = resolveInteractiveFinancialRead(canonicalFinancialResponse?.data);
   const legacyFinancials = resolvedFinancialRead.status === "legacy_fallback"
@@ -450,7 +480,7 @@ export default function PaymentHistoryPage() {
 
   const checkoutAvailable = resolvedFinancialRead.status !== "unavailable" && !loadingFinancialRead && !financialReadError;
 
-  if (loadingUser || loadingBowlerDetails || (!hasPaymentsFromDetails && loadingPayments)) {
+  if (loadingUser || loadingBowlerDetails || loadingCanonicalPaymentReport || (!hasPaymentsFromDetails && loadingPayments)) {
     return (
       <BowlerLayout bowlerName={bowlerName || 'Loading...'} leagueName={league?.name || 'Loading...'}>
         <PageLoadingState />
@@ -473,6 +503,10 @@ export default function PaymentHistoryPage() {
 
   if (bowlerId && bowlerError) {
     return <BowlerErrorView />;
+  }
+
+  if (canonicalPaymentReportError) {
+    return <BowlerLayout bowlerName={bowlerName} leagueName={league?.name || 'Payment history'}><p className="p-6 text-destructive">Payment evidence requires review; no canonical history is shown.</p></BowlerLayout>;
   }
 
   if (!bowlerDetailsResponse?.data?.bowlerLeagues?.length) {
@@ -540,6 +574,8 @@ export default function PaymentHistoryPage() {
       receiptEmail={receiptEmail}
       onReceiptEmailChange={setReceiptEmail}
       bowlerPayments={bowlerPayments}
+      paymentBusinessDates={paymentBusinessDates}
+      paymentEvidenceStatuses={paymentEvidenceStatuses}
       occurrenceAmountMinor={checkoutAvailable ? dialogAmountCents : 0}
       occurrenceAllocations={occurrenceAllocations}
       occurrenceQuoteFingerprint={occurrenceQuoteFingerprint}

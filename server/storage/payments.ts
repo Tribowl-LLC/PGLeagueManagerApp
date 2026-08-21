@@ -32,6 +32,13 @@ export class PaymentOccurrenceEvidenceExistsError extends Error {
   }
 }
 
+export class PaymentEvidenceImmutableError extends Error {
+  constructor() {
+    super("Payment evidence is immutable");
+    this.name = "PaymentEvidenceImmutableError";
+  }
+}
+
 interface PaymentFilters {
   bowlerId?: number;
   leagueId?: number;
@@ -198,6 +205,20 @@ export async function getPaymentById(id: number): Promise<Payment | undefined> {
   return result;
 }
 
+/**
+ * Tenant-scoped payment lookup for reporting, receipt, and mutation guards.
+ * A payment without a league in the requested organization is intentionally
+ * indistinguishable from a missing row.
+ */
+export async function getPaymentByIdForOrganization(id: number, organizationId: number): Promise<Payment | undefined> {
+  const [result] = await db.select({ payment: payments })
+    .from(payments)
+    .innerJoin(leagues, and(eq(leagues.id, payments.leagueId), eq(leagues.organizationId, organizationId)))
+    .where(eq(payments.id, id))
+    .limit(1);
+  return result?.payment;
+}
+
 export async function getPaymentByIdempotencyKey(key: string): Promise<Payment | undefined> {
   const [result] = await db.select().from(payments).where(eq(payments.idempotencyKey, key)).limit(1);
   return result;
@@ -264,12 +285,25 @@ export async function getPaymentsByCombinedGroupId(groupId: string): Promise<Pay
 }
 
 export async function updatePayment(id: number, payment: UpdatePayment): Promise<Payment> {
-  const [result] = await db
-    .update(payments)
-    .set(payment)
-    .where(eq(payments.id, id))
-    .returning();
-  return result;
+  const keys = Object.keys(payment);
+  const receiptOnly = keys.length > 0 && keys.every((key) => key === "receiptUrl" || key === "receiptNumber");
+  const result = await db.transaction(async (tx) => {
+    const [current] = await tx.select({
+      id: payments.id,
+      paymentOperationId: payments.paymentOperationId,
+    }).from(payments).where(eq(payments.id, id)).limit(1).for("update");
+    if (!current) return undefined;
+    const [allocation] = await tx.select({ id: paymentOccurrenceAllocations.id })
+      .from(paymentOccurrenceAllocations)
+      .where(eq(paymentOccurrenceAllocations.paymentId, id))
+      .limit(1);
+    if ((current.paymentOperationId !== null || allocation) && !receiptOnly) {
+      throw new PaymentEvidenceImmutableError();
+    }
+    const [updated] = await tx.update(payments).set(payment).where(eq(payments.id, id)).returning();
+    return updated;
+  });
+  return result as Payment;
 }
 
 export async function refundPayment(id: number, providerRefundId?: string, reason?: string): Promise<Payment> {
@@ -308,10 +342,9 @@ export async function deletePayment(id: number): Promise<void> {
     if (!payment) return;
 
     if (payment.paymentOperationId !== null) {
-      // The payment-operation row is the shared serialization fence with
-      // dispute reconciliation. Once held, no dispute can be attached between
-      // this evidence check and deletion, and reconciliation that wins first
-      // makes this delete fail closed.
+      // Preserve the existing dispute serialization/error contract while
+      // still retaining every operation-linked row. A dispute that wins the
+      // operation lock is the most specific retained-evidence reason.
       await tx.select({ id: paymentOperations.id })
         .from(paymentOperations)
         .where(eq(paymentOperations.id, payment.paymentOperationId))
@@ -322,6 +355,7 @@ export async function deletePayment(id: number): Promise<void> {
         .where(eq(paymentDisputes.paymentOperationId, payment.paymentOperationId))
         .limit(1);
       if (retainedDispute) throw new PaymentDisputeEvidenceExistsError();
+      throw new PaymentOccurrenceEvidenceExistsError();
     }
 
     const [occurrenceEvidence] = await tx.select({ id: paymentOccurrenceAllocations.id })

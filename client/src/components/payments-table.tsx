@@ -19,6 +19,7 @@ import {
   PaymentDisputeDetails,
 } from "@/components/payment-dispute-details";
 import type { Payment, PaymentRowDisputeSummary, Bowler, League } from "@shared/schema";
+import type { CanonicalPaymentRow } from "@shared/canonical-payment-report";
 
 type PaymentWithDisputes = Payment & { disputes?: PaymentRowDisputeSummary[] };
 
@@ -48,6 +49,8 @@ interface Props {
    * deep-links to that location's settings card.
    */
   leagues?: League[];
+  paymentBusinessDates?: Map<number, string>;
+  paymentEvidenceStatuses?: Map<number, CanonicalPaymentRow["status"]>;
 }
 
 // Stable default reference so the optional `leagues` prop doesn't create a
@@ -65,6 +68,8 @@ export function PaymentsTable({
   isRefundPending,
   isDeletePending,
   leagues = EMPTY_LEAGUES,
+  paymentBusinessDates,
+  paymentEvidenceStatuses,
 }: Props) {
   const [resendTarget, setResendTarget] = useState<Payment | null>(null);
   const [expandedPaymentIds, setExpandedPaymentIds] = useState<Set<number>>(new Set());
@@ -113,7 +118,7 @@ export function PaymentsTable({
                 <Fragment key={payment.id}>
                 <TableRow>
                   <TableCell>{bowler?.name || "Unknown Bowler"}</TableCell>
-                  <TableCell>{format(new Date(payment.weekOf), "MMM d, yyyy")}</TableCell>
+                  <TableCell>{format(new Date(paymentBusinessDates?.get(payment.id) ?? payment.weekOf), "MMM d, yyyy")}</TableCell>
                   <TableCell>${(payment.amount / 100).toFixed(2)}</TableCell>
                   <TableCell>
                     <div className="flex flex-wrap items-center gap-2">
@@ -126,7 +131,7 @@ export function PaymentsTable({
                         }
                         className={payment.status === "refunded" ? "border-destructive text-destructive" : ""}
                       >
-                        {payment.status}
+                        {paymentEvidenceStatuses?.get(payment.id) === "unresolved" ? "Review required" : payment.status}
                       </Badge>
                       {disputes.map((dispute) => (
                         <PaymentDisputeBadge key={dispute.id} dispute={dispute} />

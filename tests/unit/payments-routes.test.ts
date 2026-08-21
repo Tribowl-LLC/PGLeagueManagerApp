@@ -53,6 +53,7 @@ import {
 import express from 'express';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
+import { expectErrorLog } from '../helpers/expected-error-logs';
 
 const mockStorage = {
   getLeague: vi.fn(),
@@ -131,6 +132,7 @@ vi.mock('../../server/services/scheduled-payment-operation-executor', () => ({
 const mockSumQuery = vi.fn();
 vi.mock('../../server/db', () => ({
   db: {
+    execute: () => Promise.resolve({ rows: [{ present: false }] }),
     select: () => ({
       from: () => ({
         where: (..._a: unknown[]) => mockSumQuery(),
@@ -285,6 +287,15 @@ async function del(path: string, user: object = ORG_A_USER) {
 }
 
 describe('POST /api/payments', () => {
+  it('rejects generic cash/check writes once canonical activation is complete', async () => {
+    mockStorage.getLeague.mockResolvedValue(LEAGUE_OK);
+    mockSumQuery.mockResolvedValue([{ completenessMarker: true }]);
+    const res = await post('/api/payments', basePayment());
+    expect(res.status).toBe(409);
+    expect((await res.json()).error.code).toBe('CANONICAL_ALLOCATION_REQUIRED');
+    expect(mockStorage.createPayment).not.toHaveBeenCalled();
+  });
+
   it('creates a payment on the happy path → 201', async () => {
     mockStorage.getLeague.mockResolvedValue(LEAGUE_OK);
     mockStorage.createPayment.mockResolvedValue({ id: 555, ...basePayment() });
@@ -457,6 +468,15 @@ describe('PATCH /api/payments/:id', () => {
     expect(res.status).toBe(400);
     expect((await res.json()).error.code).toBe('VALIDATION_ERROR');
     expect(mockStorage.updatePayment).not.toHaveBeenCalled();
+  });
+
+  it('retains operation/allocation-linked evidence on public PATCH', async () => {
+    const { PaymentEvidenceImmutableError } = await import('../../server/storage/payments');
+    expectErrorLog(/Payment evidence is immutable/);
+    mockStorage.updatePayment.mockRejectedValue(new PaymentEvidenceImmutableError());
+    const res = await patch('/api/payments/1', { amount: 5000 });
+    expect(res.status).toBe(409);
+    expect((await res.json()).error.code).toBe('PAYMENT_EVIDENCE_RETAINED');
   });
 });
 

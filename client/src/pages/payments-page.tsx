@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueries } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Layout } from "@/components/layout";
@@ -36,6 +36,7 @@ import {
 import { PaymentsTable } from "@/components/payments-table";
 import { RefundPaymentDialog } from "@/components/refund-payment-dialog";
 import { PaginationControls } from "@/components/pagination-controls";
+import type { CanonicalPaymentReport } from "@shared/canonical-payment-report";
 
 const PAGE_SIZE_OPTIONS = [25, 50, 100];
 const DEFAULT_PAGE_SIZE = 50;
@@ -163,6 +164,40 @@ export default function PaymentsPage() {
   const pagination = paymentsResponse?.pagination;
   const bowlers = useMemo(() => bowlersResponse?.data || [], [bowlersResponse?.data]);
   const leagues = leaguesResponse?.data || [];
+  const financialReports = useQueries({
+    queries: leagues.map((league) => ({
+      queryKey: ["/api/financials/f5/payments", league.id, page, pageSize],
+      queryFn: async ({ signal }: { signal: AbortSignal }) => {
+        const response = await fetch(`/api/financials/f5/payments?leagueId=${league.id}&page=${page}&limit=${pageSize}`, {
+          credentials: "include",
+          headers: { Accept: "application/json" },
+          signal,
+        });
+        if (!response.ok) throw new Error("Financial evidence requires review");
+        return response.json() as Promise<{ data: CanonicalPaymentReport }>;
+      },
+      enabled: !!userResponse?.data,
+      staleTime: 1000 * 60,
+      retry: false,
+    })),
+  });
+  const financialReportData = financialReports.map((result) => result.data?.data);
+  const paymentBusinessDates = (() => {
+    const map = new Map<number, string>();
+    for (const report of financialReportData) {
+      for (const row of report?.rows ?? []) map.set(row.paymentId, row.businessDate);
+      for (const row of report?.unlinkedHistory ?? []) map.set(row.paymentId, row.businessDate);
+    }
+    return map;
+  })();
+  const paymentEvidenceStatuses = (() => {
+    const map = new Map<number, CanonicalPaymentReport["rows"][number]["status"]>();
+    for (const report of financialReportData) {
+      for (const row of report?.rows ?? []) map.set(row.paymentId, row.status);
+      for (const row of report?.unlinkedHistory ?? []) map.set(row.paymentId, row.status);
+    }
+    return map;
+  })();
   const defaultLeagueId = leagues.length > 0 ? leagues[0].id : undefined;
 
   const filteredPayments = useMemo(() => {
@@ -231,6 +266,8 @@ export default function PaymentsPage() {
             isRefundPending={refundPaymentMutation.isPending}
             isDeletePending={deletePaymentMutation.isPending}
             leagues={leagues}
+            paymentBusinessDates={paymentBusinessDates}
+            paymentEvidenceStatuses={paymentEvidenceStatuses}
           />
 
           {pagination && (

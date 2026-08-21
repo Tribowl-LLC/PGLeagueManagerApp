@@ -3,6 +3,7 @@ import { ChevronDown } from "lucide-react";
 import { DEFAULT_TIMEZONE } from "@shared/schema";
 import type { League, Payment, SavedCard, BowlerLeague } from "@shared/schema";
 import type { DoublePayStatus } from "@/lib/financial-utils";
+import type { CanonicalPaymentRow } from "@shared/canonical-payment-report";
 import { BowlerLayout } from "@/components/bowler-layout";
 import { PaymentSummaryCards } from "@/components/payment-summary-cards";
 import { ErrorBoundary } from "@/components/error-boundary";
@@ -62,6 +63,8 @@ interface PaymentHistoryContentProps {
   receiptEmail: string;
   onReceiptEmailChange: (email: string) => void;
   bowlerPayments: Payment[];
+  paymentBusinessDates: Map<number, string>;
+  paymentEvidenceStatuses: Map<number, CanonicalPaymentRow["status"]>;
   occurrenceAmountMinor?: number;
   occurrenceAllocations: { obligationId: string; amountMinor: number }[];
   occurrenceQuoteFingerprint?: string;
@@ -120,6 +123,8 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
   receiptEmail,
   onReceiptEmailChange,
   bowlerPayments,
+  paymentBusinessDates,
+  paymentEvidenceStatuses,
   occurrenceAmountMinor,
   onOccurrenceChange,
   onOccurrenceReadinessChange,
@@ -209,7 +214,7 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
         </ErrorBoundary>
 
         <ErrorBoundary level="section">
-          <BowlerPaymentTable payments={bowlerPayments} league={league} />
+          <BowlerPaymentTable payments={bowlerPayments} league={league} paymentBusinessDates={paymentBusinessDates} paymentEvidenceStatuses={paymentEvidenceStatuses} />
         </ErrorBoundary>
       </div>
 
