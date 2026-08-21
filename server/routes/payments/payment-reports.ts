@@ -247,7 +247,13 @@ router.get("/", async (req, res) => {
       });
       return sanitized.map((payment) => ({
         ...payment,
-        disputes: disputesByPaymentId.get(payment.id) ?? [],
+        disputes: ordinaryReader
+          ? (disputesByPaymentId.get(payment.id) ?? []).map((dispute) => ({
+            present: true,
+            state: dispute.state,
+            reviewRequired: true,
+          }))
+          : disputesByPaymentId.get(payment.id) ?? [],
       }));
     };
 

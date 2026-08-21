@@ -79,8 +79,13 @@ router.get("/payments", async (req, res) => {
       const authorizedAmount = ownAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0);
       const hasCanonicalOwnership = ownAllocations.length > 0;
       const safeAmount = hasCanonicalOwnership ? authorizedAmount : row.amountMinor;
+      const isInitiatingPayer = row.initiatingPayerBowlerId !== null
+        && row.initiatingPayerBowlerId !== undefined
+        && row.initiatingPayerBowlerId === req.user?.bowlerId;
+      const safeRefundAmount = isInitiatingPayer ? row.refund.amountMinor : 0;
+      const { initiatingPayerBowlerId: _initiatingPayerBowlerId, ...safeRow } = row;
       return {
-      ...row,
+      ...safeRow,
       bowlerId: req.user?.bowlerId ?? row.bowlerId,
       amountMinor: safeAmount,
       allocatedMinor: hasCanonicalOwnership ? authorizedAmount : Math.min(row.allocatedMinor, safeAmount),
@@ -90,7 +95,7 @@ router.get("/payments", async (req, res) => {
       operationType: null,
       operationStatus: null,
       allocations: ownAllocations,
-      refund: { ...row.refund, providerRefundId: null },
+      refund: { ...row.refund, amountMinor: safeRefundAmount, providerRefundId: null },
       dispute: { ...row.dispute, disputeId: null },
       receipt: { ...row.receipt, paymentId: null, paymentOperationId: null, operationStatus: null, amountMinor: safeAmount, allocations: ownAllocations, sharedTransaction: null, canResend: false, receiptUrl: null, receiptNumber: null },
     }; };

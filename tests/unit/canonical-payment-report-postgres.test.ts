@@ -44,6 +44,7 @@ describe("F5 canonical payment reporting PostgreSQL evidence", () => {
       limit: 1,
     });
     expect(report.mode).toBe("canonical_with_unlinked_history");
+    expect(report.paymentTiming).toMatchObject({ paymentMode: "weekly", source: "canonical_activation", upfrontDueAt: null });
     expect(report.rows).toEqual([]);
     expect(report.unlinkedHistory).toHaveLength(1);
     expect(report.unlinkedHistory[0]).toMatchObject({ paymentId: payment.id, amountMinor: 750, businessDate: payment.weekOf });

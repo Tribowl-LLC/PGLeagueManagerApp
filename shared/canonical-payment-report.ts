@@ -27,6 +27,21 @@ export interface CanonicalPaymentReceiptSummary {
   source?: "canonical_allocation" | "unlinked_legacy" | "unresolved_operation" | null;
 }
 
+export interface CanonicalPaymentTiming {
+  paymentMode: "weekly" | "upfront";
+  upfrontDueAt: string | null;
+  source: "canonical_activation" | "legacy_league";
+}
+
+export interface CanonicalCollectionEvidence {
+  d2PlanId: string;
+  planVersion: number;
+  collectionPointOccurrenceId: string;
+  coveredOccurrenceIds: string[];
+  timing: "at_collection_point";
+  grouping: "normal" | "double_pay";
+}
+
 export interface CanonicalPaymentRefundEvidence {
   present: boolean;
   amountMinor: number;
@@ -76,6 +91,9 @@ export interface CanonicalPaymentRow {
   unresolved: boolean;
   receipt: CanonicalPaymentReceiptSummary;
   allocations: CanonicalPaymentAllocationRow[];
+  collectionEvidence?: CanonicalCollectionEvidence;
+  /** Internal role projection hint; ordinary responses remove it. */
+  initiatingPayerBowlerId?: number | null;
 }
 
 export interface CanonicalPaymentTransactionGroup {
@@ -87,6 +105,7 @@ export interface CanonicalPaymentTransactionGroup {
   paymentIds: number[];
   dispute?: { present: boolean; amountMinor: number; disputeId: string | null; currency: string; state: string; reviewRequired: boolean; scope: "transaction" };
   rows: CanonicalPaymentRow[];
+  collectionEvidence?: CanonicalCollectionEvidence;
 }
 
 export interface CanonicalPaymentReportTotals {
@@ -116,6 +135,7 @@ export interface CanonicalPaymentReport {
   rows: CanonicalPaymentRow[];
   transactions: CanonicalPaymentTransactionGroup[];
   unlinkedHistory: CanonicalPaymentRow[];
+  paymentTiming: CanonicalPaymentTiming;
 }
 
 export function canonicalPaymentReportFingerprint(value: Omit<CanonicalPaymentReport, "fingerprint">): string {

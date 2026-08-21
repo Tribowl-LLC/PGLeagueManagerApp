@@ -30,6 +30,7 @@ const base: Omit<CanonicalPaymentReport, "fingerprint"> = {
   rows: [],
   transactions: [],
   unlinkedHistory: [],
+  paymentTiming: { paymentMode: "weekly", upfrontDueAt: null, source: "canonical_activation" },
 };
 
 describe("F5 canonical payment and receipt contracts", () => {
