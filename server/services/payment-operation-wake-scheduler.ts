@@ -31,7 +31,12 @@ function wakeContext(wake: PaymentOperationWake): Record<string, unknown> {
       status: wake.status,
       attemptCount: wake.attemptCount,
     }
-    : {
+    : wake.kind === "canonical_plan" ? {
+      workKind: wake.kind,
+      organizationId: wake.organizationId,
+      leagueId: wake.leagueId,
+      d2PlanId: wake.d2PlanId,
+    } : {
       workKind: wake.kind,
       organizationId: wake.organizationId,
       paymentScheduleId: wake.paymentScheduleId,
@@ -41,7 +46,9 @@ function wakeContext(wake: PaymentOperationWake): Record<string, unknown> {
 function wakeSignature(wake: PaymentOperationWake, dueMs: number): string {
   return wake.kind === "operation"
     ? `operation:${wake.operationId}:${wake.operationType}:${wake.status}:${wake.attemptCount}:${dueMs}`
-    : `schedule:${wake.paymentScheduleId}:${dueMs}`;
+    : wake.kind === "canonical_plan"
+      ? `canonical-plan:${wake.d2PlanId}:${dueMs}`
+      : `schedule:${wake.paymentScheduleId}:${dueMs}`;
 }
 
 /** Exactly one wake for the earliest durable schedule or operation work. */

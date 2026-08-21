@@ -90,6 +90,7 @@ const PARALLEL_ISOLATED_WITH_APP = [
  */
 const UNIT_NO_DB = [
   'tests/unit/f3-autopay-contract.test.ts',
+  'tests/unit/f4-canonical-autopay-contract.test.ts',
   'tests/unit/f3-provider-ownership.test.ts',
   'tests/unit/canonical-due-past-due.test.ts',
   'tests/unit/neon-branches-reveal-password.test.ts',
@@ -198,6 +199,7 @@ const PARALLEL_ISOLATED = [
   'tests/unit/scheduled-payment-ledger-cutover.test.ts',
   'tests/unit/payment-provider-error-mapping.test.ts',
   'tests/unit/f3-workflow-postgres.test.ts',
+  'tests/unit/f4-canonical-autopay-integration-postgres.test.ts',
   'tests/api/f3-autopay-enabled-router.test.ts',
   'tests/unit/payment-refunds-receipt-dependency.test.ts',
   'tests/unit/payment-scheduler.test.ts',

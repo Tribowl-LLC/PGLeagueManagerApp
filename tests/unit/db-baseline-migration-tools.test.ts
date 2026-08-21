@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(29);
+    expect(migrations).toHaveLength(30);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -402,13 +402,17 @@ describe('normalized migration baseline tools', () => {
       createdAt: 1787270862813,
       hash: '89930b8cb9a586f560a03b42ed44fa69ed80709657e45cc6c35807ec5fb1a260',
     });
-    expect(migrations[28]?.sql).toContain(
-      'legacy invitation cleanup incomplete',
-    );
+    expect(migrations[28]?.sql).toContain('legacy invitation cleanup incomplete');
     expect(migrations[28]?.sql).toContain('DROP COLUMN "invite_token"');
-    expect(migrations[28]?.sql).toContain(
-      'DROP COLUMN "invite_token_expiry"',
-    );
+    expect(migrations[28]?.sql).toContain('DROP COLUMN "invite_token_expiry"');
+    expect(migrations[29]).toMatchObject({
+      idx: 29,
+      tag: '0029_phase_f4_canonical_scheduled_execution',
+      createdAt: 1787272227750,
+      hash: '02611196ab018f454c0aa060d720cc9febf1fbc70040e6fde53f2a6afe2c368a',
+    });
+    expect(migrations[29]?.sql).toContain('CREATE TABLE "canonical_autopay_execution_snapshots"');
+    expect(migrations[29]?.sql).toContain('payment_operations_trigger_occurrence_league_tenant_fk');
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 

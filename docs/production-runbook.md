@@ -33,6 +33,19 @@ obligation balances, so verify F2 manual quotes reject reserved capacity.
 After v2 evidence exists, rollback is a forward fix or traffic pause only;
 retain migration 0026 and its evidence.
 
+F4 canonical scheduled execution is independently gated. Keep
+`LEAGUEVAULT_F4_CANONICAL_AUTOPAY_EXECUTION_ENABLED` unset or false and leave
+`SCHEDULED_PAYMENT_EXECUTION_MODE` at `ledger_paused` (or `legacy`) until F1,
+F3, and F4 have separate approvals. Automatic F4 work is permitted only with
+`ledger_execute` and both F3/F4 gates enabled. Migration
+`0029_phase_f4_canonical_scheduled_execution` is forward-only with no
+backfill; it transactionally widens the three payment-operation CHECK
+constraints needed for the canonical domain and adds its tenant-scoped
+evidence/indexes. Deployment and migration never authorize provider calls. If
+a cutover issue occurs, pause traffic/disable the gate and retain uncertain F4
+operations for exact-key reconciliation; do not bulk-cancel or reinterpret
+legacy scheduled work.
+
 Production is hosted on Render and uses Neon PostgreSQL. GitHub `main` is the
 release source. This document covers the safe release path; it does not store
 credentials.

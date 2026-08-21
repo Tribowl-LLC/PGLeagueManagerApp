@@ -209,7 +209,11 @@ for reconciliation. Only sanitized codes enter the ledger.
 ## Data and identity invariants
 
 One row represents one logical provider operation. Supported operation types
-are `scheduled_charge`, `interactive_charge`, and `refund`.
+are `scheduled_charge`, `interactive_charge`, `refund`, and the separately
+gated F4 `canonical_autopay_charge`. F4 uses a
+`canonical-autopay-plan:<d2PlanId>` target, a distinct provider-key namespace,
+and an immutable `canonical-autopay-execution/1` snapshot. It never reuses or
+reinterprets legacy schedules or interactive operations.
 
 - `organization_id` is required, and every application read or mutation is
   qualified by it.
