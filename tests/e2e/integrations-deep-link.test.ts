@@ -16,11 +16,10 @@
  * `Start application` workflow), drives a real Chromium via Playwright,
  * and asserts the full stack still wires the deep link end-to-end.
  *
- * The Replit sandbox ships a Chromium binary at
- * `REPLIT_PLAYWRIGHT_CHROMIUM_EXECUTABLE` — if that env var is missing
- * (e.g. running this suite outside Replit) the whole describe block is
- * skipped instead of failing, mirroring the opt-in pattern used by
- * `scripts/test-race.sh`.
+ * Set `PLAYWRIGHT_CHROMIUM_EXECUTABLE` to use a specific browser binary.
+ * Otherwise the suite uses Playwright's installed Chromium when available;
+ * if neither a browser nor the frontend build exists, the whole describe
+ * block is skipped instead of failing.
  */
 import { existsSync } from 'node:fs';
 import path from 'node:path';
@@ -39,7 +38,8 @@ import {
   type AuthSession,
 } from '../helpers';
 
-const CHROMIUM_PATH = process.env.REPLIT_PLAYWRIGHT_CHROMIUM_EXECUTABLE;
+const CHROMIUM_PATH = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE || chromium.executablePath();
+const HAS_CHROMIUM = existsSync(CHROMIUM_PATH);
 // The per-worker test app serves the prebuilt React bundle from
 // `dist/public/` (server/app.ts → `serveStaticFrontend`). If
 // `npm run build` hasn't run, the bundle is missing and Playwright
@@ -124,17 +124,16 @@ async function newPageWithSession(session: AuthSession): Promise<BrowserContext>
       domain: url.hostname,
       path: '/',
       httpOnly: true,
-      // Mirror the dev-server cookie flags from `server/auth.ts`. On
-      // Replit the dev server sets `Secure; SameSite=None` because the
-      // cookie has to survive the HTTPS edge → HTTP loopback hop.
+      // Mirror the provider-neutral cookie flags from `server/auth.ts`.
+      // Production uses Secure; both production and local/test use Lax.
       secure: isHttps,
-      sameSite: isHttps ? 'None' : 'Lax',
+      sameSite: 'Lax',
     },
   ]);
   return ctx;
 }
 
-describe.skipIf(!CHROMIUM_PATH || !HAS_FRONTEND_BUILD)(
+describe.skipIf(!HAS_CHROMIUM || !HAS_FRONTEND_BUILD)(
   'Integrations deep link — real browser e2e (#586)',
   () => {
     beforeAll(async () => {
@@ -179,11 +178,6 @@ describe.skipIf(!CHROMIUM_PATH || !HAS_FRONTEND_BUILD)(
       // mask a real crash.
       seededLocations.push(await createLocation(orgBId, `${SUITE_TAG}-B1`));
 
-      if (!CHROMIUM_PATH) {
-        // describe.skipIf above already filters this out — this is a
-        // type-narrowing guard for TS, not a real runtime branch.
-        throw new Error('REPLIT_PLAYWRIGHT_CHROMIUM_EXECUTABLE not set');
-      }
       browser = await chromium.launch({
         executablePath: CHROMIUM_PATH,
         headless: true,

@@ -170,21 +170,18 @@ The non-`/api` mounts are:
 
 ```ts
 cookie: {
-  secure: !isDev || !!env.REPLIT_DEPLOYMENT || !!env.REPLIT_DOMAINS,
-  sameSite: (isDev && !!env.REPLIT_DOMAINS) ? "none" : "lax",
+  secure: isProduction,
+  sameSite: "lax",
   maxAge: 24 * 60 * 60 * 1000,
   httpOnly: true,
   ...(isProduction ? { domain: `.${env.APP_DOMAIN}` } : {}),
 },
 ```
 
-- Production / deployment: `sameSite: 'lax'` and `secure: true`. CSRF tokens
+- Production: `sameSite: 'lax'` and `secure: true`. CSRF tokens
   are a defense-in-depth layer, not the only barrier. Cross-site POSTs from
   a third-party origin will not carry the session cookie.
-- Local dev with no Replit preview: `sameSite: 'lax'`, `secure: false`.
-- The Replit-iframe dev case (`isDev && REPLIT_DOMAINS`) is the only place
-  we drop to `sameSite: 'none'`, and only because the workspace previews
-  the app in an iframe under a different parent origin. This is dev-only.
+- Local development and tests: `sameSite: 'lax'`, `secure: false`.
 
 ## Single gap, fixed in this task
 

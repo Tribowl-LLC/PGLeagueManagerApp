@@ -239,9 +239,8 @@ export default defineConfig({
     testTimeout: 30000,
     hookTimeout: 30000,
     alias: sharedAlias,
-    // Defence against the workflow-log truncation problem (~73s of
-    // vitest's tail output was being lost when the per-worker app
-    // spammed [INFO] lines past Replit's log buffer cap):
+    // Defence against CI workflow-log truncation (~73s of vitest's tail
+    // output can be lost when per-worker apps emit high-volume logs):
     //   1. `default` keeps the live progress / failure output.
     //   2. Custom `summary-reporter.ts` prints a single
     //      `[lv-test-summary] …` line at the very end of the run.
@@ -307,7 +306,7 @@ export default defineConfig({
           // `.local/tasks/isolate-false-audit-notes.md` (task #689) for
           // context.
           isolate: false,
-          // Pin worker count to the container CPU count (4 on Replit). Default
+          // Pin worker count to the supported CI container CPU count. Default
           // is `os.availableParallelism()` which is dynamic and can over-fork
           // on CI runners with reported-but-unusable cores, amplifying the
           // shared dev-DB contention root-caused in #685/#687. minForks ===

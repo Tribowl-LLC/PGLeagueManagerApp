@@ -87,14 +87,6 @@ function getAllowedOrigins(): string[] {
   // `isAllowedOrigin` would silently fail if APP_DOMAIN were mixed-case.
   origins.push(`https://${env.APP_DOMAIN}`);
   if (isDev) {
-    if (env.REPLIT_DOMAINS) {
-      for (const domain of env.REPLIT_DOMAINS.split(',')) {
-        origins.push(`https://${domain}`);
-      }
-    }
-    if (env.REPL_SLUG && env.REPL_OWNER) {
-      origins.push(`https://${env.REPL_SLUG}.${env.REPL_OWNER}.repl.co`);
-    }
     origins.push('http://localhost:5000');
     origins.push('http://localhost:5173');
     origins.push('http://127.0.0.1:5000');
@@ -124,8 +116,8 @@ export function isAllowedOrigin(origin: string): boolean {
 
 /**
  * Sets JSON / no-cache / CORS headers for `/api/*` and short-circuits OPTIONS
- * preflights. Allowed origins include leaguevault.app (and subdomains), Replit
- * dev domains, and Capacitor/Ionic mobile shells.
+ * preflights. Allowed origins include leaguevault.app (and subdomains), local
+ * development hosts, and Capacitor/Ionic mobile shells.
  */
 export function apiHeaders(req: Request, res: Response, next: NextFunction): void {
   res.setHeader('Content-Type', 'application/json');

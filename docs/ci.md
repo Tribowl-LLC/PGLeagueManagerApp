@@ -233,7 +233,7 @@ app. Together with the boot guard in
 `server/lib/trust-proxy-check.ts` (#326) and the CI lint in
 `scripts/check-trust-proxy-coverage.ts` (#378), this is the third
 leg of the trust-proxy verification story (#379) — the only one
-that catches a config change at the proxy layer (Replit edge,
+that catches a config change at the reverse-proxy layer (managed hosting edge,
 custom domain, future CDN) that silently re-introduces the bug
 **without any code change**. When that happens, every per-IP rate
 limiter — most importantly the 5 req / 15 min `setupAdminLimiter` —

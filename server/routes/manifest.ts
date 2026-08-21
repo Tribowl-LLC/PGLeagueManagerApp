@@ -66,9 +66,9 @@ router.get('/manifest.json', (req: Request, res: Response) => {
 router.get('/api/org-context', (req: Request, res: Response) => {
   const org = req.subdomainOrg;
 
-  // `appEnv` and `commit` ride along here (instead of `/api/health`)
-  // so the BETA banner can render without giving anonymous callers
-  // a dedicated fingerprinting endpoint. Surfaced at the top level
+  // `appEnv` and `commit` ride along here (instead of `/api/health`) so
+  // deployment verification can reuse an existing endpoint without giving
+  // anonymous callers a dedicated fingerprinting endpoint. Surfaced at the top level
   // (alongside `data`) so consumers that already destructure `data`
   // for the org payload keep working unchanged.
   const envelope = {

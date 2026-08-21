@@ -466,7 +466,7 @@ router.get('/admin-email-change-audits', requireAdmin, async (req: Request, res:
 // Debug endpoint for the post-deploy trust-proxy smoke test (task
 // #379). The boot guard at `assertTrustProxyAtBoot` catches code-side
 // misconfiguration on startup, but a config change at the proxy layer
-// (Replit edge, custom domain, future CDN) can re-introduce the bug
+// (managed edge, custom domain, future CDN) can re-introduce the bug
 // without any code change. This endpoint exposes:
 //
 //   - `live`: what THIS request actually resolved to — the real

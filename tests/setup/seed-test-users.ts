@@ -13,26 +13,29 @@ import { db as defaultDb } from '../../server/db';
 import * as schema from '@shared/schema';
 import { leagues, organizations, users } from '@shared/schema';
 import { hashPassword } from '../../server/lib/password';
-import { isReplitDeploymentValue } from '../../server/utils/replit-env';
-import { assertSafeDatabaseHost } from '../../server/utils/db-safety';
+import {
+  assertSafeDatabaseHost,
+  hasProductionDeploymentEvidence,
+} from '../../server/utils/db-safety';
 
 type AnyDb = NodePgDatabase<typeof schema>;
 
 /**
  * Hard guard: this seeder forcibly resets passwords / roles / org for any
  * user matching the configured test emails. Running it against a production
- * database would silently overwrite real accounts. Refuse unless we are in
- * a non-production NODE_ENV, or the operator explicitly opts in via
+ * database would silently overwrite real accounts. Refuse unless process
+ * metadata is non-production, or the operator explicitly opts in via
  * ALLOW_TEST_SEED=1.
  */
 function assertSafeEnvironment(): void {
   const nodeEnv = process.env.NODE_ENV;
   const allowOverride = process.env.ALLOW_TEST_SEED === '1';
-  const isReplitDeployment = isReplitDeploymentValue(process.env.REPLIT_DEPLOYMENT);
   if (allowOverride) return;
-  if (nodeEnv === 'production' || isReplitDeployment) {
+  if (hasProductionDeploymentEvidence(process.env)) {
     throw new Error(
-      'Refusing to run test-user seeder: NODE_ENV=production or REPLIT_DEPLOYMENT is set. ' +
+      'Refusing to run test-user seeder: production/deployment evidence is present ' +
+        `(APP_ENV=${process.env.APP_ENV ?? '<unset>'}, NODE_ENV=${nodeEnv ?? '<unset>'}, ` +
+        `APP_DOMAIN=${process.env.APP_DOMAIN ?? '<unset>'}). ` +
         'Set ALLOW_TEST_SEED=1 only if you really intend to write test accounts to this database.',
     );
   }

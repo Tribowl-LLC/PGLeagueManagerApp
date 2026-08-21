@@ -1,12 +1,10 @@
 /**
  * Hostname-based DB safety guard for destructive scripts.
  *
- * This is a second, INDEPENDENT layer on top of the
- * NODE_ENV / REPLIT_DEPLOYMENT check that
- * `scripts/cleanup-test-organizations.ts` and
- * `tests/setup/seed-test-users.ts` already perform via
- * `isReplitDeploymentValue` and their own `assertSafeEnvironment`
- * helpers. NODE_ENV is a shell variable that is trivially set wrong
+ * This is a second, INDEPENDENT layer on top of the provider-neutral
+ * production/deployment evidence checks that destructive scripts perform
+ * via their own `assertSafeEnvironment` helpers. NODE_ENV is a shell
+ * variable that is trivially set wrong
  * (e.g. `NODE_ENV=development` in a shell whose `DATABASE_URL`
  * still points at the live tenant). This guard fires off a
  * different, independent signal — the `DATABASE_URL` host itself —
@@ -26,9 +24,8 @@
  *        `DEV_DB_HOST_ALLOWLIST` env var (comma-separated). This is
  *        how a deployment registers its dev DB host once, so routine
  *        operator workflows don't need to set `DEV_DB_OK=1` every
- *        time. For this Replit project, the dev Neon endpoint id
- *        (`ep-dawn-unit-…`) is registered in the `development`
- *        environment via this var.
+ *        time. A development Neon endpoint can be registered in the
+ *        development environment via this var.
  *
  * Why opt-in instead of a blocklist of "prod-looking" substrings:
  * Neon endpoint hostnames are opaque (`ep-<adjective>-<noun>-<id>.…`)
@@ -36,8 +33,8 @@
  * blocklist would let the live host slip through. The allow-list
  * model is categorical: any host that is NOT explicitly registered
  * as a dev DB requires the operator to type DEV_DB_OK=1, which makes
- * it impossible to nuke the live tenant by accident even if
- * NODE_ENV, REPLIT_DEPLOYMENT, AND DATABASE_URL all point at prod.
+ * it impossible to nuke the live tenant by accident even if the application
+ * environment selectors and DATABASE_URL all point at prod.
  */
 
 const LOOPBACK_HOSTS: readonly string[] = ['localhost', '127.0.0.1', '::1', '[::1]'];
@@ -66,6 +63,24 @@ const AMBIENT_TARGET_OVERRIDE_ENVIRONMENT_KEYS = [
   'PGSERVICEFILE',
   'PGUSER',
 ] as const;
+
+/**
+ * Returns true when process metadata identifies a production-shaped runtime.
+ * This is intentionally pure so destructive scripts can share the same
+ * conservative check without importing boot-validating server config.
+ */
+export function hasProductionDeploymentEvidence(
+  environment: NodeJS.ProcessEnv,
+): boolean {
+  return (
+    environment.APP_ENV?.trim().toLowerCase() === 'prod' ||
+    environment.NODE_ENV?.trim().toLowerCase() === 'production' ||
+    environment.APP_DOMAIN?.trim().toLowerCase() === 'leaguevault.app' ||
+    Boolean(environment.RENDER?.trim()) ||
+    Boolean(environment.RENDER_SERVICE_ID?.trim()) ||
+    Boolean(environment.RENDER_EXTERNAL_HOSTNAME?.trim())
+  );
+}
 
 function parseAllowlist(raw: string | undefined): readonly string[] {
   if (!raw) return [];
@@ -168,4 +183,5 @@ export const __testing = {
   CONNECTION_TARGET_OVERRIDE_QUERY_PARAMETERS,
   LOOPBACK_HOSTS,
   parseAllowlist,
+  hasProductionDeploymentEvidence,
 };

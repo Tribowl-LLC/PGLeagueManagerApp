@@ -25,9 +25,6 @@ function mockConfig(appDomain: string): void {
     env: {
       APP_DOMAIN: appDomain,
       SENDGRID_API_KEY: undefined,
-      REPLIT_DOMAINS: undefined,
-      REPL_SLUG: undefined,
-      REPL_OWNER: undefined,
     },
     isDev: false,
   }));

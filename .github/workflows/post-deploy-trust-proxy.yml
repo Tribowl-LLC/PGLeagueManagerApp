@@ -6,7 +6,7 @@ name: Post-deploy trust-proxy probe
 # trust-proxy misconfiguration on the code side at startup, and
 # `scripts/check-trust-proxy-coverage.ts` (CI lint, task #378) catches
 # new express() instances added without the boot guard. Neither catches
-# a config change at the proxy layer (Replit edge, custom domain,
+# a config change at the reverse-proxy layer (managed edge, custom domain,
 # future CDN) that silently re-introduces the bug WITHOUT any code
 # change. When that happens, every per-IP rate limiter — most
 # importantly the 5 req / 15 min setupAdminLimiter — collapses into a
@@ -30,7 +30,7 @@ name: Post-deploy trust-proxy probe
 # operator run it on demand immediately after pushing a deploy.
 #
 # Transient-error tolerance (task #660):
-#   The Replit deploy edge / Cloud Run frontend will occasionally
+#   A managed edge / frontend may occasionally
 #   return a plain "Internal server error. Correlation ID: <uuid>"
 #   page when the container is briefly unavailable (cold start, brief
 #   restart, transient edge hiccup). To stop those one-off blips from
@@ -111,7 +111,7 @@ name: Post-deploy trust-proxy probe
 #   The probe's per-attempt timeout is deliberately TERMINAL — only
 #   HTTP 5xx and network errors get the retry budget. Combined with
 #   the 30-min cron cadence, the live container is frequently cold-
-#   evicted by the Replit deploy edge / Cloud Run frontend, so the
+#   evicted by the managed edge / frontend, so the
 #   first probe request after a long idle has been observed to eat a
 #   cold-start hit > 10s and instantly fail with no retry. Two
 #   measures here eliminate that false-positive class without

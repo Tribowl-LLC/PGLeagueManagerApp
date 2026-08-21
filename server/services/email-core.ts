@@ -177,15 +177,6 @@ if (SENDGRID_API_KEY) {
 export function getBaseUrl(
   orgOrSlug?: string | { subdomain?: string | null; slug?: string | null } | null,
 ): string {
-  if (isDev) {
-    if (env.REPLIT_DOMAINS) {
-      const domains = env.REPLIT_DOMAINS.split(',');
-      return `https://${domains[0]}`;
-    }
-    if (env.REPL_SLUG && env.REPL_OWNER) {
-      return `https://${env.REPL_SLUG}.${env.REPL_OWNER}.repl.co`;
-    }
-  }
   // Prefer the org's `subdomain` field (the actual DNS host) over `slug`
   // (an internal identifier that may contain hyphens not present in DNS).
   // Falls back to slug for legacy orgs that haven't been assigned a

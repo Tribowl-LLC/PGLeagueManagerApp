@@ -55,15 +55,9 @@ export async function spawnTestApp(opts: SpawnTestAppOptions): Promise<SpawnedTe
     DATABASE_URL: opts.databaseUrl,
     TEST_APP_PORT: '0',
     SUPPRESS_BACKGROUND_WORKERS: '1',
-    // The shared dev session is `Secure`-flagged because REPLIT_DOMAINS
-    // is set; over plain http://127.0.0.1 the client would drop it.
-    // The escape hatch in server/auth.ts forces `secure: false` for
-    // this test instance only (gated to non-production NODE_ENV).
-    TRUST_PROXY_DISABLE_SECURE_COOKIES: '1',
-    // Keep the spawned app from inheriting the dev workspace's REPL
-    // banner / scheduling defaults that interfere with deterministic
-    // tests. We deliberately leave APP_ENV unset so config defaults to
-    // 'dev' (the schema does not accept 'test').
+    // Keep the spawned app on the local/test defaults that make the suite
+    // deterministic. We deliberately leave APP_ENV unset so config resolves
+    // it to 'dev' (the schema does not accept 'test').
     NODE_ENV: process.env.NODE_ENV ?? 'development',
     // Quiet-mode contract is "be quiet regardless of parent env".
     // Using `process.env.LOG_LEVEL ?? 'warn'` would let an inherited

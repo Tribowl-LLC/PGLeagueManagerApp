@@ -23,10 +23,8 @@ import {
   type AuthSession,
   TEST_ORG_A_EMAIL,
   TEST_ORG_PASSWORD,
+  BASE_URL,
 } from '../helpers';
-
-const REPLIT_HOST = process.env.REPLIT_DEV_DOMAIN || (process.env.REPLIT_DOMAINS?.split(',')[0]);
-const BASE_URL = process.env.TEST_BASE_URL || (REPLIT_HOST ? `https://${REPLIT_HOST}` : 'http://localhost:5000');
 
 interface ApiResponse {
   success: boolean;

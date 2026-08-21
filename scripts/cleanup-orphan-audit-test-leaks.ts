@@ -44,8 +44,8 @@
  *     can run a sibling script if that becomes load-bearing.
  *
  * Safety (mirrors `scripts/cleanup-test-organizations.ts` Task #607/#609):
- *   - Refuses to run when NODE_ENV=production or REPLIT_DEPLOYMENT is
- *     set, unless ALLOW_TEST_CLEANUP=1 is also passed.
+ *   - Refuses to run in a production-shaped runtime unless
+ *     ALLOW_TEST_CLEANUP=1 is also passed.
  *   - Independently calls `assertSafeDatabaseHost` so a wrong NODE_ENV
  *     pointing at the live Neon endpoint still refuses to delete.
  *   - Wraps all deletes in a single transaction; failure rolls back.
@@ -65,8 +65,10 @@ import {
   teams,
   users,
 } from '@shared/schema';
-import { isReplitDeploymentValue } from '../server/utils/replit-env';
-import { assertSafeDatabaseHost } from '../server/utils/db-safety';
+import {
+  assertSafeDatabaseHost,
+  hasProductionDeploymentEvidence,
+} from '../server/utils/db-safety';
 
 /**
  * Leagues that LOOK like a `Vitest Audit %` leak by pattern but are
@@ -97,11 +99,12 @@ const SEEDED_TEST_ADMIN_EMAIL =
 function assertSafeEnvironment(): void {
   const nodeEnv = process.env.NODE_ENV;
   const allowOverride = process.env.ALLOW_TEST_CLEANUP === '1';
-  const isReplitDeployment = isReplitDeploymentValue(process.env.REPLIT_DEPLOYMENT);
   if (allowOverride) return;
-  if (nodeEnv === 'production' || isReplitDeployment) {
+  if (hasProductionDeploymentEvidence(process.env)) {
     throw new Error(
-      'Refusing to run cleanup-orphan-audit-test-leaks: NODE_ENV=production or REPLIT_DEPLOYMENT is set. ' +
+      'Refusing to run cleanup-orphan-audit-test-leaks: production/deployment evidence is present ' +
+        `(APP_ENV=${process.env.APP_ENV ?? '<unset>'}, NODE_ENV=${nodeEnv ?? '<unset>'}, ` +
+        `APP_DOMAIN=${process.env.APP_DOMAIN ?? '<unset>'}). ` +
         'Set ALLOW_TEST_CLEANUP=1 only if you really intend to delete test-shaped audit rows from this database.',
     );
   }

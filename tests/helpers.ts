@@ -2,9 +2,8 @@
 // `tests/setup/per-worker-setup.ts` (Task #700). Each vitest worker
 // spawns its own Express via `server/test-entry.ts` on a kernel-
 // assigned loopback port, then exports
-// `process.env.TEST_BASE_URL=http://127.0.0.1:<port>`. Falls back to
-// the Replit-served HTTPS domain only for direct invocations outside
-// the test harness (e.g. `npx tsx tests/helpers.ts` smoke checks).
+// `process.env.TEST_BASE_URL=http://127.0.0.1:<port>`. Direct
+// invocations use the local development server fallback.
 import { eq, inArray } from 'drizzle-orm';
 import { getTestDb } from './setup/test-db';
 import {
@@ -22,8 +21,7 @@ import {
   deletionRequests,
 } from '@shared/schema';
 
-const REPLIT_HOST = process.env.REPLIT_DEV_DOMAIN || (process.env.REPLIT_DOMAINS?.split(',')[0]);
-const BASE_URL = process.env.TEST_BASE_URL || (REPLIT_HOST ? `https://${REPLIT_HOST}` : 'http://localhost:5000');
+const BASE_URL = process.env.TEST_BASE_URL || 'http://localhost:5000';
 
 // We do NOT cache the Drizzle client at module-load time. helpers.ts
 // is imported transitively before `tests/setup/per-worker-setup.ts`
@@ -65,8 +63,7 @@ interface ApiResponse<T = unknown> {
 }
 
 /**
- * Both on Replit (HTTPS edge → loopback) and on GitHub CI (direct
- * loopback) every test request resolves to `req.ip = '127.0.0.1'`, so
+ * Every test request resolves to a loopback `req.ip`, so
  * test files that intentionally burst a per-IP rate limiter
  * (e.g. `payments-provider-guards`) will starve every later test in
  * the same vitest invocation that touches the same limiter.
@@ -79,7 +76,7 @@ interface ApiResponse<T = unknown> {
  * attacker might send. Using a literal (rather than the
  * `TRUST_PROXY_PROBE_TOKEN` secret used by `verify-trust-proxy-deploy`)
  * means the bypass works in every environment that runs the vitest
- * suite — including GitHub CI, which doesn't see Replit-only secrets.
+ * suite, including GitHub CI.
  */
 function withTestBypassHeader(headers: Record<string, string>): Record<string, string> {
   headers['x-test-rate-limit-bypass'] = '1';

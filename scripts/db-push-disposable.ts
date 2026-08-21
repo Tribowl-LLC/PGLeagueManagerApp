@@ -13,6 +13,7 @@ import {
   REVIEWED_DRIZZLE_CONFIG_PATH,
 } from './lib/drizzle-cli-environment';
 import { redactConnectionDetails } from './lib/db-schema-inventory';
+import { hasProductionDeploymentEvidence } from '../server/utils/db-safety';
 
 export interface PushCommandResult {
   status: number | null;
@@ -52,15 +53,7 @@ const defaultPushDisposableRuntime: PushDisposableRuntime = {
 };
 
 function assertNonProductionEnvironment(environment: NodeJS.ProcessEnv): void {
-  if (
-    environment.APP_ENV?.trim().toLowerCase() === 'prod' ||
-    environment.NODE_ENV?.trim().toLowerCase() === 'production' ||
-    environment.APP_DOMAIN?.trim().toLowerCase() === 'leaguevault.app' ||
-    Boolean(environment.REPLIT_DEPLOYMENT?.trim()) ||
-    Boolean(environment.RENDER?.trim()) ||
-    Boolean(environment.RENDER_SERVICE_ID?.trim()) ||
-    Boolean(environment.RENDER_EXTERNAL_HOSTNAME?.trim())
-  ) {
+  if (hasProductionDeploymentEvidence(environment)) {
     throw new Error('db:push:disposable is disabled in production-shaped environments.');
   }
 }

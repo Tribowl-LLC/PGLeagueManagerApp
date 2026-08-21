@@ -342,8 +342,8 @@ these exact rules:
 - The incoming hostname and configured `APP_DOMAIN` are normalized to
   lowercase. Only one label directly beneath `APP_DOMAIN` is eligible; the
   bare domain, `www`, reserved infrastructure labels, nested labels, IP and
-  localhost hosts, recognized Replit development hosts, and hosts under any
-  other suffix do not establish an organization context.
+  localhost hosts, and hosts under any other suffix do not establish an
+  organization context.
 - The eligible label is first compared exactly with `organizations.subdomain`.
   Only when that lookup finds no row is the same label compared exactly with
   `organizations.slug`. Organization write schemas require lowercase values.
@@ -565,8 +565,8 @@ league/location relationship rather than from a client claim.
 
 For payment changes:
 
-- separate sandbox/beta and production credentials and refuse known live
-  credentials in beta;
+- separate non-production and production credentials and never use live
+  credentials outside production;
 - preserve tenant- and location-specific credential selection;
 - calculate or verify amounts on the server;
 - authorize the charge, refund, schedule, saved source, and acting user before
@@ -774,7 +774,7 @@ repository configuration:
 | No verified dedicated private vulnerability-reporting intake exists for this private repository. | Collaborators and known reporters can use existing private organizational channels; public disclosure is prohibited. | An external researcher may be unable to deliver details safely. The repository owner should establish and publish a monitored security email or another verified private intake, then update this file. |
 | Square webhooks are not implemented or subscribed, and the disabled endpoint does not verify Square signatures or process events. | The exact `POST` route runs before tenant resolution and global raw-body capture. JSON and catch-all raw parsers enforce the same 12 KB received-body limit for JSON, text, binary, missing content type, and chunked requests. It uses the shared production rate-limit store with a dedicated namespace, generates a server-controlled request id before rate limiting and parsing, and logs one warning for each request admitted by the limiter containing only a fixed event name, the same request id returned to the caller, method, static path, normalized content type, bounded declared content length, and rejection outcome. The declared length is untrusted diagnostic metadata derived from `Content-Length`; invalid, absent, chunked, or excessive values become `null`. Rate-limited requests do not add a route warning. The route never logs headers, query strings, bodies, or raw bytes; returns a deliberate rejection; and makes no application-storage, payment, tenant, queue, reconciliation, or provider call. | A distributed caller can still create bounded warning noise across source addresses, and a real or accidentally configured Square subscription would have every event rejected and unprocessed. Keep the subscription list empty and monitor the dedicated rejection event. Before enabling processing, implement raw-byte signature verification, strict event validation, tenant mapping, durable replay/idempotency protection, safe conditional state transitions, redacted logging, and focused negative tests. |
 | Sentry initialization does not set an explicit release identifier. | Server runtime logs include a commit identifier, CI certifies the exact `main` tree, and browser/server telemetry includes environment context. | Incident correlation between an event and the deployed source may require manual work. Add a release identifier only with coordinated build/runtime injection, privacy review, and deployment verification. |
-| Shared rate-limit storage is selected only when `NODE_ENV=production`. | Every current `express-rate-limit` instance is required to use `createSharedRateLimitStore`; a source-scanning test enforces that policy. A production application environment fails during limiter construction unless `NODE_ENV=production` selects the PostgreSQL store. The process-local store remains intentional in development and beta/test environments. | Keep `APP_ENV=prod` and `NODE_ENV=production` explicit and verified in Render. Do not bypass the startup invariant or weaken the shared-store coverage guard. |
+| Shared rate-limit storage is selected only when `NODE_ENV=production`. | Every current `express-rate-limit` instance is required to use `createSharedRateLimitStore`; a source-scanning test enforces that policy. A production application environment fails during limiter construction unless `NODE_ENV=production` selects the PostgreSQL store. The process-local store remains intentional in development and test environments. | Keep `APP_ENV=prod` and `NODE_ENV=production` explicit and verified in Render. Do not bypass the startup invariant or weaken the shared-store coverage guard. |
 | Organization hostname resolution performs a PostgreSQL lookup on every request. | There is no process-local tenant mapping to become stale during a rename or reassignment; every application process observes committed hostname mutations on its next request. Authorization and the organization-host session guard still run against the selected organization. | Tenant-host routing depends on database availability and adds lookup load. Preserve the uncached behavior unless a future shared cache provides tested, fail-safe cross-process invalidation. |
 
 Coverage guards are intentionally scoped static analyses, not exhaustive proof.

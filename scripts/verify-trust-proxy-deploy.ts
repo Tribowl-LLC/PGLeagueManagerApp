@@ -5,7 +5,7 @@
  * and the system-admin debug endpoint
  * `GET /api/system-admin/trust-proxy-status`. The boot guard catches
  * code-side misconfiguration on startup; this probe catches the case
- * where a config change at the proxy layer (Replit edge, custom
+ * where a config change at the proxy layer (managed edge, custom
  * domain, future CDN) silently re-introduces the bug without any code
  * change. If `req.ip` collapses to the proxy's loopback / private
  * address, every per-IP rate limiter (notably the 5 req / 15 min
@@ -62,7 +62,7 @@
  *
  * Retry policy
  * ------------
- *   The Replit deploy edge / Cloud Run frontend will occasionally
+ *   A managed deploy edge / frontend will occasionally
  *   return a plain "Internal server error. Correlation ID: <uuid>"
  *   page when the container is briefly unavailable (cold start, brief
  *   restart, transient edge hiccup). Those are not real regressions
@@ -100,8 +100,8 @@
  *     `DEPLOY_ADMIN_COOKIE` (legacy), and (optional)
  *     `DEPLOY_EXPECTED_RESOLVED_IP` repo secrets.
  *
- * When adding a new caller (e.g. a Replit-side post-deploy hook),
- * add it to the list above so future maintainers can find every
+ * When adding a new post-deploy caller, add it to the list above so future
+ * maintainers can find every
  * place this contract is enforced.
  */
 
@@ -296,7 +296,7 @@ export async function runVerifier(env: NodeJS.ProcessEnv = process.env): Promise
   type AttemptTerminal = { kind: 'terminal'; res: Response; bodyText: string };
   type AttemptResult = AttemptOk | AttemptRetryable | AttemptTerminal;
 
-  // The Replit deploy edge / Cloud Run frontend returns a plain-text
+  // The managed deploy edge / frontend returns a plain-text
   // or HTML "Internal server error. Correlation ID: <uuid>" page when
   // it can't get a clean response from the container. Our app's
   // `sendError` always returns JSON (`{success:false, error:{...}}`).

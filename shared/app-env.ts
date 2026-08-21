@@ -1,34 +1,16 @@
 /**
  * Shared App-environment definitions.
  *
- * `APP_ENV` is the canonical signal for "which environment is this
- * code running in?" — independent of `NODE_ENV` (build mode) and
- * `REPLIT_DEPLOYMENT` (Replit deploy flag). It exists because we run
- * three logically distinct environments off the same codebase:
+ * `APP_ENV` is the provider-neutral selector for the logical application
+ * environment. It deliberately has no deployment-provider inference:
+ * deployment configuration must set `APP_ENV` explicitly.
  *
- *   - `dev`   the local Replit workspace (one Repl, one dev DB)
- *   - `beta`  the forked Repl deployed to beta.leaguevault.app
- *   - `prod`  the live Repl deployed to leaguevault.app
- *
- * The historical Replit runbook is in `docs/replit-handoff.md`. The current
- * production workflow is documented in `AGENTS.md` and
- * `docs/production-runbook.md`.
- *
- * Resolution rules (single source of truth — used both in
- * `server/config.ts` to validate the env var and in
- * `server/utils/app-env.ts` to expose the boolean accessors):
- *
- *   1. If `APP_ENV` is set explicitly (and is a valid value), use it.
- *   2. Otherwise default by inferred runtime:
- *      - On a Replit deploy (`REPLIT_DEPLOYMENT` non-empty) → `prod`
- *      - In a local/dev workspace                          → `dev`
- *
- *   `beta` is NEVER a default. A beta Repl MUST set `APP_ENV=beta`
- *   in Secrets, otherwise it would boot as `prod` and the BETA
- *   banner / sandbox-creds guard would silently disable themselves.
+ * Local and test processes may leave `APP_ENV` unset; those processes resolve
+ * to `dev`. Production processes must set `APP_ENV=prod` and are validated
+ * against `NODE_ENV=production` by the server and operational scripts.
  */
 
-export const APP_ENV_VALUES = ['dev', 'beta', 'prod'] as const;
+export const APP_ENV_VALUES = ['dev', 'prod'] as const;
 export type AppEnv = (typeof APP_ENV_VALUES)[number];
 
 export function isAppEnv(value: unknown): value is AppEnv {
@@ -37,7 +19,6 @@ export function isAppEnv(value: unknown): value is AppEnv {
 
 export interface ResolveAppEnvInput {
   appEnv: string | undefined;
-  replitDeployment: string | undefined;
 }
 
 /**
@@ -51,6 +32,38 @@ export function resolveAppEnv(input: ResolveAppEnvInput): AppEnv {
   if (isAppEnv(input.appEnv)) {
     return input.appEnv;
   }
-  const isDeployed = typeof input.replitDeployment === 'string' && input.replitDeployment.length > 0;
-  return isDeployed ? 'prod' : 'dev';
+  return 'dev';
+}
+
+export interface AppEnvAgreementInput {
+  appEnv: string | undefined;
+  nodeEnv: string | undefined;
+}
+
+export type AppEnvAgreement =
+  | { ok: true; appEnv: AppEnv }
+  | { ok: false; reason: string };
+
+/**
+ * Production selection is fail-closed: `NODE_ENV=production` and
+ * `APP_ENV=prod` must either both select production or neither may do so.
+ * An omitted selector is intentionally the safe local/test default (`dev`).
+ */
+export function validateAppEnvAgreement(input: AppEnvAgreementInput): AppEnvAgreement {
+  if (input.appEnv !== undefined && !isAppEnv(input.appEnv)) {
+    return {
+      ok: false,
+      reason: `APP_ENV=${input.appEnv || '<empty>'} is invalid; it must be one of: ${APP_ENV_VALUES.join(', ')}.`,
+    };
+  }
+  const appEnv = resolveAppEnv({ appEnv: input.appEnv });
+  const nodeProduction = input.nodeEnv === 'production';
+  const appProduction = appEnv === 'prod';
+  if (nodeProduction !== appProduction) {
+    return {
+      ok: false,
+      reason: `NODE_ENV=${input.nodeEnv ?? '<unset>'} and APP_ENV=${input.appEnv ?? '<unset>'} must agree (production requires NODE_ENV=production and APP_ENV=prod).`,
+    };
+  }
+  return { ok: true, appEnv };
 }
