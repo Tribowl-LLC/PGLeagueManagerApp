@@ -228,21 +228,29 @@ function revisionSemanticsCoverage(
  * to pass.  Nullable scalar transitions are valid; missing keys, container
  * type changes, and malformed scalar values are not.
  */
-function snapshotShapeCompatible(value: unknown, template: unknown): boolean {
+const nullableSnapshotFields = new Set([
+  "approvedAt", "approvedByUserId", "revokedAt", "encryptedCustomerId", "pairedOccurrenceId",
+  "responseDueAt", "cardBrand", "brandDisputeId", "providerReportedAt", "providerObjectUpdatedAt",
+  "paymentId", "receiptUrl", "receiptNumber", "upfrontDueAt",
+]);
+
+function snapshotShapeCompatible(value: unknown, template: unknown, fieldName?: string): boolean {
   if (template === null || template === undefined) {
-    return value === null || value === undefined || (typeof value !== "object" && typeof value !== "function");
+    if (value === null || value === undefined) return true;
+    return Boolean(fieldName && nullableSnapshotFields.has(fieldName))
+      && typeof value !== "object" && typeof value !== "function";
   }
   if (Array.isArray(template)) {
     if (!Array.isArray(value)) return false;
     if (template.length === 0) return true;
-    return value.every((entry) => template.some((example) => snapshotShapeCompatible(entry, example)));
+    return value.every((entry) => template.some((example) => snapshotShapeCompatible(entry, example, fieldName)));
   }
   if (typeof template === "object") {
     if (!value || typeof value !== "object" || Array.isArray(value)) return false;
     const valueRecord = value as Record<string, unknown>;
-    return Object.entries(template as Record<string, unknown>).every(([key, example]) => key in valueRecord && snapshotShapeCompatible(valueRecord[key], example));
+    return Object.entries(template as Record<string, unknown>).every(([key, example]) => key in valueRecord && snapshotShapeCompatible(valueRecord[key], example, key));
   }
-  if (value === null) return true;
+  if (value === null) return Boolean(fieldName && nullableSnapshotFields.has(fieldName));
   if (typeof value !== typeof template) return false;
   if (typeof template === "number") return Number.isFinite(value) && Number.isSafeInteger(value);
   return true;

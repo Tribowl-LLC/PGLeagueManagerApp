@@ -71,4 +71,19 @@ describe("F5 canonical payment and receipt contracts", () => {
     ];
     expect(completeVersionedRevisionChains([parent], revisions, () => expected)).toBe(false);
   });
+
+  it.each([
+    ["F1 eligibility", { state: "eligible", reason: "explicit_admin_selection" }, "state"],
+    ["F1 assignment", { state: "assigned", teamId: 7, reason: "explicit_admin_selection" }, "state"],
+    ["F3 policy", { contractVersion: "canonical-collection-policy/1", policy: { id: "policy-1", state: "approved", policyVersion: 1 }, occurrences: [{ occurrenceId: "occ-1", groupRole: "normal", itemIndex: 0 }] }, "contractVersion"],
+    ["F3 authorization", { id: "auth-1", state: "authorized", payerBowlerId: 1, authorizedItems: [{ obligationId: "ob-1", occurrenceId: "occ-1", bowlerId: 1, amountMinor: 500 }] }, "state"],
+  ] as const)("rejects null in required historical %s snapshot fields", (_label, expected, requiredKey) => {
+    const parent = { id: "parent-null", currentRevision: 2 };
+    const malformed = { ...expected, [requiredKey]: null };
+    const revisions = [
+      { parentId: parent.id, revisionNumber: 1, snapshotSchemaVersion: 1, beforeSnapshot: null, afterSnapshot: malformed },
+      { parentId: parent.id, revisionNumber: 2, snapshotSchemaVersion: 1, beforeSnapshot: malformed, afterSnapshot: expected },
+    ];
+    expect(completeVersionedRevisionChains([parent], revisions, () => expected)).toBe(false);
+  });
 });
