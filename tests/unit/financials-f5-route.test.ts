@@ -83,4 +83,67 @@ describe("F5 canonical payment report route", () => {
     expect(response.status).toBe(409);
     expect((await response.json()).error.code).toBe("FINANCIAL_EVIDENCE_INCOMPATIBLE");
   });
+
+  it("keeps ordinary combined-participant totals full-scope across report pages", async () => {
+    mocks.hasAdmin.mockResolvedValue(false);
+    const reportForPage = (page: number) => {
+      const row = {
+        paymentId: 21,
+        leagueId: 7,
+        bowlerId: 42,
+        amountMinor: 4000,
+        currency: "USD",
+        status: "confirmed_paid",
+        paymentType: "square",
+        businessDate: "2038-01-01T00:00:00.000Z",
+        authoritativeLocalDate: "2037-12-31",
+        providerPaymentId: "provider-secret",
+        paymentOperationId: "operation-secret",
+        operationType: "canonical_autopay_charge",
+        operationStatus: "succeeded",
+        allocatedMinor: 4000,
+        unallocatedMinor: 0,
+        reviewRequired: false,
+        source: "canonical_allocation",
+        refund: { present: false, amountMinor: 0, providerRefundId: null },
+        dispute: { present: false, amountMinor: 0, disputeId: null },
+        unresolved: false,
+        receipt: { contractVersion: "payment-receipt/1", availability: "available", receiptUrl: "https://secret", receiptNumber: "secret", deliveryEvidence: "delivery_not_recorded", paymentId: 21, paymentOperationId: "operation-secret", source: "canonical_allocation", allocations: [], sharedTransaction: { groupKey: "operation-secret", childCount: 2 } },
+        allocations: [
+          { allocationId: "a1", obligationId: "ob1", occurrenceId: "occ1", bowlerId: 42, amountMinor: 2000, currency: "USD", state: "active" },
+          { allocationId: "a2", obligationId: "ob2", occurrenceId: "occ2", bowlerId: 43, amountMinor: 2000, currency: "USD", state: "active" },
+        ],
+      };
+      return {
+        contractVersion: "canonical-payment-report/1",
+        orderVersion: "league,business-date,bowler,occurrence,allocation,payment/1",
+        organizationId: 11,
+        leagueId: 7,
+        mode: "canonical",
+        authoritativeSource: "canonical",
+        asOf: "2038-01-01T00:00:00.000Z",
+        fingerprint: `fingerprint-${page}`,
+        page,
+        limit: 1,
+        totalRows: 4,
+        totalTransactions: 3,
+        totals: { grossConfirmedPaidMinor: 4000, activeAllocatedMinor: 4000, refundedMinor: 0, disputedReviewRequiredMinor: 0, reviewRequiredMinor: 0, unresolvedOperationMinor: 0, unallocatedLegacyMinor: 0 },
+        rows: [row],
+        transactions: [{ groupKey: "operation-secret", paymentOperationId: "operation-secret", combinedChargeGroupId: null, amountMinor: 4000, currency: "USD", rows: [row] }],
+        unlinkedHistory: [],
+      };
+    };
+    mocks.readReport.mockImplementation((input: { page?: number }) => Promise.resolve(reportForPage(input.page ?? 1)));
+
+    const pageOne = await get("/payments?leagueId=7&page=1&limit=1", user("user", 11, 42));
+    const pageTwo = await get("/payments?leagueId=7&page=2&limit=1", user("user", 11, 42));
+    const firstBody = await pageOne.json();
+    const secondBody = await pageTwo.json();
+    expect(pageOne.status).toBe(200);
+    expect(pageTwo.status).toBe(200);
+    expect(firstBody.data.totals).toEqual(secondBody.data.totals);
+    expect(firstBody.data.rows[0]).toMatchObject({ amountMinor: 2000, paymentOperationId: null, providerPaymentId: null });
+    expect(firstBody.data.rows[0].allocations).toEqual([expect.objectContaining({ bowlerId: 42, amountMinor: 2000 })]);
+    expect(firstBody.data.transactions[0].amountMinor).toBe(2000);
+  });
 });

@@ -49,9 +49,15 @@ const mockStorage = {
   getTeamsByIds: vi.fn(),
   getBowlerLeagues: vi.fn(),
   getBowler: vi.fn(),
+  getPayments: vi.fn(),
+  isBowlerLinked: vi.fn(),
   getLocation: vi.fn(),
 };
 vi.mock('../../server/storage', () => ({ storage: mockStorage }));
+
+vi.mock('../../server/routes/payments/payment-reports.js', () => ({
+  buildPayerNameMap: vi.fn().mockResolvedValue(new Map()),
+}));
 
 // Keep the real pure role-check helpers (isSystemAdmin, isOrgOrHigher) via
 // importOriginal — bowlers.ts uses isOrgOrHigher, so a
@@ -214,6 +220,8 @@ beforeEach(() => {
     organizationId: 1,
     paymentCustomerId: 'cust_1',
   });
+  mockStorage.getPayments.mockResolvedValue([]);
+  mockStorage.isBowlerLinked.mockResolvedValue(false);
   mockStorage.getLocation.mockResolvedValue({ id: 1, organizationId: 1 });
   mockStorage.getLeague.mockResolvedValue({ id: 11, organizationId: 1 });
 });
@@ -507,5 +515,66 @@ describe('GET /api/payments-provider/catalog/items — locationId filter', () =>
     expect(res.status).toBe(200);
     expect((await res.json()).data).toEqual({ items: [], truncated: false });
     expect(mockStorage.getLocation).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /api/bowlers/:id/details — ordinary payment privacy', () => {
+  it('removes raw provider and hosted-receipt evidence from ordinary payment details', async () => {
+    mockStorage.getBowler.mockResolvedValue({
+      id: 99,
+      name: 'Target Bowler',
+      organizationId: 1,
+      paymentCustomerId: null,
+    });
+    mockStorage.getBowlerLeagues.mockResolvedValue([{ bowlerId: 99, leagueId: 11, teamId: null }]);
+    mockStorage.getLeaguesByIds.mockResolvedValue([{ id: 11, organizationId: 1, name: 'League' }]);
+    mockStorage.getTeamsByIds.mockResolvedValue([]);
+    mockStorage.getPayments.mockResolvedValue([{
+      id: 501,
+      bowlerId: 99,
+      leagueId: 11,
+      amount: 2500,
+      lineageAmount: null,
+      prizeFundAmount: null,
+      weekOf: '2038-01-01T00:00:00.000Z',
+      status: 'paid',
+      type: 'square',
+      checkNumber: null,
+      providerPaymentId: 'provider-secret',
+      idempotencyKey: 'key-secret',
+      squareRefundId: 'refund-secret',
+      refundReason: null,
+      refundedAt: null,
+      disputeId: 'dispute-secret',
+      disputedAt: '2038-01-02T00:00:00.000Z',
+      receiptUrl: 'https://receipt.secret',
+      receiptNumber: 'receipt-secret',
+      receiptEmailMissing: false,
+      notes: null,
+      paidByUserId: 700,
+      createdAt: '2038-01-01T00:00:00.000Z',
+    }]);
+
+    const response = await get('/api/bowlers/99/details?includePayments=true', {
+      id: 42,
+      role: 'user',
+      organizationId: 1,
+      bowlerId: 99,
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.data.payments).toHaveLength(1);
+    expect(body.data.payments[0]).toMatchObject({
+      id: 501,
+      amount: 2500,
+      providerPaymentId: null,
+      idempotencyKey: null,
+      squareRefundId: null,
+      disputeId: null,
+      receiptUrl: null,
+      receiptNumber: null,
+      paidByUserId: null,
+      paidByName: null,
+    });
   });
 });

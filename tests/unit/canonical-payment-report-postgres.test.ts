@@ -71,6 +71,76 @@ describe("F5 canonical payment reporting PostgreSQL evidence", () => {
     expect(new Set([pageOne.unlinkedHistory[0]?.paymentId, pageTwo.unlinkedHistory[0]?.paymentId, pageThree.unlinkedHistory[0]?.paymentId]).size).toBe(3);
   });
 
+  it("fails closed on conservation corruption outside the selected parent page", async () => {
+    const fixture = await makeF3WorkflowFixture();
+    organizations.push(fixture.organizationId);
+    const [firstPayment] = await db.insert(payments).values({
+      bowlerId: fixture.roster[0].id,
+      leagueId: fixture.leagueId,
+      amount: 100,
+      weekOf: "2038-02-01T19:00:00.000Z",
+      status: "paid",
+      type: "cash",
+    }).returning();
+    const [corruptOperation] = await db.insert(paymentOperations).values({
+      organizationId: fixture.organizationId,
+      leagueId: null,
+      operationType: "interactive_charge",
+      targetKey: `f5-off-page-corrupt:${fixture.organizationId}`,
+      amountMinor: 900,
+      currency: "USD",
+      requestFingerprint: `lvpayreq:v1:${"2".repeat(64)}`,
+      providerIdempotencyKey: `f5-off-page-corrupt-${fixture.organizationId}`,
+      providerName: "square",
+      providerObjectId: "off-page-operation-provider",
+      status: "succeeded",
+      attemptCount: 1,
+      nextAttemptAt: null,
+      startedAt: "2038-02-02T19:00:00.000Z",
+      completedAt: "2038-02-02T19:00:00.000Z",
+    }).returning();
+    const snapshotSemantic = {
+      snapshotVersion: 2 as const,
+      organizationId: fixture.organizationId,
+      amountMinor: 900,
+      currency: "USD",
+      providerName: "square" as const,
+      leagueId: fixture.leagueId,
+      locationId: null,
+      providerLocationId: null,
+      payerBowlerId: fixture.roster[0].id,
+      requestKind: "direct" as const,
+      squarePaymentIdempotencyKey: deriveSquareOperationIdempotencyKey(`f5-off-page-corrupt-${fixture.organizationId}`, "payment"),
+      squareOrderIdempotencyKey: null,
+      sourceId: "legacy-source",
+      customerId: null,
+      buyerEmail: null,
+      storeCard: false,
+      sourceKind: "new_card" as const,
+      weekOf: "2038-02-02T19:00:00.000Z",
+      combinedChargeGroupId: null,
+      allocations: [{ allocationIndex: 0, bowlerId: fixture.roster[0].id, amountMinor: 900, lineageAmountMinor: null, prizeFundAmountMinor: null, weekOf: "2038-02-02T19:00:00.000Z", notes: null, paidByUserId: null }],
+      lineItems: [],
+    };
+    const storedSnapshot = encryptInteractivePaymentSnapshot(snapshotSemantic);
+    await db.insert(interactivePaymentOperationSnapshots).values({ operationId: corruptOperation.id, ...storedSnapshot });
+    await db.insert(interactivePaymentOperationAllocations).values(snapshotSemantic.allocations.map((row) => ({ operationId: corruptOperation.id, ...row })));
+    await db.insert(payments).values({
+      bowlerId: fixture.roster[1].id,
+      leagueId: fixture.leagueId,
+      paymentOperationId: corruptOperation.id,
+      amount: 100,
+      weekOf: "2038-02-02T19:00:00.000Z",
+      status: "paid",
+      type: "credit_card",
+      providerPaymentId: "off-page-provider",
+      paymentOperationAllocationIndex: 0,
+    });
+    await expect(readCanonicalPaymentReport({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, page: 1, limit: 1 }))
+      .rejects.toBeInstanceOf(CanonicalPaymentReportIncompatibilityError);
+    expect(firstPayment).toBeDefined();
+  });
+
   it("projects zero-row legacy interactive evidence for every snapshot participant", async () => {
     const fixture = await makeF3WorkflowFixture();
     organizations.push(fixture.organizationId);
@@ -133,7 +203,9 @@ describe("F5 canonical payment reporting PostgreSQL evidence", () => {
       const participantReport = await readCanonicalPaymentReport({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, bowlerId: participant.id, limit: 10 });
       expect(participantReport.totalRows).toBe(1);
       expect(participantReport.totalTransactions).toBe(1);
-      expect(participantReport.totals.unresolvedOperationMinor).toBe(amountMinor);
+      // Bowler-scoped totals expose only this participant's immutable
+      // snapshot allocation; the org-wide report above remains 500.
+      expect(participantReport.totals.unresolvedOperationMinor).toBe(amountMinor / 2);
       expect(participantReport.unlinkedHistory).toHaveLength(1);
     }
   });
