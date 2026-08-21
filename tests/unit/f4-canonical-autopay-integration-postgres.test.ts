@@ -608,13 +608,23 @@ describe("F4 canonical autopay PostgreSQL/provider integration", () => {
     expect(Number(canonicalWake?.organization_id)).toBe(second.fixture.organizationId);
     expect(canonicalWake?.work_id).toBe(second.planId);
     expect(new Date(String(canonicalWake?.due_at)).getTime()).toBeGreaterThan(Date.now());
-    const explain = await db.transaction(async (tx) => {
+    // Keep the normal planner assertion for the ready-plan wake source. This
+    // proves the production query naturally selects the partial wake index.
+    const wakeExplain = await db.execute(sql`EXPLAIN (COSTS OFF) ${buildNextPaymentOperationWakeQuery()}`);
+    expect(wakeExplain.rows.length).toBeGreaterThan(0);
+    const wakeExplainText = wakeExplain.rows.map((row) => Object.values(row).join(" ")).join("\n");
+    expect(wakeExplainText).toContain("collection_plans_canonical_wake_idx");
+
+    // The anti-join is eligible for the fully tenant/league-keyed canonical
+    // operation index. Keep this planner override local to the proof query;
+    // production SQL and planner settings remain untouched.
+    const antiJoinExplain = await db.transaction(async (tx) => {
       await tx.execute(sql`SET LOCAL enable_seqscan = off`);
       return tx.execute(sql`EXPLAIN (COSTS OFF) ${buildNextPaymentOperationWakeQuery()}`);
     });
-    expect(explain.rows.length).toBeGreaterThan(0);
-    const explainText = explain.rows.map((row) => Object.values(row).join(" ")).join("\n");
-    expect(explainText).toContain("Index");
+    expect(antiJoinExplain.rows.length).toBeGreaterThan(0);
+    const antiJoinExplainText = antiJoinExplain.rows.map((row) => Object.values(row).join(" ")).join("\n");
+    expect(antiJoinExplainText).toContain("payment_operations_canonical_plan_unique");
     const indexes = await db.execute(sql`SELECT indexname, indexdef FROM pg_indexes WHERE indexname IN ('collection_plans_canonical_wake_idx', 'payment_operations_canonical_plan_idx', 'payment_operations_canonical_plan_unique')`);
     const indexDefinitions = new Map(indexes.rows.map((row) => [String(row.indexname), String(row.indexdef)]));
     expect([...indexDefinitions.keys()]).toEqual(expect.arrayContaining(["collection_plans_canonical_wake_idx", "payment_operations_canonical_plan_idx", "payment_operations_canonical_plan_unique"]));
