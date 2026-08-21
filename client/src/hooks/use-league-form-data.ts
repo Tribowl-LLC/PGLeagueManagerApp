@@ -11,6 +11,7 @@ import {
   type AnyLeagueSetupIntegrationResult,
 } from "@shared/league-setup-integration";
 import { createSetupIdempotencyKeyRetainer } from "@/pages/league-view-page/fall-draft-secure-id";
+import { buildCanonicalLeagueCreatePayload } from "@/lib/league-create-payload";
 
 interface UseLeagueFormDataOptions {
   open: boolean;
@@ -173,10 +174,10 @@ export function useLeagueFormData({
         cancelledDates,
         doublePayDates,
       };
-      const createPayload = systemAdminOrganizationId == null
-        ? semanticPayload
-        : { ...semanticPayload, organizationId: systemAdminOrganizationId };
-      const { seasonEnd: _derivedSeasonEnd, ...canonicalCreatePayload } = createPayload;
+      const canonicalCreatePayload = buildCanonicalLeagueCreatePayload(
+        semanticPayload,
+        systemAdminOrganizationId,
+      );
       return apiRequest<AnyLeagueSetupIntegrationResult>(
         league ? `/api/leagues/${league.id}` : "/api/leagues",
         league ? "PATCH" : "POST",
