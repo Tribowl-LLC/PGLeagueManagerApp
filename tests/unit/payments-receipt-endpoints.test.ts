@@ -36,6 +36,11 @@ vi.mock('../../server/storage', () => ({ storage: mockStorage }));
 
 const mockDb = vi.hoisted(() => ({ select: vi.fn() }));
 vi.mock('../../server/db.js', () => ({ db: mockDb }));
+const mockReadCanonicalReport = vi.hoisted(() => vi.fn());
+vi.mock('../../server/services/canonical-payment-report.js', () => ({
+  readCanonicalPaymentReport: (...args: unknown[]) => mockReadCanonicalReport(...args),
+  CanonicalPaymentReportIncompatibilityError: class extends Error {},
+}));
 
 const mockHasAccessToPayment = vi.fn();
 vi.mock('../../server/utils/access-control', () => ({
@@ -97,6 +102,7 @@ beforeEach(() => {
   mockProvider.getPayment.mockReset();
   mockSendReceiptResend.mockReset();
   mockDb.select.mockReset();
+  mockReadCanonicalReport.mockReset();
 
   mockHasAccessToPayment.mockResolvedValue(true);
   mockGetPaymentProvider.mockResolvedValue(mockProvider);
@@ -164,6 +170,11 @@ describe('GET /payments/:id/receipt (Task #503)', () => {
     mockStorage.getPaymentByIdForOrganization.mockResolvedValue(payment);
     mockStorage.getPaymentById.mockResolvedValue(payment);
     mockStorage.getPaymentsByPaymentOperationId.mockResolvedValue([payment]);
+    mockReadCanonicalReport.mockResolvedValue({
+      rows: [{ paymentId: 15, source: 'canonical_allocation', operationType: 'interactive_charge', amountMinor: 2000, currency: 'USD', allocations: [{ allocationId: 'alloc-1', obligationId: 'ob-1', occurrenceId: 'occ-1', bowlerId: 43, amountMinor: 2000, currency: 'USD', state: 'active' }], refund: { present: false, amountMinor: 0, providerRefundId: null }, dispute: { present: false, amountMinor: 0, disputeId: null, scope: 'legacy_payment_row', state: null, reviewRequired: false } }],
+      unlinkedHistory: [],
+      paymentTiming: { paymentMode: 'weekly', upfrontDueAt: null, upfrontDueAtLocal: null, timezone: 'UTC', source: 'canonical_activation' },
+    });
     const makeQueryResults = () => [
       [{ organizationId: 1 }],
       [{ id: 'alloc-1', obligationId: 'ob-1', occurrenceId: 'occ-1', bowlerId: 43, amountMinor: 2000, currency: 'USD', state: 'active' }],
@@ -177,7 +188,7 @@ describe('GET /payments/:id/receipt (Task #503)', () => {
 
     const payerResponse = await get('/api/payments-provider/payments/15/receipt', PAYER);
     expect(payerResponse.status).toBe(200);
-    expect((await payerResponse.json()).data).toMatchObject({ receiptUrl: 'https://cached/shared', receiptNumber: 'N-shared' });
+    expect((await payerResponse.json()).data).toMatchObject({ receiptUrl: 'https://cached/shared', receiptNumber: 'N-shared', paymentTiming: { source: 'canonical_activation', paymentMode: 'weekly' } });
 
     const partnerQueryResults = makeQueryResults();
     mockDb.select.mockImplementation(() => dbResult(partnerQueryResults.shift() ?? []));
@@ -218,7 +229,7 @@ describe('GET /payments/:id/receipt (Task #503)', () => {
     const partnerResponse = await get('/api/payments-provider/payments/16/receipt', PARTNER);
     expect(partnerResponse.status).toBe(200);
     const partnerBody = await partnerResponse.json();
-    expect(partnerBody.data).toMatchObject({ receiptUrl: null, receiptNumber: null, paymentOperationId: null, amountMinor: 2000, sharedTransaction: null });
+    expect(partnerBody.data).toMatchObject({ receiptUrl: null, receiptNumber: null, paymentOperationId: null, amountMinor: 2000, sharedTransaction: null, refund: { amountMinor: 0 }, dispute: { amountMinor: 0 } });
     expect(partnerBody.data.allocations).toEqual([expect.objectContaining({ bowlerId: 43, amountMinor: 2000, source: 'unlinked_legacy' })]);
   });
 
@@ -233,6 +244,38 @@ describe('GET /payments/:id/receipt (Task #503)', () => {
     const response = await get('/api/payments-provider/payments/17/receipt', ADMIN);
     expect(response.status).toBe(404);
     expect(mockProvider.getPayment).not.toHaveBeenCalled();
+  });
+
+  it('uses validated F4 timing/grouping and keeps refund/dispute amounts private for a partner', async () => {
+    const payment = { id: 18, leagueId: 11, bowlerId: 43, paidByUserId: 100, paymentOperationId: 'f4-receipt-op', amount: 4000, status: 'refunded', providerPaymentId: 'sq-f4', receiptUrl: 'https://cached/f4', receiptNumber: 'N-f4', disputeId: 'legacy-dispute' };
+    mockStorage.getPaymentByIdForOrganization.mockResolvedValue(payment);
+    mockStorage.getPaymentsByPaymentOperationId.mockResolvedValue([payment]);
+    mockReadCanonicalReport.mockResolvedValue({
+      rows: [{ paymentId: 18, source: 'canonical_allocation', operationType: 'canonical_autopay_charge', amountMinor: 4000, currency: 'USD', refund: { present: true, amountMinor: 4000, providerRefundId: 'refund-secret' }, dispute: { present: true, amountMinor: 0, disputeId: null, scope: 'transaction', state: 'OPEN', reviewRequired: true }, allocations: [{ allocationId: 'alloc-f4', obligationId: 'ob-f4', occurrenceId: 'occ-trigger', bowlerId: 43, amountMinor: 4000, currency: 'USD', state: 'active' }], collectionEvidence: { d2PlanId: 'plan-1', planVersion: 2, collectionPointOccurrenceId: 'occ-trigger', coveredOccurrenceIds: ['occ-trigger', 'occ-paired'], timing: 'at_collection_point', grouping: 'double_pay' } }],
+      unlinkedHistory: [], totalTransactions: 1, limit: 200,
+      paymentTiming: { paymentMode: 'upfront', upfrontDueAt: '2038-02-01T07:00:00.000Z', upfrontDueAtLocal: '2038-01-31', timezone: 'America/Los_Angeles', source: 'canonical_activation' },
+    });
+    const queryResults = [
+      [{ organizationId: 1 }],
+      [{ id: 'alloc-f4', obligationId: 'ob-f4', occurrenceId: 'occ-trigger', bowlerId: 43, amountMinor: 4000, currency: 'USD', state: 'active' }],
+      [{ id: 'f4-receipt-op', leagueId: 11, operationType: 'canonical_autopay_charge', status: 'succeeded', currency: 'USD', amountMinor: 4000 }],
+      [], [], [],
+    ];
+    mockDb.select.mockImplementation(() => dbResult(queryResults.shift() ?? []));
+    const payerResponse = await get('/api/payments-provider/payments/18/receipt', PAYER);
+    expect(payerResponse.status).toBe(200);
+    expect((await payerResponse.json()).data).toMatchObject({ paymentTiming: { paymentMode: 'upfront', upfrontDueAtLocal: '2038-01-31' }, collectionEvidence: { grouping: 'double_pay' }, refund: { amountMinor: 4000 } });
+    const partnerQueryResults = [
+      [{ organizationId: 1 }],
+      [{ id: 'alloc-f4', obligationId: 'ob-f4', occurrenceId: 'occ-trigger', bowlerId: 43, amountMinor: 4000, currency: 'USD', state: 'active' }],
+      [{ id: 'f4-receipt-op', leagueId: 11, operationType: 'canonical_autopay_charge', status: 'succeeded', currency: 'USD', amountMinor: 4000 }],
+      [], [], [],
+    ];
+    mockDb.select.mockImplementation(() => dbResult(partnerQueryResults.shift() ?? []));
+    const partnerResponse = await get('/api/payments-provider/payments/18/receipt', PARTNER);
+    expect(partnerResponse.status).toBe(200);
+    expect((await partnerResponse.json()).data).toMatchObject({ receiptUrl: null, refund: { amountMinor: 0 }, dispute: { amountMinor: 0 }, allocations: [expect.objectContaining({ bowlerId: 43 })] });
+    expect(mockReadCanonicalReport).toHaveBeenCalled();
   });
 
   it('lazy-backfills from provider and caches the URL when none is stored yet', async () => {

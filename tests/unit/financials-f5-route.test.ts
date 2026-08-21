@@ -106,13 +106,14 @@ describe("F5 canonical payment report route", () => {
         reviewRequired: false,
         source: "canonical_allocation",
         refund: { present: false, amountMinor: 0, providerRefundId: null },
-        dispute: { present: false, amountMinor: 0, disputeId: null },
+        dispute: { present: true, amountMinor: 400, disputeId: "durable-dispute", scope: "transaction", state: "OPEN", reviewRequired: true },
         unresolved: false,
         receipt: { contractVersion: "payment-receipt/1", availability: "available", receiptUrl: "https://secret", receiptNumber: "secret", deliveryEvidence: "delivery_not_recorded", paymentId: 21, paymentOperationId: "operation-secret", source: "canonical_allocation", allocations: [], sharedTransaction: { groupKey: "operation-secret", childCount: 2 } },
         allocations: [
           { allocationId: "a1", obligationId: "ob1", occurrenceId: "occ1", bowlerId: 42, amountMinor: 2000, currency: "USD", state: "active" },
           { allocationId: "a2", obligationId: "ob2", occurrenceId: "occ2", bowlerId: 43, amountMinor: 2000, currency: "USD", state: "active" },
         ],
+        initiatingPayerBowlerId: 42,
       };
       return {
         contractVersion: "canonical-payment-report/1",
@@ -127,7 +128,7 @@ describe("F5 canonical payment report route", () => {
         limit: 1,
         totalRows: 4,
         totalTransactions: 3,
-        totals: { grossConfirmedPaidMinor: 2000, activeAllocatedMinor: 2000, refundedMinor: 0, disputedReviewRequiredMinor: 0, reviewRequiredMinor: 0, unresolvedOperationMinor: 0, unallocatedLegacyMinor: 0 },
+        totals: { grossConfirmedPaidMinor: 2000, activeAllocatedMinor: 2000, refundedMinor: 0, disputedReviewRequiredMinor: 400, reviewRequiredMinor: 0, unresolvedOperationMinor: 0, unallocatedLegacyMinor: 0 },
         rows: [row],
         transactions: [{ groupKey: "operation-secret", paymentOperationId: "operation-secret", combinedChargeGroupId: null, amountMinor: 4000, currency: "USD", rows: [row] }],
         unlinkedHistory: [],
@@ -146,5 +147,6 @@ describe("F5 canonical payment report route", () => {
     expect(firstBody.data.rows[0]).toMatchObject({ amountMinor: 2000, paymentOperationId: null, providerPaymentId: null });
     expect(firstBody.data.rows[0].allocations).toEqual([expect.objectContaining({ bowlerId: 42, amountMinor: 2000 })]);
     expect(firstBody.data.transactions[0].amountMinor).toBe(2000);
+    expect(firstBody.data.totals.disputedReviewRequiredMinor).toBe(400);
   });
 });

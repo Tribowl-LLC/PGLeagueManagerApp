@@ -107,8 +107,9 @@ router.get("/payments", async (req, res) => {
       transactions: report.transactions.map((transaction, index) => {
         const rows = transaction.rows.map(redact);
         const amountMinor = rows.reduce((sum, row) => sum + row.amountMinor, 0);
+        const initiatingPayer = transaction.rows.some((row) => row.initiatingPayerBowlerId === req.user?.bowlerId);
         const dispute = transaction.dispute
-          ? { ...transaction.dispute, amountMinor: 0, disputeId: null }
+          ? { ...transaction.dispute, amountMinor: initiatingPayer ? transaction.dispute.amountMinor : 0, disputeId: null }
           : undefined;
         return { ...transaction, groupKey: `transaction:${report.page}:${index + 1}`, paymentOperationId: null, combinedChargeGroupId: null, paymentIds: [], amountMinor, dispute, rows };
       }),
@@ -117,8 +118,10 @@ router.get("/payments", async (req, res) => {
     // authorized tenant/league/bowler scope, not over the selected page.
     // Keep that scope for ordinary readers; only transaction-level dispute
     // amount is withheld because a partner has no exact child apportionment.
-    const hasDurableInitiator = [...report.rows, ...report.unlinkedHistory].some((row) => row.initiatingPayerBowlerId === req.user?.bowlerId);
-    redactedReport.totals = { ...report.totals, disputedReviewRequiredMinor: hasDurableInitiator ? report.totals.disputedReviewRequiredMinor : 0 };
+    // Totals are already computed by the service over the full authorized
+    // scope, including durable F2 paidByUser and F4 payer evidence. Never
+    // derive them from the current page.
+    redactedReport.totals = report.totals;
     const { fingerprint: _privilegedFingerprint, ...redactedSemantic } = redactedReport;
     return sendSuccess(res, { ...redactedReport, fingerprint: canonicalPaymentReportFingerprint(redactedSemantic) });
   } catch (error) {

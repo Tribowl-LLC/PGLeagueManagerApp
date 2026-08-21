@@ -97,6 +97,7 @@ export interface CanonicalPaymentRow {
   dispute: CanonicalPaymentDisputeEvidence;
   unresolved: boolean;
   receipt: CanonicalPaymentReceiptSummary;
+  sharedTransaction?: { groupKey: string | null; childCount: number } | null;
   allocations: CanonicalPaymentAllocationRow[];
   collectionEvidence?: CanonicalCollectionEvidence;
   /** Internal role projection hint; ordinary responses remove it. */

@@ -317,4 +317,15 @@ describe("F5 canonical payment reporting PostgreSQL evidence", () => {
     await db.insert(paymentOccurrenceAllocationRevisions).values({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, allocationId: allocation.id, revisionNumber: 1, snapshotSchemaVersion: 1, afterSnapshot: { state: "active", amountMinor: allocation.amountMinor + 1 }, recordedByUserId: fixture.actorUserId });
     await expect(readCanonicalPaymentReport({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, limit: 10 })).rejects.toBeInstanceOf(CanonicalPaymentReportIncompatibilityError);
   });
+
+  it("selects an exact receipt parent without pagination and preserves tenant-wide validation", async () => {
+    const fixture = await makeF3WorkflowFixture();
+    organizations.push(fixture.organizationId);
+    const paymentsInserted = await db.insert(payments).values([1, 2, 3].map((amount) => ({ bowlerId: fixture.roster[0].id, leagueId: fixture.leagueId, amount: amount * 100, weekOf: `2038-03-0${amount}T19:00:00.000Z`, status: "paid" as const, type: "cash" as const }))).returning({ id: payments.id });
+    const exactPaymentId = paymentsInserted[1]?.id;
+    if (!exactPaymentId) throw new Error("exact payment fixture missing");
+    const report = await readCanonicalPaymentReport({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, paymentId: exactPaymentId, page: 1, limit: 1 });
+    expect(report.unlinkedHistory.map((row) => row.paymentId)).toEqual([exactPaymentId]);
+    expect(report.totalTransactions).toBe(3);
+  });
 });
