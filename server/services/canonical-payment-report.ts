@@ -347,6 +347,86 @@ export function completeVersionedRevisionChains<T extends { id: string; currentR
   });
 }
 
+type RevisionChainRow = { parentId: string; revisionNumber: number; snapshotSchemaVersion: number; beforeSnapshot: unknown; afterSnapshot: unknown };
+
+function revisionChainFor(parentId: string, currentRevision: number, revisions: RevisionChainRow[]): RevisionChainRow[] | null {
+  const chain = revisions.filter((revision) => revision.parentId === parentId).sort((left, right) => left.revisionNumber - right.revisionNumber);
+  return chain.length === currentRevision && chain.every((revision, index) => revision.revisionNumber === index + 1) ? chain : null;
+}
+
+function policyRevisionLifecycleValid(chain: RevisionChainRow[], expected: Record<string, unknown>): boolean {
+  const expectedPolicy = expected.policy;
+  if (!expectedPolicy || typeof expectedPolicy !== "object" || Array.isArray(expectedPolicy)) return false;
+  const expectedPolicyRecord = expectedPolicy as Record<string, unknown>;
+  const immutableKeys = [
+    "id", "organizationId", "leagueId", "activationId", "activationRevision", "activationSourceFingerprint",
+    "policyVersion", "policyFingerprint", "commandKey", "collectionPoints",
+  ];
+  let previousState: unknown = null;
+  for (const [index, revision] of chain.entries()) {
+    if (!revision.afterSnapshot || typeof revision.afterSnapshot !== "object" || Array.isArray(revision.afterSnapshot)) return false;
+    const snapshot = revision.afterSnapshot as Record<string, unknown>;
+    const policy = snapshot.policy;
+    if (!policy || typeof policy !== "object" || Array.isArray(policy)) return false;
+    const policyRecord = policy as Record<string, unknown>;
+    if (!sameEvidenceValue(snapshot.contractVersion, expected.contractVersion)
+      || !sameEvidenceValue(snapshot.occurrences, expected.occurrences)) return false;
+    if (policyRecord.currentRevision !== revision.revisionNumber) return false;
+    if (!immutableKeys.every((key) => sameEvidenceValue(policyRecord[key], expectedPolicyRecord[key]))) return false;
+    const state = policyRecord.state;
+    if (state === "draft") {
+      if (policyRecord.approvedByUserId !== null || policyRecord.approvedAt !== null) return false;
+      if (index > 0 || previousState !== null) return false;
+    } else if (state === "approved") {
+      if (!sameEvidenceValue(policyRecord.approvedByUserId, expectedPolicyRecord.approvedByUserId)
+        || !sameEvidenceValue(policyRecord.approvedAt, expectedPolicyRecord.approvedAt)
+        || policyRecord.approvedByUserId === null || policyRecord.approvedAt === null
+        || index === 0 || previousState !== "draft") return false;
+    } else if (state === "superseded") {
+      if (!sameEvidenceValue(policyRecord.approvedByUserId, expectedPolicyRecord.approvedByUserId)
+        || !sameEvidenceValue(policyRecord.approvedAt, expectedPolicyRecord.approvedAt)
+        || policyRecord.approvedByUserId === null || policyRecord.approvedAt === null
+        || previousState !== "approved") return false;
+    } else return false;
+    previousState = state;
+  }
+  return true;
+}
+
+export function completeF3PolicyRevisionChains<T extends { id: string; currentRevision: number }>(parents: T[], revisions: RevisionChainRow[], expectedAfterSnapshot: (parent: T) => unknown): boolean {
+  return parents.every((parent) => {
+    if (!completeVersionedRevisionChains([parent], revisions, expectedAfterSnapshot)) return false;
+    const expected = expectedAfterSnapshot(parent);
+    if (!expected || typeof expected !== "object" || Array.isArray(expected)) return false;
+    const chain = revisionChainFor(parent.id, parent.currentRevision, revisions);
+    return chain !== null && policyRevisionLifecycleValid(chain, expected as Record<string, unknown>);
+  });
+}
+
+export function completeF3AuthorizationRevisionChains<T extends { id: string; currentRevision: number }>(parents: T[], revisions: RevisionChainRow[], expectedAfterSnapshot: (parent: T) => unknown): boolean {
+  return parents.every((parent) => {
+    if (!completeVersionedRevisionChains([parent], revisions, expectedAfterSnapshot)) return false;
+    const expected = expectedAfterSnapshot(parent);
+    if (!expected || typeof expected !== "object" || Array.isArray(expected)) return false;
+    const expectedRecord = expected as Record<string, unknown>;
+    const chain = revisionChainFor(parent.id, parent.currentRevision, revisions);
+    if (!chain) return false;
+    const mutableKeys = new Set(["state", "currentRevision"]);
+    let previousState: unknown = null;
+    for (const [index, revision] of chain.entries()) {
+      if (!revision.afterSnapshot || typeof revision.afterSnapshot !== "object" || Array.isArray(revision.afterSnapshot)) return false;
+      const snapshot = revision.afterSnapshot as Record<string, unknown>;
+      if (snapshot.currentRevision !== revision.revisionNumber
+        || !Object.keys(expectedRecord).filter((key) => !mutableKeys.has(key)).every((key) => sameEvidenceValue(snapshot[key], expectedRecord[key]))) return false;
+      if (index === 0) {
+        if (snapshot.state !== "authorized" && snapshot.state !== "revoked") return false;
+      } else if (previousState !== "authorized" || snapshot.state !== "superseded") return false;
+      previousState = snapshot.state;
+    }
+    return true;
+  });
+}
+
 function planRevisionMatchesCurrent(
   snapshot: unknown,
   plan: typeof occurrenceCollectionPlans.$inferSelect,
@@ -680,8 +760,8 @@ async function readCanonicalPaymentReportInTransaction(tx: ReportDbTransaction, 
       const policyRevisionRows = await tx.select({ parentId: f3CollectionPolicyRevisions.policyId, revisionNumber: f3CollectionPolicyRevisions.revisionNumber, snapshotSchemaVersion: f3CollectionPolicyRevisions.snapshotSchemaVersion, beforeSnapshot: f3CollectionPolicyRevisions.beforeSnapshot, afterSnapshot: f3CollectionPolicyRevisions.afterSnapshot }).from(f3CollectionPolicyRevisions).where(and(eq(f3CollectionPolicyRevisions.organizationId, input.organizationId), eq(f3CollectionPolicyRevisions.leagueId, input.leagueId), inArray(f3CollectionPolicyRevisions.policyId, canonicalSnapshotsForReport.map((snapshot) => snapshot.policyId))));
       const authorizationRevisionRows = await tx.select({ parentId: f3PayerAuthorizationRevisions.authorizationId, revisionNumber: f3PayerAuthorizationRevisions.revisionNumber, snapshotSchemaVersion: f3PayerAuthorizationRevisions.snapshotSchemaVersion, beforeSnapshot: f3PayerAuthorizationRevisions.beforeSnapshot, afterSnapshot: f3PayerAuthorizationRevisions.afterSnapshot }).from(f3PayerAuthorizationRevisions).where(and(eq(f3PayerAuthorizationRevisions.organizationId, input.organizationId), eq(f3PayerAuthorizationRevisions.leagueId, input.leagueId), inArray(f3PayerAuthorizationRevisions.authorizationId, canonicalSnapshotsForReport.map((snapshot) => snapshot.authorizationId))));
       const planRevisionRows = await tx.select({ parentId: occurrenceCollectionPlanRevisions.planId, revisionNumber: occurrenceCollectionPlanRevisions.revisionNumber, snapshotSchemaVersion: occurrenceCollectionPlanRevisions.snapshotSchemaVersion, beforeSnapshot: occurrenceCollectionPlanRevisions.beforeSnapshot, afterSnapshot: occurrenceCollectionPlanRevisions.afterSnapshot }).from(occurrenceCollectionPlanRevisions).where(and(eq(occurrenceCollectionPlanRevisions.organizationId, input.organizationId), eq(occurrenceCollectionPlanRevisions.leagueId, input.leagueId), inArray(occurrenceCollectionPlanRevisions.planId, canonicalSnapshotsForReport.map((snapshot) => snapshot.d2PlanId))));
-      if (!completeVersionedRevisionChains(policyRows, policyRevisionRows, (policy) => policyRevisionSnapshotForReport(policy, policyOccurrenceRows.filter((row) => row.policyId === policy.id)))
-        || !completeVersionedRevisionChains(authorizationRows, authorizationRevisionRows, (authorization) => authorization)
+      if (!completeF3PolicyRevisionChains(policyRows, policyRevisionRows, (policy) => policyRevisionSnapshotForReport(policy, policyOccurrenceRows.filter((row) => row.policyId === policy.id)))
+        || !completeF3AuthorizationRevisionChains(authorizationRows, authorizationRevisionRows, (authorization) => authorization)
         || !completePlanRevisionChains(planRows, planRevisionRows, planItemRows)) throw new CanonicalPaymentReportIncompatibilityError();
       for (const row of policyOccurrenceRows) canonicalPolicyOccurrencesByPolicy.set(row.policyId, [...(canonicalPolicyOccurrencesByPolicy.get(row.policyId) ?? []), row]);
       for (const snapshot of canonicalSnapshotsForReport) {

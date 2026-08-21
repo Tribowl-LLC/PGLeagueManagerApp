@@ -5,7 +5,7 @@ import {
   type CanonicalPaymentReport,
 } from "@shared/canonical-payment-report";
 import { paymentReceiptContract, PAYMENT_RECEIPT_CONTRACT } from "@shared/payment-receipt";
-import { completeVersionedRevisionChains } from "../../server/services/canonical-payment-report";
+import { completeF3AuthorizationRevisionChains, completeF3PolicyRevisionChains, completeVersionedRevisionChains } from "../../server/services/canonical-payment-report";
 
 const base: Omit<CanonicalPaymentReport, "fingerprint"> = {
   contractVersion: CANONICAL_PAYMENT_REPORT_CONTRACT,
@@ -261,5 +261,108 @@ describe("F5 canonical payment and receipt contracts", () => {
       { parentId: parent.id, revisionNumber: 2, snapshotSchemaVersion: 1, beforeSnapshot: malformed, afterSnapshot: expected },
     ];
     expect(completeVersionedRevisionChains([parent], revisions, () => expected)).toBe(false);
+  });
+
+  it("accepts the approved F3 policy lifecycle and rejects an immutable historical rewrite", () => {
+    const policyId = "00000000-0000-4000-8000-000000000101";
+    const expected = {
+      contractVersion: "canonical-collection-policy/1",
+      policy: {
+        id: policyId,
+        organizationId: 1,
+        leagueId: 2,
+        activationId: "00000000-0000-4000-8000-000000000102",
+        activationRevision: 1,
+        activationSourceFingerprint: `lvfinancialsource:v1:${"a".repeat(64)}`,
+        policyVersion: 1,
+        policyFingerprint: `lvf3policy:v1:${"b".repeat(64)}`,
+        commandKey: "policy-command-1",
+        state: "superseded",
+        currentRevision: 3,
+        collectionPoints: [{ occurrenceId: revisionOccurrenceOne }],
+        approvedByUserId: 9,
+        approvedAt: "2030-01-02T00:00:00.000Z",
+      },
+      occurrences: [{ occurrenceId: revisionOccurrenceOne, groupKey: "group-1", groupRole: "normal", pairedOccurrenceId: null, collectionPointOccurrenceId: revisionOccurrenceOne, itemIndex: 0 }],
+    };
+    const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+    const draft = { ...expected, policy: { ...expected.policy, state: "draft", currentRevision: 1, approvedByUserId: null, approvedAt: null } };
+    const approved = { ...expected, policy: { ...expected.policy, state: "approved", currentRevision: 2 } };
+    const parent = { id: policyId, currentRevision: 3 };
+    const revisions = [
+      { parentId: policyId, revisionNumber: 1, snapshotSchemaVersion: 1, beforeSnapshot: null, afterSnapshot: draft },
+      { parentId: policyId, revisionNumber: 2, snapshotSchemaVersion: 1, beforeSnapshot: draft, afterSnapshot: approved },
+      { parentId: policyId, revisionNumber: 3, snapshotSchemaVersion: 1, beforeSnapshot: approved, afterSnapshot: expected },
+    ];
+    expect(completeF3PolicyRevisionChains([parent], revisions, () => expected)).toBe(true);
+
+    const approvedAtRevisionOne = clone(approved);
+    approvedAtRevisionOne.policy.currentRevision = 1;
+    expect(completeF3PolicyRevisionChains(
+      [{ id: policyId, currentRevision: 1 }],
+      [{ parentId: policyId, revisionNumber: 1, snapshotSchemaVersion: 1, beforeSnapshot: null, afterSnapshot: approvedAtRevisionOne }],
+      () => approvedAtRevisionOne,
+    )).toBe(false);
+
+    const rewritten = clone(draft);
+    rewritten.policy.policyFingerprint = `lvf3policy:v1:${"c".repeat(64)}`;
+    const rewrittenRevisions = [
+      { ...revisions[0], afterSnapshot: rewritten },
+      { ...revisions[1], beforeSnapshot: rewritten },
+      revisions[2],
+    ];
+    expect(completeVersionedRevisionChains([parent], rewrittenRevisions, () => expected)).toBe(true);
+    expect(completeF3PolicyRevisionChains([parent], rewrittenRevisions, () => expected)).toBe(false);
+  });
+
+  it("accepts authorized-to-superseded F3 auth and rejects immutable consent rewrites", () => {
+    const authId = "00000000-0000-4000-8000-000000000201";
+    const expected = {
+      id: authId,
+      organizationId: 1,
+      leagueId: 2,
+      payerBowlerId: 7,
+      policyId: "00000000-0000-4000-8000-000000000202",
+      policyVersion: 1,
+      authorizationVersion: 1,
+      authorizationFingerprint: `lvf3auth:v1:${"a".repeat(64)}`,
+      preauthorizationQuoteFingerprint: `lvf3quote:v1:${"b".repeat(64)}`,
+      authorizedItems: [{ obligationId: revisionObligationOne, occurrenceId: revisionOccurrenceOne, bowlerId: 7, collectionPointOccurrenceId: revisionOccurrenceOne, amountMinor: 500, itemIndex: 0 }],
+      commandKey: "auth-command-1",
+      coveredBowlerIds: [7, 8],
+      acceptedPartnerIds: [8],
+      collectionPointOccurrenceIds: [revisionOccurrenceOne],
+      locationId: 4,
+      encryptedSourceId: "encrypted-source",
+      encryptedCustomerId: "encrypted-customer",
+      paymentMethodFingerprint: "c".repeat(64),
+      timing: "at_collection_point",
+      state: "superseded",
+      currentRevision: 2,
+      createdByUserId: 9,
+      authorizedAt: "2030-01-02T00:00:00.000Z",
+      revokedAt: null,
+      createdAt: "2030-01-01T00:00:00.000Z",
+    };
+    const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+    const authorized = clone(expected);
+    authorized.state = "authorized";
+    authorized.currentRevision = 1;
+    const parent = { id: authId, currentRevision: 2 };
+    const revisions = [
+      { parentId: authId, revisionNumber: 1, snapshotSchemaVersion: 1, beforeSnapshot: null, afterSnapshot: authorized },
+      { parentId: authId, revisionNumber: 2, snapshotSchemaVersion: 1, beforeSnapshot: authorized, afterSnapshot: expected },
+    ];
+    expect(completeF3AuthorizationRevisionChains([parent], revisions, () => expected)).toBe(true);
+
+    const rewritten = clone(authorized);
+    rewritten.payerBowlerId = 99;
+    const rewrittenRevisions = [
+      { ...revisions[0], afterSnapshot: rewritten },
+      { ...revisions[1], beforeSnapshot: rewritten },
+      revisions[1],
+    ].slice(0, 2);
+    expect(completeVersionedRevisionChains([parent], rewrittenRevisions, () => expected)).toBe(true);
+    expect(completeF3AuthorizationRevisionChains([parent], rewrittenRevisions, () => expected)).toBe(false);
   });
 });
