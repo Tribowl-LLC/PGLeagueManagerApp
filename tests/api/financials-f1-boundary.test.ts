@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { apiGet, login, type AuthSession } from "../helpers";
+import { apiGet, login, BASE_URL, type AuthSession } from "../helpers";
 import { getTestDb } from "../setup/test-db";
 import { hashPassword } from "../../server/lib/password";
 import { deleteOrganization } from "../../server/storage/organizations";
@@ -41,7 +41,7 @@ describe("F1 financial API boundary", () => {
 
   it("keeps activation dormant with a generic conflict and no provider-facing response", async () => {
     const session = await login(process.env.TEST_ORG_A_EMAIL ?? "testadmin@example.com", process.env.TEST_ORG_PASSWORD ?? "org-local-dev");
-    const result = await fetch(`${process.env.TEST_BASE_URL}/api/financials/leagues/1/activate?organizationId=1`, {
+    const result = await fetch(`${BASE_URL}/api/financials/leagues/1/activate?organizationId=1`, {
       method: "POST",
       headers: { Cookie: session.cookies, "Content-Type": "application/json", "X-CSRF-Token": session.csrfToken },
       body: JSON.stringify({ commandKey: ["f1", "api", "dormant"].join("_"), sourceFingerprint: "dormant-source-fixture", payingLineupSize: 3, responsibilities: [] }),

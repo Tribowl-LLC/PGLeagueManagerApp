@@ -37,6 +37,7 @@ import {
   type VerifiedNeonProduction,
   type VerifiedNeonRehearsal,
 } from './neon-rehearsal-verifier';
+import { hasProductionDeploymentEvidence } from '../../server/utils/db-safety';
 
 export const ADOPTION_CONFIRMATION = 'ADOPT_LEAGUEVAULT_BASELINE_WITHOUT_DDL';
 export const BACKUP_ATTESTATION = 'BACKUP_AND_RESTORE_VERIFIED';
@@ -164,15 +165,7 @@ function required(environment: NodeJS.ProcessEnv, key: string): string {
 }
 
 function assertNonProductionEnvironment(environment: NodeJS.ProcessEnv): void {
-  if (
-    environment.APP_ENV?.trim().toLowerCase() === 'prod' ||
-    environment.NODE_ENV?.trim().toLowerCase() === 'production' ||
-    environment.APP_DOMAIN?.trim().toLowerCase() === 'leaguevault.app' ||
-    Boolean(environment.REPLIT_DEPLOYMENT?.trim()) ||
-    Boolean(environment.RENDER?.trim()) ||
-    Boolean(environment.RENDER_SERVICE_ID?.trim()) ||
-    Boolean(environment.RENDER_EXTERNAL_HOSTNAME?.trim())
-  ) {
+  if (hasProductionDeploymentEvidence(environment)) {
     throw new Error('Production baseline adoption is disabled in this change.');
   }
 }
@@ -186,7 +179,6 @@ function assertProductionOperatorEnvironment(environment: NodeJS.ProcessEnv): vo
     throw new Error('Production adoption requires the exact production application identity.');
   }
   if (
-    Boolean(environment.REPLIT_DEPLOYMENT?.trim()) ||
     Boolean(environment.RENDER?.trim()) ||
     Boolean(environment.RENDER_SERVICE_ID?.trim()) ||
     Boolean(environment.RENDER_EXTERNAL_HOSTNAME?.trim())

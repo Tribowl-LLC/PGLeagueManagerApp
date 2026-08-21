@@ -22,8 +22,8 @@
  *     league / location id columns) to confirm zero residual rows.
  *
  * Safety:
- *   - Hard-refuses to run when NODE_ENV=production or REPLIT_DEPLOYMENT
- *     is set, *unless* ALLOW_TEST_CLEANUP=1 is passed.
+ *   - Hard-refuses to run in a production-shaped runtime unless
+ *     ALLOW_TEST_CLEANUP=1 is passed.
  *   - `--dry-run` prints planned counts and exits without touching the
  *     DB. Default mode additionally requires ALLOW_TEST_CLEANUP=1.
  *   - Single transaction; failure rolls everything back.
@@ -57,8 +57,10 @@ import {
   adminRoleChangeAudits,
   orphanCleanupAudits,
 } from '@shared/schema';
-import { isReplitDeploymentValue } from '../server/utils/replit-env';
-import { assertSafeDatabaseHost } from '../server/utils/db-safety';
+import {
+  assertSafeDatabaseHost,
+  hasProductionDeploymentEvidence,
+} from '../server/utils/db-safety';
 import type { PgTable } from 'drizzle-orm/pg-core';
 
 const TARGET_NAMES = ['Vitest Org A', 'Vitest Org B'] as const;
@@ -66,11 +68,12 @@ const TARGET_NAMES = ['Vitest Org A', 'Vitest Org B'] as const;
 function assertSafeEnvironment(): void {
   const nodeEnv = process.env.NODE_ENV;
   const allowOverride = process.env.ALLOW_TEST_CLEANUP === '1';
-  const isReplitDeployment = isReplitDeploymentValue(process.env.REPLIT_DEPLOYMENT);
   if (allowOverride) return;
-  if (nodeEnv === 'production' || isReplitDeployment) {
+  if (hasProductionDeploymentEvidence(process.env)) {
     throw new Error(
-      'Refusing to run cleanup-vitest-org-ab: NODE_ENV=production or REPLIT_DEPLOYMENT is set. ' +
+      'Refusing to run cleanup-vitest-org-ab: production/deployment evidence is present ' +
+        `(APP_ENV=${process.env.APP_ENV ?? '<unset>'}, NODE_ENV=${nodeEnv ?? '<unset>'}, ` +
+        `APP_DOMAIN=${process.env.APP_DOMAIN ?? '<unset>'}). ` +
         'Set ALLOW_TEST_CLEANUP=1 only if you really intend to delete from this database.',
     );
   }

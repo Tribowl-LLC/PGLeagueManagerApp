@@ -125,7 +125,7 @@ async function buildSquareClient(): Promise<SquareClientLike> {
   // through the cross-org guard and the bowler UPDATE branch without
   // touching Square. Two independent gates keep the seam from being
   // tripped outside the test suite:
-  //   1. NODE_ENV !== 'production' — a Replit/CI deploy can't bypass
+  //   1. NODE_ENV !== 'production' — a hosted/CI deploy can't bypass
   //      the real Square API by setting the var.
   //   2. VITEST === 'true' — even in dev/staging, the seam is only
   //      honoured when the process was spawned by vitest. Vitest sets

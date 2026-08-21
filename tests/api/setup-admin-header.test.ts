@@ -4,21 +4,20 @@
  *
  * Hits the dev server directly on localhost so `X-Forwarded-For` spoofing
  * actually isolates per-test rate-limit buckets under `setupAdminLimiter`
- * (5 req / 15 min / IP). `X-Forwarded-Proto: https` is set so
- * express-session accepts the secure session cookie used for CSRF.
+ * (5 req / 15 min / IP). `X-Forwarded-Proto: https` is set so the request
+ * also exercises the trusted reverse-proxy metadata path used in deployment.
  */
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Request, Response } from 'express';
 import { checkSetupSecret } from '../../server/routes/setup-admin';
+import { BASE_URL as SHARED_BASE_URL } from '../helpers';
 
-// Intentionally bypasses the shared `tests/helpers.ts` BASE_URL (which
-// prefers the Replit HTTPS domain) because `setupAdminLimiter` is
+// Intentionally allows a dedicated override because `setupAdminLimiter` is
 // 5 req / 15 min / IP and we need `X-Forwarded-For` to actually reach
 // express-rate-limit's keyGenerator — only possible when we hit the
 // trusted local hop directly.
 //
-// Resolution order (all local hops — no Replit HTTPS fallback on
-// purpose, see above):
+// Resolution order (all local hops):
 //   1. `SETUP_ADMIN_TEST_BASE_URL` — explicit override.
 //   2. `TEST_BASE_URL` — set by `tests/setup/per-worker-setup.ts` to
 //      `http://127.0.0.1:<port>` for the per-fork test app vitest spawns.
@@ -30,8 +29,7 @@ import { checkSetupSecret } from '../../server/routes/setup-admin';
 //      explicitly started by the developer).
 const BASE_URL =
   process.env.SETUP_ADMIN_TEST_BASE_URL ||
-  process.env.TEST_BASE_URL ||
-  'http://localhost:5000';
+  SHARED_BASE_URL;
 const SETUP_SECRET = process.env.SETUP_SECRET;
 
 let ipCounter = 0;

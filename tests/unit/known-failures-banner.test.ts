@@ -1,9 +1,8 @@
 /**
- * Meta-test for the post-merge "known failures" banner (task #694).
+ * Meta-test for the local "known failures" snapshot (task #694).
  *
- * `scripts/snapshot-failures.sh` (invoked by `scripts/post-merge.sh`) writes
- * `.local/known-failures.md` after every task merge to surface the post-merge
- * red/green state of typecheck, lint, and tests into the next task's context.
+ * `scripts/snapshot-failures.sh` writes `.local/known-failures.md` on demand
+ * to record the current typecheck, lint, and test state for local diagnostics.
  *
  * This test asserts that *if* the file exists, it has the expected sections
  * and a recent timestamp — i.e. nobody silently broke the snapshot script and
@@ -21,7 +20,7 @@ describe('known-failures banner', () => {
   if (!existsSync(BANNER_PATH)) {
     it.skip('skipped — .local/known-failures.md not yet generated (first run)', () => {
       // No-op. The file is created by scripts/snapshot-failures.sh after the
-      // first post-merge hook run.
+      // first manual snapshot run.
     });
     return;
   }
@@ -29,19 +28,13 @@ describe('known-failures banner', () => {
   const contents = readFileSync(BANNER_PATH, 'utf8');
 
   it('has the expected top-level header', () => {
-    expect(contents).toMatch(/^# Known failures \(post-merge snapshot\)/m);
+    expect(contents).toMatch(/^# Known failures \(manual snapshot\)/m);
   });
 
   it('has Typecheck, Lint, and Tests sections', () => {
     expect(contents).toMatch(/Typecheck.*\b(PASS|FAIL)\b/);
     expect(contents).toMatch(/Lint.*\b(PASS|FAIL)\b/);
-    // Tests section may be PENDING after a fast post-merge snapshot;
-    // it gets rewritten to PASS/FAIL once the async worker finishes.
-    expect(contents).toMatch(/Tests.*\b(PASS|FAIL|PENDING)\b/);
-  });
-
-  it('declares a `_Test section:` freshness marker', () => {
-    expect(contents).toMatch(/_Test section: (fresh|pending|stale)_/);
+    expect(contents).toMatch(/Tests.*\b(PASS|FAIL)\b/);
   });
 
   it('has a timestamp within the last 24 hours', () => {

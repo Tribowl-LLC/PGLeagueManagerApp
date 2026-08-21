@@ -15,6 +15,7 @@ import {
   type PushDisposableRuntime,
 } from '../../scripts/db-push-disposable';
 import { REVIEWED_DRIZZLE_CONFIG_PATH } from '../../scripts/lib/drizzle-cli-environment';
+import { hasProductionDeploymentEvidence } from '../../server/utils/db-safety';
 
 const CONTAINER_ID = 'a'.repeat(64);
 const TARGET_URL = 'postgresql://postgres:local-only@127.0.0.1:55432/inventory_push';
@@ -85,6 +86,23 @@ function runtime(
 }
 
 describe('owned local disposable database proof', () => {
+  it.each([
+    ['APP_ENV=prod', { APP_ENV: 'prod' }],
+    ['NODE_ENV=production', { NODE_ENV: 'production' }],
+    ['the production domain', { APP_DOMAIN: 'leaguevault.app' }],
+    ['Render service metadata', { RENDER_SERVICE_ID: 'srv-leaguevault' }],
+  ])('recognizes %s as production deployment evidence', (_label, environment) => {
+    expect(hasProductionDeploymentEvidence(environment)).toBe(true);
+  });
+
+  it('does not classify local/test metadata as production evidence', () => {
+    expect(hasProductionDeploymentEvidence({
+      APP_ENV: 'dev',
+      NODE_ENV: 'test',
+      APP_DOMAIN: 'staging.example',
+    })).toBe(false);
+  });
+
   it('parses a complete proof and requires a full lowercase container ID', () => {
     expect(readDisposableTargetProof({
       LV_DISPOSABLE_DB_CONTAINER_ID: CONTAINER_ID,

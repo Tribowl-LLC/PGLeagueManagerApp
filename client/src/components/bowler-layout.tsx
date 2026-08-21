@@ -86,7 +86,7 @@ export const BowlerLayout: FC<BowlerLayoutProps> = ({ children, bowlerName, leag
   const isSystemAdmin = currentUserResponse?.data?.role === 'system_admin';
 
   return (
-    <div className="fixed top-[var(--beta-banner-height,0px)] right-0 bottom-0 left-0 flex flex-col bg-[#f8fafc] font-sans">
+    <div className="fixed top-0 right-0 bottom-0 left-0 flex flex-col bg-[#f8fafc] font-sans">
       <header className="flex-none bg-white border-b border-slate-200 px-4 h-14 flex items-center justify-center z-10 shadow-sm relative">
         {(organization?.logo || organization?.darkLogo) ? (
           <img

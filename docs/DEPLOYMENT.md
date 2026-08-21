@@ -226,7 +226,7 @@ Optional integrations and provider credentials are configured only when their
 features are enabled.
 
 Never commit secrets or production values. Never copy production values into a
-development, test, beta, screenshot, log, fixture, or prompt. Migration target
+development, test, staging, screenshot, log, fixture, or prompt. Migration target
 proofs, confirmation tokens, probe credentials, and other temporary deployment
 variables are ephemeral: scope them to the one approved operation, do not echo
 them, and unset them immediately afterward. Production payment credentials are

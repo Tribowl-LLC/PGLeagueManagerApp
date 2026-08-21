@@ -4,7 +4,7 @@
  * The endpoint exposes the live `req.ip` Express resolved + the
  * configured trust-proxy setting + the same synthetic probe the boot
  * guard uses, so a post-deploy smoke check can assert end-to-end that
- * a config change at the proxy layer (Replit edge, custom domain,
+ * a config change at the reverse-proxy layer (managed edge, custom domain,
  * future CDN) hasn't silently re-introduced the misconfiguration that
  * collapses every per-IP rate limit into a global ceiling.
  *
@@ -18,9 +18,9 @@
  *
  * Note on XFF assertions: we deliberately do NOT pin "the request's
  * X-Forwarded-For header round-trips byte-for-byte" here. In the
- * Replit test env every request reaches the dev server through an
- * edge proxy that rewrites/replaces XFF, so the value the endpoint
- * sees never matches what we set client-side. The truncation logic
+ * A hosted test environment may put an edge proxy in front of the dev
+ * server that rewrites/replaces XFF, so the value the endpoint sees
+ * need not match what we set client-side. The truncation logic
  * (256-char cap + ellipsis marker) is small enough to read by
  * inspection and is exercised end-to-end by the post-deploy probe
  * (`scripts/verify-trust-proxy-deploy.ts`) when run against a real
@@ -36,15 +36,8 @@ import {
   TEST_ADMIN_PASSWORD,
   TEST_ORG_A_EMAIL,
   TEST_ORG_PASSWORD,
+  BASE_URL,
 } from '../helpers';
-
-// `tests/helpers.ts` derives the server base URL the same way it does
-// for fetch-based requests; we need it here too for the raw fetch
-// calls that exercise the `X-Probe-Token` auth path.
-const REPLIT_HOST =
-  process.env.REPLIT_DEV_DOMAIN || process.env.REPLIT_DOMAINS?.split(',')[0];
-const TEST_BASE_URL =
-  process.env.TEST_BASE_URL || (REPLIT_HOST ? `https://${REPLIT_HOST}` : 'http://localhost:5000');
 
 interface StatusBody {
   live: {
@@ -173,7 +166,7 @@ describe('GET /api/system-admin/trust-proxy-status', () => {
 
   describe.skipIf(!probeConfigured)('X-Probe-Token auth path', () => {
     it('accepts a matching X-Probe-Token with no session and returns the status body', { retry: 2 }, async () => {
-      const res = await fetch(`${TEST_BASE_URL}/api/system-admin/trust-proxy-status`, {
+      const res = await fetch(`${BASE_URL}/api/system-admin/trust-proxy-status`, {
         headers: {
           Accept: 'application/json',
           'X-Probe-Token': probeToken!,
@@ -190,7 +183,7 @@ describe('GET /api/system-admin/trust-proxy-status', () => {
       // timingSafeEqual path (it throws on length mismatch); a wrong
       // token of the right length must still come back as 401.
       const wrong = 'X'.repeat(probeToken!.length);
-      const res = await fetch(`${TEST_BASE_URL}/api/system-admin/trust-proxy-status`, {
+      const res = await fetch(`${BASE_URL}/api/system-admin/trust-proxy-status`, {
         headers: {
           Accept: 'application/json',
           'X-Probe-Token': wrong,
@@ -208,7 +201,7 @@ describe('GET /api/system-admin/trust-proxy-status', () => {
       // valid token while holding a stolen cookie would never see a
       // failure signal.
       const admin: AuthSession = await login(TEST_ADMIN_EMAIL, TEST_ADMIN_PASSWORD);
-      const res = await fetch(`${TEST_BASE_URL}/api/system-admin/trust-proxy-status`, {
+      const res = await fetch(`${BASE_URL}/api/system-admin/trust-proxy-status`, {
         headers: {
           Accept: 'application/json',
           'X-Probe-Token': 'definitely-not-the-right-token-but-long-enough-12345',
@@ -221,7 +214,7 @@ describe('GET /api/system-admin/trust-proxy-status', () => {
     });
 
     it('rejects a length-mismatched X-Probe-Token with 401 (timingSafeEqual cannot compare)', async () => {
-      const res = await fetch(`${TEST_BASE_URL}/api/system-admin/trust-proxy-status`, {
+      const res = await fetch(`${BASE_URL}/api/system-admin/trust-proxy-status`, {
         headers: {
           Accept: 'application/json',
           // One char shorter than the real token, so the length-check

@@ -139,9 +139,9 @@ or the interactive bowler-uniqueness contract. See
 Capacitor, `ios/`, and `android/` are intentional native targets. They may look
 unused from the web entrypoint but are maintained for the mobile application.
 
-Replit is not production hosting. Replit-specific beta and handoff information
-is kept in `docs/replit-handoff.md` so it does not redefine the Render release
-workflow.
+Render is the production hosting provider. Deployment and environment
+configuration must remain provider-neutral in application code and are
+documented in the Render release runbook.
 
 ## Durable Documentation Map
 
@@ -149,5 +149,4 @@ workflow.
 - `docs/production-runbook.md`: Render, Neon, schema, and post-deploy steps.
 - `docs/ci.md`: workflows, status checks, action pinning, and CI secrets.
 - `docs/TEST_INFRA.md`: test database and worker isolation details.
-- `docs/replit-handoff.md`: historical Replit beta and Chris handoff material.
 - `CONTRIBUTING.md`: ESLint suppression-baseline rules.

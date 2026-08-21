@@ -32,10 +32,6 @@ function extractSubdomain(hostname: string): string | null {
     return null;
   }
 
-  if (host.endsWith('.replit.dev') || host.endsWith('.repl.co') || host.endsWith('.picard.replit.dev')) {
-    return null;
-  }
-
   if (host === MAIN_DOMAIN || host === `www.${MAIN_DOMAIN}`) {
     return null;
   }

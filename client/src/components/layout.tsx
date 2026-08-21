@@ -748,7 +748,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen bg-[#f8fafc] text-slate-900 font-sans flex overflow-hidden">
       <aside
         className={cn(
-          "transition-all duration-300 ease-in-out bg-[#0f172a] text-slate-300 flex-col border-r border-slate-800 shadow-xl z-50 shrink-0 fixed top-[var(--beta-banner-height,0px)] bottom-0 left-0 hidden md:flex",
+          "transition-all duration-300 ease-in-out bg-[#0f172a] text-slate-300 flex-col border-r border-slate-800 shadow-xl z-50 shrink-0 fixed top-0 bottom-0 left-0 hidden md:flex",
           isCollapsed ? "w-20" : "w-64"
         )}
       >
@@ -846,7 +846,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         "flex-1 flex flex-col min-h-screen transition-all duration-300",
         isCollapsed ? "md:ml-20" : "md:ml-64"
       )}>
-        <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-4 md:px-8 shrink-0 shadow-[0_1px_2px_rgba(0,0,0,0.02)] z-10 sticky top-[var(--beta-banner-height,0px)]">
+        <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-4 md:px-8 shrink-0 shadow-[0_1px_2px_rgba(0,0,0,0.02)] z-10 sticky top-0">
           <div className="flex items-center gap-3 text-slate-500">
             <button
               type="button"

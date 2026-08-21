@@ -68,7 +68,7 @@ during org creation. No PII.
 
 ### `server/utils/wait-for-port.ts` — 19 sites
 Lines 36, 41, 46, 50, 56, 63, 69, 81, 87, 93, 97, 108, 122, 128, 141,
-154, 160, 169, 180. Dev-only utility that waits for the Replit dev
+154, 160, 169, 180. Dev-only utility that waits for the local development
 workflow's port to be listening before firing health checks.
 
 Payloads logged: workflow name string, port number, attempt counters,

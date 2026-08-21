@@ -19,14 +19,15 @@ describe('production rate-limit store activation', () => {
     })).toThrow(/production APP_ENV requires NODE_ENV=production.*shared PostgreSQL store/i);
   });
 
-  it('refuses an inferred production deployment with an in-memory store', () => {
+  it('refuses production APP_ENV with NODE_ENV=test', () => {
     expect(() => assertProductionRateLimitStore({
-      REPLIT_DEPLOYMENT: '1',
-      NODE_ENV: 'development',
+      APP_ENV: 'prod',
+      NODE_ENV: 'test',
     })).toThrow(/production APP_ENV requires NODE_ENV=production.*shared PostgreSQL store/i);
   });
 
-  it.each(['dev', 'beta'])('preserves the in-memory store in %s', (appEnv) => {
+  it('preserves the in-memory store in dev', () => {
+    const appEnv = 'dev';
     const environment = { APP_ENV: appEnv, NODE_ENV: 'development' };
 
     expect(() => assertProductionRateLimitStore(environment)).not.toThrow();

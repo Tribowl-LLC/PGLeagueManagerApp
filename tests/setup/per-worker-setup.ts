@@ -31,9 +31,8 @@
  * singleton pool would bind to the dev DB instead of the worker DB.
  */
 // Side-effect import: installs the in-process [ERROR] log guard
-// (Task #746). `server/logger` only imports `./utils/replit-env`
-// (no `server/db`), so this respects the "no db import above setEnv"
-// rule documented in this file's header.
+// (Task #746). This module has no `server/db` dependency, so it respects the
+// "no db import above setEnv" rule documented in this file's header.
 import './error-log-guard';
 import { spawnTestApp, type SpawnedTestApp } from './spawn-test-app';
 import { CLONE_ADVISORY_LOCK_KEY } from './per-worker-lock';

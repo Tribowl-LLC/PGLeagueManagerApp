@@ -16,28 +16,16 @@ function mockConfig(appDomain: string): void {
     env: {
       APP_DOMAIN: appDomain,
       SENDGRID_API_KEY: undefined,
-      REPLIT_DOMAINS: undefined,
-      REPL_SLUG: undefined,
-      REPL_OWNER: undefined,
     },
     isDev: false,
   }));
 }
 
-interface DevEnv {
-  REPLIT_DOMAINS?: string;
-  REPL_SLUG?: string;
-  REPL_OWNER?: string;
-}
-
-function mockDevConfig(appDomain: string, devEnv: DevEnv = {}): void {
+function mockDevConfig(appDomain: string): void {
   vi.doMock('../../server/config', () => ({
     env: {
       APP_DOMAIN: appDomain,
       SENDGRID_API_KEY: undefined,
-      REPLIT_DOMAINS: devEnv.REPLIT_DOMAINS,
-      REPL_SLUG: devEnv.REPL_SLUG,
-      REPL_OWNER: devEnv.REPL_OWNER,
     },
     isDev: true,
   }));
@@ -146,55 +134,7 @@ describe('CSP frame-ancestors honors APP_DOMAIN', () => {
   });
 });
 
-/**
- * Pins the dev-only branches of `getAllowedOrigins()` so a future
- * refactor cannot silently drop REPLIT_DOMAINS / REPL_SLUG+REPL_OWNER /
- * localhost variants and only break inside the Replit preview iframe
- * (where it is hardest to notice). APP_DOMAIN production coverage is
- * already pinned by the suites above; these tests cover the dev-only
- * counterparts that task #334 left unprotected.
- */
 describe('isAllowedOrigin in dev mode', () => {
-  it('allow-lists every host listed in REPLIT_DOMAINS', async () => {
-    mockDevConfig('staging.example', {
-      REPLIT_DOMAINS:
-        'abc-123.spock.repl.co,xyz-456.kirk.repl.co',
-    });
-    const { isAllowedOrigin } = await import('../../server/middleware/security');
-    expect(isAllowedOrigin('https://abc-123.spock.repl.co')).toBe(true);
-    expect(isAllowedOrigin('https://xyz-456.kirk.repl.co')).toBe(true);
-    // Hosts not in the list — and not subdomains of APP_DOMAIN — stay
-    // rejected even in dev.
-    expect(isAllowedOrigin('https://attacker.repl.co')).toBe(false);
-  });
-
-  it('allow-lists the legacy ${REPL_SLUG}.${REPL_OWNER}.repl.co host', async () => {
-    mockDevConfig('staging.example', {
-      REPL_SLUG: 'leaguevault',
-      REPL_OWNER: 'taylor',
-    });
-    const { isAllowedOrigin } = await import('../../server/middleware/security');
-    expect(isAllowedOrigin('https://leaguevault.taylor.repl.co')).toBe(true);
-  });
-
-  it.each([
-    ['REPL_SLUG only', { REPL_SLUG: 'leaguevault' }],
-    ['REPL_OWNER only', { REPL_OWNER: 'taylor' }],
-  ])(
-    'does not synthesize a repl.co origin when only %s is set',
-    async (_label, devEnv) => {
-      // Guards the `if (REPL_SLUG && REPL_OWNER)` short-circuit — without
-      // it a missing var would push `https://undefined.undefined.repl.co`.
-      // Both asymmetric cases are covered so a regression that broke
-      // either side of the AND would surface.
-      mockDevConfig('staging.example', devEnv);
-      const { isAllowedOrigin } = await import('../../server/middleware/security');
-      expect(isAllowedOrigin('https://undefined.undefined.repl.co')).toBe(false);
-      expect(isAllowedOrigin('https://leaguevault.undefined.repl.co')).toBe(false);
-      expect(isAllowedOrigin('https://undefined.taylor.repl.co')).toBe(false);
-    },
-  );
-
   it.each([
     'http://localhost:5000',
     'http://localhost:5173',
@@ -221,48 +161,6 @@ describe('isAllowedOrigin in dev mode', () => {
     const { isAllowedOrigin } = await import('../../server/middleware/security');
     expect(isAllowedOrigin('http://acme.staging.example')).toBe(false);
     expect(isAllowedOrigin('http://attacker.example')).toBe(false);
-  });
-});
-
-/**
- * Pins that the REPLIT_DOMAINS / REPL_SLUG+OWNER allow-listing is
- * truly DEV-ONLY. If a refactor moves any of those pushes outside the
- * `if (isDev)` block, a production deploy that still has the env vars
- * set (very common on Replit) would silently broaden the prod CORS
- * allow-list. These tests use the prod-mode mockConfig directly but
- * inject the dev env vars through a custom doMock so we can assert the
- * gate, not just the absence of the vars.
- */
-describe('isAllowedOrigin gates dev origins on isDev=false', () => {
-  function mockProdWithDevEnv(appDomain: string, devEnv: DevEnv): void {
-    vi.doMock('../../server/config', () => ({
-      env: {
-        APP_DOMAIN: appDomain,
-        SENDGRID_API_KEY: undefined,
-        REPLIT_DOMAINS: devEnv.REPLIT_DOMAINS,
-        REPL_SLUG: devEnv.REPL_SLUG,
-        REPL_OWNER: devEnv.REPL_OWNER,
-      },
-      isDev: false,
-    }));
-  }
-
-  it('rejects REPLIT_DOMAINS hosts in production even when the env var is populated', async () => {
-    mockProdWithDevEnv('staging.example', {
-      REPLIT_DOMAINS: 'abc-123.spock.repl.co,xyz-456.kirk.repl.co',
-    });
-    const { isAllowedOrigin } = await import('../../server/middleware/security');
-    expect(isAllowedOrigin('https://abc-123.spock.repl.co')).toBe(false);
-    expect(isAllowedOrigin('https://xyz-456.kirk.repl.co')).toBe(false);
-  });
-
-  it('rejects ${REPL_SLUG}.${REPL_OWNER}.repl.co in production even when both env vars are set', async () => {
-    mockProdWithDevEnv('staging.example', {
-      REPL_SLUG: 'leaguevault',
-      REPL_OWNER: 'taylor',
-    });
-    const { isAllowedOrigin } = await import('../../server/middleware/security');
-    expect(isAllowedOrigin('https://leaguevault.taylor.repl.co')).toBe(false);
   });
 });
 

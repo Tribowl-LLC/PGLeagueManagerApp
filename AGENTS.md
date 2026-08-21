@@ -68,7 +68,8 @@ Before editing:
 3. Fetch the latest `origin/main` before starting a new feature or bug-fix
    branch.
 4. Read `.local/known-failures.md` when it exists. It is an advisory snapshot
-   of the most recent post-merge checks, not a reason to ignore new failures.
+   of the most recent manually captured checks, not a reason to ignore new
+   failures.
 5. Inspect the relevant implementation, tests, schemas, and documentation.
 6. Identify the smallest safe change that satisfies the requested outcome.
 7. State the expected files, validation plan, and material risks before making
@@ -240,8 +241,9 @@ browser-delivered code.
   rollback implications in the pull request.
 - Deploy the matching CI-verified commit only after the schema change is
   applied successfully.
-- Verify `/api/health`, authentication, tenant isolation, and the affected
-  workflow after deployment.
+- Verify `/api/health`, `/api/org-context` (`appEnv: "prod"` plus the matching
+  short commit), authentication, tenant isolation, and the affected workflow
+  after deployment.
 - Keep a tested restore plan for the backup.
 
 See `docs/production-runbook.md` and `docs/TEST_INFRA.md`.
@@ -360,8 +362,6 @@ Tenant isolation is a security boundary, not merely a filtering convention.
 - `docs/production-runbook.md`: Render and Neon release procedure
 - `docs/engineering-context.md`: longer architecture notes and durable
   decisions
-- `docs/replit-handoff.md`: historical Replit beta and handoff information; it
-  is not the production deployment process
 
 ## Code And Review Practices
 

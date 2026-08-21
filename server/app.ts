@@ -23,9 +23,8 @@ import { createServer, type Server as HttpServer } from 'http';
 import path from 'path';
 import fs from 'fs';
 import type { AddressInfo } from 'net';
-import { env, isDev, isBetaEnv, scheduledPaymentExecutionMode } from "./config";
+import { appEnv, env, isDev, scheduledPaymentExecutionMode } from "./config";
 import { commitSha } from './utils/build-info';
-import { findLiveCredentials } from './utils/live-credential-check';
 import { registerRoutes } from "./routes/index";
 import { setupVite } from "./vite";
 import {
@@ -133,24 +132,9 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
     rearm: () => scheduledPaymentOperationExecutor.rearm(),
   });
 
-  // Refuse to start a beta deploy that has live payment credentials in
-  // its env. See `server/utils/live-credential-check.ts` and Task #652.
-  if (isBetaEnv) {
-    const findings = findLiveCredentials(process.env);
-    if (findings.length > 0) {
-      log.error('Refusing to start: APP_ENV=beta but live payment credentials are present in environment.');
-      for (const f of findings) {
-        log.error(`  - ${f.envVar}: ${f.reason}`);
-      }
-      log.error('Remove the listed credentials from this Repl\'s Secrets and re-deploy. See docs/replit-handoff.md.');
-      process.exit(1);
-    }
-  }
-
   log.info('Runtime envelope', {
-    appEnv: (await import('./config')).appEnv,
+    appEnv,
     nodeEnv: env.NODE_ENV,
-    isReplitDeploy: !!env.REPLIT_DEPLOYMENT,
     commit: commitSha,
     squareCreds:
       env.SQUARE_PROD_TOKEN || env.SQUARE_PRODUCTION_ACCESS_TOKEN

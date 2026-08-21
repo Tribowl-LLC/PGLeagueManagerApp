@@ -7,7 +7,7 @@ import connectPg from "connect-pg-simple";
 import { storage } from "./storage";
 import { User as SelectUser } from "@shared/schema";
 import { cacheFetch } from "./utils/cache";
-import { env, isDev, isDeployment } from "./config";
+import { env, isDev } from "./config";
 import { createLogger } from "./logger";
 import { pool } from "./db";
 import { hashPassword, comparePasswords, safeTokenCompare } from "./lib/password";
@@ -100,18 +100,10 @@ export async function setupAuth(app: Express) {
       tableName: 'session',
     }),
     cookie: {
-      // Test escape hatch (Task #700): the per-worker test app is
-      // spawned with `TRUST_PROXY_DISABLE_SECURE_COOKIES=1` so the
-      // session cookie is sent over plain http://127.0.0.1:<port>
-      // instead of being silently dropped because REPLIT_DOMAINS is
-      // set in this workspace. Gated to non-production NODE_ENV so it
-      // can never leak into a real deployment.
-      secure: (
-        process.env.TRUST_PROXY_DISABLE_SECURE_COOKIES === '1' && isDev
-      ) ? false : (!isDev || isDeployment || !!env.REPLIT_DOMAINS),
-      sameSite: (
-        process.env.TRUST_PROXY_DISABLE_SECURE_COOKIES === '1' && isDev
-      ) ? "lax" as const : ((isDev && !!env.REPLIT_DOMAINS) ? "none" as const : "lax" as const),
+      // Production sessions are HTTPS-only. Local and test sessions need to
+      // work over loopback HTTP, but remain same-site.
+      secure: isProduction,
+      sameSite: "lax" as const,
       maxAge: 24 * 60 * 60 * 1000,
       httpOnly: true,
       // safe: APP_DOMAIN is normalised to lowercase at parse-time (task #335).

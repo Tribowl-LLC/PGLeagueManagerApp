@@ -66,7 +66,6 @@
     "@radix-ui/react-tabs": "^1.1.21",
     "@radix-ui/react-toast": "^1.2.23",
     "@radix-ui/react-tooltip": "^1.2.16",
-    "@replit/vite-plugin-shadcn-theme-json": "^0.0.4",
     "@sendgrid/mail": "^8.1.6",
     "@sentry/node": "^10.68.0",
     "@sentry/react": "^10.68.0",
@@ -105,7 +104,6 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@replit/vite-plugin-runtime-error-modal": "^0.0.6",
     "@tailwindcss/postcss": "^4.3.2",
     "@tailwindcss/typography": "^0.5.20",
     "@tanstack/eslint-plugin-query": "^5.101.2",

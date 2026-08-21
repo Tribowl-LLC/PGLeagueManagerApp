@@ -50,20 +50,17 @@ role and organization are reset to the values above.
 
 The hook is idempotent, so re-running the suite does not pollute the
 database with duplicate rows. As an additional safety measure the
-seeder refuses to run when `NODE_ENV=production` or `REPLIT_DEPLOYMENT`
-is set, unless `ALLOW_TEST_SEED=1` is also set.
+seeder refuses to run when production/deployment evidence is present
+(`NODE_ENV=production`, `APP_ENV=prod`, the production domain, or Render
+metadata), unless `ALLOW_TEST_SEED=1` is also set.
 
 ### Base URL behavior
 
-`tests/helpers.ts` picks a sensible default for the API base URL:
+`tests/helpers.ts` picks the per-worker `TEST_BASE_URL` when the test harness
+spawns an isolated app. Standalone invocations fall back to
+`http://localhost:5000`.
 
-- On Replit (when `REPLIT_DEV_DOMAIN` or `REPLIT_DOMAINS` is set) it
-  uses the `https://<replit-domain>` of the running dev server. This is
-  required because session cookies are flagged `Secure` and would be
-  dropped over plain `http://localhost`.
-- Otherwise it falls back to `http://localhost:5000`.
-
-Set `TEST_BASE_URL` explicitly to override either default.
+Set `TEST_BASE_URL` explicitly to override this URL.
 
 ### Auth rate limiter in dev
 
@@ -90,7 +87,7 @@ override credentials without editing source:
 
 | Env var                          | Default                       |
 |----------------------------------|-------------------------------|
-| `TEST_BASE_URL`                  | `https://$REPLIT_DEV_DOMAIN` when running on Replit, otherwise `http://localhost:5000` |
+| `TEST_BASE_URL`                  | per-worker app URL when set, otherwise `http://localhost:5000` |
 | `TEST_ADMIN_EMAIL`               | `admin@example.com`           |
 | `TEST_ADMIN_PASSWORD`            | `admin-local-dev`             |
 | `TEST_ORG_A_EMAIL`               | `testadmin@example.com`       |
