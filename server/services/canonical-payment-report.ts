@@ -228,17 +228,30 @@ function revisionSemanticsCoverage(
  * to pass.  Nullable scalar transitions are valid; missing keys, container
  * type changes, and malformed scalar values are not.
  */
-const nullableSnapshotFields = new Set([
-  "approvedAt", "approvedByUserId", "revokedAt", "encryptedCustomerId", "pairedOccurrenceId",
-  "responseDueAt", "cardBrand", "brandDisputeId", "providerReportedAt", "providerObjectUpdatedAt",
-  "paymentId", "receiptUrl", "receiptNumber", "upfrontDueAt",
-]);
+const nullableSnapshotFieldTypes: Record<string, "string" | "number" | "boolean"> = {
+  approvedAt: "string",
+  approvedByUserId: "number",
+  authorizedAt: "string",
+  revokedAt: "string",
+  encryptedCustomerId: "string",
+  pairedOccurrenceId: "string",
+  responseDueAt: "string",
+  cardBrand: "string",
+  brandDisputeId: "string",
+  providerReportedAt: "string",
+  providerObjectUpdatedAt: "string",
+  paymentId: "number",
+  receiptUrl: "string",
+  receiptNumber: "string",
+  upfrontDueAt: "string",
+};
 
 function snapshotShapeCompatible(value: unknown, template: unknown, fieldName?: string): boolean {
   if (template === null || template === undefined) {
     if (value === null || value === undefined) return true;
-    return Boolean(fieldName && nullableSnapshotFields.has(fieldName))
-      && typeof value !== "object" && typeof value !== "function";
+    const expectedType = fieldName ? nullableSnapshotFieldTypes[fieldName] : undefined;
+    return expectedType !== undefined && typeof value === expectedType
+      && (expectedType !== "number" || Number.isSafeInteger(value));
   }
   if (Array.isArray(template)) {
     if (!Array.isArray(value)) return false;
@@ -250,7 +263,7 @@ function snapshotShapeCompatible(value: unknown, template: unknown, fieldName?: 
     const valueRecord = value as Record<string, unknown>;
     return Object.entries(template as Record<string, unknown>).every(([key, example]) => key in valueRecord && snapshotShapeCompatible(valueRecord[key], example, key));
   }
-  if (value === null) return Boolean(fieldName && nullableSnapshotFields.has(fieldName));
+  if (value === null) return Boolean(fieldName && nullableSnapshotFieldTypes[fieldName]);
   if (typeof value !== typeof template) return false;
   if (typeof template === "number") return Number.isFinite(value) && Number.isSafeInteger(value);
   return true;

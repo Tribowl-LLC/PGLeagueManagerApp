@@ -86,4 +86,20 @@ describe("F5 canonical payment and receipt contracts", () => {
     ];
     expect(completeVersionedRevisionChains([parent], revisions, () => expected)).toBe(false);
   });
+
+  it.each([
+    ["pairedOccurrenceId", { contractVersion: "canonical-collection-policy/1", policy: { approvedByUserId: null }, occurrences: [{ pairedOccurrenceId: null }] }, (snapshot: Record<string, unknown>) => { const occurrences = snapshot.occurrences as Array<Record<string, unknown>>; const first = occurrences[0]; if (first) first.pairedOccurrenceId = 123; }],
+    ["approvedByUserId", { contractVersion: "canonical-collection-policy/1", policy: { approvedByUserId: null }, occurrences: [] }, (snapshot: Record<string, unknown>) => { const policy = snapshot.policy as Record<string, unknown>; policy.approvedByUserId = "wrong-type"; }],
+    ["encryptedCustomerId", { id: "auth-1", state: "authorized", encryptedCustomerId: null, payerBowlerId: 1 }, (snapshot: Record<string, unknown>) => { snapshot.encryptedCustomerId = 123; }],
+    ["eligibility state", { state: "eligible", reason: "explicit_admin_selection" }, (snapshot: Record<string, unknown>) => { snapshot.state = 42; }],
+  ] as const)("rejects wrong primitive type in %s historical snapshot", (_field, expected, corrupt) => {
+    const parent = { id: "parent-type", currentRevision: 2 };
+    const malformed = JSON.parse(JSON.stringify(expected)) as Record<string, unknown>;
+    corrupt(malformed);
+    const revisions = [
+      { parentId: parent.id, revisionNumber: 1, snapshotSchemaVersion: 1, beforeSnapshot: null, afterSnapshot: malformed },
+      { parentId: parent.id, revisionNumber: 2, snapshotSchemaVersion: 1, beforeSnapshot: malformed, afterSnapshot: expected },
+    ];
+    expect(completeVersionedRevisionChains([parent], revisions, () => expected)).toBe(false);
+  });
 });
