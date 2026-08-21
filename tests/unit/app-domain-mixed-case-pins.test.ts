@@ -44,10 +44,6 @@ function parseMixedCaseAppDomain(): string {
 
 interface ConfigOverrides {
   isDev?: boolean;
-  REPLIT_DOMAINS?: string;
-  REPL_SLUG?: string;
-  REPL_OWNER?: string;
-  REPLIT_DEPLOYMENT?: string;
 }
 
 function mockConfigWithParsedAppDomain(overrides: ConfigOverrides = {}): string {
@@ -56,10 +52,6 @@ function mockConfigWithParsedAppDomain(overrides: ConfigOverrides = {}): string 
     env: {
       APP_DOMAIN: appDomain,
       SENDGRID_API_KEY: undefined,
-      REPLIT_DOMAINS: overrides.REPLIT_DOMAINS,
-      REPL_SLUG: overrides.REPL_SLUG,
-      REPL_OWNER: overrides.REPL_OWNER,
-      REPLIT_DEPLOYMENT: overrides.REPLIT_DEPLOYMENT,
     },
     isDev: overrides.isDev ?? false,
   }));

@@ -122,10 +122,10 @@ function getTrustFn(app: TrustProxyApp): Parameters<typeof proxyAddr>[1] {
 
 export function verifyTrustProxy(app: TrustProxyApp): TrustProxyCheckResult {
   const trust = getTrustFn(app);
-  // Synthesize the simplest realistic shape: a single proxy hop
-  // (Replit's edge in our deploy) puts the client's IP in XFF, and
-  // the socket address is loopback because the proxy is local from
-  // our pov. Even a 1-hop trust setting must turn this into the
+  // Synthesize the simplest realistic shape: a single reverse-proxy hop
+  // puts the client's IP in XFF, and the socket address is loopback because
+  // the proxy is local from our point of view. Even a 1-hop trust setting
+  // must turn this into the
   // client IP — anything less means per-IP limiters key on the
   // proxy's loopback address. Real deployments with deeper chains
   // would still work (they trust >=1 hop), so this is the lower

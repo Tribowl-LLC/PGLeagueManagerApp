@@ -96,7 +96,14 @@ vi.mock('passport', () => ({
   },
 }));
 
-const sessionFactory = vi.fn(() => (_req: unknown, _res: unknown, next: () => void) => next());
+type SessionMiddleware = (_req: unknown, _res: unknown, next: () => void) => void;
+type SessionOptionsForTest = {
+  secret: string;
+  cookie?: Record<string, unknown>;
+};
+const sessionFactory = vi.fn<(options: SessionOptionsForTest) => SessionMiddleware>(
+  () => (_req: unknown, _res: unknown, next: () => void) => next(),
+);
 const captured_store_options: { value?: Record<string, unknown> } = {};
 vi.mock('express-session', () => ({
   default: Object.assign(sessionFactory, { Store: class {} }),
@@ -139,21 +146,13 @@ vi.mock('../../server/lib/password', () => ({
 }));
 
 vi.mock('../../server/config', () => ({
-  isDev: true,
-  // `setupAuth` reads `isDeployment` to decide whether to mark the
-  // session cookie `secure` even when NODE_ENV !== 'production'
-  // (Replit deployments terminate TLS at the proxy). This mock has
-  // to mirror EVERY symbol the imported file consumes — vi.mock with
-  // a factory is a full replacement, so an omitted export becomes a
-  // hard "No 'isDeployment' export" runtime error rather than a
-  // silent undefined. Pinned `false` here so the cookie path under
-  // test stays the dev (non-secure) branch.
-  isDeployment: false,
+  get isDev() {
+    return process.env.NODE_ENV !== 'production';
+  },
+  appEnv: 'dev',
   env: {
     SESSION_SECRET,
     APP_DOMAIN: 'test.example',
-    REPLIT_DEPLOYMENT: undefined,
-    REPLIT_DOMAINS: undefined,
   },
 }));
 
@@ -213,13 +212,33 @@ describe('setupAuth wires express-session without leaking SESSION_SECRET to logs
     // see the secret anywhere — and that express-session was actually
     // configured with the secret value (i.e. the wire-up happened).
     expect(sessionFactory).toHaveBeenCalledTimes(1);
-    const opts = (sessionFactory.mock.calls[0] as unknown as [{ secret: string }])[0];
+    const opts = sessionFactory.mock.calls[0]?.[0];
     expect(opts.secret).toBe(SESSION_SECRET);
+    expect(opts).toMatchObject({
+      cookie: { secure: false, sameSite: 'lax' },
+    });
     assertNoSessionLeak();
   });
 
   it('does not start a recurring database session-pruning timer', () => {
     expect(captured_store_options.value?.pruneSessionInterval).toBe(false);
+  });
+
+  it('uses Secure + SameSite=Lax and the app domain in production', async () => {
+    const previousNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      await setupAuth({ set: () => undefined, use: () => undefined } as never);
+      const options = sessionFactory.mock.calls.at(-1)?.[0];
+      expect(options?.cookie).toMatchObject({
+        secure: true,
+        sameSite: 'lax',
+        domain: '.test.example',
+      });
+    } finally {
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousNodeEnv;
+    }
   });
 });
 

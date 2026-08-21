@@ -1,6 +1,5 @@
 
 import { Writable } from 'stream';
-import { isReplitDeploymentValue } from './utils/replit-env';
 
 class ConsoleBuffer extends Writable {
   private buffer: string[] = [];
@@ -40,13 +39,9 @@ const LOG_LEVELS = { debug: 0, info: 1, warn: 2, error: 3 } as const;
 type LogLevel = keyof typeof LOG_LEVELS;
 
 function isProductionLikeRuntime(): boolean {
-  // Treat both `NODE_ENV=production` and any Replit deploy environment
-  // (`REPLIT_DEPLOYMENT` is set on Reserved-VM and Autoscale deploys) as
-  // production-like for logging purposes. This guarantees that a deploy
-  // that forgot to set `LOG_LEVEL` still defaults to `info`, not `debug`,
-  // so the org-less drift `userId × resourceId` correlations in
-  // `server/utils/access-control.ts` (task #296) are dropped at the sink.
-  return process.env.NODE_ENV === 'production' || isReplitDeploymentValue(process.env.REPLIT_DEPLOYMENT);
+  // Production's explicit NODE_ENV selector is the only production signal;
+  // deployment providers must not be inferred from ambient variables.
+  return process.env.NODE_ENV === 'production';
 }
 
 /**
@@ -54,7 +49,7 @@ function isProductionLikeRuntime(): boolean {
  *
  * Precedence:
  *   1. An explicit `LOG_LEVEL` env var, if it names a known level.
- *   2. `info` in production-like runtimes (see {@link isProductionLikeRuntime}).
+ *   2. `info` when `NODE_ENV=production` (see {@link isProductionLikeRuntime}).
  *   3. `debug` in development.
  *
  * `server/config.ts` validates `LOG_LEVEL` at boot and warns if a

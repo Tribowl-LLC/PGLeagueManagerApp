@@ -95,8 +95,8 @@ Wait for `accepting connections` before running `npm run db:migrate`.
 This example publishes PostgreSQL only on loopback port `5433`, leaving port
 `5432` available for the `npm run test:local` container. The `postgres` /
 `postgres` credentials are intentionally weak and are suitable only for this
-local database. Do not reuse them for shared, internet-accessible, beta,
-staging, or production databases.
+local database. Do not reuse them for shared, internet-accessible, staging, or
+production databases.
 
 The named Docker volume preserves the local database if the container is
 removed. If the container already exists, start it with `docker start
@@ -209,7 +209,7 @@ Common local settings:
 
 | Variable | Description |
 | --- | --- |
-| `APP_ENV` | Environment selector: `dev`, `beta`, or `prod`. Use `dev` locally. |
+| `APP_ENV` | Environment selector: `dev` or `prod`. Use `dev` locally and `prod` on Render. |
 | `NODE_ENV` | Node runtime mode. Use `development` locally and `production` for a built deployment. |
 | `APP_DOMAIN` | Base application hostname; defaults to `leaguevault.app`. |
 | `PORT` | HTTP port; defaults to `5000`. |
@@ -406,8 +406,10 @@ secrets in Render, Neon, the payment providers, SendGrid, Sentry, or GitHub
 Actions as appropriate; do not commit them.
 
 After deployment, verify `/api/health`, authentication, the affected workflow,
-and the relevant provider or webhook behavior. The complete release procedure
-is in [`docs/production-runbook.md`](docs/production-runbook.md).
+and the relevant provider or webhook behavior. Also request
+`/api/org-context` and confirm `appEnv: "prod"` plus the short commit matching
+the exact certified Render SHA. The complete release procedure is in
+[`docs/production-runbook.md`](docs/production-runbook.md).
 
 ## Additional Documentation
 

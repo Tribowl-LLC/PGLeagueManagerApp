@@ -23,7 +23,7 @@ import {
   envSchema,
   validateScheduledPaymentExecutionMode,
 } from '../../server/config';
-import { isReplitDeploymentValue } from '../../server/utils/replit-env';
+import { resolveAppEnv, validateAppEnvAgreement } from '../../shared/app-env';
 
 describe('FIELD_ENCRYPTION_KEY env-schema entry', () => {
   const field = envSchema.shape.FIELD_ENCRYPTION_KEY;
@@ -341,53 +341,42 @@ describe('Optional credential env-schema entries', () => {
   );
 });
 
-// Replit platform-injected env vars: free-form optional strings. The pin
-// below ensures they stay optional (i.e. local/dev runs that aren't on
-// Replit don't fail boot) and that they don't accidentally get tightened
-// to required.
-describe('Replit platform env-schema entries (optional, free-form)', () => {
-  const replitFields = [
-    ['REPLIT_DOMAINS', envSchema.shape.REPLIT_DOMAINS],
-    ['REPL_SLUG', envSchema.shape.REPL_SLUG],
-    ['REPL_OWNER', envSchema.shape.REPL_OWNER],
-    ['REPLIT_DEPLOYMENT', envSchema.shape.REPLIT_DEPLOYMENT],
-  ] as const;
+describe('APP_ENV environment contract', () => {
+  const field = envSchema.shape.APP_ENV;
 
-  it.each(replitFields)('%s accepts undefined', (_, field) => {
+  it.each(['dev', 'prod'])('accepts %s', (value) => {
+    expect(field.safeParse(value).success).toBe(true);
+  });
+
+  it.each(['staging', 'test', '', 'production'])('rejects retired or invalid value %s', (value) => {
+    expect(field.safeParse(value).success).toBe(false);
+  });
+
+  it('allows the selector to be omitted for local/test resolution', () => {
     expect(field.safeParse(undefined).success).toBe(true);
+    expect(resolveAppEnv({ appEnv: undefined })).toBe('dev');
   });
 
-  it.each(replitFields)('%s accepts an empty string (free-form)', (_, field) => {
-    // These are platform-injected — we don't second-guess Replit's values.
-    expect(field.safeParse('').success).toBe(true);
+  it('keeps an explicit production selector', () => {
+    expect(resolveAppEnv({ appEnv: 'prod' })).toBe('prod');
   });
 
-  it.each(replitFields)('%s accepts a normal value', (_, field) => {
-    expect(field.safeParse('something').success).toBe(true);
+  it('requires NODE_ENV and APP_ENV to agree for production', () => {
+    expect(validateAppEnvAgreement({ appEnv: 'prod', nodeEnv: 'production' })).toEqual({
+      ok: true,
+      appEnv: 'prod',
+    });
+    expect(validateAppEnvAgreement({ appEnv: undefined, nodeEnv: 'development' })).toEqual({
+      ok: true,
+      appEnv: 'dev',
+    });
+    expect(validateAppEnvAgreement({ appEnv: 'prod', nodeEnv: 'development' })).toMatchObject({
+      ok: false,
+    });
+    expect(validateAppEnvAgreement({ appEnv: 'dev', nodeEnv: 'production' })).toMatchObject({
+      ok: false,
+    });
   });
-});
-
-// `REPLIT_DEPLOYMENT` is intentionally accepted as a free-form string at
-// the schema level (the platform owns the value), so the "are we in a
-// deploy?" decision is made by `isReplitDeploymentValue` instead. Pin
-// the contract here so a future caller can't reintroduce the
-// `!!env.REPLIT_DEPLOYMENT` shortcut and silently disagree about what
-// an empty string means.
-describe('isReplitDeploymentValue derived boolean', () => {
-  it('treats undefined as not deployed', () => {
-    expect(isReplitDeploymentValue(undefined)).toBe(false);
-  });
-
-  it('treats an empty string as not deployed', () => {
-    expect(isReplitDeploymentValue('')).toBe(false);
-  });
-
-  it.each(['1', 'true', 'autoscale', 'reserved-vm'])(
-    'treats %s as deployed',
-    (value) => {
-      expect(isReplitDeploymentValue(value)).toBe(true);
-    },
-  );
 });
 
 describe('F1 activation gate', () => {

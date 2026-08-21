@@ -1,12 +1,11 @@
 /**
  * Pins the production-safe LOG_LEVEL defaults introduced in task #306:
- *   - When LOG_LEVEL is unset and the runtime is production-like
- *     (NODE_ENV=production OR REPLIT_DEPLOYMENT set), the minimum level
+ *   - When LOG_LEVEL is unset and `NODE_ENV=production`, the minimum level
  *     is `info` — so the developer-only debug lines in
  *     `server/utils/access-control.ts` (userId × resourceId
  *     correlations from the org-less drift signal, task #296) are
  *     dropped at the sink.
- *   - When LOG_LEVEL is unset and the runtime is dev, the minimum level
+ *   - When LOG_LEVEL is unset and the runtime is dev/test, the minimum level
  *     is `debug` — so devs still see those signals locally.
  *   - An explicit LOG_LEVEL always wins over the default.
  *   - The env-schema rejects unknown LOG_LEVEL values with an
@@ -22,13 +21,11 @@ import { envSchema } from '../../server/config';
 const SAVED = {
   LOG_LEVEL: process.env.LOG_LEVEL,
   NODE_ENV: process.env.NODE_ENV,
-  REPLIT_DEPLOYMENT: process.env.REPLIT_DEPLOYMENT,
 };
 
 beforeEach(() => {
   delete process.env.LOG_LEVEL;
   delete process.env.NODE_ENV;
-  delete process.env.REPLIT_DEPLOYMENT;
 });
 
 afterEach(() => {
@@ -45,14 +42,8 @@ describe('logger.getMinLevel default', () => {
     expect(getMinLevel()).toBe('info');
   });
 
-  it('defaults to info when REPLIT_DEPLOYMENT is set and LOG_LEVEL is unset', () => {
-    process.env.REPLIT_DEPLOYMENT = '1';
-    expect(isProductionLikeRuntime()).toBe(true);
-    expect(getMinLevel()).toBe('info');
-  });
-
-  it('defaults to debug in development when LOG_LEVEL is unset', () => {
-    process.env.NODE_ENV = 'development';
+  it.each(['development', 'test'])('defaults to debug in %s when LOG_LEVEL is unset', (nodeEnv) => {
+    process.env.NODE_ENV = nodeEnv;
     expect(isProductionLikeRuntime()).toBe(false);
     expect(getMinLevel()).toBe('debug');
   });

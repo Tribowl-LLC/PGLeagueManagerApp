@@ -27,8 +27,9 @@
  *      and the 2 seeded vitest baseline orgs).
  *
  * Safety:
- *   - Refuses to run when NODE_ENV=production or REPLIT_DEPLOYMENT is
- *     set, *unless* the explicit override env var ALLOW_TEST_CLEANUP=1
+ *   - Refuses to run in a production-shaped runtime (APP_ENV=prod,
+ *     NODE_ENV=production, the production APP_DOMAIN, or Render markers)
+ *     *unless* the explicit override env var ALLOW_TEST_CLEANUP=1
  *     is also passed (mirrors the seeder's `assertSafeEnvironment`
  *     pattern in `tests/setup/seed-test-users.ts`).
  *   - Wraps every delete in a single transaction. A failure rolls
@@ -57,8 +58,10 @@ import {
   adminRoleChangeAudits,
   orphanCleanupAudits,
 } from '@shared/schema';
-import { isReplitDeploymentValue } from '../server/utils/replit-env';
-import { assertSafeDatabaseHost } from '../server/utils/db-safety';
+import {
+  assertSafeDatabaseHost,
+  hasProductionDeploymentEvidence,
+} from '../server/utils/db-safety';
 
 /**
  * Slugs that must NEVER be touched by this script:
@@ -120,15 +123,16 @@ const TEST_SLUG_PATTERNS = [
 function assertSafeEnvironment(): void {
   const nodeEnv = process.env.NODE_ENV;
   const allowOverride = process.env.ALLOW_TEST_CLEANUP === '1';
-  const isReplitDeployment = isReplitDeploymentValue(process.env.REPLIT_DEPLOYMENT);
   // Mirrors `assertSafeEnvironment` in tests/setup/seed-test-users.ts:
   // an explicit ALLOW_TEST_CLEANUP=1 opt-in lets the operator run this
   // even against a deployed environment. Without that opt-in, deployed
-  // / production-flagged environments are hard-refused.
+  // / production-shaped environments are hard-refused.
   if (allowOverride) return;
-  if (nodeEnv === 'production' || isReplitDeployment) {
+  if (hasProductionDeploymentEvidence(process.env)) {
     throw new Error(
-      'Refusing to run cleanup-test-organizations: NODE_ENV=production or REPLIT_DEPLOYMENT is set. ' +
+      'Refusing to run cleanup-test-organizations: production/deployment evidence is present ' +
+        `(APP_ENV=${process.env.APP_ENV ?? '<unset>'}, NODE_ENV=${nodeEnv ?? '<unset>'}, ` +
+        `APP_DOMAIN=${process.env.APP_DOMAIN ?? '<unset>'}). ` +
         'Set ALLOW_TEST_CLEANUP=1 only if you really intend to delete test-shaped orgs from this database.',
     );
   }

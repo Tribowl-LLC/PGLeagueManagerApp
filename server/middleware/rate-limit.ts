@@ -19,9 +19,8 @@ function userKeyGenerator(req: Request): string {
 /**
  * Test-only bypass for the limiters below.
  *
- * The vitest suite drives the long-running dev server through Replit's
- * HTTPS edge (and on GitHub CI through plain loopback), and in both
- * environments every test request resolves to `req.ip = '127.0.0.1'`.
+ * The vitest suite drives per-worker or long-running development servers over
+ * loopback, so every test request resolves to `req.ip = '127.0.0.1'`.
  * That means a single test file that intentionally fires a burst
  * (e.g. `payments-provider-guards.test.ts`) drains the loopback bucket
  * and starves every later test in the same vitest invocation that

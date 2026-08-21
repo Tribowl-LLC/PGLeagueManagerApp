@@ -169,9 +169,8 @@ in Render. Do not create secret files unless the application is specifically
 changed to read them.
 
 Optional integrations include SendGrid, Sentry, and setup bootstrap.
-Keep Square credentials in their
-intended environment and location; never copy production credentials into a
-beta or local environment.
+Keep Square credentials in their intended environment and location; never copy
+production credentials into a local or test environment.
 
 ### Retired payment-provider schema cleanup
 
@@ -493,7 +492,10 @@ run a Fall recovery route against it, or resume request-v1 setup writes. See
 
 ## Post-Deployment Checks
 
-- Confirm the Render deploy is running the expected commit.
+- Confirm the Render deploy is running the exact certified commit.
+- Request `/api/org-context` and confirm it reports `appEnv: "prod"` plus the
+  short commit matching that Render deployment. A missing, unknown, or
+  mismatched commit is a failed verification.
 - Check `/api/health` and the Render boot logs.
 - Confirm authentication and one representative affected workflow.
 - Review Sentry and Render logs for new errors.

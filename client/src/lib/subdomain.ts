@@ -8,11 +8,6 @@ export function getSubdomainSlug(): string | null {
     return params.get('__org_slug') || null;
   }
 
-  if (hostname.endsWith('.replit.dev') || hostname.endsWith('.repl.co')) {
-    const params = new URLSearchParams(window.location.search);
-    return params.get('__org_slug') || null;
-  }
-
   if (hostname === MAIN_DOMAIN || hostname === `www.${MAIN_DOMAIN}`) {
     return null;
   }
@@ -27,4 +22,3 @@ export function getSubdomainSlug(): string | null {
 
   return null;
 }
-

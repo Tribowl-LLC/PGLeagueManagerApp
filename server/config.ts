@@ -1,7 +1,11 @@
 import { z } from "zod";
 import { createLogger } from './logger';
-import { isReplitDeploymentValue } from './utils/replit-env';
-import { APP_ENV_VALUES, resolveAppEnv, type AppEnv } from '../shared/app-env';
+import {
+  APP_ENV_VALUES,
+  resolveAppEnv,
+  validateAppEnvAgreement,
+  type AppEnv,
+} from '../shared/app-env';
 
 const log = createLogger("Config");
 
@@ -85,20 +89,12 @@ export const envSchema = z.object({
     })
     .optional(),
 
-  REPLIT_DOMAINS: z.string().optional(),
-  REPL_SLUG: z.string().optional(),
-  REPL_OWNER: z.string().optional(),
-  REPLIT_DEPLOYMENT: z.string().optional(),
-
-  // Canonical environment selector (dev | beta | prod). When unset
-  // the server defaults via `resolveAppEnv` (REPLIT_DEPLOYMENT → prod,
-  // otherwise dev). The beta Repl MUST set APP_ENV=beta in Secrets;
-  // see `shared/app-env.ts` for the resolution rules and
-  // `docs/replit-handoff.md` for the historical Replit runbook.
+  // Canonical environment selector (dev | prod). Local and test processes
+  // may leave it unset and resolve to dev; production must set it explicitly.
   APP_ENV: z
     .enum(APP_ENV_VALUES, {
       error: () =>
-        `APP_ENV must be one of: ${APP_ENV_VALUES.join(', ')}. Leave it unset to use the safe per-runtime default (prod on a Replit deploy, dev locally). The beta Repl MUST set APP_ENV=beta in Secrets — see docs/replit-handoff.md.`,
+        `APP_ENV must be one of: ${APP_ENV_VALUES.join(', ')}. Leave it unset only for local/test processes; production must set APP_ENV=prod.`,
     })
     .optional(),
 
@@ -216,6 +212,14 @@ function validateEnv(): Env {
   const result = envSchema.safeParse(process.env);
 
   const requireExecutionMode = (parsed: Env): Env => {
+    const agreement = validateAppEnvAgreement({
+      appEnv: parsed.APP_ENV,
+      nodeEnv: parsed.NODE_ENV,
+    });
+    if (!agreement.ok) {
+      log.error(`Environment validation failed: ${agreement.reason}`);
+      process.exit(1);
+    }
     const executionMode = validateScheduledPaymentExecutionMode({
       mode: parsed.SCHEDULED_PAYMENT_EXECUTION_MODE,
       nodeEnv: parsed.NODE_ENV,
@@ -275,27 +279,14 @@ export const canonicalF4AutopayExecutionEnabled = env.LEAGUEVAULT_F4_CANONICAL_A
 
 export const isDev = env.NODE_ENV !== "production";
 
-// Canonical "are we running on a Replit deploy?" boolean. Use this
-// instead of `!!env.REPLIT_DEPLOYMENT` so the empty-string edge case
-// is handled in exactly one place — see `utils/replit-env.ts`.
-export const isDeployment = isReplitDeploymentValue(env.REPLIT_DEPLOYMENT);
-
-// Canonical environment selector (dev | beta | prod). Resolved once
-// at boot from APP_ENV (if set) with a runtime-aware default — see
-// `shared/app-env.ts` for the rules. Downstream code should import
-// this rather than re-resolving from `env.APP_ENV` so the default
-// only lives in one place.
+// Canonical environment selector (dev | prod), resolved once at boot.
 export const appEnv: AppEnv = resolveAppEnv({
   appEnv: env.APP_ENV,
-  replitDeployment: env.REPLIT_DEPLOYMENT,
 });
-export const isBetaEnv = appEnv === 'beta';
-export const isProdEnv = appEnv === 'prod';
 
-// Canonical "are we in a production-like runtime?" boolean. NODE_ENV
-// is the explicit signal; REPLIT_DEPLOYMENT is the implicit one for
-// Replit Reserved-VM / Autoscale deploys that may not set NODE_ENV.
-export const isProdLike = env.NODE_ENV === "production" || isDeployment;
+// Canonical "are we in a production-like runtime?" boolean. Validated boot
+// configuration keeps this equivalent to `appEnv === 'prod'`.
+export const isProdLike = env.NODE_ENV === "production" || appEnv === 'prod';
 
 // Production-like deploys MUST NOT silently run at `debug` — that would
 // dump `userId × resourceId` correlations from the org-less drift signal

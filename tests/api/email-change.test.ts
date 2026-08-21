@@ -38,8 +38,8 @@ import {
 // Mint an isolated rate-limit bucket id per test. The confirm-email-change
 // limiter honors `x-test-rl-bucket` only when NODE_ENV !== 'production',
 // giving each test its own counter so the suite doesn't have to depend on
-// fragile X-Forwarded-For trickery (Replit's proxy chain mangles that
-// anyway — req.ip ends up as 127.0.0.1 regardless of what we forge).
+// fragile X-Forwarded-For trickery through a hosted reverse proxy
+// (req.ip may be rewritten to the loopback hop regardless of what we forge).
 function newBucketId(): string {
   return `vitest-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
