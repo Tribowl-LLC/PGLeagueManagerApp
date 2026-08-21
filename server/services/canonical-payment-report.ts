@@ -48,7 +48,7 @@ import {
 } from "@shared/canonical-payment-report";
 import { paymentReceiptContract } from "@shared/payment-receipt";
 import { validateF4ExecutionSnapshot } from "@shared/f4-canonical-autopay-contract";
-import { f3AuthorizationFingerprint, f3PolicyFingerprint, f3SemanticPlanFingerprint } from "@shared/f3-autopay-contract";
+import { f3AuthorizationFingerprint, f3CollectionPointSchema, f3PolicyOccurrenceSchema, f3PolicyFingerprint, f3QuoteItemSchema, f3SemanticPlanFingerprint } from "@shared/f3-autopay-contract";
 import { loadOperationalActivationEvidence } from "./canonical-due-past-due.js";
 import { fingerprintPaymentOperationOccurrenceSnapshot, validatePaymentOperationOccurrenceSnapshot } from "../services/payment-operation-occurrence-snapshot.js";
 import { reconstructScheduledPaymentSnapshot } from "../services/scheduled-payment-operation-snapshot.js";
@@ -256,25 +256,47 @@ const snapshotArraySchemas: Record<string, SnapshotArraySchema> = {
   occurrences: "policyOccurrence",
 };
 
+const uuidLike = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+function snapshotArrayIsOrderedAndUnique(value: unknown[], schema: SnapshotArraySchema): boolean {
+  if (schema === "positiveInteger" || schema === "string") return new Set(value.map((entry) => JSON.stringify(entry))).size === value.length;
+  if (schema === "collectionPoint") {
+    const occurrenceIds = value.map((entry) => (entry as Record<string, unknown>).occurrenceId);
+    return new Set(occurrenceIds).size === occurrenceIds.length;
+  }
+  const indexes = value.map((entry) => (entry as Record<string, unknown>).itemIndex);
+  if (!indexes.every((index, position) => index === position)) return false;
+  if (schema === "authorizedItem") {
+    const obligationIds = value.map((entry) => (entry as Record<string, unknown>).obligationId);
+    return new Set(obligationIds).size === obligationIds.length;
+  }
+  const occurrenceIds = value.map((entry) => (entry as Record<string, unknown>).occurrenceId);
+  return new Set(occurrenceIds).size === occurrenceIds.length;
+}
+
 function snapshotArrayEntryCompatible(value: unknown, schema: SnapshotArraySchema): boolean {
   if (schema === "positiveInteger") return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
-  if (schema === "string") return typeof value === "string" && value.length > 0;
+  if (schema === "string") return typeof value === "string" && uuidLike.test(value);
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
-  if (schema === "collectionPoint") return typeof record.occurrenceId === "string" && record.occurrenceId.length > 0;
-  if (schema === "policyOccurrence") {
-    return typeof record.occurrenceId === "string"
-      && typeof record.groupKey === "string"
-      && typeof record.groupRole === "string"
-      && (record.pairedOccurrenceId === null || typeof record.pairedOccurrenceId === "string")
-      && typeof record.collectionPointOccurrenceId === "string"
-      && typeof record.itemIndex === "number" && Number.isSafeInteger(record.itemIndex) && record.itemIndex >= 0;
+  if (schema === "collectionPoint") {
+    return Object.keys(record).length === 1 && f3CollectionPointSchema.safeParse(record).success;
   }
-  return typeof record.obligationId === "string"
-    && typeof record.occurrenceId === "string"
-    && typeof record.collectionPointOccurrenceId === "string"
-    && typeof record.bowlerId === "number" && Number.isSafeInteger(record.bowlerId) && record.bowlerId > 0
-    && typeof record.amountMinor === "number" && Number.isSafeInteger(record.amountMinor) && record.amountMinor > 0
+  if (schema === "policyOccurrence") {
+    const { itemIndex, collectionPointOccurrenceId, ...policyOccurrence } = record;
+    return typeof itemIndex === "number" && Number.isSafeInteger(itemIndex) && itemIndex >= 0
+      && typeof collectionPointOccurrenceId === "string" && uuidLike.test(collectionPointOccurrenceId)
+      && ((policyOccurrence.pairedOccurrenceId === null)
+        || (typeof policyOccurrence.pairedOccurrenceId === "string" && uuidLike.test(policyOccurrence.pairedOccurrenceId)))
+      && f3PolicyOccurrenceSchema.safeParse({
+        ...policyOccurrence,
+        collectionPoint: { occurrenceId: collectionPointOccurrenceId },
+      }).success
+      && (policyOccurrence.groupRole === "normal"
+        ? policyOccurrence.pairedOccurrenceId === null
+        : policyOccurrence.pairedOccurrenceId !== null && policyOccurrence.pairedOccurrenceId !== policyOccurrence.occurrenceId);
+  }
+  return f3QuoteItemSchema.safeParse(record).success
     && typeof record.itemIndex === "number" && Number.isSafeInteger(record.itemIndex) && record.itemIndex >= 0;
 }
 
@@ -288,7 +310,9 @@ function snapshotShapeCompatible(value: unknown, template: unknown, fieldName?: 
   if (Array.isArray(template)) {
     if (!Array.isArray(value)) return false;
     const arraySchema = fieldName ? snapshotArraySchemas[fieldName] : undefined;
-    if (arraySchema) return value.length === template.length && value.every((entry) => snapshotArrayEntryCompatible(entry, arraySchema));
+    if (arraySchema) return value.length === template.length
+      && value.every((entry) => snapshotArrayEntryCompatible(entry, arraySchema))
+      && snapshotArrayIsOrderedAndUnique(value, arraySchema);
     if (template.length === 0) return value.length === 0;
     return value.every((entry) => template.some((example) => snapshotShapeCompatible(entry, example, fieldName)));
   }

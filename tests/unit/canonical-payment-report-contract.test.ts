@@ -34,6 +34,11 @@ const base: Omit<CanonicalPaymentReport, "fingerprint"> = {
   paymentTiming: { paymentMode: "weekly", upfrontDueAt: null, source: "canonical_activation" },
 };
 
+const revisionOccurrenceOne = "00000000-0000-4000-8000-000000000001";
+const revisionOccurrenceTwo = "00000000-0000-4000-8000-000000000002";
+const revisionObligationOne = "00000000-0000-4000-8000-000000000011";
+const revisionObligationTwo = "00000000-0000-4000-8000-000000000012";
+
 describe("F5 canonical payment and receipt contracts", () => {
   it("fingerprints deterministic report ordering and changes on semantic data", () => {
     const fingerprint = canonicalPaymentReportFingerprint(base);
@@ -131,6 +136,19 @@ describe("F5 canonical payment and receipt contracts", () => {
       (snapshot: Record<string, unknown>) => { snapshot.acceptedPartnerIds = ["not-a-bowler-id"]; },
     ],
     [
+      "acceptedPartnerIds rejects duplicate historical IDs",
+      {
+        id: "auth-array-duplicate",
+        state: "authorized",
+        payerBowlerId: 1,
+        acceptedPartnerIds: [2, 3],
+        coveredBowlerIds: [1, 2, 3],
+        collectionPointOccurrenceIds: ["occ-1"],
+        authorizedItems: [{ obligationId: "ob-1", occurrenceId: "occ-1", collectionPointOccurrenceId: "occ-1", bowlerId: 1, amountMinor: 500, itemIndex: 0 }],
+      },
+      (snapshot: Record<string, unknown>) => { snapshot.acceptedPartnerIds = [2, 2]; },
+    ],
+    [
       "nonempty coveredBowlerIds rejects a vacuous historical array",
       {
         id: "auth-array-vacuous",
@@ -174,13 +192,65 @@ describe("F5 canonical payment and receipt contracts", () => {
       {
         contractVersion: "canonical-collection-policy/1",
         policy: { approvedByUserId: null },
-        collectionPoints: [{ occurrenceId: "occ-1" }],
-        occurrences: [{ occurrenceId: "occ-1", groupKey: "group-1", groupRole: "normal", pairedOccurrenceId: null, collectionPointOccurrenceId: "occ-1", itemIndex: 0 }],
+        collectionPoints: [{ occurrenceId: revisionOccurrenceOne }],
+        occurrences: [{ occurrenceId: revisionOccurrenceOne, groupKey: "group-1", groupRole: "normal", pairedOccurrenceId: null, collectionPointOccurrenceId: revisionOccurrenceOne, itemIndex: 0 }],
       },
       (snapshot: Record<string, unknown>) => {
         snapshot.collectionPoints = [{ occurrenceId: 123 }];
-        snapshot.occurrences = [{ occurrenceId: "occ-1", groupKey: "group-1", groupRole: 42, pairedOccurrenceId: null, collectionPointOccurrenceId: "occ-1", itemIndex: 0 }];
+        snapshot.occurrences = [{ occurrenceId: revisionOccurrenceOne, groupKey: "group-1", groupRole: 42, pairedOccurrenceId: null, collectionPointOccurrenceId: revisionOccurrenceOne, itemIndex: 0 }];
       },
+    ],
+    [
+      "collection point IDs reject invalid UUID history",
+      {
+        id: "auth-array-uuid",
+        state: "authorized",
+        payerBowlerId: 1,
+        acceptedPartnerIds: [],
+        coveredBowlerIds: [1],
+        collectionPointOccurrenceIds: [revisionOccurrenceOne],
+        authorizedItems: [{ obligationId: revisionObligationOne, occurrenceId: revisionOccurrenceOne, collectionPointOccurrenceId: revisionOccurrenceOne, bowlerId: 1, amountMinor: 500, itemIndex: 0 }],
+      },
+      (snapshot: Record<string, unknown>) => { snapshot.collectionPointOccurrenceIds = ["not-a-uuid"]; },
+    ],
+    [
+      "authorized item IDs reject invalid UUID history",
+      {
+        id: "auth-array-item-uuid",
+        state: "authorized",
+        payerBowlerId: 1,
+        acceptedPartnerIds: [],
+        coveredBowlerIds: [1],
+        collectionPointOccurrenceIds: [revisionOccurrenceOne],
+        authorizedItems: [{ obligationId: revisionObligationOne, occurrenceId: revisionOccurrenceOne, collectionPointOccurrenceId: revisionOccurrenceOne, bowlerId: 1, amountMinor: 500, itemIndex: 0 }],
+      },
+      (snapshot: Record<string, unknown>) => { snapshot.authorizedItems = [{ obligationId: "not-an-obligation-uuid", occurrenceId: revisionOccurrenceOne, collectionPointOccurrenceId: revisionOccurrenceOne, bowlerId: 1, amountMinor: 500, itemIndex: 0 }]; },
+    ],
+    [
+      "authorized item order rejects duplicate or noncanonical indexes",
+      {
+        id: "auth-array-item-order",
+        state: "authorized",
+        payerBowlerId: 1,
+        acceptedPartnerIds: [],
+        coveredBowlerIds: [1, 2],
+        collectionPointOccurrenceIds: [revisionOccurrenceOne, revisionOccurrenceTwo],
+        authorizedItems: [
+          { obligationId: revisionObligationOne, occurrenceId: revisionOccurrenceOne, collectionPointOccurrenceId: revisionOccurrenceOne, bowlerId: 1, amountMinor: 500, itemIndex: 0 },
+          { obligationId: revisionObligationTwo, occurrenceId: revisionOccurrenceTwo, collectionPointOccurrenceId: revisionOccurrenceTwo, bowlerId: 2, amountMinor: 600, itemIndex: 1 },
+        ],
+      },
+      (snapshot: Record<string, unknown>) => { snapshot.authorizedItems = [{ obligationId: revisionObligationOne, occurrenceId: revisionOccurrenceOne, collectionPointOccurrenceId: revisionOccurrenceOne, bowlerId: 1, amountMinor: 500, itemIndex: 0 }, { obligationId: revisionObligationTwo, occurrenceId: revisionOccurrenceTwo, collectionPointOccurrenceId: revisionOccurrenceTwo, bowlerId: 2, amountMinor: 600, itemIndex: 2 }]; },
+    ],
+    [
+      "policy occurrence role and group key reject invalid history",
+      {
+        contractVersion: "canonical-collection-policy/1",
+        policy: { approvedByUserId: null },
+        collectionPoints: [{ occurrenceId: revisionOccurrenceOne }],
+        occurrences: [{ occurrenceId: revisionOccurrenceOne, groupKey: "group-1", groupRole: "normal", pairedOccurrenceId: null, collectionPointOccurrenceId: revisionOccurrenceOne, itemIndex: 0 }],
+      },
+      (snapshot: Record<string, unknown>) => { snapshot.occurrences = [{ occurrenceId: revisionOccurrenceOne, groupKey: " ", groupRole: "invalid", pairedOccurrenceId: null, collectionPointOccurrenceId: revisionOccurrenceOne, itemIndex: 0 }]; },
     ],
   ] as const)("rejects %s", (_label, expected, corrupt) => {
     const parent = { id: "parent-array", currentRevision: 2 };
