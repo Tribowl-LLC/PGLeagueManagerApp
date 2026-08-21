@@ -14,7 +14,6 @@ export interface IdentityIntegrityPreflight {
   };
   informational: {
     emailsToNormalize: number;
-    legacyPlaintextActionsToReissue: number;
   };
 }
 
@@ -83,11 +82,6 @@ export async function inspectIdentityIntegrity(
         FROM users
         WHERE email <> lower(btrim(email))
       `);
-    const legacyTokenCount = await client.query<{ count: string }>(`
-        SELECT count(*)::text AS count
-        FROM users
-        WHERE invite_token IS NOT NULL OR invite_token_expiry IS NOT NULL
-      `);
     await client.query('COMMIT');
 
     return {
@@ -121,7 +115,6 @@ export async function inspectIdentityIntegrity(
       },
       informational: {
         emailsToNormalize: Number(normalizationCount.rows[0]?.count ?? 0),
-        legacyPlaintextActionsToReissue: Number(legacyTokenCount.rows[0]?.count ?? 0),
       },
     };
   } catch (error) {

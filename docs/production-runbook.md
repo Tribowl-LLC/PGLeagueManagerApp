@@ -280,6 +280,36 @@ exact verified URL plus a minimal environment, with no inherited target/config
 override. It has no remote-host allowlist or development bypass and is
 prohibited for production, Neon, and every durable database.
 
+### Migration 0028: retire legacy invitation columns
+
+`0028_remove_legacy_invite_tokens` is the contract step after the account
+identity hardening release. It removes `users.invite_token` and
+`users.invite_token_expiry`; `account_action_requests` remains the sole
+invitation and password-reset authority. The migration aborts if either legacy
+column contains a non-null marker.
+
+The previous application no longer accepts or writes legacy tokens, but its
+Drizzle user shape still declares both columns. Dropping them before deploying
+the 0028-compatible build could therefore break ordinary user reads. Use this
+specific release order:
+
+1. Confirm production is running the completed identity-hardening release and
+   that no legacy markers remain.
+2. Deploy the exact CI-certified 0028-compatible commit while both columns
+   still exist.
+3. Verify `/healthz`, `/api/health`, login, organization-only account creation,
+   invitation resend/acceptance, and payment-manager boundaries.
+4. Create and verify a fresh Neon backup from that healthy state.
+5. Reconfirm the exact migration journal prefix and zero legacy markers, then
+   run `npm run db:migrate` with one executor. It must report only
+   `0028_remove_legacy_invite_tokens` pending and applied.
+6. Verify the 0028 journal checksum, confirm both legacy columns are absent,
+   rerun the migrator as a no-op, and repeat health/authentication checks.
+
+After the contract migration commits, do not redeploy an application build
+whose schema still declares the removed columns. A rollback to such a build
+requires restoring the verified pre-0028 Neon backup first.
+
 ### Migration 0010: dormant auto-pay setup foundation
 
 `0010_autopay_setup_foundation` is an additive, migration-first foundation.

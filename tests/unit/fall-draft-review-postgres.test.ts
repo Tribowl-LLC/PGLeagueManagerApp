@@ -551,13 +551,13 @@ describe("C2 atomic approval, publication, and rejection", () => {
       await generateDraft(f);
       const review = await loadFallDraftReview(scope(f));
       const before = {
-        commands: await db.select().from(leagueScheduleCommands).where(eq(leagueScheduleCommands.leagueId, f.leagueId)),
+        commands: await db.select().from(leagueScheduleCommands).where(eq(leagueScheduleCommands.leagueId, f.leagueId)).orderBy(asc(leagueScheduleCommands.id)),
         occurrences: await db.select().from(leagueOccurrences).where(eq(leagueOccurrences.leagueId, f.leagueId)).orderBy(asc(leagueOccurrences.id)),
         terms: await db.select().from(leagueOccurrenceBillingTerms).where(eq(leagueOccurrenceBillingTerms.leagueId, f.leagueId)).orderBy(asc(leagueOccurrenceBillingTerms.id)),
-        occurrenceRevisions: await db.select().from(leagueOccurrenceRevisions).where(eq(leagueOccurrenceRevisions.leagueId, f.leagueId)),
-        termRevisions: await db.select().from(leagueOccurrenceBillingTermRevisions).where(eq(leagueOccurrenceBillingTermRevisions.leagueId, f.leagueId)),
-        exceptionRevisions: await db.select().from(leagueScheduleExceptionRevisions).where(eq(leagueScheduleExceptionRevisions.leagueId, f.leagueId)),
-        discrepancyRevisions: await db.select().from(leagueOccurrenceGenerationDiscrepancyRevisions).where(eq(leagueOccurrenceGenerationDiscrepancyRevisions.leagueId, f.leagueId)),
+        occurrenceRevisions: await db.select().from(leagueOccurrenceRevisions).where(eq(leagueOccurrenceRevisions.leagueId, f.leagueId)).orderBy(asc(leagueOccurrenceRevisions.id)),
+        termRevisions: await db.select().from(leagueOccurrenceBillingTermRevisions).where(eq(leagueOccurrenceBillingTermRevisions.leagueId, f.leagueId)).orderBy(asc(leagueOccurrenceBillingTermRevisions.id)),
+        exceptionRevisions: await db.select().from(leagueScheduleExceptionRevisions).where(eq(leagueScheduleExceptionRevisions.leagueId, f.leagueId)).orderBy(asc(leagueScheduleExceptionRevisions.id)),
+        discrepancyRevisions: await db.select().from(leagueOccurrenceGenerationDiscrepancyRevisions).where(eq(leagueOccurrenceGenerationDiscrepancyRevisions.leagueId, f.leagueId)).orderBy(asc(leagueOccurrenceGenerationDiscrepancyRevisions.id)),
       };
       await expect(approveAndPublishFallDraft({
         ...scope(f),
@@ -570,13 +570,13 @@ describe("C2 atomic approval, publication, and rejection", () => {
         },
         failureInjection: stage,
       })).rejects.toMatchObject({ code: "transaction_failure" });
-      expect(await db.select().from(leagueScheduleCommands).where(eq(leagueScheduleCommands.leagueId, f.leagueId))).toEqual(before.commands);
+      expect(await db.select().from(leagueScheduleCommands).where(eq(leagueScheduleCommands.leagueId, f.leagueId)).orderBy(asc(leagueScheduleCommands.id))).toEqual(before.commands);
       expect(await db.select().from(leagueOccurrences).where(eq(leagueOccurrences.leagueId, f.leagueId)).orderBy(asc(leagueOccurrences.id))).toEqual(before.occurrences);
       expect(await db.select().from(leagueOccurrenceBillingTerms).where(eq(leagueOccurrenceBillingTerms.leagueId, f.leagueId)).orderBy(asc(leagueOccurrenceBillingTerms.id))).toEqual(before.terms);
-      expect(await db.select().from(leagueOccurrenceRevisions).where(eq(leagueOccurrenceRevisions.leagueId, f.leagueId))).toEqual(before.occurrenceRevisions);
-      expect(await db.select().from(leagueOccurrenceBillingTermRevisions).where(eq(leagueOccurrenceBillingTermRevisions.leagueId, f.leagueId))).toEqual(before.termRevisions);
-      expect(await db.select().from(leagueScheduleExceptionRevisions).where(eq(leagueScheduleExceptionRevisions.leagueId, f.leagueId))).toEqual(before.exceptionRevisions);
-      expect(await db.select().from(leagueOccurrenceGenerationDiscrepancyRevisions).where(eq(leagueOccurrenceGenerationDiscrepancyRevisions.leagueId, f.leagueId))).toEqual(before.discrepancyRevisions);
+      expect(await db.select().from(leagueOccurrenceRevisions).where(eq(leagueOccurrenceRevisions.leagueId, f.leagueId)).orderBy(asc(leagueOccurrenceRevisions.id))).toEqual(before.occurrenceRevisions);
+      expect(await db.select().from(leagueOccurrenceBillingTermRevisions).where(eq(leagueOccurrenceBillingTermRevisions.leagueId, f.leagueId)).orderBy(asc(leagueOccurrenceBillingTermRevisions.id))).toEqual(before.termRevisions);
+      expect(await db.select().from(leagueScheduleExceptionRevisions).where(eq(leagueScheduleExceptionRevisions.leagueId, f.leagueId)).orderBy(asc(leagueScheduleExceptionRevisions.id))).toEqual(before.exceptionRevisions);
+      expect(await db.select().from(leagueOccurrenceGenerationDiscrepancyRevisions).where(eq(leagueOccurrenceGenerationDiscrepancyRevisions.leagueId, f.leagueId)).orderBy(asc(leagueOccurrenceGenerationDiscrepancyRevisions.id))).toEqual(before.discrepancyRevisions);
     }
   });
 

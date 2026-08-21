@@ -43,8 +43,6 @@ const makeReq = (overrides: Partial<NonNullable<Request['user']>> = {}): Request
     organizationId: 10,
     locationId: 100,
     bowlerId: null,
-    inviteToken: null,
-    inviteTokenExpiry: null,
     preferredLanguage: null,
     failedPasswordChangeAttempts: 0,
     passwordChangeLockedUntil: null,

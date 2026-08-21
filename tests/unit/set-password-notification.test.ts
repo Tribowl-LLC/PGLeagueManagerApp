@@ -39,8 +39,6 @@ const TEST_USER = {
   bowlerId: null,
   password: 'hashed:original',
   preferredLanguage: null as string | null,
-  inviteToken: 'valid-token-1234',
-  inviteTokenExpiry: FUTURE_EXPIRY,
 };
 
 // --- Module mocks. Hoisted by vitest. ----------------------------
