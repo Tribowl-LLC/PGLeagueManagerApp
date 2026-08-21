@@ -1,6 +1,6 @@
 import { db } from "../db";
 import { eq, and, lte, gte, sql } from "drizzle-orm";
-import { payments, leagues, bowlers, DEFAULT_TIMEZONE, type PaymentSchedule } from "@shared/schema";
+import { payments, leagues, bowlers, DEFAULT_TIMEZONE, type League, type PaymentSchedule } from "@shared/schema";
 import { providerNameToPaymentType } from "@shared/schema/constants";
 import { toZonedTime } from "date-fns-tz";
 import { toIsoDateStr } from "@shared/schedule-utils";
@@ -82,7 +82,7 @@ async function fetchBowlerPaymentInfo(bowlerId: number) {
 }
 
 export function buildLineItems(
-  league: typeof leagues.$inferSelect,
+  league: League,
   quantity: string
 ): OrderLineItem[] {
   const lineItems: OrderLineItem[] = [];
@@ -249,6 +249,7 @@ export async function executeScheduledPayment(
   // upstream in lifecycle. Defaults to 0 (legacy single-bowler).
   extraPayeeCount: number = 0,
   requestIdentity?: PaymentRequestIdentity,
+  options: { canonicalAuthoritative?: boolean; canonicalCollectionAmountMinor?: number } = {},
 ): Promise<ChargeResult> {
   const { buyerEmail, paymentCustomerId } = await fetchBowlerPaymentInfo(scheduleRecord.bowlerId);
 
@@ -273,7 +274,7 @@ export async function executeScheduledPayment(
     });
   }
 
-  const plan = buildScheduledChargePlan(scheduleRecord, league, extraPayeeCount);
+  const plan = buildScheduledChargePlan(scheduleRecord, league, extraPayeeCount, options);
   // Task #646: if the firing date matches one of the league's
   // double-pay dates (compared in league-local timezone), the regular
   // weekly autopay charge becomes 2× the league's weekly fee
@@ -314,6 +315,7 @@ export function buildScheduledChargePlan(
   scheduleRecord: PaymentSchedule,
   league: typeof leagues.$inferSelect,
   extraPayeeCount = 0,
+  options: { canonicalAuthoritative?: boolean; canonicalCollectionAmountMinor?: number } = {},
 ): ScheduledChargePlan {
   const weeklyFee = league?.weeklyFee || 0;
   const firingDateLocal = toZonedTime(
@@ -321,9 +323,13 @@ export function buildScheduledChargePlan(
     league?.timezone ?? DEFAULT_TIMEZONE,
   );
   const firingDateStr = toIsoDateStr(firingDateLocal);
-  const isDoublePay = (league?.doublePayDates ?? [])
-    .some((date) => date.slice(0, 10) === firingDateStr);
-  const allocationAmountMinor = isDoublePay
+  const canonicalCollectionAmountMinor = options.canonicalCollectionAmountMinor;
+  const hasCanonicalCollectionGroup = canonicalCollectionAmountMinor !== undefined;
+  const isDoublePay = hasCanonicalCollectionGroup || (!options.canonicalAuthoritative && (league?.doublePayDates ?? [])
+    .some((date) => date.slice(0, 10) === firingDateStr));
+  const allocationAmountMinor = hasCanonicalCollectionGroup
+    ? canonicalCollectionAmountMinor
+    : isDoublePay
     ? (weeklyFee > 0 ? weeklyFee * 2 : scheduleRecord.amount * 2)
     : scheduleRecord.amount;
   const amountMinor = allocationAmountMinor * (1 + Math.max(0, extraPayeeCount));
@@ -340,7 +346,7 @@ export function buildScheduledChargePlan(
 
 export function computePaymentSplit(
   amount: number,
-  league: typeof leagues.$inferSelect
+  league: League,
 ): { lineageAmount: number | undefined; prizeFundAmount: number | undefined } {
   const lineageAmount = (league?.lineageFee != null && (league?.weeklyFee ?? 0) > 0)
     ? Math.round(amount * league.lineageFee / league.weeklyFee)
@@ -355,7 +361,7 @@ async function createPaymentRecord(
   scheduleRecord: PaymentSchedule,
   amount: number,
   status: 'paid' | 'failed',
-  league: typeof leagues.$inferSelect,
+  league: League,
   paymentId?: string,
   notes?: string,
   weekOf?: string,

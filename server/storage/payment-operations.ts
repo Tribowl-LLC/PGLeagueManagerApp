@@ -1589,6 +1589,14 @@ export async function acquirePaymentOperationLease(
         THEN ${paymentOperations.leaseRecoveryCount} + 1
         ELSE ${paymentOperations.leaseRecoveryCount}
       END`,
+      // A recovered lease receives a fresh fencing token and must acquire a
+      // fresh one-shot dispatch cutoff. The provider identity remains
+      // immutable, so replay after an in-flight/unknown request is still the
+      // exact idempotent request rather than a new charge.
+      dispatchClaimedAt: sql`CASE
+        WHEN ${paymentOperations.status} = 'leased' THEN NULL
+        ELSE ${paymentOperations.dispatchClaimedAt}
+      END`,
       lastLeaseRecoveredAt: sql`CASE
         WHEN ${paymentOperations.status} = 'leased' THEN ${now}
         ELSE ${paymentOperations.lastLeaseRecoveredAt}
@@ -1746,6 +1754,63 @@ export async function acquireCanonicalAutopayDispatchCutoff(input: {
   });
 }
 
+/**
+ * Claim the legacy scheduled-charge dispatch window under the same
+ * organization/league advisory lock used by canonical cancellation. The
+ * snapshot supplies the league identity for pre-F4 operations whose ledger
+ * row has no league_id. A cancellation that commits first observes a
+ * cancellable leased row; a claim that commits first leaves the exact
+ * operation identity available for provider-idempotent recovery/review.
+ */
+export async function acquireScheduledPaymentOperationDispatchCutoff(input: {
+  organizationId: number;
+  operationId: string;
+  leaseToken: string;
+  now?: Date;
+}): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    const [scope] = await tx.select({
+      leagueId: sql<number | null>`COALESCE(${paymentOperations.leagueId}, ${scheduledPaymentOperationSnapshots.leagueId})`,
+    }).from(paymentOperations).innerJoin(
+      scheduledPaymentOperationSnapshots,
+      eq(scheduledPaymentOperationSnapshots.operationId, paymentOperations.id),
+    ).where(and(
+      eq(paymentOperations.organizationId, input.organizationId),
+      eq(paymentOperations.id, input.operationId),
+      eq(paymentOperations.operationType, "scheduled_charge"),
+    )).limit(1);
+    if (!scope?.leagueId) return false;
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(${input.organizationId}::integer, ${scope.leagueId}::integer)`);
+    const [operation] = await tx.select({
+      id: paymentOperations.id,
+      status: paymentOperations.status,
+      leaseToken: paymentOperations.leaseToken,
+      leagueId: paymentOperations.leagueId,
+    }).from(paymentOperations).where(and(
+      eq(paymentOperations.organizationId, input.organizationId),
+      eq(paymentOperations.id, input.operationId),
+      eq(paymentOperations.operationType, "scheduled_charge"),
+    )).for("update");
+    if (!operation || operation.status !== "leased" || operation.leaseToken !== input.leaseToken) return false;
+    const claimedAt = (input.now ?? new Date()).toISOString();
+    const [claimed] = await tx.update(paymentOperations).set({
+      dispatchClaimedAt: claimedAt,
+      updatedAt: claimedAt,
+    }).where(and(
+      eq(paymentOperations.organizationId, input.organizationId),
+      eq(paymentOperations.id, input.operationId),
+      eq(paymentOperations.status, "leased"),
+      eq(paymentOperations.leaseToken, input.leaseToken),
+      // The dispatch cutoff is a one-shot CAS for this lease token. Recovery
+      // and retry transitions clear the claim before issuing a fresh lease;
+      // a repeated call with the same token can therefore never re-authorize
+      // a provider request.
+      isNull(paymentOperations.dispatchClaimedAt),
+    )).returning({ id: paymentOperations.id });
+    return Boolean(claimed);
+  });
+}
+
 export async function schedulePaymentOperationRetry(
   input: ErrorOutcomeInput & {
     nextAttemptAt: Date;
@@ -1783,11 +1848,7 @@ export async function schedulePaymentOperationRetry(
           ELSE NULL
         END`,
         leaseExpiresAt: null,
-        dispatchClaimedAt: sql`CASE
-          WHEN ${paymentOperations.operationType} = 'canonical_autopay_charge'
-          THEN NULL
-          ELSE ${paymentOperations.dispatchClaimedAt}
-        END`,
+        dispatchClaimedAt: sql`NULL`,
         providerObjectId: input.providerObjectId ?? undefined,
         providerOrderId: input.providerOrderId ?? undefined,
         errorClassification: input.errorClassification,
@@ -1869,6 +1930,9 @@ export async function recordPaymentOperationProviderUnknown(
           ELSE NULL
         END`,
         leaseExpiresAt: null,
+        // The provider-unknown operation retains its immutable provider
+        // identity, but a future lease must acquire a fresh dispatch cutoff.
+        dispatchClaimedAt: sql`NULL`,
         providerObjectId: input.providerObjectId ?? undefined,
         providerOrderId: input.providerOrderId ?? undefined,
         errorClassification: "provider_unknown",
@@ -1936,11 +2000,7 @@ export async function recordPaymentOperationConfigurationRetry(
       leaseOwner: null,
       leaseToken: null,
       leaseExpiresAt: null,
-      dispatchClaimedAt: sql`CASE
-        WHEN ${paymentOperations.operationType} = 'canonical_autopay_charge'
-        THEN NULL
-        ELSE ${paymentOperations.dispatchClaimedAt}
-      END`,
+      dispatchClaimedAt: sql`NULL`,
       providerObjectId: input.providerObjectId ?? undefined,
       providerOrderId: input.providerOrderId ?? undefined,
       errorClassification: "configuration",

@@ -44,6 +44,9 @@ export function validateDoublePayDates(args: {
       return { ok: false, message: `Double-pay date "${raw}" must be in YYYY-MM-DD format` };
     }
   }
+  if (new Set(dpd).size !== dpd.length) {
+    return { ok: false, message: "Double-pay dates must be unique" };
+  }
 
   const skipSet = new Set((args.skipDates ?? []).map((d) => d.slice(0, 10)));
   const cancelSet = new Set((args.cancelledDates ?? []).map((d) => d.slice(0, 10)));
@@ -118,6 +121,10 @@ export const leagues = pgTable("leagues", {
   // the legacy `finalTwoWeeksDueWeek` lump-charge mechanism that was
   // dropped in Task #760.
   doublePayDates: text("double_pay_dates").array().notNull().default(sql`'{}'`),
+  // Durable optimistic revision for authoritative canonical schedule edits.
+  // A zero value is retained for pre-canonical legacy rows and is initialized
+  // to the generation source revision when v3 setup publishes a schedule.
+  canonicalScheduleRevision: integer("canonical_schedule_revision").notNull().default(0),
 }, (table) => ({
   activeNameIdx: index("leagues_active_name_idx").on(table.active, table.name),
   seasonIdx: index("leagues_season_idx").on(table.seasonStart, table.seasonEnd),
@@ -255,7 +262,10 @@ export const updateLeagueSchema = z.object({
   }
 });
 
-export type League = typeof leagues.$inferSelect;
+// API/test fixtures may represent pre-0030 legacy rows without the durable
+// canonical revision; database-selected rows always contain the defaulted
+// column.
+export type League = Omit<typeof leagues.$inferSelect, "canonicalScheduleRevision"> & { canonicalScheduleRevision?: number };
 export type InsertLeagueInput = z.input<typeof insertLeagueSchema>;
 export type InsertLeague = z.output<typeof insertLeagueSchema>;
 export type UpdateLeague = z.infer<typeof updateLeagueSchema>;

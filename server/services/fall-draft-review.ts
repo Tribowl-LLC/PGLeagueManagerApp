@@ -1276,6 +1276,130 @@ async function assertApprovalFutureAndCollisions(
   }
 }
 
+export interface AutomaticCanonicalPublicationInput extends FallDraftScope {
+  idempotencyKey: string;
+  reason: string;
+}
+
+export interface AutomaticCanonicalPublicationResult {
+  approvalCommandId: string;
+  publicationCommandId: string;
+  writesPerformed: boolean;
+}
+
+/**
+ * Guarded in-transaction publication primitive used by automatic setup. It
+ * shares C2's complete row/revision validation and publication mapping but has
+ * no HTTP/review dependency. Open discrepancies fail closed because setup has
+ * no review interaction in which an administrator could disposition them.
+ */
+export async function publishCanonicalDraftInTransaction(
+  tx: LeagueScheduleTransaction,
+  input: AutomaticCanonicalPublicationInput,
+): Promise<AutomaticCanonicalPublicationResult> {
+  const transactionTime = await fallDraftDatabaseTransactionTime(tx);
+  const rows = await loadRows(tx, input, true);
+  const approvalKey = `${input.idempotencyKey}:automatic-approve`;
+  const publicationKey = `${input.idempotencyKey}:automatic-publish`;
+  const payload = {
+    contractVersion: "automatic-canonical-schedule/1",
+    generationRunId: rows.run.id,
+    sourceScheduleRevision: rows.run.sourceScheduleRevision,
+    reviewAvailable: false,
+  };
+  const approvalBase: MaterializationScheduleCommandRequest = {
+    organizationId: input.organizationId,
+    leagueId: input.leagueId,
+    actorUserId: input.actorUserId,
+    commandType: "approve_generation",
+    reason: input.reason,
+    idempotencyKey: approvalKey,
+    requestFingerprint: "",
+    materializationOperation: "canonical_draft_review",
+    materializationPayload: { ...payload, action: "automatic_approve" },
+  };
+  const approvalRequest = { ...approvalBase, requestFingerprint: buildCanonicalScheduleCommandFingerprint(approvalBase) };
+  const publicationBase: MaterializationScheduleCommandRequest = {
+    ...approvalBase,
+    commandType: "publish",
+    idempotencyKey: publicationKey,
+    requestFingerprint: "",
+    materializationPayload: { ...payload, action: "automatic_publish", approvalIdempotencyKey: approvalKey },
+  };
+  const publicationRequest = { ...publicationBase, requestFingerprint: buildCanonicalScheduleCommandFingerprint(publicationBase) };
+  const existingApproval = existingCommand(rows, approvalRequest);
+  const existingPublication = existingCommand(rows, publicationRequest);
+  if (rows.run.state === "applied") {
+    if (!existingApproval || !existingPublication || rows.run.approvalCommandId !== existingApproval.id
+      || rows.occurrences.some((row) => row.lifecycle !== "published" || row.publicationCommandId !== existingPublication.id)
+      || rows.billingTerms.some((row) => row.state !== "published" || row.publicationCommandId !== existingPublication.id)
+      || rows.exceptions.some((row) => row.lifecycle !== "published" || row.publicationCommandId !== existingPublication.id)) {
+      throw new FallDraftReviewError("incompatible_canonical_state", "automatic canonical publication evidence is incomplete");
+    }
+    return { approvalCommandId: existingApproval.id, publicationCommandId: existingPublication.id, writesPerformed: false };
+  }
+  if (rows.run.state !== "generated") throw new FallDraftReviewError("terminal_state", "automatic setup requires one generated canonical run");
+  if (existingApproval || existingPublication) throw new FallDraftReviewError("incompatible_canonical_state", "automatic publication command state is partial");
+  if (rows.discrepancies.some((row) => row.resolutionState === "open")) {
+    throw new FallDraftReviewError("discrepancy_disposition_invalid", "automatic setup cannot publish canonical evidence with an open discrepancy");
+  }
+  const currentInput = await currentFallDraftInputEvidence(tx, input, rows.snapshot.normalizedInput, rows.snapshot.paymentMode);
+  if (!currentInput.matches) throw new FallDraftReviewError("legacy_input_stale", "automatic setup canonical input is stale");
+  await assertApprovalFutureAndCollisions(tx, input, rows, transactionTime);
+  const approval = await getOrCreateCanonicalScheduleCommandInTransaction(tx, approvalRequest, ["approve_generation"]);
+  const publication = await getOrCreateCanonicalScheduleCommandInTransaction(tx, publicationRequest, ["publish"]);
+  if (approval.existing || publication.existing) throw new FallDraftReviewError("incompatible_canonical_state", "automatic publication command state is partial");
+  for (const occurrence of rows.occurrences) {
+    const [updated] = await tx.update(leagueOccurrences).set({
+      lifecycle: "published",
+      currentRevision: occurrence.currentRevision + 1,
+      lastCommandId: publication.command.id,
+      publishedAt: transactionTime,
+      publishedByUserId: input.actorUserId,
+      publicationCommandId: publication.command.id,
+      updatedAt: transactionTime,
+    }).where(and(eq(leagueOccurrences.id, occurrence.id), eq(leagueOccurrences.currentRevision, occurrence.currentRevision))).returning();
+    if (!updated) throw new FallDraftReviewError("revision_conflict", "an occurrence changed during automatic publication");
+    await appendOccurrenceRevision(tx, occurrence, updated, publication.command.id);
+  }
+  for (const term of rows.billingTerms) {
+    if (term.state !== "draft") throw new FallDraftReviewError("incompatible_canonical_state", "automatic publication requires draft billing terms");
+    await updateBillingTerm(tx, term, { state: "published", publishedAt: transactionTime, publishedByUserId: input.actorUserId, publicationCommandId: publication.command.id }, publication.command.id);
+  }
+  for (const exception of rows.exceptions) {
+    if (exception.lifecycle !== "draft") throw new FallDraftReviewError("incompatible_canonical_state", "automatic publication requires draft skip exceptions");
+    const [updated] = await tx.update(leagueScheduleExceptions).set({
+      lifecycle: "published",
+      currentRevision: exception.currentRevision + 1,
+      lastCommandId: publication.command.id,
+      publishedAt: transactionTime,
+      publishedByUserId: input.actorUserId,
+      publicationCommandId: publication.command.id,
+      updatedAt: transactionTime,
+    }).where(and(eq(leagueScheduleExceptions.id, exception.id), eq(leagueScheduleExceptions.currentRevision, exception.currentRevision))).returning();
+    if (!updated) throw new FallDraftReviewError("revision_conflict", "a skip exception changed during automatic publication");
+    await tx.insert(leagueScheduleExceptionRevisions).values({
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      exceptionId: exception.id,
+      commandId: publication.command.id,
+      revisionNumber: updated.currentRevision,
+      snapshotSchemaVersion: 1,
+      beforeSnapshot: exceptionSnapshot(exception),
+      afterSnapshot: exceptionSnapshot(updated),
+    });
+  }
+  const [run] = await tx.update(leagueOccurrenceGenerationRuns).set({
+    state: "applied",
+    approvedAt: transactionTime,
+    approvedByUserId: input.actorUserId,
+    approvalCommandId: approval.command.id,
+    updatedAt: transactionTime,
+  }).where(and(eq(leagueOccurrenceGenerationRuns.id, rows.run.id), eq(leagueOccurrenceGenerationRuns.state, "generated"))).returning();
+  if (!run) throw new FallDraftReviewError("terminal_state", "the generation run changed during automatic publication");
+  return { approvalCommandId: approval.command.id, publicationCommandId: publication.command.id, writesPerformed: true };
+}
+
 function validateDispositions(request: FallDraftApproveRequest, review: FallDraftReview): Map<string, "resolved" | "waived"> {
   const open = review.discrepancies.filter((row) => row.resolutionState === "open");
   const ids = request.discrepancyDispositions.map((row) => row.discrepancyId);

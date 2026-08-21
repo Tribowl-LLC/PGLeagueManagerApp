@@ -10,6 +10,7 @@ import type { ScheduledPaymentExecutionMode } from "../config";
 import { createLogger } from "../logger";
 import {
   acquirePaymentOperationLease,
+  acquireScheduledPaymentOperationDispatchCutoff,
   finalizePaymentOperationSuccess,
   getNextPaymentOperationWake,
   getPaymentOperationForOrganization,
@@ -320,6 +321,18 @@ export class ScheduledPaymentOperationExecutor {
       await this.recordFailure(operation, snapshot, error, false);
       return;
     }
+
+    // Cancellation and dispatch share the league advisory lock. Claim the
+    // exact provider window only after all local snapshot checks pass; a
+    // cancellation committed first therefore returns here without any
+    // provider call, while claim-first remains recoverable by this ledger's
+    // existing provider idempotency/reconciliation path.
+    if (!(await acquireScheduledPaymentOperationDispatchCutoff({
+      organizationId: operation.organizationId,
+      operationId: operation.id,
+      leaseToken,
+      now: this.now(),
+    }))) return;
 
     let result: PaymentResult;
     try {

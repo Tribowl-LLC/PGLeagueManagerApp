@@ -48,6 +48,14 @@ export interface AutopaySetupPlan {
   competitionStartTime: string;
 }
 
+/** Exact collection-timing evidence for an authoritative canonical group. */
+export interface CanonicalCollectionGroupPlan {
+  triggerLocalDate: string;
+  pairedLocalDate: string;
+  triggerAmountMinor: number;
+  pairedAmountMinor: number;
+}
+
 export class AutopaySetupPlanningError extends Error {
   constructor(
     public readonly code:
@@ -128,10 +136,45 @@ function canonicalQuote(plan: Omit<AutopaySetupPlan, "quoteFingerprint" | "gener
   });
 }
 
-export function buildWeeklyBillingOccurrences(league: PlannerLeague): WeeklyBillingOccurrence[] {
+export function buildWeeklyBillingOccurrences(
+  league: PlannerLeague,
+  canonicalCollectionGroups: readonly CanonicalCollectionGroupPlan[] = [],
+): WeeklyBillingOccurrence[] {
   try {
-    return getWeeklyBillingOccurrences(league);
+    const occurrences = getWeeklyBillingOccurrences({
+      ...league,
+      // Canonical grouping is authoritative collection evidence. Generate
+      // physical rows at their independent base amounts, then apply only the
+      // exact trigger/pair sum below; never let the legacy date multiplier
+      // run alongside canonical evidence.
+      doublePayDates: canonicalCollectionGroups.length > 0 ? [] : league.doublePayDates,
+    });
+    if (canonicalCollectionGroups.length === 0) return occurrences;
+    const byDate = new Map(occurrences.map((occurrence) => [occurrence.localDate, occurrence]));
+    const claimed = new Set<string>();
+    for (const group of canonicalCollectionGroups) {
+      const trigger = byDate.get(group.triggerLocalDate);
+      const paired = byDate.get(group.pairedLocalDate);
+      if (!trigger || !paired || trigger.localDate >= paired.localDate || claimed.has(trigger.localDate) || claimed.has(paired.localDate)
+        || !Number.isSafeInteger(group.triggerAmountMinor) || group.triggerAmountMinor <= 0
+        || !Number.isSafeInteger(group.pairedAmountMinor) || group.pairedAmountMinor <= 0) {
+        throw new AutopaySetupPlanningError("INVALID_LEAGUE_SCHEDULE", "Canonical collection-group evidence does not match the physical schedule.");
+      }
+      claimed.add(trigger.localDate);
+      claimed.add(paired.localDate);
+      trigger.amountMinor = group.triggerAmountMinor + group.pairedAmountMinor;
+      trigger.isDoublePay = true;
+      // The paired physical occurrence remains in the schedule, but its
+      // obligation was pre-collected at the trigger and must not create a
+      // second collection or provider request.
+      paired.amountMinor = 0;
+      paired.isDoublePay = false;
+    }
+    return occurrences;
   } catch {
+    if (canonicalCollectionGroups.length > 0) {
+      throw new AutopaySetupPlanningError("INVALID_LEAGUE_SCHEDULE", "Canonical collection-group evidence does not match the physical schedule.");
+    }
     throw new AutopaySetupPlanningError(
       "INVALID_LEAGUE_SCHEDULE",
       "League weekly billing configuration is incomplete.",
@@ -185,12 +228,13 @@ export function planWeeklyAutopaySetup(input: {
   league: PlannerLeague;
   payees: AutopaySetupPayeeInput[];
   now?: Date;
+  canonicalCollectionGroups?: readonly CanonicalCollectionGroupPlan[];
 }): AutopaySetupPlan {
   const now = input.now ?? new Date();
   if (!Number.isFinite(now.getTime()) || input.payees.length === 0) {
     throw new AutopaySetupPlanningError("INVALID_LEAGUE_SCHEDULE", "Auto-pay setup input is invalid.");
   }
-  const occurrences = buildWeeklyBillingOccurrences(input.league);
+  const occurrences = buildWeeklyBillingOccurrences(input.league, input.canonicalCollectionGroups ?? []);
   const billableOccurrences = occurrences.filter((occurrence) => occurrence.amountMinor > 0);
   const payeeIds = input.payees.map((payee) => payee.bowlerId);
   if (new Set(payeeIds).size !== payeeIds.length) {

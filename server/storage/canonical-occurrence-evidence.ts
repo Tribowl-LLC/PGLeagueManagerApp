@@ -58,6 +58,36 @@ export async function hasLeagueOccurrenceEvidence(
 }
 
 /**
+ * Distinguish an operational canonical schedule from retained C1 draft or
+ * rejected-history evidence. Ordinary builder edits use the automatic
+ * canonical transaction only after this bit is true; v1/v2 draft history
+ * continues through its existing compatibility/review path.
+ */
+export async function hasOperationalLeagueOccurrenceEvidence(
+  tx: CanonicalOccurrenceEvidenceExecutor,
+  organizationId: number | null,
+  leagueId: number,
+): Promise<boolean> {
+  if (organizationId === null) return false;
+
+  const result = await tx.execute(sql`
+    SELECT EXISTS (
+      SELECT 1 FROM league_occurrence_generation_runs
+       WHERE organization_id = ${organizationId}
+         AND league_id = ${leagueId}
+         AND state IN ('approved', 'applied')
+      UNION ALL
+      SELECT 1 FROM league_occurrences
+       WHERE organization_id = ${organizationId}
+         AND league_id = ${leagueId}
+         AND lifecycle IN ('published', 'locked')
+    ) AS has_evidence
+  `);
+
+  return result.rows[0]?.has_evidence === true;
+}
+
+/**
  * Occurrence rows are the A1 evidence that directly retains a location.
  * This is deliberately tenant-scoped and returns no row details.
  */

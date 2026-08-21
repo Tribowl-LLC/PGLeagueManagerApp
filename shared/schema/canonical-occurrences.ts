@@ -37,6 +37,10 @@ export const LEAGUE_SCHEDULE_COMMAND_TYPES = [
   "repair",
   "reject_generation",
   "restore_cancelled_draft",
+  "publish_collection_group",
+  "revoke_collection_group",
+  "repair_collection_group",
+  "edit_schedule",
 ] as const;
 export type LeagueScheduleCommandType = (typeof LEAGUE_SCHEDULE_COMMAND_TYPES)[number];
 
@@ -474,6 +478,8 @@ export const leagueOccurrences = pgTable("league_occurrences", {
     .where(sql`${table.lifecycle} IN ('published', 'locked') AND ${table.competitionNumber} IS NOT NULL`),
   tenantDateIdx: index("occurrences_tenant_date_idx").on(table.organizationId, table.authoritativeLocalDate),
   generationRunIdx: index("occurrences_generation_run_idx").on(table.generationRunId),
+  generationRunTenantIdentityUnique: uniqueIndex("occurrences_generation_run_tenant_identity_unique")
+    .on(table.id, table.organizationId, table.leagueId, table.generationRunId),
   kindCheck: check("occurrences_kind_check", sql`${table.kind} IN (${occurrenceKinds})`),
   statusCheck: check("occurrences_status_check", sql`${table.status} IN (${occurrenceStatuses})`),
   lifecycleCheck: check("occurrences_lifecycle_check", sql`${table.lifecycle} IN (${occurrenceLifecycles})`),
@@ -638,6 +644,8 @@ export const leagueOccurrenceBillingTerms = pgTable("league_occurrence_billing_t
     .on(table.organizationId, table.leagueId, table.purpose, table.billingOrdinal)
     .where(sql`${table.state} = 'published' AND ${table.supersededAt} IS NULL AND ${table.billingOrdinal} IS NOT NULL`),
   occurrenceIdx: index("billing_terms_occurrence_idx").on(table.organizationId, table.leagueId, table.occurrenceId),
+  occurrenceTenantIdentityUnique: uniqueIndex("billing_terms_occurrence_tenant_identity_unique")
+    .on(table.id, table.organizationId, table.leagueId, table.occurrenceId),
 }));
 
 export const leagueOccurrenceRelationships = pgTable("league_occurrence_relationships", {

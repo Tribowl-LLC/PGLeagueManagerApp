@@ -158,7 +158,7 @@ describe('LeagueViewPage system-admin new-season scope', () => {
       `/api/leagues/42/new-season?organizationId=${organizationId}`,
       'POST',
       expect.objectContaining({
-        setupIntegration: expect.objectContaining({ contractVersion: 'league-setup-integration-request/2' }),
+        setupIntegration: expect.objectContaining({ contractVersion: 'league-setup-integration-request/3' }),
         sourceConfirmation: expect.objectContaining({ contractVersion: 'league-rollover-source/1' }),
       }),
     );

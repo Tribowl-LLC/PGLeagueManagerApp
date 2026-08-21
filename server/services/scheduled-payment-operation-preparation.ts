@@ -10,6 +10,8 @@ import {
   paymentOperations,
   paymentSchedules,
   users,
+  canonicalCollectionGroups,
+  canonicalCollectionGroupMembers,
   DEFAULT_TIMEZONE,
   type PaymentOperation,
   type PaymentSchedule,
@@ -254,6 +256,7 @@ function buildSnapshot(input: {
   operation: PaymentOperation;
   schedule: PaymentSchedule;
   context: Awaited<ReturnType<typeof loadPreparationContext>>;
+  canonicalCollectionAmountMinor?: number;
 }): ScheduledPaymentSemanticSnapshot {
   const { operation, schedule, context } = input;
   if (operation.paymentScheduleId === null || operation.billingCycleAt === null) {
@@ -263,6 +266,7 @@ function buildSnapshot(input: {
     schedule,
     context.league,
     context.validPartnerIds.length,
+    { canonicalAuthoritative: input.canonicalCollectionAmountMinor !== undefined || schedule.nextOccurrenceId !== null, canonicalCollectionAmountMinor: input.canonicalCollectionAmountMinor },
   );
   if (plan.amountMinor !== operation.amountMinor) {
     throw new ScheduledPaymentPreparationError("scheduled operation amount changed during preparation");
@@ -429,7 +433,6 @@ export async function prepareScheduledPaymentCycle(input: {
       return { kind: "skipped", schedule: advanced };
     }
 
-    const plan = buildScheduledChargePlan(schedule, context.league, context.validPartnerIds.length);
     const triggerComparison = await resolveCanonicalOccurrenceCompatibility(tx, {
       subject: "scheduled_operation",
       organizationId: context.organizationId,
@@ -466,6 +469,69 @@ export async function prepareScheduledPaymentCycle(input: {
       }
       triggerOccurrenceId = exactTriggerOccurrenceId;
     }
+    let canonicalCollectionAmountMinor: number | undefined;
+    let canonicalPairedOccurrence = false;
+    if (triggerOccurrenceId !== null) {
+      const [canonicalMember] = await tx.select({ groupId: canonicalCollectionGroupMembers.groupId, role: canonicalCollectionGroupMembers.role })
+        .from(canonicalCollectionGroupMembers)
+        .innerJoin(canonicalCollectionGroups, and(
+          eq(canonicalCollectionGroups.id, canonicalCollectionGroupMembers.groupId),
+          eq(canonicalCollectionGroups.organizationId, context.organizationId),
+          eq(canonicalCollectionGroups.leagueId, schedule.leagueId),
+          eq(canonicalCollectionGroups.state, "published"),
+        ))
+        .where(and(
+          eq(canonicalCollectionGroupMembers.organizationId, context.organizationId),
+          eq(canonicalCollectionGroupMembers.leagueId, schedule.leagueId),
+          eq(canonicalCollectionGroupMembers.occurrenceId, triggerOccurrenceId),
+          eq(canonicalCollectionGroupMembers.active, true),
+        )).limit(1);
+      if (canonicalMember?.role === "paired") {
+        // The paired physical occurrence was already included in the exact
+        // trigger charge. Preserve its UUID/term evidence but advance the
+        // legacy cursor without creating a second provider operation.
+        canonicalPairedOccurrence = true;
+      } else if (canonicalMember?.role === "trigger") {
+        const members = await tx.select({ amountMinor: canonicalCollectionGroupMembers.amountMinor })
+          .from(canonicalCollectionGroupMembers)
+          .where(and(
+            eq(canonicalCollectionGroupMembers.organizationId, context.organizationId),
+            eq(canonicalCollectionGroupMembers.leagueId, schedule.leagueId),
+            eq(canonicalCollectionGroupMembers.groupId, canonicalMember.groupId),
+            eq(canonicalCollectionGroupMembers.active, true),
+          )).orderBy(canonicalCollectionGroupMembers.memberOrdinal);
+        if (members.length !== 2) throw new ScheduledPaymentPreparationError("canonical collection group membership is incomplete");
+        canonicalCollectionAmountMinor = members.reduce((total, member) => total + member.amountMinor, 0);
+      }
+    }
+    if (canonicalPairedOccurrence) {
+      const nextPaymentDate = computeNextPaymentDate(schedule, context.league).toISOString();
+      const nextComparison = await resolveCanonicalOccurrenceCompatibility(tx, {
+        subject: "payment_schedule",
+        organizationId: context.organizationId,
+        leagueId: schedule.leagueId,
+        legacyStartAt: nextPaymentDate,
+        immediateUpfront: false,
+        eligibilityNow: now.toISOString(),
+        existingReferenceId: schedule.nextOccurrenceId,
+      });
+      assertNoOccurrenceReferenceConflict(nextComparison);
+      const [advanced] = await tx.update(paymentSchedules).set({
+        nextPaymentDate,
+        nextOccurrenceId: nextComparison.classification === "exact_match" ? nextComparison.occurrenceId : null,
+        lastPaymentDate: expectedCycleAt,
+      }).where(and(
+        eq(paymentSchedules.id, schedule.id),
+        eq(paymentSchedules.active, true),
+        eq(paymentSchedules.nextPaymentDate, expectedCycleAt),
+      )).returning();
+      if (!advanced) throw new ScheduledPaymentPreparationError("paired canonical cycle cursor could not be advanced");
+      return { kind: "skipped", schedule: advanced };
+    }
+    const plan = buildScheduledChargePlan(schedule, context.league, context.validPartnerIds.length, {
+      canonicalAuthoritative: triggerOccurrenceId !== null,
+      canonicalCollectionAmountMinor,
+    });
     const operation = await createOrGetScheduledPaymentOperation({
       organizationId: context.organizationId,
       paymentScheduleId: schedule.id,
@@ -477,7 +543,7 @@ export async function prepareScheduledPaymentCycle(input: {
     }, tx);
     await persistScheduledPaymentOperationSnapshot(
       operation,
-      buildSnapshot({ operation, schedule, context }),
+      buildSnapshot({ operation, schedule, context, canonicalCollectionAmountMinor }),
       tx,
     );
 

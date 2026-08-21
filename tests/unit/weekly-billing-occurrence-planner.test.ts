@@ -147,6 +147,22 @@ describe("weekly billing occurrence planner", () => {
     ]);
   });
 
+  it("uses exact canonical trigger/pair amounts once and suppresses the paired cursor", () => {
+    const occurrences = buildWeeklyBillingOccurrences(league({
+      doublePayDates: ["2026-08-02", "2026-08-09"],
+    }), [
+      { triggerLocalDate: "2026-08-02", pairedLocalDate: "2026-08-23", triggerAmountMinor: 100, pairedAmountMinor: 100 },
+      { triggerLocalDate: "2026-08-09", pairedLocalDate: "2026-08-30", triggerAmountMinor: 100, pairedAmountMinor: 100 },
+    ]);
+    expect(occurrences.map((row) => [row.localDate, row.amountMinor])).toEqual([
+      ["2026-08-02", 200],
+      ["2026-08-09", 200],
+      ["2026-08-16", 100],
+      ["2026-08-23", 0],
+      ["2026-08-30", 0],
+    ]);
+  });
+
   it("keeps the league-local start time across the spring DST boundary", () => {
     const occurrences = buildWeeklyBillingOccurrences(league({
       seasonStart: "2026-03-01",

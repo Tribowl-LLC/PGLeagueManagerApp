@@ -14,6 +14,7 @@ import { expectErrorLog } from "../helpers/expected-error-logs";
 import { deleteOrganization } from "../../server/storage/organizations";
 import {
   acquirePaymentOperationLease,
+  acquireScheduledPaymentOperationDispatchCutoff,
   buildNextPaymentOperationWakeQuery,
   getLegacyScheduledPaymentCycleBlock,
   getNextPaymentOperationWake,
@@ -193,6 +194,16 @@ afterAll(async () => {
 });
 
 describe("scheduled payment ledger cutover PostgreSQL behavior", () => {
+  it("claims the dispatch cutoff once per lease token", async () => {
+    const { schedule } = await createSchedule();
+    const prepared = await prepareScheduledPaymentCycle({ paymentScheduleId: schedule.id, billingCycleAt: cycleAt, now: dueNow });
+    if (!("operation" in prepared) || !prepared.operation) throw new Error("scheduled operation was not prepared");
+    const leased = await acquirePaymentOperationLease({ organizationId, operationId: prepared.operation.id, leaseOwner: "cutoff-regression", leaseDurationMs: 300_000, now: dueNow });
+    if (!leased?.leaseToken) throw new Error("scheduled operation was not leased");
+    expect(await acquireScheduledPaymentOperationDispatchCutoff({ organizationId, operationId: leased.id, leaseToken: leased.leaseToken, now: dueNow })).toBe(true);
+    expect(await acquireScheduledPaymentOperationDispatchCutoff({ organizationId, operationId: leased.id, leaseToken: leased.leaseToken, now: dueNow })).toBe(false);
+  });
+
   it("prepares one exact cycle under two concurrent workers", async () => {
     const { schedule } = await createSchedule();
     const results = await Promise.all([

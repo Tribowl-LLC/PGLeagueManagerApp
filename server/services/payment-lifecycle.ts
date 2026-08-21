@@ -1,6 +1,14 @@
 import { db } from "../db";
 import { eq, and } from "drizzle-orm";
-import { paymentSchedules, payments, leagues, DEFAULT_TIMEZONE, type PaymentSchedule } from "@shared/schema";
+import {
+  paymentSchedules,
+  payments,
+  leagues,
+  DEFAULT_TIMEZONE,
+  canonicalCollectionGroups,
+  canonicalCollectionGroupMembers,
+  type PaymentSchedule,
+} from "@shared/schema";
 import { providerNameToPaymentType } from "@shared/schema/constants";
 import { addWeeks, addMonths, setHours, setMinutes, setSeconds, setMilliseconds } from "date-fns";
 import { fromZonedTime, toZonedTime } from "date-fns-tz";
@@ -26,6 +34,56 @@ async function safeResolvePaidByUserId(bowlerId: number): Promise<number | null>
     logger.warn(`[PaymentLifecycle] paidByUserId lookup failed for bowler ${bowlerId}: ${(err as Error).message}`);
     return null;
   }
+}
+
+/**
+ * The pre-ledger scheduler is retained only for legacy fallback, but a
+ * schedule cursor that has an authoritative canonical occurrence must still
+ * honor the exact collection-group evidence. Keep this read tenant-scoped and
+ * fail closed on incomplete active membership rather than reapplying the
+ * legacy 2x multiplier.
+ */
+async function loadCanonicalCollectionAmountMinor(
+  organizationId: number,
+  leagueId: number,
+  triggerOccurrenceId: string | null,
+): Promise<number | undefined> {
+  if (!triggerOccurrenceId) return undefined;
+  const [trigger] = await db
+    .select({ groupId: canonicalCollectionGroupMembers.groupId })
+    .from(canonicalCollectionGroupMembers)
+    .innerJoin(canonicalCollectionGroups, and(
+      eq(canonicalCollectionGroups.id, canonicalCollectionGroupMembers.groupId),
+      eq(canonicalCollectionGroups.organizationId, organizationId),
+      eq(canonicalCollectionGroups.leagueId, leagueId),
+      eq(canonicalCollectionGroups.state, "published"),
+    ))
+    .where(and(
+      eq(canonicalCollectionGroupMembers.organizationId, organizationId),
+      eq(canonicalCollectionGroupMembers.leagueId, leagueId),
+      eq(canonicalCollectionGroupMembers.occurrenceId, triggerOccurrenceId),
+      eq(canonicalCollectionGroupMembers.role, "trigger"),
+      eq(canonicalCollectionGroupMembers.active, true),
+    ))
+    .limit(1);
+  if (!trigger) return undefined;
+  const members = await db
+    .select({ amountMinor: canonicalCollectionGroupMembers.amountMinor })
+    .from(canonicalCollectionGroupMembers)
+    .where(and(
+      eq(canonicalCollectionGroupMembers.organizationId, organizationId),
+      eq(canonicalCollectionGroupMembers.leagueId, leagueId),
+      eq(canonicalCollectionGroupMembers.groupId, trigger.groupId),
+      eq(canonicalCollectionGroupMembers.active, true),
+    ));
+  if (members.length !== 2) {
+    throw new Error("canonical collection group membership is incomplete");
+  }
+  const amount = members.reduce((total, member) => total + member.amountMinor, 0);
+  if (!Number.isSafeInteger(amount) || amount <= 0) {
+    throw new Error("canonical collection group amount is invalid");
+  }
+  return amount;
 }
 import { arePartners } from "../storage/bowler-payment-links";
 import { bowlers } from "@shared/schema";
@@ -89,6 +147,17 @@ async function processLegacyScheduledPaymentJob(
     const organizationId = league.organizationId;
     if (organizationId === null) {
       logger.warn(`[PaymentScheduler] Skipping ${jobId} because its schedule has no tenant owner`);
+      return;
+    }
+    // Authoritative canonical schedules are dispatched only by the durable
+    // operation executor, which owns the league lock and dispatch cutoff.
+    // The legacy scheduler fails closed here so it can never race a future
+    // cancellation into a provider call for a canonical occurrence.
+    const hasCanonicalSchedule = (scheduleRecord.nextOccurrenceId !== null
+      && scheduleRecord.nextOccurrenceId !== undefined)
+      || (league.canonicalScheduleRevision ?? 0) > 0;
+    if (hasCanonicalSchedule) {
+      logger.warn(`[PaymentScheduler] Skipping legacy dispatch for authoritative canonical schedule`, { jobId, scheduleId: scheduleRecord.id, nextOccurrenceId: scheduleRecord.nextOccurrenceId });
       return;
     }
     const ledgerBlock = await getLegacyScheduledPaymentCycleBlock({
@@ -182,7 +251,15 @@ async function processLegacyScheduledPaymentJob(
       }
     }
 
-    const plan = buildScheduledChargePlan(scheduleRecord, league, validPartnerIds.length);
+    const canonicalCollectionAmountMinor = await loadCanonicalCollectionAmountMinor(
+      organizationId,
+      league.id,
+      scheduleRecord.nextOccurrenceId,
+    );
+    const plan = buildScheduledChargePlan(scheduleRecord, league, validPartnerIds.length, {
+      canonicalAuthoritative: scheduleRecord.nextOccurrenceId != null,
+      canonicalCollectionAmountMinor,
+    });
     const operationIdentity = buildPaymentOperationIdentity({
       organizationId,
       operationType: "scheduled_charge",
@@ -203,6 +280,10 @@ async function processLegacyScheduledPaymentJob(
       jobId,
       validPartnerIds.length,
       requestIdentity,
+      {
+        canonicalAuthoritative: scheduleRecord.nextOccurrenceId != null,
+        canonicalCollectionAmountMinor,
+      },
     );
 
     if (paymentResult.status === 'success') {

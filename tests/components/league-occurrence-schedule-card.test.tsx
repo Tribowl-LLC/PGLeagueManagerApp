@@ -24,7 +24,7 @@ vi.mock("@/pages/league-view-page/fall-draft-review-panel", () => ({
 import { LeagueOccurrenceScheduleCard } from "@/pages/league-view-page/league-occurrence-schedule-card";
 
 const canonical: LeagueOccurrenceScheduleReadContract = {
-  contractVersion: "league-occurrence-schedule/1",
+  contractVersion: "league-occurrence-schedule/2",
   ordering: {
     version: "league-occurrence-schedule-order/1",
     keys: ["authoritativeLocalDate", "authoritativeLocalStartTime", "plannedOrdinal", "competitionNumber", "kind", "stableIdentity"],
