@@ -14,7 +14,7 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 import { bowlers } from "./bowlers";
-import { leagueOccurrences, leagueOccurrenceBillingTerms } from "./canonical-occurrences";
+import { leagueOccurrences, leagueOccurrenceBillingTerms, leagueScheduleCommands } from "./canonical-occurrences";
 import { leagues } from "./leagues";
 import { organizations } from "./organizations";
 import { teams } from "./teams";
@@ -25,6 +25,8 @@ export const FINANCIAL_ACTIVATION_VERSION = 1;
 export { FINANCIAL_READ_CONTRACT_VERSION, FINANCIAL_READ_FINGERPRINT_PREFIX, FINANCIAL_ACTIVATION_FINGERPRINT_PREFIX, FINANCIAL_SOURCE_FINGERPRINT_PREFIX } from "../financial-contract";
 export const FINANCIAL_ACTIVATION_POLICY_VERSION = "eligible-bowlers/1" as const;
 export const FINANCIAL_ACTIVATION_ORDER_VERSION = "occurrence-team-slot-bowler/1" as const;
+export const FINANCIAL_ACTIVATION_CANCELLATION_SUPPRESSION_VERSION = 1 as const;
+export const FINANCIAL_ACTIVATION_RESPONSIBILITY_FINGERPRINT_VERSION = "financial-responsibility/1" as const;
 export const FINANCIAL_RESPONSIBILITY_ROLES = ["regular", "substitute"] as const;
 export type FinancialResponsibilityRole = (typeof FINANCIAL_RESPONSIBILITY_ROLES)[number];
 const roles = sql.raw(FINANCIAL_RESPONSIBILITY_ROLES.map((v) => `'${v}'`).join(", "));
@@ -82,6 +84,45 @@ export const financialActivationRevisions = pgTable("financial_activation_revisi
   snapshotCheck: check("financial_activation_revisions_snapshot_check", sql`(${table.revisionNumber} = 1 AND ${table.beforeSnapshot} IS NULL) OR (${table.revisionNumber} > 1 AND ${table.beforeSnapshot} IS NOT NULL)`),
 }));
 
+/**
+ * A future occurrence cancellation is the one supported live delta to the
+ * immutable F1 revision-1 source. This row is the durable, audited proof
+ * that the delta was authorized by a canonical cancellation command and that
+ * the original activation responsibilities were accounted for. It never
+ * rewrites activation or responsibility identity.
+ */
+export const financialActivationCancellationSuppressions = pgTable("financial_activation_cancellation_suppressions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  organizationId: integer("organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
+  leagueId: integer("league_id").notNull(),
+  activationId: uuid("activation_id").notNull(),
+  occurrenceId: uuid("occurrence_id").notNull(),
+  cancellationCommandId: uuid("cancellation_command_id").notNull(),
+  suppressionVersion: integer("suppression_version").notNull().default(FINANCIAL_ACTIVATION_CANCELLATION_SUPPRESSION_VERSION),
+  activationRevision: integer("activation_revision").notNull().default(1),
+  sourceFingerprint: varchar("source_fingerprint", { length: 128 }).notNull(),
+  originalOccurrenceRevision: integer("original_occurrence_revision").notNull(),
+  originalBillingTermRevision: integer("original_billing_term_revision").notNull(),
+  originalResponsibilityCount: integer("original_responsibility_count").notNull(),
+  responsibilityFingerprint: varchar("responsibility_fingerprint", { length: 128 }).notNull(),
+  cancellationReviewRequired: boolean("cancellation_review_required").notNull().default(false),
+  revisionNumber: integer("revision_number").notNull().default(1),
+  snapshotSchemaVersion: integer("snapshot_schema_version").notNull().default(1),
+  beforeSnapshot: jsonb("before_snapshot"),
+  afterSnapshot: jsonb("after_snapshot").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull().defaultNow(),
+}, (table) => ({
+  activationFk: foreignKey({ name: "financial_activation_cancellation_suppressions_activation_fk", columns: [table.activationId, table.organizationId, table.leagueId], foreignColumns: [financialActivations.id, financialActivations.organizationId, financialActivations.leagueId] }).onDelete("restrict"),
+  occurrenceFk: foreignKey({ name: "financial_activation_cancellation_suppressions_occurrence_fk", columns: [table.occurrenceId, table.organizationId, table.leagueId], foreignColumns: [leagueOccurrences.id, leagueOccurrences.organizationId, leagueOccurrences.leagueId] }).onDelete("restrict"),
+  commandFk: foreignKey({ name: "financial_activation_cancellation_suppressions_command_fk", columns: [table.cancellationCommandId, table.organizationId, table.leagueId], foreignColumns: [leagueScheduleCommands.id, leagueScheduleCommands.organizationId, leagueScheduleCommands.leagueId] }).onDelete("restrict"),
+  tenantIdentityUnique: uniqueIndex("financial_activation_cancellation_suppressions_tenant_identity_unique").on(table.id, table.organizationId, table.leagueId),
+  activationOccurrenceUnique: uniqueIndex("financial_activation_cancellation_suppressions_activation_occurrence_unique").on(table.organizationId, table.leagueId, table.activationId, table.occurrenceId),
+  versionCheck: check("financial_activation_cancellation_suppressions_version_check", sql`${table.suppressionVersion} = ${FINANCIAL_ACTIVATION_CANCELLATION_SUPPRESSION_VERSION} AND ${table.activationRevision} = 1 AND ${table.revisionNumber} = 1 AND ${table.snapshotSchemaVersion} > 0`),
+  sourceCheck: check("financial_activation_cancellation_suppressions_source_check", sql`${table.sourceFingerprint} ~ '^lvfinancialsource:v1:[0-9a-f]{64}$' AND ${table.responsibilityFingerprint} ~ '^lvfinancialresponsibility:v1:[0-9a-f]{64}$'`),
+  evidenceCheck: check("financial_activation_cancellation_suppressions_evidence_check", sql`${table.originalOccurrenceRevision} > 0 AND ${table.originalBillingTermRevision} > 0 AND ${table.originalResponsibilityCount} > 0`),
+  snapshotCheck: check("financial_activation_cancellation_suppressions_snapshot_check", sql`${table.beforeSnapshot} IS NULL AND jsonb_typeof(${table.afterSnapshot}) = 'object'`),
+}));
+
 export const financialResponsibilities = pgTable("financial_responsibilities", {
   id: uuid("id").primaryKey().defaultRandom(),
   organizationId: integer("organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
@@ -127,4 +168,5 @@ export const financialResponsibilities = pgTable("financial_responsibilities", {
 
 export type FinancialActivation = typeof financialActivations.$inferSelect;
 export type FinancialActivationRevision = typeof financialActivationRevisions.$inferSelect;
+export type FinancialActivationCancellationSuppression = typeof financialActivationCancellationSuppressions.$inferSelect;
 export type FinancialResponsibility = typeof financialResponsibilities.$inferSelect;

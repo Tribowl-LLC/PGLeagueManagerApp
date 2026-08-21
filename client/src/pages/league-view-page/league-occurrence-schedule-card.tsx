@@ -82,6 +82,11 @@ function ScheduleOccurrenceRow({ occurrence, isAdministrator }: {
           </h3>
           {statusBadge(occurrence.status)}
           {occurrence.kind !== "regular" && <Badge variant="secondary">{occurrenceLabel(occurrence)}</Badge>}
+          {(occurrence.collectionGroups ?? []).map((group) => (
+            <Badge key={group.groupId} variant={group.state === "revoked" ? "secondary" : "default"}>
+              {group.state === "revoked" ? "Former double-pay" : group.role === "trigger" ? "Double-pay trigger" : "Double-pay paired"}
+            </Badge>
+          ))}
         </div>
         <p className="mt-1 text-sm">
           {formatLocalTime(occurrence.authoritativeLocalStartTime)} <span className="text-muted-foreground">({occurrence.timezone})</span>
@@ -114,6 +119,11 @@ function ScheduleOccurrenceRow({ occurrence, isAdministrator }: {
             {occurrence.selectedUtcOffsetMinutes !== null && (
               <p>{formatOffset(occurrence.selectedUtcOffsetMinutes)} · fold {occurrence.foldResolution} · {occurrence.resolverVersion}</p>
             )}
+            {(occurrence.collectionGroups ?? []).map((group) => (
+              <p key={`${group.groupId}:detail`}>
+                Collection group {group.groupOrdinal} · {group.role} · {group.pairedLocalDate} · revision {group.currentRevision}
+              </p>
+            ))}
           </div>
         )}
       </div>

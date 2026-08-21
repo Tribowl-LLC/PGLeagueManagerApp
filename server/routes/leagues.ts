@@ -44,6 +44,7 @@ import {
 import {
   leagueSetupIntegrationIntentSchema,
   leagueSetupIntegrationIntentV2Schema,
+  leagueSetupIntegrationIntentV3Schema,
   leagueRolloverSourceConfirmationSchema,
 } from '@shared/league-setup-integration';
 import {
@@ -53,6 +54,8 @@ import {
   LeagueSetupIntegrationError,
 } from '../services/league-setup-integration.js';
 import { FallDraftGenerationError } from '../services/fall-draft-generation.js';
+import { CanonicalLeagueScheduleEditError, editCanonicalLeagueSchedule, readCanonicalLeagueScheduleRevision } from '../services/canonical-league-schedule-edit.js';
+import { hasOperationalLeagueOccurrenceEvidence } from '../storage/canonical-occurrence-evidence.js';
 
 const log = createLogger("Leagues");
 
@@ -85,7 +88,20 @@ const newSeasonRequestV2Schema = z.object({
   sourceConfirmation: leagueRolloverSourceConfirmationSchema,
 }).strict();
 
-const newSeasonRequestSchema = z.union([newSeasonRequestV2Schema, newSeasonRequestV1Schema]);
+const newSeasonRequestV3Schema = z.object({
+  seasonStart: dateSchema,
+  totalBowlingWeeks: z.number().int().positive().max(52),
+  weekDay: z.enum(WEEKDAYS),
+  skipDates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)),
+  cancelledDates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)),
+  doublePayDates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).max(2, "At most 2 double-pay weeks allowed"),
+  allowPublicSignup: z.boolean(),
+  paymentMode: z.enum(PAYMENT_MODES),
+  setupIntegration: leagueSetupIntegrationIntentV3Schema,
+  sourceConfirmation: leagueRolloverSourceConfirmationSchema,
+}).strict();
+
+const newSeasonRequestSchema = z.union([newSeasonRequestV3Schema, newSeasonRequestV2Schema, newSeasonRequestV1Schema]);
 
 const directLeagueSetupV2TargetSchema = z.object({
   name: nameSchema,
@@ -116,6 +132,10 @@ const directLeagueSetupV2TargetSchema = z.object({
   squareCategoryId: z.string().nullable().optional(),
   setupIntegration: leagueSetupIntegrationIntentV2Schema,
 }).strict();
+
+const directLeagueSetupV3TargetSchema = directLeagueSetupV2TargetSchema.extend({
+  setupIntegration: leagueSetupIntegrationIntentV3Schema,
+});
 
 function sendLeagueSetupError(res: Parameters<typeof sendError>[0], error: unknown): void {
   if (error instanceof z.ZodError) return handleZodError(res, error);
@@ -329,7 +349,11 @@ router.get("/:id", async (req: Request, res) => {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
 
-    sendSuccess(res, league);
+    const canonicalScheduleRevision = league.organizationId === null
+      ? null
+      : await readCanonicalLeagueScheduleRevision({ organizationId: league.organizationId, leagueId: league.id });
+    if (canonicalScheduleRevision !== null) res.setHeader("ETag", `\"${canonicalScheduleRevision}\"`);
+    sendSuccess(res, canonicalScheduleRevision === null ? league : { ...league, canonicalScheduleRevision });
   } catch (error) {
     sendError(res, 'Failed to fetch league');
   }
@@ -412,14 +436,15 @@ router.post("/", async (req: Request, res) => {
     }
 
     const setup = z.union([
+      leagueSetupIntegrationIntentV3Schema,
       leagueSetupIntegrationIntentV2Schema,
       leagueSetupIntegrationIntentSchema,
     ]).parse(req.body?.setupIntegration);
-    if (setup.contractVersion === "league-setup-integration-request/2") {
+    if (setup.contractVersion === "league-setup-integration-request/2" || setup.contractVersion === "league-setup-integration-request/3") {
       if (Object.prototype.hasOwnProperty.call(req.body ?? {}, "seasonEnd")) {
         return sendError(res, 'seasonEnd is derived by canonical v2 league setup', 400, 'VALIDATION_ERROR');
       }
-      directLeagueSetupV2TargetSchema.parse(req.body);
+      (setup.contractVersion === "league-setup-integration-request/3" ? directLeagueSetupV3TargetSchema : directLeagueSetupV2TargetSchema).parse(req.body);
     }
 
     const league = insertLeagueSchema.parse({
@@ -530,9 +555,12 @@ router.patch("/:id", async (req: Request, res) => {
     // payload). Re-run the validator here against the merged
     // persisted-league + patch-body view so a `doublePayDates`-only
     // PATCH still gets fully checked.
-    if (update.doublePayDates !== undefined) {
+    const canonicalScheduleValidationChanged = [
+      "doublePayDates", "skipDates", "cancelledDates", "seasonStart", "seasonEnd", "weekDay",
+    ].some((field) => Object.prototype.hasOwnProperty.call(req.body ?? {}, field));
+    if (canonicalScheduleValidationChanged) {
       const result = validateDoublePayDates({
-        doublePayDates: update.doublePayDates,
+        doublePayDates: update.doublePayDates ?? league.doublePayDates ?? [],
         skipDates: update.skipDates ?? league.skipDates ?? [],
         cancelledDates: update.cancelledDates ?? league.cancelledDates ?? [],
         weekDay: update.weekDay ?? league.weekDay,
@@ -544,7 +572,95 @@ router.patch("/:id", async (req: Request, res) => {
       }
     }
 
-    const updated = await storage.updateLeague(id, update);
+    // Authoritative canonical leagues revise collection-group evidence in the
+    // same tenant transaction. The legacy storage updater remains the
+    // compatibility path only when no published canonical schedule exists.
+    const canonicalDoublePayDates = update.doublePayDates;
+    const canonicalScheduleFieldChanged = [
+      "doublePayDates", "skipDates", "cancelledDates", "seasonStart", "seasonEnd",
+      "weekDay", "competitionStartTime", "timezone", "totalBowlingWeeks",
+    ].some((field) => Object.prototype.hasOwnProperty.call(req.body ?? {}, field));
+    const canonicalMetadataFieldChanged = [
+      "name", "description", "active", "allowPublicSignup", "practiceStartTime",
+      "lineageFee", "prizeFundFee", "squareLineageItemId", "lineageItemVariationId",
+      "squareLineageItemName", "squarePrizeFundItemId", "prizeFundItemVariationId",
+      "squarePrizeFundItemName", "squareCategoryId",
+    ].some((field) => Object.prototype.hasOwnProperty.call(req.body ?? {}, field));
+    const canonicalScheduleMutationChanged = canonicalScheduleFieldChanged || canonicalMetadataFieldChanged;
+    const hasCanonicalScheduleEvidence = canonicalScheduleMutationChanged && league.organizationId !== null
+      ? await hasOperationalLeagueOccurrenceEvidence(db, league.organizationId, id)
+      : false;
+    let updated = league;
+    let canonicalScheduleResponse: { state: "published"; collectionGroups: unknown[] } | undefined;
+    if (hasCanonicalScheduleEvidence
+      && canonicalScheduleMutationChanged) {
+      for (const field of ["organizationId", "locationId", "weeklyFee", "paymentMode"] as const) {
+        if (Object.prototype.hasOwnProperty.call(req.body ?? {}, field)
+          && (update[field] as unknown) !== (league[field] as unknown)) {
+          return sendError(res, `${field} cannot be changed on an authoritative canonical league`, 409, "CANONICAL_SCHEDULE_LOCKED_FIELD");
+        }
+      }
+      const rawRevision = req.body.scheduleRevision ?? req.get("if-match")?.replace(/^W\//, "").replace(/^"|"$/g, "");
+      const expectedScheduleRevision = typeof rawRevision === "string" ? Number(rawRevision) : rawRevision;
+      const idempotencyKey = typeof req.body.idempotencyKey === "string" ? req.body.idempotencyKey : req.get("idempotency-key");
+      if (!Number.isSafeInteger(expectedScheduleRevision) || !idempotencyKey) {
+        return sendError(res, "Canonical schedule revision and Idempotency-Key are required", 428, "CANONICAL_SCHEDULE_PRECONDITION_REQUIRED");
+      }
+      const organizationId = league.organizationId;
+      const actorUserId = req.user?.id;
+      if (organizationId === null || actorUserId === undefined) {
+        return sendError(res, "Canonical schedule tenant context is required", 403, "FORBIDDEN");
+      }
+      // The existing builder always submits its display-only derived
+      // seasonEnd.  A cancellation/skip changes that preview date, but it is
+      // not an audited physical regeneration and must not become a scalar
+      // canonical edit.  Preserve the durable canonical end when the
+      // submitted value is exactly this derived preview; a genuinely
+      // different scalar still reaches the fail-closed editor below.
+      const derivedBuilderSeasonEnd = mergedTotalBowlingWeeks != null && mergedWeekDay
+        ? calculateSeasonEnd(new Date(mergedSeasonStart), mergedWeekDay, Number(mergedTotalBowlingWeeks), mergedSkipDates, mergedCancelledDates)
+        : null;
+      const seasonEndIsBuilderDerived = update.seasonEnd !== undefined && derivedBuilderSeasonEnd !== null
+        && new Date(update.seasonEnd).toISOString().slice(0, 10) === derivedBuilderSeasonEnd.toISOString().slice(0, 10);
+      const edited = await editCanonicalLeagueSchedule({
+        organizationId,
+        leagueId: id,
+        actorUserId,
+        expectedScheduleRevision,
+        idempotencyKey,
+        reason: typeof req.body.reason === "string" ? req.body.reason : "Administrator schedule builder edit",
+        doublePayDates: canonicalDoublePayDates ?? league.doublePayDates,
+        skipDates: update.skipDates ?? league.skipDates,
+        cancelledDates: update.cancelledDates ?? league.cancelledDates,
+        seasonStart: update.seasonStart === undefined ? undefined : new Date(update.seasonStart).toISOString(),
+        seasonEnd: seasonEndIsBuilderDerived ? undefined : (update.seasonEnd === undefined ? undefined : new Date(update.seasonEnd).toISOString()),
+        weekDay: update.weekDay,
+        competitionStartTime: update.competitionStartTime,
+        timezone: update.timezone,
+        totalBowlingWeeks: update.totalBowlingWeeks,
+        metadata: {
+          ...(update.name === undefined ? {} : { name: update.name }),
+          ...(update.description === undefined ? {} : { description: update.description }),
+          ...(update.active === undefined ? {} : { active: update.active }),
+          ...(update.allowPublicSignup === undefined ? {} : { allowPublicSignup: update.allowPublicSignup }),
+          ...(update.practiceStartTime === undefined ? {} : { practiceStartTime: update.practiceStartTime }),
+          ...(update.lineageFee === undefined ? {} : { lineageFee: update.lineageFee }),
+          ...(update.prizeFundFee === undefined ? {} : { prizeFundFee: update.prizeFundFee }),
+          ...(update.squareLineageItemId === undefined ? {} : { squareLineageItemId: update.squareLineageItemId }),
+          ...(update.lineageItemVariationId === undefined ? {} : { lineageItemVariationId: update.lineageItemVariationId }),
+          ...(update.squareLineageItemName === undefined ? {} : { squareLineageItemName: update.squareLineageItemName }),
+          ...(update.squarePrizeFundItemId === undefined ? {} : { squarePrizeFundItemId: update.squarePrizeFundItemId }),
+          ...(update.prizeFundItemVariationId === undefined ? {} : { prizeFundItemVariationId: update.prizeFundItemVariationId }),
+          ...(update.squarePrizeFundItemName === undefined ? {} : { squarePrizeFundItemName: update.squarePrizeFundItemName }),
+          ...(update.squareCategoryId === undefined ? {} : { squareCategoryId: update.squareCategoryId }),
+        },
+      });
+      updated = edited.league;
+      cacheInvalidate('leagues:');
+      canonicalScheduleResponse = { state: "published", collectionGroups: edited.collectionGroups };
+    }
+
+    if (!canonicalScheduleResponse) updated = await storage.updateLeague(id, update);
 
     // Task #429: a name change moves the bowler between Smart Lists
     // (the `league_name` Square attribute string changes); a season-
@@ -555,7 +671,7 @@ router.patch("/:id", async (req: Request, res) => {
     const seasonStartChanged =
       update.seasonStart !== undefined &&
       new Date(update.seasonStart).getTime() !== new Date(league.seasonStart).getTime();
-    const seasonEndChanged =
+    const seasonEndChanged = !canonicalScheduleResponse &&
       update.seasonEnd !== undefined &&
       new Date(update.seasonEnd).getTime() !== new Date(league.seasonEnd).getTime();
     const activeChanged = update.active !== undefined && update.active !== league.active;
@@ -621,6 +737,10 @@ router.patch("/:id", async (req: Request, res) => {
       }
     }
 
+    if (canonicalScheduleResponse) {
+      res.setHeader("ETag", `\"${updated.canonicalScheduleRevision}\"`);
+      return sendSuccess(res, { ...updated, canonicalSchedule: canonicalScheduleResponse });
+    }
     sendSuccess(res, updated);
   } catch (error) {
     if (error instanceof z.ZodError) {
@@ -641,6 +761,12 @@ router.patch("/:id", async (req: Request, res) => {
         409,
         'LEAGUE_CANONICAL_SCHEDULE_LOCKED',
       );
+    }
+    if (error instanceof CanonicalLeagueScheduleEditError) {
+      if (error.code === "stale_revision") return sendError(res, error.message, 409, "CANONICAL_SCHEDULE_STALE_REVISION");
+      if (error.code === "financial_conflict") return sendError(res, error.message, 409, "CANONICAL_SCHEDULE_FINANCIAL_CONFLICT");
+      if (error.code === "unsupported_edit") return sendError(res, error.message, 409, "CANONICAL_SCHEDULE_UNSUPPORTED_EDIT");
+      return sendError(res, error.message, 400, "CANONICAL_SCHEDULE_EDIT_INVALID");
     }
     sendError(res, 'Failed to update league');
   }
@@ -966,8 +1092,10 @@ router.get("/:id/season-history", async (req: Request, res) => {
     const seasons: typeof league[] = [];
 
     let current: typeof league | undefined = league;
-    while (current?.previousSeasonId) {
-      current = allLeagues.find(l => l.id === current!.previousSeasonId);
+    while (current) {
+      const previousSeasonId: number | null = current.previousSeasonId;
+      if (!previousSeasonId) break;
+      current = allLeagues.find(l => l.id === previousSeasonId);
       if (current) seasons.unshift(current);
     }
 
@@ -977,8 +1105,9 @@ router.get("/:id/season-history", async (req: Request, res) => {
     if (nextSeason) {
       let next: typeof nextSeason | undefined = nextSeason;
       while (next) {
+        const nextSeasonId: number = next.id;
         seasons.push(next);
-        next = allLeagues.find(l => l.previousSeasonId === next!.id);
+        next = allLeagues.find(l => l.previousSeasonId === nextSeasonId);
       }
     }
 

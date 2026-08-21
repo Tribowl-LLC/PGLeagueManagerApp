@@ -56,7 +56,7 @@ function schedule(
   source: "canonical" | "legacy_fallback" = "canonical",
 ): LeagueOccurrenceScheduleReadContract {
   return {
-    contractVersion: "league-occurrence-schedule/1",
+    contractVersion: "league-occurrence-schedule/2",
     ordering: {
       version: "league-occurrence-schedule-order/1",
       keys: [

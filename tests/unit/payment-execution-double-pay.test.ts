@@ -51,7 +51,7 @@ vi.mock('../../server/db', () => {
   };
 });
 
-const { executeScheduledPayment, executeCharge } = await import(
+const { executeScheduledPayment, executeCharge, buildScheduledChargePlan } = await import(
   '../../server/services/payment-execution'
 );
 
@@ -170,6 +170,18 @@ beforeEach(() => {
 });
 
 describe('executeScheduledPayment — double-pay charging (Task #646)', () => {
+  it('uses exact canonical pair evidence once and ignores legacy doublePayDates', () => {
+    const league = makeLeague({ doublePayDates: ['2026-04-22'] });
+    const plan = buildScheduledChargePlan(makeSchedule(), league, 0, {
+      canonicalAuthoritative: true,
+      canonicalCollectionAmountMinor: 5300,
+    });
+
+    expect(plan.isDoublePay).toBe(true);
+    expect(plan.amountMinor).toBe(5300);
+    expect(plan.allocationAmountMinor).toBe(5300);
+  });
+
   it('charges weeklyFee*2 and returns chargedAmount on a double-pay date (no line items)', async () => {
     const processPayment = vi.fn().mockResolvedValue({
       id: 'sq_pay_dp_1',

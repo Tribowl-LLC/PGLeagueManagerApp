@@ -118,6 +118,7 @@ const UNIT_NO_DB = [
   'tests/unit/location-webhook-retention-route.test.ts',
   'tests/unit/weekly-billing-occurrence-planner.test.ts',
   'tests/unit/canonical-occurrence-generator.test.ts',
+  'tests/unit/canonical-collection-groups.test.ts',
   'tests/unit/canonical-occurrence-compatibility.test.ts',
   'tests/unit/canonical-occurrence-operator.test.ts',
   'tests/unit/completed-summer-comparator.test.ts',

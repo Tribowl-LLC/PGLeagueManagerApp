@@ -22,6 +22,7 @@ import {
   bowlerOccurrenceObligations,
   bowlerOccurrenceTeamAssignments,
   financialActivationRevisions,
+  financialActivationCancellationSuppressions,
   bowlerOccurrenceEligibilityRevisions,
   bowlerOccurrenceTeamAssignmentRevisions,
   bowlerOccurrenceObligationRevisions,
@@ -454,9 +455,21 @@ describe("F1 successful canonical activation and durable retry", () => {
       now: "2038-01-01T00:00:00.000Z",
       reason: "F1 effective-lock test",
     };
-    await expect(cancelOccurrence({ ...cancelRequest, requestFingerprint: buildCanonicalScheduleCommandFingerprint(cancelRequest) })).rejects.toMatchObject({ code: "occurrence_effectively_locked" });
-    expect((await db.select({ currentRevision: leagueOccurrences.currentRevision }).from(leagueOccurrences).where(eq(leagueOccurrences.id, occurrenceId)))[0]?.currentRevision).toBe(1);
-    await db.update(leagueOccurrences).set({ startAt: "2038-03-01T19:00:00.000Z" }).where(eq(leagueOccurrences.id, occurrenceId));
+    const cancelled = await cancelOccurrence({ ...cancelRequest, requestFingerprint: buildCanonicalScheduleCommandFingerprint(cancelRequest) });
+    expect(cancelled.status).toBe("cancelled");
+    expect((await db.select({ currentRevision: leagueOccurrences.currentRevision }).from(leagueOccurrences).where(eq(leagueOccurrences.id, occurrenceId)))[0]?.currentRevision).toBe(2);
+    expect((await db.select({ state: bowlerOccurrenceObligations.state }).from(bowlerOccurrenceObligations).where(eq(bowlerOccurrenceObligations.occurrenceId, occurrenceId))).every((obligation) => obligation.state === "voided")).toBe(true);
+    expect(await db.select().from(financialActivationCancellationSuppressions).where(and(eq(financialActivationCancellationSuppressions.organizationId, fixture.organizationId), eq(financialActivationCancellationSuppressions.occurrenceId, occurrenceId)))).toHaveLength(1);
+    const [suppression] = await db.select({ id: financialActivationCancellationSuppressions.id }).from(financialActivationCancellationSuppressions).where(and(
+      eq(financialActivationCancellationSuppressions.organizationId, fixture.organizationId),
+      eq(financialActivationCancellationSuppressions.occurrenceId, occurrenceId),
+    ));
+    if (!suppression) throw new Error("cancellation suppression fixture is missing");
+    await expect(db.update(financialActivationCancellationSuppressions).set({ cancellationReviewRequired: true }).where(eq(financialActivationCancellationSuppressions.id, suppression.id))).rejects.toThrow();
+    await expect(db.delete(financialActivationCancellationSuppressions).where(eq(financialActivationCancellationSuppressions.id, suppression.id))).rejects.toThrow();
+    const afterCancellation = await readCanonicalDuePastDue({ organizationId: fixture.organizationId, leagueId: fixture.leagueId });
+    expect(afterCancellation.rows.filter((row) => row.occurrenceId === occurrenceId).every((row) => row.state === "voided")).toBe(true);
+    await db.update(leagues).set({ paymentMode: "weekly" }).where(eq(leagues.id, fixture.leagueId));
     await expect(readCanonicalDuePastDue({ organizationId: fixture.organizationId, leagueId: fixture.leagueId })).rejects.toThrow();
     expect(result.activationId).toBeTruthy();
   });

@@ -8,7 +8,7 @@ schedules, provider execution, or the dormant D2 financial model.
 ## Read contract
 
 `GET /api/leagues/:leagueId/occurrence-schedule` returns
-`league-occurrence-schedule/1`. Its deterministic ordering contract is
+`league-occurrence-schedule/2`. Its deterministic ordering contract is
 `league-occurrence-schedule-order/1`:
 
 1. authoritative local date;

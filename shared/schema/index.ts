@@ -301,6 +301,25 @@ export type {
 } from "./canonical-occurrences";
 
 export {
+  canonicalCollectionGroups,
+  canonicalCollectionGroupMembers,
+  canonicalCollectionGroupRevisions,
+  canonicalCollectionGroupMemberRevisions,
+  CANONICAL_COLLECTION_GROUP_KINDS,
+  CANONICAL_COLLECTION_GROUP_STATES,
+  CANONICAL_COLLECTION_GROUP_ROLES,
+} from "./canonical-collection-groups";
+export type {
+  CanonicalCollectionGroup,
+  CanonicalCollectionGroupMember,
+  CanonicalCollectionGroupRevision,
+  CanonicalCollectionGroupMemberRevision,
+  CanonicalCollectionGroupKind,
+  CanonicalCollectionGroupState,
+  CanonicalCollectionGroupRole,
+} from "./canonical-collection-groups";
+
+export {
   bowlerOccurrenceEligibilities,
   bowlerOccurrenceEligibilityRevisions,
   bowlerOccurrenceTeamAssignments,
@@ -325,6 +344,7 @@ export {
 export {
   financialActivations,
   financialActivationRevisions,
+  financialActivationCancellationSuppressions,
   financialResponsibilities,
   FINANCIAL_ACTIVATION_VERSION,
   FINANCIAL_READ_CONTRACT_VERSION,
@@ -332,10 +352,13 @@ export {
   FINANCIAL_ACTIVATION_FINGERPRINT_PREFIX,
   FINANCIAL_SOURCE_FINGERPRINT_PREFIX,
   FINANCIAL_RESPONSIBILITY_ROLES,
+  FINANCIAL_ACTIVATION_CANCELLATION_SUPPRESSION_VERSION,
+  FINANCIAL_ACTIVATION_RESPONSIBILITY_FINGERPRINT_VERSION,
 } from "./financial-activation";
 export type {
   FinancialActivation,
   FinancialActivationRevision,
+  FinancialActivationCancellationSuppression,
   FinancialResponsibility,
   FinancialResponsibilityRole,
 } from "./financial-activation";

@@ -7,7 +7,8 @@ import type {
   LeagueScheduleExceptionKind,
 } from "./schema/canonical-occurrences";
 
-export const LEAGUE_OCCURRENCE_SCHEDULE_CONTRACT_VERSION = "league-occurrence-schedule/1" as const;
+export const LEAGUE_OCCURRENCE_SCHEDULE_CONTRACT_VERSION = "league-occurrence-schedule/2" as const;
+export const LEAGUE_OCCURRENCE_SCHEDULE_COLLECTION_GROUP_VERSION = "canonical-collection-group/1" as const;
 export const LEAGUE_OCCURRENCE_SCHEDULE_ORDER_VERSION = "league-occurrence-schedule-order/1" as const;
 
 export type LeagueOccurrenceScheduleSource = "canonical" | "legacy_fallback";
@@ -30,6 +31,17 @@ export interface LeagueOccurrenceScheduleBillingSummary {
   obligationPolicy: "none" | "eligible_bowlers";
   billingOrdinal: number | null;
   version: number;
+  currentRevision: number;
+}
+
+export interface LeagueOccurrenceScheduleCollectionGroup {
+  groupId: string;
+  groupOrdinal: number;
+  kind: "double_pay";
+  role: "trigger" | "paired";
+  pairedOccurrenceId: string;
+  pairedLocalDate: string;
+  state: "published" | "revoked";
   currentRevision: number;
 }
 
@@ -57,6 +69,7 @@ export interface LeagueOccurrenceScheduleOccurrence {
   effectivelyLocked: boolean;
   effectiveLockReasons: LeagueOccurrenceEffectiveLockReason[];
   billing: LeagueOccurrenceScheduleBillingSummary | null;
+  collectionGroups?: LeagueOccurrenceScheduleCollectionGroup[];
   relationships: LeagueOccurrenceScheduleRelationship[];
 }
 

@@ -20,6 +20,7 @@ import {
   TEST_ADMIN_EMAIL,
   TEST_ADMIN_PASSWORD,
   apiGet,
+  apiPatch,
   apiPost,
   login,
   type AuthSession,
@@ -128,6 +129,54 @@ describe("league setup integration API", () => {
     }, admin);
     expect(published.status).toBe(201);
     expect(published.data.data).toMatchObject({ review: { generationRun: { state: "applied" } } });
+    const [publishedLeague] = await db.select().from(leagues).where(eq(leagues.id, result.id));
+    if (!publishedLeague) throw new Error("published league row missing");
+    const [publishedRun] = await db.select({ sourceScheduleRevision: leagueOccurrenceGenerationRuns.sourceScheduleRevision })
+      .from(leagueOccurrenceGenerationRuns)
+      .where(eq(leagueOccurrenceGenerationRuns.leagueId, result.id));
+    const builderScheduleRevision = publishedLeague.canonicalScheduleRevision > 0
+      ? publishedLeague.canonicalScheduleRevision
+      : publishedRun?.sourceScheduleRevision ?? 1;
+    const builderPatch = await apiPatch(`/api/leagues/${result.id}`, {
+      name: "API builder-shaped metadata edit",
+      description: "metadata survives canonical schedule mutation",
+      active: publishedLeague.active,
+      allowPublicSignup: publishedLeague.allowPublicSignup,
+      seasonStart: publishedLeague.seasonStart,
+      seasonEnd: publishedLeague.seasonEnd,
+      weekDay: publishedLeague.weekDay,
+      totalBowlingWeeks: publishedLeague.totalBowlingWeeks,
+      skipDates: publishedLeague.skipDates,
+      cancelledDates: publishedLeague.cancelledDates,
+      doublePayDates: publishedLeague.doublePayDates,
+      competitionStartTime: publishedLeague.competitionStartTime,
+      timezone: publishedLeague.timezone,
+      weeklyFee: publishedLeague.weeklyFee,
+      paymentMode: publishedLeague.paymentMode,
+      scheduleRevision: builderScheduleRevision,
+      idempotencyKey: "e4-api-builder-shaped-edit-1",
+    }, admin);
+    expect(builderPatch.status).toBe(200);
+    expect(builderPatch.data.data).toMatchObject({ id: result.id, name: "API builder-shaped metadata edit", description: "metadata survives canonical schedule mutation" });
+    const [durableBuilderEdit] = await db.select().from(leagues).where(eq(leagues.id, result.id));
+    expect(durableBuilderEdit).toMatchObject({
+      name: "API builder-shaped metadata edit",
+      description: "metadata survives canonical schedule mutation",
+    });
+    const unsupportedSkip = await apiPatch(`/api/leagues/${result.id}`, {
+      skipDates: [...(durableBuilderEdit?.skipDates ?? []), "2032-03-21"],
+      scheduleRevision: durableBuilderEdit?.canonicalScheduleRevision,
+      idempotencyKey: "e4-api-unsupported-skip-1",
+    }, admin);
+    expect(unsupportedSkip.status).toBe(409);
+    expect(unsupportedSkip.data.error?.code).toBe("CANONICAL_SCHEDULE_UNSUPPORTED_EDIT");
+    const unsupportedScalar = await apiPatch(`/api/leagues/${result.id}`, {
+      timezone: "UTC",
+      scheduleRevision: durableBuilderEdit?.canonicalScheduleRevision,
+      idempotencyKey: "e4-api-unsupported-scalar-1",
+    }, admin);
+    expect(unsupportedScalar.status).toBe(409);
+    expect(unsupportedScalar.data.error?.code).toBe("CANONICAL_SCHEDULE_UNSUPPORTED_EDIT");
     const schedule = await apiGet(`/api/leagues/${result.id}/occurrence-schedule`, admin);
     expect(schedule.status).toBe(200);
     expect(schedule.data.data).toMatchObject({ authoritativeSource: "canonical", operationalCanonicalStateExists: true });

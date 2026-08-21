@@ -46,6 +46,9 @@ describe("F3 real PostgreSQL workflow", () => {
     expect(buildF3QuoteEvidence(base).items[0]?.amountMinor).toBe(1000);
     await expect(Promise.resolve().then(() => buildF3QuoteEvidence({ ...base, responsibilities: [...base.responsibilities, { ...base.responsibilities[0], occurrenceId: "00000000-0000-4000-8000-000000000003" }] }))).rejects.toMatchObject({ code: "OBLIGATION_EVIDENCE_INCONSISTENT" });
     await expect(Promise.resolve().then(() => buildF3QuoteEvidence({ ...base, obligations: [{ ...base.obligations[0], state: "partially_settled" }] }))).rejects.toMatchObject({ code: "OBLIGATION_EVIDENCE_INCONSISTENT" });
+    // Cancellation preserves any active allocation rows but voids the
+    // obligation, so no F3 quote may collect the unpaid remainder.
+    await expect(Promise.resolve().then(() => buildF3QuoteEvidence({ ...base, obligations: [{ ...base.obligations[0], state: "voided" }] }))).rejects.toMatchObject({ code: "OBLIGATION_EVIDENCE_INCOMPLETE" });
     await expect(Promise.resolve().then(() => buildF3QuoteEvidence({ ...base, allocations: [{ obligationId: obligation, amountMinor: 1100, status: "paid" }] }))).rejects.toMatchObject({ code: "OBLIGATION_EVIDENCE_INCONSISTENT" });
     await expect(Promise.resolve().then(() => buildF3QuoteEvidence({ ...base, reservations: [{ obligationId: obligation, amountMinor: 1001 }] }))).rejects.toMatchObject({ code: "OBLIGATION_EVIDENCE_INCONSISTENT" });
     await expect(Promise.resolve().then(() => buildF3QuoteEvidence({ ...base, allocations: [{ obligationId: obligation, amountMinor: 100, status: "paid", disputeEvidence: true }] }))).rejects.toMatchObject({ code: "OBLIGATION_REVIEW_REQUIRED" });

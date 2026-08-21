@@ -8,6 +8,7 @@ import {
 import { providerNameToPaymentType } from "@shared/schema/constants";
 import {
   acquirePaymentOperationLease,
+  acquireInteractivePaymentOperationDispatchCutoff,
   getPaymentOperationForOrganization,
   recordPaymentOperationActionRequired,
   recordPaymentOperationFailedTerminal,
@@ -229,6 +230,17 @@ export class AutopaySetupOperationExecutor {
 
     let result: PaymentResult;
     try {
+      const cutoff = await acquireInteractivePaymentOperationDispatchCutoff({
+        organizationId: operation.organizationId,
+        operationId: operation.id,
+        leaseToken,
+        now,
+      });
+      // Setup operations created before the F2 occurrence supplement remain
+      // on the historical path; canonical supplements require the cutoff.
+      if (cutoff === false) {
+        return (await getPaymentOperationForOrganization(operation.organizationId, operation.id)) ?? operation;
+      }
       const identity = buildSquarePaymentRequestIdentity({
         providerIdempotencyKey: operation.providerIdempotencyKey,
         requestKind: request.snapshot.requestKind,

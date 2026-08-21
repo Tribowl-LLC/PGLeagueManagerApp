@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(30);
+    expect(migrations).toHaveLength(31);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -413,6 +413,14 @@ describe('normalized migration baseline tools', () => {
     });
     expect(migrations[29]?.sql).toContain('CREATE TABLE "canonical_autopay_execution_snapshots"');
     expect(migrations[29]?.sql).toContain('payment_operations_trigger_occurrence_league_tenant_fk');
+    expect(migrations[30]).toMatchObject({
+      idx: 30,
+      tag: '0030_canonical_collection_groups',
+      createdAt: 1787340597942,
+      hash: 'f646e0fd0167cab52418a41a2e4dcd4f4d1451aa0021c9f09acbcb50df96b21a',
+    });
+    expect(migrations[30]?.sql).toContain('CREATE TABLE "canonical_collection_groups"');
+    expect(migrations[30]?.sql).toContain('canonical_collection_group_members');
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 

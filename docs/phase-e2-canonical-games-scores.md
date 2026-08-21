@@ -8,7 +8,7 @@ outside this phase.
 
 ## Authoritative source selection
 
-Games and scores reuse the E1 `league-occurrence-schedule/1` snapshot builder
+Games and scores reuse the E1 `league-occurrence-schedule/2` snapshot builder
 inside repeatable-read read transactions and locked mutation transactions.
 There is no second definition of operational canonical state:
 

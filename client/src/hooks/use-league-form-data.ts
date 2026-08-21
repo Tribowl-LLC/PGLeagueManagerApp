@@ -7,7 +7,7 @@ import { useToast } from "@/hooks/use-toast";
 import { DEFAULT_WEEKLY_FEE_CENTS, DEFAULT_TIMEZONE } from "@shared/schema";
 import type { InsertLeagueInput, InsertLeague, League } from "@shared/schema";
 import {
-  LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION_2,
+  LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION_3,
   type AnyLeagueSetupIntegrationResult,
 } from "@shared/league-setup-integration";
 import { createSetupIdempotencyKeyRetainer } from "@/pages/league-view-page/fall-draft-secure-id";
@@ -181,10 +181,14 @@ export function useLeagueFormData({
       return apiRequest<AnyLeagueSetupIntegrationResult>(
         league ? `/api/leagues/${league.id}` : "/api/leagues",
         league ? "PATCH" : "POST",
-        league ? semanticPayload : {
+        league ? {
+          ...semanticPayload,
+          scheduleRevision: league.canonicalScheduleRevision,
+          idempotencyKey: setupIdempotency.current.keyFor({ leagueId: league.id, ...semanticPayload, scheduleRevision: league.canonicalScheduleRevision }),
+        } : {
           ...canonicalCreatePayload,
           setupIntegration: {
-            contractVersion: LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION_2,
+            contractVersion: LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION_3,
             idempotencyKey: setupIdempotency.current.keyFor(canonicalCreatePayload),
           },
         },
@@ -193,14 +197,14 @@ export function useLeagueFormData({
     onSuccess: (response) => {
       queryClient.invalidateQueries({ queryKey: ["/api/leagues"] });
       queryClient.invalidateQueries({ queryKey: ["/api/leagues/square-missing-alerts/recent"] });
-      if (!league) setupIdempotency.current.reset();
+      setupIdempotency.current.reset();
       const canonicalCreated = !league && response.data.canonicalDraftGeneration !== null;
       toast({
         title: league ? "League updated" : "League created",
         description: league
           ? "League has been updated successfully."
           : canonicalCreated
-            ? "League and its canonical schedule drafts were created successfully."
+            ? "League and its canonical schedule were published successfully."
             : "League has been created successfully.",
       });
       onClose();

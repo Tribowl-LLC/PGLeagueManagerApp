@@ -191,7 +191,7 @@ describe("E1 league occurrence schedule API", () => {
       primary.admin,
     );
     expect(initial.data.data).toMatchObject({
-      contractVersion: "league-occurrence-schedule/1",
+      contractVersion: "league-occurrence-schedule/2",
       authoritativeSource: "legacy_fallback",
       operationalCanonicalStateExists: false,
       administrator: { fallRecoveryEligible: true, c2ReviewAvailable: false, reviewContractFamily: null },

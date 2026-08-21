@@ -10,10 +10,12 @@ import type { ScheduledPaymentExecutionMode } from "../config";
 import { createLogger } from "../logger";
 import {
   acquirePaymentOperationLease,
+  acquireScheduledPaymentOperationDispatchCutoff,
   finalizePaymentOperationSuccess,
   getNextPaymentOperationWake,
   getPaymentOperationForOrganization,
   getScheduledPaymentOperationSnapshotForOrganization,
+  isScheduledPaymentProviderLocationCurrent,
   recordExpiredPaymentOperationAttemptExhausted,
   recordPaymentOperationActionRequired,
   recordPaymentOperationFailedTerminal,
@@ -301,6 +303,26 @@ export class ScheduledPaymentOperationExecutor {
       return;
     }
 
+    // Seller-location identity is immutable operation evidence. Resolve the
+    // current credential through the same tenant scope before acquiring the
+    // dispatch cutoff or obtaining a provider; relocation fails closed with
+    // zero provider-side calls.
+    if (!(await isScheduledPaymentProviderLocationCurrent({
+      organizationId: operation.organizationId,
+      locationId: snapshot.locationId,
+      providerLocationId: snapshot.providerLocationId,
+    }))) {
+      await recordPaymentOperationFailedTerminal({
+        organizationId: operation.organizationId,
+        operationId: operation.id,
+        leaseToken,
+        now: this.now(),
+        errorClassification: "invalid_request",
+        errorCode: "PROVIDER_LOCATION_DRIFT",
+      });
+      return;
+    }
+
     let provider: PaymentProvider;
     try {
       provider = await this.getProvider(snapshot.locationId);
@@ -320,6 +342,18 @@ export class ScheduledPaymentOperationExecutor {
       await this.recordFailure(operation, snapshot, error, false);
       return;
     }
+
+    // Cancellation and dispatch share the league advisory lock. Claim the
+    // exact provider window only after all local snapshot checks pass; a
+    // cancellation committed first therefore returns here without any
+    // provider call, while claim-first remains recoverable by this ledger's
+    // existing provider idempotency/reconciliation path.
+    if (!(await acquireScheduledPaymentOperationDispatchCutoff({
+      organizationId: operation.organizationId,
+      operationId: operation.id,
+      leaseToken,
+      now: this.now(),
+    }))) return;
 
     let result: PaymentResult;
     try {

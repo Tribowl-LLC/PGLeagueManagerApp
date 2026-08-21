@@ -12,6 +12,12 @@ import {
   type LeagueOccurrenceRelationship,
   type LeagueScheduleException,
 } from "@shared/schema/canonical-occurrences";
+import {
+  canonicalCollectionGroupMembers,
+  canonicalCollectionGroups,
+  type CanonicalCollectionGroup,
+  type CanonicalCollectionGroupMember,
+} from "@shared/schema/canonical-collection-groups";
 import { leagues, type League } from "@shared/schema/leagues";
 import {
   LEAGUE_OCCURRENCE_SCHEDULE_CONTRACT_VERSION,
@@ -22,6 +28,7 @@ import {
   type LeagueOccurrenceScheduleReadContract,
   type LeagueOccurrenceScheduleRelationship,
   type LeagueOccurrenceScheduleSkippedDate,
+  type LeagueOccurrenceScheduleCollectionGroup,
 } from "@shared/league-occurrence-schedule";
 import { getAllBowlingDates } from "@shared/schedule-utils";
 import { getProductSeasonFromDateOnly } from "@shared/season-utils";
@@ -65,6 +72,8 @@ export interface LeagueOccurrenceScheduleCanonicalRows {
   scheduleExceptions: LeagueScheduleException[];
   relationships: LeagueOccurrenceRelationship[];
   linkedActivityOccurrenceIds: ReadonlySet<string>;
+  collectionGroups?: CanonicalCollectionGroup[];
+  collectionGroupMembers?: CanonicalCollectionGroupMember[];
   hasAnyCanonicalEvidence: boolean;
 }
 
@@ -169,6 +178,8 @@ function assertScope(input: BuildLeagueOccurrenceScheduleInput): void {
     ...input.canonical.billingTerms,
     ...input.canonical.scheduleExceptions,
     ...input.canonical.relationships,
+    ...(input.canonical.collectionGroups ?? []),
+    ...(input.canonical.collectionGroupMembers ?? []),
   ]) {
     if (row.organizationId !== input.organizationId || row.leagueId !== input.leagueId) {
       throw new LeagueOccurrenceScheduleError(
@@ -199,9 +210,13 @@ function administratorEvidence(
   const start = dateOnly(input.league.seasonStart);
   const c2Runs = canonical.generationRuns.filter((row) => isFallDraftSnapshot(row.normalizedInputSnapshot));
   const e4Runs = canonical.generationRuns.filter((row) => isFutureSeasonDraftSnapshot(row.normalizedInputSnapshot));
+  // C2 controls are exposed only while an auditable draft is awaiting a
+  // decision. Automatic v3 setup publishes inside its setup transaction and
+  // therefore deliberately has no review panel, even though the retained
+  // approval/publication commands remain available to recovery tooling.
   const reviewContractFamily = c2Runs.length === 1 && e4Runs.length === 0
     ? "fall" as const
-    : e4Runs.length === 1 && c2Runs.length === 0
+    : e4Runs.length === 1 && c2Runs.length === 0 && e4Runs[0]?.state === "generated"
       ? "canonical" as const
       : null;
   return {
@@ -214,7 +229,8 @@ function administratorEvidence(
     hasSupersededEvidence: canonical.generationRuns.some((row) => row.state === "superseded")
       || canonical.billingTerms.some((row) => row.state === "superseded"),
     hasRevokedEvidence: canonical.scheduleExceptions.some((row) => row.lifecycle === "revoked")
-      || canonical.relationships.some((row) => row.state === "revoked"),
+      || canonical.relationships.some((row) => row.state === "revoked")
+      || (canonical.collectionGroups ?? []).some((row) => row.state === "revoked"),
     c2ReviewAvailable: reviewContractFamily !== null,
     reviewContractFamily,
     fallRecoveryEligible: !canonical.hasAnyCanonicalEvidence
@@ -271,6 +287,32 @@ function relationshipEvidence(
   return result.sort((left, right) => compareStrings(left.relationshipId, right.relationshipId));
 }
 
+function collectionGroupEvidence(
+  occurrenceId: string,
+  groups: CanonicalCollectionGroup[],
+  members: CanonicalCollectionGroupMember[],
+): LeagueOccurrenceScheduleCollectionGroup[] {
+  const groupById = new Map(groups.map((group) => [group.id, group]));
+  return members
+    .filter((member) => member.occurrenceId === occurrenceId)
+    .map((member) => {
+      const group = groupById.get(member.groupId);
+      const paired = members.find((candidate) => candidate.groupId === member.groupId && candidate.occurrenceId !== occurrenceId);
+      if (!group || !paired) throw new LeagueOccurrenceScheduleError("incompatible_canonical_state", "a collection group member is incomplete");
+      return {
+        groupId: group.id,
+        groupOrdinal: group.groupOrdinal,
+        kind: group.kind,
+        role: member.role,
+        pairedOccurrenceId: paired.occurrenceId,
+        pairedLocalDate: paired.localDate,
+        state: group.state === "revoked" ? "revoked" as const : "published" as const,
+        currentRevision: group.currentRevision,
+      };
+    })
+    .sort((left, right) => left.groupOrdinal - right.groupOrdinal || compareStrings(left.groupId, right.groupId));
+}
+
 function hasPublicationAudit(row: LeagueOccurrence | LeagueScheduleException): boolean {
   return row.lastCommandId !== null
     && row.publicationCommandId !== null
@@ -320,6 +362,66 @@ function assertOperationalSetIntegrity(
   }
 
   const publishedRelationships = input.canonical.relationships.filter((row) => row.state === "published");
+  const collectionGroups = input.canonical.collectionGroups ?? [];
+  const collectionGroupMembers = input.canonical.collectionGroupMembers ?? [];
+  for (const member of collectionGroupMembers) {
+    const group = collectionGroups.find((candidate) => candidate.id === member.groupId);
+    if (!group || group.organizationId !== input.organizationId || group.leagueId !== input.leagueId
+      || group.generationRunId !== currentRun.id || !operational.some((row) => row.id === member.occurrenceId)) {
+      throw new LeagueOccurrenceScheduleError("incompatible_canonical_state", "a collection group references non-operational evidence");
+    }
+  }
+  for (const group of collectionGroups) {
+    if (group.generationRunId !== currentRun.id || !["published", "revoked"].includes(group.state)) {
+      throw new LeagueOccurrenceScheduleError("incompatible_canonical_state", "collection group evidence is not operational");
+    }
+    if (group.kind !== "double_pay" || group.triggerLocalDate >= group.pairedLocalDate
+      || group.currentRevision < 1 || group.sourceScheduleRevision < 1) {
+      throw new LeagueOccurrenceScheduleError("incompatible_canonical_state", "collection group has invalid kind, dates, or revision evidence");
+    }
+    const groupMembers = collectionGroupMembers.filter((member) => member.groupId === group.id);
+    if (groupMembers.length !== 2 || new Set(groupMembers.map((member) => member.occurrenceId)).size !== 2
+      || new Set(groupMembers.map((member) => member.billingTermId)).size !== 2
+      || groupMembers.some((member) => member.organizationId !== input.organizationId
+        || member.leagueId !== input.leagueId
+        || member.generationRunId !== currentRun.id
+        || member.amountMinor <= 0
+        || member.billingOrdinal <= 0
+        || !/^[A-Z]{3}$/.test(member.currency)
+        || (member.role === "trigger" && member.memberOrdinal !== 1)
+        || (member.role === "paired" && member.memberOrdinal !== 2)
+        || !["trigger", "paired"].includes(member.role))) {
+      throw new LeagueOccurrenceScheduleError("incompatible_canonical_state", "collection group must contain exactly one strict trigger and paired member");
+    }
+    const triggerMember = groupMembers.find((member) => member.role === "trigger");
+    const pairedMember = groupMembers.find((member) => member.role === "paired");
+    if (!triggerMember || !pairedMember
+      || triggerMember.localDate !== group.triggerLocalDate
+      || pairedMember.localDate !== group.pairedLocalDate
+      || (group.state === "published" && groupMembers.some((member) => !member.active))
+      || (group.state === "revoked" && groupMembers.some((member) => member.active))) {
+      throw new LeagueOccurrenceScheduleError("incompatible_canonical_state", "collection group lifecycle and member activity are inconsistent");
+    }
+    if (group.state === "published") {
+      const occurrenceById = new Map(operational.map((row) => [row.id, row]));
+      const termById = new Map(input.canonical.billingTerms.map((term) => [term.id, term]));
+      for (const member of [triggerMember, pairedMember]) {
+        const occurrence = occurrenceById.get(member.occurrenceId);
+        const term = termById.get(member.billingTermId);
+        if (!occurrence || occurrence.authoritativeLocalDate !== member.localDate
+          || !["published", "locked"].includes(occurrence.lifecycle)
+          || !["scheduled", "completed"].includes(occurrence.status)
+          || !term || term.occurrenceId !== member.occurrenceId
+          || term.state !== "published"
+          || term.obligationPolicy !== "eligible_bowlers"
+          || term.billingOrdinal !== member.billingOrdinal
+          || term.defaultAmountMinor !== member.amountMinor
+          || term.currency !== member.currency) {
+          throw new LeagueOccurrenceScheduleError("incompatible_canonical_state", "published collection group member does not match its current occurrence and billing term");
+        }
+      }
+    }
+  }
   for (const row of operational) {
     if (row.generationRunId === currentRun.id) continue;
     const auditedPostSetOccurrence = row.generationRunId === null
@@ -353,6 +455,8 @@ function buildCanonicalSchedule(
 ): LeagueOccurrenceScheduleReadContract {
   assertOperationalSetIntegrity(input, operational);
   const operationalIds = new Set(operational.map((row) => row.id));
+  const collectionGroups = input.canonical.collectionGroups ?? [];
+  const collectionGroupMembers = input.canonical.collectionGroupMembers ?? [];
   if ([...input.canonical.linkedActivityOccurrenceIds].some((id) => !operationalIds.has(id))) {
     throw new LeagueOccurrenceScheduleError(
       "incompatible_canonical_state",
@@ -442,6 +546,7 @@ function buildCanonicalSchedule(
         currentRevision: term.currentRevision,
       } : null,
       relationships: relationshipEvidence(row.id, publishedRelationships),
+      collectionGroups: collectionGroupEvidence(row.id, collectionGroups, collectionGroupMembers),
     };
   }).sort(compareLeagueScheduleOccurrences);
   const skippedDates = publishedExceptions.map((row): LeagueOccurrenceScheduleSkippedDate => ({
@@ -524,6 +629,7 @@ function buildLegacySchedule(input: BuildLeagueOccurrenceScheduleInput): LeagueO
       effectiveLockReasons: [],
       billing: null,
       relationships: [],
+      collectionGroups: [],
     });
   }
   return {
@@ -684,6 +790,14 @@ export async function loadLeagueOccurrenceScheduleSnapshot(
     eq(leagueOccurrenceRelationships.organizationId, input.organizationId),
     eq(leagueOccurrenceRelationships.leagueId, input.leagueId),
   )).orderBy(asc(leagueOccurrenceRelationships.id));
+  const collectionGroups = await executor.select().from(canonicalCollectionGroups).where(and(
+    eq(canonicalCollectionGroups.organizationId, input.organizationId),
+    eq(canonicalCollectionGroups.leagueId, input.leagueId),
+  )).orderBy(asc(canonicalCollectionGroups.generationRunId), asc(canonicalCollectionGroups.groupOrdinal), asc(canonicalCollectionGroups.id));
+  const collectionGroupMembers = await executor.select().from(canonicalCollectionGroupMembers).where(and(
+    eq(canonicalCollectionGroupMembers.organizationId, input.organizationId),
+    eq(canonicalCollectionGroupMembers.leagueId, input.leagueId),
+  )).orderBy(asc(canonicalCollectionGroupMembers.groupId), asc(canonicalCollectionGroupMembers.memberOrdinal), asc(canonicalCollectionGroupMembers.id));
   const hasAnyEvidence = await hasLeagueOccurrenceEvidence(executor, input.organizationId, input.leagueId);
   const now = await databaseNow(executor);
   const linkedIds = await linkedActivityOccurrenceIds(
@@ -702,6 +816,8 @@ export async function loadLeagueOccurrenceScheduleSnapshot(
       billingTerms,
       scheduleExceptions,
       relationships,
+      collectionGroups,
+      collectionGroupMembers,
       linkedActivityOccurrenceIds: linkedIds,
       hasAnyCanonicalEvidence: hasAnyEvidence,
     },

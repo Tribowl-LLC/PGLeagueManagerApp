@@ -5,6 +5,8 @@ import {
   bowlers,
   leagues,
   paymentSchedules,
+  canonicalCollectionGroups,
+  canonicalCollectionGroupMembers,
   payments,
   type AutopaySetupRequest,
   type AutopaySetupSnapshot,
@@ -30,6 +32,7 @@ import { buildLineItems, computePaymentSplit } from "./payment-execution.js";
 import { canonicalizePaymentOperationInput } from "./payment-operation-idempotency.js";
 import {
   planWeeklyAutopaySetup,
+  type CanonicalCollectionGroupPlan,
   type AutopaySetupPlan,
 } from "./weekly-billing-occurrence-planner.js";
 import { autopaySetupOperationExecutor } from "./autopay-setup-operation-executor.js";
@@ -216,9 +219,45 @@ async function loadSetupContext(input: {
     eq(payments.leagueId, league.id),
     inArray(payments.bowlerId, payeeIds),
   ));
+  const canonicalGroupRows = league.canonicalScheduleRevision > 0
+    ? await db.select({
+      groupId: canonicalCollectionGroups.id,
+      triggerLocalDate: canonicalCollectionGroups.triggerLocalDate,
+      pairedLocalDate: canonicalCollectionGroups.pairedLocalDate,
+      role: canonicalCollectionGroupMembers.role,
+      amountMinor: canonicalCollectionGroupMembers.amountMinor,
+    }).from(canonicalCollectionGroups).innerJoin(canonicalCollectionGroupMembers, and(
+      eq(canonicalCollectionGroupMembers.groupId, canonicalCollectionGroups.id),
+      eq(canonicalCollectionGroupMembers.organizationId, organizationId),
+      eq(canonicalCollectionGroupMembers.leagueId, league.id),
+      eq(canonicalCollectionGroupMembers.active, true),
+    )).where(and(
+      eq(canonicalCollectionGroups.organizationId, organizationId),
+      eq(canonicalCollectionGroups.leagueId, league.id),
+      eq(canonicalCollectionGroups.state, "published"),
+    )).orderBy(canonicalCollectionGroups.groupOrdinal, canonicalCollectionGroupMembers.memberOrdinal)
+    : [];
+  const canonicalCollectionGroupsForPlanner: CanonicalCollectionGroupPlan[] = [];
+  for (let index = 0; index < canonicalGroupRows.length; index += 2) {
+    const first = canonicalGroupRows[index];
+    const second = canonicalGroupRows[index + 1];
+    if (!first || !second || first.groupId !== second.groupId || first.role !== "trigger" || second.role !== "paired") {
+      throw new AutopaySetupError("CANONICAL_EVIDENCE_INCOMPLETE", "Canonical collection-group evidence is incomplete.", 409);
+    }
+    canonicalCollectionGroupsForPlanner.push({
+      triggerLocalDate: first.triggerLocalDate,
+      pairedLocalDate: first.pairedLocalDate,
+      triggerAmountMinor: first.amountMinor,
+      pairedAmountMinor: second.amountMinor,
+    });
+  }
+  if (league.canonicalScheduleRevision > 0 && canonicalCollectionGroupsForPlanner.length !== league.doublePayDates.length) {
+    throw new AutopaySetupError("CANONICAL_EVIDENCE_INCOMPLETE", "Canonical double-pay grouping evidence is incomplete.", 409);
+  }
   const plan = planWeeklyAutopaySetup({
     league,
     now: input.now,
+    canonicalCollectionGroups: canonicalCollectionGroupsForPlanner,
     payees: payeeIds.map((bowlerId) => ({
       bowlerId,
       payments: paymentRows.filter((row) => row.bowlerId === bowlerId),

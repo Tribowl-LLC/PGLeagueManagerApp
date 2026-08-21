@@ -29,7 +29,7 @@ import { SeasonHistoryCard } from "./league-view-page/season-history-card";
 import { NewSeasonDialog, type NewSeasonFormValues } from "./league-view-page/new-season-dialog";
 import { LeagueOccurrenceScheduleCard } from "./league-view-page/league-occurrence-schedule-card";
 import {
-  LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION_2,
+  LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION_3,
   type AnyLeagueSetupIntegrationResult,
 } from "@shared/league-setup-integration";
 import { createSetupIdempotencyKeyRetainer } from "./league-view-page/fall-draft-secure-id";
@@ -85,7 +85,7 @@ export default function LeagueViewPage() {
       return await apiRequest<AnyLeagueSetupIntegrationResult>(`/api/leagues/${leagueId}/new-season${querySuffix}`, "POST", {
         ...values,
         setupIntegration: {
-          contractVersion: LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION_2,
+          contractVersion: LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION_3,
           idempotencyKey: newSeasonSetupIdempotency.current.keyFor({
             sourceLeagueId: leagueId,
             organizationId: organizationScope,
@@ -100,8 +100,8 @@ export default function LeagueViewPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/leagues"] });
       toast({
         title: "New Season Created",
-        description: newLeague.canonicalDraftGeneration
-          ? `${league?.name} new season and its canonical schedule drafts were created. The previous season has been archived.`
+        description: "canonicalSchedule" in newLeague
+          ? `${league?.name} new season and its canonical schedule were published. The previous season has been archived.`
           : `${league?.name} new season has been created. The previous season has been archived.`,
       });
       setShowNewSeason(false);

@@ -10,6 +10,7 @@ import {
   bowlers,
   financialActivationRevisions,
   financialActivations,
+  financialActivationCancellationSuppressions,
   financialResponsibilities,
   leagueOccurrenceBillingTerms,
   leagueOccurrenceBillingTermRevisions,
@@ -34,7 +35,7 @@ import {
 import { db } from "../db.js";
 import { calculateBowlerLegacySummary } from "@shared/financial-utils";
 import { loadLeagueOccurrenceScheduleSnapshot, type ScheduleExecutor } from "./league-occurrence-schedule.js";
-import { FINANCIAL_ACTIVATION_ORDER_VERSION, FINANCIAL_ACTIVATION_POLICY_VERSION } from "@shared/schema/financial-activation";
+import { FINANCIAL_ACTIVATION_CANCELLATION_SUPPRESSION_VERSION, FINANCIAL_ACTIVATION_ORDER_VERSION, FINANCIAL_ACTIVATION_POLICY_VERSION, FINANCIAL_ACTIVATION_RESPONSIBILITY_FINGERPRINT_VERSION } from "@shared/schema/financial-activation";
 import { FINANCIAL_READ_ORDER_VERSION, type FinancialReadRowContract, type FinancialReadContract } from "@shared/financial-contract";
 
 export const WEEKLY_PAST_DUE_GRACE_MS = 3 * 60 * 60 * 1000;
@@ -494,6 +495,12 @@ export async function readCanonicalDuePastDue(input: {
         return obligation !== undefined && snapshot.state === obligation.state && sameInstant(snapshot.dueAt, obligation.dueAt) && sameInstant(snapshot.pastDueAt, obligation.pastDueAt);
       },
     )) throw new FinancialReadIncompatibilityError();
+    const cancellationReviewObligationIds = new Set(
+      obligationRevisions
+        .filter((revision) => revision.revisionNumber === obligationRows.find((obligation) => obligation.id === revision.id)?.currentRevision)
+        .filter((revision) => isRecord(revision.afterSnapshot) && revision.afterSnapshot.cancellationReviewRequired === true)
+        .map((revision) => revision.id),
+    );
     const allAllocations = ids.length === 0 ? [] : await tx.select().from(paymentOccurrenceAllocations).where(and(
       eq(paymentOccurrenceAllocations.organizationId, input.organizationId),
       eq(paymentOccurrenceAllocations.leagueId, input.leagueId),
@@ -542,7 +549,7 @@ export async function readCanonicalDuePastDue(input: {
       const linked = allocationsByObligation.get(obligation.id) ?? [];
       const allocatedMinor = linked.reduce((sum, row) => sum + row.amountMinor, 0);
       const outstandingMinor = obligation.state === "voided" ? 0 : Math.max(0, obligation.amountMinor - allocatedMinor);
-      const reviewRequired = linked.some((allocation) => {
+      const reviewRequired = cancellationReviewObligationIds.has(obligation.id) || linked.some((allocation) => {
         const payment = paymentById.get(allocation.paymentId);
         return payment?.status === "refunded" || payment?.status === "disputed"
           || payment?.refundedAt !== null && payment?.refundedAt !== undefined
@@ -561,10 +568,16 @@ export async function readCanonicalDuePastDue(input: {
         return payment !== undefined && payment.status !== "paid" && payment.status !== "refunded" && payment.status !== "disputed";
       });
       const expectedState = obligation.state === "voided" ? "voided" : outstandingMinor === 0 ? "settled" : allocatedMinor > 0 ? "partially_settled" : "open";
-      const voidedWithActiveAllocation = obligation.state === "voided" && allocatedMinor > 0;
+      const cancellationVoidedWithActiveAllocation = obligation.state === "voided"
+        && allocatedMinor > 0
+        && cancellationReviewObligationIds.has(obligation.id);
+      const voidedWithActiveAllocation = obligation.state === "voided"
+        && allocatedMinor > 0
+        && !cancellationVoidedWithActiveAllocation;
       const incompatibleEvidence = expectedState !== obligation.state || voidedWithActiveAllocation || invalidSettlementPayment || !teamByObligation.has(obligation.id);
       const missingTiming = obligation.dueAt === null || obligation.pastDueAt === null;
       const classification: DuePastDueClassification = voidedWithActiveAllocation
+        || (obligation.state === "voided" && cancellationReviewObligationIds.has(obligation.id))
         ? "review_required"
         : obligation.state === "voided"
         ? "voided"
@@ -620,7 +633,44 @@ export class FinancialActivationError extends Error {
   }
 }
 
-interface OperationalActivationEvidence { expected: ResponsibilityExpectedRow[]; sourceFingerprint: string; authoritativeSource: "canonical" | "legacy" | "legacy_fallback"; }
+interface OperationalActivationEvidence { expected: ResponsibilityExpectedRow[]; sourceFingerprint: string; authoritativeSource: "canonical" | "legacy" | "legacy_fallback"; sourceSurface?: Record<string, unknown>; }
+
+type CancellationResponsibility = {
+  occurrenceId: string;
+  teamId: number;
+  slotIndex: number;
+  bowlerId: number;
+  obligationId: string;
+  billingTermId: string;
+  amountMinor: number;
+  currency: string;
+  dueAt: string;
+  pastDueAt: string;
+  role: string;
+  provenance: string;
+};
+
+function cancellationResponsibilityFingerprint(rows: CancellationResponsibility[]): string {
+  const normalized = [...rows].sort((left, right) =>
+    left.occurrenceId.localeCompare(right.occurrenceId)
+    || left.teamId - right.teamId
+    || left.slotIndex - right.slotIndex
+    || left.bowlerId - right.bowlerId
+    || left.obligationId.localeCompare(right.obligationId),
+  );
+  return `lvfinancialresponsibility:v1:${createHash("sha256").update(JSON.stringify({ version: FINANCIAL_ACTIVATION_RESPONSIBILITY_FINGERPRINT_VERSION, rows: normalized }), "utf8").digest("hex")}`;
+}
+
+function isCancellationSuppressionSnapshot(value: unknown): value is {
+  cancellationCommandId: string;
+  responsibilityFingerprint: string;
+  originalResponsibilityCount: number;
+} {
+  return isRecord(value)
+    && typeof value.cancellationCommandId === "string"
+    && typeof value.responsibilityFingerprint === "string"
+    && typeof value.originalResponsibilityCount === "number";
+}
 
 async function loadOperationalActivationSource(
   tx: ScheduleExecutor,
@@ -720,7 +770,145 @@ export async function loadOperationalActivationEvidence(
     occurrences: decisionOccurrences.map((row) => ({ occurrenceId: row.occurrenceId, kind: row.kind, status: row.status, lifecycle: row.lifecycle, startAt: row.startAt, revision: row.currentRevision, term: termByOccurrence.get(row.occurrenceId) ?? null, disposition: row.status === "cancelled" ? "cancelled" : (termByOccurrence.get(row.occurrenceId)?.obligationPolicy === "none" ? "none" : "eligible_bowlers") })),
     teams: teamsRows.map((team) => team.id),
   };
-  return { expected, authoritativeSource: "canonical", sourceFingerprint: fingerprint(FINANCIAL_SOURCE_FINGERPRINT_PREFIX, sourceSurface) };
+  const [activation] = await tx.select().from(financialActivations).where(and(
+    eq(financialActivations.organizationId, input.organizationId),
+    eq(financialActivations.leagueId, input.leagueId),
+    eq(financialActivations.state, "active"),
+    eq(financialActivations.completenessMarker, true),
+  )).limit(1);
+  if (!activation) {
+    return { expected, authoritativeSource: "canonical", sourceFingerprint: fingerprint(FINANCIAL_SOURCE_FINGERPRINT_PREFIX, sourceSurface), sourceSurface };
+  }
+
+  // F1 revision 1 is immutable. A cancellation is accepted only through an
+  // explicit suppression row written by the same audited cancellation
+  // transaction; all non-cancelled source fields must remain byte-for-byte
+  // equal to the activation snapshot. Unsupported drift remains fail-closed.
+  const [activationRevision] = await tx.select({ afterSnapshot: financialActivationRevisions.afterSnapshot, snapshotSchemaVersion: financialActivationRevisions.snapshotSchemaVersion })
+    .from(financialActivationRevisions).where(and(
+      eq(financialActivationRevisions.organizationId, input.organizationId),
+      eq(financialActivationRevisions.leagueId, input.leagueId),
+      eq(financialActivationRevisions.activationId, activation.id),
+      eq(financialActivationRevisions.revisionNumber, 1),
+    )).limit(1);
+  if (activation.currentRevision !== 1 || activationRevision?.snapshotSchemaVersion !== FINANCIAL_ACTIVATION_VERSION || !isRecord(activationRevision.afterSnapshot)
+    || !isRecord(activationRevision.afterSnapshot.sourceSurface)) {
+    throw new FinancialActivationError("canonical_incomplete", "active financial activation has no cancellation-compatible immutable source evidence");
+  }
+  const originalSourceSurface = activationRevision.afterSnapshot.sourceSurface;
+  if (!Array.isArray(originalSourceSurface.occurrences) || !Array.isArray(originalSourceSurface.teams)) {
+    throw new FinancialActivationError("canonical_incomplete", "active financial activation source evidence is malformed");
+  }
+  const currentCancelledIds = new Set(decisionOccurrences.filter((row) => row.status === "cancelled").map((row) => row.occurrenceId));
+  const originalOccurrenceIds = new Set(originalSourceSurface.occurrences
+    .filter((row): row is Record<string, unknown> => isRecord(row))
+    .map((row) => typeof row.occurrenceId === "string" ? row.occurrenceId : null)
+    .filter((id): id is string => id !== null));
+  const baselineCancelledIds = new Set(originalSourceSurface.occurrences
+    .filter((row): row is Record<string, unknown> => isRecord(row) && row.status === "cancelled")
+    .map((row) => typeof row.occurrenceId === "string" ? row.occurrenceId : null)
+    .filter((id): id is string => id !== null));
+  const suppressedOccurrenceIds = [...currentCancelledIds].filter((id) => originalOccurrenceIds.has(id) && !baselineCancelledIds.has(id)).sort();
+  if ([...currentCancelledIds].some((id) => !originalOccurrenceIds.has(id))) {
+    throw new FinancialActivationError("canonical_incomplete", "active financial activation has an unsupported cancelled occurrence");
+  }
+  const suppressions = suppressedOccurrenceIds.length === 0 ? [] : await tx.select().from(financialActivationCancellationSuppressions).where(and(
+    eq(financialActivationCancellationSuppressions.organizationId, input.organizationId),
+    eq(financialActivationCancellationSuppressions.leagueId, input.leagueId),
+    eq(financialActivationCancellationSuppressions.activationId, activation.id),
+    inArray(financialActivationCancellationSuppressions.occurrenceId, suppressedOccurrenceIds),
+  ));
+  if (suppressions.length !== suppressedOccurrenceIds.length || suppressions.some((row) => row.suppressionVersion !== FINANCIAL_ACTIVATION_CANCELLATION_SUPPRESSION_VERSION || row.activationRevision !== 1 || row.sourceFingerprint !== activation.sourceFingerprint)) {
+    throw new FinancialActivationError("canonical_incomplete", "active financial activation cancellation suppression evidence is incomplete");
+  }
+  const suppressionByOccurrence = new Map(suppressions.map((row) => [row.occurrenceId, row]));
+  const filteredOriginalSurface = {
+    ...originalSourceSurface,
+    occurrences: originalSourceSurface.occurrences.filter((row) => isRecord(row) && typeof row.occurrenceId === "string" && !suppressedOccurrenceIds.includes(row.occurrenceId)),
+  };
+  const filteredCurrentSurface = {
+    ...sourceSurface,
+    occurrences: sourceSurface.occurrences.filter((row) => !suppressedOccurrenceIds.includes(row.occurrenceId)),
+  };
+  if (stableCanonicalJson(filteredOriginalSurface) !== stableCanonicalJson(filteredCurrentSurface)) {
+    throw new FinancialActivationError("canonical_incomplete", "non-cancelled financial activation source evidence changed");
+  }
+  const activationRows = await tx.select().from(financialResponsibilities).where(and(
+    eq(financialResponsibilities.organizationId, input.organizationId),
+    eq(financialResponsibilities.leagueId, input.leagueId),
+    eq(financialResponsibilities.activationId, activation.id),
+  )).orderBy(asc(financialResponsibilities.occurrenceId), asc(financialResponsibilities.teamId), asc(financialResponsibilities.slotIndex), asc(financialResponsibilities.bowlerId), asc(financialResponsibilities.id));
+  if (activationRows.length !== activation.expectedResponsibilityCount) {
+    throw new FinancialActivationError("canonical_incomplete", "financial activation responsibility evidence is incomplete");
+  }
+  const snapshotResponsibilities = Array.isArray(activationRevision.afterSnapshot.responsibilities) ? activationRevision.afterSnapshot.responsibilities : [];
+  const snapshotResponsibilityJson = stableCanonicalJson(snapshotResponsibilities);
+  const currentResponsibilityJson = stableCanonicalJson(activationRows.map((row) => ({ occurrenceId: row.occurrenceId, teamId: row.teamId, slotIndex: row.slotIndex, bowlerId: row.bowlerId, role: row.role, provenance: row.provenance })));
+  if (snapshotResponsibilityJson !== currentResponsibilityJson) {
+    throw new FinancialActivationError("canonical_incomplete", "financial activation responsibilities changed");
+  }
+  const canceledRows = activationRows.filter((row) => suppressedOccurrenceIds.includes(row.occurrenceId));
+  const canceledObligationIds = canceledRows.map((row) => row.obligationId);
+  const canceledObligations = canceledObligationIds.length === 0 ? [] : await tx.select().from(bowlerOccurrenceObligations).where(and(
+    eq(bowlerOccurrenceObligations.organizationId, input.organizationId),
+    eq(bowlerOccurrenceObligations.leagueId, input.leagueId),
+    inArray(bowlerOccurrenceObligations.id, canceledObligationIds),
+  ));
+  const canceledObligationRevisions = canceledObligationIds.length === 0 ? [] : await tx.select({ id: bowlerOccurrenceObligationRevisions.obligationId, revisionNumber: bowlerOccurrenceObligationRevisions.revisionNumber, afterSnapshot: bowlerOccurrenceObligationRevisions.afterSnapshot }).from(bowlerOccurrenceObligationRevisions).where(and(
+    eq(bowlerOccurrenceObligationRevisions.organizationId, input.organizationId),
+    eq(bowlerOccurrenceObligationRevisions.leagueId, input.leagueId),
+    inArray(bowlerOccurrenceObligationRevisions.obligationId, canceledObligationIds),
+  ));
+  const canceledAllocations = canceledObligationIds.length === 0 ? [] : await tx.select({ obligationId: paymentOccurrenceAllocations.obligationId, state: paymentOccurrenceAllocations.state }).from(paymentOccurrenceAllocations).where(and(
+    eq(paymentOccurrenceAllocations.organizationId, input.organizationId),
+    eq(paymentOccurrenceAllocations.leagueId, input.leagueId),
+    inArray(paymentOccurrenceAllocations.obligationId, canceledObligationIds),
+  ));
+  if (canceledObligations.length !== canceledObligationIds.length || canceledObligations.some((obligation) => {
+    if (obligation.state !== "voided") return true;
+    const latest = canceledObligationRevisions.find((revision) => revision.id === obligation.id && revision.revisionNumber === obligation.currentRevision);
+    const suppression = suppressionByOccurrence.get(obligation.occurrenceId);
+    const hasActiveAllocation = canceledAllocations.some((allocation) => allocation.obligationId === obligation.id && allocation.state === "active");
+    return !latest || !isRecord(latest.afterSnapshot) || latest.afterSnapshot.cancellationCommandId !== suppression?.cancellationCommandId
+      || (suppression?.cancellationReviewRequired === true && latest.afterSnapshot.cancellationReviewRequired !== true)
+      || (hasActiveAllocation && suppression?.cancellationReviewRequired !== true);
+  })) {
+    throw new FinancialActivationError("canonical_incomplete", "cancelled activation obligations are not fully voided and audited");
+  }
+  for (const suppression of suppressions) {
+    const rows = canceledRows.filter((row) => row.occurrenceId === suppression.occurrenceId).map((row) => ({
+      occurrenceId: row.occurrenceId, teamId: row.teamId, slotIndex: row.slotIndex, bowlerId: row.bowlerId,
+      obligationId: row.obligationId, billingTermId: row.billingTermId, amountMinor: row.amountMinor, currency: row.currency,
+      dueAt: row.dueAt, pastDueAt: row.pastDueAt, role: row.role, provenance: row.provenance,
+    }));
+    if (rows.length !== suppression.originalResponsibilityCount || cancellationResponsibilityFingerprint(rows) !== suppression.responsibilityFingerprint || !isCancellationSuppressionSnapshot(suppression.afterSnapshot)) {
+      throw new FinancialActivationError("canonical_incomplete", "cancelled activation responsibility suppression evidence is inconsistent");
+    }
+  }
+  const canceledOccurrenceById = new Map(decisionOccurrences.filter((row) => suppressedOccurrenceIds.includes(row.occurrenceId)).map((row) => [row.occurrenceId, row]));
+  const canceledExpected = [...new Map(canceledRows.map((row) => [`${row.occurrenceId}:${row.teamId}`, row] as const)).values()].map((row) => {
+    const occurrence = canceledOccurrenceById.get(row.occurrenceId);
+    const suppression = suppressionByOccurrence.get(row.occurrenceId);
+    if (!occurrence || !suppression) throw new FinancialActivationError("canonical_incomplete", "cancelled activation occurrence evidence is missing");
+    const originalOccurrences = originalSourceSurface.occurrences as unknown[];
+    const sourceOccurrence = originalOccurrences.find((candidate): candidate is Record<string, unknown> => isRecord(candidate) && candidate.occurrenceId === row.occurrenceId);
+    const occurrenceKind: ResponsibilityExpectedRow["occurrenceKind"] = sourceOccurrence && (sourceOccurrence.kind === "makeup" || sourceOccurrence.kind === "position_round" || sourceOccurrence.kind === "rolloff" || sourceOccurrence.kind === "playoff" || sourceOccurrence.kind === "extension") ? sourceOccurrence.kind : "regular";
+    const occurrenceRevision = occurrence.currentRevision ?? 0;
+    if (occurrenceRevision <= 0) throw new FinancialActivationError("canonical_incomplete", "cancelled activation occurrence revision is invalid");
+    return {
+      occurrenceId: row.occurrenceId, teamId: row.teamId, billingTermId: row.billingTermId, billingTermVersion: row.billingTermVersion,
+      billingTermRevision: suppression.originalBillingTermRevision, occurrenceRevision, amountMinor: row.amountMinor,
+      currency: row.currency, paymentMode: league.paymentMode, occurrenceStartAt: occurrence.startAt, occurrenceKind,
+      occurrenceStatus: "cancelled" as const, lifecycle: occurrence.lifecycle === "locked" ? "locked" as const : "published" as const,
+      obligationPolicy: "eligible_bowlers" as const,
+    };
+  });
+  return {
+    expected: [...expected, ...canceledExpected].sort((left, right) => left.occurrenceId.localeCompare(right.occurrenceId) || left.teamId - right.teamId),
+    authoritativeSource: "canonical",
+    sourceFingerprint: activation.sourceFingerprint,
+    sourceSurface,
+  };
 }
 
 export async function activateCanonicalFinancials(input: {
@@ -799,7 +987,7 @@ export async function activateCanonicalFinancials(input: {
     const expectedGroupCount = expected.length;
     const [activation] = await tx.insert(financialActivations).values({ organizationId: input.organizationId, leagueId: input.leagueId, activationVersion: FINANCIAL_ACTIVATION_VERSION, policyVersion: FINANCIAL_ACTIVATION_POLICY_VERSION, orderVersion: FINANCIAL_ACTIVATION_ORDER_VERSION, commandKey: input.commandKey, requestFingerprint, sourceFingerprint: input.sourceFingerprint, paymentMode: league.paymentMode, state: "active", completenessMarker: true, payingLineupSize: input.payingLineupSize, expectedResponsibilityCount: expectedGroupCount * input.payingLineupSize, expectedGroupCount, currentRevision: 1, upfrontDueAt: league.paymentMode === "upfront" ? dueInstant : null, recordedByUserId: input.actorUserId }).returning();
     if (!activation) throw new FinancialActivationError("canonical_incomplete", "activation could not be recorded");
-    await tx.insert(financialActivationRevisions).values({ organizationId: input.organizationId, leagueId: input.leagueId, activationId: activation.id, revisionNumber: 1, snapshotSchemaVersion: FINANCIAL_ACTIVATION_VERSION, afterSnapshot: { activationVersion: FINANCIAL_ACTIVATION_VERSION, policyVersion: FINANCIAL_ACTIVATION_POLICY_VERSION, orderVersion: FINANCIAL_ACTIVATION_ORDER_VERSION, requestFingerprint, sourceFingerprint: input.sourceFingerprint, payingLineupSize: input.payingLineupSize, expectedGroupCount, expectedResponsibilityCount: expectedGroupCount * input.payingLineupSize, responsibilities: normalizedResponsibilities.map(({ occurrenceId, teamId, slotIndex, bowlerId, role, provenance }) => ({ occurrenceId, teamId, slotIndex, bowlerId, role, provenance })) }, recordedByUserId: input.actorUserId });
+    await tx.insert(financialActivationRevisions).values({ organizationId: input.organizationId, leagueId: input.leagueId, activationId: activation.id, revisionNumber: 1, snapshotSchemaVersion: FINANCIAL_ACTIVATION_VERSION, afterSnapshot: { activationVersion: FINANCIAL_ACTIVATION_VERSION, policyVersion: FINANCIAL_ACTIVATION_POLICY_VERSION, orderVersion: FINANCIAL_ACTIVATION_ORDER_VERSION, requestFingerprint, sourceFingerprint: input.sourceFingerprint, payingLineupSize: input.payingLineupSize, expectedGroupCount, expectedResponsibilityCount: expectedGroupCount * input.payingLineupSize, sourceSurface: evidence.sourceSurface ?? null, responsibilities: normalizedResponsibilities.map(({ occurrenceId, teamId, slotIndex, bowlerId, role, provenance }) => ({ occurrenceId, teamId, slotIndex, bowlerId, role, provenance })) }, recordedByUserId: input.actorUserId });
     const obligationIds: string[] = [];
     for (const selected of normalizedResponsibilities) {
       const term = expected.find((row) => row.occurrenceId === selected.occurrenceId && row.teamId === selected.teamId);

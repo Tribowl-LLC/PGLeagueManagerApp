@@ -180,6 +180,12 @@
       "tag": "0029_phase_f4_canonical_scheduled_execution",
       "createdAt": 1787272227750,
       "hash": "02611196ab018f454c0aa060d720cc9febf1fbc70040e6fde53f2a6afe2c368a"
+    },
+    {
+      "idx": 30,
+      "tag": "0030_canonical_collection_groups",
+      "createdAt": 1787340597942,
+      "hash": "f646e0fd0167cab52418a41a2e4dcd4f4d1451aa0021c9f09acbcb50df96b21a"
     }
   ]
 }
