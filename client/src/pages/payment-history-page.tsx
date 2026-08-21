@@ -226,8 +226,10 @@ export default function PaymentHistoryPage() {
   const paymentEvidenceStatuses = new Map<number, CanonicalPaymentRow["status"]>();
   const canonicalPaymentReport = canonicalPaymentReportResponse?.data;
   for (const row of [...(canonicalPaymentReport?.rows ?? []), ...(canonicalPaymentReport?.unlinkedHistory ?? [])]) {
-    paymentBusinessDates.set(row.paymentId, row.businessDate);
-    paymentEvidenceStatuses.set(row.paymentId, row.status);
+    if (row.paymentId !== null) {
+      paymentBusinessDates.set(row.paymentId, row.businessDate);
+      paymentEvidenceStatuses.set(row.paymentId, row.status);
+    }
   }
 
   const resolvedFinancialRead = resolveInteractiveFinancialRead(canonicalFinancialResponse?.data);

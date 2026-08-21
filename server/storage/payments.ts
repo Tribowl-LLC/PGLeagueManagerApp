@@ -3,6 +3,7 @@ import { db } from "../db.js";
 import {
   payments, paymentSchedules, leagues, bowlerLeagues,
   paymentDisputes, paymentOperations, paymentOccurrenceAllocations,
+  financialActivations, occurrenceCollectionPlans, occurrenceCollectionPlanItems,
   type Payment, type InsertPayment, type UpdatePayment,
   type PaymentSchedule, type InsertPaymentSchedule, type UpdatePaymentSchedule,
   type PaginatedResult,
@@ -37,6 +38,14 @@ export class PaymentEvidenceImmutableError extends Error {
     super("Payment evidence is immutable");
     this.name = "PaymentEvidenceImmutableError";
   }
+}
+
+export class CanonicalAllocationRequiredError extends Error {
+  constructor() { super("canonical allocation is required"); this.name = "CanonicalAllocationRequiredError"; }
+}
+
+export class FinancialEvidenceIncompatibleError extends Error {
+  constructor() { super("financial evidence is incompatible"); this.name = "FinancialEvidenceIncompatibleError"; }
 }
 
 interface PaymentFilters {
@@ -253,8 +262,34 @@ export async function getPaymentByProviderPaymentId(providerPaymentId: string): 
 }
 
 export async function createPayment(payment: InsertPayment): Promise<Payment> {
-  const [result] = await db.insert(payments).values(payment).returning();
-  return result;
+  return db.transaction(async (tx) => {
+    const [league] = await tx.select({ organizationId: leagues.organizationId })
+      .from(leagues).where(eq(leagues.id, payment.leagueId)).limit(1);
+    if (!league) throw new Error("Payment league not found");
+    if (league.organizationId !== null) {
+      // This is the same org/league lock family used by F1/F2/F3/F4. The
+      // evidence read and insert stay inside the lock-owning transaction.
+      await lockLeagueSchedule(tx, league.organizationId, payment.leagueId);
+      const [active] = await tx.select({ completenessMarker: financialActivations.completenessMarker })
+        .from(financialActivations).where(and(
+          eq(financialActivations.organizationId, league.organizationId),
+          eq(financialActivations.leagueId, payment.leagueId),
+          eq(financialActivations.state, "active"),
+        )).limit(1);
+      if (active?.completenessMarker === true) throw new CanonicalAllocationRequiredError();
+      const partial = await tx.execute(sql`
+        SELECT EXISTS (
+          SELECT 1 FROM bowler_occurrence_obligations WHERE organization_id = ${league.organizationId} AND league_id = ${payment.leagueId}
+          UNION ALL SELECT 1 FROM ${occurrenceCollectionPlans} WHERE organization_id = ${league.organizationId} AND league_id = ${payment.leagueId}
+          UNION ALL SELECT 1 FROM ${occurrenceCollectionPlanItems} WHERE organization_id = ${league.organizationId} AND league_id = ${payment.leagueId}
+          UNION ALL SELECT 1 FROM ${paymentOccurrenceAllocations} WHERE organization_id = ${league.organizationId} AND league_id = ${payment.leagueId}
+        ) AS present
+      `);
+      if ((partial.rows[0] as { present?: boolean } | undefined)?.present) throw new FinancialEvidenceIncompatibleError();
+    }
+    const [result] = await tx.insert(payments).values(payment).returning();
+    return result;
+  });
 }
 
 /**
@@ -286,7 +321,6 @@ export async function getPaymentsByCombinedGroupId(groupId: string): Promise<Pay
 
 export async function updatePayment(id: number, payment: UpdatePayment): Promise<Payment> {
   const keys = Object.keys(payment);
-  const receiptOnly = keys.length > 0 && keys.every((key) => key === "receiptUrl" || key === "receiptNumber");
   const result = await db.transaction(async (tx) => {
     const [current] = await tx.select({
       id: payments.id,
@@ -297,13 +331,35 @@ export async function updatePayment(id: number, payment: UpdatePayment): Promise
       .from(paymentOccurrenceAllocations)
       .where(eq(paymentOccurrenceAllocations.paymentId, id))
       .limit(1);
-    if ((current.paymentOperationId !== null || allocation) && !receiptOnly) {
+    if (current.paymentOperationId !== null || allocation) {
       throw new PaymentEvidenceImmutableError();
     }
     const [updated] = await tx.update(payments).set(payment).where(eq(payments.id, id)).returning();
     return updated;
   });
   return result as Payment;
+}
+
+/**
+ * Internal provider-cache path. Public payment PATCH must never be able to
+ * mutate retained operation/allocation evidence, including receipt fields.
+ * The organization join is part of the locked transaction so a cache write
+ * cannot cross a tenant boundary.
+ */
+export async function updatePaymentReceiptCacheForOrganization(
+  id: number,
+  organizationId: number,
+  fields: Pick<UpdatePayment, "receiptUrl" | "receiptNumber">,
+): Promise<Payment | undefined> {
+  return db.transaction(async (tx) => {
+    const [current] = await tx.select({ payment: payments })
+      .from(payments)
+      .innerJoin(leagues, and(eq(leagues.id, payments.leagueId), eq(leagues.organizationId, organizationId)))
+      .where(eq(payments.id, id)).limit(1).for("update");
+    if (!current) return undefined;
+    const [updated] = await tx.update(payments).set(fields).where(eq(payments.id, id)).returning();
+    return updated;
+  });
 }
 
 export async function refundPayment(id: number, providerRefundId?: string, reason?: string): Promise<Payment> {

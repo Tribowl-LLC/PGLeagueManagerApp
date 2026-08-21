@@ -97,6 +97,7 @@ export interface IPaymentStorage {
   createCombinedPayments(rows: InsertPayment[]): Promise<Array<{ id: number; bowlerId: number; amount: number }>>;
   getPaymentsByCombinedGroupId(groupId: string): Promise<Payment[]>;
   updatePayment(id: number, payment: UpdatePayment): Promise<Payment>;
+  updatePaymentReceiptCacheForOrganization(id: number, organizationId: number, fields: Pick<UpdatePayment, "receiptUrl" | "receiptNumber">): Promise<Payment | undefined>;
   refundPayment(id: number, providerRefundId?: string, reason?: string): Promise<Payment>;
   openDispute(id: number, disputeId: string): Promise<Payment>;
   deletePayment(id: number): Promise<void>;

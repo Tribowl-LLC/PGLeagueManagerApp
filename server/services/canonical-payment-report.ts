@@ -66,6 +66,17 @@ function safeLimit(value: number | undefined): number {
     : F5_PAGE_DEFAULT;
 }
 
+function localBusinessDate(value: string, timezone: string): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(value));
+  const byType = new Map(parts.map((part) => [part.type, part.value]));
+  return `${byType.get("year") ?? "0000"}-${byType.get("month") ?? "00"}-${byType.get("day") ?? "00"}`;
+}
+
 function ids<T extends { id: string }>(rows: T[]): string[] {
   return [...new Set(rows.map((row) => row.id))];
 }
@@ -106,30 +117,37 @@ function groupKey(payment: Payment): { key: string; operationId: string | null; 
   return { key: `payment:${payment.id}`, operationId: null, combinedId: null };
 }
 
-function buildTransactions(rows: CanonicalPaymentRow[], paymentsById: Map<number, Payment>): CanonicalPaymentTransactionGroup[] {
+function buildTransactions(rows: CanonicalPaymentRow[], paymentsById: Map<number, Payment>, operationsById: Map<string, Operation>): CanonicalPaymentTransactionGroup[] {
   const groups = new Map<string, CanonicalPaymentTransactionGroup>();
   for (const row of rows) {
-    const payment = paymentsById.get(row.paymentId);
-    if (!payment) throw new CanonicalPaymentReportIncompatibilityError();
-    const identity = groupKey(payment);
+    const payment = row.paymentId === null ? undefined : paymentsById.get(row.paymentId);
+    const identity = payment
+      ? groupKey(payment)
+      : { key: `operation:${row.paymentOperationId ?? row.paymentId ?? row.bowlerId}`, operationId: row.paymentOperationId, combinedId: null };
     const existing = groups.get(identity.key);
     if (existing) {
-      existing.amountMinor += row.amountMinor;
-      existing.paymentIds = [...new Set([...existing.paymentIds, row.paymentId])].sort((a, b) => a - b);
+      if (!existing.paymentOperationId) existing.amountMinor += row.amountMinor;
+      if (row.paymentId !== null) existing.paymentIds = [...new Set([...existing.paymentIds, row.paymentId])].sort((a, b) => a - b);
       existing.rows.push(row);
     } else {
       groups.set(identity.key, {
         groupKey: identity.key,
         paymentOperationId: identity.operationId,
         combinedChargeGroupId: identity.combinedId,
-        amountMinor: row.amountMinor,
+        amountMinor: identity.operationId ? (operationsById.get(identity.operationId)?.amountMinor ?? row.amountMinor) : row.amountMinor,
         currency: row.currency,
-        paymentIds: [row.paymentId],
+        paymentIds: row.paymentId === null ? [] : [row.paymentId],
         rows: [row],
       });
     }
   }
-  return [...groups.values()].sort((left, right) => left.groupKey.localeCompare(right.groupKey));
+  return [...groups.values()].sort((left, right) => {
+    const leftRow = left.rows[0];
+    const rightRow = right.rows[0];
+    return leftRow.authoritativeLocalDate.localeCompare(rightRow.authoritativeLocalDate)
+      || leftRow.bowlerId - rightRow.bowlerId
+      || left.groupKey.localeCompare(right.groupKey);
+  });
 }
 
 export async function readCanonicalPaymentReport(input: CanonicalPaymentReportInput): Promise<CanonicalPaymentReport> {
@@ -140,7 +158,7 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
     const asOfResult = await tx.execute(sql`SELECT transaction_timestamp()::text AS now`);
     const asOf = String((asOfResult.rows[0] as { now?: string } | undefined)?.now ?? new Date().toISOString());
 
-    const [league] = await tx.select({ id: leagues.id, organizationId: leagues.organizationId })
+    const [league] = await tx.select({ id: leagues.id, organizationId: leagues.organizationId, timezone: leagues.timezone })
       .from(leagues)
       .where(and(eq(leagues.id, input.leagueId), eq(leagues.organizationId, input.organizationId)))
       .limit(1);
@@ -182,11 +200,15 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
       }
     }
 
-    const paymentWhere = [
-      eq(payments.leagueId, input.leagueId),
-      ...(input.bowlerId === undefined ? [] : [eq(payments.bowlerId, input.bowlerId)]),
-    ];
-    const paymentRows = await tx.select().from(payments).where(and(...paymentWhere)).orderBy(asc(payments.weekOf), asc(payments.bowlerId), asc(payments.id));
+    // Read the complete tenant/league transaction before applying the caller's
+    // bowler projection. Combined charges are conserved at operation scope;
+    // filtering first would make each participant appear to underpay.
+    const paymentWhere = [eq(payments.leagueId, input.leagueId)];
+    const paymentRows = await tx.select({ payment: payments }).from(payments)
+      .innerJoin(bowlers, eq(bowlers.id, payments.bowlerId))
+      .where(and(eq(payments.leagueId, input.leagueId), eq(bowlers.organizationId, input.organizationId)))
+      .orderBy(asc(payments.weekOf), asc(payments.bowlerId), asc(payments.id))
+      .then((rows) => rows.map((row) => row.payment));
     const paymentsById = new Map(paymentRows.map((payment) => [payment.id, payment]));
     const paymentIds = paymentRows.map((payment) => payment.id);
     const paymentBowlerIds = [...new Set(paymentRows.map((payment) => payment.bowlerId))];
@@ -231,11 +253,12 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
     ));
     if (allocations.length > 0 && !revisionCoverage(allocations, allocationRevisions)) throw new CanonicalPaymentReportIncompatibilityError();
 
-    const operationIds = [...new Set(paymentRows.map((payment) => payment.paymentOperationId).filter((id): id is string => id !== null))];
-    const operations = operationIds.length === 0 ? [] : await tx.select().from(paymentOperations).where(and(
+    const linkedOperationIds = [...new Set(paymentRows.map((payment) => payment.paymentOperationId).filter((id): id is string => id !== null))];
+    const operationIds = linkedOperationIds;
+    const operations = await tx.select().from(paymentOperations).where(and(
       eq(paymentOperations.organizationId, input.organizationId),
       eq(paymentOperations.leagueId, input.leagueId),
-      inArray(paymentOperations.id, operationIds),
+      inArray(paymentOperations.id, operationIds.length > 0 ? operationIds : ["00000000-0000-0000-0000-000000000000"]),
     ));
     if (operations.length !== operationIds.length) throw new CanonicalPaymentReportIncompatibilityError();
     const operationsById = new Map(operations.map((operation) => [operation.id, operation]));
@@ -246,6 +269,19 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
       const linkedAmount = paymentRows.filter((payment) => payment.paymentOperationId === operation.id).reduce((sum, payment) => sum + payment.amount, 0);
       if (linkedAmount > 0 && linkedAmount !== operation.amountMinor) throw new CanonicalPaymentReportIncompatibilityError();
     }
+
+    // An uncertain/action-required F4 operation can be durable before its
+    // payment rows are inserted. Keep that evidence visible without treating
+    // it as paid. Its tenant/league row and immutable snapshots are the only
+    // source of identity; no provider lookup or amount inference is allowed.
+    const unresolvedOperations = await tx.select().from(paymentOperations).where(and(
+      eq(paymentOperations.organizationId, input.organizationId),
+      eq(paymentOperations.leagueId, input.leagueId),
+      sql`${paymentOperations.status} IN ('pending','leased','provider_unknown','retry_scheduled','action_required','reconciliation_required')`,
+    ));
+    const allOperations = [...new Map([...operations, ...unresolvedOperations].map((operation) => [operation.id, operation])).values()];
+    const allOperationsById = new Map(allOperations.map((operation) => [operation.id, operation]));
+    const allOperationIds = allOperations.map((operation) => operation.id);
 
     const occurrenceIds = [...new Set(allocations.map((allocation) => allocation.occurrenceId))];
     const occurrences = occurrenceIds.length === 0 ? [] : await tx.select({ id: leagueOccurrences.id, startAt: leagueOccurrences.startAt })
@@ -258,15 +294,23 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
     if (occurrences.length !== occurrenceIds.length) throw new CanonicalPaymentReportIncompatibilityError();
     const occurrenceStartById = new Map(occurrences.map((occurrence) => [occurrence.id, occurrence.startAt]));
 
-    const disputedOperationIds = operationIds.length === 0 ? new Set<string>() : new Set((await tx.select({ operationId: paymentDisputes.paymentOperationId })
+    const disputedOperationIds = allOperationIds.length === 0 ? new Set<string>() : new Set((await tx.select({ operationId: paymentDisputes.paymentOperationId })
       .from(paymentDisputes)
-      .where(and(eq(paymentDisputes.organizationId, input.organizationId), inArray(paymentDisputes.paymentOperationId, operationIds))))
+      .where(and(eq(paymentDisputes.organizationId, input.organizationId), inArray(paymentDisputes.paymentOperationId, allOperationIds))))
       .map((row) => row.operationId));
     const allocationsByPayment = new Map<number, Allocation[]>();
     for (const allocation of allocations) allocationsByPayment.set(allocation.paymentId, [...(allocationsByPayment.get(allocation.paymentId) ?? []), allocation]);
+    for (const payment of paymentRows) {
+      const paymentAllocations = allocationsByPayment.get(payment.id) ?? [];
+      if (paymentAllocations.length === 0) continue;
+      const activeAllocated = paymentAllocations
+        .filter((allocation) => allocation.state === "active")
+        .reduce((sum, allocation) => sum + allocation.amountMinor, 0);
+      if (activeAllocated !== payment.amount) throw new CanonicalPaymentReportIncompatibilityError();
+    }
 
     if (activation) {
-      const canonicalOperationIds = operations.filter((operation) => operation.operationType === "canonical_autopay_charge").map((operation) => operation.id);
+      const canonicalOperationIds = allOperations.filter((operation) => operation.operationType === "canonical_autopay_charge").map((operation) => operation.id);
       if (canonicalOperationIds.length > 0) {
         const snapshots = await tx.select().from(canonicalAutopayExecutionSnapshots).where(and(
           eq(canonicalAutopayExecutionSnapshots.organizationId, input.organizationId),
@@ -289,15 +333,15 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
           }
         }
       }
-      const occurrenceSnapshots = operationIds.length === 0 ? [] : await tx.select().from(paymentOperationOccurrenceSnapshots).where(and(
+      const occurrenceSnapshots = allOperationIds.length === 0 ? [] : await tx.select().from(paymentOperationOccurrenceSnapshots).where(and(
         eq(paymentOperationOccurrenceSnapshots.organizationId, input.organizationId),
         eq(paymentOperationOccurrenceSnapshots.leagueId, input.leagueId),
-        inArray(paymentOperationOccurrenceSnapshots.operationId, operationIds),
+        inArray(paymentOperationOccurrenceSnapshots.operationId, allOperationIds),
       ));
-      const occurrenceSnapshotAllocations = operationIds.length === 0 ? [] : await tx.select().from(paymentOperationOccurrenceSnapshotAllocations).where(and(
+      const occurrenceSnapshotAllocations = allOperationIds.length === 0 ? [] : await tx.select().from(paymentOperationOccurrenceSnapshotAllocations).where(and(
         eq(paymentOperationOccurrenceSnapshotAllocations.organizationId, input.organizationId),
         eq(paymentOperationOccurrenceSnapshotAllocations.leagueId, input.leagueId),
-        inArray(paymentOperationOccurrenceSnapshotAllocations.operationId, operationIds),
+        inArray(paymentOperationOccurrenceSnapshotAllocations.operationId, allOperationIds),
       ));
       for (const snapshot of occurrenceSnapshots) {
         const snapshotRows = occurrenceSnapshotAllocations.filter((row) => row.operationId === snapshot.operationId);
@@ -338,7 +382,10 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
       const operation = payment.paymentOperationId ? operationsById.get(payment.paymentOperationId) : undefined;
       const startTimes = paymentAllocations.map((allocation) => occurrenceStartById.get(allocation.occurrenceId)).filter((value): value is string => !!value).sort();
       const businessDate = startTimes[0] ?? payment.weekOf;
-      const reviewRequired = payment.status === "refunded" || payment.status === "disputed" || !!operation && unresolvedOperationStatuses.has(operation.status) || !!operation && disputedOperationIds.has(operation.id);
+      const refund = { present: payment.status === "refunded" || payment.squareRefundId !== null, amountMinor: payment.status === "refunded" ? payment.amount : 0, providerRefundId: payment.squareRefundId };
+      const dispute = { present: payment.status === "disputed" || !!operation && disputedOperationIds.has(operation.id), amountMinor: (payment.status === "disputed" || !!operation && disputedOperationIds.has(operation.id)) ? payment.amount : 0, disputeId: payment.disputeId };
+      const unresolved = !!operation && unresolvedOperationStatuses.has(operation.status);
+      const reviewRequired = dispute.present || (payment.status !== "paid" && payment.status !== "pending") || unresolved;
       const status = statusForPayment(payment, operation, disputedOperationIds.has(operation?.id ?? ""));
       return {
         paymentId: payment.id,
@@ -349,13 +396,36 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
         status,
         paymentType: payment.type,
         businessDate,
+        authoritativeLocalDate: startTimes[0] ? localBusinessDate(startTimes[0], league.timezone ?? "UTC") : localBusinessDate(payment.weekOf, league.timezone ?? "UTC"),
         providerPaymentId: payment.providerPaymentId,
         paymentOperationId: payment.paymentOperationId,
         operationType: operation?.operationType ?? null,
         operationStatus: operation?.status ?? null,
         allocatedMinor: paymentAllocations.filter((allocation) => allocation.state === "active").reduce((sum, allocation) => sum + allocation.amountMinor, 0),
+        unallocatedMinor: Math.max(0, payment.amount - paymentAllocations.filter((allocation) => allocation.state === "active").reduce((sum, allocation) => sum + allocation.amountMinor, 0)),
         reviewRequired,
-        receipt: paymentReceiptContract({ receiptUrl: payment.receiptUrl, receiptNumber: payment.receiptNumber }),
+        source: paymentAllocations.length > 0 ? "canonical_allocation" : "unlinked_legacy",
+        refund,
+        dispute,
+        unresolved,
+        receipt: paymentReceiptContract({
+          receiptUrl: payment.receiptUrl,
+          receiptNumber: payment.receiptNumber,
+          organizationId: input.organizationId,
+          leagueId: payment.leagueId,
+          paymentId: payment.id,
+          paymentOperationId: payment.paymentOperationId,
+          operationStatus: operation?.status ?? null,
+          amountMinor: payment.amount,
+          currency: "USD",
+          evidenceStatus: status,
+          source: paymentAllocations.length > 0 ? "canonical_allocation" : "unlinked_legacy",
+          allocations: paymentAllocations.map((allocation) => ({ allocationId: allocation.id, obligationId: allocation.obligationId, occurrenceId: allocation.occurrenceId, bowlerId: allocation.bowlerId, amountMinor: allocation.amountMinor, currency: allocation.currency, state: allocation.state, source: "canonical_allocation" as const })),
+          refund,
+          dispute,
+          unresolved,
+          sharedTransaction: operation ? { groupKey: `operation:${operation.id}`, childCount: paymentRows.filter((row) => row.paymentOperationId === operation.id).length } : null,
+        }),
         allocations: paymentAllocations.map((allocation) => ({
           allocationId: allocation.id,
           obligationId: allocation.obligationId,
@@ -364,28 +434,89 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
           amountMinor: allocation.amountMinor,
           currency: allocation.currency,
           state: allocation.state,
+          source: "canonical_allocation",
         })),
       };
     });
 
-    const canonicalRows = allocations.length > 0 ? rows.filter((row) => row.allocations.length > 0) : [];
-    const unlinkedHistory = rows.filter((row) => row.allocations.length === 0);
+    for (const operation of allOperations) {
+      if (!unresolvedOperationStatuses.has(operation.status) || paymentRows.some((payment) => payment.paymentOperationId === operation.id)) continue;
+      const snapshot = (await tx.select().from(paymentOperationOccurrenceSnapshots).where(and(
+        eq(paymentOperationOccurrenceSnapshots.organizationId, input.organizationId),
+        eq(paymentOperationOccurrenceSnapshots.leagueId, input.leagueId),
+        eq(paymentOperationOccurrenceSnapshots.operationId, operation.id),
+      )).then((found) => found[0]));
+      const canonicalSnapshot = operation.operationType === "canonical_autopay_charge"
+        ? (await tx.select().from(canonicalAutopayExecutionSnapshots).where(and(
+          eq(canonicalAutopayExecutionSnapshots.organizationId, input.organizationId),
+          eq(canonicalAutopayExecutionSnapshots.leagueId, input.leagueId),
+          eq(canonicalAutopayExecutionSnapshots.operationId, operation.id),
+        )).then((found) => found[0]))
+        : undefined;
+      if (operation.operationType !== "canonical_autopay_charge" && !snapshot) continue;
+      if (operation.operationType === "canonical_autopay_charge" && !canonicalSnapshot) throw new CanonicalPaymentReportIncompatibilityError();
+      const snapshotAllocationRows = snapshot
+        ? await tx.select().from(paymentOperationOccurrenceSnapshotAllocations).where(and(
+          eq(paymentOperationOccurrenceSnapshotAllocations.organizationId, input.organizationId),
+          eq(paymentOperationOccurrenceSnapshotAllocations.leagueId, input.leagueId),
+          eq(paymentOperationOccurrenceSnapshotAllocations.operationId, operation.id),
+        ))
+        : [];
+      const businessDate = canonicalSnapshot?.triggerStartAt ?? snapshot?.createdAt ?? operation.createdAt;
+      const unresolvedBowlerId = canonicalSnapshot?.payerBowlerId ?? snapshotAllocationRows[0]?.bowlerId ?? 0;
+      rows.push({
+        paymentId: null,
+        leagueId: input.leagueId,
+        bowlerId: unresolvedBowlerId,
+        amountMinor: operation.amountMinor,
+        currency: operation.currency,
+        status: "unresolved",
+        paymentType: "square",
+        businessDate,
+        authoritativeLocalDate: localBusinessDate(businessDate, league.timezone ?? "UTC"),
+        providerPaymentId: operation.providerObjectId,
+        paymentOperationId: operation.id,
+        operationType: operation.operationType,
+        operationStatus: operation.status,
+        allocatedMinor: 0,
+        unallocatedMinor: operation.amountMinor,
+        reviewRequired: true,
+        source: "unresolved_operation",
+        refund: { present: false, amountMinor: 0, providerRefundId: null },
+        dispute: { present: false, amountMinor: 0, disputeId: null },
+        unresolved: true,
+        receipt: paymentReceiptContract({ receiptUrl: null, receiptNumber: null }),
+        allocations: [],
+      });
+    }
+
+    const canonicalRows = activation ? rows.filter((row) => row.source !== "unlinked_legacy") : [];
+    const unlinkedHistory = rows.filter((row) => row.source === "unlinked_legacy");
     const mode: CanonicalPaymentReportMode = activation
       ? (unlinkedHistory.length > 0 ? "canonical_with_unlinked_history" : "canonical")
       : "legacy_fallback";
     const reportRows = activation ? canonicalRows : rows;
+    const visibleRows = input.bowlerId === undefined
+      ? reportRows
+      : reportRows.filter((row) => row.bowlerId === input.bowlerId || row.allocations.some((allocation) => allocation.bowlerId === input.bowlerId));
+    const visibleUnlinkedHistory = input.bowlerId === undefined
+      ? unlinkedHistory
+      : unlinkedHistory.filter((row) => row.bowlerId === input.bowlerId);
     const totals = {
-      grossConfirmedPaidMinor: reportRows.filter((row) => row.status === "confirmed_paid").reduce((sum, row) => sum + row.amountMinor, 0),
-      activeAllocatedMinor: reportRows.reduce((sum, row) => sum + row.allocatedMinor, 0),
-      refundedMinor: reportRows.filter((row) => row.status === "refunded").reduce((sum, row) => sum + row.amountMinor, 0),
-      disputedReviewRequiredMinor: reportRows.filter((row) => row.status === "disputed" || row.reviewRequired).reduce((sum, row) => sum + row.amountMinor, 0),
-      unresolvedOperationMinor: reportRows.filter((row) => row.status === "unresolved").reduce((sum, row) => sum + row.amountMinor, 0),
-      unallocatedLegacyMinor: unlinkedHistory.filter((row) => row.status === "confirmed_paid").reduce((sum, row) => sum + row.amountMinor, 0),
+      grossConfirmedPaidMinor: visibleRows.filter((row) => row.status === "confirmed_paid").reduce((sum, row) => sum + row.amountMinor, 0),
+      activeAllocatedMinor: visibleRows.reduce((sum, row) => sum + row.allocatedMinor, 0),
+      refundedMinor: visibleRows.filter((row) => row.refund.present).reduce((sum, row) => sum + row.refund.amountMinor, 0),
+      disputedReviewRequiredMinor: visibleRows.filter((row) => row.dispute.present).reduce((sum, row) => sum + row.dispute.amountMinor, 0),
+      reviewRequiredMinor: visibleRows.filter((row) => row.reviewRequired && !row.dispute.present && !row.unresolved).reduce((sum, row) => sum + row.amountMinor, 0),
+      unresolvedOperationMinor: visibleRows.filter((row) => row.unresolved).reduce((sum, row) => sum + row.amountMinor, 0),
+      unallocatedLegacyMinor: visibleUnlinkedHistory.filter((row) => row.status === "confirmed_paid").reduce((sum, row) => sum + row.amountMinor, 0),
     };
     const offset = (page - 1) * limit;
-    const pagedRows = reportRows.slice(offset, offset + limit);
-    const pagedTransactions = buildTransactions(pagedRows, paymentsById);
-    const pagedUnlinkedHistory = unlinkedHistory.slice(offset, offset + limit);
+    const sortedRows = [...visibleRows].sort((left, right) => left.authoritativeLocalDate.localeCompare(right.authoritativeLocalDate) || left.bowlerId - right.bowlerId || String(left.paymentOperationId ?? left.paymentId).localeCompare(String(right.paymentOperationId ?? right.paymentId)));
+    const allTransactions = buildTransactions(sortedRows, paymentsById, allOperationsById);
+    const pagedTransactions = allTransactions.slice(offset, offset + limit);
+    const pagedRows = pagedTransactions.flatMap((transaction) => transaction.rows);
+    const pagedUnlinkedHistory = visibleUnlinkedHistory.slice(offset, offset + limit);
     const withoutFingerprint = {
       contractVersion: "canonical-payment-report/1" as const,
       orderVersion: "league,business-date,bowler,occurrence,allocation,payment/1" as const,
@@ -396,7 +527,8 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
       asOf,
       page,
       limit,
-      totalRows: reportRows.length,
+      totalRows: visibleRows.length,
+      totalTransactions: allTransactions.length,
       totals,
       rows: pagedRows,
       transactions: pagedTransactions,

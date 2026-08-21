@@ -15,6 +15,9 @@ import { getPaymentProvider, ProviderNotConfiguredError } from '../../services/p
 import { buildPaymentErrorResponse } from '../../utils/payment-error-response.js';
 import { sendReceiptResendEmail } from '../../services/email';
 import { paymentReceiptContract, type PaymentReceiptContract } from '@shared/payment-receipt';
+import { db } from '../../db.js';
+import { and, eq, inArray } from 'drizzle-orm';
+import { leagues, paymentOccurrenceAllocations, paymentOperations } from '@shared/schema';
 
 const log = createLogger('PaymentReceipts');
 
@@ -45,7 +48,7 @@ const resendBodySchema = z.object({
  * the caller can map them to 422.
  */
 async function resolveReceiptUrl(paymentId: number, organizationId?: number): Promise<{
-  receiptUrl: string;
+  receiptUrl: string | null;
   receiptNumber: string | null;
   receipt: PaymentReceiptContract;
 } | null> {
@@ -78,13 +81,26 @@ async function resolveReceiptUrl(paymentId: number, organizationId?: number): Pr
   const provider = await getPaymentProvider(league?.locationId ?? null);
   const verification = await provider.getPayment(payment.providerPaymentId);
   if (!verification?.receiptUrl) {
-    return null;
+    return { receiptUrl: null, receiptNumber: verification?.receiptNumber ?? null, receipt: paymentReceiptContract({ receiptUrl: null, receiptNumber: verification?.receiptNumber ?? null }) };
   }
 
-  await storage.updatePayment(payment.id, {
-    receiptUrl: verification.receiptUrl,
-    receiptNumber: verification.receiptNumber ?? null,
-  });
+  const paymentOrganizationId = league?.organizationId;
+  if (paymentOrganizationId === null || paymentOrganizationId === undefined) {
+    return null;
+  }
+  if (typeof storage.updatePaymentReceiptCacheForOrganization === "function") {
+    await storage.updatePaymentReceiptCacheForOrganization(payment.id, paymentOrganizationId, {
+      receiptUrl: verification.receiptUrl,
+      receiptNumber: verification.receiptNumber ?? null,
+    });
+  } else {
+    // Compatibility only for older test doubles; production storage always
+    // exposes the tenant-scoped helper above.
+    await storage.updatePayment(payment.id, {
+      receiptUrl: verification.receiptUrl,
+      receiptNumber: verification.receiptNumber ?? null,
+    });
+  }
 
   return {
     receiptUrl: verification.receiptUrl,
@@ -96,8 +112,56 @@ async function resolveReceiptUrl(paymentId: number, organizationId?: number): Pr
   };
 }
 
+async function buildReceiptEvidence(paymentId: number, organizationId: number, viewer: Express.User): Promise<PaymentReceiptContract | null> {
+  const payment = await storage.getPaymentByIdForOrganization(paymentId, organizationId);
+  if (!payment) return null;
+  const [league] = await db.select({ organizationId: leagues.organizationId }).from(leagues)
+    .where(and(eq(leagues.id, payment.leagueId), eq(leagues.organizationId, organizationId))).limit(1);
+  if (!league) return null;
+  const allocations = await db.select().from(paymentOccurrenceAllocations).where(and(
+    eq(paymentOccurrenceAllocations.organizationId, organizationId),
+    eq(paymentOccurrenceAllocations.leagueId, payment.leagueId),
+    eq(paymentOccurrenceAllocations.paymentId, payment.id),
+  ));
+  const [operation] = payment.paymentOperationId ? await db.select().from(paymentOperations).where(and(
+    eq(paymentOperations.organizationId, organizationId),
+    eq(paymentOperations.leagueId, payment.leagueId),
+    eq(paymentOperations.id, payment.paymentOperationId),
+  )).limit(1) : [];
+  const privileged = viewer.role === 'system_admin' || viewer.role === 'org_admin' || viewer.role === 'payment_manager' || payment.paidByUserId === viewer.id;
+  const ownAllocation = viewer.bowlerId ? allocations.filter((allocation) => allocation.bowlerId === viewer.bowlerId) : [];
+  const visibleAllocations = privileged || viewer.bowlerId === payment.bowlerId ? allocations : ownAllocation;
+  const shared = operation ? { groupKey: `operation:${operation.id}`, childCount: (await storage.getPaymentsByPaymentOperationId(organizationId, operation.id)).length } : null;
+  const unresolved = !!operation && ['pending', 'leased', 'provider_unknown', 'retry_scheduled', 'action_required', 'reconciliation_required'].includes(operation.status);
+  return paymentReceiptContract({
+    receiptUrl: privileged || viewer.bowlerId === payment.bowlerId ? payment.receiptUrl : null,
+    receiptNumber: privileged || viewer.bowlerId === payment.bowlerId ? payment.receiptNumber : null,
+    organizationId,
+    leagueId: payment.leagueId,
+    paymentId: payment.id,
+    paymentOperationId: privileged ? payment.paymentOperationId : null,
+    operationStatus: privileged ? operation?.status ?? null : null,
+    amountMinor: privileged || viewer.bowlerId === payment.bowlerId ? payment.amount : visibleAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0),
+    currency: 'USD',
+    evidenceStatus: unresolved ? 'unresolved' : payment.status === 'paid' ? 'confirmed_paid' : payment.status === 'refunded' ? 'refunded' : payment.status === 'disputed' ? 'disputed' : 'review_required',
+    source: allocations.length > 0 ? 'canonical_allocation' : 'unlinked_legacy',
+    allocations: visibleAllocations.map((allocation) => ({ allocationId: allocation.id, obligationId: allocation.obligationId, occurrenceId: allocation.occurrenceId, bowlerId: allocation.bowlerId, amountMinor: allocation.amountMinor, currency: allocation.currency, state: allocation.state, source: 'canonical_allocation' as const })),
+    refund: { present: payment.status === 'refunded' || payment.squareRefundId !== null, amountMinor: payment.status === 'refunded' ? payment.amount : 0, providerRefundId: payment.squareRefundId },
+    dispute: { present: payment.status === 'disputed' || !!payment.disputeId, amountMinor: payment.status === 'disputed' ? payment.amount : 0, disputeId: payment.disputeId },
+    unresolved,
+    sharedTransaction: privileged || viewer.bowlerId === payment.bowlerId ? shared : null,
+    canResend: privileged && Boolean(payment.receiptUrl),
+  });
+}
+
 router.get('/payments/:id/receipt', async (req, res) => {
   try {
+    if (!req.user) return sendError(res, 'Not found', 404, 'NOT_FOUND');
+    const requestedOrganizationId = req.query.organizationId === undefined ? undefined : Number(req.query.organizationId);
+    if (req.user.role === 'system_admin' && (typeof requestedOrganizationId !== 'number' || !Number.isSafeInteger(requestedOrganizationId) || requestedOrganizationId <= 0)) {
+      return sendError(res, 'Organization scope is required', 400, 'INVALID_SCOPE');
+    }
+    const effectiveOrganizationId = req.user.role === 'system_admin' ? requestedOrganizationId : req.user.organizationId;
     const id = parseInt(singleRouteParam(req.params.id));
     if (isNaN(id)) {
       return sendError(res, 'Invalid payment ID', 400, 'INVALID_ID');
@@ -105,18 +169,31 @@ router.get('/payments/:id/receipt', async (req, res) => {
 
     // Bowlers can fetch their own receipts; admins gated by org via
     // `hasAccessToPayment`. System admins implicitly pass.
-    const hasAccess = await hasAccessToPayment(req, id);
+    let hasAccess = await hasAccessToPayment(req, id);
+    if (!hasAccess && req.user.bowlerId && req.user.organizationId) {
+      const [ownAllocation] = await db.select({ id: paymentOccurrenceAllocations.id })
+        .from(paymentOccurrenceAllocations)
+        .where(and(
+          eq(paymentOccurrenceAllocations.organizationId, req.user.organizationId),
+          eq(paymentOccurrenceAllocations.paymentId, id),
+          eq(paymentOccurrenceAllocations.bowlerId, req.user.bowlerId),
+        )).limit(1);
+      hasAccess = Boolean(ownAllocation);
+    }
     if (!hasAccess) {
       return sendError(res, "You don't have access to this payment", 403, 'FORBIDDEN');
     }
 
-    const resolved = await resolveReceiptUrl(id, req.user?.organizationId ?? undefined);
+    const resolved = await resolveReceiptUrl(id, effectiveOrganizationId ?? undefined);
     if (!resolved) {
       return sendError(res, 'No receipt available for this payment', 404, 'RECEIPT_UNAVAILABLE');
     }
-
+    const organizationId = effectiveOrganizationId;
+    const evidence = organizationId && typeof storage.getPaymentByIdForOrganization === "function"
+      ? await buildReceiptEvidence(id, organizationId, req.user)
+      : null;
     return sendSuccess(res, {
-      ...resolved.receipt,
+      ...(evidence ?? resolved.receipt),
       // Preserve the existing flat fields for current clients while the
       // versioned receipt contract is adopted by F5 consumers.
       receiptUrl: resolved.receiptUrl,
@@ -133,6 +210,12 @@ router.get('/payments/:id/receipt', async (req, res) => {
 
 router.post('/payments/:id/resend-receipt', paymentWriteLimiter, async (req, res) => {
   try {
+    if (!req.user) return sendError(res, 'Not found', 404, 'NOT_FOUND');
+    const requestedOrganizationId = req.query.organizationId === undefined ? undefined : Number(req.query.organizationId);
+    if (req.user.role === 'system_admin' && (typeof requestedOrganizationId !== 'number' || !Number.isSafeInteger(requestedOrganizationId) || requestedOrganizationId <= 0)) {
+      return sendError(res, 'Organization scope is required', 400, 'INVALID_SCOPE');
+    }
+    const effectiveOrganizationId = req.user.role === 'system_admin' ? requestedOrganizationId : req.user.organizationId;
     const id = parseInt(singleRouteParam(req.params.id));
     if (isNaN(id)) {
       return sendError(res, 'Invalid payment ID', 400, 'INVALID_ID');
@@ -155,9 +238,12 @@ router.post('/payments/:id/resend-receipt', paymentWriteLimiter, async (req, res
       }
     }
 
-    const resolved = await resolveReceiptUrl(id, req.user?.organizationId ?? undefined);
+    const resolved = await resolveReceiptUrl(id, effectiveOrganizationId ?? undefined);
     if (!resolved) {
       return sendError(res, 'No receipt available for this payment', 404, 'RECEIPT_UNAVAILABLE');
+    }
+    if (!resolved.receiptUrl) {
+      return sendError(res, 'No hosted receipt is available for this payment', 404, 'RECEIPT_UNAVAILABLE');
     }
 
     const payment = req.user?.organizationId && typeof storage.getPaymentByIdForOrganization === "function"

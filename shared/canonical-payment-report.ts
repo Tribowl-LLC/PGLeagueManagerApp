@@ -26,6 +26,18 @@ export interface CanonicalPaymentReceiptSummary {
   deliveryEvidence: "delivery_not_recorded";
 }
 
+export interface CanonicalPaymentRefundEvidence {
+  present: boolean;
+  amountMinor: number;
+  providerRefundId: string | null;
+}
+
+export interface CanonicalPaymentDisputeEvidence {
+  present: boolean;
+  amountMinor: number;
+  disputeId: string | null;
+}
+
 export interface CanonicalPaymentAllocationRow {
   allocationId: string | null;
   obligationId: string | null;
@@ -37,7 +49,7 @@ export interface CanonicalPaymentAllocationRow {
 }
 
 export interface CanonicalPaymentRow {
-  paymentId: number;
+  paymentId: number | null;
   leagueId: number;
   bowlerId: number;
   amountMinor: number;
@@ -45,12 +57,18 @@ export interface CanonicalPaymentRow {
   status: CanonicalPaymentEvidenceStatus;
   paymentType: "cash" | "check" | "credit_card" | "square";
   businessDate: string;
+  authoritativeLocalDate: string;
   providerPaymentId: string | null;
   paymentOperationId: string | null;
   operationType: "scheduled_charge" | "interactive_charge" | "refund" | "canonical_autopay_charge" | null;
   operationStatus: string | null;
   allocatedMinor: number;
+  unallocatedMinor: number;
   reviewRequired: boolean;
+  source: "canonical_allocation" | "unlinked_legacy" | "unresolved_operation";
+  refund: CanonicalPaymentRefundEvidence;
+  dispute: CanonicalPaymentDisputeEvidence;
+  unresolved: boolean;
   receipt: CanonicalPaymentReceiptSummary;
   allocations: CanonicalPaymentAllocationRow[];
 }
@@ -70,6 +88,7 @@ export interface CanonicalPaymentReportTotals {
   activeAllocatedMinor: number;
   refundedMinor: number;
   disputedReviewRequiredMinor: number;
+  reviewRequiredMinor: number;
   unresolvedOperationMinor: number;
   unallocatedLegacyMinor: number;
 }
@@ -86,6 +105,7 @@ export interface CanonicalPaymentReport {
   page: number;
   limit: number;
   totalRows: number;
+  totalTransactions: number;
   totals: CanonicalPaymentReportTotals;
   rows: CanonicalPaymentRow[];
   transactions: CanonicalPaymentTransactionGroup[];
@@ -93,7 +113,8 @@ export interface CanonicalPaymentReport {
 }
 
 export function canonicalPaymentReportFingerprint(value: Omit<CanonicalPaymentReport, "fingerprint">): string {
-  return `${CANONICAL_PAYMENT_REPORT_FINGERPRINT_PREFIX}${createHash("sha256").update(stableJson(value)).digest("hex")}`;
+  const { asOf: _generatedAsOf, ...semanticEvidence } = value;
+  return `${CANONICAL_PAYMENT_REPORT_FINGERPRINT_PREFIX}${createHash("sha256").update(stableJson(semanticEvidence)).digest("hex")}`;
 }
 
 function stableJson(value: unknown): string {

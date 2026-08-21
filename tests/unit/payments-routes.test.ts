@@ -296,6 +296,15 @@ describe('POST /api/payments', () => {
     expect(mockStorage.createPayment).not.toHaveBeenCalled();
   });
 
+  it('rejects raw card/square bookkeeping once canonical activation is complete', async () => {
+    mockStorage.getLeague.mockResolvedValue(LEAGUE_OK);
+    mockSumQuery.mockResolvedValue([{ completenessMarker: true }]);
+    const res = await post('/api/payments', basePayment({ type: 'square' }));
+    expect(res.status).toBe(409);
+    expect((await res.json()).error.code).toBe('CANONICAL_ALLOCATION_REQUIRED');
+    expect(mockStorage.createPayment).not.toHaveBeenCalled();
+  });
+
   it('creates a payment on the happy path → 201', async () => {
     mockStorage.getLeague.mockResolvedValue(LEAGUE_OK);
     mockStorage.createPayment.mockResolvedValue({ id: 555, ...basePayment() });

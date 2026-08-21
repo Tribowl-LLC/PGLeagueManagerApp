@@ -78,6 +78,7 @@ export class DatabaseStorage implements IStorage {
   createCombinedPayments!: IStorage["createCombinedPayments"];
   getPaymentsByCombinedGroupId!: IStorage["getPaymentsByCombinedGroupId"];
   updatePayment!: IStorage["updatePayment"];
+  updatePaymentReceiptCacheForOrganization!: IStorage["updatePaymentReceiptCacheForOrganization"];
   refundPayment!: IStorage["refundPayment"];
   openDispute!: IStorage["openDispute"];
   deletePayment!: IStorage["deletePayment"];

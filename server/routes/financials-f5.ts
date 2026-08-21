@@ -69,7 +69,24 @@ router.get("/payments", async (req, res) => {
       page,
       limit,
     });
-    return sendSuccess(res, report);
+    if (privileged) return sendSuccess(res, report);
+    // Ordinary users receive their authorized financial rows and safe status
+    // labels only. Provider IDs, operation IDs, and immutable execution
+    // internals stay within admin/reconciliation scopes.
+    const redact = (row: typeof report.rows[number]) => ({
+      ...row,
+      providerPaymentId: null,
+      paymentOperationId: null,
+      operationType: null,
+      operationStatus: null,
+      receipt: { ...row.receipt, paymentOperationId: null, operationStatus: null, sharedTransaction: null, canResend: false },
+    });
+    return sendSuccess(res, {
+      ...report,
+      rows: report.rows.map(redact),
+      unlinkedHistory: report.unlinkedHistory.map(redact),
+      transactions: report.transactions.map((transaction) => ({ ...transaction, paymentOperationId: null, rows: transaction.rows.map(redact) })),
+    });
   } catch (error) {
     if (error instanceof CanonicalPaymentReportIncompatibilityError) {
       return sendError(res, "Financial evidence requires review", 409, "FINANCIAL_EVIDENCE_INCOMPATIBLE");

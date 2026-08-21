@@ -166,9 +166,11 @@ export default function PaymentsPage() {
   const leagues = leaguesResponse?.data || [];
   const financialReports = useQueries({
     queries: leagues.map((league) => ({
-      queryKey: ["/api/financials/f5/payments", league.id, page, pageSize],
+      queryKey: ["/api/financials/f5/payments", league.id, page, pageSize, userResponse?.data?.organizationId, userResponse?.data?.role],
       queryFn: async ({ signal }: { signal: AbortSignal }) => {
-        const response = await fetch(`/api/financials/f5/payments?leagueId=${league.id}&page=${page}&limit=${pageSize}`, {
+        const organizationScope = userResponse?.data?.role === "system_admin" && userResponse.data.organizationId
+          ? `&organizationId=${encodeURIComponent(userResponse.data.organizationId)}` : "";
+        const response = await fetch(`/api/financials/f5/payments?leagueId=${league.id}&page=${page}&limit=${pageSize}${organizationScope}`, {
           credentials: "include",
           headers: { Accept: "application/json" },
           signal,
@@ -182,32 +184,36 @@ export default function PaymentsPage() {
     })),
   });
   const financialReportData = financialReports.map((result) => result.data?.data);
+  const financialReportError = financialReports.find((result) => result.error)?.error;
+  const missingFinancialReport = leagues.length > 0 && financialReports.some((result) => !result.data);
   const paymentBusinessDates = (() => {
     const map = new Map<number, string>();
     for (const report of financialReportData) {
-      for (const row of report?.rows ?? []) map.set(row.paymentId, row.businessDate);
-      for (const row of report?.unlinkedHistory ?? []) map.set(row.paymentId, row.businessDate);
+      for (const row of report?.rows ?? []) if (row.paymentId !== null) map.set(row.paymentId, row.businessDate);
+      for (const row of report?.unlinkedHistory ?? []) if (row.paymentId !== null) map.set(row.paymentId, row.businessDate);
     }
     return map;
   })();
   const paymentEvidenceStatuses = (() => {
     const map = new Map<number, CanonicalPaymentReport["rows"][number]["status"]>();
     for (const report of financialReportData) {
-      for (const row of report?.rows ?? []) map.set(row.paymentId, row.status);
-      for (const row of report?.unlinkedHistory ?? []) map.set(row.paymentId, row.status);
+      for (const row of report?.rows ?? []) if (row.paymentId !== null) map.set(row.paymentId, row.status);
+      for (const row of report?.unlinkedHistory ?? []) if (row.paymentId !== null) map.set(row.paymentId, row.status);
     }
     return map;
   })();
   const defaultLeagueId = leagues.length > 0 ? leagues[0].id : undefined;
 
+  const projectedPayments = useMemo(() => payments.filter((payment) => paymentBusinessDates.has(payment.id)), [payments, paymentBusinessDates]);
   const filteredPayments = useMemo(() => {
-    if (!searchQuery.trim()) return payments;
+    const source = projectedPayments;
+    if (!searchQuery.trim()) return source;
     const searchLower = searchQuery.toLowerCase();
-    return payments.filter((payment) => {
+    return source.filter((payment) => {
       const bowler = bowlers.find((b) => b.id === payment.bowlerId);
       return bowler?.name?.toLowerCase().includes(searchLower);
     });
-  }, [payments, bowlers, searchQuery]);
+  }, [projectedPayments, bowlers, searchQuery]);
 
   const handlePageChange = useCallback((newPage: number) => {
     setPage(newPage);
@@ -225,6 +231,12 @@ export default function PaymentsPage() {
         <PageLoadingState />
       </Layout>
     );
+  }
+  if (userResponse?.data?.role === "system_admin" && !userResponse.data.organizationId) {
+    return <Layout><p className="p-6 text-destructive">Select an organization before viewing financial payments.</p></Layout>;
+  }
+  if (financialReportError || missingFinancialReport) {
+    return <Layout><p className="p-6 text-destructive">Financial evidence requires review; no payment page is shown.</p></Layout>;
   }
 
   return (

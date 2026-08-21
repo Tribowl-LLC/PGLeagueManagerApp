@@ -55,6 +55,16 @@ describe("F5 canonical payment reporting PostgreSQL evidence", () => {
     })).rejects.toBeInstanceOf(CanonicalPaymentReportIncompatibilityError);
   });
 
+  it("keeps the semantic fingerprint stable when only generated asOf changes", async () => {
+    const fixture = await makeF3WorkflowFixture();
+    organizations.push(fixture.organizationId);
+    const first = await readCanonicalPaymentReport({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, limit: 10 });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const second = await readCanonicalPaymentReport({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, limit: 10 });
+    expect(second.asOf).toBeDefined();
+    expect(first.fingerprint).toBe(second.fingerprint);
+  });
+
   it("reports exact canonical allocation conservation and revision evidence", async () => {
     const fixture = await makeF3WorkflowFixture();
     organizations.push(fixture.organizationId);

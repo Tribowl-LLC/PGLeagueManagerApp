@@ -17,11 +17,13 @@ const base: Omit<CanonicalPaymentReport, "fingerprint"> = {
   page: 1,
   limit: 50,
   totalRows: 0,
+  totalTransactions: 0,
   totals: {
     grossConfirmedPaidMinor: 0,
     activeAllocatedMinor: 0,
     refundedMinor: 0,
     disputedReviewRequiredMinor: 0,
+    reviewRequiredMinor: 0,
     unresolvedOperationMinor: 0,
     unallocatedLegacyMinor: 0,
   },
@@ -36,6 +38,7 @@ describe("F5 canonical payment and receipt contracts", () => {
     expect(fingerprint).toMatch(/^lvpaymentreport:v1:[0-9a-f]{64}$/);
     expect(canonicalPaymentReportFingerprint(base)).toBe(fingerprint);
     expect(canonicalPaymentReportFingerprint({ ...base, totalRows: 1 })).not.toBe(fingerprint);
+    expect(canonicalPaymentReportFingerprint({ ...base, asOf: "2033-01-01T00:00:00.000Z" })).toBe(fingerprint);
   });
 
   it("never infers email delivery from hosted receipt availability", () => {

@@ -313,6 +313,7 @@ export async function hasAccessToBowler(req: Request, bowlerId: number): Promise
     if (isSystemAdmin(req.user)) {
       return true;
     }
+
     // Organization stamp match alone is NOT sufficient
     // for plain `user`-role callers. Previously any user whose
     // `organizationId` matched the bowler's org could read every
@@ -677,6 +678,13 @@ export async function hasAccessToPayment(req: Request, paymentId: number): Promi
     }
 
     if (isSystemAdmin(req.user)) {
+      return true;
+    }
+
+    // Receipt/payment history is also available to the initiating payer or
+    // their own bowler row. This is deliberately narrower than organization
+    // access and does not expose sibling allocations or provider internals.
+    if (req.user.bowlerId === payment.bowlerId || payment.paidByUserId === req.user.id) {
       return true;
     }
 

@@ -112,6 +112,10 @@ export default function ReportsPage() {
   });
   const bowlerLeagues = bowlerLeaguesResponse?.data || [];
 
+  if (userResponse?.data?.role === "system_admin" && !userResponse.data.organizationId) {
+    return <Layout><p className="p-6 text-destructive">Select an organization before viewing financial reports.</p></Layout>;
+  }
+
 
   if (loadingLeagues || loadingTeams || loadingBowlers || loadingPayments || loadingBowlerLeagues || loadingFinancials) {
     return (

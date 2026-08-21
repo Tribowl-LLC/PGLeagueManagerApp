@@ -155,14 +155,14 @@ export default function BowlerViewPage() {
   });
   const paymentBusinessDates = useMemo(() => {
     const map = new Map<number, string>();
-    for (const row of paymentReportResponse?.data?.rows ?? []) map.set(row.paymentId, row.businessDate);
-    for (const row of paymentReportResponse?.data?.unlinkedHistory ?? []) map.set(row.paymentId, row.businessDate);
+    for (const row of paymentReportResponse?.data?.rows ?? []) if (row.paymentId !== null) map.set(row.paymentId, row.businessDate);
+    for (const row of paymentReportResponse?.data?.unlinkedHistory ?? []) if (row.paymentId !== null) map.set(row.paymentId, row.businessDate);
     return map;
   }, [paymentReportResponse?.data]);
   const paymentEvidenceStatuses = useMemo(() => {
     const map = new Map<number, CanonicalPaymentReport["rows"][number]["status"]>();
-    for (const row of paymentReportResponse?.data?.rows ?? []) map.set(row.paymentId, row.status);
-    for (const row of paymentReportResponse?.data?.unlinkedHistory ?? []) map.set(row.paymentId, row.status);
+    for (const row of paymentReportResponse?.data?.rows ?? []) if (row.paymentId !== null) map.set(row.paymentId, row.status);
+    for (const row of paymentReportResponse?.data?.unlinkedHistory ?? []) if (row.paymentId !== null) map.set(row.paymentId, row.status);
     return map;
   }, [paymentReportResponse?.data]);
 

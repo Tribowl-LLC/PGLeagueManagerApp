@@ -21,7 +21,7 @@ import { eq, and, gte, lte, sql } from 'drizzle-orm';
 import { payments as paymentsTable } from '@shared/schema';
 import { createLogger } from '../../logger';
 import { getPgErrorCode } from '../../utils/db-errors';
-import { PaymentDisputeEvidenceExistsError, PaymentEvidenceImmutableError, PaymentOccurrenceEvidenceExistsError } from '../../storage/payments.js';
+import { CanonicalAllocationRequiredError, FinancialEvidenceIncompatibleError, PaymentDisputeEvidenceExistsError, PaymentEvidenceImmutableError, PaymentOccurrenceEvidenceExistsError } from '../../storage/payments.js';
 import { financialActivations } from '@shared/schema';
 
 const log = createLogger("Payments");
@@ -67,10 +67,13 @@ router.post("/", paymentWriteLimiter, async (req, res) => {
       return sendError(res, "You don't have access to create payments for this league", 403, 'FORBIDDEN');
     }
 
-    if (payment.type === 'cash' || payment.type === 'check') {
-      // Once canonical F1 evidence exists, a generic cash/check row cannot be
-      // safely associated with an obligation by amount, week, or roster. The
-      // dedicated canonical allocation workflow is intentionally outside F5.
+    {
+      // Once canonical F1 evidence exists, no generic payment row (including
+      // raw card/square bookkeeping) can be safely associated with an
+      // obligation by amount, week, or roster. The dedicated canonical
+      // allocation workflow is intentionally outside F5. The same check is
+      // repeated inside storage.createPayment under the lock to close the
+      // activation-vs-create race.
       const [activeActivation] = league.organizationId === null ? [] : await db.select({
         id: financialActivations.id,
         completenessMarker: financialActivations.completenessMarker,
@@ -211,6 +214,8 @@ router.post("/", paymentWriteLimiter, async (req, res) => {
     if (error instanceof z.ZodError) {
       return handleZodError(res, error);
     }
+    if (error instanceof CanonicalAllocationRequiredError) return sendError(res, 'Canonical allocation is required for this league', 409, 'CANONICAL_ALLOCATION_REQUIRED');
+    if (error instanceof FinancialEvidenceIncompatibleError) return sendError(res, 'Financial evidence requires review', 409, 'FINANCIAL_EVIDENCE_INCOMPATIBLE');
     sendError(res, 'Failed to create payment');
   }
 });
