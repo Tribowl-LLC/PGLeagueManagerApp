@@ -217,6 +217,7 @@ function normalizedLeagueSemantic(league: InsertLeague | League, kind: "league" 
     setupKind: kind,
     name: league.name,
     description: league.description ?? null,
+    payingLineupSize: league.payingLineupSize ?? null,
     active: league.active,
     allowPublicSignup: league.allowPublicSignup,
     seasonStart: new Date(league.seasonStart).toISOString(),
@@ -248,10 +249,10 @@ function normalizedLeagueSemantic(league: InsertLeague | League, kind: "league" 
 }
 
 function rolloverSourceContract(source: League, evidence: RolloverCarriedEvidence): LeagueRolloverSourceContract {
-  if (!source.organizationId || !source.locationId || !source.competitionStartTime) {
+  if (!source.organizationId || !source.locationId || !source.competitionStartTime || (source.payingLineupSize !== 3 && source.payingLineupSize !== 4)) {
     throw new LeagueSetupIntegrationError(
       "validation_error",
-      "source league is missing the tenant, location, or competition time required for canonical rollover",
+      "source league is missing the tenant, location, competition time, or lineup size required for canonical rollover",
     );
   }
   const semantic = {
@@ -262,6 +263,7 @@ function rolloverSourceContract(source: League, evidence: RolloverCarriedEvidenc
     carriedConfiguration: {
       name: source.name,
       description: source.description ?? null,
+      payingLineupSize: source.payingLineupSize,
       locationId: source.locationId,
       timezone: source.timezone ?? DEFAULT_TIMEZONE,
       practiceStartTime: source.practiceStartTime ?? null,
@@ -675,6 +677,7 @@ function buildNewSeasonLeague(
   return {
     name: source.name,
     description: source.description,
+    payingLineupSize: source.payingLineupSize as 3 | 4,
     active: true,
     allowPublicSignup: values.allowPublicSignup ?? source.allowPublicSignup,
     seasonStart: seasonStart.toISOString(),

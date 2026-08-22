@@ -23,7 +23,6 @@ export default function FinancialActivationPage() {
   const [selected, setSelected] = useState<Record<string, { bowlerId: number; role?: "regular" | "substitute"; provenance: "explicit_admin_selection" }>>({});
   const [submitting, setSubmitting] = useState(false);
   const [commandKey] = useState(() => `financial-activation-${crypto.randomUUID()}`);
-  const [payingLineupSize, setPayingLineupSize] = useState<3 | 4 | undefined>(undefined);
   const sourceQuery = useQuery<{ data: FinancialActivationSourceContract }>({
     queryKey: [`/api/financials/leagues/${leagueId}/source${scopeSuffix}`],
     enabled: Number.isSafeInteger(leagueId) && leagueId > 0,
@@ -54,7 +53,7 @@ export default function FinancialActivationPage() {
   const submit = async () => {
     const source = sourceQuery.data?.data;
     if (!source) return;
-    if (!payingLineupSize) throw new Error("Choose the league lineup size before activation");
+    const payingLineupSize = source.payingLineupSize;
     const responsibilities = groups.flatMap(([groupKey, rows]) => Array.from({ length: payingLineupSize }, (_, slotIndex) => {
       const row = rows[0];
       const choice = selected[`${groupKey}:${slotIndex}`];
@@ -66,7 +65,7 @@ export default function FinancialActivationPage() {
       const occurrenceBowlers = new Set<string>();
       for (const row of responsibilities) { const key = `${row.occurrenceId}:${row.bowlerId}`; if (occurrenceBowlers.has(key)) throw new Error("A bowler may be selected once per occurrence"); occurrenceBowlers.add(key); }
       if (!window.confirm("Activate this exact responsibility matrix? This is irreversible in F1, creates no provider payment, and never links historical payments.")) return;
-      await apiRequest(`/api/financials/leagues/${leagueId}/activate${scopeSuffix}`, "POST", { commandKey, sourceFingerprint: source.sourceFingerprint, payingLineupSize, responsibilities });
+      await apiRequest(`/api/financials/leagues/${leagueId}/activate${scopeSuffix}`, "POST", { commandKey, sourceFingerprint: source.sourceFingerprint, responsibilities });
       toast({ title: "Canonical financial activation recorded", description: "Due and past-due reports now use the canonical evidence contract." });
     } catch (error) {
       toast({ title: "Activation unavailable", description: error instanceof Error ? error.message : "Review required", variant: "destructive" });
@@ -76,21 +75,20 @@ export default function FinancialActivationPage() {
   if (sourceQuery.error || rosterQuery.error) return <Layout><p className="p-6 text-destructive">Canonical activation source is unavailable. No financial activation was created.</p></Layout>;
   const roster = rosterQuery.data?.data ?? [];
   return <Layout><div className="mx-auto max-w-5xl space-y-6 p-6">
-    <div><h1 className="text-2xl font-bold">Review payer responsibility</h1><p className="text-muted-foreground">Every published billable occurrence and active team requires exactly three or four explicit selections. Nothing is preselected.</p><p className="text-xs text-muted-foreground">System administrators must provide an explicit organization scope in the URL.</p></div>
-    <div><Label>League paying lineup size</Label><Select value={payingLineupSize ? String(payingLineupSize) : ""} onValueChange={(next) => setPayingLineupSize(Number(next) as 3 | 4)}><SelectTrigger className="max-w-xs"><SelectValue placeholder="Choose three or four" /></SelectTrigger><SelectContent><SelectItem value="3">Three payer slots</SelectItem><SelectItem value="4">Four payer slots</SelectItem></SelectContent></Select></div>
+    <div><h1 className="text-2xl font-bold">Review payer responsibility</h1><p className="text-muted-foreground">League setup determines the number of explicit bowler positions required for every published billable occurrence and active team. Nothing is preselected.</p><p className="text-xs text-muted-foreground">System administrators must provide an explicit organization scope in the URL.</p></div>
     {groups.map(([groupKey, rows]) => {
-      const lineupSize = payingLineupSize;
+      const lineupSize = sourceQuery.data?.data.payingLineupSize;
       const candidates = roster;
-      return <Card key={groupKey}><CardHeader><CardTitle>Occurrence {new Date(rows[0]?.occurrenceStartAt ?? "").toLocaleDateString()} · {rows[0]?.teamName ?? "Team"}</CardTitle><p className="text-sm text-muted-foreground">{rows[0]?.occurrenceKind} · {rows[0]?.occurrenceStatus} · {rows[0]?.paymentMode} · ${((rows[0]?.amountMinor ?? 0) / 100).toFixed(2)} USD · choose exactly three or four payers.</p></CardHeader><CardContent className="space-y-4">
-        <p className="text-sm text-muted-foreground">League lineup: {lineupSize ? `${lineupSize} explicit slots` : "not selected"}</p>
+      return <Card key={groupKey}><CardHeader><CardTitle>Occurrence {new Date(rows[0]?.occurrenceStartAt ?? "").toLocaleDateString()} · {rows[0]?.teamName ?? "Team"}</CardTitle><p className="text-sm text-muted-foreground">{rows[0]?.occurrenceKind} · {rows[0]?.occurrenceStatus} · {rows[0]?.paymentMode} · ${((rows[0]?.amountMinor ?? 0) / 100).toFixed(2)} USD · choose exactly {lineupSize} responsible bowlers.</p></CardHeader><CardContent className="space-y-4">
+        <p className="text-sm text-muted-foreground">League lineup: {lineupSize === 3 ? "Three Bowlers" : "Four Bowlers"}</p>
         {Array.from({ length: 4 }, (_, slotIndex) => { const row = rows[0]; const key = `${groupKey}:${slotIndex}`; const value = selected[key]; const disabled = lineupSize === undefined || slotIndex >= lineupSize; return <div className="grid gap-2 md:grid-cols-4" key={key}>
-          <Label className="self-center">Payer slot {slotIndex + 1}</Label>
+          <Label className="self-center">Bowler position {slotIndex + 1}</Label>
           <Select disabled={disabled} value={value?.bowlerId ? String(value.bowlerId) : ""} onValueChange={(next) => update(key, { bowlerId: Number(next) })}><SelectTrigger><SelectValue placeholder="Select bowler" /></SelectTrigger><SelectContent>{candidates.map((candidate) => <SelectItem key={candidate.bowlerId} value={String(candidate.bowlerId)}>{candidate.name}</SelectItem>)}</SelectContent></Select>
           <Select disabled={disabled} value={value?.role ?? ""} onValueChange={(next) => update(key, { role: next as "regular" | "substitute" })}><SelectTrigger><SelectValue placeholder="Choose role" /></SelectTrigger><SelectContent><SelectItem value="regular">Regular payer</SelectItem><SelectItem value="substitute">Substitute payer</SelectItem></SelectContent></Select>
           <span className="self-center text-xs text-muted-foreground">Explicit admin selection</span>
         </div>; })}
       </CardContent></Card>;
     })}
-    <p className="text-sm text-amber-700">This activation is irreversible in F1 and financially locks the covered schedule evidence. It creates obligations only from the reviewed canonical source; it does not call Square, link historical payments, or start collection.</p><Button disabled={submitting || groups.length === 0 || !payingLineupSize || groups.some(([key]) => Array.from({ length: payingLineupSize ?? 0 }, (_, slot) => !selected[`${key}:${slot}`]?.bowlerId || !selected[`${key}:${slot}`]?.role).some(Boolean))} onClick={submit}>{submitting ? "Activating…" : "Review and activate canonical billing"}</Button>
+    <p className="text-sm text-amber-700">This activation is irreversible in F1 and financially locks the covered schedule evidence. It creates obligations only from the reviewed canonical source; it does not call Square, link historical payments, or start collection.</p><Button disabled={submitting || groups.length === 0 || groups.some(([key]) => Array.from({ length: sourceQuery.data?.data.payingLineupSize ?? 0 }, (_, slot) => !selected[`${key}:${slot}`]?.bowlerId || !selected[`${key}:${slot}`]?.role).some(Boolean))} onClick={submit}>{submitting ? "Activating…" : "Review and activate canonical billing"}</Button>
   </div></Layout>;
 }

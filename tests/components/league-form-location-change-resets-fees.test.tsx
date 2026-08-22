@@ -62,6 +62,7 @@ const seededLeague: League = {
   id: 42,
   name: 'Pre-existing League',
   description: '',
+  payingLineupSize: 4,
   active: true,
   allowPublicSignup: false,
   seasonStart: new Date('2025-01-06T12:00:00.000Z').toISOString(),
@@ -120,6 +121,17 @@ describe('LeagueForm — handleLocationChange clears stored lineage / prize-fund
     fetchMock.mockClear();
   });
 
+  it('uses league lineup size in basic setup and no longer presents description', async () => {
+    renderForm();
+    expect(await screen.findByRole('combobox', { name: 'League Lineup Size' })).toBeInTheDocument();
+    expect(screen.queryByLabelText('Description')).not.toBeInTheDocument();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('combobox', { name: 'League Lineup Size' }));
+    expect(screen.getByRole('option', { name: 'Three Bowlers' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Four Bowlers' })).toBeInTheDocument();
+    expect(screen.queryByText(/payer slots/i)).not.toBeInTheDocument();
+  });
+
   it('changing the league location resets lineageFee and prizeFundFee alongside the Square identifier fields', async () => {
     const user = userEvent.setup();
     renderForm();
@@ -168,6 +180,8 @@ describe('LeagueForm — handleLocationChange clears stored lineage / prize-fund
     await user.click(screen.getByRole('option', { name: 'Lanes A' }));
     await user.click(screen.getByLabelText('League Payment Timing'));
     await user.click(screen.getByRole('option', { name: /weekly: bowlers pay each week/i }));
+    await user.click(screen.getByRole('combobox', { name: 'League Lineup Size' }));
+    await user.click(screen.getByRole('option', { name: 'Four Bowlers' }));
     await user.click(screen.getByRole('button', { name: 'Add League' }));
 
     await waitFor(() => {
@@ -178,6 +192,7 @@ describe('LeagueForm — handleLocationChange clears stored lineage / prize-fund
     const requestBody = JSON.parse(String(postCall?.[1]?.body));
     expect(requestBody).toMatchObject({
       name: 'Scoped League',
+      payingLineupSize: 4,
       organizationId: 37,
       setupIntegration: { contractVersion: 'league-setup-integration-request/3' },
     });

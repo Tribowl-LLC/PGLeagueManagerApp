@@ -88,6 +88,7 @@ function fallLeague(f: Fixture, paymentMode: PaymentMode = "weekly", overrides: 
   return {
     name: `Future Fall ${sequence}`,
     description: "atomic setup",
+    payingLineupSize: 4,
     active: true,
     allowPublicSignup: false,
     seasonStart: "2032-10-03T00:00:00.000Z",

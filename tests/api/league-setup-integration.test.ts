@@ -48,6 +48,7 @@ function futureBody(key: number) {
   return {
     name: `API atomic Spring ${key}`,
     description: "setup API coverage",
+    payingLineupSize: 4,
     active: true,
     allowPublicSignup: true,
     seasonStart: "2032-03-07",
@@ -267,6 +268,7 @@ describe("league setup integration API", () => {
       totalBowlingWeeks: 12,
       weeklyFee: 2_000,
       paymentMode: "weekly",
+      payingLineupSize: 4,
     }).returning();
     const [team] = await db.insert(teams).values({ name: "API source team", number: 1, leagueId: source.id, displayOrder: 4 }).returning();
     const [bowler] = await db.insert(bowlers).values({ name: "API roster bowler", organizationId }).returning();

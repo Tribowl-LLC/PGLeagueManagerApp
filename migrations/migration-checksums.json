@@ -186,6 +186,12 @@
       "tag": "0030_canonical_collection_groups",
       "createdAt": 1787340597942,
       "hash": "f646e0fd0167cab52418a41a2e4dcd4f4d1451aa0021c9f09acbcb50df96b21a"
+    },
+    {
+      "idx": 31,
+      "tag": "0031_league_paying_lineup_size",
+      "createdAt": 1787427717641,
+      "hash": "824d728a415630f53f1e2f09e0d7747a5fd071d7d2e4cd0be70d2471e9533d3c"
     }
   ]
 }

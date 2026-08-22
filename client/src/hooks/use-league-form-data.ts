@@ -95,6 +95,7 @@ export function useLeagueFormData({
       form.reset({
         name: league.name,
         description: league.description || "",
+        payingLineupSize: league.payingLineupSize === 3 || league.payingLineupSize === 4 ? league.payingLineupSize : undefined,
         active: league.active,
         allowPublicSignup: league.allowPublicSignup ?? false,
         seasonStart: startDate.toISOString(),
@@ -126,6 +127,7 @@ export function useLeagueFormData({
       form.reset({
         name: "",
         description: "",
+        payingLineupSize: undefined,
         active: true,
         allowPublicSignup: false,
         seasonStart: today.toISOString(),

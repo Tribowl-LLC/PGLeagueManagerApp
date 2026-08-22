@@ -37,7 +37,7 @@ function rejectUnknownQueryKeys(req: { query: Record<string, unknown> }, allowed
 const activationSchema = z.object({
   commandKey: z.string().trim().min(1).max(255),
   sourceFingerprint: z.string().trim().min(1).max(128),
-  payingLineupSize: z.union([z.literal(3), z.literal(4)]),
+  payingLineupSize: z.union([z.literal(3), z.literal(4)]).optional(),
   responsibilities: z.array(responsibilitySchema),
 }).strict();
 
@@ -84,7 +84,7 @@ router.get("/leagues/:leagueId/source", async (req, res) => {
   catch { return sendError(res, "Financial source is unavailable", 409, "FINANCIAL_EVIDENCE_INCOMPATIBLE"); }
   const teamRows = await db.select({ id: teams.id, name: teams.name }).from(teams).where(and(eq(teams.leagueId, leagueId), eq(teams.active, true)));
   const teamNames = new Map(teamRows.map((team) => [team.id, team.name]));
-  return sendSuccess(res, { contractVersion: "canonical-due-past-due/1", orderVersion: "occurrence-team-slot-bowler/1", activationVersion: 1, organizationId, leagueId, authoritativeSource: "canonical", sourceFingerprint: source.sourceFingerprint, expected: source.expected.map((row) => ({ ...row, teamName: teamNames.get(row.teamId) ?? "Team" })) });
+  return sendSuccess(res, { contractVersion: "canonical-due-past-due/1", orderVersion: "occurrence-team-slot-bowler/1", activationVersion: 1, organizationId, leagueId, authoritativeSource: "canonical", payingLineupSize: source.payingLineupSize, sourceFingerprint: source.sourceFingerprint, expected: source.expected.map((row) => ({ ...row, teamName: teamNames.get(row.teamId) ?? "Team" })) });
 });
 
 router.get("/leagues/:leagueId/roster", async (req, res) => {

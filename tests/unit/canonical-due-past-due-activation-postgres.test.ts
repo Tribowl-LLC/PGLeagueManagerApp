@@ -60,7 +60,7 @@ async function operationalFixture(paymentMode: "weekly" | "upfront", lineupSize:
   createdOrganizations.push(organization.id);
   const [actor] = await db.insert(users).values({ email: `f1-activation-${suffix}@example.test`, password: "test", name: "F1 activation actor", role: "org_admin", organizationId: organization.id }).returning({ id: users.id });
   const [location] = await db.insert(locations).values({ name: "F1 activation lanes", organizationId: organization.id }).returning({ id: locations.id });
-  const [league] = await db.insert(leagues).values({ name: `F1 activation league ${suffix}`, organizationId: organization.id, locationId: location.id, seasonStart: "2038-01-01", seasonEnd: "2038-12-31", weekDay: "Sunday", competitionStartTime: "19:00", timezone: "UTC", totalBowlingWeeks: 12, weeklyFee: 500, paymentMode }).returning({ id: leagues.id });
+  const [league] = await db.insert(leagues).values({ name: `F1 activation league ${suffix}`, organizationId: organization.id, locationId: location.id, seasonStart: "2038-01-01", seasonEnd: "2038-12-31", weekDay: "Sunday", competitionStartTime: "19:00", timezone: "UTC", totalBowlingWeeks: 12, weeklyFee: 500, paymentMode, payingLineupSize: lineupSize }).returning({ id: leagues.id });
   const [team] = await db.insert(teams).values({ name: "F1 explicit team", number: 1, leagueId: league.id }).returning({ id: teams.id });
   const bowlersInserted = await db.insert(bowlers).values(Array.from({ length: lineupSize }, (_, index) => ({ name: `F1 payer ${index}`, organizationId: organization.id, active: true }))).returning({ id: bowlers.id });
   await db.insert(bowlerLeagues).values(bowlersInserted.map((bowler) => ({ bowlerId: bowler.id, leagueId: league.id, teamId: team.id, active: true })));
@@ -185,7 +185,8 @@ describe("F1 successful canonical activation and durable retry", () => {
   it("activates weekly 3-slot operational rows across all six kinds and keeps cancelled/none excluded", async () => {
     const fixture = await operationalFixture("weekly", 3);
     const source = await getCanonicalActivationSource(fixture);
-    const input = { ...fixture, commandKey: "weekly-activation", sourceFingerprint: source.sourceFingerprint, payingLineupSize: 3 as const, responsibilities: selections(fixture, 3) };
+    expect(source.payingLineupSize).toBe(3);
+    const input = { ...fixture, commandKey: "weekly-activation", sourceFingerprint: source.sourceFingerprint, responsibilities: selections(fixture, 3) };
     const result = await activateCanonicalFinancials(input);
     const retry = await activateCanonicalFinancials(input);
     expect(retry).toEqual(result);
@@ -207,6 +208,13 @@ describe("F1 successful canonical activation and durable retry", () => {
     });
     const afterRead = await financialBoundaryCounts(fixture);
     expect(afterRead).toEqual(beforeRead);
+  });
+
+  it("rejects a legacy caller lineup size that conflicts with league setup", async () => {
+    const fixture = await operationalFixture("weekly", 3);
+    const source = await getCanonicalActivationSource(fixture);
+    await expect(activateCanonicalFinancials({ ...fixture, commandKey: "lineup-mismatch", sourceFingerprint: source.sourceFingerprint, payingLineupSize: 4, responsibilities: selections(fixture, 3) })).rejects.toMatchObject({ code: "stale_source" });
+    expect(await db.select().from(financialActivations).where(eq(financialActivations.leagueId, fixture.leagueId))).toHaveLength(0);
   });
 
   it("activates upfront 4-slot rows with one stable transaction due instant", async () => {

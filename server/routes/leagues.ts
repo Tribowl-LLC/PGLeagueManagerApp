@@ -106,6 +106,7 @@ const newSeasonRequestSchema = z.union([newSeasonRequestV3Schema, newSeasonReque
 const directLeagueSetupV2TargetSchema = z.object({
   name: nameSchema,
   description: z.string().nullable().optional(),
+  payingLineupSize: z.union([z.literal(3), z.literal(4)]),
   active: z.boolean().optional(),
   organizationId: z.number().int().positive().optional(),
   locationId: z.number().int().positive().nullable().optional(),
@@ -581,7 +582,7 @@ router.patch("/:id", async (req: Request, res) => {
       "weekDay", "competitionStartTime", "timezone", "totalBowlingWeeks",
     ].some((field) => Object.prototype.hasOwnProperty.call(req.body ?? {}, field));
     const canonicalMetadataFieldChanged = [
-      "name", "description", "active", "allowPublicSignup", "practiceStartTime",
+      "name", "description", "payingLineupSize", "active", "allowPublicSignup", "practiceStartTime",
       "lineageFee", "prizeFundFee", "squareLineageItemId", "lineageItemVariationId",
       "squareLineageItemName", "squarePrizeFundItemId", "prizeFundItemVariationId",
       "squarePrizeFundItemName", "squareCategoryId",
@@ -641,6 +642,7 @@ router.patch("/:id", async (req: Request, res) => {
         metadata: {
           ...(update.name === undefined ? {} : { name: update.name }),
           ...(update.description === undefined ? {} : { description: update.description }),
+          ...(update.payingLineupSize === undefined ? {} : { payingLineupSize: update.payingLineupSize }),
           ...(update.active === undefined ? {} : { active: update.active }),
           ...(update.allowPublicSignup === undefined ? {} : { allowPublicSignup: update.allowPublicSignup }),
           ...(update.practiceStartTime === undefined ? {} : { practiceStartTime: update.practiceStartTime }),
