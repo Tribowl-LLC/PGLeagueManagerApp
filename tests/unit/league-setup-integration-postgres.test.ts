@@ -243,8 +243,9 @@ describe("authoritative league setup integration", () => {
       idempotencyKey: `30000000-0000-4000-8000-${String(++sequence).padStart(12, "0")}`,
     };
     const commandKey = `lvsetup:${fallDraftSha256(legacyIntent)}`;
-    const leagueInput = fallLeague(f);
-    const [persisted] = await db.insert(leagues).values(leagueInput).returning();
+    const configuredLeague = fallLeague(f);
+    const { payingLineupSize: _historicallyAbsent, ...leagueInput } = configuredLeague;
+    const [persisted] = await db.insert(leagues).values({ ...configuredLeague, payingLineupSize: null }).returning();
     await db.transaction((tx) => applyFallDraftGenerationInTransaction(tx, {
       organizationId: f.organizationId,
       leagueId: persisted.id,
@@ -265,6 +266,12 @@ describe("authoritative league setup integration", () => {
       league: { ...leagueInput, name: "new v1 write forbidden" },
       setup: { ...legacyIntent, idempotencyKey: `30000000-0000-4000-8000-${String(++sequence).padStart(12, "0")}` },
     })).rejects.toMatchObject({ code: "idempotency_conflict" });
+
+    await expect(createLeagueWithCanonicalSetup({
+      scope: { organizationId: f.organizationId, actorUserId: f.actorUserId },
+      league: { ...leagueInput, name: "new setup still requires lineup size" },
+      setup: setup(++sequence),
+    })).rejects.toMatchObject({ code: "validation_error" });
   });
 
   it.each(["weekly", "upfront"] as const)("atomically creates complete %s Fall drafts with fixed policies", async (paymentMode) => {

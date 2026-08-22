@@ -193,6 +193,10 @@ describe("league setup integration API", () => {
     const { allowPublicSignup: _omitted, ...missingExplicitTarget } = futureBody(30);
     const missingTarget = await apiPost("/api/leagues", missingExplicitTarget, admin);
     expect(missingTarget.status).toBe(400);
+    const { payingLineupSize: _missingLineup, ...missingLineupTarget } = futureBody(32);
+    const missingLineup = await apiPost("/api/leagues", missingLineupTarget, admin);
+    expect(missingLineup.status).toBe(400);
+    expect(missingLineup.data.error?.code).toBe("VALIDATION_ERROR");
     const retiredSeasonEnd = await apiPost("/api/leagues", {
       ...futureBody(31),
       seasonEnd: "2032-12-01",

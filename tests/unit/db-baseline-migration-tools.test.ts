@@ -421,6 +421,11 @@ describe('normalized migration baseline tools', () => {
     });
     expect(migrations[30]?.sql).toContain('CREATE TABLE "canonical_collection_groups"');
     expect(migrations[30]?.sql).toContain('canonical_collection_group_members');
+    expect(migrations[31]).toMatchObject({ idx: 31, tag: '0031_league_paying_lineup_size' });
+    expect(migrations[31]?.sql).toContain('FROM "financial_activations"');
+    expect(migrations[31]?.sql).toContain('"activation"."state" = \'active\'');
+    expect(migrations[31]?.sql).toContain('"activation"."completeness_marker" = true');
+    expect(migrations[31]?.sql).not.toContain('FROM "payments"');
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 

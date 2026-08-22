@@ -321,6 +321,7 @@ export function NewSeasonDialog({
               <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
                 <dt className="font-medium">League</dt><dd>{carriedSource.carriedConfiguration.name}</dd>
                 <dt className="font-medium">Description</dt><dd>{carriedSource.carriedConfiguration.description ?? "Not set"}</dd>
+                <dt className="font-medium">League lineup size</dt><dd>{carriedSource.carriedConfiguration.payingLineupSize === 3 ? "Three Bowlers" : "Four Bowlers"}</dd>
                 <dt className="font-medium">Location</dt><dd>Location #{carriedSource.carriedConfiguration.locationId}</dd>
                 <dt className="font-medium">Timezone</dt><dd>{carriedSource.carriedConfiguration.timezone}</dd>
                 <dt className="font-medium">Practice</dt><dd>{carriedSource.carriedConfiguration.practiceStartTime ?? "Not set"}</dd>
