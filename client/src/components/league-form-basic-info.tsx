@@ -76,13 +76,19 @@ export function LeagueBasicInfo({ form, activeLocations, onLocationChange }: Lea
 
       <FormField
         control={form.control}
-        name="description"
+        name="payingLineupSize"
         render={({ field }) => (
           <FormItem>
-            <FormLabel>Description</FormLabel>
-            <FormControl>
-              <Input {...field} value={field.value || ""} />
-            </FormControl>
+            <FormLabel>League Lineup Size</FormLabel>
+            <Select value={field.value ? String(field.value) : ""} onValueChange={(value) => field.onChange(Number(value))}>
+              <FormControl>
+                <SelectTrigger><SelectValue placeholder="Choose a lineup size" /></SelectTrigger>
+              </FormControl>
+              <SelectContent>
+                <SelectItem value="3">Three Bowlers</SelectItem>
+                <SelectItem value="4">Four Bowlers</SelectItem>
+              </SelectContent>
+            </Select>
             <FormMessage />
           </FormItem>
         )}

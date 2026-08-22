@@ -4,6 +4,7 @@ import { insertLeagueSchema, updateLeagueSchema } from '@shared/schema/leagues';
 const BASE_VALID = {
   name: 'Test League',
   description: null,
+  payingLineupSize: 4,
   active: true,
   allowPublicSignup: false,
   // Wednesday 2026-04-01

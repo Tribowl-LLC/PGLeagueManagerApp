@@ -26,20 +26,20 @@ vi.mock("@/components/ui/select", () => {
 import FinancialActivationPage from "@/pages/financial-activation-page";
 
 describe("F1 responsibility activation UI", () => {
-  it("uses scoped source/candidate contracts and renders explicit three-or-four choices blank", async () => {
+  it("uses the league setup lineup size and renders its payer positions blank", async () => {
     const calls: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       calls.push(url);
-      if (url.includes("/source")) return new Response(JSON.stringify({ data: { activationVersion: 1, contractVersion: "canonical-due-past-due/1", orderVersion: "occurrence-team-slot-bowler/1", organizationId: 1, leagueId: 7, authoritativeSource: "canonical", sourceFingerprint: `lvfinancialsource:v1:${"a".repeat(64)}`, expected: [{ occurrenceId: "00000000-0000-0000-0000-000000000001", teamId: 9, teamName: "A Team", occurrenceKind: "makeup", occurrenceStatus: "scheduled", lifecycle: "published", occurrenceRevision: 1, billingTermId: "00000000-0000-0000-0000-000000000002", billingTermVersion: 1, billingTermRevision: 1, obligationPolicy: "eligible_bowlers", amountMinor: 500, currency: "USD", paymentMode: "weekly", occurrenceStartAt: "2038-01-01T00:00:00.000Z" }] } }), { status: 200 });
+      if (url.includes("/source")) return new Response(JSON.stringify({ data: { activationVersion: 1, contractVersion: "canonical-due-past-due/1", orderVersion: "occurrence-team-slot-bowler/1", organizationId: 1, leagueId: 7, authoritativeSource: "canonical", payingLineupSize: 3, sourceFingerprint: `lvfinancialsource:v1:${"a".repeat(64)}`, expected: [{ occurrenceId: "00000000-0000-0000-0000-000000000001", teamId: 9, teamName: "A Team", occurrenceKind: "makeup", occurrenceStatus: "scheduled", lifecycle: "published", occurrenceRevision: 1, billingTermId: "00000000-0000-0000-0000-000000000002", billingTermVersion: 1, billingTermRevision: 1, obligationPolicy: "eligible_bowlers", amountMinor: 500, currency: "USD", paymentMode: "weekly", occurrenceStartAt: "2038-01-01T00:00:00.000Z" }] } }), { status: 200 });
       return new Response(JSON.stringify({ data: [{ bowlerId: 11, name: "A Bowler" }] }), { status: 200 });
     }));
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(<QueryClientProvider client={queryClient}><FinancialActivationPage /></QueryClientProvider>);
     await waitFor(() => expect(screen.getByText(/Review payer responsibility/i)).toBeInTheDocument());
-    expect(screen.getByText("Choose three or four")).toBeInTheDocument();
-    expect(screen.getByText(/not selected/)).toBeInTheDocument();
-    expect(screen.getByText(/exactly three or four payers/i)).toBeInTheDocument();
+    expect(screen.queryByText("Choose three or four")).not.toBeInTheDocument();
+    expect(screen.getByText(/League lineup: Three Bowlers/)).toBeInTheDocument();
+    expect(screen.getAllByRole("combobox").filter((element) => !element.hasAttribute("disabled"))).toHaveLength(6);
     expect(screen.getByText(/makeup · scheduled · weekly · \$5\.00 USD/i)).toBeInTheDocument();
     expect(screen.getByText(/irreversible in F1/i)).toBeInTheDocument();
     expect(calls.some((url) => url.includes("/api/bowler-leagues") || url === "/api/bowlers")).toBe(false);
@@ -51,7 +51,7 @@ describe("F1 responsibility activation UI", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       calls.push(url);
-      if (url.includes("/source")) return new Response(JSON.stringify({ data: { activationVersion: 1, contractVersion: "canonical-due-past-due/1", orderVersion: "occurrence-team-slot-bowler/1", organizationId: 42, leagueId: 7, authoritativeSource: "canonical", sourceFingerprint: `lvfinancialsource:v1:${"b".repeat(64)}`, expected: [{ occurrenceId: "00000000-0000-0000-0000-000000000001", teamId: 9, teamName: "A Team", occurrenceKind: "regular", occurrenceStatus: "scheduled", lifecycle: "published", occurrenceRevision: 1, billingTermId: "00000000-0000-0000-0000-000000000002", billingTermVersion: 1, billingTermRevision: 1, obligationPolicy: "eligible_bowlers", amountMinor: 500, currency: "USD", paymentMode: "weekly", occurrenceStartAt: "2038-01-01T00:00:00.000Z" }] } }), { status: 200 });
+      if (url.includes("/source")) return new Response(JSON.stringify({ data: { activationVersion: 1, contractVersion: "canonical-due-past-due/1", orderVersion: "occurrence-team-slot-bowler/1", organizationId: 42, leagueId: 7, authoritativeSource: "canonical", payingLineupSize: 3, sourceFingerprint: `lvfinancialsource:v1:${"b".repeat(64)}`, expected: [{ occurrenceId: "00000000-0000-0000-0000-000000000001", teamId: 9, teamName: "A Team", occurrenceKind: "regular", occurrenceStatus: "scheduled", lifecycle: "published", occurrenceRevision: 1, billingTermId: "00000000-0000-0000-0000-000000000002", billingTermVersion: 1, billingTermRevision: 1, obligationPolicy: "eligible_bowlers", amountMinor: 500, currency: "USD", paymentMode: "weekly", occurrenceStartAt: "2038-01-01T00:00:00.000Z" }] } }), { status: 200 });
       return new Response(JSON.stringify({ data: [{ bowlerId: 11, name: "A Bowler" }, { bowlerId: 12, name: "B Bowler" }, { bowlerId: 13, name: "C Bowler" }] }), { status: 200 });
     }));
     apiRequestMock.mockResolvedValue({ success: true, data: {} });
@@ -61,13 +61,12 @@ describe("F1 responsibility activation UI", () => {
     await waitFor(() => expect(screen.getByText(/Review payer responsibility/i)).toBeInTheDocument());
     const user = userEvent.setup();
     const selects = screen.getAllByRole("combobox");
-    await user.selectOptions(selects[0], "3");
-    await user.selectOptions(selects[1], "11");
-    await user.selectOptions(selects[2], "regular");
-    await user.selectOptions(selects[3], "12");
-    await user.selectOptions(selects[4], "substitute");
-    await user.selectOptions(selects[5], "13");
-    await user.selectOptions(selects[6], "regular");
+    await user.selectOptions(selects[0], "11");
+    await user.selectOptions(selects[1], "regular");
+    await user.selectOptions(selects[2], "12");
+    await user.selectOptions(selects[3], "substitute");
+    await user.selectOptions(selects[4], "13");
+    await user.selectOptions(selects[5], "regular");
     await user.click(screen.getByRole("button", { name: /Review and activate/i }));
     await waitFor(() => expect(apiRequestMock).toHaveBeenCalledTimes(1));
     expect(apiRequestMock.mock.calls[0]).toEqual([
@@ -76,7 +75,6 @@ describe("F1 responsibility activation UI", () => {
       expect.objectContaining({
         commandKey: expect.stringMatching(/^financial-activation-/),
         sourceFingerprint: `lvfinancialsource:v1:${"b".repeat(64)}`,
-        payingLineupSize: 3,
         responsibilities: [
           { occurrenceId: "00000000-0000-0000-0000-000000000001", teamId: 9, slotIndex: 0, bowlerId: 11, role: "regular", provenance: "explicit_admin_selection" },
           { occurrenceId: "00000000-0000-0000-0000-000000000001", teamId: 9, slotIndex: 1, bowlerId: 12, role: "substitute", provenance: "explicit_admin_selection" },

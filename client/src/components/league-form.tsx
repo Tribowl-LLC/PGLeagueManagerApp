@@ -66,6 +66,7 @@ export function LeagueForm({ open, onClose, league, systemAdminOrganizationId }:
     defaultValues: {
       name: "",
       description: "",
+      payingLineupSize: undefined,
       active: true,
       allowPublicSignup: false,
       seasonStart: today.toISOString(),

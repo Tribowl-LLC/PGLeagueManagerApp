@@ -218,6 +218,13 @@
       "when": 1787340597942,
       "tag": "0030_canonical_collection_groups",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1787427717641,
+      "tag": "0031_league_paying_lineup_size",
+      "breakpoints": true
     }
   ]
 }

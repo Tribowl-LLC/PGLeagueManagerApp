@@ -103,6 +103,7 @@ export interface FinancialActivationSourceContract {
   leagueId: number;
   authoritativeSource: "canonical";
   activationVersion: 1;
+  payingLineupSize: 3 | 4;
   sourceFingerprint: string;
   expected: FinancialActivationSourceRow[];
 }
@@ -118,7 +119,8 @@ export interface FinancialActivationSelection {
 export interface FinancialActivationRequestContract {
   commandKey: string;
   sourceFingerprint: string;
-  payingLineupSize: 3 | 4;
+  /** @deprecated Compatibility evidence only; the league value is authoritative. */
+  payingLineupSize?: 3 | 4;
   responsibilities: FinancialActivationSelection[];
 }
 export interface FinancialActivationResultContract {

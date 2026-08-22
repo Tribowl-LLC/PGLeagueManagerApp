@@ -48,6 +48,7 @@ function futureBody(key: number) {
   return {
     name: `API atomic Spring ${key}`,
     description: "setup API coverage",
+    payingLineupSize: 4,
     active: true,
     allowPublicSignup: true,
     seasonStart: "2032-03-07",
@@ -192,6 +193,10 @@ describe("league setup integration API", () => {
     const { allowPublicSignup: _omitted, ...missingExplicitTarget } = futureBody(30);
     const missingTarget = await apiPost("/api/leagues", missingExplicitTarget, admin);
     expect(missingTarget.status).toBe(400);
+    const { payingLineupSize: _missingLineup, ...missingLineupTarget } = futureBody(32);
+    const missingLineup = await apiPost("/api/leagues", missingLineupTarget, admin);
+    expect(missingLineup.status).toBe(400);
+    expect(missingLineup.data.error?.code).toBe("VALIDATION_ERROR");
     const retiredSeasonEnd = await apiPost("/api/leagues", {
       ...futureBody(31),
       seasonEnd: "2032-12-01",
@@ -267,6 +272,7 @@ describe("league setup integration API", () => {
       totalBowlingWeeks: 12,
       weeklyFee: 2_000,
       paymentMode: "weekly",
+      payingLineupSize: 4,
     }).returning();
     const [team] = await db.insert(teams).values({ name: "API source team", number: 1, leagueId: source.id, displayOrder: 4 }).returning();
     const [bowler] = await db.insert(bowlers).values({ name: "API roster bowler", organizationId }).returning();

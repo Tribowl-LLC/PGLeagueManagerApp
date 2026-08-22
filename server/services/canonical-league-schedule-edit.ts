@@ -10,6 +10,7 @@ import {
   paymentOccurrenceAllocations,
   paymentOperationOccurrenceSnapshotAllocations,
   paymentOperations,
+  financialActivations,
   leagueOccurrenceGenerationRuns,
   leagueOccurrences,
   leagues,
@@ -38,7 +39,7 @@ export class CanonicalLeagueScheduleEditError extends Error {
 
 /** Ordinary builder fields that may accompany a canonical schedule edit. */
 export type CanonicalLeagueMetadataPatch = Partial<Pick<League,
-  "name" | "description" | "active" | "allowPublicSignup" | "practiceStartTime"
+  "name" | "description" | "payingLineupSize" | "active" | "allowPublicSignup" | "practiceStartTime"
   | "lineageFee" | "prizeFundFee" | "squareLineageItemId" | "lineageItemVariationId"
   | "squareLineageItemName" | "squarePrizeFundItemId" | "prizeFundItemVariationId"
   | "squarePrizeFundItemName" | "squareCategoryId"
@@ -166,6 +167,15 @@ export async function editCanonicalLeagueSchedule(input: CanonicalLeagueSchedule
     if (!input.reason || input.reason.trim() !== input.reason || !Number.isSafeInteger(input.expectedScheduleRevision) || input.expectedScheduleRevision < 0) throw new CanonicalLeagueScheduleEditError("invalid_edit", "schedule revision and reason are required");
     const [league] = await tx.select().from(leagues).where(and(eq(leagues.organizationId, input.organizationId), eq(leagues.id, input.leagueId))).for("update");
     if (!league) throw new CanonicalLeagueScheduleEditError("invalid_edit", "league is outside the requested tenant");
+    if (input.metadata?.payingLineupSize !== undefined && input.metadata.payingLineupSize !== league.payingLineupSize) {
+      const [activation] = await tx.select({ id: financialActivations.id }).from(financialActivations).where(and(
+        eq(financialActivations.organizationId, input.organizationId),
+        eq(financialActivations.leagueId, input.leagueId),
+        eq(financialActivations.state, "active"),
+        eq(financialActivations.completenessMarker, true),
+      )).for("update").limit(1);
+      if (activation) throw new CanonicalLeagueScheduleEditError("financial_conflict", "league lineup size is locked after financial activation");
+    }
     const request: MaterializationScheduleCommandRequest = {
       organizationId: input.organizationId,
       leagueId: input.leagueId,

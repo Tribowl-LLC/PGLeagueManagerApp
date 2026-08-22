@@ -633,7 +633,7 @@ export class FinancialActivationError extends Error {
   }
 }
 
-interface OperationalActivationEvidence { expected: ResponsibilityExpectedRow[]; sourceFingerprint: string; authoritativeSource: "canonical" | "legacy" | "legacy_fallback"; sourceSurface?: Record<string, unknown>; }
+interface OperationalActivationEvidence { expected: ResponsibilityExpectedRow[]; payingLineupSize: 3 | 4; sourceFingerprint: string; authoritativeSource: "canonical" | "legacy" | "legacy_fallback"; sourceSurface?: Record<string, unknown>; }
 
 type CancellationResponsibility = {
   occurrenceId: string;
@@ -683,11 +683,12 @@ export async function loadOperationalActivationEvidence(
   tx: ScheduleExecutor,
   input: { organizationId: number; leagueId: number },
 ): Promise<OperationalActivationEvidence> {
-  const [league] = await tx.select({ paymentMode: leagues.paymentMode }).from(leagues).where(and(eq(leagues.id, input.leagueId), eq(leagues.organizationId, input.organizationId))).limit(1);
+  const [league] = await tx.select({ paymentMode: leagues.paymentMode, payingLineupSize: leagues.payingLineupSize }).from(leagues).where(and(eq(leagues.id, input.leagueId), eq(leagues.organizationId, input.organizationId))).limit(1);
   if (!league || (league.paymentMode !== "weekly" && league.paymentMode !== "upfront")) throw new FinancialActivationError("canonical_incomplete", "canonical payment mode is unavailable");
+  if (league.payingLineupSize !== 3 && league.payingLineupSize !== 4) throw new FinancialActivationError("canonical_incomplete", "league lineup size must be selected in league setup");
   const schedule = await loadOperationalActivationSource(tx, input);
   if (schedule.authoritativeSource !== "canonical" || !schedule.operationalCanonicalStateExists) {
-    return { expected: [], authoritativeSource: schedule.authoritativeSource, sourceFingerprint: fingerprint(FINANCIAL_SOURCE_FINGERPRINT_PREFIX, { organizationId: input.organizationId, leagueId: input.leagueId, contractVersion: FINANCIAL_READ_CONTRACT_VERSION, policyVersion: FINANCIAL_ACTIVATION_POLICY_VERSION, orderVersion: FINANCIAL_ACTIVATION_ORDER_VERSION, paymentMode: league.paymentMode, occurrences: [], teams: [] }) };
+    return { expected: [], payingLineupSize: league.payingLineupSize, authoritativeSource: schedule.authoritativeSource, sourceFingerprint: fingerprint(FINANCIAL_SOURCE_FINGERPRINT_PREFIX, { organizationId: input.organizationId, leagueId: input.leagueId, contractVersion: FINANCIAL_READ_CONTRACT_VERSION, policyVersion: FINANCIAL_ACTIVATION_POLICY_VERSION, orderVersion: FINANCIAL_ACTIVATION_ORDER_VERSION, paymentMode: league.paymentMode, payingLineupSize: league.payingLineupSize, occurrences: [], teams: [] }) };
   }
   const decisionOccurrences = schedule.occurrences.filter((row): row is typeof row & { occurrenceId: string; startAt: string } => typeof row.occurrenceId === "string" && typeof row.startAt === "string" && (row.lifecycle === "published" || row.lifecycle === "locked"));
   const operational = decisionOccurrences.filter((row) => row.status === "scheduled" || row.status === "completed");
@@ -767,6 +768,7 @@ export async function loadOperationalActivationEvidence(
     policyVersion: FINANCIAL_ACTIVATION_POLICY_VERSION,
     orderVersion: FINANCIAL_ACTIVATION_ORDER_VERSION,
     paymentMode: league.paymentMode,
+    payingLineupSize: league.payingLineupSize,
     occurrences: decisionOccurrences.map((row) => ({ occurrenceId: row.occurrenceId, kind: row.kind, status: row.status, lifecycle: row.lifecycle, startAt: row.startAt, revision: row.currentRevision, term: termByOccurrence.get(row.occurrenceId) ?? null, disposition: row.status === "cancelled" ? "cancelled" : (termByOccurrence.get(row.occurrenceId)?.obligationPolicy === "none" ? "none" : "eligible_bowlers") })),
     teams: teamsRows.map((team) => team.id),
   };
@@ -777,7 +779,7 @@ export async function loadOperationalActivationEvidence(
     eq(financialActivations.completenessMarker, true),
   )).limit(1);
   if (!activation) {
-    return { expected, authoritativeSource: "canonical", sourceFingerprint: fingerprint(FINANCIAL_SOURCE_FINGERPRINT_PREFIX, sourceSurface), sourceSurface };
+    return { expected, payingLineupSize: league.payingLineupSize, authoritativeSource: "canonical", sourceFingerprint: fingerprint(FINANCIAL_SOURCE_FINGERPRINT_PREFIX, sourceSurface), sourceSurface };
   }
 
   // F1 revision 1 is immutable. A cancellation is accepted only through an
@@ -905,6 +907,7 @@ export async function loadOperationalActivationEvidence(
   });
   return {
     expected: [...expected, ...canceledExpected].sort((left, right) => left.occurrenceId.localeCompare(right.occurrenceId) || left.teamId - right.teamId),
+    payingLineupSize: league.payingLineupSize,
     authoritativeSource: "canonical",
     sourceFingerprint: activation.sourceFingerprint,
     sourceSurface,
@@ -917,7 +920,7 @@ export async function activateCanonicalFinancials(input: {
   actorUserId: number;
   commandKey: string;
   sourceFingerprint: string;
-  payingLineupSize: 3 | 4;
+  payingLineupSize?: 3 | 4;
   responsibilities: ResponsibilityInput[];
 }): Promise<ActivationResult> {
   const normalizedResponsibilities = normalizeResponsibilities(input.responsibilities);
@@ -925,9 +928,12 @@ export async function activateCanonicalFinancials(input: {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(${input.organizationId}::integer, ${input.leagueId}::integer)`);
     const [actor] = await tx.select({ id: users.id, role: users.role, organizationId: users.organizationId }).from(users).where(eq(users.id, input.actorUserId)).limit(1);
     if (!actor || (actor.role !== "org_admin" && actor.role !== "system_admin") || (actor.role !== "system_admin" && actor.organizationId !== input.organizationId)) throw new FinancialActivationError("canonical_incomplete", "activation authorization is unavailable");
-    const [league] = await tx.select({ paymentMode: leagues.paymentMode }).from(leagues).where(and(eq(leagues.id, input.leagueId), eq(leagues.organizationId, input.organizationId))).limit(1);
+    const [league] = await tx.select({ paymentMode: leagues.paymentMode, payingLineupSize: leagues.payingLineupSize }).from(leagues).where(and(eq(leagues.id, input.leagueId), eq(leagues.organizationId, input.organizationId))).limit(1);
     if (!league || (league.paymentMode !== "weekly" && league.paymentMode !== "upfront")) throw new FinancialActivationError("canonical_incomplete", "canonical league billing is unavailable");
-    const requestFingerprint = activationRequestFingerprint({ organizationId: input.organizationId, leagueId: input.leagueId, sourceFingerprint: input.sourceFingerprint, paymentMode: league.paymentMode, payingLineupSize: input.payingLineupSize, responsibilities: normalizedResponsibilities });
+    if (league.payingLineupSize !== 3 && league.payingLineupSize !== 4) throw new FinancialActivationError("canonical_incomplete", "league lineup size must be selected in league setup");
+    const payingLineupSize = league.payingLineupSize;
+    if (input.payingLineupSize !== undefined && input.payingLineupSize !== payingLineupSize) throw new FinancialActivationError("stale_source", "league lineup size changed; review the matrix again");
+    const requestFingerprint = activationRequestFingerprint({ organizationId: input.organizationId, leagueId: input.leagueId, sourceFingerprint: input.sourceFingerprint, paymentMode: league.paymentMode, payingLineupSize, responsibilities: normalizedResponsibilities });
     const existing = await tx.select().from(financialActivations).where(and(eq(financialActivations.organizationId, input.organizationId), eq(financialActivations.commandKey, input.commandKey))).limit(1);
     if (existing[0]) {
       const [revision] = await tx.select().from(financialActivationRevisions).where(and(eq(financialActivationRevisions.organizationId, input.organizationId), eq(financialActivationRevisions.leagueId, input.leagueId), eq(financialActivationRevisions.activationId, existing[0].id), eq(financialActivationRevisions.revisionNumber, 1))).limit(1);
@@ -935,7 +941,7 @@ export async function activateCanonicalFinancials(input: {
       const storedCount = await tx.select({ id: financialResponsibilities.id }).from(financialResponsibilities).where(and(eq(financialResponsibilities.organizationId, input.organizationId), eq(financialResponsibilities.leagueId, input.leagueId), eq(financialResponsibilities.activationId, existing[0].id)));
       const storedResponsibilities = await tx.select({ occurrenceId: financialResponsibilities.occurrenceId, teamId: financialResponsibilities.teamId, slotIndex: financialResponsibilities.slotIndex, bowlerId: financialResponsibilities.bowlerId, role: financialResponsibilities.role, provenance: financialResponsibilities.provenance }).from(financialResponsibilities).where(and(eq(financialResponsibilities.organizationId, input.organizationId), eq(financialResponsibilities.leagueId, input.leagueId), eq(financialResponsibilities.activationId, existing[0].id))).orderBy(asc(financialResponsibilities.occurrenceId), asc(financialResponsibilities.teamId), asc(financialResponsibilities.slotIndex), asc(financialResponsibilities.bowlerId));
       const submittedResponsibilities = normalizedResponsibilities;
-      const retryMismatch = existing[0].leagueId !== input.leagueId || existing[0].recordedByUserId !== input.actorUserId || existing[0].requestFingerprint !== requestFingerprint || existing[0].sourceFingerprint !== input.sourceFingerprint || existing[0].activationVersion !== FINANCIAL_ACTIVATION_VERSION || existing[0].policyVersion !== FINANCIAL_ACTIVATION_POLICY_VERSION || existing[0].orderVersion !== FINANCIAL_ACTIVATION_ORDER_VERSION || existing[0].payingLineupSize !== input.payingLineupSize || !revision || snapshot?.requestFingerprint !== requestFingerprint || snapshot?.sourceFingerprint !== input.sourceFingerprint || snapshot?.payingLineupSize !== input.payingLineupSize || snapshot?.expectedGroupCount !== existing[0].expectedGroupCount || snapshot?.expectedResponsibilityCount !== existing[0].expectedResponsibilityCount || stableCanonicalJson(snapshot?.responsibilities) !== stableCanonicalJson(submittedResponsibilities) || stableCanonicalJson(storedResponsibilities) !== stableCanonicalJson(submittedResponsibilities) || storedCount.length !== existing[0].expectedResponsibilityCount;
+      const retryMismatch = existing[0].leagueId !== input.leagueId || existing[0].recordedByUserId !== input.actorUserId || existing[0].requestFingerprint !== requestFingerprint || existing[0].sourceFingerprint !== input.sourceFingerprint || existing[0].activationVersion !== FINANCIAL_ACTIVATION_VERSION || existing[0].policyVersion !== FINANCIAL_ACTIVATION_POLICY_VERSION || existing[0].orderVersion !== FINANCIAL_ACTIVATION_ORDER_VERSION || existing[0].payingLineupSize !== payingLineupSize || !revision || snapshot?.requestFingerprint !== requestFingerprint || snapshot?.sourceFingerprint !== input.sourceFingerprint || snapshot?.payingLineupSize !== payingLineupSize || snapshot?.expectedGroupCount !== existing[0].expectedGroupCount || snapshot?.expectedResponsibilityCount !== existing[0].expectedResponsibilityCount || stableCanonicalJson(snapshot?.responsibilities) !== stableCanonicalJson(submittedResponsibilities) || stableCanonicalJson(storedResponsibilities) !== stableCanonicalJson(submittedResponsibilities) || storedCount.length !== existing[0].expectedResponsibilityCount;
       if (retryMismatch) throw new FinancialActivationError("idempotency_conflict", "activation command conflicts with a prior command");
       const priorObligations = await tx.select({ id: financialResponsibilities.obligationId })
         .from(financialResponsibilities)
@@ -979,15 +985,15 @@ export async function activateCanonicalFinancials(input: {
     const expected = evidence.expected;
     if (expected.length === 0) throw new FinancialActivationError("canonical_incomplete", "no published billable canonical occurrences are available");
     if (input.sourceFingerprint !== evidence.sourceFingerprint) throw new FinancialActivationError("stale_source", "canonical billing inputs changed; review the matrix again");
-    const matrixErrors = validateResponsibilityMatrix(expected, normalizedResponsibilities, input.payingLineupSize);
+    const matrixErrors = validateResponsibilityMatrix(expected, normalizedResponsibilities, payingLineupSize);
     if (matrixErrors.length > 0) throw new FinancialActivationError("invalid_matrix", "responsibility matrix is incomplete");
     const databaseClock = await tx.execute(sql`SELECT transaction_timestamp()::text AS now`);
     const dueInstant = (databaseClock.rows[0] as { now?: string } | undefined)?.now;
     if (!dueInstant) throw new FinancialActivationError("canonical_incomplete", "activation clock evidence unavailable");
     const expectedGroupCount = expected.length;
-    const [activation] = await tx.insert(financialActivations).values({ organizationId: input.organizationId, leagueId: input.leagueId, activationVersion: FINANCIAL_ACTIVATION_VERSION, policyVersion: FINANCIAL_ACTIVATION_POLICY_VERSION, orderVersion: FINANCIAL_ACTIVATION_ORDER_VERSION, commandKey: input.commandKey, requestFingerprint, sourceFingerprint: input.sourceFingerprint, paymentMode: league.paymentMode, state: "active", completenessMarker: true, payingLineupSize: input.payingLineupSize, expectedResponsibilityCount: expectedGroupCount * input.payingLineupSize, expectedGroupCount, currentRevision: 1, upfrontDueAt: league.paymentMode === "upfront" ? dueInstant : null, recordedByUserId: input.actorUserId }).returning();
+    const [activation] = await tx.insert(financialActivations).values({ organizationId: input.organizationId, leagueId: input.leagueId, activationVersion: FINANCIAL_ACTIVATION_VERSION, policyVersion: FINANCIAL_ACTIVATION_POLICY_VERSION, orderVersion: FINANCIAL_ACTIVATION_ORDER_VERSION, commandKey: input.commandKey, requestFingerprint, sourceFingerprint: input.sourceFingerprint, paymentMode: league.paymentMode, state: "active", completenessMarker: true, payingLineupSize, expectedResponsibilityCount: expectedGroupCount * payingLineupSize, expectedGroupCount, currentRevision: 1, upfrontDueAt: league.paymentMode === "upfront" ? dueInstant : null, recordedByUserId: input.actorUserId }).returning();
     if (!activation) throw new FinancialActivationError("canonical_incomplete", "activation could not be recorded");
-    await tx.insert(financialActivationRevisions).values({ organizationId: input.organizationId, leagueId: input.leagueId, activationId: activation.id, revisionNumber: 1, snapshotSchemaVersion: FINANCIAL_ACTIVATION_VERSION, afterSnapshot: { activationVersion: FINANCIAL_ACTIVATION_VERSION, policyVersion: FINANCIAL_ACTIVATION_POLICY_VERSION, orderVersion: FINANCIAL_ACTIVATION_ORDER_VERSION, requestFingerprint, sourceFingerprint: input.sourceFingerprint, payingLineupSize: input.payingLineupSize, expectedGroupCount, expectedResponsibilityCount: expectedGroupCount * input.payingLineupSize, sourceSurface: evidence.sourceSurface ?? null, responsibilities: normalizedResponsibilities.map(({ occurrenceId, teamId, slotIndex, bowlerId, role, provenance }) => ({ occurrenceId, teamId, slotIndex, bowlerId, role, provenance })) }, recordedByUserId: input.actorUserId });
+    await tx.insert(financialActivationRevisions).values({ organizationId: input.organizationId, leagueId: input.leagueId, activationId: activation.id, revisionNumber: 1, snapshotSchemaVersion: FINANCIAL_ACTIVATION_VERSION, afterSnapshot: { activationVersion: FINANCIAL_ACTIVATION_VERSION, policyVersion: FINANCIAL_ACTIVATION_POLICY_VERSION, orderVersion: FINANCIAL_ACTIVATION_ORDER_VERSION, requestFingerprint, sourceFingerprint: input.sourceFingerprint, payingLineupSize, expectedGroupCount, expectedResponsibilityCount: expectedGroupCount * payingLineupSize, sourceSurface: evidence.sourceSurface ?? null, responsibilities: normalizedResponsibilities.map(({ occurrenceId, teamId, slotIndex, bowlerId, role, provenance }) => ({ occurrenceId, teamId, slotIndex, bowlerId, role, provenance })) }, recordedByUserId: input.actorUserId });
     const obligationIds: string[] = [];
     for (const selected of normalizedResponsibilities) {
       const term = expected.find((row) => row.occurrenceId === selected.occurrenceId && row.teamId === selected.teamId);
@@ -1006,7 +1012,7 @@ export async function activateCanonicalFinancials(input: {
       const [obligation] = await tx.insert(bowlerOccurrenceObligations).values({ organizationId: input.organizationId, leagueId: input.leagueId, occurrenceId: selected.occurrenceId, bowlerId: selected.bowlerId, purpose: "league_weekly_fee", amountMinor: term.amountMinor, currency: term.currency, dueAt: timing.dueAt, pastDueAt: timing.pastDueAt, state: "open", billingTermId: term.billingTermId, billingTermVersion: term.billingTermVersion, currentRevision: 1, recordedByUserId: input.actorUserId }).returning();
       if (!obligation) throw new FinancialActivationError("canonical_incomplete", "obligation could not be recorded");
       obligationIds.push(obligation.id);
-      const [responsibility] = await tx.insert(financialResponsibilities).values({ organizationId: input.organizationId, leagueId: input.leagueId, activationId: activation.id, occurrenceId: selected.occurrenceId, teamId: selected.teamId, slotIndex: selected.slotIndex, payingLineupSize: input.payingLineupSize, bowlerId: selected.bowlerId, eligibilityId: eligibility.id, assignmentId: assignment.id, obligationId: obligation.id, amountMinor: term.amountMinor, currency: term.currency, billingTermId: term.billingTermId, purpose: "league_weekly_fee", billingTermVersion: term.billingTermVersion, dueAt: timing.dueAt, pastDueAt: timing.pastDueAt, role: selected.role, provenance: selected.provenance }).returning();
+      const [responsibility] = await tx.insert(financialResponsibilities).values({ organizationId: input.organizationId, leagueId: input.leagueId, activationId: activation.id, occurrenceId: selected.occurrenceId, teamId: selected.teamId, slotIndex: selected.slotIndex, payingLineupSize, bowlerId: selected.bowlerId, eligibilityId: eligibility.id, assignmentId: assignment.id, obligationId: obligation.id, amountMinor: term.amountMinor, currency: term.currency, billingTermId: term.billingTermId, purpose: "league_weekly_fee", billingTermVersion: term.billingTermVersion, dueAt: timing.dueAt, pastDueAt: timing.pastDueAt, role: selected.role, provenance: selected.provenance }).returning();
       if (!responsibility) throw new FinancialActivationError("canonical_incomplete", "responsibility could not be recorded");
       await tx.insert(bowlerOccurrenceObligationRevisions).values({ organizationId: input.organizationId, leagueId: input.leagueId, obligationId: obligation.id, revisionNumber: 1, snapshotSchemaVersion: FINANCIAL_ACTIVATION_VERSION, afterSnapshot: { activationId: activation.id, responsibilityId: responsibility.id, state: "open", amountMinor: term.amountMinor, currency: term.currency, billingTermId: term.billingTermId, billingTermVersion: term.billingTermVersion, dueAt: timing.dueAt, pastDueAt: timing.pastDueAt }, recordedByUserId: input.actorUserId });
     }
@@ -1028,9 +1034,9 @@ export async function activateCanonicalFinancials(input: {
   throw new FinancialActivationError("canonical_incomplete", "activation serialization did not complete");
 }
 
-export async function getCanonicalActivationSource(input: { organizationId: number; leagueId: number }): Promise<{ sourceFingerprint: string; expected: ResponsibilityExpectedRow[] }> {
+export async function getCanonicalActivationSource(input: { organizationId: number; leagueId: number }): Promise<{ sourceFingerprint: string; payingLineupSize: 3 | 4; expected: ResponsibilityExpectedRow[] }> {
   return db.transaction(async (tx) => {
     const evidence = await loadOperationalActivationEvidence(tx, input);
-    return { sourceFingerprint: evidence.sourceFingerprint, expected: evidence.expected };
+    return { sourceFingerprint: evidence.sourceFingerprint, payingLineupSize: evidence.payingLineupSize, expected: evidence.expected };
   }, { isolationLevel: "repeatable read", accessMode: "read only" });
 }

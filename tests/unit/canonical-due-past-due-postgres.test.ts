@@ -25,7 +25,7 @@ async function fixture(label: string) {
   createdOrganizations.push(organization.id);
   const [location] = await db.insert(locations).values({ name: `F1 ${label} location`, organizationId: organization.id }).returning({ id: locations.id });
   const [actor] = await db.insert(users).values({ email: `f1-${label}-${Date.now()}@example.test`, password: "test", name: `F1 ${label}`, role: "org_admin", organizationId: organization.id }).returning({ id: users.id });
-  const [league] = await db.insert(leagues).values({ name: `F1 ${label} league`, organizationId: organization.id, locationId: location.id, seasonStart: "2038-01-01", seasonEnd: "2038-12-31", weekDay: "Sunday", competitionStartTime: "19:00", totalBowlingWeeks: 12, paymentMode: "weekly", weeklyFee: 500 }).returning({ id: leagues.id });
+  const [league] = await db.insert(leagues).values({ name: `F1 ${label} league`, organizationId: organization.id, locationId: location.id, seasonStart: "2038-01-01", seasonEnd: "2038-12-31", weekDay: "Sunday", competitionStartTime: "19:00", totalBowlingWeeks: 12, paymentMode: "weekly", weeklyFee: 500, payingLineupSize: 3 }).returning({ id: leagues.id });
   const [team] = await db.insert(teams).values({ name: `F1 ${label} team`, number: 1, leagueId: league.id }).returning({ id: teams.id });
   const [member, inactive] = await db.insert(bowlers).values([{ name: `F1 ${label} member`, organizationId: organization.id, active: true }, { name: `F1 ${label} inactive`, organizationId: organization.id, active: false }]).returning({ id: bowlers.id });
   await db.insert(bowlerLeagues).values({ bowlerId: member.id, leagueId: league.id, teamId: team.id, active: true });

@@ -60,6 +60,7 @@ describe('NewSeasonDialog', () => {
         carriedConfiguration: {
           name: league.name,
           description: null,
+          payingLineupSize: 4,
           locationId: 9,
           timezone: 'America/Chicago',
           practiceStartTime: '18:30',
@@ -94,6 +95,8 @@ describe('NewSeasonDialog', () => {
     const endDate = screen.getByLabelText('New Season End Date');
     expect(endDate).toHaveValue('2026-11-23');
     expect(screen.getByRole('button', { name: /create new season/i })).toBeDisabled();
+    expect(await screen.findByText('League lineup size')).toBeInTheDocument();
+    expect(screen.getByText('Four Bowlers')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /bowling schedule/i }));
     await user.click(screen.getByTestId('schedule-week-2026-09-07'));

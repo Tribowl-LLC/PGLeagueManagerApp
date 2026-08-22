@@ -45,6 +45,7 @@ export type LeagueRolloverSourceConfirmation = z.infer<typeof leagueRolloverSour
 export interface LeagueRolloverCarriedConfiguration {
   name: string;
   description: string | null;
+  payingLineupSize: 3 | 4;
   locationId: number;
   timezone: string;
   practiceStartTime: string | null;

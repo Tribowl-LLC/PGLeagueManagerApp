@@ -212,11 +212,14 @@ function isActiveFall(league: Pick<InsertLeague, "active" | "seasonStart">): boo
   return league.active === true && getProductSeasonFromDateOnly(dateOnly(league.seasonStart)) === "Fall";
 }
 
-function normalizedLeagueSemantic(league: InsertLeague | League, kind: "league" | "new_season"): Record<string, unknown> {
+type LeagueSetupTarget = Omit<InsertLeague, "payingLineupSize"> & { payingLineupSize?: 3 | 4 };
+
+function normalizedLeagueSemantic(league: LeagueSetupTarget | League, kind: "league" | "new_season"): Record<string, unknown> {
   return {
     setupKind: kind,
     name: league.name,
     description: league.description ?? null,
+    ...(league.payingLineupSize === undefined ? {} : { payingLineupSize: league.payingLineupSize }),
     active: league.active,
     allowPublicSignup: league.allowPublicSignup,
     seasonStart: new Date(league.seasonStart).toISOString(),
@@ -248,10 +251,10 @@ function normalizedLeagueSemantic(league: InsertLeague | League, kind: "league" 
 }
 
 function rolloverSourceContract(source: League, evidence: RolloverCarriedEvidence): LeagueRolloverSourceContract {
-  if (!source.organizationId || !source.locationId || !source.competitionStartTime) {
+  if (!source.organizationId || !source.locationId || !source.competitionStartTime || (source.payingLineupSize !== 3 && source.payingLineupSize !== 4)) {
     throw new LeagueSetupIntegrationError(
       "validation_error",
-      "source league is missing the tenant, location, or competition time required for canonical rollover",
+      "source league is missing the tenant, location, competition time, or lineup size required for canonical rollover",
     );
   }
   const semantic = {
@@ -262,6 +265,7 @@ function rolloverSourceContract(source: League, evidence: RolloverCarriedEvidenc
     carriedConfiguration: {
       name: source.name,
       description: source.description ?? null,
+      payingLineupSize: source.payingLineupSize,
       locationId: source.locationId,
       timezone: source.timezone ?? DEFAULT_TIMEZONE,
       practiceStartTime: source.practiceStartTime ?? null,
@@ -326,7 +330,7 @@ async function loadRolloverCarriedEvidence(
 function setupConfirmationFingerprint(input: {
   setup: LeagueSetupIntegrationIntentV2 | LeagueSetupIntegrationIntentV3;
   kind: "league" | "new_season";
-  target: InsertLeague;
+  target: LeagueSetupTarget;
   sourceConfirmationFingerprint?: string;
 }): string {
   return fallDraftSha256({
@@ -338,9 +342,13 @@ function setupConfirmationFingerprint(input: {
   });
 }
 
-function assertRetrySemantic(expected: InsertLeague, persisted: League, kind: "league" | "new_season"): void {
-  if (fallDraftCanonicalJson(normalizedLeagueSemantic(expected, kind))
-    !== fallDraftCanonicalJson(normalizedLeagueSemantic(persisted, kind))) {
+function assertRetrySemantic(expected: LeagueSetupTarget, persisted: League, kind: "league" | "new_season"): void {
+  const expectedSemantic = normalizedLeagueSemantic(expected, kind);
+  const persistedSemantic = normalizedLeagueSemantic(persisted, kind);
+  if (expected.payingLineupSize === undefined && persisted.payingLineupSize === null) {
+    delete persistedSemantic.payingLineupSize;
+  }
+  if (fallDraftCanonicalJson(expectedSemantic) !== fallDraftCanonicalJson(persistedSemantic)) {
     throw new LeagueSetupIntegrationError("idempotency_conflict", "the setup idempotency key is bound to different league setup semantics");
   }
 }
@@ -496,7 +504,7 @@ async function assertSetupKeyOrganization(
 async function retryExistingSetup(input: {
   tx: LeagueScheduleTransaction;
   scope: LeagueSetupScope;
-  expected: InsertLeague;
+  expected: LeagueSetupTarget;
   commandKey: string;
   kind: "league" | "new_season";
   setup: AnyLeagueSetupIntegrationIntent;
@@ -580,7 +588,7 @@ async function retryExistingSetup(input: {
 async function createLeagueInTransaction(input: {
   tx: LeagueScheduleTransaction;
   scope: LeagueSetupScope;
-  league: InsertLeague;
+  league: LeagueSetupTarget;
   setup: AnyLeagueSetupIntegrationIntent;
   failureInjection?: LeagueSetupFailureStage;
   canonicalFailureInjection?: FallDraftFailureStage;
@@ -615,7 +623,11 @@ async function createLeagueInTransaction(input: {
   if (!confirmationFingerprint) {
     throw new LeagueSetupIntegrationError("transaction_failure", "v2 league setup confirmation fingerprint is missing");
   }
-  const [league] = await input.tx.insert(leagues).values(input.league).returning();
+  if (input.league.payingLineupSize !== 3 && input.league.payingLineupSize !== 4) {
+    throw new LeagueSetupIntegrationError("validation_error", "league lineup size is required for new league setup");
+  }
+  const leagueToInsert: InsertLeague = { ...input.league, payingLineupSize: input.league.payingLineupSize };
+  const [league] = await input.tx.insert(leagues).values(leagueToInsert).returning();
   if (!league) throw new LeagueSetupIntegrationError("transaction_failure", "league was not created");
   injectFailure(input.failureInjection, "after_league_insert");
   const canonicalDraftGeneration = await applyFutureSeasonDraftGenerationInTransaction(input.tx, {
@@ -675,6 +687,7 @@ function buildNewSeasonLeague(
   return {
     name: source.name,
     description: source.description,
+    payingLineupSize: source.payingLineupSize as 3 | 4,
     active: true,
     allowPublicSignup: values.allowPublicSignup ?? source.allowPublicSignup,
     seasonStart: seasonStart.toISOString(),
@@ -921,7 +934,7 @@ function invalidateSetupCaches(): void {
 
 export async function createLeagueWithCanonicalSetup(input: {
   scope: LeagueSetupScope;
-  league: InsertLeague;
+  league: LeagueSetupTarget;
   setup: AnyLeagueSetupIntegrationIntent;
   failureInjection?: LeagueSetupFailureStage;
   canonicalFailureInjection?: FallDraftFailureStage;

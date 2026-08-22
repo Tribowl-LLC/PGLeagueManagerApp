@@ -54,11 +54,13 @@ describe('Zod 4 migration contracts', () => {
       seasonEnd: '2026-12-14',
       weekDay: 'Monday',
       paymentMode: 'weekly',
+      payingLineupSize: 4,
     });
 
     expect(league).toMatchObject({
       active: true,
       paymentMode: 'weekly',
+      payingLineupSize: 4,
       weeklyFee: DEFAULT_WEEKLY_FEE_CENTS,
     });
     expect(league.seasonStart).toBe('2026-09-07T00:00:00.000Z');

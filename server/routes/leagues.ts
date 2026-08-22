@@ -106,6 +106,9 @@ const newSeasonRequestSchema = z.union([newSeasonRequestV3Schema, newSeasonReque
 const directLeagueSetupV2TargetSchema = z.object({
   name: nameSchema,
   description: z.string().nullable().optional(),
+  // Missing is accepted only far enough to prove an exact pre-0031 setup
+  // retry. The setup service rejects a first write without this value.
+  payingLineupSize: z.union([z.literal(3), z.literal(4)]).optional(),
   active: z.boolean().optional(),
   organizationId: z.number().int().positive().optional(),
   locationId: z.number().int().positive().nullable().optional(),
@@ -447,12 +450,20 @@ router.post("/", async (req: Request, res) => {
       (setup.contractVersion === "league-setup-integration-request/3" ? directLeagueSetupV3TargetSchema : directLeagueSetupV2TargetSchema).parse(req.body);
     }
 
-    const league = insertLeagueSchema.parse({
+    const hasPayingLineupSize = Object.prototype.hasOwnProperty.call(req.body ?? {}, "payingLineupSize");
+    const parsedLeague = insertLeagueSchema.parse({
       ...req.body,
+      // The public insert schema remains strict for all ordinary callers.
+      // A placeholder only normalizes the rest of a historical retry before
+      // the field is removed again and checked against durable null evidence.
+      payingLineupSize: hasPayingLineupSize ? req.body.payingLineupSize : 3,
       organizationId: effectiveOrgId,
       seasonStart: new Date(req.body.seasonStart),
       seasonEnd: derivedSeasonEnd ?? new Date(req.body.seasonEnd)
     });
+    const league = hasPayingLineupSize
+      ? parsedLeague
+      : { ...parsedLeague, payingLineupSize: undefined };
     const created = await createLeagueWithCanonicalSetup({
       scope: { organizationId: effectiveOrgId, actorUserId: req.user.id },
       league,
@@ -581,7 +592,7 @@ router.patch("/:id", async (req: Request, res) => {
       "weekDay", "competitionStartTime", "timezone", "totalBowlingWeeks",
     ].some((field) => Object.prototype.hasOwnProperty.call(req.body ?? {}, field));
     const canonicalMetadataFieldChanged = [
-      "name", "description", "active", "allowPublicSignup", "practiceStartTime",
+      "name", "description", "payingLineupSize", "active", "allowPublicSignup", "practiceStartTime",
       "lineageFee", "prizeFundFee", "squareLineageItemId", "lineageItemVariationId",
       "squareLineageItemName", "squarePrizeFundItemId", "prizeFundItemVariationId",
       "squarePrizeFundItemName", "squareCategoryId",
@@ -641,6 +652,7 @@ router.patch("/:id", async (req: Request, res) => {
         metadata: {
           ...(update.name === undefined ? {} : { name: update.name }),
           ...(update.description === undefined ? {} : { description: update.description }),
+          ...(update.payingLineupSize === undefined ? {} : { payingLineupSize: update.payingLineupSize }),
           ...(update.active === undefined ? {} : { active: update.active }),
           ...(update.allowPublicSignup === undefined ? {} : { allowPublicSignup: update.allowPublicSignup }),
           ...(update.practiceStartTime === undefined ? {} : { practiceStartTime: update.practiceStartTime }),

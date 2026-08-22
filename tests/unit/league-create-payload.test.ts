@@ -6,6 +6,7 @@ function parsedBrowserFormData() {
   return insertLeagueSchema.parse({
     name: "Monday Farmington Mixed League",
     description: "Fall 2026",
+    payingLineupSize: 4,
     active: true,
     allowPublicSignup: false,
     seasonStart: new Date("2026-09-14T00:00:00.000Z"),
@@ -50,6 +51,7 @@ describe("canonical league create payload", () => {
       competitionStartTime: "18:30",
       timezone: "America/New_York",
       paymentMode: "weekly",
+      payingLineupSize: 4,
       totalBowlingWeeks: 32,
     });
   });

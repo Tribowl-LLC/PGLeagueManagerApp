@@ -100,6 +100,7 @@ function makeLeague(overrides: Partial<League> = {}): League {
   const parsed = insertLeagueSchema.parse({
     name: 'Test League',
     description: null,
+    payingLineupSize: 4,
     active: true,
     allowPublicSignup: false,
     seasonStart: '2026-01-01',
