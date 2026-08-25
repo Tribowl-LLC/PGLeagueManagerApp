@@ -102,7 +102,10 @@ async function fixture(label: string): Promise<Fixture> {
     name: `B2 ${unique} league`,
     organizationId: organization.id,
     locationId: location.id,
-    active: false,
+    // Canonical materialization is a write operation. An inactive canonical
+    // league is a read-only archive under PR1, so the historical source used
+    // by this migration test must remain active until materialization commits.
+    active: true,
     seasonStart: "2025-06-01T00:00:00.000Z",
     seasonEnd: "2025-06-22T00:00:00.000Z",
     weekDay: "Sunday",

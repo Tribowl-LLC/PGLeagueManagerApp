@@ -466,6 +466,22 @@ export async function createOrGetAutopaySetupRequest(
   const nowIso = now.toISOString();
 
   return db.transaction(async (tx) => {
+    // Revalidate authority under the same league lock used by canonical
+    // schedule/payment mutations.  A request prepared before archive must not
+    // create a new provider operation after the archive wins the race.
+    await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
+    const [league] = await tx.select({ active: leagues.active, scheduleAuthority: leagues.scheduleAuthority })
+      .from(leagues)
+      .where(and(
+        eq(leagues.id, input.leagueId),
+        eq(leagues.organizationId, input.organizationId),
+        eq(leagues.scheduleAuthority, "canonical"),
+      ))
+      .limit(1)
+      .for("share");
+    if (!league || !league.active) {
+      throw new AutopaySetupRequestValidationError("auto-pay setup requires an active canonical league");
+    }
     await validateTenantReferences(tx, identity.snapshot);
     const operation = identity.snapshot.immediateAmountMinor === 0
       ? null

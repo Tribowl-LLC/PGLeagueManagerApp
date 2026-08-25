@@ -41,6 +41,8 @@ import {
   LeagueOccurrenceEvidenceExistsError,
   LeaguePaymentModeLockedError,
   LeagueSubstituteConfigurationLockedError,
+  LeagueArchivedReadOnlyError,
+  LeagueRetiredLegacyError,
 } from '../storage/leagues';
 import {
   leagueSetupIntegrationIntentSchema,
@@ -62,14 +64,31 @@ const log = createLogger("Leagues");
 
 const router = Router();
 
+// Rollover uses the same editable league builder as creation. The source
+// fingerprint remains a separate opaque freshness fence; these fields are
+// merely prefilled defaults and never carry provider/catalog identities.
+const rolloverEditableFields = {
+  name: nameSchema.optional(),
+  description: z.string().nullable().optional(),
+  payingLineupSize: z.union([z.literal(3), z.literal(4)]).optional(),
+  locationId: z.number().int().positive().nullable().optional(),
+  timezone: z.string().optional(),
+  practiceStartTime: timeSchema.nullable().optional(),
+  competitionStartTime: timeSchema.nullable().optional(),
+  weeklyFee: positiveIntSchema.optional(),
+  lineageFee: z.number().int().min(0).nullable().optional(),
+  prizeFundFee: z.number().int().min(0).nullable().optional(),
+};
+
 const newSeasonRequestV1Schema = z.object({
+  ...rolloverEditableFields,
   seasonStart: dateSchema,
   // Retained for older clients that still submit an explicit end date.
   seasonEnd: dateSchema.optional(),
   totalBowlingWeeks: z.number().int().positive().max(52).optional(),
   weekDay: z.enum(WEEKDAYS).optional(),
   skipDates: z.array(z.string()).default([]),
-  cancelledDates: z.array(z.string()).default([]),
+  cancelledDates: z.array(z.string()).max(0, "Rollover creation supports No Bowling skips, not cancelled dates").default([]),
   doublePayDates: z.array(z.string()).max(2, "At most 2 double-pay weeks allowed").default([]),
   allowPublicSignup: z.boolean().optional(),
   paymentMode: z.enum(PAYMENT_MODES),
@@ -77,11 +96,12 @@ const newSeasonRequestV1Schema = z.object({
 }).strict();
 
 const newSeasonRequestV2Schema = z.object({
+  ...rolloverEditableFields,
   seasonStart: dateSchema,
   totalBowlingWeeks: z.number().int().positive().max(52),
   weekDay: z.enum(WEEKDAYS),
   skipDates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)),
-  cancelledDates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)),
+  cancelledDates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).max(0, "Rollover creation supports No Bowling skips, not cancelled dates"),
   doublePayDates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).max(2, "At most 2 double-pay weeks allowed"),
   allowPublicSignup: z.boolean(),
   paymentMode: z.enum(PAYMENT_MODES),
@@ -90,11 +110,12 @@ const newSeasonRequestV2Schema = z.object({
 }).strict();
 
 const newSeasonRequestV3Schema = z.object({
+  ...rolloverEditableFields,
   seasonStart: dateSchema,
   totalBowlingWeeks: z.number().int().positive().max(52),
   weekDay: z.enum(WEEKDAYS),
   skipDates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)),
-  cancelledDates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)),
+  cancelledDates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).max(0, "Rollover creation supports No Bowling skips, not cancelled dates"),
   doublePayDates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).max(2, "At most 2 double-pay weeks allowed"),
   allowPublicSignup: z.boolean(),
   paymentMode: z.enum(PAYMENT_MODES),
@@ -786,6 +807,9 @@ router.patch("/:id", async (req: Request, res) => {
         'LEAGUE_SUBSTITUTE_CONFIGURATION_LOCKED',
       );
     }
+    if (error instanceof LeagueArchivedReadOnlyError || error instanceof LeagueRetiredLegacyError) {
+      return sendError(res, error.message, 409, 'LEAGUE_ARCHIVED_READ_ONLY');
+    }
     if (error instanceof CanonicalLeagueScheduleEditError) {
       if (error.code === "stale_revision") return sendError(res, error.message, 409, "CANONICAL_SCHEDULE_STALE_REVISION");
       if (error.code === "financial_conflict") return sendError(res, error.message, 409, "CANONICAL_SCHEDULE_FINANCIAL_CONFLICT");
@@ -808,12 +832,15 @@ router.patch("/:id/archive", async (req: Request, res) => {
     if (!isOrgOrHigher(req.user) || !requireOrganizationAccess(req, league.organizationId, 'league', id)) {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
-    const archived = await storage.archiveLeague(id);
+    const archived = await storage.archiveLeague(id, league.organizationId);
     // Archiving drops this league from every member's `league_name`
     // and `league_season` strings — push the new values out (task #429).
     fireLeagueBowlersExternalResync(id, req.user?.organizationId);
     sendSuccess(res, archived);
   } catch (error) {
+    if (error instanceof LeagueArchivedReadOnlyError || error instanceof LeagueRetiredLegacyError) {
+      return sendError(res, error.message, 409, 'LEAGUE_ARCHIVED_READ_ONLY');
+    }
     sendError(res, 'Failed to archive league');
   }
 });
@@ -836,6 +863,9 @@ router.patch("/:id/restore", async (req: Request, res) => {
     fireLeagueBowlersExternalResync(id, req.user?.organizationId);
     sendSuccess(res, restored);
   } catch (error) {
+    if (error instanceof LeagueArchivedReadOnlyError || error instanceof LeagueRetiredLegacyError) {
+      return sendError(res, error.message, 409, 'LEAGUE_ARCHIVED_READ_ONLY');
+    }
     sendError(res, 'Failed to restore league');
   }
 });
@@ -868,6 +898,9 @@ router.delete("/:id", async (req: Request, res) => {
 
     sendSuccess(res, null);
   } catch (error) {
+    if (error instanceof LeagueArchivedReadOnlyError || error instanceof LeagueRetiredLegacyError) {
+      return sendError(res, error.message, 409, 'LEAGUE_ARCHIVED_READ_ONLY');
+    }
     if (error instanceof LeagueOccurrenceEvidenceExistsError) {
       return sendError(
         res,
@@ -888,6 +921,12 @@ router.post("/:id/send-invites", async (req: Request, res) => {
 
     if (!league) {
       return sendError(res, "League not found", 404, 'NOT_FOUND');
+    }
+
+    // Invitations create users, account-action evidence, and outbound email;
+    // an archived canonical league is a read-only history surface.
+    if (!league.active || league.scheduleAuthority === 'retired_legacy') {
+      return sendError(res, 'Inactive or retired leagues are read-only', 409, 'LEAGUE_ARCHIVED_READ_ONLY');
     }
 
     // Sending invitations is an administrator action.

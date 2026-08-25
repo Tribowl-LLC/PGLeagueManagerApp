@@ -19,6 +19,7 @@ import {
   paymentOperationStandingAutopayBindings,
   paymentOperationStandingAutopayParticipants,
   paymentOperations,
+  payments,
   teams,
   users,
   type PaymentOperation,
@@ -130,6 +131,7 @@ async function applyCommand(
 async function leagueFor(tx: StandingTx, organizationId: number, leagueId: number) {
   const [league] = await tx.select().from(leagues).where(and(eq(leagues.organizationId, organizationId), eq(leagues.id, leagueId))).limit(1);
   if (!league) throw new StandingAutopayError("NOT_FOUND", "League not found", 404);
+  if (!league.active || league.scheduleAuthority !== "canonical") throw new StandingAutopayError("NOT_FOUND", "League not found", 404);
   if (league.payingLineupSize === null) throw new StandingAutopayError("ROSTER_PAYMENTS_REQUIRED", "Standing automatic payments require a roster-configured league");
   if (league.paymentMode === "upfront") throw new StandingAutopayError("STANDING_AUTOPAY_UNAVAILABLE_FOR_UPFRONT", "Standing automatic payments are weekly only for upfront leagues", 422);
   return league;
@@ -139,7 +141,7 @@ async function activeMembership(tx: StandingTx, organizationId: number, leagueId
   if (bowlerIds.length === 0) return false;
   const rows = await tx.select({ bowlerId: bowlerLeagues.bowlerId }).from(bowlerLeagues).innerJoin(bowlers, and(
     eq(bowlers.id, bowlerLeagues.bowlerId), eq(bowlers.organizationId, organizationId), eq(bowlers.active, true),
-  )).where(and(eq(bowlerLeagues.leagueId, leagueId), eq(bowlerLeagues.active, true), inArray(bowlerLeagues.bowlerId, bowlerIds)));
+  )).innerJoin(leagues, and(eq(leagues.id, bowlerLeagues.leagueId), eq(leagues.organizationId, organizationId))).where(and(eq(bowlerLeagues.leagueId, leagueId), eq(bowlerLeagues.active, true), eq(leagues.active, true), eq(leagues.scheduleAuthority, "canonical"), inArray(bowlerLeagues.bowlerId, bowlerIds)));
   return new Set(rows.map((row) => row.bowlerId)).size === new Set(bowlerIds).size;
 }
 
@@ -314,6 +316,136 @@ async function revokeConsentAndStopOperationsInTransaction(
   return { ...input.consent, state: "revoked" as const, revokedAt: input.revokedAt };
 }
 
+/**
+ * Archive fence shared by explicit league archive and season rollover.  It
+ * revokes every source consent under the league lock, releases only
+ * pre-dispatch reservations, and leaves dispatched/provider-unknown work in
+ * reconciliation evidence for an operator.  No provider call occurs here.
+ */
+export async function revokeStandingAutopayForArchivedLeagueInTransaction(
+  tx: StandingTx,
+  input: { organizationId: number; leagueId: number; revokedAt?: string },
+): Promise<void> {
+  const revokedAt = input.revokedAt ?? new Date().toISOString();
+  const consents = await tx.select({ consent: autopayConsents }).from(autopayConsents)
+    .where(and(
+      eq(autopayConsents.organizationId, input.organizationId),
+      eq(autopayConsents.leagueId, input.leagueId),
+      inArray(autopayConsents.state, ["pending", "active"] as const),
+    ))
+    .orderBy(asc(autopayConsents.id))
+    .for("update");
+  const consentIds = consents.map(({ consent }) => consent.id);
+  const bindings = consentIds.length === 0 ? [] : await tx.select({
+    consentId: paymentOperationStandingAutopayBindings.consentId,
+    consentVersion: paymentOperationStandingAutopayBindings.consentVersion,
+    operation: paymentOperations,
+  }).from(paymentOperationStandingAutopayBindings)
+    .innerJoin(paymentOperations, and(
+      eq(paymentOperations.id, paymentOperationStandingAutopayBindings.operationId),
+      eq(paymentOperations.organizationId, input.organizationId),
+      eq(paymentOperations.leagueId, input.leagueId),
+    ))
+    .where(and(
+      eq(paymentOperationStandingAutopayBindings.organizationId, input.organizationId),
+      eq(paymentOperationStandingAutopayBindings.leagueId, input.leagueId),
+      inArray(paymentOperationStandingAutopayBindings.consentId, consentIds),
+    ))
+    .orderBy(asc(paymentOperations.id))
+    .for("update");
+  for (const { consent } of consents) {
+    // A pending consent has no provider identity and the v1 consent shape
+    // deliberately forbids pending -> revoked.  It is already unusable once
+    // the league is inactive; preserve that pending evidence rather than
+    // writing a state the database rejects. Active consents are the only
+    // executable authority and are revoked here.
+    if (consent.state === "active") {
+      await tx.update(autopayConsents).set({ state: "revoked", revokedAt }).where(and(
+        eq(autopayConsents.id, consent.id),
+        eq(autopayConsents.state, "active"),
+      ));
+    }
+  }
+  // Lock every standing operation for this source league, not only rows that
+  // still point at a pending/active consent. A retry can outlive a revoked
+  // consent after a partial recovery, and it is still archive-owned work that
+  // must be canceled or fenced from execution.
+  const standingOperations = await tx.select({ operation: paymentOperations })
+    .from(paymentOperations)
+    .where(and(
+      eq(paymentOperations.organizationId, input.organizationId),
+      eq(paymentOperations.leagueId, input.leagueId),
+      eq(paymentOperations.operationType, "standing_autopay_charge"),
+    ))
+    .orderBy(asc(paymentOperations.id))
+    .for("update");
+  const allOperations = standingOperations.map(({ operation }) => operation);
+  const operationIds = [...new Set(allOperations.map(({ id }) => id))].sort();
+  // Snapshot rows are the reservation ledger. Lock them in operation-id /
+  // allocation order before deciding whether any reservation may be released.
+  // This keeps archive/rollover races deterministic with dispatch workers.
+  if (operationIds.length > 0) {
+    await tx.select({ operationId: paymentOperationRosterSnapshots.operationId })
+      .from(paymentOperationRosterSnapshots)
+      .where(and(
+        eq(paymentOperationRosterSnapshots.organizationId, input.organizationId),
+        eq(paymentOperationRosterSnapshots.leagueId, input.leagueId),
+        inArray(paymentOperationRosterSnapshots.operationId, operationIds),
+      ))
+      .orderBy(asc(paymentOperationRosterSnapshots.operationId))
+      .for("update");
+    await tx.select({ id: paymentOperationRosterSnapshotItems.id })
+      .from(paymentOperationRosterSnapshotItems)
+      .where(and(
+        eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId),
+        eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId),
+        inArray(paymentOperationRosterSnapshotItems.operationId, operationIds),
+      ))
+      .orderBy(asc(paymentOperationRosterSnapshotItems.operationId), asc(paymentOperationRosterSnapshotItems.allocationIndex), asc(paymentOperationRosterSnapshotItems.id))
+      .for("update");
+  }
+  const seen = new Set<string>();
+  for (const operation of allOperations) {
+    if (seen.has(operation.id)) continue;
+    seen.add(operation.id);
+    const [paymentEvidence] = await tx.select({ id: payments.id }).from(payments).where(and(
+      eq(payments.paymentOperationId, operation.id),
+    )).limit(1);
+    const providerEvidence = operation.providerObjectId !== null
+      || operation.providerOrderId !== null
+      || operation.dispatchClaimedAt !== null
+      || paymentEvidence !== undefined
+      || operation.status === "provider_unknown";
+    const canCancel = ["pending", "leased", "retry_scheduled"].includes(operation.status)
+      && !providerEvidence;
+    if (canCancel) {
+      await tx.update(paymentOperationRosterSnapshotItems).set({ state: "released" }).where(and(
+        eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId),
+        eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId),
+        eq(paymentOperationRosterSnapshotItems.operationId, operation.id),
+        eq(paymentOperationRosterSnapshotItems.state, "reserved"),
+      ));
+      await tx.update(paymentOperations).set({
+        status: "canceled", nextAttemptAt: null, leaseOwner: null, leaseToken: null,
+        leaseExpiresAt: null, dispatchClaimedAt: null, errorClassification: null,
+        errorCode: null, completedAt: revokedAt, updatedAt: revokedAt,
+      }).where(and(eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.id, operation.id)));
+      continue;
+    }
+    if (providerEvidence && !["succeeded", "action_required", "failed_terminal", "canceled", "reconciliation_required"].includes(operation.status)) {
+      // Keep dispatchClaimedAt and leaseToken as immutable reconciliation
+      // fences. Clearing only the wake/lease expiry prevents an archived
+      // league from being executed while retaining provider identity.
+      await tx.update(paymentOperations).set({
+        status: "reconciliation_required", nextAttemptAt: null, leaseOwner: null,
+        leaseExpiresAt: null, errorClassification: "provider_unknown",
+        errorCode: operation.errorCode ?? "LEAGUE_ARCHIVED_AFTER_DISPATCH",
+        completedAt: revokedAt, updatedAt: revokedAt,
+      }).where(and(eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.id, operation.id)));
+    }
+  }
+}
+
 function consentWire(consent: typeof autopayConsents.$inferSelect | undefined, partners: number[], organizationId: number, leagueId: number, payerBowlerId: number) {
   return {
     contractVersion: "standing-autopay-consent/1" as const,
@@ -341,8 +473,8 @@ export async function readStandingAutopayConsent(input: { organizationId: number
 
 export async function activateStandingAutopayConsent(input: { organizationId: number; leagueId: number; payerBowlerId: number; actorUserId: number; request: StandingAutopayConsentRequest }) {
   if (!rosterStandingAutopayEnabled || scheduledPaymentExecutionMode !== "ledger_execute") throw new StandingAutopayError("STANDING_AUTOPAY_DISABLED", "Standing automatic payments are not enabled", 409);
-  const league = await db.select({ locationId: leagues.locationId, paymentMode: leagues.paymentMode }).from(leagues).where(and(eq(leagues.id, input.leagueId), eq(leagues.organizationId, input.organizationId))).limit(1).then((rows) => rows[0]);
-  if (!league || league.locationId === null) throw new StandingAutopayError("NOT_FOUND", "League not found", 404);
+  const league = await db.select({ locationId: leagues.locationId, paymentMode: leagues.paymentMode, active: leagues.active, scheduleAuthority: leagues.scheduleAuthority }).from(leagues).where(and(eq(leagues.id, input.leagueId), eq(leagues.organizationId, input.organizationId))).limit(1).then((rows) => rows[0]);
+  if (!league || league.locationId === null || league.active === false || league.scheduleAuthority === "retired_legacy") throw new StandingAutopayError("NOT_FOUND", "League not found", 404);
   if (league.paymentMode === "upfront") throw new StandingAutopayError("STANDING_AUTOPAY_UNAVAILABLE_FOR_UPFRONT", "Standing automatic payments are disabled for upfront leagues", 422);
   const [payer] = await db.select().from(bowlers).where(and(eq(bowlers.id, input.payerBowlerId), eq(bowlers.organizationId, input.organizationId), eq(bowlers.active, true))).limit(1);
   const customerId = payer?.paymentCustomerId ?? null;

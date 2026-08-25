@@ -59,6 +59,7 @@ router.get('/public-leagues', async (_req, res) => {
       .where(and(
         eq(leagues.allowPublicSignup, true),
         eq(leagues.active, true),
+        eq(leagues.scheduleAuthority, 'canonical'),
         isNotNull(leagues.organizationId),
       ))
       .orderBy(organizations.name, leagues.name);

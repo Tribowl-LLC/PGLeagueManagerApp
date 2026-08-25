@@ -54,6 +54,7 @@ import { lockLeagueSchedule, type LeagueScheduleTransaction } from "../storage/l
 import { publishCanonicalDraftInTransaction } from "./fall-draft-review.js";
 import { persistCanonicalCollectionGroupsInTransaction, type PersistCanonicalCollectionGroupsResult } from "./canonical-collection-groups.js";
 import { CanonicalCollectionGroupingError } from "@shared/canonical-collection-groups";
+import { revokeStandingAutopayForArchivedLeagueInTransaction } from "./roster-standing-autopay.js";
 
 export const LEAGUE_SETUP_FALL_AUDIT_REASON = "Generate canonical Fall drafts during authoritative league setup";
 export const LEAGUE_SETUP_FUTURE_SEASON_AUDIT_REASON = "Generate canonical future-season drafts during authoritative league setup";
@@ -93,6 +94,16 @@ export interface LeagueSetupScope {
 }
 
 export interface NewSeasonSetupValues {
+  name?: string;
+  description?: string | null;
+  payingLineupSize?: 3 | 4;
+  locationId?: number | null;
+  timezone?: string;
+  practiceStartTime?: string | null;
+  competitionStartTime?: string | null;
+  weeklyFee?: number;
+  lineageFee?: number | null;
+  prizeFundFee?: number | null;
   seasonStart: string;
   seasonEnd?: string;
   totalBowlingWeeks?: number;
@@ -105,6 +116,16 @@ export interface NewSeasonSetupValues {
 }
 
 export interface NewSeasonSetupValuesV2 {
+  name?: string;
+  description?: string | null;
+  payingLineupSize?: 3 | 4;
+  locationId?: number | null;
+  timezone?: string;
+  practiceStartTime?: string | null;
+  competitionStartTime?: string | null;
+  weeklyFee?: number;
+  lineageFee?: number | null;
+  prizeFundFee?: number | null;
   seasonStart: string;
   totalBowlingWeeks: number;
   weekDay: League["weekDay"];
@@ -222,6 +243,7 @@ function normalizedLeagueSemantic(league: LeagueSetupTarget | League, kind: "lea
     description: league.description ?? null,
     ...(league.payingLineupSize === undefined ? {} : { payingLineupSize: league.payingLineupSize }),
     active: league.active,
+    scheduleAuthority: "canonical",
     allowPublicSignup: league.allowPublicSignup,
     seasonStart: new Date(league.seasonStart).toISOString(),
     seasonEnd: new Date(league.seasonEnd).toISOString(),
@@ -594,6 +616,9 @@ async function createLeagueInTransaction(input: {
   failureInjection?: LeagueSetupFailureStage;
   canonicalFailureInjection?: FallDraftFailureStage;
 }): Promise<SetupTransactionResult> {
+  if (input.league.scheduleAuthority !== undefined && input.league.scheduleAuthority !== "canonical") {
+    throw new LeagueSetupIntegrationError("validation_error", "new leagues must use canonical schedule authority");
+  }
   const legacyFall = isActiveFall(input.league);
   await authorizeSetupActor(input.tx, input.scope, input.setup.contractVersion !== LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION || legacyFall, false);
   if ((input.setup.contractVersion === LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION_2 || input.setup.contractVersion === LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION_3) && input.league.active !== true) {
@@ -615,6 +640,13 @@ async function createLeagueInTransaction(input: {
     seasonClassification,
   });
   if (retry) return retry;
+  // An exact historical idempotency retry is not a new creation and may
+  // legitimately reproduce the legacy Fall payload (including its old
+  // cancelled-date array). Fresh canonical setup accepts only Bowling or
+  // No Bowling skip dates.
+  if (input.league.cancelledDates.length > 0) {
+    throw new LeagueSetupIntegrationError("validation_error", "creation-time cancelled dates are not supported; use No Bowling skip dates");
+  }
   if (input.setup.contractVersion === LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION) {
     throw new LeagueSetupIntegrationError(
       "idempotency_conflict",
@@ -685,23 +717,40 @@ function buildNewSeasonLeague(
     seasonEnd: seasonEnd.toISOString(),
   });
   if (!doublePay.ok) throw new LeagueSetupIntegrationError("validation_error", doublePay.message);
+  if (values.cancelledDates.length > 0) {
+    throw new LeagueSetupIntegrationError("validation_error", "rollover creation supports No Bowling skips, not cancelled dates");
+  }
+  const name = values.name ?? source.name;
+  const locationId = values.locationId ?? source.locationId;
+  const competitionStartTime = values.competitionStartTime ?? source.competitionStartTime;
+  const weeklyFee = values.weeklyFee ?? source.weeklyFee;
+  const lineageFee = values.lineageFee !== undefined ? values.lineageFee : source.lineageFee;
+  const prizeFundFee = values.prizeFundFee !== undefined ? values.prizeFundFee : source.prizeFundFee;
+  if (!locationId || !competitionStartTime || !name.trim() || weeklyFee <= 0) {
+    throw new LeagueSetupIntegrationError("validation_error", "rollover configuration is incomplete");
+  }
+  if ((lineageFee == null) !== (prizeFundFee == null)
+    || (lineageFee != null && prizeFundFee != null && lineageFee + prizeFundFee !== weeklyFee)) {
+    throw new LeagueSetupIntegrationError("validation_error", "lineage and prize fund fees must both be set and sum to the weekly fee");
+  }
   return {
-    name: source.name,
-    description: source.description,
-    payingLineupSize: source.payingLineupSize as 3 | 4,
+    name,
+    description: values.description !== undefined ? values.description : source.description,
+    payingLineupSize: (values.payingLineupSize ?? source.payingLineupSize) as 3 | 4,
     substituteAccess: source.substituteAccess ?? "team_only",
     substitutePaymentRegime: source.substitutePaymentRegime ?? "team_choice",
     active: true,
+    scheduleAuthority: "canonical",
     allowPublicSignup: values.allowPublicSignup ?? source.allowPublicSignup,
     seasonStart: seasonStart.toISOString(),
     seasonEnd: seasonEnd.toISOString(),
     weekDay,
-    weeklyFee: source.weeklyFee,
-    lineageFee: source.lineageFee,
-    prizeFundFee: source.prizeFundFee,
-    practiceStartTime: source.practiceStartTime ?? undefined,
-    competitionStartTime: source.competitionStartTime ?? undefined,
-    timezone: source.timezone ?? DEFAULT_TIMEZONE,
+    weeklyFee,
+    lineageFee,
+    prizeFundFee,
+    practiceStartTime: values.practiceStartTime !== undefined ? values.practiceStartTime ?? undefined : source.practiceStartTime ?? undefined,
+    competitionStartTime,
+    timezone: values.timezone ?? source.timezone ?? DEFAULT_TIMEZONE,
     squareLineageItemId: explicit ? null : source.squareLineageItemId,
     lineageItemVariationId: explicit ? null : source.lineageItemVariationId,
     squareLineageItemName: explicit ? null : source.squareLineageItemName,
@@ -711,7 +760,7 @@ function buildNewSeasonLeague(
     squareCategoryId: explicit ? null : source.squareCategoryId,
     paymentMode: values.paymentMode,
     organizationId: source.organizationId,
-    locationId: source.locationId,
+    locationId,
     seasonNumber: source.seasonNumber + 1,
     previousSeasonId: source.id,
     totalBowlingWeeks,
@@ -807,6 +856,9 @@ async function createNewSeasonInTransaction(input: {
     eq(leagues.organizationId, input.scope.organizationId),
   )).for("update");
   if (!source) throw new LeagueSetupIntegrationError("source_league_not_found", "source league was not found in the authorized organization");
+  if (source.scheduleAuthority !== "canonical") {
+    throw new LeagueSetupIntegrationError("source_league_not_found", "retired legacy leagues cannot be rolled over");
+  }
   const carriedEvidence = await loadRolloverCarriedEvidence(
     input.tx,
     input.scope.organizationId,
@@ -927,6 +979,10 @@ async function createNewSeasonInTransaction(input: {
       generation: canonicalDraftGeneration,
     });
   }
+  await revokeStandingAutopayForArchivedLeagueInTransaction(input.tx, {
+    organizationId: input.scope.organizationId,
+    leagueId: source.id,
+  });
   const [archived] = await input.tx.update(leagues).set({ active: false }).where(and(
     eq(leagues.id, source.id),
     eq(leagues.organizationId, input.scope.organizationId),
@@ -992,7 +1048,7 @@ export async function loadLeagueRolloverSource(input: {
     if (!source) {
       throw new LeagueSetupIntegrationError("source_league_not_found", "source league was not found in the authorized organization");
     }
-    if (!source.active) {
+    if (source.scheduleAuthority !== "canonical" || !source.active) {
       throw new LeagueSetupIntegrationError("stale_source_league", "only an active source league can be confirmed for rollover");
     }
     await assertLocationScope(tx, input.scope.organizationId, source.locationId);

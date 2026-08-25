@@ -139,11 +139,36 @@ export function calculateRosterPaymentTiming(dueAt: string | Date): { dueAt: str
   return { dueAt: due.toISOString(), pastDueAt: new Date(due.getTime() + WEEKLY_BILLING_GRACE_PERIOD_MS).toISOString() };
 }
 
-async function leagueScope(organizationId: number, leagueId: number): Promise<{ id: number; organizationId: number; locationId: number | null; payingLineupSize: number | null; paymentMode: "weekly" | "upfront"; weeklyFee: number; substituteAccess: "team_only" | "floating"; substitutePaymentRegime: "team_choice" | "league_lineage_prize_split"; lineageFee: number | null; prizeFundFee: number | null }> {
-  const [league] = await db.select({ id: leagues.id, organizationId: leagues.organizationId, locationId: leagues.locationId, payingLineupSize: leagues.payingLineupSize, paymentMode: leagues.paymentMode, weeklyFee: leagues.weeklyFee, substituteAccess: leagues.substituteAccess, substitutePaymentRegime: leagues.substitutePaymentRegime, lineageFee: leagues.lineageFee, prizeFundFee: leagues.prizeFundFee })
-    .from(leagues).where(and(eq(leagues.id, leagueId), eq(leagues.organizationId, organizationId))).limit(1);
+type LeagueScope = {
+  id: number;
+  organizationId: number;
+  locationId: number | null;
+  payingLineupSize: number | null;
+  paymentMode: "weekly" | "upfront";
+  weeklyFee: number;
+  substituteAccess: "team_only" | "floating";
+  substitutePaymentRegime: "team_choice" | "league_lineage_prize_split";
+  lineageFee: number | null;
+  prizeFundFee: number | null;
+  active: boolean;
+  scheduleAuthority: "canonical" | "retired_legacy";
+};
+
+async function leagueScope(organizationId: number, leagueId: number): Promise<LeagueScope> {
+  const [league] = await db.select({ id: leagues.id, organizationId: leagues.organizationId, locationId: leagues.locationId, payingLineupSize: leagues.payingLineupSize, paymentMode: leagues.paymentMode, weeklyFee: leagues.weeklyFee, substituteAccess: leagues.substituteAccess, substitutePaymentRegime: leagues.substitutePaymentRegime, lineageFee: leagues.lineageFee, prizeFundFee: leagues.prizeFundFee, active: leagues.active, scheduleAuthority: leagues.scheduleAuthority })
+    .from(leagues).where(and(eq(leagues.id, leagueId), eq(leagues.organizationId, organizationId), eq(leagues.scheduleAuthority, "canonical"))).limit(1);
   if (!league || league.organizationId !== organizationId) throw new RosterPaymentError("NOT_FOUND", "League not found", 404);
   return { ...league, organizationId };
+}
+
+async function requireWritableLeagueInTransaction(tx: RosterPaymentTransaction, organizationId: number, leagueId: number): Promise<void> {
+  const [league] = await tx.select({ active: leagues.active, scheduleAuthority: leagues.scheduleAuthority })
+    .from(leagues)
+    .where(and(eq(leagues.id, leagueId), eq(leagues.organizationId, organizationId), eq(leagues.scheduleAuthority, "canonical")))
+    .limit(1)
+    .for("share");
+  if (!league) throw new RosterPaymentError("NOT_FOUND", "League not found", 404);
+  if (!league.active) throw new RosterPaymentError("LEAGUE_ARCHIVED_READ_ONLY", "Inactive leagues are read-only archives", 409);
 }
 
 export async function readRosterPaymentResponsibility(input: { organizationId: number; leagueId: number }) {
@@ -248,6 +273,7 @@ export async function saveTeamRoster(input: {
   }
   return db.transaction(async (tx) => {
     await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
+    await requireWritableLeagueInTransaction(tx, input.organizationId, input.leagueId);
     await beginFinancialCommand(tx, {
       organizationId: input.organizationId,
       leagueId: input.leagueId,
@@ -465,6 +491,7 @@ export async function recordOccurrenceResponsibilities(input: {
   if (input.requestFingerprint !== canonicalResponsibilityFingerprint(input.responsibilities)) throw new RosterPaymentError("INVALID_FINGERPRINT", "The responsibility request fingerprint is invalid", 422);
   const run = async (tx: RosterPaymentTransaction) => {
     if (!input.transaction) await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
+    await requireWritableLeagueInTransaction(tx, input.organizationId, input.leagueId);
     await beginFinancialCommand(tx, {
       organizationId: input.organizationId,
       leagueId: input.leagueId,
@@ -755,6 +782,7 @@ export async function chargeInteractiveObligations(input: {
   const provider = await getPaymentProvider(league.locationId);
   const prepared = await db.transaction(async (tx) => {
     await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
+    await requireWritableLeagueInTransaction(tx, input.organizationId, input.leagueId);
     const [existingOperation] = await tx.select().from(paymentOperations).where(and(
       eq(paymentOperations.organizationId, input.organizationId),
       eq(paymentOperations.leagueId, input.leagueId),
@@ -989,6 +1017,7 @@ export async function chargeInteractiveObligations(input: {
 export async function recordCanonicalManualPayment(input: { organizationId: number; leagueId: number; actorUserId: number; request: CanonicalManualRecordRequest }) {
   return db.transaction(async (tx) => {
     await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
+    await requireWritableLeagueInTransaction(tx, input.organizationId, input.leagueId);
     await beginFinancialCommand(tx, {
       organizationId: input.organizationId,
       leagueId: input.leagueId,
@@ -1032,6 +1061,7 @@ export async function recordCanonicalManualPayment(input: { organizationId: numb
 export async function correctCanonicalAllocation(input: { organizationId: number; leagueId: number; actorUserId: number; request: CanonicalCorrectionRequest }) {
   return db.transaction(async (tx) => {
     await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
+    await requireWritableLeagueInTransaction(tx, input.organizationId, input.leagueId);
     await beginFinancialCommand(tx, {
       organizationId: input.organizationId,
       leagueId: input.leagueId,

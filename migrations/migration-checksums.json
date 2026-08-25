@@ -204,6 +204,12 @@
       "tag": "0033_roster_standing_autopay",
       "createdAt": 1787662614604,
       "hash": "2e2e58955a34c56ea731bb5dc8a7901314a33b89d275e6438cb7d3805c4a5dd7"
+    },
+    {
+      "idx": 34,
+      "tag": "0034_canonical_schedule_authority",
+      "createdAt": 1787697858021,
+      "hash": "a57f091cabd474db93d5408f5bb7862621a81c8ae21d58f2339ce2431397bee9"
     }
   ]
 }

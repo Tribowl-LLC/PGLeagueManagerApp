@@ -11,6 +11,10 @@ export type SubstituteAccess = (typeof SUBSTITUTE_ACCESS)[number];
 export const SUBSTITUTE_PAYMENT_REGIMES = ["team_choice", "league_lineage_prize_split"] as const;
 export type SubstitutePaymentRegime = (typeof SUBSTITUTE_PAYMENT_REGIMES)[number];
 
+/** The only schedule authorities that may be exposed by product reads. */
+export const SCHEDULE_AUTHORITIES = ["canonical", "retired_legacy"] as const;
+export type ScheduleAuthority = (typeof SCHEDULE_AUTHORITIES)[number];
+
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 const WEEKDAY_INDEX: Record<typeof WEEKDAYS[number], number> = {
@@ -92,6 +96,7 @@ export const leagues = pgTable("leagues", {
   substituteAccess: text("substitute_access", { enum: SUBSTITUTE_ACCESS }).notNull().default("team_only"),
   substitutePaymentRegime: text("substitute_payment_regime", { enum: SUBSTITUTE_PAYMENT_REGIMES }).notNull().default("team_choice"),
   active: boolean("active").notNull().default(true),
+  scheduleAuthority: text("schedule_authority", { enum: SCHEDULE_AUTHORITIES }).notNull().default("canonical"),
   allowPublicSignup: boolean("allow_public_signup").notNull().default(false),
   seasonStart: timestamp("season_start", { mode: "string" }).notNull(),
   seasonEnd: timestamp("season_end", { mode: "string" }).notNull(),
@@ -141,11 +146,14 @@ export const leagues = pgTable("leagues", {
   activeNameIdx: index("leagues_active_name_idx").on(table.active, table.name),
   seasonIdx: index("leagues_season_idx").on(table.seasonStart, table.seasonEnd),
   organizationIdx: index("leagues_organization_idx").on(table.organizationId),
+  scheduleAuthorityActiveIdx: index("leagues_schedule_authority_active_idx").on(table.organizationId, table.scheduleAuthority, table.active, table.name),
   locationIdx: index("leagues_location_idx").on(table.locationId),
   paymentModeCheck: check("leagues_payment_mode_check", sql`${table.paymentMode} IN ('weekly', 'upfront')`),
   payingLineupSizeCheck: check("leagues_paying_lineup_size_check", sql`${table.payingLineupSize} IS NULL OR ${table.payingLineupSize} IN (3, 4)`),
   substituteAccessCheck: check("leagues_substitute_access_check", sql`${table.substituteAccess} IN ('team_only', 'floating')`),
   substitutePaymentRegimeCheck: check("leagues_substitute_payment_regime_check", sql`${table.substitutePaymentRegime} IN ('team_choice', 'league_lineage_prize_split')`),
+  scheduleAuthorityCheck: check("leagues_schedule_authority_check", sql`${table.scheduleAuthority} IN ('canonical', 'retired_legacy')`),
+  retiredLegacyInactiveCheck: check("leagues_retired_legacy_inactive_check", sql`NOT (${table.scheduleAuthority} = 'retired_legacy' AND ${table.active} = TRUE)`),
   // Canonical occurrence rows carry both the league and organization IDs.
   // This parent key lets PostgreSQL enforce that the pair came from the same
   // tenant even though legacy leagues.organization_id remains nullable.
@@ -161,6 +169,9 @@ export const insertLeagueSchema = baseLeagueSchema.extend({
   substituteAccess: z.enum(SUBSTITUTE_ACCESS).optional(),
   substitutePaymentRegime: z.enum(SUBSTITUTE_PAYMENT_REGIMES).optional(),
   active: z.boolean().default(true),
+  // Database default supplies canonical for legacy/internal callers; the
+  // setup service still rejects an explicit retired authority on creation.
+  scheduleAuthority: z.enum(SCHEDULE_AUTHORITIES).optional(),
   allowPublicSignup: z.boolean().default(false),
   seasonStart: dateSchema,
   seasonEnd: dateSchema,
@@ -286,11 +297,12 @@ export const updateLeagueSchema = z.object({
 // API/test fixtures may represent pre-0030 legacy rows without the durable
 // canonical revision; database-selected rows always contain the defaulted
 // column.
-export type League = Omit<typeof leagues.$inferSelect, "canonicalScheduleRevision" | "payingLineupSize" | "substituteAccess" | "substitutePaymentRegime"> & {
+export type League = Omit<typeof leagues.$inferSelect, "canonicalScheduleRevision" | "payingLineupSize" | "substituteAccess" | "substitutePaymentRegime" | "scheduleAuthority"> & {
   canonicalScheduleRevision?: number;
   payingLineupSize?: number | null;
   substituteAccess?: SubstituteAccess;
   substitutePaymentRegime?: SubstitutePaymentRegime;
+  scheduleAuthority?: ScheduleAuthority;
 };
 export type InsertLeagueInput = z.input<typeof insertLeagueSchema>;
 export type InsertLeague = z.output<typeof insertLeagueSchema>;

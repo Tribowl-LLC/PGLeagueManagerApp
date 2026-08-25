@@ -20,6 +20,8 @@ interface LeagueSchedulePreviewProps {
   effectiveBowlingWeeks: number;
   computedSeasonEnd: Date | null;
   toggleDateType: (isoDate: string, currentType: ScheduleWeekType) => void;
+  /** Creation and rollover schedules support Bowling/No Bowling only. */
+  allowCancelled?: boolean;
 }
 
 export function LeagueSchedulePreview({
@@ -33,6 +35,7 @@ export function LeagueSchedulePreview({
   effectiveBowlingWeeks,
   computedSeasonEnd,
   toggleDateType,
+  allowCancelled = true,
 }: LeagueSchedulePreviewProps) {
   if (scheduleDates.length === 0) return null;
 
@@ -40,7 +43,7 @@ export function LeagueSchedulePreview({
     <div className="space-y-1.5">
       {!showSchedule && (
         <p className="text-xs text-muted-foreground px-1">
-          Click weeks to mark holidays, cancellations, or double-pay.
+          Click weeks to mark No Bowling skips{allowCancelled ? ", cancellations" : ""}, or double-pay.
         </p>
       )}
       <div className="rounded-lg border">
@@ -55,7 +58,7 @@ export function LeagueSchedulePreview({
             <span className="text-xs text-muted-foreground font-normal">
               {bowlingWeeks} planned week{bowlingWeeks !== 1 ? 's' : ''}
               {skipDates.length > 0 && ` · ${skipDates.length} holiday skip${skipDates.length !== 1 ? 's' : ''}`}
-              {cancelledDates.length > 0 && ` · ${cancelledDates.length} cancellation${cancelledDates.length !== 1 ? 's' : ''}`}
+              {allowCancelled && cancelledDates.length > 0 && ` · ${cancelledDates.length} cancellation${cancelledDates.length !== 1 ? 's' : ''}`}
               {doublePayDates.length > 0 && ` · ${doublePayDates.length} double-pay week${doublePayDates.length !== 1 ? 's' : ''}`}
               {computedSeasonEnd && ` · ends ${computedSeasonEnd.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`}
             </span>
@@ -67,13 +70,13 @@ export function LeagueSchedulePreview({
       {showSchedule && (
         <div className="border-t">
           <div className="px-3 py-2 text-xs text-muted-foreground bg-muted/30">
-            Click a date to cycle: <span className="font-medium">Normal → Skip (holiday, season extends) → Cancelled (no makeup, season shortens) → 2× Pay (charged double, max 2 per league)</span>
+            Click a date to cycle: <span className="font-medium">Normal → Skip (No Bowling) {allowCancelled ? "→ Cancelled (no makeup) " : ""}→ 2× Pay (charged double, max 2 per league)</span>
           </div>
           <div className="divide-y max-h-72 overflow-y-auto">
             {scheduleDates.map((week) => {
               const weekLabel = week.type === 'skip'
                 ? 'Skip'
-                : week.type === 'cancelled'
+                : allowCancelled && week.type === 'cancelled'
                 ? 'Cancelled'
                 : week.type === 'double-pay'
                 ? `Week ${week.bowlingWeekNumber} · 2× Pay`
@@ -86,7 +89,7 @@ export function LeagueSchedulePreview({
                   className={`flex w-full items-center justify-between px-3 py-1.5 text-sm hover:bg-muted/50 transition-colors ${
                     week.type === 'skip'
                       ? 'bg-yellow-50 dark:bg-yellow-950/20'
-                      : week.type === 'cancelled'
+                      : allowCancelled && week.type === 'cancelled'
                       ? 'bg-red-50 dark:bg-red-950/20'
                       : week.type === 'double-pay'
                       ? 'bg-emerald-50 dark:bg-emerald-950/20'
@@ -94,7 +97,7 @@ export function LeagueSchedulePreview({
                   }`}
                   data-testid={`schedule-week-${week.isoDate}`}
                 >
-                  <span className={week.type === 'skip' || week.type === 'cancelled' ? 'text-muted-foreground line-through' : ''}>
+                  <span className={week.type === 'skip' || (allowCancelled && week.type === 'cancelled') ? 'text-muted-foreground line-through' : ''}>
                     {week.date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}
                   </span>
                   <Badge

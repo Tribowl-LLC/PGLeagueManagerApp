@@ -19,7 +19,6 @@ import {
 } from "@/components/ui/dialog";
 import { Loader2, RefreshCw } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
-import { Checkbox } from "@/components/ui/checkbox";
 import type { ApiResponse, League, PaymentMode } from "@shared/schema";
 import { WEEKDAYS } from "@shared/schema";
 import type { ScheduleWeekType } from "@shared/schedule-utils";
@@ -39,6 +38,16 @@ import {
 } from "@shared/league-setup-integration";
 
 export type NewSeasonFormValues = {
+  name?: string;
+  description?: string | null;
+  payingLineupSize?: 3 | 4;
+  locationId?: number | null;
+  timezone?: string;
+  practiceStartTime?: string | null;
+  competitionStartTime?: string | null;
+  weeklyFee?: number;
+  lineageFee?: number | null;
+  prizeFundFee?: number | null;
   seasonStart: string;
   totalBowlingWeeks: number;
   weekDay: (typeof WEEKDAYS)[number];
@@ -66,6 +75,16 @@ export function NewSeasonDialog({
   isSystemAdmin?: boolean;
 }) {
   const [seasonStart, setSeasonStart] = useState("");
+  const [name, setName] = useState(league.name);
+  const [description, setDescription] = useState(league.description ?? "");
+  const [payingLineupSize, setPayingLineupSize] = useState<3 | 4>((league.payingLineupSize === 3 ? 3 : 4));
+  const [locationId, setLocationId] = useState<number | "">(league.locationId ?? "");
+  const [timezone, setTimezone] = useState(league.timezone ?? "");
+  const [practiceStartTime, setPracticeStartTime] = useState(league.practiceStartTime ?? "");
+  const [competitionStartTime, setCompetitionStartTime] = useState(league.competitionStartTime ?? "");
+  const [weeklyFee, setWeeklyFee] = useState(league.weeklyFee);
+  const [lineageFee, setLineageFee] = useState<number | null>(league.lineageFee ?? null);
+  const [prizeFundFee, setPrizeFundFee] = useState<number | null>(league.prizeFundFee ?? null);
   const [bowlingWeeks, setBowlingWeeks] = useState(league.totalBowlingWeeks ?? 30);
   const [weekDay, setWeekDay] = useState<(typeof WEEKDAYS)[number]>(league.weekDay);
   const [skipDates, setSkipDates] = useState<string[]>([]);
@@ -74,7 +93,6 @@ export function NewSeasonDialog({
   const [allowPublicSignup, setAllowPublicSignup] = useState(league.allowPublicSignup ?? false);
   const [paymentMode, setPaymentMode] = useState<PaymentMode | "">("");
   const [showSchedule, setShowSchedule] = useState(false);
-  const [carriedConfigurationConfirmed, setCarriedConfigurationConfirmed] = useState(false);
   const sourceQuerySuffix = isSystemAdmin ? `?organizationId=${league.organizationId}` : "";
   const sourceConfirmationQuery = useQuery<ApiResponse<LeagueRolloverSourceContract>>({
     queryKey: ["league-rollover-source", league.id, sourceQuerySuffix],
@@ -87,8 +105,33 @@ export function NewSeasonDialog({
   });
   const carriedSource = sourceConfirmationQuery.data?.data;
 
+  useEffect(() => {
+    const carried = carriedSource?.carriedConfiguration;
+    if (!carried) return;
+    setName(carried.name);
+    setDescription(carried.description ?? "");
+    setPayingLineupSize(carried.payingLineupSize);
+    setLocationId(carried.locationId);
+    setTimezone(carried.timezone);
+    setPracticeStartTime(carried.practiceStartTime ?? "");
+    setCompetitionStartTime(carried.competitionStartTime);
+    setWeeklyFee(carried.weeklyFee);
+    setLineageFee(carried.lineageFee);
+    setPrizeFundFee(carried.prizeFundFee);
+  }, [carriedSource]);
+
   const resetForm = useCallback(() => {
     setSeasonStart("");
+    setName(league.name);
+    setDescription(league.description ?? "");
+    setPayingLineupSize(league.payingLineupSize === 3 ? 3 : 4);
+    setLocationId(league.locationId ?? "");
+    setTimezone(league.timezone ?? "");
+    setPracticeStartTime(league.practiceStartTime ?? "");
+    setCompetitionStartTime(league.competitionStartTime ?? "");
+    setWeeklyFee(league.weeklyFee);
+    setLineageFee(league.lineageFee ?? null);
+    setPrizeFundFee(league.prizeFundFee ?? null);
     setBowlingWeeks(league.totalBowlingWeeks ?? 30);
     setWeekDay(league.weekDay);
     setSkipDates([]);
@@ -97,8 +140,7 @@ export function NewSeasonDialog({
     setAllowPublicSignup(league.allowPublicSignup ?? false);
     setPaymentMode("");
     setShowSchedule(false);
-    setCarriedConfigurationConfirmed(false);
-  }, [league.allowPublicSignup, league.totalBowlingWeeks, league.weekDay]);
+  }, [league.allowPublicSignup, league.competitionStartTime, league.description, league.lineageFee, league.locationId, league.name, league.payingLineupSize, league.practiceStartTime, league.prizeFundFee, league.timezone, league.totalBowlingWeeks, league.weekDay, league.weeklyFee]);
 
   useEffect(() => {
     if (showNewSeason) resetForm();
@@ -138,9 +180,6 @@ export function NewSeasonDialog({
       setSkipDates((prev) => [...prev, isoDate]);
     } else if (currentType === "skip") {
       setSkipDates((prev) => prev.filter((date) => date !== isoDate));
-      setCancelledDates((prev) => [...prev, isoDate]);
-    } else if (currentType === "cancelled") {
-      setCancelledDates((prev) => prev.filter((date) => date !== isoDate));
       if (doublePayDates.length < 2) {
         setDoublePayDates((prev) => [...prev, isoDate]);
       }
@@ -155,9 +194,21 @@ export function NewSeasonDialog({
   };
 
   const handleCreate = () => {
-    if (!seasonStart || bowlingWeeks <= 0 || !computedSeasonEnd || paymentMode === ""
-      || !carriedConfigurationConfirmed || !carriedSource) return;
+    if (!seasonStart || bowlingWeeks <= 0 || !computedSeasonEnd || paymentMode === "" || !carriedSource) return;
+    const carried = carriedSource.carriedConfiguration;
+    const editableOverrides: Pick<NewSeasonFormValues, "name" | "description" | "payingLineupSize" | "locationId" | "timezone" | "practiceStartTime" | "competitionStartTime" | "weeklyFee" | "lineageFee" | "prizeFundFee"> = {};
+    if (name.trim() !== carried.name) editableOverrides.name = name.trim();
+    if ((description.trim() || null) !== carried.description) editableOverrides.description = description.trim() || null;
+    if (payingLineupSize !== carried.payingLineupSize) editableOverrides.payingLineupSize = payingLineupSize;
+    if (locationId !== carried.locationId) editableOverrides.locationId = locationId === "" ? null : locationId;
+    if (timezone !== carried.timezone) editableOverrides.timezone = timezone;
+    if ((practiceStartTime || null) !== carried.practiceStartTime) editableOverrides.practiceStartTime = practiceStartTime || null;
+    if ((competitionStartTime || null) !== carried.competitionStartTime) editableOverrides.competitionStartTime = competitionStartTime || null;
+    if (weeklyFee !== carried.weeklyFee) editableOverrides.weeklyFee = weeklyFee;
+    if (lineageFee !== carried.lineageFee) editableOverrides.lineageFee = lineageFee;
+    if (prizeFundFee !== carried.prizeFundFee) editableOverrides.prizeFundFee = prizeFundFee;
     onCreate({
+      ...editableOverrides,
       seasonStart,
       totalBowlingWeeks: bowlingWeeks,
       weekDay,
@@ -308,9 +359,9 @@ export function NewSeasonDialog({
 
           <section className="space-y-3 rounded-lg border p-4" aria-labelledby="carried-configuration-heading">
             <div>
-              <h3 id="carried-configuration-heading" className="font-medium">Confirm carried league configuration</h3>
+              <h3 id="carried-configuration-heading" className="font-medium">Prefilled league configuration</h3>
               <p className="text-xs text-muted-foreground">
-                These stable settings are copied from the current season and cannot be edited during rollover.
+                These values are carried forward as editable rollover defaults. Payment provider catalog identities are never copied.
               </p>
             </div>
             {sourceConfirmationQuery.isLoading && <p className="text-sm text-muted-foreground">Loading carried configuration…</p>}
@@ -318,30 +369,60 @@ export function NewSeasonDialog({
               <p className="text-sm text-destructive" role="alert">Carried configuration could not be verified. Close and retry the rollover.</p>
             )}
             {carriedSource && (
-              <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
-                <dt className="font-medium">League</dt><dd>{carriedSource.carriedConfiguration.name}</dd>
-                <dt className="font-medium">Description</dt><dd>{carriedSource.carriedConfiguration.description ?? "Not set"}</dd>
-                <dt className="font-medium">League lineup size</dt><dd>{carriedSource.carriedConfiguration.payingLineupSize === 3 ? "Three Bowlers" : "Four Bowlers"}</dd>
-                <dt className="font-medium">Location</dt><dd>Location #{carriedSource.carriedConfiguration.locationId}</dd>
-                <dt className="font-medium">Timezone</dt><dd>{carriedSource.carriedConfiguration.timezone}</dd>
-                <dt className="font-medium">Practice</dt><dd>{carriedSource.carriedConfiguration.practiceStartTime ?? "Not set"}</dd>
-                <dt className="font-medium">Competition</dt><dd>{carriedSource.carriedConfiguration.competitionStartTime}</dd>
-                <dt className="font-medium">Weekly fee</dt><dd>${(carriedSource.carriedConfiguration.weeklyFee / 100).toFixed(2)}</dd>
-                <dt className="font-medium">Lineage fee</dt><dd>{carriedSource.carriedConfiguration.lineageFee == null ? "Not set" : `$${(carriedSource.carriedConfiguration.lineageFee / 100).toFixed(2)}`}</dd>
-                <dt className="font-medium">Prize fund fee</dt><dd>{carriedSource.carriedConfiguration.prizeFundFee == null ? "Not set" : `$${(carriedSource.carriedConfiguration.prizeFundFee / 100).toFixed(2)}`}</dd>
-              </dl>
+              <div className="space-y-3">
+                <div>
+                  <label htmlFor="new-season-name" className="text-sm font-medium">League name</label>
+                  <Input id="new-season-name" value={name} onChange={(event) => setName(event.target.value)} className="mt-1" />
+                </div>
+                <div>
+                  <label htmlFor="new-season-description" className="text-sm font-medium">Description</label>
+                  <Input id="new-season-description" value={description} onChange={(event) => setDescription(event.target.value)} className="mt-1" />
+                </div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div>
+                    <label htmlFor="new-season-lineup" className="text-sm font-medium">League lineup size</label>
+                    <Select value={String(payingLineupSize)} onValueChange={(value) => setPayingLineupSize(Number(value) as 3 | 4)}>
+                      <SelectTrigger id="new-season-lineup" className="mt-1"><SelectValue /></SelectTrigger>
+                      <SelectContent><SelectItem value="3">Three Bowlers</SelectItem><SelectItem value="4">Four Bowlers</SelectItem></SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <label htmlFor="new-season-location" className="text-sm font-medium">Location ID</label>
+                    <Input id="new-season-location" type="number" min={1} value={locationId} onChange={(event) => setLocationId(event.target.value === "" ? "" : Number(event.target.value))} className="mt-1" />
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div>
+                    <label htmlFor="new-season-timezone" className="text-sm font-medium">Timezone</label>
+                    <Input id="new-season-timezone" value={timezone} onChange={(event) => setTimezone(event.target.value)} className="mt-1" />
+                  </div>
+                  <div>
+                    <label htmlFor="new-season-practice" className="text-sm font-medium">Practice time</label>
+                    <Input id="new-season-practice" type="time" value={practiceStartTime} onChange={(event) => setPracticeStartTime(event.target.value)} className="mt-1" />
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div>
+                    <label htmlFor="new-season-competition" className="text-sm font-medium">Competition time</label>
+                    <Input id="new-season-competition" type="time" value={competitionStartTime} onChange={(event) => setCompetitionStartTime(event.target.value)} className="mt-1" />
+                  </div>
+                  <div>
+                    <label htmlFor="new-season-weekly-fee" className="text-sm font-medium">Weekly fee (cents)</label>
+                    <Input id="new-season-weekly-fee" type="number" min={1} value={weeklyFee} onChange={(event) => setWeeklyFee(Number(event.target.value))} className="mt-1" />
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div>
+                    <label htmlFor="new-season-lineage-fee" className="text-sm font-medium">Lineage fee (cents)</label>
+                    <Input id="new-season-lineage-fee" type="number" min={0} value={lineageFee ?? ""} onChange={(event) => setLineageFee(event.target.value === "" ? null : Number(event.target.value))} className="mt-1" />
+                  </div>
+                  <div>
+                    <label htmlFor="new-season-prize-fee" className="text-sm font-medium">Prize fund fee (cents)</label>
+                    <Input id="new-season-prize-fee" type="number" min={0} value={prizeFundFee ?? ""} onChange={(event) => setPrizeFundFee(event.target.value === "" ? null : Number(event.target.value))} className="mt-1" />
+                  </div>
+                </div>
+              </div>
             )}
-            <div className="flex items-start gap-2">
-              <Checkbox
-                id="confirm-carried-configuration"
-                checked={carriedConfigurationConfirmed}
-                onCheckedChange={(checked) => setCarriedConfigurationConfirmed(checked === true)}
-                disabled={!carriedSource || sourceConfirmationQuery.isError}
-              />
-              <label htmlFor="confirm-carried-configuration" className="text-sm">
-                I reviewed and confirm this carried configuration. Square catalog identities will be reset for the new season.
-              </label>
-            </div>
           </section>
 
           <LeagueSchedulePreview
@@ -355,6 +436,7 @@ export function NewSeasonDialog({
             effectiveBowlingWeeks={effectiveBowlingWeeks}
             computedSeasonEnd={computedSeasonEnd}
             toggleDateType={toggleDateType}
+            allowCancelled={false}
           />
 
           {seasonStart && computedSeasonEnd && (
@@ -371,7 +453,7 @@ export function NewSeasonDialog({
           <Button
             onClick={handleCreate}
             disabled={!seasonStart || bowlingWeeks <= 0 || !computedSeasonEnd || paymentMode === ""
-              || !carriedConfigurationConfirmed || !carriedSource || sourceConfirmationQuery.isLoading
+              || !carriedSource || sourceConfirmationQuery.isLoading
               || sourceConfirmationQuery.isError || isPending}
           >
             {isPending ? (

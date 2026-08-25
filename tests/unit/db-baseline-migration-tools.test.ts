@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(34);
+    expect(migrations).toHaveLength(35);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -442,6 +442,9 @@ describe('normalized migration baseline tools', () => {
     expect(migrations[33]?.sql).toContain('0033 requires an empty autopay_consents table');
     expect(migrations[33]?.sql).toContain('CREATE TABLE "payment_operation_standing_autopay_bindings"');
     expect(migrations[33]?.sql).toContain("standing_autopay_charge");
+    expect(migrations[34]).toMatchObject({ idx: 34, tag: '0034_canonical_schedule_authority' });
+    expect(migrations[34]?.sql).toContain('0034 refused: partial or contradictory canonical evidence');
+    expect(migrations[34]?.sql).toContain('enforce_league_schedule_authority_immutability');
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 

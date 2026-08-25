@@ -70,6 +70,12 @@ async function rejectLegacyRosterCharge(req: Request, res: Response): Promise<bo
     sendError(res, 'Payment route unavailable', 404, 'NOT_FOUND');
     return true;
   }
+  if (league.active === false || league.scheduleAuthority === 'retired_legacy') {
+    // Archived canonical rows remain readable as history, but provider
+    // charge/quote execution has a hard active-authority fence.
+    sendError(res, 'Payment route unavailable', 404, 'NOT_FOUND');
+    return true;
+  }
   if (league.payingLineupSize != null) {
     if (!(await hasAccessToLeague(req, leagueId))) {
       sendError(res, 'Payment route unavailable', 404, 'NOT_FOUND');

@@ -16,8 +16,9 @@ const log = createLogger("StorageBowlers");
 const BOWLERS_TTL = 30_000;
 
 async function lockRosterLeague(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], leagueId: number): Promise<void> {
-  const [league] = await tx.select({ organizationId: leagues.organizationId }).from(leagues).where(eq(leagues.id, leagueId)).limit(1);
+  const [league] = await tx.select({ organizationId: leagues.organizationId, active: leagues.active, scheduleAuthority: leagues.scheduleAuthority }).from(leagues).where(eq(leagues.id, leagueId)).limit(1);
   if (!league) throw new Error('League not found');
+  if (!league.active || league.scheduleAuthority !== "canonical") throw new Error('League is a read-only archive');
   if (league.organizationId !== null) await lockLeagueSchedule(tx, league.organizationId, leagueId);
 }
 
@@ -114,6 +115,7 @@ export async function getBowlers(filters: { teamId?: number; organizationId: num
         .where(and(
           eq(bowlerLeagues.teamId, filters.teamId),
           eq(leagues.organizationId, filters.organizationId),
+          eq(leagues.scheduleAuthority, "canonical"),
         ))
         .orderBy(bowlers.order);
     }
@@ -122,7 +124,7 @@ export async function getBowlers(filters: { teamId?: number; organizationId: num
       .from(bowlers)
       .innerJoin(bowlerLeagues, eq(bowlerLeagues.bowlerId, bowlers.id))
       .innerJoin(leagues, eq(bowlerLeagues.leagueId, leagues.id))
-      .where(eq(leagues.organizationId, filters.organizationId))
+        .where(and(eq(leagues.organizationId, filters.organizationId), eq(leagues.scheduleAuthority, "canonical")))
       .orderBy(bowlers.order);
   });
 }
@@ -137,7 +139,7 @@ export async function getAllBowlersSystemAdmin(): Promise<Bowler[]> {
     .from(bowlers)
     .innerJoin(bowlerLeagues, eq(bowlerLeagues.bowlerId, bowlers.id))
     .innerJoin(leagues, eq(bowlerLeagues.leagueId, leagues.id))
-    .where(sql`${leagues.organizationId} IS NOT NULL`)
+    .where(and(sql`${leagues.organizationId} IS NOT NULL`, eq(leagues.scheduleAuthority, "canonical")))
     .orderBy(bowlers.order);
 }
 
@@ -204,6 +206,7 @@ export async function deleteBowler(id: number): Promise<void> {
 
 export async function getBowlerLeaguesFiltered(filters?: { bowlerId?: number; leagueId?: number; teamId?: number }): Promise<BowlerLeague[]> {
   const query = db.select().from(bowlerLeagues);
+  const canonicalLeague = sql`EXISTS (SELECT 1 FROM leagues authority_league WHERE authority_league.id = ${bowlerLeagues.leagueId} AND authority_league.schedule_authority = 'canonical')`;
 
   if (filters) {
     const conditions = [];
@@ -217,16 +220,16 @@ export async function getBowlerLeaguesFiltered(filters?: { bowlerId?: number; le
       conditions.push(eq(bowlerLeagues.teamId, filters.teamId));
     }
     if (conditions.length > 0) {
-      conditions.push(eq(bowlerLeagues.active, true));
+      conditions.push(eq(bowlerLeagues.active, true), canonicalLeague);
       return query.where(and(...conditions)).orderBy(bowlerLeagues.order);
     }
   }
 
-  return query.where(eq(bowlerLeagues.active, true)).orderBy(bowlerLeagues.order);
+  return query.where(and(eq(bowlerLeagues.active, true), canonicalLeague)).orderBy(bowlerLeagues.order);
 }
 
 export async function getBowlerLeague(id: number): Promise<BowlerLeague | undefined> {
-  const [result] = await db.select().from(bowlerLeagues).where(eq(bowlerLeagues.id, id));
+  const [result] = await db.select().from(bowlerLeagues).where(and(eq(bowlerLeagues.id, id), sql`EXISTS (SELECT 1 FROM leagues authority_league WHERE authority_league.id = ${bowlerLeagues.leagueId} AND authority_league.schedule_authority = 'canonical')`));
   return result;
 }
 
@@ -243,6 +246,7 @@ export async function isBowlerActiveInLeague(bowlerId: number, leagueId: number)
         eq(bowlerLeagues.bowlerId, bowlerId),
         eq(bowlerLeagues.leagueId, leagueId),
         eq(bowlerLeagues.active, true),
+        sql`EXISTS (SELECT 1 FROM leagues authority_league WHERE authority_league.id = ${bowlerLeagues.leagueId} AND authority_league.schedule_authority = 'canonical')`,
       ),
     )
     .limit(1);
@@ -540,7 +544,7 @@ export async function getBowlerLeaguesByBowlerIds(bowlerIds: number[]): Promise<
   return db
     .select()
     .from(bowlerLeagues)
-    .where(and(inArray(bowlerLeagues.bowlerId, bowlerIds), eq(bowlerLeagues.active, true)))
+    .where(and(inArray(bowlerLeagues.bowlerId, bowlerIds), eq(bowlerLeagues.active, true), sql`EXISTS (SELECT 1 FROM leagues authority_league WHERE authority_league.id = ${bowlerLeagues.leagueId} AND authority_league.schedule_authority = 'canonical')`))
     .orderBy(bowlerLeagues.order);
 }
 
@@ -640,6 +644,7 @@ export async function searchBowlersByName(
       and(
         inArray(bowlerLeagues.bowlerId, ids),
         eq(leagues.organizationId, organizationId),
+        eq(leagues.scheduleAuthority, "canonical"),
       ),
     )
     .orderBy(asc(bowlerLeagues.bowlerId), asc(leagues.id));

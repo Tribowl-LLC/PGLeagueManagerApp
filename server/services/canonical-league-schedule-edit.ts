@@ -26,6 +26,7 @@ import {
   type MaterializationScheduleCommandRequest,
 } from "./canonical-occurrence-transactions.js";
 import { db } from "../db.js";
+import { revokeStandingAutopayForArchivedLeagueInTransaction } from "./roster-standing-autopay.js";
 
 export class CanonicalLeagueScheduleEditError extends Error {
   constructor(public readonly code: "stale_revision" | "financial_conflict" | "invalid_edit" | "unsupported_edit", message: string) {
@@ -180,6 +181,8 @@ export async function editCanonicalLeagueSchedule(input: CanonicalLeagueSchedule
     if (!input.reason || input.reason.trim() !== input.reason || !Number.isSafeInteger(input.expectedScheduleRevision) || input.expectedScheduleRevision < 0) throw new CanonicalLeagueScheduleEditError("invalid_edit", "schedule revision and reason are required");
     const [league] = await tx.select().from(leagues).where(and(eq(leagues.organizationId, input.organizationId), eq(leagues.id, input.leagueId))).for("update");
     if (!league) throw new CanonicalLeagueScheduleEditError("invalid_edit", "league is outside the requested tenant");
+    if (league.scheduleAuthority !== "canonical") throw new CanonicalLeagueScheduleEditError("invalid_edit", "retired legacy leagues are not editable");
+    if (!league.active) throw new CanonicalLeagueScheduleEditError("unsupported_edit", "inactive canonical leagues are read-only archives");
     // The new roster schema owns lineup locking; the old activation relation
     // is deliberately absent after migration 0032.  League setup performs
     // the same canonical-evidence check under this advisory lock.
@@ -270,6 +273,12 @@ export async function editCanonicalLeagueSchedule(input: CanonicalLeagueSchedule
     if (!scheduleChanged && !metadataChanged) {
       const collectionGroups = await readCanonicalCollectionGroupsInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId, generationRunId: run.id });
       return { mode: "idempotent_retry", scheduleRevision: currentRevision, doublePayDates: league.doublePayDates, collectionGroups, commandId: command.command.id, writesPerformed: false, league };
+    }
+    if (input.metadata?.active === false) {
+      await revokeStandingAutopayForArchivedLeagueInTransaction(tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+      });
     }
     const now = new Date().toISOString();
     const addedCancelledDates = nextCancelledDates.filter((date) => !previousCancelledDates.includes(date));

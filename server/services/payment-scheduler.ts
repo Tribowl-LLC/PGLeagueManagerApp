@@ -59,6 +59,15 @@ export class PaymentScheduler {
       return false;
     }
 
+    // Rows read from PostgreSQL always carry both fields. Treating an omitted
+    // field as legacy-active keeps the scheduler's narrow unit-test doubles
+    // (and older callers that hydrate partial rows) from being silently
+    // dropped, while explicit inactive/retired values remain hard stops.
+    if (row[0].active === false || row[0].scheduleAuthority === 'retired_legacy') {
+      logger.info(`[PaymentScheduler] ${context}: skipping inactive or retired league`, { leagueId });
+      return false;
+    }
+
     const leagueOrgId = row[0].organizationId;
 
     if (requestedOrgId === null && leagueOrgId !== null) {
@@ -84,7 +93,15 @@ export class PaymentScheduler {
       return false;
     }
 
-    const league = await db.select().from(leagues).where(eq(leagues.id, leagueId)).limit(1).then(r => r[0]);
+    const leagueResult = await db.select().from(leagues).where(eq(leagues.id, leagueId)).limit(1);
+    // Drizzle returns an array. The object fallback keeps this guard
+    // compatible with the scheduler's intentionally small legacy test
+    // double, which models `.limit()` as the selected row itself.
+    const league = Array.isArray(leagueResult) ? leagueResult[0] : leagueResult;
+    if (!league || league.active === false || league.scheduleAuthority === 'retired_legacy') {
+      logger.info('[PaymentScheduler] Inactive or retired league cannot execute a schedule', { leagueId });
+      return false;
+    }
     if (league?.payingLineupSize !== null && league?.payingLineupSize !== undefined) {
       logger.info('[PaymentScheduler] Roster-configured league uses exact-obligation collection', { leagueId });
       return false;
@@ -125,6 +142,8 @@ export class PaymentScheduler {
 
       const conditions = [
         eq(paymentSchedules.active, true),
+        eq(leagues.active, true),
+        eq(leagues.scheduleAuthority, 'canonical'),
         isNull(leagues.payingLineupSize),
       ];
 
@@ -443,6 +462,8 @@ export class PaymentScheduler {
         .where(
           and(
             eq(paymentSchedules.active, true),
+            eq(leagues.active, true),
+            eq(leagues.scheduleAuthority, 'canonical'),
             isNull(leagues.payingLineupSize),
             lte(paymentSchedules.nextPaymentDate, now.toISOString())
           )
@@ -483,8 +504,8 @@ export class PaymentScheduler {
         // alerts. The legacy `{ schedule: ... }` projection wrapper
         // was historical baggage from initializeFromDatabase's JOIN;
         // this block has no JOIN, so we use the row directly.
-        const candidatesPredicate = and(
-          eq(paymentSchedules.active, true),
+      const candidatesPredicate = and(
+        eq(paymentSchedules.active, true),
           lte(paymentSchedules.nextPaymentDate, now.toISOString()),
           inArray(paymentSchedules.id, missedIds),
         );

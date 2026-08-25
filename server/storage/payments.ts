@@ -68,6 +68,14 @@ interface AllPaymentFilters {
 export function buildPaymentConditions(filters: AllPaymentFilters, options?: { excludeOrgLessLeagues?: boolean }) {
   const conditions = [];
 
+  // Payment history is a product surface. Retired legacy leagues remain in
+  // the ledger for reconciliation, but are never disclosed through list or
+  // report queries; provider/reconciliation lookups below intentionally keep
+  // their narrower evidence-oriented semantics.
+  if (filters.organizationId !== undefined || options?.excludeOrgLessLeagues) {
+    conditions.push(sql`${payments.leagueId} IN (SELECT "id" FROM ${leagues} WHERE ${leagues.scheduleAuthority} = 'canonical')`);
+  }
+
   if (filters.organizationId !== undefined) {
     conditions.push(sql`${payments.leagueId} IN (SELECT "id" FROM ${leagues} WHERE ${leagues.organizationId} = ${filters.organizationId})`);
   } else if (options?.excludeOrgLessLeagues) {
@@ -209,7 +217,10 @@ export async function getPaymentsPaginated(
 }
 
 export async function getPaymentById(id: number): Promise<Payment | undefined> {
-  const [result] = await db.select().from(payments).where(eq(payments.id, id));
+  const [result] = await db.select().from(payments).where(and(
+    eq(payments.id, id),
+    sql`EXISTS (SELECT 1 FROM leagues authority_league WHERE authority_league.id = ${payments.leagueId} AND authority_league.schedule_authority = 'canonical')`,
+  ));
   return result;
 }
 
@@ -221,7 +232,7 @@ export async function getPaymentById(id: number): Promise<Payment | undefined> {
 export async function getPaymentByIdForOrganization(id: number, organizationId: number): Promise<Payment | undefined> {
   const [result] = await db.select({ payment: payments })
     .from(payments)
-    .innerJoin(leagues, and(eq(leagues.id, payments.leagueId), eq(leagues.organizationId, organizationId)))
+    .innerJoin(leagues, and(eq(leagues.id, payments.leagueId), eq(leagues.organizationId, organizationId), eq(leagues.scheduleAuthority, "canonical")))
     .where(eq(payments.id, id))
     .limit(1);
   return result?.payment;
@@ -265,9 +276,14 @@ export async function createPayment(payment: InsertPayment): Promise<Payment> {
     const [league] = await tx.select({
       organizationId: leagues.organizationId,
       payingLineupSize: leagues.payingLineupSize,
+      active: leagues.active,
+      scheduleAuthority: leagues.scheduleAuthority,
     })
       .from(leagues).where(eq(leagues.id, payment.leagueId)).limit(1);
     if (!league) throw new Error("Payment league not found");
+    if (league.organizationId !== null && (league.active !== true || league.scheduleAuthority !== "canonical")) {
+      throw new Error("Archived leagues are read-only");
+    }
     if (league.organizationId !== null) {
       // Tenant-owned leagues are PR1 roster-driven. Generic payment writes
       // have no obligation identity and therefore cannot safely infer a
@@ -293,8 +309,9 @@ export async function createCombinedPayments(
   return await db.transaction(async (tx) => {
     const leagueIds = [...new Set(rows.map((row) => row.leagueId))];
     for (const leagueId of leagueIds) {
-      const [league] = await tx.select({ organizationId: leagues.organizationId }).from(leagues).where(eq(leagues.id, leagueId)).limit(1);
+      const [league] = await tx.select({ organizationId: leagues.organizationId, active: leagues.active, scheduleAuthority: leagues.scheduleAuthority }).from(leagues).where(eq(leagues.id, leagueId)).limit(1);
       if (!league) throw new Error("Payment league not found");
+      if (league.organizationId !== null && (league.active !== true || league.scheduleAuthority !== "canonical")) throw new Error("Archived leagues are read-only");
       if (league.organizationId !== null) {
         await lockLeagueSchedule(tx, league.organizationId, leagueId);
         throw new CanonicalAllocationRequiredError();
@@ -448,9 +465,10 @@ export async function deletePayment(id: number): Promise<void> {
 
 export async function createPaymentSchedule(schedule: InsertPaymentSchedule): Promise<PaymentSchedule> {
   const { result, comparison } = await db.transaction(async (tx) => {
-    const [league] = await tx.select({ organizationId: leagues.organizationId })
+    const [league] = await tx.select({ organizationId: leagues.organizationId, active: leagues.active, scheduleAuthority: leagues.scheduleAuthority })
       .from(leagues).where(eq(leagues.id, schedule.leagueId)).limit(1);
     if (!league) throw new Error('Payment schedule league not found');
+    if (league.organizationId !== null && (league.active !== true || league.scheduleAuthority !== "canonical")) throw new Error("Archived leagues are read-only");
     if (league.organizationId === null) {
       const [legacyResult] = await tx.insert(paymentSchedules).values(schedule).returning();
       return { result: legacyResult, comparison: null };
@@ -488,7 +506,8 @@ export async function getPaymentSchedule(bowlerId: number, leagueId: number): Pr
       and(
         eq(paymentSchedules.bowlerId, bowlerId),
         eq(paymentSchedules.leagueId, leagueId),
-        eq(paymentSchedules.active, true)
+        eq(paymentSchedules.active, true),
+        sql`EXISTS (SELECT 1 FROM leagues authority_league WHERE authority_league.id = ${paymentSchedules.leagueId} AND authority_league.schedule_authority = 'canonical')`,
       )
     );
   return result;
@@ -498,7 +517,7 @@ export async function getPaymentScheduleById(id: number): Promise<PaymentSchedul
   const [result] = await db
     .select()
     .from(paymentSchedules)
-    .where(eq(paymentSchedules.id, id));
+    .where(and(eq(paymentSchedules.id, id), sql`EXISTS (SELECT 1 FROM leagues authority_league WHERE authority_league.id = ${paymentSchedules.leagueId} AND authority_league.schedule_authority = 'canonical')`));
   return result;
 }
 
@@ -509,7 +528,8 @@ export async function getActiveSchedulesByLeague(leagueId: number): Promise<Paym
     .where(
       and(
         eq(paymentSchedules.leagueId, leagueId),
-        eq(paymentSchedules.active, true)
+        eq(paymentSchedules.active, true),
+        sql`EXISTS (SELECT 1 FROM leagues authority_league WHERE authority_league.id = ${paymentSchedules.leagueId} AND authority_league.schedule_authority = 'canonical')`,
       )
     );
 }
@@ -522,7 +542,8 @@ export async function getActiveSchedulesByLocationId(locationId: number): Promis
     .where(
       and(
         eq(leagues.locationId, locationId),
-        eq(paymentSchedules.active, true)
+        eq(paymentSchedules.active, true),
+        eq(leagues.scheduleAuthority, "canonical"),
       )
     );
   return rows.map(r => r.schedule);

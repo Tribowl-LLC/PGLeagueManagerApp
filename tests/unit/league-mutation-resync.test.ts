@@ -90,9 +90,11 @@ const mockStorage = {
   deleteBowlerLeague: vi.fn(),
   createBowlerLeagueIfBowlerFree: vi.fn(),
 };
-const { LeagueEvidenceError, LeaguePaymentModeError } = vi.hoisted(() => ({
+const { LeagueEvidenceError, LeaguePaymentModeError, LeagueArchivedReadOnlyError, LeagueRetiredLegacyError } = vi.hoisted(() => ({
   LeagueEvidenceError: class LeagueOccurrenceEvidenceExistsError extends Error {},
   LeaguePaymentModeError: class LeaguePaymentModeLockedError extends Error {},
+  LeagueArchivedReadOnlyError: class LeagueArchivedReadOnlyError extends Error {},
+  LeagueRetiredLegacyError: class LeagueRetiredLegacyError extends Error {},
 }));
 const { mockCreateLeagueWithCanonicalSetup, mockCreateNewSeasonWithCanonicalSetup } = vi.hoisted(() => ({
   mockCreateLeagueWithCanonicalSetup: vi.fn(),
@@ -102,6 +104,8 @@ vi.mock('../../server/storage', () => ({ storage: mockStorage }));
 vi.mock('../../server/storage/leagues', () => ({
   LeagueOccurrenceEvidenceExistsError: LeagueEvidenceError,
   LeaguePaymentModeLockedError: LeaguePaymentModeError,
+  LeagueArchivedReadOnlyError,
+  LeagueRetiredLegacyError,
 }));
 vi.mock('../../server/services/league-setup-integration.js', () => ({
   LeagueSetupIntegrationError: class LeagueSetupIntegrationError extends Error {},

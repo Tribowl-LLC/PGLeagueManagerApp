@@ -55,7 +55,7 @@ function futureBody(key: number) {
     weekDay: "Sunday",
     totalBowlingWeeks: 6,
     skipDates: ["2032-03-14"],
-    cancelledDates: ["2032-03-28"],
+    cancelledDates: [],
     doublePayDates: ["2032-04-11"],
     competitionStartTime: "19:00",
     timezone: "America/New_York",

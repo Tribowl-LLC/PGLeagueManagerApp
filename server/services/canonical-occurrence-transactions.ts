@@ -418,12 +418,18 @@ export async function assertCanonicalScheduleTenantAndActor(
     throw new CanonicalOccurrenceTransactionError("unauthorized_actor", "actorUserId must be a positive safe integer");
   }
   const [league] = await tx
-    .select({ id: leagues.id, organizationId: leagues.organizationId })
+    .select({ id: leagues.id, organizationId: leagues.organizationId, active: leagues.active, scheduleAuthority: leagues.scheduleAuthority })
     .from(leagues)
     .where(and(eq(leagues.id, request.leagueId), eq(leagues.organizationId, request.organizationId)))
     .for("update");
   if (!league || league.organizationId !== request.organizationId) {
     throw new CanonicalOccurrenceTransactionError("league_not_found", "league is missing or outside the requested tenant");
+  }
+  if (league.scheduleAuthority !== "canonical") {
+    throw new CanonicalOccurrenceTransactionError("league_not_found", "league is missing or outside the requested tenant");
+  }
+  if (!league.active) {
+    throw new CanonicalOccurrenceTransactionError("invalid_command", "inactive canonical leagues are read-only archives");
   }
   const [actor] = await tx
     .select({ id: users.id, organizationId: users.organizationId, role: users.role })

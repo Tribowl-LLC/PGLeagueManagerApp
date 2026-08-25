@@ -43,9 +43,12 @@ router.get("/", async (req, res) => {
       return sendSuccess(res, { leagues: [], teams: [], bowlers: [] });
     }
 
-    const leagueScope = paymentManagerLeagueIds
-      ? inArray(leagues.id, paymentManagerLeagueIds)
-      : eq(leagues.organizationId, organizationId);
+    const leagueScope = and(
+      eq(leagues.scheduleAuthority, "canonical"),
+      paymentManagerLeagueIds
+        ? inArray(leagues.id, paymentManagerLeagueIds)
+        : eq(leagues.organizationId, organizationId),
+    );
 
     const matchedLeagues = await db
       .select({ id: leagues.id, name: leagues.name, active: leagues.active })

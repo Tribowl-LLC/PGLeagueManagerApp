@@ -15,6 +15,7 @@ import { createLogger } from '../logger';
 import { cacheFetch, cacheInvalidate } from '../utils/cache';
 import { hasLeagueOccurrenceEvidence, hasOperationalLeagueOccurrenceEvidence } from './canonical-occurrence-evidence.js';
 import { lockLeagueSchedule } from './league-schedule-lock.js';
+import { revokeStandingAutopayForArchivedLeagueInTransaction } from '../services/roster-standing-autopay.js';
 
 const log = createLogger("StorageLeagues");
 
@@ -48,7 +49,22 @@ export class LeagueSubstituteConfigurationLockedError extends Error {
   }
 }
 
+export class LeagueArchivedReadOnlyError extends Error {
+  constructor() {
+    super('Inactive canonical leagues are read-only archives and cannot be edited or reactivated');
+    this.name = 'LeagueArchivedReadOnlyError';
+  }
+}
+
+export class LeagueRetiredLegacyError extends Error {
+  constructor() {
+    super('Retired legacy leagues are permanently inactive and immutable');
+    this.name = 'LeagueRetiredLegacyError';
+  }
+}
+
 const CANONICAL_UPDATE_FIELDS = [
+  'active',
   'organizationId',
   'locationId',
   'seasonStart',
@@ -96,7 +112,7 @@ function sameValue(left: unknown, right: unknown): boolean {
 export async function getLeagues(organizationId: number): Promise<League[]> {
   return cacheFetch(`leagues:org:${organizationId}`, LEAGUES_TTL, () =>
     db.select().from(leagues)
-      .where(eq(leagues.organizationId, organizationId))
+      .where(and(eq(leagues.organizationId, organizationId), eq(leagues.scheduleAuthority, 'canonical')))
       .orderBy(leagues.name)
   );
 }
@@ -106,13 +122,13 @@ export async function getAllLeaguesSystemAdmin(): Promise<League[]> {
   // exclude leagues whose organization_id IS NULL. They are only surfaced via
   // the explicit /api/system-admin/orphaned-data-counts diagnostic endpoint.
   return cacheFetch('leagues:all', LEAGUES_TTL, () =>
-    db.select().from(leagues).where(isNotNull(leagues.organizationId)).orderBy(leagues.id)
+    db.select().from(leagues).where(and(isNotNull(leagues.organizationId), eq(leagues.scheduleAuthority, 'canonical'))).orderBy(leagues.id)
   );
 }
 
 export async function getLeague(id: number): Promise<League | undefined> {
   return cacheFetch(`leagues:id:${id}`, LEAGUES_TTL, async () => {
-    const [result] = await db.select().from(leagues).where(eq(leagues.id, id));
+    const [result] = await db.select().from(leagues).where(and(eq(leagues.id, id), eq(leagues.scheduleAuthority, 'canonical')));
     return result;
   });
 }
@@ -127,7 +143,23 @@ export async function updateLeague(id: number, league: UpdateLeague): Promise<Le
   const canonicalFields = CANONICAL_UPDATE_FIELDS.filter((field) => league[field] !== undefined);
   const substituteConfigurationChanged = league.substituteAccess !== undefined || league.substitutePaymentRegime !== undefined;
   if (canonicalFields.length === 0 && !substituteConfigurationChanged) {
-    const [result] = await db.update(leagues).set(league).where(eq(leagues.id, id)).returning();
+    const result = await db.transaction(async (tx) => {
+      const [scope] = await tx.select({ organizationId: leagues.organizationId })
+        .from(leagues).where(eq(leagues.id, id)).limit(1);
+      if (!scope) throw new Error(`League with ID ${id} not found`);
+      await lockLeagueSchedule(tx, scope.organizationId, id);
+      const scopedWhere = scope.organizationId === null
+        ? and(eq(leagues.id, id), isNull(leagues.organizationId))
+        : and(eq(leagues.id, id), eq(leagues.organizationId, scope.organizationId));
+      const [current] = await tx.select({ active: leagues.active, scheduleAuthority: leagues.scheduleAuthority })
+        .from(leagues).where(scopedWhere).limit(1).for('update');
+      if (!current) throw new Error(`League with ID ${id} not found`);
+      if (current.scheduleAuthority === 'retired_legacy') throw new LeagueRetiredLegacyError();
+      if (!current.active) throw new LeagueArchivedReadOnlyError();
+      const [updated] = await tx.update(leagues).set(league).where(scopedWhere).returning();
+      if (!updated) throw new Error(`League with ID ${id} not found`);
+      return updated;
+    });
     cacheInvalidate('leagues:');
     return result;
   }
@@ -143,6 +175,8 @@ export async function updateLeague(id: number, league: UpdateLeague): Promise<Le
     if (!current || current.organizationId !== scope.organizationId) {
       throw new Error('League organization changed while acquiring its schedule lock');
     }
+    if (current.scheduleAuthority === 'retired_legacy') throw new LeagueRetiredLegacyError();
+    if (!current.active) throw new LeagueArchivedReadOnlyError();
 
     const changedFields = canonicalFields.filter((field) => !sameCanonicalValue(field, league[field], current[field]));
     if (changedFields.includes('payingLineupSize')) {
@@ -159,8 +193,9 @@ export async function updateLeague(id: number, league: UpdateLeague): Promise<Le
         if (outOfRange) throw new LeagueCanonicalScheduleLockedError();
       }
     }
-    if (changedFields.length > 0 && await hasLeagueOccurrenceEvidence(tx, current.organizationId, id)) {
-      if (changedFields.length === 1 && changedFields[0] === 'paymentMode') throw new LeaguePaymentModeLockedError();
+    const scheduleFieldsChanged = changedFields.filter((field) => field !== 'active');
+    if (scheduleFieldsChanged.length > 0 && await hasLeagueOccurrenceEvidence(tx, current.organizationId, id)) {
+      if (scheduleFieldsChanged.length === 1 && scheduleFieldsChanged[0] === 'paymentMode') throw new LeaguePaymentModeLockedError();
       throw new LeagueCanonicalScheduleLockedError();
     }
 
@@ -182,7 +217,16 @@ export async function updateLeague(id: number, league: UpdateLeague): Promise<Le
       }
     }
 
-    const [updated] = await tx.update(leagues).set(league).where(eq(leagues.id, id)).returning();
+    if (league.active === false && current.active && current.organizationId !== null) {
+      await revokeStandingAutopayForArchivedLeagueInTransaction(tx, {
+        organizationId: current.organizationId,
+        leagueId: id,
+      });
+    }
+    const [updated] = await tx.update(leagues).set(league).where(and(
+      eq(leagues.id, id),
+      current.organizationId === null ? isNull(leagues.organizationId) : eq(leagues.organizationId, current.organizationId),
+    )).returning();
     if (!updated) throw new Error(`League with ID ${id} not found`);
     return updated;
   });
@@ -200,7 +244,7 @@ export async function deleteLeague(id: number, organizationId: number | null): P
     await lockLeagueSchedule(tx, organizationId, id);
 
     const [league] = await tx
-      .select({ id: leagues.id, organizationId: leagues.organizationId })
+      .select({ id: leagues.id, organizationId: leagues.organizationId, active: leagues.active, scheduleAuthority: leagues.scheduleAuthority })
       .from(leagues)
       .where(eq(leagues.id, id))
       .for('update');
@@ -214,6 +258,8 @@ export async function deleteLeague(id: number, organizationId: number | null): P
     if (league.organizationId !== organizationId) {
       throw new Error('League organization does not match deletion scope');
     }
+    if (league.scheduleAuthority === 'retired_legacy') throw new LeagueRetiredLegacyError();
+    if (!league.active) throw new LeagueArchivedReadOnlyError();
 
     if (await hasLeagueOccurrenceEvidence(tx, league.organizationId, id)) {
       throw new LeagueOccurrenceEvidenceExistsError();
@@ -272,12 +318,31 @@ export async function deleteLeague(id: number, organizationId: number | null): P
   return affectedBowlerIds;
 }
 
-export async function archiveLeague(id: number): Promise<League> {
+export async function archiveLeague(id: number, organizationId?: number | null): Promise<League> {
   const result = await db.transaction(async (tx) => {
-    const [current] = await tx.select({ organizationId: leagues.organizationId }).from(leagues).where(eq(leagues.id, id)).limit(1);
+    // The first read supplies the tenant key needed by the advisory lock. All
+    // authorization-sensitive state is re-read under that lock below.
+    const [scope] = await tx.select({ organizationId: leagues.organizationId })
+      .from(leagues).where(eq(leagues.id, id)).limit(1);
+    if (!scope) throw new Error(`League with ID ${id} not found`);
+    if (organizationId !== undefined && scope.organizationId !== organizationId) {
+      throw new Error('League organization does not match archive scope');
+    }
+    if (scope.organizationId !== null) await lockLeagueSchedule(tx, scope.organizationId, id);
+    const scopedWhere = scope.organizationId === null
+      ? and(eq(leagues.id, id), isNull(leagues.organizationId))
+      : and(eq(leagues.id, id), eq(leagues.organizationId, scope.organizationId));
+    const [current] = await tx.select().from(leagues).where(scopedWhere).limit(1).for('update');
     if (!current) throw new Error(`League with ID ${id} not found`);
-    if (current.organizationId !== null) await lockLeagueSchedule(tx, current.organizationId, id);
-    const [updated] = await tx.update(leagues).set({ active: false }).where(eq(leagues.id, id)).returning();
+    if (current.scheduleAuthority === 'retired_legacy') throw new LeagueRetiredLegacyError();
+    if (current.active && current.organizationId !== null) {
+      await revokeStandingAutopayForArchivedLeagueInTransaction(tx, {
+        organizationId: current.organizationId,
+        leagueId: id,
+      });
+    }
+    const [updated] = await tx.update(leagues).set({ active: false }).where(scopedWhere).returning();
+    if (!updated) throw new Error(`League with ID ${id} not found`);
     return updated;
   });
   cacheInvalidate('leagues:');
@@ -286,8 +351,10 @@ export async function archiveLeague(id: number): Promise<League> {
 
 export async function restoreLeague(id: number): Promise<League> {
   const result = await db.transaction(async (tx) => {
-    const [current] = await tx.select({ organizationId: leagues.organizationId }).from(leagues).where(eq(leagues.id, id)).limit(1);
+    const [current] = await tx.select({ organizationId: leagues.organizationId, active: leagues.active, scheduleAuthority: leagues.scheduleAuthority }).from(leagues).where(eq(leagues.id, id)).limit(1);
     if (!current) throw new Error(`League with ID ${id} not found`);
+    if (current.scheduleAuthority === 'retired_legacy') throw new LeagueRetiredLegacyError();
+    if (!current.active) throw new LeagueArchivedReadOnlyError();
     if (current.organizationId !== null) await lockLeagueSchedule(tx, current.organizationId, id);
     const [updated] = await tx.update(leagues).set({ active: true }).where(eq(leagues.id, id)).returning();
     return updated;
@@ -298,5 +365,5 @@ export async function restoreLeague(id: number): Promise<League> {
 
 export async function getLeaguesByIds(ids: number[]): Promise<League[]> {
   if (ids.length === 0) return [];
-  return db.select().from(leagues).where(inArray(leagues.id, ids));
+  return db.select().from(leagues).where(and(inArray(leagues.id, ids), eq(leagues.scheduleAuthority, 'canonical')));
 }

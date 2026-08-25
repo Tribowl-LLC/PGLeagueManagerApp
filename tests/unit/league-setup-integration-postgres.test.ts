@@ -107,7 +107,9 @@ function fallLeague(f: Fixture, paymentMode: PaymentMode = "weekly", overrides: 
     previousSeasonId: null,
     totalBowlingWeeks: 6,
     skipDates: ["2032-10-10"],
-    cancelledDates: ["2032-10-24"],
+    // New canonical setup represents a non-bowling date with skipDates;
+    // cancelledDates is reserved for post-publication direct edits.
+    cancelledDates: [],
     doublePayDates: ["2032-11-07"],
     ...overrides,
   };
@@ -308,7 +310,7 @@ describe("authoritative league setup integration", () => {
     expect(occurrences.every((row) => row.lifecycle === "draft")).toBe(true);
     expect(new Set(occurrences.map((row) => row.selectedUtcOffsetMinutes))).toEqual(new Set([-240, -300]));
     expect(terms.every((row) => row.state === "draft" && row.currency === "USD")).toBe(true);
-    expect(terms.map((row) => row.billingOrdinal).filter((value) => value !== null).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5]);
+    expect(terms.map((row) => row.billingOrdinal).filter((value) => value !== null).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6]);
     expect(terms.every((row) => row.obligationPolicy === "eligible_bowlers" || row.obligationPolicy === "none")).toBe(true);
     expect(exceptions).toHaveLength(1);
     expect(exceptions[0]).toMatchObject({ lifecycle: "draft", localDate: "2032-10-10" });
@@ -463,7 +465,7 @@ describe("authoritative league setup integration", () => {
       totalBowlingWeeks: 6,
       weekDay: "Sunday" as const,
       skipDates: ["2032-10-10"],
-      cancelledDates: ["2032-10-24"],
+      cancelledDates: [],
       doublePayDates: ["2032-11-07"],
       allowPublicSignup: true,
       paymentMode: "upfront" as const,

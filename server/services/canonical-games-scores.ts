@@ -527,9 +527,10 @@ function normalizeGameDate(value: string | Date): string {
 export async function createCanonicalAwareGame(game: InsertGame): Promise<Game> {
   const date = normalizeGameDate(game.date);
   return db.transaction(async (tx) => {
-    const [league] = await tx.select({ organizationId: leagues.organizationId })
+    const [league] = await tx.select({ organizationId: leagues.organizationId, active: leagues.active, scheduleAuthority: leagues.scheduleAuthority })
       .from(leagues).where(eq(leagues.id, game.leagueId)).limit(1);
     if (!league) throw new Error("League not found for createGame");
+    if (!league.active || league.scheduleAuthority !== "canonical") throw new Error("Inactive or retired leagues are read-only");
     if (league.organizationId === null) {
       const [created] = await tx.insert(games).values({ ...game, date, occurrenceId: null }).returning();
       if (!created) throw new Error("Game was not created");
@@ -565,9 +566,12 @@ export async function updateCanonicalAwareGame(id: number, patch: UpdateGame): P
     const [preRead] = await tx.select({
       leagueId: games.leagueId,
       organizationId: leagues.organizationId,
+      active: leagues.active,
+      scheduleAuthority: leagues.scheduleAuthority,
     }).from(games).innerJoin(leagues, eq(leagues.id, games.leagueId))
       .where(eq(games.id, id)).limit(1);
     if (!preRead) throw new Error("Game not found for updateGame");
+    if (!preRead.active || preRead.scheduleAuthority !== "canonical") throw new Error("Inactive or retired leagues are read-only");
     if (patch.leagueId !== undefined && patch.leagueId !== preRead.leagueId) {
       throw new CanonicalGamesScoresError({
         organizationId: preRead.organizationId ?? 0,
@@ -578,11 +582,12 @@ export async function updateCanonicalAwareGame(id: number, patch: UpdateGame): P
     await lockLeagueSchedule(tx, preRead.organizationId, preRead.leagueId);
     const [current] = await tx.select().from(games).where(eq(games.id, id)).limit(1).for("update");
     if (!current || current.leagueId !== preRead.leagueId) throw new Error("Game scope changed while updateGame was waiting for its league lock");
-    const [league] = await tx.select({ organizationId: leagues.organizationId })
+    const [league] = await tx.select({ organizationId: leagues.organizationId, active: leagues.active, scheduleAuthority: leagues.scheduleAuthority })
       .from(leagues).where(eq(leagues.id, current.leagueId)).limit(1);
     if (!league || league.organizationId !== preRead.organizationId) {
       throw new Error("League scope changed while updateGame was waiting for its league lock");
     }
+    if (!league.active || league.scheduleAuthority !== "canonical") throw new Error("Inactive or retired leagues are read-only");
     const next = {
       leagueId: current.leagueId,
       weekNumber: patch.weekNumber ?? current.weekNumber,
@@ -624,15 +629,18 @@ export async function deleteCanonicalAwareGame(id: number): Promise<void> {
     const [preRead] = await tx.select({
       leagueId: games.leagueId,
       organizationId: leagues.organizationId,
+      active: leagues.active,
+      scheduleAuthority: leagues.scheduleAuthority,
     }).from(games).innerJoin(leagues, eq(leagues.id, games.leagueId))
       .where(eq(games.id, id)).limit(1);
     if (!preRead) return;
+    if (!preRead.active || preRead.scheduleAuthority !== "canonical") throw new Error("Inactive or retired leagues are read-only");
     await lockLeagueSchedule(tx, preRead.organizationId, preRead.leagueId);
     const [current] = await tx.select().from(games).where(eq(games.id, id)).limit(1).for("update");
     if (!current) return;
     if (current.leagueId !== preRead.leagueId) throw new Error("Game scope changed while deleteGame was waiting for its league lock");
     if (current.occurrenceId !== null) {
-      const [league] = await tx.select({ organizationId: leagues.organizationId })
+      const [league] = await tx.select({ organizationId: leagues.organizationId, active: leagues.active, scheduleAuthority: leagues.scheduleAuthority })
         .from(leagues).where(eq(leagues.id, current.leagueId)).limit(1);
       throw new CanonicalGamesScoresError({
         organizationId: league?.organizationId ?? 0,

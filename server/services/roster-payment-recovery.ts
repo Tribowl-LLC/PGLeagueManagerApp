@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "../db.js";
-import { paymentOperations, paymentOperationRosterSnapshots } from "@shared/schema";
+import { leagues, paymentOperations, paymentOperationRosterSnapshots } from "@shared/schema";
 import { lockLeagueSchedule } from "../storage/league-schedule-lock.js";
 import {
   finalizeRosterSnapshotInTransaction,
@@ -26,6 +26,17 @@ export async function recoverRosterPaymentOperation(input: {
 }) {
   return db.transaction(async (tx) => {
     await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
+    const [league] = await tx.select({ active: leagues.active, scheduleAuthority: leagues.scheduleAuthority })
+      .from(leagues)
+      .where(and(
+        eq(leagues.id, input.leagueId),
+        eq(leagues.organizationId, input.organizationId),
+        eq(leagues.scheduleAuthority, "canonical"),
+      ))
+      .limit(1)
+      .for("share");
+    if (!league) throw new RosterPaymentRecoveryError("NOT_FOUND", "Payment operation not found", 404);
+    if (!league.active) throw new RosterPaymentRecoveryError("LEAGUE_ARCHIVED_READ_ONLY", "Inactive leagues are read-only archives", 409);
     const [operation] = await tx.select().from(paymentOperations).where(and(
       eq(paymentOperations.organizationId, input.organizationId),
       eq(paymentOperations.leagueId, input.leagueId),

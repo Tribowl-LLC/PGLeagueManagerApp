@@ -147,18 +147,20 @@ export function LeagueForm({ open, onClose, league, systemAdminOrganizationId }:
     onClose,
   });
 
-  // 4-state cycle: normal → skip → cancelled → double-pay → normal.
-  // When the 2-double-pay cap is already full, the cycle collapses to
-  // 3 states (normal → skip → cancelled → normal) for any week that
-  // isn't itself double-pay, so the user can still fix mistakes
-  // elsewhere in the schedule without having to first clear an
-  // existing double-pay mark.
+  // Existing-season edits retain the legacy cancellation control. New
+  // league creation is deliberately limited to Bowling / No Bowling / the
+  // independent double-pay marker.
   const toggleDateType = (isoDate: string, currentType: ScheduleWeekType) => {
     if (currentType === 'normal') {
       setSkipDates(prev => [...prev, isoDate]);
-    } else if (currentType === 'skip') {
+    } else if (currentType === 'skip' && league) {
       setSkipDates(prev => prev.filter(d => d !== isoDate));
       setCancelledDates(prev => [...prev, isoDate]);
+    } else if (currentType === 'skip') {
+      setSkipDates(prev => prev.filter(d => d !== isoDate));
+      if (doublePayDates.length < 2) {
+        setDoublePayDates(prev => [...prev, isoDate]);
+      }
     } else if (currentType === 'cancelled') {
       setCancelledDates(prev => prev.filter(d => d !== isoDate));
       if (doublePayDates.length < 2) {
@@ -251,6 +253,7 @@ export function LeagueForm({ open, onClose, league, systemAdminOrganizationId }:
                   effectiveBowlingWeeks={effectiveBowlingWeeks}
                   computedSeasonEnd={computedSeasonEnd}
                   toggleDateType={toggleDateType}
+                  allowCancelled={Boolean(league)}
                 />
 
                 <LeagueTimingSection form={form} />

@@ -352,12 +352,19 @@ export async function prepareScheduledPaymentCycle(input: {
     if (!schedule) return { kind: "stale" };
 
     const [ownedLeague] = await tx
-      .select({ organizationId: leagues.organizationId })
+      .select({ organizationId: leagues.organizationId, active: leagues.active, scheduleAuthority: leagues.scheduleAuthority })
       .from(leagues)
       .where(eq(leagues.id, schedule.leagueId))
       .limit(1);
     if (!ownedLeague?.organizationId) {
       throw new ScheduledPaymentPreparationError("scheduled payment league has no tenant owner");
+    }
+    if (!ownedLeague.active || ownedLeague.scheduleAuthority !== "canonical") {
+      await tx.update(paymentSchedules).set({ active: false }).where(and(
+        eq(paymentSchedules.id, schedule.id),
+        eq(paymentSchedules.active, true),
+      ));
+      return { kind: "stale" };
     }
     await lockLeagueSchedule(tx, ownedLeague.organizationId, schedule.leagueId);
 

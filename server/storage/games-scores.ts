@@ -1,4 +1,4 @@
-import { eq, and, desc, inArray } from "drizzle-orm";
+import { eq, and, desc, inArray, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   games, scores, bowlers, teams, leagues,
@@ -15,25 +15,27 @@ import {
 const log = createLogger("StorageGamesScores");
 
 export async function getGames(leagueId: number, weekNumber?: number): Promise<Game[]> {
+  const canonicalLeague = sql`EXISTS (SELECT 1 FROM leagues authority_league WHERE authority_league.id = ${games.leagueId} AND authority_league.schedule_authority = 'canonical')`;
   if (weekNumber !== undefined) {
     return db
       .select()
       .from(games)
       .where(and(
         eq(games.leagueId, leagueId),
-        eq(games.weekNumber, weekNumber)
+        eq(games.weekNumber, weekNumber),
+        canonicalLeague,
       ))
       .orderBy(games.gameNumber);
   }
   return db
     .select()
     .from(games)
-    .where(eq(games.leagueId, leagueId))
+    .where(and(eq(games.leagueId, leagueId), canonicalLeague))
     .orderBy(desc(games.date), games.gameNumber);
 }
 
 export async function getGame(id: number): Promise<Game | undefined> {
-  const [result] = await db.select().from(games).where(eq(games.id, id));
+  const [result] = await db.select().from(games).where(and(eq(games.id, id), sql`EXISTS (SELECT 1 FROM leagues authority_league WHERE authority_league.id = ${games.leagueId} AND authority_league.schedule_authority = 'canonical')`));
   return result;
 }
 
@@ -50,25 +52,27 @@ export async function deleteGame(id: number): Promise<void> {
 }
 
 export async function getScores(gameId: number, teamId?: number): Promise<Score[]> {
+  const canonicalGame = sql`EXISTS (SELECT 1 FROM games authority_game INNER JOIN leagues authority_league ON authority_league.id = authority_game.league_id WHERE authority_game.id = ${scores.gameId} AND authority_league.schedule_authority = 'canonical')`;
   if (teamId !== undefined) {
     return db
       .select()
       .from(scores)
       .where(and(
         eq(scores.gameId, gameId),
-        eq(scores.teamId, teamId)
+        eq(scores.teamId, teamId),
+        canonicalGame,
       ))
       .orderBy(scores.position);
   }
   return db
     .select()
     .from(scores)
-    .where(eq(scores.gameId, gameId))
+    .where(and(eq(scores.gameId, gameId), canonicalGame))
     .orderBy(scores.teamId, scores.position);
 }
 
 export async function getScore(id: number): Promise<Score | undefined> {
-  const [result] = await db.select().from(scores).where(eq(scores.id, id));
+  const [result] = await db.select().from(scores).where(and(eq(scores.id, id), sql`EXISTS (SELECT 1 FROM games authority_game INNER JOIN leagues authority_league ON authority_league.id = authority_game.league_id WHERE authority_game.id = ${scores.gameId} AND authority_league.schedule_authority = 'canonical')`));
   return result;
 }
 
@@ -117,7 +121,7 @@ export async function getBowlerScores(bowlerId: number): Promise<Score[]> {
     .innerJoin(games, eq(games.id, scores.gameId))
     .innerJoin(teams, eq(teams.id, scores.teamId))
     .innerJoin(leagues, eq(leagues.id, games.leagueId))
-    .where(eq(scores.bowlerId, bowlerId))
+    .where(and(eq(scores.bowlerId, bowlerId), eq(leagues.scheduleAuthority, "canonical")))
     .orderBy(desc(games.date), games.gameNumber);
 
   log.info('Found scores:', results.length);
@@ -219,7 +223,10 @@ export async function getGameScores(gameId: number): Promise<Score[]> {
   return db
     .select()
     .from(scores)
-    .where(eq(scores.gameId, gameId))
+    .where(and(
+      eq(scores.gameId, gameId),
+      sql`EXISTS (SELECT 1 FROM games authority_game INNER JOIN leagues authority_league ON authority_league.id = authority_game.league_id WHERE authority_game.id = ${scores.gameId} AND authority_league.schedule_authority = 'canonical')`,
+    ))
     .orderBy(scores.teamId, scores.position);
 }
 
@@ -266,7 +273,8 @@ export async function getScoresByLeagueAndWeek(leagueId: number, weekNumber: num
     .where(
       and(
         eq(games.leagueId, leagueId),
-        eq(games.weekNumber, weekNumber)
+        eq(games.weekNumber, weekNumber),
+        sql`EXISTS (SELECT 1 FROM leagues authority_league WHERE authority_league.id = ${games.leagueId} AND authority_league.schedule_authority = 'canonical')`,
       )
     )
     .orderBy(games.gameNumber, teams.number, scores.position);
@@ -280,6 +288,9 @@ export async function getScoresByGameIds(gameIds: number[]): Promise<Score[]> {
   return db
     .select()
     .from(scores)
-    .where(inArray(scores.gameId, gameIds))
+    .where(and(
+      inArray(scores.gameId, gameIds),
+      sql`EXISTS (SELECT 1 FROM games authority_game INNER JOIN leagues authority_league ON authority_league.id = authority_game.league_id WHERE authority_game.id = ${scores.gameId} AND authority_league.schedule_authority = 'canonical')`,
+    ))
     .orderBy(scores.gameId, scores.teamId, scores.position);
 }

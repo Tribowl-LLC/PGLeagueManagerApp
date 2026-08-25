@@ -1702,6 +1702,15 @@ export async function acquirePaymentOperationLease(
     .where(and(
       eq(paymentOperations.organizationId, input.organizationId),
       eq(paymentOperations.id, input.operationId),
+      // A retained operation may remain addressable for reconciliation, but
+      // no automatic lease may execute against an inactive or retired league.
+      sql`(${paymentOperations.leagueId} IS NULL OR EXISTS (
+        SELECT 1 FROM leagues execution_league
+        WHERE execution_league.id = ${paymentOperations.leagueId}
+          AND execution_league.organization_id = ${paymentOperations.organizationId}
+          AND execution_league.active = TRUE
+          AND execution_league.schedule_authority = 'canonical'
+      ))`,
       or(
         lt(paymentOperations.attemptCount, PAYMENT_OPERATION_MAX_ATTEMPTS),
         and(
@@ -1752,15 +1761,17 @@ export async function acquireScheduledPaymentOperationDispatchCutoff(input: {
   return db.transaction(async (tx) => {
     const [scope] = await tx.select({
       leagueId: sql<number | null>`COALESCE(${paymentOperations.leagueId}, ${scheduledPaymentOperationSnapshots.leagueId})`,
+      leagueActive: leagues.active,
+      scheduleAuthority: leagues.scheduleAuthority,
     }).from(paymentOperations).innerJoin(
       scheduledPaymentOperationSnapshots,
       eq(scheduledPaymentOperationSnapshots.operationId, paymentOperations.id),
-    ).where(and(
+    ).innerJoin(leagues, eq(leagues.id, sql`COALESCE(${paymentOperations.leagueId}, ${scheduledPaymentOperationSnapshots.leagueId})`)).where(and(
       eq(paymentOperations.organizationId, input.organizationId),
       eq(paymentOperations.id, input.operationId),
       eq(paymentOperations.operationType, "scheduled_charge"),
     )).limit(1);
-    if (!scope?.leagueId) return false;
+    if (!scope?.leagueId || !scope.leagueActive || scope.scheduleAuthority !== "canonical") return false;
     await tx.execute(sql`SELECT pg_advisory_xact_lock(${input.organizationId}::integer, ${scope.leagueId}::integer)`);
     const [operation] = await tx.select({
       id: paymentOperations.id,
@@ -1839,8 +1850,9 @@ export async function acquireInteractivePaymentOperationDispatchCutoff(input: {
   now?: Date;
 }): Promise<boolean | null> {
   return db.transaction(async (tx) => {
-    const [scope] = await tx.select({ leagueId: paymentOperations.leagueId })
+    const [scope] = await tx.select({ leagueId: paymentOperations.leagueId, leagueActive: leagues.active, scheduleAuthority: leagues.scheduleAuthority })
       .from(paymentOperations)
+      .innerJoin(leagues, and(eq(leagues.id, paymentOperations.leagueId), eq(leagues.organizationId, paymentOperations.organizationId)))
       .where(and(
         eq(paymentOperations.organizationId, input.organizationId),
         eq(paymentOperations.id, input.operationId),
@@ -1851,6 +1863,7 @@ export async function acquireInteractivePaymentOperationDispatchCutoff(input: {
     // retained operation with no ledger league remains on legacy behavior;
     // a roster operation never reaches this provider path.
     if (!scope || scope.leagueId === null) return null;
+    if (!scope.leagueActive || scope.scheduleAuthority !== "canonical") return false;
     await tx.execute(sql`SELECT pg_advisory_xact_lock(${input.organizationId}::integer, ${scope.leagueId}::integer)`);
     const [operation] = await tx.select({
       status: paymentOperations.status,
@@ -1920,14 +1933,15 @@ export async function acquireStandingAutopayDispatchCutoff(input: {
   now?: Date;
 }): Promise<boolean> {
   return db.transaction(async (tx) => {
-    const [scope] = await tx.select({ leagueId: paymentOperations.leagueId })
+    const [scope] = await tx.select({ leagueId: paymentOperations.leagueId, leagueActive: leagues.active, scheduleAuthority: leagues.scheduleAuthority })
       .from(paymentOperations)
+      .innerJoin(leagues, and(eq(leagues.id, paymentOperations.leagueId), eq(leagues.organizationId, paymentOperations.organizationId)))
       .where(and(
         eq(paymentOperations.organizationId, input.organizationId),
         eq(paymentOperations.id, input.operationId),
         eq(paymentOperations.operationType, "standing_autopay_charge"),
       )).limit(1);
-    if (!scope?.leagueId) return false;
+    if (!scope?.leagueId || !scope.leagueActive || scope.scheduleAuthority !== "canonical") return false;
     await tx.execute(sql`SELECT pg_advisory_xact_lock(${input.organizationId}::integer, ${scope.leagueId}::integer)`);
     const [operation] = await tx.select({
       status: paymentOperations.status,
@@ -3057,6 +3071,9 @@ export async function getNextStandingAutopayWake(): Promise<StandingAutopayWake 
         NULL::integer AS attempt_count,
         MIN(o.due_at) AS due_at
       FROM autopay_consents c
+      INNER JOIN leagues l
+        ON l.id = c.league_id
+       AND l.organization_id = c.organization_id
       INNER JOIN payment_obligations o
         ON o.organization_id = c.organization_id
        AND o.league_id = c.league_id
@@ -3128,6 +3145,8 @@ export async function getNextStandingAutopayWake(): Promise<StandingAutopayWake 
       WHERE c.state = 'active'
         AND c.payment_mode = 'weekly'
         AND c.revoked_at IS NULL
+        AND l.active = true
+        AND l.schedule_authority = 'canonical'
       GROUP BY c.organization_id, c.league_id, c.id
       ORDER BY MIN(o.due_at) ASC, c.id ASC
       LIMIT 1
@@ -3142,10 +3161,15 @@ export async function getNextStandingAutopayWake(): Promise<StandingAutopayWake 
         po.attempt_count,
         CASE WHEN po.status = 'leased' THEN po.lease_expires_at ELSE po.next_attempt_at END AS due_at
       FROM payment_operations po
+      INNER JOIN leagues operation_league
+        ON operation_league.id = po.league_id
+       AND operation_league.organization_id = po.organization_id
       WHERE po.operation_type = 'standing_autopay_charge'
         AND po.status IN ('pending', 'provider_unknown', 'retry_scheduled', 'leased')
         AND (po.status <> 'provider_unknown' OR po.provider_object_id IS NULL)
         AND CASE WHEN po.status = 'leased' THEN po.lease_expires_at ELSE po.next_attempt_at END IS NOT NULL
+        AND operation_league.active = true
+        AND operation_league.schedule_authority = 'canonical'
       ORDER BY CASE WHEN po.status = 'leased' THEN po.lease_expires_at ELSE po.next_attempt_at END ASC, po.id ASC
       LIMIT 1
     )
@@ -3188,6 +3212,16 @@ export function buildNextPaymentOperationWakeQuery() {
       FROM ${paymentOperations}
       WHERE (
         ${paymentOperations.operationType} NOT IN ('scheduled_charge', 'canonical_autopay_charge', 'standing_autopay_charge')
+        AND (
+          ${paymentOperations.leagueId} IS NULL
+          OR EXISTS (
+            SELECT 1 FROM leagues wake_league
+            WHERE wake_league.id = ${paymentOperations.leagueId}
+              AND wake_league.organization_id = ${paymentOperations.organizationId}
+              AND wake_league.active = TRUE
+              AND wake_league.schedule_authority = 'canonical'
+          )
+        )
         AND (
           (${paymentOperations.status} IN ('pending', 'provider_unknown', 'retry_scheduled')
             AND ${paymentOperations.nextAttemptAt} IS NOT NULL)

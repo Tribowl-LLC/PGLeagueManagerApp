@@ -55,6 +55,7 @@ type ScheduleLeague = Pick<
   | "id"
   | "organizationId"
   | "active"
+  | "scheduleAuthority"
   | "seasonStart"
   | "seasonEnd"
   | "weekDay"
@@ -748,6 +749,7 @@ export async function loadLeagueOccurrenceScheduleSnapshot(
     id: leagues.id,
     organizationId: leagues.organizationId,
     active: leagues.active,
+    scheduleAuthority: leagues.scheduleAuthority,
     seasonStart: leagues.seasonStart,
     seasonEnd: leagues.seasonEnd,
     weekDay: leagues.weekDay,
@@ -761,6 +763,9 @@ export async function loadLeagueOccurrenceScheduleSnapshot(
     eq(leagues.organizationId, input.organizationId),
   )).limit(1);
   if (!league || league.organizationId !== input.organizationId) {
+    throw new LeagueOccurrenceScheduleError("league_not_found", "league was not found in the authorized organization");
+  }
+  if (league.scheduleAuthority === "retired_legacy") {
     throw new LeagueOccurrenceScheduleError("league_not_found", "league was not found in the authorized organization");
   }
   // A transaction uses one PostgreSQL client. Keep these reads sequential so

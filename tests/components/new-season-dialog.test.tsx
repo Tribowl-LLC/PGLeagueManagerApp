@@ -103,7 +103,6 @@ describe('NewSeasonDialog', () => {
     await user.click(screen.getByRole('switch', { name: /allow public sign-up/i }));
     await user.click(screen.getByLabelText('League Payment Timing'));
     await user.click(screen.getByRole('option', { name: /full season upfront/i }));
-    await user.click(await screen.findByLabelText(/reviewed and confirm this carried configuration/i));
     expect(screen.getByRole('button', { name: /create new season/i })).toBeEnabled();
 
     expect(endDate).toHaveValue('2026-11-30');

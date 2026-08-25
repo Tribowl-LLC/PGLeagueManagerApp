@@ -7,8 +7,8 @@ export type { Organization, InsertOrganization, UpdateOrganization } from "./org
 export { locations, locationSquareCredentialsSchema, insertLocationSchema, updateLocationSchema, REQUIRED_SQUARE_FIELDS, SQUARE_FIELD_LABELS, getMissingSquareFields } from "./locations";
 export type { LocationSquareCredentials, Location, InsertLocation, UpdateLocation, RequiredSquareField } from "./locations";
 
-export { leagues, insertLeagueSchema, updateLeagueSchema, SUBSTITUTE_ACCESS, SUBSTITUTE_PAYMENT_REGIMES } from "./leagues";
-export type { League, InsertLeagueInput, InsertLeague, UpdateLeague, SubstituteAccess, SubstitutePaymentRegime } from "./leagues";
+export { leagues, insertLeagueSchema, updateLeagueSchema, SUBSTITUTE_ACCESS, SUBSTITUTE_PAYMENT_REGIMES, SCHEDULE_AUTHORITIES } from "./leagues";
+export type { League, InsertLeagueInput, InsertLeague, UpdateLeague, SubstituteAccess, SubstitutePaymentRegime, ScheduleAuthority } from "./leagues";
 
 export { teams, insertTeamSchema, updateTeamSchema, reorderTeamsSchema } from "./teams";
 export type { Team, InsertTeamInput, InsertTeam, UpdateTeam } from "./teams";

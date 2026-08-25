@@ -1,4 +1,4 @@
-import { eq, and, inArray } from "drizzle-orm";
+import { eq, and, inArray, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import { teams, leagues, teamPaymentSlots, users, type Team, type InsertTeam, type UpdateTeam } from "@shared/schema";
 import { createLogger } from '../logger';
@@ -8,21 +8,23 @@ const log = createLogger("StorageTeams");
 
 export async function getTeams(leagueId?: number): Promise<Team[]> {
   const query = db.select().from(teams);
+  const canonicalLeague = sql`EXISTS (SELECT 1 FROM leagues authority_league WHERE authority_league.id = ${teams.leagueId} AND authority_league.schedule_authority = 'canonical')`;
   if (leagueId !== undefined) {
-    return query.where(eq(teams.leagueId, leagueId)).orderBy(teams.displayOrder, teams.number);
+    return query.where(and(eq(teams.leagueId, leagueId), canonicalLeague)).orderBy(teams.displayOrder, teams.number);
   }
-  return query.orderBy(teams.displayOrder, teams.number);
+  return query.where(canonicalLeague).orderBy(teams.displayOrder, teams.number);
 }
 
 export async function getTeam(id: number): Promise<Team | undefined> {
-  const [result] = await db.select().from(teams).where(eq(teams.id, id));
+  const [result] = await db.select().from(teams).where(and(eq(teams.id, id), sql`EXISTS (SELECT 1 FROM leagues authority_league WHERE authority_league.id = ${teams.leagueId} AND authority_league.schedule_authority = 'canonical')`));
   return result;
 }
 
 export async function createTeam(team: InsertTeam, recordedByUserId?: number): Promise<Team> {
   return db.transaction(async (tx) => {
-    const [league] = await tx.select({ organizationId: leagues.organizationId, payingLineupSize: leagues.payingLineupSize }).from(leagues).where(eq(leagues.id, team.leagueId)).limit(1);
+    const [league] = await tx.select({ organizationId: leagues.organizationId, payingLineupSize: leagues.payingLineupSize, active: leagues.active, scheduleAuthority: leagues.scheduleAuthority }).from(leagues).where(eq(leagues.id, team.leagueId)).limit(1);
     if (!league) throw new Error('League not found');
+    if (!league.active || league.scheduleAuthority !== "canonical") throw new Error('League is a read-only archive');
     if (league.organizationId !== null) await lockLeagueSchedule(tx, league.organizationId, team.leagueId);
     const [result] = await tx.insert(teams).values(team).returning();
     if (result && league.organizationId !== null && league.payingLineupSize !== null) {
@@ -51,7 +53,8 @@ export async function updateTeam(id: number, team: UpdateTeam): Promise<Team> {
   return db.transaction(async (tx) => {
     const [current] = await tx.select({ leagueId: teams.leagueId }).from(teams).where(eq(teams.id, id)).limit(1);
     if (!current) throw new Error('Team not found');
-    const [league] = await tx.select({ organizationId: leagues.organizationId }).from(leagues).where(eq(leagues.id, current.leagueId)).limit(1);
+    const [league] = await tx.select({ organizationId: leagues.organizationId, active: leagues.active, scheduleAuthority: leagues.scheduleAuthority }).from(leagues).where(eq(leagues.id, current.leagueId)).limit(1);
+    if (!league || !league.active || league.scheduleAuthority !== "canonical") throw new Error('League is a read-only archive');
     if (league?.organizationId !== null && league) await lockLeagueSchedule(tx, league.organizationId, current.leagueId);
     const [result] = await tx.update(teams).set(team).where(eq(teams.id, id)).returning();
     return result;
@@ -62,7 +65,8 @@ export async function deleteTeam(id: number): Promise<void> {
   await db.transaction(async (tx) => {
     const [current] = await tx.select({ leagueId: teams.leagueId }).from(teams).where(eq(teams.id, id)).limit(1);
     if (!current) return;
-    const [league] = await tx.select({ organizationId: leagues.organizationId }).from(leagues).where(eq(leagues.id, current.leagueId)).limit(1);
+    const [league] = await tx.select({ organizationId: leagues.organizationId, active: leagues.active, scheduleAuthority: leagues.scheduleAuthority }).from(leagues).where(eq(leagues.id, current.leagueId)).limit(1);
+    if (!league || !league.active || league.scheduleAuthority !== "canonical") throw new Error('League is a read-only archive');
     if (league?.organizationId !== null && league) await lockLeagueSchedule(tx, league.organizationId, current.leagueId);
     await tx.delete(teams).where(eq(teams.id, id));
   });
@@ -74,14 +78,15 @@ export async function getTeamByNumber(leagueId: number, teamNumber: number): Pro
     .from(teams)
     .where(and(
       eq(teams.leagueId, leagueId),
-      eq(teams.number, teamNumber)
+      eq(teams.number, teamNumber),
+      sql`EXISTS (SELECT 1 FROM leagues authority_league WHERE authority_league.id = ${teams.leagueId} AND authority_league.schedule_authority = 'canonical')`,
     ));
   return result;
 }
 
 export async function getTeamsByIds(ids: number[]): Promise<Team[]> {
   if (ids.length === 0) return [];
-  return db.select().from(teams).where(inArray(teams.id, ids));
+  return db.select().from(teams).where(and(inArray(teams.id, ids), sql`EXISTS (SELECT 1 FROM leagues authority_league WHERE authority_league.id = ${teams.leagueId} AND authority_league.schedule_authority = 'canonical')`));
 }
 
 export async function renumberActiveTeams(leagueId: number): Promise<void> {

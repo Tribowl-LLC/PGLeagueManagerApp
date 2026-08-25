@@ -43,7 +43,7 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
       const asOfResult = await tx.execute(sql`SELECT transaction_timestamp()::text AS as_of`);
       asOf = (asOfResult.rows[0] as { as_of?: string } | undefined)?.as_of ?? asOf;
     }
-    const [league] = await tx.select({ timezone: leagues.timezone, paymentMode: leagues.paymentMode }).from(leagues).where(and(eq(leagues.id, input.leagueId), eq(leagues.organizationId, input.organizationId))).limit(1);
+    const [league] = await tx.select({ timezone: leagues.timezone, paymentMode: leagues.paymentMode }).from(leagues).where(and(eq(leagues.id, input.leagueId), eq(leagues.organizationId, input.organizationId), eq(leagues.scheduleAuthority, "canonical"))).limit(1);
     if (!league) throw new CanonicalPaymentReportIncompatibilityError("league not found");
     const [upfrontEvidence] = league.paymentMode === "upfront"
       ? await tx.select({ dueAt: paymentObligations.dueAt }).from(paymentObligations).where(and(
