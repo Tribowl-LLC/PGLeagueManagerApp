@@ -117,7 +117,7 @@ describe('interactive request-key recovery', () => {
     expect(csrfFetchMock).toHaveBeenCalledWith('/api/financials/leagues/11/interactive-obligation-charge/2/operations/11111111-1111-4111-8111-111111111111/recover', expect.objectContaining({ method: 'POST' }));
   });
 
-  it.each(['pending', 'provider_unknown', 'retry_scheduled', 'action_required'])('preserves exact %s without invoking roster recovery', async (status) => {
+  it.each(['pending', 'provider_unknown', 'retry_scheduled'])('preserves exact %s without invoking roster recovery', async (status) => {
     const initial = exactResponse(status);
     await expect(paymentRequestWithRecovery(
       'request-key-123456',
@@ -134,7 +134,7 @@ describe('interactive request-key recovery', () => {
     expect(csrfFetchMock).not.toHaveBeenCalled();
   });
 
-  it.each(['pending', 'provider_unknown', 'retry_scheduled', 'action_required'])('preserves generic %s operation state without exact recovery', async (status) => {
+  it.each(['pending', 'provider_unknown', 'retry_scheduled'])('preserves generic %s operation state without exact recovery', async (status) => {
     const initial = new Response(JSON.stringify({
       success: true,
       operationId: '11111111-1111-4111-8111-111111111111',
@@ -144,7 +144,7 @@ describe('interactive request-key recovery', () => {
     expect(csrfFetchMock).not.toHaveBeenCalled();
   });
 
-  it.each(['failed_terminal', 'canceled'])('preserves exact terminal %s and rotates the browser intent', async (status) => {
+  it.each(['failed_terminal', 'canceled', 'action_required'])('preserves exact terminal %s and rotates the browser intent', async (status) => {
     const values = installStorage();
     const scope = `roster:terminal:${status}`;
     const requestKey = beginPaymentIntent(scope);
@@ -273,7 +273,7 @@ describe('interactive request-key recovery', () => {
 
   it('exposes state-specific recovery messages and only accepts succeeded', () => {
     expect(rosterPaymentStatusMessage('provider_unknown')).toContain('still being confirmed');
-    expect(rosterPaymentStatusMessage('action_required')).toContain('additional action');
+    expect(rosterPaymentStatusMessage('action_required')).toContain('not completed');
     expect(rosterPaymentStatusMessage('reconciliation_required')).toContain('reconciliation');
     expect(() => assertRosterPaymentSucceeded('failed_terminal')).toThrow('not completed');
     expect(() => assertRosterPaymentSucceeded('succeeded')).not.toThrow();

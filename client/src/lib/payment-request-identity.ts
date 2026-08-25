@@ -78,7 +78,7 @@ export function paymentRequestHeaders(requestKey: string): Record<string, string
 
 /** Terminal roster outcomes that are safe to retry with a new source/key. */
 export function isTerminalRosterPaymentFailure(status: unknown): boolean {
-  return status === 'failed_terminal' || status === 'canceled';
+  return status === 'failed_terminal' || status === 'canceled' || status === 'action_required';
 }
 
 /**
@@ -98,10 +98,9 @@ export function rosterPaymentStatusMessage(status: unknown): string | null {
     case 'retry_scheduled':
       return 'Your payment is still being confirmed. Use payment recovery before trying another card.';
     case 'action_required':
-      return 'Your payment needs additional action from the card provider. Complete that step, then try again.';
     case 'failed_terminal':
     case 'canceled':
-      return 'Your payment was not completed. Correct the payment details and try again.';
+      return 'Your payment was not completed. Try another payment method.';
     default:
       return 'Your payment is not confirmed yet. Use payment recovery before trying again.';
   }
@@ -165,7 +164,9 @@ export async function paymentRequestWithRecovery(
       if (status === 'reconciliation_required') return 'recover';
       if (isTerminalRosterPaymentFailure(status)) return 'terminal_failure';
       // The charge contract intentionally returns pending/provider_unknown/
-      // retry_scheduled/action_required as-is. They are not safe to replay.
+      // and retry_scheduled as-is. They are not safe to replay. An
+      // action_required result is terminal in this ledger (there is no
+      // challenge/resume contract), so it is handled above.
       return 'preserve';
     }
     // An operation-id recovery response has already passed through the exact
@@ -192,8 +193,9 @@ export async function paymentRequestWithRecovery(
     if (decision !== 'recover' || !operation.operationId) return response;
     // Generic terminal provider success and exact reconciliation_required
     // responses are handed to the operation-id finalizer. Pending,
-    // provider_unknown, retry_scheduled, action_required, and an already
-    // completed exact recovery response are returned unchanged.
+    // provider_unknown, retry_scheduled, and an already completed exact
+    // recovery response are returned unchanged. action_required is terminal
+    // and has already had its browser intent cleared above.
     const recovered = await recoverRosterPaymentOperation(rosterLeagueId, operation.operationId).catch(() => null);
     // A roster recovery may deliberately return 409/202 while preserving the
     // durable operation identity and reconciliation status. Keep that exact
