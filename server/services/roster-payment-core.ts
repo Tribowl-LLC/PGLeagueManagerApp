@@ -366,51 +366,6 @@ export async function saveTeamRoster(input: {
   });
 }
 
-/** Materialize one newly published/locked occurrence behind a complete
- * roster. Schedule publication and restoration call this inside their
- * existing tenant+league transaction, so a ready league cannot expose a
- * billable occurrence without its responsibility/obligation evidence. */
-export async function materializeRosterPaymentOccurrenceInTransaction(
-  tx: RosterPaymentTransaction,
-  input: { organizationId: number; leagueId: number; occurrenceId: string; actorUserId: number },
-): Promise<boolean> {
-  const [league] = await tx.select({ payingLineupSize: leagues.payingLineupSize, weeklyFee: leagues.weeklyFee, substituteAccess: leagues.substituteAccess, substitutePaymentRegime: leagues.substitutePaymentRegime, lineageFee: leagues.lineageFee, prizeFundFee: leagues.prizeFundFee })
-    .from(leagues).where(and(eq(leagues.id, input.leagueId), eq(leagues.organizationId, input.organizationId))).limit(1);
-  if (!league?.payingLineupSize) return false;
-  const [occurrence] = await tx.select({ id: leagueOccurrences.id, startAt: leagueOccurrences.startAt, status: leagueOccurrences.status })
-    .from(leagueOccurrences).where(and(eq(leagueOccurrences.id, input.occurrenceId), eq(leagueOccurrences.organizationId, input.organizationId), eq(leagueOccurrences.leagueId, input.leagueId), inArray(leagueOccurrences.lifecycle, ["published", "locked"] as const), inArray(leagueOccurrences.status, ["scheduled", "completed"] as const))).limit(1);
-  if (!occurrence) return false;
-  const rosterTeams = await tx.select({ id: teams.id }).from(teams).where(and(eq(teams.leagueId, input.leagueId), eq(teams.active, true)));
-  const rosterRows = await tx.select().from(teamPaymentSlots).where(and(eq(teamPaymentSlots.organizationId, input.organizationId), eq(teamPaymentSlots.leagueId, input.leagueId))).orderBy(asc(teamPaymentSlots.teamId), asc(teamPaymentSlots.slotIndex));
-  if (rosterTeams.length === 0 || !rosterTeams.every((team) => {
-    const teamSlots = rosterRows.filter((slot) => slot.teamId === team.id);
-    return teamSlots.length === league.payingLineupSize && teamSlots.every((slot) => slot.occupant !== "unassigned");
-  })) return false;
-  const policies = await tx.select().from(teamPaymentPolicies).where(and(eq(teamPaymentPolicies.organizationId, input.organizationId), eq(teamPaymentPolicies.leagueId, input.leagueId)));
-  const active = await tx.select({ occurrenceId: occurrencePaymentResponsibilities.occurrenceId, teamId: occurrencePaymentResponsibilities.teamId, slotIndex: occurrencePaymentResponsibilities.slotIndex, responsibilityKind: occurrencePaymentResponsibilities.responsibilityKind, mainBowlerId: occurrencePaymentResponsibilities.mainBowlerId, substituteBowlerId: occurrencePaymentResponsibilities.substituteBowlerId, payerBowlerId: occurrencePaymentResponsibilities.payerBowlerId, policy: occurrencePaymentResponsibilities.policy }).from(occurrencePaymentResponsibilities).where(and(eq(occurrencePaymentResponsibilities.organizationId, input.organizationId), eq(occurrencePaymentResponsibilities.leagueId, input.leagueId), eq(occurrencePaymentResponsibilities.occurrenceId, occurrence.id), eq(occurrencePaymentResponsibilities.state, "active")));
-  const { pastDueAt } = calculateRosterPaymentTiming(occurrence.startAt);
-  const responsibilities = rosterTeams.flatMap((team) => rosterRows.filter((slot) => slot.teamId === team.id).filter((slot) => {
-    const current = active.find((row) => row.teamId === team.id && row.slotIndex === slot.slotIndex);
-    if (current && ["substitute", "split"].includes(current.responsibilityKind)) return false;
-    const kind = slot.occupant === "main" ? "main" as const : "vacant" as const;
-    const mainBowlerId = slot.occupant === "main" ? slot.mainBowlerId : null;
-    const payerBowlerId = slot.occupant === "main" ? slot.mainBowlerId : null;
-    const policy = policies.find((candidate) => candidate.teamId === team.id)?.defaultPolicy ?? "main_pays_full";
-    return !current || current.responsibilityKind !== kind || current.mainBowlerId !== mainBowlerId || current.substituteBowlerId !== null || current.payerBowlerId !== payerBowlerId || current.policy !== policy;
-  }).map((slot) => {
-    const policy = policies.find((candidate) => candidate.teamId === team.id)?.defaultPolicy ?? "main_pays_full";
-    return { occurrenceId: occurrence.id, teamId: team.id, slotIndex: slot.slotIndex, positionIndex: slot.slotIndex, kind: slot.occupant === "main" ? "main" as const : "vacant" as const, mainBowlerId: slot.occupant === "main" ? slot.mainBowlerId : null, substituteBowlerId: null, payerBowlerId: slot.occupant === "main" ? slot.mainBowlerId : null, policy, amountMinor: slot.occupant === "main" ? league.weeklyFee : 0, lineageAmountMinor: null, prizeFundAmountMinor: null, dueAt: occurrence.startAt, pastDueAt, assignmentNote: "roster_default" };
-  }));
-  if (responsibilities.length === 0) return true;
-  const fingerprint = canonicalResponsibilityFingerprint(responsibilities);
-  try {
-    await recordOccurrenceResponsibilities({ organizationId: input.organizationId, leagueId: input.leagueId, actorUserId: input.actorUserId, commandKey: `roster:${occurrence.id}:${fingerprint.slice(-32)}`, requestFingerprint: fingerprint, responsibilities, transaction: tx });
-  } catch (error) {
-    if (!(error instanceof RosterPaymentReplay)) throw error;
-  }
-  return true;
-}
-
 export async function readCanonicalDuePastDue(input: { organizationId: number; leagueId: number; payerBowlerId?: number }) {
   await leagueScope(input.organizationId, input.leagueId);
   return db.transaction(async (tx) => {
