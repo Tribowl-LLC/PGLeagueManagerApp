@@ -29,7 +29,7 @@ import { useLocation } from "wouter";
 import { PaymentFormFields } from "@/components/payment-form-fields";
 import { PaymentMethodTabs } from "@/components/payment-method-tabs";
 import { usePaymentFormSubmit } from "@/hooks/use-payment-form-submit";
-import { beginPaymentIntent, clearPaymentIntent, paymentRequestHeaders, paymentRequestWithRecovery } from "@/lib/payment-request-identity";
+import { assertRosterPaymentSucceeded, beginPaymentIntent, clearPaymentIntent, isTerminalRosterPaymentFailure, paymentRequestHeaders, paymentRequestWithRecovery } from "@/lib/payment-request-identity";
 import { PaymentFeeInfoAlert } from "@/components/payment-fee-info-alert";
 import { PaymentCheckNumberField } from "@/components/payment-check-number-field";
 import { PaymentReceiptEmailField } from "@/components/payment-receipt-email-field";
@@ -287,8 +287,13 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
         if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw new Error(quoteBody.error?.message || "Exact payment obligations are unavailable.");
         const exactResponse = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${currentLeagueId}/interactive-obligation-charge/2`, { method: "POST", headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" }, body: JSON.stringify({ obligationIds: exactObligationIds, allocations: occurrenceAllocations, payerBowlerId: quoteBody.data.payerBowlerId, sourceId: token, sourceKind: "wallet", buyerEmail: overrideEmail ?? selected?.email ?? null, storeCard: false, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }) }), leagueInfo.organizationId, currentLeagueId);
         const exactBody = await exactResponse.json();
-        if (!exactResponse.ok) throw new Error(exactBody.error?.message || "Wallet payment failed.");
-        if (exactBody.data?.status !== "succeeded") throw new Error("Your wallet payment is not confirmed yet. Use payment recovery before trying again.");
+        const rosterStatus = exactBody.data?.status ?? exactBody.status;
+        if (!exactResponse.ok) {
+          if (isTerminalRosterPaymentFailure(rosterStatus)) walletRequestKeyRef.current = null;
+          throw new Error(exactBody.error?.message || "Wallet payment failed.");
+        }
+        if (isTerminalRosterPaymentFailure(rosterStatus)) walletRequestKeyRef.current = null;
+        assertRosterPaymentSucceeded(rosterStatus);
         walletRequestKeyRef.current = null;
         toast({ title: "Success", description: `Payment processed via ${walletType === "apple_pay" ? "Apple Pay" : "Google Pay"}` });
         queryClient.invalidateQueries({ queryKey: ["/api/payments"] });

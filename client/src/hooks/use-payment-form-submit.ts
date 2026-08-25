@@ -10,6 +10,7 @@ import {
 } from "@/lib/provider-not-configured";
 import { sanitizePaymentErrorMessage } from "@/lib/payment-user-error";
 import {
+  assertRosterPaymentSucceeded,
   beginPaymentIntent,
   clearPaymentIntent,
   paymentRequestHeaders,
@@ -135,7 +136,7 @@ export function usePaymentFormSubmit({
           }), organizationId, data.leagueId);
           const responseData = await response.json();
           if (!response.ok) throw makeApiError(responseData, response.status, 'Failed to process payment');
-          if (responseData.data?.status !== 'succeeded') throw new Error('Payment is not confirmed yet. Use payment recovery before trying again.');
+          assertRosterPaymentSucceeded(responseData.data?.status ?? responseData.status);
           clearPaymentIntent(paymentScope);
           toast({ title: 'Success', description: 'Exact payment obligations charged successfully' });
           queryClient.invalidateQueries({ queryKey: ['/api/payments'] });

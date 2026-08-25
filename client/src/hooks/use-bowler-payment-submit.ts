@@ -12,6 +12,7 @@ import {
 } from "@/lib/provider-not-configured";
 import { sanitizePaymentErrorMessage } from "@/lib/payment-user-error";
 import {
+  assertRosterPaymentSucceeded,
   beginPaymentIntent,
   clearPaymentIntent,
   paymentRequestHeaders,
@@ -180,9 +181,7 @@ export function useBowlerPaymentSubmit({
         }), undefined, league.id);
         const data = await response.json();
         await throwApiErrorIfNotOk(response, data, 'Payment failed');
-        if (data?.data?.status !== 'succeeded') {
-          throw new Error('Your payment is not confirmed yet. Use the payment recovery action before trying again.');
-        }
+        assertRosterPaymentSucceeded(data?.data?.status ?? data?.status);
         clearPaymentIntent(paymentScope);
         toast({ title: 'Payment submitted', description: data?.data?.status === 'succeeded' ? 'Your exact obligations were paid.' : 'Your payment is being confirmed.' });
         setShowPaymentSetup(false);

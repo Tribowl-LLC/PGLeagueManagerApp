@@ -13,7 +13,7 @@ import type { League, Bowler, Payment, SavedCard, ApiResponse, BowlerDetailsResp
 import { PaymentStatusView } from "@/components/payment-status-view";
 import { useBowlerPaymentSubmit } from "@/hooks/use-bowler-payment-submit";
 import type { AutopaySetupQuote } from "@/lib/autopay-setup";
-import { beginPaymentIntent, clearPaymentIntent, paymentRequestHeaders, paymentRequestWithRecovery } from "@/lib/payment-request-identity";
+import { assertRosterPaymentSucceeded, beginPaymentIntent, clearPaymentIntent, isTerminalRosterPaymentFailure, paymentRequestHeaders, paymentRequestWithRecovery } from "@/lib/payment-request-identity";
 import { buildInteractiveOccurrenceFields, interactiveIntentScopeSuffix } from "@/lib/interactive-payment-request";
 import type { InteractiveOccurrenceReadiness } from "@/components/interactive-occurrence-selector";
 
@@ -328,8 +328,13 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
         const requestKey = walletRequestKeyRef.current ?? beginPaymentIntent(`roster-wallet:${league.id}:${exactObligationIds.join(",")}:${quoteBody.data.fingerprint}`);
         const exactResponse = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-charge/2`, { method: "POST", headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" }, body: JSON.stringify({ obligationIds: exactObligationIds, allocations: occurrenceAllocations, payerBowlerId: quoteBody.data.payerBowlerId, sourceId: token, sourceKind: "wallet", buyerEmail: bowler.email ?? null, storeCard: false, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }) }), league.organizationId, league.id);
         const exactBody = await exactResponse.json();
-        if (!exactResponse.ok) throw new Error(exactBody.error?.message || "Wallet payment failed.");
-        if (exactBody.data?.status !== "succeeded") throw new Error("Your wallet payment is not confirmed yet. Use payment recovery before trying again.");
+        const rosterStatus = exactBody.data?.status ?? exactBody.status;
+        if (!exactResponse.ok) {
+          if (isTerminalRosterPaymentFailure(rosterStatus)) walletRequestKeyRef.current = null;
+          throw new Error(exactBody.error?.message || "Wallet payment failed.");
+        }
+        if (isTerminalRosterPaymentFailure(rosterStatus)) walletRequestKeyRef.current = null;
+        assertRosterPaymentSucceeded(rosterStatus);
         walletRequestKeyRef.current = null;
         toast({ title: "Payment Successful", description: `${walletType === "apple_pay" ? "Apple Pay" : "Google Pay"} payment completed.` });
         return;
