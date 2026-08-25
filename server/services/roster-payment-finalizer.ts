@@ -31,6 +31,7 @@ export function isRosterSnapshotFinalizationError(error: unknown): error is Rost
 
 type SnapshotRecord = {
   id?: string;
+  obligationId?: string;
   responsibilityId?: string;
   responsibilityVersion?: number;
   payerBowlerId?: number;
@@ -84,7 +85,7 @@ export async function validateRosterSnapshotForDispatchInTransaction(
     )).for("share");
   if (obligations.length !== items.length) throw new RosterSnapshotFinalizationError("OBLIGATION_MISSING", "The roster reservation references a missing obligation");
   for (const item of items) {
-    const record = records.find((candidate) => candidate.id === item.obligationId);
+    const record = records.find((candidate) => (candidate.id ?? candidate.obligationId) === item.obligationId);
     const responsibility = record?.responsibilityId ? byId.get(record.responsibilityId) : undefined;
     const obligation = obligations.find((candidate) => candidate.id === item.obligationId);
     if (!record || !responsibility || !obligation || responsibility.state !== "active"
@@ -169,7 +170,7 @@ export async function finalizeRosterSnapshotInTransaction(
   const responsibilityById = new Map(responsibilities.map((row) => [row.id, row]));
 
   for (const item of items) {
-    const record = records.find((candidate) => candidate.id === item.obligationId);
+    const record = records.find((candidate) => (candidate.id ?? candidate.obligationId) === item.obligationId);
     const responsibility = record?.responsibilityId ? responsibilityById.get(record.responsibilityId) : undefined;
     if (!record || record.responsibilityId === undefined || record.responsibilityVersion === undefined
       || !responsibility || responsibility.state !== "active" || responsibility.version !== record.responsibilityVersion) {

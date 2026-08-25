@@ -181,8 +181,8 @@ async function activeConsent(tx: StandingTx, input: { organizationId: number; le
 async function eligibleRows(
   tx: StandingTx,
   input: { organizationId: number; leagueId: number; payerBowlerIds: number[]; activationAt: string; cutoffAt: string; dueMode: "exact" | "paired"; occurrenceIds?: string[] },
-): Promise<Array<{ obligation: typeof paymentObligations.$inferSelect; outstandingMinor: number }>> {
-  const obligations = await tx.select({ obligation: paymentObligations })
+): Promise<Array<{ obligation: typeof paymentObligations.$inferSelect; outstandingMinor: number; responsibilityVersion: number }>> {
+  const obligations = await tx.select({ obligation: paymentObligations, responsibilityVersion: occurrencePaymentResponsibilities.version })
     .from(paymentObligations)
     .innerJoin(occurrencePaymentResponsibilities, and(
       eq(paymentObligations.responsibilityId, occurrencePaymentResponsibilities.id),
@@ -198,7 +198,7 @@ async function eligibleRows(
       ...(input.dueMode === "exact" ? [eq(paymentObligations.dueAt, input.cutoffAt)] : []),
       ...(input.occurrenceIds?.length ? [inArray(paymentObligations.occurrenceId, input.occurrenceIds)] : []),
     )).orderBy(asc(paymentObligations.dueAt), asc(paymentObligations.payerBowlerId), asc(paymentObligations.occurrenceId), asc(paymentObligations.id)).for("update");
-  const result: Array<{ obligation: typeof paymentObligations.$inferSelect; outstandingMinor: number }> = [];
+  const result: Array<{ obligation: typeof paymentObligations.$inferSelect; outstandingMinor: number; responsibilityVersion: number }> = [];
   for (const row of obligations) {
     const [allocated] = await tx.select({ total: sql<number>`COALESCE(SUM(${paymentAllocations.amountMinor}), 0)` }).from(paymentAllocations).where(and(
       eq(paymentAllocations.organizationId, input.organizationId), eq(paymentAllocations.leagueId, input.leagueId), eq(paymentAllocations.obligationId, row.obligation.id), eq(paymentAllocations.state, "active"),
@@ -207,7 +207,7 @@ async function eligibleRows(
       eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId), eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId), eq(paymentOperationRosterSnapshotItems.obligationId, row.obligation.id), eq(paymentOperationRosterSnapshotItems.state, "reserved"),
     ));
     const outstandingMinor = row.obligation.amountMinor - Number(allocated?.total ?? 0) - Number(reserved?.total ?? 0);
-    if (outstandingMinor > 0) result.push({ obligation: row.obligation, outstandingMinor });
+    if (outstandingMinor > 0) result.push({ obligation: row.obligation, outstandingMinor, responsibilityVersion: row.responsibilityVersion });
   }
   return result;
 }
@@ -332,7 +332,7 @@ export async function revokeStandingAutopayConsent(input: { organizationId: numb
       for (const { operation } of operations) {
         if (["pending", "leased", "retry_scheduled"].includes(operation.status) && operation.dispatchClaimedAt === null && operation.providerObjectId === null) {
           await tx.update(paymentOperationRosterSnapshotItems).set({ state: "released" }).where(and(eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId), eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId), eq(paymentOperationRosterSnapshotItems.operationId, operation.id), eq(paymentOperationRosterSnapshotItems.state, "reserved")));
-          await tx.update(paymentOperations).set({ status: "canceled", nextAttemptAt: null, leaseOwner: null, leaseToken: null, leaseExpiresAt: null, dispatchClaimedAt: null, errorClassification: "invalid_request", errorCode: "CONSENT_REVOKED_BEFORE_DISPATCH", updatedAt: revokedAt }).where(and(eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.id, operation.id)));
+          await tx.update(paymentOperations).set({ status: "canceled", nextAttemptAt: null, leaseOwner: null, leaseToken: null, leaseExpiresAt: null, dispatchClaimedAt: null, errorClassification: null, errorCode: null, completedAt: revokedAt, updatedAt: revokedAt }).where(and(eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.id, operation.id)));
         } else if (["leased", "provider_unknown", "retry_scheduled", "pending"].includes(operation.status) && (operation.dispatchClaimedAt !== null || operation.providerObjectId !== null)) {
           await tx.update(paymentOperations).set({ status: "reconciliation_required", nextAttemptAt: null, errorClassification: "provider_unknown", errorCode: "CONSENT_REVOKED_AFTER_DISPATCH", updatedAt: revokedAt }).where(and(eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.id, operation.id)));
         }
@@ -407,6 +407,30 @@ export async function prepareStandingAutopayCutoff(input: { organizationId: numb
       const fp = digest(CUTOFF_FP_PREFIX, { consentId: consent.id, consentVersion: consent.consentVersion, cutoffAt, empty: true });
       const [user] = await tx.select({ id: users.id }).from(users).where(and(eq(users.organizationId, input.organizationId), eq(users.bowlerId, consent.payerBowlerId))).limit(1);
       if (!user) throw new StandingAutopayError("PAYER_ACCOUNT_REQUIRED", "The standing payer account is unavailable", 403);
+      // A replay of a successful cutoff sees its rows reserved and therefore
+      // has no eligible rows on the second pass. Return the exact durable
+      // operation instead of comparing the replay against the empty/no-op
+      // fingerprint.
+      const [existingCutoff] = await tx.select().from(financialCommands).where(and(
+        eq(financialCommands.organizationId, input.organizationId),
+        eq(financialCommands.leagueId, input.leagueId),
+        eq(financialCommands.commandType, COMMAND_CUTOFF),
+        eq(financialCommands.idempotencyKey, key),
+      )).limit(1).for("share");
+      if (existingCutoff?.state === "applied" && existingCutoff.result && typeof existingCutoff.result === "object") {
+        const replay = existingCutoff.result as { operationId?: unknown };
+        if (existingCutoff.actorUserId !== user.id) throw new StandingAutopayError("IDEMPOTENCY_CONFLICT", "The standing command identity does not match the original request");
+        if (typeof replay.operationId === "string") {
+          const [replayedOperation] = await tx.select().from(paymentOperations).where(and(
+            eq(paymentOperations.organizationId, input.organizationId),
+            eq(paymentOperations.leagueId, input.leagueId),
+            eq(paymentOperations.id, replay.operationId),
+            eq(paymentOperations.operationType, "standing_autopay_charge"),
+          )).limit(1).for("share");
+          return replayedOperation;
+        }
+        return undefined;
+      }
       try { await beginCommand(tx, { organizationId: input.organizationId, leagueId: input.leagueId, actorUserId: user.id, commandType: COMMAND_CUTOFF, key, fingerprint: fp }); } catch (error) { if (!(error instanceof StandingAutopayReplay)) throw error; return undefined; }
       await applyCommand(tx, { organizationId: input.organizationId, leagueId: input.leagueId, commandType: COMMAND_CUTOFF, key, result: { kind: "no_op", cutoffAt, consentId: consent.id } });
       return undefined;
@@ -415,10 +439,25 @@ export async function prepareStandingAutopayCutoff(input: { organizationId: numb
     const [payerUser] = await tx.select({ id: users.id }).from(users).where(and(eq(users.organizationId, input.organizationId), eq(users.bowlerId, consent.payerBowlerId))).limit(1);
     if (!payerUser) throw new StandingAutopayError("PAYER_ACCOUNT_REQUIRED", "The standing payer account is unavailable", 403);
     const amountMinor = rows.reduce((sum, row) => sum + row.outstandingMinor, 0);
-    const groupIdentity = [group.groupId ?? "weekly", group.triggerOccurrenceId, group.pairedOccurrenceId ?? "", group.groupRevision ?? "", group.groupFingerprint ?? ""].join(":");
-    const targetKey = `standing-autopay:${input.organizationId}:${input.leagueId}:${consent.payerBowlerId}:${consent.id}:${consent.consentVersion}:${cutoffAt}:${groupIdentity}`;
+    // Keep the durable target within the ledger's 128-byte identity limit
+    // while retaining every group identity component in the fingerprint. A
+    // raw UUID + collection fingerprint tuple would exceed that limit.
+    const groupIdentity = digest("lvstandinggroup:v1:", {
+      groupId: group.groupId,
+      triggerOccurrenceId: group.triggerOccurrenceId,
+      pairedOccurrenceId: group.pairedOccurrenceId,
+      groupRevision: group.groupRevision,
+      groupFingerprint: group.groupFingerprint,
+    });
+    const targetIdentity = digest("lvstandingtarget:v1:", {
+      consentId: consent.id,
+      consentVersion: consent.consentVersion,
+      cutoffAt,
+      groupIdentity,
+    });
+    const targetKey = `standing-autopay:${input.organizationId}:${input.leagueId}:${consent.payerBowlerId}:${targetIdentity}`;
     const identity = buildPaymentOperationIdentity({ organizationId: input.organizationId, operationType: "standing_autopay_charge", targetKey, amountMinor, currency: "USD", providerName: consent.providerName ?? "square" });
-    const evidenceFingerprint = digest(CUTOFF_FP_PREFIX, { consentId: consent.id, consentVersion: consent.consentVersion, cutoffAt, mode: group.mode, groupId: group.groupId, groupOccurrenceIds: group.occurrenceIds, obligations: rows.map((row) => ({ id: row.obligation.id, responsibilityId: row.obligation.responsibilityId, occurrenceId: row.obligation.occurrenceId, amountMinor: row.outstandingMinor, dueAt: row.obligation.dueAt, payerBowlerId: row.obligation.payerBowlerId })), partners: partners.map((row) => ({ partnerBowlerId: row.partnerBowlerId, paymentLinkId: row.paymentLinkId, linkFingerprint: row.linkFingerprint })) });
+    const evidenceFingerprint = digest(CUTOFF_FP_PREFIX, { consentId: consent.id, consentVersion: consent.consentVersion, cutoffAt, mode: group.mode, groupId: group.groupId, groupOccurrenceIds: group.occurrenceIds, obligations: rows.map((row) => ({ id: row.obligation.id, responsibilityId: row.obligation.responsibilityId, responsibilityVersion: row.responsibilityVersion, occurrenceId: row.obligation.occurrenceId, amountMinor: row.outstandingMinor, dueAt: row.obligation.dueAt, payerBowlerId: row.obligation.payerBowlerId })), partners: partners.map((row) => ({ partnerBowlerId: row.partnerBowlerId, paymentLinkId: row.paymentLinkId, linkFingerprint: row.linkFingerprint })) });
     const commandKey = `${consent.id}:${consent.consentVersion}:${cutoffAt}`;
     try {
       await beginCommand(tx, { organizationId: input.organizationId, leagueId: input.leagueId, actorUserId: payerUser.id, commandType: COMMAND_CUTOFF, key: commandKey, fingerprint: evidenceFingerprint });
@@ -435,7 +474,7 @@ export async function prepareStandingAutopayCutoff(input: { organizationId: numb
       organizationId: input.organizationId, authorizingUserId: payerUser.id, operationType: "standing_autopay_charge", targetKey, triggerOccurrenceId: group.triggerOccurrenceId, leagueId: input.leagueId, amountMinor, currency: "USD", requestFingerprint: identity.requestFingerprint, providerIdempotencyKey: identity.providerIdempotencyKey, providerName: consent.providerName ?? "square", status: "pending", nextAttemptAt: now.toISOString(), createdAt: now.toISOString(), updatedAt: now.toISOString(), attemptCount: 0,
     }).returning();
     if (!operation) throw new StandingAutopayError("OPERATION_WRITE_FAILED", "The standing payment operation could not be created", 500);
-    const snapshotRows = rows.map((row, index) => ({ allocationIndex: index, obligationId: row.obligation.id, amountMinor: row.outstandingMinor, occurrenceId: row.obligation.occurrenceId, responsibilityId: row.obligation.responsibilityId, payerBowlerId: row.obligation.payerBowlerId, dueAt: row.obligation.dueAt }));
+    const snapshotRows = rows.map((row, index) => ({ allocationIndex: index, obligationId: row.obligation.id, amountMinor: row.outstandingMinor, occurrenceId: row.obligation.occurrenceId, responsibilityId: row.obligation.responsibilityId, responsibilityVersion: row.responsibilityVersion, payerBowlerId: row.obligation.payerBowlerId, dueAt: row.obligation.dueAt }));
     await tx.insert(paymentOperationRosterSnapshots).values({ operationId: operation.id, organizationId: input.organizationId, leagueId: input.leagueId, snapshotVersion: 1, snapshotKind: "standing_autopay", collectionMode: group.mode, cutoffAt, amountMinor, currency: "USD", obligations: snapshotRows, snapshotFingerprint: evidenceFingerprint });
     await tx.insert(paymentOperationStandingAutopayBindings).values({ operationId: operation.id, organizationId: input.organizationId, leagueId: input.leagueId, consentId: consent.id, consentVersion: consent.consentVersion, providerName: consent.providerName ?? "square", providerLocationId: consent.providerLocationId ?? "", triggerOccurrenceId: group.triggerOccurrenceId, pairedOccurrenceId: group.pairedOccurrenceId, collectionGroupId: group.groupId, collectionGroupRevision: group.groupRevision, collectionGroupFingerprint: group.groupFingerprint, triggerMemberId: group.triggerMemberId, pairedMemberId: group.pairedMemberId, cutoffAt, collectionMode: group.mode, evidenceFingerprint });
     await tx.insert(paymentOperationRosterSnapshotItems).values(snapshotRows.map((row) => ({ operationId: operation.id, organizationId: input.organizationId, leagueId: input.leagueId, obligationId: row.obligationId, allocationIndex: row.allocationIndex, amountMinor: row.amountMinor, state: "reserved" as const })));

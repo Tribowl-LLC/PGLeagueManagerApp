@@ -1952,8 +1952,11 @@ export async function acquireStandingAutopayDispatchCutoff(input: {
         leaseToken: null,
         leaseExpiresAt: null,
         dispatchClaimedAt: null,
-        errorClassification: providerEvidenceExists ? "internal" : "invalid_request",
-        errorCode: code,
+        // `canceled` is a clean terminal state in the ledger and therefore
+        // cannot carry an error classification/code (the DB state-shape
+        // guard deliberately reserves those fields for retry/error states).
+        errorClassification: providerEvidenceExists ? "internal" : null,
+        errorCode: providerEvidenceExists ? code : null,
         completedAt: blockedAt,
         updatedAt: blockedAt,
       }).where(and(

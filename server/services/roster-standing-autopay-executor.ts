@@ -33,8 +33,10 @@ function code(error: unknown): string {
 
 export class RosterStandingAutopayOperationExecutor {
   private readonly wakeScheduler: PaymentOperationWakeScheduler<StandingAutopayWake>;
+  private readonly getProvider: typeof getPaymentProvider;
 
-  constructor() {
+  constructor(dependencies: { getProvider?: typeof getPaymentProvider } = {}) {
+    this.getProvider = dependencies.getProvider ?? getPaymentProvider;
     this.wakeScheduler = new PaymentOperationWakeScheduler({
       loadNextWake: getNextStandingAutopayWake,
       handleWake: (wake) => this.handleWake(wake),
@@ -89,7 +91,7 @@ export class RosterStandingAutopayOperationExecutor {
     }
     let provider;
     try {
-      provider = await getPaymentProvider(snapshot.locationId ?? null);
+      provider = await this.getProvider(snapshot.locationId ?? null);
       const providerLocationId = typeof provider.getProviderLocationId === "function" ? (await provider.getProviderLocationId()).trim() : "";
       if (provider.providerName !== snapshot.binding.providerName || providerLocationId !== snapshot.binding.providerLocationId || !provider.validateCardId(sourceId) || !provider.hasCardOnFile || !(await provider.hasCardOnFile(customerId, sourceId))) throw new PaymentProviderError("The standing payment method is unavailable.", "PAYMENT_METHOD_INVALID", undefined, { disposition: "invalid_request", providerCode: "PAYMENT_METHOD_INVALID" });
     } catch (error) {

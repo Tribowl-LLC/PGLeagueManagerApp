@@ -196,6 +196,9 @@ export async function deleteOrganization(id: number): Promise<void> {
       ...locationIds.map((locationId) => `square_catalog_cap:loc:${locationId}`),
     ];
 
+    // Partner evidence references the link with a restrictive FK. Remove the
+    // consent-side history before retiring the tenant's link rows.
+    await tx.delete(autopayConsentPartners).where(eq(autopayConsentPartners.organizationId, id));
     await tx.delete(bowlerPaymentLinks).where(eq(bowlerPaymentLinks.organizationId, id));
     await tx.delete(applePayJobItems).where(eq(applePayJobItems.organizationId, id));
     await tx.delete(adminRoleChangeAudits).where(eq(adminRoleChangeAudits.organizationId, id));
