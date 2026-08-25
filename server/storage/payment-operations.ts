@@ -442,9 +442,13 @@ async function insertLinkedPaymentRows(
     eq(payments.leagueId, rows[0]?.values.leagueId ?? 0),
   )).orderBy(asc(payments.paymentOperationAllocationIndex), asc(payments.id)).for("update");
   const existingByIndex = new Map(existingRows.map((row) => [row.paymentOperationAllocationIndex, row]));
-  const missingRows = rows.filter((row) => {
+  const missingRows: PaymentOperationLinkedPaymentInput[] = [];
+  for (const row of rows) {
     const existing = existingByIndex.get(row.allocationIndex);
-    if (!existing) return true;
+    if (!existing) {
+      missingRows.push(row);
+      continue;
+    }
     if (
       existing.bowlerId !== row.values.bowlerId
       || existing.leagueId !== row.values.leagueId
@@ -457,8 +461,15 @@ async function insertLinkedPaymentRows(
     ) {
       throw new PaymentOperationImmutableMismatchError();
     }
-    return false;
-  });
+    if (existing.receiptUrl !== null && row.values.receiptUrl !== undefined && row.values.receiptUrl !== existing.receiptUrl) throw new PaymentOperationImmutableMismatchError();
+    if (existing.receiptNumber !== null && row.values.receiptNumber !== undefined && row.values.receiptNumber !== existing.receiptNumber) throw new PaymentOperationImmutableMismatchError();
+    if ((existing.receiptUrl === null && row.values.receiptUrl !== undefined) || (existing.receiptNumber === null && row.values.receiptNumber !== undefined)) {
+      await executor.update(payments).set({
+        receiptUrl: existing.receiptUrl === null ? row.values.receiptUrl : undefined,
+        receiptNumber: existing.receiptNumber === null ? row.values.receiptNumber : undefined,
+      }).where(and(eq(payments.id, existing.id), eq(payments.leagueId, row.values.leagueId)));
+    }
+  }
   if (missingRows.length === 0) return;
   await executor.insert(payments).values(missingRows.map((row) => ({
     ...row.values,
@@ -2248,7 +2259,7 @@ async function recordTerminalErrorOutcome(
     if (
       transitioned.operationType === "standing_autopay_charge"
       && transitioned.leagueId !== null
-      && transitioned.dispatchClaimedAt === null
+      && (transitioned.dispatchClaimedAt === null || transitioned.status === "action_required")
       && transitioned.providerObjectId === null
     ) {
       await releaseRosterReservationsWithoutProviderEvidence(tx, {
@@ -2822,6 +2833,8 @@ export async function finalizeChargeFromWebhookEvidenceInTransaction(
         status: "paid" as const,
         type: providerNameToPaymentType(operation.providerName),
         providerPaymentId: input.providerObjectId,
+        receiptUrl: input.receiptUrl ?? undefined,
+        receiptNumber: input.receiptNumber ?? undefined,
         receiptEmailMissing: false,
         combinedChargeGroupId: binding.collectionMode === "double_pay" ? operation.id : null,
         paidByUserId: operation.authorizingUserId,
@@ -3059,6 +3072,20 @@ export async function getNextStandingAutopayWake(): Promise<StandingAutopayWake 
        )
        AND NOT EXISTS (
          SELECT 1
+           FROM canonical_collection_group_members paired_member
+           INNER JOIN canonical_collection_groups paired_group
+             ON paired_group.id = paired_member.group_id
+            AND paired_group.organization_id = paired_member.organization_id
+            AND paired_group.league_id = paired_member.league_id
+          WHERE paired_member.organization_id = o.organization_id
+            AND paired_member.league_id = o.league_id
+            AND paired_member.occurrence_id = o.occurrence_id
+            AND paired_member.role = 'paired'
+            AND paired_member.active = true
+            AND paired_group.state = 'published'
+       )
+       AND NOT EXISTS (
+         SELECT 1
            FROM payment_operations blocked
           WHERE blocked.organization_id = c.organization_id
             AND blocked.league_id = c.league_id
@@ -3075,7 +3102,7 @@ export async function getNextStandingAutopayWake(): Promise<StandingAutopayWake 
          WHERE decided.organization_id = c.organization_id
            AND decided.league_id = c.league_id
            AND decided.command_type = 'standing_autopay_cutoff'
-           AND decided.idempotency_key = concat(c.id, ':', c.consent_version, ':', to_char(o.due_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+           AND decided.idempotency_key LIKE concat(c.id, ':', c.consent_version, ':', to_char(o.due_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'), ':%')
            AND decided.state = 'applied'
        )
        AND (

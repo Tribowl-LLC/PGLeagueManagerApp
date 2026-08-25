@@ -93,7 +93,6 @@ ALTER TABLE "payment_operation_roster_snapshots" ADD COLUMN "cutoff_at" timestam
 CREATE UNIQUE INDEX IF NOT EXISTS "autopay_consent_partners_identity_unique" ON "autopay_consent_partners" USING btree ("id","organization_id","league_id");--> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "autopay_consent_partners_partner_unique" ON "autopay_consent_partners" USING btree ("organization_id","league_id","consent_id","consent_version","partner_bowler_id");--> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "payment_operation_standing_autopay_bindings_identity_unique" ON "payment_operation_standing_autopay_bindings" USING btree ("operation_id","organization_id","league_id");--> statement-breakpoint
-CREATE UNIQUE INDEX IF NOT EXISTS "payment_operation_standing_autopay_bindings_consent_version_unique" ON "payment_operation_standing_autopay_bindings" USING btree ("organization_id","league_id","consent_id","consent_version","cutoff_at","collection_mode");--> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "payment_operation_standing_autopay_participants_identity_unique" ON "payment_operation_standing_autopay_participants" USING btree ("id","organization_id","league_id");--> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "payment_operation_standing_autopay_participants_allocation_unique" ON "payment_operation_standing_autopay_participants" USING btree ("operation_id","organization_id","league_id","allocation_index");--> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "payment_operations_standing_autopay_target_unique" ON "payment_operations" USING btree ("organization_id","target_key") WHERE "payment_operations"."operation_type" = 'standing_autopay_charge';--> statement-breakpoint
@@ -125,7 +124,6 @@ ALTER TABLE "payment_operation_standing_autopay_participants" ADD CONSTRAINT "pa
 CREATE UNIQUE INDEX IF NOT EXISTS "autopay_consent_partners_identity_unique" ON "autopay_consent_partners" USING btree ("id","organization_id","league_id");--> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "autopay_consent_partners_partner_unique" ON "autopay_consent_partners" USING btree ("organization_id","league_id","consent_id","consent_version","partner_bowler_id");--> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "payment_operation_standing_autopay_bindings_identity_unique" ON "payment_operation_standing_autopay_bindings" USING btree ("operation_id","organization_id","league_id");--> statement-breakpoint
-CREATE UNIQUE INDEX IF NOT EXISTS "payment_operation_standing_autopay_bindings_consent_version_unique" ON "payment_operation_standing_autopay_bindings" USING btree ("organization_id","league_id","consent_id","consent_version","cutoff_at","collection_mode");--> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "payment_operation_standing_autopay_participants_identity_unique" ON "payment_operation_standing_autopay_participants" USING btree ("id","organization_id","league_id");--> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "payment_operation_standing_autopay_participants_allocation_unique" ON "payment_operation_standing_autopay_participants" USING btree ("operation_id","organization_id","league_id","allocation_index");--> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "payment_operations_standing_autopay_target_unique" ON "payment_operations" USING btree ("organization_id","target_key") WHERE "payment_operations"."operation_type" = 'standing_autopay_charge';--> statement-breakpoint
@@ -230,6 +228,48 @@ CREATE TRIGGER payment_operation_standing_autopay_bindings_append_only BEFORE UP
 --> statement-breakpoint
 CREATE TRIGGER payment_operation_standing_autopay_participants_append_only BEFORE UPDATE OR DELETE ON payment_operation_standing_autopay_participants FOR EACH ROW EXECUTE FUNCTION roster_payment_append_only_guard();
 --> statement-breakpoint
+-- A consent-partner row is immutable evidence, not a free-form same-tenant
+-- bowler/link join. Validate the accepted link and the exact opposite endpoint
+-- of the consent payer at the deferred boundary so direct SQL cannot
+-- manufacture a participant for an unrelated bowler.
+CREATE OR REPLACE FUNCTION roster_standing_consent_partner_evidence_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  consent record;
+  link record;
+BEGIN
+  SELECT c.payer_bowler_id, c.consent_version, c.state
+    INTO consent
+    FROM autopay_consents c
+   WHERE c.id = NEW.consent_id
+     AND c.organization_id = NEW.organization_id
+     AND c.league_id = NEW.league_id;
+  IF consent.payer_bowler_id IS NULL OR consent.consent_version <> NEW.consent_version OR consent.state <> 'active' THEN
+    RAISE EXCEPTION 'standing consent partner consent binding mismatch';
+  END IF;
+  SELECT l.status, l.bowler_a_id, l.bowler_b_id
+    INTO link
+    FROM bowler_payment_links l
+   WHERE l.id = NEW.payment_link_id
+     AND l.organization_id = NEW.organization_id;
+  IF link.status IS NULL OR link.status <> 'accepted' THEN
+    RAISE EXCEPTION 'standing consent partner link is not accepted';
+  END IF;
+  IF consent.payer_bowler_id = link.bowler_a_id THEN
+    IF NEW.partner_bowler_id <> link.bowler_b_id THEN RAISE EXCEPTION 'standing consent partner is not the link opposite endpoint'; END IF;
+  ELSIF consent.payer_bowler_id = link.bowler_b_id THEN
+    IF NEW.partner_bowler_id <> link.bowler_a_id THEN RAISE EXCEPTION 'standing consent partner is not the link opposite endpoint'; END IF;
+  ELSE
+    RAISE EXCEPTION 'standing consent payer is not a link endpoint';
+  END IF;
+  IF NEW.link_fingerprint !~ '^lvpartnerlink:v1:[0-9a-f]{64}$' THEN RAISE EXCEPTION 'standing consent partner fingerprint is invalid'; END IF;
+  RETURN NEW;
+END;
+$$;
+--> statement-breakpoint
+CREATE CONSTRAINT TRIGGER autopay_consent_partner_evidence
+AFTER INSERT ON autopay_consent_partners
+DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION roster_standing_consent_partner_evidence_guard();
+--> statement-breakpoint
 -- Deferring the sum check on item writes closes the hole where a direct item
 -- insert could change a snapshot total after the parent snapshot trigger ran.
 CREATE CONSTRAINT TRIGGER payment_operation_roster_snapshot_item_sum
@@ -305,13 +345,15 @@ BEGIN
   SELECT i.obligation_id INTO item FROM payment_operation_roster_snapshot_items i
    WHERE i.operation_id = NEW.operation_id AND i.organization_id = NEW.organization_id AND i.league_id = NEW.league_id AND i.allocation_index = NEW.allocation_index;
   IF item.obligation_id IS NULL OR item.obligation_id <> NEW.obligation_id THEN RAISE EXCEPTION 'standing participant snapshot item mismatch'; END IF;
-  SELECT c.payer_bowler_id INTO consent FROM autopay_consents c WHERE c.id = binding.consent_id AND c.organization_id = NEW.organization_id AND c.league_id = NEW.league_id;
+  SELECT c.payer_bowler_id, c.state, c.consent_version INTO consent FROM autopay_consents c WHERE c.id = binding.consent_id AND c.organization_id = NEW.organization_id AND c.league_id = NEW.league_id;
+  IF consent.payer_bowler_id IS NULL OR consent.state NOT IN ('active', 'revoked', 'expired') OR consent.consent_version <> NEW.consent_version THEN RAISE EXCEPTION 'standing participant consent evidence unavailable'; END IF;
   IF NEW.role = 'payer' THEN
     IF NEW.bowler_id <> consent.payer_bowler_id OR NEW.payment_link_id IS NOT NULL OR NEW.link_fingerprint IS NOT NULL THEN RAISE EXCEPTION 'standing payer participant identity mismatch'; END IF;
   ELSE
     SELECT cp.link_fingerprint, l.status, l.bowler_a_id, l.bowler_b_id INTO partner FROM autopay_consent_partners cp INNER JOIN bowler_payment_links l ON l.id = cp.payment_link_id AND l.organization_id = cp.organization_id
      WHERE cp.consent_id = binding.consent_id AND cp.consent_version = binding.consent_version AND cp.organization_id = NEW.organization_id AND cp.league_id = NEW.league_id AND cp.partner_bowler_id = NEW.bowler_id AND cp.payment_link_id = NEW.payment_link_id;
     IF partner.link_fingerprint IS NULL OR partner.status <> 'accepted' OR partner.link_fingerprint <> NEW.link_fingerprint OR consent.payer_bowler_id NOT IN (partner.bowler_a_id, partner.bowler_b_id) THEN RAISE EXCEPTION 'standing partner participant authorization mismatch'; END IF;
+    IF (consent.payer_bowler_id = partner.bowler_a_id AND NEW.bowler_id <> partner.bowler_b_id) OR (consent.payer_bowler_id = partner.bowler_b_id AND NEW.bowler_id <> partner.bowler_a_id) OR consent.payer_bowler_id = NEW.bowler_id THEN RAISE EXCEPTION 'standing partner participant must be the exact opposite link endpoint'; END IF;
   END IF;
   RETURN NEW;
 END;

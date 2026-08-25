@@ -768,6 +768,8 @@ function billingTermSnapshot(row: LeagueOccurrenceBillingTerm): Record<string, u
     purpose: row.purpose,
     obligationPolicy: row.obligationPolicy,
     defaultAmountMinor: row.defaultAmountMinor,
+    billingOrdinal: row.billingOrdinal,
+    version: row.version,
     currency: row.currency,
   };
 }
@@ -1200,7 +1202,14 @@ export async function cancelOccurrenceInTransaction(tx: LeagueScheduleTransactio
     )).for("update");
     for (const responsibility of rosterResponsibilities) {
       const evidence = rosterObligations.filter((obligation) => obligation.responsibilityId === responsibility.id);
-      if (evidence.length > 0 && evidence.every((obligation) => obligation.state === "voided")) {
+      if (evidence.length > 0 && evidence.every((obligation) => {
+        // `rosterObligations` was locked before the state transition above;
+        // an open row with no active allocation is the same row this
+        // cancellation just voided. Do not let the pre-update snapshot keep
+        // its responsibility active and block a later safe restore.
+        return obligation.state === "voided"
+          || (obligation.state === "open" && (allocationsByObligation.get(obligation.id)?.length ?? 0) === 0);
+      })) {
         await tx.update(occurrencePaymentResponsibilities).set({ state: "voided" }).where(and(
           eq(occurrencePaymentResponsibilities.id, responsibility.id),
           eq(occurrencePaymentResponsibilities.organizationId, request.organizationId),
@@ -1372,10 +1381,20 @@ export async function restoreCancelledOccurrenceInTransaction(tx: LeagueSchedule
     eq(leagueOccurrenceBillingTermRevisions.organizationId, input.organizationId),
     eq(leagueOccurrenceBillingTermRevisions.leagueId, input.leagueId),
     eq(leagueOccurrenceBillingTermRevisions.billingTermId, term.id),
-    eq(leagueOccurrenceBillingTermRevisions.revisionNumber, term.currentRevision - 1),
-  )).limit(1);
-  const priorSnapshot = priorRevision?.afterSnapshot;
+  )).orderBy(desc(leagueOccurrenceBillingTermRevisions.revisionNumber)).limit(1);
   const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+  // Cancellation writes the preserved published term to `beforeSnapshot` and
+  // the zero-obligation term to `afterSnapshot`. A direct publication may not
+  // have an earlier revision row, so restoration must use the latest
+  // cancellation evidence rather than assuming revision N-1 exists.
+  const latestAfter = isRecord(priorRevision?.afterSnapshot) ? priorRevision.afterSnapshot : null;
+  const priorSnapshot = [latestAfter, priorRevision?.beforeSnapshot].find((candidate) => {
+    if (!isRecord(candidate) || candidate.obligationPolicy === "none") return false;
+    return typeof candidate.defaultAmountMinor === "number"
+      && candidate.defaultAmountMinor > 0
+      && typeof candidate.billingOrdinal === "number"
+      && candidate.billingOrdinal > 0;
+  });
   const restoredAmount = isRecord(priorSnapshot) && typeof priorSnapshot.defaultAmountMinor === "number" ? priorSnapshot.defaultAmountMinor : null;
   const restoredOrdinal = isRecord(priorSnapshot) && typeof priorSnapshot.billingOrdinal === "number" ? priorSnapshot.billingOrdinal : null;
   if (!restoredAmount || !restoredOrdinal || restoredAmount <= 0 || restoredOrdinal <= 0) throw new CanonicalOccurrenceTransactionError("invalid_command", "cancelled occurrence has no restorable published billing-term evidence");
@@ -1389,6 +1408,21 @@ export async function restoreCancelledOccurrenceInTransaction(tx: LeagueSchedule
   await tx.insert(leagueOccurrenceBillingTermRevisions).values({ organizationId: input.organizationId, leagueId: input.leagueId, billingTermId: term.id, commandId: command.id, revisionNumber: nextTermRevision, snapshotSchemaVersion: 1, beforeSnapshot: billingTermSnapshot(term), afterSnapshot: billingTermSnapshot(restoredTerm) });
   await materializeRosterPaymentOccurrenceInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId, occurrenceId: restored.id, actorUserId: input.actorUserId });
   return restored;
+}
+
+/** Public transaction wrapper for callers that restore one occurrence without
+ * a broader canonical schedule-edit batch. The schedule-edit service uses the
+ * in-transaction variant so its league lock remains shared with the batch. */
+export async function restoreCancelledOccurrence(input: {
+  organizationId: number;
+  leagueId: number;
+  actorUserId: number;
+  occurrenceId: string;
+  idempotencyKey: string;
+  reason: string;
+  now: string;
+}): Promise<LeagueOccurrence> {
+  return withDefaultCanonicalTransaction((tx) => restoreCancelledOccurrenceInTransaction(tx, input));
 }
 
 /** Reschedule an occurrence in place; UUID and generationKey are deliberately untouched. */

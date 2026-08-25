@@ -107,7 +107,7 @@ export class RosterStandingAutopayOperationExecutor {
       return this.recordFailure(operation, leaseToken, error, true);
     }
     try {
-      return await finalizePaymentOperationSuccess({ organizationId: operation.organizationId, operationId: operation.id, leaseToken, providerObjectId: result.id, providerOrderId: result.orderId, paymentRows: await standingPaymentRows({ organizationId: operation.organizationId, operationId: operation.id, providerPaymentId: result.id, providerName: operation.providerName, actorUserId: operation.authorizingUserId }), now: new Date() });
+      return await finalizePaymentOperationSuccess({ organizationId: operation.organizationId, operationId: operation.id, leaseToken, providerObjectId: result.id, providerOrderId: result.orderId, paymentRows: await standingPaymentRows({ organizationId: operation.organizationId, operationId: operation.id, providerPaymentId: result.id, providerName: operation.providerName, actorUserId: operation.authorizingUserId, receiptUrl: result.receiptUrl, receiptNumber: result.receiptNumber }), now: new Date() });
     } catch (error) {
       log.error("Standing automatic payment provider succeeded but local finalization needs recovery", { operationId: operation.id, organizationId: operation.organizationId, errorName: error instanceof Error ? error.name : "UnknownError" });
       throw error;

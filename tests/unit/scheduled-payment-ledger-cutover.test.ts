@@ -977,7 +977,17 @@ describe("scheduled payment ledger cutover PostgreSQL behavior", () => {
   it("does not wake archived legacy schedules after the roster cutover", async () => {
     const future = await createSchedule({ nextPaymentDate: "2033-01-01T00:00:00.000Z" });
     const wake = await getNextPaymentOperationWake();
-    expect(wake).toBeUndefined();
+    // This worker still wakes retained refund/interactive ledger operations
+    // created by other suites sharing the disposable database.  The cutover
+    // contract is specifically that an archived legacy schedule cannot be a
+    // wake candidate; assert that boundary without masking unrelated ledger
+    // work.
+    if (wake) {
+      expect(wake.kind).toBe("operation");
+      if (wake.kind === "operation") {
+        expect(wake.operationType).not.toBe("scheduled_charge");
+      }
+    }
 
     const planRows = await db.transaction(async (tx) => {
       await tx.execute(sql`SET LOCAL enable_seqscan = off`);
