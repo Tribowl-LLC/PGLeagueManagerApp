@@ -409,7 +409,8 @@ export async function updateBowlerLeague(id: number, bowlerLeague: UpdateBowlerL
     if (!current) throw new Error('Bowler league not found');
     await lockRosterLeague(tx, current.leagueId);
     const [updated] = await tx.update(bowlerLeagues).set(bowlerLeague).where(eq(bowlerLeagues.id, id)).returning();
-    if ((bowlerLeague.active === false || (bowlerLeague.teamId !== undefined && bowlerLeague.teamId !== current.teamId)) && updated) {
+    const bowlerIdentityChanged = bowlerLeague.bowlerId !== undefined && bowlerLeague.bowlerId !== current.bowlerId;
+    if ((bowlerIdentityChanged || bowlerLeague.active === false || (bowlerLeague.teamId !== undefined && bowlerLeague.teamId !== current.teamId)) && updated) {
       const [league] = await tx.select({ organizationId: leagues.organizationId }).from(leagues).where(eq(leagues.id, current.leagueId)).limit(1);
       if (league?.organizationId !== null && league?.organizationId !== undefined) {
         const now = new Date().toISOString();
