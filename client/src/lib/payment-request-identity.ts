@@ -65,6 +65,15 @@ export async function recoverPaymentIntent(requestKey: string, organizationId?: 
   });
 }
 
+/** Reconcile an exact roster operation by its durable operation identity. */
+export async function recoverRosterPaymentOperation(leagueId: number, operationId: string): Promise<Response> {
+  return csrfFetch(`/api/financials/leagues/${leagueId}/interactive-obligation-charge/2/operations/${encodeURIComponent(operationId)}/recover`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+}
+
 /**
  * Reconcile a durable payment operation when the request carrying a provider
  * token is lost to a network failure. The request key is the only recovery
@@ -74,9 +83,21 @@ export async function paymentRequestWithRecovery(
   requestKey: string,
   request: () => Promise<Response>,
   organizationId?: number | null,
+  rosterLeagueId?: number,
 ): Promise<Response> {
   try {
-    return await request();
+    const response = await request();
+    if (rosterLeagueId !== undefined) {
+      const body = await response.clone().json().catch(() => null) as { data?: { contractVersion?: string; operationId?: string; status?: string } } | null;
+      const operation = body?.data;
+      if (operation?.contractVersion === 'interactive-obligation-charge/2'
+        && operation.operationId
+        && operation.status === 'reconciliation_required') {
+        const recovered = await recoverRosterPaymentOperation(rosterLeagueId, operation.operationId).catch(() => null);
+        if (recovered?.ok) return recovered;
+      }
+    }
+    return response;
   } catch (error) {
     const recovered = await recoverPaymentIntent(requestKey, organizationId).catch(() => null);
     if (!recovered) throw error;

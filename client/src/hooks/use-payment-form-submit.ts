@@ -131,7 +131,7 @@ export function usePaymentFormSubmit({
             method: 'POST',
             headers: { ...paymentRequestHeaders(requestKey), 'Content-Type': 'application/json' },
             body: JSON.stringify({ obligationIds, sourceId, sourceKind: cardMode === 'saved' ? 'saved_card' : 'new_card', buyerEmail: trimmedBuyerEmail || null, storeCard: false, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }),
-          }), organizationId);
+          }), organizationId, data.leagueId);
           const responseData = await response.json();
           if (!response.ok) throw makeApiError(responseData, response.status, 'Failed to process payment');
           clearPaymentIntent(paymentScope);

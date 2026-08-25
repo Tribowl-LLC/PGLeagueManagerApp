@@ -11,6 +11,16 @@ type Props = {
   canCorrect?: boolean;
 };
 
+/** Convert the operator-facing dollar amount to exact USD minor units. */
+export function dollarsToMinorUnits(value: string): number | null {
+  const normalized = value.trim();
+  if (!/^(?:0|[1-9]\d*)(?:\.\d{1,2})?$/.test(normalized)) return null;
+  const [wholeText, fractionText = ""] = normalized.split(".");
+  const whole = Number(wholeText);
+  const minor = whole * 100 + Number(fractionText.padEnd(2, "0"));
+  return Number.isSafeInteger(minor) && minor > 0 ? minor : null;
+}
+
 /**
  * The F5 projection is deliberately rendered as evidence rows.  In
  * particular, a row with no payment id is still a real unresolved/legacy
@@ -26,6 +36,7 @@ export function CanonicalPaymentEvidenceTable({ rows, mode, paymentTiming, organ
   const [replacementCheckNumber, setReplacementCheckNumber] = useState("");
   const [replacementNotes, setReplacementNotes] = useState("");
   const [correctionBusy, setCorrectionBusy] = useState(false);
+  const [correctionError, setCorrectionError] = useState<string | null>(null);
   const openReceipt = async (paymentId: number) => {
     setReceiptLoading(paymentId);
     try {
@@ -53,6 +64,12 @@ export function CanonicalPaymentEvidenceTable({ rows, mode, paymentTiming, organ
   const submitCorrection = async (row: CanonicalPaymentRow, allocationId: string) => {
     const trimmedReason = reason.trim();
     if (!trimmedReason) return;
+    const replacementAmountMinor = correctionMode === "replace" ? dollarsToMinorUnits(replacementAmount) : null;
+    if (correctionMode === "replace" && replacementAmountMinor === null) {
+      setCorrectionError("Enter a valid dollar amount with at most two decimal places.");
+      return;
+    }
+    setCorrectionError(null);
     setCorrectionBusy(true);
     try {
       const payload = {
@@ -60,7 +77,7 @@ export function CanonicalPaymentEvidenceTable({ rows, mode, paymentTiming, organ
         correctionMode,
         reason: trimmedReason,
         ...(correctionMode === "replace" ? {
-          replacementAmountMinor: Number(replacementAmount),
+          replacementAmountMinor: replacementAmountMinor as number,
           replacementType,
           ...(replacementType === "check" ? { replacementCheckNumber: replacementCheckNumber.trim() } : {}),
           replacementNotes: replacementNotes.trim() || null,
@@ -76,6 +93,8 @@ export function CanonicalPaymentEvidenceTable({ rows, mode, paymentTiming, organ
       setEditingAllocationId(null);
       setReason("");
       window.location.reload();
+    } catch {
+      setCorrectionError("Payment correction could not be recorded");
     } finally {
       setCorrectionBusy(false);
     }
@@ -87,7 +106,7 @@ export function CanonicalPaymentEvidenceTable({ rows, mode, paymentTiming, organ
         {paymentTiming.paymentMode === "upfront" ? "Upfront payment" : "Weekly payment"}
         {paymentTiming.upfrontDueAt ? ` · due ${paymentTiming.upfrontDueAtLocal ?? paymentTiming.upfrontDueAt}` : ""}
         {` · timezone ${paymentTiming.timezone ?? "UTC"}`}
-        {` · ${paymentTiming.source === "canonical_activation" ? "canonical activation" : "legacy league timing"}`}
+        {` · ${paymentTiming.source === "canonical_activation" ? "canonical activation" : paymentTiming.source === "roster_payment_responsibility" ? "roster-driven canonical billing" : "legacy league timing"}`}
       </div>}
       {rows.length === 0 ? (
         <p className="text-sm text-muted-foreground">No payment evidence for this page.</p>
@@ -120,7 +139,8 @@ export function CanonicalPaymentEvidenceTable({ rows, mode, paymentTiming, organ
                   {editingAllocationId === allocation.allocationId ? <div className="grid gap-2 md:grid-cols-2">
                     <input aria-label="Correction reason" className="rounded border bg-background p-1" placeholder="Reason" value={reason} onChange={(event) => setReason(event.target.value)} />
                     <select aria-label="Correction mode" className="rounded border bg-background p-1" value={correctionMode} onChange={(event) => setCorrectionMode(event.target.value as typeof correctionMode)}><option value="void_only">Void entry</option><option value="replace">Replace cash/check</option></select>
-                    {correctionMode === "replace" && <><input aria-label="Replacement amount" type="number" min="1" className="rounded border bg-background p-1" placeholder="Amount in cents" value={replacementAmount} onChange={(event) => setReplacementAmount(event.target.value)} /><select aria-label="Replacement type" className="rounded border bg-background p-1" value={replacementType} onChange={(event) => setReplacementType(event.target.value as typeof replacementType)}><option value="cash">Cash</option><option value="check">Check</option></select>{replacementType === "check" && <input aria-label="Replacement check number" className="rounded border bg-background p-1" placeholder="Check number" value={replacementCheckNumber} onChange={(event) => setReplacementCheckNumber(event.target.value)} />}<input aria-label="Replacement notes" className="rounded border bg-background p-1" placeholder="Notes (optional)" value={replacementNotes} onChange={(event) => setReplacementNotes(event.target.value)} /></>}
+                    {correctionMode === "replace" && <><input aria-label="Replacement amount" type="text" inputMode="decimal" className="rounded border bg-background p-1" placeholder="Amount in dollars (e.g. 20.00)" value={replacementAmount} onChange={(event) => setReplacementAmount(event.target.value)} /><select aria-label="Replacement type" className="rounded border bg-background p-1" value={replacementType} onChange={(event) => setReplacementType(event.target.value as typeof replacementType)}><option value="cash">Cash</option><option value="check">Check</option></select>{replacementType === "check" && <input aria-label="Replacement check number" className="rounded border bg-background p-1" placeholder="Check number" value={replacementCheckNumber} onChange={(event) => setReplacementCheckNumber(event.target.value)} />}<input aria-label="Replacement notes" className="rounded border bg-background p-1" placeholder="Notes (optional)" value={replacementNotes} onChange={(event) => setReplacementNotes(event.target.value)} /></>}
+                    {correctionError && <p role="alert" className="text-destructive">{correctionError}</p>}
                     <div className="flex gap-2"><button type="button" className="underline" disabled={correctionBusy} onClick={() => void submitCorrection(row, allocation.allocationId as string)}>Save correction</button><button type="button" className="underline" onClick={() => setEditingAllocationId(null)}>Cancel</button></div>
                   </div> : <button type="button" className="underline" onClick={() => setEditingAllocationId(allocation.allocationId)}>Correct manual entry</button>}
                 </div>

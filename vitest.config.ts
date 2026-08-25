@@ -206,6 +206,7 @@ const PARALLEL_ISOLATED = [
   // Storage-only PostgreSQL race suite; it needs an isolated database but no
   // spawned Express process or mutable application singleton state.
   'tests/unit/payment-operations.test.ts',
+  'tests/unit/roster-payment-finalizer-postgres.test.ts',
   'tests/unit/interactive-payment-operation-executor.test.ts',
   'tests/unit/refund-payment-operation-executor.test.ts',
   'tests/unit/scheduled-payment-ledger-cutover.test.ts',

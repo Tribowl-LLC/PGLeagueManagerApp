@@ -321,7 +321,7 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
         const quoteBody = await quoteResponse.json();
         if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw new Error(quoteBody.error?.message || "Exact payment obligations are unavailable. Refresh and try again.");
         const requestKey = walletRequestKeyRef.current ?? beginPaymentIntent(`roster-wallet:${league.id}:${exactObligationIds.join(",")}:${quoteBody.data.fingerprint}`);
-        const exactResponse = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-charge/2`, { method: "POST", headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" }, body: JSON.stringify({ obligationIds: exactObligationIds, sourceId: token, sourceKind: "wallet", buyerEmail: bowler.email ?? null, storeCard: false, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }) }), league.organizationId);
+        const exactResponse = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-charge/2`, { method: "POST", headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" }, body: JSON.stringify({ obligationIds: exactObligationIds, sourceId: token, sourceKind: "wallet", buyerEmail: bowler.email ?? null, storeCard: false, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }) }), league.organizationId, league.id);
         const exactBody = await exactResponse.json();
         if (!exactResponse.ok) throw new Error(exactBody.error?.message || "Wallet payment failed.");
         walletRequestKeyRef.current = null;

@@ -8,6 +8,7 @@ import {
   locations,
   organizations,
   paymentOperations,
+  paymentOperationRosterSnapshotItems,
   paymentSchedules,
   payments,
   paymentDisputes,
@@ -67,6 +68,29 @@ import {
   isRosterSnapshotFinalizationError,
   validateRosterSnapshotForDispatchInTransaction,
 } from "../services/roster-payment-finalizer.js";
+
+async function releaseRosterReservationsWithoutProviderEvidence(
+  tx: PaymentOperationTransaction,
+  input: { organizationId: number; leagueId: number; operationId: string },
+): Promise<void> {
+  const [operation] = await tx.select({ providerObjectId: paymentOperations.providerObjectId }).from(paymentOperations).where(and(
+    eq(paymentOperations.organizationId, input.organizationId),
+    eq(paymentOperations.leagueId, input.leagueId),
+    eq(paymentOperations.id, input.operationId),
+  )).for("share");
+  if (operation?.providerObjectId) return;
+  const [providerPayment] = await tx.select({ id: payments.id }).from(payments).where(and(
+    eq(payments.leagueId, input.leagueId),
+    eq(payments.paymentOperationId, input.operationId),
+  )).limit(1);
+  if (providerPayment) return;
+  await tx.update(paymentOperationRosterSnapshotItems).set({ state: "released" }).where(and(
+    eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId),
+    eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId),
+    eq(paymentOperationRosterSnapshotItems.operationId, input.operationId),
+    eq(paymentOperationRosterSnapshotItems.state, "reserved"),
+  ));
+}
 
 export class PaymentOperationNotFoundError extends Error {
   constructor() {
@@ -1691,6 +1715,11 @@ export async function acquireScheduledPaymentOperationDispatchCutoff(input: {
       });
     } catch (error) {
       if (!isRosterSnapshotFinalizationError(error)) throw error;
+      await releaseRosterReservationsWithoutProviderEvidence(tx, {
+        organizationId: input.organizationId,
+        leagueId: scope.leagueId,
+        operationId: input.operationId,
+      });
       const blockedAt = (input.now ?? new Date()).toISOString();
       await tx.update(paymentOperations).set({
         status: "reconciliation_required",
@@ -1774,6 +1803,11 @@ export async function acquireInteractivePaymentOperationDispatchCutoff(input: {
       });
     } catch (error) {
       if (!isRosterSnapshotFinalizationError(error)) throw error;
+      await releaseRosterReservationsWithoutProviderEvidence(tx, {
+        organizationId: input.organizationId,
+        leagueId: scope.leagueId,
+        operationId: input.operationId,
+      });
       const blockedAt = (input.now ?? new Date()).toISOString();
       await tx.update(paymentOperations).set({
         status: "reconciliation_required",

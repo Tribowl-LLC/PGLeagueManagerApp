@@ -43,7 +43,7 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
       const asOfResult = await tx.execute(sql`SELECT transaction_timestamp()::text AS as_of`);
       asOf = (asOfResult.rows[0] as { as_of?: string } | undefined)?.as_of ?? asOf;
     }
-    const [league] = await tx.select({ timezone: leagues.timezone }).from(leagues).where(and(eq(leagues.id, input.leagueId), eq(leagues.organizationId, input.organizationId))).limit(1);
+    const [league] = await tx.select({ timezone: leagues.timezone, paymentMode: leagues.paymentMode }).from(leagues).where(and(eq(leagues.id, input.leagueId), eq(leagues.organizationId, input.organizationId))).limit(1);
     if (!league) throw new CanonicalPaymentReportIncompatibilityError("league not found");
     const conditions = [eq(payments.leagueId, input.leagueId)];
     if (input.bowlerId !== undefined) conditions.push(eq(payments.bowlerId, input.bowlerId));
@@ -125,6 +125,7 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
       const operation = first.operation;
       const snapshot = first.snapshot;
       const dueAt = evidenceRows.map((row) => row.obligation.dueAt).sort()[0] ?? operation.createdAt;
+      const authoritativeLocalDate = leagueLocalDate(dueAt, league.timezone);
       const unresolved = operation.status === "provider_unknown" || operation.status === "reconciliation_required";
       const operationRow: CanonicalPaymentRow = {
         paymentId: null,
@@ -134,8 +135,8 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
         currency: snapshot.currency,
         status: unresolved ? "unresolved" : "pending",
         paymentType: "credit_card",
-        businessDate: dueAt,
-        authoritativeLocalDate: leagueLocalDate(dueAt, league.timezone),
+        businessDate: authoritativeLocalDate,
+        authoritativeLocalDate,
         providerPaymentId: operation.providerObjectId,
         paymentOperationId: operation.id,
         operationType: operation.operationType,
@@ -160,7 +161,11 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
       || (left.allocations[0]?.allocationId ?? "").localeCompare(right.allocations[0]?.allocationId ?? "")
       || (left.paymentId ?? Number.MAX_SAFE_INTEGER) - (right.paymentId ?? Number.MAX_SAFE_INTEGER));
     const grouped = new Map<string, CanonicalPaymentRow[]>();
-    for (const row of rows) grouped.set(row.sharedTransaction?.groupKey ?? `payment:${row.paymentId}`, [...(grouped.get(row.sharedTransaction?.groupKey ?? `payment:${row.paymentId}`) ?? []), row]);
+    for (const row of rows) {
+      const groupKey = row.sharedTransaction?.groupKey
+        ?? (row.paymentOperationId ? `operation:${row.paymentOperationId}` : `payment:${row.paymentId}`);
+      grouped.set(groupKey, [...(grouped.get(groupKey) ?? []), row]);
+    }
     const transactions = [...grouped.entries()].map(([groupKey, groupedRows]) => ({ groupKey, paymentOperationId: groupedRows[0]?.paymentOperationId ?? null, combinedChargeGroupId: groupedRows[0]?.sharedTransaction?.groupKey ?? null, amountMinor: groupedRows.reduce((sum, row) => sum + row.amountMinor, 0), currency: "USD", paymentIds: groupedRows.flatMap((row) => row.paymentId ? [row.paymentId] : []), rows: groupedRows }));
     const totals: CanonicalPaymentReportTotals = {
       grossConfirmedPaidMinor: rows.filter((row) => row.status === "confirmed_paid" || row.status === "refunded" || row.status === "disputed").reduce((sum, row) => sum + row.amountMinor, 0),
@@ -171,7 +176,7 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
       unresolvedOperationMinor: rows.filter((row) => row.unresolved).reduce((sum, row) => sum + row.amountMinor, 0),
       unallocatedLegacyMinor: rows.filter((row) => row.source === "unlinked_legacy").reduce((sum, row) => sum + row.unallocatedMinor, 0),
     };
-    const reportWithoutFingerprint = { contractVersion: "canonical-payment-report/1" as const, orderVersion: "league,business-date,bowler,occurrence,allocation,payment/1" as const, organizationId: input.organizationId, leagueId: input.leagueId, mode: rows.some((row) => row.source === "unlinked_legacy") ? "canonical_with_unlinked_history" as const : "canonical" as const, authoritativeSource: "canonical" as const, asOf, page, limit, totalRows: rows.length, totalTransactions: transactions.length, totals, rows: rows.slice((page - 1) * limit, page * limit), transactions: transactions.slice((page - 1) * limit, page * limit), unlinkedHistory: rows.filter((row) => row.source === "unlinked_legacy"), paymentTiming: { paymentMode: "weekly" as const, upfrontDueAt: null, timezone: league.timezone ?? "UTC", source: "roster_payment_responsibility" as const } };
+    const reportWithoutFingerprint = { contractVersion: "canonical-payment-report/1" as const, orderVersion: "league,business-date,bowler,occurrence,allocation,payment/1" as const, organizationId: input.organizationId, leagueId: input.leagueId, mode: rows.some((row) => row.source === "unlinked_legacy") ? "canonical_with_unlinked_history" as const : "canonical" as const, authoritativeSource: "canonical" as const, asOf, page, limit, totalRows: rows.length, totalTransactions: transactions.length, totals, rows: rows.slice((page - 1) * limit, page * limit), transactions: transactions.slice((page - 1) * limit, page * limit), unlinkedHistory: rows.filter((row) => row.source === "unlinked_legacy"), paymentTiming: { paymentMode: league.paymentMode === "upfront" ? "upfront" as const : "weekly" as const, upfrontDueAt: null, timezone: league.timezone ?? "UTC", source: "roster_payment_responsibility" as const } };
     return { ...reportWithoutFingerprint, fingerprint: canonicalPaymentReportFingerprint(reportWithoutFingerprint) };
   };
   // Production always supplies a transaction-capable Drizzle database. A few

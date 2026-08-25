@@ -828,6 +828,86 @@ async function assertNotEffectivelyLocked(
   }
 }
 
+/**
+ * Rescheduling is intentionally narrower than ordinary draft discard. A
+ * roster-ready future occurrence already has open obligations, so their mere
+ * existence is not a lock. They may be versioned only while every financial
+ * row is still open, unallocated, and unclaimed. The league lock is held by
+ * the caller; row locks here make the guard and the versioning operation one
+ * atomic decision.
+ */
+async function assertRescheduleFinanciallyEditableInTransaction(
+  tx: LeagueScheduleLockExecutor,
+  row: LeagueOccurrence,
+  now: string,
+): Promise<void> {
+  assertValidInstant(now, "now");
+  if (Date.parse(row.startAt) <= Date.parse(now) || row.lifecycle !== "published" || row.lockedAt !== null) {
+    throw new CanonicalOccurrenceTransactionError("occurrence_effectively_locked", "only a future published occurrence can be rescheduled");
+  }
+  const [linkedGame] = await tx.select({ id: games.id }).from(games).where(and(
+    eq(games.leagueId, row.leagueId),
+    eq(games.occurrenceId, row.id),
+  )).limit(1);
+  if (linkedGame) throw new CanonicalOccurrenceTransactionError("occurrence_effectively_locked", "occurrence has participation evidence");
+  const [groupMember] = await tx.select({ id: canonicalCollectionGroupMembers.id }).from(canonicalCollectionGroupMembers).where(and(
+    eq(canonicalCollectionGroupMembers.organizationId, row.organizationId),
+    eq(canonicalCollectionGroupMembers.leagueId, row.leagueId),
+    eq(canonicalCollectionGroupMembers.occurrenceId, row.id),
+    eq(canonicalCollectionGroupMembers.active, true),
+  )).limit(1);
+  if (groupMember) throw new CanonicalOccurrenceTransactionError("occurrence_effectively_locked", "occurrence is in an active collection group");
+
+  // trigger_occurrence_id is the retained ledger's canonical occurrence
+  // identity. Do not require the optional operation league_id here: legacy
+  // scheduled operations may intentionally leave it null, and they still
+  // lock a physical occurrence for rescheduling.
+  const linkedOperations = await tx.select({ id: paymentOperations.id, status: paymentOperations.status, dispatchClaimedAt: paymentOperations.dispatchClaimedAt }).from(paymentOperations).where(and(
+    eq(paymentOperations.organizationId, row.organizationId),
+    eq(paymentOperations.triggerOccurrenceId, row.id),
+  )).for("update");
+  if (linkedOperations.length > 0) {
+    throw new CanonicalOccurrenceTransactionError("occurrence_effectively_locked", "occurrence has payment-operation evidence");
+  }
+
+  const obligations = await tx.select({ id: paymentObligations.id, state: paymentObligations.state }).from(paymentObligations).where(and(
+    eq(paymentObligations.organizationId, row.organizationId),
+    eq(paymentObligations.leagueId, row.leagueId),
+    eq(paymentObligations.occurrenceId, row.id),
+  )).orderBy(asc(paymentObligations.dueAt), asc(paymentObligations.payerBowlerId), asc(paymentObligations.id)).for("update");
+  if (obligations.some((obligation) => obligation.state !== "open")) {
+    throw new CanonicalOccurrenceTransactionError("occurrence_effectively_locked", "occurrence has settled, voided, or review-required obligation evidence");
+  }
+  const obligationIds = obligations.map((obligation) => obligation.id);
+  if (obligationIds.length === 0) return;
+  const [allocation] = await tx.select({ id: paymentAllocations.id }).from(paymentAllocations).where(and(
+    eq(paymentAllocations.organizationId, row.organizationId),
+    eq(paymentAllocations.leagueId, row.leagueId),
+    inArray(paymentAllocations.obligationId, obligationIds),
+    eq(paymentAllocations.state, "active"),
+  )).for("update");
+  if (allocation) throw new CanonicalOccurrenceTransactionError("occurrence_effectively_locked", "occurrence has active allocation evidence");
+  const rosterItems = await tx.select({ operationId: paymentOperationRosterSnapshotItems.operationId, state: paymentOperationRosterSnapshotItems.state }).from(paymentOperationRosterSnapshotItems).where(and(
+    eq(paymentOperationRosterSnapshotItems.organizationId, row.organizationId),
+    eq(paymentOperationRosterSnapshotItems.leagueId, row.leagueId),
+    inArray(paymentOperationRosterSnapshotItems.obligationId, obligationIds),
+  )).for("update");
+  const rosterOperationIds = [...new Set(rosterItems.map((item) => item.operationId))];
+  if (rosterItems.some((item) => item.state === "reserved" || item.state === "finalized")) {
+    throw new CanonicalOccurrenceTransactionError("occurrence_effectively_locked", "occurrence has reserved payment-operation evidence");
+  }
+  if (rosterOperationIds.length > 0) {
+    const rosterOperations = await tx.select({ id: paymentOperations.id, status: paymentOperations.status, dispatchClaimedAt: paymentOperations.dispatchClaimedAt }).from(paymentOperations).where(and(
+      eq(paymentOperations.organizationId, row.organizationId),
+      eq(paymentOperations.leagueId, row.leagueId),
+      inArray(paymentOperations.id, rosterOperationIds),
+    )).for("update");
+    if (rosterOperations.some((operation) => operation.dispatchClaimedAt !== null || ["leased", "provider_unknown", "succeeded", "action_required", "failed_terminal", "reconciliation_required"].includes(operation.status))) {
+      throw new CanonicalOccurrenceTransactionError("occurrence_effectively_locked", "occurrence has dispatched or provider payment-operation evidence");
+    }
+  }
+}
+
 /** Cancellation keeps UUID/identity but still refuses a past or explicitly
  * locked occurrence. Financial rows are handled by cancelOccurrence below so
  * open obligations/plans can be voided without touching settled allocations. */
@@ -1327,7 +1407,14 @@ export async function rescheduleOccurrence(request: OccurrenceRescheduleRequest)
     if (!occurrence) throw new CanonicalOccurrenceTransactionError("occurrence_not_found", "occurrence is missing or outside the requested tenant");
     if (existing && occurrence.lastCommandId === command.id) return occurrence;
     if (occurrence.status === "discarded" || occurrence.status === "cancelled") throw new CanonicalOccurrenceTransactionError("occurrence_terminal", "discarded or cancelled occurrences cannot be rescheduled");
-    await assertNotEffectivelyLocked(tx, occurrence, canonicalRequest.now);
+    if (occurrence.lifecycle === "published") {
+      await assertRescheduleFinanciallyEditableInTransaction(tx, occurrence, canonicalRequest.now);
+    } else {
+      // Draft schedule editing remains governed by the established physical
+      // schedule lock checks. The roster-specific versioning guard applies
+      // only after canonical publication has made payer evidence billable.
+      await assertNotEffectivelyLocked(tx, occurrence, canonicalRequest.now);
+    }
     await validateCanonicalOccurrencePlacementInTransaction(tx, {
       ...canonicalRequest,
       existingOccurrenceId: occurrence.id,
@@ -1364,6 +1451,7 @@ export async function rescheduleOccurrence(request: OccurrenceRescheduleRequest)
       leagueId: canonicalRequest.leagueId,
       occurrenceId: rescheduled.id,
       actorUserId: canonicalRequest.actorUserId,
+      reschedule: true,
     });
     return rescheduled;
   });

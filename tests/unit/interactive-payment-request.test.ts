@@ -82,6 +82,14 @@ describe('interactive request-key recovery', () => {
     expect(csrfFetchMock).not.toHaveBeenCalled();
   });
 
+  it('reconciles a roster operation by operation id after local finalization reports review', async () => {
+    const initial = new Response(JSON.stringify({ data: { contractVersion: 'interactive-obligation-charge/2', operationId: '11111111-1111-4111-8111-111111111111', status: 'reconciliation_required' } }), { status: 202 });
+    const recovered = new Response(JSON.stringify({ data: { contractVersion: 'interactive-obligation-recovery/1', operationId: '11111111-1111-4111-8111-111111111111', status: 'succeeded' } }), { status: 200 });
+    csrfFetchMock.mockResolvedValueOnce(recovered);
+    await expect(paymentRequestWithRecovery('request-key-123456', () => Promise.resolve(initial), 42, 11)).resolves.toBe(recovered);
+    expect(csrfFetchMock).toHaveBeenCalledWith('/api/financials/leagues/11/interactive-obligation-charge/2/operations/11111111-1111-4111-8111-111111111111/recover', expect.objectContaining({ method: 'POST' }));
+  });
+
   it('includes explicit organization scope for an org-less scoped admin recovery', async () => {
     const recovered = new Response(null, { status: 202 });
     csrfFetchMock.mockResolvedValueOnce(recovered);

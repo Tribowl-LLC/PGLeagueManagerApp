@@ -67,7 +67,7 @@ export interface IBowlerStorage {
   getBowlerByEmailSystemAdmin(email: string): Promise<Bowler | undefined>;
   getBowlersByEmailSystemAdmin(email: string): Promise<Bowler[]>;
   createBowler(bowler: InsertBowler): Promise<Bowler>;
-  updateBowler(id: number, bowler: UpdateBowler): Promise<Bowler>;
+  updateBowler(id: number, bowler: UpdateBowler, actorUserId?: number): Promise<Bowler>;
   deleteBowler(id: number): Promise<void>;
   anonymizeBowler(id: number): Promise<Bowler>;
   getBowlerLeagues(filters?: { bowlerId?: number; leagueId?: number; teamId?: number }): Promise<BowlerLeague[]>;

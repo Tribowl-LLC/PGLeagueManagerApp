@@ -257,8 +257,15 @@ router.post("/leagues/:leagueId/interactive-obligation-charge/2/operations/:oper
   const leagueId = leagueIdParam(String(req.params.leagueId));
   const operationId = z.string().uuid().safeParse(req.params.operationId);
   if (!leagueId || !operationId.success || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
-  const league = await authorizedLeague(req, leagueId, true, true);
+  const league = await authorizedLeague(req, leagueId);
   if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
+  const privileged = await hasAdminAccessToLeague(req, leagueId) || await hasPaymentManagerAccessToLeague(req, leagueId) || req.user.role === "system_admin";
+  if (!privileged) {
+    const operation = await storage.getPaymentOperationForOrganization(league.organizationId, operationId.data);
+    // A bowler may recover only the operation they authorized. Do not expose
+    // whether another payer's operation exists in this league.
+    if (!operation || operation.leagueId !== leagueId || operation.authorizingUserId !== req.user.id) return sendError(res, "Not found", 404, "NOT_FOUND");
+  }
   try {
     const result = await recoverRosterPaymentOperation({ organizationId: league.organizationId, leagueId, operationId: operationId.data, actorUserId: req.user.id });
     return sendSuccess(res, rosterWireResult({ contractVersion: "interactive-obligation-recovery/1", operationId: result.id, status: result.status }));

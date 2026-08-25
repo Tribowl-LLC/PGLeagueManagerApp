@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "../db.js";
-import { paymentOperations } from "@shared/schema";
+import { paymentOperations, paymentOperationRosterSnapshots } from "@shared/schema";
 import { lockLeagueSchedule } from "../storage/league-schedule-lock.js";
 import {
   finalizeRosterSnapshotInTransaction,
@@ -33,21 +33,26 @@ export async function recoverRosterPaymentOperation(input: {
       eq(paymentOperations.operationType, "interactive_charge"),
     )).limit(1).for("update");
     if (!operation) throw new RosterPaymentRecoveryError("NOT_FOUND", "Payment operation not found", 404);
+    const [snapshot] = await tx.select({ operationId: paymentOperationRosterSnapshots.operationId }).from(paymentOperationRosterSnapshots).where(and(
+      eq(paymentOperationRosterSnapshots.operationId, operation.id),
+      eq(paymentOperationRosterSnapshots.organizationId, input.organizationId),
+      eq(paymentOperationRosterSnapshots.leagueId, input.leagueId),
+    )).limit(1).for("share");
+    if (!snapshot) throw new RosterPaymentRecoveryError("NOT_ROSTER_OPERATION", "Only roster-backed payment operations can use this recovery path", 409);
     if (!operation.providerObjectId) throw new RosterPaymentRecoveryError("PROVIDER_EVIDENCE_PENDING", "Provider evidence is not available for recovery", 409);
     if (operation.status !== "succeeded" && operation.status !== "reconciliation_required") {
       throw new RosterPaymentRecoveryError("OPERATION_NOT_RECOVERABLE", "Payment operation is not ready for roster recovery", 409);
     }
     const now = new Date().toISOString();
     try {
-      await tx.transaction(async (finalizerTx) => {
-        await finalizeRosterSnapshotInTransaction(finalizerTx, {
+      const finalization = await tx.transaction(async (finalizerTx) => finalizeRosterSnapshotInTransaction(finalizerTx, {
           organizationId: input.organizationId,
           leagueId: input.leagueId,
           operationId: operation.id,
           now,
           actorUserId: operation.authorizingUserId ?? input.actorUserId,
-        });
-      });
+        }));
+      if (!finalization.finalized) throw new RosterPaymentRecoveryError("ROSTER_FINALIZATION_NOT_CONFIRMED", "Roster payment finalization was not confirmed", 409);
     } catch (error) {
       if (!isRosterSnapshotFinalizationError(error)) throw error;
       const [reviewed] = await tx.update(paymentOperations).set({

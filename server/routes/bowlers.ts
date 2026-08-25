@@ -646,7 +646,7 @@ router.patch("/:id", async (req, res) => {
     }
 
     const merged = { ...bowler, ...update };
-    let updated = await storage.updateBowler(id, merged);
+    let updated = await storage.updateBowler(id, merged, req.user?.id);
 
     if (updated.email) {
       const emailChanged = !bowler.email || bowler.email.toLowerCase() !== updated.email.toLowerCase();

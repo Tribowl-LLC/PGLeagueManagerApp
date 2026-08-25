@@ -22,6 +22,7 @@ import {
 } from "@shared/schema";
 import { getTestDb } from "../setup/test-db";
 import { deleteOrganization } from "../../server/storage/organizations";
+import { updateBowler } from "../../server/storage/bowlers";
 import { materializeRosterPaymentOccurrenceInTransaction } from "../../server/services/roster-payment-materializer";
 import {
   finalizeRosterSnapshotInTransaction,
@@ -33,8 +34,10 @@ import { chargeInteractiveObligations, quoteInteractiveObligations } from "../..
 import { interactivePaymentOperationExecutor } from "../../server/services/interactive-payment-operation-executor";
 import { prepareInteractivePaymentOperation } from "../../server/services/interactive-payment-operation-preparation";
 import { finalizeChargeFromWebhookEvidenceInTransaction } from "../../server/storage/payment-operations";
-import { buildCanonicalScheduleCommandFingerprint, cancelOccurrence } from "../../server/services/canonical-occurrence-transactions";
+import { buildCanonicalScheduleCommandFingerprint, cancelOccurrence, rescheduleOccurrence } from "../../server/services/canonical-occurrence-transactions";
 import { lockLeagueSchedule } from "../../server/storage/league-schedule-lock";
+import { readCanonicalPaymentReport } from "../../server/services/canonical-payment-report";
+import * as paymentProviderFactory from "../../server/services/payment-provider-factory";
 
 const db = getTestDb();
 const suffix = process.env.VITEST_POOL_ID ?? "0";
@@ -196,6 +199,116 @@ async function createRosterOperation(obligationId: string, responsibilityId: str
 }
 
 describe("PR1 roster snapshot finalization on PostgreSQL", () => {
+  it("reports unresolved operation evidence in league-local dates and preserves upfront mode", async () => {
+    const fixture = await createOccurrence();
+    await db.update(leagues).set({ paymentMode: "upfront", timezone: "Pacific/Kiritimati" }).where(eq(leagues.id, leagueId));
+    const operationId = randomUUID();
+    await db.insert(paymentOperations).values({
+      id: operationId,
+      organizationId,
+      authorizingUserId: actorUserId,
+      operationType: "interactive_charge",
+      targetKey: `report-operation-only-${operationId}`,
+      leagueId,
+      amountMinor: fixture.obligation.amountMinor,
+      currency: "USD",
+      requestFingerprint: `lvpayreq:v1:${"d".repeat(64)}`,
+      providerIdempotencyKey: `report-${operationId}`.slice(0, 45),
+      providerName: "square",
+      status: "provider_unknown",
+      errorClassification: "provider_unknown",
+      errorCode: "REPORT_TEST_PENDING",
+      nextAttemptAt: "2038-02-01T20:00:00.000Z",
+    });
+    await db.transaction(async (tx) => {
+      await tx.insert(paymentOperationRosterSnapshots).values({
+        operationId,
+        organizationId,
+        leagueId,
+        snapshotVersion: 1,
+        amountMinor: fixture.obligation.amountMinor,
+        currency: "USD",
+        obligations: [{ id: fixture.obligation.id, responsibilityId: fixture.responsibility.id, responsibilityVersion: fixture.responsibility.version, payerBowlerId: fixture.obligation.payerBowlerId, amountMinor: fixture.obligation.amountMinor }],
+        snapshotFingerprint: `lvroster:report:${"e".repeat(64)}`.slice(0, 128),
+      });
+      await tx.insert(paymentOperationRosterSnapshotItems).values({ operationId, organizationId, leagueId, obligationId: fixture.obligation.id, allocationIndex: 0, amountMinor: fixture.obligation.amountMinor, state: "reserved" });
+    });
+    const report = await readCanonicalPaymentReport({ organizationId, leagueId, page: 1, limit: 20 });
+    const unresolved = report.rows.find((row) => row.paymentOperationId === operationId);
+    expect(report.paymentTiming).toMatchObject({ paymentMode: "upfront", source: "roster_payment_responsibility" });
+    expect(unresolved).toMatchObject({ source: "unresolved_operation", businessDate: "2038-02-03", authoritativeLocalDate: "2038-02-03", operationStatus: "provider_unknown" });
+  });
+
+  it("reschedules a future roster-ready occurrence by versioning open obligations", async () => {
+    const fixture = await createOccurrence();
+    const request = {
+      organizationId,
+      leagueId,
+      actorUserId,
+      commandType: "reschedule" as const,
+      occurrenceId: fixture.occurrence.id,
+      now: "2038-01-01T00:00:00.000Z",
+      authoritativeLocalDate: "2038-03-15",
+      authoritativeLocalStartTime: "19:00",
+      timezone: "UTC",
+      ambiguousFold: "reject" as const,
+      idempotencyKey: `roster-reschedule-open-${randomUUID()}`,
+      requestFingerprint: "",
+      reason: "Move the future session while payment remains open",
+    };
+    const rescheduled = await rescheduleOccurrence({ ...request, requestFingerprint: buildCanonicalScheduleCommandFingerprint(request) });
+    expect(rescheduled.id).toBe(fixture.occurrence.id);
+    expect(rescheduled.authoritativeLocalDate).toBe("2038-03-15");
+    const responsibilities = await db.select({ id: occurrencePaymentResponsibilities.id, version: occurrencePaymentResponsibilities.version, state: occurrencePaymentResponsibilities.state, dueAt: occurrencePaymentResponsibilities.dueAt }).from(occurrencePaymentResponsibilities).where(and(
+      eq(occurrencePaymentResponsibilities.organizationId, organizationId),
+      eq(occurrencePaymentResponsibilities.leagueId, leagueId),
+      eq(occurrencePaymentResponsibilities.occurrenceId, fixture.occurrence.id),
+      eq(occurrencePaymentResponsibilities.slotIndex, 0),
+    )).orderBy(occurrencePaymentResponsibilities.version);
+    expect(responsibilities.map((row) => row.state)).toEqual(["voided", "active"]);
+    const correctedDueAt = new Date(rescheduled.startAt).toISOString();
+    expect(new Date(responsibilities.at(-1)?.dueAt ?? "").toISOString()).toBe(correctedDueAt);
+    expect(responsibilities.at(-1)).toMatchObject({ version: 2, state: "active" });
+    const obligations = await db.select({ state: paymentObligations.state, dueAt: paymentObligations.dueAt, responsibilityId: paymentObligations.responsibilityId }).from(paymentObligations).where(and(
+      eq(paymentObligations.organizationId, organizationId),
+      eq(paymentObligations.leagueId, leagueId),
+      eq(paymentObligations.occurrenceId, fixture.occurrence.id),
+      eq(paymentObligations.payerBowlerId, bowlerId),
+    )).orderBy(paymentObligations.createdAt);
+    expect(obligations.map((row) => row.state)).toEqual(["voided", "open"]);
+    expect(new Date(obligations.at(-1)?.dueAt ?? "").toISOString()).toBe(correctedDueAt);
+    expect(obligations.at(-1)).toMatchObject({ state: "open", responsibilityId: responsibilities.at(-1)?.id });
+  });
+
+  it("blocks reschedule when roster evidence is reserved or paid", async () => {
+    const reservedFixture = await createOccurrence();
+    const reservedOperation = await createRosterOperation(reservedFixture.obligation.id, reservedFixture.responsibility.id);
+    const makeRequest = (occurrenceId: string, key: string) => ({
+      organizationId,
+      leagueId,
+      actorUserId,
+      commandType: "reschedule" as const,
+      occurrenceId,
+      now: "2038-01-01T00:00:00.000Z",
+      authoritativeLocalDate: "2038-03-20",
+      authoritativeLocalStartTime: "19:00",
+      timezone: "UTC",
+      ambiguousFold: "reject" as const,
+      idempotencyKey: key,
+      requestFingerprint: "",
+      reason: "Attempt to move an occurrence with payment evidence",
+    });
+    const reservedRequest = makeRequest(reservedFixture.occurrence.id, `roster-reschedule-reserved-${randomUUID()}`);
+    await expect(rescheduleOccurrence({ ...reservedRequest, requestFingerprint: buildCanonicalScheduleCommandFingerprint(reservedRequest) })).rejects.toMatchObject({ code: "occurrence_effectively_locked" });
+    expect(reservedOperation.operation.id).toBeTruthy();
+
+    const paidFixture = await createOccurrence();
+    const paidOperation = await createRosterOperation(paidFixture.obligation.id, paidFixture.responsibility.id);
+    await db.transaction(async (tx) => finalizeRosterSnapshotInTransaction(tx, { organizationId, leagueId, operationId: paidOperation.operation.id, now: "2038-02-01T21:00:00.000Z", actorUserId }));
+    const paidRequest = makeRequest(paidFixture.occurrence.id, `roster-reschedule-paid-${randomUUID()}`);
+    await expect(rescheduleOccurrence({ ...paidRequest, requestFingerprint: buildCanonicalScheduleCommandFingerprint(paidRequest) })).rejects.toMatchObject({ code: "occurrence_effectively_locked" });
+  });
+
   it("links a real interactive preparation to its league and creates the roster snapshot", async () => {
     const fixture = await createOccurrence();
     const quote = await quoteInteractiveObligations({ organizationId, leagueId, obligationIds: [fixture.obligation.id] });
@@ -223,6 +336,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
       });
       return (await db.select().from(paymentOperations).where(eq(paymentOperations.id, operationId)))[0];
     });
+    const provider = vi.spyOn(paymentProviderFactory, "getPaymentProvider").mockResolvedValue({ providerName: "square" } as Awaited<ReturnType<typeof paymentProviderFactory.getPaymentProvider>>);
     try {
       const result = await chargeInteractiveObligations({
         organizationId,
@@ -245,6 +359,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
       expect(snapshot?.leagueId).toBe(leagueId);
     } finally {
       execute.mockRestore();
+      provider.mockRestore();
     }
   });
 
@@ -375,6 +490,8 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
   it("blocks an interactive provider cutoff when a reserved roster version is stale", async () => {
     const fixture = await createOccurrence();
     const { operation } = await createRosterOperation(fixture.obligation.id, fixture.responsibility.id);
+    await db.delete(payments).where(eq(payments.paymentOperationId, operation.id));
+    await db.update(paymentOperations).set({ providerObjectId: null, status: "pending", nextAttemptAt: "2038-02-03T18:00:00.000Z", completedAt: null }).where(eq(paymentOperations.id, operation.id));
     const leaseToken = randomUUID();
     await db.update(paymentOperations).set({
       status: "leased",
@@ -390,6 +507,45 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
     expect(cutoff).toBe(false);
     const [blocked] = await db.select({ status: paymentOperations.status }).from(paymentOperations).where(eq(paymentOperations.id, operation.id));
     expect(blocked?.status).toBe("reconciliation_required");
+    const [releasedItem] = await db.select({ state: paymentOperationRosterSnapshotItems.state }).from(paymentOperationRosterSnapshotItems).where(eq(paymentOperationRosterSnapshotItems.operationId, operation.id));
+    expect(releasedItem?.state).toBe("released");
+  });
+
+  it("invalidates Main slots when a bowler is directly deactivated", async () => {
+    const [team] = await db.insert(teams).values({ name: "Direct Deactivation Team", number: 2, leagueId }).returning({ id: teams.id });
+    const [deactivated] = await db.insert(bowlers).values({ name: "Direct Deactivation Main", organizationId }).returning({ id: bowlers.id, active: bowlers.active });
+    await db.insert(bowlerLeagues).values({ bowlerId: deactivated.id, leagueId, teamId: team.id });
+    await db.insert(teamPaymentSlots).values([
+      { organizationId, leagueId, teamId: team.id, slotIndex: 0, lineupSize: 3, occupant: "main", mainBowlerId: deactivated.id, recordedByUserId: actorUserId },
+      { organizationId, leagueId, teamId: team.id, slotIndex: 1, lineupSize: 3, occupant: "vacant", mainBowlerId: null, recordedByUserId: actorUserId },
+      { organizationId, leagueId, teamId: team.id, slotIndex: 2, lineupSize: 3, occupant: "vacant", mainBowlerId: null, recordedByUserId: actorUserId },
+    ]);
+    const fixture = await createOccurrence();
+    const before = await db.select({ id: occurrencePaymentResponsibilities.id }).from(occurrencePaymentResponsibilities).where(and(
+      eq(occurrencePaymentResponsibilities.organizationId, organizationId),
+      eq(occurrencePaymentResponsibilities.leagueId, leagueId),
+      eq(occurrencePaymentResponsibilities.occurrenceId, fixture.occurrence.id),
+      eq(occurrencePaymentResponsibilities.mainBowlerId, deactivated.id),
+      eq(occurrencePaymentResponsibilities.state, "active"),
+    ));
+    expect(before).toHaveLength(1);
+    const updated = await updateBowler(deactivated.id, { active: false }, actorUserId);
+    expect(updated.active).toBe(false);
+    const [slot] = await db.select({ occupant: teamPaymentSlots.occupant, mainBowlerId: teamPaymentSlots.mainBowlerId }).from(teamPaymentSlots).where(and(
+      eq(teamPaymentSlots.organizationId, organizationId),
+      eq(teamPaymentSlots.leagueId, leagueId),
+      eq(teamPaymentSlots.teamId, team.id),
+      eq(teamPaymentSlots.slotIndex, 0),
+    ));
+    expect(slot).toMatchObject({ occupant: "vacant", mainBowlerId: null });
+    const after = await db.select({ id: occurrencePaymentResponsibilities.id }).from(occurrencePaymentResponsibilities).where(and(
+      eq(occurrencePaymentResponsibilities.organizationId, organizationId),
+      eq(occurrencePaymentResponsibilities.leagueId, leagueId),
+      eq(occurrencePaymentResponsibilities.occurrenceId, fixture.occurrence.id),
+      eq(occurrencePaymentResponsibilities.mainBowlerId, deactivated.id),
+      eq(occurrencePaymentResponsibilities.state, "active"),
+    ));
+    expect(after).toHaveLength(0);
   });
 
   it("rejects snapshot totals that disagree with the operation or obligation at commit", async () => {
