@@ -301,9 +301,12 @@ export {
   paymentObligations,
   paymentAllocations,
   autopayConsents,
+  autopayConsentPartners,
   financialCommands,
   paymentOperationRosterSnapshots,
   paymentOperationRosterSnapshotItems,
+  paymentOperationStandingAutopayBindings,
+  paymentOperationStandingAutopayParticipants,
   TEAM_PAYMENT_SLOT_OCCUPANTS,
   TEAM_PAYMENT_POLICIES,
   RESPONSIBILITY_KINDS,
@@ -312,6 +315,9 @@ export {
   OBLIGATION_STATES,
   ALLOCATION_STATES,
   AUTOPAY_CONSENT_STATES,
+  AUTOPAY_CONSENT_PAYMENT_MODES,
+  ROSTER_OPERATION_SNAPSHOT_KINDS,
+  STANDING_COLLECTION_MODES,
   FINANCIAL_COMMAND_STATES,
 } from "./roster-payments";
 export type {
@@ -324,15 +330,21 @@ export type {
   PaymentObligation,
   PaymentAllocation,
   AutopayConsent,
+  AutopayConsentPartner,
   FinancialCommand,
   PaymentOperationRosterSnapshot,
   PaymentOperationRosterSnapshotItem,
+  PaymentOperationStandingAutopayBinding,
+  PaymentOperationStandingAutopayParticipant,
   ResponsibilityKind,
   ObligationComponent,
   ResponsibilityState,
   PaymentObligationState,
   PaymentAllocationState,
   AutopayConsentState,
+  AutopayConsentPaymentMode,
+  RosterOperationSnapshotKind,
+  StandingCollectionMode,
   FinancialCommandState,
 } from "./roster-payments";
 
@@ -347,3 +359,20 @@ export {
   interactiveObligationQuoteRequestSchema,
 } from "../interactive-obligation-contract";
 export type { InteractiveObligationSelection } from "../interactive-obligation-contract";
+
+export {
+  STANDING_AUTOPAY_CONSENT_CONTRACT,
+  STANDING_AUTOPAY_STATUS_CONTRACT,
+  STANDING_AUTOPAY_QUOTE_CONTRACT,
+  STANDING_AUTOPAY_OPERATION_CONTRACT,
+  standingAutopayConsentRequestSchema,
+  standingAutopayRevokeRequestSchema,
+  standingAutopayQuoteRequestSchema,
+} from "../standing-autopay-contract";
+export type {
+  StandingAutopayConsentRequest,
+  StandingAutopayRevokeRequest,
+  StandingAutopayConsentWire,
+  StandingAutopayQuoteWire,
+  StandingAutopayOperationWire,
+} from "../standing-autopay-contract";

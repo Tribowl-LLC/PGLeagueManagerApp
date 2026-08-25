@@ -9,7 +9,7 @@ import {
 import { createLogger } from '../logger';
 import { cacheFetch, cacheInvalidate } from '../utils/cache';
 import { lockLeagueSchedule } from './league-schedule-lock.js';
-import { materializeRosterPaymentOccurrenceInTransaction } from '../services/roster-payment-materializer.js';
+import { materializeRosterPaymentOccurrenceInTransaction, revokeStandingAutopayForBowlerInTransaction } from '../services/roster-payment-materializer.js';
 
 const log = createLogger("StorageBowlers");
 
@@ -29,6 +29,7 @@ async function clearMainRosterSlotsForBowler(
   const auditUserId = input.actorUserId ?? (await tx.select({ id: users.id }).from(users).where(eq(users.organizationId, input.organizationId)).limit(1))[0]?.id;
   if (!auditUserId) throw new Error("Roster slot invalidation requires an audit actor");
   const now = new Date().toISOString();
+  await revokeStandingAutopayForBowlerInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId, bowlerId: input.bowlerId, now });
   const affectedSlots = await tx.select().from(teamPaymentSlots).where(and(
     eq(teamPaymentSlots.organizationId, input.organizationId),
     eq(teamPaymentSlots.leagueId, input.leagueId),
@@ -62,13 +63,22 @@ async function clearMainRosterSlotsForBowler(
   ));
   for (const occurrence of occurrences) {
     for (const teamId of affectedTeamIds) {
-      await materializeRosterPaymentOccurrenceInTransaction(tx, {
-        organizationId: input.organizationId,
-        leagueId: input.leagueId,
-        occurrenceId: occurrence.id,
-        actorUserId: auditUserId,
-        teamId,
-      });
+      try {
+        await materializeRosterPaymentOccurrenceInTransaction(tx, {
+          organizationId: input.organizationId,
+          leagueId: input.leagueId,
+          occurrenceId: occurrence.id,
+          actorUserId: auditUserId,
+          teamId,
+        });
+      } catch (error) {
+        // A provider-dispatched or otherwise reserved historical occurrence
+        // is preserved as reconciliation evidence. The slot invalidation is
+        // still committed, but no new roster obligation may be synthesized
+        // over that evidence.
+        if (error instanceof Error && ["RESERVED_EVIDENCE_LOCKED", "PAID_EVIDENCE_LOCKED"].includes(error.message)) continue;
+        throw error;
+      }
     }
   }
 }
@@ -419,6 +429,17 @@ export async function updateBowlerLeague(id: number, bowlerLeague: UpdateBowlerL
         const now = new Date().toISOString();
         const auditUserId = actorUserId ?? (await tx.select({ id: users.id }).from(users).where(eq(users.organizationId, league.organizationId)).limit(1))[0]?.id;
         if (!auditUserId) throw new Error('Roster slot change requires an audit actor');
+        // Membership/team/identity changes are financial fences even when the
+        // member does not currently occupy a Main slot: an accepted partner
+        // or payer consent can still own a cutoff reservation. Revoke it while
+        // the same league advisory lock is held, before changing the slot
+        // evidence, so cutoff preparation cannot race this mutation.
+        await revokeStandingAutopayForBowlerInTransaction(tx, {
+          organizationId: league.organizationId,
+          leagueId: current.leagueId,
+          bowlerId: current.bowlerId,
+          now,
+        });
         const affectedSlots = await tx.select().from(teamPaymentSlots).where(and(
           eq(teamPaymentSlots.organizationId, league.organizationId),
           eq(teamPaymentSlots.leagueId, current.leagueId),
@@ -438,7 +459,12 @@ export async function updateBowlerLeague(id: number, bowlerLeague: UpdateBowlerL
             inArray(leagueOccurrences.status, ['scheduled', 'completed'] as const),
           ));
           for (const occurrence of occurrences) {
-            await materializeRosterPaymentOccurrenceInTransaction(tx, { organizationId: league.organizationId, leagueId: current.leagueId, occurrenceId: occurrence.id, actorUserId: auditUserId });
+            try {
+              await materializeRosterPaymentOccurrenceInTransaction(tx, { organizationId: league.organizationId, leagueId: current.leagueId, occurrenceId: occurrence.id, actorUserId: auditUserId });
+            } catch (error) {
+              if (error instanceof Error && ["RESERVED_EVIDENCE_LOCKED", "PAID_EVIDENCE_LOCKED"].includes(error.message)) continue;
+              throw error;
+            }
           }
         }
       }

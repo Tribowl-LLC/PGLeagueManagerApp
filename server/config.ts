@@ -29,6 +29,10 @@ export const envSchema = z.object({
   // explicitly; local/test runtimes retain the legacy default so dormant
   // infrastructure does not alter the scheduled-payment path.
   SCHEDULED_PAYMENT_EXECUTION_MODE: z.enum(SCHEDULED_PAYMENT_EXECUTION_MODES).optional(),
+  ROSTER_STANDING_AUTOPAY_ENABLED: z
+    .enum(["true", "false", "1", "0"])
+    .optional()
+    .transform((v) => v === "true" || v === "1"),
 
   SENDGRID_API_KEY: z.string().min(1).optional(),
   SENTRY_DSN: z.string().min(1).optional(),
@@ -220,6 +224,10 @@ function validateEnv(): Env {
       log.error(`Environment validation failed: ${executionMode.reason}`);
       process.exit(1);
     }
+    if (parsed.ROSTER_STANDING_AUTOPAY_ENABLED && executionMode.mode !== "ledger_execute") {
+      log.error("Environment validation failed: ROSTER_STANDING_AUTOPAY_ENABLED requires SCHEDULED_PAYMENT_EXECUTION_MODE=ledger_execute");
+      process.exit(1);
+    }
     return parsed;
   };
 
@@ -254,6 +262,7 @@ function validateEnv(): Env {
 export const env = validateEnv();
 export const scheduledPaymentExecutionMode: ScheduledPaymentExecutionMode =
   env.SCHEDULED_PAYMENT_EXECUTION_MODE ?? 'legacy';
+export const rosterStandingAutopayEnabled = env.ROSTER_STANDING_AUTOPAY_ENABLED === true;
 
 // Enforce SETUP_SECRET strength at boot. Refuses to start the server when
 // a secret is set but weak — see task 282 / the docs section in AGENTS.md.

@@ -280,6 +280,23 @@ router.post("/leagues/:leagueId/interactive-obligation-charge/2/operations/:oper
   } catch (error) { return handleError(res, error); }
 });
 
+router.post("/leagues/:leagueId/standing-autopay/1/operations/:operationId/recover", adminWriteLimiter, async (req, res) => {
+  const leagueId = leagueIdParam(String(req.params.leagueId));
+  const operationId = z.string().uuid().safeParse(req.params.operationId);
+  if (!leagueId || !operationId.success || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
+  const league = await authorizedLeague(req, leagueId);
+  if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
+  const privileged = await hasAdminAccessToLeague(req, leagueId) || await hasPaymentManagerAccessToLeague(req, leagueId) || req.user.role === "system_admin";
+  if (!privileged) {
+    const operation = await storage.getPaymentOperationForOrganization(league.organizationId, operationId.data);
+    if (!operation || operation.leagueId !== leagueId || operation.operationType !== "standing_autopay_charge" || operation.authorizingUserId !== req.user.id) return sendError(res, "Not found", 404, "NOT_FOUND");
+  }
+  try {
+    const result = await recoverRosterPaymentOperation({ organizationId: league.organizationId, leagueId, operationId: operationId.data, actorUserId: req.user.id });
+    return sendSuccess(res, rosterWireResult({ contractVersion: "standing-autopay-operation/1", operationId: result.id, status: result.status }));
+  } catch (error) { return handleError(res, error); }
+});
+
 router.post("/leagues/:leagueId/canonical/manual-record/1", adminWriteLimiter, async (req, res) => {
   const leagueId = leagueIdParam(String(req.params.leagueId));
   if (!leagueId || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");

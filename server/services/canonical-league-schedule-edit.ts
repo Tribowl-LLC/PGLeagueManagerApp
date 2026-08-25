@@ -7,6 +7,7 @@ import {
   paymentObligations,
   paymentAllocations,
   paymentOperations,
+  paymentOperationRosterSnapshotItems,
   leagueOccurrenceGenerationRuns,
   leagueOccurrences,
   leagues,
@@ -118,10 +119,37 @@ async function revokeGroupInTransaction(tx: LeagueScheduleTransaction, input: Ca
     eq(paymentAllocations.state, "active"),
     inArray(paymentObligations.occurrenceId, occurrenceIds),
   )).orderBy(asc(paymentAllocations.id)).for("update");
-  const operations = await tx.select({ id: paymentOperations.id }).from(paymentOperations).where(and(
+  // Standing operations have no triggerOccurrenceId, so collect their IDs
+  // through the immutable snapshot before taking the final operation locks.
+  // Keeping the final lock query on one base table also avoids PostgreSQL's
+  // prohibition on FOR UPDATE over the nullable side of an outer join.
+  const triggerOperationRows = await tx.select({ id: paymentOperations.id }).from(paymentOperations).where(and(
     eq(paymentOperations.organizationId, input.organizationId),
     eq(paymentOperations.leagueId, input.leagueId),
     inArray(paymentOperations.triggerOccurrenceId, occurrenceIds),
+  )).orderBy(asc(paymentOperations.id));
+  const rosterOperationRows = await tx.selectDistinct({ id: paymentOperations.id }).from(paymentOperations)
+    .innerJoin(paymentOperationRosterSnapshotItems, and(
+      eq(paymentOperationRosterSnapshotItems.operationId, paymentOperations.id),
+      eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId),
+      eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId),
+    ))
+    .innerJoin(paymentObligations, and(
+      eq(paymentObligations.id, paymentOperationRosterSnapshotItems.obligationId),
+      eq(paymentObligations.organizationId, input.organizationId),
+      eq(paymentObligations.leagueId, input.leagueId),
+    ))
+    .where(and(
+      eq(paymentOperations.organizationId, input.organizationId),
+      eq(paymentOperations.leagueId, input.leagueId),
+      inArray(paymentOperationRosterSnapshotItems.state, ["reserved", "finalized"] as const),
+      inArray(paymentObligations.occurrenceId, occurrenceIds),
+    )).orderBy(asc(paymentOperations.id));
+  const operationIds = [...new Set([...triggerOperationRows, ...rosterOperationRows].map((row) => row.id))].sort();
+  const operations = operationIds.length === 0 ? [] : await tx.select({ id: paymentOperations.id }).from(paymentOperations).where(and(
+    eq(paymentOperations.organizationId, input.organizationId),
+    eq(paymentOperations.leagueId, input.leagueId),
+    inArray(paymentOperations.id, operationIds),
   )).orderBy(asc(paymentOperations.id)).for("update");
   if (obligations.length > 0 || allocations.length > 0 || operations.length > 0) {
     throw new CanonicalLeagueScheduleEditError("financial_conflict", "double-pay collection group has financial or dispatch evidence and cannot be revised");

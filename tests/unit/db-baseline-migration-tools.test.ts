@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(33);
+    expect(migrations).toHaveLength(34);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -438,6 +438,10 @@ describe('normalized migration baseline tools', () => {
     expect(migrations[32]?.sql).toContain('CREATE TABLE payment_allocations');
     expect(migrations[32]?.sql).toContain('CREATE TABLE financial_commands');
     expect(migrations[32]?.sql).toContain('payment_operation_occurrence_snapshot_allocations');
+    expect(migrations[33]).toMatchObject({ idx: 33, tag: '0033_roster_standing_autopay' });
+    expect(migrations[33]?.sql).toContain('0033 requires an empty autopay_consents table');
+    expect(migrations[33]?.sql).toContain('CREATE TABLE "payment_operation_standing_autopay_bindings"');
+    expect(migrations[33]?.sql).toContain("standing_autopay_charge");
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 

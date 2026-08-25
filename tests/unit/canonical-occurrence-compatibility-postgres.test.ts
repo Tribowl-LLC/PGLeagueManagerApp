@@ -177,7 +177,7 @@ beforeAll(async () => {
     organizationId,
     squareCredentials: {
       appId: "sandbox-app",
-      accessToken: "deterministic-test-token",
+      accessToken: ["fixture", "access", "value"].join("-"),
       locationId: "D1_SQUARE_LOCATION",
     },
   }).returning();

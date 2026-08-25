@@ -43,9 +43,12 @@ import {
   paymentObligations,
   paymentAllocations,
   autopayConsents,
+  autopayConsentPartners,
   financialCommands,
   paymentOperationRosterSnapshots,
   paymentOperationRosterSnapshotItems,
+  paymentOperationStandingAutopayBindings,
+  paymentOperationStandingAutopayParticipants,
   canonicalCollectionGroups,
   canonicalCollectionGroupMembers,
   canonicalCollectionGroupRevisions,
@@ -193,6 +196,14 @@ export async function deleteOrganization(id: number): Promise<void> {
       ...locationIds.map((locationId) => `square_catalog_cap:loc:${locationId}`),
     ];
 
+    // Standing participant/binding evidence and consent-partner evidence
+    // reference the link with restrictive FKs. Remove every child evidence
+    // row before retiring the tenant's link rows. This ordering is also
+    // shared with normal link retirement: a teardown must never leave the
+    // durable operation evidence pointing at a deleted link.
+    await tx.delete(paymentOperationStandingAutopayParticipants).where(eq(paymentOperationStandingAutopayParticipants.organizationId, id));
+    await tx.delete(paymentOperationStandingAutopayBindings).where(eq(paymentOperationStandingAutopayBindings.organizationId, id));
+    await tx.delete(autopayConsentPartners).where(eq(autopayConsentPartners.organizationId, id));
     await tx.delete(bowlerPaymentLinks).where(eq(bowlerPaymentLinks.organizationId, id));
     await tx.delete(applePayJobItems).where(eq(applePayJobItems.organizationId, id));
     await tx.delete(adminRoleChangeAudits).where(eq(adminRoleChangeAudits.organizationId, id));

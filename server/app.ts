@@ -37,6 +37,8 @@ import { installDbInvariants } from "./db-invariants";
 import { setupAuth } from "./auth";
 import { paymentScheduler } from './services/payment-scheduler';
 import { scheduledPaymentOperationExecutor } from './services/scheduled-payment-operation-executor';
+import { rosterStandingAutopayOperationExecutor } from './services/roster-standing-autopay-executor';
+import { configureStandingAutopayRuntime } from './services/roster-standing-autopay';
 import { configureScheduledPaymentRuntime } from './services/scheduled-payment-runtime';
 import { startPaymentSyncRetrySweep } from './services/payment-sync-retry';
 import { bootstrapAllSquareCustomAttributeDefinitions } from './services/square-startup-bootstrap';
@@ -127,6 +129,7 @@ export interface CreatedApp {
 
 export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp> {
   const suppress = opts.suppressBackgroundWorkers === true;
+  configureStandingAutopayRuntime({ rearm: () => rosterStandingAutopayOperationExecutor.rearm() });
   configureScheduledPaymentRuntime({
     ledgerExecute: !suppress && scheduledPaymentExecutionMode === 'ledger_execute',
     rearm: () => scheduledPaymentOperationExecutor.rearm(),
@@ -445,9 +448,11 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
   if (!suppress) {
     try {
       await scheduledPaymentOperationExecutor.start(scheduledPaymentExecutionMode);
+      await rosterStandingAutopayOperationExecutor.start();
       if (scheduledPaymentExecutionMode !== 'ledger_execute') {
-        await paymentScheduler.initialize();
-        paymentScheduler.startSweepPoll();
+        // Legacy payment_schedules are archive-only after the roster cutover;
+        // no scheduler wake, preparation, or provider dispatch is allowed.
+        log.info('Legacy payment scheduler remains disabled after roster cutover');
       }
       log.info('Scheduled payment execution initialized', { mode: scheduledPaymentExecutionMode });
 
@@ -482,6 +487,7 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
 
   const close = async (): Promise<void> => {
     scheduledPaymentOperationExecutor.stop();
+    rosterStandingAutopayOperationExecutor.stop();
     paymentScheduler.cancelAllJobs();
     await new Promise<void>((resolve) => {
       server.close(() => resolve());

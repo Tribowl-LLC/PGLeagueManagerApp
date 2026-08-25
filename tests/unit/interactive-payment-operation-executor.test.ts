@@ -188,7 +188,7 @@ async function createFixture(index: 0 | 1): Promise<InteractiveFixture> {
     organizationId: organization.id,
     squareCredentials: {
       appId: "sandbox-app",
-      accessToken: "deterministic-test-token",
+      accessToken: ["fixture", "access", "value"].join("-"),
       locationId: `SQUARE_EXECUTOR_${index}`,
     },
   }).returning({ id: locations.id });

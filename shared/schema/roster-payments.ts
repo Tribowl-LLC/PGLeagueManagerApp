@@ -16,12 +16,14 @@ import {
 } from "drizzle-orm/pg-core";
 import { bowlers } from "./bowlers";
 import { leagueOccurrences } from "./canonical-occurrences";
+import { canonicalCollectionGroupMembers, canonicalCollectionGroups } from "./canonical-collection-groups";
 import { leagues } from "./leagues";
 import { organizations } from "./organizations";
 import { paymentOperations } from "./payment-operations";
 import { payments } from "./payments";
 import { teams } from "./teams";
 import { users } from "./users";
+import { bowlerPaymentLinks } from "./bowler-payment-links";
 
 /** The slot is deliberately not inferred from a roster membership. */
 export const TEAM_PAYMENT_SLOT_OCCUPANTS = ["unassigned", "main", "vacant"] as const;
@@ -46,6 +48,12 @@ export type PaymentAllocationState = (typeof ALLOCATION_STATES)[number];
 
 export const AUTOPAY_CONSENT_STATES = ["pending", "active", "revoked", "expired"] as const;
 export type AutopayConsentState = (typeof AUTOPAY_CONSENT_STATES)[number];
+export const AUTOPAY_CONSENT_PAYMENT_MODES = ["weekly"] as const;
+export type AutopayConsentPaymentMode = (typeof AUTOPAY_CONSENT_PAYMENT_MODES)[number];
+export const ROSTER_OPERATION_SNAPSHOT_KINDS = ["interactive", "standing_autopay"] as const;
+export type RosterOperationSnapshotKind = (typeof ROSTER_OPERATION_SNAPSHOT_KINDS)[number];
+export const STANDING_COLLECTION_MODES = ["weekly", "double_pay"] as const;
+export type StandingCollectionMode = (typeof STANDING_COLLECTION_MODES)[number];
 
 export const FINANCIAL_COMMAND_STATES = ["accepted", "rejected", "applied", "failed"] as const;
 export type FinancialCommandState = (typeof FINANCIAL_COMMAND_STATES)[number];
@@ -58,6 +66,9 @@ const obligationStates = sql.raw(OBLIGATION_STATES.map((value) => `'${value}'`).
 const obligationComponents = sql.raw(OBLIGATION_COMPONENTS.map((value) => `'${value}'`).join(", "));
 const allocationStates = sql.raw(ALLOCATION_STATES.map((value) => `'${value}'`).join(", "));
 const consentStates = sql.raw(AUTOPAY_CONSENT_STATES.map((value) => `'${value}'`).join(", "));
+const consentPaymentModes = sql.raw(AUTOPAY_CONSENT_PAYMENT_MODES.map((value) => `'${value}'`).join(", "));
+const snapshotKinds = sql.raw(ROSTER_OPERATION_SNAPSHOT_KINDS.map((value) => `'${value}'`).join(", "));
+const collectionModes = sql.raw(STANDING_COLLECTION_MODES.map((value) => `'${value}'`).join(", "));
 const commandStates = sql.raw(FINANCIAL_COMMAND_STATES.map((value) => `'${value}'`).join(", "));
 
 const leagueTenantFk = (table: { leagueId: AnyPgColumn; organizationId: AnyPgColumn }, name: string) =>
@@ -265,10 +276,14 @@ export const autopayConsents = pgTable("autopay_consents", {
   payerBowlerId: integer("payer_bowler_id").notNull(),
   consentVersion: integer("consent_version").notNull().default(1),
   state: text("state", { enum: AUTOPAY_CONSENT_STATES }).notNull().default("pending"),
+  paymentMode: text("payment_mode", { enum: AUTOPAY_CONSENT_PAYMENT_MODES }).notNull().default("weekly"),
+  consentFingerprint: varchar("consent_fingerprint", { length: 128 }).notNull(),
   providerName: varchar("provider_name", { length: 32 }),
+  providerLocationId: varchar("provider_location_id", { length: 255 }),
   encryptedSourceId: text("encrypted_source_id"),
   encryptedCustomerId: text("encrypted_customer_id"),
   createdByUserId: integer("created_by_user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+  activatedAt: timestamp("activated_at", { withTimezone: true, mode: "string" }).notNull().defaultNow(),
   createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull().defaultNow(),
   revokedAt: timestamp("revoked_at", { withTimezone: true, mode: "string" }),
 }, (table) => ({
@@ -276,7 +291,38 @@ export const autopayConsents = pgTable("autopay_consents", {
   payerFk: foreignKey({ name: "autopay_consents_payer_fk", columns: [table.payerBowlerId, table.organizationId], foreignColumns: [bowlers.id, bowlers.organizationId] }).onDelete("restrict"),
   versionUnique: uniqueIndex("autopay_consents_version_unique").on(table.organizationId, table.leagueId, table.payerBowlerId, table.consentVersion),
   activeUnique: uniqueIndex("autopay_consents_active_unique").on(table.organizationId, table.leagueId, table.payerBowlerId).where(sql`${table.state} = 'active'`),
-  stateCheck: check("autopay_consents_state_check", sql`${table.state} IN (${consentStates}) AND ${table.consentVersion} > 0`),
+  tenantIdentityUnique: uniqueIndex("autopay_consents_tenant_identity_unique").on(table.id, table.organizationId, table.leagueId),
+  identityUnique: uniqueIndex("autopay_consents_identity_unique").on(table.id, table.organizationId, table.leagueId, table.payerBowlerId, table.consentVersion),
+  fingerprintUnique: uniqueIndex("autopay_consents_fingerprint_unique").on(table.organizationId, table.leagueId, table.payerBowlerId, table.consentFingerprint),
+  stateCheck: check("autopay_consents_state_check", sql`${table.state} IN (${consentStates}) AND ${table.paymentMode} IN (${consentPaymentModes}) AND ${table.consentVersion} > 0 AND ${table.consentFingerprint} ~ '^lvstandingconsent:v1:[0-9a-f]{64}$'`),
+  stateShapeCheck: check("autopay_consents_state_shape_check", sql`(
+    (${table.state} = 'pending' AND ${table.revokedAt} IS NULL)
+    OR (${table.state} = 'active' AND ${table.providerName} IS NOT NULL AND ${table.providerLocationId} IS NOT NULL AND ${table.encryptedSourceId} IS NOT NULL AND ${table.encryptedCustomerId} IS NOT NULL AND ${table.revokedAt} IS NULL)
+    OR (${table.state} IN ('revoked', 'expired') AND ${table.providerName} IS NOT NULL AND ${table.providerLocationId} IS NOT NULL AND ${table.encryptedSourceId} IS NOT NULL AND ${table.encryptedCustomerId} IS NOT NULL AND ${table.revokedAt} IS NOT NULL)
+  )`),
+  providerNameCheck: check("autopay_consents_provider_name_check", sql`${table.providerName} IS NULL OR ${table.providerName} ~ '^[a-z0-9][a-z0-9_-]{0,31}$'`),
+  providerLocationCheck: check("autopay_consents_provider_location_check", sql`${table.providerLocationId} IS NULL OR length(btrim(${table.providerLocationId})) > 0`),
+}));
+
+/** Explicit same-tenant accepted-partner evidence captured by one standing consent version. */
+export const autopayConsentPartners = pgTable("autopay_consent_partners", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  organizationId: integer("organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
+  leagueId: integer("league_id").notNull(),
+  consentId: uuid("consent_id").notNull(),
+  consentVersion: integer("consent_version").notNull(),
+  partnerBowlerId: integer("partner_bowler_id").notNull(),
+  paymentLinkId: integer("payment_link_id").notNull(),
+  linkFingerprint: varchar("link_fingerprint", { length: 128 }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull().defaultNow(),
+}, (table) => ({
+  leagueTenantFk: leagueTenantFk(table, "autopay_consent_partners_league_tenant_fk"),
+  consentFk: foreignKey({ name: "autopay_consent_partners_consent_fk", columns: [table.consentId, table.organizationId, table.leagueId], foreignColumns: [autopayConsents.id, autopayConsents.organizationId, autopayConsents.leagueId] }).onDelete("restrict"),
+  partnerFk: foreignKey({ name: "autopay_consent_partners_bowler_fk", columns: [table.partnerBowlerId, table.organizationId], foreignColumns: [bowlers.id, bowlers.organizationId] }).onDelete("restrict"),
+  linkFk: foreignKey({ name: "autopay_consent_partners_link_fk", columns: [table.paymentLinkId, table.organizationId], foreignColumns: [bowlerPaymentLinks.id, bowlerPaymentLinks.organizationId] }).onDelete("restrict"),
+  identityUnique: uniqueIndex("autopay_consent_partners_identity_unique").on(table.id, table.organizationId, table.leagueId),
+  partnerUnique: uniqueIndex("autopay_consent_partners_partner_unique").on(table.organizationId, table.leagueId, table.consentId, table.consentVersion, table.partnerBowlerId),
+  versionCheck: check("autopay_consent_partners_version_check", sql`${table.consentVersion} > 0 AND ${table.linkFingerprint} ~ '^lvpartnerlink:v1:[0-9a-f]{64}$'`),
 }));
 
 /** Idempotent command/audit ledger. Commands never make provider calls in a transaction. */
@@ -306,6 +352,9 @@ export const paymentOperationRosterSnapshots = pgTable("payment_operation_roster
   organizationId: integer("organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
   leagueId: integer("league_id").notNull(),
   snapshotVersion: integer("snapshot_version").notNull().default(1),
+  snapshotKind: text("snapshot_kind", { enum: ROSTER_OPERATION_SNAPSHOT_KINDS }).notNull().default("interactive"),
+  collectionMode: text("collection_mode", { enum: STANDING_COLLECTION_MODES }),
+  cutoffAt: timestamp("cutoff_at", { withTimezone: true, mode: "string" }),
   amountMinor: integer("amount_minor").notNull(),
   currency: varchar("currency", { length: 3 }).notNull().default("USD"),
   obligations: jsonb("obligations").notNull(),
@@ -316,7 +365,65 @@ export const paymentOperationRosterSnapshots = pgTable("payment_operation_roster
   leagueTenantFk: leagueTenantFk(table, "payment_operation_roster_snapshots_league_tenant_fk"),
   tenantIdentityUnique: uniqueIndex("payment_operation_roster_snapshots_tenant_identity_unique").on(table.operationId, table.organizationId, table.leagueId),
   versionUnique: uniqueIndex("payment_operation_roster_snapshots_version_unique").on(table.operationId, table.organizationId, table.leagueId, table.snapshotVersion),
-  amountCheck: check("payment_operation_roster_snapshots_amount_check", sql`${table.amountMinor} > 0 AND ${table.currency} = 'USD' AND ${table.snapshotVersion} > 0`),
+  amountCheck: check("payment_operation_roster_snapshots_amount_check", sql`${table.amountMinor} > 0 AND ${table.currency} = 'USD' AND ${table.snapshotVersion} > 0 AND ${table.snapshotKind} IN (${snapshotKinds}) AND ((${table.snapshotKind} = 'interactive' AND ${table.collectionMode} IS NULL AND ${table.cutoffAt} IS NULL) OR (${table.snapshotKind} = 'standing_autopay' AND ${table.collectionMode} IN (${collectionModes}) AND ${table.cutoffAt} IS NOT NULL))`),
+}));
+
+/** Unambiguous operation-to-consent identity and cutoff evidence. */
+export const paymentOperationStandingAutopayBindings = pgTable("payment_operation_standing_autopay_bindings", {
+  operationId: uuid("operation_id").primaryKey(),
+  organizationId: integer("organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
+  leagueId: integer("league_id").notNull(),
+  consentId: uuid("consent_id").notNull(),
+  consentVersion: integer("consent_version").notNull(),
+  providerName: varchar("provider_name", { length: 32 }).notNull(),
+  providerLocationId: varchar("provider_location_id", { length: 255 }).notNull(),
+  triggerOccurrenceId: uuid("trigger_occurrence_id").notNull(),
+  pairedOccurrenceId: uuid("paired_occurrence_id"),
+  collectionGroupId: uuid("collection_group_id"),
+  collectionGroupRevision: integer("collection_group_revision"),
+  collectionGroupFingerprint: varchar("collection_group_fingerprint", { length: 128 }),
+  triggerMemberId: uuid("trigger_member_id"),
+  pairedMemberId: uuid("paired_member_id"),
+  cutoffAt: timestamp("cutoff_at", { withTimezone: true, mode: "string" }).notNull(),
+  collectionMode: text("collection_mode", { enum: STANDING_COLLECTION_MODES }).notNull(),
+  evidenceFingerprint: varchar("evidence_fingerprint", { length: 128 }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull().defaultNow(),
+}, (table) => ({
+  operationFk: foreignKey({ name: "payment_operation_standing_autopay_bindings_operation_fk", columns: [table.operationId, table.organizationId, table.leagueId], foreignColumns: [paymentOperations.id, paymentOperations.organizationId, paymentOperations.leagueId] }).onDelete("restrict"),
+  consentFk: foreignKey({ name: "payment_operation_standing_autopay_bindings_consent_fk", columns: [table.consentId, table.organizationId, table.leagueId], foreignColumns: [autopayConsents.id, autopayConsents.organizationId, autopayConsents.leagueId] }).onDelete("restrict"),
+  triggerOccurrenceFk: foreignKey({ name: "payment_operation_standing_autopay_bindings_trigger_occurrence_fk", columns: [table.triggerOccurrenceId, table.organizationId, table.leagueId], foreignColumns: [leagueOccurrences.id, leagueOccurrences.organizationId, leagueOccurrences.leagueId] }).onDelete("restrict"),
+  pairedOccurrenceFk: foreignKey({ name: "payment_operation_standing_autopay_bindings_paired_occurrence_fk", columns: [table.pairedOccurrenceId, table.organizationId, table.leagueId], foreignColumns: [leagueOccurrences.id, leagueOccurrences.organizationId, leagueOccurrences.leagueId] }).onDelete("restrict"),
+  collectionGroupFk: foreignKey({ name: "payment_operation_standing_autopay_bindings_group_fk", columns: [table.collectionGroupId, table.organizationId, table.leagueId], foreignColumns: [canonicalCollectionGroups.id, canonicalCollectionGroups.organizationId, canonicalCollectionGroups.leagueId] }).onDelete("restrict"),
+  triggerMemberFk: foreignKey({ name: "payment_operation_standing_autopay_bindings_trigger_member_fk", columns: [table.triggerMemberId, table.organizationId, table.leagueId], foreignColumns: [canonicalCollectionGroupMembers.id, canonicalCollectionGroupMembers.organizationId, canonicalCollectionGroupMembers.leagueId] }).onDelete("restrict"),
+  pairedMemberFk: foreignKey({ name: "payment_operation_standing_autopay_bindings_paired_member_fk", columns: [table.pairedMemberId, table.organizationId, table.leagueId], foreignColumns: [canonicalCollectionGroupMembers.id, canonicalCollectionGroupMembers.organizationId, canonicalCollectionGroupMembers.leagueId] }).onDelete("restrict"),
+  identityUnique: uniqueIndex("payment_operation_standing_autopay_bindings_identity_unique").on(table.operationId, table.organizationId, table.leagueId),
+  versionCheck: check("payment_operation_standing_autopay_bindings_version_check", sql`${table.consentVersion} > 0 AND ${table.evidenceFingerprint} ~ '^lvstandingcutoff:v1:[0-9a-f]{64}$' AND ${table.providerName} ~ '^[a-z0-9][a-z0-9_-]{0,31}$' AND length(btrim(${table.providerLocationId})) > 0 AND ((${table.collectionGroupId} IS NULL AND ${table.collectionGroupRevision} IS NULL AND ${table.collectionGroupFingerprint} IS NULL AND ${table.pairedOccurrenceId} IS NULL AND ${table.triggerMemberId} IS NULL AND ${table.pairedMemberId} IS NULL) OR (${table.collectionGroupId} IS NOT NULL AND ${table.collectionGroupRevision} IS NOT NULL AND ${table.collectionGroupRevision} > 0 AND ${table.collectionGroupFingerprint} ~ '^lvcollectiongroup:v1:[0-9a-f]{64}$' AND ${table.pairedOccurrenceId} IS NOT NULL AND ${table.triggerMemberId} IS NOT NULL AND ${table.pairedMemberId} IS NOT NULL))`),
+  collectionModeCheck: check("payment_operation_standing_autopay_bindings_collection_mode_check", sql`${table.collectionMode} IN ('weekly', 'double_pay')`),
+}));
+
+/** Participant/link evidence for each automatic operation. */
+export const paymentOperationStandingAutopayParticipants = pgTable("payment_operation_standing_autopay_participants", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  operationId: uuid("operation_id").notNull(),
+  organizationId: integer("organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
+  leagueId: integer("league_id").notNull(),
+  allocationIndex: integer("allocation_index").notNull(),
+  obligationId: uuid("obligation_id").notNull(),
+  bowlerId: integer("bowler_id").notNull(),
+  role: text("role", { enum: ["payer", "partner"] as const }).notNull(),
+  paymentLinkId: integer("payment_link_id"),
+  linkFingerprint: varchar("link_fingerprint", { length: 128 }),
+  consentVersion: integer("consent_version").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull().defaultNow(),
+}, (table) => ({
+  operationFk: foreignKey({ name: "payment_operation_standing_autopay_participants_operation_fk", columns: [table.operationId, table.organizationId, table.leagueId], foreignColumns: [paymentOperationStandingAutopayBindings.operationId, paymentOperationStandingAutopayBindings.organizationId, paymentOperationStandingAutopayBindings.leagueId] }).onDelete("restrict"),
+  bowlerFk: foreignKey({ name: "payment_operation_standing_autopay_participants_bowler_fk", columns: [table.bowlerId, table.organizationId], foreignColumns: [bowlers.id, bowlers.organizationId] }).onDelete("restrict"),
+  linkFk: foreignKey({ name: "payment_operation_standing_autopay_participants_link_fk", columns: [table.paymentLinkId, table.organizationId], foreignColumns: [bowlerPaymentLinks.id, bowlerPaymentLinks.organizationId] }).onDelete("restrict"),
+  obligationFk: foreignKey({ name: "payment_operation_standing_autopay_participants_obligation_fk", columns: [table.obligationId, table.organizationId, table.leagueId], foreignColumns: [paymentObligations.id, paymentObligations.organizationId, paymentObligations.leagueId] }).onDelete("restrict"),
+  identityUnique: uniqueIndex("payment_operation_standing_autopay_participants_identity_unique").on(table.id, table.organizationId, table.leagueId),
+  allocationUnique: uniqueIndex("payment_operation_standing_autopay_participants_allocation_unique").on(table.operationId, table.organizationId, table.leagueId, table.allocationIndex),
+  roleCheck: check("payment_operation_standing_autopay_participants_role_check", sql`(${table.role} = 'payer' AND ${table.paymentLinkId} IS NULL AND ${table.linkFingerprint} IS NULL) OR (${table.role} = 'partner' AND ${table.paymentLinkId} IS NOT NULL AND ${table.linkFingerprint} ~ '^lvpartnerlink:v1:[0-9a-f]{64}$')`),
+  versionCheck: check("payment_operation_standing_autopay_participants_version_check", sql`${table.consentVersion} > 0 AND ${table.allocationIndex} >= 0 AND ${table.obligationId} IS NOT NULL`),
 }));
 
 /** Exact obligation reservations made before provider I/O.  The partial
@@ -354,6 +461,9 @@ export type OccurrencePaymentResponsibility = typeof occurrencePaymentResponsibi
 export type PaymentObligation = typeof paymentObligations.$inferSelect;
 export type PaymentAllocation = typeof paymentAllocations.$inferSelect;
 export type AutopayConsent = typeof autopayConsents.$inferSelect;
+export type AutopayConsentPartner = typeof autopayConsentPartners.$inferSelect;
 export type FinancialCommand = typeof financialCommands.$inferSelect;
 export type PaymentOperationRosterSnapshot = typeof paymentOperationRosterSnapshots.$inferSelect;
 export type PaymentOperationRosterSnapshotItem = typeof paymentOperationRosterSnapshotItems.$inferSelect;
+export type PaymentOperationStandingAutopayBinding = typeof paymentOperationStandingAutopayBindings.$inferSelect;
+export type PaymentOperationStandingAutopayParticipant = typeof paymentOperationStandingAutopayParticipants.$inferSelect;

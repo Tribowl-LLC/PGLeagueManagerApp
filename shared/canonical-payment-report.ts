@@ -87,7 +87,7 @@ export interface CanonicalPaymentRow {
   authoritativeLocalDate: string;
   providerPaymentId: string | null;
   paymentOperationId: string | null;
-  operationType: "scheduled_charge" | "interactive_charge" | "refund" | "canonical_autopay_charge" | null;
+  operationType: "scheduled_charge" | "interactive_charge" | "refund" | "canonical_autopay_charge" | "standing_autopay_charge" | null;
   operationStatus: string | null;
   allocatedMinor: number;
   unallocatedMinor: number;

@@ -88,6 +88,12 @@ export interface PaymentProvider {
    * record without a second DB lookup.
    */
   readonly locationId: number;
+  /**
+   * The provider's immutable location identity (for Square this is the
+   * credential's string location ID, not LeagueVault's numeric location key).
+   * Standing-autopay consent stores this server-derived value only.
+   */
+  getProviderLocationId?(): Promise<string>;
 
   processPayment(
     sourceId: string,

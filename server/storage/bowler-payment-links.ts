@@ -1,11 +1,18 @@
 import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import {
+  autopayConsentPartners,
+  autopayConsents,
   bowlerPaymentLinks,
+  paymentOperationRosterSnapshotItems,
+  paymentOperationStandingAutopayBindings,
+  paymentOperations,
+  leagues,
   type BowlerPaymentLink,
   type InsertBowlerPaymentLink,
   type LinkStatus,
 } from "@shared/schema";
+import { lockLeagueSchedule } from "./league-schedule-lock.js";
 
 /**
  * Pairs are stored canonically with `bowlerAId < bowlerBId` so the
@@ -74,7 +81,11 @@ export async function getLinkBetween(
     .select()
     .from(bowlerPaymentLinks)
     .where(
-      and(eq(bowlerPaymentLinks.bowlerAId, a), eq(bowlerPaymentLinks.bowlerBId, b)),
+      and(
+        eq(bowlerPaymentLinks.bowlerAId, a),
+        eq(bowlerPaymentLinks.bowlerBId, b),
+        inArray(bowlerPaymentLinks.status, ["pending", "accepted"] as const),
+      ),
     )
     .limit(1);
   return row;
@@ -129,7 +140,51 @@ export async function acceptLink(id: number): Promise<BowlerPaymentLink | undefi
 }
 
 export async function deleteLink(id: number): Promise<void> {
-  await db.delete(bowlerPaymentLinks).where(eq(bowlerPaymentLinks.id, id));
+  await db.transaction(async (tx) => {
+    // Discover without a row lock first. Every writer that can activate or
+    // prepare standing autopay acquires the league advisory lock before it
+    // locks link/consent evidence; taking the link lock first here would
+    // invert that order and permit an unlink/cutoff deadlock.
+    const [discoveredLink] = await tx.select().from(bowlerPaymentLinks).where(and(eq(bowlerPaymentLinks.id, id), inArray(bowlerPaymentLinks.status, ["pending", "accepted"] as const))).limit(1);
+    if (!discoveredLink) return;
+    // A payment link is organization-scoped while consent evidence is
+    // league-scoped. Lock every league in the tenant, not only leagues that
+    // happened to have a consent at discovery time; activation may be racing
+    // this unlink and can add a consent in an otherwise empty league.
+    const tenantLeagues = await tx.select({ id: leagues.id }).from(leagues).where(eq(leagues.organizationId, discoveredLink.organizationId));
+    const leagueIds = tenantLeagues.map((row) => row.id).sort((a, b) => a - b);
+    for (const leagueId of leagueIds) {
+      await lockLeagueSchedule(tx, discoveredLink.organizationId, leagueId);
+    }
+
+    // Re-read all evidence after the canonical locks. A concurrent activation
+    // or cutoff either observes the retired link or waits behind this tx;
+    // neither can resurrect a consent after the final status update.
+    const [link] = await tx.select().from(bowlerPaymentLinks).where(and(eq(bowlerPaymentLinks.id, id), inArray(bowlerPaymentLinks.status, ["pending", "accepted"] as const))).limit(1).for("update");
+    if (!link) return;
+    const consents = await tx.select({ consent: autopayConsents }).from(autopayConsents).innerJoin(autopayConsentPartners, and(
+      eq(autopayConsentPartners.consentId, autopayConsents.id), eq(autopayConsentPartners.consentVersion, autopayConsents.consentVersion), eq(autopayConsentPartners.paymentLinkId, link.id), eq(autopayConsentPartners.organizationId, link.organizationId), eq(autopayConsentPartners.leagueId, autopayConsents.leagueId),
+    )).where(and(eq(autopayConsents.organizationId, link.organizationId), eq(autopayConsents.state, "active")));
+    for (const leagueId of leagueIds) {
+      const affected = consents.filter((row) => row.consent.leagueId === leagueId);
+      for (const { consent } of affected) {
+        const operations = await tx.select({ operation: paymentOperations }).from(paymentOperations).innerJoin(paymentOperationStandingAutopayBindings, and(
+          eq(paymentOperationStandingAutopayBindings.operationId, paymentOperations.id), eq(paymentOperationStandingAutopayBindings.consentId, consent.id), eq(paymentOperationStandingAutopayBindings.consentVersion, consent.consentVersion), eq(paymentOperationStandingAutopayBindings.organizationId, link.organizationId), eq(paymentOperationStandingAutopayBindings.leagueId, leagueId),
+        )).where(and(eq(paymentOperations.organizationId, link.organizationId), eq(paymentOperations.leagueId, leagueId), eq(paymentOperations.operationType, "standing_autopay_charge"))).for("update");
+        for (const { operation } of operations) {
+          if (["pending", "leased", "retry_scheduled"].includes(operation.status) && operation.dispatchClaimedAt === null && operation.providerObjectId === null) {
+            await tx.update(paymentOperationRosterSnapshotItems).set({ state: "released" }).where(and(eq(paymentOperationRosterSnapshotItems.organizationId, link.organizationId), eq(paymentOperationRosterSnapshotItems.leagueId, leagueId), eq(paymentOperationRosterSnapshotItems.operationId, operation.id), eq(paymentOperationRosterSnapshotItems.state, "reserved")));
+            const canceledAt = new Date().toISOString();
+            await tx.update(paymentOperations).set({ status: "canceled", nextAttemptAt: null, leaseOwner: null, leaseToken: null, leaseExpiresAt: null, errorClassification: null, errorCode: null, completedAt: canceledAt, updatedAt: canceledAt }).where(and(eq(paymentOperations.organizationId, link.organizationId), eq(paymentOperations.id, operation.id)));
+          } else if (["pending", "leased", "provider_unknown", "retry_scheduled"].includes(operation.status) && (operation.dispatchClaimedAt !== null || operation.providerObjectId !== null)) {
+            await tx.update(paymentOperations).set({ status: "reconciliation_required", nextAttemptAt: null, errorClassification: "provider_unknown", errorCode: "PARTNER_LINK_RETIRED_AFTER_DISPATCH", updatedAt: new Date().toISOString() }).where(and(eq(paymentOperations.organizationId, link.organizationId), eq(paymentOperations.id, operation.id)));
+          }
+        }
+        await tx.update(autopayConsents).set({ state: "revoked", revokedAt: new Date().toISOString() }).where(and(eq(autopayConsents.id, consent.id), eq(autopayConsents.state, "active")));
+      }
+    }
+    await tx.update(bowlerPaymentLinks).set({ status: "retired", respondedAt: new Date().toISOString() }).where(and(eq(bowlerPaymentLinks.id, id), inArray(bowlerPaymentLinks.status, ["pending", "accepted"] as const)));
+  });
 }
 
 /**

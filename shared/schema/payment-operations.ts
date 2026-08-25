@@ -26,6 +26,7 @@ export const PAYMENT_OPERATION_TYPES = [
   "interactive_charge",
   "refund",
   "canonical_autopay_charge",
+  "standing_autopay_charge",
 ] as const;
 export type PaymentOperationType = (typeof PAYMENT_OPERATION_TYPES)[number];
 
@@ -145,6 +146,11 @@ export const paymentOperations = pgTable("payment_operations", {
   interactiveTargetUnique: uniqueIndex("payment_operations_interactive_target_unique")
     .on(table.organizationId, table.targetKey)
     .where(sql`${table.operationType} = 'interactive_charge'`),
+  standingAutopayTargetUnique: uniqueIndex("payment_operations_standing_autopay_target_unique")
+    .on(table.organizationId, table.targetKey)
+    .where(sql`${table.operationType} = 'standing_autopay_charge'`),
+  tenantLeagueIdentityUnique: uniqueIndex("payment_operations_id_org_league_unique")
+    .on(table.id, table.organizationId, table.leagueId),
   refundTargetUnique: uniqueIndex("payment_operations_refund_target_unique")
     .on(table.organizationId, table.targetKey)
     .where(sql`${table.operationType} = 'refund'`),
@@ -180,7 +186,7 @@ export const paymentOperations = pgTable("payment_operations", {
   }).onDelete("restrict"),
   operationTypeCheck: check(
     "payment_operations_operation_type_check",
-    sql`${table.operationType} IN ('scheduled_charge', 'interactive_charge', 'refund', 'canonical_autopay_charge')`,
+    sql`${table.operationType} IN ('scheduled_charge', 'interactive_charge', 'refund', 'canonical_autopay_charge', 'standing_autopay_charge')`,
   ),
   statusCheck: check(
     "payment_operations_status_check",
@@ -189,12 +195,12 @@ export const paymentOperations = pgTable("payment_operations", {
   dispatchClaimStateCheck: check(
     "payment_operations_dispatch_claim_state_check",
     sql`(
-      (${table.operationType} IN ('canonical_autopay_charge', 'scheduled_charge', 'interactive_charge')
+      (${table.operationType} IN ('canonical_autopay_charge', 'standing_autopay_charge', 'scheduled_charge', 'interactive_charge')
         AND (
           (${table.status} IN ('pending', 'retry_scheduled') AND ${table.dispatchClaimedAt} IS NULL)
           OR ${table.status} IN ('leased', 'provider_unknown', 'reconciliation_required', 'succeeded', 'action_required', 'failed_terminal', 'canceled')
         ))
-      OR (${table.operationType} NOT IN ('canonical_autopay_charge', 'scheduled_charge', 'interactive_charge') AND ${table.dispatchClaimedAt} IS NULL)
+      OR (${table.operationType} NOT IN ('canonical_autopay_charge', 'standing_autopay_charge', 'scheduled_charge', 'interactive_charge') AND ${table.dispatchClaimedAt} IS NULL)
     )`,
   ),
   amountCheck: check("payment_operations_amount_minor_check", sql`${table.amountMinor} > 0`),
@@ -267,6 +273,13 @@ export const paymentOperations = pgTable("payment_operations", {
       AND ${table.paymentScheduleId} IS NOT NULL
       AND ${table.billingCycleAt} IS NOT NULL
     ) OR (
+      ${table.operationType} = 'standing_autopay_charge'
+      AND ${table.paymentScheduleId} IS NULL
+      AND ${table.billingCycleAt} IS NULL
+      AND ${table.leagueId} IS NOT NULL
+      AND ${table.canonicalPlanId} IS NULL
+      AND ${table.authorizingUserId} IS NOT NULL
+    ) OR (
       ${table.operationType} = 'canonical_autopay_charge'
       AND ${table.paymentScheduleId} IS NULL
       AND ${table.billingCycleAt} IS NULL
@@ -287,6 +300,10 @@ export const paymentOperations = pgTable("payment_operations", {
       AND (${table.triggerOccurrenceId} IS NULL OR (
         ${table.paymentScheduleId} IS NOT NULL AND ${table.billingCycleAt} IS NOT NULL
       ))
+    ) OR (
+      ${table.operationType} = 'standing_autopay_charge'
+      AND ${table.triggerOccurrenceId} IS NOT NULL
+      AND ${table.leagueId} IS NOT NULL
     ) OR (
       ${table.operationType} = 'canonical_autopay_charge'
       AND ${table.triggerOccurrenceId} IS NOT NULL

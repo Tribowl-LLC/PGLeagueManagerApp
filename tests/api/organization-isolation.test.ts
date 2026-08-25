@@ -329,6 +329,14 @@ describe('Organization Isolation', () => {
       expect([403, 404]).toContain(roster.status);
       expect(roster.data.success).toBe(false);
       expect(JSON.stringify(roster.data)).not.toContain(`"organizationId":${sessionB.user.organizationId}`);
+
+      const standing = await apiGet(
+        `/api/financials/leagues/${orgBLeagueId}/standing-autopay/1`,
+        sessionA,
+      );
+      expect([403, 404]).toContain(standing.status);
+      expect(standing.data.success).toBe(false);
+      expect(JSON.stringify(standing.data)).not.toContain(`"organizationId":${sessionB.user.organizationId}`);
     });
   });
 
@@ -1169,14 +1177,14 @@ describe('Organization Isolation', () => {
       expect(owner.data.success).toBe(true);
     });
 
-    it('org A GET /api/payment-schedules/setup-quote/<orgB bowler>/<orgB league> returns 403', async () => {
+    it('org A GET /api/payment-schedules/setup-quote/<orgB bowler>/<orgB league> is retired without an oracle', async () => {
       expect(orgBBowlerId).not.toBeNull();
       expect(orgBLeagueId).not.toBeNull();
       const { status, data } = await apiGet(
         `/api/payment-schedules/setup-quote/${orgBBowlerId}/${orgBLeagueId}`,
         sessionA,
       );
-      expect(status).toBe(403);
+      expect(status).toBe(410);
       expect(data.success).toBe(false);
       const payload = JSON.stringify(data);
       expect(payload).not.toContain(`Vitest #341 Bowler ${stamp}`);

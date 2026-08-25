@@ -3,6 +3,7 @@ import type { Request, Response, NextFunction } from "express";
 import { cleanup as dbCleanup } from "../db";
 import { paymentScheduler } from "../services/payment-scheduler";
 import { scheduledPaymentOperationExecutor } from "../services/scheduled-payment-operation-executor";
+import { rosterStandingAutopayOperationExecutor } from "../services/roster-standing-autopay-executor";
 import { stopPaymentSyncRetrySweep } from "../services/payment-sync-retry";
 import { createLogger } from "../logger";
 
@@ -37,6 +38,7 @@ export function registerShutdownHandlers(server: Server): void {
     try {
       paymentScheduler?.cancelAllJobs();
       scheduledPaymentOperationExecutor.stop();
+      rosterStandingAutopayOperationExecutor.stop();
       stopPaymentSyncRetrySweep();
 
       await new Promise<void>((resolve) => {

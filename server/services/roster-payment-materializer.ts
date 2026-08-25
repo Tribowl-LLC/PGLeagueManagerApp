@@ -1,12 +1,16 @@
-import { and, asc, eq, inArray, sql, type ExtractTablesWithRelations } from "drizzle-orm";
+import { and, asc, eq, inArray, or, sql, type ExtractTablesWithRelations } from "drizzle-orm";
 import type { NodePgTransaction } from "drizzle-orm/node-postgres";
 import {
   leagueOccurrences,
   leagues,
+  autopayConsentPartners,
+  autopayConsents,
   occurrencePaymentResponsibilities,
   paymentObligations,
   paymentAllocations,
   paymentOperationRosterSnapshotItems,
+  paymentOperationStandingAutopayBindings,
+  paymentOperations,
   teamPaymentPolicies,
   teamPaymentSlots,
   teams,
@@ -61,6 +65,51 @@ export async function deriveRosterPaymentTimingInTransaction(
   if (!timestamp) throw new Error("UPFRONT_DUE_TIMESTAMP_UNAVAILABLE");
   const dueAt = new Date(timestamp).toISOString();
   return { dueAt, pastDueAt: dueAt };
+}
+
+/** Revoke standing consent and fence its pending work when a payer or
+ * accepted partner leaves the league. This primitive is deliberately DB-only
+ * so bowler/membership lifecycle writes can call it under the league lock. */
+export async function revokeStandingAutopayForBowlerInTransaction(
+  tx: PaymentOperationTransaction,
+  input: { organizationId: number; leagueId: number; bowlerId: number; now?: string },
+): Promise<void> {
+  const revokedAt = input.now ?? new Date().toISOString();
+  const consents = await tx.select({ consent: autopayConsents }).from(autopayConsents).where(and(
+    eq(autopayConsents.organizationId, input.organizationId),
+    eq(autopayConsents.leagueId, input.leagueId),
+    or(
+      eq(autopayConsents.payerBowlerId, input.bowlerId),
+      sql`EXISTS (SELECT 1 FROM autopay_consent_partners cp WHERE cp.consent_id = ${autopayConsents.id} AND cp.organization_id = ${input.organizationId} AND cp.league_id = ${input.leagueId} AND cp.partner_bowler_id = ${input.bowlerId})`,
+    ),
+  )).orderBy(asc(autopayConsents.id)).for("update");
+  for (const { consent } of consents) {
+    const operations = await tx.select({ operation: paymentOperations }).from(paymentOperations).innerJoin(paymentOperationStandingAutopayBindings, and(
+      eq(paymentOperationStandingAutopayBindings.operationId, paymentOperations.id),
+      eq(paymentOperationStandingAutopayBindings.organizationId, input.organizationId),
+      eq(paymentOperationStandingAutopayBindings.leagueId, input.leagueId),
+      eq(paymentOperationStandingAutopayBindings.consentId, consent.id),
+      eq(paymentOperationStandingAutopayBindings.consentVersion, consent.consentVersion),
+    )).where(and(
+      eq(paymentOperations.organizationId, input.organizationId),
+      eq(paymentOperations.leagueId, input.leagueId),
+      eq(paymentOperations.operationType, "standing_autopay_charge"),
+    )).orderBy(asc(paymentOperations.id)).for("update");
+    for (const { operation } of operations) {
+      if (["pending", "leased", "retry_scheduled"].includes(operation.status) && operation.dispatchClaimedAt === null && operation.providerObjectId === null) {
+        await tx.update(paymentOperationRosterSnapshotItems).set({ state: "released" }).where(and(
+          eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId),
+          eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId),
+          eq(paymentOperationRosterSnapshotItems.operationId, operation.id),
+          eq(paymentOperationRosterSnapshotItems.state, "reserved"),
+        ));
+        await tx.update(paymentOperations).set({ status: "canceled", nextAttemptAt: null, leaseOwner: null, leaseToken: null, leaseExpiresAt: null, dispatchClaimedAt: null, completedAt: revokedAt, updatedAt: revokedAt }).where(and(eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.id, operation.id)));
+      } else if (["pending", "leased", "retry_scheduled", "provider_unknown"].includes(operation.status) && (operation.dispatchClaimedAt !== null || operation.providerObjectId !== null)) {
+        await tx.update(paymentOperations).set({ status: "reconciliation_required", nextAttemptAt: null, errorClassification: "provider_unknown", errorCode: "PARTICIPANT_INACTIVE_AFTER_DISPATCH", updatedAt: revokedAt }).where(and(eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.id, operation.id)));
+      }
+    }
+    await tx.update(autopayConsents).set({ state: "revoked", revokedAt }).where(and(eq(autopayConsents.id, consent.id), eq(autopayConsents.state, "active")));
+  }
 }
 
 /**
@@ -212,7 +261,11 @@ export async function materializeRosterPaymentOccurrenceInTransaction(
           eq(paymentObligations.leagueId, input.leagueId),
           eq(paymentObligations.responsibilityId, current.id),
         ));
-        if (currentObligations.some((row) => row.state !== "open")) throw new Error("PAID_EVIDENCE_LOCKED");
+        // Settled/voided responsibility history is immutable. A roster
+        // invalidation must not rewrite that evidence or fail the membership
+        // mutation; leave the historical version in place and continue with
+        // future/open occurrences. Reserved evidence remains a hard fence.
+        if (currentObligations.some((row) => row.state !== "open")) continue;
         const obligationIds = await tx.select({ id: paymentObligations.id }).from(paymentObligations).where(and(
           eq(paymentObligations.organizationId, input.organizationId),
           eq(paymentObligations.leagueId, input.leagueId),
@@ -240,6 +293,17 @@ export async function materializeRosterPaymentOccurrenceInTransaction(
           eq(paymentObligations.state, "open"),
         ));
       }
+      const [latestVersion] = await tx.select({ version: sql<number>`COALESCE(MAX(${occurrencePaymentResponsibilities.version}), 0)` })
+        .from(occurrencePaymentResponsibilities)
+        .where(and(
+          eq(occurrencePaymentResponsibilities.organizationId, input.organizationId),
+          eq(occurrencePaymentResponsibilities.leagueId, input.leagueId),
+          eq(occurrencePaymentResponsibilities.occurrenceId, occurrence.id),
+          eq(occurrencePaymentResponsibilities.teamId, team.id),
+          eq(occurrencePaymentResponsibilities.slotIndex, slot.slotIndex),
+          eq(occurrencePaymentResponsibilities.positionIndex, slot.slotIndex),
+        ));
+      const nextVersion = Math.max(current?.version ?? 0, Number(latestVersion?.version ?? 0)) + 1;
       const [responsibility] = await tx.insert(occurrencePaymentResponsibilities).values({
         organizationId: input.organizationId,
         leagueId: input.leagueId,
@@ -248,7 +312,7 @@ export async function materializeRosterPaymentOccurrenceInTransaction(
         slotId: slot.id,
         slotIndex: slot.slotIndex,
         positionIndex: slot.slotIndex,
-        version: (current?.version ?? 0) + 1,
+        version: nextVersion,
         state: "active",
         responsibilityKind: kind,
         mainBowlerId,

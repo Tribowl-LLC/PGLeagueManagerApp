@@ -148,9 +148,9 @@ describe('POST /api/payment-schedules legacy weekly cutoff', () => {
       frequency: 'weekly',
     });
 
-    expect(res.status).toBe(409);
+    expect(res.status).toBe(410);
     const body = await res.json();
-    expect(body.error.code).toBe('AUTOPAY_SETUP_REQUIRED');
+    expect(body.error.code).toBe('LEGACY_AUTOPAY_RETIRED');
     expect(mockStorage.createPaymentSchedule).not.toHaveBeenCalled();
     expect(mockAddSchedule).not.toHaveBeenCalled();
   });
@@ -165,8 +165,8 @@ describe('POST /api/payment-schedules legacy weekly cutoff', () => {
       additionalBowlerIds: [PARTNER],
     });
 
-    expect(res.status).toBe(409);
-    expect((await res.json()).error.code).toBe('AUTOPAY_SETUP_REQUIRED');
+    expect(res.status).toBe(410);
+    expect((await res.json()).error.code).toBe('LEGACY_AUTOPAY_RETIRED');
     expect(mockStorage.createPaymentSchedule).not.toHaveBeenCalled();
     expect(mockAddSchedule).not.toHaveBeenCalled();
   });
@@ -187,8 +187,8 @@ describe('POST /api/payment-schedules legacy weekly cutoff', () => {
       cardId: 'card-1',
     });
 
-    expect(res.status).toBe(409);
-    expect((await res.json()).error.code).toBe('AUTOPAY_SETUP_REQUIRED');
+    expect(res.status).toBe(410);
+    expect((await res.json()).error.code).toBe('LEGACY_AUTOPAY_RETIRED');
     expect(mockStorage.createPaymentSchedule).not.toHaveBeenCalled();
     expect(mockAddSchedule).not.toHaveBeenCalled();
   });

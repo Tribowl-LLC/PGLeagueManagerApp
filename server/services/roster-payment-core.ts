@@ -98,7 +98,7 @@ function commandFingerprint(prefix: string, value: unknown): string {
   return `${prefix}:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
 }
 
-function canonicalRosterFingerprint(request: RosterPaymentResponsibilityRequest & { policy?: TeamPaymentPolicy }): string {
+export function canonicalRosterFingerprint(request: RosterPaymentResponsibilityRequest & { policy?: TeamPaymentPolicy }): string {
   return commandFingerprint("lvroster:v1", {
     lineupSize: request.lineupSize,
     policy: request.policy ?? "main_pays_full",
@@ -106,7 +106,7 @@ function canonicalRosterFingerprint(request: RosterPaymentResponsibilityRequest 
   });
 }
 
-function canonicalResponsibilityFingerprint(rows: OccurrenceResponsibilityInput[]): string {
+export function canonicalResponsibilityFingerprint(rows: OccurrenceResponsibilityInput[]): string {
   return commandFingerprint("lvresponsibility:v1", [...rows].sort((a, b) => a.occurrenceId.localeCompare(b.occurrenceId) || a.teamId - b.teamId || a.positionIndex - b.positionIndex).map((row) => ({
     occurrenceId: row.occurrenceId,
     teamId: row.teamId,
@@ -120,7 +120,7 @@ function canonicalResponsibilityFingerprint(rows: OccurrenceResponsibilityInput[
   })));
 }
 
-function canonicalCorrectionFingerprint(request: CanonicalCorrectionRequest): string {
+export function canonicalCorrectionFingerprint(request: CanonicalCorrectionRequest): string {
   return commandFingerprint("lvcorrection:v2", {
     allocationId: request.allocationId,
     correctionMode: request.correctionMode,
@@ -583,6 +583,27 @@ export async function recordOccurrenceResponsibilities(input: {
           eq(paymentObligations.leagueId, input.leagueId),
           eq(paymentObligations.responsibilityId, currentResponsibility.id),
         )).for("update");
+        // A standing operation reserves an otherwise-open obligation before
+        // provider dispatch. Treat that reservation as financial evidence:
+        // roster edits cannot supersede it in the same lock window. The
+        // league advisory lock is acquired by the caller, and the obligation
+        // row was just locked above, so this check has deterministic lock
+        // ordering with cutoff/manual paths.
+        const reservedEvidence = await tx.select({ id: paymentOperationRosterSnapshotItems.id }).from(paymentOperationRosterSnapshotItems)
+          .innerJoin(paymentObligations, and(
+            eq(paymentOperationRosterSnapshotItems.obligationId, paymentObligations.id),
+            eq(paymentOperationRosterSnapshotItems.organizationId, paymentObligations.organizationId),
+            eq(paymentOperationRosterSnapshotItems.leagueId, paymentObligations.leagueId),
+          ))
+          .where(and(
+            eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId),
+            eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId),
+            eq(paymentOperationRosterSnapshotItems.state, "reserved"),
+            eq(paymentObligations.responsibilityId, currentResponsibility.id),
+          )).limit(1).for("update");
+        if (reservedEvidence.length > 0) {
+          throw new RosterPaymentError("OBLIGATION_RESERVED", "A standing payment operation has reserved this roster responsibility", 409);
+        }
         if (currentObligations.some((obligation) => obligation.state !== "open")) {
           throw new RosterPaymentError("PAID_EVIDENCE_LOCKED", "A responsibility with settled or partially settled evidence cannot be replaced", 409);
         }
