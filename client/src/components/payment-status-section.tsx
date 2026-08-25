@@ -189,6 +189,11 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
   // (rather than optimistically showing them and yanking them once the
   // fetch resolves) so the picker doesn't flicker.
   const partnerOptions = useMemo(() => {
+    // PR1's exact roster contract intentionally scopes one charge to one
+    // payer. Accepted partner links remain available for historical archive
+    // views, but combined/partner checkout controls stay hidden until the
+    // multi-payer snapshot contract is separately approved.
+    if (league.payingLineupSize != null) return [];
     return acceptedPartners.filter((p, idx) => {
       const data = partnerDetailsQueries[idx]?.data?.data;
       if (!data) return false;
@@ -196,7 +201,7 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
         (bl) => bl.leagueId === league.id && bl.active,
       );
     });
-  }, [acceptedPartners, partnerDetailsQueries, league.id]);
+  }, [acceptedPartners, partnerDetailsQueries, league.id, league.payingLineupSize]);
 
   const { data: savedCardsResponse } = useQuery<{ success: boolean; data: SavedCard[] }>({
     queryKey: [`/api/payments-provider/cards/${bowler.id}`, league.id],

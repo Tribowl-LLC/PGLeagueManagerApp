@@ -229,6 +229,8 @@ router.post('/combined-payments/quote', paymentLimiter, occurrenceQuote);
 type InteractiveChargeResponse = {
   status: 'COMPLETED';
   id: string;
+  /** Durable ledger identity used by roster recovery after a lost response. */
+  operationId: string;
   orderId?: string;
   dbPaymentId?: number;
   combinedChargeGroupId?: string;
@@ -342,6 +344,7 @@ async function reconstructInteractiveChargeResponse(
   return {
     status: 'COMPLETED',
     id: operation.providerObjectId,
+    operationId: operation.id,
     ...(operation.providerOrderId ? { orderId: operation.providerOrderId } : {}),
     ...(first ? {
       dbPaymentId: first.id,

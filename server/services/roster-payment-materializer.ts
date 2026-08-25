@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, type ExtractTablesWithRelations } from "drizzle-orm";
+import { and, asc, eq, inArray, sql, type ExtractTablesWithRelations } from "drizzle-orm";
 import type { NodePgTransaction } from "drizzle-orm/node-postgres";
 import {
   leagueOccurrences,
@@ -18,6 +18,52 @@ type PaymentOperationTransaction = NodePgTransaction<typeof schema, ExtractTable
 const GRACE_PERIOD_MS = 3 * 60 * 60 * 1000;
 
 /**
+ * Return the authoritative timing for a roster obligation. Weekly leagues
+ * use the occurrence start and the versioned three-hour grace. Upfront
+ * leagues deliberately share one due instant: the first roster materializing
+ * transaction records its PostgreSQL transaction timestamp in every created
+ * obligation, and later occurrences derive that same instant from the
+ * existing upfront evidence. This keeps upfront timing automatic without
+ * recreating a financial activation entity or UI.
+ */
+export async function deriveRosterPaymentTimingInTransaction(
+  tx: PaymentOperationTransaction,
+  input: { organizationId: number; leagueId: number; paymentMode: "weekly" | "upfront"; occurrenceStartAt: string },
+): Promise<{ dueAt: string; pastDueAt: string }> {
+  const occurrenceStart = new Date(input.occurrenceStartAt);
+  if (!Number.isFinite(occurrenceStart.getTime())) throw new Error("INVALID_OCCURRENCE_START");
+  if (input.paymentMode === "weekly") {
+    const dueAt = occurrenceStart.toISOString();
+    return { dueAt, pastDueAt: new Date(occurrenceStart.getTime() + GRACE_PERIOD_MS).toISOString() };
+  }
+
+  // `past_due_at = due_at` identifies the clean-slate upfront timing without
+  // consulting any retired activation table. Include voided rows so a safe
+  // responsibility correction cannot silently move the league's season due
+  // instant after immutable evidence was written.
+  const [existing] = await tx.select({ dueAt: paymentObligations.dueAt })
+    .from(paymentObligations)
+    .where(and(
+      eq(paymentObligations.organizationId, input.organizationId),
+      eq(paymentObligations.leagueId, input.leagueId),
+      sql`${paymentObligations.pastDueAt} = ${paymentObligations.dueAt}`,
+    ))
+    .orderBy(asc(paymentObligations.dueAt), asc(paymentObligations.id))
+    .limit(1)
+    .for("share");
+  if (existing?.dueAt) {
+    const dueAt = new Date(existing.dueAt).toISOString();
+    return { dueAt, pastDueAt: dueAt };
+  }
+
+  const timestampResult = await tx.execute(sql`SELECT transaction_timestamp()::text AS upfront_due_at`);
+  const timestamp = (timestampResult.rows[0] as { upfront_due_at?: string } | undefined)?.upfront_due_at;
+  if (!timestamp) throw new Error("UPFRONT_DUE_TIMESTAMP_UNAVAILABLE");
+  const dueAt = new Date(timestamp).toISOString();
+  return { dueAt, pastDueAt: dueAt };
+}
+
+/**
  * Database-only publication hook for a roster-ready occurrence. It is kept
  * free of the provider factory and app db singleton so schedule operators can
  * use it inside their existing transaction without importing payment I/O.
@@ -29,6 +75,7 @@ export async function materializeRosterPaymentOccurrenceInTransaction(
   const [league] = await tx.select({
     payingLineupSize: leagues.payingLineupSize,
     weeklyFee: leagues.weeklyFee,
+    paymentMode: leagues.paymentMode,
   }).from(leagues).where(and(eq(leagues.id, input.leagueId), eq(leagues.organizationId, input.organizationId))).limit(1);
   if (!league?.payingLineupSize) return false;
   const [occurrence] = await tx.select({ id: leagueOccurrences.id, startAt: leagueOccurrences.startAt })
@@ -55,7 +102,13 @@ export async function materializeRosterPaymentOccurrenceInTransaction(
     eq(occurrencePaymentResponsibilities.occurrenceId, occurrence.id),
     eq(occurrencePaymentResponsibilities.state, "active"),
   ));
-  const pastDueAt = new Date(new Date(occurrence.startAt).getTime() + GRACE_PERIOD_MS).toISOString();
+  const timing = await deriveRosterPaymentTimingInTransaction(tx, {
+    organizationId: input.organizationId,
+    leagueId: input.leagueId,
+    paymentMode: league.paymentMode,
+    occurrenceStartAt: occurrence.startAt,
+  });
+  const { dueAt, pastDueAt } = timing;
   for (const team of rosterTeams.filter((row) => input.teamId === undefined || row.id === input.teamId)) {
     for (const slot of rosterRows.filter((row) => row.teamId === team.id)) {
       const policy = policies.find((row) => row.teamId === team.id)?.defaultPolicy ?? "main_pays_full";
@@ -63,7 +116,7 @@ export async function materializeRosterPaymentOccurrenceInTransaction(
       const mainBowlerId = kind === "main" ? slot.mainBowlerId : null;
       const payerBowlerId = mainBowlerId;
       const current = active.find((row) => row.teamId === team.id && row.slotIndex === slot.slotIndex && row.positionIndex === slot.slotIndex);
-      if (current && current.responsibilityKind === kind && current.mainBowlerId === mainBowlerId && current.substituteBowlerId === null && current.payerBowlerId === payerBowlerId && current.policy === policy && current.dueAt === occurrence.startAt && current.pastDueAt === pastDueAt) continue;
+      if (current && current.responsibilityKind === kind && current.mainBowlerId === mainBowlerId && current.substituteBowlerId === null && current.payerBowlerId === payerBowlerId && current.policy === policy && current.dueAt === dueAt && current.pastDueAt === pastDueAt) continue;
       if (current && input.reschedule) {
         // A safe future schedule correction preserves the resolved payer and
         // component facts while issuing a new responsibility/obligation
@@ -128,7 +181,7 @@ export async function materializeRosterPaymentOccurrenceInTransaction(
           lineageAmountMinor: current.lineageAmountMinor,
           prizeFundAmountMinor: current.prizeFundAmountMinor,
           currency: current.currency,
-          dueAt: occurrence.startAt,
+          dueAt,
           pastDueAt,
           assignmentNote: current.assignmentNote,
           recordedByUserId: input.actorUserId,
@@ -144,7 +197,7 @@ export async function materializeRosterPaymentOccurrenceInTransaction(
             payerBowlerId: obligation.payerBowlerId,
             amountMinor: obligation.amountMinor,
             currency: obligation.currency,
-            dueAt: occurrence.startAt,
+            dueAt,
             pastDueAt,
             state: "open",
             createdByUserId: input.actorUserId,
@@ -208,7 +261,7 @@ export async function materializeRosterPaymentOccurrenceInTransaction(
         lineageAmountMinor: null,
         prizeFundAmountMinor: null,
         currency: "USD",
-        dueAt: occurrence.startAt,
+        dueAt,
         pastDueAt,
         assignmentNote: "roster_default",
         recordedByUserId: input.actorUserId,
@@ -223,7 +276,7 @@ export async function materializeRosterPaymentOccurrenceInTransaction(
           payerBowlerId,
           amountMinor: league.weeklyFee,
           currency: "USD",
-          dueAt: occurrence.startAt,
+          dueAt,
           pastDueAt,
           state: "open",
           createdByUserId: input.actorUserId,

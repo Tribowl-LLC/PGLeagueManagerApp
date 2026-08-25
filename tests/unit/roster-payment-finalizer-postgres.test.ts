@@ -239,7 +239,24 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
     expect(unresolved).toMatchObject({ source: "unresolved_operation", businessDate: "2038-02-03", authoritativeLocalDate: "2038-02-03", operationStatus: "provider_unknown" });
   });
 
+  it("persists one upfront due instant with no grace window across later occurrences", async () => {
+    await db.update(leagues).set({ paymentMode: "upfront", timezone: "UTC" }).where(eq(leagues.id, leagueId));
+    const first = await createOccurrence();
+    const second = await createOccurrence();
+    expect(first.obligation.dueAt).toBe(first.obligation.pastDueAt);
+    expect(second.obligation.dueAt).toBe(second.obligation.pastDueAt);
+    expect(second.obligation.dueAt).toBe(first.obligation.dueAt);
+    const report = await readCanonicalPaymentReport({ organizationId, leagueId, page: 1, limit: 100 });
+    expect(report.paymentTiming).toMatchObject({
+      paymentMode: "upfront",
+      upfrontDueAt: new Date(first.obligation.dueAt).toISOString(),
+      upfrontDueAtLocal: first.obligation.dueAt.slice(0, 10),
+      source: "roster_payment_responsibility",
+    });
+  });
+
   it("reschedules a future roster-ready occurrence by versioning open obligations", async () => {
+    await db.update(leagues).set({ paymentMode: "weekly", timezone: "UTC" }).where(eq(leagues.id, leagueId));
     const fixture = await createOccurrence();
     const request = {
       organizationId,
@@ -307,6 +324,90 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
     await db.transaction(async (tx) => finalizeRosterSnapshotInTransaction(tx, { organizationId, leagueId, operationId: paidOperation.operation.id, now: "2038-02-01T21:00:00.000Z", actorUserId }));
     const paidRequest = makeRequest(paidFixture.occurrence.id, `roster-reschedule-paid-${randomUUID()}`);
     await expect(rescheduleOccurrence({ ...paidRequest, requestFingerprint: buildCanonicalScheduleCommandFingerprint(paidRequest) })).rejects.toMatchObject({ code: "occurrence_effectively_locked" });
+  });
+
+  it("permits sequential provider partials after the first roster snapshot is finalized", async () => {
+    await db.update(leagues).set({ paymentMode: "weekly", timezone: "UTC" }).where(eq(leagues.id, leagueId));
+    const fixture = await createOccurrence();
+    const first = await createRosterOperation(fixture.obligation.id, fixture.responsibility.id, 1_000);
+    await db.transaction(async (tx) => finalizeRosterSnapshotInTransaction(tx, {
+      organizationId,
+      leagueId,
+      operationId: first.operation.id,
+      now: "2038-02-01T21:00:00.000Z",
+      actorUserId,
+    }));
+    const second = await createRosterOperation(fixture.obligation.id, fixture.responsibility.id, 1_000);
+    await db.transaction(async (tx) => finalizeRosterSnapshotInTransaction(tx, {
+      organizationId,
+      leagueId,
+      operationId: second.operation.id,
+      now: "2038-02-01T22:00:00.000Z",
+      actorUserId,
+    }));
+
+    const allocations = await db.select({ amountMinor: paymentAllocations.amountMinor }).from(paymentAllocations).where(and(
+      eq(paymentAllocations.organizationId, organizationId),
+      eq(paymentAllocations.leagueId, leagueId),
+      eq(paymentAllocations.obligationId, fixture.obligation.id),
+      eq(paymentAllocations.state, "active"),
+    ));
+    const [obligation] = await db.select({ state: paymentObligations.state }).from(paymentObligations).where(eq(paymentObligations.id, fixture.obligation.id));
+    const items = await db.select({ state: paymentOperationRosterSnapshotItems.state }).from(paymentOperationRosterSnapshotItems).where(and(
+      eq(paymentOperationRosterSnapshotItems.organizationId, organizationId),
+      eq(paymentOperationRosterSnapshotItems.leagueId, leagueId),
+      eq(paymentOperationRosterSnapshotItems.obligationId, fixture.obligation.id),
+    ));
+    expect(allocations.map((row) => row.amountMinor).sort((a, b) => a - b)).toEqual([1_000, 1_000]);
+    expect(allocations.reduce((sum, row) => sum + row.amountMinor, 0)).toBe(fixture.obligation.amountMinor);
+    expect(obligation?.state).toBe("settled");
+    expect(items).toHaveLength(2);
+    expect(items.every((row) => row.state === "finalized")).toBe(true);
+  });
+
+  it("allows only one unresolved reservation while concurrent provider preparations race", async () => {
+    await db.update(leagues).set({ paymentMode: "weekly", timezone: "UTC" }).where(eq(leagues.id, leagueId));
+    const fixture = await createOccurrence();
+    const reserve = async (suffixValue: string) => {
+      const operationId = randomUUID();
+      return db.transaction(async (tx) => {
+        await tx.insert(paymentOperations).values({
+          id: operationId,
+          organizationId,
+          authorizingUserId: actorUserId,
+          operationType: "interactive_charge",
+          targetKey: `reservation-race:${suffixValue}:${operationId}`,
+          leagueId,
+          amountMinor: 1_000,
+          currency: "USD",
+          requestFingerprint: `lvpayreq:v1:${"f".repeat(64)}`,
+          providerIdempotencyKey: `race-${operationId}`.slice(0, 45),
+          providerName: "square",
+          status: "pending",
+        });
+        await tx.insert(paymentOperationRosterSnapshots).values({
+          operationId,
+          organizationId,
+          leagueId,
+          snapshotVersion: 1,
+          amountMinor: 1_000,
+          currency: "USD",
+          obligations: [{ id: fixture.obligation.id, responsibilityId: fixture.responsibility.id, responsibilityVersion: fixture.responsibility.version, payerBowlerId: bowlerId, amountMinor: 1_000 }],
+          snapshotFingerprint: `lvroster:race:${suffixValue}:${"1".repeat(64)}`.slice(0, 128),
+        });
+        await tx.insert(paymentOperationRosterSnapshotItems).values({ operationId, organizationId, leagueId, obligationId: fixture.obligation.id, allocationIndex: 0, amountMinor: 1_000, state: "reserved" });
+        return operationId;
+      });
+    };
+    const results = await Promise.allSettled([reserve("a"), reserve("b")]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    const reservations = await db.select({ state: paymentOperationRosterSnapshotItems.state }).from(paymentOperationRosterSnapshotItems).where(and(
+      eq(paymentOperationRosterSnapshotItems.organizationId, organizationId),
+      eq(paymentOperationRosterSnapshotItems.leagueId, leagueId),
+      eq(paymentOperationRosterSnapshotItems.obligationId, fixture.obligation.id),
+    ));
+    expect(reservations).toEqual([{ state: "reserved" }]);
   });
 
   it("links a real interactive preparation to its league and creates the roster snapshot", async () => {

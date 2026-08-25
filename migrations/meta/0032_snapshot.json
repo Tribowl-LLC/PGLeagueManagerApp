@@ -14371,7 +14371,7 @@
             }
           ],
           "isUnique": true,
-          "where": "\"payment_operation_roster_snapshot_items\".\"state\" IN ('reserved', 'finalized')",
+          "where": "\"payment_operation_roster_snapshot_items\".\"state\" = 'reserved'",
           "concurrently": false,
           "method": "btree",
           "with": {}

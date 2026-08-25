@@ -21,6 +21,14 @@ quote fingerprint; it prepares a durable operation, calls the provider only
 after commit, and allocates the immutable provider result in a second locked
 transaction. Cash/check administration uses the exact obligation IDs and quote
 fingerprint.
+
+PR1 intentionally scopes an interactive charge to one payer identity. Accepted
+partner links remain available to retained archive/history surfaces, but the new
+roster checkout hides combined/partner controls and rejects partner IDs. This
+prevents one payer's card from selecting another payer's obligations until a
+separately reviewed multi-payer snapshot contract can bind each accepted
+partner, payment-method owner, and allocation in one immutable operation
+(planned for PR2).
 Corrections append a voided allocation record, and provider refunds/disputes
 retain allocation evidence while marking it for review.
 

@@ -36,6 +36,7 @@ import { getPaymentProvider } from "./payment-provider-factory.js";
 import { getProviderCustomerId } from "./payment-utils.js";
 import { WEEKLY_BILLING_GRACE_PERIOD_MS } from "@shared/schedule-utils";
 import { decrypt } from "../utils/crypto.js";
+import { deriveRosterPaymentTimingInTransaction } from "./roster-payment-materializer.js";
 
 export class RosterPaymentError extends Error {
   constructor(public readonly code: string, message: string, public readonly status = 409) {
@@ -242,6 +243,9 @@ export async function saveTeamRoster(input: {
   const slots = [...input.request.slots].sort((a, b) => a.slotIndex - b.slotIndex);
   if (slots.length !== input.request.lineupSize || slots.some((slot, index) => slot.slotIndex !== index)) throw new RosterPaymentError("INCOMPLETE_ROSTER", "Every stable lineup slot must be supplied", 422);
   if (slots.filter((slot) => slot.occupant === "main").some((slot) => slot.mainBowlerId === null || slot.mainBowlerId === undefined)) throw new RosterPaymentError("INVALID_MAIN", "A Main slot requires a bowler", 422);
+  if (slots.some((slot) => slot.occupant !== "main" && slot.mainBowlerId !== null && slot.mainBowlerId !== undefined)) {
+    throw new RosterPaymentError("INVALID_SLOT_IDENTITY", "Only a Main slot may contain a Main bowler identity", 422);
+  }
   return db.transaction(async (tx) => {
     await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
     await beginFinancialCommand(tx, {
@@ -315,7 +319,12 @@ export async function saveTeamRoster(input: {
         eq(occurrencePaymentResponsibilities.state, "active"),
       ));
       for (const occurrence of occurrences) {
-        const { dueAt, pastDueAt } = calculateRosterPaymentTiming(occurrence.startAt);
+        const { dueAt, pastDueAt } = await deriveRosterPaymentTimingInTransaction(tx, {
+          organizationId: input.organizationId,
+          leagueId: input.leagueId,
+          paymentMode: league.paymentMode,
+          occurrenceStartAt: occurrence.startAt,
+        });
         const responsibilities = rosterTeams.flatMap((team) => rosterRows
           .filter((slot) => slot.teamId === team.id)
           .filter((slot) => {
@@ -341,7 +350,7 @@ export async function saveTeamRoster(input: {
             slotIndex: slot.slotIndex,
             positionIndex: slot.slotIndex,
             kind: slot.occupant === "main" ? "main" as const : "vacant" as const,
-            mainBowlerId: slot.mainBowlerId,
+            mainBowlerId: slot.occupant === "main" ? slot.mainBowlerId : null,
             substituteBowlerId: null,
             payerBowlerId: slot.occupant === "main" ? slot.mainBowlerId : null,
             policy: policies.find((policy) => policy.teamId === team.id)?.defaultPolicy ?? "main_pays_full",
@@ -520,7 +529,12 @@ export async function recordOccurrenceResponsibilities(input: {
       const effectivePolicy = slot.occupant === "vacant" && row.kind === "substitute" ? "sub_pays_full" as const : row.policy;
       const occurrence = occurrences.find((candidate) => candidate.id === row.occurrenceId);
       if (!occurrence) throw new RosterPaymentError("OCCURRENCE_NOT_PUBLISHED", "Occurrence not found", 422);
-      const { dueAt: authoritativeDueAt, pastDueAt: authoritativePastDueAt } = calculateRosterPaymentTiming(occurrence.startAt);
+      const { dueAt: authoritativeDueAt, pastDueAt: authoritativePastDueAt } = await deriveRosterPaymentTimingInTransaction(tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        paymentMode: league.paymentMode,
+        occurrenceStartAt: occurrence.startAt,
+      });
       const authoritativeAmountMinor = row.kind === "vacant" ? 0 : league.weeklyFee;
       if (row.kind === "split" && (league.lineageFee === null || league.prizeFundFee === null)) throw new RosterPaymentError("INVALID_SPLIT", "The league split fees are not configured", 422);
       const candidateBowlerIds = [row.mainBowlerId, row.substituteBowlerId, row.payerBowlerId].filter((id): id is number => id !== null && id !== undefined);

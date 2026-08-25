@@ -85,20 +85,49 @@ export async function paymentRequestWithRecovery(
   organizationId?: number | null,
   rosterLeagueId?: number,
 ): Promise<Response> {
+  type RecoveryOperation = {
+    contractVersion?: string;
+    operationId?: string;
+    status?: string;
+  };
   const reconcileRosterResponse = async (response: Response): Promise<Response> => {
     if (rosterLeagueId === undefined) return response;
-    const body = await response.clone().json().catch(() => null) as { data?: { contractVersion?: string; operationId?: string; status?: string }; operationId?: string; status?: string } | null;
+    const body = await response.clone().json().catch(() => null) as {
+      data?: RecoveryOperation;
+      error?: { details?: RecoveryOperation };
+      operationId?: string;
+      status?: string;
+    } | null;
     // The exact roster route returns `{ data: ... }`, while the retained
     // request-key recovery route returns a top-level operation status. Both
     // identify the same durable operation; hand it to the roster finalizer
     // whenever local evidence is not terminally succeeded.
-    const operation = body?.data ?? body;
-    if (!operation?.operationId || operation.status === 'succeeded' || operation.status === 'COMPLETED') return response;
+    const operation: RecoveryOperation = body?.data ?? body?.error?.details ?? body ?? {};
+    if (!operation?.operationId) return response;
+    // The retained generic route represents a terminal provider success as
+    // `{ status: 'COMPLETED', id, operationId }`. Hand that durable identity
+    // to the roster finalizer too; the operation-id path is idempotent and
+    // closes the gap where generic ledger success preceded local allocation.
+    const exactResponse = operation.contractVersion === 'interactive-obligation-charge/2';
+    if (exactResponse && operation.status === 'succeeded') return response;
     const recovered = await recoverRosterPaymentOperation(rosterLeagueId, operation.operationId).catch(() => null);
-    return recovered?.ok ? recovered : response;
+    // A roster recovery may deliberately return 409/202 while preserving the
+    // durable operation identity and reconciliation status. Keep that exact
+    // response so callers never mistake a generic provider response for a
+    // confirmed local allocation; only the exact terminal `succeeded` status
+    // is accepted by checkout callers.
+    return recovered ?? response;
   };
   try {
-    return await reconcileRosterResponse(await request());
+    const initial = await request();
+    if (rosterLeagueId !== undefined && !initial.ok) {
+      // A provider-success/local-finalization failure is commonly surfaced
+      // as 409/202 after dispatch. Re-read the durable request-key operation
+      // before exposing that non-terminal response to the caller.
+      const recovered = await recoverPaymentIntent(requestKey, organizationId).catch(() => null);
+      if (recovered) return await reconcileRosterResponse(recovered);
+    }
+    return await reconcileRosterResponse(initial);
   } catch (error) {
     const recovered = await recoverPaymentIntent(requestKey, organizationId).catch(() => null);
     if (!recovered) throw error;

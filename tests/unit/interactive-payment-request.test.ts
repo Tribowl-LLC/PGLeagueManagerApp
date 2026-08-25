@@ -90,6 +90,57 @@ describe('interactive request-key recovery', () => {
     expect(csrfFetchMock).toHaveBeenCalledWith('/api/financials/leagues/11/interactive-obligation-charge/2/operations/11111111-1111-4111-8111-111111111111/recover', expect.objectContaining({ method: 'POST' }));
   });
 
+  it('hands a generic terminal success response to exact roster recovery', async () => {
+    const generic = new Response(JSON.stringify({
+      success: true,
+      status: 'COMPLETED',
+      id: 'sq_pay_123',
+      operationId: '11111111-1111-4111-8111-111111111111',
+    }), { status: 200 });
+    const exact = new Response(JSON.stringify({ data: {
+      contractVersion: 'interactive-obligation-recovery/1',
+      operationId: '11111111-1111-4111-8111-111111111111',
+      status: 'succeeded',
+    } }), { status: 200 });
+    csrfFetchMock.mockResolvedValueOnce(generic).mockResolvedValueOnce(exact);
+
+    await expect(paymentRequestWithRecovery(
+      'request-key-123456',
+      () => Promise.reject(new Error('connection reset')),
+      42,
+      11,
+    )).resolves.toBe(exact);
+    expect(csrfFetchMock.mock.calls[1]?.[0]).toBe('/api/financials/leagues/11/interactive-obligation-charge/2/operations/11111111-1111-4111-8111-111111111111/recover');
+  });
+
+  it('extracts roster identity from a generic non-2xx operation detail', async () => {
+    const generic = new Response(JSON.stringify({
+      success: false,
+      error: {
+        code: 'RECONCILIATION_REQUIRED',
+        message: 'Payment status is still being confirmed.',
+        details: {
+          operationId: '11111111-1111-4111-8111-111111111111',
+          status: 'reconciliation_required',
+        },
+      },
+    }), { status: 409 });
+    const exact = new Response(JSON.stringify({ data: {
+      contractVersion: 'interactive-obligation-recovery/1',
+      operationId: '11111111-1111-4111-8111-111111111111',
+      status: 'reconciliation_required',
+    } }), { status: 409 });
+    csrfFetchMock.mockResolvedValueOnce(generic).mockResolvedValueOnce(exact);
+
+    await expect(paymentRequestWithRecovery(
+      'request-key-123456',
+      () => Promise.resolve(new Response(null, { status: 409 })),
+      42,
+      11,
+    )).resolves.toBe(exact);
+    expect(csrfFetchMock.mock.calls[1]?.[0]).toContain('/operations/11111111-1111-4111-8111-111111111111/recover');
+  });
+
   it('includes explicit organization scope for an org-less scoped admin recovery', async () => {
     const recovered = new Response(null, { status: 202 });
     csrfFetchMock.mockResolvedValueOnce(recovered);

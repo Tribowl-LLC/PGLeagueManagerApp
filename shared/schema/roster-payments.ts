@@ -338,7 +338,10 @@ export const paymentOperationRosterSnapshotItems = pgTable("payment_operation_ro
   leagueTenantFk: leagueTenantFk(table, "payment_operation_roster_snapshot_items_league_tenant_fk"),
   operationItemUnique: uniqueIndex("payment_operation_roster_snapshot_items_operation_item_unique").on(table.operationId, table.organizationId, table.leagueId, table.obligationId),
   operationAllocationIndexUnique: uniqueIndex("payment_operation_roster_snapshot_items_operation_allocation_index_unique").on(table.operationId, table.organizationId, table.leagueId, table.allocationIndex),
-  activeObligationUnique: uniqueIndex("payment_operation_roster_snapshot_items_active_obligation_unique").on(table.organizationId, table.leagueId, table.obligationId).where(sql`${table.state} IN ('reserved', 'finalized')`),
+  // Finalized items are immutable provider evidence, not live reservations.
+  // They must not prevent a later exact operation from collecting a remaining
+  // partial balance on the same obligation.
+  activeObligationUnique: uniqueIndex("payment_operation_roster_snapshot_items_active_obligation_unique").on(table.organizationId, table.leagueId, table.obligationId).where(sql`${table.state} = 'reserved'`),
   index: index("payment_operation_roster_snapshot_items_obligation_idx").on(table.organizationId, table.leagueId, table.obligationId, table.state),
   amountCheck: check("payment_operation_roster_snapshot_items_amount_check", sql`${table.amountMinor} > 0 AND ${table.allocationIndex} >= 0 AND ${table.state} IN ('reserved', 'finalized', 'released')`),
 }));

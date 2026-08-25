@@ -45,6 +45,15 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
     }
     const [league] = await tx.select({ timezone: leagues.timezone, paymentMode: leagues.paymentMode }).from(leagues).where(and(eq(leagues.id, input.leagueId), eq(leagues.organizationId, input.organizationId))).limit(1);
     if (!league) throw new CanonicalPaymentReportIncompatibilityError("league not found");
+    const [upfrontEvidence] = league.paymentMode === "upfront"
+      ? await tx.select({ dueAt: paymentObligations.dueAt }).from(paymentObligations).where(and(
+        eq(paymentObligations.organizationId, input.organizationId),
+        eq(paymentObligations.leagueId, input.leagueId),
+        sql`${paymentObligations.pastDueAt} = ${paymentObligations.dueAt}`,
+      )).orderBy(asc(paymentObligations.dueAt), asc(paymentObligations.id)).limit(1)
+      : [];
+    const upfrontDueAt = upfrontEvidence?.dueAt ? new Date(upfrontEvidence.dueAt).toISOString() : null;
+    const timezone = league.timezone ?? "UTC";
     const conditions = [eq(payments.leagueId, input.leagueId)];
     if (input.bowlerId !== undefined) conditions.push(eq(payments.bowlerId, input.bowlerId));
     if (input.paymentId !== undefined) conditions.push(eq(payments.id, input.paymentId));
@@ -180,7 +189,7 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
       unresolvedOperationMinor: rows.filter((row) => row.unresolved).reduce((sum, row) => sum + row.amountMinor, 0),
       unallocatedLegacyMinor: rows.filter((row) => row.source === "unlinked_legacy").reduce((sum, row) => sum + row.unallocatedMinor, 0),
     };
-    const reportWithoutFingerprint = { contractVersion: "canonical-payment-report/1" as const, orderVersion: "league,business-date,bowler,occurrence,allocation,payment/1" as const, organizationId: input.organizationId, leagueId: input.leagueId, mode: rows.some((row) => row.source === "unlinked_legacy") ? "canonical_with_unlinked_history" as const : "canonical" as const, authoritativeSource: "canonical" as const, asOf, page, limit, totalRows: rows.length, totalTransactions: transactions.length, totals, rows: rows.slice((page - 1) * limit, page * limit), transactions: transactions.slice((page - 1) * limit, page * limit), unlinkedHistory: rows.filter((row) => row.source === "unlinked_legacy"), paymentTiming: { paymentMode: league.paymentMode === "upfront" ? "upfront" as const : "weekly" as const, upfrontDueAt: null, timezone: league.timezone ?? "UTC", source: "roster_payment_responsibility" as const } };
+    const reportWithoutFingerprint = { contractVersion: "canonical-payment-report/1" as const, orderVersion: "league,business-date,bowler,occurrence,allocation,payment/1" as const, organizationId: input.organizationId, leagueId: input.leagueId, mode: rows.some((row) => row.source === "unlinked_legacy") ? "canonical_with_unlinked_history" as const : "canonical" as const, authoritativeSource: "canonical" as const, asOf, page, limit, totalRows: rows.length, totalTransactions: transactions.length, totals, rows: rows.slice((page - 1) * limit, page * limit), transactions: transactions.slice((page - 1) * limit, page * limit), unlinkedHistory: rows.filter((row) => row.source === "unlinked_legacy"), paymentTiming: { paymentMode: league.paymentMode === "upfront" ? "upfront" as const : "weekly" as const, upfrontDueAt, upfrontDueAtLocal: upfrontDueAt ? leagueLocalDate(upfrontDueAt, timezone) : null, timezone, source: "roster_payment_responsibility" as const } };
     return { ...reportWithoutFingerprint, fingerprint: canonicalPaymentReportFingerprint(reportWithoutFingerprint) };
   };
   // Production always supplies a transaction-capable Drizzle database. A few

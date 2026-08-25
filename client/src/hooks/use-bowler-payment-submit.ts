@@ -136,6 +136,9 @@ export function useBowlerPaymentSubmit({
       // historical amount/season payment routes remain archive-compatible,
       // but are deliberately unavailable for new canonical charges.
       if (league.payingLineupSize != null) {
+        if (chargeForBowlerId !== bowler.id || hasCombinedPartners) {
+          throw new Error('Partner payments are temporarily unavailable for roster-driven leagues. Pay one exact payer at a time.');
+        }
         const selectedObligationIds = [...new Set((occurrenceAllocations ?? []).map((row) => row.obligationId))];
         if (selectedObligationIds.length === 0) {
           throw new Error('Select one or more exact payment obligations before paying.');

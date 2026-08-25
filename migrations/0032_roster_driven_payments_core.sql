@@ -382,7 +382,7 @@ CREATE TABLE payment_operation_roster_snapshot_items (
 );
 CREATE UNIQUE INDEX payment_operation_roster_snapshot_items_operation_item_unique ON payment_operation_roster_snapshot_items(operation_id, organization_id, league_id, obligation_id);
 CREATE UNIQUE INDEX payment_operation_roster_snapshot_items_operation_allocation_index_unique ON payment_operation_roster_snapshot_items(operation_id, organization_id, league_id, allocation_index);
-CREATE UNIQUE INDEX payment_operation_roster_snapshot_items_active_obligation_unique ON payment_operation_roster_snapshot_items(organization_id, league_id, obligation_id) WHERE state IN ('reserved', 'finalized');
+CREATE UNIQUE INDEX payment_operation_roster_snapshot_items_active_obligation_unique ON payment_operation_roster_snapshot_items(organization_id, league_id, obligation_id) WHERE state = 'reserved';
 CREATE INDEX payment_operation_roster_snapshot_items_obligation_idx ON payment_operation_roster_snapshot_items(organization_id, league_id, obligation_id, state);
 --> statement-breakpoint
 
