@@ -36,6 +36,21 @@ const log = createLogger("Bowlers");
 
 const router = Router();
 
+// Provider identity and retry fields are server-owned. They are populated by
+// the provider sync/retry workflows, never by a generic bowler PATCH. Keeping
+// this boundary in the route also protects the self-profile shortcut from
+// turning a profile update into a payment-account mutation.
+const PROVIDER_MANAGED_BOWLER_FIELDS = [
+  'paymentCustomerId',
+  'paymentProviderLocationId',
+  'paymentSyncPendingAt',
+  'paymentSyncAttempts',
+  'paymentSyncLastAttemptAt',
+  'paymentSyncNextRetryAt',
+] as const;
+const SELF_EDITABLE_BOWLER_FIELDS = ['name', 'email', 'phone'] as const;
+const ADMIN_EDITABLE_BOWLER_FIELDS = [...SELF_EDITABLE_BOWLER_FIELDS, 'active', 'order'] as const;
+
 
 router.get("/unlinked", async (req, res) => {
   try {
@@ -403,7 +418,7 @@ router.get("/:id/details", async (req, res) => {
     }
 
     const leagueIds = [...new Set(bowlerLeagues.map(bl => bl.leagueId))];
-    const teamIds = [...new Set(bowlerLeagues.filter(bl => bl.teamId).map(bl => bl.teamId!))];
+    const teamIds = [...new Set(bowlerLeagues.map(bl => bl.teamId))];
 
     const [leagues, teams] = await Promise.all([
       leagueIds.length > 0 ? storage.getLeaguesByIds(leagueIds) : Promise.resolve([]),
@@ -643,6 +658,24 @@ router.patch("/:id", async (req, res) => {
     // another bowler's profile (task #732).
     if (!await hasSelfOrAdminAccessToBowler(req, id)) {
       return sendError(res, "You don't have access to update this bowler", 403, 'FORBIDDEN');
+    }
+
+    const requestedFields = Object.keys(update);
+    if (requestedFields.some((field) => (PROVIDER_MANAGED_BOWLER_FIELDS as readonly string[]).includes(field))) {
+      return sendError(res, 'Payment provider fields are managed by the payment sync workflow', 403, 'FORBIDDEN');
+    }
+
+    // A linked ordinary user may edit only their own profile fields. In
+    // particular, `active` and `order` affect canonical roster
+    // responsibility and must remain administrator-only. The access check
+    // above intentionally happens first so cross-tenant requests retain the
+    // existing non-oracular denial behavior.
+    const allowedFields = isOrgOrHigher(req.user)
+      ? ADMIN_EDITABLE_BOWLER_FIELDS
+      : SELF_EDITABLE_BOWLER_FIELDS;
+    const disallowedFields = requestedFields.filter((field) => !(allowedFields as readonly string[]).includes(field));
+    if (disallowedFields.length > 0) {
+      return sendError(res, 'Only profile fields may be changed by this account', 403, 'FORBIDDEN');
     }
 
     const merged = { ...bowler, ...update };

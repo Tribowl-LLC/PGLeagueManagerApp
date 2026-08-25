@@ -141,6 +141,33 @@ describe('interactive request-key recovery', () => {
     expect(csrfFetchMock.mock.calls[1]?.[0]).toContain('/operations/11111111-1111-4111-8111-111111111111/recover');
   });
 
+  it.each(['STALE_QUOTE', 'INVALID_REQUEST'])('preserves an exact roster validation response when generic recovery has no durable identity (%s)', async (code) => {
+    const initial = new Response(JSON.stringify({
+      success: false,
+      error: { code, message: code === 'STALE_QUOTE' ? 'The quote is no longer current.' : 'The payment request is invalid.' },
+    }), { status: code === 'STALE_QUOTE' ? 409 : 400 });
+    // A request-key lookup can legitimately return a generic not-found/error
+    // response when no operation was dispatched. It must not replace the
+    // exact validation response with a misleading recovery 404.
+    csrfFetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      success: false,
+      error: { code: 'NOT_FOUND', message: 'Payment operation not found' },
+    }), { status: 404 }));
+
+    const result = await paymentRequestWithRecovery(
+      'request-key-123456',
+      () => Promise.resolve(initial),
+      42,
+      11,
+    );
+
+    expect(result).toBe(initial);
+    expect(result.status).toBe(code === 'STALE_QUOTE' ? 409 : 400);
+    await expect(result.clone().json()).resolves.toMatchObject({ error: { code } });
+    expect(csrfFetchMock).toHaveBeenCalledTimes(1);
+    expect(csrfFetchMock.mock.calls[0]?.[0]).toBe('/api/payments-provider/payment-operations/recover');
+  });
+
   it('includes explicit organization scope for an org-less scoped admin recovery', async () => {
     const recovered = new Response(null, { status: 202 });
     csrfFetchMock.mockResolvedValueOnce(recovered);

@@ -90,8 +90,7 @@ export async function paymentRequestWithRecovery(
     operationId?: string;
     status?: string;
   };
-  const reconcileRosterResponse = async (response: Response): Promise<Response> => {
-    if (rosterLeagueId === undefined) return response;
+  const readRecoveryOperation = async (response: Response): Promise<RecoveryOperation> => {
     const body = await response.clone().json().catch(() => null) as {
       data?: RecoveryOperation;
       error?: { details?: RecoveryOperation };
@@ -100,9 +99,12 @@ export async function paymentRequestWithRecovery(
     } | null;
     // The exact roster route returns `{ data: ... }`, while the retained
     // request-key recovery route returns a top-level operation status. Both
-    // identify the same durable operation; hand it to the roster finalizer
-    // whenever local evidence is not terminally succeeded.
-    const operation: RecoveryOperation = body?.data ?? body?.error?.details ?? body ?? {};
+    // identify the same durable operation when operationId is present.
+    return body?.data ?? body?.error?.details ?? body ?? {};
+  };
+  const reconcileRosterResponse = async (response: Response): Promise<Response> => {
+    if (rosterLeagueId === undefined) return response;
+    const operation = await readRecoveryOperation(response);
     if (!operation?.operationId) return response;
     // The retained generic route represents a terminal provider success as
     // `{ status: 'COMPLETED', id, operationId }`. Hand that durable identity
@@ -123,9 +125,16 @@ export async function paymentRequestWithRecovery(
     if (rosterLeagueId !== undefined && !initial.ok) {
       // A provider-success/local-finalization failure is commonly surfaced
       // as 409/202 after dispatch. Re-read the durable request-key operation
-      // before exposing that non-terminal response to the caller.
+      // before exposing that non-terminal response to the caller. If the
+      // retained recovery route has no operation identity, it cannot prove
+      // that the request belongs to this roster checkout; preserve the
+      // original exact response (including STALE_QUOTE/INVALID_REQUEST).
       const recovered = await recoverPaymentIntent(requestKey, organizationId).catch(() => null);
-      if (recovered) return await reconcileRosterResponse(recovered);
+      if (recovered) {
+        const operation = await readRecoveryOperation(recovered);
+        if (operation.operationId) return await reconcileRosterResponse(recovered);
+        return initial;
+      }
     }
     return await reconcileRosterResponse(initial);
   } catch (error) {

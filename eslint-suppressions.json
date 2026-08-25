@@ -160,10 +160,7 @@
   },
   "server/routes/bowlers.ts": {
     "@typescript-eslint/no-non-null-assertion": {
-      "count": 3
-    },
-    "@typescript-eslint/no-unnecessary-type-assertion": {
-      "count": 1
+      "count": 2
     }
   },
   "server/routes/payments/payment-reports.ts": {
