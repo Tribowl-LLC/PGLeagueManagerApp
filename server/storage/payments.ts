@@ -355,19 +355,20 @@ export async function updatePaymentReceiptCacheForOrganization(
   fields: Pick<UpdatePayment, "receiptUrl" | "receiptNumber">,
 ): Promise<Payment | undefined> {
   return db.transaction(async (tx) => {
-    const [current] = await tx.select({ payment: payments, leagueId: payments.leagueId, paymentOperationId: payments.paymentOperationId })
+    // Receipt projection is an internal, tenant-scoped cache write. It is
+    // deliberately narrower than the public payment mutation API: provider
+    // and canonical allocation facts remain immutable, while a provider
+    // receipt URL/number may be filled in lazily after the payment is read.
+    const [scope] = await tx.select({ leagueId: payments.leagueId })
       .from(payments)
       .innerJoin(leagues, and(eq(leagues.id, payments.leagueId), eq(leagues.organizationId, organizationId)))
       .where(eq(payments.id, id)).limit(1);
-    if (!current) return undefined;
-    await lockLeagueSchedule(tx, organizationId, current.leagueId);
-    const [allocation] = await tx.select({ id: paymentAllocations.id }).from(paymentAllocations).where(and(
-      eq(paymentAllocations.paymentId, id),
-      eq(paymentAllocations.organizationId, organizationId),
-      eq(paymentAllocations.leagueId, current.leagueId),
-    )).limit(1).for("update");
-    if (allocation || current.paymentOperationId !== null) throw new PaymentEvidenceImmutableError();
-    const [updated] = await tx.update(payments).set(fields).where(eq(payments.id, id)).returning();
+    if (!scope) return undefined;
+    await lockLeagueSchedule(tx, organizationId, scope.leagueId);
+    const [updated] = await tx.update(payments).set(fields).where(and(
+      eq(payments.id, id),
+      eq(payments.leagueId, scope.leagueId),
+    )).returning();
     return updated;
   });
 }

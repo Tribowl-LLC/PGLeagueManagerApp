@@ -15,7 +15,11 @@ export interface CanonicalPaymentReportInput {
   limit?: number;
 }
 
-function rowStatus(payment: typeof payments.$inferSelect, reviewRequired: boolean): CanonicalPaymentRow["status"] {
+function rowStatus(payment: typeof payments.$inferSelect, reviewRequired: boolean, corrected: boolean): CanonicalPaymentRow["status"] {
+  // A manual correction is append-only evidence: the original payment row is
+  // retained, but its canonical allocation is voided and superseded. Do not
+  // count that archived row as a second settled payment in report totals.
+  if (corrected) return "failed";
   if (reviewRequired) return "review_required";
   if (payment.disputeId) return "disputed";
   if (payment.refundedAt || payment.squareRefundId) return "refunded";
@@ -47,6 +51,7 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
       const linked = allocations.filter((candidate) => candidate.allocation.paymentId === payment.id);
       const operation = operations.find((candidate) => candidate.id === payment.paymentOperationId);
       const dispute = operation ? disputes.find((candidate) => candidate.paymentOperationId === operation.id) : undefined;
+      const corrected = linked.some((candidate) => candidate.allocation.state === "voided" && candidate.allocation.supersedesAllocationId !== null);
       const reviewRequired = linked.some((candidate) => candidate.allocation.reviewRequired) || Boolean(dispute && !["WON", "CLOSED"].includes(dispute.state));
       const allocationRows = linked.map((candidate) => ({ allocationId: candidate.allocation.id, obligationId: candidate.obligation.id, occurrenceId: candidate.obligation.occurrenceId, bowlerId: candidate.obligation.payerBowlerId, amountMinor: candidate.allocation.amountMinor, currency: candidate.allocation.currency, state: candidate.allocation.state === "active" ? "active" as const : "voided" as const }));
       const allocatedMinor = allocationRows.filter((candidate) => candidate.state === "active").reduce((sum, candidate) => sum + candidate.amountMinor, 0);
@@ -57,7 +62,7 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
         bowlerId: payment.bowlerId,
         amountMinor: payment.amount,
         currency: "USD",
-        status: rowStatus(payment, reviewRequired),
+        status: rowStatus(payment, reviewRequired, corrected),
         paymentType: payment.type === "cash" || payment.type === "check" ? payment.type : payment.type === "square" ? "square" : "credit_card",
         businessDate: payment.weekOf,
         authoritativeLocalDate: payment.weekOf.slice(0, 10),

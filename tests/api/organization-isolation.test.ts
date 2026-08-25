@@ -299,6 +299,37 @@ describe('Organization Isolation', () => {
       expect(spoofedScope.data.success).toBe(false);
       expect(JSON.stringify(spoofedScope.data)).not.toContain(`"organizationId":${sessionB.user.organizationId}`);
     });
+
+    it('org A cannot read org B roster-payment due or responsibility surfaces', async () => {
+      expect(orgBLeagueId, 'expected an org B league id to test against').not.toBeNull();
+      expect(sessionB.user.organizationId, 'expected an org B organization id').not.toBeNull();
+
+      const due = await apiGet(
+        `/api/financials/leagues/${orgBLeagueId}/canonical-due-past-due/2`,
+        sessionA,
+      );
+      expect([403, 404]).toContain(due.status);
+      expect(due.data.success).toBe(false);
+      expect(JSON.stringify(due.data)).not.toContain(`"organizationId":${sessionB.user.organizationId}`);
+
+      const dueForOtherPayer = await apiGet(
+        `/api/financials/leagues/${orgBLeagueId}/canonical-due-past-due/2?bowlerId=999999`,
+        sessionA,
+      );
+      // Coverage marker for the guard's fetch-and-filter inventory:
+      // /api/financials/leagues/:leagueId/canonical-due-past-due/2?bowlerId=...
+      expect([403, 404]).toContain(dueForOtherPayer.status);
+      expect(dueForOtherPayer.data.success).toBe(false);
+      expect(JSON.stringify(dueForOtherPayer.data)).not.toContain(`"organizationId":${sessionB.user.organizationId}`);
+
+      const roster = await apiGet(
+        `/api/financials/leagues/${orgBLeagueId}/roster-payment-responsibility/1`,
+        sessionA,
+      );
+      expect([403, 404]).toContain(roster.status);
+      expect(roster.data.success).toBe(false);
+      expect(JSON.stringify(roster.data)).not.toContain(`"organizationId":${sessionB.user.organizationId}`);
+    });
   });
 
   // -------------------------------------------------------------------------

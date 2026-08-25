@@ -11,6 +11,7 @@ import {
   validateInteractiveOccurrenceBaseAllocations,
   validateInteractiveOccurrenceSelections,
 } from "../../server/services/interactive-occurrence-allocation";
+import { calculateRosterPaymentTiming } from "../../server/services/roster-payment-core";
 
 const id = "00000000-0000-4000-8000-000000000001";
 const id2 = "00000000-0000-4000-8000-000000000002";
@@ -56,6 +57,13 @@ describe("PR1 roster-driven payment contract", () => {
       dueAt: "2032-10-01T00:00:00.000Z", pastDueAt: "2032-10-08T00:00:00.000Z",
       payerBowlerId: 10,
     }).success).toBe(true); // server materialization rejects payer identity for VACANT
+  });
+
+  it("derives roster past-due at the exact centralized three-hour grace boundary", () => {
+    expect(calculateRosterPaymentTiming("2032-10-01T19:00:00.000Z")).toEqual({
+      dueAt: "2032-10-01T19:00:00.000Z",
+      pastDueAt: "2032-10-01T22:00:00.000Z",
+    });
   });
 
   it("allows partial exact allocations but never over-allocates an obligation", () => {

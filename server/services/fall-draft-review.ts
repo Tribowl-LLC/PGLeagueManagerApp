@@ -65,6 +65,7 @@ import {
 } from "@shared/fall-draft-generation";
 import { db } from "../db.js";
 import { lockLeagueSchedule, type LeagueScheduleTransaction } from "../storage/league-schedule-lock.js";
+import { materializeRosterPaymentOccurrenceInTransaction } from "./roster-payment-core.js";
 import {
   buildCanonicalScheduleCommandFingerprint,
   getOrCreateCanonicalScheduleCommandInTransaction,
@@ -1344,6 +1345,9 @@ export async function publishCanonicalDraftInTransaction(
     if (term.state !== "draft") throw new FallDraftReviewError("incompatible_canonical_state", "automatic publication requires draft billing terms");
     await updateBillingTerm(tx, term, { state: "published", publishedAt: transactionTime, publishedByUserId: input.actorUserId, publicationCommandId: publication.command.id }, publication.command.id);
   }
+  for (const occurrence of rows.occurrences) {
+    await materializeRosterPaymentOccurrenceInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId, occurrenceId: occurrence.id, actorUserId: input.actorUserId });
+  }
   for (const exception of rows.exceptions) {
     if (exception.lifecycle !== "draft") throw new FallDraftReviewError("incompatible_canonical_state", "automatic publication requires draft skip exceptions");
     const [updated] = await tx.update(leagueScheduleExceptions).set({
@@ -1460,6 +1464,9 @@ export async function approveAndPublishFallDraft(input: FallDraftScope & {
         state: "published", publishedAt: transactionTime, publishedByUserId: input.actorUserId,
         publicationCommandId: publish.command.id,
       }, publish.command.id);
+    }
+    for (const occurrence of rows.occurrences) {
+      await materializeRosterPaymentOccurrenceInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId, occurrenceId: occurrence.id, actorUserId: input.actorUserId });
     }
     injectFailure(input.failureInjection, "after_billing_terms");
     for (const exception of rows.exceptions) {

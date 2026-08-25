@@ -19,6 +19,7 @@ import {
   paymentOperations,
   paymentOperationRosterSnapshots,
   paymentOperationRosterSnapshotItems,
+  interactivePaymentOperationSnapshots,
   type TeamPaymentPolicy,
 } from "@shared/schema";
 import type {
@@ -33,6 +34,8 @@ import { prepareInteractivePaymentOperation } from "./interactive-payment-operat
 import { interactivePaymentOperationExecutor } from "./interactive-payment-operation-executor.js";
 import { getPaymentProvider } from "./payment-provider-factory.js";
 import { getProviderCustomerId } from "./payment-utils.js";
+import { WEEKLY_BILLING_GRACE_PERIOD_MS } from "@shared/schedule-utils";
+import { decrypt } from "../utils/crypto.js";
 
 export class RosterPaymentError extends Error {
   constructor(public readonly code: string, message: string, public readonly status = 409) {
@@ -119,6 +122,12 @@ function canonicalCorrectionFingerprint(request: CanonicalCorrectionRequest): st
   return commandFingerprint("lvcorrection:v1", { allocationId: request.allocationId, reason: request.reason });
 }
 
+export function calculateRosterPaymentTiming(dueAt: string | Date): { dueAt: string; pastDueAt: string } {
+  const due = new Date(dueAt);
+  if (!Number.isFinite(due.getTime())) throw new RosterPaymentError("INVALID_DUE_AT", "The occurrence start time is invalid", 422);
+  return { dueAt: due.toISOString(), pastDueAt: new Date(due.getTime() + WEEKLY_BILLING_GRACE_PERIOD_MS).toISOString() };
+}
+
 async function leagueScope(organizationId: number, leagueId: number): Promise<{ id: number; organizationId: number; locationId: number | null; payingLineupSize: number | null; weeklyFee: number; substituteAccess: "team_only" | "floating"; substitutePaymentRegime: "team_choice" | "league_lineage_prize_split"; lineageFee: number | null; prizeFundFee: number | null }> {
   const [league] = await db.select({ id: leagues.id, organizationId: leagues.organizationId, locationId: leagues.locationId, payingLineupSize: leagues.payingLineupSize, weeklyFee: leagues.weeklyFee, substituteAccess: leagues.substituteAccess, substitutePaymentRegime: leagues.substitutePaymentRegime, lineageFee: leagues.lineageFee, prizeFundFee: leagues.prizeFundFee })
     .from(leagues).where(and(eq(leagues.id, leagueId), eq(leagues.organizationId, organizationId))).limit(1);
@@ -135,6 +144,20 @@ export async function readRosterPaymentResponsibility(input: { organizationId: n
     .orderBy(asc(teamPaymentSlots.teamId), asc(teamPaymentSlots.slotIndex));
   const policyRows = await db.select().from(teamPaymentPolicies)
     .where(and(eq(teamPaymentPolicies.organizationId, input.organizationId), eq(teamPaymentPolicies.leagueId, input.leagueId)));
+  const substituteBowlerOptions = await db.select({ id: bowlers.id, name: bowlers.name, teamId: bowlerLeagues.teamId })
+    .from(bowlers)
+    .innerJoin(bowlerLeagues, and(eq(bowlerLeagues.bowlerId, bowlers.id), eq(bowlerLeagues.leagueId, input.leagueId), eq(bowlerLeagues.active, true)))
+    .where(and(eq(bowlers.organizationId, input.organizationId), eq(bowlers.active, true)))
+    .orderBy(asc(bowlers.name), asc(bowlers.id));
+  const occurrences = await db.select({ id: leagueOccurrences.id, startAt: leagueOccurrences.startAt, status: leagueOccurrences.status })
+    .from(leagueOccurrences)
+    .where(and(
+      eq(leagueOccurrences.organizationId, input.organizationId),
+      eq(leagueOccurrences.leagueId, input.leagueId),
+      inArray(leagueOccurrences.lifecycle, ["published", "locked"] as const),
+      inArray(leagueOccurrences.status, ["scheduled", "completed"] as const),
+    ))
+    .orderBy(asc(leagueOccurrences.startAt), asc(leagueOccurrences.id));
   const slotsByTeam = new Map<number, typeof slots>();
   for (const slot of slots) slotsByTeam.set(slot.teamId, [...(slotsByTeam.get(slot.teamId) ?? []), slot]);
   const incompleteTeams = teamRows.filter((team) => {
@@ -151,6 +174,8 @@ export async function readRosterPaymentResponsibility(input: { organizationId: n
     substitutePaymentRegime: league.substitutePaymentRegime,
     ready: league.payingLineupSize !== null && incompleteTeams.length === 0,
     incompleteTeamIds: incompleteTeams,
+    occurrences: occurrences.map((occurrence) => ({ id: occurrence.id, startAt: occurrence.startAt, status: occurrence.status })),
+    substituteBowlerOptions,
     teams: teamRows.map((team) => ({
       ...team,
       policy: policyRows.find((policy) => policy.teamId === team.id)?.defaultPolicy ?? "main_pays_full",
@@ -250,8 +275,7 @@ export async function saveTeamRoster(input: {
         eq(occurrencePaymentResponsibilities.state, "active"),
       ));
       for (const occurrence of occurrences) {
-        const dueAt = occurrence.startAt;
-        const pastDueAt = new Date(new Date(dueAt).getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
+        const { dueAt, pastDueAt } = calculateRosterPaymentTiming(occurrence.startAt);
         const responsibilities = rosterTeams.flatMap((team) => rosterRows
           .filter((slot) => slot.teamId === team.id)
           .filter((slot) => {
@@ -309,6 +333,51 @@ export async function saveTeamRoster(input: {
     await completeFinancialCommand(tx, { organizationId: input.organizationId, leagueId: input.leagueId, commandType: "roster_payment.save_team_roster", idempotencyKey: input.request.commandKey, result });
     return result;
   });
+}
+
+/** Materialize one newly published/locked occurrence behind a complete
+ * roster. Schedule publication and restoration call this inside their
+ * existing tenant+league transaction, so a ready league cannot expose a
+ * billable occurrence without its responsibility/obligation evidence. */
+export async function materializeRosterPaymentOccurrenceInTransaction(
+  tx: RosterPaymentTransaction,
+  input: { organizationId: number; leagueId: number; occurrenceId: string; actorUserId: number },
+): Promise<boolean> {
+  const [league] = await tx.select({ payingLineupSize: leagues.payingLineupSize, weeklyFee: leagues.weeklyFee, substituteAccess: leagues.substituteAccess, substitutePaymentRegime: leagues.substitutePaymentRegime, lineageFee: leagues.lineageFee, prizeFundFee: leagues.prizeFundFee })
+    .from(leagues).where(and(eq(leagues.id, input.leagueId), eq(leagues.organizationId, input.organizationId))).limit(1);
+  if (!league?.payingLineupSize) return false;
+  const [occurrence] = await tx.select({ id: leagueOccurrences.id, startAt: leagueOccurrences.startAt, status: leagueOccurrences.status })
+    .from(leagueOccurrences).where(and(eq(leagueOccurrences.id, input.occurrenceId), eq(leagueOccurrences.organizationId, input.organizationId), eq(leagueOccurrences.leagueId, input.leagueId), inArray(leagueOccurrences.lifecycle, ["published", "locked"] as const), inArray(leagueOccurrences.status, ["scheduled", "completed"] as const))).limit(1);
+  if (!occurrence) return false;
+  const rosterTeams = await tx.select({ id: teams.id }).from(teams).where(and(eq(teams.leagueId, input.leagueId), eq(teams.active, true)));
+  const rosterRows = await tx.select().from(teamPaymentSlots).where(and(eq(teamPaymentSlots.organizationId, input.organizationId), eq(teamPaymentSlots.leagueId, input.leagueId))).orderBy(asc(teamPaymentSlots.teamId), asc(teamPaymentSlots.slotIndex));
+  if (rosterTeams.length === 0 || !rosterTeams.every((team) => {
+    const teamSlots = rosterRows.filter((slot) => slot.teamId === team.id);
+    return teamSlots.length === league.payingLineupSize && teamSlots.every((slot) => slot.occupant !== "unassigned");
+  })) return false;
+  const policies = await tx.select().from(teamPaymentPolicies).where(and(eq(teamPaymentPolicies.organizationId, input.organizationId), eq(teamPaymentPolicies.leagueId, input.leagueId)));
+  const active = await tx.select({ occurrenceId: occurrencePaymentResponsibilities.occurrenceId, teamId: occurrencePaymentResponsibilities.teamId, slotIndex: occurrencePaymentResponsibilities.slotIndex, responsibilityKind: occurrencePaymentResponsibilities.responsibilityKind, mainBowlerId: occurrencePaymentResponsibilities.mainBowlerId, substituteBowlerId: occurrencePaymentResponsibilities.substituteBowlerId, payerBowlerId: occurrencePaymentResponsibilities.payerBowlerId, policy: occurrencePaymentResponsibilities.policy }).from(occurrencePaymentResponsibilities).where(and(eq(occurrencePaymentResponsibilities.organizationId, input.organizationId), eq(occurrencePaymentResponsibilities.leagueId, input.leagueId), eq(occurrencePaymentResponsibilities.occurrenceId, occurrence.id), eq(occurrencePaymentResponsibilities.state, "active")));
+  const { pastDueAt } = calculateRosterPaymentTiming(occurrence.startAt);
+  const responsibilities = rosterTeams.flatMap((team) => rosterRows.filter((slot) => slot.teamId === team.id).filter((slot) => {
+    const current = active.find((row) => row.teamId === team.id && row.slotIndex === slot.slotIndex);
+    if (current && ["substitute", "split"].includes(current.responsibilityKind)) return false;
+    const kind = slot.occupant === "main" ? "main" as const : "vacant" as const;
+    const mainBowlerId = slot.occupant === "main" ? slot.mainBowlerId : null;
+    const payerBowlerId = slot.occupant === "main" ? slot.mainBowlerId : null;
+    const policy = policies.find((candidate) => candidate.teamId === team.id)?.defaultPolicy ?? "main_pays_full";
+    return !current || current.responsibilityKind !== kind || current.mainBowlerId !== mainBowlerId || current.substituteBowlerId !== null || current.payerBowlerId !== payerBowlerId || current.policy !== policy;
+  }).map((slot) => {
+    const policy = policies.find((candidate) => candidate.teamId === team.id)?.defaultPolicy ?? "main_pays_full";
+    return { occurrenceId: occurrence.id, teamId: team.id, slotIndex: slot.slotIndex, positionIndex: slot.slotIndex, kind: slot.occupant === "main" ? "main" as const : "vacant" as const, mainBowlerId: slot.occupant === "main" ? slot.mainBowlerId : null, substituteBowlerId: null, payerBowlerId: slot.occupant === "main" ? slot.mainBowlerId : null, policy, amountMinor: slot.occupant === "main" ? league.weeklyFee : 0, lineageAmountMinor: null, prizeFundAmountMinor: null, dueAt: occurrence.startAt, pastDueAt, assignmentNote: "roster_default" };
+  }));
+  if (responsibilities.length === 0) return true;
+  const fingerprint = canonicalResponsibilityFingerprint(responsibilities);
+  try {
+    await recordOccurrenceResponsibilities({ organizationId: input.organizationId, leagueId: input.leagueId, actorUserId: input.actorUserId, commandKey: `roster:${occurrence.id}:${fingerprint.slice(-32)}`, requestFingerprint: fingerprint, responsibilities, transaction: tx });
+  } catch (error) {
+    if (!(error instanceof RosterPaymentReplay)) throw error;
+  }
+  return true;
 }
 
 export async function readCanonicalDuePastDue(input: { organizationId: number; leagueId: number; payerBowlerId?: number }) {
@@ -434,13 +503,15 @@ export async function recordOccurrenceResponsibilities(input: {
       if (row.kind === "main" && row.mainBowlerId !== null && row.mainBowlerId !== undefined && row.mainBowlerId !== slot.mainBowlerId) throw new RosterPaymentError("MAIN_MISMATCH", "Main responsibility does not match the stable roster slot", 422);
       if (row.kind === "split" && league.substitutePaymentRegime !== "league_lineage_prize_split") throw new RosterPaymentError("POLICY_NOT_AVAILABLE", "Split responsibility requires the league lineage/prize split regime", 422);
       if (row.kind === "split" && (!row.substituteBowlerId || !slot.mainBowlerId || row.amountMinor <= 0)) throw new RosterPaymentError("INVALID_SPLIT", "Split responsibility requires both Main and Substitute", 422);
-      if (slot.occupant === "vacant" && row.kind !== "substitute") throw new RosterPaymentError("VACANT_REQUIRES_SUBSTITUTE", "A VACANT slot can only be filled by a Substitute", 422);
+      // A stable VACANT slot is itself valid zero-obligation evidence. A
+      // Substitute may additionally fill it for an occurrence, in which case
+      // the substitute row is the billable responsibility.
+      if (slot.occupant === "vacant" && row.kind !== "substitute" && row.kind !== "vacant") throw new RosterPaymentError("VACANT_REQUIRES_SUBSTITUTE", "A VACANT slot can only be filled by a Substitute", 422);
       if (slot.occupant === "vacant" && row.kind === "substitute" && !row.substituteBowlerId) throw new RosterPaymentError("INVALID_SUBSTITUTE", "A Substitute is required to fill a VACANT slot", 422);
       const effectivePolicy = slot.occupant === "vacant" && row.kind === "substitute" ? "sub_pays_full" as const : row.policy;
       const occurrence = occurrences.find((candidate) => candidate.id === row.occurrenceId);
       if (!occurrence) throw new RosterPaymentError("OCCURRENCE_NOT_PUBLISHED", "Occurrence not found", 422);
-      const authoritativeDueAt = occurrence.startAt;
-      const authoritativePastDueAt = new Date(new Date(authoritativeDueAt).getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
+      const { dueAt: authoritativeDueAt, pastDueAt: authoritativePastDueAt } = calculateRosterPaymentTiming(occurrence.startAt);
       const authoritativeAmountMinor = row.kind === "vacant" ? 0 : league.weeklyFee;
       if (row.kind === "split" && (league.lineageFee === null || league.prizeFundFee === null)) throw new RosterPaymentError("INVALID_SPLIT", "The league split fees are not configured", 422);
       const candidateBowlerIds = [row.mainBowlerId, row.substituteBowlerId, row.payerBowlerId].filter((id): id is number => id !== null && id !== undefined);
@@ -579,6 +650,21 @@ export async function chargeInteractiveObligations(input: {
       eq(paymentOperations.targetKey, `interactive-charge:${input.request.idempotencyKey}`),
     )).limit(1).for("update");
     if (existingOperation) {
+      if (existingOperation.authorizingUserId !== input.actorUserId) {
+        throw new RosterPaymentError("IDEMPOTENCY_CONFLICT", "The idempotency key belongs to another authorizing user", 409);
+      }
+      const [existingInteractiveSnapshot] = await tx.select().from(interactivePaymentOperationSnapshots).where(eq(interactivePaymentOperationSnapshots.operationId, existingOperation.id)).limit(1).for("share");
+      const requestedPayer = input.payerBowlerId;
+      const storedSourceId = existingInteractiveSnapshot ? decrypt(existingInteractiveSnapshot.encryptedSourceId) : null;
+      const storedBuyerEmail = existingInteractiveSnapshot?.encryptedBuyerEmail ? decrypt(existingInteractiveSnapshot.encryptedBuyerEmail) : null;
+      if (!existingInteractiveSnapshot
+        || (requestedPayer !== undefined && existingInteractiveSnapshot.payerBowlerId !== requestedPayer)
+        || existingInteractiveSnapshot.sourceKind !== input.request.sourceKind
+        || existingInteractiveSnapshot.storeCard !== (input.request.storeCard === true)
+        || storedSourceId !== input.request.sourceId
+        || storedBuyerEmail !== (input.request.buyerEmail ?? null)) {
+        throw new RosterPaymentError("IDEMPOTENCY_CONFLICT", "The idempotency key was already used for a different payment identity", 409);
+      }
       const [existingSnapshot] = await tx.select().from(paymentOperationRosterSnapshots).where(and(
         eq(paymentOperationRosterSnapshots.operationId, existingOperation.id),
         eq(paymentOperationRosterSnapshots.organizationId, input.organizationId),

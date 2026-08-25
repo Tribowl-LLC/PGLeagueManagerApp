@@ -33,6 +33,8 @@ import {
   occurrenceCollectionPlanRevisions,
   paymentObligations,
   paymentAllocations,
+  occurrencePaymentResponsibilities,
+  paymentOperationRosterSnapshotItems,
   type LeagueOccurrence,
   type LeagueOccurrenceBillingTerm,
   type LeagueScheduleCommand,
@@ -50,6 +52,7 @@ import {
   type AmbiguousFoldPolicy,
   type DstFoldResolution,
 } from "@shared/canonical-dst-resolver";
+import { materializeRosterPaymentOccurrenceInTransaction } from "./roster-payment-core.js";
 
 export const CANONICAL_COMMAND_FINGERPRINT_VERSION = "canonical-occurrence-command/1";
 export const CANONICAL_COMMAND_FINGERPRINT_PREFIX = "lvcanoncmd:v1:";
@@ -1104,6 +1107,26 @@ export async function cancelOccurrenceInTransaction(tx: LeagueScheduleTransactio
         ));
       }
     }
+    // Open roster responsibilities are retired together with their voided
+    // obligations. A later safe restore creates a new append-only version;
+    // settled responsibilities remain active evidence and are never erased.
+    const rosterResponsibilities = await tx.select().from(occurrencePaymentResponsibilities).where(and(
+      eq(occurrencePaymentResponsibilities.organizationId, request.organizationId),
+      eq(occurrencePaymentResponsibilities.leagueId, request.leagueId),
+      eq(occurrencePaymentResponsibilities.occurrenceId, occurrence.id),
+      eq(occurrencePaymentResponsibilities.state, "active"),
+    )).for("update");
+    for (const responsibility of rosterResponsibilities) {
+      const evidence = rosterObligations.filter((obligation) => obligation.responsibilityId === responsibility.id);
+      if (evidence.length > 0 && evidence.every((obligation) => obligation.state === "voided")) {
+        await tx.update(occurrencePaymentResponsibilities).set({ state: "voided" }).where(and(
+          eq(occurrencePaymentResponsibilities.id, responsibility.id),
+          eq(occurrencePaymentResponsibilities.organizationId, request.organizationId),
+          eq(occurrencePaymentResponsibilities.leagueId, request.leagueId),
+          eq(occurrencePaymentResponsibilities.state, "active"),
+        ));
+      }
+    }
 
     const affectedGroups = await tx.select({ group: canonicalCollectionGroups })
       .from(canonicalCollectionGroups)
@@ -1730,9 +1753,10 @@ export async function restoreCancelledOccurrenceInTransaction(tx: LeagueSchedule
   if (Date.parse(occurrence.startAt) <= Date.parse(input.now)) throw new CanonicalOccurrenceTransactionError("occurrence_effectively_locked", "only a future occurrence can be restored");
   const evidenceChecks = await Promise.all([
     tx.select({ id: games.id }).from(games).where(and(eq(games.occurrenceId, occurrence.id), eq(games.leagueId, input.leagueId))).limit(1),
-    tx.select({ id: paymentObligations.id }).from(paymentObligations).where(and(eq(paymentObligations.organizationId, input.organizationId), eq(paymentObligations.leagueId, input.leagueId), eq(paymentObligations.occurrenceId, occurrence.id))).limit(1),
+    tx.select({ id: paymentObligations.id }).from(paymentObligations).where(and(eq(paymentObligations.organizationId, input.organizationId), eq(paymentObligations.leagueId, input.leagueId), eq(paymentObligations.occurrenceId, occurrence.id), inArray(paymentObligations.state, ["partially_settled", "settled"] as const))).limit(1),
     tx.select({ id: paymentAllocations.id }).from(paymentAllocations).innerJoin(paymentObligations, and(eq(paymentAllocations.obligationId, paymentObligations.id), eq(paymentObligations.organizationId, input.organizationId), eq(paymentObligations.leagueId, input.leagueId))).where(and(eq(paymentAllocations.organizationId, input.organizationId), eq(paymentAllocations.leagueId, input.leagueId), eq(paymentAllocations.state, "active"), eq(paymentObligations.occurrenceId, occurrence.id))).limit(1),
     tx.select({ id: paymentOperations.id }).from(paymentOperations).where(and(eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.leagueId, input.leagueId), eq(paymentOperations.triggerOccurrenceId, occurrence.id))).limit(1),
+    tx.select({ id: paymentOperationRosterSnapshotItems.id }).from(paymentOperationRosterSnapshotItems).innerJoin(paymentObligations, and(eq(paymentObligations.id, paymentOperationRosterSnapshotItems.obligationId), eq(paymentObligations.organizationId, input.organizationId), eq(paymentObligations.leagueId, input.leagueId), eq(paymentObligations.occurrenceId, occurrence.id))).where(and(eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId), eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId), inArray(paymentOperationRosterSnapshotItems.state, ["reserved", "finalized"] as const))).limit(1),
     tx.select({ id: canonicalCollectionGroupMembers.id }).from(canonicalCollectionGroupMembers).where(and(eq(canonicalCollectionGroupMembers.organizationId, input.organizationId), eq(canonicalCollectionGroupMembers.leagueId, input.leagueId), eq(canonicalCollectionGroupMembers.occurrenceId, occurrence.id))).limit(1),
   ]);
   if (evidenceChecks.some((rows) => rows.length > 0)) throw new CanonicalOccurrenceTransactionError("occurrence_effectively_locked", "cancelled occurrence has effective game, financial, collection, dispatch, or grouping evidence");
@@ -1762,6 +1786,7 @@ export async function restoreCancelledOccurrenceInTransaction(tx: LeagueSchedule
   const [restoredTerm] = await tx.update(leagueOccurrenceBillingTerms).set({ obligationPolicy: "eligible_bowlers", defaultAmountMinor: restoredAmount, billingOrdinal: restoredOrdinal, currentRevision: nextTermRevision, lastCommandId: command.id }).where(and(eq(leagueOccurrenceBillingTerms.id, term.id), eq(leagueOccurrenceBillingTerms.currentRevision, term.currentRevision))).returning();
   if (!restoredTerm) throw new CanonicalOccurrenceTransactionError("invalid_command", "billing-term restoration failed");
   await tx.insert(leagueOccurrenceBillingTermRevisions).values({ organizationId: input.organizationId, leagueId: input.leagueId, billingTermId: term.id, commandId: command.id, revisionNumber: nextTermRevision, snapshotSchemaVersion: 1, beforeSnapshot: billingTermSnapshot(term), afterSnapshot: billingTermSnapshot(restoredTerm) });
+  await materializeRosterPaymentOccurrenceInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId, occurrenceId: restored.id, actorUserId: input.actorUserId });
   return restored;
 }
 

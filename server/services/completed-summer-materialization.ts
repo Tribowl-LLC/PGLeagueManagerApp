@@ -51,6 +51,7 @@ import {
   unlockLeagueScheduleSession,
   type LeagueScheduleTransaction,
 } from "../storage/league-schedule-lock.js";
+import { materializeRosterPaymentOccurrenceInTransaction } from "./roster-payment-core.js";
 
 export type CompletedSummerMaterializationFailureStage =
   | "after_commands"
@@ -747,6 +748,17 @@ export async function executeCompletedSummerMaterialization(input: {
       terms.push(row);
     }
     injectFailure(input.failureInjection, "after_billing_terms");
+
+    for (const occurrence of occurrences) {
+      if (occurrence.status === "scheduled") {
+        await materializeRosterPaymentOccurrenceInTransaction(tx, {
+          organizationId: plan.approval.organizationId,
+          leagueId: plan.approval.leagueId,
+          occurrenceId: occurrence.id,
+          actorUserId: plan.approval.actorUserId,
+        });
+      }
+    }
 
     const exceptions: LeagueScheduleException[] = [];
     for (const candidate of generation.exceptionCandidates) {
