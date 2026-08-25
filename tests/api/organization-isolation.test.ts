@@ -465,34 +465,34 @@ describe('Organization Isolation', () => {
       const all = await apiGet(`/api/financials/due-past-due?organizationId=${sessionB.user.organizationId}`, sessionA);
       expect([403, 404]).toContain(all.status);
       const source = await apiGet(`/api/financials/leagues/${orgBLeagueId}/source`, sessionA);
-      expect([403, 404]).toContain(source.status);
+      expect([403, 404, 410]).toContain(source.status);
       const sourceScoped = await apiGet(`/api/financials/leagues/${orgBLeagueId}/source?organizationId=${sessionB.user.organizationId}`, sessionA);
-      expect([403, 404]).toContain(sourceScoped.status);
+      expect([403, 404, 410]).toContain(sourceScoped.status);
       const roster = await apiGet(`/api/financials/leagues/${orgBLeagueId}/roster?organizationId=${sessionB.user.organizationId}`, sessionA);
-      expect([403, 404]).toContain(roster.status);
+      expect([403, 404, 410]).toContain(roster.status);
       const rosterUnscoped = await apiGet(`/api/financials/leagues/${orgBLeagueId}/roster`, sessionA);
-      expect([403, 404]).toContain(rosterUnscoped.status);
+      expect([403, 404, 410]).toContain(rosterUnscoped.status);
       const report = await apiGet(`/api/financials/leagues/${orgBLeagueId}/due-past-due?organizationId=${sessionB.user.organizationId}&bowlerId=${orgBBowlerId}`, sessionA);
-      expect([403, 404]).toContain(report.status);
+      expect([403, 404, 410]).toContain(report.status);
       const reportUnscoped = await apiGet(`/api/financials/leagues/${orgBLeagueId}/due-past-due`, sessionA);
-      expect([403, 404]).toContain(reportUnscoped.status);
+      expect([403, 404, 410]).toContain(reportUnscoped.status);
       const reportBowler = await apiGet(`/api/financials/leagues/${orgBLeagueId}/due-past-due?bowlerId=${orgBBowlerId}`, sessionA);
-      expect([403, 404]).toContain(reportBowler.status);
+      expect([403, 404, 410]).toContain(reportBowler.status);
       const sourceGuard = await apiGet(`/api/financials/leagues/${orgBLeagueId}/source?organizationId=${sessionB.user.organizationId}`, sessionA);
-      expect([403, 404]).toContain(sourceGuard.status);
+      expect([403, 404, 410]).toContain(sourceGuard.status);
       const rosterGuard = await apiGet(`/api/financials/leagues/${orgBLeagueId}/roster?organizationId=${sessionB.user.organizationId}`, sessionA);
-      expect([403, 404]).toContain(rosterGuard.status);
+      expect([403, 404, 410]).toContain(rosterGuard.status);
       const reportGuard = await apiGet(`/api/financials/leagues/${orgBLeagueId}/due-past-due?organizationId=${sessionB.user.organizationId}`, sessionA);
-      expect([403, 404]).toContain(reportGuard.status);
+      expect([403, 404, 410]).toContain(reportGuard.status);
 
       // F5 canonical payment reports are explicitly organization/league
       // scoped; cross-tenant callers receive a nondisclosing denial.
       const f5OrgScope = await apiGet(`/api/financials/f5/payments?organizationId=${sessionB.user.organizationId}&leagueId=${orgBLeagueId}`, sessionA);
-      expect([403, 404]).toContain(f5OrgScope.status);
+      expect([403, 404, 410]).toContain(f5OrgScope.status);
       const f5LeagueScope = await apiGet(`/api/financials/f5/payments?leagueId=${orgBLeagueId}`, sessionA);
-      expect([403, 404]).toContain(f5LeagueScope.status);
+      expect([403, 404, 410]).toContain(f5LeagueScope.status);
       const f5BowlerScope = await apiGet(`/api/financials/f5/payments?leagueId=${orgBLeagueId}&bowlerId=${orgBBowlerId}`, sessionA);
-      expect([403, 404]).toContain(f5BowlerScope.status);
+      expect([403, 404, 410]).toContain(f5BowlerScope.status);
     });
 
     it('org A GET /api/financials/f3/leagues/:leagueId/policy/candidates?organizationId=<orgB> must fail closed', async () => {
@@ -501,7 +501,7 @@ describe('Organization Isolation', () => {
         `/api/financials/f3/leagues/${orgBLeagueId}/policy/candidates?organizationId=${sessionB.user.organizationId}`,
         sessionA,
       );
-      expect([403, 404]).toContain(response.status);
+      expect([403, 404, 410]).toContain(response.status);
       expect(JSON.stringify(response.data)).not.toContain(String(orgBLeagueId));
       expect(JSON.stringify(response.data)).not.toContain(`"organizationId":${sessionB.user.organizationId}`);
     });
@@ -513,7 +513,7 @@ describe('Organization Isolation', () => {
         `/api/financials/f3/leagues/${orgBLeagueId}/prequote?organizationId=${sessionB.user.organizationId}&bowlerId=${orgBBowlerId}`,
         sessionA,
       );
-      expect([403, 404]).toContain(response.status);
+      expect([403, 404, 410]).toContain(response.status);
       expect(JSON.stringify(response.data)).not.toContain(String(orgBLeagueId));
       expect(JSON.stringify(response.data)).not.toContain(`"organizationId":${sessionB.user.organizationId}`);
     });
@@ -525,7 +525,7 @@ describe('Organization Isolation', () => {
         `/api/financials/f3/leagues/${orgBLeagueId}/quote?organizationId=${sessionB.user.organizationId}&bowlerId=${orgBBowlerId}`,
         sessionA,
       );
-      expect([403, 404]).toContain(response.status);
+      expect([403, 404, 410]).toContain(response.status);
       expect(JSON.stringify(response.data)).not.toContain(String(orgBLeagueId));
       expect(JSON.stringify(response.data)).not.toContain(`"organizationId":${sessionB.user.organizationId}`);
     });

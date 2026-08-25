@@ -39,8 +39,6 @@ import { autopaySetupOperationExecutor } from "./autopay-setup-operation-executo
 import { interactivePaymentOperationExecutor } from "./interactive-payment-operation-executor";
 import { refundPaymentOperationExecutor } from "./refund-payment-operation-executor";
 import { GENERAL_INTERACTIVE_TARGET_PREFIX } from "../storage/payment-operations";
-import { prepareCanonicalAutopayPlan } from "./canonical-autopay-preparation.js";
-import { executeCanonicalAutopayOperation } from "./canonical-autopay-operation-executor.js";
 
 const log = createLogger("ScheduledPaymentLedger");
 const LEASE_DURATION_MS = PAYMENT_OPERATION_MAX_LEASE_MS;
@@ -201,12 +199,7 @@ export class ScheduledPaymentOperationExecutor {
     }
 
     if (wake.kind === "canonical_plan") {
-      await prepareCanonicalAutopayPlan({
-        organizationId: wake.organizationId,
-        leagueId: wake.leagueId,
-        d2PlanId: wake.d2PlanId,
-        now: this.now(),
-      });
+      log.info("Canonical automatic collection wake ignored until PR2", { organizationId: wake.organizationId, leagueId: wake.leagueId });
       return;
     }
 
@@ -253,7 +246,7 @@ export class ScheduledPaymentOperationExecutor {
       return;
     }
     if (wake.operationType === "canonical_autopay_charge") {
-      await executeCanonicalAutopayOperation({ organizationId: wake.organizationId, operationId: wake.operationId, now: this.now() });
+      log.info("Canonical automatic collection operation ignored until PR2", { organizationId: wake.organizationId, operationId: wake.operationId });
       return;
     }
     if (wake.operationType !== "scheduled_charge") {

@@ -19,11 +19,6 @@
       "count": 1
     }
   },
-  "client/src/components/payment-form.tsx": {
-    "react-hooks/exhaustive-deps": {
-      "count": 2
-    }
-  },
   "client/src/components/payment-status-section.tsx": {
     "@tanstack/query/no-unstable-deps": {
       "count": 1
@@ -262,11 +257,6 @@
   "tests/api/admin-email-change-audits.test.ts": {
     "@typescript-eslint/no-non-null-assertion": {
       "count": 3
-    }
-  },
-  "tests/api/admin-fk-id-existence.test.ts": {
-    "@typescript-eslint/no-non-null-assertion": {
-      "count": 1
     }
   },
   "tests/api/apple-pay-job-cancel-retry.test.ts": {

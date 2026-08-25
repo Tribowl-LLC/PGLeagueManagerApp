@@ -141,7 +141,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
     if (leagueId) {
       form.setValue('leagueId', leagueId, { shouldDirty: false });
     }
-  }, [leagueId, form.setValue]);
+  }, [leagueId, form]);
 
   const paymentType = form.watch("type");
   const selectedBowlerId = form.watch("bowlerId");
@@ -245,7 +245,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
       setSelectedSavedCardId('');
       setReceiptEmail('');
     }
-  }, [open, form.reset]);
+  }, [open, form]);
 
   // Clear inline receipt-email when operator switches bowlers so we never
   // reuse the prior bowler's typed address. Render-time adjustment keyed on
@@ -364,8 +364,8 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
   useEffect(() => {
     setOccurrenceAllocations([]);
     setOccurrenceQuoteFingerprint(undefined);
-    setOccurrenceReadiness(open && paymentType === 'credit_card' ? 'loading' : 'disabled');
-  }, [open, selectedBowlerId, leagueInfo?.id, paymentType]);
+    setOccurrenceReadiness(open && (paymentType === 'credit_card' || leagueInfo?.payingLineupSize != null) ? 'loading' : 'disabled');
+  }, [open, selectedBowlerId, leagueInfo?.id, leagueInfo?.payingLineupSize, paymentType]);
 
   // When the selected bowler has no email on file, capture one inline so
   // Square's hosted receipt still fires for this charge.
@@ -382,6 +382,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
     buyerEmail: !bowlerHasEmail ? receiptEmail : undefined,
     locationId: leagueInfo?.locationId ?? null,
     organizationId: leagueInfo?.organizationId,
+    canonical: leagueInfo?.payingLineupSize != null,
     occurrenceAllocations,
     occurrenceQuoteFingerprint,
     occurrenceReadiness,
@@ -409,7 +410,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
               </Alert>
             )}
             <PaymentFormFields form={form} bowlers={bowlers} />
-            {paymentType === "credit_card" && selectedBowlerId && leagueInfo && (
+            {selectedBowlerId && leagueInfo && (paymentType === "credit_card" || leagueInfo.payingLineupSize != null) && (
               <InteractiveOccurrenceSelector
                 leagueId={leagueInfo.id}
                 organizationId={leagueInfo.organizationId ?? undefined}
@@ -417,6 +418,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
                 amountMinor={watchedAmount || 0}
                 bowlerIds={[selectedBowlerId]}
                 enabled={open}
+                canonical={leagueInfo.payingLineupSize != null}
                 onChange={handleOccurrenceChange}
                 onReadinessChange={setOccurrenceReadiness}
               />

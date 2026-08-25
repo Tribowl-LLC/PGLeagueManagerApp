@@ -53,6 +53,15 @@ const log = createLogger("PaymentSchedules");
 
 const router = Router();
 
+async function rejectRosterConfiguredAutopay(res: Parameters<typeof sendError>[0], leagueId: number): Promise<boolean> {
+  const league = await storage.getLeague(leagueId);
+  if (league?.payingLineupSize !== null && league?.payingLineupSize !== undefined) {
+    sendError(res, 'Legacy autopay schedules are retired for roster-configured leagues; pay exact obligations instead', 410, 'ROSTER_AUTOPAY_RETIRED');
+    return true;
+  }
+  return false;
+}
+
 router.use((req, res, next) => {
   if ((req.user?.role as string | undefined) === 'payment_manager') {
     return sendError(res, 'Payment managers cannot access autopay schedules', 403, 'FORBIDDEN');
@@ -77,6 +86,7 @@ router.get('/setup-quote/:bowlerId/:leagueId', async (req, res) => {
     if (!Number.isSafeInteger(bowlerId) || bowlerId <= 0 || !Number.isSafeInteger(leagueId) || leagueId <= 0) {
       return sendError(res, 'Invalid bowler or league ID', 400, 'INVALID_ID');
     }
+    if (await rejectRosterConfiguredAutopay(res, leagueId)) return;
     if (!await hasAccessToLeague(req, leagueId)) {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
@@ -115,6 +125,7 @@ router.post('/setup', adminWriteLimiter, async (req, res) => {
     if (!Number.isSafeInteger(bowlerId) || bowlerId <= 0 || !Number.isSafeInteger(leagueId) || leagueId <= 0) {
       return sendError(res, 'Invalid bowler or league ID', 400, 'INVALID_ID');
     }
+    if (await rejectRosterConfiguredAutopay(res, leagueId)) return;
     if (!await hasAccessToLeague(req, leagueId)) {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
@@ -173,6 +184,7 @@ router.post('/', adminWriteLimiter, async (req, res) => {
     if (!await hasAccessToLeague(req, req.body.leagueId)) {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
+    if (await rejectRosterConfiguredAutopay(res, Number(req.body.leagueId))) return;
 
     // Sensitive write: creating a schedule requires self-access or admin role (task #732).
     if (!await hasSelfOrAdminAccessToBowler(req, req.body.bowlerId)) {
@@ -291,7 +303,6 @@ router.get('/:bowlerId/:leagueId', async (req, res) => {
     if (!schedule) {
       return sendSuccess(res, null);
     }
-
     const league = await storage.getLeague(leagueId);
     const normalizedNextPaymentDate = schedule.nextPaymentDate.endsWith('Z')
       ? schedule.nextPaymentDate
@@ -322,6 +333,7 @@ router.delete('/:id', adminWriteLimiter, async (req, res) => {
     if (!schedule) {
       return sendError(res, 'Payment schedule not found', 404, 'NOT_FOUND');
     }
+    if (await rejectRosterConfiguredAutopay(res, schedule.leagueId)) return;
 
     // Sensitive write: requires self-access or admin role (task #732).
     if (!await hasSelfOrAdminAccessToBowler(req, schedule.bowlerId)) {
@@ -355,6 +367,7 @@ router.patch('/:id', adminWriteLimiter, async (req, res) => {
     if (!schedule || !schedule.active) {
       return sendError(res, 'Active payment schedule not found', 404, 'NOT_FOUND');
     }
+    if (await rejectRosterConfiguredAutopay(res, schedule.leagueId)) return;
 
     // Sensitive write: requires self-access or admin role (task #732).
     if (!await hasSelfOrAdminAccessToBowler(req, schedule.bowlerId)) {

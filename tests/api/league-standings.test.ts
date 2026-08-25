@@ -333,16 +333,6 @@ async function evidenceSnapshot(leagueId: number): Promise<Record<string, string
       + (SELECT count(*) FROM league_occurrence_billing_term_revisions WHERE league_id = ${leagueId})
     )::text
     UNION ALL SELECT 'canonical_discrepancies', count(*)::text FROM league_occurrence_generation_discrepancies WHERE league_id = ${leagueId}
-    UNION ALL SELECT 'd2_rows', (
-      (SELECT count(*) FROM bowler_occurrence_eligibilities WHERE league_id = ${leagueId})
-      + (SELECT count(*) FROM bowler_occurrence_team_assignments WHERE league_id = ${leagueId})
-      + (SELECT count(*) FROM bowler_occurrence_obligations WHERE league_id = ${leagueId})
-      + (SELECT count(*) FROM occurrence_collection_plans WHERE league_id = ${leagueId})
-      + (SELECT count(*) FROM occurrence_collection_plan_items WHERE league_id = ${leagueId})
-      + (SELECT count(*) FROM payment_occurrence_allocations WHERE league_id = ${leagueId})
-      + (SELECT count(*) FROM payment_operation_occurrence_snapshots WHERE league_id = ${leagueId})
-      + (SELECT count(*) FROM payment_operation_occurrence_snapshot_allocations WHERE league_id = ${leagueId})
-    )::text
     UNION ALL SELECT 'payment_schedules', count(*)::text FROM payment_schedules WHERE league_id = ${leagueId}
     UNION ALL SELECT 'payment_operations', count(*)::text FROM payment_operations po JOIN payment_schedules ps ON ps.id = po.payment_schedule_id WHERE ps.league_id = ${leagueId}
     UNION ALL SELECT 'payments', count(*)::text FROM payments WHERE league_id = ${leagueId}

@@ -168,6 +168,14 @@ async function nonRolloverEvidenceCounts() {
   ] as const;
   const result: Record<string, number> = {};
   for (const name of names) {
+    // PR1 deliberately drops the old F1/D2 evidence tables. Keep this
+    // conservation helper useful for retained tables while treating a
+    // retired relation as an empty historical count.
+    const relation = await db.execute(sql`SELECT to_regclass(${`public.${name}`}) AS relation`);
+    if (!relation.rows[0]?.relation) {
+      result[name] = 0;
+      continue;
+    }
     const counted = await db.execute(sql.raw(`SELECT count(*)::integer AS count FROM ${name}`));
     result[name] = Number(counted.rows[0]?.count ?? 0);
   }
@@ -486,6 +494,8 @@ describe("authoritative league setup integration", () => {
       "payment_occurrence_allocations",
       "payment_operation_occurrence_snapshot_allocations",
     ]) {
+      const relation = await db.execute(sql`SELECT to_regclass(${`public.${table}`}) AS relation`);
+      if (!relation.rows[0]?.relation) continue;
       const counted = await db.execute(sql.raw(
         `SELECT count(*)::integer AS count FROM ${table} WHERE league_id = ${created.result.id}`,
       ));

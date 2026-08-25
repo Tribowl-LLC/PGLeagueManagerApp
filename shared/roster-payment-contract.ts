@@ -42,7 +42,6 @@ export const occurrenceResponsibilityInputSchema = z.object({
 
 export const interactiveObligationQuoteRequestV2Schema = z.object({
   obligationIds: z.array(z.string().uuid()).min(1).max(200),
-  requestFingerprint: z.string().trim().min(1).max(128),
 }).strict();
 
 export const interactiveObligationChargeRequestV2Schema = z.object({

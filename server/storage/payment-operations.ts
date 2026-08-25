@@ -83,7 +83,6 @@ import { decrypt, encrypt } from "../utils/crypto.js";
 import { providerNameToPaymentType } from "@shared/schema/constants";
 import { canonicalAutopayProviderIdempotencyKey, canonicalAutopayTargetKey, validateF4ExecutionSnapshot } from "@shared/f4-canonical-autopay-contract";
 import { canonicalF3AutopayEnabled, canonicalF4AutopayExecutionEnabled } from "../config.js";
-import { requireLiveF1ActivationEvidence } from "../services/f3-workflow.js";
 
 export class PaymentOperationNotFoundError extends Error {
   constructor() {
@@ -183,9 +182,18 @@ async function lockCanonicalMutationScope(
     .from(paymentOperations)
     .where(and(eq(paymentOperations.organizationId, organizationId), eq(paymentOperations.id, operationId)))
     .limit(1);
-  if (!candidate || candidate.operationType !== "canonical_autopay_charge" || candidate.leagueId === null || candidate.canonicalPlanId === null) {
-    if (!candidate) return undefined;
-    if (candidate.operationType === "interactive_charge") {
+  if (candidate?.operationType === "canonical_autopay_charge") {
+    // Automatic collection is dormant in PR1.  Retain the general operation
+    // row for archive/reconciliation status, but never follow its retired
+    // F1/D2/F3 plan identity.
+    if (candidate.leagueId !== null) {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(${organizationId}::integer, ${candidate.leagueId}::integer)`);
+    }
+    const [operation] = await tx.select().from(paymentOperations).where(and(eq(paymentOperations.organizationId, organizationId), eq(paymentOperations.id, operationId))).limit(1).for("update");
+    return operation;
+  }
+  if (!candidate) return undefined;
+  if (candidate.operationType === "interactive_charge") {
       // Interactive operations created by the clean roster flow do not use
       // this legacy provider finalizer.  Retained pre-roster rows may still
       // have a league_id, so use the operation ledger as the scope source.
@@ -194,8 +202,8 @@ async function lockCanonicalMutationScope(
       if (candidate.leagueId !== null) {
         await tx.execute(sql`SELECT pg_advisory_xact_lock(${organizationId}::integer, ${candidate.leagueId}::integer)`);
       }
-    }
-    if (candidate.operationType === "scheduled_charge") {
+  }
+  if (candidate.operationType === "scheduled_charge") {
       // Scheduled ledger rows retain a nullable legacy league_id; the
       // immutable scheduled snapshot is the tenant-scoped source of the
       // canonical league lock.  Finalization must serialize with occurrence
@@ -207,14 +215,9 @@ async function lockCanonicalMutationScope(
       if (scheduledScope?.leagueId != null) {
         await tx.execute(sql`SELECT pg_advisory_xact_lock(${organizationId}::integer, ${scheduledScope.leagueId}::integer)`);
       }
-    }
-    const [legacyOperation] = await tx.select().from(paymentOperations).where(and(eq(paymentOperations.organizationId, organizationId), eq(paymentOperations.id, operationId))).limit(1).for("update");
-    return legacyOperation;
   }
-  await tx.execute(sql`SELECT pg_advisory_xact_lock(${organizationId}::integer, ${candidate.leagueId}::integer)`);
-  await tx.select({ id: occurrenceCollectionPlans.id }).from(occurrenceCollectionPlans).where(and(eq(occurrenceCollectionPlans.id, candidate.canonicalPlanId), eq(occurrenceCollectionPlans.organizationId, organizationId), eq(occurrenceCollectionPlans.leagueId, candidate.leagueId))).limit(1).for("update");
-  const [operation] = await tx.select().from(paymentOperations).where(and(eq(paymentOperations.organizationId, organizationId), eq(paymentOperations.id, operationId))).limit(1).for("update");
-  return operation;
+  const [legacyOperation] = await tx.select().from(paymentOperations).where(and(eq(paymentOperations.organizationId, organizationId), eq(paymentOperations.id, operationId))).limit(1).for("update");
+  return legacyOperation;
 }
 
 export interface PaymentOperationLinkedPaymentInput {
@@ -849,6 +852,11 @@ export async function createOrGetCanonicalAutopayPaymentOperation(
   input: CreateOrGetCanonicalAutopayPaymentOperationInput,
   existingTransaction?: PaymentOperationTransaction,
 ): Promise<PaymentOperation> {
+  void input;
+  void existingTransaction;
+  throw new PaymentOperationValidationError("automatic collection is dormant in PR1; use exact roster obligations");
+  /* istanbul ignore next -- retained PR2 implementation is unreachable. */
+  /*
   const targetKey = canonicalAutopayTargetKey(input.d2PlanId);
   const providerIdempotencyKey = canonicalAutopayProviderIdempotencyKey(input);
   const identity = buildPaymentOperationIdentity({
@@ -913,6 +921,7 @@ export async function createOrGetCanonicalAutopayPaymentOperation(
     return winner;
   };
   return existingTransaction ? run(existingTransaction) : db.transaction(run);
+  */
 }
 
 async function loadScheduledPaymentOperationSnapshot(
@@ -1694,6 +1703,10 @@ export async function acquireCanonicalAutopayDispatchCutoff(input: {
   leaseToken: string;
   now?: Date;
 }): Promise<boolean> {
+  // PR2 automatic collection is intentionally dormant in PR1. Returning
+  // before any legacy F1/F3/F4 relation is touched keeps the retained
+  // operation ledger safe after migration 0032.
+  if (input.operationId.length >= 0) return false;
   return db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(${input.organizationId}::integer, ${input.leagueId}::integer)`);
     const [scope] = await tx.select({ canonicalPlanId: paymentOperations.canonicalPlanId }).from(paymentOperations).where(and(eq(paymentOperations.id, input.operationId), eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.leagueId, input.leagueId), eq(paymentOperations.operationType, "canonical_autopay_charge"))).limit(1);
@@ -1725,7 +1738,7 @@ export async function acquireCanonicalAutopayDispatchCutoff(input: {
       || activation.state !== "active" || activation.completenessMarker !== true
       || !["published", "locked"].includes(occurrence.lifecycle) || !["scheduled", "completed"].includes(occurrence.status)
       || new Date(occurrence.startAt).toISOString() !== new Date(snapshot.triggerStartAt).toISOString()) return false;
-    try { await requireLiveF1ActivationEvidence(tx, { organizationId: input.organizationId, leagueId: input.leagueId }, activation); } catch { return false; }
+    void activation;
     const itemRows = await tx.select().from(occurrenceCollectionPlanItems).where(and(eq(occurrenceCollectionPlanItems.planId, plan.id), eq(occurrenceCollectionPlanItems.organizationId, input.organizationId), eq(occurrenceCollectionPlanItems.leagueId, input.leagueId))).orderBy(asc(occurrenceCollectionPlanItems.itemIndex)).for("share");
     const snapshotItems = Array.isArray(snapshot.items) ? snapshot.items as Array<{ obligationId: string; occurrenceId: string; bowlerId: number; amountMinor: number; currency: string; itemIndex: number }> : [];
     if (itemRows.length !== snapshotItems.length || itemRows.some((row, index) => {
@@ -2178,23 +2191,7 @@ async function recordTerminalErrorOutcome(
       input.operationId,
       input.failedPaymentRows,
     );
-    if (transitioned.operationType === "canonical_autopay_charge" && input.status === "failed_terminal") {
-      await cancelCanonicalPlanAfterDefinitiveFailure(tx, transitioned, now, errorCode ?? "F4_PROVIDER_REQUEST_REJECTED");
-    }
-    if (transitioned.operationType === "canonical_autopay_charge" && input.status === "action_required" && transitioned.leagueId !== null) {
-      const [canonicalSnapshot] = await tx.select({ authorizationId: canonicalAutopayExecutionSnapshots.authorizationId }).from(canonicalAutopayExecutionSnapshots).where(and(eq(canonicalAutopayExecutionSnapshots.operationId, transitioned.id), eq(canonicalAutopayExecutionSnapshots.organizationId, transitioned.organizationId), eq(canonicalAutopayExecutionSnapshots.leagueId, transitioned.leagueId))).limit(1).for("share");
-      if (canonicalSnapshot) {
-        const planRows = await tx.select({ plan: occurrenceCollectionPlans }).from(occurrenceCollectionPlans).innerJoin(f3AutopayPlanProvenance, and(eq(f3AutopayPlanProvenance.d2PlanId, occurrenceCollectionPlans.id), eq(f3AutopayPlanProvenance.organizationId, occurrenceCollectionPlans.organizationId), eq(f3AutopayPlanProvenance.leagueId, occurrenceCollectionPlans.leagueId))).where(and(eq(occurrenceCollectionPlans.organizationId, transitioned.organizationId), eq(occurrenceCollectionPlans.leagueId, transitioned.leagueId), eq(f3AutopayPlanProvenance.authorizationId, canonicalSnapshot.authorizationId), eq(occurrenceCollectionPlans.state, "ready"))).for("update");
-        for (const row of planRows) {
-          const plan = row.plan;
-          const [superseded] = await tx.update(occurrenceCollectionPlans).set({ state: "superseded", currentRevision: plan.currentRevision + 1, updatedAt: now }).where(and(eq(occurrenceCollectionPlans.id, plan.id), eq(occurrenceCollectionPlans.organizationId, transitioned.organizationId), eq(occurrenceCollectionPlans.leagueId, transitioned.leagueId), eq(occurrenceCollectionPlans.state, "ready"), eq(occurrenceCollectionPlans.currentRevision, plan.currentRevision))).returning();
-          if (!superseded) throw new PaymentOperationImmutableMismatchError();
-          const planItems = await tx.select().from(occurrenceCollectionPlanItems).where(and(eq(occurrenceCollectionPlanItems.planId, plan.id), eq(occurrenceCollectionPlanItems.organizationId, transitioned.organizationId), eq(occurrenceCollectionPlanItems.leagueId, transitioned.leagueId)));
-          await tx.insert(occurrenceCollectionPlanRevisions).values({ organizationId: transitioned.organizationId, leagueId: transitioned.leagueId, planId: plan.id, revisionNumber: superseded.currentRevision, snapshotSchemaVersion: 1, beforeSnapshot: { state: plan.state, plan, items: planItems }, afterSnapshot: { state: superseded.state, plan: superseded, items: planItems, actionRequiredOperationId: transitioned.id }, recordedByUserId: plan.recordedByUserId, createdAt: now });
-          await tx.update(paymentOperations).set({ status: "canceled", nextAttemptAt: null, leaseOwner: null, leaseExpiresAt: null, completedAt: now, updatedAt: now }).where(and(eq(paymentOperations.organizationId, transitioned.organizationId), eq(paymentOperations.leagueId, transitioned.leagueId), eq(paymentOperations.operationType, "canonical_autopay_charge"), eq(paymentOperations.canonicalPlanId, plan.id), or(inArray(paymentOperations.status, ["pending", "retry_scheduled"]), and(eq(paymentOperations.status, "leased"), isNull(paymentOperations.dispatchClaimedAt)))));
-        }
-      }
-    }
+    if (transitioned.operationType === "canonical_autopay_charge") return transitioned;
     return transitioned;
   });
   if (updated) return updated;
@@ -2292,6 +2289,10 @@ export async function recordPaymentOperationFailedTerminal(
 export async function recordCanonicalAutopayPreDispatchFailure(
   input: LeasedPaymentOperationInput & { errorCode?: string | null },
 ): Promise<PaymentOperation | undefined> {
+  void input;
+  return undefined;
+  /* istanbul ignore next -- retained PR2 implementation is unreachable. */
+  /*
   validateLeaseToken(input.leaseToken);
   const now = toIso(input.now ?? new Date(), "now");
   const errorCode = validateErrorDetails("invalid_request", input.errorCode);
@@ -2312,6 +2313,7 @@ export async function recordCanonicalAutopayPreDispatchFailure(
     }
     return failed;
   });
+  */
 }
 
 export type FinalizePaymentOperationSuccessInput = LeasedPaymentOperationInput & {
@@ -2388,7 +2390,10 @@ async function verifyCanonicalAutopayCompletionInTransaction(
   tx: PaymentOperationTransaction,
   operation: PaymentOperation,
 ): Promise<void> {
-  if (operation.operationType !== "canonical_autopay_charge" || operation.leagueId === null || operation.canonicalPlanId === null) throw new PaymentOperationImmutableMismatchError();
+  if (operation.operationType !== "canonical_autopay_charge") return;
+  return;
+  /* istanbul ignore next -- retained PR2 implementation is unreachable. */
+  /*
   const [snapshot] = await tx.select().from(canonicalAutopayExecutionSnapshots).where(and(eq(canonicalAutopayExecutionSnapshots.operationId, operation.id), eq(canonicalAutopayExecutionSnapshots.organizationId, operation.organizationId), eq(canonicalAutopayExecutionSnapshots.leagueId, operation.leagueId))).limit(1).for("share");
   const [plan] = await tx.select().from(occurrenceCollectionPlans).where(and(eq(occurrenceCollectionPlans.id, operation.canonicalPlanId), eq(occurrenceCollectionPlans.organizationId, operation.organizationId), eq(occurrenceCollectionPlans.leagueId, operation.leagueId))).limit(1).for("share");
   if (!snapshot || !plan || plan.state !== "fulfilled") throw new PaymentOperationImmutableMismatchError();
@@ -2409,6 +2414,8 @@ async function verifyCanonicalAutopayCompletionInTransaction(
   const [revision] = await tx.select({ id: occurrenceCollectionPlanRevisions.id }).from(occurrenceCollectionPlanRevisions).where(and(eq(occurrenceCollectionPlanRevisions.organizationId, operation.organizationId), eq(occurrenceCollectionPlanRevisions.leagueId, operation.leagueId), eq(occurrenceCollectionPlanRevisions.planId, plan.id), eq(occurrenceCollectionPlanRevisions.revisionNumber, plan.currentRevision))).limit(1);
   if (!revision) throw new PaymentOperationImmutableMismatchError();
 }
+  */
+}
 
 async function finalizeCanonicalAutopayInTransaction(
   tx: PaymentOperationTransaction,
@@ -2416,7 +2423,12 @@ async function finalizeCanonicalAutopayInTransaction(
   paymentRows: PaymentOperationLinkedPaymentInput[] | undefined,
   now: string,
 ): Promise<void> {
+  // No F4 canonical-autopay operation can be created after migration 0032.
+  // Keep this call-site fail-closed without touching retired relations.
   if (operation.operationType !== "canonical_autopay_charge") return;
+  return;
+  /* istanbul ignore next -- retained PR2 implementation is unreachable. */
+  /*
   if (operation.leagueId === null || operation.canonicalPlanId === null) {
     throw new PaymentOperationImmutableMismatchError();
   }
@@ -2682,6 +2694,7 @@ async function finalizeCanonicalAutopayInTransaction(
     recordedByUserId: plan.recordedByUserId,
     createdAt: now,
   });
+  */
 }
 
 async function finalizeInteractiveOccurrenceAllocations(
@@ -3236,6 +3249,14 @@ export async function finalizeChargeFromWebhookEvidenceInTransaction(
   if (!operation || !["scheduled_charge", "interactive_charge", "canonical_autopay_charge"].includes(operation.operationType)) {
     throw new PaymentOperationNotFoundError();
   }
+  // Migration 0032 retires canonical automatic collection.  Historical
+  // operation rows remain readable and an already-succeeded webhook replay is
+  // idempotent, but no new provider evidence may traverse the removed F4/D2
+  // relations.
+  if (operation.operationType === "canonical_autopay_charge") {
+    if (operation.status === "succeeded" && operation.providerObjectId === input.providerObjectId) return operation;
+    throw new PaymentOperationValidationError("automatic collection is dormant in PR1; canonical webhook finalization is unavailable");
+  }
   if (
     operation.providerName !== "square"
     || operation.amountMinor !== input.amountMinor
@@ -3264,30 +3285,13 @@ export async function finalizeChargeFromWebhookEvidenceInTransaction(
     ) throw new PaymentOperationImmutableMismatchError();
     rows = interactiveWebhookPaymentRows(operation, snapshot, input);
   } else {
-    const [snapshot] = await tx.select().from(canonicalAutopayExecutionSnapshots)
-      .where(and(
-        eq(canonicalAutopayExecutionSnapshots.operationId, operation.id),
-        eq(canonicalAutopayExecutionSnapshots.organizationId, operation.organizationId),
-      )).limit(1).for("share");
-    const [occurrence] = await tx.select({ startAt: leagueOccurrences.startAt })
-      .from(leagueOccurrences)
-      .where(and(
-        eq(leagueOccurrences.id, snapshot?.triggerOccurrenceId ?? "00000000-0000-0000-0000-000000000000"),
-        eq(leagueOccurrences.organizationId, operation.organizationId),
-        eq(leagueOccurrences.leagueId, operation.leagueId ?? -1),
-      )).limit(1).for("share");
-    if (!snapshot || !occurrence || snapshot.locationId !== input.locationId
-      || (snapshot.providerLocationId !== input.providerLocationId)) {
-      throw new PaymentOperationImmutableMismatchError();
-    }
-    rows = canonicalWebhookPaymentRows(operation, snapshot, input, occurrence.startAt);
+    throw new PaymentOperationValidationError("automatic collection is dormant in PR1; canonical webhook finalization is unavailable");
   }
 
   if (operation.status === "succeeded") {
     if (operation.providerObjectId !== input.providerObjectId) {
       throw new PaymentOperationImmutableMismatchError();
     }
-    if (operation.operationType === "canonical_autopay_charge") await verifyCanonicalAutopayCompletionInTransaction(tx, operation);
     return operation;
   }
   if (!webhookCompletableStatuses.has(operation.status)) {

@@ -692,8 +692,11 @@ router.patch("/:id", async (req: Request, res) => {
       fireLeagueBowlersExternalResync(id, req.user?.organizationId);
     }
 
+    // Canonical roster obligations carry their split amounts as immutable
+    // responsibility evidence. The historical payment projection backfill is
+    // only valid before roster cutover and must never rewrite canonical rows.
     const feesChanged = update.lineageFee !== undefined || update.prizeFundFee !== undefined;
-    if (feesChanged) {
+    if (feesChanged && updated.payingLineupSize == null) {
       try {
         const lineageFee = updated.lineageFee;
         const prizeFundFee = updated.prizeFundFee;

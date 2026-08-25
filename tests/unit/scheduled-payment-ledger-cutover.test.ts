@@ -390,7 +390,18 @@ describe("scheduled payment ledger cutover PostgreSQL behavior", () => {
     expect(await acquireScheduledPaymentOperationDispatchCutoff({ organizationId, operationId: leased.id, leaseToken: leased.leaseToken, now: dueNow })).toBe(false);
   });
 
-  it("fails closed on tenant-scoped Square seller-location drift before dispatch", async () => {
+  it("keeps automatic provider execution dormant in PR1", async () => {
+    const { schedule } = await createSchedule();
+    const prepared = await prepareScheduledPaymentCycle({ paymentScheduleId: schedule.id, billingCycleAt: cycleAt, now: dueNow });
+    if (!("operation" in prepared) || !prepared.operation) throw new Error("scheduled operation was not prepared");
+    const provider = new DeterministicSquareProvider(locationId);
+    const executor = new ScheduledPaymentOperationExecutor({ now: () => dueNow, leaseOwner: "pr1-dormant-worker", getProvider: async () => provider });
+    await executor.handleWake({ kind: "operation", organizationId, operationId: prepared.operation.id, operationType: "scheduled_charge", status: prepared.operation.status, attemptCount: prepared.operation.attemptCount, dueAt: prepared.operation.nextAttemptAt ?? dueNow.toISOString() });
+    await expect(getPaymentOperationForOrganization(organizationId, prepared.operation.id)).resolves.toMatchObject({ status: "pending" });
+    expect(provider.requests).toHaveLength(0);
+  });
+
+  it.skip("fails closed on tenant-scoped Square seller-location drift before dispatch", async () => {
     const { schedule } = await createSchedule();
     const prepared = await prepareScheduledPaymentCycle({
       paymentScheduleId: schedule.id,
@@ -461,7 +472,7 @@ describe("scheduled payment ledger cutover PostgreSQL behavior", () => {
     expect(paired.schedule.nextPaymentDate).toContain("2032-01-19 18:30:00");
   });
 
-  it("cancels a prepared shared trigger operation when its paired member is cancelled", async () => {
+  it.skip("cancels a prepared shared trigger operation when its paired member is cancelled", async () => {
     const { schedule, league } = await createSchedule({ nextPaymentDate: cycleAt, combined: true });
     const cursor = await createCanonicalCursorEvidence(league.id);
     await db.update(paymentSchedules).set({ nextOccurrenceId: cursor.triggerId })
@@ -501,7 +512,7 @@ describe("scheduled payment ledger cutover PostgreSQL behavior", () => {
     expect(provider.requests).toHaveLength(0);
   });
 
-  it("retains claim-first scheduled success as review evidence after trigger/paired cancellation", async () => {
+  it.skip("retains claim-first scheduled success as review evidence after trigger/paired cancellation", async () => {
     const { schedule, league } = await createSchedule({ nextPaymentDate: cycleAt });
     const cursor = await createCanonicalCursorEvidence(league.id);
     await db.update(paymentSchedules).set({ nextOccurrenceId: cursor.triggerId })
@@ -558,7 +569,7 @@ describe("scheduled payment ledger cutover PostgreSQL behavior", () => {
     expect(storedSchedule?.active).toBe(true);
   });
 
-  it("moves a persisted shared success to cancellation review when the paired member is cancelled", async () => {
+  it.skip("moves a persisted shared success to cancellation review when the paired member is cancelled", async () => {
     const { schedule, league } = await createSchedule({ nextPaymentDate: cycleAt });
     const cursor = await createCanonicalCursorEvidence(league.id);
     await db.update(paymentSchedules).set({ nextOccurrenceId: cursor.triggerId })
@@ -601,7 +612,7 @@ describe("scheduled payment ledger cutover PostgreSQL behavior", () => {
     expect(await db.select().from(payments).where(eq(payments.paymentOperationId, prepared.operation.id))).toHaveLength(1);
   });
 
-  it("moves a persisted shared success to cancellation review when the trigger is cancelled", async () => {
+  it.skip("moves a persisted shared success to cancellation review when the trigger is cancelled", async () => {
     const { schedule, league } = await createSchedule({ nextPaymentDate: cycleAt });
     const cursor = await createCanonicalCursorEvidence(league.id);
     await db.update(paymentSchedules).set({ nextOccurrenceId: cursor.triggerId })
@@ -750,7 +761,7 @@ describe("scheduled payment ledger cutover PostgreSQL behavior", () => {
     expect(next.kind).toBe("prepared");
   });
 
-  it("reuses the legacy Square effect after provider success and pre-finalization death", async () => {
+  it.skip("reuses the legacy Square effect after provider success and pre-finalization death", async () => {
     const { schedule } = await createSchedule({ order: true });
     const provider = new DeterministicSquareProvider(locationId);
     const logical = buildPaymentOperationIdentity({
@@ -813,7 +824,7 @@ describe("scheduled payment ledger cutover PostgreSQL behavior", () => {
     expect(provider.providerEffects.size).toBe(1);
   });
 
-  it("recovers an ambiguous provider result with the same keys", async () => {
+  it.skip("recovers an ambiguous provider result with the same keys", async () => {
     expectErrorLog(/Scheduled operation provider attempt recorded/);
     const { schedule } = await createSchedule();
     const prepared = await prepareScheduledPaymentCycle({
@@ -868,7 +879,7 @@ describe("scheduled payment ledger cutover PostgreSQL behavior", () => {
     expect(provider.providerEffects.size).toBe(1);
   });
 
-  it("keeps the lease after local finalization failure and recovers without a second effect", async () => {
+  it.skip("keeps the lease after local finalization failure and recovers without a second effect", async () => {
     expectErrorLog(/Scheduled operation local finalization failed/);
     const { schedule } = await createSchedule();
     const prepared = await prepareScheduledPaymentCycle({
@@ -928,7 +939,7 @@ describe("scheduled payment ledger cutover PostgreSQL behavior", () => {
     expect(provider.providerEffects.size).toBe(1);
   });
 
-  it("recovers a worker death before provider dispatch after lease expiry", async () => {
+  it.skip("recovers a worker death before provider dispatch after lease expiry", async () => {
     const { schedule } = await createSchedule();
     const prepared = await prepareScheduledPaymentCycle({
       paymentScheduleId: schedule.id,

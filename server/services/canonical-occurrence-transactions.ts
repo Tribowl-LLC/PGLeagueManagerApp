@@ -1040,6 +1040,31 @@ export async function cancelOccurrenceInTransaction(tx: LeagueScheduleTransactio
       ne(leagueOccurrenceBillingTerms.state, "superseded"),
       isNull(leagueOccurrenceBillingTerms.supersededAt),
     )).for("update");
+    for (const term of terms) {
+      const nextTermRevision = term.currentRevision + 1;
+      const [revised] = await tx.update(leagueOccurrenceBillingTerms).set({
+        obligationPolicy: "none",
+        defaultAmountMinor: 0,
+        billingOrdinal: null,
+        currentRevision: nextTermRevision,
+        lastCommandId: command.id,
+      }).where(and(
+        eq(leagueOccurrenceBillingTerms.id, term.id),
+        eq(leagueOccurrenceBillingTerms.organizationId, request.organizationId),
+        eq(leagueOccurrenceBillingTerms.leagueId, request.leagueId),
+      )).returning();
+      if (!revised) throw new CanonicalOccurrenceTransactionError("invalid_command", "cancellation billing update failed");
+      await tx.insert(leagueOccurrenceBillingTermRevisions).values({
+        organizationId: request.organizationId,
+        leagueId: request.leagueId,
+        billingTermId: term.id,
+        commandId: command.id,
+        revisionNumber: nextTermRevision,
+        snapshotSchemaVersion: 1,
+        beforeSnapshot: billingTermSnapshot(term),
+        afterSnapshot: billingTermSnapshot(revised),
+      });
+    }
 
     // PR1 owns cancellation evidence.  The retired activation/F1 and D2
     // tables are intentionally absent after migration 0032, so cancellation

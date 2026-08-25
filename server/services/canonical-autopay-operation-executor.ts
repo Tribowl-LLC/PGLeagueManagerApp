@@ -13,9 +13,14 @@ import { requireLiveF1ActivationEvidence } from "./f3-workflow.js";
 
 const LEASE_MS = 15 * 60 * 1000;
 const leaseOwner = `canonical-autopay:${hostname().replace(/[^A-Za-z0-9_.:-]/g, "-")}:${process.pid}:${randomUUID()}`.slice(0, 128);
+// Canonical automatic collection is a PR2 capability. Keep this hard stop in
+// the executor itself as well as in its scheduler: a stale worker, feature
+// flag, or direct call must never query the F1/F3/F4 relations removed by
+// migration 0032 or dispatch a provider charge in PR1.
+const PR1_AUTOPAY_DORMANT = true;
 
 export async function executeCanonicalAutopayOperation(input: { organizationId: number; operationId: string; now?: Date }): Promise<void> {
-  if (!canonicalF4AutopayExecutionEnabled) return;
+  if (PR1_AUTOPAY_DORMANT || !canonicalF4AutopayExecutionEnabled) return;
   const now = input.now ?? new Date();
   const operation = await acquirePaymentOperationLease({ organizationId: input.organizationId, operationId: input.operationId, leaseOwner, leaseDurationMs: LEASE_MS, now });
   if (!operation?.leaseToken) return;

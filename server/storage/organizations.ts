@@ -45,6 +45,11 @@ import {
   autopayConsents,
   financialCommands,
   paymentOperationRosterSnapshots,
+  paymentOperationRosterSnapshotItems,
+  canonicalCollectionGroups,
+  canonicalCollectionGroupMembers,
+  canonicalCollectionGroupRevisions,
+  canonicalCollectionGroupMemberRevisions,
   paymentSchedules,
   users,
   webhookEvents,
@@ -286,6 +291,7 @@ export async function deleteOrganization(id: number): Promise<void> {
     // Remove corrections/obligations/responsibilities before slots and the
     // retained general payment ledger. This path is the explicit teardown
     // exception; ordinary mutations remain append-only/locked.
+    await tx.delete(paymentOperationRosterSnapshotItems).where(eq(paymentOperationRosterSnapshotItems.organizationId, id));
     await tx.delete(paymentOperationRosterSnapshots).where(eq(paymentOperationRosterSnapshots.organizationId, id));
     await tx.delete(paymentAllocations).where(eq(paymentAllocations.organizationId, id));
     await tx.delete(paymentObligations).where(eq(paymentObligations.organizationId, id));
@@ -322,6 +328,14 @@ export async function deleteOrganization(id: number): Promise<void> {
       await tx.delete(games).where(inArray(games.leagueId, leagueIds));
       await tx.delete(paymentSchedules).where(inArray(paymentSchedules.leagueId, leagueIds));
     }
+
+    // Collection groups are retained canonical schedule evidence and must be
+    // removed only as part of explicit organization teardown, in child-first
+    // order so their revision/member history cannot block league deletion.
+    await tx.delete(canonicalCollectionGroupMemberRevisions).where(eq(canonicalCollectionGroupMemberRevisions.organizationId, id));
+    await tx.delete(canonicalCollectionGroupRevisions).where(eq(canonicalCollectionGroupRevisions.organizationId, id));
+    await tx.delete(canonicalCollectionGroupMembers).where(eq(canonicalCollectionGroupMembers.organizationId, id));
+    await tx.delete(canonicalCollectionGroups).where(eq(canonicalCollectionGroups.organizationId, id));
 
     // Ordinary location deletion retains webhook evidence and is rejected.
     // Full tenant teardown is the explicit retention-policy exception: remove

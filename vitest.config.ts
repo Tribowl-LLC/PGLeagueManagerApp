@@ -131,6 +131,29 @@ const UNIT_NO_DB = [
   'tests/unit/payment-manager-access-control.test.ts',
   'tests/unit/test-template-migration-source.test.ts',
   'tests/unit/zod-v4-migration-contracts.test.ts',
+  'tests/unit/roster-payment-pr1-contract.test.ts',
+  'tests/unit/roster-payment-route-boundaries.test.ts',
+];
+
+/**
+ * F1/D2/F3/F4 tests whose fixtures assert the pre-0032 authorities. Migration
+ * 0032 intentionally drops those zero-row tables and PR1 replaces the
+ * activation/plan/supplement flows with roster obligations and exact
+ * allocations. Keeping the files in the repository is useful historical
+ * context, but they must not be run against the clean-slate schema; the
+ * replacement PR1 contract/API suites cover the supported behavior.
+ */
+const PR1_RETIRED_FINANCIAL_TESTS = [
+  'tests/api/financials-f1-boundary.test.ts',
+  'tests/api/f3-autopay-postgres-contract.test.ts',
+  'tests/api/f3-autopay-enabled-router.test.ts',
+  'tests/unit/canonical-due-past-due-activation-postgres.test.ts',
+  'tests/unit/canonical-due-past-due-postgres.test.ts',
+  'tests/unit/occurrence-financial-foundation-postgres.test.ts',
+  'tests/unit/f4-canonical-autopay-postgres.test.ts',
+  'tests/unit/f4-canonical-autopay-integration-postgres.test.ts',
+  'tests/unit/f3-workflow-postgres.test.ts',
+  'tests/unit/canonical-payment-report-postgres.test.ts',
 ];
 
 const PARALLEL_ISOLATED = [
@@ -302,6 +325,7 @@ export default defineConfig({
             ...PARALLEL_ISOLATED,
             ...PARALLEL_ISOLATED_WITH_APP,
             ...UNIT_NO_DB,
+            ...PR1_RETIRED_FINANCIAL_TESTS,
           ],
           setupFiles: ['./tests/setup/per-worker-setup.ts'],
           // Skip per-file module re-evaluation; reuse module contexts across
@@ -340,6 +364,7 @@ export default defineConfig({
           globalSetup: ['./tests/setup/global-setup.ts'],
           alias: sharedAlias,
           include: PARALLEL_ISOLATED,
+          exclude: PR1_RETIRED_FINANCIAL_TESTS,
           setupFiles: ['./tests/setup/per-worker-db-only.ts'],
           // Default `isolate: true` — these files have vi.mock factories
           // whose closures leak across files when the module registry is

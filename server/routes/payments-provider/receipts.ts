@@ -114,11 +114,6 @@ async function resolveReceiptUrl(paymentId: number, organizationId?: number): Pr
 async function buildReceiptEvidence(paymentId: number, organizationId: number, viewer: Express.User): Promise<{ evidence: PaymentReceiptContract; sharedReceiptAllowed: boolean } | null> {
   const paymentScope = await storage.getPaymentByIdForOrganization(paymentId, organizationId);
   const scopedLeague = paymentScope ? await storage.getLeague(paymentScope.leagueId) : undefined;
-  if (scopedLeague?.payingLineupSize !== null && scopedLeague?.payingLineupSize !== undefined) {
-    // PR1 has no provider-created payments for roster-driven leagues; cash
-    // and check records intentionally have no hosted receipt projection.
-    return null;
-  }
   const projection = await readPaymentReceiptProjection({ organizationId, paymentId });
   const { payment, report, row } = projection;
   const transaction = report.transactions.find((candidate) => candidate.rows.some((candidateRow) => candidateRow.paymentId === payment.id));

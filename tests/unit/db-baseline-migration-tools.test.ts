@@ -430,7 +430,7 @@ describe('normalized migration baseline tools', () => {
       idx: 32,
       tag: '0032_roster_driven_payments_core',
       createdAt: 1787500000000,
-      hash: 'd3044c41dc1206e9eee7d5290d98a0cd2a44affdfa51aa61f36f555fbdbe0a92',
+      hash: 'bce4b4bad8fe1b82b55b5e8c3e70a3298e448f89b44168c5cd19461534ccd3fd',
     });
     expect(migrations[32]?.sql).toContain('0032 refused');
     expect(migrations[32]?.sql).toContain('CREATE TABLE team_payment_slots');

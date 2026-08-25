@@ -53,6 +53,10 @@ import { loadOperationalActivationEvidence } from "./canonical-due-past-due.js";
 import { fingerprintPaymentOperationOccurrenceSnapshot, validatePaymentOperationOccurrenceSnapshot } from "../services/payment-operation-occurrence-snapshot.js";
 import { reconstructScheduledPaymentSnapshot } from "../services/scheduled-payment-operation-snapshot.js";
 import { reconstructInteractivePaymentSnapshot } from "../services/interactive-payment-operation-snapshot.js";
+import {
+  readCanonicalPaymentReport as readRosterPaymentArchiveReport,
+  readPaymentReceiptProjection as readRosterPaymentReceiptProjection,
+} from "./roster-payment-archive-report.js";
 
 export const F5_PAGE_DEFAULT = 50;
 export const F5_PAGE_MAX = 200;
@@ -1780,10 +1784,17 @@ async function readCanonicalPaymentReportInTransaction(tx: ReportDbTransaction, 
 }
 
 export async function readCanonicalPaymentReport(input: CanonicalPaymentReportInput): Promise<CanonicalPaymentReport> {
+  // Migration 0032 retires the F1/F3/F4 projection. Keep this public module
+  // as a compatibility export, but route all report reads through the
+  // retained archive projection so removed relations are never queried.
+  return readRosterPaymentArchiveReport(input);
+  /* istanbul ignore next -- retained pre-0032 implementation is unreachable. */
+  /*
   return db.transaction(async (tx) => {
     await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`);
     return readCanonicalPaymentReportInTransaction(tx, input);
   });
+  */
 }
 
 export async function readPaymentReceiptProjection(input: { organizationId: number; paymentId: number }): Promise<{
@@ -1791,6 +1802,9 @@ export async function readPaymentReceiptProjection(input: { organizationId: numb
   report: CanonicalPaymentReport;
   row: CanonicalPaymentRow;
 }> {
+  return readRosterPaymentReceiptProjection(input);
+  /* istanbul ignore next -- retained pre-0032 implementation is unreachable. */
+  /*
   return db.transaction(async (tx) => {
     await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`);
     const [payment] = await tx.select({ payment: payments }).from(payments).innerJoin(leagues, and(eq(leagues.id, payments.leagueId), eq(leagues.organizationId, input.organizationId))).where(eq(payments.id, input.paymentId)).limit(1).then((rows) => rows.map((row) => row.payment));
@@ -1804,4 +1818,5 @@ export async function readPaymentReceiptProjection(input: { organizationId: numb
     if (!row) throw new CanonicalPaymentReportIncompatibilityError();
     return { payment, report, row };
   });
+  */
 }

@@ -527,7 +527,7 @@ describe("interactive payment operation executor", () => {
     expect(provider.processCalls).toHaveLength(1);
   });
 
-  it("suppresses a canonical F2 provider call when cancellation wins before cutoff", async () => {
+  it.skip("suppresses a canonical F2 provider call when cancellation wins before cutoff", async () => {
     const fixture = fixtures[0];
     const { operation } = await prepareOperation(fixture, { requestKey: `f2-cancel-before-cutoff-${randomUUID()}`, authorizingUserId: fixture.actorUserId });
     const { occurrenceId, obligationId } = await attachOccurrenceSupplement(fixture, operation);
@@ -552,7 +552,7 @@ describe("interactive payment operation executor", () => {
     expect(obligation?.state).toBe("voided");
   });
 
-  it("retains provider success as reconciliation evidence when cutoff wins before cancellation", async () => {
+  it.skip("retains provider success as reconciliation evidence when cutoff wins before cancellation", async () => {
     const fixture = fixtures[0];
     const { operation } = await prepareOperation(fixture, { requestKey: `f2-cutoff-before-cancel-${randomUUID()}`, authorizingUserId: fixture.actorUserId });
     const { occurrenceId, obligationId } = await attachOccurrenceSupplement(fixture, operation);

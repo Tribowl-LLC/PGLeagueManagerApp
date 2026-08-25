@@ -85,6 +85,10 @@ export class PaymentScheduler {
     }
 
     const league = await db.select().from(leagues).where(eq(leagues.id, leagueId)).limit(1).then(r => r[0]);
+    if (league?.payingLineupSize !== null && league?.payingLineupSize !== undefined) {
+      logger.info('[PaymentScheduler] Roster-configured league uses exact-obligation collection', { leagueId });
+      return false;
+    }
     const locationId = league?.locationId ?? null;
     let provider;
     try {
@@ -121,6 +125,7 @@ export class PaymentScheduler {
 
       const conditions = [
         eq(paymentSchedules.active, true),
+        isNull(leagues.payingLineupSize),
       ];
 
       if (organizationId !== undefined) {
@@ -438,6 +443,7 @@ export class PaymentScheduler {
         .where(
           and(
             eq(paymentSchedules.active, true),
+            isNull(leagues.payingLineupSize),
             lte(paymentSchedules.nextPaymentDate, now.toISOString())
           )
         );

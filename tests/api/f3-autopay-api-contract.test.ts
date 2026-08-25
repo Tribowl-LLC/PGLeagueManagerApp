@@ -24,16 +24,16 @@ describe("F3 API/provider boundary contract", () => {
     const anonymous = await apiGet(`/api/financials/f3/leagues/${leagueId}/prequote?bowlerId=1`);
     expect(anonymous.status).toBe(401);
     const disabled = await apiGet(`/api/financials/f3/leagues/${leagueId}/prequote?bowlerId=${bowlerId}`, session);
-    expect([404, 409]).toContain(disabled.status);
-    if (disabled.status === 409) expect(responseCode(disabled.data)).toBe("F3_DISABLED");
+    expect(disabled.status).toBe(410);
+    expect(responseCode(disabled.data)).toBe("FINANCIAL_AUTOPAY_RETIRED");
   });
 
   it("does not expose policy candidates or authorization commands while disabled", async () => {
     const candidates = await apiGet(`/api/financials/f3/leagues/${leagueId}/policy/candidates`, session);
-    expect(candidates.status).toBe(409);
-    expect(responseCode(candidates.data)).toBe("F3_DISABLED");
+    expect(candidates.status).toBe(410);
+    expect(responseCode(candidates.data)).toBe("FINANCIAL_AUTOPAY_RETIRED");
     const authorize = await apiGet(`/api/financials/f3/leagues/${leagueId}/quote?bowlerId=${bowlerId}`, session);
-    expect(authorize.status).toBe(409);
-    expect(responseCode(authorize.data)).toBe("F3_DISABLED");
+    expect(authorize.status).toBe(410);
+    expect(responseCode(authorize.data)).toBe("FINANCIAL_AUTOPAY_RETIRED");
   });
 });

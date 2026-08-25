@@ -189,9 +189,13 @@ export const occurrencePaymentResponsibilities = pgTable("occurrence_payment_res
   stateCheck: check("occurrence_payment_responsibilities_state_check", sql`${table.state} IN (${responsibilityStates}) AND ${table.version} > 0`),
   positionCheck: check("occurrence_payment_responsibilities_position_check", sql`${table.slotIndex} >= 0 AND ${table.positionIndex} >= 0 AND ${table.positionIndex} < 4`),
   kindCheck: check("occurrence_payment_responsibilities_kind_check", sql`${table.responsibilityKind} IN (${responsibilityKinds}) AND ((
-    ${table.responsibilityKind} = 'vacant' AND ${table.payerBowlerId} IS NULL AND ${table.amountMinor} = 0 AND ${table.lineageAmountMinor} IS NULL AND ${table.prizeFundAmountMinor} IS NULL
+    ${table.responsibilityKind} = 'vacant' AND ${table.mainBowlerId} IS NULL AND ${table.substituteBowlerId} IS NULL AND ${table.payerBowlerId} IS NULL AND ${table.amountMinor} = 0 AND ${table.lineageAmountMinor} IS NULL AND ${table.prizeFundAmountMinor} IS NULL
   ) OR (
-    ${table.responsibilityKind} <> 'vacant' AND ${table.payerBowlerId} IS NOT NULL AND ${table.amountMinor} > 0
+    ${table.responsibilityKind} = 'main' AND ${table.mainBowlerId} IS NOT NULL AND ${table.substituteBowlerId} IS NULL AND ${table.payerBowlerId} = ${table.mainBowlerId} AND ${table.amountMinor} > 0
+  ) OR (
+    ${table.responsibilityKind} = 'substitute' AND ${table.mainBowlerId} IS NOT NULL AND ${table.substituteBowlerId} IS NOT NULL AND ${table.payerBowlerId} IS NOT NULL AND ${table.amountMinor} > 0
+  ) OR (
+    ${table.responsibilityKind} = 'split' AND ${table.mainBowlerId} IS NOT NULL AND ${table.substituteBowlerId} IS NOT NULL AND ${table.payerBowlerId} IS NOT NULL AND ${table.amountMinor} > 0
   )) AND ((${table.responsibilityKind} = 'split' AND ${table.lineagePayerBowlerId} IS NOT NULL AND ${table.prizePayerBowlerId} IS NOT NULL AND ${table.lineageAmountMinor} IS NOT NULL AND ${table.prizeFundAmountMinor} IS NOT NULL AND ${table.lineageAmountMinor} >= 0 AND ${table.prizeFundAmountMinor} >= 0 AND ${table.lineageAmountMinor} + ${table.prizeFundAmountMinor} = ${table.amountMinor} AND ${table.amountMinor} > 0) OR (${table.responsibilityKind} <> 'split' AND ${table.lineagePayerBowlerId} IS NULL AND ${table.prizePayerBowlerId} IS NULL AND ${table.lineageAmountMinor} IS NULL AND ${table.prizeFundAmountMinor} IS NULL))`),
   amountCheck: check("occurrence_payment_responsibilities_amount_check", sql`${table.amountMinor} >= 0 AND ${table.currency} = 'USD' AND ${table.pastDueAt} >= ${table.dueAt}`),
 }));
@@ -247,7 +251,6 @@ export const paymentAllocations = pgTable("payment_allocations", {
   obligationFk: foreignKey({ name: "payment_allocations_obligation_fk", columns: [table.obligationId, table.organizationId, table.leagueId], foreignColumns: [paymentObligations.id, paymentObligations.organizationId, paymentObligations.leagueId] }).onDelete("restrict"),
   supersedesFk: foreignKey({ name: "payment_allocations_supersedes_fk", columns: [table.supersedesAllocationId, table.organizationId, table.leagueId], foreignColumns: [table.id, table.organizationId, table.leagueId] }).onDelete("restrict"),
   tenantIdentityUnique: uniqueIndex("payment_allocations_tenant_identity_unique").on(table.id, table.organizationId, table.leagueId),
-  activeUnique: uniqueIndex("payment_allocations_active_obligation_unique").on(table.organizationId, table.leagueId, table.obligationId).where(sql`${table.state} = 'active'`),
   paymentIdx: index("payment_allocations_payment_idx").on(table.organizationId, table.leagueId, table.paymentId),
   obligationIdx: index("payment_allocations_obligation_idx").on(table.organizationId, table.leagueId, table.obligationId),
   amountCheck: check("payment_allocations_amount_check", sql`${table.amountMinor} > 0 AND ${table.currency} = 'USD'`),
@@ -311,8 +314,32 @@ export const paymentOperationRosterSnapshots = pgTable("payment_operation_roster
 }, (table) => ({
   operationFk: foreignKey({ name: "payment_operation_roster_snapshots_operation_fk", columns: [table.operationId, table.organizationId, table.leagueId], foreignColumns: [paymentOperations.id, paymentOperations.organizationId, paymentOperations.leagueId] }).onDelete("restrict"),
   leagueTenantFk: leagueTenantFk(table, "payment_operation_roster_snapshots_league_tenant_fk"),
+  tenantIdentityUnique: uniqueIndex("payment_operation_roster_snapshots_tenant_identity_unique").on(table.operationId, table.organizationId, table.leagueId),
   versionUnique: uniqueIndex("payment_operation_roster_snapshots_version_unique").on(table.operationId, table.organizationId, table.leagueId, table.snapshotVersion),
   amountCheck: check("payment_operation_roster_snapshots_amount_check", sql`${table.amountMinor} > 0 AND ${table.currency} = 'USD' AND ${table.snapshotVersion} > 0`),
+}));
+
+/** Exact obligation reservations made before provider I/O.  The partial
+ * uniqueness rule is the concurrency boundary: an obligation can belong to
+ * only one unresolved provider operation at a time. */
+export const paymentOperationRosterSnapshotItems = pgTable("payment_operation_roster_snapshot_items", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  operationId: uuid("operation_id").notNull(),
+  organizationId: integer("organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
+  leagueId: integer("league_id").notNull(),
+  obligationId: uuid("obligation_id").notNull(),
+  allocationIndex: integer("allocation_index").notNull(),
+  amountMinor: integer("amount_minor").notNull(),
+  state: text("state", { enum: ["reserved", "finalized", "released"] as const }).notNull().default("reserved"),
+  createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull().defaultNow(),
+}, (table) => ({
+  operationFk: foreignKey({ name: "payment_operation_roster_snapshot_items_operation_fk", columns: [table.operationId, table.organizationId, table.leagueId], foreignColumns: [paymentOperationRosterSnapshots.operationId, paymentOperationRosterSnapshots.organizationId, paymentOperationRosterSnapshots.leagueId] }).onDelete("restrict"),
+  obligationFk: foreignKey({ name: "payment_operation_roster_snapshot_items_obligation_fk", columns: [table.obligationId, table.organizationId, table.leagueId], foreignColumns: [paymentObligations.id, paymentObligations.organizationId, paymentObligations.leagueId] }).onDelete("restrict"),
+  leagueTenantFk: leagueTenantFk(table, "payment_operation_roster_snapshot_items_league_tenant_fk"),
+  operationItemUnique: uniqueIndex("payment_operation_roster_snapshot_items_operation_item_unique").on(table.operationId, table.organizationId, table.leagueId, table.obligationId),
+  activeObligationUnique: uniqueIndex("payment_operation_roster_snapshot_items_active_obligation_unique").on(table.organizationId, table.leagueId, table.obligationId).where(sql`${table.state} IN ('reserved', 'finalized')`),
+  index: index("payment_operation_roster_snapshot_items_obligation_idx").on(table.organizationId, table.leagueId, table.obligationId, table.state),
+  amountCheck: check("payment_operation_roster_snapshot_items_amount_check", sql`${table.amountMinor} > 0 AND ${table.allocationIndex} >= 0 AND ${table.state} IN ('reserved', 'finalized', 'released')`),
 }));
 
 export type TeamPaymentSlot = typeof teamPaymentSlots.$inferSelect;
@@ -325,3 +352,4 @@ export type PaymentAllocation = typeof paymentAllocations.$inferSelect;
 export type AutopayConsent = typeof autopayConsents.$inferSelect;
 export type FinancialCommand = typeof financialCommands.$inferSelect;
 export type PaymentOperationRosterSnapshot = typeof paymentOperationRosterSnapshots.$inferSelect;
+export type PaymentOperationRosterSnapshotItem = typeof paymentOperationRosterSnapshotItems.$inferSelect;

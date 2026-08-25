@@ -37,6 +37,9 @@ DECLARE
 BEGIN
   FOREACH table_name IN ARRAY abandoned LOOP
     IF to_regclass(format('public.%I', table_name)) IS NOT NULL THEN
+      -- SERIALIZABLE migration gate: block inserts/deletes that could race
+      -- the evidence check while this migration drops the authority.
+      EXECUTE format('LOCK TABLE public.%I IN SHARE ROW EXCLUSIVE MODE', table_name);
       EXECUTE format('SELECT count(*) FROM public.%I', table_name) INTO row_count;
       IF row_count <> 0 THEN
         RAISE EXCEPTION '0032 refused: abandoned canonical financial evidence table % contains % rows', table_name, row_count;
@@ -224,7 +227,7 @@ CREATE TABLE occurrence_payment_responsibilities (
   CONSTRAINT occurrence_payment_responsibilities_prize_payer_fk FOREIGN KEY (prize_payer_bowler_id, organization_id) REFERENCES bowlers(id, organization_id) ON DELETE RESTRICT,
   CONSTRAINT occurrence_payment_responsibilities_state_check CHECK (state IN ('active', 'voided') AND version > 0),
   CONSTRAINT occurrence_payment_responsibilities_position_check CHECK (slot_index >= 0 AND position_index >= 0 AND position_index < 4),
-  CONSTRAINT occurrence_payment_responsibilities_kind_check CHECK (responsibility_kind IN ('main', 'substitute', 'split', 'vacant') AND ((responsibility_kind = 'vacant' AND payer_bowler_id IS NULL AND amount_minor = 0 AND lineage_amount_minor IS NULL AND prize_fund_amount_minor IS NULL) OR (responsibility_kind <> 'vacant' AND payer_bowler_id IS NOT NULL AND amount_minor > 0)) AND ((responsibility_kind = 'split' AND lineage_payer_bowler_id IS NOT NULL AND prize_payer_bowler_id IS NOT NULL AND lineage_amount_minor IS NOT NULL AND prize_fund_amount_minor IS NOT NULL AND lineage_amount_minor >= 0 AND prize_fund_amount_minor >= 0 AND lineage_amount_minor + prize_fund_amount_minor = amount_minor AND amount_minor > 0) OR (responsibility_kind <> 'split' AND lineage_payer_bowler_id IS NULL AND prize_payer_bowler_id IS NULL AND lineage_amount_minor IS NULL AND prize_fund_amount_minor IS NULL))),
+  CONSTRAINT occurrence_payment_responsibilities_kind_check CHECK (responsibility_kind IN ('main', 'substitute', 'split', 'vacant') AND ((responsibility_kind = 'vacant' AND main_bowler_id IS NULL AND substitute_bowler_id IS NULL AND payer_bowler_id IS NULL AND amount_minor = 0 AND lineage_amount_minor IS NULL AND prize_fund_amount_minor IS NULL) OR (responsibility_kind = 'main' AND main_bowler_id IS NOT NULL AND substitute_bowler_id IS NULL AND payer_bowler_id = main_bowler_id AND amount_minor > 0) OR (responsibility_kind = 'substitute' AND main_bowler_id IS NOT NULL AND substitute_bowler_id IS NOT NULL AND payer_bowler_id IS NOT NULL AND amount_minor > 0) OR (responsibility_kind = 'split' AND main_bowler_id IS NOT NULL AND substitute_bowler_id IS NOT NULL AND payer_bowler_id IS NOT NULL AND amount_minor > 0)) AND ((responsibility_kind = 'split' AND lineage_payer_bowler_id IS NOT NULL AND prize_payer_bowler_id IS NOT NULL AND lineage_amount_minor IS NOT NULL AND prize_fund_amount_minor IS NOT NULL AND lineage_amount_minor >= 0 AND prize_fund_amount_minor >= 0 AND lineage_amount_minor + prize_fund_amount_minor = amount_minor AND amount_minor > 0) OR (responsibility_kind <> 'split' AND lineage_payer_bowler_id IS NULL AND prize_payer_bowler_id IS NULL AND lineage_amount_minor IS NULL AND prize_fund_amount_minor IS NULL))),
   CONSTRAINT occurrence_payment_responsibilities_amount_check CHECK (amount_minor >= 0 AND currency = 'USD' AND past_due_at >= due_at)
 );
 CREATE UNIQUE INDEX occurrence_payment_responsibilities_version_unique ON occurrence_payment_responsibilities(organization_id, league_id, occurrence_id, team_id, slot_index, position_index, version);
@@ -288,7 +291,6 @@ CREATE TABLE payment_allocations (
   CONSTRAINT payment_allocations_amount_check CHECK (amount_minor > 0 AND currency = 'USD'),
   CONSTRAINT payment_allocations_state_check CHECK (state IN ('active', 'voided') AND (state = 'voided' OR supersedes_allocation_id IS NULL OR correction_reason IS NOT NULL))
 );
-CREATE UNIQUE INDEX payment_allocations_active_obligation_unique ON payment_allocations(organization_id, league_id, obligation_id) WHERE state = 'active';
 CREATE INDEX payment_allocations_payment_idx ON payment_allocations(organization_id, league_id, payment_id);
 CREATE INDEX payment_allocations_obligation_idx ON payment_allocations(organization_id, league_id, obligation_id);
 --> statement-breakpoint
@@ -348,6 +350,27 @@ CREATE TABLE payment_operation_roster_snapshots (
   CONSTRAINT payment_operation_roster_snapshots_amount_check CHECK (amount_minor > 0 AND currency = 'USD' AND snapshot_version > 0)
 );
 CREATE UNIQUE INDEX payment_operation_roster_snapshots_version_unique ON payment_operation_roster_snapshots(operation_id, organization_id, league_id, snapshot_version);
+CREATE UNIQUE INDEX payment_operation_roster_snapshots_tenant_identity_unique ON payment_operation_roster_snapshots(operation_id, organization_id, league_id);
+--> statement-breakpoint
+
+CREATE TABLE payment_operation_roster_snapshot_items (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  operation_id uuid NOT NULL,
+  organization_id integer NOT NULL REFERENCES organizations(id) ON DELETE RESTRICT,
+  league_id integer NOT NULL,
+  obligation_id uuid NOT NULL,
+  allocation_index integer NOT NULL,
+  amount_minor integer NOT NULL,
+  state text NOT NULL DEFAULT 'reserved',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT payment_operation_roster_snapshot_items_operation_fk FOREIGN KEY (operation_id, organization_id, league_id) REFERENCES payment_operation_roster_snapshots(operation_id, organization_id, league_id) ON DELETE RESTRICT,
+  CONSTRAINT payment_operation_roster_snapshot_items_obligation_fk FOREIGN KEY (obligation_id, organization_id, league_id) REFERENCES payment_obligations(id, organization_id, league_id) ON DELETE RESTRICT,
+  CONSTRAINT payment_operation_roster_snapshot_items_league_tenant_fk FOREIGN KEY (league_id, organization_id) REFERENCES leagues(id, organization_id) ON DELETE RESTRICT,
+  CONSTRAINT payment_operation_roster_snapshot_items_amount_check CHECK (amount_minor > 0 AND allocation_index >= 0 AND state IN ('reserved', 'finalized', 'released'))
+);
+CREATE UNIQUE INDEX payment_operation_roster_snapshot_items_operation_item_unique ON payment_operation_roster_snapshot_items(operation_id, organization_id, league_id, obligation_id);
+CREATE UNIQUE INDEX payment_operation_roster_snapshot_items_active_obligation_unique ON payment_operation_roster_snapshot_items(organization_id, league_id, obligation_id) WHERE state IN ('reserved', 'finalized');
+CREATE INDEX payment_operation_roster_snapshot_items_obligation_idx ON payment_operation_roster_snapshot_items(organization_id, league_id, obligation_id, state);
 --> statement-breakpoint
 
 -- Financial evidence is append-only. Corrections are represented by new rows
@@ -356,6 +379,53 @@ CREATE OR REPLACE FUNCTION roster_payment_append_only_guard() RETURNS trigger LA
 BEGIN
   IF current_setting('leaguevault.organization_teardown', true) = 'on' THEN
     RETURN OLD;
+  END IF;
+  IF TG_TABLE_NAME = 'payment_operation_roster_snapshot_items'
+    AND OLD.state = 'reserved' AND NEW.state IN ('finalized', 'released')
+    AND ROW(NEW.id, NEW.operation_id, NEW.organization_id, NEW.league_id,
+            NEW.obligation_id, NEW.allocation_index, NEW.amount_minor,
+            NEW.created_at)
+        IS NOT DISTINCT FROM
+        ROW(OLD.id, OLD.operation_id, OLD.organization_id, OLD.league_id,
+            OLD.obligation_id, OLD.allocation_index, OLD.amount_minor,
+            OLD.created_at) THEN
+    RETURN NEW;
+  END IF;
+  IF TG_TABLE_NAME = 'payment_obligations'
+    AND ROW(NEW.id, NEW.organization_id, NEW.league_id, NEW.occurrence_id,
+            NEW.responsibility_id, NEW.component, NEW.payer_bowler_id,
+            NEW.amount_minor, NEW.currency, NEW.due_at, NEW.past_due_at,
+            NEW.created_by_user_id, NEW.created_at)
+        IS NOT DISTINCT FROM
+        ROW(OLD.id, OLD.organization_id, OLD.league_id, OLD.occurrence_id,
+            OLD.responsibility_id, OLD.component, OLD.payer_bowler_id,
+            OLD.amount_minor, OLD.currency, OLD.due_at, OLD.past_due_at,
+            OLD.created_by_user_id, OLD.created_at)
+    AND NEW.state IN ('open', 'partially_settled', 'settled', 'voided')
+    AND ((NEW.state = 'voided' AND NEW.voided_at IS NOT NULL) OR (NEW.state <> 'voided' AND NEW.voided_at IS NULL)) THEN
+    RETURN NEW;
+  END IF;
+  IF TG_TABLE_NAME = 'financial_commands'
+    AND ROW(NEW.id, NEW.organization_id, NEW.league_id, NEW.actor_user_id,
+            NEW.command_type, NEW.idempotency_key, NEW.request_fingerprint,
+            NEW.created_at)
+        IS NOT DISTINCT FROM
+        ROW(OLD.id, OLD.organization_id, OLD.league_id, OLD.actor_user_id,
+            OLD.command_type, OLD.idempotency_key, OLD.request_fingerprint,
+            OLD.created_at)
+    AND NEW.state IN ('accepted', 'rejected', 'applied', 'failed') THEN
+    RETURN NEW;
+  END IF;
+  IF TG_TABLE_NAME = 'autopay_consents'
+    AND ROW(NEW.id, NEW.organization_id, NEW.league_id, NEW.payer_bowler_id,
+            NEW.consent_version, NEW.provider_name, NEW.encrypted_source_id,
+            NEW.encrypted_customer_id, NEW.created_by_user_id, NEW.created_at)
+        IS NOT DISTINCT FROM
+        ROW(OLD.id, OLD.organization_id, OLD.league_id, OLD.payer_bowler_id,
+            OLD.consent_version, OLD.provider_name, OLD.encrypted_source_id,
+            OLD.encrypted_customer_id, OLD.created_by_user_id, OLD.created_at)
+    AND NEW.state IN ('pending', 'active', 'revoked', 'expired') THEN
+    RETURN NEW;
   END IF;
   -- Provider/payment facts remain immutable, while a refund or dispute may
   -- append review metadata to the retained allocation in place.
@@ -413,6 +483,10 @@ END;
 $$;
 CREATE TRIGGER occurrence_payment_responsibilities_append_only BEFORE UPDATE OR DELETE ON occurrence_payment_responsibilities FOR EACH ROW EXECUTE FUNCTION roster_payment_append_only_guard();
 CREATE TRIGGER payment_allocations_append_only BEFORE UPDATE OR DELETE ON payment_allocations FOR EACH ROW EXECUTE FUNCTION roster_payment_append_only_guard();
+CREATE TRIGGER payment_obligations_append_only BEFORE UPDATE OR DELETE ON payment_obligations FOR EACH ROW EXECUTE FUNCTION roster_payment_append_only_guard();
 CREATE TRIGGER team_payment_slot_revisions_append_only BEFORE UPDATE OR DELETE ON team_payment_slot_revisions FOR EACH ROW EXECUTE FUNCTION roster_payment_append_only_guard();
 CREATE TRIGGER team_payment_policy_revisions_append_only BEFORE UPDATE OR DELETE ON team_payment_policy_revisions FOR EACH ROW EXECUTE FUNCTION roster_payment_append_only_guard();
 CREATE TRIGGER payment_operation_roster_snapshots_append_only BEFORE UPDATE OR DELETE ON payment_operation_roster_snapshots FOR EACH ROW EXECUTE FUNCTION roster_payment_append_only_guard();
+CREATE TRIGGER payment_operation_roster_snapshot_items_append_only BEFORE UPDATE OR DELETE ON payment_operation_roster_snapshot_items FOR EACH ROW EXECUTE FUNCTION roster_payment_append_only_guard();
+CREATE TRIGGER autopay_consents_append_only BEFORE UPDATE OR DELETE ON autopay_consents FOR EACH ROW EXECUTE FUNCTION roster_payment_append_only_guard();
+CREATE TRIGGER financial_commands_append_only BEFORE UPDATE OR DELETE ON financial_commands FOR EACH ROW EXECUTE FUNCTION roster_payment_append_only_guard();

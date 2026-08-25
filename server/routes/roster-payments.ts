@@ -8,9 +8,11 @@ import {
   rosterPaymentResponsibilityRequestSchema,
   occurrenceResponsibilityInputSchema,
 } from "@shared/roster-payment-contract";
-import { hasAdminAccessToLeague, hasPaymentManagerAccessToLeague } from "../utils/access-control.js";
+import { hasAccessToLeague, hasAdminAccessToLeague, hasPaymentManagerAccessToLeague } from "../utils/access-control.js";
+import { canUserPayForBowler } from "../utils/bowler-payment-authz.js";
 import { sendError, sendSuccess } from "../utils/api.js";
 import { storage } from "../storage/index.js";
+import { adminWriteLimiter, paymentWriteLimiter } from "../middleware/rate-limit.js";
 import {
   correctCanonicalAllocation,
   chargeInteractiveObligations,
@@ -32,10 +34,35 @@ function leagueIdParam(value: string): number | null {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
-async function authorizedLeague(req: Request, leagueId: number) {
+async function authorizedLeague(req: Request, leagueId: number, management = false, adminOnly = false) {
   const league = await storage.getLeague(leagueId);
   if (!league || league.organizationId === null || req.user?.organizationId !== league.organizationId && req.user?.role !== "system_admin") return null;
-  if (!(await hasAdminAccessToLeague(req, leagueId)) && !(await hasPaymentManagerAccessToLeague(req, leagueId))) return null;
+  if (management) {
+    if (adminOnly ? !(await hasAdminAccessToLeague(req, leagueId)) : !(await hasAdminAccessToLeague(req, leagueId)) && !(await hasPaymentManagerAccessToLeague(req, leagueId))) return null;
+  } else if (!(await hasAccessToLeague(req, leagueId))) {
+    return null;
+  }
+  return league;
+}
+
+async function paymentScope(req: Request, leagueId: number, obligationIds: string[]) {
+  const league = await authorizedLeague(req, leagueId);
+  if (!league || league.organizationId === null) return null;
+  const privileged = await hasAdminAccessToLeague(req, leagueId) || await hasPaymentManagerAccessToLeague(req, leagueId) || req.user?.role === "system_admin";
+  if (!privileged) {
+    let quote;
+    try {
+      quote = await quoteInteractiveObligations({ organizationId: league.organizationId, leagueId, obligationIds, payerBowlerId: req.user?.bowlerId ?? undefined });
+    } catch {
+      // Obligation existence, ownership, and state are deliberately folded
+      // into the same not-found response for an unprivileged caller.
+      return null;
+    }
+    for (const obligation of quote.obligations) {
+      const allowed = await canUserPayForBowler(req, obligation.payerBowlerId);
+      if (!allowed.allowed) return null;
+    }
+  }
   return league;
 }
 
@@ -54,16 +81,16 @@ function handleError(res: Response, error: unknown): void {
 router.get("/leagues/:leagueId/roster-payment-responsibility/1", async (req, res) => {
   const leagueId = leagueIdParam(req.params.leagueId);
   if (!leagueId || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
-  const league = await authorizedLeague(req, leagueId);
+  const league = await authorizedLeague(req, leagueId, true);
   if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
   try { return sendSuccess(res, await readRosterPaymentResponsibility({ organizationId: league.organizationId, leagueId })); } catch (error) { return handleError(res, error); }
 });
 
-router.post("/leagues/:leagueId/roster-payment-responsibility/1/teams/:teamId", async (req, res) => {
-  const leagueId = leagueIdParam(req.params.leagueId);
-  const teamId = leagueIdParam(req.params.teamId);
+router.post("/leagues/:leagueId/roster-payment-responsibility/1/teams/:teamId", adminWriteLimiter, async (req, res) => {
+  const leagueId = leagueIdParam(String(req.params.leagueId));
+  const teamId = leagueIdParam(String(req.params.teamId));
   if (!leagueId || !teamId || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
-  const league = await authorizedLeague(req, leagueId);
+  const league = await authorizedLeague(req, leagueId, true, true);
   if (!league || league.organizationId === null || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
   const parsed = rosterPaymentResponsibilityRequestSchema.safeParse(req.body);
   if (!parsed.success) return sendError(res, "Invalid roster responsibility request", 400, "INVALID_REQUEST");
@@ -72,10 +99,10 @@ router.post("/leagues/:leagueId/roster-payment-responsibility/1/teams/:teamId", 
   } catch (error) { return handleError(res, error); }
 });
 
-router.post("/leagues/:leagueId/roster-payment-responsibility/1/occurrences", async (req, res) => {
-  const leagueId = leagueIdParam(req.params.leagueId);
+router.post("/leagues/:leagueId/roster-payment-responsibility/1/occurrences", adminWriteLimiter, async (req, res) => {
+  const leagueId = leagueIdParam(String(req.params.leagueId));
   if (!leagueId || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
-  const league = await authorizedLeague(req, leagueId);
+  const league = await authorizedLeague(req, leagueId, true, true);
   if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
   const bodySchema = z.object({ commandKey: z.string().trim().min(1).max(255), requestFingerprint: z.string().trim().min(1).max(128), responsibilities: z.array(occurrenceResponsibilityInputSchema).min(1) }).strict();
   const parsed = bodySchema.safeParse(req.body);
@@ -84,52 +111,58 @@ router.post("/leagues/:leagueId/roster-payment-responsibility/1/occurrences", as
 });
 
 router.get("/leagues/:leagueId/canonical-due-past-due/2", async (req, res) => {
-  const leagueId = leagueIdParam(req.params.leagueId);
+  const leagueId = leagueIdParam(String(req.params.leagueId));
   if (!leagueId || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
   const league = await authorizedLeague(req, leagueId);
   if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
-  const payerBowlerId = req.query.bowlerId === undefined ? undefined : Number(req.query.bowlerId);
+  const privileged = await hasAdminAccessToLeague(req, leagueId) || await hasPaymentManagerAccessToLeague(req, leagueId) || req.user.role === "system_admin";
+  const payerBowlerId = req.query.bowlerId === undefined ? (privileged ? undefined : req.user.bowlerId ?? undefined) : Number(req.query.bowlerId);
+  if (!privileged && (payerBowlerId === undefined || payerBowlerId !== req.user.bowlerId)) return sendError(res, "Not found", 404, "NOT_FOUND");
   if (payerBowlerId !== undefined && (!Number.isSafeInteger(payerBowlerId) || payerBowlerId <= 0)) return sendError(res, "Invalid bowler", 400, "INVALID_REQUEST");
   try { return sendSuccess(res, await readCanonicalDuePastDue({ organizationId: league.organizationId, leagueId, payerBowlerId })); } catch (error) { return handleError(res, error); }
 });
 
-router.post("/leagues/:leagueId/interactive-obligation-quote/2", async (req, res) => {
-  const leagueId = leagueIdParam(req.params.leagueId);
+router.post("/leagues/:leagueId/interactive-obligation-quote/2", paymentWriteLimiter, async (req, res) => {
+  const leagueId = leagueIdParam(String(req.params.leagueId));
   if (!leagueId || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
-  const league = await authorizedLeague(req, leagueId);
-  if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
   const parsed = interactiveObligationQuoteRequestV2Schema.safeParse(req.body);
   if (!parsed.success) return sendError(res, "Invalid obligation quote request", 400, "INVALID_REQUEST");
-  try { return sendSuccess(res, await quoteInteractiveObligations({ organizationId: league.organizationId, leagueId, obligationIds: parsed.data.obligationIds })); } catch (error) { return handleError(res, error); }
+  let league;
+  try { league = await paymentScope(req, leagueId, parsed.data.obligationIds); } catch (error) { return handleError(res, error); }
+  if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
+  const privileged = await hasAdminAccessToLeague(req, leagueId) || await hasPaymentManagerAccessToLeague(req, leagueId) || req.user.role === "system_admin";
+  try { return sendSuccess(res, await quoteInteractiveObligations({ organizationId: league.organizationId, leagueId, obligationIds: parsed.data.obligationIds, payerBowlerId: privileged ? undefined : req.user.bowlerId ?? undefined })); } catch (error) { return handleError(res, error); }
 });
 
-router.post("/leagues/:leagueId/interactive-obligation-charge/2", async (req, res) => {
-  const leagueId = leagueIdParam(req.params.leagueId);
+router.post("/leagues/:leagueId/interactive-obligation-charge/2", paymentWriteLimiter, async (req, res) => {
+  const leagueId = leagueIdParam(String(req.params.leagueId));
   if (!leagueId || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
-  const league = await authorizedLeague(req, leagueId);
-  if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
   const parsed = interactiveObligationChargeRequestV2Schema.safeParse(req.body);
   if (!parsed.success) return sendError(res, "Invalid obligation charge request", 400, "INVALID_REQUEST");
+  let league;
+  try { league = await paymentScope(req, leagueId, parsed.data.obligationIds); } catch (error) { return handleError(res, error); }
+  if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
   try {
-    const result = await chargeInteractiveObligations({ organizationId: league.organizationId, leagueId, actorUserId: req.user.id, request: parsed.data });
+    const privileged = await hasAdminAccessToLeague(req, leagueId) || await hasPaymentManagerAccessToLeague(req, leagueId) || req.user.role === "system_admin";
+    const result = await chargeInteractiveObligations({ organizationId: league.organizationId, leagueId, actorUserId: req.user.id, payerBowlerId: privileged ? undefined : req.user.bowlerId ?? undefined, request: parsed.data });
     return sendSuccess(res, result, result.status === "succeeded" ? 201 : 202);
   } catch (error) { return handleError(res, error); }
 });
 
-router.post("/leagues/:leagueId/canonical/manual-record/1", async (req, res) => {
-  const leagueId = leagueIdParam(req.params.leagueId);
+router.post("/leagues/:leagueId/canonical/manual-record/1", adminWriteLimiter, async (req, res) => {
+  const leagueId = leagueIdParam(String(req.params.leagueId));
   if (!leagueId || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
-  const league = await authorizedLeague(req, leagueId);
+  const league = await authorizedLeague(req, leagueId, true, true);
   if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
   const parsed = canonicalManualRecordRequestSchema.safeParse(req.body);
   if (!parsed.success) return sendError(res, "Invalid manual payment request", 400, "INVALID_REQUEST");
   try { return sendSuccess(res, await recordCanonicalManualPayment({ organizationId: league.organizationId, leagueId, actorUserId: req.user.id, request: parsed.data }), 201); } catch (error) { return handleError(res, error); }
 });
 
-router.post("/leagues/:leagueId/canonical/corrections/1", async (req, res) => {
-  const leagueId = leagueIdParam(req.params.leagueId);
+router.post("/leagues/:leagueId/canonical/corrections/1", adminWriteLimiter, async (req, res) => {
+  const leagueId = leagueIdParam(String(req.params.leagueId));
   if (!leagueId || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
-  const league = await authorizedLeague(req, leagueId);
+  const league = await authorizedLeague(req, leagueId, true, true);
   if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
   const parsed = canonicalCorrectionRequestSchema.safeParse(req.body);
   if (!parsed.success) return sendError(res, "Invalid correction request", 400, "INVALID_REQUEST");

@@ -13,7 +13,7 @@ import {
 } from "@shared/schema";
 import { createLogger } from '../logger';
 import { cacheFetch, cacheInvalidate } from '../utils/cache';
-import { hasLeagueOccurrenceEvidence } from './canonical-occurrence-evidence.js';
+import { hasLeagueOccurrenceEvidence, hasOperationalLeagueOccurrenceEvidence } from './canonical-occurrence-evidence.js';
 import { lockLeagueSchedule } from './league-schedule-lock.js';
 
 const log = createLogger("StorageLeagues");
@@ -60,6 +60,8 @@ const CANONICAL_UPDATE_FIELDS = [
   'skipDates',
   'cancelledDates',
   'weeklyFee',
+  'lineageFee',
+  'prizeFundFee',
   'payingLineupSize',
   'paymentMode',
 ] as const satisfies readonly (keyof UpdateLeague)[];
@@ -174,7 +176,9 @@ export async function updateLeague(id: number, league: UpdateLeague): Promise<Le
             eq(occurrencePaymentResponsibilities.leagueId, id),
           ))
           .limit(1);
-        if (responsibility) throw new LeagueSubstituteConfigurationLockedError();
+        if (responsibility || await hasOperationalLeagueOccurrenceEvidence(tx, current.organizationId, id)) {
+          throw new LeagueSubstituteConfigurationLockedError();
+        }
       }
     }
 

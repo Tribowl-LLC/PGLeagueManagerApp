@@ -277,12 +277,22 @@ export class FinancialReadIncompatibilityError extends Error {
   }
 }
 
+function rejectRetiredFinancialRead(): void {
+  throw new FinancialReadIncompatibilityError();
+}
+
 export async function readCanonicalDuePastDue(input: {
   organizationId: number;
   leagueId: number;
   bowlerId?: number;
   now?: Date;
 }): Promise<CanonicalDuePastDueRead> {
+  // PR1 has one canonical due surface: roster-payment-core.  Keeping this
+  // retired v1 export callable would reintroduce the legacy balance fallback
+  // after migration 0032, so callers must use the roster contract instead.
+  void input;
+  rejectRetiredFinancialRead();
+  /* istanbul ignore next -- retired v1 implementation retained only for source migration context. */
   const now = input.now ?? new Date();
   return db.transaction(async (tx) => {
     await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`);
@@ -683,6 +693,14 @@ export async function loadOperationalActivationEvidence(
   tx: ScheduleExecutor,
   input: { organizationId: number; leagueId: number },
 ): Promise<OperationalActivationEvidence> {
+  // F1 activation evidence was retired by migration 0032.  Keep this legacy
+  // export as a fail-closed compatibility boundary for dormant modules; it
+  // must never issue a query against the removed relations.
+  void tx;
+  void input;
+  throw new FinancialActivationError("canonical_incomplete", "legacy financial activation evidence is retired; use roster payment obligations");
+  /* istanbul ignore next -- retained source is unreachable after PR1 cutover. */
+  /*
   const [league] = await tx.select({ paymentMode: leagues.paymentMode, payingLineupSize: leagues.payingLineupSize }).from(leagues).where(and(eq(leagues.id, input.leagueId), eq(leagues.organizationId, input.organizationId))).limit(1);
   if (!league || (league.paymentMode !== "weekly" && league.paymentMode !== "upfront")) throw new FinancialActivationError("canonical_incomplete", "canonical payment mode is unavailable");
   if (league.payingLineupSize !== 3 && league.payingLineupSize !== 4) throw new FinancialActivationError("canonical_incomplete", "league lineup size must be selected in league setup");
@@ -912,6 +930,7 @@ export async function loadOperationalActivationEvidence(
     sourceFingerprint: activation.sourceFingerprint,
     sourceSurface,
   };
+  */
 }
 
 export async function activateCanonicalFinancials(input: {
@@ -923,6 +942,10 @@ export async function activateCanonicalFinancials(input: {
   payingLineupSize?: 3 | 4;
   responsibilities: ResponsibilityInput[];
 }): Promise<ActivationResult> {
+  void input;
+  throw new FinancialActivationError("canonical_incomplete", "legacy financial activation is retired; complete the roster payment setup instead");
+  /* istanbul ignore next -- retained source is unreachable after PR1 cutover. */
+  /*
   const normalizedResponsibilities = normalizeResponsibilities(input.responsibilities);
   const runActivation = () => db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(${input.organizationId}::integer, ${input.leagueId}::integer)`);
@@ -1032,11 +1055,17 @@ export async function activateCanonicalFinancials(input: {
     }
   }
   throw new FinancialActivationError("canonical_incomplete", "activation serialization did not complete");
+  */
 }
 
 export async function getCanonicalActivationSource(input: { organizationId: number; leagueId: number }): Promise<{ sourceFingerprint: string; payingLineupSize: 3 | 4; expected: ResponsibilityExpectedRow[] }> {
+  void input;
+  throw new FinancialActivationError("canonical_incomplete", "legacy financial activation source is retired; use roster payment obligations");
+  /* istanbul ignore next -- retained source is unreachable after PR1 cutover. */
+  /*
   return db.transaction(async (tx) => {
     const evidence = await loadOperationalActivationEvidence(tx, input);
     return { sourceFingerprint: evidence.sourceFingerprint, payingLineupSize: evidence.payingLineupSize, expected: evidence.expected };
   }, { isolationLevel: "repeatable read", accessMode: "read only" });
+  */
 }

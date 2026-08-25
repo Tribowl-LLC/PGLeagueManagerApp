@@ -21,14 +21,14 @@ describe("interactive financial read contract", () => {
     expect(result).toMatchObject({ status: "canonical", amountPastDue: 300, remainingBalance: 300 });
   });
 
-  it("uses calculateFinancials-compatible values only for explicit legacy fallback", () => {
+  it("does not expose legacy balance fallback when canonical rows are absent", () => {
     const result = resolve({
       contractVersion,
       mode: "legacy_fallback",
       legacyFallback: { helperVersion: "shared-financial-utils/1", totalPaidMinor: 0, amountPastDueMinor: 1200, totalDueToDateMinor: 3400, fullSeasonAmountMinor: 3400, remainingBalanceMinor: 3400, totalWeeksInSeason: 10 },
       rows: [],
     });
-    expect(result).toMatchObject({ status: "legacy_fallback", amountPastDue: 1200, remainingBalance: 3400 });
+    expect(result).toMatchObject({ status: "unavailable", amountPastDue: 0, remainingBalance: 0 });
   });
 
   it.each([
