@@ -11500,7 +11500,7 @@
         },
         "snapshot_fingerprint": {
           "name": "snapshot_fingerprint",
-          "type": "varchar(80)",
+          "type": "varchar(128)",
           "primaryKey": false,
           "notNull": true
         },

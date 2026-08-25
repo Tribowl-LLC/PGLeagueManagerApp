@@ -355,7 +355,7 @@ CREATE TABLE payment_operation_roster_snapshots (
   amount_minor integer NOT NULL,
   currency varchar(3) NOT NULL DEFAULT 'USD',
   obligations jsonb NOT NULL,
-  snapshot_fingerprint varchar(80) NOT NULL,
+  snapshot_fingerprint varchar(128) NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT payment_operation_roster_snapshots_operation_fk FOREIGN KEY (operation_id, organization_id, league_id) REFERENCES payment_operations(id, organization_id, league_id) ON DELETE RESTRICT,
   CONSTRAINT payment_operation_roster_snapshots_league_tenant_fk FOREIGN KEY (league_id, organization_id) REFERENCES leagues(id, organization_id) ON DELETE RESTRICT,

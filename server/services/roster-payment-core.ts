@@ -697,6 +697,11 @@ export async function chargeInteractiveObligations(input: {
     if (quote.fingerprint !== input.request.requestFingerprint) throw new RosterPaymentError("STALE_QUOTE", "The obligation quote is stale; request a new quote", 409);
     const first = quote.obligations[0];
     if (!first) throw new RosterPaymentError("EXACT_OBLIGATIONS_REQUIRED", "At least one obligation is required", 422);
+    // Drizzle's PostgreSQL string timestamps may be returned as a space-
+    // separated value. Interactive snapshot contracts require canonical ISO
+    // datetimes, so normalize once before persisting the immutable operation
+    // snapshot and every allocation row derived from it.
+    const canonicalWeekOf = new Date(first.dueAt).toISOString();
     const payerBowlerId = input.payerBowlerId ?? first.payerBowlerId;
     if (input.request.sourceKind === "saved_card" && input.payerBowlerId === undefined) {
       throw new RosterPaymentError("SAVED_CARD_PAYER_REQUIRED", "A saved payment method requires an authenticated payer", 403);
@@ -733,7 +738,7 @@ export async function chargeInteractiveObligations(input: {
       buyerEmail: input.request.buyerEmail ?? null,
       storeCard: input.request.storeCard === true,
       sourceKind: input.request.sourceKind,
-      weekOf: first.dueAt,
+      weekOf: canonicalWeekOf,
       combined: quote.obligations.length > 1,
       allocations: quote.obligations.map((obligation, allocationIndex) => ({
         allocationIndex,
@@ -741,7 +746,7 @@ export async function chargeInteractiveObligations(input: {
         amountMinor: obligation.outstandingMinor,
         lineageAmountMinor: null,
         prizeFundAmountMinor: null,
-        weekOf: obligation.dueAt,
+        weekOf: new Date(obligation.dueAt).toISOString(),
         notes: `Roster obligation ${obligation.id}`,
         paidByUserId: input.actorUserId,
       })),

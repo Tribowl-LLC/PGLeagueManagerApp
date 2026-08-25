@@ -309,7 +309,7 @@ export const paymentOperationRosterSnapshots = pgTable("payment_operation_roster
   amountMinor: integer("amount_minor").notNull(),
   currency: varchar("currency", { length: 3 }).notNull().default("USD"),
   obligations: jsonb("obligations").notNull(),
-  snapshotFingerprint: varchar("snapshot_fingerprint", { length: 80 }).notNull(),
+  snapshotFingerprint: varchar("snapshot_fingerprint", { length: 128 }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull().defaultNow(),
 }, (table) => ({
   operationFk: foreignKey({ name: "payment_operation_roster_snapshots_operation_fk", columns: [table.operationId, table.organizationId, table.leagueId], foreignColumns: [paymentOperations.id, paymentOperations.organizationId, paymentOperations.leagueId] }).onDelete("restrict"),
