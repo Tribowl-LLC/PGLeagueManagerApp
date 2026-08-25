@@ -22,12 +22,29 @@ interface TeamViewBowlersTableProps {
 
 type Slot = { id?: string; slotIndex: number; occupant: "main" | "vacant" | "unassigned"; mainBowlerId?: number | null };
 type Occurrence = { id: string; startAt: string; status: "scheduled" | "completed" };
+type OccurrenceResponsibility = {
+  occurrenceId: string;
+  teamId: number;
+  slotIndex: number;
+  positionIndex: number;
+  responsibilityKind: "main" | "substitute" | "split" | "vacant";
+  mainBowlerId: number | null;
+  substituteBowlerId: number | null;
+  payerBowlerId: number | null;
+  policy: "main_pays_full" | "sub_pays_full" | "special_split";
+  amountMinor: number;
+  lineageAmountMinor: number | null;
+  prizeFundAmountMinor: number | null;
+};
 type RosterResponse = {
   payingLineupSize: number | null;
   ready: boolean;
+  lineageFee: number | null;
+  prizeFundFee: number | null;
   substituteAccess: "team_only" | "floating";
   substituteBowlerOptions: Array<{ id: number; name: string; teamId: number | null }>;
   occurrences: Occurrence[];
+  occurrenceResponsibilities: OccurrenceResponsibility[];
   teams: Array<{ id: number; slots: Slot[]; policy: "main_pays_full" | "sub_pays_full" | "special_split" }>;
 };
 
@@ -55,7 +72,13 @@ export function TeamViewBowlersTable({ teamBowlers, league, teamId, leagueId, ca
     if (!current) return;
     setSlots(current.slots.map((slot) => ({ ...slot })));
     setPolicy(current.policy);
-  }, [current]);
+    const hydrated: Record<number, { occurrenceId: string; bowlerId: number }> = {};
+    for (const responsibility of rosterQuery.data?.data?.occurrenceResponsibilities ?? []) {
+      if (responsibility.teamId !== teamId || (responsibility.responsibilityKind !== "substitute" && responsibility.responsibilityKind !== "split") || responsibility.substituteBowlerId === null) continue;
+      hydrated[responsibility.slotIndex] = { occurrenceId: responsibility.occurrenceId, bowlerId: responsibility.substituteBowlerId };
+    }
+    setSubstitutes(hydrated);
+  }, [current, rosterQuery.data?.data?.occurrenceResponsibilities, teamId]);
   const normalizedSlots = useMemo(() => Array.from({ length: lineupSize }, (_, slotIndex) => slots.find((slot) => slot.slotIndex === slotIndex) ?? { slotIndex, occupant: "unassigned" as const, mainBowlerId: null }), [lineupSize, slots]);
 
   const save = useMutation({
@@ -71,11 +94,12 @@ export function TeamViewBowlersTable({ teamBowlers, league, teamId, leagueId, ca
       const slot = normalizedSlots.find((row) => row.slotIndex === slotIndex);
       const occurrence = rosterQuery.data?.data?.occurrences.find((row) => row.id === occurrenceId);
       if (!slot || !occurrence) throw new Error("Select a published occurrence and stable slot.");
-      const responsibility = { occurrenceId, teamId, slotIndex, positionIndex: slotIndex, kind: "substitute" as const, mainBowlerId: slot.mainBowlerId ?? null, substituteBowlerId: bowlerId, payerBowlerId: policy === "main_pays_full" ? slot.mainBowlerId ?? null : bowlerId, policy: slot.occupant === "vacant" ? "sub_pays_full" as const : policy };
+      const split = policy === "special_split" && slot.occupant === "main";
+      const responsibility = { occurrenceId, teamId, slotIndex, positionIndex: slotIndex, kind: split ? "split" as const : "substitute" as const, mainBowlerId: slot.mainBowlerId ?? null, substituteBowlerId: bowlerId, payerBowlerId: split || policy !== "main_pays_full" || slot.occupant === "vacant" ? bowlerId : slot.mainBowlerId ?? null, policy: split ? "special_split" as const : slot.occupant === "vacant" ? "sub_pays_full" as const : policy, amountMinor: league?.weeklyFee ?? 0, lineageAmountMinor: split ? rosterQuery.data?.data?.lineageFee ?? null : null, prizeFundAmountMinor: split ? rosterQuery.data?.data?.prizeFundFee ?? null : null };
       const canonical = JSON.stringify([responsibility].sort((left, right) => left.occurrenceId.localeCompare(right.occurrenceId) || left.teamId - right.teamId || left.positionIndex - right.positionIndex));
       const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));
       const requestFingerprint = `lvresponsibility:v1:${Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("")}`;
-      return apiRequest(`/api/financials/leagues/${leagueId}/roster-payment-responsibility/1/occurrences`, "POST", { commandKey: crypto.randomUUID(), requestFingerprint, responsibilities: [{ ...responsibility, amountMinor: 0, dueAt: occurrence.startAt, pastDueAt: new Date(new Date(occurrence.startAt).getTime() + 3 * 60 * 60 * 1000).toISOString() }] });
+      return apiRequest(`/api/financials/leagues/${leagueId}/roster-payment-responsibility/1/occurrences`, "POST", { commandKey: crypto.randomUUID(), requestFingerprint, responsibilities: [{ ...responsibility, dueAt: occurrence.startAt, pastDueAt: new Date(new Date(occurrence.startAt).getTime() + 3 * 60 * 60 * 1000).toISOString() }] });
     },
     onSuccess: () => { void queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/canonical-due-past-due/2`] }); void queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/roster-payment-responsibility/1`] }); toast({ title: "Substitute assignment saved" }); },
     onError: (error: Error) => toast({ title: "Substitute assignment could not be saved", description: error.message, variant: "destructive" }),
@@ -88,6 +112,15 @@ export function TeamViewBowlersTable({ teamBowlers, league, teamId, leagueId, ca
     : teamBowlers.map(({ bowler }) => ({ id: bowler.id, name: bowler.name, teamId: teamId }));
   const occurrenceLabel = (startAt: string) => new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeZone: league?.timezone ?? "UTC" }).format(new Date(startAt));
   const updateSlot = (slotIndex: number, value: Partial<Slot>) => setSlots((rows) => rows.map((row) => row.slotIndex === slotIndex ? { ...row, ...value } : row));
+  const setMemberRole = (bowlerId: number, role: "main" | "substitute") => {
+    if (role === "main") {
+      const target = normalizedSlots.find((slot) => slot.occupant !== "main");
+      if (!target) { toast({ title: "No open paying position", description: "Set an existing Main to VACANT or Substitute first.", variant: "destructive" }); return; }
+      setSlots((rows) => rows.map((row) => row.slotIndex === target.slotIndex ? { ...row, occupant: "main", mainBowlerId: bowlerId } : row));
+    } else {
+      setSlots((rows) => rows.map((row) => row.mainBowlerId === bowlerId ? { ...row, occupant: "vacant", mainBowlerId: null } : row));
+    }
+  };
 
   return <div className="rounded-md border"><Table><TableHeader><TableRow><TableHead>Position</TableHead><TableHead>Name</TableHead><TableHead>Payer role</TableHead><TableHead>Weekly Fee</TableHead><TableHead>Status</TableHead><TableHead>Actions</TableHead></TableRow></TableHeader><TableBody>
     {normalizedSlots.map((slot) => {
@@ -100,7 +133,7 @@ export function TeamViewBowlersTable({ teamBowlers, league, teamId, leagueId, ca
         <TableCell>${((league?.weeklyFee || 0) / 100).toFixed(2)}</TableCell><TableCell><Badge variant={slot.occupant === "unassigned" ? "secondary" : "default"}>{slot.occupant === "unassigned" ? "Incomplete" : slot.occupant === "vacant" ? "No obligation" : "Active payer"}</Badge></TableCell><TableCell>{main && <div className="flex items-center gap-2">{onEditBowler && <Button variant="outline" size="sm" onClick={() => onEditBowler(main)}><Pencil className="size-4 mr-2" />Edit</Button>}{onRemoveBowler && <Button variant="ghost" size="sm" onClick={() => onRemoveBowler({ bowlerId: main.id, name: main.name })}><Trash2 className="size-4" /></Button>}</div>}</TableCell>
       </TableRow>;
     })}
-    {teamBowlers.filter(({ bowler }) => !mainIds.has(bowler.id)).map(({ bowler, bowlerLeague }) => <TableRow key={`member-${bowlerLeague.id}`}><TableCell className="text-muted-foreground">—</TableCell><TableCell><div className="flex items-center gap-1.5"><CheckCircle2 className={`size-4 ${bowler.hasAccount ? "text-green-500" : "text-muted-foreground/40"}`} /><Link href={`/bowlers/${bowler.id}?from=team&fromTeamId=${teamId}`} className="hover:underline">{bowler.name}</Link></div></TableCell><TableCell><Badge variant="outline">Substitute</Badge></TableCell><TableCell>${((league?.weeklyFee || 0) / 100).toFixed(2)}</TableCell><TableCell><Badge variant={bowlerLeague.active ? "default" : "secondary"}>{bowlerLeague.active ? "Active" : "Inactive"}</Badge></TableCell><TableCell><div className="flex items-center gap-2">{onEditBowler && <Button variant="outline" size="sm" onClick={() => onEditBowler(bowler)}><Pencil className="size-4 mr-2" />Edit</Button>}{onRemoveBowler && <Button variant="ghost" size="sm" onClick={() => onRemoveBowler({ bowlerId: bowler.id, name: bowler.name })}><Trash2 className="size-4" /></Button>}</div></TableCell></TableRow>)}
+    {teamBowlers.map(({ bowler, bowlerLeague }) => { const mainSlot = normalizedSlots.find((slot) => slot.mainBowlerId === bowler.id); return <TableRow key={`member-${bowlerLeague.id}`}><TableCell className="text-muted-foreground">{mainSlot ? mainSlot.slotIndex + 1 : "—"}</TableCell><TableCell><div className="flex items-center gap-1.5"><CheckCircle2 className={`size-4 ${bowler.hasAccount ? "text-green-500" : "text-muted-foreground/40"}`} /><Link href={`/bowlers/${bowler.id}?from=team&fromTeamId=${teamId}`} className="hover:underline">{bowler.name}</Link></div></TableCell><TableCell><select aria-label={`Payer role ${bowler.name}`} disabled={!canManage || !bowlerLeague.active} className="rounded border bg-background p-2" value={mainIds.has(bowler.id) ? "main" : "substitute"} onChange={(event) => setMemberRole(bowler.id, event.target.value as "main" | "substitute")}><option value="main">Main</option><option value="substitute">Substitute</option></select></TableCell><TableCell>${((league?.weeklyFee || 0) / 100).toFixed(2)}</TableCell><TableCell><Badge variant={bowlerLeague.active ? "default" : "secondary"}>{bowlerLeague.active ? "Active" : "Inactive"}</Badge></TableCell><TableCell><div className="flex items-center gap-2">{onEditBowler && <Button variant="outline" size="sm" onClick={() => onEditBowler(bowler)}><Pencil className="size-4 mr-2" />Edit</Button>}{onRemoveBowler && <Button variant="ghost" size="sm" onClick={() => onRemoveBowler({ bowlerId: bowler.id, name: bowler.name })}><Trash2 className="size-4" /></Button>}</div></TableCell></TableRow>; })}
     {canManage && lineupSize > 0 && <TableRow><TableCell colSpan={6}><div className="flex flex-wrap items-center gap-3"><label className="text-sm">Team policy <select aria-label="Team payment policy" className="ml-2 rounded border bg-background p-2" value={policy} onChange={(event) => setPolicy(event.target.value as typeof policy)}><option value="main_pays_full">Main pays full</option><option value="sub_pays_full">Substitute pays full</option><option value="special_split">Substitute lineage / Main prize split</option></select></label><Badge variant={normalizedSlots.every((slot) => slot.occupant !== "unassigned") ? "default" : "secondary"}>{normalizedSlots.every((slot) => slot.occupant !== "unassigned") ? "Ready" : "Incomplete"}</Badge><Button disabled={save.isPending} onClick={() => save.mutate()}>{save.isPending ? "Saving…" : "Save roster"}</Button></div></TableCell></TableRow>}
   </TableBody></Table></div>;
 }

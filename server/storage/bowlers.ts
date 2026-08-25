@@ -2,12 +2,14 @@ import { eq, and, sql, inArray, ilike, asc } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   bowlers, bowlerLeagues, leagues, teams,
+  teamPaymentSlots, teamPaymentSlotRevisions, leagueOccurrences, users,
   type Bowler, type InsertBowler, type UpdateBowler,
   type BowlerLeague, type InsertBowlerLeague, type UpdateBowlerLeague,
 } from "@shared/schema";
 import { createLogger } from '../logger';
 import { cacheFetch, cacheInvalidate } from '../utils/cache';
 import { lockLeagueSchedule } from './league-schedule-lock.js';
+import { materializeRosterPaymentOccurrenceInTransaction } from '../services/roster-payment-materializer.js';
 
 const log = createLogger("StorageBowlers");
 
@@ -312,12 +314,42 @@ export async function createBowlerLeagueIfBowlerFree(
   });
 }
 
-export async function updateBowlerLeague(id: number, bowlerLeague: UpdateBowlerLeague): Promise<BowlerLeague> {
+export async function updateBowlerLeague(id: number, bowlerLeague: UpdateBowlerLeague, actorUserId?: number): Promise<BowlerLeague> {
   const result = await db.transaction(async (tx) => {
     const [current] = await tx.select().from(bowlerLeagues).where(eq(bowlerLeagues.id, id)).limit(1);
     if (!current) throw new Error('Bowler league not found');
     await lockRosterLeague(tx, current.leagueId);
     const [updated] = await tx.update(bowlerLeagues).set(bowlerLeague).where(eq(bowlerLeagues.id, id)).returning();
+    if ((bowlerLeague.active === false || (bowlerLeague.teamId !== undefined && bowlerLeague.teamId !== current.teamId)) && updated) {
+      const [league] = await tx.select({ organizationId: leagues.organizationId }).from(leagues).where(eq(leagues.id, current.leagueId)).limit(1);
+      if (league?.organizationId !== null && league?.organizationId !== undefined) {
+        const now = new Date().toISOString();
+        const auditUserId = actorUserId ?? (await tx.select({ id: users.id }).from(users).where(eq(users.organizationId, league.organizationId)).limit(1))[0]?.id;
+        if (!auditUserId) throw new Error('Roster slot change requires an audit actor');
+        const affectedSlots = await tx.select().from(teamPaymentSlots).where(and(
+          eq(teamPaymentSlots.organizationId, league.organizationId),
+          eq(teamPaymentSlots.leagueId, current.leagueId),
+          eq(teamPaymentSlots.mainBowlerId, current.bowlerId),
+          eq(teamPaymentSlots.occupant, 'main'),
+          eq(teamPaymentSlots.teamId, current.teamId),
+        )).for('update');
+        for (const slot of affectedSlots) {
+          const [vacated] = await tx.update(teamPaymentSlots).set({ occupant: 'vacant', mainBowlerId: null, currentRevision: slot.currentRevision + 1, updatedAt: now }).where(eq(teamPaymentSlots.id, slot.id)).returning();
+          await tx.insert(teamPaymentSlotRevisions).values({ organizationId: league.organizationId, leagueId: current.leagueId, slotId: slot.id, revisionNumber: vacated.currentRevision, beforeSnapshot: slot, afterSnapshot: vacated, recordedByUserId: auditUserId });
+        }
+        if (affectedSlots.length > 0) {
+          const occurrences = await tx.select({ id: leagueOccurrences.id }).from(leagueOccurrences).where(and(
+            eq(leagueOccurrences.organizationId, league.organizationId),
+            eq(leagueOccurrences.leagueId, current.leagueId),
+            inArray(leagueOccurrences.lifecycle, ['published', 'locked'] as const),
+            inArray(leagueOccurrences.status, ['scheduled', 'completed'] as const),
+          ));
+          for (const occurrence of occurrences) {
+            await materializeRosterPaymentOccurrenceInTransaction(tx, { organizationId: league.organizationId, leagueId: current.leagueId, occurrenceId: occurrence.id, actorUserId: auditUserId });
+          }
+        }
+      }
+    }
     return updated;
   });
   cacheInvalidate('bowlers:');

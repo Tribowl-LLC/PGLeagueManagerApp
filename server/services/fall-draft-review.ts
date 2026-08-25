@@ -65,7 +65,7 @@ import {
 } from "@shared/fall-draft-generation";
 import { db } from "../db.js";
 import { lockLeagueSchedule, type LeagueScheduleTransaction } from "../storage/league-schedule-lock.js";
-import { materializeRosterPaymentOccurrenceInTransaction } from "./roster-payment-core.js";
+import { materializeRosterPaymentOccurrenceInTransaction } from "./roster-payment-materializer.js";
 import {
   buildCanonicalScheduleCommandFingerprint,
   getOrCreateCanonicalScheduleCommandInTransaction,

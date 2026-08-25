@@ -29,15 +29,6 @@ export const envSchema = z.object({
   // explicitly; local/test runtimes retain the legacy default so dormant
   // infrastructure does not alter the scheduled-payment path.
   SCHEDULED_PAYMENT_EXECUTION_MODE: z.enum(SCHEDULED_PAYMENT_EXECUTION_MODES).optional(),
-  // F1 canonical activation remains dormant until legacy payment reconciliation
-  // and rollout approval are complete. Explicit opt-in only; unset is false.
-  LEAGUEVAULT_F1_ACTIVATION_ENABLED: z.enum(["true", "false", "1", "0"]).optional().transform((v) => v === "true" || v === "1"),
-  // F3 canonical policy/plan setup is separately gated and defaults off. It
-  // never enables or upgrades existing v1 schedules.
-  LEAGUEVAULT_F3_CANONICAL_AUTOPAY_ENABLED: z.enum(["true", "false", "1", "0"]).optional().transform((v) => v === "true" || v === "1"),
-  // F4 unattended preparation/execution is independently gated. Unset is
-  // deliberately false and never changes legacy scheduled wakes.
-  LEAGUEVAULT_F4_CANONICAL_AUTOPAY_EXECUTION_ENABLED: z.enum(["true", "false", "1", "0"]).optional().transform((v) => v === "true" || v === "1"),
 
   SENDGRID_API_KEY: z.string().min(1).optional(),
   SENTRY_DSN: z.string().min(1).optional(),
@@ -263,9 +254,6 @@ function validateEnv(): Env {
 export const env = validateEnv();
 export const scheduledPaymentExecutionMode: ScheduledPaymentExecutionMode =
   env.SCHEDULED_PAYMENT_EXECUTION_MODE ?? 'legacy';
-export const financialActivationEnabled = env.LEAGUEVAULT_F1_ACTIVATION_ENABLED === true;
-export const canonicalF3AutopayEnabled = env.LEAGUEVAULT_F3_CANONICAL_AUTOPAY_ENABLED === true;
-export const canonicalF4AutopayExecutionEnabled = env.LEAGUEVAULT_F4_CANONICAL_AUTOPAY_EXECUTION_ENABLED === true;
 
 // Enforce SETUP_SECRET strength at boot. Refuses to start the server when
 // a secret is set but weak — see task 282 / the docs section in AGENTS.md.

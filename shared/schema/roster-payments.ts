@@ -193,9 +193,9 @@ export const occurrencePaymentResponsibilities = pgTable("occurrence_payment_res
   ) OR (
     ${table.responsibilityKind} = 'main' AND ${table.mainBowlerId} IS NOT NULL AND ${table.substituteBowlerId} IS NULL AND ${table.payerBowlerId} = ${table.mainBowlerId} AND ${table.amountMinor} > 0
   ) OR (
-    ${table.responsibilityKind} = 'substitute' AND ${table.mainBowlerId} IS NOT NULL AND ${table.substituteBowlerId} IS NOT NULL AND ${table.payerBowlerId} IS NOT NULL AND ${table.amountMinor} > 0
+    ${table.responsibilityKind} = 'substitute' AND ${table.mainBowlerId} IS NOT NULL AND ${table.substituteBowlerId} IS NOT NULL AND ${table.mainBowlerId} <> ${table.substituteBowlerId} AND ${table.payerBowlerId} IS NOT NULL AND ${table.amountMinor} > 0
   ) OR (
-    ${table.responsibilityKind} = 'split' AND ${table.mainBowlerId} IS NOT NULL AND ${table.substituteBowlerId} IS NOT NULL AND ${table.payerBowlerId} IS NOT NULL AND ${table.amountMinor} > 0
+    ${table.responsibilityKind} = 'split' AND ${table.mainBowlerId} IS NOT NULL AND ${table.substituteBowlerId} IS NOT NULL AND ${table.mainBowlerId} <> ${table.substituteBowlerId} AND ${table.payerBowlerId} IS NOT NULL AND ${table.amountMinor} > 0
   )) AND ((${table.responsibilityKind} = 'split' AND ${table.lineagePayerBowlerId} IS NOT NULL AND ${table.prizePayerBowlerId} IS NOT NULL AND ${table.lineageAmountMinor} IS NOT NULL AND ${table.prizeFundAmountMinor} IS NOT NULL AND ${table.lineageAmountMinor} >= 0 AND ${table.prizeFundAmountMinor} >= 0 AND ${table.lineageAmountMinor} + ${table.prizeFundAmountMinor} = ${table.amountMinor} AND ${table.amountMinor} > 0) OR (${table.responsibilityKind} <> 'split' AND ${table.lineagePayerBowlerId} IS NULL AND ${table.prizePayerBowlerId} IS NULL AND ${table.lineageAmountMinor} IS NULL AND ${table.prizeFundAmountMinor} IS NULL))`),
   amountCheck: check("occurrence_payment_responsibilities_amount_check", sql`${table.amountMinor} >= 0 AND ${table.currency} = 'USD' AND ${table.pastDueAt} >= ${table.dueAt}`),
 }));

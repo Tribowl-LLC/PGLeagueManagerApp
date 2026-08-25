@@ -17,23 +17,9 @@ import {
   interactivePaymentOperationAllocations,
   interactivePaymentOperationLineItems,
   interactivePaymentOperationSnapshots,
-  paymentOccurrenceAllocations,
-  occurrenceCollectionPlans,
-  paymentOccurrenceAllocationRevisions,
-  paymentOperationOccurrenceSnapshots,
-  paymentOperationOccurrenceSnapshotAllocations,
-  bowlerOccurrenceObligations,
-  bowlerOccurrenceObligationRevisions,
-  canonicalAutopayExecutionSnapshots,
   canonicalCollectionGroups,
   canonicalCollectionGroupMembers,
-  f3PayerAuthorizations,
-  f3AutopayPlanProvenance,
-  f3CollectionPolicies,
-  financialActivations,
   bowlerPaymentLinks,
-  occurrenceCollectionPlanItems,
-  occurrenceCollectionPlanRevisions,
   refundPaymentOperationSnapshots,
   users,
   PAYMENT_OPERATION_ERROR_CLASSIFICATIONS,
@@ -68,11 +54,6 @@ import {
 } from "../services/interactive-payment-operation-snapshot.js";
 import { deriveSquareCardSaveIdempotencyKey } from "../services/payment-operation-idempotency.js";
 import {
-  PAYMENT_OPERATION_OCCURRENCE_SNAPSHOT_CONTRACT,
-  fingerprintPaymentOperationOccurrenceSnapshot,
-  validatePaymentOperationOccurrenceSnapshot,
-} from "../services/payment-operation-occurrence-snapshot.js";
-import {
   encryptRefundPaymentSnapshot,
   fingerprintRefundPaymentSnapshot,
   reconstructRefundPaymentSnapshot,
@@ -81,8 +62,6 @@ import {
 } from "../services/refund-payment-operation-snapshot.js";
 import { decrypt, encrypt } from "../utils/crypto.js";
 import { providerNameToPaymentType } from "@shared/schema/constants";
-import { canonicalAutopayProviderIdempotencyKey, canonicalAutopayTargetKey, validateF4ExecutionSnapshot } from "@shared/f4-canonical-autopay-contract";
-import { canonicalF3AutopayEnabled, canonicalF4AutopayExecutionEnabled } from "../config.js";
 
 export class PaymentOperationNotFoundError extends Error {
   constructor() {
@@ -854,74 +833,7 @@ export async function createOrGetCanonicalAutopayPaymentOperation(
 ): Promise<PaymentOperation> {
   void input;
   void existingTransaction;
-  throw new PaymentOperationValidationError("automatic collection is dormant in PR1; use exact roster obligations");
-  /* istanbul ignore next -- retained PR2 implementation is unreachable. */
-  /*
-  const targetKey = canonicalAutopayTargetKey(input.d2PlanId);
-  const providerIdempotencyKey = canonicalAutopayProviderIdempotencyKey(input);
-  const identity = buildPaymentOperationIdentity({
-    organizationId: input.organizationId,
-    operationType: "canonical_autopay_charge",
-    targetKey,
-    amountMinor: input.amountMinor,
-    currency: input.currency,
-    providerName: input.providerName,
-  });
-  const now = toIso(input.now ?? new Date(), "now");
-  const run = async (tx: PaymentOperationTransaction): Promise<PaymentOperation> => {
-    const [plan] = await tx.select({ id: occurrenceCollectionPlans.id }).from(occurrenceCollectionPlans).where(and(
-      eq(occurrenceCollectionPlans.id, input.d2PlanId),
-      eq(occurrenceCollectionPlans.organizationId, input.organizationId),
-      eq(occurrenceCollectionPlans.leagueId, input.leagueId),
-      eq(occurrenceCollectionPlans.state, "ready"),
-    )).limit(1).for("share");
-    if (!plan) throw new PaymentOperationNotFoundError();
-    const [existing] = await tx.select().from(paymentOperations).where(and(
-      eq(paymentOperations.organizationId, input.organizationId),
-      eq(paymentOperations.operationType, "canonical_autopay_charge"),
-      eq(paymentOperations.targetKey, targetKey),
-    )).limit(1);
-    if (existing) {
-      if (existing.leagueId !== input.leagueId || existing.canonicalPlanId !== input.d2PlanId
-        || existing.triggerOccurrenceId !== input.triggerOccurrenceId
-        || existing.amountMinor !== input.amountMinor || existing.currency !== input.currency.toUpperCase()
-      || existing.providerName !== input.providerName || existing.requestFingerprint !== identity.requestFingerprint
-        || existing.providerIdempotencyKey !== providerIdempotencyKey || existing.authorizingUserId !== input.authorizingUserId) throw new PaymentOperationImmutableMismatchError();
-      return existing;
-    }
-    const [created] = await tx.insert(paymentOperations).values({
-      organizationId: input.organizationId,
-      leagueId: input.leagueId,
-      canonicalPlanId: input.d2PlanId,
-      operationType: "canonical_autopay_charge",
-      targetKey,
-      triggerOccurrenceId: input.triggerOccurrenceId,
-      amountMinor: input.amountMinor,
-      currency: input.currency.toUpperCase(),
-      requestFingerprint: identity.requestFingerprint,
-      providerIdempotencyKey,
-      providerName: input.providerName,
-      authorizingUserId: input.authorizingUserId,
-      status: "pending",
-      nextAttemptAt: now,
-      createdAt: now,
-      updatedAt: now,
-    }).onConflictDoNothing().returning();
-    if (created) return created;
-    const [winner] = await tx.select().from(paymentOperations).where(and(
-      eq(paymentOperations.organizationId, input.organizationId),
-      eq(paymentOperations.operationType, "canonical_autopay_charge"),
-      eq(paymentOperations.targetKey, targetKey),
-    )).limit(1);
-    if (!winner || winner.leagueId !== input.leagueId || winner.canonicalPlanId !== input.d2PlanId
-      || winner.requestFingerprint !== identity.requestFingerprint || winner.providerIdempotencyKey !== providerIdempotencyKey
-      || winner.authorizingUserId !== input.authorizingUserId) {
-      throw new PaymentOperationImmutableMismatchError();
-    }
-    return winner;
-  };
-  return existingTransaction ? run(existingTransaction) : db.transaction(run);
-  */
+ throw new PaymentOperationValidationError("automatic collection is dormant in PR1; use exact roster obligations");
 }
 
 async function loadScheduledPaymentOperationSnapshot(
@@ -1703,128 +1615,12 @@ export async function acquireCanonicalAutopayDispatchCutoff(input: {
   leaseToken: string;
   now?: Date;
 }): Promise<boolean> {
-  // PR2 automatic collection is intentionally dormant in PR1. Returning
-  // before any legacy F1/F3/F4 relation is touched keeps the retained
-  // operation ledger safe after migration 0032.
-  if (input.operationId.length >= 0) return false;
-  return db.transaction(async (tx) => {
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(${input.organizationId}::integer, ${input.leagueId}::integer)`);
-    const [scope] = await tx.select({ canonicalPlanId: paymentOperations.canonicalPlanId }).from(paymentOperations).where(and(eq(paymentOperations.id, input.operationId), eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.leagueId, input.leagueId), eq(paymentOperations.operationType, "canonical_autopay_charge"))).limit(1);
-    if (!scope?.canonicalPlanId) return false;
-    const [plan] = await tx.select().from(occurrenceCollectionPlans).where(and(eq(occurrenceCollectionPlans.id, scope.canonicalPlanId), eq(occurrenceCollectionPlans.organizationId, input.organizationId), eq(occurrenceCollectionPlans.leagueId, input.leagueId))).limit(1).for("update");
-    const [operation] = await tx.select().from(paymentOperations).where(and(eq(paymentOperations.id, input.operationId), eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.leagueId, input.leagueId), eq(paymentOperations.operationType, "canonical_autopay_charge"))).limit(1).for("update");
-    if (!operation || operation.status !== "leased" || operation.leaseToken !== input.leaseToken || operation.canonicalPlanId === null) return false;
-    const [snapshot] = await tx.select().from(canonicalAutopayExecutionSnapshots).where(and(eq(canonicalAutopayExecutionSnapshots.operationId, operation.id), eq(canonicalAutopayExecutionSnapshots.organizationId, input.organizationId), eq(canonicalAutopayExecutionSnapshots.leagueId, input.leagueId))).limit(1).for("share");
-    if (!plan || !snapshot || plan.state !== "ready" || plan.version !== snapshot.planVersion || plan.currency !== snapshot.currency || plan.triggerOccurrenceId !== snapshot.triggerOccurrenceId || operation.triggerOccurrenceId !== snapshot.triggerOccurrenceId || operation.amountMinor !== snapshot.amountMinor || operation.currency !== snapshot.currency) return false;
-    const [provenance] = await tx.select().from(f3AutopayPlanProvenance).where(and(eq(f3AutopayPlanProvenance.d2PlanId, plan.id), eq(f3AutopayPlanProvenance.organizationId, input.organizationId), eq(f3AutopayPlanProvenance.leagueId, input.leagueId))).limit(1).for("share");
-    const [policy] = await tx.select().from(f3CollectionPolicies).where(and(eq(f3CollectionPolicies.id, snapshot.policyId), eq(f3CollectionPolicies.organizationId, input.organizationId), eq(f3CollectionPolicies.leagueId, input.leagueId))).limit(1).for("share");
-    const [authorization] = await tx.select().from(f3PayerAuthorizations).where(and(eq(f3PayerAuthorizations.id, snapshot.authorizationId), eq(f3PayerAuthorizations.organizationId, input.organizationId), eq(f3PayerAuthorizations.leagueId, input.leagueId))).limit(1).for("share");
-    const [activation] = await tx.select().from(financialActivations).where(and(eq(financialActivations.id, snapshot.activationId), eq(financialActivations.organizationId, input.organizationId), eq(financialActivations.leagueId, input.leagueId))).limit(1).for("share");
-    const [occurrence] = await tx.select().from(leagueOccurrences).where(and(eq(leagueOccurrences.id, snapshot.triggerOccurrenceId), eq(leagueOccurrences.organizationId, input.organizationId), eq(leagueOccurrences.leagueId, input.leagueId))).limit(1).for("share");
-    if (!provenance || !policy || !authorization || !activation || !occurrence
-      || authorization.state !== "authorized" || authorization.authorizationVersion !== snapshot.authorizationVersion
-      || authorization.authorizationFingerprint !== snapshot.authorizationFingerprint || authorization.encryptedSourceId !== snapshot.encryptedSourceId
-      || authorization.encryptedCustomerId !== snapshot.encryptedCustomerId || authorization.locationId !== snapshot.locationId
-      || authorization.payerBowlerId !== snapshot.payerBowlerId || authorization.policyId !== snapshot.policyId
-      || authorization.policyVersion !== snapshot.policyVersion || authorization.createdByUserId !== operation.authorizingUserId
-      || provenance.policyId !== snapshot.policyId || provenance.policyVersion !== snapshot.policyVersion
-      || provenance.authorizationId !== snapshot.authorizationId || provenance.authorizationVersion !== snapshot.authorizationVersion
-      || provenance.activationId !== snapshot.activationId || provenance.activationRevision !== snapshot.activationRevision
-      || provenance.activationSourceFingerprint !== snapshot.activationSourceFingerprint || provenance.planVersion !== snapshot.planVersion
-      || provenance.planFingerprint !== snapshot.planFingerprint || provenance.collectionPointOccurrenceId !== snapshot.collectionPointOccurrenceId
-      || policy.state !== "approved" || policy.policyVersion !== snapshot.policyVersion || policy.policyFingerprint !== snapshot.policyFingerprint
-      || !policy.collectionPoints.some((point) => point.occurrenceId === snapshot.collectionPointOccurrenceId)
-      || activation.currentRevision !== snapshot.activationRevision || activation.sourceFingerprint !== snapshot.activationSourceFingerprint
-      || activation.state !== "active" || activation.completenessMarker !== true
-      || !["published", "locked"].includes(occurrence.lifecycle) || !["scheduled", "completed"].includes(occurrence.status)
-      || new Date(occurrence.startAt).toISOString() !== new Date(snapshot.triggerStartAt).toISOString()) return false;
-    void activation;
-    const itemRows = await tx.select().from(occurrenceCollectionPlanItems).where(and(eq(occurrenceCollectionPlanItems.planId, plan.id), eq(occurrenceCollectionPlanItems.organizationId, input.organizationId), eq(occurrenceCollectionPlanItems.leagueId, input.leagueId))).orderBy(asc(occurrenceCollectionPlanItems.itemIndex)).for("share");
-    const snapshotItems = Array.isArray(snapshot.items) ? snapshot.items as Array<{ obligationId: string; occurrenceId: string; bowlerId: number; amountMinor: number; currency: string; itemIndex: number }> : [];
-    if (itemRows.length !== snapshotItems.length || itemRows.some((row, index) => {
-      const expected = snapshotItems[index];
-      return !expected || row.itemIndex !== expected.itemIndex || row.obligationId !== expected.obligationId || row.occurrenceId !== expected.occurrenceId || row.bowlerId !== expected.bowlerId || row.amountMinor !== expected.amountMinor || row.currency !== expected.currency;
-    })) return false;
-    const authorizedItems = authorization.authorizedItems
-      .filter((item) => item.collectionPointOccurrenceId === snapshot.collectionPointOccurrenceId)
-      .sort((left, right) => left.itemIndex - right.itemIndex);
-    if (authorizedItems.length !== snapshotItems.length || authorizedItems.some((item, index) => {
-      const expected = snapshotItems[index];
-      return !expected || item.collectionPointOccurrenceId !== snapshot.collectionPointOccurrenceId
-        || item.obligationId !== expected.obligationId
-        || item.occurrenceId !== expected.occurrenceId || item.bowlerId !== expected.bowlerId
-        || item.amountMinor !== expected.amountMinor;
-    })) return false;
-    const obligationIds = snapshotItems.map((item) => item.obligationId);
-    const obligations = await tx.select().from(bowlerOccurrenceObligations).where(and(
-      eq(bowlerOccurrenceObligations.organizationId, input.organizationId),
-      eq(bowlerOccurrenceObligations.leagueId, input.leagueId),
-      inArray(bowlerOccurrenceObligations.id, obligationIds),
-    )).for("update");
-    if (obligations.length !== obligationIds.length) return false;
-    const activeAllocations = await tx.select({ obligationId: paymentOccurrenceAllocations.obligationId, amountMinor: paymentOccurrenceAllocations.amountMinor, status: payments.status, refundedAt: payments.refundedAt, disputedAt: payments.disputedAt, paymentOperationId: payments.paymentOperationId }).from(paymentOccurrenceAllocations)
-      .innerJoin(payments, eq(payments.id, paymentOccurrenceAllocations.paymentId))
-      .where(and(
-        eq(paymentOccurrenceAllocations.organizationId, input.organizationId),
-        eq(paymentOccurrenceAllocations.leagueId, input.leagueId),
-        inArray(paymentOccurrenceAllocations.obligationId, obligationIds),
-        eq(paymentOccurrenceAllocations.state, "active"),
-      )).for("share");
-    const allocationOperationIds = [...new Set(activeAllocations.map((row) => row.paymentOperationId).filter((id): id is string => id !== null))];
-    const disputedOperationIds = allocationOperationIds.length
-      ? new Set((await tx.select({ operationId: paymentDisputes.paymentOperationId }).from(paymentDisputes).where(and(eq(paymentDisputes.organizationId, input.organizationId), inArray(paymentDisputes.paymentOperationId, allocationOperationIds)))).map((row) => row.operationId))
-      : new Set<string>();
-    if (activeAllocations.some((row) => row.status !== "paid" || row.refundedAt !== null || row.disputedAt !== null || (row.paymentOperationId !== null && disputedOperationIds.has(row.paymentOperationId)))) return false;
-    const paidByObligation = new Map<string, number>();
-    for (const row of activeAllocations) if (row.status === "paid") paidByObligation.set(row.obligationId, (paidByObligation.get(row.obligationId) ?? 0) + row.amountMinor);
-    const otherReservations = await tx.select({ obligationId: paymentOperationOccurrenceSnapshotAllocations.obligationId, amountMinor: paymentOperationOccurrenceSnapshotAllocations.amountMinor }).from(paymentOperationOccurrenceSnapshotAllocations)
-      .innerJoin(paymentOperations, and(eq(paymentOperations.id, paymentOperationOccurrenceSnapshotAllocations.operationId), eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.leagueId, input.leagueId)))
-      .where(and(inArray(paymentOperationOccurrenceSnapshotAllocations.obligationId, obligationIds), ne(paymentOperationOccurrenceSnapshotAllocations.operationId, operation.id), inArray(paymentOperations.status, ["pending", "leased", "provider_unknown", "retry_scheduled", "reconciliation_required"]))).for("share");
-    const otherPlanReservations = await tx.select({ obligationId: occurrenceCollectionPlanItems.obligationId, amountMinor: occurrenceCollectionPlanItems.amountMinor }).from(occurrenceCollectionPlanItems)
-      .innerJoin(occurrenceCollectionPlans, and(eq(occurrenceCollectionPlans.id, occurrenceCollectionPlanItems.planId), eq(occurrenceCollectionPlans.organizationId, input.organizationId), eq(occurrenceCollectionPlans.leagueId, input.leagueId), eq(occurrenceCollectionPlans.state, "ready")))
-      .where(and(inArray(occurrenceCollectionPlanItems.obligationId, obligationIds), ne(occurrenceCollectionPlanItems.planId, plan.id))).for("share");
-    const reservedByObligation = new Map<string, number>();
-    for (const row of [...otherReservations, ...otherPlanReservations]) reservedByObligation.set(row.obligationId, (reservedByObligation.get(row.obligationId) ?? 0) + row.amountMinor);
-    const obligationById = new Map(obligations.map((row) => [row.id, row]));
-    for (const item of snapshotItems) {
-      const obligation = obligationById.get(item.obligationId);
-      const paid = paidByObligation.get(item.obligationId) ?? 0;
-      const reserved = reservedByObligation.get(item.obligationId) ?? 0;
-      if (!obligation || obligation.occurrenceId !== item.occurrenceId || obligation.bowlerId !== item.bowlerId || obligation.currency !== item.currency
-        || ["voided", "settled", "refunded", "disputed", "review_required"].includes(obligation.state)
-        || paid + reserved + item.amountMinor !== obligation.amountMinor
-        || (paid === 0 && obligation.state !== "open")
-        || (paid > 0 && paid < obligation.amountMinor && obligation.state !== "partially_settled")) return false;
-    }
-    const expectedBowlers = [...new Set(snapshotItems.map((item) => item.bowlerId))].sort((a, b) => a - b);
-    const covered = [...new Set(authorization.coveredBowlerIds)].sort((a, b) => a - b);
-    if (covered.length !== expectedBowlers.length || covered.some((id, index) => id !== expectedBowlers[index]) || !authorization.collectionPointOccurrenceIds.includes(snapshot.collectionPointOccurrenceId)) return false;
-    const memberships = await tx.select({ bowlerId: bowlerLeagues.bowlerId }).from(bowlerLeagues).innerJoin(bowlers, and(eq(bowlers.id, bowlerLeagues.bowlerId), eq(bowlers.organizationId, input.organizationId), eq(bowlers.active, true))).where(and(eq(bowlerLeagues.leagueId, input.leagueId), eq(bowlerLeagues.active, true), inArray(bowlerLeagues.bowlerId, expectedBowlers))).for("share");
-    if (new Set(memberships.map((row) => row.bowlerId)).size !== expectedBowlers.length) return false;
-    const links = await tx.select({ a: bowlerPaymentLinks.bowlerAId, b: bowlerPaymentLinks.bowlerBId }).from(bowlerPaymentLinks).where(and(eq(bowlerPaymentLinks.organizationId, input.organizationId), eq(bowlerPaymentLinks.status, "accepted"), or(eq(bowlerPaymentLinks.bowlerAId, authorization.payerBowlerId), eq(bowlerPaymentLinks.bowlerBId, authorization.payerBowlerId)))).for("share");
-    const linkedPartners = new Set(links.map((row) => row.a === authorization.payerBowlerId ? row.b : row.a));
-    if (expectedBowlers.some((id) => id !== authorization.payerBowlerId && (!authorization.acceptedPartnerIds.includes(id) || !linkedPartners.has(id)))) return false;
-    const [payer] = await tx.select({ paymentCustomerId: bowlers.paymentCustomerId, paymentProviderLocationId: bowlers.paymentProviderLocationId }).from(bowlers).where(and(eq(bowlers.id, authorization.payerBowlerId), eq(bowlers.organizationId, input.organizationId), eq(bowlers.active, true))).limit(1).for("share");
-    let customerId: string;
-    try { customerId = (snapshot.encryptedCustomerId ? decrypt(snapshot.encryptedCustomerId) : null) ?? ""; } catch { return false; }
-    if (!payer || !customerId || payer.paymentCustomerId !== customerId || payer.paymentProviderLocationId !== snapshot.locationId) return false;
-    const [location] = await tx.select({ squareCredentials: locations.squareCredentials }).from(locations).where(and(eq(locations.id, snapshot.locationId), eq(locations.organizationId, input.organizationId))).limit(1).for("share");
-    const locationCredentials = locationSquareCredentialsSchema.safeParse(location?.squareCredentials);
-    if (!locationCredentials.success || locationCredentials.data?.locationId !== snapshot.providerLocationId) return false;
-    const claimedAt = (input.now ?? new Date()).toISOString();
-    const [claimed] = await tx.update(paymentOperations).set({ dispatchClaimedAt: claimedAt, updatedAt: claimedAt }).where(and(eq(paymentOperations.id, operation.id), eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.status, "leased"), eq(paymentOperations.leaseToken, input.leaseToken), isNull(paymentOperations.dispatchClaimedAt))).returning({ id: paymentOperations.id });
-    return Boolean(claimed);
-  });
+  // Automatic collection is PR2.  The dormant entry point must be a
+  // deterministic no-op and must never consult retired F1/F3/F4 relations.
+  void input;
+  return false;
 }
 
-/**
- * Claim the legacy scheduled-charge dispatch window under the same
- * organization/league advisory lock used by canonical cancellation. The
- * snapshot supplies the league identity for pre-F4 operations whose ledger
- * row has no league_id. A cancellation that commits first observes a
- * cancellable leased row; a claim that commits first leaves the exact
- * operation identity available for provider-idempotent recovery/review.
- */
 export async function acquireScheduledPaymentOperationDispatchCutoff(input: {
   organizationId: number;
   operationId: string;
@@ -2001,9 +1797,6 @@ export async function schedulePaymentOperationRetry(
         input.operationId,
         input.failedPaymentRows,
       );
-      if (transitioned.operationType === "canonical_autopay_charge") {
-        await cancelCanonicalPlanAfterDefinitiveFailure(tx, transitioned, now, "ATTEMPTS_EXHAUSTED");
-      }
     }
     return transitioned;
   });
@@ -2211,46 +2004,8 @@ async function recordTerminalErrorOutcome(
   throw new PaymentOperationInvalidTransitionError(existing.status);
 }
 
-async function cancelCanonicalPlanAfterDefinitiveFailure(
-  tx: PaymentOperationTransaction,
-  operation: PaymentOperation,
-  now: string,
-  reason: string,
-): Promise<void> {
-  if (operation.operationType !== "canonical_autopay_charge" || operation.leagueId === null || operation.canonicalPlanId === null) return;
-  const [plan] = await tx.select().from(occurrenceCollectionPlans).where(and(
-    eq(occurrenceCollectionPlans.id, operation.canonicalPlanId),
-    eq(occurrenceCollectionPlans.organizationId, operation.organizationId),
-    eq(occurrenceCollectionPlans.leagueId, operation.leagueId),
-  )).limit(1).for("update");
-  if (!plan || plan.state !== "ready") return;
-  const revisionNumber = plan.currentRevision + 1;
-  const [cancelled] = await tx.update(occurrenceCollectionPlans).set({ state: "cancelled", currentRevision: revisionNumber, updatedAt: now }).where(and(
-    eq(occurrenceCollectionPlans.id, plan.id),
-    eq(occurrenceCollectionPlans.organizationId, operation.organizationId),
-    eq(occurrenceCollectionPlans.leagueId, operation.leagueId),
-    eq(occurrenceCollectionPlans.state, "ready"),
-    eq(occurrenceCollectionPlans.currentRevision, plan.currentRevision),
-  )).returning();
-  if (!cancelled) throw new PaymentOperationImmutableMismatchError();
-  const items = await tx.select().from(occurrenceCollectionPlanItems).where(and(
-    eq(occurrenceCollectionPlanItems.planId, plan.id),
-    eq(occurrenceCollectionPlanItems.organizationId, operation.organizationId),
-    eq(occurrenceCollectionPlanItems.leagueId, operation.leagueId),
-  ));
-  await tx.insert(occurrenceCollectionPlanRevisions).values({
-    organizationId: operation.organizationId,
-    leagueId: operation.leagueId,
-    planId: plan.id,
-    revisionNumber,
-    snapshotSchemaVersion: 1,
-    beforeSnapshot: { state: plan.state, plan, items },
-    afterSnapshot: { state: "cancelled", reason, operationId: operation.id, plan: cancelled, items },
-    recordedByUserId: plan.recordedByUserId,
-    createdAt: now,
-  });
-}
-
+// PR2 canonical plan cancellation is intentionally dormant.  The retained
+// operation ledger must not query relations removed by migration 0032.
 export async function recordPaymentOperationActionRequired(
   input: ErrorOutcomeInput,
 ): Promise<PaymentOperation> {
@@ -2290,30 +2045,7 @@ export async function recordCanonicalAutopayPreDispatchFailure(
   input: LeasedPaymentOperationInput & { errorCode?: string | null },
 ): Promise<PaymentOperation | undefined> {
   void input;
-  return undefined;
-  /* istanbul ignore next -- retained PR2 implementation is unreachable. */
-  /*
-  validateLeaseToken(input.leaseToken);
-  const now = toIso(input.now ?? new Date(), "now");
-  const errorCode = validateErrorDetails("invalid_request", input.errorCode);
-  return db.transaction(async (tx) => {
-    const [candidate] = await tx.select({ leagueId: paymentOperations.leagueId, canonicalPlanId: paymentOperations.canonicalPlanId, operationType: paymentOperations.operationType }).from(paymentOperations).where(and(eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.id, input.operationId))).limit(1);
-    if (candidate?.operationType !== "canonical_autopay_charge" || candidate.leagueId === null || candidate.canonicalPlanId === null) return undefined;
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(${input.organizationId}::integer, ${candidate.leagueId}::integer)`);
-    const [plan] = await tx.select().from(occurrenceCollectionPlans).where(and(eq(occurrenceCollectionPlans.id, candidate.canonicalPlanId), eq(occurrenceCollectionPlans.organizationId, input.organizationId), eq(occurrenceCollectionPlans.leagueId, candidate.leagueId))).limit(1).for("update");
-    const [operation] = await tx.select().from(paymentOperations).where(and(eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.id, input.operationId), eq(paymentOperations.operationType, "canonical_autopay_charge"))).limit(1).for("update");
-    if (!operation || operation.status !== "leased" || operation.leaseToken !== input.leaseToken) return undefined;
-    const [failed] = await tx.update(paymentOperations).set({ status: "failed_terminal", nextAttemptAt: null, leaseOwner: null, leaseExpiresAt: null, errorClassification: "invalid_request", errorCode, completedAt: now, updatedAt: now }).where(and(eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.id, input.operationId), eq(paymentOperations.status, "leased"), eq(paymentOperations.leaseToken, input.leaseToken))).returning();
-    if (!failed) return undefined;
-    if (plan?.state === "ready") {
-      const [cancelled] = await tx.update(occurrenceCollectionPlans).set({ state: "cancelled", currentRevision: plan.currentRevision + 1, updatedAt: now }).where(and(eq(occurrenceCollectionPlans.id, plan.id), eq(occurrenceCollectionPlans.organizationId, input.organizationId), eq(occurrenceCollectionPlans.leagueId, candidate.leagueId), eq(occurrenceCollectionPlans.state, "ready"), eq(occurrenceCollectionPlans.currentRevision, plan.currentRevision))).returning();
-      if (!cancelled) throw new PaymentOperationImmutableMismatchError();
-      const items = await tx.select().from(occurrenceCollectionPlanItems).where(and(eq(occurrenceCollectionPlanItems.planId, plan.id), eq(occurrenceCollectionPlanItems.organizationId, input.organizationId), eq(occurrenceCollectionPlanItems.leagueId, candidate.leagueId)));
-      await tx.insert(occurrenceCollectionPlanRevisions).values({ organizationId: input.organizationId, leagueId: candidate.leagueId, planId: plan.id, revisionNumber: cancelled.currentRevision, snapshotSchemaVersion: 1, beforeSnapshot: { state: plan.state, plan, items }, afterSnapshot: { state: cancelled.state, plan: cancelled, items, reason: errorCode }, recordedByUserId: plan.recordedByUserId, createdAt: now });
-    }
-    return failed;
-  });
-  */
+ return undefined;
 }
 
 export type FinalizePaymentOperationSuccessInput = LeasedPaymentOperationInput & {
@@ -2335,49 +2067,6 @@ async function validateInteractiveOccurrenceSupplementBeforeWrites(
   void tx;
   void operation;
   return;
-  // eslint-disable-next-line no-unreachable
-  const [supplement] = await tx.select().from(paymentOperationOccurrenceSnapshots)
-    .where(eq(paymentOperationOccurrenceSnapshots.operationId, operation.id))
-    .limit(1).for("share");
-  if (!supplement) return;
-  if (operation.authorizingUserId === null || supplement.amountMinor !== operation.amountMinor || supplement.currency !== operation.currency) {
-    throw new PaymentOperationImmutableMismatchError();
-  }
-  const snapshotAllocations = await tx.select().from(paymentOperationOccurrenceSnapshotAllocations)
-    .where(eq(paymentOperationOccurrenceSnapshotAllocations.operationId, operation.id))
-    .orderBy(asc(paymentOperationOccurrenceSnapshotAllocations.allocationIndex));
-  if (snapshotAllocations.length !== supplement.allocationCount
-    || snapshotAllocations.reduce((sum, row) => sum + row.amountMinor, 0) !== operation.amountMinor) {
-    throw new PaymentOperationImmutableMismatchError();
-  }
-  try {
-    const semantic = validatePaymentOperationOccurrenceSnapshot({
-      contractVersion: PAYMENT_OPERATION_OCCURRENCE_SNAPSHOT_CONTRACT,
-      snapshotVersion: supplement.snapshotVersion,
-      operationId: operation.id,
-      operationType: operation.operationType,
-      organizationId: operation.organizationId,
-      leagueId: supplement.leagueId,
-      amountMinor: operation.amountMinor,
-      currency: operation.currency,
-      allocations: snapshotAllocations.map((row) => ({
-        allocationIndex: row.allocationIndex,
-        organizationId: row.organizationId,
-        leagueId: row.leagueId,
-        occurrenceId: row.occurrenceId,
-        bowlerId: row.bowlerId,
-        obligationId: row.obligationId,
-        amountMinor: row.amountMinor,
-        currency: row.currency,
-      })),
-    });
-    if (fingerprintPaymentOperationOccurrenceSnapshot(semantic) !== supplement.snapshotFingerprint) {
-      throw new PaymentOperationImmutableMismatchError();
-    }
-  } catch (error) {
-    if (error instanceof PaymentOperationImmutableMismatchError) throw error;
-    throw new PaymentOperationImmutableMismatchError({ cause: error });
-  }
 }
 
 /**
@@ -2391,30 +2080,7 @@ async function verifyCanonicalAutopayCompletionInTransaction(
   operation: PaymentOperation,
 ): Promise<void> {
   if (operation.operationType !== "canonical_autopay_charge") return;
-  return;
-  /* istanbul ignore next -- retained PR2 implementation is unreachable. */
-  /*
-  const [snapshot] = await tx.select().from(canonicalAutopayExecutionSnapshots).where(and(eq(canonicalAutopayExecutionSnapshots.operationId, operation.id), eq(canonicalAutopayExecutionSnapshots.organizationId, operation.organizationId), eq(canonicalAutopayExecutionSnapshots.leagueId, operation.leagueId))).limit(1).for("share");
-  const [plan] = await tx.select().from(occurrenceCollectionPlans).where(and(eq(occurrenceCollectionPlans.id, operation.canonicalPlanId), eq(occurrenceCollectionPlans.organizationId, operation.organizationId), eq(occurrenceCollectionPlans.leagueId, operation.leagueId))).limit(1).for("share");
-  if (!snapshot || !plan || plan.state !== "fulfilled") throw new PaymentOperationImmutableMismatchError();
-  const [supplement] = await tx.select().from(paymentOperationOccurrenceSnapshots).where(and(eq(paymentOperationOccurrenceSnapshots.operationId, operation.id), eq(paymentOperationOccurrenceSnapshots.organizationId, operation.organizationId), eq(paymentOperationOccurrenceSnapshots.leagueId, operation.leagueId))).limit(1).for("share");
-  if (!supplement || supplement.amountMinor !== operation.amountMinor || supplement.currency !== operation.currency) throw new PaymentOperationImmutableMismatchError();
-  const allocations = await tx.select().from(paymentOccurrenceAllocations).where(and(eq(paymentOccurrenceAllocations.organizationId, operation.organizationId), eq(paymentOccurrenceAllocations.leagueId, operation.leagueId), sql`${paymentOccurrenceAllocations.allocationKey} LIKE ${`payment-operation:${operation.id}:%`}`));
-  const supplementAllocations = await tx.select().from(paymentOperationOccurrenceSnapshotAllocations).where(and(eq(paymentOperationOccurrenceSnapshotAllocations.operationId, operation.id), eq(paymentOperationOccurrenceSnapshotAllocations.organizationId, operation.organizationId), eq(paymentOperationOccurrenceSnapshotAllocations.leagueId, operation.leagueId))).orderBy(asc(paymentOperationOccurrenceSnapshotAllocations.allocationIndex));
-  if (allocations.length !== supplementAllocations.length || allocations.some((allocation) => allocation.state !== "active" || !supplementAllocations.some((item) => allocation.allocationKey === `payment-operation:${operation.id}:${item.allocationIndex}` && allocation.obligationId === item.obligationId && allocation.amountMinor === item.amountMinor && allocation.currency === item.currency))) throw new PaymentOperationImmutableMismatchError();
-  const allocationRevisionRows = allocations.length === 0 ? [] : await tx.select({ allocationId: paymentOccurrenceAllocationRevisions.allocationId, revisionNumber: paymentOccurrenceAllocationRevisions.revisionNumber }).from(paymentOccurrenceAllocationRevisions).where(and(eq(paymentOccurrenceAllocationRevisions.organizationId, operation.organizationId), eq(paymentOccurrenceAllocationRevisions.leagueId, operation.leagueId), inArray(paymentOccurrenceAllocationRevisions.allocationId, allocations.map((allocation) => allocation.id))));
-  const allocationRevisionKeys = new Set(allocationRevisionRows.map((row) => `${row.allocationId}:${row.revisionNumber}`));
-  if (allocations.some((allocation) => !allocationRevisionKeys.has(`${allocation.id}:${allocation.currentRevision}`))) throw new PaymentOperationImmutableMismatchError();
-  const obligationIds = supplementAllocations.map((item) => item.obligationId);
-  const obligations = await tx.select().from(bowlerOccurrenceObligations).where(and(eq(bowlerOccurrenceObligations.organizationId, operation.organizationId), eq(bowlerOccurrenceObligations.leagueId, operation.leagueId), inArray(bowlerOccurrenceObligations.id, obligationIds))).for("share");
-  if (obligations.length !== obligationIds.length || obligations.some((obligation) => obligation.state !== "settled")) throw new PaymentOperationImmutableMismatchError();
-  const obligationRevisionRows = await tx.select({ obligationId: bowlerOccurrenceObligationRevisions.obligationId, revisionNumber: bowlerOccurrenceObligationRevisions.revisionNumber }).from(bowlerOccurrenceObligationRevisions).where(and(eq(bowlerOccurrenceObligationRevisions.organizationId, operation.organizationId), eq(bowlerOccurrenceObligationRevisions.leagueId, operation.leagueId), inArray(bowlerOccurrenceObligationRevisions.obligationId, obligationIds)));
-  const obligationRevisionKeys = new Set(obligationRevisionRows.map((row) => `${row.obligationId}:${row.revisionNumber}`));
-  if (obligations.some((obligation) => !obligationRevisionKeys.has(`${obligation.id}:${obligation.currentRevision}`))) throw new PaymentOperationImmutableMismatchError();
-  const [revision] = await tx.select({ id: occurrenceCollectionPlanRevisions.id }).from(occurrenceCollectionPlanRevisions).where(and(eq(occurrenceCollectionPlanRevisions.organizationId, operation.organizationId), eq(occurrenceCollectionPlanRevisions.leagueId, operation.leagueId), eq(occurrenceCollectionPlanRevisions.planId, plan.id), eq(occurrenceCollectionPlanRevisions.revisionNumber, plan.currentRevision))).limit(1);
-  if (!revision) throw new PaymentOperationImmutableMismatchError();
-}
-  */
+ return;
 }
 
 async function finalizeCanonicalAutopayInTransaction(
@@ -2426,275 +2092,7 @@ async function finalizeCanonicalAutopayInTransaction(
   // No F4 canonical-autopay operation can be created after migration 0032.
   // Keep this call-site fail-closed without touching retired relations.
   if (operation.operationType !== "canonical_autopay_charge") return;
-  return;
-  /* istanbul ignore next -- retained PR2 implementation is unreachable. */
-  /*
-  if (operation.leagueId === null || operation.canonicalPlanId === null) {
-    throw new PaymentOperationImmutableMismatchError();
-  }
-  if (operation.authorizingUserId === null) throw new PaymentOperationImmutableMismatchError();
-  const [storedSnapshot] = await tx.select().from(canonicalAutopayExecutionSnapshots)
-    .where(and(
-      eq(canonicalAutopayExecutionSnapshots.operationId, operation.id),
-      eq(canonicalAutopayExecutionSnapshots.organizationId, operation.organizationId),
-      eq(canonicalAutopayExecutionSnapshots.leagueId, operation.leagueId),
-    )).limit(1).for("update");
-  if (!storedSnapshot) throw new PaymentOperationImmutableMismatchError();
-  let snapshot: ReturnType<typeof validateF4ExecutionSnapshot>;
-  try {
-    snapshot = validateF4ExecutionSnapshot({
-      contractVersion: "canonical-autopay-execution/1",
-      snapshotVersion: storedSnapshot.snapshotVersion,
-      operationId: storedSnapshot.operationId,
-      organizationId: storedSnapshot.organizationId,
-      leagueId: storedSnapshot.leagueId,
-      d2PlanId: storedSnapshot.d2PlanId,
-      collectionPointOccurrenceId: storedSnapshot.collectionPointOccurrenceId,
-      triggerOccurrenceId: storedSnapshot.triggerOccurrenceId,
-      triggerStartAt: new Date(storedSnapshot.triggerStartAt).toISOString(),
-      payerBowlerId: storedSnapshot.payerBowlerId,
-      locationId: storedSnapshot.locationId,
-      providerLocationId: storedSnapshot.providerLocationId,
-      activationId: storedSnapshot.activationId,
-      activationRevision: storedSnapshot.activationRevision,
-      activationSourceFingerprint: storedSnapshot.activationSourceFingerprint,
-      policyId: storedSnapshot.policyId,
-      policyVersion: storedSnapshot.policyVersion,
-      policyFingerprint: storedSnapshot.policyFingerprint,
-      authorizationId: storedSnapshot.authorizationId,
-      authorizationVersion: storedSnapshot.authorizationVersion,
-      authorizationFingerprint: storedSnapshot.authorizationFingerprint,
-      planVersion: storedSnapshot.planVersion,
-      planFingerprint: storedSnapshot.planFingerprint,
-      amountMinor: storedSnapshot.amountMinor,
-      currency: storedSnapshot.currency,
-      items: storedSnapshot.items,
-      encryptedSourceId: storedSnapshot.encryptedSourceId,
-      encryptedCustomerId: storedSnapshot.encryptedCustomerId,
-      snapshotFingerprint: storedSnapshot.snapshotFingerprint,
-    });
-  } catch (error) {
-    throw new PaymentOperationImmutableMismatchError({ cause: error });
-  }
-  if (
-    snapshot.operationId !== operation.id
-    || snapshot.amountMinor !== operation.amountMinor
-    || snapshot.currency !== operation.currency
-    || snapshot.d2PlanId !== operation.canonicalPlanId
-      || snapshot.triggerOccurrenceId !== operation.triggerOccurrenceId
-  ) throw new PaymentOperationImmutableMismatchError();
-
-  const [supplement] = await tx.select().from(paymentOperationOccurrenceSnapshots)
-    .where(and(
-      eq(paymentOperationOccurrenceSnapshots.operationId, operation.id),
-      eq(paymentOperationOccurrenceSnapshots.organizationId, operation.organizationId),
-      eq(paymentOperationOccurrenceSnapshots.leagueId, operation.leagueId),
-    )).limit(1).for("update");
-  if (!supplement || supplement.amountMinor !== operation.amountMinor || supplement.currency !== operation.currency) {
-    throw new PaymentOperationImmutableMismatchError();
-  }
-  const supplementAllocations = await tx.select().from(paymentOperationOccurrenceSnapshotAllocations)
-    .where(and(
-      eq(paymentOperationOccurrenceSnapshotAllocations.operationId, operation.id),
-      eq(paymentOperationOccurrenceSnapshotAllocations.organizationId, operation.organizationId),
-      eq(paymentOperationOccurrenceSnapshotAllocations.leagueId, operation.leagueId),
-    )).orderBy(asc(paymentOperationOccurrenceSnapshotAllocations.allocationIndex));
-  if (supplementAllocations.length !== supplement.allocationCount) throw new PaymentOperationImmutableMismatchError();
-  try {
-    const semantic = validatePaymentOperationOccurrenceSnapshot({
-      contractVersion: PAYMENT_OPERATION_OCCURRENCE_SNAPSHOT_CONTRACT,
-      snapshotVersion: supplement.snapshotVersion,
-      operationId: operation.id,
-      operationType: "canonical_autopay_charge",
-      organizationId: operation.organizationId,
-      leagueId: operation.leagueId,
-      amountMinor: operation.amountMinor,
-      currency: operation.currency,
-      allocations: supplementAllocations.map((row) => ({
-        allocationIndex: row.allocationIndex,
-        organizationId: row.organizationId,
-        leagueId: row.leagueId,
-        occurrenceId: row.occurrenceId,
-        bowlerId: row.bowlerId,
-        obligationId: row.obligationId,
-        amountMinor: row.amountMinor,
-        currency: row.currency,
-      })),
-    });
-    if (fingerprintPaymentOperationOccurrenceSnapshot(semantic) !== supplement.snapshotFingerprint) throw new Error("occurrence fingerprint mismatch");
-  } catch (error) {
-    throw new PaymentOperationImmutableMismatchError({ cause: error });
-  }
-  if (supplementAllocations.length !== snapshot.items.length || supplementAllocations.some((row, index) => {
-    const item = snapshot.items[index];
-    return !item || row.allocationIndex !== item.itemIndex || row.obligationId !== item.obligationId
-      || row.occurrenceId !== item.occurrenceId || row.bowlerId !== item.bowlerId
-      || row.amountMinor !== item.amountMinor || row.currency !== item.currency;
-  })) throw new PaymentOperationImmutableMismatchError();
-  const [triggerOccurrence] = await tx.select({ startAt: leagueOccurrences.startAt, lifecycle: leagueOccurrences.lifecycle, status: leagueOccurrences.status }).from(leagueOccurrences).where(and(
-    eq(leagueOccurrences.id, snapshot.triggerOccurrenceId),
-    eq(leagueOccurrences.organizationId, operation.organizationId),
-    eq(leagueOccurrences.leagueId, operation.leagueId),
-  )).limit(1).for("share");
-  if (!triggerOccurrence || new Date(triggerOccurrence.startAt).getTime() !== new Date(snapshot.triggerStartAt).getTime() || !["published", "locked"].includes(triggerOccurrence.lifecycle) || !["scheduled", "completed"].includes(triggerOccurrence.status)) throw new PaymentOperationImmutableMismatchError();
-
-  const linkedPayments = await tx.select().from(payments)
-    .where(eq(payments.paymentOperationId, operation.id));
-  const rowsByBowler = new Map<number, Payment>();
-  for (const payment of linkedPayments) {
-    if (payment.status !== "paid" || payment.leagueId !== operation.leagueId || payment.paidByUserId !== operation.authorizingUserId || payment.lineageAmount !== null || payment.prizeFundAmount !== null || payment.receiptEmailMissing !== true) throw new PaymentOperationImmutableMismatchError();
-    if (rowsByBowler.has(payment.bowlerId)) throw new PaymentOperationImmutableMismatchError();
-    rowsByBowler.set(payment.bowlerId, payment);
-  }
-  const expectedByBowler = new Map<number, number>();
-  for (const item of snapshot.items) expectedByBowler.set(item.bowlerId, (expectedByBowler.get(item.bowlerId) ?? 0) + item.amountMinor);
-  if (rowsByBowler.size !== expectedByBowler.size || [...expectedByBowler].some(([bowlerId, amount]) => rowsByBowler.get(bowlerId)?.amount !== amount)) {
-    throw new PaymentOperationImmutableMismatchError();
-  }
-
-  const [plan] = await tx.select().from(occurrenceCollectionPlans)
-    .where(and(
-      eq(occurrenceCollectionPlans.id, operation.canonicalPlanId),
-      eq(occurrenceCollectionPlans.organizationId, operation.organizationId),
-      eq(occurrenceCollectionPlans.leagueId, operation.leagueId),
-    )).limit(1).for("update");
-  if (!plan) throw new PaymentOperationImmutableMismatchError();
-  const planItems = await tx.select().from(occurrenceCollectionPlanItems)
-    .where(and(
-      eq(occurrenceCollectionPlanItems.planId, plan.id),
-      eq(occurrenceCollectionPlanItems.organizationId, operation.organizationId),
-      eq(occurrenceCollectionPlanItems.leagueId, operation.leagueId),
-    )).orderBy(asc(occurrenceCollectionPlanItems.itemIndex));
-  const obligationIds = snapshot.items.map((item) => item.obligationId);
-  const obligations = await tx.select().from(bowlerOccurrenceObligations)
-    .where(and(
-      eq(bowlerOccurrenceObligations.organizationId, operation.organizationId),
-      eq(bowlerOccurrenceObligations.leagueId, operation.leagueId),
-      inArray(bowlerOccurrenceObligations.id, obligationIds),
-    )).for("update");
-  const dispatchOwned = operation.dispatchClaimedAt !== null;
-  if (obligations.length !== obligationIds.length || planItems.length !== snapshot.items.length || (plan.state !== "ready" && !(dispatchOwned && plan.state === "superseded"))) {
-    throw new PaymentOperationImmutableMismatchError();
-  }
-  if (planItems.some((planItem, index) => {
-    const item = snapshot.items[index];
-    return !item || planItem.itemIndex !== item.itemIndex || planItem.obligationId !== item.obligationId
-      || planItem.occurrenceId !== item.occurrenceId || planItem.bowlerId !== item.bowlerId
-      || planItem.amountMinor !== item.amountMinor || planItem.currency !== item.currency;
-  })) throw new PaymentOperationImmutableMismatchError();
-  const obligationById = new Map(obligations.map((row) => [row.id, row]));
-  const activeAllocationRows = await tx.select({ obligationId: paymentOccurrenceAllocations.obligationId, amountMinor: paymentOccurrenceAllocations.amountMinor, status: payments.status, refundedAt: payments.refundedAt, disputedAt: payments.disputedAt, paymentOperationId: payments.paymentOperationId }).from(paymentOccurrenceAllocations).innerJoin(payments, eq(payments.id, paymentOccurrenceAllocations.paymentId)).where(and(eq(paymentOccurrenceAllocations.organizationId, operation.organizationId), eq(paymentOccurrenceAllocations.leagueId, operation.leagueId), inArray(paymentOccurrenceAllocations.obligationId, obligationIds), eq(paymentOccurrenceAllocations.state, "active"))).for("share");
-  const allocationOperationIds = [...new Set(activeAllocationRows.map((row) => row.paymentOperationId).filter((id): id is string => id !== null))];
-  const disputeOperationIds = allocationOperationIds.length ? new Set((await tx.select({ operationId: paymentDisputes.paymentOperationId }).from(paymentDisputes).where(and(eq(paymentDisputes.organizationId, operation.organizationId), inArray(paymentDisputes.paymentOperationId, allocationOperationIds)))).map((row) => row.operationId)) : new Set<string>();
-  if (activeAllocationRows.some((row) => row.status !== "paid" || row.refundedAt !== null || row.disputedAt !== null || (row.paymentOperationId !== null && disputeOperationIds.has(row.paymentOperationId)))) throw new PaymentOperationImmutableMismatchError();
-  const paidBeforeRows = activeAllocationRows.filter((row) => row.status === "paid").map((row) => ({ obligationId: row.obligationId, amountMinor: row.amountMinor }));
-  const paidBefore = new Map<string, number>();
-  for (const row of paidBeforeRows) paidBefore.set(row.obligationId, (paidBefore.get(row.obligationId) ?? 0) + row.amountMinor);
-  for (const item of snapshot.items) {
-    const obligation = obligationById.get(item.obligationId);
-    if (!obligation || obligation.occurrenceId !== item.occurrenceId || obligation.bowlerId !== item.bowlerId
-      || obligation.currency !== item.currency
-      || ["voided", "refunded", "disputed", "review_required"].includes(obligation.state)) {
-      throw new PaymentOperationImmutableMismatchError();
-    }
-    if ((paidBefore.get(item.obligationId) ?? 0) + item.amountMinor !== obligation.amountMinor) throw new PaymentOperationImmutableMismatchError();
-  }
-
-  for (const row of supplementAllocations) {
-    const payment = rowsByBowler.get(row.bowlerId);
-    if (!payment) throw new PaymentOperationImmutableMismatchError();
-    const allocationKey = `payment-operation:${operation.id}:${row.allocationIndex}`;
-    const [created] = await tx.insert(paymentOccurrenceAllocations).values({
-      organizationId: operation.organizationId,
-      leagueId: operation.leagueId,
-      paymentId: payment.id,
-      obligationId: row.obligationId,
-      occurrenceId: row.occurrenceId,
-      bowlerId: row.bowlerId,
-      amountMinor: row.amountMinor,
-      currency: row.currency,
-      state: "active",
-      allocationKey,
-      currentRevision: 1,
-      recordedByUserId: plan.recordedByUserId,
-      createdAt: now,
-      updatedAt: now,
-    }).onConflictDoNothing().returning();
-    if (created) {
-      await tx.insert(paymentOccurrenceAllocationRevisions).values({
-        organizationId: operation.organizationId,
-        leagueId: operation.leagueId,
-        allocationId: created.id,
-        revisionNumber: 1,
-        snapshotSchemaVersion: 1,
-        beforeSnapshot: null,
-        afterSnapshot: { state: "active", amountMinor: row.amountMinor, currency: row.currency, paymentId: payment.id, obligationId: row.obligationId, occurrenceId: row.occurrenceId, bowlerId: row.bowlerId },
-        recordedByUserId: plan.recordedByUserId,
-        createdAt: now,
-      });
-    } else {
-      const [existing] = await tx.select().from(paymentOccurrenceAllocations).where(and(
-        eq(paymentOccurrenceAllocations.organizationId, operation.organizationId),
-        eq(paymentOccurrenceAllocations.leagueId, operation.leagueId),
-        eq(paymentOccurrenceAllocations.allocationKey, allocationKey),
-      )).limit(1).for("share");
-      if (!existing || existing.paymentId !== payment.id || existing.obligationId !== row.obligationId || existing.occurrenceId !== row.occurrenceId || existing.bowlerId !== row.bowlerId || existing.amountMinor !== row.amountMinor || existing.currency !== row.currency || existing.state !== "active") throw new PaymentOperationImmutableMismatchError();
-      const [existingRevision] = await tx.select({ id: paymentOccurrenceAllocationRevisions.id }).from(paymentOccurrenceAllocationRevisions).where(and(
-        eq(paymentOccurrenceAllocationRevisions.organizationId, operation.organizationId),
-        eq(paymentOccurrenceAllocationRevisions.leagueId, operation.leagueId),
-        eq(paymentOccurrenceAllocationRevisions.allocationId, existing.id),
-        eq(paymentOccurrenceAllocationRevisions.revisionNumber, existing.currentRevision),
-      )).limit(1);
-      if (!existingRevision) throw new PaymentOperationImmutableMismatchError();
-    }
-  }
-  for (const obligation of obligations) {
-    const [totals] = await tx.select({ total: sql<number>`COALESCE(SUM(${paymentOccurrenceAllocations.amountMinor}), 0)` })
-      .from(paymentOccurrenceAllocations)
-      .innerJoin(payments, eq(payments.id, paymentOccurrenceAllocations.paymentId))
-      .where(and(
-        eq(paymentOccurrenceAllocations.organizationId, operation.organizationId),
-        eq(paymentOccurrenceAllocations.leagueId, operation.leagueId),
-        eq(paymentOccurrenceAllocations.obligationId, obligation.id),
-        eq(paymentOccurrenceAllocations.state, "active"),
-        eq(payments.status, "paid"),
-      ));
-    const state = Number(totals?.total ?? 0) >= obligation.amountMinor ? "settled" : "partially_settled";
-    if (state !== obligation.state) {
-      const beforeSnapshot = { ...obligation, state: obligation.state };
-      const revisionNumber = obligation.currentRevision + 1;
-      const [updated] = await tx.update(bowlerOccurrenceObligations).set({ state, currentRevision: revisionNumber, updatedAt: now })
-        .where(and(eq(bowlerOccurrenceObligations.id, obligation.id), eq(bowlerOccurrenceObligations.organizationId, operation.organizationId), eq(bowlerOccurrenceObligations.leagueId, operation.leagueId), eq(bowlerOccurrenceObligations.currentRevision, obligation.currentRevision))).returning();
-      if (!updated) throw new PaymentOperationImmutableMismatchError();
-      await tx.insert(bowlerOccurrenceObligationRevisions).values({
-        organizationId: operation.organizationId,
-        leagueId: operation.leagueId,
-        obligationId: obligation.id,
-        revisionNumber,
-        snapshotSchemaVersion: 1,
-        beforeSnapshot,
-        afterSnapshot: { ...updated, state },
-        recordedByUserId: plan.recordedByUserId,
-        createdAt: now,
-      });
-    }
-  }
-  const nextRevision = plan.currentRevision + 1;
-  const [fulfilled] = await tx.update(occurrenceCollectionPlans).set({ state: "fulfilled", currentRevision: nextRevision, updatedAt: now })
-    .where(and(eq(occurrenceCollectionPlans.id, plan.id), eq(occurrenceCollectionPlans.organizationId, operation.organizationId), eq(occurrenceCollectionPlans.leagueId, operation.leagueId), dispatchOwned ? inArray(occurrenceCollectionPlans.state, ["ready", "superseded"]) : eq(occurrenceCollectionPlans.state, "ready"), eq(occurrenceCollectionPlans.currentRevision, plan.currentRevision))).returning();
-  if (!fulfilled) throw new PaymentOperationImmutableMismatchError();
-  await tx.insert(occurrenceCollectionPlanRevisions).values({
-    organizationId: operation.organizationId,
-    leagueId: operation.leagueId,
-    planId: plan.id,
-    revisionNumber: nextRevision,
-    snapshotSchemaVersion: 1,
-    beforeSnapshot: { state: plan.state, plan, items: planItems },
-    afterSnapshot: { state: "fulfilled", operationId: operation.id, snapshotFingerprint: snapshot.snapshotFingerprint, plan: fulfilled, items: planItems },
-    recordedByUserId: plan.recordedByUserId,
-    createdAt: now,
-  });
-  */
+ return;
 }
 
 async function finalizeInteractiveOccurrenceAllocations(
@@ -2710,151 +2108,6 @@ async function finalizeInteractiveOccurrenceAllocations(
   void paymentRows;
   void now;
   return;
-  /* Retired D2 occurrence-allocation finalization (kept in history only).
-  const [supplement] = await tx.select().from(paymentOperationOccurrenceSnapshots)
-    .where(eq(paymentOperationOccurrenceSnapshots.operationId, operation.id))
-    .limit(1).for("update");
-  if (!supplement) return;
-  if (operation.authorizingUserId === null || supplement.amountMinor !== operation.amountMinor || supplement.currency !== operation.currency) {
-    throw new PaymentOperationImmutableMismatchError();
-  }
-  const snapshotAllocations = await tx.select().from(paymentOperationOccurrenceSnapshotAllocations)
-    .where(eq(paymentOperationOccurrenceSnapshotAllocations.operationId, operation.id))
-    .orderBy(asc(paymentOperationOccurrenceSnapshotAllocations.allocationIndex));
-  if (snapshotAllocations.length !== supplement.allocationCount
-    || snapshotAllocations.reduce((sum, row) => sum + row.amountMinor, 0) !== operation.amountMinor) {
-    throw new PaymentOperationImmutableMismatchError();
-  }
-  try {
-    const semantic = validatePaymentOperationOccurrenceSnapshot({
-      contractVersion: PAYMENT_OPERATION_OCCURRENCE_SNAPSHOT_CONTRACT,
-      snapshotVersion: supplement.snapshotVersion,
-      operationId: operation.id,
-      operationType: operation.operationType,
-      organizationId: operation.organizationId,
-      leagueId: supplement.leagueId,
-      amountMinor: operation.amountMinor,
-      currency: operation.currency,
-      allocations: snapshotAllocations.map((row) => ({
-        allocationIndex: row.allocationIndex,
-        organizationId: row.organizationId,
-        leagueId: row.leagueId,
-        occurrenceId: row.occurrenceId,
-        bowlerId: row.bowlerId,
-        obligationId: row.obligationId,
-        amountMinor: row.amountMinor,
-        currency: row.currency,
-      })),
-    });
-    if (fingerprintPaymentOperationOccurrenceSnapshot(semantic) !== supplement.snapshotFingerprint) {
-      throw new PaymentOperationImmutableMismatchError();
-    }
-  } catch (error) {
-    if (error instanceof PaymentOperationImmutableMismatchError) throw error;
-    throw new PaymentOperationImmutableMismatchError({ cause: error });
-  }
-  const linkedPayments = await tx.select().from(payments)
-    .where(eq(payments.paymentOperationId, operation.id));
-  const byBowler = new Map(linkedPayments.map((row) => [row.bowlerId, row]));
-  const snapshotByBowler = new Map<number, number>();
-  for (const row of snapshotAllocations) snapshotByBowler.set(row.bowlerId, (snapshotByBowler.get(row.bowlerId) ?? 0) + row.amountMinor);
-  if (byBowler.size !== snapshotByBowler.size || [...snapshotByBowler].some(([bowlerId, amountMinor]) => byBowler.get(bowlerId)?.amount !== amountMinor)) {
-    throw new PaymentOperationImmutableMismatchError();
-  }
-  const obligationIds = [...new Set(snapshotAllocations.map((row) => row.obligationId))];
-  const obligations = await tx.select().from(bowlerOccurrenceObligations).where(and(
-    eq(bowlerOccurrenceObligations.organizationId, operation.organizationId),
-    inArray(bowlerOccurrenceObligations.id, obligationIds),
-  )).for("update");
-  if (obligations.length !== obligationIds.length) throw new PaymentOperationImmutableMismatchError();
-  for (const row of snapshotAllocations) {
-    const payment = byBowler.get(row.bowlerId);
-    if (!payment || payment.status !== "paid" || payment.amount < row.amountMinor) {
-      throw new PaymentOperationImmutableMismatchError();
-    }
-    const allocationKey = `payment-operation:${operation.id}:${row.allocationIndex}`;
-    const [created] = await tx.insert(paymentOccurrenceAllocations).values({
-      organizationId: operation.organizationId,
-      leagueId: supplement.leagueId,
-      paymentId: payment.id,
-      obligationId: row.obligationId,
-      occurrenceId: row.occurrenceId,
-      bowlerId: row.bowlerId,
-      amountMinor: row.amountMinor,
-      currency: row.currency,
-      state: "active",
-      allocationKey,
-      currentRevision: 1,
-      recordedByUserId: operation.authorizingUserId,
-      createdAt: now,
-      updatedAt: now,
-    }).onConflictDoNothing().returning();
-    if (created) {
-      await tx.insert(paymentOccurrenceAllocationRevisions).values({
-        organizationId: operation.organizationId,
-        leagueId: supplement.leagueId,
-        allocationId: created.id,
-        revisionNumber: 1,
-        snapshotSchemaVersion: 1,
-        beforeSnapshot: null,
-        afterSnapshot: {
-          state: "active", amountMinor: row.amountMinor, currency: row.currency,
-          paymentId: payment.id, obligationId: row.obligationId,
-          occurrenceId: row.occurrenceId, bowlerId: row.bowlerId,
-        },
-        recordedByUserId: operation.authorizingUserId,
-        createdAt: now,
-      });
-    }
-  }
-  for (const obligation of obligations) {
-    const [totals] = await tx.select({ total: sql<number>`COALESCE(SUM(${paymentOccurrenceAllocations.amountMinor}), 0)` })
-      .from(paymentOccurrenceAllocations).innerJoin(payments, eq(payments.id, paymentOccurrenceAllocations.paymentId)).where(and(
-        eq(paymentOccurrenceAllocations.obligationId, obligation.id),
-        eq(paymentOccurrenceAllocations.state, "active"),
-        eq(payments.status, "paid"),
-      ));
-    const total = Number(totals?.total ?? 0);
-    const state = total >= obligation.amountMinor ? "settled" : total > 0 ? "partially_settled" : "open";
-    if (state !== obligation.state) {
-      const beforeSnapshot = {
-        occurrenceId: obligation.occurrenceId,
-        bowlerId: obligation.bowlerId,
-        purpose: obligation.purpose,
-        amountMinor: obligation.amountMinor,
-        currency: obligation.currency,
-        dueAt: obligation.dueAt,
-        pastDueAt: obligation.pastDueAt,
-        state: obligation.state,
-        billingTermId: obligation.billingTermId,
-        billingTermVersion: obligation.billingTermVersion,
-      };
-      const afterSnapshot = { ...beforeSnapshot, state };
-      const nextRevision = obligation.currentRevision + 1;
-      const [updated] = await tx.update(bowlerOccurrenceObligations).set({
-        state,
-        currentRevision: nextRevision,
-        updatedAt: now,
-      }).where(and(
-        eq(bowlerOccurrenceObligations.id, obligation.id),
-        eq(bowlerOccurrenceObligations.organizationId, operation.organizationId),
-        eq(bowlerOccurrenceObligations.currentRevision, obligation.currentRevision),
-      )).returning({ id: bowlerOccurrenceObligations.id });
-      if (!updated) throw new PaymentOperationImmutableMismatchError();
-      await tx.insert(bowlerOccurrenceObligationRevisions).values({
-        organizationId: operation.organizationId,
-        leagueId: obligation.leagueId,
-        obligationId: obligation.id,
-        revisionNumber: nextRevision,
-        snapshotSchemaVersion: 1,
-        beforeSnapshot,
-        afterSnapshot,
-        recordedByUserId: operation.authorizingUserId,
-        createdAt: now,
-      });
-    }
-  }
-  */
 }
 
 /** The occurrence rows are locked after the shared league advisory lock.  A
@@ -2871,30 +2124,6 @@ async function interactiveCancellationWonInTransaction(
   void tx;
   void operation;
   return false;
-  // eslint-disable-next-line no-unreachable
-  const [supplement] = await tx.select({ leagueId: paymentOperationOccurrenceSnapshots.leagueId })
-    .from(paymentOperationOccurrenceSnapshots)
-    .where(and(
-      eq(paymentOperationOccurrenceSnapshots.operationId, operation.id),
-      eq(paymentOperationOccurrenceSnapshots.organizationId, operation.organizationId),
-    )).limit(1).for("share");
-  if (!supplement) return false;
-  const occurrenceIds = await tx.selectDistinct({ occurrenceId: paymentOperationOccurrenceSnapshotAllocations.occurrenceId })
-    .from(paymentOperationOccurrenceSnapshotAllocations)
-    .where(and(
-      eq(paymentOperationOccurrenceSnapshotAllocations.operationId, operation.id),
-      eq(paymentOperationOccurrenceSnapshotAllocations.organizationId, operation.organizationId),
-      eq(paymentOperationOccurrenceSnapshotAllocations.leagueId, supplement.leagueId),
-    ));
-  if (occurrenceIds.length === 0) return false;
-  const occurrences = await tx.select({ status: leagueOccurrences.status })
-    .from(leagueOccurrences)
-    .where(and(
-      eq(leagueOccurrences.organizationId, operation.organizationId),
-      eq(leagueOccurrences.leagueId, supplement.leagueId),
-      inArray(leagueOccurrences.id, occurrenceIds.map((row) => row.occurrenceId)),
-    )).orderBy(asc(leagueOccurrences.id)).for("update");
-  return occurrences.some((row) => row.status === "cancelled");
 }
 
 /**
@@ -3197,39 +2426,6 @@ function interactiveWebhookPaymentRows(
   }));
 }
 
-function canonicalWebhookPaymentRows(
-  operation: PaymentOperation,
-  snapshot: typeof canonicalAutopayExecutionSnapshots.$inferSelect,
-  input: ProviderWebhookCompletionEvidence,
-  weekOf: string,
-): PaymentOperationLinkedPaymentInput[] {
-  const items = snapshot.items as Array<{ itemIndex: number; bowlerId: number; amountMinor: number }>;
-  const combinedChargeGroupId = new Set(items.map((item) => item.bowlerId)).size > 1 ? operation.id : null;
-  const byBowler = new Map<number, number>();
-  for (const item of items) byBowler.set(item.bowlerId, (byBowler.get(item.bowlerId) ?? 0) + item.amountMinor);
-  return [...byBowler.entries()].sort(([a], [b]) => a - b).map(([bowlerId, amount], allocationIndex) => ({
-    allocationIndex,
-    values: {
-      bowlerId,
-      leagueId: snapshot.leagueId,
-      amount,
-      // F4 does not synthesize a lineage/prize split or actor identity.
-      lineageAmount: null,
-      prizeFundAmount: null,
-      weekOf,
-      status: "paid" as const,
-      type: providerNameToPaymentType(operation.providerName),
-      providerPaymentId: input.providerPaymentId,
-      receiptUrl: input.receiptUrl ?? undefined,
-      receiptNumber: input.receiptNumber ?? undefined,
-      receiptEmailMissing: true,
-      notes: null,
-      paidByUserId: operation.authorizingUserId,
-      combinedChargeGroupId,
-    },
-  }));
-}
-
 /**
  * Conclusive signed provider evidence uses the same local invariants and row
  * insertion primitive as executor finalization, but never calls a provider.
@@ -3460,7 +2656,7 @@ export function buildNextPaymentOperationWakeQuery() {
       FROM ${paymentOperations}
       WHERE (
         (${paymentOperations.operationType} <> 'canonical_autopay_charge'
-          OR ${sql.raw(canonicalF3AutopayEnabled && canonicalF4AutopayExecutionEnabled ? "TRUE" : "FALSE")})
+          OR FALSE)
         AND (
           (${paymentOperations.status} IN ('pending', 'provider_unknown', 'retry_scheduled')
             AND ${paymentOperations.nextAttemptAt} IS NOT NULL)

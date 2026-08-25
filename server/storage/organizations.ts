@@ -81,15 +81,6 @@ export class OrganizationHostnameConflictError extends Error {
   }
 }
 
-export class OrganizationFinancialActivationRetentionError extends Error {
-  readonly code = 'FINANCIAL_ACTIVATION_RETENTION_REQUIRED' as const;
-
-  constructor() {
-    super('Organization teardown requires retention of canonical financial evidence');
-    this.name = 'OrganizationFinancialActivationRetentionError';
-  }
-}
-
 function rethrowOrganizationHostnameConflict(error: unknown): never {
   if (
     getPgErrorCode(error) === '23505'

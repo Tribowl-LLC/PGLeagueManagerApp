@@ -334,6 +334,7 @@ export default function PaymentsPage() {
             paymentTiming={financialReportData[0]?.paymentTiming}
             organizationId={financialReportData[0]?.organizationId ?? userResponse?.data?.organizationId ?? null}
             title="Financial payment evidence"
+            canCorrect={userResponse?.data?.role === "org_admin" || userResponse?.data?.role === "system_admin"}
           />
 
           <div aria-label="Payment management actions">

@@ -86,13 +86,13 @@ router.get('/setup-quote/:bowlerId/:leagueId', async (req, res) => {
     if (!Number.isSafeInteger(bowlerId) || bowlerId <= 0 || !Number.isSafeInteger(leagueId) || leagueId <= 0) {
       return sendError(res, 'Invalid bowler or league ID', 400, 'INVALID_ID');
     }
-    if (await rejectRosterConfiguredAutopay(res, leagueId)) return;
     if (!await hasAccessToLeague(req, leagueId)) {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
     if (!await hasSelfOrAdminAccessToBowler(req, bowlerId)) {
       return sendError(res, "You don't have access to this bowler", 403, 'FORBIDDEN');
     }
+    if (await rejectRosterConfiguredAutopay(res, leagueId)) return;
     const rawAdditional = typeof req.query.additionalBowlerIds === 'string'
       ? req.query.additionalBowlerIds.split(',').filter(Boolean).map(Number)
       : [];
@@ -125,13 +125,13 @@ router.post('/setup', adminWriteLimiter, async (req, res) => {
     if (!Number.isSafeInteger(bowlerId) || bowlerId <= 0 || !Number.isSafeInteger(leagueId) || leagueId <= 0) {
       return sendError(res, 'Invalid bowler or league ID', 400, 'INVALID_ID');
     }
-    if (await rejectRosterConfiguredAutopay(res, leagueId)) return;
     if (!await hasAccessToLeague(req, leagueId)) {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
     if (!await hasSelfOrAdminAccessToBowler(req, bowlerId)) {
       return sendError(res, "You don't have access to this bowler", 403, 'FORBIDDEN');
     }
+    if (await rejectRosterConfiguredAutopay(res, leagueId)) return;
     if (typeof req.body.sourceId !== 'string' || req.body.sourceId.length === 0) {
       return sendError(res, 'A saved payment card is required', 400, 'INVALID_PAYMENT_SOURCE');
     }
@@ -293,11 +293,14 @@ router.get('/:bowlerId/:leagueId', async (req, res) => {
     if (isNaN(bowlerId) || isNaN(leagueId)) {
       return sendError(res, 'Invalid bowler or league ID', 400, 'INVALID_ID');
     }
-
     // Sensitive read (autopay schedule): requires self-access or admin role (task #732).
+    if (!await hasAccessToLeague(req, leagueId)) {
+      return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
+    }
     if (!await hasSelfOrAdminAccessToBowler(req, bowlerId)) {
       return sendError(res, "You don't have access to this bowler", 403, 'FORBIDDEN');
     }
+    if (await rejectRosterConfiguredAutopay(res, leagueId)) return;
 
     const schedule = await storage.getPaymentSchedule(bowlerId, leagueId);
     if (!schedule) {
@@ -333,12 +336,14 @@ router.delete('/:id', adminWriteLimiter, async (req, res) => {
     if (!schedule) {
       return sendError(res, 'Payment schedule not found', 404, 'NOT_FOUND');
     }
-    if (await rejectRosterConfiguredAutopay(res, schedule.leagueId)) return;
-
     // Sensitive write: requires self-access or admin role (task #732).
+    if (!await hasAccessToLeague(req, schedule.leagueId)) {
+      return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
+    }
     if (!await hasSelfOrAdminAccessToBowler(req, schedule.bowlerId)) {
       return sendError(res, "You don't have access to this schedule", 403, 'FORBIDDEN');
     }
+    if (await rejectRosterConfiguredAutopay(res, schedule.leagueId)) return;
 
     await storage.deactivatePaymentSchedule(id, "manual");
     if (!isTestKickSuppressed(req, PAYMENT_SCHEDULER_KICK_HEADER)) {
@@ -367,12 +372,14 @@ router.patch('/:id', adminWriteLimiter, async (req, res) => {
     if (!schedule || !schedule.active) {
       return sendError(res, 'Active payment schedule not found', 404, 'NOT_FOUND');
     }
-    if (await rejectRosterConfiguredAutopay(res, schedule.leagueId)) return;
-
     // Sensitive write: requires self-access or admin role (task #732).
+    if (!await hasAccessToLeague(req, schedule.leagueId)) {
+      return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
+    }
     if (!await hasSelfOrAdminAccessToBowler(req, schedule.bowlerId)) {
       return sendError(res, "You don't have access to this schedule", 403, 'FORBIDDEN');
     }
+    if (await rejectRosterConfiguredAutopay(res, schedule.leagueId)) return;
 
     const { frequency } = req.body;
     if (frequency && !['weekly', 'monthly', 'upfront'].includes(frequency)) {

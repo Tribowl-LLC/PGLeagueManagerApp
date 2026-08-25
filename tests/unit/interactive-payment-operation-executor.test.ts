@@ -4,17 +4,12 @@ import { eq, inArray } from "drizzle-orm";
 import {
   bowlers,
   bowlerLeagues,
-  bowlerOccurrenceObligationRevisions,
-  bowlerOccurrenceObligations,
   leagueOccurrenceBillingTerms,
   leagueOccurrences,
   leagueScheduleCommands,
   leagues,
   locations,
   organizations,
-  paymentOperationOccurrenceSnapshotAllocations,
-  paymentOperationOccurrenceSnapshots,
-  paymentOccurrenceAllocations,
   payments,
   teams,
   users,
@@ -54,11 +49,6 @@ import type {
   SavedCard,
 } from "../../server/services/payment-provider";
 import type { InteractivePaymentSemanticSnapshot } from "../../server/services/interactive-payment-operation-snapshot";
-import {
-  PAYMENT_OPERATION_OCCURRENCE_SNAPSHOT_CONTRACT,
-  fingerprintPaymentOperationOccurrenceSnapshot,
-  type PaymentOperationOccurrenceSnapshotV1,
-} from "../../server/services/payment-operation-occurrence-snapshot";
 
 const db = getTestDb();
 const suffix = process.env.VITEST_POOL_ID ?? "0";
@@ -251,153 +241,6 @@ async function createFixture(index: 0 | 1): Promise<InteractiveFixture> {
   };
 }
 
-async function attachOccurrenceSupplement(
-  fixture: InteractiveFixture,
-  operation: Awaited<ReturnType<typeof createOrGetGeneralInteractivePaymentOperation>>,
-): Promise<{ occurrenceId: string; obligationId: string }> {
-  const occurrenceOrdinal = 100 + occurrenceSequence;
-  const day = String(2 + occurrenceSequence++).padStart(2, "0");
-  const localDate = `2032-02-${day}`;
-  const startAt = `${localDate}T00:00:00.000Z`;
-  const [publishCommand] = await db.insert(leagueScheduleCommands).values({
-    organizationId: fixture.organizationId,
-    leagueId: fixture.leagueId,
-    actorUserId: fixture.actorUserId,
-    commandType: "publish",
-    reason: "Publish interactive executor race occurrence",
-    idempotencyKey: `interactive-executor-publish-${randomUUID()}`,
-    requestFingerprint: `lvcanoncmd:v1:${"a".repeat(64)}`,
-  }).returning({ id: leagueScheduleCommands.id });
-  if (!publishCommand) throw new Error("executor publish command was not created");
-  const [occurrence] = await db.insert(leagueOccurrences).values({
-    organizationId: fixture.organizationId,
-    leagueId: fixture.leagueId,
-    locationId: fixture.locationId,
-    generationKey: `interactive-executor-occurrence-${randomUUID()}`,
-    kind: "regular",
-    status: "scheduled",
-    lifecycle: "published",
-    authoritativeLocalDate: localDate,
-    authoritativeLocalStartTime: "19:00:00",
-    timezone: "America/New_York",
-    startAt,
-    selectedUtcOffsetMinutes: -300,
-    foldResolution: "unambiguous",
-    resolverVersion: "interactive-executor-test/1",
-    plannedOrdinal: occurrenceOrdinal,
-    competitionNumber: occurrenceOrdinal,
-    competitive: true,
-    countsInStandings: true,
-    publishedAt: fixedNow.toISOString(),
-    publishedByUserId: fixture.actorUserId,
-    lastCommandId: publishCommand.id,
-    publicationCommandId: publishCommand.id,
-  }).returning({ id: leagueOccurrences.id });
-  if (!occurrence) throw new Error("executor occurrence was not created");
-  const [term] = await db.insert(leagueOccurrenceBillingTerms).values({
-    organizationId: fixture.organizationId,
-    leagueId: fixture.leagueId,
-    occurrenceId: occurrence.id,
-    purpose: "league_weekly_fee",
-    obligationPolicy: "eligible_bowlers",
-    defaultAmountMinor: operation.amountMinor,
-    currency: operation.currency,
-    billingOrdinal: occurrenceOrdinal,
-    version: 1,
-  }).returning({ id: leagueOccurrenceBillingTerms.id });
-  if (!term) throw new Error("executor billing term was not created");
-  const [obligation] = await db.insert(bowlerOccurrenceObligations).values({
-    organizationId: fixture.organizationId,
-    leagueId: fixture.leagueId,
-    occurrenceId: occurrence.id,
-    bowlerId: fixture.bowlerId,
-    purpose: "league_weekly_fee",
-    amountMinor: operation.amountMinor,
-    currency: operation.currency,
-    billingTermId: term.id,
-    billingTermVersion: 1,
-    recordedByUserId: fixture.actorUserId,
-  }).returning({ id: bowlerOccurrenceObligations.id });
-  if (!obligation) throw new Error("executor obligation was not created");
-  await db.insert(bowlerOccurrenceObligationRevisions).values({
-    organizationId: fixture.organizationId,
-    leagueId: fixture.leagueId,
-    obligationId: obligation.id,
-    revisionNumber: 1,
-    snapshotSchemaVersion: 1,
-    afterSnapshot: { state: "open", amountMinor: operation.amountMinor },
-    recordedByUserId: fixture.actorUserId,
-  });
-  const snapshot = {
-    contractVersion: PAYMENT_OPERATION_OCCURRENCE_SNAPSHOT_CONTRACT,
-    snapshotVersion: 1,
-    operationId: operation.id,
-    operationType: "interactive_charge" as const,
-    organizationId: fixture.organizationId,
-    leagueId: fixture.leagueId,
-    amountMinor: operation.amountMinor,
-    currency: operation.currency,
-    allocations: [{
-      allocationIndex: 0,
-      organizationId: fixture.organizationId,
-      leagueId: fixture.leagueId,
-      occurrenceId: occurrence.id,
-      bowlerId: fixture.bowlerId,
-      obligationId: obligation.id,
-      amountMinor: operation.amountMinor,
-      currency: operation.currency,
-    }],
-  } satisfies PaymentOperationOccurrenceSnapshotV1;
-  await db.transaction(async (tx) => {
-    await tx.insert(paymentOperationOccurrenceSnapshots).values({
-      operationId: operation.id,
-      organizationId: fixture.organizationId,
-      leagueId: fixture.leagueId,
-      snapshotVersion: 1,
-      snapshotFingerprint: fingerprintPaymentOperationOccurrenceSnapshot(snapshot),
-      amountMinor: operation.amountMinor,
-      currency: operation.currency,
-      allocationCount: 1,
-    });
-    await tx.insert(paymentOperationOccurrenceSnapshotAllocations).values({
-      operationId: operation.id,
-      snapshotVersion: 1,
-      allocationIndex: 0,
-      organizationId: fixture.organizationId,
-      leagueId: fixture.leagueId,
-      occurrenceId: occurrence.id,
-      bowlerId: fixture.bowlerId,
-      obligationId: obligation.id,
-      amountMinor: operation.amountMinor,
-      currency: operation.currency,
-    });
-  });
-  return { occurrenceId: occurrence.id, obligationId: obligation.id };
-}
-
-async function cancelAttachedOccurrence(
-  fixture: InteractiveFixture,
-  occurrenceId: string,
-  idempotencyKey: string,
-  reason: string,
-): Promise<void> {
-  const request = {
-    organizationId: fixture.organizationId,
-    leagueId: fixture.leagueId,
-    actorUserId: fixture.actorUserId,
-    commandType: "cancel" as const,
-    idempotencyKey,
-    requestFingerprint: "",
-    reason,
-    occurrenceId,
-    now: fixedNow.toISOString(),
-  };
-  await cancelOccurrence({
-    ...request,
-    requestFingerprint: buildCanonicalScheduleCommandFingerprint(request),
-  });
-}
-
 async function prepareOperation(
   fixture: InteractiveFixture,
   options: {
@@ -525,59 +368,6 @@ describe("interactive payment operation executor", () => {
     });
     expect(result?.status).toBe("succeeded");
     expect(provider.processCalls).toHaveLength(1);
-  });
-
-  it.skip("suppresses a canonical F2 provider call when cancellation wins before cutoff", async () => {
-    const fixture = fixtures[0];
-    const { operation } = await prepareOperation(fixture, { requestKey: `f2-cancel-before-cutoff-${randomUUID()}`, authorizingUserId: fixture.actorUserId });
-    const { occurrenceId, obligationId } = await attachOccurrenceSupplement(fixture, operation);
-    const provider = new ScriptedInteractiveProvider(fixture.locationId);
-    const result = await createExecutor(fixture, provider, {
-      // getProvider runs after the lease transaction commits. Cancelling here
-      // proves a leased-but-unclaimed canonical operation is stopped before
-      // the dispatch-cutoff CAS and before any provider mutation.
-      getProvider: async () => {
-        await cancelAttachedOccurrence(fixture, occurrenceId, `f2-cancel-before-cutoff-${randomUUID()}`, "Cancel before interactive dispatch cutoff");
-        return provider;
-      },
-    }).execute({
-      organizationId: fixture.organizationId,
-      operationId: operation.id,
-      now: fixedNow,
-    });
-    expect(result?.status).toBe("canceled");
-    expect(provider.processCalls).toHaveLength(0);
-    const [obligation] = await db.select({ state: bowlerOccurrenceObligations.state })
-      .from(bowlerOccurrenceObligations).where(eq(bowlerOccurrenceObligations.id, obligationId));
-    expect(obligation?.state).toBe("voided");
-  });
-
-  it.skip("retains provider success as reconciliation evidence when cutoff wins before cancellation", async () => {
-    const fixture = fixtures[0];
-    const { operation } = await prepareOperation(fixture, { requestKey: `f2-cutoff-before-cancel-${randomUUID()}`, authorizingUserId: fixture.actorUserId });
-    const { occurrenceId, obligationId } = await attachOccurrenceSupplement(fixture, operation);
-    const provider = new ScriptedInteractiveProvider(fixture.locationId);
-    let cancellationStarted = false;
-    provider.beforeCall = async () => {
-      if (!cancellationStarted) {
-        cancellationStarted = true;
-        await cancelAttachedOccurrence(fixture, occurrenceId, `f2-cutoff-before-cancel-${randomUUID()}`, "Cancel after interactive dispatch cutoff");
-      }
-    };
-    const result = await createExecutor(fixture, provider).execute({
-      organizationId: fixture.organizationId,
-      operationId: operation.id,
-      now: fixedNow,
-    });
-    expect(result).toMatchObject({
-      status: "reconciliation_required",
-      providerObjectId: "square-payment-default",
-    });
-    expect(provider.processCalls).toHaveLength(1);
-    const linked = await db.select().from(payments).where(eq(payments.paymentOperationId, operation.id));
-    expect(linked).toHaveLength(1);
-    expect(linked[0]?.providerPaymentId).toBe("square-payment-default");
-    expect(await db.select().from(paymentOccurrenceAllocations).where(eq(paymentOccurrenceAllocations.obligationId, obligationId))).toHaveLength(0);
   });
 
   it("dispatches direct requests with the exact retained payment key", async () => {

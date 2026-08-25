@@ -290,7 +290,7 @@ router.patch("/:id", async (req, res) => {
       return sendError(res, "You don't have access to the target bowler", 403, 'FORBIDDEN');
     }
 
-    const updated = await storage.updateBowlerLeague(id, update);
+    const updated = await storage.updateBowlerLeague(id, update, req.user?.id);
     if (!updated) {
       return sendError(res, "Bowler league not found", 404, 'NOT_FOUND');
     }

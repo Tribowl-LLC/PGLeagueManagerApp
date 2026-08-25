@@ -67,10 +67,25 @@ export const canonicalManualRecordRequestSchema = z.object({
 
 export const canonicalCorrectionRequestSchema = z.object({
   allocationId: z.string().uuid(),
+  correctionMode: z.enum(["void_only", "replace"]).default("void_only"),
   reason: z.string().trim().min(1).max(500),
+  replacementAmountMinor: z.number().int().positive().optional(),
+  replacementType: z.enum(["cash", "check"]).optional(),
+  replacementCheckNumber: z.string().trim().min(1).max(128).optional(),
+  replacementWeekOf: z.string().datetime({ offset: true }).optional(),
+  replacementNotes: z.string().max(1000).nullable().optional(),
   idempotencyKey: z.string().trim().min(1).max(255),
   requestFingerprint: z.string().trim().min(1).max(128),
-}).strict();
+}).strict().superRefine((value, ctx) => {
+  if (value.correctionMode === "replace") {
+    if (value.replacementAmountMinor === undefined) ctx.addIssue({ code: "custom", path: ["replacementAmountMinor"], message: "replacementAmountMinor is required when replacing a manual entry" });
+    if (value.replacementType === undefined) ctx.addIssue({ code: "custom", path: ["replacementType"], message: "replacementType is required when replacing a manual entry" });
+    if (value.replacementType === "check" && !value.replacementCheckNumber) ctx.addIssue({ code: "custom", path: ["replacementCheckNumber"], message: "replacementCheckNumber is required for a replacement check" });
+  }
+  if (value.correctionMode === "void_only" && (value.replacementAmountMinor !== undefined || value.replacementType !== undefined || value.replacementCheckNumber !== undefined || value.replacementWeekOf !== undefined || value.replacementNotes !== undefined)) {
+    ctx.addIssue({ code: "custom", path: ["correctionMode"], message: "Replacement facts require correctionMode=replace" });
+  }
+});
 
 export type RosterPaymentResponsibilityRequest = z.infer<typeof rosterPaymentResponsibilityRequestSchema>;
 export type OccurrenceResponsibilityInput = z.infer<typeof occurrenceResponsibilityInputSchema>;

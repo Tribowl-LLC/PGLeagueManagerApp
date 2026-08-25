@@ -77,7 +77,7 @@ export interface IBowlerStorage {
   createBowlerLeague(bowlerLeague: InsertBowlerLeague): Promise<BowlerLeague>;
   createBowlerLeagueIfBowlerFree(bowlerLeague: InsertBowlerLeague): Promise<BowlerLeague | null>;
   createBowlerLeagueIfNotInLeague(bowlerLeague: InsertBowlerLeague): Promise<BowlerLeague | null>;
-  updateBowlerLeague(id: number, bowlerLeague: UpdateBowlerLeague): Promise<BowlerLeague>;
+  updateBowlerLeague(id: number, bowlerLeague: UpdateBowlerLeague, actorUserId?: number): Promise<BowlerLeague>;
   updateBowlerLeagueOrder(id: number, newOrder: number): Promise<BowlerLeague[]>;
   deleteBowlerLeague(id: number): Promise<boolean>;
 }

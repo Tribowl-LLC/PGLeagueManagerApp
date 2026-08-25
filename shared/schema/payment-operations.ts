@@ -20,7 +20,6 @@ import { locations } from "./locations";
 import { payments, paymentSchedules } from "./payments";
 import { users } from "./users";
 import { leagueOccurrences } from "./canonical-occurrences";
-import { occurrenceCollectionPlans } from "./occurrence-financials";
 
 export const PAYMENT_OPERATION_TYPES = [
   "scheduled_charge",

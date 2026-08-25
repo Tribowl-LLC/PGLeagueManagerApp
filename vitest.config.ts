@@ -90,10 +90,6 @@ const PARALLEL_ISOLATED_WITH_APP = [
  */
 const UNIT_NO_DB = [
   'tests/unit/league-create-payload.test.ts',
-  'tests/unit/f3-autopay-contract.test.ts',
-  'tests/unit/f4-canonical-autopay-contract.test.ts',
-  'tests/unit/f3-provider-ownership.test.ts',
-  'tests/unit/canonical-due-past-due.test.ts',
   'tests/unit/neon-branches-reveal-password.test.ts',
   'tests/unit/cleanup-connection-aware-sweep.test.ts',
   'tests/unit/db-baseline-rls-compatibility.test.ts',
@@ -105,7 +101,6 @@ const UNIT_NO_DB = [
   'tests/unit/passive-database-polling.test.ts',
   'tests/unit/payment-disputes-routes.test.ts',
   'tests/unit/payment-operation-idempotency.test.ts',
-  'tests/unit/canonical-payment-report-contract.test.ts',
   'tests/unit/financials-f5-route.test.ts',
   'tests/unit/payment-operation-wake-scheduler.test.ts',
   'tests/unit/square-webhook.test.ts',
@@ -114,7 +109,6 @@ const UNIT_NO_DB = [
   'tests/unit/subdomain-resolution-consistency.test.ts',
   'tests/unit/scheduled-payment-operation-snapshot.test.ts',
   'tests/unit/interactive-payment-operation-snapshot.test.ts',
-  'tests/unit/payment-operation-occurrence-snapshot.test.ts',
   'tests/unit/location-webhook-retention-route.test.ts',
   'tests/unit/weekly-billing-occurrence-planner.test.ts',
   'tests/unit/canonical-occurrence-generator.test.ts',
@@ -139,25 +133,15 @@ const UNIT_NO_DB = [
  * F1/D2/F3/F4 tests whose fixtures assert the pre-0032 authorities. Migration
  * 0032 intentionally drops those zero-row tables and PR1 replaces the
  * activation/plan/supplement flows with roster obligations and exact
- * allocations. Keeping the files in the repository is useful historical
- * context, but they must not be run against the clean-slate schema; the
- * replacement PR1 contract/API suites cover the supported behavior.
+ * allocations. These obsolete authority tests are removed from the active
+ * suite; the replacement PR1 contract/API suites cover supported behavior.
  */
 const PR1_RETIRED_FINANCIAL_TESTS = [
   'tests/api/financials-f1-boundary.test.ts',
   'tests/api/f3-autopay-postgres-contract.test.ts',
-  'tests/api/f3-autopay-enabled-router.test.ts',
-  'tests/unit/canonical-due-past-due-activation-postgres.test.ts',
-  'tests/unit/canonical-due-past-due-postgres.test.ts',
-  'tests/unit/occurrence-financial-foundation-postgres.test.ts',
-  'tests/unit/f4-canonical-autopay-postgres.test.ts',
-  'tests/unit/f4-canonical-autopay-integration-postgres.test.ts',
-  'tests/unit/f3-workflow-postgres.test.ts',
-  'tests/unit/canonical-payment-report-postgres.test.ts',
 ];
 
 const PARALLEL_ISOLATED = [
-  'tests/unit/canonical-payment-report-postgres.test.ts',
   'server/routes/__tests__/leagues-square-missing-alerts.test.ts',
   'server/services/__tests__/apple-pay-worker.test.ts',
   'server/services/__tests__/square.test.ts',

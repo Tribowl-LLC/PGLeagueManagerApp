@@ -15,7 +15,6 @@ import { useBowlerPaymentSubmit } from "@/hooks/use-bowler-payment-submit";
 import type { AutopaySetupQuote } from "@/lib/autopay-setup";
 import { beginPaymentIntent, clearPaymentIntent, paymentRequestHeaders, paymentRequestWithRecovery } from "@/lib/payment-request-identity";
 import { buildInteractiveOccurrenceFields, interactiveIntentScopeSuffix } from "@/lib/interactive-payment-request";
-import { invalidateF3AfterInteractivePayment } from "@/lib/f3-autopay";
 import type { InteractiveOccurrenceReadiness } from "@/components/interactive-occurrence-selector";
 
 interface BowlerLinkRow {
@@ -114,6 +113,18 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
     retry: false,
   });
   const autopayQuote = autopayQuoteResponse?.data;
+
+  const { data: rosterDueResponse } = useQuery<{ data: { rows: Array<{ amountMinor: number; allocatedMinor: number; outstandingMinor: number; classification: string; reviewRequired: boolean }>; totals: { collectiblePastDueMinor: number } } }>({
+    queryKey: [`/api/financials/leagues/${league.id}/canonical-due-past-due/2`, bowler.id],
+    queryFn: async () => {
+      const response = await csrfFetch(`/api/financials/leagues/${league.id}/canonical-due-past-due/2?bowlerId=${bowler.id}`);
+      if (!response.ok) throw new Error("Roster payment evidence is unavailable");
+      return response.json();
+    },
+    enabled: league.payingLineupSize != null,
+    retry: false,
+    staleTime: 30_000,
+  });
 
   const { supportsWallets, isLoading: providerLoading } = usePaymentProvider(league.locationId ?? null);
 
@@ -254,8 +265,24 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
   }, [payments, bowler.id, league.id]);
 
   const financials = useMemo(() => {
+    if (league.payingLineupSize != null) {
+      const rows = rosterDueResponse?.data?.rows ?? [];
+      const dueRows = rows.filter((row) => row.classification !== "future");
+      const paid = rows.reduce((sum, row) => sum + row.allocatedMinor, 0);
+      const fullSeasonAmount = rows.reduce((sum, row) => sum + row.amountMinor, 0);
+      return {
+        weeksPassed: dueRows.length,
+        totalWeeksInSeason: rows.length,
+        totalDueToDate: dueRows.reduce((sum, row) => sum + row.amountMinor, 0),
+        totalPaid: paid,
+        amountPastDue: rosterDueResponse?.data?.totals.collectiblePastDueMinor ?? 0,
+        fullSeasonAmount,
+        remainingBalance: rows.reduce((sum, row) => sum + row.outstandingMinor, 0),
+        doublePay: { dates: [], perWeekExtra: 0, totalExtra: 0, pastExtra: 0, isPaid: paid >= fullSeasonAmount },
+      };
+    }
     return calculateFinancials(league, bowlerPayments);
-  }, [league, bowlerPayments]);
+  }, [league, bowlerPayments, rosterDueResponse]);
 
   const maxPayableWeeks = useMemo(() => {
     return Math.max(1, Math.floor(financials.remainingBalance / weeklyFee));
@@ -287,6 +314,20 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
     try {
       setIsSubmitting(true);
       const perAmount = calculateTotalAmount();
+      const exactObligationIds = [...new Set((occurrenceAllocations ?? []).map((row) => row.obligationId))];
+      if (league.payingLineupSize != null) {
+        if (additionalBowlerIds.length > 0 || exactObligationIds.length === 0) throw new Error("Wallet payments for roster-configured leagues require exact obligations for one payer.");
+        const quoteResponse = await csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-quote/2`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ obligationIds: exactObligationIds }) });
+        const quoteBody = await quoteResponse.json();
+        if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw new Error(quoteBody.error?.message || "Exact payment obligations are unavailable. Refresh and try again.");
+        const requestKey = walletRequestKeyRef.current ?? beginPaymentIntent(`roster-wallet:${league.id}:${exactObligationIds.join(",")}:${quoteBody.data.fingerprint}`);
+        const exactResponse = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-charge/2`, { method: "POST", headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" }, body: JSON.stringify({ obligationIds: exactObligationIds, sourceId: token, sourceKind: "wallet", buyerEmail: bowler.email ?? null, storeCard: false, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }) }), league.organizationId);
+        const exactBody = await exactResponse.json();
+        if (!exactResponse.ok) throw new Error(exactBody.error?.message || "Wallet payment failed.");
+        walletRequestKeyRef.current = null;
+        toast({ title: "Payment Successful", description: `${walletType === "apple_pay" ? "Apple Pay" : "Google Pay"} payment completed.` });
+        return;
+      }
       // Task #706: when combined-pay partners are selected, route the
       // wallet token through the combined-payments endpoint so ONE
       // provider charge writes N+1 per-bowler rows sharing a
@@ -351,7 +392,6 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
         toast({ title: "Payment Successful", description: `${walletLabel} payment of $${(amount / 100).toFixed(2)} completed.` });
       }
       queryClient.invalidateQueries({ queryKey: ['/api/payments'] });
-      invalidateF3AfterInteractivePayment(queryClient, league.id, league.organizationId);
       queryClient.invalidateQueries({ queryKey: [`/api/payment-schedules/${bowler.id}/${league.id}`] });
       queryClient.invalidateQueries({ queryKey: [`/api/payments-provider/cards/${bowler.id}`, league.id] });
       // when paying for a partner, refresh THEIR bowler-details
@@ -379,7 +419,7 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
     } finally {
       setIsSubmitting(false);
     }
-  }, [bowler.id, league.id, league.organizationId, targetBowlerId, additionalBowlerIds, calculateTotalAmount, toast, setIsSubmitting, setShowPaymentSetup, paymentMode, occurrenceAllocations, occurrenceQuoteFingerprint]);
+  }, [bowler.id, bowler.email, league.id, league.organizationId, league.payingLineupSize, targetBowlerId, additionalBowlerIds, calculateTotalAmount, toast, setIsSubmitting, setShowPaymentSetup, paymentMode, occurrenceAllocations, occurrenceQuoteFingerprint]);
 
   const beginWalletPayment = useCallback(() => {
     const perAmount = calculateTotalAmount();

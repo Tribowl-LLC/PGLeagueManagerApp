@@ -17,7 +17,6 @@ import {
   paymentOperations,
   paymentSchedules,
   payments,
-  paymentOccurrenceAllocations,
   scheduledPaymentOperationAllocations,
   users,
 } from "@shared/schema";
@@ -563,8 +562,6 @@ describe("scheduled payment ledger cutover PostgreSQL behavior", () => {
     expect(linkedPayments).toHaveLength(1);
     const linkedPayment = linkedPayments[0];
     if (!linkedPayment) throw new Error("claim-first provider payment was not linked");
-    expect(await db.select().from(paymentOccurrenceAllocations)
-      .where(eq(paymentOccurrenceAllocations.paymentId, linkedPayment.id))).toHaveLength(0);
     const [storedSchedule] = await db.select().from(paymentSchedules).where(eq(paymentSchedules.id, schedule.id));
     expect(storedSchedule?.active).toBe(true);
   });

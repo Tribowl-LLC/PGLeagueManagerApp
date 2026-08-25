@@ -279,6 +279,21 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
     try {
       const paymentScope = `admin-wallet:${bowlerId}:${currentLeagueId}:${amount}${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
       const requestKey = walletRequestKeyRef.current ?? beginPaymentIntent(paymentScope);
+      const exactObligationIds = [...new Set((occurrenceAllocations ?? []).map((row) => row.obligationId))];
+      if (leagueInfo?.payingLineupSize != null) {
+        if (exactObligationIds.length === 0) throw new Error("Wallet payments for roster-configured leagues require exact obligations.");
+        const quoteResponse = await csrfFetch(`/api/financials/leagues/${currentLeagueId}/interactive-obligation-quote/2`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ obligationIds: exactObligationIds }) });
+        const quoteBody = await quoteResponse.json();
+        if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw new Error(quoteBody.error?.message || "Exact payment obligations are unavailable.");
+        const exactResponse = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${currentLeagueId}/interactive-obligation-charge/2`, { method: "POST", headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" }, body: JSON.stringify({ obligationIds: exactObligationIds, sourceId: token, sourceKind: "wallet", buyerEmail: overrideEmail ?? selected?.email ?? null, storeCard: false, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }) }), leagueInfo.organizationId);
+        const exactBody = await exactResponse.json();
+        if (!exactResponse.ok) throw new Error(exactBody.error?.message || "Wallet payment failed.");
+        walletRequestKeyRef.current = null;
+        toast({ title: "Success", description: `Payment processed via ${walletType === "apple_pay" ? "Apple Pay" : "Google Pay"}` });
+        queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
+        onClose();
+        return;
+      }
       const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch('/api/payments-provider/payments', {
         method: 'POST',
         headers: paymentRequestHeaders(requestKey),
@@ -324,7 +339,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
       setPaymentError(errorMessage);
       toast({ title: "Error", description: errorMessage, variant: "destructive" });
     }
-  }, [form, toast, queryClient, onClose, bowlers, receiptEmail, navigate, leagueInfo?.locationId, leagueInfo?.organizationId, occurrenceAllocations, occurrenceQuoteFingerprint]);
+  }, [form, toast, queryClient, onClose, bowlers, receiptEmail, navigate, leagueInfo?.locationId, leagueInfo?.organizationId, leagueInfo?.payingLineupSize, occurrenceAllocations, occurrenceQuoteFingerprint]);
 
   const beginWalletPayment = useCallback(() => {
     const values = form.getValues();

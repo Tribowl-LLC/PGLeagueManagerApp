@@ -51,7 +51,7 @@ import {
   unlockLeagueScheduleSession,
   type LeagueScheduleTransaction,
 } from "../storage/league-schedule-lock.js";
-import { materializeRosterPaymentOccurrenceInTransaction } from "./roster-payment-core.js";
+import { materializeRosterPaymentOccurrenceInTransaction } from "./roster-payment-materializer.js";
 
 export type CompletedSummerMaterializationFailureStage =
   | "after_commands"

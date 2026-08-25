@@ -19,7 +19,6 @@ import {
   providerNotConfiguredToast,
   makeApiError,
 } from "@/lib/provider-not-configured";
-import { calculateFinancials } from "@/lib/financial-utils";
 import { formatCurrency } from "@/lib/utils";
 import { useSelectedLeague } from "@/hooks/use-selected-league";
 import { AuthErrorView } from "./payment-history-page/auth-error-view";
@@ -32,7 +31,6 @@ import { beginPaymentIntent, clearPaymentIntent, paymentRequestHeaders, paymentR
 import { buildInteractiveOccurrenceFields, interactiveIntentScopeSuffix } from "@/lib/interactive-payment-request";
 import { resolveInteractiveFinancialRead } from "@/lib/financial-read-contract";
 import { invalidatePaymentHistoryFinancials, paymentHistoryFinancialQueryKey } from "@/lib/payment-history-financial-query";
-import { invalidateF3AfterInteractivePayment } from "@/lib/f3-autopay";
 import type { InteractiveOccurrenceReadiness } from "@/components/interactive-occurrence-selector";
 
 export default function PaymentHistoryPage() {
@@ -248,11 +246,8 @@ export default function PaymentHistoryPage() {
   }
 
   const resolvedFinancialRead = resolveInteractiveFinancialRead(canonicalFinancialResponse?.data);
-  const legacyFinancials = resolvedFinancialRead.status === "legacy_fallback"
-    ? calculateFinancials(league, bowlerPayments)
-    : null;
   const canonicalRows = resolvedFinancialRead.status === "canonical" ? resolvedFinancialRead.rows : [];
-  const financials = legacyFinancials ?? {
+  const financials = {
     weeksPassed: canonicalRows.filter((row) => row.classification !== "future").length,
     totalWeeksInSeason: canonicalRows.length,
     totalDueToDate: canonicalRows.filter((row) => row.classification !== "future").reduce((sum, row) => sum + row.amountMinor, 0),
@@ -301,6 +296,20 @@ export default function PaymentHistoryPage() {
     const overrideEmail = !bowlerEmail && trimmedReceiptEmail ? trimmedReceiptEmail : undefined;
     try {
       setIsWalletProcessing(true);
+      const exactObligationIds = [...new Set((occurrenceAllocations ?? []).map((row) => row.obligationId))];
+      if (league?.payingLineupSize != null) {
+        if (exactObligationIds.length === 0) throw new Error("Wallet payments for roster-configured leagues require exact obligations. Refresh and select the obligations to pay.");
+        const quoteResponse = await csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-quote/2`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ obligationIds: exactObligationIds }) });
+        const quoteBody = await quoteResponse.json();
+        if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw new Error(quoteBody.error?.message || "Exact payment obligations are unavailable.");
+        const requestKey = walletRequestKeyRef.current ?? beginPaymentIntent(`roster-wallet:${league.id}:${exactObligationIds.join(",")}:${quoteBody.data.fingerprint}`);
+        const exactResponse = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-charge/2`, { method: "POST", headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" }, body: JSON.stringify({ obligationIds: exactObligationIds, sourceId: token, sourceKind: "wallet", buyerEmail: overrideEmail ?? bowlerEmail ?? null, storeCard: false, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }) }), league.organizationId);
+        const exactBody = await exactResponse.json();
+        if (!exactResponse.ok) throw new Error(exactBody.error?.message || "Wallet payment failed.");
+        walletRequestKeyRef.current = null;
+        toast({ title: "Payment Successful", description: `${walletType === "apple_pay" ? "Apple Pay" : "Google Pay"} payment completed.` });
+        return;
+      }
       const paymentScope = `history-wallet:${bowlerId}:${leagueId}:${dialogAmountCents}${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
       const requestKey = walletRequestKeyRef.current ?? beginPaymentIntent(paymentScope);
       const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch('/api/payments-provider/payments', {
@@ -336,7 +345,6 @@ export default function PaymentHistoryPage() {
       await invalidatePaymentHistoryFinancials(queryClient, leagueId, bowlerId);
       setPayDialogType(null);
       queryClient.invalidateQueries({ queryKey: ["/api/payments", { bowlerId, leagueId }] });
-      await invalidateF3AfterInteractivePayment(queryClient, leagueId, league?.organizationId);
       queryClient.invalidateQueries({ queryKey: [`/api/bowlers/${bowlerId}/details`] });
       queryClient.invalidateQueries({ queryKey: [`/api/payments-provider/cards/${bowlerId}`] });
     } catch (error) {
@@ -352,7 +360,7 @@ export default function PaymentHistoryPage() {
     } finally {
       setIsWalletProcessing(false);
     }
-  }, [bowlerId, leagueId, dialogAmountCents, payDialogType, toast, bowlerEmail, receiptEmail, navigate, league?.locationId, league?.organizationId, occurrenceAllocations, occurrenceQuoteFingerprint, occurrenceReadiness, resolvedFinancialRead.status, loadingFinancialRead, financialReadError]);
+  }, [bowlerId, leagueId, league?.id, dialogAmountCents, payDialogType, toast, bowlerEmail, receiptEmail, navigate, league?.locationId, league?.organizationId, league?.payingLineupSize, occurrenceAllocations, occurrenceQuoteFingerprint, occurrenceReadiness, resolvedFinancialRead.status, loadingFinancialRead, financialReadError]);
 
   const beginWalletPayment = useCallback(() => {
     if (resolvedFinancialRead.status === "unavailable" || loadingFinancialRead || financialReadError) return;
@@ -467,7 +475,6 @@ export default function PaymentHistoryPage() {
       await invalidatePaymentHistoryFinancials(queryClient, leagueId, bowlerId);
       setPayDialogType(null);
       queryClient.invalidateQueries({ queryKey: ["/api/payments", { bowlerId, leagueId }] });
-      await invalidateF3AfterInteractivePayment(queryClient, leagueId, league?.organizationId);
       queryClient.invalidateQueries({ queryKey: [`/api/bowlers/${bowlerId}/details`] });
     } catch (error) {
       logger.error('Payment', 'Payment failed', error);

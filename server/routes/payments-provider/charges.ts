@@ -62,19 +62,22 @@ async function rejectLegacyRosterCharge(req: Request, res: Response): Promise<bo
   const leagueId = Number(req.body?.leagueId);
   if (!Number.isSafeInteger(leagueId) || leagueId <= 0) return false;
   const league = await storage.getLeague(leagueId);
-  // The legacy endpoint is not an archive reader.  A missing/organisation-less
-  // league must fail closed as well; otherwise the old inference path could
-  // continue into tables retired by migration 0032.
-  if (!league || league.organizationId == null || league.payingLineupSize != null) {
-    if (!league || league.organizationId == null) {
+  // This guard must not disclose roster configuration for another tenant.
+  // Authorize the league first, then reject the old amount/occurrence inference
+  // path for roster-driven leagues.  Historical/unconfigured leagues continue
+  // through the legacy route until the orchestrated cutover.
+  if (!league || league.organizationId == null) {
+    sendError(res, 'Payment route unavailable', 404, 'NOT_FOUND');
+    return true;
+  }
+  if (league.payingLineupSize != null) {
+    if (!(await hasAccessToLeague(req, leagueId))) {
       sendError(res, 'Payment route unavailable', 404, 'NOT_FOUND');
     } else {
       sendError(res, 'Select exact payment obligations before charging this league', 409, 'CANONICAL_OBLIGATION_SELECTION_REQUIRED');
     }
     return true;
   }
-  // Legacy leagues remain operational until the orchestrated cutover. Once
-  // payingLineupSize is set, all new money is exact-obligation-only.
   return false;
 }
 

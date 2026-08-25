@@ -20,7 +20,7 @@ import { createLogger } from '../logger';
 import { getPaymentProvider, ProviderNotConfiguredError } from '../services/payment-provider-factory';
 import { hasWalletSupport } from '../services/payment-provider';
 import { canonicalApplePayDomain } from '../services/apple-pay-domains';
-import { OrganizationFinancialActivationRetentionError, OrganizationHostnameConflictError } from '../storage/organizations';
+import { OrganizationHostnameConflictError } from '../storage/organizations';
 import { publicAccountInvitation } from '../services/account-invitation.js';
 import { getPgErrorCode } from '../utils/db-errors.js';
 
@@ -337,9 +337,6 @@ router.delete('/:id', requireAdmin, adminWriteLimiter, async (req, res) => {
     await storage.deleteOrganization(id);
     sendSuccess(res, { message: 'Organization deleted successfully' });
   } catch (error) {
-    if (error instanceof OrganizationFinancialActivationRetentionError) {
-      return sendError(res, 'Organization retention prevents permanent deletion', 409, error.code);
-    }
     if (handleUserOrgError(res, error)) return;
     log.error(`Error deleting organization with ID ${req.params.id}:`, error);
     sendError(res, 'Failed to delete organization', 500, 'ServerError');

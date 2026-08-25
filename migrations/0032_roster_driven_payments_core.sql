@@ -227,7 +227,7 @@ CREATE TABLE occurrence_payment_responsibilities (
   CONSTRAINT occurrence_payment_responsibilities_prize_payer_fk FOREIGN KEY (prize_payer_bowler_id, organization_id) REFERENCES bowlers(id, organization_id) ON DELETE RESTRICT,
   CONSTRAINT occurrence_payment_responsibilities_state_check CHECK (state IN ('active', 'voided') AND version > 0),
   CONSTRAINT occurrence_payment_responsibilities_position_check CHECK (slot_index >= 0 AND position_index >= 0 AND position_index < 4),
-  CONSTRAINT occurrence_payment_responsibilities_kind_check CHECK (responsibility_kind IN ('main', 'substitute', 'split', 'vacant') AND ((responsibility_kind = 'vacant' AND main_bowler_id IS NULL AND substitute_bowler_id IS NULL AND payer_bowler_id IS NULL AND amount_minor = 0 AND lineage_amount_minor IS NULL AND prize_fund_amount_minor IS NULL) OR (responsibility_kind = 'main' AND main_bowler_id IS NOT NULL AND substitute_bowler_id IS NULL AND payer_bowler_id = main_bowler_id AND amount_minor > 0) OR (responsibility_kind = 'substitute' AND main_bowler_id IS NOT NULL AND substitute_bowler_id IS NOT NULL AND payer_bowler_id IS NOT NULL AND amount_minor > 0) OR (responsibility_kind = 'split' AND main_bowler_id IS NOT NULL AND substitute_bowler_id IS NOT NULL AND payer_bowler_id IS NOT NULL AND amount_minor > 0)) AND ((responsibility_kind = 'split' AND lineage_payer_bowler_id IS NOT NULL AND prize_payer_bowler_id IS NOT NULL AND lineage_amount_minor IS NOT NULL AND prize_fund_amount_minor IS NOT NULL AND lineage_amount_minor >= 0 AND prize_fund_amount_minor >= 0 AND lineage_amount_minor + prize_fund_amount_minor = amount_minor AND amount_minor > 0) OR (responsibility_kind <> 'split' AND lineage_payer_bowler_id IS NULL AND prize_payer_bowler_id IS NULL AND lineage_amount_minor IS NULL AND prize_fund_amount_minor IS NULL))),
+  CONSTRAINT occurrence_payment_responsibilities_kind_check CHECK (responsibility_kind IN ('main', 'substitute', 'split', 'vacant') AND ((responsibility_kind = 'vacant' AND main_bowler_id IS NULL AND substitute_bowler_id IS NULL AND payer_bowler_id IS NULL AND amount_minor = 0 AND lineage_amount_minor IS NULL AND prize_fund_amount_minor IS NULL) OR (responsibility_kind = 'main' AND main_bowler_id IS NOT NULL AND substitute_bowler_id IS NULL AND payer_bowler_id = main_bowler_id AND amount_minor > 0) OR (responsibility_kind = 'substitute' AND main_bowler_id IS NOT NULL AND substitute_bowler_id IS NOT NULL AND main_bowler_id <> substitute_bowler_id AND payer_bowler_id IS NOT NULL AND amount_minor > 0) OR (responsibility_kind = 'split' AND main_bowler_id IS NOT NULL AND substitute_bowler_id IS NOT NULL AND main_bowler_id <> substitute_bowler_id AND payer_bowler_id IS NOT NULL AND amount_minor > 0)) AND ((responsibility_kind = 'split' AND lineage_payer_bowler_id IS NOT NULL AND prize_payer_bowler_id IS NOT NULL AND lineage_amount_minor IS NOT NULL AND prize_fund_amount_minor IS NOT NULL AND lineage_amount_minor >= 0 AND prize_fund_amount_minor >= 0 AND lineage_amount_minor + prize_fund_amount_minor = amount_minor AND amount_minor > 0) OR (responsibility_kind <> 'split' AND lineage_payer_bowler_id IS NULL AND prize_payer_bowler_id IS NULL AND lineage_amount_minor IS NULL AND prize_fund_amount_minor IS NULL))),
   CONSTRAINT occurrence_payment_responsibilities_amount_check CHECK (amount_minor >= 0 AND currency = 'USD' AND past_due_at >= due_at)
 );
 CREATE UNIQUE INDEX occurrence_payment_responsibilities_version_unique ON occurrence_payment_responsibilities(organization_id, league_id, occurrence_id, team_id, slot_index, position_index, version);
@@ -490,3 +490,80 @@ CREATE TRIGGER payment_operation_roster_snapshots_append_only BEFORE UPDATE OR D
 CREATE TRIGGER payment_operation_roster_snapshot_items_append_only BEFORE UPDATE OR DELETE ON payment_operation_roster_snapshot_items FOR EACH ROW EXECUTE FUNCTION roster_payment_append_only_guard();
 CREATE TRIGGER autopay_consents_append_only BEFORE UPDATE OR DELETE ON autopay_consents FOR EACH ROW EXECUTE FUNCTION roster_payment_append_only_guard();
 CREATE TRIGGER financial_commands_append_only BEFORE UPDATE OR DELETE ON financial_commands FOR EACH ROW EXECUTE FUNCTION roster_payment_append_only_guard();
+
+-- Active allocations are additive settlement evidence.  A deferred constraint
+-- trigger serializes all writers on the obligation row and checks the sum at
+-- commit, so two concurrent partial payments cannot over-allocate an
+-- obligation even when both transactions initially observe the same balance.
+CREATE OR REPLACE FUNCTION roster_payment_allocation_conservation_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  obligation_amount integer;
+  active_total integer;
+  target_obligation uuid;
+BEGIN
+  target_obligation := COALESCE(NEW.obligation_id, OLD.obligation_id);
+  SELECT amount_minor INTO obligation_amount
+    FROM payment_obligations
+   WHERE id = target_obligation
+     AND organization_id = COALESCE(NEW.organization_id, OLD.organization_id)
+     AND league_id = COALESCE(NEW.league_id, OLD.league_id)
+   FOR UPDATE;
+  IF obligation_amount IS NULL THEN
+    RAISE EXCEPTION 'allocation obligation is missing from its tenant scope';
+  END IF;
+  SELECT COALESCE(SUM(amount_minor), 0) INTO active_total
+    FROM payment_allocations
+   WHERE obligation_id = target_obligation
+     AND organization_id = COALESCE(NEW.organization_id, OLD.organization_id)
+     AND league_id = COALESCE(NEW.league_id, OLD.league_id)
+     AND state = 'active';
+  IF active_total > obligation_amount THEN
+    RAISE EXCEPTION 'active allocation total (%) exceeds obligation amount (%)', active_total, obligation_amount;
+  END IF;
+  RETURN COALESCE(NEW, OLD);
+END;
+$$;
+CREATE CONSTRAINT TRIGGER payment_allocations_conservation
+AFTER INSERT OR UPDATE ON payment_allocations
+DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
+EXECUTE FUNCTION roster_payment_allocation_conservation_guard();
+
+-- The immutable operation snapshot amount is the exact sum of its immutable
+-- item amounts. Released items remain evidence and are included in the sum.
+CREATE OR REPLACE FUNCTION roster_payment_snapshot_sum_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  target_operation uuid;
+  snapshot_amount integer;
+  item_total integer;
+  item_count integer;
+BEGIN
+  IF TG_TABLE_NAME = 'payment_operation_roster_snapshots' THEN
+    target_operation := COALESCE(NEW.operation_id, OLD.operation_id);
+  ELSE
+    target_operation := COALESCE(NEW.operation_id, OLD.operation_id);
+  END IF;
+  SELECT amount_minor INTO snapshot_amount
+    FROM payment_operation_roster_snapshots
+   WHERE operation_id = target_operation
+   FOR UPDATE;
+  IF snapshot_amount IS NULL THEN
+    RAISE EXCEPTION 'roster operation snapshot is missing';
+  END IF;
+  SELECT COUNT(*)::integer, COALESCE(SUM(amount_minor), 0)
+    INTO item_count, item_total
+    FROM payment_operation_roster_snapshot_items
+   WHERE operation_id = target_operation;
+  IF item_count = 0 OR item_total <> snapshot_amount THEN
+    RAISE EXCEPTION 'roster operation snapshot amount (%) does not equal item total (%)', snapshot_amount, item_total;
+  END IF;
+  RETURN COALESCE(NEW, OLD);
+END;
+$$;
+CREATE CONSTRAINT TRIGGER payment_operation_roster_snapshot_sum
+AFTER INSERT OR UPDATE ON payment_operation_roster_snapshots
+DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
+EXECUTE FUNCTION roster_payment_snapshot_sum_guard();
+CREATE CONSTRAINT TRIGGER payment_operation_roster_snapshot_items_sum
+AFTER INSERT OR UPDATE ON payment_operation_roster_snapshot_items
+DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
+EXECUTE FUNCTION roster_payment_snapshot_sum_guard();
