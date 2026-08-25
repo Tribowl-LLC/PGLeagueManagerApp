@@ -196,8 +196,13 @@ export async function deleteOrganization(id: number): Promise<void> {
       ...locationIds.map((locationId) => `square_catalog_cap:loc:${locationId}`),
     ];
 
-    // Partner evidence references the link with a restrictive FK. Remove the
-    // consent-side history before retiring the tenant's link rows.
+    // Standing participant/binding evidence and consent-partner evidence
+    // reference the link with restrictive FKs. Remove every child evidence
+    // row before retiring the tenant's link rows. This ordering is also
+    // shared with normal link retirement: a teardown must never leave the
+    // durable operation evidence pointing at a deleted link.
+    await tx.delete(paymentOperationStandingAutopayParticipants).where(eq(paymentOperationStandingAutopayParticipants.organizationId, id));
+    await tx.delete(paymentOperationStandingAutopayBindings).where(eq(paymentOperationStandingAutopayBindings.organizationId, id));
     await tx.delete(autopayConsentPartners).where(eq(autopayConsentPartners.organizationId, id));
     await tx.delete(bowlerPaymentLinks).where(eq(bowlerPaymentLinks.organizationId, id));
     await tx.delete(applePayJobItems).where(eq(applePayJobItems.organizationId, id));
@@ -288,9 +293,6 @@ export async function deleteOrganization(id: number): Promise<void> {
     // Remove corrections/obligations/responsibilities before slots and the
     // retained general payment ledger. This path is the explicit teardown
     // exception; ordinary mutations remain append-only/locked.
-    await tx.delete(paymentOperationStandingAutopayParticipants).where(eq(paymentOperationStandingAutopayParticipants.organizationId, id));
-    await tx.delete(paymentOperationStandingAutopayBindings).where(eq(paymentOperationStandingAutopayBindings.organizationId, id));
-    await tx.delete(autopayConsentPartners).where(eq(autopayConsentPartners.organizationId, id));
     await tx.delete(paymentOperationRosterSnapshotItems).where(eq(paymentOperationRosterSnapshotItems.organizationId, id));
     await tx.delete(paymentOperationRosterSnapshots).where(eq(paymentOperationRosterSnapshots.organizationId, id));
     await tx.delete(paymentAllocations).where(eq(paymentAllocations.organizationId, id));

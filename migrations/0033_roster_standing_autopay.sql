@@ -342,9 +342,14 @@ BEGIN
     FROM payment_operation_standing_autopay_bindings b
    WHERE b.operation_id = NEW.operation_id AND b.organization_id = NEW.organization_id AND b.league_id = NEW.league_id;
   IF binding.consent_id IS NULL OR binding.consent_version <> NEW.consent_version THEN RAISE EXCEPTION 'standing participant consent version mismatch'; END IF;
-  SELECT i.obligation_id INTO item FROM payment_operation_roster_snapshot_items i
+  SELECT i.obligation_id, o.payer_bowler_id INTO item
+    FROM payment_operation_roster_snapshot_items i
+    INNER JOIN payment_obligations o ON o.id = i.obligation_id
+      AND o.organization_id = i.organization_id AND o.league_id = i.league_id
    WHERE i.operation_id = NEW.operation_id AND i.organization_id = NEW.organization_id AND i.league_id = NEW.league_id AND i.allocation_index = NEW.allocation_index;
-  IF item.obligation_id IS NULL OR item.obligation_id <> NEW.obligation_id THEN RAISE EXCEPTION 'standing participant snapshot item mismatch'; END IF;
+  IF item.obligation_id IS NULL OR item.obligation_id <> NEW.obligation_id OR item.payer_bowler_id IS NULL OR item.payer_bowler_id <> NEW.bowler_id THEN
+    RAISE EXCEPTION 'standing participant obligation payer identity mismatch';
+  END IF;
   SELECT c.payer_bowler_id, c.state, c.consent_version INTO consent FROM autopay_consents c WHERE c.id = binding.consent_id AND c.organization_id = NEW.organization_id AND c.league_id = NEW.league_id;
   IF consent.payer_bowler_id IS NULL OR consent.state NOT IN ('active', 'revoked', 'expired') OR consent.consent_version <> NEW.consent_version THEN RAISE EXCEPTION 'standing participant consent evidence unavailable'; END IF;
   IF NEW.role = 'payer' THEN
@@ -362,3 +367,63 @@ $$;
 CREATE CONSTRAINT TRIGGER payment_operation_standing_autopay_participant_evidence
 AFTER INSERT OR UPDATE ON payment_operation_standing_autopay_participants
 DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION roster_standing_participant_evidence_guard();
+--> statement-breakpoint
+-- Every standing snapshot item has exactly one participant row.  The
+-- allocation-index unique index prevents duplicates, while this deferred
+-- trigger prevents omissions (including direct SQL writes that bypass the
+-- application executor).  Tenant teardown is the explicit, child-first
+-- exception and sets the transaction-local marker before deleting evidence.
+CREATE OR REPLACE FUNCTION roster_standing_participant_completeness_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  target_operation uuid;
+  target_organization integer;
+  target_league integer;
+  item_count integer;
+  participant_count integer;
+BEGIN
+  IF current_setting('leaguevault.organization_teardown', true) = 'on' THEN RETURN COALESCE(NEW, OLD); END IF;
+  target_operation := COALESCE(NEW.operation_id, OLD.operation_id);
+  target_organization := COALESCE(NEW.organization_id, OLD.organization_id);
+  target_league := COALESCE(NEW.league_id, OLD.league_id);
+  IF NOT EXISTS (
+    SELECT 1 FROM payment_operations po
+     WHERE po.id = target_operation AND po.organization_id = target_organization
+       AND po.league_id = target_league AND po.operation_type = 'standing_autopay_charge'
+  ) THEN
+    RETURN COALESCE(NEW, OLD);
+  END IF;
+  SELECT count(*) INTO item_count
+    FROM payment_operation_roster_snapshot_items i
+    INNER JOIN payment_operations po ON po.id = i.operation_id
+      AND po.organization_id = i.organization_id AND po.league_id = i.league_id
+   WHERE i.operation_id = target_operation AND i.organization_id = target_organization
+     AND i.league_id = target_league AND po.operation_type = 'standing_autopay_charge';
+  SELECT count(*) INTO participant_count
+    FROM payment_operation_standing_autopay_participants p
+   WHERE p.operation_id = target_operation AND p.organization_id = target_organization
+     AND p.league_id = target_league;
+  IF item_count <> participant_count THEN
+    RAISE EXCEPTION 'standing snapshot participant cardinality mismatch';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+      FROM payment_operation_roster_snapshot_items i
+      LEFT JOIN payment_operation_standing_autopay_participants p
+        ON p.operation_id = i.operation_id AND p.organization_id = i.organization_id
+       AND p.league_id = i.league_id AND p.allocation_index = i.allocation_index
+     WHERE i.operation_id = target_operation AND i.organization_id = target_organization
+       AND i.league_id = target_league AND p.id IS NULL
+  ) THEN
+    RAISE EXCEPTION 'standing snapshot item is missing participant evidence';
+  END IF;
+  RETURN COALESCE(NEW, OLD);
+END;
+$$;
+--> statement-breakpoint
+CREATE CONSTRAINT TRIGGER payment_operation_standing_autopay_participant_completeness
+AFTER INSERT OR UPDATE OR DELETE ON payment_operation_standing_autopay_participants
+DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION roster_standing_participant_completeness_guard();
+--> statement-breakpoint
+CREATE CONSTRAINT TRIGGER payment_operation_standing_autopay_snapshot_participant_completeness
+AFTER INSERT OR UPDATE OR DELETE ON payment_operation_roster_snapshot_items
+DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION roster_standing_participant_completeness_guard();

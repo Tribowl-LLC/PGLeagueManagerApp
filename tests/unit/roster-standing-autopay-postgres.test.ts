@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-non-null-assertion, @typescript-eslint/consistent-type-assertions */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   autopayConsentPartners,
@@ -41,6 +41,8 @@ import { PaymentProviderError } from "../../server/services/payment-errors";
 import { buildCanonicalScheduleCommandFingerprint, cancelOccurrence, restoreCancelledOccurrence } from "../../server/services/canonical-occurrence-transactions";
 import { readCanonicalPaymentReport } from "../../server/services/roster-payment-archive-report";
 import { updateBowlerLeague } from "../../server/storage/bowlers";
+import { getNextStandingAutopayWake } from "../../server/storage/payment-operations";
+import { canonicalizePaymentOperationInput } from "../../server/services/payment-operation-idempotency";
 
 // This suite deliberately enables only the standing runtime in the isolated
 // test process. It never supplies provider credentials and never calls a
@@ -72,6 +74,14 @@ let occurrenceOrdinal = 0;
 
 const fp = (prefix: string, fill: string) => `${prefix}${/^[0-9a-f]$/i.test(fill.slice(0, 1)) ? fill.slice(0, 1) : "a".repeat(1)}${"a".repeat(63)}`;
 const uniqueFp = (prefix: string) => `${prefix}${randomUUID().replaceAll("-", "")}${randomUUID().replaceAll("-", "")}`;
+const partnerLinkFp = (link: { id: number; bowlerAId: number; bowlerBId: number; organizationId: number; status: string; respondedAt: string | null }) => `lvpartnerlink:v1:${createHash("sha256").update(canonicalizePaymentOperationInput({
+  id: link.id,
+  bowlerAId: link.bowlerAId,
+  bowlerBId: link.bowlerBId,
+  organizationId: link.organizationId,
+  status: link.status,
+  respondedAt: link.respondedAt,
+})).digest("hex")}`;
 
 beforeAll(async () => {
   const leftovers = await db.select({ id: organizations.id }).from(organizations).where(eq(organizations.slug, slug));
@@ -490,6 +500,56 @@ describe("standing automatic payments on migrated PostgreSQL", () => {
     expect(Number(allocationTotals?.total ?? 0) + reserved.reduce((sum, row) => sum + row.amountMinor, 0)).toBe(target.obligation.amountMinor);
   });
 
+  it("fences roster saves and manual corrections while standing evidence is reserved", async () => {
+    const target = await publishOccurrence("2039-03-16T19:00:00.000Z");
+    const consent = await insertConsent({ version: 72, activatedAt: "2039-01-02T00:00:00.000Z" });
+    const { prepareStandingAutopayCutoff } = await import("../../server/services/roster-standing-autopay");
+    const { canonicalRosterFingerprint, correctCanonicalAllocation, quoteInteractiveObligations, recordCanonicalManualPayment, RosterPaymentError, saveTeamRoster } = await import("../../server/services/roster-payment-core");
+
+    // A roster mutation that would supersede the reserved responsibility is
+    // rejected under the same league lock as cutoff preparation.
+    const standingOperation = await prepareStandingAutopayCutoff({ organizationId, leagueId, consentId: consent.id, cutoffAt: target.occurrence.startAt });
+    expect(standingOperation).toBeDefined();
+    const roster = await (await import("../../server/services/roster-payment-core")).readRosterPaymentResponsibility({ organizationId, leagueId });
+    const rosterTeam = roster.teams.find((team) => team.id === teamId);
+    expect(rosterTeam).toBeDefined();
+    const rosterRequest = {
+      commandKey: `reserved-roster-${randomUUID()}`,
+      requestFingerprint: "",
+      lineupSize: 3 as const,
+      policy: rosterTeam!.policy,
+      slots: rosterTeam!.slots.map((slot) => ({ slotIndex: slot.slotIndex, occupant: slot.occupant, mainBowlerId: slot.slotIndex === 0 ? partnerBowlerId : slot.mainBowlerId })),
+    };
+    rosterRequest.requestFingerprint = canonicalRosterFingerprint(rosterRequest);
+    await expect(saveTeamRoster({ organizationId, leagueId, teamId, actorUserId, request: rosterRequest })).rejects.toMatchObject({ code: "OBLIGATION_RESERVED" });
+
+    // A partial manual entry leaves an open remainder. Once the standing
+    // cutoff reserves that remainder, correcting the original cash evidence
+    // must fail closed rather than reopen the obligation underneath it.
+    const manualTarget = await publishOccurrence("2039-03-17T19:00:00.000Z");
+    const manualQuote = await quoteInteractiveObligations({ organizationId, leagueId, obligationIds: [manualTarget.obligation.id], payerBowlerId, allocations: [{ obligationId: manualTarget.obligation.id, amountMinor: 1_000 }] });
+    const manual = await recordCanonicalManualPayment({ organizationId, leagueId, actorUserId, request: {
+      obligationIds: [manualTarget.obligation.id],
+      allocations: [{ obligationId: manualTarget.obligation.id, amountMinor: 1_000 }],
+      type: "cash",
+      idempotencyKey: `reserved-correction-manual-${randomUUID()}`,
+      requestFingerprint: manualQuote.fingerprint,
+      notes: "partial cash fixture",
+    } });
+    const manualOperation = await prepareStandingAutopayCutoff({ organizationId, leagueId, consentId: consent.id, cutoffAt: manualTarget.occurrence.startAt });
+    expect(manualOperation).toBeDefined();
+    const correctionRequest = {
+      allocationId: manual.records[0].allocation.id,
+      correctionMode: "void_only" as const,
+      reason: "reserved correction fixture",
+      idempotencyKey: `reserved-correction-${randomUUID()}`,
+      requestFingerprint: "",
+    };
+    const { canonicalCorrectionFingerprint } = await import("../../server/services/roster-payment-core");
+    correctionRequest.requestFingerprint = canonicalCorrectionFingerprint(correctionRequest);
+    await expect(correctCanonicalAllocation({ organizationId, leagueId, actorUserId, request: correctionRequest })).rejects.toMatchObject({ code: "OBLIGATION_RESERVED" });
+  });
+
   it("handles unlink racing cutoff without leaving an active consent or live reservation", async () => {
     const target = await publishOccurrence("2039-03-19T19:00:00.000Z");
     const consent = await insertConsent({ version: 8, activatedAt: "2039-01-02T00:00:00.000Z" });
@@ -544,7 +604,9 @@ describe("standing automatic payments on migrated PostgreSQL", () => {
   });
 
   it("restores a canceled occurrence and makes its new cutoff eligible again", async () => {
-    const target = await publishOccurrence("2039-04-16T19:00:00.000Z");
+    // Keep this restored cutoff earlier than later fixture obligations so the
+    // public scheduler query must return it before preparation is replayed.
+    const target = await publishOccurrence("2039-01-09T19:00:00.000Z");
     const consent = await insertConsent({ version: 12, activatedAt: "2039-01-02T00:00:00.000Z" });
     // The schedule publication service normally creates this canonical term;
     // the compact fixture publishes the occurrence directly, so provide the
@@ -599,6 +661,18 @@ describe("standing automatic payments on migrated PostgreSQL", () => {
       eq(paymentObligations.state, "open"),
     ));
     expect(restoredObligations.length).toBeGreaterThan(0);
+    // Earlier cases intentionally leave committed standing operations in the
+    // fixture. Move only their retry wake times beyond this assertion so the
+    // public scheduler result proves restored cutoff discovery rather than an
+    // unrelated operation retry.
+    await db.update(paymentOperations).set({ nextAttemptAt: "2099-01-01T00:00:00.000Z" }).where(and(
+      eq(paymentOperations.organizationId, organizationId),
+      eq(paymentOperations.operationType, "standing_autopay_charge"),
+      inArray(paymentOperations.status, ["pending", "retry_scheduled", "provider_unknown"] as const),
+    ));
+    const restoredWake = await getNextStandingAutopayWake();
+    const restoredDueAt = new Date(target.occurrence.startAt).toISOString().replace("T", " ").replace(".000Z", "");
+    expect(restoredWake).toMatchObject({ kind: "standing_cutoff", organizationId, leagueId, consentId: consent.id, dueAt: restoredDueAt });
     const restoredOperation = await prepareStandingAutopayCutoff({ organizationId, leagueId, consentId: consent.id, cutoffAt: target.occurrence.startAt });
     expect(restoredOperation).toBeDefined();
     expect(restoredOperation!.id).not.toBe(originalOperation!.id);
@@ -700,6 +774,54 @@ describe("standing automatic payments on migrated PostgreSQL", () => {
     expect(report.rows[0]?.receipt).toMatchObject({ availability: "available", receiptUrl: "https://square.example.test/standing-receipt", receiptNumber: "standing-receipt-11" });
   });
 
+  it("retains partner participant evidence until tenant teardown", async () => {
+    const target = await publishOccurrence("2039-04-16T19:00:00.000Z");
+    const consent = await insertConsent({ version: 14, activatedAt: "2039-01-02T00:00:00.000Z" });
+    const [link] = await db.insert(bowlerPaymentLinks).values({
+      bowlerAId: Math.min(payerBowlerId, partnerBowlerId),
+      bowlerBId: Math.max(payerBowlerId, partnerBowlerId),
+      organizationId,
+      status: "accepted",
+      createdByUserId: actorUserId,
+      respondedAt: "2039-04-15T00:00:00.000Z",
+    }).returning();
+    const linkFingerprint = partnerLinkFp(link);
+    await db.insert(autopayConsentPartners).values({ organizationId, leagueId, consentId: consent.id, consentVersion: consent.consentVersion, partnerBowlerId, paymentLinkId: link.id, linkFingerprint });
+    const { canonicalResponsibilityFingerprint, recordOccurrenceResponsibilities } = await import("../../server/services/roster-payment-core");
+    const responsibility = {
+      occurrenceId: target.occurrence.id,
+      teamId,
+      slotIndex: 0,
+      positionIndex: 0,
+      kind: "substitute" as const,
+      mainBowlerId: payerBowlerId,
+      substituteBowlerId: partnerBowlerId,
+      payerBowlerId: partnerBowlerId,
+      policy: "sub_pays_full" as const,
+      amountMinor: 2_000,
+      lineageAmountMinor: null,
+      prizeFundAmountMinor: null,
+      dueAt: target.occurrence.startAt,
+      pastDueAt: "2039-04-16T22:00:00.000Z",
+      assignmentNote: "partner teardown fixture",
+    };
+    await recordOccurrenceResponsibilities({
+      organizationId,
+      leagueId,
+      actorUserId,
+      commandKey: `partner-responsibility-${randomUUID()}`,
+      requestFingerprint: canonicalResponsibilityFingerprint([responsibility]),
+      responsibilities: [responsibility],
+    });
+    const { prepareStandingAutopayCutoff } = await import("../../server/services/roster-standing-autopay");
+    const operation = await prepareStandingAutopayCutoff({ organizationId, leagueId, consentId: consent.id, cutoffAt: target.occurrence.startAt });
+    expect(operation).toBeDefined();
+    const [participant] = await db.select().from(paymentOperationStandingAutopayParticipants).where(eq(paymentOperationStandingAutopayParticipants.operationId, operation!.id));
+    const [partnerObligation] = await db.select({ id: paymentObligations.id }).from(paymentObligations).where(and(eq(paymentObligations.organizationId, organizationId), eq(paymentObligations.leagueId, leagueId), eq(paymentObligations.occurrenceId, target.occurrence.id), eq(paymentObligations.payerBowlerId, partnerBowlerId), eq(paymentObligations.state, "open")));
+    expect(partnerObligation).toBeDefined();
+    expect(participant).toMatchObject({ role: "partner", bowlerId: partnerBowlerId, paymentLinkId: link.id, linkFingerprint, obligationId: partnerObligation.id });
+  });
+
   it("revokes standing work when an active membership is deactivated", async () => {
     const target = await publishOccurrence("2039-04-23T19:00:00.000Z");
     const consent = await insertConsent({ version: 13, activatedAt: "2039-01-02T00:00:00.000Z" });
@@ -716,5 +838,18 @@ describe("standing automatic payments on migrated PostgreSQL", () => {
     expect(updatedOperation.status).toBe("canceled");
     expect(snapshotItem.state).toBe("released");
     expect(updatedSlot).toMatchObject({ occupant: "vacant", mainBowlerId: null });
+  });
+
+  it("deletes standing participant and link child evidence before organization teardown", async () => {
+    const doomedOrganizationId = organizationId;
+    expect(doomedOrganizationId).toBeGreaterThan(0);
+    const participantBefore = await db.select({ id: paymentOperationStandingAutopayParticipants.id }).from(paymentOperationStandingAutopayParticipants).where(eq(paymentOperationStandingAutopayParticipants.organizationId, doomedOrganizationId));
+    expect(participantBefore.length).toBeGreaterThan(0);
+    await deleteOrganization(doomedOrganizationId);
+    organizationId = 0;
+    expect(await db.select().from(paymentOperationStandingAutopayParticipants).where(eq(paymentOperationStandingAutopayParticipants.organizationId, doomedOrganizationId))).toHaveLength(0);
+    expect(await db.select().from(paymentOperationStandingAutopayBindings).where(eq(paymentOperationStandingAutopayBindings.organizationId, doomedOrganizationId))).toHaveLength(0);
+    expect(await db.select().from(autopayConsentPartners).where(eq(autopayConsentPartners.organizationId, doomedOrganizationId))).toHaveLength(0);
+    expect(await db.select().from(bowlerPaymentLinks).where(eq(bowlerPaymentLinks.organizationId, doomedOrganizationId))).toHaveLength(0);
   });
 });

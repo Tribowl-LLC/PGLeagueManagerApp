@@ -552,13 +552,15 @@ export async function prepareStandingAutopayCutoff(input: { organizationId: numb
       consentVersion: consent.consentVersion,
       cutoffAt,
       triggerOccurrenceId: group.triggerOccurrenceId,
-      triggerOccurrenceRevision: group.triggerOccurrenceRevision,
       groupIdentity,
     });
     // Keep the durable ledger key below its 128-byte limit even for maximum
     // tenant/league/bowler identifiers. The digest commits the tenant, league,
     // payer, cutoff, consent version, and exact collection-group identity.
-    const targetKey = `standing-autopay:${targetIdentity}`;
+    // Keep the occurrence revision as a readable final component so wake
+    // discovery can distinguish an old canceled decision from a restored
+    // occurrence without reimplementing the application digest in SQL.
+    const targetKey = `standing-autopay:${targetIdentity}:${group.triggerOccurrenceRevision}`;
     const identity = buildPaymentOperationIdentity({ organizationId: input.organizationId, operationType: "standing_autopay_charge", targetKey, amountMinor, currency: "USD", providerName: consent.providerName ?? "square" });
     const evidenceFingerprint = digest(CUTOFF_FP_PREFIX, { consentId: consent.id, consentVersion: consent.consentVersion, cutoffAt, mode: group.mode, groupId: group.groupId, groupOccurrenceIds: group.occurrenceIds, obligations: rows.map((row) => ({ id: row.obligation.id, responsibilityId: row.obligation.responsibilityId, responsibilityVersion: row.responsibilityVersion, occurrenceId: row.obligation.occurrenceId, amountMinor: row.outstandingMinor, dueAt: row.obligation.dueAt, payerBowlerId: row.obligation.payerBowlerId })), partners: partners.map((row) => ({ partnerBowlerId: row.partnerBowlerId, paymentLinkId: row.paymentLinkId, linkFingerprint: row.linkFingerprint })) });
     try {
