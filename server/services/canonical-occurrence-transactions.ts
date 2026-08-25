@@ -31,6 +31,8 @@ import {
   canonicalCollectionGroupRevisions,
   canonicalCollectionGroupMemberRevisions,
   occurrenceCollectionPlanRevisions,
+  paymentObligations,
+  paymentAllocations,
   type LeagueOccurrence,
   type LeagueOccurrenceBillingTerm,
   type LeagueScheduleCommand,
@@ -829,59 +831,37 @@ async function assertNotEffectivelyLocked(
     eq(paymentOperations.organizationId, row.organizationId),
     eq(paymentOperations.triggerOccurrenceId, row.id),
   )).limit(1);
-  const [eligibility] = await tx.select({ id: bowlerOccurrenceEligibilities.id })
-    .from(bowlerOccurrenceEligibilities).where(and(
-      eq(bowlerOccurrenceEligibilities.organizationId, row.organizationId),
-      eq(bowlerOccurrenceEligibilities.leagueId, row.leagueId),
-      eq(bowlerOccurrenceEligibilities.occurrenceId, row.id),
+  const [obligation] = await tx.select({ id: paymentObligations.id })
+    .from(paymentObligations).where(and(
+      eq(paymentObligations.organizationId, row.organizationId),
+      eq(paymentObligations.leagueId, row.leagueId),
+      eq(paymentObligations.occurrenceId, row.id),
     )).limit(1);
-  const [teamAssignment] = await tx.select({ id: bowlerOccurrenceTeamAssignments.id })
-    .from(bowlerOccurrenceTeamAssignments).where(and(
-      eq(bowlerOccurrenceTeamAssignments.organizationId, row.organizationId),
-      eq(bowlerOccurrenceTeamAssignments.leagueId, row.leagueId),
-      eq(bowlerOccurrenceTeamAssignments.occurrenceId, row.id),
+  const [allocation] = await tx.select({ id: paymentAllocations.id })
+    .from(paymentAllocations)
+    .innerJoin(paymentObligations, and(
+      eq(paymentObligations.id, paymentAllocations.obligationId),
+      eq(paymentObligations.organizationId, row.organizationId),
+      eq(paymentObligations.leagueId, row.leagueId),
+      eq(paymentObligations.occurrenceId, row.id),
+    )).where(and(
+      eq(paymentAllocations.organizationId, row.organizationId),
+      eq(paymentAllocations.leagueId, row.leagueId),
+      eq(paymentAllocations.state, "active"),
     )).limit(1);
-  const [obligation] = await tx.select({ id: bowlerOccurrenceObligations.id })
-    .from(bowlerOccurrenceObligations).where(and(
-      eq(bowlerOccurrenceObligations.organizationId, row.organizationId),
-      eq(bowlerOccurrenceObligations.leagueId, row.leagueId),
-      eq(bowlerOccurrenceObligations.occurrenceId, row.id),
-    )).limit(1);
-  const [triggerPlan] = await tx.select({ id: occurrenceCollectionPlans.id })
-    .from(occurrenceCollectionPlans).where(and(
-      eq(occurrenceCollectionPlans.organizationId, row.organizationId),
-      eq(occurrenceCollectionPlans.leagueId, row.leagueId),
-      eq(occurrenceCollectionPlans.triggerOccurrenceId, row.id),
-    )).limit(1);
-  const [planItem] = await tx.select({ id: occurrenceCollectionPlanItems.id })
-    .from(occurrenceCollectionPlanItems).where(and(
-      eq(occurrenceCollectionPlanItems.organizationId, row.organizationId),
-      eq(occurrenceCollectionPlanItems.leagueId, row.leagueId),
-      eq(occurrenceCollectionPlanItems.occurrenceId, row.id),
-    )).limit(1);
-  const [allocation] = await tx.select({ id: paymentOccurrenceAllocations.id })
-    .from(paymentOccurrenceAllocations).where(and(
-      eq(paymentOccurrenceAllocations.organizationId, row.organizationId),
-      eq(paymentOccurrenceAllocations.leagueId, row.leagueId),
-      eq(paymentOccurrenceAllocations.occurrenceId, row.id),
-    )).limit(1);
-  const [snapshotAllocation] = await tx
-    .select({ operationId: paymentOperationOccurrenceSnapshotAllocations.operationId })
-    .from(paymentOperationOccurrenceSnapshotAllocations).where(and(
-      eq(paymentOperationOccurrenceSnapshotAllocations.organizationId, row.organizationId),
-      eq(paymentOperationOccurrenceSnapshotAllocations.leagueId, row.leagueId),
-      eq(paymentOperationOccurrenceSnapshotAllocations.occurrenceId, row.id),
+  const [groupMember] = await tx.select({ id: canonicalCollectionGroupMembers.id })
+    .from(canonicalCollectionGroupMembers).where(and(
+      eq(canonicalCollectionGroupMembers.organizationId, row.organizationId),
+      eq(canonicalCollectionGroupMembers.leagueId, row.leagueId),
+      eq(canonicalCollectionGroupMembers.occurrenceId, row.id),
+      eq(canonicalCollectionGroupMembers.active, true),
     )).limit(1);
   if (
     linkedGame
     || linkedOperation
-    || eligibility
-    || teamAssignment
     || obligation
-    || triggerPlan
-    || planItem
     || allocation
-    || snapshotAllocation
+    || groupMember
   ) {
     throw new CanonicalOccurrenceTransactionError(
       "occurrence_effectively_locked",
@@ -1060,6 +1040,139 @@ export async function cancelOccurrenceInTransaction(tx: LeagueScheduleTransactio
       ne(leagueOccurrenceBillingTerms.state, "superseded"),
       isNull(leagueOccurrenceBillingTerms.supersededAt),
     )).for("update");
+
+    // PR1 owns cancellation evidence.  The retired activation/F1 and D2
+    // tables are intentionally absent after migration 0032, so cancellation
+    // must resolve only the new obligation/allocation ledger and the retained
+    // operation/group ledgers.  Open, unallocated obligations can be voided;
+    // any paid or dispatched evidence is retained and marked for review.
+    const rosterObligations = await tx.select().from(paymentObligations).where(and(
+      eq(paymentObligations.organizationId, request.organizationId),
+      eq(paymentObligations.leagueId, request.leagueId),
+      eq(paymentObligations.occurrenceId, occurrence.id),
+    )).orderBy(asc(paymentObligations.dueAt), asc(paymentObligations.payerBowlerId), asc(paymentObligations.id)).for("update");
+    const rosterObligationIds = rosterObligations.map((obligation) => obligation.id);
+    const rosterAllocations = rosterObligationIds.length === 0 ? [] : await tx.select().from(paymentAllocations).where(and(
+      eq(paymentAllocations.organizationId, request.organizationId),
+      eq(paymentAllocations.leagueId, request.leagueId),
+      eq(paymentAllocations.state, "active"),
+      inArray(paymentAllocations.obligationId, rosterObligationIds),
+    )).orderBy(asc(paymentAllocations.obligationId), asc(paymentAllocations.id)).for("update");
+    const allocationsByObligation = new Map<string, typeof rosterAllocations>();
+    for (const allocation of rosterAllocations) allocationsByObligation.set(allocation.obligationId, [...(allocationsByObligation.get(allocation.obligationId) ?? []), allocation]);
+    for (const obligation of rosterObligations) {
+      const allocations = allocationsByObligation.get(obligation.id) ?? [];
+      if (obligation.state === "open" && allocations.length === 0) {
+        await tx.update(paymentObligations).set({ state: "voided", voidedAt: request.now }).where(and(
+          eq(paymentObligations.id, obligation.id),
+          eq(paymentObligations.organizationId, request.organizationId),
+          eq(paymentObligations.leagueId, request.leagueId),
+          eq(paymentObligations.state, "open"),
+        ));
+      } else if (allocations.length > 0 || obligation.state === "partially_settled" || obligation.state === "settled") {
+        if (allocations.length === 0) throw new CanonicalOccurrenceTransactionError("invalid_command", "cancelled occurrence has settled obligation without allocation evidence");
+        await tx.update(paymentAllocations).set({ reviewRequired: true, reviewReason: "OCCURRENCE_CANCELLATION_REVIEW" }).where(and(
+          eq(paymentAllocations.organizationId, request.organizationId),
+          eq(paymentAllocations.leagueId, request.leagueId),
+          eq(paymentAllocations.obligationId, obligation.id),
+          eq(paymentAllocations.state, "active"),
+        ));
+      }
+    }
+
+    const affectedGroups = await tx.select({ group: canonicalCollectionGroups })
+      .from(canonicalCollectionGroups)
+      .innerJoin(canonicalCollectionGroupMembers, and(
+        eq(canonicalCollectionGroupMembers.groupId, canonicalCollectionGroups.id),
+        eq(canonicalCollectionGroupMembers.organizationId, request.organizationId),
+        eq(canonicalCollectionGroupMembers.leagueId, request.leagueId),
+        eq(canonicalCollectionGroupMembers.occurrenceId, occurrence.id),
+        eq(canonicalCollectionGroupMembers.active, true),
+      ))
+      .where(and(
+        eq(canonicalCollectionGroups.organizationId, request.organizationId),
+        eq(canonicalCollectionGroups.leagueId, request.leagueId),
+        eq(canonicalCollectionGroups.state, "published"),
+      )).for("update");
+    const affectedGroupIds = affectedGroups.map(({ group }) => group.id);
+    const groupTriggerOccurrenceIds = affectedGroupIds.length === 0 ? [] : (await tx.select({ occurrenceId: canonicalCollectionGroupMembers.occurrenceId })
+      .from(canonicalCollectionGroupMembers)
+      .where(and(
+        eq(canonicalCollectionGroupMembers.organizationId, request.organizationId),
+        eq(canonicalCollectionGroupMembers.leagueId, request.leagueId),
+        inArray(canonicalCollectionGroupMembers.groupId, affectedGroupIds),
+        eq(canonicalCollectionGroupMembers.active, true),
+      ))).map(({ occurrenceId }) => occurrenceId);
+    const operationRows = await tx.select({
+      id: paymentOperations.id,
+      status: paymentOperations.status,
+      dispatchClaimedAt: paymentOperations.dispatchClaimedAt,
+    }).from(paymentOperations).where(and(
+      eq(paymentOperations.organizationId, request.organizationId),
+      eq(paymentOperations.leagueId, request.leagueId),
+      inArray(paymentOperations.triggerOccurrenceId, [...new Set([occurrence.id, ...groupTriggerOccurrenceIds])]),
+    )).orderBy(asc(paymentOperations.id)).for("update");
+    for (const operation of operationRows) {
+      if (["pending", "retry_scheduled", "leased"].includes(operation.status) && operation.dispatchClaimedAt === null) {
+        await tx.update(paymentOperations).set({ status: "canceled", nextAttemptAt: null, leaseOwner: null, leaseExpiresAt: null, completedAt: request.now, updatedAt: request.now }).where(and(
+          eq(paymentOperations.organizationId, request.organizationId),
+          eq(paymentOperations.id, operation.id),
+          isNull(paymentOperations.dispatchClaimedAt),
+        ));
+      } else if (operation.status === "provider_unknown" || operation.status === "succeeded") {
+        await tx.update(paymentOperations).set({ status: "reconciliation_required", nextAttemptAt: null, errorClassification: "provider_unknown", errorCode: "CANCELLATION_REVIEW", updatedAt: request.now }).where(and(
+          eq(paymentOperations.organizationId, request.organizationId),
+          eq(paymentOperations.id, operation.id),
+          eq(paymentOperations.status, operation.status),
+        ));
+      }
+    }
+    for (const { group } of affectedGroups) {
+      const revokeRequest: MaterializationScheduleCommandRequest = {
+        organizationId: request.organizationId,
+        leagueId: request.leagueId,
+        actorUserId: request.actorUserId,
+        commandType: "revoke_collection_group",
+        idempotencyKey: `${request.idempotencyKey}:collection-group-revoke:${group.id}`,
+        requestFingerprint: "",
+        reason: request.reason,
+        materializationOperation: "canonical_collection_grouping",
+        materializationPayload: { contractVersion: "canonical-collection-group/1", action: "revoke", groupId: group.id, occurrenceId: occurrence.id, reviewRequired: rosterAllocations.length > 0 || operationRows.some((operation) => operation.status === "succeeded" || operation.status === "provider_unknown") },
+      };
+      revokeRequest.requestFingerprint = buildCanonicalScheduleCommandFingerprint(revokeRequest);
+      const { command: revokeCommand } = await getOrCreateCanonicalScheduleCommandInTransaction(tx, revokeRequest, ["revoke_collection_group"]);
+      const [revoked] = await tx.update(canonicalCollectionGroups).set({ state: "revoked", currentRevision: group.currentRevision + 1, lastCommandId: revokeCommand.id, revokedAt: request.now, revokedByUserId: request.actorUserId, revocationCommandId: revokeCommand.id, updatedAt: request.now }).where(and(
+        eq(canonicalCollectionGroups.id, group.id),
+        eq(canonicalCollectionGroups.organizationId, request.organizationId),
+        eq(canonicalCollectionGroups.leagueId, request.leagueId),
+        eq(canonicalCollectionGroups.state, "published"),
+        eq(canonicalCollectionGroups.currentRevision, group.currentRevision),
+      )).returning();
+      if (!revoked) throw new CanonicalOccurrenceTransactionError("invalid_command", "collection group revocation failed");
+      const activeMembers = await tx.select().from(canonicalCollectionGroupMembers).where(and(
+        eq(canonicalCollectionGroupMembers.groupId, group.id),
+        eq(canonicalCollectionGroupMembers.organizationId, request.organizationId),
+        eq(canonicalCollectionGroupMembers.leagueId, request.leagueId),
+        eq(canonicalCollectionGroupMembers.active, true),
+      )).for("update");
+      const revokedMembers = await tx.update(canonicalCollectionGroupMembers).set({ active: false, currentRevision: sql`${canonicalCollectionGroupMembers.currentRevision} + 1`, lastCommandId: revokeCommand.id, updatedAt: request.now }).where(and(
+        eq(canonicalCollectionGroupMembers.groupId, group.id),
+        eq(canonicalCollectionGroupMembers.organizationId, request.organizationId),
+        eq(canonicalCollectionGroupMembers.leagueId, request.leagueId),
+        eq(canonicalCollectionGroupMembers.active, true),
+      )).returning();
+      for (const member of revokedMembers) {
+        await tx.insert(canonicalCollectionGroupMemberRevisions).values({ organizationId: request.organizationId, leagueId: request.leagueId, memberId: member.id, commandId: revokeCommand.id, revisionNumber: member.currentRevision, snapshotSchemaVersion: 1, beforeSnapshot: activeMembers.find((candidate) => candidate.id === member.id) ?? null, afterSnapshot: member });
+      }
+      await tx.insert(canonicalCollectionGroupRevisions).values({ organizationId: request.organizationId, leagueId: request.leagueId, groupId: group.id, commandId: revokeCommand.id, revisionNumber: revoked.currentRevision, snapshotSchemaVersion: CANONICAL_COLLECTION_GROUP_REVISION_SNAPSHOT_VERSION, beforeSnapshot: group, afterSnapshot: { ...revoked, cancellationReviewRequired: rosterAllocations.length > 0 } });
+    }
+    return cancelled;
+
+    /* The pre-0032 activation/F1/D2 cancellation implementation is retained
+     * below only as historical source context. It is unreachable by design;
+     * migration 0032 removes every relation it referenced. */
+    // eslint-disable-next-line no-unreachable
+    if (false) {
     const [activation] = await tx.select().from(financialActivations).where(and(
       eq(financialActivations.organizationId, request.organizationId),
       eq(financialActivations.leagueId, request.leagueId),
@@ -1381,6 +1494,7 @@ export async function cancelOccurrenceInTransaction(tx: LeagueScheduleTransactio
         return groupId !== undefined && candidate.isDoublePay;
       })
       .map(({ id, operationType, status, dispatchClaimedAt }) => ({ id, operationType, status, dispatchClaimedAt }));
+    // eslint-disable-next-line no-unreachable
     const directTriggerOperations = await tx.select({ id: paymentOperations.id, operationType: paymentOperations.operationType, status: paymentOperations.status, dispatchClaimedAt: paymentOperations.dispatchClaimedAt })
       .from(paymentOperations).where(and(
         eq(paymentOperations.organizationId, request.organizationId),
@@ -1543,6 +1657,8 @@ export async function cancelOccurrenceInTransaction(tx: LeagueScheduleTransactio
         afterSnapshot: { ...revoked, cancellationReviewRequired: reviewRequiredOccurrenceIds.includes(occurrence.id) },
       });
     }
+    }
+  // eslint-disable-next-line no-unreachable
   return cancelled;
 }
 
@@ -1589,14 +1705,10 @@ export async function restoreCancelledOccurrenceInTransaction(tx: LeagueSchedule
   if (Date.parse(occurrence.startAt) <= Date.parse(input.now)) throw new CanonicalOccurrenceTransactionError("occurrence_effectively_locked", "only a future occurrence can be restored");
   const evidenceChecks = await Promise.all([
     tx.select({ id: games.id }).from(games).where(and(eq(games.occurrenceId, occurrence.id), eq(games.leagueId, input.leagueId))).limit(1),
-    tx.select({ id: bowlerOccurrenceObligations.id }).from(bowlerOccurrenceObligations).where(and(eq(bowlerOccurrenceObligations.organizationId, input.organizationId), eq(bowlerOccurrenceObligations.leagueId, input.leagueId), eq(bowlerOccurrenceObligations.occurrenceId, occurrence.id))).limit(1),
-    tx.select({ id: paymentOccurrenceAllocations.id }).from(paymentOccurrenceAllocations).where(and(eq(paymentOccurrenceAllocations.organizationId, input.organizationId), eq(paymentOccurrenceAllocations.leagueId, input.leagueId), eq(paymentOccurrenceAllocations.occurrenceId, occurrence.id))).limit(1),
-    tx.select({ id: occurrenceCollectionPlanItems.id }).from(occurrenceCollectionPlanItems).where(and(eq(occurrenceCollectionPlanItems.organizationId, input.organizationId), eq(occurrenceCollectionPlanItems.leagueId, input.leagueId), eq(occurrenceCollectionPlanItems.occurrenceId, occurrence.id))).limit(1),
-    tx.select({ id: paymentOperationOccurrenceSnapshotAllocations.operationId }).from(paymentOperationOccurrenceSnapshotAllocations).where(and(eq(paymentOperationOccurrenceSnapshotAllocations.organizationId, input.organizationId), eq(paymentOperationOccurrenceSnapshotAllocations.leagueId, input.leagueId), eq(paymentOperationOccurrenceSnapshotAllocations.occurrenceId, occurrence.id))).limit(1),
+    tx.select({ id: paymentObligations.id }).from(paymentObligations).where(and(eq(paymentObligations.organizationId, input.organizationId), eq(paymentObligations.leagueId, input.leagueId), eq(paymentObligations.occurrenceId, occurrence.id))).limit(1),
+    tx.select({ id: paymentAllocations.id }).from(paymentAllocations).innerJoin(paymentObligations, and(eq(paymentAllocations.obligationId, paymentObligations.id), eq(paymentObligations.organizationId, input.organizationId), eq(paymentObligations.leagueId, input.leagueId))).where(and(eq(paymentAllocations.organizationId, input.organizationId), eq(paymentAllocations.leagueId, input.leagueId), eq(paymentAllocations.state, "active"), eq(paymentObligations.occurrenceId, occurrence.id))).limit(1),
     tx.select({ id: paymentOperations.id }).from(paymentOperations).where(and(eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.leagueId, input.leagueId), eq(paymentOperations.triggerOccurrenceId, occurrence.id))).limit(1),
     tx.select({ id: canonicalCollectionGroupMembers.id }).from(canonicalCollectionGroupMembers).where(and(eq(canonicalCollectionGroupMembers.organizationId, input.organizationId), eq(canonicalCollectionGroupMembers.leagueId, input.leagueId), eq(canonicalCollectionGroupMembers.occurrenceId, occurrence.id))).limit(1),
-    tx.select({ id: bowlerOccurrenceEligibilities.id }).from(bowlerOccurrenceEligibilities).where(and(eq(bowlerOccurrenceEligibilities.organizationId, input.organizationId), eq(bowlerOccurrenceEligibilities.leagueId, input.leagueId), eq(bowlerOccurrenceEligibilities.occurrenceId, occurrence.id))).limit(1),
-    tx.select({ id: bowlerOccurrenceTeamAssignments.id }).from(bowlerOccurrenceTeamAssignments).where(and(eq(bowlerOccurrenceTeamAssignments.organizationId, input.organizationId), eq(bowlerOccurrenceTeamAssignments.leagueId, input.leagueId), eq(bowlerOccurrenceTeamAssignments.occurrenceId, occurrence.id))).limit(1),
   ]);
   if (evidenceChecks.some((rows) => rows.length > 0)) throw new CanonicalOccurrenceTransactionError("occurrence_effectively_locked", "cancelled occurrence has effective game, financial, collection, dispatch, or grouping evidence");
   const [term] = await tx.select().from(leagueOccurrenceBillingTerms).where(and(

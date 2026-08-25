@@ -19,6 +19,7 @@ import { TeamViewHeader } from "./team-view-page/header";
 import { TeamViewBowlersTable } from "./team-view-page/bowlers-table";
 import { TeamViewEditDialog } from "./team-view-page/edit-dialog";
 import { TeamViewRemoveBowlerDialog } from "./team-view-page/remove-bowler-dialog";
+import { TeamPaymentRosterCard } from "@/components/team-payment-roster-card";
 
 const editTeamSchema = z.object({
   name: z.string().min(1, "Team name is required"),
@@ -198,6 +199,8 @@ export default function TeamViewPage() {
         } : undefined}
         onRemoveBowler={canManageRoster ? (target) => setShowRemoveDialog(target) : undefined}
       />
+
+      {league?.organizationId !== null && league?.organizationId !== undefined && <TeamPaymentRosterCard teamId={teamId} leagueId={team.leagueId} bowlers={bowlers} canManage={canManageRoster} />}
 
       {canManageRoster && teamBowlers.length > 1 && (
         <div className="mt-4">

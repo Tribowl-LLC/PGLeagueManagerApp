@@ -6,6 +6,11 @@ import { WEEKDAYS, PAYMENT_MODES, nameSchema, positiveIntSchema, dateSchema, tim
 import { organizations } from "./organizations";
 import { locations } from "./locations";
 
+export const SUBSTITUTE_ACCESS = ["team_only", "floating"] as const;
+export type SubstituteAccess = (typeof SUBSTITUTE_ACCESS)[number];
+export const SUBSTITUTE_PAYMENT_REGIMES = ["team_choice", "league_lineage_prize_split"] as const;
+export type SubstitutePaymentRegime = (typeof SUBSTITUTE_PAYMENT_REGIMES)[number];
+
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 const WEEKDAY_INDEX: Record<typeof WEEKDAYS[number], number> = {
@@ -82,6 +87,10 @@ export const leagues = pgTable("leagues", {
   // Explicit league configuration. Nullable only so existing leagues can be
   // upgraded deliberately; public league setup requires three or four.
   payingLineupSize: integer("paying_lineup_size"),
+  // Roster-driven payment configuration. Defaults keep pre-PR1 rows readable;
+  // new setup requests persist an explicit value through the insert schema.
+  substituteAccess: text("substitute_access", { enum: SUBSTITUTE_ACCESS }).notNull().default("team_only"),
+  substitutePaymentRegime: text("substitute_payment_regime", { enum: SUBSTITUTE_PAYMENT_REGIMES }).notNull().default("team_choice"),
   active: boolean("active").notNull().default(true),
   allowPublicSignup: boolean("allow_public_signup").notNull().default(false),
   seasonStart: timestamp("season_start", { mode: "string" }).notNull(),
@@ -135,6 +144,8 @@ export const leagues = pgTable("leagues", {
   locationIdx: index("leagues_location_idx").on(table.locationId),
   paymentModeCheck: check("leagues_payment_mode_check", sql`${table.paymentMode} IN ('weekly', 'upfront')`),
   payingLineupSizeCheck: check("leagues_paying_lineup_size_check", sql`${table.payingLineupSize} IS NULL OR ${table.payingLineupSize} IN (3, 4)`),
+  substituteAccessCheck: check("leagues_substitute_access_check", sql`${table.substituteAccess} IN ('team_only', 'floating')`),
+  substitutePaymentRegimeCheck: check("leagues_substitute_payment_regime_check", sql`${table.substitutePaymentRegime} IN ('team_choice', 'league_lineage_prize_split')`),
   // Canonical occurrence rows carry both the league and organization IDs.
   // This parent key lets PostgreSQL enforce that the pair came from the same
   // tenant even though legacy leagues.organization_id remains nullable.
@@ -147,6 +158,8 @@ export const insertLeagueSchema = baseLeagueSchema.extend({
   name: nameSchema,
   description: z.string().nullable().optional(),
   payingLineupSize: z.union([z.literal(3), z.literal(4)]),
+  substituteAccess: z.enum(SUBSTITUTE_ACCESS).optional(),
+  substitutePaymentRegime: z.enum(SUBSTITUTE_PAYMENT_REGIMES).optional(),
   active: z.boolean().default(true),
   allowPublicSignup: z.boolean().default(false),
   seasonStart: dateSchema,
@@ -208,6 +221,8 @@ export const updateLeagueSchema = z.object({
   name: nameSchema,
   description: z.string().nullable(),
   payingLineupSize: z.union([z.literal(3), z.literal(4)]),
+  substituteAccess: z.enum(SUBSTITUTE_ACCESS),
+  substitutePaymentRegime: z.enum(SUBSTITUTE_PAYMENT_REGIMES),
   active: z.boolean(),
   allowPublicSignup: z.boolean(),
   seasonStart: dateSchema,
@@ -271,9 +286,11 @@ export const updateLeagueSchema = z.object({
 // API/test fixtures may represent pre-0030 legacy rows without the durable
 // canonical revision; database-selected rows always contain the defaulted
 // column.
-export type League = Omit<typeof leagues.$inferSelect, "canonicalScheduleRevision" | "payingLineupSize"> & {
+export type League = Omit<typeof leagues.$inferSelect, "canonicalScheduleRevision" | "payingLineupSize" | "substituteAccess" | "substitutePaymentRegime"> & {
   canonicalScheduleRevision?: number;
   payingLineupSize?: number | null;
+  substituteAccess?: SubstituteAccess;
+  substitutePaymentRegime?: SubstitutePaymentRegime;
 };
 export type InsertLeagueInput = z.input<typeof insertLeagueSchema>;
 export type InsertLeague = z.output<typeof insertLeagueSchema>;

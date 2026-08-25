@@ -186,17 +186,13 @@ async function lockCanonicalMutationScope(
   if (!candidate || candidate.operationType !== "canonical_autopay_charge" || candidate.leagueId === null || candidate.canonicalPlanId === null) {
     if (!candidate) return undefined;
     if (candidate.operationType === "interactive_charge") {
-      // F2 operations intentionally keep league_id NULL for compatibility;
-      // their immutable occurrence supplement is the tenant-safe scope.  Use
-      // the same advisory lock as cancellation before finalizing provider
-      // evidence so cancellation and finalization have one serialization
-      // point.
-      const [supplementScope] = await tx.select({ leagueId: paymentOperationOccurrenceSnapshots.leagueId })
-        .from(paymentOperationOccurrenceSnapshots)
-        .where(eq(paymentOperationOccurrenceSnapshots.operationId, operationId))
-        .limit(1);
-      if (supplementScope) {
-        await tx.execute(sql`SELECT pg_advisory_xact_lock(${organizationId}::integer, ${supplementScope.leagueId}::integer)`);
+      // Interactive operations created by the clean roster flow do not use
+      // this legacy provider finalizer.  Retained pre-roster rows may still
+      // have a league_id, so use the operation ledger as the scope source.
+      // The former occurrence supplement was part of the retired D2 model
+      // and is deliberately absent after migration 0032.
+      if (candidate.leagueId !== null) {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(${organizationId}::integer, ${candidate.leagueId}::integer)`);
       }
     }
     if (candidate.operationType === "scheduled_charge") {
@@ -1879,26 +1875,18 @@ export async function acquireInteractivePaymentOperationDispatchCutoff(input: {
   now?: Date;
 }): Promise<boolean | null> {
   return db.transaction(async (tx) => {
-    const [scope] = await tx.select({ leagueId: paymentOperationOccurrenceSnapshots.leagueId })
+    const [scope] = await tx.select({ leagueId: paymentOperations.leagueId })
       .from(paymentOperations)
-      .innerJoin(
-        paymentOperationOccurrenceSnapshots,
-        and(
-          eq(paymentOperationOccurrenceSnapshots.operationId, paymentOperations.id),
-          eq(paymentOperationOccurrenceSnapshots.organizationId, paymentOperations.organizationId),
-        ),
-      )
       .where(and(
         eq(paymentOperations.organizationId, input.organizationId),
         eq(paymentOperations.id, input.operationId),
         eq(paymentOperations.operationType, "interactive_charge"),
       ))
       .limit(1);
-    // A missing occurrence supplement is the explicit pre-F2/legacy path;
-    // callers must retain its historical dispatch behavior. Once a
-    // supplement exists, false means the canonical cutoff was lost.
-    if (!scope) return null;
-    if (!scope.leagueId) return false;
+    // The retired D2 occurrence supplement used to provide this scope. A
+    // retained operation with no ledger league remains on legacy behavior;
+    // a roster operation never reaches this provider path.
+    if (!scope || scope.leagueId === null) return null;
     await tx.execute(sql`SELECT pg_advisory_xact_lock(${input.organizationId}::integer, ${scope.leagueId}::integer)`);
     const [operation] = await tx.select({
       status: paymentOperations.status,
@@ -2340,6 +2328,12 @@ async function validateInteractiveOccurrenceSupplementBeforeWrites(
   tx: PaymentOperationTransaction,
   operation: PaymentOperation,
 ): Promise<void> {
+  // The D2 occurrence supplement is retired by migration 0032. The retained
+  // general ledger must not query or recreate that canonical evidence.
+  void tx;
+  void operation;
+  return;
+  // eslint-disable-next-line no-unreachable
   const [supplement] = await tx.select().from(paymentOperationOccurrenceSnapshots)
     .where(eq(paymentOperationOccurrenceSnapshots.operationId, operation.id))
     .limit(1).for("share");
@@ -2696,6 +2690,14 @@ async function finalizeInteractiveOccurrenceAllocations(
   paymentRows: PaymentOperationLinkedPaymentInput[] | undefined,
   now: string,
 ): Promise<void> {
+  // Canonical roster allocations are finalized by roster-payment-core. This
+  // retained provider path intentionally does not touch retired D2 tables.
+  void tx;
+  void operation;
+  void paymentRows;
+  void now;
+  return;
+  /* Retired D2 occurrence-allocation finalization (kept in history only).
   const [supplement] = await tx.select().from(paymentOperationOccurrenceSnapshots)
     .where(eq(paymentOperationOccurrenceSnapshots.operationId, operation.id))
     .limit(1).for("update");
@@ -2839,6 +2841,7 @@ async function finalizeInteractiveOccurrenceAllocations(
       });
     }
   }
+  */
 }
 
 /** The occurrence rows are locked after the shared league advisory lock.  A
@@ -2849,6 +2852,13 @@ async function interactiveCancellationWonInTransaction(
   tx: PaymentOperationTransaction,
   operation: PaymentOperation,
 ): Promise<boolean> {
+  // There is no D2 occurrence supplement after migration 0032. Provider
+  // routes for the new system are disabled; retained operations have no
+  // canonical cancellation evidence to inspect here.
+  void tx;
+  void operation;
+  return false;
+  // eslint-disable-next-line no-unreachable
   const [supplement] = await tx.select({ leagueId: paymentOperationOccurrenceSnapshots.leagueId })
     .from(paymentOperationOccurrenceSnapshots)
     .where(and(
@@ -2962,17 +2972,11 @@ export async function finalizePaymentOperationSuccessInTransaction(
   if (input.providerOrderId != null) validateProviderOrderId(input.providerOrderId);
   const now = toIso(input.now ?? new Date(), "now");
   if (input.providerOrderId == null) {
-    const [supplement] = await tx.select({ operationId: paymentOperationOccurrenceSnapshots.operationId })
-      .from(paymentOperationOccurrenceSnapshots)
-      .where(eq(paymentOperationOccurrenceSnapshots.operationId, input.operationId))
+    const [interactiveSnapshot] = await tx.select({ requestKind: interactivePaymentOperationSnapshots.requestKind })
+      .from(interactivePaymentOperationSnapshots)
+      .where(eq(interactivePaymentOperationSnapshots.operationId, input.operationId))
       .limit(1);
-    if (supplement) {
-      const [interactiveSnapshot] = await tx.select({ requestKind: interactivePaymentOperationSnapshots.requestKind })
-        .from(interactivePaymentOperationSnapshots)
-        .where(eq(interactivePaymentOperationSnapshots.operationId, input.operationId))
-        .limit(1);
-      if (interactiveSnapshot?.requestKind === "order") throw new PaymentOperationImmutableMismatchError();
-    }
+    if (interactiveSnapshot?.requestKind === "order") throw new PaymentOperationImmutableMismatchError();
   }
   const preflightOperation = await lockCanonicalMutationScope(tx, input.organizationId, input.operationId);
   const cancellationReviewRequired = preflightOperation?.operationType === "interactive_charge"
@@ -3463,46 +3467,18 @@ export function buildNextPaymentOperationWakeQuery() {
       ORDER BY due_at ASC, ${paymentOperations.id} ASC
       LIMIT 1
     ), next_canonical_plan AS (
+      -- Automatic collection is dormant in PR1. Keep the union's stable
+      -- result shape without referencing the retired F3/D2/F4 tables.
       SELECT
-        'canonical_plan'::text AS kind,
-        ${occurrenceCollectionPlans.organizationId} AS organization_id,
-        ${occurrenceCollectionPlans.id}::text AS work_id,
+        NULL::text AS kind,
+        NULL::integer AS organization_id,
+        NULL::text AS work_id,
         NULL::text AS operation_type,
         NULL::text AS status,
         NULL::integer AS attempt_count,
-        ${occurrenceCollectionPlans.leagueId} AS league_id,
-        ${leagueOccurrences.startAt} AS due_at
-      FROM ${occurrenceCollectionPlans}
-      INNER JOIN ${leagueOccurrences} ON ${occurrenceCollectionPlans.triggerOccurrenceId} = ${leagueOccurrences.id}
-        AND ${occurrenceCollectionPlans.organizationId} = ${leagueOccurrences.organizationId}
-        AND ${occurrenceCollectionPlans.leagueId} = ${leagueOccurrences.leagueId}
-      INNER JOIN f3_autopay_plan_provenance canonical_provenance ON canonical_provenance.d2_plan_id = ${occurrenceCollectionPlans.id}
-        AND canonical_provenance.organization_id = ${occurrenceCollectionPlans.organizationId}
-        AND canonical_provenance.league_id = ${occurrenceCollectionPlans.leagueId}
-      LEFT JOIN ${paymentOperations} AS canonical_operation ON canonical_operation.organization_id = ${occurrenceCollectionPlans.organizationId}
-        AND canonical_operation.league_id = ${occurrenceCollectionPlans.leagueId}
-        AND canonical_operation.canonical_plan_id = ${occurrenceCollectionPlans.id}
-        AND canonical_operation.operation_type = 'canonical_autopay_charge'
-      WHERE ${sql.raw(canonicalF3AutopayEnabled && canonicalF4AutopayExecutionEnabled ? "TRUE" : "FALSE")}
-        AND ${occurrenceCollectionPlans.state} = 'ready'
-        AND ${occurrenceCollectionPlans.triggerOccurrenceId} IS NOT NULL
-        AND ${leagueOccurrences.lifecycle} IN ('published', 'locked')
-        AND ${leagueOccurrences.status} IN ('scheduled', 'completed')
-        AND canonical_operation.id IS NULL
-        AND NOT EXISTS (
-          SELECT 1
-          FROM canonical_autopay_execution_snapshots blocked_snapshot
-          INNER JOIN payment_operations blocked_operation ON blocked_operation.id = blocked_snapshot.operation_id
-            AND blocked_operation.organization_id = blocked_snapshot.organization_id
-            AND blocked_operation.league_id = blocked_snapshot.league_id
-          WHERE blocked_snapshot.authorization_id = canonical_provenance.authorization_id
-            AND blocked_snapshot.organization_id = canonical_provenance.organization_id
-            AND blocked_snapshot.league_id = canonical_provenance.league_id
-            AND blocked_operation.operation_type = 'canonical_autopay_charge'
-            AND blocked_operation.status IN ('action_required', 'leased', 'provider_unknown', 'reconciliation_required')
-        )
-      ORDER BY ${leagueOccurrences.startAt} ASC, ${occurrenceCollectionPlans.id} ASC
-      LIMIT 1
+        NULL::integer AS league_id,
+        NULL::timestamp AS due_at
+      WHERE FALSE
     )
     SELECT
       kind,

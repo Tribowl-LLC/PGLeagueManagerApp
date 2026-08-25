@@ -11,7 +11,6 @@ import { calculateFinancials } from "@/lib/financial-utils";
 import { sanitizePaymentErrorMessage } from "@/lib/payment-user-error";
 import type { League, Bowler, Payment, SavedCard, ApiResponse, BowlerDetailsResponse } from "@shared/schema";
 import { PaymentStatusView } from "@/components/payment-status-view";
-import { F3CanonicalAutopaySetup } from "@/components/f3-canonical-autopay-setup";
 import { useBowlerPaymentSubmit } from "@/hooks/use-bowler-payment-submit";
 import type { AutopaySetupQuote } from "@/lib/autopay-setup";
 import { beginPaymentIntent, clearPaymentIntent, paymentRequestHeaders, paymentRequestWithRecovery } from "@/lib/payment-request-identity";
@@ -61,7 +60,7 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
   const cardContainerRef = useRef<HTMLDivElement>(null);
   const walletRequestKeyRef = useRef<string | null>(null);
   const [showPaymentSetup, setShowPaymentSetup] = useState(false);
-  const [paymentMode, setPaymentMode] = useState<'autopay' | 'onetime'>('autopay');
+  const [paymentMode, setPaymentMode] = useState<'autopay' | 'onetime'>(league.payingLineupSize == null ? 'autopay' : 'onetime');
   const [selectedSchedule, setSelectedSchedule] = useState<PaymentSchedule>("weekly");
   const [storeCard, setStoreCard] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -110,7 +109,7 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
       }
       return body;
     },
-    enabled: showPaymentSetup && paymentMode === 'autopay' && selectedSchedule === 'weekly',
+    enabled: showPaymentSetup && league.payingLineupSize == null && paymentMode === 'autopay' && selectedSchedule === 'weekly',
     staleTime: 0,
     retry: false,
   });
@@ -476,9 +475,7 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
 
   return (
     <>
-    {league.paymentMode === "weekly" && league.organizationId ? (
-      <F3CanonicalAutopaySetup leagueId={league.id} organizationId={league.organizationId} bowlerId={bowler.id} savedCards={savedCards} acceptedPartners={partnerOptions} onCatchUp={() => { window.location.hash = '#interactive-occurrence-selector'; document.getElementById('interactive-occurrence-selector')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }} />
-    ) : null}
+    {league.payingLineupSize != null && <p className="mb-4 text-sm text-muted-foreground">This league uses exact roster payment obligations. Historical payments remain an archive and do not determine current due balances.</p>}
     <PaymentStatusView
       showPaymentSetup={showPaymentSetup}
       league={league}

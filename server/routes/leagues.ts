@@ -40,6 +40,7 @@ import {
   LeagueCanonicalScheduleLockedError,
   LeagueOccurrenceEvidenceExistsError,
   LeaguePaymentModeLockedError,
+  LeagueSubstituteConfigurationLockedError,
 } from '../storage/leagues';
 import {
   leagueSetupIntegrationIntentSchema,
@@ -772,6 +773,14 @@ router.patch("/:id", async (req: Request, res) => {
         'Canonical schedule inputs cannot be changed after canonical schedule generation has started.',
         409,
         'LEAGUE_CANONICAL_SCHEDULE_LOCKED',
+      );
+    }
+    if (error instanceof LeagueSubstituteConfigurationLockedError) {
+      return sendError(
+        res,
+        'Substitute access and payment regime cannot change after the first canonical responsibility.',
+        409,
+        'LEAGUE_SUBSTITUTE_CONFIGURATION_LOCKED',
       );
     }
     if (error instanceof CanonicalLeagueScheduleEditError) {

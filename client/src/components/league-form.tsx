@@ -67,6 +67,8 @@ export function LeagueForm({ open, onClose, league, systemAdminOrganizationId }:
       name: "",
       description: "",
       payingLineupSize: undefined,
+      substituteAccess: "team_only",
+      substitutePaymentRegime: "team_choice",
       active: true,
       allowPublicSignup: false,
       seasonStart: today.toISOString(),

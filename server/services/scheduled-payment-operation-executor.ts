@@ -46,6 +46,10 @@ const log = createLogger("ScheduledPaymentLedger");
 const LEASE_DURATION_MS = PAYMENT_OPERATION_MAX_LEASE_MS;
 const MIN_RETRY_MS = 60_000;
 const MAX_RETRY_MS = 6 * 60 * 60 * 1000;
+// Automatic collection is intentionally a PR2 capability. PR1 must not
+// dispatch a provider charge from either a legacy schedule or an abandoned
+// F3/D2/F4 plan while those authorities are being retired.
+const ROSTER_PAYMENT_AUTOPAY_ENABLED = false;
 
 export interface ScheduledPaymentOperationExecutorDependencies {
   now?: () => Date;
@@ -160,6 +164,10 @@ export class ScheduledPaymentOperationExecutor {
   }
 
   async start(mode: ScheduledPaymentExecutionMode): Promise<void> {
+    if (!ROSTER_PAYMENT_AUTOPAY_ENABLED) {
+      log.info("Automatic collection is dormant until PR2", { mode });
+      return;
+    }
     await this.wakeScheduler.start(mode);
   }
 
@@ -168,10 +176,15 @@ export class ScheduledPaymentOperationExecutor {
   }
 
   async rearm(): Promise<void> {
+    if (!ROSTER_PAYMENT_AUTOPAY_ENABLED) return;
     await this.wakeScheduler.rearm();
   }
 
   async handleWake(wake: PaymentOperationWake): Promise<{ retryAfterMs?: number } | void> {
+    if (!ROSTER_PAYMENT_AUTOPAY_ENABLED) {
+      log.info("Automatic collection wake ignored until PR2", { organizationId: wake.organizationId, kind: wake.kind });
+      return;
+    }
     if (wake.kind === "schedule") {
       const prepared = await prepareScheduledPaymentCycle({
         paymentScheduleId: wake.paymentScheduleId,

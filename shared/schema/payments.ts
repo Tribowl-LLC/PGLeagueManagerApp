@@ -71,6 +71,8 @@ export const payments = pgTable("payments", {
 }, (table) => ({
   idBowlerLeagueUnique: uniqueIndex("payments_id_bowler_league_unique")
     .on(table.id, table.bowlerId, table.leagueId),
+  idLeagueUnique: uniqueIndex("payments_id_league_unique")
+    .on(table.id, table.leagueId),
   bowlerIdx: index("payments_bowler_idx").on(table.bowlerId),
   leagueIdx: index("payments_league_idx").on(table.leagueId),
   weekOfIdx: index("payments_week_of_idx").on(table.weekOf),

@@ -96,6 +96,42 @@ export function LeagueBasicInfo({ form, activeLocations, onLocationChange }: Lea
 
       <FormField
         control={form.control}
+        name="substituteAccess"
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>Substitute access</FormLabel>
+            <Select value={field.value ?? "team_only"} onValueChange={field.onChange}>
+              <FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl>
+              <SelectContent>
+                <SelectItem value="team_only">Team members only</SelectItem>
+                <SelectItem value="floating">Any active league member</SelectItem>
+              </SelectContent>
+            </Select>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+
+      <FormField
+        control={form.control}
+        name="substitutePaymentRegime"
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>Substitute payment regime</FormLabel>
+            <Select value={field.value ?? "team_choice"} onValueChange={field.onChange}>
+              <FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl>
+              <SelectContent>
+                <SelectItem value="team_choice">Team chooses payer policy</SelectItem>
+                <SelectItem value="league_lineage_prize_split">Substitute lineage / Main prize split</SelectItem>
+              </SelectContent>
+            </Select>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+
+      <FormField
+        control={form.control}
         name="allowPublicSignup"
         render={({ field }) => (
           <FormItem className="flex flex-row items-center justify-between rounded-lg border p-3">

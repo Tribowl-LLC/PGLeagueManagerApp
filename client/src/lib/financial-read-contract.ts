@@ -18,18 +18,9 @@ export function resolveInteractiveFinancialRead(data: FinancialReadContract | un
     return { status: "unavailable", amountPastDue: 0, remainingBalance: 0, rows: [] };
   }
 
-  if (data.mode === "legacy_fallback") {
-    const fallback = data.legacyFallback;
-    if (!fallback || !isNonnegativeSafeInteger(fallback.amountPastDueMinor) || !isNonnegativeSafeInteger(fallback.remainingBalanceMinor)) {
-      return { status: "unavailable", amountPastDue: 0, remainingBalance: 0, rows: [] };
-    }
-    return {
-      status: "legacy_fallback",
-      amountPastDue: fallback.amountPastDueMinor,
-      remainingBalance: fallback.remainingBalanceMinor,
-      rows: data.rows ?? [],
-    };
-  }
+  // Historical/legacy balance payloads are display-only archive data. They
+  // are never an interactive payment source in the clean-slate system.
+  if (data.mode === "legacy_fallback") return { status: "unavailable", amountPastDue: 0, remainingBalance: 0, rows: [] };
 
   if (data.mode !== "canonical" || !data.rows || !data.totals || !isNonnegativeSafeInteger(data.totals.collectiblePastDueMinor)) {
     return { status: "unavailable", amountPastDue: 0, remainingBalance: 0, rows: [] };

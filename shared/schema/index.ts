@@ -7,8 +7,8 @@ export type { Organization, InsertOrganization, UpdateOrganization } from "./org
 export { locations, locationSquareCredentialsSchema, insertLocationSchema, updateLocationSchema, REQUIRED_SQUARE_FIELDS, SQUARE_FIELD_LABELS, getMissingSquareFields } from "./locations";
 export type { LocationSquareCredentials, Location, InsertLocation, UpdateLocation, RequiredSquareField } from "./locations";
 
-export { leagues, insertLeagueSchema, updateLeagueSchema } from "./leagues";
-export type { League, InsertLeagueInput, InsertLeague, UpdateLeague } from "./leagues";
+export { leagues, insertLeagueSchema, updateLeagueSchema, SUBSTITUTE_ACCESS, SUBSTITUTE_PAYMENT_REGIMES } from "./leagues";
+export type { League, InsertLeagueInput, InsertLeague, UpdateLeague, SubstituteAccess, SubstitutePaymentRegime } from "./leagues";
 
 export { teams, insertTeamSchema, updateTeamSchema, reorderTeamsSchema } from "./teams";
 export type { Team, InsertTeamInput, InsertTeam, UpdateTeam } from "./teams";
@@ -340,6 +340,48 @@ export {
   PAYMENT_OCCURRENCE_ALLOCATION_STATES,
   PAYMENT_OPERATION_OCCURRENCE_SNAPSHOT_VERSION,
 } from "./occurrence-financials";
+
+export {
+  teamPaymentSlots,
+  teamPaymentSlotRevisions,
+  teamPaymentPolicies,
+  teamPaymentPolicyRevisions,
+  occurrencePaymentResponsibilities,
+  paymentObligations,
+  paymentAllocations,
+  autopayConsents,
+  financialCommands,
+  paymentOperationRosterSnapshots,
+  TEAM_PAYMENT_SLOT_OCCUPANTS,
+  TEAM_PAYMENT_POLICIES,
+  RESPONSIBILITY_KINDS,
+  OBLIGATION_COMPONENTS,
+  RESPONSIBILITY_STATES,
+  OBLIGATION_STATES,
+  ALLOCATION_STATES,
+  AUTOPAY_CONSENT_STATES,
+  FINANCIAL_COMMAND_STATES,
+} from "./roster-payments";
+export type {
+  TeamPaymentSlot,
+  TeamPaymentSlotRevision,
+  TeamPaymentPolicy,
+  TeamPaymentPolicyRow,
+  TeamPaymentPolicyRevision,
+  OccurrencePaymentResponsibility,
+  PaymentObligation,
+  PaymentAllocation,
+  AutopayConsent,
+  FinancialCommand,
+  PaymentOperationRosterSnapshot,
+  ResponsibilityKind,
+  ObligationComponent,
+  ResponsibilityState,
+  PaymentObligationState,
+  PaymentAllocationState,
+  AutopayConsentState,
+  FinancialCommandState,
+} from "./roster-payments";
 
 export {
   financialActivations,

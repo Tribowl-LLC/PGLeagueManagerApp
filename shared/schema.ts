@@ -7,3 +7,4 @@ export * from "./f4-canonical-autopay-contract";
 export * from "./canonical-payment-report";
 export * from "./payment-receipt";
 export * from "./canonical-collection-groups";
+export * from "./roster-payment-contract";

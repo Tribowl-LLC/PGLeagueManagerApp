@@ -55,6 +55,20 @@ const log = createLogger('Payments');
 
 const router = Router();
 
+/** PR1's provider charge path is exact-obligation-only. The older charge
+ * endpoints infer a season/occurrence from amount and roster state, so they
+ * must fail closed for a configured roster-driven league. */
+async function rejectLegacyRosterCharge(req: Request, res: Response): Promise<boolean> {
+  const leagueId = Number(req.body?.leagueId);
+  if (!Number.isSafeInteger(leagueId) || leagueId <= 0) return false;
+  const league = await storage.getLeague(leagueId);
+  if (league?.organizationId !== null && league?.organizationId !== undefined) {
+    sendError(res, 'Select exact payment obligations before charging this league', 409, 'CANONICAL_OBLIGATION_SELECTION_REQUIRED');
+    return true;
+  }
+  return false;
+}
+
 function parseOccurrenceSelections(value: unknown): InteractiveOccurrenceSelection[] | undefined {
   if (value === undefined) return undefined;
   if (!Array.isArray(value) || value.length === 0 || value.length > 100) throw new InteractiveOccurrenceAllocationError('INVALID_SELECTION');
@@ -144,6 +158,7 @@ function interactiveReplayRequestFingerprint(operation: PaymentOperation, select
 }
 
 async function occurrenceQuote(req: Request, res: Response): Promise<void> {
+  if (await rejectLegacyRosterCharge(req, res)) return;
   const leagueId = Number(req.body?.leagueId);
   const amountMinor = Number(req.body?.amountMinor ?? req.body?.amount);
   const explicitOrganizationId = Number(req.body?.organizationId);
@@ -576,6 +591,7 @@ router.get('/payments/:paymentId/verify', async (req, res) => {
  */
 router.post('/combined-payments', paymentLimiter, async (req, res) => {
   try {
+    if (await rejectLegacyRosterCharge(req, res)) return;
     const requestKey = requireInteractiveRequestKey(req, res);
     if (!requestKey) return;
     const sourceKind = requireInteractiveSourceKind(req, res);
@@ -890,6 +906,7 @@ router.post('/combined-payments', paymentLimiter, async (req, res) => {
 
 router.post('/payments', paymentLimiter, async (req, res) => {
   try {
+    if (await rejectLegacyRosterCharge(req, res)) return;
     const requestKey = requireInteractiveRequestKey(req, res);
     if (!requestKey) return;
     const sourceKind = requireInteractiveSourceKind(req, res);

@@ -4,13 +4,9 @@ import {
   canonicalCollectionGroupMembers,
   canonicalCollectionGroupRevisions,
   canonicalCollectionGroups,
-  bowlerOccurrenceObligations,
-  occurrenceCollectionPlanItems,
-  occurrenceCollectionPlans,
-  paymentOccurrenceAllocations,
-  paymentOperationOccurrenceSnapshotAllocations,
+  paymentObligations,
+  paymentAllocations,
   paymentOperations,
-  financialActivations,
   leagueOccurrenceGenerationRuns,
   leagueOccurrences,
   leagues,
@@ -107,38 +103,27 @@ async function revokeGroupInTransaction(tx: LeagueScheduleTransaction, input: Ca
   )).orderBy(asc(canonicalCollectionGroupMembers.memberOrdinal), asc(canonicalCollectionGroupMembers.id)).for("update");
   const occurrenceIds = members.map((member) => member.occurrenceId);
   if (occurrenceIds.length !== 2) throw new CanonicalLeagueScheduleEditError("financial_conflict", "collection group membership is incomplete");
-  const obligations = await tx.select({ id: bowlerOccurrenceObligations.id }).from(bowlerOccurrenceObligations).where(and(
-    eq(bowlerOccurrenceObligations.organizationId, input.organizationId),
-    eq(bowlerOccurrenceObligations.leagueId, input.leagueId),
-    inArray(bowlerOccurrenceObligations.occurrenceId, occurrenceIds),
-  )).orderBy(asc(bowlerOccurrenceObligations.id)).for("update");
-  const allocations = await tx.select({ id: paymentOccurrenceAllocations.id }).from(paymentOccurrenceAllocations).where(and(
-    eq(paymentOccurrenceAllocations.organizationId, input.organizationId),
-    eq(paymentOccurrenceAllocations.leagueId, input.leagueId),
-    inArray(paymentOccurrenceAllocations.occurrenceId, occurrenceIds),
-  )).orderBy(asc(paymentOccurrenceAllocations.id)).for("update");
-  const plans = await tx.select({ id: occurrenceCollectionPlans.id }).from(occurrenceCollectionPlans).where(and(
-    eq(occurrenceCollectionPlans.organizationId, input.organizationId),
-    eq(occurrenceCollectionPlans.leagueId, input.leagueId),
-    eq(occurrenceCollectionPlans.state, "ready"),
-    inArray(occurrenceCollectionPlans.triggerOccurrenceId, occurrenceIds),
-  )).orderBy(asc(occurrenceCollectionPlans.id)).for("update");
-  const planItems = await tx.select({ id: occurrenceCollectionPlanItems.id }).from(occurrenceCollectionPlanItems).where(and(
-    eq(occurrenceCollectionPlanItems.organizationId, input.organizationId),
-    eq(occurrenceCollectionPlanItems.leagueId, input.leagueId),
-    inArray(occurrenceCollectionPlanItems.occurrenceId, occurrenceIds),
-  )).orderBy(asc(occurrenceCollectionPlanItems.id)).for("update");
+  const obligations = await tx.select({ id: paymentObligations.id }).from(paymentObligations).where(and(
+    eq(paymentObligations.organizationId, input.organizationId),
+    eq(paymentObligations.leagueId, input.leagueId),
+    inArray(paymentObligations.occurrenceId, occurrenceIds),
+  )).orderBy(asc(paymentObligations.id)).for("update");
+  const allocations = obligations.length === 0 ? [] : await tx.select({ id: paymentAllocations.id }).from(paymentAllocations).innerJoin(paymentObligations, and(
+    eq(paymentAllocations.obligationId, paymentObligations.id),
+    eq(paymentObligations.organizationId, input.organizationId),
+    eq(paymentObligations.leagueId, input.leagueId),
+  )).where(and(
+    eq(paymentAllocations.organizationId, input.organizationId),
+    eq(paymentAllocations.leagueId, input.leagueId),
+    eq(paymentAllocations.state, "active"),
+    inArray(paymentObligations.occurrenceId, occurrenceIds),
+  )).orderBy(asc(paymentAllocations.id)).for("update");
   const operations = await tx.select({ id: paymentOperations.id }).from(paymentOperations).where(and(
     eq(paymentOperations.organizationId, input.organizationId),
     eq(paymentOperations.leagueId, input.leagueId),
     inArray(paymentOperations.triggerOccurrenceId, occurrenceIds),
   )).orderBy(asc(paymentOperations.id)).for("update");
-  const snapshotOperations = await tx.select({ operationId: paymentOperationOccurrenceSnapshotAllocations.operationId }).from(paymentOperationOccurrenceSnapshotAllocations).where(and(
-    eq(paymentOperationOccurrenceSnapshotAllocations.organizationId, input.organizationId),
-    eq(paymentOperationOccurrenceSnapshotAllocations.leagueId, input.leagueId),
-    inArray(paymentOperationOccurrenceSnapshotAllocations.occurrenceId, occurrenceIds),
-  )).orderBy(asc(paymentOperationOccurrenceSnapshotAllocations.operationId)).for("update");
-  if (obligations.length > 0 || allocations.length > 0 || plans.length > 0 || planItems.length > 0 || operations.length > 0 || snapshotOperations.length > 0) {
+  if (obligations.length > 0 || allocations.length > 0 || operations.length > 0) {
     throw new CanonicalLeagueScheduleEditError("financial_conflict", "double-pay collection group has financial or dispatch evidence and cannot be revised");
   }
   const request: MaterializationScheduleCommandRequest = {
@@ -167,15 +152,9 @@ export async function editCanonicalLeagueSchedule(input: CanonicalLeagueSchedule
     if (!input.reason || input.reason.trim() !== input.reason || !Number.isSafeInteger(input.expectedScheduleRevision) || input.expectedScheduleRevision < 0) throw new CanonicalLeagueScheduleEditError("invalid_edit", "schedule revision and reason are required");
     const [league] = await tx.select().from(leagues).where(and(eq(leagues.organizationId, input.organizationId), eq(leagues.id, input.leagueId))).for("update");
     if (!league) throw new CanonicalLeagueScheduleEditError("invalid_edit", "league is outside the requested tenant");
-    if (input.metadata?.payingLineupSize !== undefined && input.metadata.payingLineupSize !== league.payingLineupSize) {
-      const [activation] = await tx.select({ id: financialActivations.id }).from(financialActivations).where(and(
-        eq(financialActivations.organizationId, input.organizationId),
-        eq(financialActivations.leagueId, input.leagueId),
-        eq(financialActivations.state, "active"),
-        eq(financialActivations.completenessMarker, true),
-      )).for("update").limit(1);
-      if (activation) throw new CanonicalLeagueScheduleEditError("financial_conflict", "league lineup size is locked after financial activation");
-    }
+    // The new roster schema owns lineup locking; the old activation relation
+    // is deliberately absent after migration 0032.  League setup performs
+    // the same canonical-evidence check under this advisory lock.
     const request: MaterializationScheduleCommandRequest = {
       organizationId: input.organizationId,
       leagueId: input.leagueId,

@@ -7,10 +7,17 @@ import {
 } from "@shared/schema";
 import { createLogger } from '../logger';
 import { cacheFetch, cacheInvalidate } from '../utils/cache';
+import { lockLeagueSchedule } from './league-schedule-lock.js';
 
 const log = createLogger("StorageBowlers");
 
 const BOWLERS_TTL = 30_000;
+
+async function lockRosterLeague(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], leagueId: number): Promise<void> {
+  const [league] = await tx.select({ organizationId: leagues.organizationId }).from(leagues).where(eq(leagues.id, leagueId)).limit(1);
+  if (!league) throw new Error('League not found');
+  if (league.organizationId !== null) await lockLeagueSchedule(tx, league.organizationId, leagueId);
+}
 
 const bowlerColumns = {
   id: bowlers.id,
@@ -143,6 +150,7 @@ export async function isBowlerActiveInLeague(bowlerId: number, leagueId: number)
 
 export async function createBowlerLeague(bowlerLeague: InsertBowlerLeague): Promise<BowlerLeague> {
   return db.transaction(async (tx) => {
+    await lockRosterLeague(tx, bowlerLeague.leagueId);
     await tx.execute(sql`SELECT id FROM ${teams} WHERE id = ${bowlerLeague.teamId} FOR UPDATE`);
 
     const [maxOrder] = await tx
@@ -190,6 +198,7 @@ export async function createBowlerLeagueIfNotInLeague(
   bowlerLeague: InsertBowlerLeague,
 ): Promise<BowlerLeague | null> {
   return db.transaction(async (tx) => {
+    await lockRosterLeague(tx, bowlerLeague.leagueId);
     // Lock the bowler row so concurrent transactions targeting the same
     // bowler serialize. A racing transaction will block here until this
     // one commits/rollbacks, and will then observe the link we are
@@ -259,6 +268,7 @@ export async function createBowlerLeagueIfBowlerFree(
   bowlerLeague: InsertBowlerLeague,
 ): Promise<BowlerLeague | null> {
   return db.transaction(async (tx) => {
+    await lockRosterLeague(tx, bowlerLeague.leagueId);
     // Lock the bowler row so concurrent bootstrap transactions for the
     // same bowler serialize. Any racing transaction will block here
     // until this one commits/rollbacks, and then will observe the link
@@ -303,11 +313,13 @@ export async function createBowlerLeagueIfBowlerFree(
 }
 
 export async function updateBowlerLeague(id: number, bowlerLeague: UpdateBowlerLeague): Promise<BowlerLeague> {
-  const [result] = await db
-    .update(bowlerLeagues)
-    .set(bowlerLeague)
-    .where(eq(bowlerLeagues.id, id))
-    .returning();
+  const result = await db.transaction(async (tx) => {
+    const [current] = await tx.select().from(bowlerLeagues).where(eq(bowlerLeagues.id, id)).limit(1);
+    if (!current) throw new Error('Bowler league not found');
+    await lockRosterLeague(tx, current.leagueId);
+    const [updated] = await tx.update(bowlerLeagues).set(bowlerLeague).where(eq(bowlerLeagues.id, id)).returning();
+    return updated;
+  });
   cacheInvalidate('bowlers:');
   return result;
 }
@@ -322,6 +334,8 @@ export async function updateBowlerLeagueOrder(id: number, newOrder: number): Pro
     if (!targetBowlerLeague) {
       throw new Error('Bowler league not found');
     }
+
+    await lockRosterLeague(tx, targetBowlerLeague.leagueId);
 
     await tx.execute(sql`SELECT id FROM ${teams} WHERE id = ${targetBowlerLeague.teamId} FOR UPDATE`);
 
@@ -351,9 +365,12 @@ export async function updateBowlerLeagueOrder(id: number, newOrder: number): Pro
 }
 
 export async function deleteBowlerLeague(id: number): Promise<boolean> {
-  const result = await db.delete(bowlerLeagues)
-    .where(eq(bowlerLeagues.id, id))
-    .returning();
+  const result = await db.transaction(async (tx) => {
+    const [current] = await tx.select({ leagueId: bowlerLeagues.leagueId }).from(bowlerLeagues).where(eq(bowlerLeagues.id, id)).limit(1);
+    if (!current) return [];
+    await lockRosterLeague(tx, current.leagueId);
+    return tx.delete(bowlerLeagues).where(eq(bowlerLeagues.id, id)).returning();
+  });
   cacheInvalidate('bowlers:');
   return result.length > 0;
 }

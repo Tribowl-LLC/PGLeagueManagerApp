@@ -1,30 +1,16 @@
 import { Router } from "express";
-import { z } from "zod";
-import { getCanonicalActivationSource, activateCanonicalFinancials, FinancialActivationError, FinancialReadIncompatibilityError, readCanonicalDuePastDue } from "../services/canonical-due-past-due.js";
+import { readCanonicalDuePastDue as readRosterCanonicalDuePastDue, RosterPaymentError } from "../services/roster-payment-core.js";
 import { getPaymentManagerAccessibleLeagueIds, hasAdminAccessToLeague, hasPaymentManagerAccessToLeague, isPaymentManager } from "../utils/access-control.js";
 import { sendError, sendSuccess } from "../utils/api.js";
 import { storage } from "../storage/index.js";
 import { db } from "../db.js";
 import { bowlers, bowlerLeagues, teams } from "@shared/schema";
 import { and, eq } from "drizzle-orm";
-import { financialActivationEnabled } from "../config.js";
-import type { FinancialOrganizationDuePastDueContract } from "@shared/financial-contract";
-import f5PaymentReportsRouter from "./financials-f5.js";
 
 const router = Router();
-router.use("/f5", f5PaymentReportsRouter);
 // F1 activation is deliberately dormant until legacy payment reconciliation and
 // the operational rollout gate are separately approved. No production env change
 // enables this flag.
-const positiveInt = z.number().int().positive();
-const responsibilitySchema = z.object({
-  occurrenceId: z.string().uuid(),
-  teamId: positiveInt,
-  slotIndex: z.number().int().min(0).max(3),
-  bowlerId: positiveInt,
-  role: z.enum(["regular", "substitute"]),
-  provenance: z.literal("explicit_admin_selection"),
-}).strict();
 function queryPositiveInt(value: unknown): number | undefined | null {
   if (value === undefined) return undefined;
   if (typeof value !== "string" || !/^\d+$/.test(value)) return null;
@@ -34,13 +20,6 @@ function queryPositiveInt(value: unknown): number | undefined | null {
 function rejectUnknownQueryKeys(req: { query: Record<string, unknown> }, allowed: readonly string[]): boolean {
   return Object.keys(req.query).some((key) => !allowed.includes(key));
 }
-const activationSchema = z.object({
-  commandKey: z.string().trim().min(1).max(255),
-  sourceFingerprint: z.string().trim().min(1).max(128),
-  payingLineupSize: z.union([z.literal(3), z.literal(4)]).optional(),
-  responsibilities: z.array(responsibilitySchema),
-}).strict();
-
 router.get("/due-past-due", async (req, res) => {
   if (rejectUnknownQueryKeys(req, ["organizationId"])) return sendError(res, "Invalid scope", 400, "INVALID_SCOPE");
   const requestedOrganizationId = queryPositiveInt(req.query.organizationId);
@@ -59,16 +38,19 @@ router.get("/due-past-due", async (req, res) => {
       .filter((league) => league.organizationId === organizationId)
       .filter((league) => paymentManagerLeagueIds === null || paymentManagerLeagueIds.has(league.id))
       .sort((a, b) => a.id - b.id)
-      .map(async (league) => ({ leagueId: league.id, name: league.name, report: await readCanonicalDuePastDue({ organizationId, leagueId: league.id, bowlerId: undefined }) })));
-    const response: FinancialOrganizationDuePastDueContract = { contractVersion: "canonical-due-past-due/1", orderVersion: "due-at,bowler,occurrence,obligation/1", organizationId, authoritativeSource: "per-league-snapshots", leagues: reports };
+      .map(async (league) => ({ leagueId: league.id, name: league.name, report: await readRosterCanonicalDuePastDue({ organizationId, leagueId: league.id, payerBowlerId: undefined }) })));
+    const response = { contractVersion: "canonical-due-past-due/2" as const, orderVersion: "due-at,payer,occurrence,obligation/2" as const, organizationId, authoritativeSource: "payment_obligations" as const, leagues: reports };
     return sendSuccess(res, response);
   } catch (error) {
-    if (error instanceof FinancialReadIncompatibilityError) return sendError(res, "Financial evidence requires review", 409, "FINANCIAL_EVIDENCE_INCOMPATIBLE");
+    if (error instanceof RosterPaymentError) return sendError(res, error.message, error.status, error.code);
     return sendError(res, "Unable to read financial evidence", 500, "INTERNAL_ERROR");
   }
 });
 
 router.get("/leagues/:leagueId/source", async (req, res) => {
+  // F1 activation is retired in the clean-slate roster-driven system.
+  return sendError(res, "Legacy financial activation is retired", 410, "FINANCIAL_ACTIVATION_RETIRED");
+  /*
   if (rejectUnknownQueryKeys(req, ["organizationId"])) return sendError(res, "Not found", 404, "NOT_FOUND");
   const leagueId = Number(req.params.leagueId);
   if (!Number.isSafeInteger(leagueId) || leagueId <= 0) return sendError(res, "Not found", 404, "NOT_FOUND");
@@ -85,9 +67,12 @@ router.get("/leagues/:leagueId/source", async (req, res) => {
   const teamRows = await db.select({ id: teams.id, name: teams.name }).from(teams).where(and(eq(teams.leagueId, leagueId), eq(teams.active, true)));
   const teamNames = new Map(teamRows.map((team) => [team.id, team.name]));
   return sendSuccess(res, { contractVersion: "canonical-due-past-due/1", orderVersion: "occurrence-team-slot-bowler/1", activationVersion: 1, organizationId, leagueId, authoritativeSource: "canonical", payingLineupSize: source.payingLineupSize, sourceFingerprint: source.sourceFingerprint, expected: source.expected.map((row) => ({ ...row, teamName: teamNames.get(row.teamId) ?? "Team" })) });
+  */
 });
 
 router.get("/leagues/:leagueId/roster", async (req, res) => {
+  return sendError(res, "Legacy financial roster surface is retired", 410, "FINANCIAL_ACTIVATION_RETIRED");
+  /*
   if (rejectUnknownQueryKeys(req, ["organizationId"])) return sendError(res, "Not found", 404, "NOT_FOUND");
   const leagueId = Number(req.params.leagueId);
   if (!Number.isSafeInteger(leagueId) || leagueId <= 0) return sendError(res, "Not found", 404, "NOT_FOUND");
@@ -101,9 +86,12 @@ router.get("/leagues/:leagueId/roster", async (req, res) => {
     .where(and(eq(bowlers.organizationId, league.organizationId), eq(bowlers.active, true)))
     .orderBy(bowlers.name, bowlers.id);
   return sendSuccess(res, rows);
+  */
 });
 
 router.post("/leagues/:leagueId/activate", async (req, res) => {
+  return sendError(res, "Legacy financial activation is retired", 410, "FINANCIAL_ACTIVATION_RETIRED");
+  /*
   if (rejectUnknownQueryKeys(req, ["organizationId"])) return sendError(res, "Not found", 404, "NOT_FOUND");
   const leagueId = Number(req.params.leagueId);
   if (!Number.isSafeInteger(leagueId) || leagueId <= 0 || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
@@ -125,6 +113,7 @@ router.post("/leagues/:leagueId/activate", async (req, res) => {
     }
     return sendError(res, "Activation could not be completed", 500, "INTERNAL_ERROR");
   }
+  */
 });
 
 router.get("/leagues/:leagueId/due-past-due", async (req, res) => {
@@ -169,10 +158,10 @@ router.get("/leagues/:leagueId/due-past-due", async (req, res) => {
   if (!isAdmin && requestedBowler === undefined) return sendError(res, "Not found", 404, "NOT_FOUND");
   const bowlerId = isAdmin ? requestedBowler : req.user.bowlerId;
   try {
-    const result = await readCanonicalDuePastDue({ organizationId: league.organizationId, leagueId, bowlerId: bowlerId ?? undefined });
+    const result = await readRosterCanonicalDuePastDue({ organizationId: league.organizationId, leagueId, payerBowlerId: bowlerId ?? undefined });
     return sendSuccess(res, result);
   } catch (error) {
-    if (error instanceof FinancialReadIncompatibilityError) return sendError(res, "Financial evidence requires review", 409, "FINANCIAL_EVIDENCE_INCOMPATIBLE");
+    if (error instanceof RosterPaymentError) return sendError(res, error.message, error.status, error.code);
     return sendError(res, "Unable to read financial evidence", 500, "INTERNAL_ERROR");
   }
 });

@@ -1,0 +1,8 @@
+{
+  "id": "f4e8b2a9-6b27-4db7-95b9-003200000032",
+  "prevId": "e32e5ccf-b24d-4d96-bdfd-72463e00cf33",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {},
+  "enums": {}
+}

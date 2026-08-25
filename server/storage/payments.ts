@@ -2,8 +2,7 @@ import { eq, and, desc, inArray, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   payments, paymentSchedules, leagues, bowlerLeagues,
-  paymentDisputes, paymentOperations, paymentOccurrenceAllocations,
-  financialActivations, occurrenceCollectionPlans, occurrenceCollectionPlanItems,
+  paymentDisputes, paymentOperations, paymentAllocations,
   type Payment, type InsertPayment, type UpdatePayment,
   type PaymentSchedule, type InsertPaymentSchedule, type UpdatePaymentSchedule,
   type PaginatedResult,
@@ -263,29 +262,18 @@ export async function getPaymentByProviderPaymentId(providerPaymentId: string): 
 
 export async function createPayment(payment: InsertPayment): Promise<Payment> {
   return db.transaction(async (tx) => {
-    const [league] = await tx.select({ organizationId: leagues.organizationId })
+    const [league] = await tx.select({
+      organizationId: leagues.organizationId,
+      payingLineupSize: leagues.payingLineupSize,
+    })
       .from(leagues).where(eq(leagues.id, payment.leagueId)).limit(1);
     if (!league) throw new Error("Payment league not found");
     if (league.organizationId !== null) {
-      // This is the same org/league lock family used by F1/F2/F3/F4. The
-      // evidence read and insert stay inside the lock-owning transaction.
+      // Tenant-owned leagues are PR1 roster-driven. Generic payment writes
+      // have no obligation identity and therefore cannot safely infer a
+      // billable occurrence from amount, date, or roster membership.
       await lockLeagueSchedule(tx, league.organizationId, payment.leagueId);
-      const [active] = await tx.select({ completenessMarker: financialActivations.completenessMarker })
-        .from(financialActivations).where(and(
-          eq(financialActivations.organizationId, league.organizationId),
-          eq(financialActivations.leagueId, payment.leagueId),
-          eq(financialActivations.state, "active"),
-        )).limit(1);
-      if (active?.completenessMarker === true) throw new CanonicalAllocationRequiredError();
-      const partial = await tx.execute(sql`
-        SELECT EXISTS (
-          SELECT 1 FROM bowler_occurrence_obligations WHERE organization_id = ${league.organizationId} AND league_id = ${payment.leagueId}
-          UNION ALL SELECT 1 FROM ${occurrenceCollectionPlans} WHERE organization_id = ${league.organizationId} AND league_id = ${payment.leagueId}
-          UNION ALL SELECT 1 FROM ${occurrenceCollectionPlanItems} WHERE organization_id = ${league.organizationId} AND league_id = ${payment.leagueId}
-          UNION ALL SELECT 1 FROM ${paymentOccurrenceAllocations} WHERE organization_id = ${league.organizationId} AND league_id = ${payment.leagueId}
-        ) AS present
-      `);
-      if ((partial.rows[0] as { present?: boolean } | undefined)?.present) throw new FinancialEvidenceIncompatibleError();
+      throw new CanonicalAllocationRequiredError();
     }
     const [result] = await tx.insert(payments).values(payment).returning();
     return result;
@@ -303,6 +291,15 @@ export async function createCombinedPayments(
 ): Promise<Array<{ id: number; bowlerId: number; amount: number }>> {
   if (rows.length === 0) return [];
   return await db.transaction(async (tx) => {
+    const leagueIds = [...new Set(rows.map((row) => row.leagueId))];
+    for (const leagueId of leagueIds) {
+      const [league] = await tx.select({ organizationId: leagues.organizationId }).from(leagues).where(eq(leagues.id, leagueId)).limit(1);
+      if (!league) throw new Error("Payment league not found");
+      if (league.organizationId !== null) {
+        await lockLeagueSchedule(tx, league.organizationId, leagueId);
+        throw new CanonicalAllocationRequiredError();
+      }
+    }
     const inserted = await tx.insert(payments).values(rows).returning({
       id: payments.id,
       bowlerId: payments.bowlerId,
@@ -322,14 +319,20 @@ export async function getPaymentsByCombinedGroupId(groupId: string): Promise<Pay
 export async function updatePayment(id: number, payment: UpdatePayment): Promise<Payment> {
   const keys = Object.keys(payment);
   const result = await db.transaction(async (tx) => {
+    const [scope] = await tx.select({ leagueId: payments.leagueId, organizationId: leagues.organizationId })
+      .from(payments)
+      .innerJoin(leagues, eq(leagues.id, payments.leagueId))
+      .where(eq(payments.id, id)).limit(1);
+    if (!scope) return undefined;
+    if (scope.organizationId !== null) await lockLeagueSchedule(tx, scope.organizationId, scope.leagueId);
     const [current] = await tx.select({
       id: payments.id,
       paymentOperationId: payments.paymentOperationId,
     }).from(payments).where(eq(payments.id, id)).limit(1).for("update");
     if (!current) return undefined;
-    const [allocation] = await tx.select({ id: paymentOccurrenceAllocations.id })
-      .from(paymentOccurrenceAllocations)
-      .where(eq(paymentOccurrenceAllocations.paymentId, id))
+    const [allocation] = await tx.select({ id: paymentAllocations.id })
+      .from(paymentAllocations)
+      .where(eq(paymentAllocations.paymentId, id))
       .limit(1);
     if (current.paymentOperationId !== null || allocation) {
       throw new PaymentEvidenceImmutableError();
@@ -352,45 +355,63 @@ export async function updatePaymentReceiptCacheForOrganization(
   fields: Pick<UpdatePayment, "receiptUrl" | "receiptNumber">,
 ): Promise<Payment | undefined> {
   return db.transaction(async (tx) => {
-    const [current] = await tx.select({ payment: payments })
+    const [current] = await tx.select({ payment: payments, leagueId: payments.leagueId, paymentOperationId: payments.paymentOperationId })
       .from(payments)
       .innerJoin(leagues, and(eq(leagues.id, payments.leagueId), eq(leagues.organizationId, organizationId)))
-      .where(eq(payments.id, id)).limit(1).for("update");
+      .where(eq(payments.id, id)).limit(1);
     if (!current) return undefined;
+    await lockLeagueSchedule(tx, organizationId, current.leagueId);
+    const [allocation] = await tx.select({ id: paymentAllocations.id }).from(paymentAllocations).where(and(
+      eq(paymentAllocations.paymentId, id),
+      eq(paymentAllocations.organizationId, organizationId),
+      eq(paymentAllocations.leagueId, current.leagueId),
+    )).limit(1).for("update");
+    if (allocation || current.paymentOperationId !== null) throw new PaymentEvidenceImmutableError();
     const [updated] = await tx.update(payments).set(fields).where(eq(payments.id, id)).returning();
     return updated;
   });
 }
 
 export async function refundPayment(id: number, providerRefundId?: string, reason?: string): Promise<Payment> {
-  const [result] = await db
-    .update(payments)
-    .set({
-      status: 'refunded',
-      squareRefundId: providerRefundId || null,
-      refundReason: reason || null,
-      refundedAt: new Date().toISOString(),
-    })
-    .where(eq(payments.id, id))
-    .returning();
-  return result;
+  return db.transaction(async (tx) => {
+    const [scope] = await tx.select({ leagueId: payments.leagueId, organizationId: leagues.organizationId })
+      .from(payments).innerJoin(leagues, eq(leagues.id, payments.leagueId)).where(eq(payments.id, id)).limit(1).for("update");
+    if (!scope) throw new Error("Payment not found");
+    if (scope.organizationId !== null) await lockLeagueSchedule(tx, scope.organizationId, scope.leagueId);
+    const [result] = await tx.update(payments).set({
+      status: 'refunded', squareRefundId: providerRefundId || null, refundReason: reason || null, refundedAt: new Date().toISOString(),
+    }).where(eq(payments.id, id)).returning();
+    if (scope.organizationId !== null) {
+      await tx.update(paymentAllocations).set({ reviewRequired: true, reviewReason: reason || "provider_refund" })
+        .where(and(eq(paymentAllocations.paymentId, id), eq(paymentAllocations.organizationId, scope.organizationId), eq(paymentAllocations.leagueId, scope.leagueId)));
+    }
+    return result;
+  });
 }
 
 export async function openDispute(id: number, disputeId: string): Promise<Payment> {
-  const [result] = await db
-    .update(payments)
-    .set({
-      status: 'disputed',
-      disputeId,
-      disputedAt: new Date().toISOString(),
-    })
-    .where(eq(payments.id, id))
-    .returning();
-  return result;
+  return db.transaction(async (tx) => {
+    const [scope] = await tx.select({ leagueId: payments.leagueId, organizationId: leagues.organizationId })
+      .from(payments).innerJoin(leagues, eq(leagues.id, payments.leagueId)).where(eq(payments.id, id)).limit(1).for("update");
+    if (!scope) throw new Error("Payment not found");
+    if (scope.organizationId !== null) await lockLeagueSchedule(tx, scope.organizationId, scope.leagueId);
+    const [result] = await tx.update(payments).set({ status: 'disputed', disputeId, disputedAt: new Date().toISOString() }).where(eq(payments.id, id)).returning();
+    if (scope.organizationId !== null) {
+      await tx.update(paymentAllocations).set({ reviewRequired: true, reviewReason: "provider_dispute" })
+        .where(and(eq(paymentAllocations.paymentId, id), eq(paymentAllocations.organizationId, scope.organizationId), eq(paymentAllocations.leagueId, scope.leagueId)));
+    }
+    return result;
+  });
 }
 
 export async function deletePayment(id: number): Promise<void> {
   await db.transaction(async (tx) => {
+    const [scope] = await tx.select({ leagueId: payments.leagueId, organizationId: leagues.organizationId })
+      .from(payments)
+      .innerJoin(leagues, eq(leagues.id, payments.leagueId))
+      .where(eq(payments.id, id)).limit(1);
+    if (!scope) return;
+    if (scope.organizationId !== null) await lockLeagueSchedule(tx, scope.organizationId, scope.leagueId);
     const [payment] = await tx.select({
       id: payments.id,
       paymentOperationId: payments.paymentOperationId,
@@ -414,9 +435,9 @@ export async function deletePayment(id: number): Promise<void> {
       throw new PaymentOccurrenceEvidenceExistsError();
     }
 
-    const [occurrenceEvidence] = await tx.select({ id: paymentOccurrenceAllocations.id })
-      .from(paymentOccurrenceAllocations)
-      .where(eq(paymentOccurrenceAllocations.paymentId, id))
+    const [occurrenceEvidence] = await tx.select({ id: paymentAllocations.id })
+      .from(paymentAllocations)
+      .where(eq(paymentAllocations.paymentId, id))
       .limit(1);
     if (occurrenceEvidence) throw new PaymentOccurrenceEvidenceExistsError();
 

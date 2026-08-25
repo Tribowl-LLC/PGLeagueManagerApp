@@ -12,6 +12,7 @@ import {
 } from "@shared/schema";
 import type { InteractivePaymentSemanticSnapshot } from "./interactive-payment-operation-snapshot.js";
 import { persistInteractiveOccurrenceSnapshot, type InteractiveOccurrenceSelection } from "./interactive-occurrence-allocation.js";
+import { lockLeagueSchedule } from "../storage/league-schedule-lock.js";
 
 export interface InteractivePaymentAllocationInput {
   allocationIndex: number;
@@ -97,6 +98,7 @@ export async function prepareInteractivePaymentOperation(
     throw new PaymentOperationValidationError("Square provider location is required for occurrence-aware interactive payments");
   }
   return db.transaction(async (tx: PaymentOperationTransaction) => {
+    await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
     const operation = await storage.createOrGetGeneralInteractivePaymentOperation({
       organizationId: input.organizationId,
       requestKey: input.requestKey,

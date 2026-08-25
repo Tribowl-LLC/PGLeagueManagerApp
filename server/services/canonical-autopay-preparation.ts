@@ -13,6 +13,8 @@ import { createOrGetCanonicalAutopayPaymentOperation, type PaymentOperationTrans
 import { fingerprintPaymentOperationOccurrenceSnapshot, validatePaymentOperationOccurrenceSnapshot } from "./payment-operation-occurrence-snapshot.js";
 import { requireLiveF1ActivationEvidence } from "./f3-workflow.js";
 
+const PR2_AUTOPAY_ENABLED = false;
+
 export class CanonicalAutopayPreparationError extends Error {
   constructor(public readonly code: string, message = "Canonical auto-pay preparation is unavailable") { super(message); this.name = "CanonicalAutopayPreparationError"; }
 }
@@ -32,7 +34,9 @@ async function cancelPlan(tx: F4Tx, plan: typeof occurrenceCollectionPlans.$infe
 
 /** Prepare one exact F3/D2 plan. The transaction contains no provider I/O. */
 export async function prepareCanonicalAutopayPlan(input: { organizationId: number; leagueId: number; d2PlanId: string; now?: Date }): Promise<{ kind: "prepared" | "existing" | "cancelled"; operation?: typeof paymentOperations.$inferSelect }> {
-  if (!canonicalF3AutopayEnabled || !canonicalF4AutopayExecutionEnabled) return { kind: "cancelled" };
+  // The legacy authorities are deliberately absent after migration 0032;
+  // this function remains as a compatibility seam for PR2 only.
+  if (!PR2_AUTOPAY_ENABLED || !canonicalF3AutopayEnabled || !canonicalF4AutopayExecutionEnabled) return { kind: "cancelled" };
   const now = input.now ?? new Date();
   try {
     return await db.transaction(async (tx) => {

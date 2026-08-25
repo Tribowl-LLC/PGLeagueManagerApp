@@ -1,9 +1,11 @@
-import { and, eq, inArray, isNotNull, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   bowlerLeagues,
   bowlers,
   leagues,
+  occurrencePaymentResponsibilities,
+  teamPaymentSlots,
   teams,
   type League,
   type InsertLeague,
@@ -39,6 +41,13 @@ export class LeagueCanonicalScheduleLockedError extends Error {
   }
 }
 
+export class LeagueSubstituteConfigurationLockedError extends Error {
+  constructor() {
+    super('Substitute access and payment regime cannot change after the first canonical responsibility');
+    this.name = 'LeagueSubstituteConfigurationLockedError';
+  }
+}
+
 const CANONICAL_UPDATE_FIELDS = [
   'organizationId',
   'locationId',
@@ -51,6 +60,7 @@ const CANONICAL_UPDATE_FIELDS = [
   'skipDates',
   'cancelledDates',
   'weeklyFee',
+  'payingLineupSize',
   'paymentMode',
 ] as const satisfies readonly (keyof UpdateLeague)[];
 
@@ -74,6 +84,10 @@ function sameCanonicalValue(field: typeof CANONICAL_UPDATE_FIELDS[number], left:
       : value ?? null;
     return normalize(left) === normalize(right);
   }
+  return (left ?? null) === (right ?? null);
+}
+
+function sameValue(left: unknown, right: unknown): boolean {
   return (left ?? null) === (right ?? null);
 }
 
@@ -109,7 +123,8 @@ export async function createLeague(league: InsertLeague): Promise<League> {
 
 export async function updateLeague(id: number, league: UpdateLeague): Promise<League> {
   const canonicalFields = CANONICAL_UPDATE_FIELDS.filter((field) => league[field] !== undefined);
-  if (canonicalFields.length === 0) {
+  const substituteConfigurationChanged = league.substituteAccess !== undefined || league.substitutePaymentRegime !== undefined;
+  if (canonicalFields.length === 0 && !substituteConfigurationChanged) {
     const [result] = await db.update(leagues).set(league).where(eq(leagues.id, id)).returning();
     cacheInvalidate('leagues:');
     return result;
@@ -128,9 +143,39 @@ export async function updateLeague(id: number, league: UpdateLeague): Promise<Le
     }
 
     const changedFields = canonicalFields.filter((field) => !sameCanonicalValue(field, league[field], current[field]));
+    if (changedFields.includes('payingLineupSize')) {
+      const requestedSize = league.payingLineupSize;
+      if (requestedSize !== undefined && requestedSize !== null && current.organizationId !== null) {
+        const [outOfRange] = await tx.select({ id: teamPaymentSlots.id })
+          .from(teamPaymentSlots)
+          .where(and(
+            eq(teamPaymentSlots.organizationId, current.organizationId),
+            eq(teamPaymentSlots.leagueId, id),
+            sql`${teamPaymentSlots.slotIndex} >= ${requestedSize}`,
+          ))
+          .limit(1);
+        if (outOfRange) throw new LeagueCanonicalScheduleLockedError();
+      }
+    }
     if (changedFields.length > 0 && await hasLeagueOccurrenceEvidence(tx, current.organizationId, id)) {
       if (changedFields.length === 1 && changedFields[0] === 'paymentMode') throw new LeaguePaymentModeLockedError();
       throw new LeagueCanonicalScheduleLockedError();
+    }
+
+    const substituteConfigChanged =
+      (league.substituteAccess !== undefined && !sameValue(league.substituteAccess, current.substituteAccess))
+      || (league.substitutePaymentRegime !== undefined && !sameValue(league.substitutePaymentRegime, current.substitutePaymentRegime));
+    if (substituteConfigChanged) {
+      if (current.organizationId !== null) {
+        const [responsibility] = await tx.select({ id: occurrencePaymentResponsibilities.id })
+          .from(occurrencePaymentResponsibilities)
+          .where(and(
+            eq(occurrencePaymentResponsibilities.organizationId, current.organizationId),
+            eq(occurrencePaymentResponsibilities.leagueId, id),
+          ))
+          .limit(1);
+        if (responsibility) throw new LeagueSubstituteConfigurationLockedError();
+      }
     }
 
     const [updated] = await tx.update(leagues).set(league).where(eq(leagues.id, id)).returning();
@@ -224,13 +269,25 @@ export async function deleteLeague(id: number, organizationId: number | null): P
 }
 
 export async function archiveLeague(id: number): Promise<League> {
-  const [result] = await db.update(leagues).set({ active: false }).where(eq(leagues.id, id)).returning();
+  const result = await db.transaction(async (tx) => {
+    const [current] = await tx.select({ organizationId: leagues.organizationId }).from(leagues).where(eq(leagues.id, id)).limit(1);
+    if (!current) throw new Error(`League with ID ${id} not found`);
+    if (current.organizationId !== null) await lockLeagueSchedule(tx, current.organizationId, id);
+    const [updated] = await tx.update(leagues).set({ active: false }).where(eq(leagues.id, id)).returning();
+    return updated;
+  });
   cacheInvalidate('leagues:');
   return result;
 }
 
 export async function restoreLeague(id: number): Promise<League> {
-  const [result] = await db.update(leagues).set({ active: true }).where(eq(leagues.id, id)).returning();
+  const result = await db.transaction(async (tx) => {
+    const [current] = await tx.select({ organizationId: leagues.organizationId }).from(leagues).where(eq(leagues.id, id)).limit(1);
+    if (!current) throw new Error(`League with ID ${id} not found`);
+    if (current.organizationId !== null) await lockLeagueSchedule(tx, current.organizationId, id);
+    const [updated] = await tx.update(leagues).set({ active: true }).where(eq(leagues.id, id)).returning();
+    return updated;
+  });
   cacheInvalidate('leagues:');
   return result;
 }

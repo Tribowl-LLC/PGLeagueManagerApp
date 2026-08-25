@@ -688,6 +688,8 @@ function buildNewSeasonLeague(
     name: source.name,
     description: source.description,
     payingLineupSize: source.payingLineupSize as 3 | 4,
+    substituteAccess: source.substituteAccess ?? "team_only",
+    substitutePaymentRegime: source.substitutePaymentRegime ?? "team_choice",
     active: true,
     allowPublicSignup: values.allowPublicSignup ?? source.allowPublicSignup,
     seasonStart: seasonStart.toISOString(),

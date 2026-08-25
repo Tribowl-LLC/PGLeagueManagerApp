@@ -3,7 +3,7 @@ import { storage } from '../storage';
 import { createLogger } from '../logger';
 import { db } from '../db.js';
 import { and, eq } from 'drizzle-orm';
-import { leagues, paymentOccurrenceAllocations } from '@shared/schema';
+import { leagues, paymentAllocations, paymentObligations } from '@shared/schema';
 
 const log = createLogger("AccessControl");
 
@@ -720,16 +720,22 @@ export async function hasReceiptReadAccessToPayment(req: Request, paymentId: num
     ? await storage.getPaymentByIdForOrganization(paymentId, organizationId)
     : await storage.getPaymentById(paymentId);
   if (!payment || payment.paidByUserId === req.user.id || payment.bowlerId === req.user.bowlerId) return Boolean(payment);
-  const [allocation] = await db.select({ id: paymentOccurrenceAllocations.id })
-    .from(paymentOccurrenceAllocations)
+  const [allocation] = await db.select({ id: paymentAllocations.id })
+    .from(paymentAllocations)
+    .innerJoin(paymentObligations, and(
+      eq(paymentObligations.id, paymentAllocations.obligationId),
+      eq(paymentObligations.organizationId, organizationId),
+      eq(paymentObligations.leagueId, paymentAllocations.leagueId),
+    ))
     .innerJoin(leagues, and(
-      eq(leagues.id, paymentOccurrenceAllocations.leagueId),
+      eq(leagues.id, paymentAllocations.leagueId),
       eq(leagues.organizationId, organizationId),
     ))
     .where(and(
-      eq(paymentOccurrenceAllocations.paymentId, paymentId),
-      eq(paymentOccurrenceAllocations.organizationId, organizationId),
-      eq(paymentOccurrenceAllocations.bowlerId, req.user.bowlerId ?? -1),
+      eq(paymentAllocations.paymentId, paymentId),
+      eq(paymentAllocations.organizationId, organizationId),
+      eq(paymentAllocations.state, "active"),
+      eq(paymentObligations.payerBowlerId, req.user.bowlerId ?? -1),
     )).limit(1);
   return Boolean(allocation);
 }
