@@ -143,6 +143,10 @@ export class SquarePaymentProvider implements PaymentProvider, CatalogProvider, 
     return '';
   }
 
+  async getProviderLocationId(): Promise<string> {
+    return this.getSquareLocationId();
+  }
+
   /**
    * Test-only: clear the per-process bootstrap cache so unit tests
    * can verify the lazy-bootstrap path runs again.

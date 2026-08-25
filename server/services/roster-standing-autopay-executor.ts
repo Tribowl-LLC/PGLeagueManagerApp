@@ -90,7 +90,8 @@ export class RosterStandingAutopayOperationExecutor {
     let provider;
     try {
       provider = await getPaymentProvider(snapshot.locationId ?? null);
-      if (provider.providerName !== snapshot.operation.providerName || String(provider.locationId) !== snapshot.consent.providerLocationId || !provider.validateCardId(sourceId) || !provider.hasCardOnFile || !(await provider.hasCardOnFile(customerId, sourceId))) throw new PaymentProviderError("The standing payment method is unavailable.", "PAYMENT_METHOD_INVALID", undefined, { disposition: "invalid_request", providerCode: "PAYMENT_METHOD_INVALID" });
+      const providerLocationId = typeof provider.getProviderLocationId === "function" ? (await provider.getProviderLocationId()).trim() : "";
+      if (provider.providerName !== snapshot.binding.providerName || providerLocationId !== snapshot.binding.providerLocationId || !provider.validateCardId(sourceId) || !provider.hasCardOnFile || !(await provider.hasCardOnFile(customerId, sourceId))) throw new PaymentProviderError("The standing payment method is unavailable.", "PAYMENT_METHOD_INVALID", undefined, { disposition: "invalid_request", providerCode: "PAYMENT_METHOD_INVALID" });
     } catch (error) {
       return this.recordFailure(operation, leaseToken, error, false);
     }
@@ -98,7 +99,7 @@ export class RosterStandingAutopayOperationExecutor {
     if (!cutoffClaimed) return getPaymentOperationForOrganization(operation.organizationId, operation.id);
     let result;
     try {
-      result = await provider.processPayment(sourceId, operation.amountMinor, false, customerId, undefined, { paymentKey: operation.providerIdempotencyKey, providerLocationId: snapshot.consent.providerLocationId ?? undefined, referenceId: operation.id });
+      result = await provider.processPayment(sourceId, operation.amountMinor, false, customerId, undefined, { paymentKey: operation.providerIdempotencyKey, providerLocationId: snapshot.binding.providerLocationId, referenceId: operation.id });
       if (result.status !== "COMPLETED" || !result.id) throw new PaymentProviderError("The standing payment outcome could not be confirmed.", "PAYMENT_NOT_COMPLETED", undefined, { disposition: "provider_unknown", providerCode: "PAYMENT_NOT_COMPLETED", providerOrderId: result.orderId });
     } catch (error) {
       return this.recordFailure(operation, leaseToken, error, true);
@@ -119,7 +120,7 @@ export class RosterStandingAutopayOperationExecutor {
       return recordPaymentOperationProviderUnknown({ organizationId: operation.organizationId, operationId: operation.id, leaseToken, providerObjectId: null, providerOrderId: error instanceof PaymentProviderError ? error.providerOrderId ?? null : null, errorCode, recoveryAt: retryAt(operation.attemptCount, now), now });
     }
     if (providerDisposition === "action_required") return recordPaymentOperationActionRequired({ organizationId: operation.organizationId, operationId: operation.id, leaseToken, errorCode, now });
-    if (providerDisposition === "provider_unknown") return recordPaymentOperationProviderUnknown({ organizationId: operation.organizationId, operationId: operation.id, leaseToken, errorCode, recoveryAt: retryAt(operation.attemptCount, now), now });
+    if (providerDisposition === "provider_unknown" && providerDispatchStarted) return recordPaymentOperationProviderUnknown({ organizationId: operation.organizationId, operationId: operation.id, leaseToken, errorCode, recoveryAt: retryAt(operation.attemptCount, now), now });
     if (providerDisposition === "transient") return schedulePaymentOperationRetry({ organizationId: operation.organizationId, operationId: operation.id, leaseToken, errorCode, errorClassification: "transient", nextAttemptAt: retryAt(operation.attemptCount, now), now });
     return recordPaymentOperationFailedTerminal({ organizationId: operation.organizationId, operationId: operation.id, leaseToken, errorCode, errorClassification: providerDisposition === "configuration" ? "configuration" : "invalid_request", now });
   }

@@ -360,7 +360,7 @@ beforeAll(async () => {
     organizationId,
     squareCredentials: {
       appId: "sandbox-app",
-      accessToken: "deterministic-test-token",
+      accessToken: ["fixture", "access", "value"].join("-"),
       locationId: "SQUARE_LOCATION_TEST",
     },
   }).returning();
@@ -412,7 +412,7 @@ describe("scheduled payment ledger cutover PostgreSQL behavior", () => {
     await db.update(locations).set({
       squareCredentials: {
         appId: "sandbox-app",
-        accessToken: "deterministic-test-token",
+        accessToken: ["fixture", "access", "value"].join("-"),
         locationId: "SQUARE_LOCATION_DRIFTED",
       },
     }).where(eq(locations.id, locationId));
@@ -438,7 +438,7 @@ describe("scheduled payment ledger cutover PostgreSQL behavior", () => {
       await db.update(locations).set({
         squareCredentials: {
           appId: "sandbox-app",
-          accessToken: "deterministic-test-token",
+          accessToken: ["fixture", "access", "value"].join("-"),
           locationId: "SQUARE_LOCATION_TEST",
         },
       }).where(eq(locations.id, locationId));

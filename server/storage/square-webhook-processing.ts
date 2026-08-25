@@ -251,7 +251,7 @@ async function findDisputeOperation(
     scheduledProviderLocationId: scheduledPaymentOperationSnapshots.providerLocationId,
     interactiveLocationId: interactivePaymentOperationSnapshots.locationId,
     interactiveProviderLocationId: interactivePaymentOperationSnapshots.providerLocationId,
-    standingProviderLocationId: autopayConsents.providerLocationId,
+    standingProviderLocationId: paymentOperationStandingAutopayBindings.providerLocationId,
   }).from(paymentOperations)
     .leftJoin(
       scheduledPaymentOperationSnapshots,

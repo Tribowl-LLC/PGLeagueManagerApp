@@ -11,12 +11,6 @@ const commandKey = z.string().trim().min(16).max(109).regex(/^[A-Za-z0-9_-]+$/);
 export const standingAutopayConsentRequestSchema = z.object({
   commandKey,
   sourceId: z.string().trim().min(1).max(255),
-  // The server derives the tenant-owned provider customer from the payer;
-  // accepting this value is retained only for idempotent callers that already
-  // have it and is never trusted as authority.
-  customerId: z.string().trim().min(1).max(255).optional(),
-  providerName: z.string().trim().regex(/^[a-z0-9][a-z0-9_-]{0,31}$/),
-  providerLocationId: z.string().trim().min(1).max(255),
   partnerBowlerIds: z.array(z.number().int().positive()).max(32).default([]),
 }).strict();
 
@@ -35,8 +29,6 @@ export type StandingAutopayConsentWire = {
   consentVersion: number | null;
   state: "pending" | "active" | "revoked" | "expired" | "none";
   paymentMode: "weekly";
-  providerName: string | null;
-  providerLocationId: string | null;
   partnerBowlerIds: number[];
 };
 

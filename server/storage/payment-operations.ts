@@ -2788,7 +2788,7 @@ export async function finalizeChargeFromWebhookEvidenceInTransaction(
     ) throw new PaymentOperationImmutableMismatchError();
     rows = interactiveWebhookPaymentRows(operation, snapshot, input);
   } else if (operation.operationType === "standing_autopay_charge") {
-    const [binding] = await tx.select({ providerLocationId: autopayConsents.providerLocationId, collectionMode: paymentOperationStandingAutopayBindings.collectionMode }).from(paymentOperationStandingAutopayBindings).innerJoin(autopayConsents, and(
+    const [binding] = await tx.select({ providerLocationId: paymentOperationStandingAutopayBindings.providerLocationId, collectionMode: paymentOperationStandingAutopayBindings.collectionMode }).from(paymentOperationStandingAutopayBindings).innerJoin(autopayConsents, and(
       eq(autopayConsents.id, paymentOperationStandingAutopayBindings.consentId),
       eq(autopayConsents.organizationId, input.organizationId),
       eq(autopayConsents.leagueId, operation.leagueId ?? 0),
@@ -3046,6 +3046,7 @@ export async function getNextStandingAutopayWake(): Promise<StandingAutopayWake 
        AND o.league_id = c.league_id
        AND o.state IN ('open', 'partially_settled')
        AND o.due_at IS NOT NULL
+       AND o.due_at >= c.activated_at
        AND NOT EXISTS (
          SELECT 1 FROM payment_operation_roster_snapshot_items ri
          WHERE ri.organization_id = o.organization_id
@@ -3060,11 +3061,19 @@ export async function getNextStandingAutopayWake(): Promise<StandingAutopayWake 
             AND blocked.league_id = c.league_id
             AND blocked.operation_type = 'standing_autopay_charge'
             AND blocked.status IN ('canceled', 'failed_terminal', 'action_required', 'reconciliation_required')
-            AND blocked.target_key LIKE concat(
+           AND blocked.target_key LIKE concat(
               'standing-autopay:', c.organization_id, ':', c.league_id, ':',
-              c.payer_bowler_id, ':',
+              c.payer_bowler_id, ':', c.id, ':', c.consent_version, ':',
               to_char(o.due_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'), ':%'
             )
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM financial_commands decided
+         WHERE decided.organization_id = c.organization_id
+           AND decided.league_id = c.league_id
+           AND decided.command_type = 'standing_autopay_cutoff'
+           AND decided.idempotency_key = concat(c.id, ':', c.consent_version, ':', to_char(o.due_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+           AND decided.state = 'applied'
        )
        AND (
          o.payer_bowler_id = c.payer_bowler_id

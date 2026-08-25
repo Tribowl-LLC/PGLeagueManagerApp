@@ -1,4 +1,5 @@
 import { pgTable, serial, integer, text, timestamp, uniqueIndex, index } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { bowlers } from "./bowlers";
@@ -22,7 +23,7 @@ import { organizations } from "./organizations";
  * org-less data policy honored: any access-control helper denies rows
  * with NULL organizationId, even for system_admin.
  */
-export const LINK_STATUSES = ["pending", "accepted"] as const;
+export const LINK_STATUSES = ["pending", "accepted", "retired"] as const;
 export type LinkStatus = (typeof LINK_STATUSES)[number];
 
 export const bowlerPaymentLinks = pgTable(
@@ -49,7 +50,7 @@ export const bowlerPaymentLinks = pgTable(
     pairUnique: uniqueIndex("bowler_payment_links_pair_unique_idx").on(
       table.bowlerAId,
       table.bowlerBId,
-    ),
+    ).where(sql`${table.status} <> 'retired'`),
     tenantIdentityUnique: uniqueIndex("bowler_payment_links_id_organization_unique").on(
       table.id,
       table.organizationId,

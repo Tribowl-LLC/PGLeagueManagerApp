@@ -39,11 +39,20 @@ CREATE TABLE "payment_operation_standing_autopay_bindings" (
 	"league_id" integer NOT NULL,
 	"consent_id" uuid NOT NULL,
 	"consent_version" integer NOT NULL,
+	"provider_name" varchar(32) NOT NULL,
+	"provider_location_id" varchar(255) NOT NULL,
+	"trigger_occurrence_id" uuid NOT NULL,
+	"paired_occurrence_id" uuid,
+	"collection_group_id" uuid,
+	"collection_group_revision" integer,
+	"collection_group_fingerprint" varchar(128),
+	"trigger_member_id" uuid,
+	"paired_member_id" uuid,
 	"cutoff_at" timestamp with time zone NOT NULL,
 	"collection_mode" text NOT NULL,
 	"evidence_fingerprint" varchar(128) NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "payment_operation_standing_autopay_bindings_version_check" CHECK ("payment_operation_standing_autopay_bindings"."consent_version" > 0 AND "payment_operation_standing_autopay_bindings"."evidence_fingerprint" ~ '^lvstandingcutoff:v1:[0-9a-f]{64}$'),
+	CONSTRAINT "payment_operation_standing_autopay_bindings_version_check" CHECK ("payment_operation_standing_autopay_bindings"."consent_version" > 0 AND "payment_operation_standing_autopay_bindings"."evidence_fingerprint" ~ '^lvstandingcutoff:v1:[0-9a-f]{64}$' AND "payment_operation_standing_autopay_bindings"."provider_name" ~ '^[a-z0-9][a-z0-9_-]{0,31}$' AND length(btrim("payment_operation_standing_autopay_bindings"."provider_location_id")) > 0 AND (("payment_operation_standing_autopay_bindings"."collection_group_id" IS NULL AND "payment_operation_standing_autopay_bindings"."collection_group_revision" IS NULL AND "payment_operation_standing_autopay_bindings"."collection_group_fingerprint" IS NULL AND "payment_operation_standing_autopay_bindings"."paired_occurrence_id" IS NULL AND "payment_operation_standing_autopay_bindings"."trigger_member_id" IS NULL AND "payment_operation_standing_autopay_bindings"."paired_member_id" IS NULL) OR ("payment_operation_standing_autopay_bindings"."collection_group_id" IS NOT NULL AND "payment_operation_standing_autopay_bindings"."collection_group_revision" IS NOT NULL AND "payment_operation_standing_autopay_bindings"."collection_group_revision" > 0 AND "payment_operation_standing_autopay_bindings"."collection_group_fingerprint" ~ '^lvcollectiongroup:v1:[0-9a-f]{64}$' AND "payment_operation_standing_autopay_bindings"."paired_occurrence_id" IS NOT NULL AND "payment_operation_standing_autopay_bindings"."trigger_member_id" IS NOT NULL AND "payment_operation_standing_autopay_bindings"."paired_member_id" IS NOT NULL)) ),
 	CONSTRAINT "payment_operation_standing_autopay_bindings_collection_mode_check" CHECK ("payment_operation_standing_autopay_bindings"."collection_mode" IN ('weekly', 'double_pay'))
 );
 --> statement-breakpoint
@@ -53,6 +62,7 @@ CREATE TABLE "payment_operation_standing_autopay_participants" (
 	"organization_id" integer NOT NULL,
 	"league_id" integer NOT NULL,
 	"allocation_index" integer NOT NULL,
+	"obligation_id" uuid NOT NULL,
 	"bowler_id" integer NOT NULL,
 	"role" text NOT NULL,
 	"payment_link_id" integer,
@@ -73,6 +83,7 @@ ALTER TABLE "autopay_consents" ADD COLUMN "payment_mode" text DEFAULT 'weekly' N
 ALTER TABLE "autopay_consents" ADD COLUMN "consent_fingerprint" varchar(128) DEFAULT 'lvstandingconsent:v1:0000000000000000000000000000000000000000000000000000000000000000' NOT NULL;--> statement-breakpoint
 ALTER TABLE "autopay_consents" ALTER COLUMN "consent_fingerprint" DROP DEFAULT;--> statement-breakpoint
 ALTER TABLE "autopay_consents" ADD COLUMN "provider_location_id" varchar(255);--> statement-breakpoint
+ALTER TABLE "autopay_consents" ADD COLUMN "activated_at" timestamp with time zone DEFAULT now() NOT NULL;--> statement-breakpoint
 ALTER TABLE "payment_operation_roster_snapshots" ADD COLUMN "snapshot_kind" text DEFAULT 'interactive' NOT NULL;--> statement-breakpoint
 ALTER TABLE "payment_operation_roster_snapshots" ADD COLUMN "collection_mode" text;--> statement-breakpoint
 ALTER TABLE "payment_operation_roster_snapshots" ADD COLUMN "cutoff_at" timestamp with time zone;--> statement-breakpoint
@@ -91,6 +102,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS "bowler_payment_links_id_organization_unique" 
 CREATE UNIQUE INDEX IF NOT EXISTS "autopay_consents_identity_unique" ON "autopay_consents" USING btree ("id","organization_id","league_id","payer_bowler_id","consent_version");--> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "autopay_consents_tenant_identity_unique" ON "autopay_consents" USING btree ("id","organization_id","league_id");--> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "autopay_consents_fingerprint_unique" ON "autopay_consents" USING btree ("organization_id","league_id","payer_bowler_id","consent_fingerprint");--> statement-breakpoint
+DROP INDEX IF EXISTS "bowler_payment_links_pair_unique_idx";--> statement-breakpoint
+CREATE UNIQUE INDEX "bowler_payment_links_pair_unique_idx" ON "bowler_payment_links" USING btree ("bowler_a_id","bowler_b_id") WHERE "status" <> 'retired';--> statement-breakpoint
 ALTER TABLE "autopay_consent_partners" ADD CONSTRAINT "autopay_consent_partners_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "autopay_consent_partners" ADD CONSTRAINT "autopay_consent_partners_league_tenant_fk" FOREIGN KEY ("league_id","organization_id") REFERENCES "public"."leagues"("id","organization_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "autopay_consent_partners" ADD CONSTRAINT "autopay_consent_partners_consent_fk" FOREIGN KEY ("consent_id","organization_id","league_id") REFERENCES "public"."autopay_consents"("id","organization_id","league_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
@@ -99,10 +112,16 @@ ALTER TABLE "autopay_consent_partners" ADD CONSTRAINT "autopay_consent_partners_
 ALTER TABLE "payment_operation_standing_autopay_bindings" ADD CONSTRAINT "payment_operation_standing_autopay_bindings_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "payment_operation_standing_autopay_bindings" ADD CONSTRAINT "payment_operation_standing_autopay_bindings_operation_fk" FOREIGN KEY ("operation_id","organization_id","league_id") REFERENCES "public"."payment_operations"("id","organization_id","league_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "payment_operation_standing_autopay_bindings" ADD CONSTRAINT "payment_operation_standing_autopay_bindings_consent_fk" FOREIGN KEY ("consent_id","organization_id","league_id") REFERENCES "public"."autopay_consents"("id","organization_id","league_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "payment_operation_standing_autopay_bindings" ADD CONSTRAINT "payment_operation_standing_autopay_bindings_trigger_occurrence_fk" FOREIGN KEY ("trigger_occurrence_id","organization_id","league_id") REFERENCES "public"."league_occurrences"("id","organization_id","league_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "payment_operation_standing_autopay_bindings" ADD CONSTRAINT "payment_operation_standing_autopay_bindings_paired_occurrence_fk" FOREIGN KEY ("paired_occurrence_id","organization_id","league_id") REFERENCES "public"."league_occurrences"("id","organization_id","league_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "payment_operation_standing_autopay_bindings" ADD CONSTRAINT "payment_operation_standing_autopay_bindings_group_fk" FOREIGN KEY ("collection_group_id","organization_id","league_id") REFERENCES "public"."canonical_collection_groups"("id","organization_id","league_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "payment_operation_standing_autopay_bindings" ADD CONSTRAINT "payment_operation_standing_autopay_bindings_trigger_member_fk" FOREIGN KEY ("trigger_member_id","organization_id","league_id") REFERENCES "public"."canonical_collection_group_members"("id","organization_id","league_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "payment_operation_standing_autopay_bindings" ADD CONSTRAINT "payment_operation_standing_autopay_bindings_paired_member_fk" FOREIGN KEY ("paired_member_id","organization_id","league_id") REFERENCES "public"."canonical_collection_group_members"("id","organization_id","league_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "payment_operation_standing_autopay_participants" ADD CONSTRAINT "payment_operation_standing_autopay_participants_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "payment_operation_standing_autopay_participants" ADD CONSTRAINT "payment_operation_standing_autopay_participants_operation_fk" FOREIGN KEY ("operation_id","organization_id","league_id") REFERENCES "public"."payment_operation_standing_autopay_bindings"("operation_id","organization_id","league_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "payment_operation_standing_autopay_participants" ADD CONSTRAINT "payment_operation_standing_autopay_participants_bowler_fk" FOREIGN KEY ("bowler_id","organization_id") REFERENCES "public"."bowlers"("id","organization_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "payment_operation_standing_autopay_participants" ADD CONSTRAINT "payment_operation_standing_autopay_participants_link_fk" FOREIGN KEY ("payment_link_id","organization_id") REFERENCES "public"."bowler_payment_links"("id","organization_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "payment_operation_standing_autopay_participants" ADD CONSTRAINT "payment_operation_standing_autopay_participants_obligation_fk" FOREIGN KEY ("obligation_id","organization_id","league_id") REFERENCES "public"."payment_obligations"("id","organization_id","league_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "autopay_consent_partners_identity_unique" ON "autopay_consent_partners" USING btree ("id","organization_id","league_id");--> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "autopay_consent_partners_partner_unique" ON "autopay_consent_partners" USING btree ("organization_id","league_id","consent_id","consent_version","partner_bowler_id");--> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "payment_operation_standing_autopay_bindings_identity_unique" ON "payment_operation_standing_autopay_bindings" USING btree ("operation_id","organization_id","league_id");--> statement-breakpoint
@@ -154,7 +173,7 @@ ALTER TABLE "payment_operations" ADD CONSTRAINT "payment_operations_trigger_occu
       ))
     ) OR (
       "payment_operations"."operation_type" = 'standing_autopay_charge'
-      AND "payment_operations"."trigger_occurrence_id" IS NULL
+      AND "payment_operations"."trigger_occurrence_id" IS NOT NULL
       AND "payment_operations"."league_id" IS NOT NULL
     ) OR (
       "payment_operations"."operation_type" = 'canonical_autopay_charge'
@@ -185,12 +204,12 @@ BEGIN
   IF ROW(NEW.id, NEW.organization_id, NEW.league_id, NEW.payer_bowler_id,
           NEW.consent_version, NEW.payment_mode, NEW.consent_fingerprint,
           NEW.provider_name, NEW.provider_location_id, NEW.encrypted_source_id,
-          NEW.encrypted_customer_id, NEW.created_by_user_id, NEW.created_at)
+          NEW.encrypted_customer_id, NEW.created_by_user_id, NEW.activated_at, NEW.created_at)
       IS DISTINCT FROM
      ROW(OLD.id, OLD.organization_id, OLD.league_id, OLD.payer_bowler_id,
           OLD.consent_version, OLD.payment_mode, OLD.consent_fingerprint,
           OLD.provider_name, OLD.provider_location_id, OLD.encrypted_source_id,
-          OLD.encrypted_customer_id, OLD.created_by_user_id, OLD.created_at)
+          OLD.encrypted_customer_id, OLD.created_by_user_id, OLD.activated_at, OLD.created_at)
   THEN RAISE EXCEPTION 'standing consent identity is immutable'; END IF;
   IF NOT (
     NEW.state = OLD.state
@@ -217,3 +236,87 @@ CREATE CONSTRAINT TRIGGER payment_operation_roster_snapshot_item_sum
 AFTER INSERT OR UPDATE ON payment_operation_roster_snapshot_items
 DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
 EXECUTE FUNCTION roster_payment_snapshot_sum_guard();
+--> statement-breakpoint
+-- Standing bindings are the durable authority for a cutoff.  Keep the
+-- trigger/group/member identity in relational evidence and validate it at
+-- commit so operation, binding, and published collection rows cannot drift.
+CREATE OR REPLACE FUNCTION roster_standing_binding_evidence_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  op record;
+  consent record;
+  trigger_member_count integer;
+  paired_member_count integer;
+BEGIN
+  SELECT po.operation_type, po.trigger_occurrence_id, po.organization_id, po.league_id
+    INTO op FROM payment_operations po
+   WHERE po.id = NEW.operation_id AND po.organization_id = NEW.organization_id AND po.league_id = NEW.league_id;
+  IF op.operation_type IS DISTINCT FROM 'standing_autopay_charge' OR op.trigger_occurrence_id IS DISTINCT FROM NEW.trigger_occurrence_id THEN
+    RAISE EXCEPTION 'standing binding operation trigger identity mismatch';
+  END IF;
+  SELECT c.consent_version, c.payer_bowler_id, c.state, c.payment_mode
+    INTO consent FROM autopay_consents c
+   WHERE c.id = NEW.consent_id AND c.organization_id = NEW.organization_id AND c.league_id = NEW.league_id;
+  IF consent.consent_version IS NULL OR consent.consent_version <> NEW.consent_version OR consent.payment_mode <> 'weekly' THEN
+    RAISE EXCEPTION 'standing binding consent identity mismatch';
+  END IF;
+  IF NEW.collection_mode = 'weekly' THEN
+    IF NEW.collection_group_id IS NOT NULL OR NEW.collection_group_revision IS NOT NULL OR NEW.collection_group_fingerprint IS NOT NULL OR NEW.paired_occurrence_id IS NOT NULL OR NEW.trigger_member_id IS NOT NULL OR NEW.paired_member_id IS NOT NULL THEN
+      RAISE EXCEPTION 'weekly standing binding cannot contain paired group evidence';
+    END IF;
+  ELSE
+    SELECT count(*) FILTER (WHERE role = 'trigger'), count(*) FILTER (WHERE role = 'paired')
+      INTO trigger_member_count, paired_member_count
+      FROM canonical_collection_group_members
+     WHERE id IN (NEW.trigger_member_id, NEW.paired_member_id)
+       AND organization_id = NEW.organization_id AND league_id = NEW.league_id
+       AND group_id = NEW.collection_group_id AND active = true;
+    IF NEW.collection_group_id IS NULL OR NEW.collection_group_revision IS NULL OR NEW.collection_group_fingerprint IS NULL OR NEW.paired_occurrence_id IS NULL OR NEW.trigger_member_id IS NULL OR NEW.paired_member_id IS NULL OR trigger_member_count <> 1 OR paired_member_count <> 1 THEN
+      RAISE EXCEPTION 'double-pay standing binding requires exact trigger and paired member evidence';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM canonical_collection_groups g WHERE g.id = NEW.collection_group_id AND g.organization_id = NEW.organization_id AND g.league_id = NEW.league_id AND g.state = 'published' AND g.current_revision = NEW.collection_group_revision AND g.fingerprint = NEW.collection_group_fingerprint) THEN
+      RAISE EXCEPTION 'standing binding collection group revision is not published';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM canonical_collection_group_members m WHERE m.id = NEW.trigger_member_id AND m.occurrence_id = NEW.trigger_occurrence_id AND m.role = 'trigger' AND m.active = true) OR NOT EXISTS (SELECT 1 FROM canonical_collection_group_members m WHERE m.id = NEW.paired_member_id AND m.occurrence_id = NEW.paired_occurrence_id AND m.role = 'paired' AND m.active = true) THEN
+      RAISE EXCEPTION 'standing binding member occurrence identity mismatch';
+    END IF;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM league_occurrences o WHERE o.id = NEW.trigger_occurrence_id AND o.organization_id = NEW.organization_id AND o.league_id = NEW.league_id AND o.start_at = NEW.cutoff_at) THEN
+    RAISE EXCEPTION 'standing binding cutoff does not match trigger occurrence';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+--> statement-breakpoint
+CREATE CONSTRAINT TRIGGER payment_operation_standing_autopay_binding_evidence
+AFTER INSERT OR UPDATE ON payment_operation_standing_autopay_bindings
+DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION roster_standing_binding_evidence_guard();
+--> statement-breakpoint
+CREATE OR REPLACE FUNCTION roster_standing_participant_evidence_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  binding record;
+  consent record;
+  item record;
+  partner record;
+BEGIN
+  SELECT b.consent_id, b.consent_version INTO binding
+    FROM payment_operation_standing_autopay_bindings b
+   WHERE b.operation_id = NEW.operation_id AND b.organization_id = NEW.organization_id AND b.league_id = NEW.league_id;
+  IF binding.consent_id IS NULL OR binding.consent_version <> NEW.consent_version THEN RAISE EXCEPTION 'standing participant consent version mismatch'; END IF;
+  SELECT i.obligation_id INTO item FROM payment_operation_roster_snapshot_items i
+   WHERE i.operation_id = NEW.operation_id AND i.organization_id = NEW.organization_id AND i.league_id = NEW.league_id AND i.allocation_index = NEW.allocation_index;
+  IF item.obligation_id IS NULL OR item.obligation_id <> NEW.obligation_id THEN RAISE EXCEPTION 'standing participant snapshot item mismatch'; END IF;
+  SELECT c.payer_bowler_id INTO consent FROM autopay_consents c WHERE c.id = binding.consent_id AND c.organization_id = NEW.organization_id AND c.league_id = NEW.league_id;
+  IF NEW.role = 'payer' THEN
+    IF NEW.bowler_id <> consent.payer_bowler_id OR NEW.payment_link_id IS NOT NULL OR NEW.link_fingerprint IS NOT NULL THEN RAISE EXCEPTION 'standing payer participant identity mismatch'; END IF;
+  ELSE
+    SELECT cp.link_fingerprint, l.status, l.bowler_a_id, l.bowler_b_id INTO partner FROM autopay_consent_partners cp INNER JOIN bowler_payment_links l ON l.id = cp.payment_link_id AND l.organization_id = cp.organization_id
+     WHERE cp.consent_id = binding.consent_id AND cp.consent_version = binding.consent_version AND cp.organization_id = NEW.organization_id AND cp.league_id = NEW.league_id AND cp.partner_bowler_id = NEW.bowler_id AND cp.payment_link_id = NEW.payment_link_id;
+    IF partner.link_fingerprint IS NULL OR partner.status <> 'accepted' OR partner.link_fingerprint <> NEW.link_fingerprint OR consent.payer_bowler_id NOT IN (partner.bowler_a_id, partner.bowler_b_id) THEN RAISE EXCEPTION 'standing partner participant authorization mismatch'; END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+--> statement-breakpoint
+CREATE CONSTRAINT TRIGGER payment_operation_standing_autopay_participant_evidence
+AFTER INSERT OR UPDATE ON payment_operation_standing_autopay_participants
+DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION roster_standing_participant_evidence_guard();

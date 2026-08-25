@@ -299,10 +299,11 @@ describe('Bowler payment links — lifecycle + cross-org denial', () => {
     const unlink = await apiDelete(`/api/bowler-links/${linkId}`, sessionA);
     expect(unlink.status).toBe(200);
     const remaining = await db
-      .select({ id: bowlerPaymentLinks.id })
+      .select({ id: bowlerPaymentLinks.id, status: bowlerPaymentLinks.status })
       .from(bowlerPaymentLinks)
       .where(eq(bowlerPaymentLinks.id, linkId));
-    expect(remaining).toHaveLength(0);
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]?.status).toBe("retired");
   });
 
   it('invite-by-bowlerId (task #702) blocks unclaimed bowler, self, cross-org; happy path links claimed bowler', async () => {

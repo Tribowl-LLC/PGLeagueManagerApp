@@ -302,7 +302,7 @@ export const paymentOperations = pgTable("payment_operations", {
       ))
     ) OR (
       ${table.operationType} = 'standing_autopay_charge'
-      AND ${table.triggerOccurrenceId} IS NULL
+      AND ${table.triggerOccurrenceId} IS NOT NULL
       AND ${table.leagueId} IS NOT NULL
     ) OR (
       ${table.operationType} = 'canonical_autopay_charge'

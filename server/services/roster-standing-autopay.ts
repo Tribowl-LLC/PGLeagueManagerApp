@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { and, asc, desc, eq, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import {
   autopayConsentPartners,
   autopayConsents,
@@ -76,6 +76,14 @@ function iso(value: string | Date): string {
   const parsed = value instanceof Date ? value : new Date(value);
   if (!Number.isFinite(parsed.getTime())) throw new StandingAutopayError("INVALID_TIMESTAMP", "The standing cutoff timestamp is invalid", 422);
   return parsed.toISOString();
+}
+
+async function providerLocationIdentity(provider: Awaited<ReturnType<typeof getPaymentProvider>>): Promise<string> {
+  const resolve = provider.getProviderLocationId;
+  if (typeof resolve !== "function") throw new StandingAutopayError("PAYMENT_PROVIDER_IDENTITY_UNAVAILABLE", "The payment provider location identity is unavailable", 422);
+  const value = (await resolve.call(provider)).trim();
+  if (!value) throw new StandingAutopayError("PAYMENT_PROVIDER_IDENTITY_UNAVAILABLE", "The payment provider location identity is unavailable", 422);
+  return value;
 }
 
 async function beginCommand(
@@ -172,7 +180,7 @@ async function activeConsent(tx: StandingTx, input: { organizationId: number; le
 
 async function eligibleRows(
   tx: StandingTx,
-  input: { organizationId: number; leagueId: number; payerBowlerIds: number[]; cutoffAt: string },
+  input: { organizationId: number; leagueId: number; payerBowlerIds: number[]; activationAt: string; cutoffAt: string; dueMode: "exact" | "paired"; occurrenceIds?: string[] },
 ): Promise<Array<{ obligation: typeof paymentObligations.$inferSelect; outstandingMinor: number }>> {
   const obligations = await tx.select({ obligation: paymentObligations })
     .from(paymentObligations)
@@ -186,7 +194,9 @@ async function eligibleRows(
       eq(paymentObligations.organizationId, input.organizationId), eq(paymentObligations.leagueId, input.leagueId),
       inArray(paymentObligations.payerBowlerId, input.payerBowlerIds),
       inArray(paymentObligations.state, ["open", "partially_settled"] as const),
-      lte(paymentObligations.dueAt, input.cutoffAt),
+      gte(paymentObligations.dueAt, input.activationAt),
+      ...(input.dueMode === "exact" ? [eq(paymentObligations.dueAt, input.cutoffAt)] : []),
+      ...(input.occurrenceIds?.length ? [inArray(paymentObligations.occurrenceId, input.occurrenceIds)] : []),
     )).orderBy(asc(paymentObligations.dueAt), asc(paymentObligations.payerBowlerId), asc(paymentObligations.occurrenceId), asc(paymentObligations.id)).for("update");
   const result: Array<{ obligation: typeof paymentObligations.$inferSelect; outstandingMinor: number }> = [];
   for (const row of obligations) {
@@ -202,38 +212,35 @@ async function eligibleRows(
   return result;
 }
 
-async function groupForCutoff(tx: StandingTx, input: { organizationId: number; leagueId: number; cutoffAt: string; obligations: Array<{ obligation: typeof paymentObligations.$inferSelect; outstandingMinor: number }> }): Promise<{ mode: "weekly" | "double_pay"; groupId: string | null; occurrenceIds: string[] }> {
-  const occurrenceIds = [...new Set(input.obligations.map((row) => row.obligation.occurrenceId))];
-  const groups = await tx.select({ group: canonicalCollectionGroups, member: canonicalCollectionGroupMembers }).from(canonicalCollectionGroups).innerJoin(canonicalCollectionGroupMembers, and(
-    eq(canonicalCollectionGroupMembers.groupId, canonicalCollectionGroups.id), eq(canonicalCollectionGroupMembers.organizationId, input.organizationId), eq(canonicalCollectionGroupMembers.leagueId, input.leagueId), eq(canonicalCollectionGroupMembers.active, true),
-  )).where(and(eq(canonicalCollectionGroups.organizationId, input.organizationId), eq(canonicalCollectionGroups.leagueId, input.leagueId), eq(canonicalCollectionGroups.state, "published"), inArray(canonicalCollectionGroupMembers.occurrenceId, occurrenceIds))).orderBy(asc(canonicalCollectionGroups.groupOrdinal), asc(canonicalCollectionGroupMembers.memberOrdinal)).for("share");
-  const trigger = groups.find((row) => row.member.role === "trigger" && occurrenceIds.includes(row.member.occurrenceId));
-  if (!trigger) return { mode: "weekly", groupId: null, occurrenceIds };
-  const members = groups.filter((row) => row.group.id === trigger.group.id).map((row) => row.member.occurrenceId);
-  const pairIds = [...new Set(members)];
-  return { mode: "double_pay", groupId: trigger.group.id, occurrenceIds: pairIds };
-}
+type StandingCutoffGroup = {
+  mode: "weekly" | "double_pay";
+  groupId: string | null;
+  groupRevision: number | null;
+  groupFingerprint: string | null;
+  triggerOccurrenceId: string;
+  pairedOccurrenceId: string | null;
+  triggerMemberId: string | null;
+  pairedMemberId: string | null;
+  occurrenceIds: string[];
+};
 
-async function addPairedRows(
-  tx: StandingTx,
-  input: { organizationId: number; leagueId: number; payerBowlerIds: number[]; cutoffAt: string; groupId: string; existing: Array<{ obligation: typeof paymentObligations.$inferSelect; outstandingMinor: number }> },
-): Promise<Array<{ obligation: typeof paymentObligations.$inferSelect; outstandingMinor: number }>> {
-  const members = await tx.select({ occurrenceId: canonicalCollectionGroupMembers.occurrenceId }).from(canonicalCollectionGroupMembers).where(and(
-    eq(canonicalCollectionGroupMembers.organizationId, input.organizationId), eq(canonicalCollectionGroupMembers.leagueId, input.leagueId), eq(canonicalCollectionGroupMembers.groupId, input.groupId), eq(canonicalCollectionGroupMembers.active, true),
-  )).orderBy(asc(canonicalCollectionGroupMembers.memberOrdinal));
-  const missing = members.map((row) => row.occurrenceId).filter((id) => !input.existing.some((row) => row.obligation.occurrenceId === id));
-  if (missing.length === 0) return input.existing;
-  const paired = await tx.select({ obligation: paymentObligations }).from(paymentObligations).where(and(
-    eq(paymentObligations.organizationId, input.organizationId), eq(paymentObligations.leagueId, input.leagueId), inArray(paymentObligations.occurrenceId, missing), inArray(paymentObligations.payerBowlerId, input.payerBowlerIds), inArray(paymentObligations.state, ["open", "partially_settled"] as const),
-  )).orderBy(asc(paymentObligations.dueAt), asc(paymentObligations.payerBowlerId), asc(paymentObligations.occurrenceId), asc(paymentObligations.id)).for("update");
-  const result = [...input.existing];
-  for (const row of paired) {
-    const [allocated] = await tx.select({ total: sql<number>`COALESCE(SUM(${paymentAllocations.amountMinor}), 0)` }).from(paymentAllocations).where(and(eq(paymentAllocations.organizationId, input.organizationId), eq(paymentAllocations.leagueId, input.leagueId), eq(paymentAllocations.obligationId, row.obligation.id), eq(paymentAllocations.state, "active")));
-    const [reserved] = await tx.select({ total: sql<number>`COALESCE(SUM(${paymentOperationRosterSnapshotItems.amountMinor}), 0)` }).from(paymentOperationRosterSnapshotItems).where(and(eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId), eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId), eq(paymentOperationRosterSnapshotItems.obligationId, row.obligation.id), eq(paymentOperationRosterSnapshotItems.state, "reserved")));
-    const outstandingMinor = row.obligation.amountMinor - Number(allocated?.total ?? 0) - Number(reserved?.total ?? 0);
-    if (outstandingMinor > 0) result.push({ obligation: row.obligation, outstandingMinor });
-  }
-  return result.sort((a, b) => a.obligation.dueAt.localeCompare(b.obligation.dueAt) || a.obligation.payerBowlerId - b.obligation.payerBowlerId || a.obligation.id.localeCompare(b.obligation.id));
+/** Resolve one exact published trigger. A double-pay is all-or-nothing: the
+ * group identity and both member identities are captured before obligations
+ * are selected. */
+async function groupForCutoff(tx: StandingTx, input: { organizationId: number; leagueId: number; cutoffAt: string }): Promise<StandingCutoffGroup> {
+  const occurrence = (await tx.select({ id: leagueOccurrences.id }).from(leagueOccurrences).where(and(eq(leagueOccurrences.organizationId, input.organizationId), eq(leagueOccurrences.leagueId, input.leagueId), eq(leagueOccurrences.startAt, input.cutoffAt))).limit(1))[0];
+  if (!occurrence) throw new StandingAutopayError("TRIGGER_OCCURRENCE_MISSING", "The standing cutoff occurrence is unavailable", 409);
+  const members = await tx.select({ group: canonicalCollectionGroups, member: canonicalCollectionGroupMembers }).from(canonicalCollectionGroups).innerJoin(canonicalCollectionGroupMembers, and(
+    eq(canonicalCollectionGroupMembers.groupId, canonicalCollectionGroups.id), eq(canonicalCollectionGroupMembers.organizationId, input.organizationId), eq(canonicalCollectionGroupMembers.leagueId, input.leagueId), eq(canonicalCollectionGroupMembers.active, true),
+  )).where(and(eq(canonicalCollectionGroups.organizationId, input.organizationId), eq(canonicalCollectionGroups.leagueId, input.leagueId), eq(canonicalCollectionGroups.state, "published"), eq(canonicalCollectionGroupMembers.occurrenceId, occurrence.id))).orderBy(asc(canonicalCollectionGroupMembers.memberOrdinal)).for("share");
+  const trigger = members.find((row) => row.member.role === "trigger");
+  if (!trigger) return { mode: "weekly", groupId: null, groupRevision: null, groupFingerprint: null, triggerOccurrenceId: occurrence.id, pairedOccurrenceId: null, triggerMemberId: null, pairedMemberId: null, occurrenceIds: [occurrence.id] };
+  const allMembers = await tx.select({ group: canonicalCollectionGroups, member: canonicalCollectionGroupMembers }).from(canonicalCollectionGroups).innerJoin(canonicalCollectionGroupMembers, and(
+    eq(canonicalCollectionGroupMembers.groupId, trigger.group.id), eq(canonicalCollectionGroupMembers.organizationId, input.organizationId), eq(canonicalCollectionGroupMembers.leagueId, input.leagueId), eq(canonicalCollectionGroupMembers.active, true),
+  )).where(and(eq(canonicalCollectionGroups.id, trigger.group.id), eq(canonicalCollectionGroups.state, "published"))).orderBy(asc(canonicalCollectionGroupMembers.memberOrdinal)).for("share");
+  const paired = allMembers.find((row) => row.member.role === "paired");
+  if (allMembers.length !== 2 || !paired) throw new StandingAutopayError("DOUBLE_PAY_GROUP_INVALID", "The published double-pay group is incomplete", 409);
+  return { mode: "double_pay", groupId: trigger.group.id, groupRevision: trigger.group.currentRevision, groupFingerprint: trigger.group.fingerprint, triggerOccurrenceId: trigger.member.occurrenceId, pairedOccurrenceId: paired.member.occurrenceId, triggerMemberId: trigger.member.id, pairedMemberId: paired.member.id, occurrenceIds: [trigger.member.occurrenceId, paired.member.occurrenceId] };
 }
 
 function consentWire(consent: typeof autopayConsents.$inferSelect | undefined, partners: number[], organizationId: number, leagueId: number, payerBowlerId: number) {
@@ -244,8 +251,6 @@ function consentWire(consent: typeof autopayConsents.$inferSelect | undefined, p
     consentVersion: consent?.consentVersion ?? null,
     state: consent?.state ?? "none",
     paymentMode: "weekly" as const,
-    providerName: consent?.providerName ?? null,
-    providerLocationId: consent?.providerLocationId ?? null,
     partnerBowlerIds: partners,
   };
 }
@@ -270,26 +275,35 @@ export async function activateStandingAutopayConsent(input: { organizationId: nu
   if (league.paymentMode === "upfront") throw new StandingAutopayError("STANDING_AUTOPAY_UNAVAILABLE_FOR_UPFRONT", "Standing automatic payments are disabled for upfront leagues", 422);
   const [payer] = await db.select().from(bowlers).where(and(eq(bowlers.id, input.payerBowlerId), eq(bowlers.organizationId, input.organizationId), eq(bowlers.active, true))).limit(1);
   const customerId = payer?.paymentCustomerId ?? null;
-  if (!payer || !customerId || (input.request.customerId !== undefined && payer.paymentCustomerId !== input.request.customerId)) throw new StandingAutopayError("PAYMENT_CUSTOMER_MISMATCH", "The payment method belongs to another payer", 403);
+  if (!payer || !customerId) throw new StandingAutopayError("PAYMENT_CUSTOMER_MISMATCH", "The payment method belongs to another payer", 403);
   const provider = await getPaymentProvider(league.locationId);
-  if (provider.providerName !== input.request.providerName || String(provider.locationId) !== input.request.providerLocationId || !provider.validateCardId(input.request.sourceId) || !provider.hasCardOnFile) throw new StandingAutopayError("PAYMENT_METHOD_INVALID", "The saved payment method is unavailable", 422);
+  const providerName = provider.providerName;
+  const providerLocationId = await providerLocationIdentity(provider);
+  if (!provider.validateCardId(input.request.sourceId) || !provider.hasCardOnFile) throw new StandingAutopayError("PAYMENT_METHOD_INVALID", "The saved payment method is unavailable", 422);
   if (!(await provider.hasCardOnFile(customerId, input.request.sourceId))) throw new StandingAutopayError("PAYMENT_METHOD_NOT_OWNED", "The saved payment method is unavailable", 403);
   const partnerIds = [...new Set(input.request.partnerBowlerIds)].filter((id) => id !== input.payerBowlerId).sort((a, b) => a - b);
-  const commandFingerprint = digest("lvstandingcommand:v1:", { leagueId: input.leagueId, payerBowlerId: input.payerBowlerId, sourceId: input.request.sourceId, customerId, providerName: input.request.providerName, providerLocationId: input.request.providerLocationId, partnerIds });
+  const commandFingerprint = digest("lvstandingcommand:v1:", { leagueId: input.leagueId, payerBowlerId: input.payerBowlerId, sourceId: input.request.sourceId, customerId, providerName, providerLocationId, partnerIds });
   const result = await db.transaction(async (tx) => {
     await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
-    await leagueFor(tx, input.organizationId, input.leagueId);
+    const lockedLeague = await leagueFor(tx, input.organizationId, input.leagueId);
+    if (lockedLeague.locationId === null || lockedLeague.locationId !== league.locationId) throw new StandingAutopayError("LEAGUE_PROVIDER_LOCATION_CHANGED", "The league payment location changed; retry consent setup", 409);
+    const lockedProvider = await getPaymentProvider(lockedLeague.locationId);
+    const lockedProviderLocationId = await providerLocationIdentity(lockedProvider);
+    if (lockedProvider.providerName !== providerName || lockedProviderLocationId !== providerLocationId) throw new StandingAutopayError("LEAGUE_PROVIDER_LOCATION_CHANGED", "The payment provider location changed; retry consent setup", 409);
     await beginCommand(tx, { organizationId: input.organizationId, leagueId: input.leagueId, actorUserId: input.actorUserId, commandType: COMMAND_CONSENT, key: input.request.commandKey, fingerprint: commandFingerprint });
     if (!(await activeMembership(tx, input.organizationId, input.leagueId, [input.payerBowlerId, ...partnerIds]))) throw new StandingAutopayError("BOWLER_NOT_IN_LEAGUE", "Every standing payer must be an active league member", 403);
     const links = partnerIds.length === 0 ? [] : await tx.select().from(bowlerPaymentLinks).where(and(eq(bowlerPaymentLinks.organizationId, input.organizationId), eq(bowlerPaymentLinks.status, "accepted"), or(...partnerIds.map((id) => or(and(eq(bowlerPaymentLinks.bowlerAId, input.payerBowlerId), eq(bowlerPaymentLinks.bowlerBId, id)), and(eq(bowlerPaymentLinks.bowlerAId, id), eq(bowlerPaymentLinks.bowlerBId, input.payerBowlerId))))))).for("update");
     if (links.length !== partnerIds.length) throw new StandingAutopayError("PARTNER_AUTHORIZATION_REQUIRED", "Every selected partner must have an accepted same-tenant payment link", 403);
-    const consentFingerprint = digest(CONSENT_FP_PREFIX, { organizationId: input.organizationId, leagueId: input.leagueId, payerBowlerId: input.payerBowlerId, paymentMode: "weekly", providerName: input.request.providerName, providerLocationId: input.request.providerLocationId, sourceId: input.request.sourceId, customerId, partners: links.map((link) => ({ bowlerAId: link.bowlerAId, bowlerBId: link.bowlerBId, id: link.id, fingerprint: linkFingerprint(link) })) });
+    const timestampResult = await tx.execute(sql`SELECT transaction_timestamp()::text AS activated_at`);
+    const activatedAt = (timestampResult.rows[0] as { activated_at?: string } | undefined)?.activated_at;
+    if (!activatedAt) throw new StandingAutopayError("CONSENT_TIME_UNAVAILABLE", "The standing consent could not establish its activation boundary", 503);
+    const consentFingerprint = digest(CONSENT_FP_PREFIX, { organizationId: input.organizationId, leagueId: input.leagueId, payerBowlerId: input.payerBowlerId, paymentMode: "weekly", providerName, providerLocationId, sourceId: input.request.sourceId, customerId, activatedAt, partners: links.map((link) => ({ bowlerAId: link.bowlerAId, bowlerBId: link.bowlerBId, id: link.id, fingerprint: linkFingerprint(link) })) });
     const [existing] = await tx.select().from(autopayConsents).where(and(eq(autopayConsents.organizationId, input.organizationId), eq(autopayConsents.leagueId, input.leagueId), eq(autopayConsents.payerBowlerId, input.payerBowlerId), eq(autopayConsents.state, "active"))).limit(1).for("update");
     const nextVersion = (await tx.select({ max: sql<number>`COALESCE(MAX(${autopayConsents.consentVersion}), 0)` }).from(autopayConsents).where(and(eq(autopayConsents.organizationId, input.organizationId), eq(autopayConsents.leagueId, input.leagueId), eq(autopayConsents.payerBowlerId, input.payerBowlerId))))[0]?.max ?? 0;
     if (existing) await tx.update(autopayConsents).set({ state: "revoked", revokedAt: new Date().toISOString() }).where(and(eq(autopayConsents.id, existing.id), eq(autopayConsents.state, "active")));
     const [consent] = await tx.insert(autopayConsents).values({
       organizationId: input.organizationId, leagueId: input.leagueId, payerBowlerId: input.payerBowlerId, consentVersion: Number(nextVersion) + 1, state: "active", paymentMode: "weekly", consentFingerprint,
-      providerName: input.request.providerName, providerLocationId: input.request.providerLocationId, encryptedSourceId: encrypt(input.request.sourceId), encryptedCustomerId: encrypt(customerId), createdByUserId: input.actorUserId,
+      providerName, providerLocationId, encryptedSourceId: encrypt(input.request.sourceId), encryptedCustomerId: encrypt(customerId), createdByUserId: input.actorUserId, activatedAt,
     }).returning();
     if (!consent) throw new StandingAutopayError("CONSENT_WRITE_FAILED", "The standing consent could not be saved", 500);
     if (links.length > 0) await tx.insert(autopayConsentPartners).values(links.map((link) => ({ organizationId: input.organizationId, leagueId: input.leagueId, consentId: consent.id, consentVersion: consent.consentVersion, partnerBowlerId: link.bowlerAId === input.payerBowlerId ? link.bowlerBId : link.bowlerAId, paymentLinkId: link.id, linkFingerprint: linkFingerprint(link) })));
@@ -345,10 +359,17 @@ export async function quoteStandingAutopay(input: { organizationId: number; leag
     const timestampResult = await tx.execute(sql`SELECT transaction_timestamp()::text AS as_of`);
     const asOf = (timestampResult.rows[0] as { as_of?: string } | undefined)?.as_of;
     if (!asOf) throw new StandingAutopayError("QUOTE_TIME_UNAVAILABLE", "The standing quote could not establish a database timestamp", 503);
-    const rows = await eligibleRows(tx, { organizationId: input.organizationId, leagueId: input.leagueId, payerBowlerIds: payerIds, cutoffAt: new Date(asOf).toISOString() });
+    const activationAt = new Date(consent.activatedAt).toISOString();
+    const [next] = await tx.select({ dueAt: paymentObligations.dueAt }).from(paymentObligations).innerJoin(occurrencePaymentResponsibilities, and(
+      eq(paymentObligations.responsibilityId, occurrencePaymentResponsibilities.id), eq(occurrencePaymentResponsibilities.organizationId, input.organizationId), eq(occurrencePaymentResponsibilities.leagueId, input.leagueId), eq(occurrencePaymentResponsibilities.state, "active"),
+    )).where(and(eq(paymentObligations.organizationId, input.organizationId), eq(paymentObligations.leagueId, input.leagueId), inArray(paymentObligations.payerBowlerId, payerIds), inArray(paymentObligations.state, ["open", "partially_settled"] as const), gte(paymentObligations.dueAt, activationAt), gte(paymentObligations.dueAt, new Date(asOf).toISOString()))).orderBy(asc(paymentObligations.dueAt)).limit(1);
+    const cutoffAt = next?.dueAt ?? null;
+    const group = cutoffAt ? await groupForCutoff(tx, { organizationId: input.organizationId, leagueId: input.leagueId, cutoffAt }) : { mode: "weekly" as const, groupId: null, groupRevision: null, groupFingerprint: null, triggerOccurrenceId: "", pairedOccurrenceId: null, triggerMemberId: null, pairedMemberId: null, occurrenceIds: [] };
+    const triggerRows = cutoffAt ? await eligibleRows(tx, { organizationId: input.organizationId, leagueId: input.leagueId, payerBowlerIds: payerIds, activationAt, cutoffAt, dueMode: "exact", occurrenceIds: [group.triggerOccurrenceId] }) : [];
+    const pairedRows = cutoffAt && group.mode === "double_pay" && group.pairedOccurrenceId ? await eligibleRows(tx, { organizationId: input.organizationId, leagueId: input.leagueId, payerBowlerIds: payerIds, activationAt, cutoffAt, dueMode: "paired", occurrenceIds: [group.pairedOccurrenceId] }) : [];
+    const rows = [...triggerRows, ...pairedRows];
+    if (group.mode === "double_pay" && group.occurrenceIds.some((occurrenceId) => payerIds.some((payerBowlerId) => !rows.some((row) => row.obligation.occurrenceId === occurrenceId && row.obligation.payerBowlerId === payerBowlerId)))) throw new StandingAutopayError("DOUBLE_PAY_INCOMPLETE", "The complete double-pay group is not eligible at its trigger cutoff", 409);
     const amountMinor = rows.reduce((sum, row) => sum + row.outstandingMinor, 0);
-    const cutoffAt = rows[0]?.obligation.dueAt ?? null;
-    const group = cutoffAt ? await groupForCutoff(tx, { organizationId: input.organizationId, leagueId: input.leagueId, cutoffAt, obligations: rows }) : { mode: "weekly" as const, groupId: null, occurrenceIds: [] };
     const result = { contractVersion: "standing-autopay-quote/1" as const, organizationId: input.organizationId, leagueId: input.leagueId, consentId: consent.id, consentVersion: consent.consentVersion, cutoffAt, collectionMode: rows.length ? group.mode : null, amountMinor, obligations: rows.map((row) => ({ obligationId: row.obligation.id, occurrenceId: row.obligation.occurrenceId, payerBowlerId: row.obligation.payerBowlerId, amountMinor: row.obligation.amountMinor, outstandingMinor: row.outstandingMinor, dueAt: row.obligation.dueAt, collectionGroupId: group.groupId })), fingerprint: digest("lvstandingquote:v1:", { consentId: consent.id, consentVersion: consent.consentVersion, cutoffAt, groupId: group.groupId, rows: rows.map((row) => [row.obligation.id, row.outstandingMinor]) }) };
     void league;
     return result;
@@ -366,45 +387,61 @@ export async function prepareStandingAutopayCutoff(input: { organizationId: numb
     const partners = await consentPartners(tx, { organizationId: input.organizationId, leagueId: input.leagueId, consentId: consent.id, consentVersion: consent.consentVersion, payerBowlerId: consent.payerBowlerId });
     const payerIds = [consent.payerBowlerId, ...partners.map((row) => row.partnerBowlerId)];
     if (!(await activeMembership(tx, input.organizationId, input.leagueId, payerIds))) throw new StandingAutopayError("BOWLER_NOT_IN_LEAGUE", "A standing payer is no longer active in the league", 409);
-    const rows = await eligibleRows(tx, { organizationId: input.organizationId, leagueId: input.leagueId, payerBowlerIds: payerIds, cutoffAt });
+    const activationAt = new Date(consent.activatedAt).toISOString();
+    const group = await groupForCutoff(tx, { organizationId: input.organizationId, leagueId: input.leagueId, cutoffAt });
+    const triggerRows = await eligibleRows(tx, { organizationId: input.organizationId, leagueId: input.leagueId, payerBowlerIds: payerIds, activationAt, cutoffAt, dueMode: "exact", occurrenceIds: [group.triggerOccurrenceId] });
+    const pairedRows = group.mode === "double_pay" && group.pairedOccurrenceId ? await eligibleRows(tx, { organizationId: input.organizationId, leagueId: input.leagueId, payerBowlerIds: payerIds, activationAt, cutoffAt, dueMode: "paired", occurrenceIds: [group.pairedOccurrenceId] }) : [];
+    const rows = [...triggerRows, ...pairedRows];
+    const doublePayIncomplete = group.mode === "double_pay" && group.occurrenceIds.some((occurrenceId) => payerIds.some((payerBowlerId) => !rows.some((row) => row.obligation.occurrenceId === occurrenceId && row.obligation.payerBowlerId === payerBowlerId)));
+    if (doublePayIncomplete) {
+      const key = `${consent.id}:${consent.consentVersion}:${cutoffAt}`;
+      const fp = digest(CUTOFF_FP_PREFIX, { consentId: consent.id, consentVersion: consent.consentVersion, cutoffAt, blocked: "double_pay_incomplete", groupId: group.groupId });
+      const [payerUser] = await tx.select({ id: users.id }).from(users).where(and(eq(users.organizationId, input.organizationId), eq(users.bowlerId, consent.payerBowlerId))).limit(1);
+      if (!payerUser) throw new StandingAutopayError("PAYER_ACCOUNT_REQUIRED", "The standing payer account is unavailable", 403);
+      try { await beginCommand(tx, { organizationId: input.organizationId, leagueId: input.leagueId, actorUserId: payerUser.id, commandType: COMMAND_CUTOFF, key, fingerprint: fp }); } catch (error) { if (!(error instanceof StandingAutopayReplay)) throw error; return undefined; }
+      await applyCommand(tx, { organizationId: input.organizationId, leagueId: input.leagueId, commandType: COMMAND_CUTOFF, key, result: { kind: "blocked", reason: "double_pay_incomplete", cutoffAt, consentId: consent.id } });
+      return undefined;
+    }
     if (rows.length === 0) {
       const key = `${consent.id}:${consent.consentVersion}:${cutoffAt}`;
       const fp = digest(CUTOFF_FP_PREFIX, { consentId: consent.id, consentVersion: consent.consentVersion, cutoffAt, empty: true });
       const [user] = await tx.select({ id: users.id }).from(users).where(and(eq(users.organizationId, input.organizationId), eq(users.bowlerId, consent.payerBowlerId))).limit(1);
-      if (user) {
-        try { await beginCommand(tx, { organizationId: input.organizationId, leagueId: input.leagueId, actorUserId: user.id, commandType: COMMAND_CUTOFF, key, fingerprint: fp }); } catch (error) { if (!(error instanceof StandingAutopayReplay)) throw error; return undefined; }
-        await applyCommand(tx, { organizationId: input.organizationId, leagueId: input.leagueId, commandType: COMMAND_CUTOFF, key, result: { kind: "no_op", cutoffAt, consentId: consent.id } });
-      }
+      if (!user) throw new StandingAutopayError("PAYER_ACCOUNT_REQUIRED", "The standing payer account is unavailable", 403);
+      try { await beginCommand(tx, { organizationId: input.organizationId, leagueId: input.leagueId, actorUserId: user.id, commandType: COMMAND_CUTOFF, key, fingerprint: fp }); } catch (error) { if (!(error instanceof StandingAutopayReplay)) throw error; return undefined; }
+      await applyCommand(tx, { organizationId: input.organizationId, leagueId: input.leagueId, commandType: COMMAND_CUTOFF, key, result: { kind: "no_op", cutoffAt, consentId: consent.id } });
       return undefined;
-    }
-    let group = await groupForCutoff(tx, { organizationId: input.organizationId, leagueId: input.leagueId, cutoffAt, obligations: rows });
-    if (group.mode === "double_pay" && group.groupId) {
-      const expanded = await addPairedRows(tx, { organizationId: input.organizationId, leagueId: input.leagueId, payerBowlerIds: payerIds, cutoffAt, groupId: group.groupId, existing: rows });
-      rows.splice(0, rows.length, ...expanded);
-      group = await groupForCutoff(tx, { organizationId: input.organizationId, leagueId: input.leagueId, cutoffAt, obligations: rows });
     }
     const now = input.now ?? new Date();
     const [payerUser] = await tx.select({ id: users.id }).from(users).where(and(eq(users.organizationId, input.organizationId), eq(users.bowlerId, consent.payerBowlerId))).limit(1);
     if (!payerUser) throw new StandingAutopayError("PAYER_ACCOUNT_REQUIRED", "The standing payer account is unavailable", 403);
     const amountMinor = rows.reduce((sum, row) => sum + row.outstandingMinor, 0);
-    const targetKey = `standing-autopay:${input.organizationId}:${input.leagueId}:${consent.payerBowlerId}:${cutoffAt}:${group.groupId ?? group.occurrenceIds.join(".")}`;
+    const groupIdentity = [group.groupId ?? "weekly", group.triggerOccurrenceId, group.pairedOccurrenceId ?? "", group.groupRevision ?? "", group.groupFingerprint ?? ""].join(":");
+    const targetKey = `standing-autopay:${input.organizationId}:${input.leagueId}:${consent.payerBowlerId}:${consent.id}:${consent.consentVersion}:${cutoffAt}:${groupIdentity}`;
     const identity = buildPaymentOperationIdentity({ organizationId: input.organizationId, operationType: "standing_autopay_charge", targetKey, amountMinor, currency: "USD", providerName: consent.providerName ?? "square" });
     const evidenceFingerprint = digest(CUTOFF_FP_PREFIX, { consentId: consent.id, consentVersion: consent.consentVersion, cutoffAt, mode: group.mode, groupId: group.groupId, groupOccurrenceIds: group.occurrenceIds, obligations: rows.map((row) => ({ id: row.obligation.id, responsibilityId: row.obligation.responsibilityId, occurrenceId: row.obligation.occurrenceId, amountMinor: row.outstandingMinor, dueAt: row.obligation.dueAt, payerBowlerId: row.obligation.payerBowlerId })), partners: partners.map((row) => ({ partnerBowlerId: row.partnerBowlerId, paymentLinkId: row.paymentLinkId, linkFingerprint: row.linkFingerprint })) });
-    const commandKey = `${consent.id}:${consent.consentVersion}:${cutoffAt}:${group.groupId ?? "weekly"}`;
-    await beginCommand(tx, { organizationId: input.organizationId, leagueId: input.leagueId, actorUserId: payerUser.id, commandType: COMMAND_CUTOFF, key: commandKey, fingerprint: evidenceFingerprint });
+    const commandKey = `${consent.id}:${consent.consentVersion}:${cutoffAt}`;
+    try {
+      await beginCommand(tx, { organizationId: input.organizationId, leagueId: input.leagueId, actorUserId: payerUser.id, commandType: COMMAND_CUTOFF, key: commandKey, fingerprint: evidenceFingerprint });
+    } catch (error) {
+      if (!(error instanceof StandingAutopayReplay)) throw error;
+      const replay = error.result as { operationId?: unknown };
+      if (typeof replay.operationId !== "string") return undefined;
+      const [replayed] = await tx.select().from(paymentOperations).where(and(eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.leagueId, input.leagueId), eq(paymentOperations.id, replay.operationId), eq(paymentOperations.operationType, "standing_autopay_charge"))).limit(1).for("share");
+      return replayed;
+    }
     const [existing] = await tx.select().from(paymentOperations).where(and(eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.targetKey, targetKey), eq(paymentOperations.operationType, "standing_autopay_charge"))).limit(1).for("update");
     if (existing) { await applyCommand(tx, { organizationId: input.organizationId, leagueId: input.leagueId, commandType: COMMAND_CUTOFF, key: commandKey, result: { operationId: existing.id, status: existing.status, cutoffAt } }); return existing; }
     const [operation] = await tx.insert(paymentOperations).values({
-      organizationId: input.organizationId, authorizingUserId: payerUser.id, operationType: "standing_autopay_charge", targetKey, leagueId: input.leagueId, amountMinor, currency: "USD", requestFingerprint: identity.requestFingerprint, providerIdempotencyKey: identity.providerIdempotencyKey, providerName: consent.providerName ?? "square", status: "pending", nextAttemptAt: now.toISOString(), createdAt: now.toISOString(), updatedAt: now.toISOString(), attemptCount: 0,
+      organizationId: input.organizationId, authorizingUserId: payerUser.id, operationType: "standing_autopay_charge", targetKey, triggerOccurrenceId: group.triggerOccurrenceId, leagueId: input.leagueId, amountMinor, currency: "USD", requestFingerprint: identity.requestFingerprint, providerIdempotencyKey: identity.providerIdempotencyKey, providerName: consent.providerName ?? "square", status: "pending", nextAttemptAt: now.toISOString(), createdAt: now.toISOString(), updatedAt: now.toISOString(), attemptCount: 0,
     }).returning();
     if (!operation) throw new StandingAutopayError("OPERATION_WRITE_FAILED", "The standing payment operation could not be created", 500);
     const snapshotRows = rows.map((row, index) => ({ allocationIndex: index, obligationId: row.obligation.id, amountMinor: row.outstandingMinor, occurrenceId: row.obligation.occurrenceId, responsibilityId: row.obligation.responsibilityId, payerBowlerId: row.obligation.payerBowlerId, dueAt: row.obligation.dueAt }));
     await tx.insert(paymentOperationRosterSnapshots).values({ operationId: operation.id, organizationId: input.organizationId, leagueId: input.leagueId, snapshotVersion: 1, snapshotKind: "standing_autopay", collectionMode: group.mode, cutoffAt, amountMinor, currency: "USD", obligations: snapshotRows, snapshotFingerprint: evidenceFingerprint });
-    await tx.insert(paymentOperationStandingAutopayBindings).values({ operationId: operation.id, organizationId: input.organizationId, leagueId: input.leagueId, consentId: consent.id, consentVersion: consent.consentVersion, cutoffAt, collectionMode: group.mode, evidenceFingerprint });
+    await tx.insert(paymentOperationStandingAutopayBindings).values({ operationId: operation.id, organizationId: input.organizationId, leagueId: input.leagueId, consentId: consent.id, consentVersion: consent.consentVersion, providerName: consent.providerName ?? "square", providerLocationId: consent.providerLocationId ?? "", triggerOccurrenceId: group.triggerOccurrenceId, pairedOccurrenceId: group.pairedOccurrenceId, collectionGroupId: group.groupId, collectionGroupRevision: group.groupRevision, collectionGroupFingerprint: group.groupFingerprint, triggerMemberId: group.triggerMemberId, pairedMemberId: group.pairedMemberId, cutoffAt, collectionMode: group.mode, evidenceFingerprint });
     await tx.insert(paymentOperationRosterSnapshotItems).values(snapshotRows.map((row) => ({ operationId: operation.id, organizationId: input.organizationId, leagueId: input.leagueId, obligationId: row.obligationId, allocationIndex: row.allocationIndex, amountMinor: row.amountMinor, state: "reserved" as const })));
     await tx.insert(paymentOperationStandingAutopayParticipants).values(snapshotRows.map((row) => {
       const partner = partners.find((candidate) => candidate.partnerBowlerId === row.payerBowlerId);
-      return { operationId: operation.id, organizationId: input.organizationId, leagueId: input.leagueId, allocationIndex: row.allocationIndex, bowlerId: row.payerBowlerId, role: partner ? "partner" as const : "payer" as const, paymentLinkId: partner?.paymentLinkId ?? null, linkFingerprint: partner?.linkFingerprint ?? null, consentVersion: consent.consentVersion };
+      return { operationId: operation.id, organizationId: input.organizationId, leagueId: input.leagueId, allocationIndex: row.allocationIndex, obligationId: row.obligationId, bowlerId: row.payerBowlerId, role: partner ? "partner" as const : "payer" as const, paymentLinkId: partner?.paymentLinkId ?? null, linkFingerprint: partner?.linkFingerprint ?? null, consentVersion: consent.consentVersion };
     }));
     await applyCommand(tx, { organizationId: input.organizationId, leagueId: input.leagueId, commandType: COMMAND_CUTOFF, key: commandKey, result: { operationId: operation.id, status: operation.status, cutoffAt, amountMinor } });
     return operation;

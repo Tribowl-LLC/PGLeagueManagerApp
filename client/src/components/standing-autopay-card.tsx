@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
 
 type Props = { league: League; bowlerId: number; savedCards: SavedCard[] };
-type Consent = { state: "none" | "pending" | "active" | "revoked" | "expired"; providerLocationId: string | null; partnerBowlerIds: number[] };
+type Consent = { state: "none" | "pending" | "active" | "revoked" | "expired"; partnerBowlerIds: number[] };
 type PartnerLink = { status: string; partnerBowlerId: number; partnerName: string };
 
 function commandKey(prefix: string): string {
@@ -38,7 +38,7 @@ export function StandingAutopayCard({ league, bowlerId, savedCards }: Props) {
   );
   const activate = useMutation({
     mutationFn: () => apiRequest(`/api/financials/leagues/${league.id}/standing-autopay/1/consent`, "POST", {
-      commandKey: commandKey("standing-consent"), sourceId: selectedCard, providerName: "square", providerLocationId: String(league.locationId ?? ""), partnerBowlerIds: partnerIds,
+      commandKey: commandKey("standing-consent"), sourceId: selectedCard, partnerBowlerIds: partnerIds,
     }),
     onSuccess: () => { setReplaceMode(false); void queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${league.id}/standing-autopay/1`] }); toast({ title: "Automatic weekly payments enabled" }); },
     onError: (error: Error) => toast({ title: "Automatic payments unavailable", description: error.message, variant: "destructive" }),
