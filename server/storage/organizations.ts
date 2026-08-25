@@ -43,9 +43,12 @@ import {
   paymentObligations,
   paymentAllocations,
   autopayConsents,
+  autopayConsentPartners,
   financialCommands,
   paymentOperationRosterSnapshots,
   paymentOperationRosterSnapshotItems,
+  paymentOperationStandingAutopayBindings,
+  paymentOperationStandingAutopayParticipants,
   canonicalCollectionGroups,
   canonicalCollectionGroupMembers,
   canonicalCollectionGroupRevisions,
@@ -282,6 +285,9 @@ export async function deleteOrganization(id: number): Promise<void> {
     // Remove corrections/obligations/responsibilities before slots and the
     // retained general payment ledger. This path is the explicit teardown
     // exception; ordinary mutations remain append-only/locked.
+    await tx.delete(paymentOperationStandingAutopayParticipants).where(eq(paymentOperationStandingAutopayParticipants.organizationId, id));
+    await tx.delete(paymentOperationStandingAutopayBindings).where(eq(paymentOperationStandingAutopayBindings.organizationId, id));
+    await tx.delete(autopayConsentPartners).where(eq(autopayConsentPartners.organizationId, id));
     await tx.delete(paymentOperationRosterSnapshotItems).where(eq(paymentOperationRosterSnapshotItems.organizationId, id));
     await tx.delete(paymentOperationRosterSnapshots).where(eq(paymentOperationRosterSnapshots.organizationId, id));
     await tx.delete(paymentAllocations).where(eq(paymentAllocations.organizationId, id));

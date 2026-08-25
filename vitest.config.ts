@@ -126,6 +126,8 @@ const UNIT_NO_DB = [
   'tests/unit/test-template-migration-source.test.ts',
   'tests/unit/zod-v4-migration-contracts.test.ts',
   'tests/unit/roster-payment-pr1-contract.test.ts',
+  'tests/unit/roster-standing-autopay-contract.test.ts',
+  'tests/unit/roster-standing-autopay-wake.test.ts',
   'tests/unit/roster-payment-route-boundaries.test.ts',
 ];
 
@@ -188,6 +190,10 @@ const PARALLEL_ISOLATED = [
   'tests/unit/fall-draft-review-postgres.test.ts',
   'tests/unit/identity-link-service-postgres.test.ts',
   'tests/unit/users-identity-integrity-postgres.test.ts',
+  // Storage-only user role invariants import the singleton database/storage
+  // modules and must not share a mocked module registry with parallel route
+  // suites.
+  'tests/unit/users-org-required.test.ts',
   'tests/unit/canonical-occurrence-compatibility-postgres.test.ts',
   'tests/unit/list-routes-filter-validation.test.ts',
   'tests/unit/locked-sweep.test.ts', // Task #720 moved to parallel as factory-safe; reverted defensively after sibling regressions (#722).

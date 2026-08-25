@@ -9,9 +9,9 @@ type PaymentOperationSetTimeout = (
 ) => PaymentOperationTimer;
 type PaymentOperationClearTimeout = (timer: PaymentOperationTimer) => void;
 
-export interface PaymentOperationWakeSchedulerDependencies {
-  loadNextWake: () => Promise<PaymentOperationWake | undefined>;
-  handleWake: (wake: PaymentOperationWake) => Promise<{ retryAfterMs?: number } | void>;
+export interface PaymentOperationWakeSchedulerDependencies<TWake extends { kind: string; dueAt: string } = PaymentOperationWake> {
+  loadNextWake: () => Promise<TWake | undefined>;
+  handleWake: (wake: TWake) => Promise<{ retryAfterMs?: number } | void>;
   now?: () => Date;
   setTimeoutFn?: PaymentOperationSetTimeout;
   clearTimeoutFn?: PaymentOperationClearTimeout;
@@ -21,7 +21,8 @@ export interface PaymentOperationWakeSchedulerDependencies {
   };
 }
 
-function wakeContext(wake: PaymentOperationWake): Record<string, unknown> {
+function wakeContext(input: unknown): Record<string, unknown> {
+  const wake = input as { kind?: string; organizationId?: number; operationId?: string; operationType?: string; status?: string; attemptCount?: number; leagueId?: number; d2PlanId?: string; paymentScheduleId?: number };
   return wake.kind === "operation"
     ? {
       workKind: wake.kind,
@@ -43,16 +44,8 @@ function wakeContext(wake: PaymentOperationWake): Record<string, unknown> {
     };
 }
 
-function wakeSignature(wake: PaymentOperationWake, dueMs: number): string {
-  return wake.kind === "operation"
-    ? `operation:${wake.operationId}:${wake.operationType}:${wake.status}:${wake.attemptCount}:${dueMs}`
-    : wake.kind === "canonical_plan"
-      ? `canonical-plan:${wake.d2PlanId}:${dueMs}`
-      : `schedule:${wake.paymentScheduleId}:${dueMs}`;
-}
-
 /** Exactly one wake for the earliest durable schedule or operation work. */
-export class PaymentOperationWakeScheduler {
+export class PaymentOperationWakeScheduler<TWake extends { kind: string; dueAt: string } = PaymentOperationWake> {
   private readonly now: () => Date;
   private readonly setTimeoutFn: PaymentOperationSetTimeout;
   private readonly clearTimeoutFn: PaymentOperationClearTimeout;
@@ -61,7 +54,7 @@ export class PaymentOperationWakeScheduler {
   private mode: ScheduledPaymentExecutionMode = "legacy";
   private armPromise: Promise<void> | null = null;
 
-  constructor(private readonly dependencies: PaymentOperationWakeSchedulerDependencies) {
+  constructor(private readonly dependencies: PaymentOperationWakeSchedulerDependencies<TWake>) {
     this.now = dependencies.now ?? (() => new Date());
     this.setTimeoutFn = dependencies.setTimeoutFn ?? setTimeout;
     this.clearTimeoutFn = dependencies.clearTimeoutFn ?? clearTimeout;
@@ -114,7 +107,7 @@ export class PaymentOperationWakeScheduler {
       });
       return;
     }
-    const signature = wakeSignature(wake, dueMs);
+    const signature = `${wake.kind}:${"operationId" in wake ? wake.operationId : "consentId" in wake ? wake.consentId : "work"}:${dueMs}`;
     if (minimumDelayMs <= 0 && signature === previousDueSignature && dueMs <= this.now().getTime()) {
       // A handler must commit a state transition before returning. Refusing to
       // re-arm the identical overdue row prevents a malformed handler or a
@@ -144,7 +137,7 @@ export class PaymentOperationWakeScheduler {
   }
 
   private async fire(
-    wake: PaymentOperationWake,
+    wake: TWake,
     signature: string,
     generation: number,
   ): Promise<void> {

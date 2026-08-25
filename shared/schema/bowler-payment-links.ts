@@ -50,6 +50,10 @@ export const bowlerPaymentLinks = pgTable(
       table.bowlerAId,
       table.bowlerBId,
     ),
+    tenantIdentityUnique: uniqueIndex("bowler_payment_links_id_organization_unique").on(
+      table.id,
+      table.organizationId,
+    ),
     bowlerAIdx: index("bowler_payment_links_a_idx").on(table.bowlerAId),
     bowlerBIdx: index("bowler_payment_links_b_idx").on(table.bowlerBId),
     organizationIdx: index("bowler_payment_links_org_idx").on(table.organizationId),

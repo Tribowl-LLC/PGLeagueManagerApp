@@ -974,17 +974,17 @@ describe("scheduled payment ledger cutover PostgreSQL behavior", () => {
     expect(provider.requests).toHaveLength(1);
   });
 
-  it("chooses schedule or operation work and uses both partial indexes", async () => {
+  it("does not wake archived legacy schedules after the roster cutover", async () => {
     const future = await createSchedule({ nextPaymentDate: "2033-01-01T00:00:00.000Z" });
     const wake = await getNextPaymentOperationWake();
-    expect(wake).toBeDefined();
+    expect(wake).toBeUndefined();
 
     const planRows = await db.transaction(async (tx) => {
       await tx.execute(sql`SET LOCAL enable_seqscan = off`);
       return tx.execute(sql`EXPLAIN ${buildNextPaymentOperationWakeQuery()}`);
     });
     const plan = planRows.rows.map((row) => String(row["QUERY PLAN"])).join("\n");
-    expect(plan).toContain("payment_schedules_active_next_payment_idx");
+    expect(plan).not.toContain("payment_schedules");
     expect(plan).toMatch(/payment_operations_(due_retry|expired_lease)_idx/);
     await db.update(paymentSchedules).set({ active: false })
       .where(eq(paymentSchedules.id, future.schedule.id));

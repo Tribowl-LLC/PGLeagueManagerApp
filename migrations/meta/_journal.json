@@ -232,6 +232,13 @@
       "when": 1787500000000,
       "tag": "0032_roster_driven_payments_core",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1787662614604,
+      "tag": "0033_roster_standing_autopay",
+      "breakpoints": true
     }
   ]
 }

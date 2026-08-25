@@ -31,6 +31,7 @@ import bowlerLinkRespondRouter from './bowler-link-respond.js';
 import paymentDisputesRouter from './payment-disputes.js';
 import financialsRouter from './financials.js';
 import rosterPaymentsRouter from './roster-payments.js';
+import rosterStandingAutopayRouter from './roster-standing-autopay.js';
 import financialsF5Router from './financials-f5.js';
 import { requireAuth, requireOrgAdmin, requireSystemAdmin, requirePasswordRotated } from '../middleware/auth.js';
 import { createLogger } from '../logger';
@@ -135,6 +136,7 @@ export function registerRoutes(app: Express): void {
   app.use('/api/payments', requireAuth, paymentsRouter);
   app.use('/api/financials', requireAuth, financialsRouter);
   app.use('/api/financials', requireAuth, rosterPaymentsRouter);
+  app.use('/api/financials', requireAuth, rosterStandingAutopayRouter);
   app.use('/api/financials/f5', requireAuth, financialsF5Router);
   // F3's authorization/plan workflow was part of the retired financial
   // activation model. Keep the namespace explicit so stale clients fail

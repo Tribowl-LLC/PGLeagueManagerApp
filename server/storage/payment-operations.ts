@@ -9,6 +9,12 @@ import {
   organizations,
   paymentOperations,
   paymentOperationRosterSnapshotItems,
+  paymentOperationRosterSnapshots,
+  paymentOperationStandingAutopayBindings,
+  paymentOperationStandingAutopayParticipants,
+  paymentObligations,
+  autopayConsents,
+  autopayConsentPartners,
   paymentSchedules,
   payments,
   paymentDisputes,
@@ -68,6 +74,8 @@ import {
   isRosterSnapshotFinalizationError,
   validateRosterSnapshotForDispatchInTransaction,
 } from "../services/roster-payment-finalizer.js";
+import { validateStandingConsentForDispatchInTransaction } from "../services/roster-standing-autopay.js";
+import { rosterStandingAutopayEnabled, scheduledPaymentExecutionMode } from "../config.js";
 
 async function releaseRosterReservationsWithoutProviderEvidence(
   tx: PaymentOperationTransaction,
@@ -194,6 +202,13 @@ async function lockCanonicalMutationScope(
     // Automatic collection is dormant in PR1.  Retain the general operation
     // row for archive/reconciliation status, but never follow its retired
     // F1/D2/F3 plan identity.
+    if (candidate.leagueId !== null) {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(${organizationId}::integer, ${candidate.leagueId}::integer)`);
+    }
+    const [operation] = await tx.select().from(paymentOperations).where(and(eq(paymentOperations.organizationId, organizationId), eq(paymentOperations.id, operationId))).limit(1).for("update");
+    return operation;
+  }
+  if (candidate?.operationType === "standing_autopay_charge") {
     if (candidate.leagueId !== null) {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(${organizationId}::integer, ${candidate.leagueId}::integer)`);
     }
@@ -450,6 +465,46 @@ async function insertLinkedPaymentRows(
     paymentOperationId: operationId,
     paymentOperationAllocationIndex: row.allocationIndex,
   })));
+}
+
+async function deriveStandingPaymentRowsInTransaction(
+  tx: PaymentOperationTransaction,
+  input: { organizationId: number; operationId: string; providerPaymentId: string; providerName: string; actorUserId: number | null },
+): Promise<PaymentOperationLinkedPaymentInput[]> {
+  const [operation] = await tx.select().from(paymentOperations).where(and(
+    eq(paymentOperations.organizationId, input.organizationId),
+    eq(paymentOperations.id, input.operationId),
+    eq(paymentOperations.operationType, "standing_autopay_charge"),
+  )).limit(1).for("share");
+  if (!operation || operation.leagueId === null) throw new PaymentOperationValidationError("standing operation scope is incomplete");
+  const rows = await tx.select({ item: paymentOperationRosterSnapshotItems, obligation: paymentObligations }).from(paymentOperationRosterSnapshotItems).innerJoin(paymentObligations, and(
+    eq(paymentObligations.id, paymentOperationRosterSnapshotItems.obligationId),
+    eq(paymentObligations.organizationId, input.organizationId),
+    eq(paymentObligations.leagueId, operation.leagueId),
+  )).where(and(
+    eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId),
+    eq(paymentOperationRosterSnapshotItems.leagueId, operation.leagueId),
+    eq(paymentOperationRosterSnapshotItems.operationId, operation.id),
+  )).orderBy(asc(paymentOperationRosterSnapshotItems.allocationIndex));
+  if (rows.length === 0) throw new PaymentOperationValidationError("standing operation snapshot has no payment rows");
+  return rows.map((row) => ({
+    allocationIndex: row.item.allocationIndex,
+    values: {
+      bowlerId: row.obligation.payerBowlerId,
+      leagueId: operation.leagueId as number,
+      amount: row.item.amountMinor,
+      lineageAmount: null,
+      prizeFundAmount: null,
+      weekOf: row.obligation.dueAt,
+      status: "paid" as const,
+      type: providerNameToPaymentType(input.providerName),
+      providerPaymentId: input.providerPaymentId,
+      receiptEmailMissing: false,
+      combinedChargeGroupId: null,
+      paidByUserId: input.actorUserId,
+      notes: "Roster standing automatic payment",
+    },
+  }));
 }
 
 async function deactivatePaidInFullSchedule(
@@ -1789,6 +1844,8 @@ export async function acquireInteractivePaymentOperationDispatchCutoff(input: {
     const [operation] = await tx.select({
       status: paymentOperations.status,
       leaseToken: paymentOperations.leaseToken,
+      providerObjectId: paymentOperations.providerObjectId,
+      dispatchClaimedAt: paymentOperations.dispatchClaimedAt,
     }).from(paymentOperations).where(and(
       eq(paymentOperations.organizationId, input.organizationId),
       eq(paymentOperations.id, input.operationId),
@@ -1833,6 +1890,82 @@ export async function acquireInteractivePaymentOperationDispatchCutoff(input: {
       dispatchClaimedAt: claimedAt,
       updatedAt: claimedAt,
     }).where(and(
+      eq(paymentOperations.organizationId, input.organizationId),
+      eq(paymentOperations.id, input.operationId),
+      eq(paymentOperations.status, "leased"),
+      eq(paymentOperations.leaseToken, input.leaseToken),
+      isNull(paymentOperations.dispatchClaimedAt),
+    )).returning({ id: paymentOperations.id });
+    return Boolean(claimed);
+  });
+}
+
+/** Standing-autopay dispatch fence. Consent/link/membership evidence is
+ * revalidated under the same league lock immediately before provider I/O. */
+export async function acquireStandingAutopayDispatchCutoff(input: {
+  organizationId: number;
+  operationId: string;
+  leaseToken: string;
+  now?: Date;
+}): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    const [scope] = await tx.select({ leagueId: paymentOperations.leagueId })
+      .from(paymentOperations)
+      .where(and(
+        eq(paymentOperations.organizationId, input.organizationId),
+        eq(paymentOperations.id, input.operationId),
+        eq(paymentOperations.operationType, "standing_autopay_charge"),
+      )).limit(1);
+    if (!scope?.leagueId) return false;
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(${input.organizationId}::integer, ${scope.leagueId}::integer)`);
+    const [operation] = await tx.select({
+      status: paymentOperations.status,
+      leaseToken: paymentOperations.leaseToken,
+      providerObjectId: paymentOperations.providerObjectId,
+      dispatchClaimedAt: paymentOperations.dispatchClaimedAt,
+    }).from(paymentOperations).where(and(
+      eq(paymentOperations.organizationId, input.organizationId),
+      eq(paymentOperations.id, input.operationId),
+      eq(paymentOperations.operationType, "standing_autopay_charge"),
+    )).limit(1).for("update");
+    if (!operation || operation.status !== "leased" || operation.leaseToken !== input.leaseToken) return false;
+    try {
+      await validateStandingConsentForDispatchInTransaction(tx, {
+        organizationId: input.organizationId,
+        leagueId: scope.leagueId,
+        operationId: input.operationId,
+        leagueIdAlreadyLocked: true,
+      });
+    } catch (error) {
+      await releaseRosterReservationsWithoutProviderEvidence(tx, {
+        organizationId: input.organizationId,
+        leagueId: scope.leagueId,
+        operationId: input.operationId,
+      });
+      const blockedAt = (input.now ?? new Date()).toISOString();
+      const code = error instanceof Error && "code" in error && typeof error.code === "string" ? error.code : "STANDING_DISPATCH_INVALID";
+      const providerEvidenceExists = operation.providerObjectId !== null || operation.dispatchClaimedAt !== null;
+      await tx.update(paymentOperations).set({
+        status: providerEvidenceExists ? "reconciliation_required" : "canceled",
+        nextAttemptAt: null,
+        leaseOwner: null,
+        leaseToken: null,
+        leaseExpiresAt: null,
+        dispatchClaimedAt: null,
+        errorClassification: providerEvidenceExists ? "internal" : "invalid_request",
+        errorCode: code,
+        completedAt: blockedAt,
+        updatedAt: blockedAt,
+      }).where(and(
+        eq(paymentOperations.organizationId, input.organizationId),
+        eq(paymentOperations.id, input.operationId),
+        eq(paymentOperations.status, "leased"),
+        eq(paymentOperations.leaseToken, input.leaseToken),
+      ));
+      return false;
+    }
+    const claimedAt = (input.now ?? new Date()).toISOString();
+    const [claimed] = await tx.update(paymentOperations).set({ dispatchClaimedAt: claimedAt, updatedAt: claimedAt }).where(and(
       eq(paymentOperations.organizationId, input.organizationId),
       eq(paymentOperations.id, input.operationId),
       eq(paymentOperations.status, "leased"),
@@ -2106,6 +2239,21 @@ async function recordTerminalErrorOutcome(
       input.operationId,
       input.failedPaymentRows,
     );
+    // A deterministic terminal failure before dispatch must not strand the
+    // cutoff reservation. Once dispatch has started we retain the reservation
+    // as fail-closed evidence until provider reconciliation resolves it.
+    if (
+      transitioned.operationType === "standing_autopay_charge"
+      && transitioned.leagueId !== null
+      && transitioned.dispatchClaimedAt === null
+      && transitioned.providerObjectId === null
+    ) {
+      await releaseRosterReservationsWithoutProviderEvidence(tx, {
+        organizationId: input.organizationId,
+        leagueId: transitioned.leagueId,
+        operationId: transitioned.id,
+      });
+    }
     if (transitioned.operationType === "canonical_autopay_charge") return transitioned;
     return transitioned;
   });
@@ -2431,7 +2579,7 @@ export async function finalizePaymentOperationSuccessInTransaction(
     && (input.providerOrderId == null || existing.providerOrderId === input.providerOrderId)
   ) {
     if (existing.operationType === "canonical_autopay_charge") await verifyCanonicalAutopayCompletionInTransaction(tx, existing);
-    if (existing.operationType === "interactive_charge" && existing.leagueId !== null) {
+    if ((existing.operationType === "interactive_charge" || existing.operationType === "standing_autopay_charge") && existing.leagueId !== null) {
       try {
         await tx.transaction(async (finalizerTx) => {
           await finalizeRosterSnapshotInTransaction(finalizerTx, {
@@ -2601,7 +2749,7 @@ export async function finalizeChargeFromWebhookEvidenceInTransaction(
   if (input.providerOrderId != null) validateProviderOrderId(input.providerOrderId);
   const now = toIso(input.now ?? new Date(), "now");
   const operation = await lockCanonicalMutationScope(tx, input.organizationId, input.operationId);
-  if (!operation || !["scheduled_charge", "interactive_charge", "canonical_autopay_charge"].includes(operation.operationType)) {
+  if (!operation || !["scheduled_charge", "interactive_charge", "canonical_autopay_charge", "standing_autopay_charge"].includes(operation.operationType)) {
     throw new PaymentOperationNotFoundError();
   }
   // Migration 0032 retires canonical automatic collection.  Historical
@@ -2639,6 +2787,45 @@ export async function finalizeChargeFromWebhookEvidenceInTransaction(
         && snapshot.providerLocationId !== input.providerLocationId)
     ) throw new PaymentOperationImmutableMismatchError();
     rows = interactiveWebhookPaymentRows(operation, snapshot, input);
+  } else if (operation.operationType === "standing_autopay_charge") {
+    const [binding] = await tx.select({ providerLocationId: autopayConsents.providerLocationId, collectionMode: paymentOperationStandingAutopayBindings.collectionMode }).from(paymentOperationStandingAutopayBindings).innerJoin(autopayConsents, and(
+      eq(autopayConsents.id, paymentOperationStandingAutopayBindings.consentId),
+      eq(autopayConsents.organizationId, input.organizationId),
+      eq(autopayConsents.leagueId, operation.leagueId ?? 0),
+    )).where(and(
+      eq(paymentOperationStandingAutopayBindings.operationId, operation.id),
+      eq(paymentOperationStandingAutopayBindings.organizationId, input.organizationId),
+      eq(paymentOperationStandingAutopayBindings.leagueId, operation.leagueId ?? 0),
+    )).limit(1);
+    if (!binding || binding.providerLocationId !== input.providerLocationId) throw new PaymentOperationImmutableMismatchError();
+    const standingRows = await tx.select({ item: paymentOperationRosterSnapshotItems, obligation: paymentObligations }).from(paymentOperationRosterSnapshotItems).innerJoin(paymentObligations, and(
+      eq(paymentObligations.id, paymentOperationRosterSnapshotItems.obligationId),
+      eq(paymentObligations.organizationId, input.organizationId),
+      eq(paymentObligations.leagueId, operation.leagueId ?? 0),
+    )).where(and(
+      eq(paymentOperationRosterSnapshotItems.operationId, operation.id),
+      eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId),
+      eq(paymentOperationRosterSnapshotItems.leagueId, operation.leagueId ?? 0),
+    )).orderBy(asc(paymentOperationRosterSnapshotItems.allocationIndex));
+    rows = standingRows.map((row) => ({
+      allocationIndex: row.item.allocationIndex,
+      values: {
+        bowlerId: row.obligation.payerBowlerId,
+        leagueId: operation.leagueId ?? 0,
+        amount: row.item.amountMinor,
+        lineageAmount: null,
+        prizeFundAmount: null,
+        weekOf: row.obligation.dueAt,
+        status: "paid" as const,
+        type: providerNameToPaymentType(operation.providerName),
+        providerPaymentId: input.providerObjectId,
+        receiptEmailMissing: false,
+        combinedChargeGroupId: binding.collectionMode === "double_pay" ? operation.id : null,
+        paidByUserId: operation.authorizingUserId,
+        notes: "Roster standing automatic payment",
+      },
+    }));
+    if (rows.length === 0) throw new PaymentOperationImmutableMismatchError();
   } else {
     throw new PaymentOperationValidationError("automatic collection is dormant in PR1; canonical webhook finalization is unavailable");
   }
@@ -2647,7 +2834,7 @@ export async function finalizeChargeFromWebhookEvidenceInTransaction(
     if (operation.providerObjectId !== input.providerObjectId) {
       throw new PaymentOperationImmutableMismatchError();
     }
-    if (operation.operationType === "interactive_charge" && operation.leagueId !== null) {
+    if ((operation.operationType === "interactive_charge" || operation.operationType === "standing_autopay_charge") && operation.leagueId !== null) {
       try {
         await tx.transaction(async (finalizerTx) => {
           await finalizeRosterSnapshotInTransaction(finalizerTx, {
@@ -2807,26 +2994,137 @@ export type PaymentOperationWake = {
   dueAt: string;
 };
 
+/** Work generated only from an active PR2 standing consent.  This is kept
+ * separate from PaymentOperationWake so the retired schedule worker cannot
+ * accidentally wake standing work (or vice versa). */
+export type StandingAutopayWake = {
+  kind: "standing_cutoff";
+  organizationId: number;
+  leagueId: number;
+  consentId: string;
+  dueAt: string;
+} | {
+  kind: "standing_operation";
+  organizationId: number;
+  operationId: string;
+  dueAt: string;
+  status: PaymentOperation["status"];
+  attemptCount: number;
+};
+
+/**
+ * Return the earliest standing-consent cutoff or retry.  The query deliberately
+ * does not join payment_schedules or any retired plan table.  Reservations are
+ * considered only while unresolved; finalized evidence is history and must not
+ * suppress a later partial collection.
+ */
+export async function getNextStandingAutopayWake(): Promise<StandingAutopayWake | undefined> {
+  if (!rosterStandingAutopayEnabled || scheduledPaymentExecutionMode !== "ledger_execute") return undefined;
+  const result = await db.execute<{
+    kind: "standing_cutoff" | "standing_operation";
+    organization_id: number;
+    league_id: number | null;
+    consent_id: string | null;
+    work_id: string | null;
+    status: PaymentOperation["status"] | null;
+    attempt_count: number | null;
+    due_at: string;
+  }>(sql`
+    WITH next_cutoff AS (
+      SELECT
+        'standing_cutoff'::text AS kind,
+        c.organization_id,
+        c.league_id,
+        c.id::text AS consent_id,
+        NULL::text AS work_id,
+        NULL::text AS status,
+        NULL::integer AS attempt_count,
+        MIN(o.due_at) AS due_at
+      FROM autopay_consents c
+      INNER JOIN payment_obligations o
+        ON o.organization_id = c.organization_id
+       AND o.league_id = c.league_id
+       AND o.state IN ('open', 'partially_settled')
+       AND o.due_at IS NOT NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM payment_operation_roster_snapshot_items ri
+         WHERE ri.organization_id = o.organization_id
+           AND ri.league_id = o.league_id
+           AND ri.obligation_id = o.id
+           AND ri.state = 'reserved'
+       )
+       AND NOT EXISTS (
+         SELECT 1
+           FROM payment_operations blocked
+          WHERE blocked.organization_id = c.organization_id
+            AND blocked.league_id = c.league_id
+            AND blocked.operation_type = 'standing_autopay_charge'
+            AND blocked.status IN ('canceled', 'failed_terminal', 'action_required', 'reconciliation_required')
+            AND blocked.target_key LIKE concat(
+              'standing-autopay:', c.organization_id, ':', c.league_id, ':',
+              c.payer_bowler_id, ':',
+              to_char(o.due_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'), ':%'
+            )
+       )
+       AND (
+         o.payer_bowler_id = c.payer_bowler_id
+         OR EXISTS (
+           SELECT 1 FROM autopay_consent_partners cp
+           WHERE cp.organization_id = c.organization_id
+             AND cp.league_id = c.league_id
+             AND cp.consent_id = c.id
+             AND cp.consent_version = c.consent_version
+             AND cp.partner_bowler_id = o.payer_bowler_id
+         )
+       )
+      WHERE c.state = 'active'
+        AND c.payment_mode = 'weekly'
+        AND c.revoked_at IS NULL
+      GROUP BY c.organization_id, c.league_id, c.id
+      ORDER BY MIN(o.due_at) ASC, c.id ASC
+      LIMIT 1
+    ), next_operation AS (
+      SELECT
+        'standing_operation'::text AS kind,
+        po.organization_id,
+        po.league_id,
+        NULL::text AS consent_id,
+        po.id::text AS work_id,
+        po.status,
+        po.attempt_count,
+        CASE WHEN po.status = 'leased' THEN po.lease_expires_at ELSE po.next_attempt_at END AS due_at
+      FROM payment_operations po
+      WHERE po.operation_type = 'standing_autopay_charge'
+        AND po.status IN ('pending', 'provider_unknown', 'retry_scheduled', 'leased')
+        AND (po.status <> 'provider_unknown' OR po.provider_object_id IS NULL)
+        AND CASE WHEN po.status = 'leased' THEN po.lease_expires_at ELSE po.next_attempt_at END IS NOT NULL
+      ORDER BY CASE WHEN po.status = 'leased' THEN po.lease_expires_at ELSE po.next_attempt_at END ASC, po.id ASC
+      LIMIT 1
+    )
+    SELECT kind, organization_id, league_id, consent_id, work_id, status, attempt_count,
+      (due_at AT TIME ZONE 'UTC')::text AS due_at
+    FROM (
+      SELECT * FROM next_cutoff
+      UNION ALL
+      SELECT * FROM next_operation
+    ) standing_work
+    ORDER BY due_at ASC, organization_id ASC, COALESCE(consent_id, work_id) ASC
+    LIMIT 1
+  `);
+  const row = result.rows[0];
+  if (!row) return undefined;
+  if (row.kind === "standing_cutoff") {
+    if (row.league_id === null || row.consent_id === null) throw new PaymentOperationValidationError("standing cutoff wake row is incomplete");
+    return { kind: "standing_cutoff", organizationId: Number(row.organization_id), leagueId: Number(row.league_id), consentId: row.consent_id, dueAt: row.due_at };
+  }
+  if (row.work_id === null || row.status === null || row.attempt_count === null) throw new PaymentOperationValidationError("standing operation wake row is incomplete");
+  return { kind: "standing_operation", organizationId: Number(row.organization_id), operationId: row.work_id, dueAt: row.due_at, status: row.status, attemptCount: Number(row.attempt_count) };
+}
+
 /** Exported so PostgreSQL plan tests exercise the exact production query. */
 export function buildNextPaymentOperationWakeQuery() {
   return sql`
-    WITH next_schedule AS (
-      SELECT
-        'schedule'::text AS kind,
-        ${leagues.organizationId} AS organization_id,
-        ${paymentSchedules.id}::text AS work_id,
-        NULL::text AS operation_type,
-        NULL::text AS status,
-        NULL::integer AS attempt_count,
-        NULL::integer AS league_id,
-        ${paymentSchedules.nextPaymentDate} AS due_at
-      FROM ${paymentSchedules}
-      INNER JOIN ${leagues} ON ${paymentSchedules.leagueId} = ${leagues.id}
-      WHERE ${paymentSchedules.active} = true
-        AND ${leagues.organizationId} IS NOT NULL
-      ORDER BY ${paymentSchedules.nextPaymentDate} ASC
-      LIMIT 1
-    ), next_operation AS (
+    WITH next_operation AS (
       SELECT
         'operation'::text AS kind,
         ${paymentOperations.organizationId} AS organization_id,
@@ -2841,8 +3139,7 @@ export function buildNextPaymentOperationWakeQuery() {
         END AS due_at
       FROM ${paymentOperations}
       WHERE (
-        (${paymentOperations.operationType} <> 'canonical_autopay_charge'
-          OR FALSE)
+        ${paymentOperations.operationType} NOT IN ('scheduled_charge', 'canonical_autopay_charge', 'standing_autopay_charge')
         AND (
           (${paymentOperations.status} IN ('pending', 'provider_unknown', 'retry_scheduled')
             AND ${paymentOperations.nextAttemptAt} IS NOT NULL)
@@ -2876,8 +3173,6 @@ export function buildNextPaymentOperationWakeQuery() {
       league_id,
       (due_at AT TIME ZONE 'UTC')::text AS due_at
     FROM (
-      SELECT * FROM next_schedule
-      UNION ALL
       SELECT * FROM next_operation
       UNION ALL
       SELECT * FROM next_canonical_plan
@@ -3020,8 +3315,11 @@ export async function reconcilePaymentOperationSuccess(
       ))
       .returning();
     if (!transitioned) return undefined;
-    await insertLinkedPaymentRows(tx, input.organizationId, input.operationId, input.paymentRows);
-    if (transitioned.operationType === "interactive_charge" && transitioned.leagueId !== null) {
+    const linkedRows = transitioned.operationType === "standing_autopay_charge" && (!input.paymentRows || input.paymentRows.length === 0)
+      ? await deriveStandingPaymentRowsInTransaction(tx, { organizationId: input.organizationId, operationId: transitioned.id, providerPaymentId: input.providerObjectId, providerName: transitioned.providerName, actorUserId: transitioned.authorizingUserId })
+      : input.paymentRows;
+    await insertLinkedPaymentRows(tx, input.organizationId, input.operationId, linkedRows);
+    if ((transitioned.operationType === "interactive_charge" || transitioned.operationType === "standing_autopay_charge") && transitioned.leagueId !== null) {
       try {
         await tx.transaction(async (finalizerTx) => {
           await finalizeRosterSnapshotInTransaction(finalizerTx, {

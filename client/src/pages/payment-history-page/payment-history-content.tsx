@@ -12,6 +12,7 @@ import { BowlerPaymentDialog } from "@/components/bowler-payment-dialog";
 import { LeagueSwitcherSheet } from "@/components/league-switcher-sheet";
 import { InteractiveOccurrenceSelector } from "@/components/interactive-occurrence-selector";
 import type { InteractiveOccurrenceReadiness } from "@/components/interactive-occurrence-selector";
+import { StandingAutopayCard } from "@/components/standing-autopay-card";
 
 interface PaymentHistoryContentProps {
   bowlerName: string;
@@ -183,6 +184,10 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
             onPayPastDue={onPayPastDue}
             onPayRemaining={onPayRemaining}
           />
+        </ErrorBoundary>
+
+        <ErrorBoundary level="section">
+          <StandingAutopayCard league={league} bowlerId={bowlerId} savedCards={savedCards} />
         </ErrorBoundary>
 
         <ErrorBoundary level="section">

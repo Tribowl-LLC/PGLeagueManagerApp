@@ -198,6 +198,12 @@
       "tag": "0032_roster_driven_payments_core",
       "createdAt": 1787500000000,
       "hash": "a3681e2358e52d270742b6b96d04745070b6251cd487657424b7667acd744fc4"
+    },
+    {
+      "idx": 33,
+      "tag": "0033_roster_standing_autopay",
+      "createdAt": 1787662614604,
+      "hash": "b7b54ada157f8afb3b334f0bf3346304f87f9ab2d074915c42cfdedd0b4ade91"
     }
   ]
 }

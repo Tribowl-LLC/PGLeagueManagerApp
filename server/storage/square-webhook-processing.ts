@@ -10,6 +10,8 @@ import {
   payments,
   refundPaymentOperationSnapshots,
   scheduledPaymentOperationSnapshots,
+  paymentOperationStandingAutopayBindings,
+  autopayConsents,
   webhookEvents,
   WEBHOOK_EVENT_MAX_ATTEMPTS,
   type WebhookEvent,
@@ -207,7 +209,7 @@ async function findChargeOperationId(
 ): Promise<string | null | "ambiguous"> {
   const base = and(
     eq(paymentOperations.organizationId, row.organizationId),
-    inArray(paymentOperations.operationType, ["scheduled_charge", "interactive_charge", "canonical_autopay_charge"]),
+    inArray(paymentOperations.operationType, ["scheduled_charge", "interactive_charge", "canonical_autopay_charge", "standing_autopay_charge"]),
     eq(paymentOperations.providerName, "square"),
   );
   const referenceId = event.providerReferenceId;
@@ -249,6 +251,7 @@ async function findDisputeOperation(
     scheduledProviderLocationId: scheduledPaymentOperationSnapshots.providerLocationId,
     interactiveLocationId: interactivePaymentOperationSnapshots.locationId,
     interactiveProviderLocationId: interactivePaymentOperationSnapshots.providerLocationId,
+    standingProviderLocationId: autopayConsents.providerLocationId,
   }).from(paymentOperations)
     .leftJoin(
       scheduledPaymentOperationSnapshots,
@@ -258,9 +261,25 @@ async function findDisputeOperation(
       interactivePaymentOperationSnapshots,
       eq(interactivePaymentOperationSnapshots.operationId, paymentOperations.id),
     )
+    .leftJoin(
+      paymentOperationStandingAutopayBindings,
+      and(
+        eq(paymentOperationStandingAutopayBindings.operationId, paymentOperations.id),
+        eq(paymentOperationStandingAutopayBindings.organizationId, paymentOperations.organizationId),
+        eq(paymentOperationStandingAutopayBindings.leagueId, paymentOperations.leagueId),
+      ),
+    )
+    .leftJoin(
+      autopayConsents,
+      and(
+        eq(autopayConsents.id, paymentOperationStandingAutopayBindings.consentId),
+        eq(autopayConsents.organizationId, paymentOperations.organizationId),
+        eq(autopayConsents.leagueId, paymentOperations.leagueId),
+      ),
+    )
     .where(and(
       eq(paymentOperations.organizationId, row.organizationId),
-      inArray(paymentOperations.operationType, ["scheduled_charge", "interactive_charge", "canonical_autopay_charge"]),
+      inArray(paymentOperations.operationType, ["scheduled_charge", "interactive_charge", "canonical_autopay_charge", "standing_autopay_charge"]),
       eq(paymentOperations.providerName, "square"),
       eq(paymentOperations.providerObjectId, event.providerPaymentId),
     )).limit(2).for("update", { of: paymentOperations });
@@ -276,6 +295,8 @@ async function findDisputeOperation(
       )
     : operation.operationType === "canonical_autopay_charge"
       ? false
+      : operation.operationType === "standing_autopay_charge"
+        ? operation.standingProviderLocationId === row.providerLocationId
       : operation.interactiveLocationId === row.locationId
       && (
         operation.interactiveProviderLocationId === null

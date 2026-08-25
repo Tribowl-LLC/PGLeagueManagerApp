@@ -66,6 +66,12 @@ router.use((req, res, next) => {
   if ((req.user?.role as string | undefined) === 'payment_manager') {
     return sendError(res, 'Payment managers cannot access autopay schedules', 403, 'FORBIDDEN');
   }
+  // Schedules remain an archive only after the roster cutover.  Keeping the
+  // route mounted lets old clients receive an explicit, non-retrying response
+  // while preventing any new legacy payer authority from being created.
+  if (req.method !== 'GET' || req.path.startsWith('/setup-quote')) {
+    return sendError(res, 'Legacy autopay schedules are retired; use standing roster consent and exact obligations', 410, 'LEGACY_AUTOPAY_RETIRED');
+  }
   next();
 });
 
