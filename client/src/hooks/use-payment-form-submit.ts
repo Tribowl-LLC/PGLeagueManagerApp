@@ -75,7 +75,7 @@ export function usePaymentFormSubmit({
         const quoteResponse = await csrfFetch(`/api/financials/leagues/${data.leagueId}/interactive-obligation-quote/2`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ obligationIds }),
+          body: JSON.stringify({ obligationIds, allocations: occurrenceAllocations }),
         });
         const quoteBody = await quoteResponse.json();
         if (!quoteResponse.ok || !quoteBody.data?.fingerprint) {
@@ -87,6 +87,7 @@ export function usePaymentFormSubmit({
           headers: { ...paymentRequestHeaders(requestKey), 'Content-Type': 'application/json' },
           body: JSON.stringify({
             obligationIds,
+            allocations: occurrenceAllocations,
             type: data.type,
             checkNumber: data.checkNumber,
             notes: data.notes ?? null,
@@ -117,7 +118,7 @@ export function usePaymentFormSubmit({
           const quoteResponse = await csrfFetch(`/api/financials/leagues/${data.leagueId}/interactive-obligation-quote/2`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ obligationIds }),
+            body: JSON.stringify({ obligationIds, allocations: occurrenceAllocations }),
           });
           const quoteBody = await quoteResponse.json();
           if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw makeApiError(quoteBody, quoteResponse.status, 'Payment quote is unavailable');
@@ -130,10 +131,11 @@ export function usePaymentFormSubmit({
           const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${data.leagueId}/interactive-obligation-charge/2`, {
             method: 'POST',
             headers: { ...paymentRequestHeaders(requestKey), 'Content-Type': 'application/json' },
-            body: JSON.stringify({ obligationIds, sourceId, sourceKind: cardMode === 'saved' ? 'saved_card' : 'new_card', buyerEmail: trimmedBuyerEmail || null, storeCard: false, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }),
+            body: JSON.stringify({ obligationIds, allocations: occurrenceAllocations, payerBowlerId: quoteBody.data.payerBowlerId, sourceId, sourceKind: cardMode === 'saved' ? 'saved_card' : 'new_card', buyerEmail: trimmedBuyerEmail || null, storeCard: false, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }),
           }), organizationId, data.leagueId);
           const responseData = await response.json();
           if (!response.ok) throw makeApiError(responseData, response.status, 'Failed to process payment');
+          if (responseData.data?.status !== 'succeeded') throw new Error('Payment is not confirmed yet. Use payment recovery before trying again.');
           clearPaymentIntent(paymentScope);
           toast({ title: 'Success', description: 'Exact payment obligations charged successfully' });
           queryClient.invalidateQueries({ queryKey: ['/api/payments'] });

@@ -311,6 +311,11 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
 
   it("links a real interactive preparation to its league and creates the roster snapshot", async () => {
     const fixture = await createOccurrence();
+    // The first report test deliberately exercises upfront mode and leaves the
+    // shared fixture in that mode. This preparation path is the weekly exact-
+    // obligation contract, so reset the fixture's authoritative league mode
+    // before quoting one obligation.
+    await db.update(leagues).set({ paymentMode: "weekly", timezone: "UTC" }).where(eq(leagues.id, leagueId));
     const quote = await quoteInteractiveObligations({ organizationId, leagueId, obligationIds: [fixture.obligation.id] });
     const providerObjectId = `roster-preparation-provider-${randomUUID()}`;
     const execute = vi.spyOn(interactivePaymentOperationExecutor, "execute").mockImplementation(async ({ operationId }) => {

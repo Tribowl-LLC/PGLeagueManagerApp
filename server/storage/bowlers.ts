@@ -407,6 +407,9 @@ export async function updateBowlerLeague(id: number, bowlerLeague: UpdateBowlerL
   const result = await db.transaction(async (tx) => {
     const [current] = await tx.select().from(bowlerLeagues).where(eq(bowlerLeagues.id, id)).limit(1);
     if (!current) throw new Error('Bowler league not found');
+    if (bowlerLeague.leagueId !== undefined && bowlerLeague.leagueId !== current.leagueId) {
+      throw new Error('LEAGUE_MOVE_REQUIRES_REASSIGNMENT');
+    }
     await lockRosterLeague(tx, current.leagueId);
     const [updated] = await tx.update(bowlerLeagues).set(bowlerLeague).where(eq(bowlerLeagues.id, id)).returning();
     const bowlerIdentityChanged = bowlerLeague.bowlerId !== undefined && bowlerLeague.bowlerId !== current.bowlerId;

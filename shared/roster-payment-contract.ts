@@ -42,10 +42,24 @@ export const occurrenceResponsibilityInputSchema = z.object({
 
 export const interactiveObligationQuoteRequestV2Schema = z.object({
   obligationIds: z.array(z.string().uuid()).min(1).max(200),
+  /** Optional exact partial allocations. Omitted means the full outstanding
+   * remainder of every selected obligation. */
+  allocations: z.array(z.object({
+    obligationId: z.string().uuid(),
+    amountMinor: z.number().int().positive(),
+  }).strict()).max(200).optional(),
+  /** Only management callers may provide this; the server always validates it
+   * against the selected obligations and the authenticated payer scope. */
+  payerBowlerId: z.number().int().positive().optional(),
 }).strict();
 
 export const interactiveObligationChargeRequestV2Schema = z.object({
   obligationIds: z.array(z.string().uuid()).min(1).max(200),
+  allocations: z.array(z.object({
+    obligationId: z.string().uuid(),
+    amountMinor: z.number().int().positive(),
+  }).strict()).max(200).optional(),
+  payerBowlerId: z.number().int().positive().optional(),
   sourceId: z.string().trim().min(1).max(255),
   sourceKind: z.enum(["new_card", "saved_card", "wallet"]).default("new_card"),
   buyerEmail: z.string().email().nullable().optional(),
@@ -56,6 +70,7 @@ export const interactiveObligationChargeRequestV2Schema = z.object({
 
 export const canonicalManualRecordRequestSchema = z.object({
   obligationIds: z.array(z.string().uuid()).min(1).max(200),
+  allocations: z.array(z.object({ obligationId: z.string().uuid(), amountMinor: z.number().int().positive() }).strict()).max(200).optional(),
   type: z.enum(["cash", "check"]),
   checkNumber: z.string().trim().min(1).max(128).optional(),
   idempotencyKey: z.string().trim().min(1).max(255),
@@ -91,5 +106,44 @@ export type RosterPaymentResponsibilityRequest = z.infer<typeof rosterPaymentRes
 export type OccurrenceResponsibilityInput = z.infer<typeof occurrenceResponsibilityInputSchema>;
 export type InteractiveObligationQuoteRequestV2 = z.infer<typeof interactiveObligationQuoteRequestV2Schema>;
 export type InteractiveObligationChargeRequestV2 = z.infer<typeof interactiveObligationChargeRequestV2Schema>;
+
+export type CanonicalDuePastDueRowV2 = {
+  id: string;
+  organizationId: number;
+  leagueId: number;
+  occurrenceId: string;
+  responsibilityId: string;
+  teamId: number;
+  component: "full" | "lineage" | "prize";
+  payerBowlerId: number;
+  amountMinor: number;
+  currency: "USD";
+  dueAt: string;
+  pastDueAt: string;
+  state: "open" | "partially_settled" | "settled" | "voided";
+  allocatedMinor: number;
+  outstandingMinor: number;
+  classification: "future" | "due" | "past_due" | "settled" | "voided" | "review_required";
+  reviewRequired: boolean;
+};
+
+export type CanonicalDuePastDueResponseV2 = {
+  contractVersion: typeof CANONICAL_DUE_PAST_DUE_CONTRACT_V2;
+  orderVersion: "due-at,payer,occurrence,obligation/2";
+  organizationId: number;
+  leagueId: number;
+  authoritativeSource: "payment_obligations";
+  asOf: string;
+  rows: CanonicalDuePastDueRowV2[];
+  totals: {
+    amountMinor: number;
+    allocatedMinor: number;
+    outstandingMinor: number;
+    collectiblePastDueMinor: number;
+    reviewCount: number;
+    settledCount: number;
+    voidedCount: number;
+  };
+};
 export type CanonicalManualRecordRequest = z.infer<typeof canonicalManualRecordRequestSchema>;
 export type CanonicalCorrectionRequest = z.infer<typeof canonicalCorrectionRequestSchema>;

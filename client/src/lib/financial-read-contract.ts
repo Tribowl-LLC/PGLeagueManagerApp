@@ -1,9 +1,25 @@
-import { FINANCIAL_READ_CONTRACT_VERSION, type FinancialReadContract, type FinancialReadRowContract } from "@shared/financial-contract";
+import type { CanonicalDuePastDueResponseV2, CanonicalDuePastDueRowV2 } from "@shared/roster-payment-contract";
+import type { FinancialReadContract } from "@shared/financial-contract";
 
-export type FinancialReadRow = FinancialReadRowContract;
+export type FinancialReadRow = {
+  obligationId: string | null;
+  occurrenceId: string | null;
+  bowlerId: number;
+  teamId: number | null;
+  amountMinor: number;
+  allocatedMinor: number;
+  outstandingMinor: number;
+  dueAt: string | null;
+  pastDueAt: string | null;
+  classification: "future" | "due" | "past_due" | "settled" | "voided" | "review_required";
+  state: "open" | "partially_settled" | "settled" | "voided";
+  evidenceSource: "canonical";
+  reviewRequired: boolean;
+  reviewCategory: "refund" | "dispute" | "evidence" | null;
+  incompatibleEvidence: boolean;
+};
 
 export type ResolvedFinancialRead =
-  | { status: "legacy_fallback"; amountPastDue: number; remainingBalance: number; rows: FinancialReadRow[] }
   | { status: "canonical"; amountPastDue: number; remainingBalance: number; rows: FinancialReadRow[] }
   | { status: "unavailable"; amountPastDue: 0; remainingBalance: 0; rows: [] };
 
@@ -13,32 +29,48 @@ export type ResolvedFinancialRead =
  * allowed to fall through to calculateFinancials: the caller must disable the
  * checkout until a versioned read succeeds.
  */
-export function resolveInteractiveFinancialRead(data: FinancialReadContract | undefined): ResolvedFinancialRead {
-  if (!data || data.contractVersion !== FINANCIAL_READ_CONTRACT_VERSION) {
+function isSafeMinor(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function toFinancialRow(row: CanonicalDuePastDueRowV2): FinancialReadRow {
+  return {
+    obligationId: row.id,
+    occurrenceId: row.occurrenceId,
+    bowlerId: row.payerBowlerId,
+    teamId: row.teamId,
+    amountMinor: row.amountMinor,
+    allocatedMinor: row.allocatedMinor,
+    outstandingMinor: row.outstandingMinor,
+    dueAt: row.dueAt,
+    pastDueAt: row.pastDueAt,
+    classification: row.classification,
+    state: row.state,
+    evidenceSource: "canonical",
+    reviewRequired: row.reviewRequired,
+    reviewCategory: null,
+    incompatibleEvidence: false,
+  };
+}
+
+export function resolveInteractiveFinancialRead(data: CanonicalDuePastDueResponseV2 | FinancialReadContract | undefined): ResolvedFinancialRead {
+  if (!data || data.contractVersion !== "canonical-due-past-due/2" || data.authoritativeSource !== "payment_obligations" || !Array.isArray(data.rows) || !data.totals) {
     return { status: "unavailable", amountPastDue: 0, remainingBalance: 0, rows: [] };
   }
-
-  // Historical/legacy balance payloads are display-only archive data. They
-  // are never an interactive payment source in the clean-slate system.
-  if (data.mode === "legacy_fallback") return { status: "unavailable", amountPastDue: 0, remainingBalance: 0, rows: [] };
-
-  if (data.mode !== "canonical" || !data.rows || !data.totals || !isNonnegativeSafeInteger(data.totals.collectiblePastDueMinor)) {
+  const v2Data: CanonicalDuePastDueResponseV2 = data;
+  if (!isSafeMinor(v2Data.totals.collectiblePastDueMinor)) {
     return { status: "unavailable", amountPastDue: 0, remainingBalance: 0, rows: [] };
   }
-
-  const collectibleRows = data.rows.filter((row) => isNonnegativeSafeInteger(row.outstandingMinor) && row.outstandingMinor > 0
+  const rows = v2Data.rows.map(toFinancialRow);
+  const collectibleRows = rows.filter((row) => isSafeMinor(row.outstandingMinor) && row.outstandingMinor > 0
     && row.state !== "voided"
     && row.state !== "settled"
     && !row.reviewRequired
     && !row.incompatibleEvidence);
   return {
     status: "canonical",
-    amountPastDue: data.totals.collectiblePastDueMinor,
+    amountPastDue: v2Data.totals.collectiblePastDueMinor,
     remainingBalance: collectibleRows.reduce((sum, row) => sum + row.outstandingMinor, 0),
-    rows: data.rows,
+    rows,
   };
-}
-
-function isNonnegativeSafeInteger(value: number): boolean {
-  return Number.isSafeInteger(value) && value >= 0;
 }

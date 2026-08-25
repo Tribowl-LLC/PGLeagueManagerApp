@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { League, Payment, User, SavedCard, ApiResponse, BowlerDetailsResponse } from "@shared/schema";
 import type { CanonicalPaymentReport, CanonicalPaymentRow } from "@shared/canonical-payment-report";
-import type { FinancialReadContract } from "@shared/financial-contract";
+import type { CanonicalDuePastDueResponseV2 } from "@shared/roster-payment-contract";
 import { BowlerLayout } from "@/components/bowler-layout";
 import { PageLoadingState } from "@/components/page-states";
 import { useSearch, useLocation as useWouterLocation } from "wouter";
@@ -10,7 +10,7 @@ import { useSquarePayment } from "@/hooks/use-square-payment";
 import { usePaymentProvider } from "@/hooks/use-payment-provider";
 import { useWalletPayments } from "@/hooks/use-wallet-payments";
 import { useSavedCardDefault } from "@/hooks/use-saved-card-default";
-import { createPayment } from "@/lib/square";
+import { createPayment, tokenizeCard } from "@/lib/square";
 import { logger } from "@/lib/logger";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, csrfFetch } from '@/lib/queryClient';
@@ -196,14 +196,13 @@ export default function PaymentHistoryPage() {
     }
   }, [payDialogType, cleanupCard]);
 
-  // A live F1 read is the amount authority for activated leagues. Legacy
-  // financial-utils remains the exact fallback until this versioned read is
-  // available, while selector state is reset whenever the dialog intent or
-  // league changes so an old obligation set cannot ride into a new charge.
-  const { data: canonicalFinancialResponse, isLoading: loadingFinancialRead, error: financialReadError } = useQuery<ApiResponse<FinancialReadContract>>({
+  // The roster obligation read is the amount authority for configured
+  // leagues. Archive payment history is display-only and never supplies a
+  // fallback balance for checkout.
+  const { data: canonicalFinancialResponse, isLoading: loadingFinancialRead, error: financialReadError } = useQuery<ApiResponse<CanonicalDuePastDueResponseV2>>({
     queryKey: paymentHistoryFinancialQueryKey(leagueId ?? 0, bowlerId ?? 0),
     queryFn: async ({ signal }) => {
-      const response = await fetch(`/api/financials/leagues/${leagueId}/due-past-due?bowlerId=${bowlerId}`, {
+      const response = await fetch(`/api/financials/leagues/${leagueId}/canonical-due-past-due/2?bowlerId=${bowlerId}`, {
         credentials: "include",
         headers: { Accept: "application/json" },
         signal,
@@ -299,13 +298,14 @@ export default function PaymentHistoryPage() {
       const exactObligationIds = [...new Set((occurrenceAllocations ?? []).map((row) => row.obligationId))];
       if (league?.payingLineupSize != null) {
         if (exactObligationIds.length === 0) throw new Error("Wallet payments for roster-configured leagues require exact obligations. Refresh and select the obligations to pay.");
-        const quoteResponse = await csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-quote/2`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ obligationIds: exactObligationIds }) });
+        const quoteResponse = await csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-quote/2`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ obligationIds: exactObligationIds, allocations: occurrenceAllocations }) });
         const quoteBody = await quoteResponse.json();
         if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw new Error(quoteBody.error?.message || "Exact payment obligations are unavailable.");
         const requestKey = walletRequestKeyRef.current ?? beginPaymentIntent(`roster-wallet:${league.id}:${exactObligationIds.join(",")}:${quoteBody.data.fingerprint}`);
-        const exactResponse = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-charge/2`, { method: "POST", headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" }, body: JSON.stringify({ obligationIds: exactObligationIds, sourceId: token, sourceKind: "wallet", buyerEmail: overrideEmail ?? bowlerEmail ?? null, storeCard: false, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }) }), league.organizationId, league.id);
+        const exactResponse = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-charge/2`, { method: "POST", headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" }, body: JSON.stringify({ obligationIds: exactObligationIds, allocations: occurrenceAllocations, payerBowlerId: quoteBody.data.payerBowlerId, sourceId: token, sourceKind: "wallet", buyerEmail: overrideEmail ?? bowlerEmail ?? null, storeCard: false, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }) }), league.organizationId, league.id);
         const exactBody = await exactResponse.json();
         if (!exactResponse.ok) throw new Error(exactBody.error?.message || "Wallet payment failed.");
+        if (exactBody.data?.status !== "succeeded") throw new Error("Your wallet payment is not confirmed yet. Use payment recovery before trying again.");
         walletRequestKeyRef.current = null;
         toast({ title: "Payment Successful", description: `${walletType === "apple_pay" ? "Apple Pay" : "Google Pay"} payment completed.` });
         return;
@@ -434,6 +434,53 @@ export default function PaymentHistoryPage() {
       // one inline so Square's hosted receipt fires for this charge.
       const trimmedReceiptEmail = receiptEmail.trim();
       const overrideEmail = !bowlerEmail && trimmedReceiptEmail ? trimmedReceiptEmail : undefined;
+
+      // Roster-authoritative leagues always charge the exact quoted
+      // obligations. The historical amount endpoint remains available only
+      // for archive-compatible, non-roster leagues.
+      if (!league) throw new Error("League payment context is unavailable.");
+      if (league.payingLineupSize != null) {
+        const exactObligationIds = [...new Set((occurrenceAllocations ?? []).map((row) => row.obligationId))];
+        if (exactObligationIds.length === 0) throw new Error("Select one or more exact payment obligations before paying.");
+        const quoteResponse = await csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-quote/2`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ obligationIds: exactObligationIds, allocations: occurrenceAllocations }),
+        });
+        const quoteBody = await quoteResponse.json().catch(() => ({}));
+        if (!quoteResponse.ok || !quoteBody.data?.fingerprint || !Number.isSafeInteger(quoteBody.data?.amountMinor)) {
+          throw new Error(quoteBody.error?.message || "Exact payment obligations are unavailable. Refresh and try again.");
+        }
+        const sourceId = cardMode === "saved"
+          ? selectedSavedCardId
+          : card ? await tokenizeCard(card) : "";
+        if (!sourceId) throw new Error("A payment source is required.");
+        const paymentScope = `history-roster:${league.id}:${exactObligationIds.join(",")}:${quoteBody.data.fingerprint}:${cardMode}`;
+        const requestKey = beginPaymentIntent(paymentScope);
+        const exactResponse = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-charge/2`, {
+          method: "POST",
+          headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" },
+          body: JSON.stringify({
+            obligationIds: exactObligationIds,
+            allocations: occurrenceAllocations,
+            payerBowlerId: quoteBody.data.payerBowlerId,
+            sourceId,
+            sourceKind: cardMode === "saved" ? "saved_card" : "new_card",
+            buyerEmail: overrideEmail ?? null,
+            storeCard: cardMode === "new" ? storeCard : false,
+            idempotencyKey: requestKey,
+            requestFingerprint: quoteBody.data.fingerprint,
+          }),
+        }), league.organizationId, league.id);
+        const exactBody = await exactResponse.json().catch(() => ({}));
+        if (!exactResponse.ok) throw makeApiError(exactBody, exactResponse.status, "Payment failed");
+        if (exactBody.data?.status !== "succeeded") throw new Error("Your payment is not confirmed yet. Use payment recovery before trying again.");
+        clearPaymentIntent(paymentScope);
+        toast({ title: "Payment Successful", description: `${formatCurrency(quoteBody.data.amountMinor)} ${dialogLabel} has been paid.` });
+        await invalidatePaymentHistoryFinancials(queryClient, leagueId, bowlerId);
+        setPayDialogType(null);
+        return;
+      }
 
       if (cardMode === 'saved' && selectedSavedCardId) {
         const paymentScope = `history:${bowlerId}:${leagueId}:${dialogAmount}:saved${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`;

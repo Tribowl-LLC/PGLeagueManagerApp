@@ -235,7 +235,15 @@ router.post("/leagues/:leagueId/interactive-obligation-quote/2", paymentWriteLim
   try { league = await paymentScope(req, leagueId, parsed.data.obligationIds); } catch (error) { return handleError(res, error); }
   if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
   const privileged = await hasAdminAccessToLeague(req, leagueId) || await hasPaymentManagerAccessToLeague(req, leagueId) || req.user.role === "system_admin";
-  try { return sendSuccess(res, await quoteInteractiveObligations({ organizationId: league.organizationId, leagueId, obligationIds: parsed.data.obligationIds, payerBowlerId: privileged ? undefined : req.user.bowlerId ?? undefined })); } catch (error) { return handleError(res, error); }
+  try {
+    return sendSuccess(res, await quoteInteractiveObligations({
+      organizationId: league.organizationId,
+      leagueId,
+      obligationIds: parsed.data.obligationIds,
+      allocations: parsed.data.allocations,
+      payerBowlerId: privileged ? parsed.data.payerBowlerId : req.user.bowlerId ?? undefined,
+    }));
+  } catch (error) { return handleError(res, error); }
 });
 
 router.post("/leagues/:leagueId/interactive-obligation-charge/2", paymentWriteLimiter, async (req, res) => {
@@ -248,7 +256,7 @@ router.post("/leagues/:leagueId/interactive-obligation-charge/2", paymentWriteLi
   if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
   try {
     const privileged = await hasAdminAccessToLeague(req, leagueId) || await hasPaymentManagerAccessToLeague(req, leagueId) || req.user.role === "system_admin";
-    const result = await chargeInteractiveObligations({ organizationId: league.organizationId, leagueId, actorUserId: req.user.id, payerBowlerId: privileged ? undefined : req.user.bowlerId ?? undefined, request: parsed.data });
+    const result = await chargeInteractiveObligations({ organizationId: league.organizationId, leagueId, actorUserId: req.user.id, payerBowlerId: privileged ? parsed.data.payerBowlerId : req.user.bowlerId ?? undefined, request: parsed.data });
     return sendSuccess(res, rosterWireResult(result), result.status === "succeeded" ? 201 : 202);
   } catch (error) { return handleError(res, error); }
 });

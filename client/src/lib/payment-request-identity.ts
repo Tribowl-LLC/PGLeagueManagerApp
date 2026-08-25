@@ -85,22 +85,23 @@ export async function paymentRequestWithRecovery(
   organizationId?: number | null,
   rosterLeagueId?: number,
 ): Promise<Response> {
+  const reconcileRosterResponse = async (response: Response): Promise<Response> => {
+    if (rosterLeagueId === undefined) return response;
+    const body = await response.clone().json().catch(() => null) as { data?: { contractVersion?: string; operationId?: string; status?: string }; operationId?: string; status?: string } | null;
+    // The exact roster route returns `{ data: ... }`, while the retained
+    // request-key recovery route returns a top-level operation status. Both
+    // identify the same durable operation; hand it to the roster finalizer
+    // whenever local evidence is not terminally succeeded.
+    const operation = body?.data ?? body;
+    if (!operation?.operationId || operation.status === 'succeeded' || operation.status === 'COMPLETED') return response;
+    const recovered = await recoverRosterPaymentOperation(rosterLeagueId, operation.operationId).catch(() => null);
+    return recovered?.ok ? recovered : response;
+  };
   try {
-    const response = await request();
-    if (rosterLeagueId !== undefined) {
-      const body = await response.clone().json().catch(() => null) as { data?: { contractVersion?: string; operationId?: string; status?: string } } | null;
-      const operation = body?.data;
-      if (operation?.contractVersion === 'interactive-obligation-charge/2'
-        && operation.operationId
-        && operation.status === 'reconciliation_required') {
-        const recovered = await recoverRosterPaymentOperation(rosterLeagueId, operation.operationId).catch(() => null);
-        if (recovered?.ok) return recovered;
-      }
-    }
-    return response;
+    return await reconcileRosterResponse(await request());
   } catch (error) {
     const recovered = await recoverPaymentIntent(requestKey, organizationId).catch(() => null);
     if (!recovered) throw error;
-    return recovered;
+    return await reconcileRosterResponse(recovered);
   }
 }

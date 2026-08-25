@@ -282,12 +282,13 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
       const exactObligationIds = [...new Set((occurrenceAllocations ?? []).map((row) => row.obligationId))];
       if (leagueInfo?.payingLineupSize != null) {
         if (exactObligationIds.length === 0) throw new Error("Wallet payments for roster-configured leagues require exact obligations.");
-        const quoteResponse = await csrfFetch(`/api/financials/leagues/${currentLeagueId}/interactive-obligation-quote/2`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ obligationIds: exactObligationIds }) });
+        const quoteResponse = await csrfFetch(`/api/financials/leagues/${currentLeagueId}/interactive-obligation-quote/2`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ obligationIds: exactObligationIds, allocations: occurrenceAllocations }) });
         const quoteBody = await quoteResponse.json();
         if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw new Error(quoteBody.error?.message || "Exact payment obligations are unavailable.");
-        const exactResponse = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${currentLeagueId}/interactive-obligation-charge/2`, { method: "POST", headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" }, body: JSON.stringify({ obligationIds: exactObligationIds, sourceId: token, sourceKind: "wallet", buyerEmail: overrideEmail ?? selected?.email ?? null, storeCard: false, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }) }), leagueInfo.organizationId, currentLeagueId);
+        const exactResponse = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${currentLeagueId}/interactive-obligation-charge/2`, { method: "POST", headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" }, body: JSON.stringify({ obligationIds: exactObligationIds, allocations: occurrenceAllocations, payerBowlerId: quoteBody.data.payerBowlerId, sourceId: token, sourceKind: "wallet", buyerEmail: overrideEmail ?? selected?.email ?? null, storeCard: false, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }) }), leagueInfo.organizationId, currentLeagueId);
         const exactBody = await exactResponse.json();
         if (!exactResponse.ok) throw new Error(exactBody.error?.message || "Wallet payment failed.");
+        if (exactBody.data?.status !== "succeeded") throw new Error("Your wallet payment is not confirmed yet. Use payment recovery before trying again.");
         walletRequestKeyRef.current = null;
         toast({ title: "Success", description: `Payment processed via ${walletType === "apple_pay" ? "Apple Pay" : "Google Pay"}` });
         queryClient.invalidateQueries({ queryKey: ["/api/payments"] });

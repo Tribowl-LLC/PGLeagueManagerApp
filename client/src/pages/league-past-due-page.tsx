@@ -12,6 +12,7 @@ import {
 import { ArrowLeft, CheckCircle2 } from "lucide-react";
 import { PageLoadingState } from "@/components/page-states";
 import type { League, Team, BowlerLeague, BowlerWithAccount, User } from "@shared/schema";
+import type { CanonicalDuePastDueResponseV2 } from "@shared/roster-payment-contract";
 import { Link, useParams } from "wouter";
 
 export default function LeaguePastDuePage() {
@@ -65,10 +66,10 @@ export default function LeaguePastDuePage() {
     }
   });
 
-  const { data: financialResponse, isLoading: loadingFinancials, error: financialError } = useQuery<{ data: { mode: "canonical" | "legacy_fallback" | "unavailable"; rows: Array<{ bowlerId: number; teamId: number | null; outstandingMinor: number; classification: string; reviewRequired: boolean }> } }>({
-    queryKey: [`/api/financials/leagues/${leagueId}/due-past-due${systemScope}`],
+  const { data: financialResponse, isLoading: loadingFinancials, error: financialError } = useQuery<{ data: CanonicalDuePastDueResponseV2 }>({
+    queryKey: [`/api/financials/leagues/${leagueId}/canonical-due-past-due/2${systemScope}`],
     queryFn: async () => {
-      const response = await fetch(`/api/financials/leagues/${leagueId}/due-past-due${systemScope}`);
+      const response = await fetch(`/api/financials/leagues/${leagueId}/canonical-due-past-due/2${systemScope}`);
       if (!response.ok) {
         throw new Error('Canonical financial evidence requires review');
       }
@@ -107,7 +108,7 @@ export default function LeaguePastDuePage() {
   const leagueBowlers = bowlers;
 
   const groupedRows = [...financialRows.reduce((map, row) => {
-    const key = `${row.bowlerId}:${row.teamId ?? "none"}`;
+    const key = `${row.payerBowlerId}:none`;
     const prior = map.get(key);
     const collectible = row.classification === "past_due" ? row.outstandingMinor : 0;
     map.set(key, prior ? { ...prior, outstandingMinor: prior.outstandingMinor + row.outstandingMinor, collectiblePastDueMinor: prior.collectiblePastDueMinor + collectible, reviewRequired: prior.reviewRequired || row.reviewRequired, reviewMinor: prior.reviewMinor + (row.reviewRequired ? row.outstandingMinor : 0), classification: prior.reviewRequired || row.reviewRequired ? "review_required" : prior.collectiblePastDueMinor + collectible > 0 ? "past_due" : row.classification } : { ...row, collectiblePastDueMinor: collectible, reviewMinor: row.reviewRequired ? row.outstandingMinor : 0 });
@@ -116,17 +117,17 @@ export default function LeaguePastDuePage() {
   const pastDueBowlers = groupedRows
     .filter((row) => row.collectiblePastDueMinor > 0 || row.reviewRequired)
     .flatMap((row) => {
-      const bowler = leagueBowlers.find((candidate) => candidate.id === row.bowlerId);
+      const bowler = leagueBowlers.find((candidate) => candidate.id === row.payerBowlerId);
       if (!bowler) return [];
       const bowlerLeague = bowlerLeagues.find(bl => 
-        bl.bowlerId === bowler.id && 
+        bl.bowlerId === bowler.id &&
         bl.leagueId === leagueId
       );
-      if (financialResponse?.data.mode !== "canonical" && (!bowlerLeague || !bowlerLeague.active)) return [];
+      if (!bowlerLeague) return [];
 
       // Canonical responsibility is authoritative for team identity. Membership
       // supplies only the safe league population/display fallback used by legacy.
-      const team = teams?.find(t => t.id === (row.teamId ?? bowlerLeague?.teamId));
+      const team = teams?.find(t => t.id === row.teamId) ?? teams?.find(t => t.id === bowlerLeague?.teamId);
       if (!team) return [];
 
       const pastDueAmount = row.collectiblePastDueMinor;
@@ -154,7 +155,7 @@ export default function LeaguePastDuePage() {
         <div>
           <h1 className="text-2xl font-bold mb-2">{league.data.name} - Past Due Balances</h1>
           <p className="text-muted-foreground mb-6">
-            List of bowlers with past due balances in {league.data.name}. Source: {financialResponse?.data.mode === "canonical" ? "canonical" : financialResponse?.data.mode === "legacy_fallback" ? "legacy fallback" : "unavailable"}.
+            List of bowlers with past due balances in {league.data.name}. Source: roster-driven canonical obligations.
           </p>
         </div>
 

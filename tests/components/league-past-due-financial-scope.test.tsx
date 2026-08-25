@@ -22,7 +22,7 @@ describe("LeaguePastDuePage financial scope", () => {
       if (url === "/api/user") return new Response(JSON.stringify({ data: { role: "system_admin", organizationId: 77 } }), { status: 200 });
       if (url === "/api/leagues/7") return new Response(JSON.stringify({ data: { id: 7, name: "Scoped League" } }), { status: 200 });
       if (url === "/api/teams" || url === "/api/bowlers" || url === "/api/bowler-leagues?leagueId=7") return new Response(JSON.stringify({ data: [] }), { status: 200 });
-      return new Response(JSON.stringify({ data: { mode: "canonical", rows: [] } }), { status: 200 });
+      return new Response(JSON.stringify({ data: { contractVersion: "canonical-due-past-due/2", orderVersion: "due-at,payer,occurrence,obligation/2", organizationId: 77, leagueId: 7, authoritativeSource: "payment_obligations", asOf: "2038-01-01T00:00:00.000Z", rows: [], totals: { amountMinor: 0, allocatedMinor: 0, outstandingMinor: 0, collectiblePastDueMinor: 0, reviewCount: 0, settledCount: 0, voidedCount: 0 } } }), { status: 200 });
     }));
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, queryFn: async () => ({ data: [] }) } } });
     queryClient.setQueryData(["/api/user"], { data: { role: "system_admin", organizationId: 77 } });
@@ -34,8 +34,8 @@ describe("LeaguePastDuePage financial scope", () => {
     render(<QueryClientProvider client={queryClient}><LeaguePastDuePage /></QueryClientProvider>);
 
     await waitFor(() => expect(screen.getByText("Scoped League - Past Due Balances")).toBeInTheDocument());
-    expect(requestedUrls).toContain("/api/financials/leagues/7/due-past-due?organizationId=77");
-    expect(queryClient.getQueryCache().find({ queryKey: ["/api/financials/leagues/7/due-past-due?organizationId=77"] })).toBeDefined();
+    expect(requestedUrls).toContain("/api/financials/leagues/7/canonical-due-past-due/2?organizationId=77");
+    expect(queryClient.getQueryCache().find({ queryKey: ["/api/financials/leagues/7/canonical-due-past-due/2?organizationId=77"] })).toBeDefined();
     vi.unstubAllGlobals();
   });
 });

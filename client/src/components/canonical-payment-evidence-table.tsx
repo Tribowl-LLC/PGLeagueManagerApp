@@ -52,10 +52,10 @@ export function CanonicalPaymentEvidenceTable({ rows, mode, paymentTiming, organ
     allocationId: string;
     correctionMode: "void_only" | "replace";
     reason: string;
-    replacementAmountMinor?: number;
-    replacementType?: "cash" | "check";
-    replacementCheckNumber?: string;
-    replacementWeekOf?: string;
+    replacementAmountMinor?: number | null;
+    replacementType?: "cash" | "check" | null;
+    replacementCheckNumber?: string | null;
+    replacementWeekOf?: string | null;
     replacementNotes?: string | null;
   }) => {
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(payload)));
@@ -84,10 +84,20 @@ export function CanonicalPaymentEvidenceTable({ rows, mode, paymentTiming, organ
         } : {}),
       } as const;
       const idempotencyKey = crypto.randomUUID();
+      const fingerprintPayload = {
+        allocationId,
+        correctionMode,
+        reason: trimmedReason,
+        replacementAmountMinor,
+        replacementType: correctionMode === "replace" ? replacementType : null,
+        replacementCheckNumber: correctionMode === "replace" && replacementType === "check" ? replacementCheckNumber.trim() : null,
+        replacementWeekOf: null,
+        replacementNotes: correctionMode === "replace" ? replacementNotes.trim() || null : null,
+      };
       const response = await csrfFetch(`/api/financials/leagues/${row.leagueId}/canonical/corrections/1`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
-        body: JSON.stringify({ ...payload, idempotencyKey, requestFingerprint: await correctionFingerprint(payload) }),
+        body: JSON.stringify({ ...payload, idempotencyKey, requestFingerprint: await correctionFingerprint(fingerprintPayload) }),
       });
       if (!response.ok) throw new Error("Payment correction could not be recorded");
       setEditingAllocationId(null);

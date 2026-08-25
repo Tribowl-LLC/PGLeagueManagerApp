@@ -275,6 +275,14 @@ router.patch("/:id", async (req, res) => {
     const effectiveTeamId = update.teamId ?? bowlerLeague.teamId;
     const effectiveBowlerId = update.bowlerId ?? bowlerLeague.bowlerId;
 
+    // A membership move changes the tenant/league scope of roster payment
+    // evidence. It must be represented as an explicit remove + add so both
+    // league locks and materialization history are auditable; never mutate a
+    // membership across leagues in place.
+    if (effectiveLeagueId !== bowlerLeague.leagueId) {
+      return sendError(res, "Move the bowler by removing the old league membership and adding a new one", 409, "LEAGUE_MOVE_REQUIRES_REASSIGNMENT");
+    }
+
     if (!(await hasAdminAccessToLeague(req, effectiveLeagueId))) {
       return sendError(res, "You don't have access to the target league", 403, 'FORBIDDEN');
     }

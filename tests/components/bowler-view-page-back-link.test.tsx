@@ -111,20 +111,17 @@ function renderPage(search: string) {
     { success: true, data: DETAILS },
   );
   qc.setQueryData(['/api/user'], { success: true, data: { role: 'user', organizationId: 1 } });
-  qc.setQueryData(["/api/financials/leagues", LEAGUE_ID, "due-past-due", BOWLER_ID, ""], {
+  qc.setQueryData(["/api/financials/leagues", LEAGUE_ID, "canonical-due-past-due/2", BOWLER_ID, ""], {
     success: true,
     data: {
-      mode: "legacy_fallback",
+      contractVersion: "canonical-due-past-due/2",
+      orderVersion: "due-at,payer,occurrence,obligation/2",
+      organizationId: 1,
+      leagueId: LEAGUE_ID,
+      authoritativeSource: "payment_obligations",
+      asOf: "2038-01-01T00:00:00.000Z",
       rows: [],
-      legacyFallback: {
-        totalPaidMinor: 0,
-        amountPastDueMinor: 0,
-        totalDueToDateMinor: 0,
-        fullSeasonAmountMinor: 0,
-        remainingBalanceMinor: 0,
-        totalWeeksInSeason: 0,
-      },
-      totals: { collectiblePastDueMinor: 0, reviewCount: 0 },
+      totals: { amountMinor: 0, allocatedMinor: 0, outstandingMinor: 0, collectiblePastDueMinor: 0, reviewCount: 0, settledCount: 0, voidedCount: 0 },
     },
   });
 

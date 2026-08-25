@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import type { Payment, BowlerDetailsResponse, ApiResponse } from "@shared/schema";
+import type { CanonicalDuePastDueResponseV2 } from "@shared/roster-payment-contract";
 import { filterActiveBowlerLeagues } from "@/lib/bowler-league-utils";
 import { BowlerFinancialSummary } from "@/components/bowler-financial-summary";
 import { PaymentSyncRetryStatus } from "@/components/payment-sync-retry-status";
@@ -167,14 +168,10 @@ export default function BowlerViewPage() {
     return map;
   }, [paymentReportResponse?.data]);
 
-  const { data: financialResponse, isLoading: loadingFinancials, error: financialError } = useQuery<ApiResponse<{
-    mode: string;
-    rows: Array<{ amountMinor: number; allocatedMinor: number; outstandingMinor: number; classification: string; reviewRequired: boolean; reviewCategory: "refund" | "dispute" | "evidence" | null }>;
-    totals: { collectiblePastDueMinor: number; reviewCount: number };
-  }>>({
-    queryKey: ["/api/financials/leagues", effectiveLeagueId, "due-past-due", bowlerId, systemScope],
+  const { data: financialResponse, isLoading: loadingFinancials, error: financialError } = useQuery<ApiResponse<CanonicalDuePastDueResponseV2>>({
+    queryKey: ["/api/financials/leagues", effectiveLeagueId, "canonical-due-past-due/2", bowlerId, systemScope],
     queryFn: async ({ signal }) => {
-      const response = await fetch(`/api/financials/leagues/${effectiveLeagueId}/due-past-due?bowlerId=${bowlerId}${systemScope}`, { credentials: "include", headers: { Accept: "application/json" }, signal });
+      const response = await fetch(`/api/financials/leagues/${effectiveLeagueId}/canonical-due-past-due/2?bowlerId=${bowlerId}${systemScope}`, { credentials: "include", headers: { Accept: "application/json" }, signal });
       if (!response.ok) throw new Error("Financial evidence is unavailable");
       return response.json();
     },
@@ -202,12 +199,12 @@ export default function BowlerViewPage() {
       totalSeasonDues: dueRows.reduce((sum, row) => sum + row.amountMinor, 0),
       totalWeeksInSeason: financialRows.length,
       fullSeasonAmount: financialRows.reduce((sum, row) => sum + row.amountMinor, 0),
-      amountPastDue: financialResponse.data.mode === "canonical" ? financialResponse.data.totals.collectiblePastDueMinor : 0,
-      remainingBalance: financialResponse.data.mode === "canonical" ? financialRows.reduce((sum, row) => sum + row.outstandingMinor, 0) : 0,
-      totalPaidAmount: financialResponse?.data?.mode === "canonical" ? financialRows.reduce((sum, row) => sum + row.allocatedMinor, 0) : 0,
+      amountPastDue: financialResponse.data.totals.collectiblePastDueMinor,
+      remainingBalance: financialRows.reduce((sum, row) => sum + row.outstandingMinor, 0),
+      totalPaidAmount: financialRows.reduce((sum, row) => sum + row.allocatedMinor, 0),
       totalUnpaidAmount: 0,
       reviewRequired: financialRows.some((row) => row.reviewRequired),
-      reviewCategory: financialRows.some((row) => row.reviewCategory === "refund") ? ("refund" as const) : financialRows.some((row) => row.reviewCategory === "dispute") ? ("dispute" as const) : financialRows.some((row) => row.reviewRequired) ? ("evidence" as const) : null,
+      reviewCategory: financialRows.some((row) => row.reviewRequired) ? ("evidence" as const) : null,
     };
   })();
 
@@ -286,7 +283,7 @@ export default function BowlerViewPage() {
         </div>
 
         <ErrorBoundary level="section">
-          {loadingFinancials ? <div className="text-sm text-muted-foreground">Loading server financial evidence…</div> : financialError || financialResponse?.data?.mode !== "canonical" ? <div className="text-sm text-amber-700">Financial evidence unavailable or requires review.</div> : <BowlerFinancialSummary league={league} financials={financials} sourceLabel="Roster obligations" />}
+          {loadingFinancials ? <div className="text-sm text-muted-foreground">Loading server financial evidence…</div> : financialError || financialResponse?.data?.contractVersion !== "canonical-due-past-due/2" ? <div className="text-sm text-amber-700">Financial evidence unavailable or requires review.</div> : <BowlerFinancialSummary league={league} financials={financials} sourceLabel="Roster obligations" />}
         </ErrorBoundary>
       </div>
 

@@ -12,6 +12,7 @@ import {
 import { ArrowLeft, CheckCircle2 } from "lucide-react";
 import { PageLoadingState } from "@/components/page-states";
 import type { League, Team, BowlerLeague, BowlerWithAccount, User } from "@shared/schema";
+import type { CanonicalDuePastDueResponseV2 } from "@shared/roster-payment-contract";
 import { Link } from "wouter";
 
 export default function PastDuePage() {
@@ -65,7 +66,7 @@ export default function PastDuePage() {
   });
   const bowlerLeagues = bowlerLeaguesResponse?.data || [];
 
-  const { data: financialResponse, isLoading: loadingFinancials, error: financialError } = useQuery<{ data: { leagues: Array<{ leagueId: number; report: { rows: Array<{ bowlerId: number; teamId: number | null; outstandingMinor: number; classification: string; reviewRequired: boolean }> } }> } }>({
+  const { data: financialResponse, isLoading: loadingFinancials, error: financialError } = useQuery<{ data: { leagues: Array<{ leagueId: number; report: CanonicalDuePastDueResponseV2 }> } }>({
     queryKey: [systemScope ? `/api/financials/due-past-due${systemScope}` : "/api/financials/due-past-due"],
     queryFn: async () => {
       const response = await fetch(`/api/financials/due-past-due${systemScope}`);
@@ -87,22 +88,22 @@ export default function PastDuePage() {
   }
   if (financialError || !financialResponse?.data?.leagues) return <Layout><p className="p-6 text-destructive">Financial evidence requires review; no balance is shown.</p></Layout>;
 
-  const groupedRows = [...financialLeagues.flatMap((entry) => entry.report.rows.map((row) => ({ ...row, leagueId: entry.leagueId, mode: (entry.report as { mode?: string }).mode ?? "legacy_fallback" }))).reduce((map, row) => {
-    const key = `${row.leagueId}:${row.bowlerId}:${row.teamId ?? "none"}`;
+  const groupedRows = [...financialLeagues.flatMap((entry) => entry.report.rows.map((row) => ({ ...row, leagueId: entry.leagueId }))).reduce((map, row) => {
+    const key = `${row.leagueId}:${row.payerBowlerId}:none`;
     const prior = map.get(key);
     const collectible = row.classification === "past_due" ? row.outstandingMinor : 0;
     const next = prior ? { ...prior, outstandingMinor: prior.outstandingMinor + row.outstandingMinor, collectiblePastDueMinor: prior.collectiblePastDueMinor + collectible, reviewRequired: prior.reviewRequired || row.reviewRequired, reviewMinor: prior.reviewMinor + (row.reviewRequired ? row.outstandingMinor : 0), classification: prior.reviewRequired || row.reviewRequired ? "review_required" : prior.collectiblePastDueMinor + collectible > 0 ? "past_due" : row.classification } : { ...row, collectiblePastDueMinor: collectible, reviewMinor: row.reviewRequired ? row.outstandingMinor : 0 };
     map.set(key, next);
     return map;
-  }, new Map<string, (typeof financialLeagues[number]["report"]["rows"][number] & { leagueId: number; mode: string; collectiblePastDueMinor: number; reviewMinor: number })>()).values()];
+  }, new Map<string, (typeof financialLeagues[number]["report"]["rows"][number] & { leagueId: number; collectiblePastDueMinor: number; reviewMinor: number })>()).values()];
   const pastDueBowlers = groupedRows.flatMap((financialLeague) => {
     const league = leagues.find((candidate) => candidate.id === financialLeague.leagueId);
     if (!league) return [];
     return [financialLeague].filter((row) => row.collectiblePastDueMinor > 0 || row.reviewRequired).flatMap((row) => {
-      const bowler = bowlers.find((candidate) => candidate.id === row.bowlerId);
-      const association = bowlerLeagues.find((candidate) => candidate.bowlerId === row.bowlerId && candidate.leagueId === league.id && candidate.active);
-      const team = teams.find((candidate) => candidate.id === (row.teamId ?? association?.teamId));
-      if (!bowler || !team || (row.mode !== "canonical" && !association)) return [];
+      const bowler = bowlers.find((candidate) => candidate.id === row.payerBowlerId);
+      const association = bowlerLeagues.find((candidate) => candidate.bowlerId === row.payerBowlerId && candidate.leagueId === league.id);
+      const team = teams.find((candidate) => candidate.id === row.teamId) ?? teams.find((candidate) => candidate.id === association?.teamId);
+      if (!bowler || !team || !association) return [];
       return [{ bowler, team, league, pastDueObligations: row.reviewRequired ? "Review required" : "Aggregated", pastDueAmount: row.collectiblePastDueMinor, reviewRequired: row.reviewRequired }];
     });
   })
@@ -120,7 +121,7 @@ export default function PastDuePage() {
         <div>
           <h1 className="text-2xl font-bold mb-2">Past Due Balances</h1>
           <p className="text-muted-foreground mb-6">
-            List of bowlers with past due balances. Source: server canonical/legacy contract.
+            List of bowlers with past due balances. Source: roster-driven canonical obligations.
           </p>
         </div>
 

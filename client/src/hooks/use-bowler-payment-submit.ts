@@ -143,7 +143,7 @@ export function useBowlerPaymentSubmit({
         const quoteResponse = await csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-quote/2`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ obligationIds: selectedObligationIds }),
+          body: JSON.stringify({ obligationIds: selectedObligationIds, allocations: occurrenceAllocations }),
         });
         const quoteBody = await quoteResponse.json().catch(() => ({}));
         await throwApiErrorIfNotOk(quoteResponse, quoteBody, 'Payment quote is unavailable');
@@ -163,6 +163,8 @@ export function useBowlerPaymentSubmit({
           headers: { ...paymentRequestHeaders(requestKey), 'Content-Type': 'application/json' },
           body: JSON.stringify({
             obligationIds: selectedObligationIds,
+            allocations: occurrenceAllocations,
+            payerBowlerId: quoteBody?.data?.payerBowlerId,
             sourceId,
             sourceKind: cardMode === 'saved' ? 'saved_card' : 'new_card',
             buyerEmail: (buyerEmail ?? '').trim() || null,
@@ -175,6 +177,9 @@ export function useBowlerPaymentSubmit({
         }), undefined, league.id);
         const data = await response.json();
         await throwApiErrorIfNotOk(response, data, 'Payment failed');
+        if (data?.data?.status !== 'succeeded') {
+          throw new Error('Your payment is not confirmed yet. Use the payment recovery action before trying again.');
+        }
         clearPaymentIntent(paymentScope);
         toast({ title: 'Payment submitted', description: data?.data?.status === 'succeeded' ? 'Your exact obligations were paid.' : 'Your payment is being confirmed.' });
         setShowPaymentSetup(false);

@@ -1,7 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 
 export function paymentHistoryFinancialQueryKey(leagueId: number, bowlerId: number) {
-  return ["/api/financials/leagues", leagueId, "due-past-due", bowlerId] as const;
+  return ["/api/financials/leagues", leagueId, "canonical-due-past-due/2", bowlerId] as const;
 }
 
 /** Await the canonical balance refresh before allowing history checkout to reopen. */

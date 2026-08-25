@@ -90,7 +90,11 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
         allocations: allocationRows,
         correctionEvidence: corrected ? { status: "corrected", supersedesAllocationIds: linked.filter((candidate) => candidate.allocation.state === "voided" && candidate.allocation.supersedesAllocationId !== null).map((candidate) => candidate.allocation.supersedesAllocationId as string) } : undefined,
         sharedTransaction: payment.combinedChargeGroupId ? { groupKey: payment.combinedChargeGroupId, childCount: 0 } : null,
-        initiatingPayerBowlerId: payment.paidByUserId ? payment.bowlerId : null,
+        // paidByUserId is a users.id actor and must never be interpreted as a
+        // bowler identity. The recipient/payer comes from the canonical
+        // obligation allocation; receipt authorization separately checks the
+        // payment actor against users.id.
+        initiatingPayerBowlerId: linked[0]?.obligation.payerBowlerId ?? null,
       };
       return row;
     });
@@ -151,7 +155,7 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
         receipt: { contractVersion: "payment-receipt/1", availability: "unavailable", receiptUrl: null, receiptNumber: null, deliveryEvidence: "delivery_not_recorded", source: "unresolved_operation", refund: { present: false, amountMinor: 0, providerRefundId: null }, dispute: { present: false, amountMinor: 0, disputeId: null, scope: "transaction", state: null, reviewRequired: unresolved } },
         allocations: evidenceRows.map((row) => ({ allocationId: null, obligationId: row.obligation.id, occurrenceId: row.obligation.occurrenceId, bowlerId: row.obligation.payerBowlerId, amountMinor: row.item.amountMinor, currency: row.item.state === "released" ? "USD" : snapshot.currency, state: null })),
         sharedTransaction: null,
-        initiatingPayerBowlerId: operation.authorizingUserId,
+        initiatingPayerBowlerId: first.obligation.payerBowlerId,
       };
       rows.push(operationRow);
     }
