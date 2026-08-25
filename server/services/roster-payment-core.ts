@@ -660,7 +660,7 @@ export async function quoteInteractiveObligations(input: { organizationId: numbe
       eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId),
       eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId),
       inArray(paymentOperationRosterSnapshotItems.obligationId, input.obligationIds),
-      inArray(paymentOperationRosterSnapshotItems.state, ["reserved", "finalized"] as const),
+      eq(paymentOperationRosterSnapshotItems.state, "reserved"),
     )).for("update");
     if (reservations.length > 0) throw new RosterPaymentError("OBLIGATION_RESERVED", "A provider operation has already reserved one or more obligations", 409);
     const allocations = await tx.select({ obligationId: paymentAllocations.obligationId, amountMinor: paymentAllocations.amountMinor }).from(paymentAllocations).where(and(
@@ -982,7 +982,7 @@ export async function recordCanonicalManualPayment(input: { organizationId: numb
       eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId),
       eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId),
       inArray(paymentOperationRosterSnapshotItems.obligationId, input.request.obligationIds),
-      inArray(paymentOperationRosterSnapshotItems.state, ["reserved", "finalized"] as const),
+      eq(paymentOperationRosterSnapshotItems.state, "reserved"),
     )).for("update");
     if (reservations.length > 0) throw new RosterPaymentError("OBLIGATION_RESERVED", "A provider operation has already reserved one or more obligations", 409);
     const quote = await quoteInteractiveObligations({
@@ -1037,7 +1037,7 @@ export async function correctCanonicalAllocation(input: { organizationId: number
       eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId),
       eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId),
       eq(paymentOperationRosterSnapshotItems.obligationId, allocation.obligationId),
-      inArray(paymentOperationRosterSnapshotItems.state, ["reserved", "finalized"] as const),
+      eq(paymentOperationRosterSnapshotItems.state, "reserved"),
     )).limit(1).for("update");
     if (reservation.length > 0) throw new RosterPaymentError("OBLIGATION_RESERVED", "A provider operation has already reserved this obligation", 409);
     const [priorCorrection] = await tx.select({ id: paymentAllocations.id }).from(paymentAllocations).where(and(eq(paymentAllocations.supersedesAllocationId, allocation.id), eq(paymentAllocations.organizationId, input.organizationId), eq(paymentAllocations.leagueId, input.leagueId))).limit(1);

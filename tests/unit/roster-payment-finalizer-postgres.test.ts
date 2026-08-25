@@ -417,14 +417,19 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
     // obligation contract, so reset the fixture's authoritative league mode
     // before quoting one obligation.
     await db.update(leagues).set({ paymentMode: "weekly", timezone: "UTC" }).where(eq(leagues.id, leagueId));
-    const quote = await quoteInteractiveObligations({ organizationId, leagueId, obligationIds: [fixture.obligation.id] });
-    const providerObjectId = `roster-preparation-provider-${randomUUID()}`;
+    const firstQuote = await quoteInteractiveObligations({
+      organizationId,
+      leagueId,
+      obligationIds: [fixture.obligation.id],
+      allocations: [{ obligationId: fixture.obligation.id, amountMinor: 1_000 }],
+    });
     const execute = vi.spyOn(interactivePaymentOperationExecutor, "execute").mockImplementation(async ({ operationId }) => {
       const [operation] = await db.select().from(paymentOperations).where(eq(paymentOperations.id, operationId));
       if (!operation) throw new Error("prepared operation was not persisted");
       const [snapshot] = await db.select().from(paymentOperationRosterSnapshots).where(eq(paymentOperationRosterSnapshots.operationId, operationId));
       const [item] = await db.select().from(paymentOperationRosterSnapshotItems).where(eq(paymentOperationRosterSnapshotItems.operationId, operationId));
       if (!snapshot || !item) throw new Error("roster snapshot was not created before provider dispatch");
+      const providerObjectId = `roster-preparation-provider-${operationId}`;
       await db.transaction(async (tx) => {
         await tx.update(paymentOperations).set({ status: "succeeded", providerObjectId, completedAt: "2038-03-01T21:00:00.000Z", nextAttemptAt: null }).where(eq(paymentOperations.id, operationId));
         await tx.insert(payments).values({
@@ -451,18 +456,49 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
         payerBowlerId: fixture.obligation.payerBowlerId,
         request: {
           obligationIds: [fixture.obligation.id],
+          allocations: [{ obligationId: fixture.obligation.id, amountMinor: 1_000 }],
           sourceId: "card-source-preparation-test",
           sourceKind: "new_card",
           storeCard: false,
           idempotencyKey: `preparation-test-${randomUUID()}`,
-          requestFingerprint: quote.fingerprint,
+          requestFingerprint: firstQuote.fingerprint,
         },
       });
       expect(result.status).toBe("succeeded");
-      const [operation] = await db.select({ leagueId: paymentOperations.leagueId }).from(paymentOperations).where(eq(paymentOperations.providerObjectId, providerObjectId));
-      expect(operation?.leagueId).toBe(leagueId);
-      const [snapshot] = await db.select({ leagueId: paymentOperationRosterSnapshots.leagueId }).from(paymentOperationRosterSnapshots).where(eq(paymentOperationRosterSnapshots.leagueId, leagueId)).orderBy(paymentOperationRosterSnapshots.createdAt);
-      expect(snapshot?.leagueId).toBe(leagueId);
+      const firstOperation = await db.select({ id: paymentOperations.id, leagueId: paymentOperations.leagueId }).from(paymentOperations).where(and(eq(paymentOperations.organizationId, organizationId), eq(paymentOperations.leagueId, leagueId), eq(paymentOperations.operationType, "interactive_charge"))).orderBy(paymentOperations.createdAt);
+      expect(firstOperation.at(-1)?.leagueId).toBe(leagueId);
+
+      // The first provider snapshot is now finalized, so the public quote must
+      // treat it as immutable history and expose the exact remaining balance
+      // for the second preparation rather than returning OBLIGATION_RESERVED.
+      const secondQuote = await quoteInteractiveObligations({
+        organizationId,
+        leagueId,
+        obligationIds: [fixture.obligation.id],
+        allocations: [{ obligationId: fixture.obligation.id, amountMinor: 1_000 }],
+      });
+      expect(secondQuote.amountMinor).toBe(1_000);
+      const secondResult = await chargeInteractiveObligations({
+        organizationId,
+        leagueId,
+        actorUserId,
+        payerBowlerId: fixture.obligation.payerBowlerId,
+        request: {
+          obligationIds: [fixture.obligation.id],
+          allocations: [{ obligationId: fixture.obligation.id, amountMinor: 1_000 }],
+          sourceId: "card-source-preparation-test-second",
+          sourceKind: "new_card",
+          storeCard: false,
+          idempotencyKey: `preparation-test-second-${randomUUID()}`,
+          requestFingerprint: secondQuote.fingerprint,
+        },
+      });
+      expect(secondResult.status).toBe("succeeded");
+      const snapshots = await db.select({ leagueId: paymentOperationRosterSnapshots.leagueId, amountMinor: paymentOperationRosterSnapshots.amountMinor }).from(paymentOperationRosterSnapshots).where(and(eq(paymentOperationRosterSnapshots.organizationId, organizationId), eq(paymentOperationRosterSnapshots.leagueId, leagueId))).orderBy(paymentOperationRosterSnapshots.createdAt);
+      expect(snapshots.slice(-2)).toEqual([
+        { leagueId, amountMinor: 1_000 },
+        { leagueId, amountMinor: 1_000 },
+      ]);
     } finally {
       execute.mockRestore();
       provider.mockRestore();
