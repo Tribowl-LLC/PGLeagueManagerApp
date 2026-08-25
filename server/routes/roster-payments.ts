@@ -25,6 +25,10 @@ import {
   RosterPaymentReplay,
   saveTeamRoster,
 } from "../services/roster-payment-core.js";
+import {
+  recoverRosterPaymentOperation,
+  RosterPaymentRecoveryError,
+} from "../services/roster-payment-recovery.js";
 
 const router = Router();
 
@@ -72,6 +76,10 @@ function handleError(res: Response, error: unknown): void {
     return;
   }
   if (error instanceof RosterPaymentError) {
+    sendError(res, error.message, error.status, error.code);
+    return;
+  }
+  if (error instanceof RosterPaymentRecoveryError) {
     sendError(res, error.message, error.status, error.code);
     return;
   }
@@ -242,6 +250,18 @@ router.post("/leagues/:leagueId/interactive-obligation-charge/2", paymentWriteLi
     const privileged = await hasAdminAccessToLeague(req, leagueId) || await hasPaymentManagerAccessToLeague(req, leagueId) || req.user.role === "system_admin";
     const result = await chargeInteractiveObligations({ organizationId: league.organizationId, leagueId, actorUserId: req.user.id, payerBowlerId: privileged ? undefined : req.user.bowlerId ?? undefined, request: parsed.data });
     return sendSuccess(res, rosterWireResult(result), result.status === "succeeded" ? 201 : 202);
+  } catch (error) { return handleError(res, error); }
+});
+
+router.post("/leagues/:leagueId/interactive-obligation-charge/2/operations/:operationId/recover", adminWriteLimiter, async (req, res) => {
+  const leagueId = leagueIdParam(String(req.params.leagueId));
+  const operationId = z.string().uuid().safeParse(req.params.operationId);
+  if (!leagueId || !operationId.success || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
+  const league = await authorizedLeague(req, leagueId, true, true);
+  if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
+  try {
+    const result = await recoverRosterPaymentOperation({ organizationId: league.organizationId, leagueId, operationId: operationId.data, actorUserId: req.user.id });
+    return sendSuccess(res, rosterWireResult({ contractVersion: "interactive-obligation-recovery/1", operationId: result.id, status: result.status }));
   } catch (error) { return handleError(res, error); }
 });
 

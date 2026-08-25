@@ -37,7 +37,7 @@ export interface CanonicalPaymentTiming {
   /** Date-only rendering in the league timezone; the instant above remains the audit value. */
   upfrontDueAtLocal?: string | null;
   timezone?: string;
-  source: "canonical_activation" | "legacy_league";
+  source: "canonical_activation" | "roster_payment_responsibility" | "legacy_league";
 }
 
 export interface CanonicalCollectionEvidence {

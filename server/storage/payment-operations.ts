@@ -62,6 +62,11 @@ import {
 } from "../services/refund-payment-operation-snapshot.js";
 import { decrypt, encrypt } from "../utils/crypto.js";
 import { providerNameToPaymentType } from "@shared/schema/constants";
+import {
+  finalizeRosterSnapshotInTransaction,
+  isRosterSnapshotFinalizationError,
+  validateRosterSnapshotForDispatchInTransaction,
+} from "../services/roster-payment-finalizer.js";
 
 export class PaymentOperationNotFoundError extends Error {
   constructor() {
@@ -389,7 +394,34 @@ async function insertLinkedPaymentRows(
   ) {
     throw new PaymentOperationValidationError("linked payment rows do not belong to the operation tenant");
   }
-  await executor.insert(payments).values(rows.map((row) => ({
+
+  // A local finalization can commit provider/payment evidence before an
+  // allocation write fails. Recovery must be able to replay the same exact
+  // rows without violating the operation-allocation uniqueness boundary.
+  const existingRows = await executor.select().from(payments).where(and(
+    eq(payments.paymentOperationId, operationId),
+    eq(payments.leagueId, rows[0]?.values.leagueId ?? 0),
+  )).orderBy(asc(payments.paymentOperationAllocationIndex), asc(payments.id)).for("update");
+  const existingByIndex = new Map(existingRows.map((row) => [row.paymentOperationAllocationIndex, row]));
+  const missingRows = rows.filter((row) => {
+    const existing = existingByIndex.get(row.allocationIndex);
+    if (!existing) return true;
+    if (
+      existing.bowlerId !== row.values.bowlerId
+      || existing.leagueId !== row.values.leagueId
+      || existing.amount !== row.values.amount
+      || existing.lineageAmount !== row.values.lineageAmount
+      || existing.prizeFundAmount !== row.values.prizeFundAmount
+      || existing.providerPaymentId !== row.values.providerPaymentId
+      || existing.status !== row.values.status
+      || existing.type !== row.values.type
+    ) {
+      throw new PaymentOperationImmutableMismatchError();
+    }
+    return false;
+  });
+  if (missingRows.length === 0) return;
+  await executor.insert(payments).values(missingRows.map((row) => ({
     ...row.values,
     paymentOperationId: operationId,
     paymentOperationAllocationIndex: row.allocationIndex,
@@ -1651,6 +1683,34 @@ export async function acquireScheduledPaymentOperationDispatchCutoff(input: {
       eq(paymentOperations.operationType, "scheduled_charge"),
     )).for("update");
     if (!operation || operation.status !== "leased" || operation.leaseToken !== input.leaseToken) return false;
+    try {
+      await validateRosterSnapshotForDispatchInTransaction(tx, {
+        organizationId: input.organizationId,
+        leagueId: scope.leagueId,
+        operationId: input.operationId,
+      });
+    } catch (error) {
+      if (!isRosterSnapshotFinalizationError(error)) throw error;
+      const blockedAt = (input.now ?? new Date()).toISOString();
+      await tx.update(paymentOperations).set({
+        status: "reconciliation_required",
+        nextAttemptAt: null,
+        leaseOwner: null,
+        leaseToken: null,
+        leaseExpiresAt: null,
+        dispatchClaimedAt: null,
+        errorClassification: "internal",
+        errorCode: error.code,
+        completedAt: blockedAt,
+        updatedAt: blockedAt,
+      }).where(and(
+        eq(paymentOperations.organizationId, input.organizationId),
+        eq(paymentOperations.id, input.operationId),
+        eq(paymentOperations.status, "leased"),
+        eq(paymentOperations.leaseToken, input.leaseToken),
+      ));
+      return false;
+    }
     const claimedAt = (input.now ?? new Date()).toISOString();
     const [claimed] = await tx.update(paymentOperations).set({
       dispatchClaimedAt: claimedAt,
@@ -1706,6 +1766,34 @@ export async function acquireInteractivePaymentOperationDispatchCutoff(input: {
       eq(paymentOperations.operationType, "interactive_charge"),
     )).for("update");
     if (!operation || operation.status !== "leased" || operation.leaseToken !== input.leaseToken) return false;
+    try {
+      await validateRosterSnapshotForDispatchInTransaction(tx, {
+        organizationId: input.organizationId,
+        leagueId: scope.leagueId,
+        operationId: input.operationId,
+      });
+    } catch (error) {
+      if (!isRosterSnapshotFinalizationError(error)) throw error;
+      const blockedAt = (input.now ?? new Date()).toISOString();
+      await tx.update(paymentOperations).set({
+        status: "reconciliation_required",
+        nextAttemptAt: null,
+        leaseOwner: null,
+        leaseToken: null,
+        leaseExpiresAt: null,
+        dispatchClaimedAt: null,
+        errorClassification: "internal",
+        errorCode: error.code,
+        completedAt: blockedAt,
+        updatedAt: blockedAt,
+      }).where(and(
+        eq(paymentOperations.organizationId, input.organizationId),
+        eq(paymentOperations.id, input.operationId),
+        eq(paymentOperations.status, "leased"),
+        eq(paymentOperations.leaseToken, input.leaseToken),
+      ));
+      return false;
+    }
     const claimedAt = (input.now ?? new Date()).toISOString();
     const [claimed] = await tx.update(paymentOperations).set({
       dispatchClaimedAt: claimedAt,
@@ -2095,21 +2183,6 @@ async function finalizeCanonicalAutopayInTransaction(
  return;
 }
 
-async function finalizeInteractiveOccurrenceAllocations(
-  tx: PaymentOperationTransaction,
-  operation: PaymentOperation,
-  paymentRows: PaymentOperationLinkedPaymentInput[] | undefined,
-  now: string,
-): Promise<void> {
-  // Canonical roster allocations are finalized by roster-payment-core. This
-  // retained provider path intentionally does not touch retired D2 tables.
-  void tx;
-  void operation;
-  void paymentRows;
-  void now;
-  return;
-}
-
 /** The occurrence rows are locked after the shared league advisory lock.  A
  * claim-first provider success must therefore be recorded as review evidence
  * when cancellation already won, without ever recreating active allocations
@@ -2280,8 +2353,33 @@ export async function finalizePaymentOperationSuccessInTransaction(
     );
     if (transitioned.operationType === "canonical_autopay_charge") {
       await finalizeCanonicalAutopayInTransaction(tx, transitioned, input.paymentRows, now);
-    } else if (!cancellationReviewRequired) {
-      await finalizeInteractiveOccurrenceAllocations(tx, transitioned, input.paymentRows, now);
+    } else if (!cancellationReviewRequired && transitioned.leagueId !== null) {
+      try {
+        await tx.transaction(async (finalizerTx) => {
+          await finalizeRosterSnapshotInTransaction(finalizerTx, {
+            organizationId: input.organizationId,
+            leagueId: transitioned.leagueId ?? 0,
+            operationId: transitioned.id,
+            now,
+            actorUserId: transitioned.authorizingUserId,
+          });
+        });
+      } catch (error) {
+        if (!isRosterSnapshotFinalizationError(error)) throw error;
+        const [reviewed] = await tx.update(paymentOperations).set({
+          status: "reconciliation_required",
+          nextAttemptAt: null,
+          errorClassification: "internal",
+          errorCode: error.code,
+          completedAt: now,
+          updatedAt: now,
+        }).where(and(
+          eq(paymentOperations.organizationId, input.organizationId),
+          eq(paymentOperations.id, transitioned.id),
+          eq(paymentOperations.status, "succeeded"),
+        )).returning();
+        return reviewed ?? transitioned;
+      }
     }
     if (!cancellationReviewRequired) await deactivatePaidInFullSchedule(tx, input.operationId, now);
     return transitioned;
@@ -2299,6 +2397,33 @@ export async function finalizePaymentOperationSuccessInTransaction(
     && (input.providerOrderId == null || existing.providerOrderId === input.providerOrderId)
   ) {
     if (existing.operationType === "canonical_autopay_charge") await verifyCanonicalAutopayCompletionInTransaction(tx, existing);
+    if (existing.operationType === "interactive_charge" && existing.leagueId !== null) {
+      try {
+        await tx.transaction(async (finalizerTx) => {
+          await finalizeRosterSnapshotInTransaction(finalizerTx, {
+            organizationId: input.organizationId,
+            leagueId: existing.leagueId as number,
+            operationId: existing.id,
+            now,
+            actorUserId: existing.authorizingUserId,
+          });
+        });
+      } catch (error) {
+        if (!isRosterSnapshotFinalizationError(error)) throw error;
+        const [reviewed] = await tx.update(paymentOperations).set({
+          status: "reconciliation_required",
+          nextAttemptAt: null,
+          errorClassification: "internal",
+          errorCode: error.code,
+          updatedAt: now,
+        }).where(and(
+          eq(paymentOperations.organizationId, input.organizationId),
+          eq(paymentOperations.id, existing.id),
+          eq(paymentOperations.status, "succeeded"),
+        )).returning();
+        return reviewed ?? existing;
+      }
+    }
     return existing;
   }
   if (
@@ -2487,6 +2612,33 @@ export async function finalizeChargeFromWebhookEvidenceInTransaction(
   if (operation.status === "succeeded") {
     if (operation.providerObjectId !== input.providerObjectId) {
       throw new PaymentOperationImmutableMismatchError();
+    }
+    if (operation.operationType === "interactive_charge" && operation.leagueId !== null) {
+      try {
+        await tx.transaction(async (finalizerTx) => {
+          await finalizeRosterSnapshotInTransaction(finalizerTx, {
+            organizationId: input.organizationId,
+            leagueId: operation.leagueId as number,
+            operationId: operation.id,
+            now,
+            actorUserId: operation.authorizingUserId,
+          });
+        });
+      } catch (error) {
+        if (!isRosterSnapshotFinalizationError(error)) throw error;
+        const [reviewed] = await tx.update(paymentOperations).set({
+          status: "reconciliation_required",
+          nextAttemptAt: null,
+          errorClassification: "internal",
+          errorCode: error.code,
+          updatedAt: now,
+        }).where(and(
+          eq(paymentOperations.organizationId, input.organizationId),
+          eq(paymentOperations.id, operation.id),
+          eq(paymentOperations.status, "succeeded"),
+        )).returning();
+        return reviewed ?? operation;
+      }
     }
     return operation;
   }
@@ -2835,6 +2987,33 @@ export async function reconcilePaymentOperationSuccess(
       .returning();
     if (!transitioned) return undefined;
     await insertLinkedPaymentRows(tx, input.organizationId, input.operationId, input.paymentRows);
+    if (transitioned.operationType === "interactive_charge" && transitioned.leagueId !== null) {
+      try {
+        await tx.transaction(async (finalizerTx) => {
+          await finalizeRosterSnapshotInTransaction(finalizerTx, {
+            organizationId: input.organizationId,
+            leagueId: transitioned.leagueId as number,
+            operationId: transitioned.id,
+            now,
+            actorUserId: transitioned.authorizingUserId,
+          });
+        });
+      } catch (error) {
+        if (!isRosterSnapshotFinalizationError(error)) throw error;
+        const [reviewed] = await tx.update(paymentOperations).set({
+          status: "reconciliation_required",
+          nextAttemptAt: null,
+          errorClassification: "internal",
+          errorCode: error.code,
+          updatedAt: now,
+        }).where(and(
+          eq(paymentOperations.organizationId, input.organizationId),
+          eq(paymentOperations.id, transitioned.id),
+          eq(paymentOperations.status, "succeeded"),
+        )).returning();
+        return reviewed ?? transitioned;
+      }
+    }
     await deactivatePaidInFullSchedule(tx, input.operationId, now);
     return transitioned;
   });

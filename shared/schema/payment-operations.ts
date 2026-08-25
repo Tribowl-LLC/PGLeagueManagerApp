@@ -277,7 +277,6 @@ export const paymentOperations = pgTable("payment_operations", {
       ${table.operationType} IN ('interactive_charge', 'refund')
       AND ${table.paymentScheduleId} IS NULL
       AND ${table.billingCycleAt} IS NULL
-      AND ${table.leagueId} IS NULL
       AND ${table.canonicalPlanId} IS NULL
     )`,
   ),

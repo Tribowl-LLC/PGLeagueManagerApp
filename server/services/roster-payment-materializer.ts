@@ -5,6 +5,7 @@ import {
   leagues,
   occurrencePaymentResponsibilities,
   paymentObligations,
+  paymentOperationRosterSnapshotItems,
   teamPaymentPolicies,
   teamPaymentSlots,
   teams,
@@ -62,7 +63,7 @@ export async function materializeRosterPaymentOccurrenceInTransaction(
       const payerBowlerId = mainBowlerId;
       const current = active.find((row) => row.teamId === team.id && row.slotIndex === slot.slotIndex && row.positionIndex === slot.slotIndex);
       if (current && (current.responsibilityKind === "substitute" || current.responsibilityKind === "split")) continue;
-      if (current && current.responsibilityKind === kind && current.mainBowlerId === mainBowlerId && current.substituteBowlerId === null && current.payerBowlerId === payerBowlerId && current.policy === policy) continue;
+      if (current && current.responsibilityKind === kind && current.mainBowlerId === mainBowlerId && current.substituteBowlerId === null && current.payerBowlerId === payerBowlerId && current.policy === policy && current.dueAt === occurrence.startAt && current.pastDueAt === pastDueAt) continue;
       if (current) {
         const currentObligations = await tx.select({ state: paymentObligations.state }).from(paymentObligations).where(and(
           eq(paymentObligations.organizationId, input.organizationId),
@@ -70,6 +71,20 @@ export async function materializeRosterPaymentOccurrenceInTransaction(
           eq(paymentObligations.responsibilityId, current.id),
         ));
         if (currentObligations.some((row) => row.state !== "open")) throw new Error("PAID_EVIDENCE_LOCKED");
+        const obligationIds = await tx.select({ id: paymentObligations.id }).from(paymentObligations).where(and(
+          eq(paymentObligations.organizationId, input.organizationId),
+          eq(paymentObligations.leagueId, input.leagueId),
+          eq(paymentObligations.responsibilityId, current.id),
+        ));
+        if (obligationIds.length > 0) {
+          const reservations = await tx.select({ id: paymentOperationRosterSnapshotItems.id }).from(paymentOperationRosterSnapshotItems).where(and(
+            eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId),
+            eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId),
+            inArray(paymentOperationRosterSnapshotItems.obligationId, obligationIds.map((row) => row.id)),
+            inArray(paymentOperationRosterSnapshotItems.state, ["reserved", "finalized"] as const),
+          ));
+          if (reservations.length > 0) throw new Error("RESERVED_EVIDENCE_LOCKED");
+        }
         await tx.update(occurrencePaymentResponsibilities).set({ state: "voided" }).where(and(
           eq(occurrencePaymentResponsibilities.id, current.id),
           eq(occurrencePaymentResponsibilities.organizationId, input.organizationId),

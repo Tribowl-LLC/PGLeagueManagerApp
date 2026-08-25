@@ -188,9 +188,18 @@ export async function readRosterPaymentResponsibility(input: { organizationId: n
   )).orderBy(asc(occurrencePaymentResponsibilities.occurrenceId), asc(occurrencePaymentResponsibilities.teamId), asc(occurrencePaymentResponsibilities.slotIndex), asc(occurrencePaymentResponsibilities.positionIndex));
   const slotsByTeam = new Map<number, typeof slots>();
   for (const slot of slots) slotsByTeam.set(slot.teamId, [...(slotsByTeam.get(slot.teamId) ?? []), slot]);
+  const activeMainRows = await db.select({ bowlerId: bowlerLeagues.bowlerId, teamId: bowlerLeagues.teamId })
+    .from(bowlerLeagues)
+    .innerJoin(bowlers, eq(bowlers.id, bowlerLeagues.bowlerId))
+    .where(and(
+      eq(bowlerLeagues.leagueId, input.leagueId),
+      eq(bowlerLeagues.active, true),
+      eq(bowlers.active, true),
+    ));
+  const activeMainKeys = new Set(activeMainRows.map((row) => `${row.teamId}:${row.bowlerId}`));
   const incompleteTeams = teamRows.filter((team) => {
     const rows = slotsByTeam.get(team.id) ?? [];
-    return league.payingLineupSize === null || rows.length !== league.payingLineupSize || rows.some((row) => row.occupant === "unassigned");
+    return league.payingLineupSize === null || rows.length !== league.payingLineupSize || rows.some((row) => row.occupant === "unassigned" || (row.occupant === "main" && (row.mainBowlerId === null || !activeMainKeys.has(`${row.teamId}:${row.mainBowlerId}`))));
   }).map((team) => team.id);
   return {
     contractVersion: "roster-payment-responsibility/1" as const,
@@ -490,6 +499,7 @@ export async function recordOccurrenceResponsibilities(input: {
       if (row.kind === "main" && row.mainBowlerId !== null && row.mainBowlerId !== undefined && row.mainBowlerId !== slot.mainBowlerId) throw new RosterPaymentError("MAIN_MISMATCH", "Main responsibility does not match the stable roster slot", 422);
       if ((row.kind === "substitute" || row.kind === "split") && row.mainBowlerId !== null && row.mainBowlerId !== undefined && row.mainBowlerId !== slot.mainBowlerId) throw new RosterPaymentError("MAIN_MISMATCH", "Substitute responsibility does not match the stable roster Main", 422);
       if (row.kind === "split" && league.substitutePaymentRegime !== "league_lineage_prize_split") throw new RosterPaymentError("POLICY_NOT_AVAILABLE", "Split responsibility requires the league lineage/prize split regime", 422);
+      if (row.kind === "substitute" && row.policy === "special_split") throw new RosterPaymentError("INVALID_SPLIT", "Special split responsibilities must use kind=split", 422);
       if (row.kind === "split" && (!row.substituteBowlerId || !slot.mainBowlerId || row.amountMinor <= 0 || row.substituteBowlerId === slot.mainBowlerId)) throw new RosterPaymentError("INVALID_SPLIT", "Split responsibility requires distinct Main and Substitute", 422);
       // A stable VACANT slot is itself valid zero-obligation evidence. A
       // Substitute may additionally fill it for an occurrence, in which case
@@ -787,7 +797,14 @@ export async function chargeInteractiveObligations(input: {
     await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
     const persisted = await tx.select().from(paymentOperations).where(and(eq(paymentOperations.id, operation.id), eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.leagueId, input.leagueId))).limit(1).for("update");
     const storedOperation = persisted[0];
-    if (!storedOperation || storedOperation.status !== "succeeded") throw new RosterPaymentError("PAYMENT_NOT_SETTLED", "Provider payment is not locally settled", 409);
+    if (!storedOperation || (storedOperation.status !== "succeeded" && storedOperation.status !== "reconciliation_required")) throw new RosterPaymentError("PAYMENT_NOT_SETTLED", "Provider payment is not locally settled", 409);
+    // Provider success is durable even when the roster reservation became
+    // stale during local finalization. Return the reconciliation state so an
+    // operation-id recovery can retry the exact immutable snapshot; never
+    // turn that evidence into a generic payment failure.
+    if (storedOperation.status === "reconciliation_required") {
+      return { contractVersion: "interactive-obligation-charge/2" as const, operationId: storedOperation.id, status: storedOperation.status, providerPaymentId: storedOperation.providerObjectId };
+    }
     const [rosterSnapshot] = await tx.select().from(paymentOperationRosterSnapshots).where(and(eq(paymentOperationRosterSnapshots.operationId, operation.id), eq(paymentOperationRosterSnapshots.organizationId, input.organizationId), eq(paymentOperationRosterSnapshots.leagueId, input.leagueId))).limit(1).for("share");
     const snapshotItems = await tx.select().from(paymentOperationRosterSnapshotItems).where(and(eq(paymentOperationRosterSnapshotItems.operationId, operation.id), eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId), eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId))).orderBy(asc(paymentOperationRosterSnapshotItems.allocationIndex)).for("update");
     if (!rosterSnapshot || snapshotItems.length === 0) throw new RosterPaymentError("OPERATION_SNAPSHOT_MISSING", "The payment operation has no immutable roster reservation", 409);

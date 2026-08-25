@@ -59,6 +59,18 @@ CREATE UNIQUE INDEX IF NOT EXISTS payments_id_league_unique ON payments(id, leag
 CREATE UNIQUE INDEX IF NOT EXISTS payment_operations_id_org_league_unique ON payment_operations(id, organization_id, league_id);
 --> statement-breakpoint
 
+-- Roster interactive charges are exact league-scoped operations. The
+-- pre-PR1 constraint treated every interactive operation as league-less;
+-- retain that shape for refunds while permitting the new canonical league
+-- linkage (canonical_plan_id remains reserved for dormant PR2).
+ALTER TABLE payment_operations DROP CONSTRAINT IF EXISTS payment_operations_scheduled_cycle_check;
+ALTER TABLE payment_operations ADD CONSTRAINT payment_operations_scheduled_cycle_check CHECK (
+  (operation_type = 'scheduled_charge' AND payment_schedule_id IS NOT NULL AND billing_cycle_at IS NOT NULL)
+  OR (operation_type = 'canonical_autopay_charge' AND payment_schedule_id IS NULL AND billing_cycle_at IS NULL AND league_id IS NOT NULL AND canonical_plan_id IS NOT NULL AND authorizing_user_id IS NOT NULL)
+  OR (operation_type IN ('interactive_charge', 'refund') AND payment_schedule_id IS NULL AND billing_cycle_at IS NULL AND canonical_plan_id IS NULL)
+);
+--> statement-breakpoint
+
 -- Dependency-safe retirement: children/revisions first, then their authority.
 -- D2 also installed deferred triggers on the retained scheduled/interactive
 -- operation snapshots. Remove those trigger hooks before retiring the shared
@@ -369,6 +381,7 @@ CREATE TABLE payment_operation_roster_snapshot_items (
   CONSTRAINT payment_operation_roster_snapshot_items_amount_check CHECK (amount_minor > 0 AND allocation_index >= 0 AND state IN ('reserved', 'finalized', 'released'))
 );
 CREATE UNIQUE INDEX payment_operation_roster_snapshot_items_operation_item_unique ON payment_operation_roster_snapshot_items(operation_id, organization_id, league_id, obligation_id);
+CREATE UNIQUE INDEX payment_operation_roster_snapshot_items_operation_allocation_index_unique ON payment_operation_roster_snapshot_items(operation_id, organization_id, league_id, allocation_index);
 CREATE UNIQUE INDEX payment_operation_roster_snapshot_items_active_obligation_unique ON payment_operation_roster_snapshot_items(organization_id, league_id, obligation_id) WHERE state IN ('reserved', 'finalized');
 CREATE INDEX payment_operation_roster_snapshot_items_obligation_idx ON payment_operation_roster_snapshot_items(organization_id, league_id, obligation_id, state);
 --> statement-breakpoint
@@ -380,8 +393,8 @@ BEGIN
   IF current_setting('leaguevault.organization_teardown', true) = 'on' THEN
     RETURN OLD;
   END IF;
-  IF TG_TABLE_NAME = 'payment_operation_roster_snapshot_items'
-    AND OLD.state = 'reserved' AND NEW.state IN ('finalized', 'released')
+  IF TG_TABLE_NAME = 'payment_operation_roster_snapshot_items' THEN
+    IF OLD.state = 'reserved' AND NEW.state IN ('finalized', 'released')
     AND ROW(NEW.id, NEW.operation_id, NEW.organization_id, NEW.league_id,
             NEW.obligation_id, NEW.allocation_index, NEW.amount_minor,
             NEW.created_at)
@@ -390,9 +403,10 @@ BEGIN
             OLD.obligation_id, OLD.allocation_index, OLD.amount_minor,
             OLD.created_at) THEN
     RETURN NEW;
+    END IF;
   END IF;
-  IF TG_TABLE_NAME = 'payment_obligations'
-    AND ROW(NEW.id, NEW.organization_id, NEW.league_id, NEW.occurrence_id,
+  IF TG_TABLE_NAME = 'payment_obligations' THEN
+    IF ROW(NEW.id, NEW.organization_id, NEW.league_id, NEW.occurrence_id,
             NEW.responsibility_id, NEW.component, NEW.payer_bowler_id,
             NEW.amount_minor, NEW.currency, NEW.due_at, NEW.past_due_at,
             NEW.created_by_user_id, NEW.created_at)
@@ -402,35 +416,60 @@ BEGIN
             OLD.amount_minor, OLD.currency, OLD.due_at, OLD.past_due_at,
             OLD.created_by_user_id, OLD.created_at)
     AND NEW.state IN ('open', 'partially_settled', 'settled', 'voided')
+    AND (
+      NEW.state = OLD.state
+      OR (OLD.state = 'open' AND NEW.state IN ('partially_settled', 'settled', 'voided'))
+      OR (OLD.state = 'partially_settled' AND NEW.state IN ('settled', 'voided'))
+      OR (OLD.state = 'settled' AND NEW.state IN ('open', 'partially_settled') AND (
+        SELECT COALESCE(SUM(pa.amount_minor), 0) < NEW.amount_minor
+          FROM payment_allocations pa
+         WHERE pa.organization_id = NEW.organization_id
+           AND pa.league_id = NEW.league_id
+           AND pa.obligation_id = NEW.id
+           AND pa.state = 'active'
+      ))
+    )
     AND ((NEW.state = 'voided' AND NEW.voided_at IS NOT NULL) OR (NEW.state <> 'voided' AND NEW.voided_at IS NULL)) THEN
     RETURN NEW;
+    END IF;
   END IF;
-  IF TG_TABLE_NAME = 'financial_commands'
-    AND ROW(NEW.id, NEW.organization_id, NEW.league_id, NEW.actor_user_id,
+  IF TG_TABLE_NAME = 'financial_commands' THEN
+    IF ROW(NEW.id, NEW.organization_id, NEW.league_id, NEW.actor_user_id,
             NEW.command_type, NEW.idempotency_key, NEW.request_fingerprint,
             NEW.created_at)
         IS NOT DISTINCT FROM
         ROW(OLD.id, OLD.organization_id, OLD.league_id, OLD.actor_user_id,
             OLD.command_type, OLD.idempotency_key, OLD.request_fingerprint,
             OLD.created_at)
-    AND NEW.state IN ('accepted', 'rejected', 'applied', 'failed') THEN
+    AND NEW.state IN ('accepted', 'rejected', 'applied', 'failed')
+    AND (
+      NEW.state = OLD.state
+      OR (OLD.state = 'accepted' AND NEW.state IN ('rejected', 'applied', 'failed'))
+    ) THEN
     RETURN NEW;
+    END IF;
   END IF;
-  IF TG_TABLE_NAME = 'autopay_consents'
-    AND ROW(NEW.id, NEW.organization_id, NEW.league_id, NEW.payer_bowler_id,
+  IF TG_TABLE_NAME = 'autopay_consents' THEN
+    IF ROW(NEW.id, NEW.organization_id, NEW.league_id, NEW.payer_bowler_id,
             NEW.consent_version, NEW.provider_name, NEW.encrypted_source_id,
             NEW.encrypted_customer_id, NEW.created_by_user_id, NEW.created_at)
         IS NOT DISTINCT FROM
         ROW(OLD.id, OLD.organization_id, OLD.league_id, OLD.payer_bowler_id,
             OLD.consent_version, OLD.provider_name, OLD.encrypted_source_id,
             OLD.encrypted_customer_id, OLD.created_by_user_id, OLD.created_at)
-    AND NEW.state IN ('pending', 'active', 'revoked', 'expired') THEN
+    AND NEW.state IN ('pending', 'active', 'revoked', 'expired')
+    AND (
+      NEW.state = OLD.state
+      OR (OLD.state = 'pending' AND NEW.state IN ('active', 'revoked', 'expired'))
+      OR (OLD.state = 'active' AND NEW.state IN ('revoked', 'expired'))
+    ) THEN
     RETURN NEW;
+    END IF;
   END IF;
   -- Provider/payment facts remain immutable, while a refund or dispute may
   -- append review metadata to the retained allocation in place.
-  IF TG_TABLE_NAME = 'payment_allocations'
-    AND OLD.state = 'active' AND NEW.state = 'voided'
+  IF TG_TABLE_NAME = 'payment_allocations' THEN
+    IF OLD.state = 'active' AND NEW.state = 'voided'
     AND NEW.correction_reason IS NOT NULL
     AND ROW(NEW.id, NEW.organization_id, NEW.league_id, NEW.payment_id,
             NEW.obligation_id, NEW.amount_minor, NEW.currency,
@@ -442,9 +481,10 @@ BEGIN
             OLD.supersedes_allocation_id, OLD.recorded_by_user_id,
             OLD.created_at) THEN
     RETURN NEW;
+    END IF;
   END IF;
-  IF TG_TABLE_NAME = 'payment_allocations'
-    AND ROW(NEW.id, NEW.organization_id, NEW.league_id, NEW.payment_id,
+  IF TG_TABLE_NAME = 'payment_allocations' THEN
+    IF ROW(NEW.id, NEW.organization_id, NEW.league_id, NEW.payment_id,
             NEW.obligation_id, NEW.amount_minor, NEW.currency, NEW.state,
             NEW.supersedes_allocation_id, NEW.correction_reason,
             NEW.recorded_by_user_id, NEW.created_at)
@@ -454,9 +494,10 @@ BEGIN
             OLD.supersedes_allocation_id, OLD.correction_reason,
             OLD.recorded_by_user_id, OLD.created_at) THEN
     RETURN NEW;
+    END IF;
   END IF;
-  IF TG_TABLE_NAME = 'occurrence_payment_responsibilities'
-    AND OLD.state = 'active' AND NEW.state = 'voided'
+  IF TG_TABLE_NAME = 'occurrence_payment_responsibilities' THEN
+    IF OLD.state = 'active' AND NEW.state = 'voided'
     AND ROW(NEW.id, NEW.organization_id, NEW.league_id, NEW.occurrence_id,
             NEW.team_id, NEW.slot_id, NEW.slot_index, NEW.position_index,
             NEW.responsibility_key, NEW.version, NEW.responsibility_kind,
@@ -477,6 +518,7 @@ BEGIN
             OLD.past_due_at, OLD.assignment_note, OLD.recorded_by_user_id,
             OLD.created_at) THEN
     RETURN NEW;
+    END IF;
   END IF;
   RAISE EXCEPTION 'roster payment evidence is append-only';
 END;
@@ -499,6 +541,8 @@ CREATE OR REPLACE FUNCTION roster_payment_allocation_conservation_guard() RETURN
 DECLARE
   obligation_amount integer;
   active_total integer;
+  payment_amount integer;
+  payment_active_total integer;
   target_obligation uuid;
 BEGIN
   target_obligation := COALESCE(NEW.obligation_id, OLD.obligation_id);
@@ -520,6 +564,23 @@ BEGIN
   IF active_total > obligation_amount THEN
     RAISE EXCEPTION 'active allocation total (%) exceeds obligation amount (%)', active_total, obligation_amount;
   END IF;
+  SELECT amount INTO payment_amount
+    FROM payments
+   WHERE id = COALESCE(NEW.payment_id, OLD.payment_id)
+     AND league_id = COALESCE(NEW.league_id, OLD.league_id)
+   FOR UPDATE;
+  IF payment_amount IS NULL THEN
+    RAISE EXCEPTION 'allocation payment is missing from its league scope';
+  END IF;
+  SELECT COALESCE(SUM(amount_minor), 0) INTO payment_active_total
+    FROM payment_allocations
+   WHERE payment_id = COALESCE(NEW.payment_id, OLD.payment_id)
+     AND organization_id = COALESCE(NEW.organization_id, OLD.organization_id)
+     AND league_id = COALESCE(NEW.league_id, OLD.league_id)
+     AND state = 'active';
+  IF payment_active_total > payment_amount THEN
+    RAISE EXCEPTION 'active allocation total (%) exceeds provider payment amount (%)', payment_active_total, payment_amount;
+  END IF;
   RETURN COALESCE(NEW, OLD);
 END;
 $$;
@@ -534,6 +595,7 @@ CREATE OR REPLACE FUNCTION roster_payment_snapshot_sum_guard() RETURNS trigger L
 DECLARE
   target_operation uuid;
   snapshot_amount integer;
+  operation_amount integer;
   item_total integer;
   item_count integer;
 BEGIN
@@ -549,6 +611,12 @@ BEGIN
   IF snapshot_amount IS NULL THEN
     RAISE EXCEPTION 'roster operation snapshot is missing';
   END IF;
+  SELECT amount_minor INTO operation_amount
+    FROM payment_operations
+   WHERE id = target_operation;
+  IF operation_amount IS NULL OR operation_amount <> snapshot_amount THEN
+    RAISE EXCEPTION 'roster snapshot amount (%) does not equal operation amount (%)', snapshot_amount, operation_amount;
+  END IF;
   SELECT COUNT(*)::integer, COALESCE(SUM(amount_minor), 0)
     INTO item_count, item_total
     FROM payment_operation_roster_snapshot_items
@@ -563,6 +631,74 @@ CREATE CONSTRAINT TRIGGER payment_operation_roster_snapshot_sum
 AFTER INSERT OR UPDATE ON payment_operation_roster_snapshots
 DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
 EXECUTE FUNCTION roster_payment_snapshot_sum_guard();
+
+-- Reservation amounts must fit the obligation's remaining balance. The
+-- obligation row is the serialization point shared by quote/manual/provider
+-- commands; active reservations are included so a partial allocation cannot
+-- be hidden behind a second provider operation.
+CREATE OR REPLACE FUNCTION roster_payment_snapshot_item_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  obligation_amount integer;
+  allocated_total integer;
+  reserved_total integer;
+  target_obligation uuid;
+BEGIN
+  target_obligation := COALESCE(NEW.obligation_id, OLD.obligation_id);
+  SELECT amount_minor INTO obligation_amount
+    FROM payment_obligations
+   WHERE id = target_obligation
+     AND organization_id = COALESCE(NEW.organization_id, OLD.organization_id)
+     AND league_id = COALESCE(NEW.league_id, OLD.league_id)
+   FOR UPDATE;
+  IF obligation_amount IS NULL THEN
+    RAISE EXCEPTION 'roster reservation obligation is missing from its tenant scope';
+  END IF;
+  IF COALESCE(NEW.amount_minor, OLD.amount_minor) > obligation_amount THEN
+    RAISE EXCEPTION 'roster reservation amount exceeds obligation amount';
+  END IF;
+  SELECT COALESCE(SUM(amount_minor), 0) INTO allocated_total
+    FROM payment_allocations
+   WHERE obligation_id = target_obligation
+     AND organization_id = COALESCE(NEW.organization_id, OLD.organization_id)
+     AND league_id = COALESCE(NEW.league_id, OLD.league_id)
+     AND state = 'active';
+  SELECT COALESCE(SUM(amount_minor), 0) INTO reserved_total
+    FROM payment_operation_roster_snapshot_items
+   WHERE obligation_id = target_obligation
+     AND organization_id = COALESCE(NEW.organization_id, OLD.organization_id)
+     AND league_id = COALESCE(NEW.league_id, OLD.league_id)
+     AND state = 'reserved';
+  IF allocated_total + reserved_total > obligation_amount THEN
+    RAISE EXCEPTION 'roster reservations and allocations exceed obligation amount';
+  END IF;
+  RETURN COALESCE(NEW, OLD);
+END;
+$$;
+CREATE CONSTRAINT TRIGGER payment_operation_roster_snapshot_item_guard
+AFTER INSERT OR UPDATE ON payment_operation_roster_snapshot_items
+DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
+EXECUTE FUNCTION roster_payment_snapshot_item_guard();
+
+-- Obligation and responsibility occurrence identities are a canonical pair;
+-- tenant FKs alone do not enforce that they reference the same occurrence.
+CREATE OR REPLACE FUNCTION roster_payment_obligation_identity_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  responsibility_occurrence uuid;
+BEGIN
+  SELECT occurrence_id INTO responsibility_occurrence
+    FROM occurrence_payment_responsibilities
+   WHERE id = NEW.responsibility_id
+     AND organization_id = NEW.organization_id
+     AND league_id = NEW.league_id;
+  IF responsibility_occurrence IS NULL OR responsibility_occurrence <> NEW.occurrence_id THEN
+    RAISE EXCEPTION 'obligation occurrence does not match responsibility occurrence';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+CREATE TRIGGER payment_obligation_identity_guard
+BEFORE INSERT OR UPDATE ON payment_obligations
+FOR EACH ROW EXECUTE FUNCTION roster_payment_obligation_identity_guard();
 CREATE CONSTRAINT TRIGGER payment_operation_roster_snapshot_items_sum
 AFTER INSERT OR UPDATE ON payment_operation_roster_snapshot_items
 DEFERRABLE INITIALLY DEFERRED FOR EACH ROW

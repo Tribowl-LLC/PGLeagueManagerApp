@@ -1359,6 +1359,12 @@ export async function rescheduleOccurrence(request: OccurrenceRescheduleRequest)
       beforeSnapshot: occurrenceSnapshot(occurrence),
       afterSnapshot: occurrenceSnapshot(rescheduled),
     });
+    await materializeRosterPaymentOccurrenceInTransaction(tx, {
+      organizationId: canonicalRequest.organizationId,
+      leagueId: canonicalRequest.leagueId,
+      occurrenceId: rescheduled.id,
+      actorUserId: canonicalRequest.actorUserId,
+    });
     return rescheduled;
   });
 }

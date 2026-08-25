@@ -36,12 +36,15 @@ type OccurrenceResponsibility = {
   lineageAmountMinor: number | null;
   prizeFundAmountMinor: number | null;
 };
+type OverrideKind = "main" | "substitute" | "split" | "vacant";
+type OverridePolicy = "main_pays_full" | "sub_pays_full" | "special_split";
 type RosterResponse = {
   payingLineupSize: number | null;
   ready: boolean;
   lineageFee: number | null;
   prizeFundFee: number | null;
   substituteAccess: "team_only" | "floating";
+  substitutePaymentRegime: "team_choice" | "league_lineage_prize_split";
   substituteBowlerOptions: Array<{ id: number; name: string; teamId: number | null }>;
   occurrences: Occurrence[];
   occurrenceResponsibilities: OccurrenceResponsibility[];
@@ -67,18 +70,23 @@ export function TeamViewBowlersTable({ teamBowlers, league, teamId, leagueId, ca
   const lineupSize = rosterQuery.data?.data?.payingLineupSize ?? league?.payingLineupSize ?? 0;
   const [slots, setSlots] = useState<Slot[]>([]);
   const [policy, setPolicy] = useState<"main_pays_full" | "sub_pays_full" | "special_split">("main_pays_full");
-  const [substitutes, setSubstitutes] = useState<Record<number, { occurrenceId: string; bowlerId: number }>>({});
+  const [substitutes, setSubstitutes] = useState<Record<string, { occurrenceId: string; slotIndex: number; kind: OverrideKind; policy: OverridePolicy; bowlerId: number | null }>>({});
+  const [selectedOccurrenceId, setSelectedOccurrenceId] = useState("");
   useEffect(() => {
     if (!current) return;
     setSlots(current.slots.map((slot) => ({ ...slot })));
     setPolicy(current.policy);
-    const hydrated: Record<number, { occurrenceId: string; bowlerId: number }> = {};
+    const hydrated: Record<string, { occurrenceId: string; slotIndex: number; kind: OverrideKind; policy: OverridePolicy; bowlerId: number | null }> = {};
     for (const responsibility of rosterQuery.data?.data?.occurrenceResponsibilities ?? []) {
-      if (responsibility.teamId !== teamId || (responsibility.responsibilityKind !== "substitute" && responsibility.responsibilityKind !== "split") || responsibility.substituteBowlerId === null) continue;
-      hydrated[responsibility.slotIndex] = { occurrenceId: responsibility.occurrenceId, bowlerId: responsibility.substituteBowlerId };
+      if (responsibility.teamId !== teamId || responsibility.responsibilityKind === "main") continue;
+      hydrated[`${responsibility.occurrenceId}:${responsibility.slotIndex}`] = { occurrenceId: responsibility.occurrenceId, slotIndex: responsibility.slotIndex, kind: responsibility.responsibilityKind, policy: responsibility.policy, bowlerId: responsibility.substituteBowlerId };
     }
     setSubstitutes(hydrated);
   }, [current, rosterQuery.data?.data?.occurrenceResponsibilities, teamId]);
+  useEffect(() => {
+    const first = rosterQuery.data?.data?.occurrences[0]?.id;
+    if (first && !rosterQuery.data?.data?.occurrences.some((occurrence) => occurrence.id === selectedOccurrenceId)) setSelectedOccurrenceId(first);
+  }, [rosterQuery.data?.data?.occurrences, selectedOccurrenceId]);
   const normalizedSlots = useMemo(() => Array.from({ length: lineupSize }, (_, slotIndex) => slots.find((slot) => slot.slotIndex === slotIndex) ?? { slotIndex, occupant: "unassigned" as const, mainBowlerId: null }), [lineupSize, slots]);
 
   const save = useMutation({
@@ -90,12 +98,15 @@ export function TeamViewBowlersTable({ teamBowlers, league, teamId, leagueId, ca
   });
 
   const assignSubstitute = useMutation({
-    mutationFn: async ({ slotIndex, occurrenceId, bowlerId }: { slotIndex: number; occurrenceId: string; bowlerId: number }) => {
+    mutationFn: async ({ slotIndex, occurrenceId, kind = "substitute", overridePolicy, bowlerId }: { slotIndex: number; occurrenceId: string; kind?: OverrideKind; overridePolicy?: OverridePolicy; bowlerId: number | null }) => {
       const slot = normalizedSlots.find((row) => row.slotIndex === slotIndex);
       const occurrence = rosterQuery.data?.data?.occurrences.find((row) => row.id === occurrenceId);
       if (!slot || !occurrence) throw new Error("Select a published occurrence and stable slot.");
-      const split = policy === "special_split" && slot.occupant === "main";
-      const responsibility = { occurrenceId, teamId, slotIndex, positionIndex: slotIndex, kind: split ? "split" as const : "substitute" as const, mainBowlerId: slot.mainBowlerId ?? null, substituteBowlerId: bowlerId, payerBowlerId: split || policy !== "main_pays_full" || slot.occupant === "vacant" ? bowlerId : slot.mainBowlerId ?? null, policy: split ? "special_split" as const : slot.occupant === "vacant" ? "sub_pays_full" as const : policy, amountMinor: league?.weeklyFee ?? 0, lineageAmountMinor: split ? rosterQuery.data?.data?.lineageFee ?? null : null, prizeFundAmountMinor: split ? rosterQuery.data?.data?.prizeFundFee ?? null : null };
+      const split = kind === "split";
+      const main = kind === "main";
+      const vacant = kind === "vacant";
+      const effectivePolicy = overridePolicy ?? policy;
+      const responsibility = { occurrenceId, teamId, slotIndex, positionIndex: slotIndex, kind, mainBowlerId: vacant ? null : slot.mainBowlerId ?? null, substituteBowlerId: vacant || main ? null : bowlerId, payerBowlerId: vacant ? null : main ? slot.mainBowlerId ?? null : split || effectivePolicy !== "main_pays_full" || slot.occupant === "vacant" ? bowlerId : slot.mainBowlerId ?? null, policy: vacant ? "main_pays_full" as const : split ? "special_split" as const : slot.occupant === "vacant" ? "sub_pays_full" as const : effectivePolicy, amountMinor: vacant ? 0 : league?.weeklyFee ?? 0, lineageAmountMinor: split ? rosterQuery.data?.data?.lineageFee ?? null : null, prizeFundAmountMinor: split ? rosterQuery.data?.data?.prizeFundFee ?? null : null };
       const canonical = JSON.stringify([responsibility].sort((left, right) => left.occurrenceId.localeCompare(right.occurrenceId) || left.teamId - right.teamId || left.positionIndex - right.positionIndex));
       const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));
       const requestFingerprint = `lvresponsibility:v1:${Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("")}`;
@@ -108,9 +119,36 @@ export function TeamViewBowlersTable({ teamBowlers, league, teamId, leagueId, ca
   const memberById = new Map(teamBowlers.map(({ bowler }) => [bowler.id, bowler]));
   const mainIds = new Set(normalizedSlots.flatMap((slot) => slot.mainBowlerId ? [slot.mainBowlerId] : []));
   const substituteOptions = rosterQuery.data?.data?.substituteAccess === "floating"
-    ? rosterQuery.data.data.substituteBowlerOptions
-    : teamBowlers.map(({ bowler }) => ({ id: bowler.id, name: bowler.name, teamId: teamId }));
-  const occurrenceLabel = (startAt: string) => new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeZone: league?.timezone ?? "UTC" }).format(new Date(startAt));
+    ? rosterQuery.data.data.substituteBowlerOptions.filter((bowler) => memberById.get(bowler.id)?.active !== false)
+    : teamBowlers.filter(({ bowler, bowlerLeague }) => bowler.active && bowlerLeague.active).map(({ bowler }) => ({ id: bowler.id, name: bowler.name, teamId: teamId }));
+  const savedOccurrenceOverrides = (rosterQuery.data?.data?.occurrenceResponsibilities ?? [])
+    .filter((responsibility) => responsibility.teamId === teamId && responsibility.responsibilityKind !== "main");
+  const selectedOccurrence = rosterQuery.data?.data?.occurrences.find((occurrence) => occurrence.id === selectedOccurrenceId);
+  // Keep the normal roster compact: only the selected occurrence is editable
+  // here. Saved non-default rows remain summarized below so an administrator
+  // can see that other weeks have contextual overrides without rendering every
+  // occurrence × slot combination.
+  const selectedOccurrenceRows = selectedOccurrence
+    ? normalizedSlots.filter((slot) => slot.occupant !== "unassigned").map((slot) => {
+      const persisted = rosterQuery.data?.data?.occurrenceResponsibilities.find((row) => row.teamId === teamId && row.occurrenceId === selectedOccurrence.id && row.slotIndex === slot.slotIndex);
+      if (persisted) return persisted;
+      return {
+        occurrenceId: selectedOccurrence.id,
+        teamId,
+        slotIndex: slot.slotIndex,
+        positionIndex: slot.slotIndex,
+        responsibilityKind: slot.occupant === "vacant" ? "vacant" as const : "main" as const,
+        mainBowlerId: slot.mainBowlerId ?? null,
+        substituteBowlerId: null,
+        payerBowlerId: slot.mainBowlerId ?? null,
+        policy,
+        amountMinor: slot.occupant === "vacant" ? 0 : league?.weeklyFee ?? 0,
+        lineageAmountMinor: null,
+        prizeFundAmountMinor: null,
+      } satisfies OccurrenceResponsibility;
+    })
+    : [];
+  const occurrenceLabel = (startAt: string) => new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short", timeZone: league?.timezone ?? "UTC" }).format(new Date(startAt));
   const updateSlot = (slotIndex: number, value: Partial<Slot>) => setSlots((rows) => rows.map((row) => row.slotIndex === slotIndex ? { ...row, ...value } : row));
   const setMemberRole = (bowlerId: number, role: "main" | "substitute") => {
     if (role === "main") {
@@ -122,18 +160,43 @@ export function TeamViewBowlersTable({ teamBowlers, league, teamId, leagueId, ca
     }
   };
 
-  return <div className="rounded-md border"><Table><TableHeader><TableRow><TableHead>Position</TableHead><TableHead>Name</TableHead><TableHead>Payer role</TableHead><TableHead>Weekly Fee</TableHead><TableHead>Status</TableHead><TableHead>Actions</TableHead></TableRow></TableHeader><TableBody>
-    {normalizedSlots.map((slot) => {
+  return <div className="space-y-4"><div className="rounded-md border"><Table><TableHeader><TableRow><TableHead>Position</TableHead><TableHead>Name</TableHead><TableHead>Payer role</TableHead><TableHead>Weekly Fee</TableHead><TableHead>Status</TableHead><TableHead>Actions</TableHead></TableRow></TableHeader><TableBody>
+    {normalizedSlots.filter((slot) => slot.occupant !== "main").map((slot) => {
       const main = slot.mainBowlerId ? memberById.get(slot.mainBowlerId) : undefined;
-      const selection = substitutes[slot.slotIndex];
       return <TableRow key={`payment-slot-${slot.slotIndex}`}>
         <TableCell className="font-medium">{slot.slotIndex + 1}</TableCell>
         <TableCell>{main ? <Link href={`/bowlers/${main.id}?from=team&fromTeamId=${teamId}`} className="hover:underline">{main.name}</Link> : slot.occupant === "vacant" ? <span className="text-muted-foreground">VACANT</span> : <span className="text-muted-foreground">Unassigned</span>}</TableCell>
-        <TableCell><div className="space-y-2"><select aria-label={`Payer role position ${slot.slotIndex + 1}`} disabled={!canManage} className="w-full rounded border bg-background p-2" value={slot.occupant} onChange={(event) => updateSlot(slot.slotIndex, { occupant: event.target.value as Slot["occupant"], mainBowlerId: event.target.value === "main" ? slot.mainBowlerId ?? teamBowlers[0]?.bowler.id ?? null : null })}><option value="unassigned">Unassigned</option><option value="main">Main</option><option value="vacant">VACANT</option></select>{slot.occupant === "main" && <select aria-label={`Main bowler position ${slot.slotIndex + 1}`} disabled={!canManage} className="w-full rounded border bg-background p-2 text-sm" value={slot.mainBowlerId ?? ""} onChange={(event) => updateSlot(slot.slotIndex, { mainBowlerId: Number(event.target.value) })}><option value="">Select Main</option>{teamBowlers.map(({ bowler }) => <option key={bowler.id} value={bowler.id}>{bowler.name}</option>)}</select>}{canManage && <div className="space-y-1 border-t pt-2"><span className="text-xs text-muted-foreground">Substitute for occurrence</span><select aria-label={`Substitute occurrence position ${slot.slotIndex + 1}`} className="w-full rounded border bg-background p-1 text-sm" value={selection?.occurrenceId ?? ""} onChange={(event) => setSubstitutes((rows) => ({ ...rows, [slot.slotIndex]: { occurrenceId: event.target.value, bowlerId: rows[slot.slotIndex]?.bowlerId ?? substituteOptions.find((bowler) => bowler.id !== slot.mainBowlerId)?.id ?? 0 } }))}><option value="">Select occurrence</option>{rosterQuery.data?.data?.occurrences.map((occurrence) => <option key={occurrence.id} value={occurrence.id}>{occurrenceLabel(occurrence.startAt)}</option>)}</select><select aria-label={`Substitute bowler position ${slot.slotIndex + 1}`} className="w-full rounded border bg-background p-1 text-sm" value={selection?.bowlerId ?? ""} onChange={(event) => setSubstitutes((rows) => ({ ...rows, [slot.slotIndex]: { occurrenceId: rows[slot.slotIndex]?.occurrenceId ?? "", bowlerId: Number(event.target.value) } }))}><option value="">Select Substitute</option>{substituteOptions.filter((bowler) => bowler.id !== slot.mainBowlerId).map((bowler) => <option key={bowler.id} value={bowler.id}>{bowler.name}</option>)}</select><Button variant="outline" size="sm" disabled={assignSubstitute.isPending || !selection?.occurrenceId || !selection?.bowlerId} onClick={() => selection && assignSubstitute.mutate({ slotIndex: slot.slotIndex, ...selection })}>Assign Substitute</Button></div>}</div></TableCell>
-        <TableCell>${((league?.weeklyFee || 0) / 100).toFixed(2)}</TableCell><TableCell><Badge variant={slot.occupant === "unassigned" ? "secondary" : "default"}>{slot.occupant === "unassigned" ? "Incomplete" : slot.occupant === "vacant" ? "No obligation" : "Active payer"}</Badge></TableCell><TableCell>{main && <div className="flex items-center gap-2">{onEditBowler && <Button variant="outline" size="sm" onClick={() => onEditBowler(main)}><Pencil className="size-4 mr-2" />Edit</Button>}{onRemoveBowler && <Button variant="ghost" size="sm" onClick={() => onRemoveBowler({ bowlerId: main.id, name: main.name })}><Trash2 className="size-4" /></Button>}</div>}</TableCell>
+        <TableCell><select aria-label={`Payer role position ${slot.slotIndex + 1}`} disabled={!canManage} className="w-full rounded border bg-background p-2" value={slot.occupant} onChange={(event) => updateSlot(slot.slotIndex, { occupant: event.target.value as Slot["occupant"], mainBowlerId: null })}><option value="unassigned">Unassigned</option><option value="vacant">VACANT</option></select></TableCell>
+        <TableCell>${((league?.weeklyFee || 0) / 100).toFixed(2)}</TableCell><TableCell><Badge variant={slot.occupant === "unassigned" ? "secondary" : "default"}>{slot.occupant === "unassigned" ? "Incomplete" : slot.occupant === "vacant" ? "VACANT · no obligation" : "Active payer"}</Badge></TableCell><TableCell>{main && <div className="flex items-center gap-2">{onEditBowler && <Button variant="outline" size="sm" onClick={() => onEditBowler(main)}><Pencil className="size-4 mr-2" />Edit</Button>}{onRemoveBowler && <Button variant="ghost" size="sm" onClick={() => onRemoveBowler({ bowlerId: main.id, name: main.name })}><Trash2 className="size-4" /></Button>}</div>}</TableCell>
       </TableRow>;
     })}
-    {teamBowlers.map(({ bowler, bowlerLeague }) => { const mainSlot = normalizedSlots.find((slot) => slot.mainBowlerId === bowler.id); return <TableRow key={`member-${bowlerLeague.id}`}><TableCell className="text-muted-foreground">{mainSlot ? mainSlot.slotIndex + 1 : "—"}</TableCell><TableCell><div className="flex items-center gap-1.5"><CheckCircle2 className={`size-4 ${bowler.hasAccount ? "text-green-500" : "text-muted-foreground/40"}`} /><Link href={`/bowlers/${bowler.id}?from=team&fromTeamId=${teamId}`} className="hover:underline">{bowler.name}</Link></div></TableCell><TableCell><select aria-label={`Payer role ${bowler.name}`} disabled={!canManage || !bowlerLeague.active} className="rounded border bg-background p-2" value={mainIds.has(bowler.id) ? "main" : "substitute"} onChange={(event) => setMemberRole(bowler.id, event.target.value as "main" | "substitute")}><option value="main">Main</option><option value="substitute">Substitute</option></select></TableCell><TableCell>${((league?.weeklyFee || 0) / 100).toFixed(2)}</TableCell><TableCell><Badge variant={bowlerLeague.active ? "default" : "secondary"}>{bowlerLeague.active ? "Active" : "Inactive"}</Badge></TableCell><TableCell><div className="flex items-center gap-2">{onEditBowler && <Button variant="outline" size="sm" onClick={() => onEditBowler(bowler)}><Pencil className="size-4 mr-2" />Edit</Button>}{onRemoveBowler && <Button variant="ghost" size="sm" onClick={() => onRemoveBowler({ bowlerId: bowler.id, name: bowler.name })}><Trash2 className="size-4" /></Button>}</div></TableCell></TableRow>; })}
+    {teamBowlers.map(({ bowler, bowlerLeague }) => { const mainSlot = normalizedSlots.find((slot) => slot.mainBowlerId === bowler.id); const active = bowler.active && bowlerLeague.active; return <TableRow key={`member-${bowlerLeague.id}`}><TableCell className="text-muted-foreground">{mainSlot ? mainSlot.slotIndex + 1 : "—"}</TableCell><TableCell><div className="flex items-center gap-1.5"><CheckCircle2 className={`size-4 ${bowler.hasAccount ? "text-green-500" : "text-muted-foreground/40"}`} /><Link href={`/bowlers/${bowler.id}?from=team&fromTeamId=${teamId}`} className="hover:underline">{bowler.name}</Link></div></TableCell><TableCell><select aria-label={`Payer role ${bowler.name}`} disabled={!canManage || !active} className="rounded border bg-background p-2" value={mainIds.has(bowler.id) ? "main" : "substitute"} onChange={(event) => setMemberRole(bowler.id, event.target.value as "main" | "substitute")}><option value="main">Main</option><option value="substitute">Substitute</option></select></TableCell><TableCell>${((league?.weeklyFee || 0) / 100).toFixed(2)}</TableCell><TableCell><Badge variant={active ? "default" : "secondary"}>{active ? (mainSlot ? "Main" : "Substitute") : "Inactive"}</Badge></TableCell><TableCell><div className="flex items-center gap-2">{onEditBowler && <Button variant="outline" size="sm" onClick={() => onEditBowler(bowler)}><Pencil className="size-4 mr-2" />Edit</Button>}{onRemoveBowler && <Button variant="ghost" size="sm" onClick={() => onRemoveBowler({ bowlerId: bowler.id, name: bowler.name })}><Trash2 className="size-4" /></Button>}</div></TableCell></TableRow>; })}
     {canManage && lineupSize > 0 && <TableRow><TableCell colSpan={6}><div className="flex flex-wrap items-center gap-3"><label className="text-sm">Team policy <select aria-label="Team payment policy" className="ml-2 rounded border bg-background p-2" value={policy} onChange={(event) => setPolicy(event.target.value as typeof policy)}><option value="main_pays_full">Main pays full</option><option value="sub_pays_full">Substitute pays full</option><option value="special_split">Substitute lineage / Main prize split</option></select></label><Badge variant={normalizedSlots.every((slot) => slot.occupant !== "unassigned") ? "default" : "secondary"}>{normalizedSlots.every((slot) => slot.occupant !== "unassigned") ? "Ready" : "Incomplete"}</Badge><Button disabled={save.isPending} onClick={() => save.mutate()}>{save.isPending ? "Saving…" : "Save roster"}</Button></div></TableCell></TableRow>}
-  </TableBody></Table></div>;
+  </TableBody></Table></div>{canManage && selectedOccurrence && <div className="rounded-md border p-4">
+    <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
+      <div><h3 className="font-medium">Payment override for one occurrence</h3><p className="text-sm text-muted-foreground">Roster defaults are automatic. Select a published occurrence to edit only its lineup positions.</p></div>
+      <label className="text-sm">Occurrence <select aria-label="Override occurrence" className="ml-2 rounded border bg-background p-2" value={selectedOccurrence.id} onChange={(event) => setSelectedOccurrenceId(event.target.value)}>{(rosterQuery.data?.data?.occurrences ?? []).map((occurrence) => <option key={occurrence.id} value={occurrence.id}>{occurrenceLabel(occurrence.startAt)}</option>)}</select></label>
+    </div>
+    <div className="mb-3 text-xs text-muted-foreground">Saved non-default overrides: {savedOccurrenceOverrides.length}</div>
+    {selectedOccurrenceRows.length > 0 ? <Table><TableHeader><TableRow><TableHead>Position</TableHead><TableHead>Default Main</TableHead><TableHead>Assignment</TableHead><TableHead>Payer/status</TableHead><TableHead /></TableRow></TableHeader><TableBody>{selectedOccurrenceRows.map((responsibility) => {
+      const key = `${responsibility.occurrenceId}:${responsibility.slotIndex}`;
+      const slot = normalizedSlots.find((row) => row.slotIndex === responsibility.slotIndex);
+      const main = slot?.mainBowlerId ? memberById.get(slot.mainBowlerId) : undefined;
+      const persisted = substitutes[key];
+      const defaultKind: OverrideKind = responsibility.responsibilityKind;
+      const kind = persisted?.kind ?? defaultKind;
+      const bowlerId = persisted?.bowlerId ?? responsibility.substituteBowlerId;
+      const splitAvailable = rosterQuery.data?.data?.substitutePaymentRegime === "league_lineage_prize_split" && rosterQuery.data?.data?.lineageFee != null && rosterQuery.data?.data?.prizeFundFee != null;
+      const displayName = bowlerId == null ? "" : substituteOptions.find((option) => option.id === bowlerId)?.name ?? memberById.get(bowlerId)?.name ?? "Assigned";
+      const amount = `$${(responsibility.amountMinor / 100).toFixed(2)}`;
+      return <TableRow key={key}>
+        <TableCell>{responsibility.slotIndex + 1}</TableCell>
+        <TableCell>{main?.name ?? "VACANT"}</TableCell>
+        <TableCell><select aria-label={`Override kind ${key}`} disabled={!canManage} className="rounded border bg-background p-1" value={kind} onChange={(event) => { const next = event.target.value as OverrideKind; setSubstitutes((rows) => ({ ...rows, [key]: { occurrenceId: responsibility.occurrenceId, slotIndex: responsibility.slotIndex, kind: next, policy: next === "split" ? "special_split" : next === "vacant" || next === "main" ? "main_pays_full" : responsibility.policy, bowlerId: next === "vacant" || next === "main" ? null : bowlerId } })); }}>{slot?.occupant === "main" && <option value="main">Use roster Main</option>}<option value="substitute">Substitute</option>{splitAvailable && slot?.occupant === "main" && <option value="split">Split</option>}{(slot?.occupant === "vacant" || responsibility.responsibilityKind === "vacant") && <option value="vacant">VACANT</option>}</select>{kind !== "vacant" && kind !== "main" && <select aria-label={`Override bowler ${key}`} disabled={!canManage} className="ml-2 rounded border bg-background p-1" value={bowlerId ?? ""} onChange={(event) => { const next = Number(event.target.value); setSubstitutes((rows) => ({ ...rows, [key]: { occurrenceId: responsibility.occurrenceId, slotIndex: responsibility.slotIndex, kind, policy: persisted?.policy ?? responsibility.policy, bowlerId: next } })); }}><option value="">Select bowler</option>{substituteOptions.filter((option) => option.id !== responsibility.mainBowlerId).map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}</select>}</TableCell>
+        <TableCell>{kind === "main" ? "Main · full default" : kind === "vacant" ? "VACANT · no obligation" : bowlerId ? `${displayName} · ${amount}` : "Select a substitute"}</TableCell>
+        <TableCell>{canManage && <Button variant="outline" size="sm" disabled={assignSubstitute.isPending || (kind !== "vacant" && kind !== "main" && !bowlerId)} onClick={() => assignSubstitute.mutate({ occurrenceId: responsibility.occurrenceId, slotIndex: responsibility.slotIndex, kind, overridePolicy: persisted?.policy ?? responsibility.policy, bowlerId: kind === "vacant" || kind === "main" ? null : bowlerId })}>Save</Button>}</TableCell>
+      </TableRow>;
+    })}</TableBody></Table> : <p className="text-sm text-muted-foreground">No paying positions are configured for this team.</p>}
+    {savedOccurrenceOverrides.length > 0 && <div className="mt-3 text-xs text-muted-foreground">{savedOccurrenceOverrides.slice(0, 8).map((responsibility) => { const occurrence = rosterQuery.data?.data?.occurrences.find((row) => row.id === responsibility.occurrenceId); return <span className="mr-3 inline-block" key={`${responsibility.occurrenceId}:${responsibility.slotIndex}`}>{occurrence ? occurrenceLabel(occurrence.startAt) : responsibility.occurrenceId} · position {responsibility.slotIndex + 1} · {responsibility.responsibilityKind}</span>; })}{savedOccurrenceOverrides.length > 8 && <span>+{savedOccurrenceOverrides.length - 8} more</span>}</div>}
+  </div>}</div>;
 }

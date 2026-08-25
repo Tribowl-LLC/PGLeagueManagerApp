@@ -120,16 +120,19 @@ export async function prepareInteractivePaymentOperation(
     if (operation.leagueId !== null && operation.leagueId !== input.leagueId) {
       throw new PaymentOperationValidationError("interactive operation belongs to another league");
     }
+    let linkedOperation = operation;
     if (operation.leagueId === null) {
-      await tx.update(paymentOperations).set({ leagueId: input.leagueId }).where(and(
+      const [updatedOperation] = await tx.update(paymentOperations).set({ leagueId: input.leagueId }).where(and(
         eq(paymentOperations.id, operation.id),
         eq(paymentOperations.organizationId, input.organizationId),
         isNull(paymentOperations.leagueId),
-      ));
+      )).returning();
+      if (!updatedOperation) throw new PaymentOperationValidationError("interactive operation could not be linked to its league");
+      linkedOperation = updatedOperation;
     }
     await storage.persistInteractivePaymentOperationSnapshot(
-      operation,
-      buildInteractivePaymentSnapshot(operation, input),
+      linkedOperation,
+      buildInteractivePaymentSnapshot(linkedOperation, input),
       tx,
     );
     if (input.occurrenceSelections !== undefined) {
@@ -143,7 +146,7 @@ export async function prepareInteractivePaymentOperation(
         })),
       });
     }
-    return operation;
+    return linkedOperation;
   };
   return input.transaction ? run(input.transaction) : db.transaction(run);
 }
