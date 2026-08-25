@@ -4,7 +4,6 @@ import { eq, inArray } from "drizzle-orm";
 import {
   bowlers,
   bowlerLeagues,
-  bowlerOccurrenceObligations,
   leagueOccurrenceBillingTerms,
   leagueOccurrences,
   leagues,
@@ -14,10 +13,6 @@ import {
   paymentDisputeReplayAudits,
   paymentDisputes,
   paymentOperations,
-  paymentOperationOccurrenceSnapshots,
-  paymentOperationOccurrenceSnapshotAllocations,
-  paymentOccurrenceAllocations,
-  paymentOccurrenceAllocationRevisions,
   payments,
   teams,
   users,
@@ -51,7 +46,6 @@ import {
   persistInteractivePaymentOperationSnapshot,
 } from "../../server/storage/payment-operations";
 import { deriveSquareOperationIdempotencyKey } from "../../server/services/payment-operation-idempotency";
-import { fingerprintPaymentOperationOccurrenceSnapshot, PAYMENT_OPERATION_OCCURRENCE_SNAPSHOT_CONTRACT } from "../../server/services/payment-operation-occurrence-snapshot";
 import type { InteractivePaymentSemanticSnapshot } from "../../server/services/interactive-payment-operation-snapshot";
 
 const db = getTestDb();
@@ -234,99 +228,6 @@ async function preparedInteractiveCharge(options: { combined?: boolean } = {}) {
   return leased;
 }
 
-async function addF2OccurrenceSupplement(operation: { id: string; amountMinor: number }) {
-  return db.transaction(async (tx) => {
-    const [occurrence] = await tx.insert(leagueOccurrences).values({
-      organizationId,
-      leagueId,
-      locationId,
-      generationKey: `webhook-f2-occurrence-${randomUUID()}`,
-      kind: "regular",
-      status: "scheduled",
-      lifecycle: "draft",
-      authoritativeLocalDate: "2034-04-01",
-      authoritativeLocalStartTime: "19:00:00",
-      timezone: "UTC",
-      startAt: "2034-04-01T19:00:00.000Z",
-      selectedUtcOffsetMinutes: 0,
-      foldResolution: "unambiguous",
-      resolverVersion: "webhook-f2-fixture/1",
-      plannedOrdinal: 1,
-      competitionNumber: 1,
-    }).returning({ id: leagueOccurrences.id });
-    if (!occurrence) throw new Error("F2 webhook occurrence was not created");
-    const [term] = await tx.insert(leagueOccurrenceBillingTerms).values({
-      organizationId,
-      leagueId,
-      occurrenceId: occurrence.id,
-      purpose: "league_weekly_fee",
-      obligationPolicy: "eligible_bowlers",
-      defaultAmountMinor: operation.amountMinor,
-      currency: "USD",
-      billingOrdinal: 1,
-      version: 1,
-      state: "draft",
-    }).returning({ id: leagueOccurrenceBillingTerms.id, version: leagueOccurrenceBillingTerms.version });
-    if (!term) throw new Error("F2 webhook billing term was not created");
-    const [obligation] = await tx.insert(bowlerOccurrenceObligations).values({
-      organizationId,
-      leagueId,
-      occurrenceId: occurrence.id,
-      bowlerId,
-      purpose: "league_weekly_fee",
-      amountMinor: operation.amountMinor,
-      currency: "USD",
-      billingTermId: term.id,
-      billingTermVersion: term.version,
-      recordedByUserId: actorUserId,
-    }).returning({ id: bowlerOccurrenceObligations.id });
-    if (!obligation) throw new Error("F2 webhook obligation was not created");
-    const semantic = {
-      contractVersion: PAYMENT_OPERATION_OCCURRENCE_SNAPSHOT_CONTRACT,
-      snapshotVersion: 1 as const,
-      operationId: operation.id,
-      operationType: "interactive_charge" as const,
-      organizationId,
-      leagueId,
-      amountMinor: operation.amountMinor,
-      currency: "USD",
-      allocations: [{
-        allocationIndex: 0,
-        organizationId,
-        leagueId,
-        occurrenceId: occurrence.id,
-        bowlerId,
-        obligationId: obligation.id,
-        amountMinor: operation.amountMinor,
-        currency: "USD",
-      }],
-    };
-    await tx.update(paymentOperations).set({ authorizingUserId: actorUserId }).where(eq(paymentOperations.id, operation.id));
-    await tx.insert(paymentOperationOccurrenceSnapshots).values({
-      operationId: operation.id,
-      organizationId,
-      leagueId,
-      snapshotFingerprint: fingerprintPaymentOperationOccurrenceSnapshot(semantic),
-      amountMinor: operation.amountMinor,
-      currency: "USD",
-      allocationCount: 1,
-    });
-    await tx.insert(paymentOperationOccurrenceSnapshotAllocations).values({
-      operationId: operation.id,
-      allocationIndex: 0,
-      organizationId,
-      leagueId,
-      snapshotVersion: 1,
-      obligationId: obligation.id,
-      occurrenceId: occurrence.id,
-      bowlerId,
-      amountMinor: operation.amountMinor,
-      currency: "USD",
-    });
-    return obligation.id;
-  });
-}
-
 function refundBody(input: {
   eventId: string;
   refundId: string;
@@ -455,146 +356,6 @@ async function completedInteractiveCharge(options: { combined?: boolean } = {}) 
 }
 
 describe("Square webhook payment/refund PostgreSQL reconciliation", () => {
-  it("finalizes an interactive F2 supplement exactly once through payment.updated", async () => {
-    const operation = await preparedInteractiveCharge();
-    const obligationId = await addF2OccurrenceSupplement(operation);
-    const revisionsBefore = await db.select().from(paymentOccurrenceAllocationRevisions)
-      .where(eq(paymentOccurrenceAllocationRevisions.organizationId, organizationId));
-    const providerPaymentId = `payment-${randomUUID()}`;
-    const delivery = await ingest(paymentBody({
-      eventId: `event-${randomUUID()}`,
-      paymentId: providerPaymentId,
-      operationId: operation.id,
-    }));
-    const first = await processSquareWebhookEvent({
-      organizationId,
-      eventId: delivery.recorded.event.id,
-      event: delivery.event,
-      now: new Date("2034-03-05T00:01:01.000Z"),
-    });
-    const duplicate = await processSquareWebhookEvent({
-      organizationId,
-      eventId: delivery.recorded.event.id,
-      event: delivery.event,
-      now: new Date("2034-03-05T00:01:02.000Z"),
-    });
-    expect(first).toMatchObject({ acknowledged: true, businessStateChanged: true, status: "processed" });
-    expect(duplicate).toMatchObject({ acknowledged: true, businessStateChanged: false, status: "processed" });
-    expect(await db.select().from(paymentOccurrenceAllocations).where(eq(paymentOccurrenceAllocations.obligationId, obligationId))).toHaveLength(1);
-    expect(await db.select().from(paymentOccurrenceAllocationRevisions).where(eq(paymentOccurrenceAllocationRevisions.organizationId, organizationId))).toHaveLength(revisionsBefore.length + 1);
-    expect(await db.select().from(payments).where(eq(payments.paymentOperationId, operation.id))).toHaveLength(1);
-  });
-
-  it("fails a tampered F2 webhook supplement atomically before payment-occurrence evidence", async () => {
-    const operation = await preparedInteractiveCharge();
-    const obligationId = await addF2OccurrenceSupplement(operation);
-    const revisionsBefore = await db.select().from(paymentOccurrenceAllocationRevisions)
-      .where(eq(paymentOccurrenceAllocationRevisions.organizationId, organizationId));
-    await db.update(paymentOperationOccurrenceSnapshots).set({
-      snapshotFingerprint: `lvpayocc:v1:${"d".repeat(64)}`,
-    }).where(eq(paymentOperationOccurrenceSnapshots.operationId, operation.id));
-    const delivery = await ingest(paymentBody({
-      eventId: `event-${randomUUID()}`,
-      paymentId: `payment-${randomUUID()}`,
-      operationId: operation.id,
-    }));
-    const result = await processSquareWebhookEvent({
-      organizationId,
-      eventId: delivery.recorded.event.id,
-      event: delivery.event,
-      now: new Date("2034-03-05T00:01:01.000Z"),
-    });
-    expect(result).toMatchObject({ acknowledged: true, businessStateChanged: false, status: "failed", code: "OPERATION_EVIDENCE_MISMATCH" });
-    expect(await db.select().from(paymentOccurrenceAllocations).where(eq(paymentOccurrenceAllocations.obligationId, obligationId))).toHaveLength(0);
-    expect(await db.select().from(paymentOccurrenceAllocationRevisions).where(eq(paymentOccurrenceAllocationRevisions.organizationId, organizationId))).toHaveLength(revisionsBefore.length);
-    expect(await db.select().from(payments).where(eq(payments.paymentOperationId, operation.id))).toHaveLength(0);
-    const [storedOperation] = await db.select().from(paymentOperations).where(eq(paymentOperations.id, operation.id));
-    expect(storedOperation?.status).toBe("leased");
-  });
-
-  it("rolls back a non-fingerprint base-bowler mismatch in webhook finalization", async () => {
-    const operation = await preparedInteractiveCharge();
-    const obligationId = await addF2OccurrenceSupplement(operation);
-    const revisionsBefore = await db.select().from(paymentOccurrenceAllocationRevisions)
-      .where(eq(paymentOccurrenceAllocationRevisions.organizationId, organizationId));
-    // Keep the occurrence supplement internally valid while making it
-    // disagree with the immutable base allocation. This reaches the
-    // post-payment bowler-total invariant instead of failing the earlier
-    // interactive execution-snapshot fingerprint check.
-    await db.transaction(async (tx) => {
-      const [allocation] = await tx.select().from(paymentOperationOccurrenceSnapshotAllocations)
-        .where(eq(paymentOperationOccurrenceSnapshotAllocations.operationId, operation.id))
-        .limit(1);
-      const [supplement] = await tx.select().from(paymentOperationOccurrenceSnapshots)
-        .where(eq(paymentOperationOccurrenceSnapshots.operationId, operation.id))
-        .limit(1);
-      const [originalObligation] = await tx.select().from(bowlerOccurrenceObligations)
-        .where(eq(bowlerOccurrenceObligations.id, obligationId))
-        .limit(1);
-      if (!allocation || !supplement || !originalObligation) throw new Error("F2 supplement fixture is incomplete");
-      const [replacementObligation] = await tx.insert(bowlerOccurrenceObligations).values({
-        organizationId: originalObligation.organizationId,
-        leagueId: originalObligation.leagueId,
-        occurrenceId: originalObligation.occurrenceId,
-        bowlerId: secondBowlerId,
-        purpose: originalObligation.purpose,
-        amountMinor: originalObligation.amountMinor,
-        currency: originalObligation.currency,
-        dueAt: originalObligation.dueAt,
-        pastDueAt: originalObligation.pastDueAt,
-        billingTermId: originalObligation.billingTermId,
-        billingTermVersion: originalObligation.billingTermVersion,
-        recordedByUserId: originalObligation.recordedByUserId,
-      }).returning({ id: bowlerOccurrenceObligations.id });
-      if (!replacementObligation) throw new Error("replacement F2 obligation was not created");
-      await tx.update(paymentOperationOccurrenceSnapshotAllocations).set({
-        bowlerId: secondBowlerId,
-        obligationId: replacementObligation.id,
-      })
-        .where(eq(paymentOperationOccurrenceSnapshotAllocations.operationId, operation.id));
-      const semantic = {
-        contractVersion: PAYMENT_OPERATION_OCCURRENCE_SNAPSHOT_CONTRACT,
-        snapshotVersion: 1 as const,
-        operationId: operation.id,
-        operationType: "interactive_charge" as const,
-        organizationId,
-        leagueId,
-        amountMinor: operation.amountMinor,
-        currency: "USD",
-        allocations: [{
-          allocationIndex: allocation.allocationIndex,
-          organizationId: allocation.organizationId,
-          leagueId: allocation.leagueId,
-          occurrenceId: allocation.occurrenceId,
-          bowlerId: secondBowlerId,
-          obligationId: replacementObligation.id,
-          amountMinor: allocation.amountMinor,
-          currency: allocation.currency,
-        }],
-      };
-      await tx.update(paymentOperationOccurrenceSnapshots).set({
-        snapshotFingerprint: fingerprintPaymentOperationOccurrenceSnapshot(semantic),
-      }).where(eq(paymentOperationOccurrenceSnapshots.operationId, operation.id));
-    });
-    const delivery = await ingest(paymentBody({
-      eventId: `event-${randomUUID()}`,
-      paymentId: `payment-${randomUUID()}`,
-      operationId: operation.id,
-    }));
-    const result = await processSquareWebhookEvent({
-      organizationId,
-      eventId: delivery.recorded.event.id,
-      event: delivery.event,
-      now: new Date("2034-03-05T00:01:01.000Z"),
-    });
-    expect(result).toMatchObject({ acknowledged: true, businessStateChanged: false, status: "failed", code: "OPERATION_EVIDENCE_MISMATCH" });
-    expect(await db.select().from(payments).where(eq(payments.paymentOperationId, operation.id))).toHaveLength(0);
-    expect(await db.select().from(paymentOccurrenceAllocations).where(eq(paymentOccurrenceAllocations.obligationId, obligationId))).toHaveLength(0);
-    expect(await db.select().from(paymentOccurrenceAllocationRevisions).where(eq(paymentOccurrenceAllocationRevisions.organizationId, organizationId))).toHaveLength(revisionsBefore.length);
-    const [storedOperation] = await db.select().from(paymentOperations).where(eq(paymentOperations.id, operation.id));
-    expect(storedOperation?.status).toBe("leased");
-  });
-
   it("finalizes one known charge from signed reference evidence without duplicate payment rows", async () => {
     const operation = await preparedInteractiveCharge();
     const providerPaymentId = `payment-${randomUUID()}`;

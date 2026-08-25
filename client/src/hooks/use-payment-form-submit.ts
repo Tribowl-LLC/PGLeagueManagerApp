@@ -10,6 +10,7 @@ import {
 } from "@/lib/provider-not-configured";
 import { sanitizePaymentErrorMessage } from "@/lib/payment-user-error";
 import {
+  assertRosterPaymentSucceeded,
   beginPaymentIntent,
   clearPaymentIntent,
   paymentRequestHeaders,
@@ -36,6 +37,7 @@ interface UsePaymentFormSubmitOptions {
   /** Owning location used to deep-link the PROVIDER_NOT_CONFIGURED toast. */
   locationId?: number | null;
   organizationId?: number | null;
+  canonical?: boolean;
   occurrenceAllocations?: InteractiveOccurrenceSelection[];
   occurrenceQuoteFingerprint?: string;
   occurrenceReadiness?: InteractiveOccurrenceReadiness;
@@ -51,6 +53,7 @@ export function usePaymentFormSubmit({
   buyerEmail,
   locationId,
   organizationId,
+  canonical = false,
   occurrenceAllocations,
   occurrenceQuoteFingerprint,
   occurrenceReadiness,
@@ -67,6 +70,41 @@ export function usePaymentFormSubmit({
       const buyerEmailField = trimmedBuyerEmail ? { buyerEmail: trimmedBuyerEmail } : {};
       const occurrenceFields = buildInteractiveOccurrenceFields(occurrenceAllocations, occurrenceQuoteFingerprint);
 
+      if (canonical && (data.type === 'cash' || data.type === 'check')) {
+        const obligationIds = [...new Set((occurrenceAllocations ?? []).map((row) => row.obligationId))];
+        if (obligationIds.length === 0) throw new Error('Select one or more exact obligations before recording payment.');
+        const quoteResponse = await csrfFetch(`/api/financials/leagues/${data.leagueId}/interactive-obligation-quote/2`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ obligationIds, allocations: occurrenceAllocations }),
+        });
+        const quoteBody = await quoteResponse.json();
+        if (!quoteResponse.ok || !quoteBody.data?.fingerprint) {
+          throw makeApiError(quoteBody, quoteResponse.status, 'Payment quote is unavailable');
+        }
+        const requestKey = beginPaymentIntent(`manual:${data.leagueId}:${obligationIds.join(',')}:${data.type}:${quoteBody.data.fingerprint}`);
+        const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${data.leagueId}/canonical/manual-record/1`, {
+          method: 'POST',
+          headers: { ...paymentRequestHeaders(requestKey), 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            obligationIds,
+            allocations: occurrenceAllocations,
+            type: data.type,
+            checkNumber: data.checkNumber,
+            notes: data.notes ?? null,
+            idempotencyKey: requestKey,
+            requestFingerprint: quoteBody.data.fingerprint,
+          }),
+        }), organizationId);
+        const responseBody = await response.json();
+        if (!response.ok) throw makeApiError(responseBody, response.status, 'Failed to record payment');
+        clearPaymentIntent(`manual:${data.leagueId}:${obligationIds.join(',')}:${data.type}:${quoteBody.data.fingerprint}`);
+        toast({ title: 'Success', description: 'Exact payment obligations recorded successfully' });
+        queryClient.invalidateQueries({ queryKey: ['/api/payments'] });
+        onClose();
+        return;
+      }
+
       if (data.type === 'credit_card') {
         const f2IntentBound = occurrenceReadiness !== undefined
           && (occurrenceAllocations !== undefined || occurrenceQuoteFingerprint !== undefined);
@@ -74,6 +112,36 @@ export function usePaymentFormSubmit({
           throw new Error(occurrenceReadiness === 'error'
             ? 'Current payment obligations could not be loaded. Refresh before paying.'
             : 'Select obligations totaling the payment amount before paying.');
+        }
+        if (canonical) {
+          const obligationIds = [...new Set((occurrenceAllocations ?? []).map((row) => row.obligationId))];
+          if (obligationIds.length === 0) throw new Error('Select one or more exact obligations before paying.');
+          const quoteResponse = await csrfFetch(`/api/financials/leagues/${data.leagueId}/interactive-obligation-quote/2`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ obligationIds, allocations: occurrenceAllocations }),
+          });
+          const quoteBody = await quoteResponse.json();
+          if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw makeApiError(quoteBody, quoteResponse.status, 'Payment quote is unavailable');
+          const tokenized = cardMode === 'new' && card ? await card.tokenize() : null;
+          if (tokenized && tokenized.status !== 'OK') throw new Error('Card validation failed');
+          const sourceId = cardMode === 'saved' ? selectedSavedCardId : tokenized?.token ?? '';
+          if (!sourceId) throw new Error('Credit card form is not ready.');
+          const paymentScope = `admin-roster:${data.leagueId}:${obligationIds.join(',')}:${quoteBody.data.fingerprint}:${cardMode}`;
+          const requestKey = beginPaymentIntent(paymentScope);
+          const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${data.leagueId}/interactive-obligation-charge/2`, {
+            method: 'POST',
+            headers: { ...paymentRequestHeaders(requestKey), 'Content-Type': 'application/json' },
+            body: JSON.stringify({ obligationIds, allocations: occurrenceAllocations, payerBowlerId: quoteBody.data.payerBowlerId, sourceId, sourceKind: cardMode === 'saved' ? 'saved_card' : 'new_card', buyerEmail: trimmedBuyerEmail || null, storeCard: false, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }),
+          }), organizationId, data.leagueId);
+          const responseData = await response.json();
+          if (!response.ok) throw makeApiError(responseData, response.status, 'Failed to process payment');
+          assertRosterPaymentSucceeded(responseData.data?.status ?? responseData.status);
+          clearPaymentIntent(paymentScope);
+          toast({ title: 'Success', description: 'Exact payment obligations charged successfully' });
+          queryClient.invalidateQueries({ queryKey: ['/api/payments'] });
+          onClose();
+          return;
         }
         const paymentScope = `admin:${data.bowlerId}:${data.leagueId}:${data.amount}:${cardMode}:${data.storeCard === true}${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
         const requestKey = beginPaymentIntent(paymentScope);

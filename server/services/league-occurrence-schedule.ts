@@ -688,39 +688,35 @@ async function linkedActivityOccurrenceIds(
       FROM (
         SELECT g.occurrence_id, g.league_id AS evidence_league_id
           FROM games g
-         WHERE g.occurrence_id IN (${sql.join(occurrenceIds.map((id) => sql`${id}::uuid`), sql`, `)})
+          JOIN leagues gl ON gl.id = g.league_id
+         WHERE gl.organization_id = ${organizationId}
+           AND g.league_id = ${leagueId}
+           AND g.occurrence_id IN (${sql.join(occurrenceIds.map((id) => sql`${id}::uuid`), sql`, `)})
         UNION ALL
         SELECT po.trigger_occurrence_id AS occurrence_id, ps.league_id AS evidence_league_id
           FROM payment_operations po
           JOIN payment_schedules ps ON ps.id = po.payment_schedule_id
+          JOIN leagues pl ON pl.id = ps.league_id
          WHERE po.organization_id = ${organizationId}
+           AND pl.organization_id = ${organizationId}
+           AND ps.league_id = ${leagueId}
            AND po.trigger_occurrence_id IN (${sql.join(occurrenceIds.map((id) => sql`${id}::uuid`), sql`, `)})
         UNION ALL
-        SELECT occurrence_id, league_id FROM bowler_occurrence_eligibilities
+        SELECT occurrence_id, league_id FROM occurrence_payment_responsibilities
          WHERE organization_id = ${organizationId} AND league_id = ${leagueId}
            AND occurrence_id IN (${sql.join(occurrenceIds.map((id) => sql`${id}::uuid`), sql`, `)})
         UNION ALL
-        SELECT occurrence_id, league_id FROM bowler_occurrence_team_assignments
+        SELECT occurrence_id, league_id FROM payment_obligations
          WHERE organization_id = ${organizationId} AND league_id = ${leagueId}
            AND occurrence_id IN (${sql.join(occurrenceIds.map((id) => sql`${id}::uuid`), sql`, `)})
         UNION ALL
-        SELECT occurrence_id, league_id FROM bowler_occurrence_obligations
-         WHERE organization_id = ${organizationId} AND league_id = ${leagueId}
-           AND occurrence_id IN (${sql.join(occurrenceIds.map((id) => sql`${id}::uuid`), sql`, `)})
+        SELECT o.occurrence_id, o.league_id
+          FROM payment_allocations a
+          JOIN payment_obligations o ON o.id = a.obligation_id
+         WHERE a.organization_id = ${organizationId} AND a.league_id = ${leagueId}
+           AND o.occurrence_id IN (${sql.join(occurrenceIds.map((id) => sql`${id}::uuid`), sql`, `)})
         UNION ALL
-        SELECT trigger_occurrence_id AS occurrence_id, league_id FROM occurrence_collection_plans
-         WHERE organization_id = ${organizationId} AND league_id = ${leagueId}
-           AND trigger_occurrence_id IN (${sql.join(occurrenceIds.map((id) => sql`${id}::uuid`), sql`, `)})
-        UNION ALL
-        SELECT occurrence_id, league_id FROM occurrence_collection_plan_items
-         WHERE organization_id = ${organizationId} AND league_id = ${leagueId}
-           AND occurrence_id IN (${sql.join(occurrenceIds.map((id) => sql`${id}::uuid`), sql`, `)})
-        UNION ALL
-        SELECT occurrence_id, league_id FROM payment_occurrence_allocations
-         WHERE organization_id = ${organizationId} AND league_id = ${leagueId}
-           AND occurrence_id IN (${sql.join(occurrenceIds.map((id) => sql`${id}::uuid`), sql`, `)})
-        UNION ALL
-        SELECT occurrence_id, league_id FROM payment_operation_occurrence_snapshot_allocations
+        SELECT occurrence_id, league_id FROM canonical_collection_group_members
          WHERE organization_id = ${organizationId} AND league_id = ${leagueId}
            AND occurrence_id IN (${sql.join(occurrenceIds.map((id) => sql`${id}::uuid`), sql`, `)})
       ) evidence

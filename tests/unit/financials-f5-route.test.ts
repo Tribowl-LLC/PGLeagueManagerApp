@@ -17,6 +17,10 @@ vi.mock("../../server/services/canonical-payment-report.js", () => ({
   readCanonicalPaymentReport: (...args: unknown[]) => mocks.readReport(...args),
   CanonicalPaymentReportIncompatibilityError: class extends Error {},
 }));
+vi.mock("../../server/services/roster-payment-archive-report.js", () => ({
+  readCanonicalPaymentReport: (...args: unknown[]) => mocks.readReport(...args),
+  CanonicalPaymentReportIncompatibilityError: class extends Error {},
+}));
 vi.mock("../../server/utils/access-control.js", () => ({
   hasAdminAccessToLeague: (...args: unknown[]) => mocks.hasAdmin(...args),
   hasPaymentManagerAccessToLeague: (...args: unknown[]) => mocks.hasPaymentManager(...args),
@@ -77,7 +81,7 @@ describe("F5 canonical payment report route", () => {
   it("returns stable incompatibility without falling back", async () => {
     class EvidenceError extends Error {}
     mocks.readReport.mockRejectedValue(new EvidenceError());
-    const serviceModule = await import("../../server/services/canonical-payment-report.js");
+    const serviceModule = await import("../../server/services/roster-payment-archive-report.js");
     mocks.readReport.mockRejectedValue(new serviceModule.CanonicalPaymentReportIncompatibilityError());
     const response = await get("/payments?leagueId=7", user("org_admin", 11));
     expect(response.status).toBe(409);

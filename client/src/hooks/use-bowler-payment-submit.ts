@@ -12,13 +12,13 @@ import {
 } from "@/lib/provider-not-configured";
 import { sanitizePaymentErrorMessage } from "@/lib/payment-user-error";
 import {
+  assertRosterPaymentSucceeded,
   beginPaymentIntent,
   clearPaymentIntent,
   paymentRequestHeaders,
   paymentRequestWithRecovery,
 } from "@/lib/payment-request-identity";
 import { buildInteractiveOccurrenceFields, interactiveIntentScopeSuffix } from "@/lib/interactive-payment-request";
-import { invalidateF3AfterInteractivePayment } from "@/lib/f3-autopay";
 import type { InteractiveOccurrenceReadiness } from "@/components/interactive-occurrence-selector";
 import type { League, Bowler } from "@shared/schema";
 import type { SquareCard } from "@/hooks/use-square-payment";
@@ -133,6 +133,63 @@ export function useBowlerPaymentSubmit({
           : 'Select obligations totaling the payment amount before paying.');
       }
 
+      // Roster-configured leagues use only the exact-obligation contract. The
+      // historical amount/season payment routes remain archive-compatible,
+      // but are deliberately unavailable for new canonical charges.
+      if (league.payingLineupSize != null) {
+        if (chargeForBowlerId !== bowler.id || hasCombinedPartners) {
+          throw new Error('Partner payments are temporarily unavailable for roster-driven leagues. Pay one exact payer at a time.');
+        }
+        const selectedObligationIds = [...new Set((occurrenceAllocations ?? []).map((row) => row.obligationId))];
+        if (selectedObligationIds.length === 0) {
+          throw new Error('Select one or more exact payment obligations before paying.');
+        }
+        const quoteResponse = await csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-quote/2`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ obligationIds: selectedObligationIds, allocations: occurrenceAllocations }),
+        });
+        const quoteBody = await quoteResponse.json().catch(() => ({}));
+        await throwApiErrorIfNotOk(quoteResponse, quoteBody, 'Payment quote is unavailable');
+        const quote = quoteBody?.data as { amountMinor?: number; fingerprint?: string } | undefined;
+        const quotedAmountMinor = quote?.amountMinor;
+        if (!quote?.fingerprint || typeof quotedAmountMinor !== 'number' || !Number.isSafeInteger(quotedAmountMinor) || quotedAmountMinor <= 0) {
+          throw new Error('The exact payment quote is invalid. Refresh and try again.');
+        }
+        const sourceId = cardMode === 'saved'
+          ? selectedSavedCardId
+          : newCard ? await tokenizeCard(newCard) : '';
+        if (!sourceId) throw new Error('A payment source is required.');
+        const paymentScope = `roster:${league.id}:${selectedObligationIds.join(',')}:${quote.fingerprint}:${cardMode}`;
+        const requestKey = beginPaymentIntent(paymentScope);
+        const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-charge/2`, {
+          method: 'POST',
+          headers: { ...paymentRequestHeaders(requestKey), 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            obligationIds: selectedObligationIds,
+            allocations: occurrenceAllocations,
+            payerBowlerId: quoteBody?.data?.payerBowlerId,
+            sourceId,
+            sourceKind: cardMode === 'saved' ? 'saved_card' : 'new_card',
+            buyerEmail: (buyerEmail ?? '').trim() || null,
+            // Card vaulting is a separate, explicitly authorized operation in
+            // the PR2 consent flow and is not enabled by this PR1 charge.
+            storeCard: false,
+            idempotencyKey: requestKey,
+            requestFingerprint: quote.fingerprint,
+          }),
+        }), undefined, league.id);
+        const data = await response.json();
+        await throwApiErrorIfNotOk(response, data, 'Payment failed');
+        assertRosterPaymentSucceeded(data?.data?.status ?? data?.status);
+        clearPaymentIntent(paymentScope);
+        toast({ title: 'Payment submitted', description: data?.data?.status === 'succeeded' ? 'Your exact obligations were paid.' : 'Your payment is being confirmed.' });
+        setShowPaymentSetup(false);
+        queryClient.invalidateQueries({ queryKey: ['/api/financials', league.id] });
+        queryClient.invalidateQueries({ queryKey: ['/api/payments'] });
+        return;
+      }
+
       if (isUpfront) {
         // Preserve the established combined-upfront behavior. For one
         // bowler, settle a legacy partial payment with only the remaining
@@ -187,7 +244,6 @@ export function useBowlerPaymentSubmit({
           });
           setShowPaymentSetup(false);
           queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
-          invalidateF3AfterInteractivePayment(queryClient, league.id, league.organizationId);
           partnerIds.forEach((id) =>
             queryClient.invalidateQueries({ queryKey: [`/api/bowlers/${id}/details`] }),
           );
@@ -252,7 +308,6 @@ export function useBowlerPaymentSubmit({
         });
         setShowPaymentSetup(false);
         queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
-        invalidateF3AfterInteractivePayment(queryClient, league.id, league.organizationId);
         return;
       }
 
@@ -306,7 +361,6 @@ export function useBowlerPaymentSubmit({
         });
         setShowPaymentSetup(false);
         queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
-        invalidateF3AfterInteractivePayment(queryClient, league.id, league.organizationId);
         partnerIds.forEach((id) =>
           queryClient.invalidateQueries({ queryKey: [`/api/bowlers/${id}/details`] }),
         );
@@ -358,7 +412,6 @@ export function useBowlerPaymentSubmit({
         });
         setShowPaymentSetup(false);
         queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
-        invalidateF3AfterInteractivePayment(queryClient, league.id, league.organizationId);
         queryClient.invalidateQueries({ queryKey: [`/api/payment-schedules/${bowler.id}/${league.id}`] });
         (additionalBowlerIds ?? []).forEach((id) =>
           queryClient.invalidateQueries({ queryKey: [`/api/bowlers/${id}/details`] }),
@@ -422,7 +475,6 @@ export function useBowlerPaymentSubmit({
 
       setShowPaymentSetup(false);
       queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
-      invalidateF3AfterInteractivePayment(queryClient, league.id, league.organizationId);
       // Refresh the recipient's bowler details so payment-history
       // surfaces (which read /api/bowlers/:id/details?includePayments=true)
       // pick up the new "Paid by …" attribution immediately.

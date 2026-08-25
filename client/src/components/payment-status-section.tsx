@@ -11,12 +11,10 @@ import { calculateFinancials } from "@/lib/financial-utils";
 import { sanitizePaymentErrorMessage } from "@/lib/payment-user-error";
 import type { League, Bowler, Payment, SavedCard, ApiResponse, BowlerDetailsResponse } from "@shared/schema";
 import { PaymentStatusView } from "@/components/payment-status-view";
-import { F3CanonicalAutopaySetup } from "@/components/f3-canonical-autopay-setup";
 import { useBowlerPaymentSubmit } from "@/hooks/use-bowler-payment-submit";
 import type { AutopaySetupQuote } from "@/lib/autopay-setup";
-import { beginPaymentIntent, clearPaymentIntent, paymentRequestHeaders, paymentRequestWithRecovery } from "@/lib/payment-request-identity";
+import { assertRosterPaymentSucceeded, beginPaymentIntent, clearPaymentIntent, isTerminalRosterPaymentFailure, paymentRequestHeaders, paymentRequestWithRecovery } from "@/lib/payment-request-identity";
 import { buildInteractiveOccurrenceFields, interactiveIntentScopeSuffix } from "@/lib/interactive-payment-request";
-import { invalidateF3AfterInteractivePayment } from "@/lib/f3-autopay";
 import type { InteractiveOccurrenceReadiness } from "@/components/interactive-occurrence-selector";
 
 interface BowlerLinkRow {
@@ -61,7 +59,7 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
   const cardContainerRef = useRef<HTMLDivElement>(null);
   const walletRequestKeyRef = useRef<string | null>(null);
   const [showPaymentSetup, setShowPaymentSetup] = useState(false);
-  const [paymentMode, setPaymentMode] = useState<'autopay' | 'onetime'>('autopay');
+  const [paymentMode, setPaymentMode] = useState<'autopay' | 'onetime'>(league.payingLineupSize == null ? 'autopay' : 'onetime');
   const [selectedSchedule, setSelectedSchedule] = useState<PaymentSchedule>("weekly");
   const [storeCard, setStoreCard] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -110,11 +108,23 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
       }
       return body;
     },
-    enabled: showPaymentSetup && paymentMode === 'autopay' && selectedSchedule === 'weekly',
+    enabled: showPaymentSetup && league.payingLineupSize == null && paymentMode === 'autopay' && selectedSchedule === 'weekly',
     staleTime: 0,
     retry: false,
   });
   const autopayQuote = autopayQuoteResponse?.data;
+
+  const { data: rosterDueResponse } = useQuery<{ data: { rows: Array<{ amountMinor: number; allocatedMinor: number; outstandingMinor: number; classification: string; reviewRequired: boolean }>; totals: { collectiblePastDueMinor: number } } }>({
+    queryKey: [`/api/financials/leagues/${league.id}/canonical-due-past-due/2`, bowler.id],
+    queryFn: async () => {
+      const response = await csrfFetch(`/api/financials/leagues/${league.id}/canonical-due-past-due/2?bowlerId=${bowler.id}`);
+      if (!response.ok) throw new Error("Roster payment evidence is unavailable");
+      return response.json();
+    },
+    enabled: league.payingLineupSize != null,
+    retry: false,
+    staleTime: 30_000,
+  });
 
   const { supportsWallets, isLoading: providerLoading } = usePaymentProvider(league.locationId ?? null);
 
@@ -179,6 +189,11 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
   // (rather than optimistically showing them and yanking them once the
   // fetch resolves) so the picker doesn't flicker.
   const partnerOptions = useMemo(() => {
+    // PR1's exact roster contract intentionally scopes one charge to one
+    // payer. Accepted partner links remain available for historical archive
+    // views, but combined/partner checkout controls stay hidden until the
+    // multi-payer snapshot contract is separately approved.
+    if (league.payingLineupSize != null) return [];
     return acceptedPartners.filter((p, idx) => {
       const data = partnerDetailsQueries[idx]?.data?.data;
       if (!data) return false;
@@ -186,7 +201,7 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
         (bl) => bl.leagueId === league.id && bl.active,
       );
     });
-  }, [acceptedPartners, partnerDetailsQueries, league.id]);
+  }, [acceptedPartners, partnerDetailsQueries, league.id, league.payingLineupSize]);
 
   const { data: savedCardsResponse } = useQuery<{ success: boolean; data: SavedCard[] }>({
     queryKey: [`/api/payments-provider/cards/${bowler.id}`, league.id],
@@ -255,8 +270,24 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
   }, [payments, bowler.id, league.id]);
 
   const financials = useMemo(() => {
+    if (league.payingLineupSize != null) {
+      const rows = rosterDueResponse?.data?.rows ?? [];
+      const dueRows = rows.filter((row) => row.classification !== "future");
+      const paid = rows.reduce((sum, row) => sum + row.allocatedMinor, 0);
+      const fullSeasonAmount = rows.reduce((sum, row) => sum + row.amountMinor, 0);
+      return {
+        weeksPassed: dueRows.length,
+        totalWeeksInSeason: rows.length,
+        totalDueToDate: dueRows.reduce((sum, row) => sum + row.amountMinor, 0),
+        totalPaid: paid,
+        amountPastDue: rosterDueResponse?.data?.totals.collectiblePastDueMinor ?? 0,
+        fullSeasonAmount,
+        remainingBalance: rows.reduce((sum, row) => sum + row.outstandingMinor, 0),
+        doublePay: { dates: [], perWeekExtra: 0, totalExtra: 0, pastExtra: 0, isPaid: paid >= fullSeasonAmount },
+      };
+    }
     return calculateFinancials(league, bowlerPayments);
-  }, [league, bowlerPayments]);
+  }, [league, bowlerPayments, rosterDueResponse]);
 
   const maxPayableWeeks = useMemo(() => {
     return Math.max(1, Math.floor(financials.remainingBalance / weeklyFee));
@@ -288,6 +319,26 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
     try {
       setIsSubmitting(true);
       const perAmount = calculateTotalAmount();
+      const exactObligationIds = [...new Set((occurrenceAllocations ?? []).map((row) => row.obligationId))];
+      if (league.payingLineupSize != null) {
+        if (additionalBowlerIds.length > 0 || exactObligationIds.length === 0) throw new Error("Wallet payments for roster-configured leagues require exact obligations for one payer.");
+        const quoteResponse = await csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-quote/2`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ obligationIds: exactObligationIds, allocations: occurrenceAllocations }) });
+        const quoteBody = await quoteResponse.json();
+        if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw new Error(quoteBody.error?.message || "Exact payment obligations are unavailable. Refresh and try again.");
+        const requestKey = walletRequestKeyRef.current ?? beginPaymentIntent(`roster-wallet:${league.id}:${exactObligationIds.join(",")}:${quoteBody.data.fingerprint}`);
+        const exactResponse = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-charge/2`, { method: "POST", headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" }, body: JSON.stringify({ obligationIds: exactObligationIds, allocations: occurrenceAllocations, payerBowlerId: quoteBody.data.payerBowlerId, sourceId: token, sourceKind: "wallet", buyerEmail: bowler.email ?? null, storeCard: false, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }) }), league.organizationId, league.id);
+        const exactBody = await exactResponse.json();
+        const rosterStatus = exactBody.data?.status ?? exactBody.status;
+        if (!exactResponse.ok) {
+          if (isTerminalRosterPaymentFailure(rosterStatus)) walletRequestKeyRef.current = null;
+          throw new Error(exactBody.error?.message || "Wallet payment failed.");
+        }
+        if (isTerminalRosterPaymentFailure(rosterStatus)) walletRequestKeyRef.current = null;
+        assertRosterPaymentSucceeded(rosterStatus);
+        walletRequestKeyRef.current = null;
+        toast({ title: "Payment Successful", description: `${walletType === "apple_pay" ? "Apple Pay" : "Google Pay"} payment completed.` });
+        return;
+      }
       // Task #706: when combined-pay partners are selected, route the
       // wallet token through the combined-payments endpoint so ONE
       // provider charge writes N+1 per-bowler rows sharing a
@@ -352,7 +403,6 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
         toast({ title: "Payment Successful", description: `${walletLabel} payment of $${(amount / 100).toFixed(2)} completed.` });
       }
       queryClient.invalidateQueries({ queryKey: ['/api/payments'] });
-      invalidateF3AfterInteractivePayment(queryClient, league.id, league.organizationId);
       queryClient.invalidateQueries({ queryKey: [`/api/payment-schedules/${bowler.id}/${league.id}`] });
       queryClient.invalidateQueries({ queryKey: [`/api/payments-provider/cards/${bowler.id}`, league.id] });
       // when paying for a partner, refresh THEIR bowler-details
@@ -380,7 +430,7 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
     } finally {
       setIsSubmitting(false);
     }
-  }, [bowler.id, league.id, league.organizationId, targetBowlerId, additionalBowlerIds, calculateTotalAmount, toast, setIsSubmitting, setShowPaymentSetup, paymentMode, occurrenceAllocations, occurrenceQuoteFingerprint]);
+  }, [bowler.id, bowler.email, league.id, league.organizationId, league.payingLineupSize, targetBowlerId, additionalBowlerIds, calculateTotalAmount, toast, setIsSubmitting, setShowPaymentSetup, paymentMode, occurrenceAllocations, occurrenceQuoteFingerprint]);
 
   const beginWalletPayment = useCallback(() => {
     const perAmount = calculateTotalAmount();
@@ -476,9 +526,7 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({
 
   return (
     <>
-    {league.paymentMode === "weekly" && league.organizationId ? (
-      <F3CanonicalAutopaySetup leagueId={league.id} organizationId={league.organizationId} bowlerId={bowler.id} savedCards={savedCards} acceptedPartners={partnerOptions} onCatchUp={() => { window.location.hash = '#interactive-occurrence-selector'; document.getElementById('interactive-occurrence-selector')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }} />
-    ) : null}
+    {league.payingLineupSize != null && <p className="mb-4 text-sm text-muted-foreground">This league uses exact roster payment obligations. Historical payments remain an archive and do not determine current due balances.</p>}
     <PaymentStatusView
       showPaymentSetup={showPaymentSetup}
       league={league}

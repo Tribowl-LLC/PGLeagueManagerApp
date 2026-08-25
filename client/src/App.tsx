@@ -50,7 +50,6 @@ const ApplePayJobsPage = lazy(() => import("@/pages/apple-pay-jobs-page"));
 const DataIntegrityPage = lazy(() => import("@/pages/data-integrity-page"));
 const AdminEmailChangeAuditsPage = lazy(() => import("@/pages/admin-email-change-audits-page"));
 const MessagingPage = lazy(() => import("@/pages/messaging-page"));
-const FinancialActivationPage = lazy(() => import("@/pages/financial-activation-page"));
 
 function PageLoader() {
   return <PageLoadingState />;
@@ -171,7 +170,6 @@ function Router() {
         <Route path="/reports">{guard('paymentManager', <ReportsPage />)}</Route>
         <Route path="/reports/leagues/:leagueId/past-due">{guard('paymentManager', <LeaguePastDuePage />)}</Route>
         <Route path="/reports/past-due">{guard('paymentManager', <PastDuePage />)}</Route>
-        <Route path="/leagues/:leagueId/financial-activation">{guard('orgAdmin', <FinancialActivationPage />)}</Route>
         <Route path="/integrations">{guard('orgAdmin', <IntegrationsPage />)}</Route>
         <Route path="/messaging">{guard('orgAdmin', <MessagingPage />)}</Route>
         <Route path="/admin/unclaimed-users">{guard('orgAdmin', <AdminUnclaimedUsersPage />)}</Route>

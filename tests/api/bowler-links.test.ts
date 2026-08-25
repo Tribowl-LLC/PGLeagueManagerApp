@@ -14,6 +14,7 @@ import { hashPassword } from '../../server/lib/password';
 import {
   apiDelete,
   apiGet,
+  apiPatch,
   apiPost,
   BASE_URL,
   getBaselineOrgIds,
@@ -545,4 +546,24 @@ describe('Bowler payment links — lifecycle + cross-org denial', () => {
       .where(inArray(bowlerPaymentLinks.bowlerBId, [bobBowlerId]));
     expect(landed).toHaveLength(0);
   });
+
+  it('ordinary linked users cannot deactivate themselves or write provider identity fields', async () => {
+    const deactivate = await apiPatch(`/api/bowlers/${aliceBowlerId}`, { active: false }, sessionA);
+    expect(deactivate.status, JSON.stringify(deactivate.data)).toBe(403);
+    expect((await db.select({ active: bowlersTable.active }).from(bowlersTable).where(eq(bowlersTable.id, aliceBowlerId)))[0]?.active).toBe(true);
+
+    const providerMutation = await apiPatch(`/api/bowlers/${aliceBowlerId}`, {
+      paymentCustomerId: 'attacker-controlled-customer',
+      paymentProviderLocationId: 987654,
+      paymentSyncAttempts: 99,
+    }, sessionA);
+    expect(providerMutation.status, JSON.stringify(providerMutation.data)).toBe(403);
+    const unchanged = (await db.select({
+      paymentCustomerId: bowlersTable.paymentCustomerId,
+      paymentProviderLocationId: bowlersTable.paymentProviderLocationId,
+      paymentSyncAttempts: bowlersTable.paymentSyncAttempts,
+    }).from(bowlersTable).where(eq(bowlersTable.id, aliceBowlerId)))[0];
+    expect(unchanged).toMatchObject({ paymentCustomerId: null, paymentProviderLocationId: null, paymentSyncAttempts: 0 });
+  });
+
 });

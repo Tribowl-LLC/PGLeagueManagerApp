@@ -12,6 +12,9 @@ import {
 } from "@shared/schema";
 import type { InteractivePaymentSemanticSnapshot } from "./interactive-payment-operation-snapshot.js";
 import { persistInteractiveOccurrenceSnapshot, type InteractiveOccurrenceSelection } from "./interactive-occurrence-allocation.js";
+import { lockLeagueSchedule } from "../storage/league-schedule-lock.js";
+import { paymentOperations } from "@shared/schema";
+import { and, eq, isNull } from "drizzle-orm";
 
 export interface InteractivePaymentAllocationInput {
   allocationIndex: number;
@@ -52,6 +55,7 @@ export interface InteractivePaymentOperationPreparationInput {
   }>;
   occurrenceSelections?: InteractiveOccurrenceSelection[];
   occurrenceQuoteFingerprint?: string;
+  transaction?: PaymentOperationTransaction;
 }
 
 export function buildInteractivePaymentSnapshot(
@@ -91,12 +95,16 @@ export function buildInteractivePaymentSnapshot(
 export async function prepareInteractivePaymentOperation(
   input: InteractivePaymentOperationPreparationInput,
 ): Promise<PaymentOperation> {
+  if (input.occurrenceSelections !== undefined) {
+    throw new PaymentOperationValidationError("occurrence-aware legacy payment selections are retired; use exact roster obligations");
+  }
   if (input.occurrenceSelections !== undefined
     && input.providerName === "square"
     && !input.providerLocationId?.trim()) {
     throw new PaymentOperationValidationError("Square provider location is required for occurrence-aware interactive payments");
   }
-  return db.transaction(async (tx: PaymentOperationTransaction) => {
+  const run = async (tx: PaymentOperationTransaction) => {
+    if (!input.transaction) await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
     const operation = await storage.createOrGetGeneralInteractivePaymentOperation({
       organizationId: input.organizationId,
       requestKey: input.requestKey,
@@ -109,22 +117,36 @@ export async function prepareInteractivePaymentOperation(
         : fingerprintInteractiveOccurrenceIntent({ selections: input.occurrenceSelections, quoteFingerprint: input.occurrenceQuoteFingerprint }),
       now: input.now,
     }, tx);
+    if (operation.leagueId !== null && operation.leagueId !== input.leagueId) {
+      throw new PaymentOperationValidationError("interactive operation belongs to another league");
+    }
+    let linkedOperation = operation;
+    if (operation.leagueId === null) {
+      const [updatedOperation] = await tx.update(paymentOperations).set({ leagueId: input.leagueId }).where(and(
+        eq(paymentOperations.id, operation.id),
+        eq(paymentOperations.organizationId, input.organizationId),
+        isNull(paymentOperations.leagueId),
+      )).returning();
+      if (!updatedOperation) throw new PaymentOperationValidationError("interactive operation could not be linked to its league");
+      linkedOperation = updatedOperation;
+    }
     await storage.persistInteractivePaymentOperationSnapshot(
-      operation,
-      buildInteractivePaymentSnapshot(operation, input),
+      linkedOperation,
+      buildInteractivePaymentSnapshot(linkedOperation, input),
       tx,
     );
     if (input.occurrenceSelections !== undefined) {
       await persistInteractiveOccurrenceSnapshot(tx, operation, {
         leagueId: input.leagueId,
         selections: input.occurrenceSelections,
-        quoteFingerprint: input.occurrenceQuoteFingerprint,
+        quoteFingerprint: input.occurrenceQuoteFingerprint ?? "",
         baseAllocations: input.allocations.map((allocation) => ({
           bowlerId: allocation.bowlerId,
           amountMinor: allocation.amountMinor,
         })),
       });
     }
-    return operation;
-  });
+    return linkedOperation;
+  };
+  return input.transaction ? run(input.transaction) : db.transaction(run);
 }

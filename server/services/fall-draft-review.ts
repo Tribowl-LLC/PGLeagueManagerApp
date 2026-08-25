@@ -14,13 +14,9 @@ import {
   games,
   paymentOperations,
   paymentSchedules,
-  bowlerOccurrenceEligibilities,
-  bowlerOccurrenceTeamAssignments,
-  bowlerOccurrenceObligations,
-  occurrenceCollectionPlans,
-  occurrenceCollectionPlanItems,
-  paymentOccurrenceAllocations,
-  paymentOperationOccurrenceSnapshotAllocations,
+  paymentObligations,
+  paymentAllocations,
+  canonicalCollectionGroupMembers,
   leagues,
   type LeagueOccurrence,
   type LeagueOccurrenceBillingTerm,
@@ -69,6 +65,7 @@ import {
 } from "@shared/fall-draft-generation";
 import { db } from "../db.js";
 import { lockLeagueSchedule, type LeagueScheduleTransaction } from "../storage/league-schedule-lock.js";
+import { materializeRosterPaymentOccurrenceInTransaction } from "./roster-payment-materializer.js";
 import {
   buildCanonicalScheduleCommandFingerprint,
   getOrCreateCanonicalScheduleCommandInTransaction,
@@ -443,47 +440,29 @@ async function loadRows(tx: LeagueScheduleTransaction, scope: FallDraftScope, lo
     );
   }
   const d2ActivityIds = occurrenceIds.length === 0 ? [] : [
-    ...(await tx.select({ occurrenceId: bowlerOccurrenceEligibilities.occurrenceId })
-      .from(bowlerOccurrenceEligibilities).where(and(
-        eq(bowlerOccurrenceEligibilities.organizationId, scope.organizationId),
-        eq(bowlerOccurrenceEligibilities.leagueId, scope.leagueId),
-        inArray(bowlerOccurrenceEligibilities.occurrenceId, occurrenceIds),
+    ...(await tx.select({ occurrenceId: paymentObligations.occurrenceId })
+      .from(paymentObligations).where(and(
+        eq(paymentObligations.organizationId, scope.organizationId),
+        eq(paymentObligations.leagueId, scope.leagueId),
+        inArray(paymentObligations.occurrenceId, occurrenceIds),
       ))),
-    ...(await tx.select({ occurrenceId: bowlerOccurrenceTeamAssignments.occurrenceId })
-      .from(bowlerOccurrenceTeamAssignments).where(and(
-        eq(bowlerOccurrenceTeamAssignments.organizationId, scope.organizationId),
-        eq(bowlerOccurrenceTeamAssignments.leagueId, scope.leagueId),
-        inArray(bowlerOccurrenceTeamAssignments.occurrenceId, occurrenceIds),
+    ...(await tx.select({ occurrenceId: paymentObligations.occurrenceId })
+      .from(paymentAllocations).innerJoin(paymentObligations, and(
+        eq(paymentObligations.id, paymentAllocations.obligationId),
+        eq(paymentObligations.organizationId, scope.organizationId),
+        eq(paymentObligations.leagueId, scope.leagueId),
+      )).where(and(
+        eq(paymentAllocations.organizationId, scope.organizationId),
+        eq(paymentAllocations.leagueId, scope.leagueId),
+        eq(paymentAllocations.state, "active"),
+        inArray(paymentObligations.occurrenceId, occurrenceIds),
       ))),
-    ...(await tx.select({ occurrenceId: bowlerOccurrenceObligations.occurrenceId })
-      .from(bowlerOccurrenceObligations).where(and(
-        eq(bowlerOccurrenceObligations.organizationId, scope.organizationId),
-        eq(bowlerOccurrenceObligations.leagueId, scope.leagueId),
-        inArray(bowlerOccurrenceObligations.occurrenceId, occurrenceIds),
-      ))),
-    ...(await tx.select({ occurrenceId: occurrenceCollectionPlans.triggerOccurrenceId })
-      .from(occurrenceCollectionPlans).where(and(
-        eq(occurrenceCollectionPlans.organizationId, scope.organizationId),
-        eq(occurrenceCollectionPlans.leagueId, scope.leagueId),
-        inArray(occurrenceCollectionPlans.triggerOccurrenceId, occurrenceIds),
-      ))),
-    ...(await tx.select({ occurrenceId: occurrenceCollectionPlanItems.occurrenceId })
-      .from(occurrenceCollectionPlanItems).where(and(
-        eq(occurrenceCollectionPlanItems.organizationId, scope.organizationId),
-        eq(occurrenceCollectionPlanItems.leagueId, scope.leagueId),
-        inArray(occurrenceCollectionPlanItems.occurrenceId, occurrenceIds),
-      ))),
-    ...(await tx.select({ occurrenceId: paymentOccurrenceAllocations.occurrenceId })
-      .from(paymentOccurrenceAllocations).where(and(
-        eq(paymentOccurrenceAllocations.organizationId, scope.organizationId),
-        eq(paymentOccurrenceAllocations.leagueId, scope.leagueId),
-        inArray(paymentOccurrenceAllocations.occurrenceId, occurrenceIds),
-      ))),
-    ...(await tx.select({ occurrenceId: paymentOperationOccurrenceSnapshotAllocations.occurrenceId })
-      .from(paymentOperationOccurrenceSnapshotAllocations).where(and(
-        eq(paymentOperationOccurrenceSnapshotAllocations.organizationId, scope.organizationId),
-        eq(paymentOperationOccurrenceSnapshotAllocations.leagueId, scope.leagueId),
-        inArray(paymentOperationOccurrenceSnapshotAllocations.occurrenceId, occurrenceIds),
+    ...(await tx.select({ occurrenceId: canonicalCollectionGroupMembers.occurrenceId })
+      .from(canonicalCollectionGroupMembers).where(and(
+        eq(canonicalCollectionGroupMembers.organizationId, scope.organizationId),
+        eq(canonicalCollectionGroupMembers.leagueId, scope.leagueId),
+        eq(canonicalCollectionGroupMembers.active, true),
+        inArray(canonicalCollectionGroupMembers.occurrenceId, occurrenceIds),
       ))),
   ];
   const activityOccurrenceIds = new Set<string>([
@@ -1366,6 +1345,9 @@ export async function publishCanonicalDraftInTransaction(
     if (term.state !== "draft") throw new FallDraftReviewError("incompatible_canonical_state", "automatic publication requires draft billing terms");
     await updateBillingTerm(tx, term, { state: "published", publishedAt: transactionTime, publishedByUserId: input.actorUserId, publicationCommandId: publication.command.id }, publication.command.id);
   }
+  for (const occurrence of rows.occurrences) {
+    await materializeRosterPaymentOccurrenceInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId, occurrenceId: occurrence.id, actorUserId: input.actorUserId });
+  }
   for (const exception of rows.exceptions) {
     if (exception.lifecycle !== "draft") throw new FallDraftReviewError("incompatible_canonical_state", "automatic publication requires draft skip exceptions");
     const [updated] = await tx.update(leagueScheduleExceptions).set({
@@ -1482,6 +1464,9 @@ export async function approveAndPublishFallDraft(input: FallDraftScope & {
         state: "published", publishedAt: transactionTime, publishedByUserId: input.actorUserId,
         publicationCommandId: publish.command.id,
       }, publish.command.id);
+    }
+    for (const occurrence of rows.occurrences) {
+      await materializeRosterPaymentOccurrenceInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId, occurrenceId: occurrence.id, actorUserId: input.actorUserId });
     }
     injectFailure(input.failureInjection, "after_billing_terms");
     for (const exception of rows.exceptions) {

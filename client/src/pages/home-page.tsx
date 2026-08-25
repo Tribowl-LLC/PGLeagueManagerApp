@@ -3,6 +3,7 @@ import { Layout } from "@/components/layout";
 import { Trophy, Users, Activity, ArrowUpRight, DollarSign } from "lucide-react";
 import { Link } from "wouter";
 import type { League, Payment, BowlerLeague, ApiResponse, Organization, User } from "@shared/schema";
+import type { CanonicalDuePastDueResponseV2 } from "@shared/roster-payment-contract";
 import { getPaymentSummary } from "@/lib/financial-utils";
 import { PastDueBowlersSection } from "@/components/past-due-bowlers-section";
 import { formatCurrency } from "@/lib/utils";
@@ -95,7 +96,7 @@ export default function HomePage() {
   });
 
   const { data: financialReportResponse, isLoading: loadingFinancialReport, error: financialReportError, refetch: refetchFinancialReport } = useQuery<ApiResponse<{
-    leagues: Array<{ leagueId: number; report: { mode: string; rows: Array<{ bowlerId: number; classification: string; outstandingMinor: number; reviewRequired: boolean; evidenceSource?: "canonical" | "legacy_fallback" }> } }>;
+    leagues: Array<{ leagueId: number; report: CanonicalDuePastDueResponseV2 }>;
   }>>({
     queryKey: [userResponse?.data?.role === "system_admin" && userResponse.data.organizationId ? `/api/financials/due-past-due?organizationId=${userResponse.data.organizationId}` : "/api/financials/due-past-due"],
     queryFn: async () => {
@@ -139,11 +140,7 @@ export default function HomePage() {
   const financialPopulationKeys = new Set<number>();
   for (const league of activeLeagues) {
     const report = serverFinancialLeagues.find((entry) => entry.leagueId === league.id)?.report;
-    if (report?.mode === "canonical") {
-      for (const row of report.rows) financialPopulationKeys.add(row.bowlerId);
-    } else {
-      for (const bl of bowlerLeaguesData) if (bl.leagueId === league.id && bl.active) financialPopulationKeys.add(bl.bowlerId);
-    }
+    if (report) for (const row of report.rows) financialPopulationKeys.add(row.payerBowlerId);
   }
   const activeBowlers = financialPopulationKeys.size || activeBowlerIds.size;
   const totalLeagues = activeLeagueIds.size;
@@ -155,8 +152,8 @@ export default function HomePage() {
   const pastDueBowlerIds = new Set<number>();
   const reviewRequiredBowlerIds = new Set<string>();
   serverRows.forEach((row) => {
-    if (row.classification === "past_due") pastDueBowlerIds.add(row.bowlerId);
-    if (row.reviewRequired) reviewRequiredBowlerIds.add(`${row.leagueId}:${row.bowlerId}`);
+    if (row.classification === "past_due") pastDueBowlerIds.add(row.payerBowlerId);
+    if (row.reviewRequired) reviewRequiredBowlerIds.add(`${row.leagueId}:${row.payerBowlerId}`);
   });
 
   const pastDueRate = activeBowlers > 0 ? Math.round((pastDueBowlerIds.size / activeBowlers) * 100) : 0;
@@ -167,15 +164,15 @@ export default function HomePage() {
       if (bl.leagueId === league.id && bl.active) leagueBowlerIds.add(bl.bowlerId);
     }
     const leagueReport = serverFinancialLeagues.find((entry) => entry.leagueId === league.id)?.report;
-    const leagueBowlerCount = leagueReport?.mode === "canonical" ? new Set(leagueReport.rows.map((row) => row.bowlerId)).size : leagueBowlerIds.size;
+    const leagueBowlerCount = leagueReport ? new Set(leagueReport.rows.map((row) => row.payerBowlerId)).size : leagueBowlerIds.size;
     if (leagueBowlerCount === 0) return [];
 
     const pastDueCount = new Set(serverRows
       .filter((row) => row.leagueId === league.id && row.classification === "past_due")
-      .map((row) => row.bowlerId)).size;
+      .map((row) => row.payerBowlerId)).size;
     const reviewRequiredCount = new Set(serverRows
       .filter((row) => row.leagueId === league.id && row.reviewRequired)
-      .map((row) => row.bowlerId)).size;
+      .map((row) => row.payerBowlerId)).size;
 
     return [{
       id: league.id,

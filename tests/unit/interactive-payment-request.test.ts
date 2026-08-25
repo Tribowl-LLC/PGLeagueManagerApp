@@ -1,10 +1,15 @@
-import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 
 const { csrfFetchMock } = vi.hoisted(() => ({ csrfFetchMock: vi.fn() }));
 vi.mock('@/lib/queryClient', () => ({ csrfFetch: csrfFetchMock }));
 
 import { buildInteractiveOccurrenceFields, interactiveIntentScopeSuffix, interactiveIntentSemanticKey } from '../../client/src/lib/interactive-payment-request';
-import { paymentRequestWithRecovery } from '../../client/src/lib/payment-request-identity';
+import {
+  assertRosterPaymentSucceeded,
+  beginPaymentIntent,
+  paymentRequestWithRecovery,
+  rosterPaymentStatusMessage,
+} from '../../client/src/lib/payment-request-identity';
 
 describe('interactive wallet request occurrence fields', () => {
   const selection = { obligationId: '44444444-4444-4444-8444-444444444444', amountMinor: 2000 };
@@ -59,6 +64,28 @@ describe('interactive wallet request occurrence fields', () => {
 
 describe('interactive request-key recovery', () => {
   beforeEach(() => csrfFetchMock.mockReset());
+  afterEach(() => vi.unstubAllGlobals());
+
+  const exactResponse = (status: string, httpStatus = 202) => new Response(JSON.stringify({
+    data: {
+      contractVersion: 'interactive-obligation-charge/2',
+      operationId: '11111111-1111-4111-8111-111111111111',
+      status,
+    },
+  }), { status: httpStatus });
+
+  function installStorage() {
+    const values = new Map<string, string>();
+    const storage = {
+      get length() { return values.size; },
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+      key: (index: number) => [...values.keys()][index] ?? null,
+    };
+    vi.stubGlobal('window', { localStorage: storage });
+    return values;
+  }
 
   it('reconciles a network-lost wallet request by the exact stored key without re-tokenizing', async () => {
     const recovered = new Response(null, { status: 200 });
@@ -82,10 +109,173 @@ describe('interactive request-key recovery', () => {
     expect(csrfFetchMock).not.toHaveBeenCalled();
   });
 
+  it('reconciles a roster operation by operation id after local finalization reports review', async () => {
+    const initial = new Response(JSON.stringify({ data: { contractVersion: 'interactive-obligation-charge/2', operationId: '11111111-1111-4111-8111-111111111111', status: 'reconciliation_required' } }), { status: 202 });
+    const recovered = new Response(JSON.stringify({ data: { contractVersion: 'interactive-obligation-recovery/1', operationId: '11111111-1111-4111-8111-111111111111', status: 'succeeded' } }), { status: 200 });
+    csrfFetchMock.mockResolvedValueOnce(recovered);
+    await expect(paymentRequestWithRecovery('request-key-123456', () => Promise.resolve(initial), 42, 11)).resolves.toBe(recovered);
+    expect(csrfFetchMock).toHaveBeenCalledWith('/api/financials/leagues/11/interactive-obligation-charge/2/operations/11111111-1111-4111-8111-111111111111/recover', expect.objectContaining({ method: 'POST' }));
+  });
+
+  it.each(['pending', 'provider_unknown', 'retry_scheduled'])('preserves exact %s without invoking roster recovery', async (status) => {
+    const initial = exactResponse(status);
+    await expect(paymentRequestWithRecovery(
+      'request-key-123456',
+      () => Promise.resolve(initial),
+      42,
+      11,
+    )).resolves.toBe(initial);
+    expect(csrfFetchMock).not.toHaveBeenCalled();
+  });
+
+  it('returns an exact succeeded response without another recovery request', async () => {
+    const initial = exactResponse('succeeded', 201);
+    await expect(paymentRequestWithRecovery('request-key-123456', () => Promise.resolve(initial), 42, 11)).resolves.toBe(initial);
+    expect(csrfFetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['pending', 'provider_unknown', 'retry_scheduled'])('preserves generic %s operation state without exact recovery', async (status) => {
+    const initial = new Response(JSON.stringify({
+      success: true,
+      operationId: '11111111-1111-4111-8111-111111111111',
+      status,
+    }), { status: 202 });
+    await expect(paymentRequestWithRecovery('request-key-123456', () => Promise.resolve(initial), 42, 11)).resolves.toBe(initial);
+    expect(csrfFetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['failed_terminal', 'canceled', 'action_required'])('preserves exact terminal %s and rotates the browser intent', async (status) => {
+    const values = installStorage();
+    const scope = `roster:terminal:${status}`;
+    const requestKey = beginPaymentIntent(scope);
+    expect(values.size).toBe(1);
+    const initial = exactResponse(status, 202);
+
+    await expect(paymentRequestWithRecovery(requestKey, () => Promise.resolve(initial), 42, 11)).resolves.toBe(initial);
+    expect(csrfFetchMock).not.toHaveBeenCalled();
+    expect(values.size).toBe(0);
+    // A corrected retry gets a new idempotency key instead of replaying the
+    // terminal operation with a changed card/source.
+    expect(beginPaymentIntent(scope)).not.toBe(requestKey);
+    expect(rosterPaymentStatusMessage(status)).toContain('not completed');
+  });
+
+  it('does not recursively recover an already-returned reconciliation response', async () => {
+    const initial = exactResponse('reconciliation_required');
+    const recovery = new Response(JSON.stringify({ data: {
+      contractVersion: 'interactive-obligation-recovery/1',
+      operationId: '11111111-1111-4111-8111-111111111111',
+      status: 'reconciliation_required',
+    } }), { status: 409 });
+    csrfFetchMock.mockResolvedValueOnce(recovery);
+
+    await expect(paymentRequestWithRecovery('request-key-123456', () => Promise.resolve(initial), 42, 11)).resolves.toBe(recovery);
+    expect(csrfFetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('hands a generic terminal success response to exact roster recovery', async () => {
+    const generic = new Response(JSON.stringify({
+      success: true,
+      status: 'COMPLETED',
+      id: 'sq_pay_123',
+      operationId: '11111111-1111-4111-8111-111111111111',
+    }), { status: 200 });
+    const exact = new Response(JSON.stringify({ data: {
+      contractVersion: 'interactive-obligation-recovery/1',
+      operationId: '11111111-1111-4111-8111-111111111111',
+      status: 'succeeded',
+    } }), { status: 200 });
+    csrfFetchMock.mockResolvedValueOnce(generic).mockResolvedValueOnce(exact);
+
+    await expect(paymentRequestWithRecovery(
+      'request-key-123456',
+      () => Promise.reject(new Error('connection reset')),
+      42,
+      11,
+    )).resolves.toBe(exact);
+    expect(csrfFetchMock.mock.calls[1]?.[0]).toBe('/api/financials/leagues/11/interactive-obligation-charge/2/operations/11111111-1111-4111-8111-111111111111/recover');
+  });
+
+  it('extracts roster identity from a generic non-2xx operation detail', async () => {
+    const generic = new Response(JSON.stringify({
+      success: false,
+      error: {
+        code: 'RECONCILIATION_REQUIRED',
+        message: 'Payment status is still being confirmed.',
+        details: {
+          operationId: '11111111-1111-4111-8111-111111111111',
+          status: 'reconciliation_required',
+        },
+      },
+    }), { status: 409 });
+    const exact = new Response(JSON.stringify({ data: {
+      contractVersion: 'interactive-obligation-recovery/1',
+      operationId: '11111111-1111-4111-8111-111111111111',
+      status: 'reconciliation_required',
+    } }), { status: 409 });
+    csrfFetchMock.mockResolvedValueOnce(generic).mockResolvedValueOnce(exact);
+
+    await expect(paymentRequestWithRecovery(
+      'request-key-123456',
+      () => Promise.resolve(new Response(null, { status: 409 })),
+      42,
+      11,
+    )).resolves.toBe(exact);
+    expect(csrfFetchMock.mock.calls[1]?.[0]).toContain('/operations/11111111-1111-4111-8111-111111111111/recover');
+  });
+
+  it.each(['STALE_QUOTE', 'INVALID_REQUEST'])('preserves an exact roster validation response when generic recovery has no durable identity (%s)', async (code) => {
+    const initial = new Response(JSON.stringify({
+      success: false,
+      error: { code, message: code === 'STALE_QUOTE' ? 'The quote is no longer current.' : 'The payment request is invalid.' },
+    }), { status: code === 'STALE_QUOTE' ? 409 : 400 });
+    // A request-key lookup can legitimately return a generic not-found/error
+    // response when no operation was dispatched. It must not replace the
+    // exact validation response with a misleading recovery 404.
+    csrfFetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      success: false,
+      error: { code: 'NOT_FOUND', message: 'Payment operation not found' },
+    }), { status: 404 }));
+
+    const result = await paymentRequestWithRecovery(
+      'request-key-123456',
+      () => Promise.resolve(initial),
+      42,
+      11,
+    );
+
+    expect(result).toBe(initial);
+    expect(result.status).toBe(code === 'STALE_QUOTE' ? 409 : 400);
+    await expect(result.clone().json()).resolves.toMatchObject({ error: { code } });
+    expect(csrfFetchMock).toHaveBeenCalledTimes(1);
+    expect(csrfFetchMock.mock.calls[0]?.[0]).toBe('/api/payments-provider/payment-operations/recover');
+  });
+
   it('includes explicit organization scope for an org-less scoped admin recovery', async () => {
     const recovered = new Response(null, { status: 202 });
     csrfFetchMock.mockResolvedValueOnce(recovered);
     await expect(paymentRequestWithRecovery('request-key-123456', () => Promise.reject(new Error('connection reset')), 42)).resolves.toBe(recovered);
     expect(csrfFetchMock.mock.calls[0]?.[1]?.body).toBe(JSON.stringify({ organizationId: 42 }));
+  });
+
+  it('keeps a network-lost request without an operation identity unresolved', async () => {
+    const recovered = new Response(JSON.stringify({ success: false, error: { code: 'NOT_FOUND' } }), { status: 404 });
+    csrfFetchMock.mockResolvedValueOnce(recovered);
+
+    await expect(paymentRequestWithRecovery(
+      'request-key-123456',
+      () => Promise.reject(new Error('connection reset')),
+      42,
+      11,
+    )).resolves.toBe(recovered);
+    expect(csrfFetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('exposes state-specific recovery messages and only accepts succeeded', () => {
+    expect(rosterPaymentStatusMessage('provider_unknown')).toContain('still being confirmed');
+    expect(rosterPaymentStatusMessage('action_required')).toContain('not completed');
+    expect(rosterPaymentStatusMessage('reconciliation_required')).toContain('reconciliation');
+    expect(() => assertRosterPaymentSucceeded('failed_terminal')).toThrow('not completed');
+    expect(() => assertRosterPaymentSucceeded('succeeded')).not.toThrow();
   });
 });

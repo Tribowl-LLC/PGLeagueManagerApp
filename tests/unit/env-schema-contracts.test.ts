@@ -378,14 +378,3 @@ describe('APP_ENV environment contract', () => {
     });
   });
 });
-
-describe('F1 activation gate', () => {
-  const base = { DATABASE_URL: 'postgres://localhost/db', SESSION_SECRET: 'secret', FIELD_ENCRYPTION_KEY: '0'.repeat(64), NODE_ENV: 'development' as const };
-  it('defaults false when unset and accepts explicit true', () => {
-    expect(envSchema.parse(base).LEAGUEVAULT_F1_ACTIVATION_ENABLED).toBe(false);
-    expect(envSchema.parse({ ...base, LEAGUEVAULT_F1_ACTIVATION_ENABLED: 'true' }).LEAGUEVAULT_F1_ACTIVATION_ENABLED).toBe(true);
-  });
-  it('rejects invalid activation gate values', () => {
-    expect(envSchema.safeParse({ ...base, LEAGUEVAULT_F1_ACTIVATION_ENABLED: 'yes' }).success).toBe(false);
-  });
-});

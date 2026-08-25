@@ -49,7 +49,7 @@ export interface ITeamStorage {
   getTeam(id: number): Promise<Team | undefined>;
   getTeamsByIds(ids: number[]): Promise<Team[]>;
   getTeamByNumber(leagueId: number, teamNumber: number): Promise<Team | undefined>;
-  createTeam(team: InsertTeam): Promise<Team>;
+  createTeam(team: InsertTeam, recordedByUserId?: number): Promise<Team>;
   updateTeam(id: number, team: UpdateTeam): Promise<Team>;
   deleteTeam(id: number): Promise<void>;
   reorderTeams(updates: { id: number; displayOrder: number; number: number }[]): Promise<void>;
@@ -67,7 +67,7 @@ export interface IBowlerStorage {
   getBowlerByEmailSystemAdmin(email: string): Promise<Bowler | undefined>;
   getBowlersByEmailSystemAdmin(email: string): Promise<Bowler[]>;
   createBowler(bowler: InsertBowler): Promise<Bowler>;
-  updateBowler(id: number, bowler: UpdateBowler): Promise<Bowler>;
+  updateBowler(id: number, bowler: UpdateBowler, actorUserId?: number): Promise<Bowler>;
   deleteBowler(id: number): Promise<void>;
   anonymizeBowler(id: number): Promise<Bowler>;
   getBowlerLeagues(filters?: { bowlerId?: number; leagueId?: number; teamId?: number }): Promise<BowlerLeague[]>;
@@ -77,7 +77,7 @@ export interface IBowlerStorage {
   createBowlerLeague(bowlerLeague: InsertBowlerLeague): Promise<BowlerLeague>;
   createBowlerLeagueIfBowlerFree(bowlerLeague: InsertBowlerLeague): Promise<BowlerLeague | null>;
   createBowlerLeagueIfNotInLeague(bowlerLeague: InsertBowlerLeague): Promise<BowlerLeague | null>;
-  updateBowlerLeague(id: number, bowlerLeague: UpdateBowlerLeague): Promise<BowlerLeague>;
+  updateBowlerLeague(id: number, bowlerLeague: UpdateBowlerLeague, actorUserId?: number): Promise<BowlerLeague>;
   updateBowlerLeagueOrder(id: number, newOrder: number): Promise<BowlerLeague[]>;
   deleteBowlerLeague(id: number): Promise<boolean>;
 }

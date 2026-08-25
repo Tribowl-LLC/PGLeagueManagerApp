@@ -76,6 +76,7 @@ export const PaymentOverviewCard: FC<PaymentOverviewCardProps> = ({
         <CardTitle>Payment Overview</CardTitle>
       </CardHeader>
       <CardContent className="pt-6 space-y-4">
+        {league.payingLineupSize != null && <p className="text-sm text-muted-foreground">Payments are selected from exact roster obligations. Automatic collection is unavailable until PR2.</p>}
         <div className="space-y-3">
           <div className="flex items-center justify-between">
             <span className="text-sm text-muted-foreground">Full Season Total Due</span>
@@ -168,7 +169,7 @@ export const PaymentOverviewCard: FC<PaymentOverviewCardProps> = ({
 
         <Separator />
 
-        {activeSchedule && !showCancelConfirm && (
+        {league.payingLineupSize == null && activeSchedule && !showCancelConfirm && (
           <Button
             variant="ghost"
             onClick={() => setShowCancelConfirm(true)}
@@ -178,7 +179,7 @@ export const PaymentOverviewCard: FC<PaymentOverviewCardProps> = ({
           </Button>
         )}
 
-        {activeSchedule && showCancelConfirm && (
+        {league.payingLineupSize == null && activeSchedule && showCancelConfirm && (
           <div className="space-y-3 rounded-md border border-destructive/30 bg-destructive/5 p-3">
             <p className="text-sm font-medium">Are you sure you want to cancel auto-pay?</p>
             <p className="text-xs text-muted-foreground">You will need to set it up again if you change your mind.</p>
@@ -200,7 +201,7 @@ export const PaymentOverviewCard: FC<PaymentOverviewCardProps> = ({
           </div>
         )}
 
-        {!activeSchedule && financials.remainingBalance > 0 && league.paymentMode === 'upfront' && (
+        {league.payingLineupSize == null && !activeSchedule && financials.remainingBalance > 0 && league.paymentMode === 'upfront' && (
           <div className="space-y-2">
             <Button className="w-full" onClick={() => onSetupPayment('onetime')}>
               {financials.totalPaid > 0 ? 'Pay Remaining Balance' : 'Pay Full Season'} ({formatCurrency(financials.remainingBalance)})
@@ -209,7 +210,7 @@ export const PaymentOverviewCard: FC<PaymentOverviewCardProps> = ({
           </div>
         )}
 
-        {!activeSchedule && financials.remainingBalance > 0 && league.paymentMode !== 'upfront' && (
+        {league.payingLineupSize == null && !activeSchedule && financials.remainingBalance > 0 && league.paymentMode !== 'upfront' && (
           <div className="space-y-2">
             <Button onClick={() => onSetupPayment('autopay')} className="w-full">
               {financials.amountPastDue > 0

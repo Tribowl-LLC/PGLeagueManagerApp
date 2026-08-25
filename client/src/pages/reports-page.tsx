@@ -23,6 +23,7 @@ import { Label } from "@/components/ui/label";
 import { PageLoadingState } from "@/components/page-states";
 import type { League, Team, Bowler, BowlerLeague, User } from "@shared/schema"; // Added BowlerLeague type
 import type { CanonicalPaymentReport } from "@shared/canonical-payment-report";
+import type { CanonicalDuePastDueResponseV2 } from "@shared/roster-payment-contract";
 import { Link } from "wouter";
 
 export default function ReportsPage() {
@@ -90,7 +91,7 @@ export default function ReportsPage() {
     if (report) paymentReports.set(league.id, report);
   });
 
-  const { data: financialResponse, isLoading: loadingFinancials, error: financialError } = useQuery<{ data: { leagues: Array<{ leagueId: number; report: { mode: string; rows: Array<{ bowlerId?: number; teamId?: number | null; outstandingMinor: number; classification: string; reviewRequired: boolean }> } }> } }>({
+  const { data: financialResponse, isLoading: loadingFinancials, error: financialError } = useQuery<{ data: { leagues: Array<{ leagueId: number; report: CanonicalDuePastDueResponseV2 }> } }>({
     queryKey: ["/api/financials/due-past-due", systemScope],
     queryFn: async () => {
       const response = await fetch(`/api/financials/due-past-due${systemScope}`);

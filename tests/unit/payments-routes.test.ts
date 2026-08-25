@@ -305,42 +305,38 @@ describe('POST /api/payments', () => {
     expect(mockStorage.createPayment).not.toHaveBeenCalled();
   });
 
-  it('creates a payment on the happy path → 201', async () => {
+  it('rejects inferred bookkeeping even when the league has legacy-shaped fields', async () => {
     mockStorage.getLeague.mockResolvedValue(LEAGUE_OK);
     mockStorage.createPayment.mockResolvedValue({ id: 555, ...basePayment() });
 
     const res = await post('/api/payments', basePayment());
     const body = await res.json();
 
-    expect(res.status).toBe(201);
-    expect(body.success).toBe(true);
-    expect(body.data).toMatchObject({ id: 555, leagueId: LEAGUE_OK.id });
-    // lineage/prize fund pro-rated against weeklyFee.
-    const createArg = mockStorage.createPayment.mock.calls[0][0];
-    expect(createArg.lineageAmount).toBe(1000); // 2000 * 1000 / 2000
-    expect(createArg.prizeFundAmount).toBe(500);
+    expect(res.status).toBe(409);
+    expect(body.error.code).toBe('CANONICAL_ALLOCATION_REQUIRED');
+    expect(mockStorage.createPayment).not.toHaveBeenCalled();
   });
 
   // P1 (#737): admin access to the league is not enough — the bowler must
   // be actively rostered in it and belong to its organization.
-  it('returns 400 BOWLER_NOT_IN_LEAGUE for a same-org bowler not rostered in the league', async () => {
+  it('does not disclose bowler roster state through the retired inferred route', async () => {
     mockStorage.getLeague.mockResolvedValue(LEAGUE_OK);
     mockStorage.getBowler.mockResolvedValue({ id: 42, organizationId: LEAGUE_OK.organizationId });
     mockStorage.isBowlerActiveInLeague.mockResolvedValue(false);
 
     const res = await post('/api/payments', basePayment());
-    expect(res.status).toBe(400);
-    expect((await res.json()).error.code).toBe('BOWLER_NOT_IN_LEAGUE');
+    expect(res.status).toBe(409);
+    expect((await res.json()).error.code).toBe('CANONICAL_ALLOCATION_REQUIRED');
     expect(mockStorage.createPayment).not.toHaveBeenCalled();
   });
 
-  it('returns 403 FORBIDDEN when the bowler belongs to a different organization', async () => {
+  it('does not disclose cross-organization bowler state through the retired route', async () => {
     mockStorage.getLeague.mockResolvedValue(LEAGUE_OK);
     mockStorage.getBowler.mockResolvedValue({ id: 42, organizationId: LEAGUE_OK.organizationId + 1 });
 
     const res = await post('/api/payments', basePayment());
-    expect(res.status).toBe(403);
-    expect((await res.json()).error.code).toBe('FORBIDDEN');
+    expect(res.status).toBe(409);
+    expect((await res.json()).error.code).toBe('CANONICAL_ALLOCATION_REQUIRED');
     expect(mockStorage.isBowlerActiveInLeague).not.toHaveBeenCalled();
     expect(mockStorage.createPayment).not.toHaveBeenCalled();
   });
@@ -373,19 +369,19 @@ describe('POST /api/payments', () => {
     expect(mockStorage.createPayment).not.toHaveBeenCalled();
   });
 
-  it('idempotency dedup returns the existing row with 200 (same league)', async () => {
+  it('requires exact obligations before evaluating legacy idempotency keys', async () => {
     mockStorage.getLeague.mockResolvedValue(LEAGUE_OK);
     const existing = { id: 999, leagueId: LEAGUE_OK.id, idempotencyKey: 'k1' };
     mockStorage.getPaymentByIdempotencyKey.mockResolvedValue(existing);
 
     const res = await post('/api/payments', basePayment({ idempotencyKey: 'k1' }));
     const body = await res.json();
-    expect(res.status).toBe(200);
-    expect(body.data).toEqual(existing);
+    expect(res.status).toBe(409);
+    expect(body.error.code).toBe('CANONICAL_ALLOCATION_REQUIRED');
     expect(mockStorage.createPayment).not.toHaveBeenCalled();
   });
 
-  it('idempotency conflict (different league) → 409', async () => {
+  it('does not reveal legacy idempotency conflicts before exact selection', async () => {
     mockStorage.getLeague.mockResolvedValue(LEAGUE_OK);
     mockStorage.getPaymentByIdempotencyKey.mockResolvedValue({
       id: 998,
@@ -395,11 +391,11 @@ describe('POST /api/payments', () => {
 
     const res = await post('/api/payments', basePayment({ idempotencyKey: 'k1' }));
     expect(res.status).toBe(409);
-    expect((await res.json()).error.code).toBe('CONFLICT');
+    expect((await res.json()).error.code).toBe('CANONICAL_ALLOCATION_REQUIRED');
     expect(mockStorage.createPayment).not.toHaveBeenCalled();
   });
 
-  it('idempotency race: createPayment 23505 → recovers existing row → 200', async () => {
+  it('does not race legacy inserts after the clean-slate cutover', async () => {
     mockStorage.getLeague.mockResolvedValue(LEAGUE_OK);
     // First lookup misses (no existing row yet), insert races and loses,
     // second lookup finds the row written by the winner.
@@ -412,12 +408,12 @@ describe('POST /api/payments', () => {
 
     const res = await post('/api/payments', basePayment({ idempotencyKey: 'race-1' }));
     const body = await res.json();
-    expect(res.status).toBe(200);
-    expect(body.data).toEqual(winner);
-    expect(mockStorage.getPaymentByIdempotencyKey).toHaveBeenCalledTimes(2);
+    expect(res.status).toBe(409);
+    expect(body.error.code).toBe('CANONICAL_ALLOCATION_REQUIRED');
+    expect(mockStorage.getPaymentByIdempotencyKey).not.toHaveBeenCalled();
   });
 
-  it('paid-in-full triggers schedule deactivation + scheduler.removeSchedule', async () => {
+  it('does not deactivate a legacy schedule from an inferred payment', async () => {
     const PIF_LEAGUE = {
       ...LEAGUE_OK,
       seasonStart: '2026-01-01',
@@ -432,12 +428,10 @@ describe('POST /api/payments', () => {
     mockRemoveSchedule.mockResolvedValue(undefined);
 
     const res = await post('/api/payments', basePayment());
-    expect(res.status).toBe(201);
-    expect(mockStorage.deactivatePaymentSchedule).toHaveBeenCalledWith(
-      333,
-      expect.stringContaining('paid_in_full:payment_id=777'),
-    );
-    expect(mockRemoveSchedule).toHaveBeenCalledWith(333);
+    expect(res.status).toBe(409);
+    expect((await res.json()).error.code).toBe('CANONICAL_ALLOCATION_REQUIRED');
+    expect(mockStorage.deactivatePaymentSchedule).not.toHaveBeenCalled();
+    expect(mockRemoveSchedule).not.toHaveBeenCalled();
   });
 });
 

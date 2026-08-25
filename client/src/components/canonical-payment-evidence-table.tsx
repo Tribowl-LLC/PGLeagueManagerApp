@@ -8,15 +8,35 @@ type Props = {
   paymentTiming?: CanonicalPaymentTiming;
   organizationId?: number | null;
   title?: string;
+  canCorrect?: boolean;
 };
+
+/** Convert the operator-facing dollar amount to exact USD minor units. */
+export function dollarsToMinorUnits(value: string): number | null {
+  const normalized = value.trim();
+  if (!/^(?:0|[1-9]\d*)(?:\.\d{1,2})?$/.test(normalized)) return null;
+  const [wholeText, fractionText = ""] = normalized.split(".");
+  const whole = Number(wholeText);
+  const minor = whole * 100 + Number(fractionText.padEnd(2, "0"));
+  return Number.isSafeInteger(minor) && minor > 0 ? minor : null;
+}
 
 /**
  * The F5 projection is deliberately rendered as evidence rows.  In
  * particular, a row with no payment id is still a real unresolved/legacy
  * operation participant and must not be converted into a synthetic Payment.
  */
-export function CanonicalPaymentEvidenceTable({ rows, mode, paymentTiming, organizationId, title = "Payment evidence" }: Props) {
+export function CanonicalPaymentEvidenceTable({ rows, mode, paymentTiming, organizationId, title = "Payment evidence", canCorrect = false }: Props) {
   const [receiptLoading, setReceiptLoading] = useState<number | null>(null);
+  const [editingAllocationId, setEditingAllocationId] = useState<string | null>(null);
+  const [correctionMode, setCorrectionMode] = useState<"void_only" | "replace">("void_only");
+  const [reason, setReason] = useState("");
+  const [replacementAmount, setReplacementAmount] = useState("");
+  const [replacementType, setReplacementType] = useState<"cash" | "check">("cash");
+  const [replacementCheckNumber, setReplacementCheckNumber] = useState("");
+  const [replacementNotes, setReplacementNotes] = useState("");
+  const [correctionBusy, setCorrectionBusy] = useState(false);
+  const [correctionError, setCorrectionError] = useState<string | null>(null);
   const openReceipt = async (paymentId: number) => {
     setReceiptLoading(paymentId);
     try {
@@ -28,6 +48,67 @@ export function CanonicalPaymentEvidenceTable({ rows, mode, paymentTiming, organ
       setReceiptLoading(null);
     }
   };
+  const correctionFingerprint = async (payload: {
+    allocationId: string;
+    correctionMode: "void_only" | "replace";
+    reason: string;
+    replacementAmountMinor?: number | null;
+    replacementType?: "cash" | "check" | null;
+    replacementCheckNumber?: string | null;
+    replacementWeekOf?: string | null;
+    replacementNotes?: string | null;
+  }) => {
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(payload)));
+    return `lvcorrection:v2:${Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("")}`;
+  };
+  const submitCorrection = async (row: CanonicalPaymentRow, allocationId: string) => {
+    const trimmedReason = reason.trim();
+    if (!trimmedReason) return;
+    const replacementAmountMinor = correctionMode === "replace" ? dollarsToMinorUnits(replacementAmount) : null;
+    if (correctionMode === "replace" && replacementAmountMinor === null) {
+      setCorrectionError("Enter a valid dollar amount with at most two decimal places.");
+      return;
+    }
+    setCorrectionError(null);
+    setCorrectionBusy(true);
+    try {
+      const payload = {
+        allocationId,
+        correctionMode,
+        reason: trimmedReason,
+        ...(correctionMode === "replace" ? {
+          replacementAmountMinor: replacementAmountMinor as number,
+          replacementType,
+          ...(replacementType === "check" ? { replacementCheckNumber: replacementCheckNumber.trim() } : {}),
+          replacementNotes: replacementNotes.trim() || null,
+        } : {}),
+      } as const;
+      const idempotencyKey = crypto.randomUUID();
+      const fingerprintPayload = {
+        allocationId,
+        correctionMode,
+        reason: trimmedReason,
+        replacementAmountMinor,
+        replacementType: correctionMode === "replace" ? replacementType : null,
+        replacementCheckNumber: correctionMode === "replace" && replacementType === "check" ? replacementCheckNumber.trim() : null,
+        replacementWeekOf: null,
+        replacementNotes: correctionMode === "replace" ? replacementNotes.trim() || null : null,
+      };
+      const response = await csrfFetch(`/api/financials/leagues/${row.leagueId}/canonical/corrections/1`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
+        body: JSON.stringify({ ...payload, idempotencyKey, requestFingerprint: await correctionFingerprint(fingerprintPayload) }),
+      });
+      if (!response.ok) throw new Error("Payment correction could not be recorded");
+      setEditingAllocationId(null);
+      setReason("");
+      window.location.reload();
+    } catch {
+      setCorrectionError("Payment correction could not be recorded");
+    } finally {
+      setCorrectionBusy(false);
+    }
+  };
   return (
     <section aria-label={title} data-testid="canonical-payment-evidence-table" className="space-y-2">
       <div className="text-sm font-medium">{title}{mode ? ` · ${mode}` : ""}</div>
@@ -35,7 +116,7 @@ export function CanonicalPaymentEvidenceTable({ rows, mode, paymentTiming, organ
         {paymentTiming.paymentMode === "upfront" ? "Upfront payment" : "Weekly payment"}
         {paymentTiming.upfrontDueAt ? ` · due ${paymentTiming.upfrontDueAtLocal ?? paymentTiming.upfrontDueAt}` : ""}
         {` · timezone ${paymentTiming.timezone ?? "UTC"}`}
-        {` · ${paymentTiming.source === "canonical_activation" ? "canonical activation" : "legacy league timing"}`}
+        {` · ${paymentTiming.source === "canonical_activation" ? "canonical activation" : paymentTiming.source === "roster_payment_responsibility" ? "roster-driven canonical billing" : "legacy league timing"}`}
       </div>}
       {rows.length === 0 ? (
         <p className="text-sm text-muted-foreground">No payment evidence for this page.</p>
@@ -63,6 +144,17 @@ export function CanonicalPaymentEvidenceTable({ rows, mode, paymentTiming, organ
               <span className="font-mono">{new Intl.NumberFormat("en-US", { style: "currency", currency: row.currency }).format(row.amountMinor / 100)}</span>
               <span className="text-xs text-muted-foreground">{row.paymentId === null ? "operation evidence" : `payment #${row.paymentId}`}</span>
               {paymentId !== null && ["confirmed_paid", "refunded", "disputed"].includes(row.status) && <button type="button" className="text-xs underline" disabled={receiptLoading === paymentId} onClick={() => void openReceipt(paymentId)}>{receiptLoading === paymentId ? "Loading receipt…" : "Receipt"}</button>}
+              {canCorrect && row.paymentId !== null && row.allocations.filter((allocation) => allocation.state === "active" && allocation.allocationId !== null).map((allocation) => (
+                <div key={`correction-${allocation.allocationId}`} className="col-span-full rounded border bg-muted/30 p-2 text-xs">
+                  {editingAllocationId === allocation.allocationId ? <div className="grid gap-2 md:grid-cols-2">
+                    <input aria-label="Correction reason" className="rounded border bg-background p-1" placeholder="Reason" value={reason} onChange={(event) => setReason(event.target.value)} />
+                    <select aria-label="Correction mode" className="rounded border bg-background p-1" value={correctionMode} onChange={(event) => setCorrectionMode(event.target.value as typeof correctionMode)}><option value="void_only">Void entry</option><option value="replace">Replace cash/check</option></select>
+                    {correctionMode === "replace" && <><input aria-label="Replacement amount" type="text" inputMode="decimal" className="rounded border bg-background p-1" placeholder="Amount in dollars (e.g. 20.00)" value={replacementAmount} onChange={(event) => setReplacementAmount(event.target.value)} /><select aria-label="Replacement type" className="rounded border bg-background p-1" value={replacementType} onChange={(event) => setReplacementType(event.target.value as typeof replacementType)}><option value="cash">Cash</option><option value="check">Check</option></select>{replacementType === "check" && <input aria-label="Replacement check number" className="rounded border bg-background p-1" placeholder="Check number" value={replacementCheckNumber} onChange={(event) => setReplacementCheckNumber(event.target.value)} />}<input aria-label="Replacement notes" className="rounded border bg-background p-1" placeholder="Notes (optional)" value={replacementNotes} onChange={(event) => setReplacementNotes(event.target.value)} /></>}
+                    {correctionError && <p role="alert" className="text-destructive">{correctionError}</p>}
+                    <div className="flex gap-2"><button type="button" className="underline" disabled={correctionBusy} onClick={() => void submitCorrection(row, allocation.allocationId as string)}>Save correction</button><button type="button" className="underline" onClick={() => setEditingAllocationId(null)}>Cancel</button></div>
+                  </div> : <button type="button" className="underline" onClick={() => setEditingAllocationId(allocation.allocationId)}>Correct manual entry</button>}
+                </div>
+              ))}
             </article>
             );
           })}

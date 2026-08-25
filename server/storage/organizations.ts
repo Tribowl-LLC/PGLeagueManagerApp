@@ -10,15 +10,6 @@ import {
   applePayJobs,
   autopaySetupRequests,
   bowlerPaymentLinks,
-  bowlerOccurrenceEligibilities,
-  bowlerOccurrenceEligibilityRevisions,
-  bowlerOccurrenceTeamAssignments,
-  bowlerOccurrenceTeamAssignmentRevisions,
-  bowlerOccurrenceObligations,
-  bowlerOccurrenceObligationRevisions,
-  financialResponsibilities,
-  financialActivationRevisions,
-  financialActivations,
   bowlers,
   leagueOccurrenceBillingTermRevisions,
   leagueOccurrenceGenerationDiscrepancies,
@@ -44,13 +35,21 @@ import {
   accountActionRequests,
   paymentDisputes,
   paymentOperations,
-  occurrenceCollectionPlans,
-  occurrenceCollectionPlanItems,
-  occurrenceCollectionPlanRevisions,
-  paymentOccurrenceAllocations,
-  paymentOccurrenceAllocationRevisions,
-  paymentOperationOccurrenceSnapshots,
-  paymentOperationOccurrenceSnapshotAllocations,
+  teamPaymentSlots,
+  teamPaymentSlotRevisions,
+  teamPaymentPolicies,
+  teamPaymentPolicyRevisions,
+  occurrencePaymentResponsibilities,
+  paymentObligations,
+  paymentAllocations,
+  autopayConsents,
+  financialCommands,
+  paymentOperationRosterSnapshots,
+  paymentOperationRosterSnapshotItems,
+  canonicalCollectionGroups,
+  canonicalCollectionGroupMembers,
+  canonicalCollectionGroupRevisions,
+  canonicalCollectionGroupMemberRevisions,
   paymentSchedules,
   users,
   webhookEvents,
@@ -79,15 +78,6 @@ export class OrganizationHostnameConflictError extends Error {
   constructor() {
     super('Organization hostname is already in use');
     this.name = 'OrganizationHostnameConflictError';
-  }
-}
-
-export class OrganizationFinancialActivationRetentionError extends Error {
-  readonly code = 'FINANCIAL_ACTIVATION_RETENTION_REQUIRED' as const;
-
-  constructor() {
-    super('Organization teardown requires retention of canonical financial evidence');
-    this.name = 'OrganizationFinancialActivationRetentionError';
   }
 }
 
@@ -154,24 +144,16 @@ export async function restoreOrganization(id: number): Promise<Organization> {
 export async function deleteOrganization(id: number): Promise<void> {
   let affectedUserIds: number[] = [];
   await db.transaction(async (tx) => {
+    // Explicit system-admin teardown is the only operation allowed to remove
+    // append-only roster evidence. The trigger checks this transaction-local
+    // marker; ordinary commands cannot bypass the evidence guard.
+    await tx.execute(sql`SELECT set_config('leaguevault.organization_teardown', 'on', true)`);
     // Keep tenant mutation serialized while remaining compatible with the
     // KEY SHARE lock PostgreSQL takes to validate a concurrent webhook's
     // organization FK. Locations are locked below before evidence deletion,
     // so a new ingestion either commits first and is deleted here or observes
     // the completed teardown and fails mapping, without a lock-order deadlock.
     await tx.execute(sql`SELECT id FROM ${organizations} WHERE id = ${id} FOR NO KEY UPDATE`);
-
-    // F1 evidence is immutable and has no runtime trigger bypass. A tenant
-    // with an activation must be archived or retained; hard deletion fails
-    // closed so an application writer cannot erase the audit contract.
-    const [financialActivation] = await tx
-      .select({ id: financialActivations.id })
-      .from(financialActivations)
-      .where(eq(financialActivations.organizationId, id))
-      .limit(1);
-    if (financialActivation) {
-      throw new OrganizationFinancialActivationRetentionError();
-    }
 
     // The system-admin-only delete route is an intentional full teardown.
     // Clear restrictive audit FKs and organization-owned join rows first,
@@ -296,48 +278,21 @@ export async function deleteOrganization(id: number): Promise<void> {
     // explicit tenant teardown removes them before either referenced table.
     await tx.delete(autopaySetupRequests).where(eq(autopaySetupRequests.organizationId, id));
 
-    // F3 policy, payer authorization, and ready-plan evidence is immutable
-    // financial evidence. The F1 retention gate prevents hard tenant removal
-    // while this evidence exists; never bypass the database guard here.
-
-    // D2 financial evidence uses restrictive parent links. Full tenant
-    // teardown is the explicit retention-policy exception and removes every
-    // revision and child before current rows, operations, payments, bowlers,
-    // canonical occurrences, and leagues.
-    await tx.delete(paymentOperationOccurrenceSnapshotAllocations)
-      .where(eq(paymentOperationOccurrenceSnapshotAllocations.organizationId, id));
-    await tx.delete(paymentOperationOccurrenceSnapshots)
-      .where(eq(paymentOperationOccurrenceSnapshots.organizationId, id));
-    await tx.delete(paymentOccurrenceAllocationRevisions)
-      .where(eq(paymentOccurrenceAllocationRevisions.organizationId, id));
-    await tx.delete(paymentOccurrenceAllocations)
-      .where(eq(paymentOccurrenceAllocations.organizationId, id));
-    await tx.delete(occurrenceCollectionPlanRevisions)
-      .where(eq(occurrenceCollectionPlanRevisions.organizationId, id));
-    await tx.delete(occurrenceCollectionPlanItems)
-      .where(eq(occurrenceCollectionPlanItems.organizationId, id));
-    await tx.delete(occurrenceCollectionPlans)
-      .where(eq(occurrenceCollectionPlans.organizationId, id));
-    await tx.delete(bowlerOccurrenceObligationRevisions)
-      .where(eq(bowlerOccurrenceObligationRevisions.organizationId, id));
-    // F1 responsibility evidence is restrictive against both obligations and
-    // activation revisions/current rows; remove it before D2 and league data.
-    await tx.delete(financialResponsibilities)
-      .where(eq(financialResponsibilities.organizationId, id));
-    await tx.delete(financialActivationRevisions)
-      .where(eq(financialActivationRevisions.organizationId, id));
-    await tx.delete(financialActivations)
-      .where(eq(financialActivations.organizationId, id));
-    await tx.delete(bowlerOccurrenceObligations)
-      .where(eq(bowlerOccurrenceObligations.organizationId, id));
-    await tx.delete(bowlerOccurrenceTeamAssignmentRevisions)
-      .where(eq(bowlerOccurrenceTeamAssignmentRevisions.organizationId, id));
-    await tx.delete(bowlerOccurrenceTeamAssignments)
-      .where(eq(bowlerOccurrenceTeamAssignments.organizationId, id));
-    await tx.delete(bowlerOccurrenceEligibilityRevisions)
-      .where(eq(bowlerOccurrenceEligibilityRevisions.organizationId, id));
-    await tx.delete(bowlerOccurrenceEligibilities)
-      .where(eq(bowlerOccurrenceEligibilities.organizationId, id));
+    // PR1 roster-driven evidence is tenant-owned and uses restrictive links.
+    // Remove corrections/obligations/responsibilities before slots and the
+    // retained general payment ledger. This path is the explicit teardown
+    // exception; ordinary mutations remain append-only/locked.
+    await tx.delete(paymentOperationRosterSnapshotItems).where(eq(paymentOperationRosterSnapshotItems.organizationId, id));
+    await tx.delete(paymentOperationRosterSnapshots).where(eq(paymentOperationRosterSnapshots.organizationId, id));
+    await tx.delete(paymentAllocations).where(eq(paymentAllocations.organizationId, id));
+    await tx.delete(paymentObligations).where(eq(paymentObligations.organizationId, id));
+    await tx.delete(occurrencePaymentResponsibilities).where(eq(occurrencePaymentResponsibilities.organizationId, id));
+    await tx.delete(teamPaymentPolicyRevisions).where(eq(teamPaymentPolicyRevisions.organizationId, id));
+    await tx.delete(teamPaymentPolicies).where(eq(teamPaymentPolicies.organizationId, id));
+    await tx.delete(teamPaymentSlotRevisions).where(eq(teamPaymentSlotRevisions.organizationId, id));
+    await tx.delete(teamPaymentSlots).where(eq(teamPaymentSlots.organizationId, id));
+    await tx.delete(autopayConsents).where(eq(autopayConsents.organizationId, id));
+    await tx.delete(financialCommands).where(eq(financialCommands.organizationId, id));
 
     // Replay audits and in-app notifications retain restrictive user,
     // dispute, and webhook-evidence references. Full tenant teardown is the
@@ -364,6 +319,14 @@ export async function deleteOrganization(id: number): Promise<void> {
       await tx.delete(games).where(inArray(games.leagueId, leagueIds));
       await tx.delete(paymentSchedules).where(inArray(paymentSchedules.leagueId, leagueIds));
     }
+
+    // Collection groups are retained canonical schedule evidence and must be
+    // removed only as part of explicit organization teardown, in child-first
+    // order so their revision/member history cannot block league deletion.
+    await tx.delete(canonicalCollectionGroupMemberRevisions).where(eq(canonicalCollectionGroupMemberRevisions.organizationId, id));
+    await tx.delete(canonicalCollectionGroupRevisions).where(eq(canonicalCollectionGroupRevisions.organizationId, id));
+    await tx.delete(canonicalCollectionGroupMembers).where(eq(canonicalCollectionGroupMembers.organizationId, id));
+    await tx.delete(canonicalCollectionGroups).where(eq(canonicalCollectionGroups.organizationId, id));
 
     // Ordinary location deletion retains webhook evidence and is rejected.
     // Full tenant teardown is the explicit retention-policy exception: remove

@@ -192,6 +192,8 @@ export default function TeamViewPage() {
         teamBowlers={teamBowlers}
         league={league}
         teamId={teamId}
+        leagueId={team.leagueId}
+        canManage={canManageRoster}
         onEditBowler={canManageRoster ? (bowler) => {
           setSelectedBowler(bowler);
           setShowForm(true);

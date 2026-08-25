@@ -121,6 +121,56 @@ const bowlerLeagues: BowlerLeague[] = [
   },
 ];
 
+function makeCanonicalRow(input: {
+  index: number;
+  teamId: number;
+  classification: 'future' | 'due' | 'past_due' | 'settled' | 'voided' | 'review_required';
+  outstandingMinor: number;
+  reviewRequired: boolean;
+}) {
+  const amountMinor = input.outstandingMinor + (input.classification === 'settled' ? 700 : 0);
+  return {
+    id: `00000000-0000-4000-8000-0000000000${String(input.index).padStart(2, '0')}`,
+    organizationId: 1,
+    leagueId: ACTIVE_LEAGUE_ID,
+    occurrenceId: `00000000-0000-4000-8000-0000000001${String(input.index).padStart(2, '0')}`,
+    responsibilityId: `00000000-0000-4000-8000-0000000002${String(input.index).padStart(2, '0')}`,
+    teamId: input.teamId,
+    component: 'full' as const,
+    payerBowlerId: BOWLER_ID,
+    amountMinor,
+    currency: 'USD' as const,
+    dueAt: '2038-01-01T00:00:00.000Z',
+    pastDueAt: '2038-01-01T03:00:00.000Z',
+    state: input.classification === 'voided' ? 'voided' as const : input.classification === 'settled' ? 'settled' as const : 'open' as const,
+    allocatedMinor: amountMinor - input.outstandingMinor,
+    outstandingMinor: input.outstandingMinor,
+    classification: input.classification,
+    reviewRequired: input.reviewRequired,
+  };
+}
+
+function makeCanonicalReport(rows: ReturnType<typeof makeCanonicalRow>[]) {
+  return {
+    contractVersion: 'canonical-due-past-due/2' as const,
+    orderVersion: 'due-at,payer,occurrence,obligation/2' as const,
+    organizationId: 1,
+    leagueId: ACTIVE_LEAGUE_ID,
+    authoritativeSource: 'payment_obligations' as const,
+    asOf: '2038-01-01T00:00:00.000Z',
+    rows,
+    totals: {
+      amountMinor: rows.reduce((sum, row) => sum + row.amountMinor, 0),
+      allocatedMinor: rows.reduce((sum, row) => sum + row.allocatedMinor, 0),
+      outstandingMinor: rows.reduce((sum, row) => sum + row.outstandingMinor, 0),
+      collectiblePastDueMinor: rows.filter((row) => row.classification === 'past_due' && !row.reviewRequired).reduce((sum, row) => sum + row.outstandingMinor, 0),
+      reviewCount: rows.filter((row) => row.reviewRequired).length,
+      settledCount: rows.filter((row) => row.classification === 'settled').length,
+      voidedCount: rows.filter((row) => row.classification === 'voided').length,
+    },
+  };
+}
+
 function renderSection(report?: unknown, enabled = true) {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -160,21 +210,21 @@ describe('PastDueBowlersSection', () => {
   });
 
   it('keeps zero-outstanding review evidence visible and aggregates obligation rows', () => {
-    renderSection({ data: { leagues: [{ leagueId: ACTIVE_LEAGUE_ID, report: { rows: [
-      { bowlerId: BOWLER_ID, teamId: ACTIVE_TEAM_ID, classification: 'future', outstandingMinor: 500, reviewRequired: false },
-      { bowlerId: BOWLER_ID, teamId: ACTIVE_TEAM_ID, classification: 'due', outstandingMinor: 400, reviewRequired: false },
-      { bowlerId: BOWLER_ID, teamId: ACTIVE_TEAM_ID, classification: 'settled', outstandingMinor: 0, reviewRequired: true },
-      { bowlerId: BOWLER_ID, teamId: ACTIVE_TEAM_ID, classification: 'past_due', outstandingMinor: 250, reviewRequired: false },
-    ] } }] } });
+    renderSection({ data: { leagues: [{ leagueId: ACTIVE_LEAGUE_ID, report: makeCanonicalReport([
+      makeCanonicalRow({ index: 1, teamId: ACTIVE_TEAM_ID, classification: 'future', outstandingMinor: 500, reviewRequired: false }),
+      makeCanonicalRow({ index: 2, teamId: ACTIVE_TEAM_ID, classification: 'due', outstandingMinor: 400, reviewRequired: false }),
+      makeCanonicalRow({ index: 3, teamId: ACTIVE_TEAM_ID, classification: 'settled', outstandingMinor: 0, reviewRequired: true }),
+      makeCanonicalRow({ index: 4, teamId: ACTIVE_TEAM_ID, classification: 'past_due', outstandingMinor: 250, reviewRequired: false }),
+    ]) }] } });
     expect(screen.getAllByText('Review required').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('Jane Doe')).toBeInTheDocument();
     expect(screen.getByText('$2.50')).toBeInTheDocument();
   });
 
   it('uses canonical responsibility team identity for an explicit substitute', () => {
-    renderSection({ data: { leagues: [{ leagueId: ACTIVE_LEAGUE_ID, report: { rows: [
-      { bowlerId: BOWLER_ID, teamId: RESPONSIBILITY_TEAM_ID, classification: 'past_due', outstandingMinor: 250, reviewRequired: false },
-    ] } }] } });
+    renderSection({ data: { leagues: [{ leagueId: ACTIVE_LEAGUE_ID, report: makeCanonicalReport([
+      makeCanonicalRow({ index: 5, teamId: RESPONSIBILITY_TEAM_ID, classification: 'past_due', outstandingMinor: 250, reviewRequired: false }),
+    ]) }] } });
     expect(screen.getByText('Explicit Responsibility Team')).toBeInTheDocument();
   });
 
@@ -188,9 +238,9 @@ describe('PastDueBowlersSection', () => {
     bowler.active = false;
     bowlerLeagues[1].active = false;
     bowlerLeagues[1].teamId = ACTIVE_TEAM_ID;
-    renderSection({ data: { leagues: [{ leagueId: ACTIVE_LEAGUE_ID, report: { mode: 'canonical', rows: [
-      { bowlerId: BOWLER_ID, teamId: RESPONSIBILITY_TEAM_ID, classification: 'past_due', outstandingMinor: 250, reviewRequired: false },
-    ] } }] } });
+    renderSection({ data: { leagues: [{ leagueId: ACTIVE_LEAGUE_ID, report: makeCanonicalReport([
+      makeCanonicalRow({ index: 6, teamId: RESPONSIBILITY_TEAM_ID, classification: 'past_due', outstandingMinor: 250, reviewRequired: false }),
+    ]) }] } });
     expect(screen.getByText('Jane Doe')).toBeInTheDocument();
     expect(screen.getByText('Explicit Responsibility Team')).toBeInTheDocument();
     bowler.active = true;

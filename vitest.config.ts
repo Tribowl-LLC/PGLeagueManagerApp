@@ -90,10 +90,6 @@ const PARALLEL_ISOLATED_WITH_APP = [
  */
 const UNIT_NO_DB = [
   'tests/unit/league-create-payload.test.ts',
-  'tests/unit/f3-autopay-contract.test.ts',
-  'tests/unit/f4-canonical-autopay-contract.test.ts',
-  'tests/unit/f3-provider-ownership.test.ts',
-  'tests/unit/canonical-due-past-due.test.ts',
   'tests/unit/neon-branches-reveal-password.test.ts',
   'tests/unit/cleanup-connection-aware-sweep.test.ts',
   'tests/unit/db-baseline-rls-compatibility.test.ts',
@@ -105,7 +101,6 @@ const UNIT_NO_DB = [
   'tests/unit/passive-database-polling.test.ts',
   'tests/unit/payment-disputes-routes.test.ts',
   'tests/unit/payment-operation-idempotency.test.ts',
-  'tests/unit/canonical-payment-report-contract.test.ts',
   'tests/unit/financials-f5-route.test.ts',
   'tests/unit/payment-operation-wake-scheduler.test.ts',
   'tests/unit/square-webhook.test.ts',
@@ -114,7 +109,6 @@ const UNIT_NO_DB = [
   'tests/unit/subdomain-resolution-consistency.test.ts',
   'tests/unit/scheduled-payment-operation-snapshot.test.ts',
   'tests/unit/interactive-payment-operation-snapshot.test.ts',
-  'tests/unit/payment-operation-occurrence-snapshot.test.ts',
   'tests/unit/location-webhook-retention-route.test.ts',
   'tests/unit/weekly-billing-occurrence-planner.test.ts',
   'tests/unit/canonical-occurrence-generator.test.ts',
@@ -131,10 +125,23 @@ const UNIT_NO_DB = [
   'tests/unit/payment-manager-access-control.test.ts',
   'tests/unit/test-template-migration-source.test.ts',
   'tests/unit/zod-v4-migration-contracts.test.ts',
+  'tests/unit/roster-payment-pr1-contract.test.ts',
+  'tests/unit/roster-payment-route-boundaries.test.ts',
+];
+
+/**
+ * F1/D2/F3/F4 tests whose fixtures assert the pre-0032 authorities. Migration
+ * 0032 intentionally drops those zero-row tables and PR1 replaces the
+ * activation/plan/supplement flows with roster obligations and exact
+ * allocations. These obsolete authority tests are removed from the active
+ * suite; the replacement PR1 contract/API suites cover supported behavior.
+ */
+const PR1_RETIRED_FINANCIAL_TESTS = [
+  'tests/api/financials-f1-boundary.test.ts',
+  'tests/api/f3-autopay-postgres-contract.test.ts',
 ];
 
 const PARALLEL_ISOLATED = [
-  'tests/unit/canonical-payment-report-postgres.test.ts',
   'server/routes/__tests__/leagues-square-missing-alerts.test.ts',
   'server/services/__tests__/apple-pay-worker.test.ts',
   'server/services/__tests__/square.test.ts',
@@ -199,6 +206,7 @@ const PARALLEL_ISOLATED = [
   // Storage-only PostgreSQL race suite; it needs an isolated database but no
   // spawned Express process or mutable application singleton state.
   'tests/unit/payment-operations.test.ts',
+  'tests/unit/roster-payment-finalizer-postgres.test.ts',
   'tests/unit/interactive-payment-operation-executor.test.ts',
   'tests/unit/refund-payment-operation-executor.test.ts',
   'tests/unit/scheduled-payment-ledger-cutover.test.ts',
@@ -302,6 +310,7 @@ export default defineConfig({
             ...PARALLEL_ISOLATED,
             ...PARALLEL_ISOLATED_WITH_APP,
             ...UNIT_NO_DB,
+            ...PR1_RETIRED_FINANCIAL_TESTS,
           ],
           setupFiles: ['./tests/setup/per-worker-setup.ts'],
           // Skip per-file module re-evaluation; reuse module contexts across
@@ -340,6 +349,7 @@ export default defineConfig({
           globalSetup: ['./tests/setup/global-setup.ts'],
           alias: sharedAlias,
           include: PARALLEL_ISOLATED,
+          exclude: PR1_RETIRED_FINANCIAL_TESTS,
           setupFiles: ['./tests/setup/per-worker-db-only.ts'],
           // Default `isolate: true` — these files have vi.mock factories
           // whose closures leak across files when the module registry is

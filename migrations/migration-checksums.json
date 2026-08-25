@@ -192,6 +192,12 @@
       "tag": "0031_league_paying_lineup_size",
       "createdAt": 1787427717641,
       "hash": "35b9265f9d2027d972376ec313fb08c3d285748f62141a0dfde04555dd62153a"
+    },
+    {
+      "idx": 32,
+      "tag": "0032_roster_driven_payments_core",
+      "createdAt": 1787500000000,
+      "hash": "a3681e2358e52d270742b6b96d04745070b6251cd487657424b7667acd744fc4"
     }
   ]
 }

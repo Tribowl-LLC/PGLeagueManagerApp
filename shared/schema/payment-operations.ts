@@ -20,7 +20,6 @@ import { locations } from "./locations";
 import { payments, paymentSchedules } from "./payments";
 import { users } from "./users";
 import { leagueOccurrences } from "./canonical-occurrences";
-import { occurrenceCollectionPlans } from "./occurrence-financials";
 
 export const PAYMENT_OPERATION_TYPES = [
   "scheduled_charge",
@@ -164,23 +163,10 @@ export const paymentOperations = pgTable("payment_operations", {
     .where(sql`${table.status} = 'leased'`),
   triggerOccurrenceIdx: index("payment_operations_trigger_occurrence_idx")
     .on(table.triggerOccurrenceId),
-  canonicalPlanIdx: index("payment_operations_canonical_plan_idx")
-    .on(table.organizationId, table.leagueId, table.canonicalPlanId),
-  canonicalPlanUnique: uniqueIndex("payment_operations_canonical_plan_unique")
-    .on(table.organizationId, table.leagueId, table.canonicalPlanId)
-    .where(sql`${table.operationType} = 'canonical_autopay_charge'`),
-  canonicalTargetUnique: uniqueIndex("payment_operations_canonical_target_unique")
-    .on(table.organizationId, table.targetKey)
-    .where(sql`${table.operationType} = 'canonical_autopay_charge'`),
   leagueTenantFk: foreignKey({
     name: "payment_operations_league_tenant_fk",
     columns: [table.leagueId, table.organizationId],
     foreignColumns: [leagues.id, leagues.organizationId],
-  }).onDelete("restrict"),
-  canonicalPlanTenantFk: foreignKey({
-    name: "payment_operations_canonical_plan_tenant_fk",
-    columns: [table.canonicalPlanId, table.organizationId, table.leagueId],
-    foreignColumns: [occurrenceCollectionPlans.id, occurrenceCollectionPlans.organizationId, occurrenceCollectionPlans.leagueId],
   }).onDelete("restrict"),
   triggerOccurrenceTenantFk: foreignKey({
     name: "payment_operations_trigger_occurrence_tenant_fk",
@@ -291,7 +277,6 @@ export const paymentOperations = pgTable("payment_operations", {
       ${table.operationType} IN ('interactive_charge', 'refund')
       AND ${table.paymentScheduleId} IS NULL
       AND ${table.billingCycleAt} IS NULL
-      AND ${table.leagueId} IS NULL
       AND ${table.canonicalPlanId} IS NULL
     )`,
   ),

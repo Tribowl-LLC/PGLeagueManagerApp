@@ -10,6 +10,7 @@ import {
 import { CheckCircle2 } from "lucide-react";
 import { Link } from "wouter";
 import type { League, Team, BowlerLeague, BowlerWithAccount } from "@shared/schema";
+import type { CanonicalDuePastDueResponseV2 } from "@shared/roster-payment-contract";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { cn } from "@/lib/utils";
 
@@ -43,7 +44,7 @@ export function PastDueBowlersSection({ enabled = true, organizationId }: { enab
 
   // scopeSuffix is encoded in the URL key above; keep the legacy base key for existing ordinary-member cache/tests.
   // eslint-disable-next-line @tanstack/query/exhaustive-deps
-  const { data: financialReportResponse, isLoading: financialLoading, error: financialError } = useQuery<{ data: { leagues: Array<{ leagueId: number; report: { rows: Array<{ bowlerId: number; teamId: number | null; classification: string; outstandingMinor: number; reviewRequired: boolean }> } }> } }>({
+  const { data: financialReportResponse, isLoading: financialLoading, error: financialError } = useQuery<{ data: { leagues: Array<{ leagueId: number; report: CanonicalDuePastDueResponseV2 }> } }>({
     queryKey: [organizationId ? `/api/financials/due-past-due?organizationId=${organizationId}` : "/api/financials/due-past-due"],
     queryFn: async () => {
       const response = await fetch(`/api/financials/due-past-due${scopeSuffix}`);
@@ -55,10 +56,10 @@ export function PastDueBowlersSection({ enabled = true, organizationId }: { enab
   if (!enabled) return null;
   if (financialLoading) return <div className="text-sm text-muted-foreground">Loading server financial evidence…</div>;
   if (financialError) return <div className="text-sm text-amber-700">Financial evidence requires review; balances are unavailable.</div>;
-  const financialRows = financialReportResponse?.data?.leagues?.flatMap((entry) => entry.report.rows.map((row) => ({ ...row, leagueId: entry.leagueId, mode: (entry.report as { mode?: string }).mode ?? "legacy_fallback" }))) ?? [];
+  const financialRows = financialReportResponse?.data?.leagues?.flatMap((entry) => entry.report.rows.map((row) => ({ ...row, leagueId: entry.leagueId }))) ?? [];
 
   const groupedFinancialRows = [...financialRows.reduce((map, row) => {
-    const key = `${row.leagueId}:${row.bowlerId}:${row.teamId ?? "none"}`;
+    const key = `${row.leagueId}:${row.payerBowlerId}:none`;
     const prior = map.get(key);
     const collectible = row.classification === "past_due" ? row.outstandingMinor : 0;
     map.set(key, prior ? { ...prior, outstandingMinor: prior.outstandingMinor + row.outstandingMinor, collectiblePastDueMinor: prior.collectiblePastDueMinor + collectible, reviewRequired: prior.reviewRequired || row.reviewRequired, reviewMinor: prior.reviewMinor + (row.reviewRequired ? row.outstandingMinor : 0), classification: prior.reviewRequired || row.reviewRequired ? "review_required" : prior.collectiblePastDueMinor + collectible > 0 ? "past_due" : row.classification } : { ...row, collectiblePastDueMinor: collectible, reviewMinor: row.reviewRequired ? row.outstandingMinor : 0 });
@@ -67,11 +68,14 @@ export function PastDueBowlersSection({ enabled = true, organizationId }: { enab
   const pastDueBowlers = groupedFinancialRows
     .filter((row) => row.collectiblePastDueMinor > 0 || row.reviewRequired)
     .flatMap((row) => {
-      const bowler = bowlers.find((candidate) => candidate.id === row.bowlerId);
+      const bowler = bowlers.find((candidate) => candidate.id === row.payerBowlerId);
       const league = leagues.find((candidate) => candidate.id === row.leagueId);
-      const association = bowlerLeagues.find((candidate) => candidate.bowlerId === row.bowlerId && candidate.leagueId === row.leagueId && candidate.active);
-      const team = teams.find((candidate) => candidate.id === (row.teamId ?? association?.teamId));
-      if (!bowler || !league || !league.active || !team || (row.mode !== "canonical" && (!bowler.active || !association))) return [];
+      // Canonical evidence remains displayable after a roster move/deactivation. The
+      // row's team is the historical responsibility identity; membership is only a
+      // fallback for older server rows and must not rewrite paid history.
+      const association = bowlerLeagues.find((candidate) => candidate.bowlerId === row.payerBowlerId && candidate.leagueId === row.leagueId);
+      const team = teams.find((candidate) => candidate.id === row.teamId) ?? teams.find((candidate) => candidate.id === association?.teamId);
+      if (!bowler || !league || !league.active || !team || !association) return [];
       return [{ bowler, team, league, weeksPastDueDisplay: row.reviewRequired ? "Review required" : league.paymentMode === "upfront" ? "Full season" : "—", pastDueAmount: row.collectiblePastDueMinor, reviewRequired: row.reviewRequired }];
     })
     .sort((a, b) => b.pastDueAmount - a.pastDueAmount);

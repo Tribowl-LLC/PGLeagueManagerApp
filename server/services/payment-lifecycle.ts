@@ -149,6 +149,10 @@ async function processLegacyScheduledPaymentJob(
       logger.warn(`[PaymentScheduler] Skipping ${jobId} because its schedule has no tenant owner`);
       return;
     }
+    if (league.payingLineupSize !== null && league.payingLineupSize !== undefined) {
+      logger.info(`[PaymentScheduler] Skipping legacy dispatch for roster-configured league`, { jobId, scheduleId: scheduleRecord.id, leagueId: league.id });
+      return;
+    }
     // Authoritative canonical schedules are dispatched only by the durable
     // operation executor, which owns the league lock and dispatch cutoff.
     // The legacy scheduler fails closed here so it can never race a future

@@ -110,6 +110,22 @@ function emptyDoublePay(weeklyFee = 0): DoublePayStatus {
 export function calculateFinancials(league: League | null | undefined, payments: Payment[]): FinancialCalculation {
   const totalPaid = getTotalPaidAmount(payments);
 
+  // Configured leagues are obligation-driven. Historical payment rows remain
+  // visible in the archive, but they must never be converted into a legacy
+  // season balance or used as a payment-readiness fallback.
+  if (league?.payingLineupSize !== null && league?.payingLineupSize !== undefined) {
+    return {
+      weeksPassed: 0,
+      totalWeeksInSeason: 0,
+      totalDueToDate: 0,
+      totalPaid,
+      amountPastDue: 0,
+      fullSeasonAmount: 0,
+      remainingBalance: 0,
+      doublePay: emptyDoublePay(),
+    };
+  }
+
   if (!league?.seasonStart || !league?.seasonEnd || !league?.weeklyFee) {
     return {
       weeksPassed: 0,

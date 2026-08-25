@@ -10,7 +10,6 @@ import {
   payments,
   refundPaymentOperationSnapshots,
   scheduledPaymentOperationSnapshots,
-  canonicalAutopayExecutionSnapshots,
   webhookEvents,
   WEBHOOK_EVENT_MAX_ATTEMPTS,
   type WebhookEvent,
@@ -248,8 +247,6 @@ async function findDisputeOperation(
     currency: paymentOperations.currency,
     scheduledLocationId: scheduledPaymentOperationSnapshots.locationId,
     scheduledProviderLocationId: scheduledPaymentOperationSnapshots.providerLocationId,
-    canonicalLocationId: canonicalAutopayExecutionSnapshots.locationId,
-    canonicalProviderLocationId: canonicalAutopayExecutionSnapshots.providerLocationId,
     interactiveLocationId: interactivePaymentOperationSnapshots.locationId,
     interactiveProviderLocationId: interactivePaymentOperationSnapshots.providerLocationId,
   }).from(paymentOperations)
@@ -260,10 +257,6 @@ async function findDisputeOperation(
     .leftJoin(
       interactivePaymentOperationSnapshots,
       eq(interactivePaymentOperationSnapshots.operationId, paymentOperations.id),
-    )
-    .leftJoin(
-      canonicalAutopayExecutionSnapshots,
-      eq(canonicalAutopayExecutionSnapshots.operationId, paymentOperations.id),
     )
     .where(and(
       eq(paymentOperations.organizationId, row.organizationId),
@@ -282,8 +275,7 @@ async function findDisputeOperation(
         || operation.scheduledProviderLocationId === row.providerLocationId
       )
     : operation.operationType === "canonical_autopay_charge"
-      ? operation.canonicalLocationId === row.locationId
-        && operation.canonicalProviderLocationId === row.providerLocationId
+      ? false
       : operation.interactiveLocationId === row.locationId
       && (
         operation.interactiveProviderLocationId === null

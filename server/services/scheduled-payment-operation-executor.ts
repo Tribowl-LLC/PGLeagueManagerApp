@@ -39,13 +39,15 @@ import { autopaySetupOperationExecutor } from "./autopay-setup-operation-executo
 import { interactivePaymentOperationExecutor } from "./interactive-payment-operation-executor";
 import { refundPaymentOperationExecutor } from "./refund-payment-operation-executor";
 import { GENERAL_INTERACTIVE_TARGET_PREFIX } from "../storage/payment-operations";
-import { prepareCanonicalAutopayPlan } from "./canonical-autopay-preparation.js";
-import { executeCanonicalAutopayOperation } from "./canonical-autopay-operation-executor.js";
 
 const log = createLogger("ScheduledPaymentLedger");
 const LEASE_DURATION_MS = PAYMENT_OPERATION_MAX_LEASE_MS;
 const MIN_RETRY_MS = 60_000;
 const MAX_RETRY_MS = 6 * 60 * 60 * 1000;
+// Automatic collection is intentionally a PR2 capability. PR1 must not
+// dispatch a provider charge from either a legacy schedule or an abandoned
+// F3/D2/F4 plan while those authorities are being retired.
+const ROSTER_PAYMENT_AUTOPAY_ENABLED = false;
 
 export interface ScheduledPaymentOperationExecutorDependencies {
   now?: () => Date;
@@ -160,6 +162,10 @@ export class ScheduledPaymentOperationExecutor {
   }
 
   async start(mode: ScheduledPaymentExecutionMode): Promise<void> {
+    if (!ROSTER_PAYMENT_AUTOPAY_ENABLED) {
+      log.info("Automatic collection is dormant until PR2", { mode });
+      return;
+    }
     await this.wakeScheduler.start(mode);
   }
 
@@ -168,10 +174,15 @@ export class ScheduledPaymentOperationExecutor {
   }
 
   async rearm(): Promise<void> {
+    if (!ROSTER_PAYMENT_AUTOPAY_ENABLED) return;
     await this.wakeScheduler.rearm();
   }
 
   async handleWake(wake: PaymentOperationWake): Promise<{ retryAfterMs?: number } | void> {
+    if (!ROSTER_PAYMENT_AUTOPAY_ENABLED) {
+      log.info("Automatic collection wake ignored until PR2", { organizationId: wake.organizationId, kind: wake.kind });
+      return;
+    }
     if (wake.kind === "schedule") {
       const prepared = await prepareScheduledPaymentCycle({
         paymentScheduleId: wake.paymentScheduleId,
@@ -188,12 +199,7 @@ export class ScheduledPaymentOperationExecutor {
     }
 
     if (wake.kind === "canonical_plan") {
-      await prepareCanonicalAutopayPlan({
-        organizationId: wake.organizationId,
-        leagueId: wake.leagueId,
-        d2PlanId: wake.d2PlanId,
-        now: this.now(),
-      });
+      log.info("Canonical automatic collection wake ignored until PR2", { organizationId: wake.organizationId, leagueId: wake.leagueId });
       return;
     }
 
@@ -240,7 +246,7 @@ export class ScheduledPaymentOperationExecutor {
       return;
     }
     if (wake.operationType === "canonical_autopay_charge") {
-      await executeCanonicalAutopayOperation({ organizationId: wake.organizationId, operationId: wake.operationId, now: this.now() });
+      log.info("Canonical automatic collection operation ignored until PR2", { organizationId: wake.organizationId, operationId: wake.operationId });
       return;
     }
     if (wake.operationType !== "scheduled_charge") {

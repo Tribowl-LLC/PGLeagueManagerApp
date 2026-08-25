@@ -9,7 +9,7 @@ import { storage } from "../storage/index.js";
 import {
   CanonicalPaymentReportIncompatibilityError,
   readCanonicalPaymentReport,
-} from "../services/canonical-payment-report.js";
+} from "../services/roster-payment-archive-report.js";
 import { canonicalPaymentReportFingerprint } from "@shared/canonical-payment-report";
 
 const router = Router();

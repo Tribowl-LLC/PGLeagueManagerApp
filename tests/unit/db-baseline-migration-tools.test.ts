@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(32);
+    expect(migrations).toHaveLength(33);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -426,6 +426,18 @@ describe('normalized migration baseline tools', () => {
     expect(migrations[31]?.sql).toContain('"activation"."state" = \'active\'');
     expect(migrations[31]?.sql).toContain('"activation"."completeness_marker" = true');
     expect(migrations[31]?.sql).not.toContain('FROM "payments"');
+    expect(migrations[32]).toMatchObject({
+      idx: 32,
+      tag: '0032_roster_driven_payments_core',
+      createdAt: 1787500000000,
+      hash: 'a3681e2358e52d270742b6b96d04745070b6251cd487657424b7667acd744fc4',
+    });
+    expect(migrations[32]?.sql).toContain('0032 refused');
+    expect(migrations[32]?.sql).toContain('CREATE TABLE team_payment_slots');
+    expect(migrations[32]?.sql).toContain('CREATE TABLE payment_obligations');
+    expect(migrations[32]?.sql).toContain('CREATE TABLE payment_allocations');
+    expect(migrations[32]?.sql).toContain('CREATE TABLE financial_commands');
+    expect(migrations[32]?.sql).toContain('payment_operation_occurrence_snapshot_allocations');
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 

@@ -238,7 +238,7 @@ router.post("/", async (req, res) => {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
     
-    const created = await storage.createTeam(team);
+    const created = await storage.createTeam(team, req.user?.id);
     sendSuccess(res, created, 201);
   } catch (error) {
     if (error instanceof z.ZodError) {

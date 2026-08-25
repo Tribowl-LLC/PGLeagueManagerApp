@@ -29,7 +29,7 @@ import { useLocation } from "wouter";
 import { PaymentFormFields } from "@/components/payment-form-fields";
 import { PaymentMethodTabs } from "@/components/payment-method-tabs";
 import { usePaymentFormSubmit } from "@/hooks/use-payment-form-submit";
-import { beginPaymentIntent, clearPaymentIntent, paymentRequestHeaders, paymentRequestWithRecovery } from "@/lib/payment-request-identity";
+import { assertRosterPaymentSucceeded, beginPaymentIntent, clearPaymentIntent, isTerminalRosterPaymentFailure, paymentRequestHeaders, paymentRequestWithRecovery } from "@/lib/payment-request-identity";
 import { PaymentFeeInfoAlert } from "@/components/payment-fee-info-alert";
 import { PaymentCheckNumberField } from "@/components/payment-check-number-field";
 import { PaymentReceiptEmailField } from "@/components/payment-receipt-email-field";
@@ -141,7 +141,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
     if (leagueId) {
       form.setValue('leagueId', leagueId, { shouldDirty: false });
     }
-  }, [leagueId, form.setValue]);
+  }, [leagueId, form]);
 
   const paymentType = form.watch("type");
   const selectedBowlerId = form.watch("bowlerId");
@@ -245,7 +245,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
       setSelectedSavedCardId('');
       setReceiptEmail('');
     }
-  }, [open, form.reset]);
+  }, [open, form]);
 
   // Clear inline receipt-email when operator switches bowlers so we never
   // reuse the prior bowler's typed address. Render-time adjustment keyed on
@@ -279,6 +279,27 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
     try {
       const paymentScope = `admin-wallet:${bowlerId}:${currentLeagueId}:${amount}${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
       const requestKey = walletRequestKeyRef.current ?? beginPaymentIntent(paymentScope);
+      const exactObligationIds = [...new Set((occurrenceAllocations ?? []).map((row) => row.obligationId))];
+      if (leagueInfo?.payingLineupSize != null) {
+        if (exactObligationIds.length === 0) throw new Error("Wallet payments for roster-configured leagues require exact obligations.");
+        const quoteResponse = await csrfFetch(`/api/financials/leagues/${currentLeagueId}/interactive-obligation-quote/2`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ obligationIds: exactObligationIds, allocations: occurrenceAllocations }) });
+        const quoteBody = await quoteResponse.json();
+        if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw new Error(quoteBody.error?.message || "Exact payment obligations are unavailable.");
+        const exactResponse = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${currentLeagueId}/interactive-obligation-charge/2`, { method: "POST", headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" }, body: JSON.stringify({ obligationIds: exactObligationIds, allocations: occurrenceAllocations, payerBowlerId: quoteBody.data.payerBowlerId, sourceId: token, sourceKind: "wallet", buyerEmail: overrideEmail ?? selected?.email ?? null, storeCard: false, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }) }), leagueInfo.organizationId, currentLeagueId);
+        const exactBody = await exactResponse.json();
+        const rosterStatus = exactBody.data?.status ?? exactBody.status;
+        if (!exactResponse.ok) {
+          if (isTerminalRosterPaymentFailure(rosterStatus)) walletRequestKeyRef.current = null;
+          throw new Error(exactBody.error?.message || "Wallet payment failed.");
+        }
+        if (isTerminalRosterPaymentFailure(rosterStatus)) walletRequestKeyRef.current = null;
+        assertRosterPaymentSucceeded(rosterStatus);
+        walletRequestKeyRef.current = null;
+        toast({ title: "Success", description: `Payment processed via ${walletType === "apple_pay" ? "Apple Pay" : "Google Pay"}` });
+        queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
+        onClose();
+        return;
+      }
       const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch('/api/payments-provider/payments', {
         method: 'POST',
         headers: paymentRequestHeaders(requestKey),
@@ -324,7 +345,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
       setPaymentError(errorMessage);
       toast({ title: "Error", description: errorMessage, variant: "destructive" });
     }
-  }, [form, toast, queryClient, onClose, bowlers, receiptEmail, navigate, leagueInfo?.locationId, leagueInfo?.organizationId, occurrenceAllocations, occurrenceQuoteFingerprint]);
+  }, [form, toast, queryClient, onClose, bowlers, receiptEmail, navigate, leagueInfo?.locationId, leagueInfo?.organizationId, leagueInfo?.payingLineupSize, occurrenceAllocations, occurrenceQuoteFingerprint]);
 
   const beginWalletPayment = useCallback(() => {
     const values = form.getValues();
@@ -364,8 +385,8 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
   useEffect(() => {
     setOccurrenceAllocations([]);
     setOccurrenceQuoteFingerprint(undefined);
-    setOccurrenceReadiness(open && paymentType === 'credit_card' ? 'loading' : 'disabled');
-  }, [open, selectedBowlerId, leagueInfo?.id, paymentType]);
+    setOccurrenceReadiness(open && (paymentType === 'credit_card' || leagueInfo?.payingLineupSize != null) ? 'loading' : 'disabled');
+  }, [open, selectedBowlerId, leagueInfo?.id, leagueInfo?.payingLineupSize, paymentType]);
 
   // When the selected bowler has no email on file, capture one inline so
   // Square's hosted receipt still fires for this charge.
@@ -382,6 +403,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
     buyerEmail: !bowlerHasEmail ? receiptEmail : undefined,
     locationId: leagueInfo?.locationId ?? null,
     organizationId: leagueInfo?.organizationId,
+    canonical: leagueInfo?.payingLineupSize != null,
     occurrenceAllocations,
     occurrenceQuoteFingerprint,
     occurrenceReadiness,
@@ -409,7 +431,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
               </Alert>
             )}
             <PaymentFormFields form={form} bowlers={bowlers} />
-            {paymentType === "credit_card" && selectedBowlerId && leagueInfo && (
+            {selectedBowlerId && leagueInfo && (paymentType === "credit_card" || leagueInfo.payingLineupSize != null) && (
               <InteractiveOccurrenceSelector
                 leagueId={leagueInfo.id}
                 organizationId={leagueInfo.organizationId ?? undefined}
@@ -417,6 +439,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
                 amountMinor={watchedAmount || 0}
                 bowlerIds={[selectedBowlerId]}
                 enabled={open}
+                canonical={leagueInfo.payingLineupSize != null}
                 onChange={handleOccurrenceChange}
                 onReadinessChange={setOccurrenceReadiness}
               />

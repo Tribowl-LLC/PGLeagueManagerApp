@@ -1,7 +1,8 @@
 import { eq, and, inArray } from "drizzle-orm";
 import { db } from "../db.js";
-import { teams, type Team, type InsertTeam, type UpdateTeam } from "@shared/schema";
+import { teams, leagues, teamPaymentSlots, users, type Team, type InsertTeam, type UpdateTeam } from "@shared/schema";
 import { createLogger } from '../logger';
+import { lockLeagueSchedule } from './league-schedule-lock.js';
 
 const log = createLogger("StorageTeams");
 
@@ -18,18 +19,53 @@ export async function getTeam(id: number): Promise<Team | undefined> {
   return result;
 }
 
-export async function createTeam(team: InsertTeam): Promise<Team> {
-  const [result] = await db.insert(teams).values(team).returning();
-  return result;
+export async function createTeam(team: InsertTeam, recordedByUserId?: number): Promise<Team> {
+  return db.transaction(async (tx) => {
+    const [league] = await tx.select({ organizationId: leagues.organizationId, payingLineupSize: leagues.payingLineupSize }).from(leagues).where(eq(leagues.id, team.leagueId)).limit(1);
+    if (!league) throw new Error('League not found');
+    if (league.organizationId !== null) await lockLeagueSchedule(tx, league.organizationId, team.leagueId);
+    const [result] = await tx.insert(teams).values(team).returning();
+    if (result && league.organizationId !== null && league.payingLineupSize !== null) {
+      const actor = recordedByUserId ?? (await tx.select({ id: users.id }).from(users).where(and(
+        eq(users.organizationId, league.organizationId),
+        eq(users.role, "org_admin"),
+      )).orderBy(users.id).limit(1))[0]?.id;
+      if (actor !== undefined) {
+        await tx.insert(teamPaymentSlots).values(Array.from({ length: league.payingLineupSize }, (_, slotIndex) => ({
+          organizationId: league.organizationId as number,
+          leagueId: team.leagueId,
+          teamId: result.id,
+          slotIndex,
+          lineupSize: league.payingLineupSize as number,
+          occupant: "unassigned" as const,
+          mainBowlerId: null,
+          recordedByUserId: actor,
+        })));
+      }
+    }
+    return result;
+  });
 }
 
 export async function updateTeam(id: number, team: UpdateTeam): Promise<Team> {
-  const [result] = await db.update(teams).set(team).where(eq(teams.id, id)).returning();
-  return result;
+  return db.transaction(async (tx) => {
+    const [current] = await tx.select({ leagueId: teams.leagueId }).from(teams).where(eq(teams.id, id)).limit(1);
+    if (!current) throw new Error('Team not found');
+    const [league] = await tx.select({ organizationId: leagues.organizationId }).from(leagues).where(eq(leagues.id, current.leagueId)).limit(1);
+    if (league?.organizationId !== null && league) await lockLeagueSchedule(tx, league.organizationId, current.leagueId);
+    const [result] = await tx.update(teams).set(team).where(eq(teams.id, id)).returning();
+    return result;
+  });
 }
 
 export async function deleteTeam(id: number): Promise<void> {
-  await db.delete(teams).where(eq(teams.id, id));
+  await db.transaction(async (tx) => {
+    const [current] = await tx.select({ leagueId: teams.leagueId }).from(teams).where(eq(teams.id, id)).limit(1);
+    if (!current) return;
+    const [league] = await tx.select({ organizationId: leagues.organizationId }).from(leagues).where(eq(leagues.id, current.leagueId)).limit(1);
+    if (league?.organizationId !== null && league) await lockLeagueSchedule(tx, league.organizationId, current.leagueId);
+    await tx.delete(teams).where(eq(teams.id, id));
+  });
 }
 
 export async function getTeamByNumber(leagueId: number, teamNumber: number): Promise<Team | undefined> {

@@ -112,6 +112,8 @@ async function resolveReceiptUrl(paymentId: number, organizationId?: number): Pr
 }
 
 async function buildReceiptEvidence(paymentId: number, organizationId: number, viewer: Express.User): Promise<{ evidence: PaymentReceiptContract; sharedReceiptAllowed: boolean } | null> {
+  const paymentScope = await storage.getPaymentByIdForOrganization(paymentId, organizationId);
+  const scopedLeague = paymentScope ? await storage.getLeague(paymentScope.leagueId) : undefined;
   const projection = await readPaymentReceiptProjection({ organizationId, paymentId });
   const { payment, report, row } = projection;
   const transaction = report.transactions.find((candidate) => candidate.rows.some((candidateRow) => candidateRow.paymentId === payment.id));

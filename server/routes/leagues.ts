@@ -40,6 +40,7 @@ import {
   LeagueCanonicalScheduleLockedError,
   LeagueOccurrenceEvidenceExistsError,
   LeaguePaymentModeLockedError,
+  LeagueSubstituteConfigurationLockedError,
 } from '../storage/leagues';
 import {
   leagueSetupIntegrationIntentSchema,
@@ -691,8 +692,11 @@ router.patch("/:id", async (req: Request, res) => {
       fireLeagueBowlersExternalResync(id, req.user?.organizationId);
     }
 
+    // Canonical roster obligations carry their split amounts as immutable
+    // responsibility evidence. The historical payment projection backfill is
+    // only valid before roster cutover and must never rewrite canonical rows.
     const feesChanged = update.lineageFee !== undefined || update.prizeFundFee !== undefined;
-    if (feesChanged) {
+    if (feesChanged && updated.payingLineupSize == null) {
       try {
         const lineageFee = updated.lineageFee;
         const prizeFundFee = updated.prizeFundFee;
@@ -772,6 +776,14 @@ router.patch("/:id", async (req: Request, res) => {
         'Canonical schedule inputs cannot be changed after canonical schedule generation has started.',
         409,
         'LEAGUE_CANONICAL_SCHEDULE_LOCKED',
+      );
+    }
+    if (error instanceof LeagueSubstituteConfigurationLockedError) {
+      return sendError(
+        res,
+        'Substitute access and payment regime cannot change after the first canonical responsibility.',
+        409,
+        'LEAGUE_SUBSTITUTE_CONFIGURATION_LOCKED',
       );
     }
     if (error instanceof CanonicalLeagueScheduleEditError) {

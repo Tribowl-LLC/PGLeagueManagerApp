@@ -119,7 +119,7 @@ describe('Task #454 — admin-supplied FK id existence checks', () => {
   });
 
   describe('POST /api/payments', () => {
-    it('returns 404 NOT_FOUND when the bowlerId points at a non-existent bowler', async () => {
+    it('rejects the retired inferred payment route before FK lookup', async () => {
       // 2_000_000_000 is well above any seeded bowler id but well within
       // int range, so it parses cleanly and the only failure mode is
       // the existence check (no FK fallthrough). Mirrors the missing-
@@ -138,10 +138,9 @@ describe('Task #454 — admin-supplied FK id existence checks', () => {
         orgAAdmin,
       );
 
-      expect(status).toBe(404);
+      expect(status).toBe(409);
       expect(data.success).toBe(false);
-      expect(data.error?.code).toBe('NOT_FOUND');
-      expect(data.error?.message).toMatch(/bowler not found/i);
+      expect(data.error?.code).toBe('CANONICAL_ALLOCATION_REQUIRED');
 
       // Belt-and-suspenders: prove no row was inserted under the
       // missing bowler id. If the existence check ever regresses,
@@ -156,7 +155,7 @@ describe('Task #454 — admin-supplied FK id existence checks', () => {
       expect(orphans).toHaveLength(0);
     });
 
-    it('happy path: a valid bowlerId stamps the payment normally', async () => {
+    it('rejects inferred cash entry even when the bowler exists', async () => {
       // Closes the matrix so a regression that turns the existence
       // check into a deny-everything guard would also be caught.
       const { status, data } = await apiPost<{ id: number; bowlerId: number }>(
@@ -172,11 +171,9 @@ describe('Task #454 — admin-supplied FK id existence checks', () => {
         orgAAdmin,
       );
 
-      expect(status).toBe(201);
-      expect(data.success).toBe(true);
-      const created = data.data!;
-      createdPaymentIds.push(created.id);
-      expect(created.bowlerId).toBe(bowlerId);
+      expect(status).toBe(409);
+      expect(data.success).toBe(false);
+      expect(data.error?.code).toBe('CANONICAL_ALLOCATION_REQUIRED');
     });
   });
 

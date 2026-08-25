@@ -243,6 +243,7 @@ export const PaymentSetupForm: FC<PaymentSetupFormProps> = ({
               amountMinor={baseAmount * (hasCombinedPicks ? 1 + additionalBowlerIds.length : 1)}
               bowlerIds={hasCombinedPicks ? [selfBowler.id, ...additionalBowlerIds] : [targetBowlerId]}
               enabled
+              canonical={league.payingLineupSize != null}
               onChange={handleOccurrenceChange}
               onReadinessChange={setOccurrenceReadiness}
             />

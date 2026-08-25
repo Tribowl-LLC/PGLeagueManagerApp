@@ -7,6 +7,7 @@ import {
   locations,
   organizations,
   teams,
+  teamPaymentSlots,
   users,
   DEFAULT_TIMEZONE,
   type InsertLeague,
@@ -688,6 +689,8 @@ function buildNewSeasonLeague(
     name: source.name,
     description: source.description,
     payingLineupSize: source.payingLineupSize as 3 | 4,
+    substituteAccess: source.substituteAccess ?? "team_only",
+    substitutePaymentRegime: source.substitutePaymentRegime ?? "team_choice",
     active: true,
     allowPublicSignup: values.allowPublicSignup ?? source.allowPublicSignup,
     seasonStart: seasonStart.toISOString(),
@@ -870,6 +873,18 @@ async function createNewSeasonInTransaction(input: {
       displayOrder: sourceTeam.displayOrder,
     }).returning();
     if (!newTeam) throw new LeagueSetupIntegrationError("transaction_failure", "new season team was not copied");
+    if (league.payingLineupSize !== null && league.organizationId !== null) {
+      await input.tx.insert(teamPaymentSlots).values(Array.from({ length: league.payingLineupSize }, (_, slotIndex) => ({
+        organizationId: league.organizationId as number,
+        leagueId: league.id,
+        teamId: newTeam.id,
+        slotIndex,
+        lineupSize: league.payingLineupSize as number,
+        occupant: "unassigned" as const,
+        mainBowlerId: null,
+        recordedByUserId: input.scope.actorUserId,
+      })));
+    }
     teamIdMap.set(sourceTeam.id, newTeam.id);
   }
   injectFailure(input.failureInjection, "after_team_copy");

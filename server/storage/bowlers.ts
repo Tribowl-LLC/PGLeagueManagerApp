@@ -2,15 +2,76 @@ import { eq, and, sql, inArray, ilike, asc } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   bowlers, bowlerLeagues, leagues, teams,
+  teamPaymentSlots, teamPaymentSlotRevisions, leagueOccurrences, users,
   type Bowler, type InsertBowler, type UpdateBowler,
   type BowlerLeague, type InsertBowlerLeague, type UpdateBowlerLeague,
 } from "@shared/schema";
 import { createLogger } from '../logger';
 import { cacheFetch, cacheInvalidate } from '../utils/cache';
+import { lockLeagueSchedule } from './league-schedule-lock.js';
+import { materializeRosterPaymentOccurrenceInTransaction } from '../services/roster-payment-materializer.js';
 
 const log = createLogger("StorageBowlers");
 
 const BOWLERS_TTL = 30_000;
+
+async function lockRosterLeague(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], leagueId: number): Promise<void> {
+  const [league] = await tx.select({ organizationId: leagues.organizationId }).from(leagues).where(eq(leagues.id, leagueId)).limit(1);
+  if (!league) throw new Error('League not found');
+  if (league.organizationId !== null) await lockLeagueSchedule(tx, league.organizationId, leagueId);
+}
+
+async function clearMainRosterSlotsForBowler(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  input: { organizationId: number; leagueId: number; bowlerId: number; actorUserId?: number },
+): Promise<void> {
+  await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
+  const auditUserId = input.actorUserId ?? (await tx.select({ id: users.id }).from(users).where(eq(users.organizationId, input.organizationId)).limit(1))[0]?.id;
+  if (!auditUserId) throw new Error("Roster slot invalidation requires an audit actor");
+  const now = new Date().toISOString();
+  const affectedSlots = await tx.select().from(teamPaymentSlots).where(and(
+    eq(teamPaymentSlots.organizationId, input.organizationId),
+    eq(teamPaymentSlots.leagueId, input.leagueId),
+    eq(teamPaymentSlots.mainBowlerId, input.bowlerId),
+    eq(teamPaymentSlots.occupant, "main"),
+  )).for("update");
+  for (const slot of affectedSlots) {
+    const [vacated] = await tx.update(teamPaymentSlots).set({
+      occupant: "vacant",
+      mainBowlerId: null,
+      currentRevision: slot.currentRevision + 1,
+      updatedAt: now,
+    }).where(eq(teamPaymentSlots.id, slot.id)).returning();
+    await tx.insert(teamPaymentSlotRevisions).values({
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      slotId: slot.id,
+      revisionNumber: vacated.currentRevision,
+      beforeSnapshot: slot,
+      afterSnapshot: vacated,
+      recordedByUserId: auditUserId,
+    });
+  }
+  if (affectedSlots.length === 0) return;
+  const affectedTeamIds = [...new Set(affectedSlots.map((slot) => slot.teamId))];
+  const occurrences = await tx.select({ id: leagueOccurrences.id }).from(leagueOccurrences).where(and(
+    eq(leagueOccurrences.organizationId, input.organizationId),
+    eq(leagueOccurrences.leagueId, input.leagueId),
+    inArray(leagueOccurrences.lifecycle, ["published", "locked"] as const),
+    inArray(leagueOccurrences.status, ["scheduled", "completed"] as const),
+  ));
+  for (const occurrence of occurrences) {
+    for (const teamId of affectedTeamIds) {
+      await materializeRosterPaymentOccurrenceInTransaction(tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        occurrenceId: occurrence.id,
+        actorUserId: auditUserId,
+        teamId,
+      });
+    }
+  }
+}
 
 const bowlerColumns = {
   id: bowlers.id,
@@ -83,8 +144,45 @@ export async function createBowler(
   return result;
 }
 
-export async function updateBowler(id: number, bowler: UpdateBowler): Promise<Bowler> {
-  const [result] = await db.update(bowlers).set(bowler).where(eq(bowlers.id, id)).returning();
+export async function updateBowler(id: number, bowler: UpdateBowler, actorUserId?: number): Promise<Bowler> {
+  const result = await db.transaction(async (tx) => {
+    const [current] = await tx.select().from(bowlers).where(eq(bowlers.id, id)).for("update").limit(1);
+    if (!current) throw new Error("Bowler not found");
+
+    // Deactivation is a roster mutation, not merely a profile-field update.
+    // Acquire every affected league lock before changing the bowler so a
+    // concurrent roster/payment command cannot observe an inactive Main that
+    // still owns a paying slot.
+    const isDeactivating = current.active === true && bowler.active === false;
+    const affectedLeagues = isDeactivating
+      ? await tx
+          .select({ leagueId: bowlerLeagues.leagueId, organizationId: leagues.organizationId })
+          .from(bowlerLeagues)
+          .innerJoin(leagues, eq(leagues.id, bowlerLeagues.leagueId))
+          .where(and(eq(bowlerLeagues.bowlerId, id), eq(bowlerLeagues.active, true)))
+          .orderBy(asc(bowlerLeagues.leagueId))
+      : [];
+    for (const league of affectedLeagues) {
+      if (league.organizationId !== null) {
+        await lockLeagueSchedule(tx, league.organizationId, league.leagueId);
+      }
+    }
+
+    const [updated] = await tx.update(bowlers).set(bowler).where(eq(bowlers.id, id)).returning();
+    if (isDeactivating) {
+      for (const league of affectedLeagues) {
+        if (league.organizationId !== null) {
+          await clearMainRosterSlotsForBowler(tx, {
+            organizationId: league.organizationId,
+            leagueId: league.leagueId,
+            bowlerId: id,
+            actorUserId,
+          });
+        }
+      }
+    }
+    return updated;
+  });
   cacheInvalidate('bowlers:');
   return result;
 }
@@ -143,6 +241,7 @@ export async function isBowlerActiveInLeague(bowlerId: number, leagueId: number)
 
 export async function createBowlerLeague(bowlerLeague: InsertBowlerLeague): Promise<BowlerLeague> {
   return db.transaction(async (tx) => {
+    await lockRosterLeague(tx, bowlerLeague.leagueId);
     await tx.execute(sql`SELECT id FROM ${teams} WHERE id = ${bowlerLeague.teamId} FOR UPDATE`);
 
     const [maxOrder] = await tx
@@ -190,6 +289,7 @@ export async function createBowlerLeagueIfNotInLeague(
   bowlerLeague: InsertBowlerLeague,
 ): Promise<BowlerLeague | null> {
   return db.transaction(async (tx) => {
+    await lockRosterLeague(tx, bowlerLeague.leagueId);
     // Lock the bowler row so concurrent transactions targeting the same
     // bowler serialize. A racing transaction will block here until this
     // one commits/rollbacks, and will then observe the link we are
@@ -259,6 +359,7 @@ export async function createBowlerLeagueIfBowlerFree(
   bowlerLeague: InsertBowlerLeague,
 ): Promise<BowlerLeague | null> {
   return db.transaction(async (tx) => {
+    await lockRosterLeague(tx, bowlerLeague.leagueId);
     // Lock the bowler row so concurrent bootstrap transactions for the
     // same bowler serialize. Any racing transaction will block here
     // until this one commits/rollbacks, and then will observe the link
@@ -302,12 +403,48 @@ export async function createBowlerLeagueIfBowlerFree(
   });
 }
 
-export async function updateBowlerLeague(id: number, bowlerLeague: UpdateBowlerLeague): Promise<BowlerLeague> {
-  const [result] = await db
-    .update(bowlerLeagues)
-    .set(bowlerLeague)
-    .where(eq(bowlerLeagues.id, id))
-    .returning();
+export async function updateBowlerLeague(id: number, bowlerLeague: UpdateBowlerLeague, actorUserId?: number): Promise<BowlerLeague> {
+  const result = await db.transaction(async (tx) => {
+    const [current] = await tx.select().from(bowlerLeagues).where(eq(bowlerLeagues.id, id)).limit(1);
+    if (!current) throw new Error('Bowler league not found');
+    if (bowlerLeague.leagueId !== undefined && bowlerLeague.leagueId !== current.leagueId) {
+      throw new Error('LEAGUE_MOVE_REQUIRES_REASSIGNMENT');
+    }
+    await lockRosterLeague(tx, current.leagueId);
+    const [updated] = await tx.update(bowlerLeagues).set(bowlerLeague).where(eq(bowlerLeagues.id, id)).returning();
+    const bowlerIdentityChanged = bowlerLeague.bowlerId !== undefined && bowlerLeague.bowlerId !== current.bowlerId;
+    if ((bowlerIdentityChanged || bowlerLeague.active === false || (bowlerLeague.teamId !== undefined && bowlerLeague.teamId !== current.teamId)) && updated) {
+      const [league] = await tx.select({ organizationId: leagues.organizationId }).from(leagues).where(eq(leagues.id, current.leagueId)).limit(1);
+      if (league?.organizationId !== null && league?.organizationId !== undefined) {
+        const now = new Date().toISOString();
+        const auditUserId = actorUserId ?? (await tx.select({ id: users.id }).from(users).where(eq(users.organizationId, league.organizationId)).limit(1))[0]?.id;
+        if (!auditUserId) throw new Error('Roster slot change requires an audit actor');
+        const affectedSlots = await tx.select().from(teamPaymentSlots).where(and(
+          eq(teamPaymentSlots.organizationId, league.organizationId),
+          eq(teamPaymentSlots.leagueId, current.leagueId),
+          eq(teamPaymentSlots.mainBowlerId, current.bowlerId),
+          eq(teamPaymentSlots.occupant, 'main'),
+          eq(teamPaymentSlots.teamId, current.teamId),
+        )).for('update');
+        for (const slot of affectedSlots) {
+          const [vacated] = await tx.update(teamPaymentSlots).set({ occupant: 'vacant', mainBowlerId: null, currentRevision: slot.currentRevision + 1, updatedAt: now }).where(eq(teamPaymentSlots.id, slot.id)).returning();
+          await tx.insert(teamPaymentSlotRevisions).values({ organizationId: league.organizationId, leagueId: current.leagueId, slotId: slot.id, revisionNumber: vacated.currentRevision, beforeSnapshot: slot, afterSnapshot: vacated, recordedByUserId: auditUserId });
+        }
+        if (affectedSlots.length > 0) {
+          const occurrences = await tx.select({ id: leagueOccurrences.id }).from(leagueOccurrences).where(and(
+            eq(leagueOccurrences.organizationId, league.organizationId),
+            eq(leagueOccurrences.leagueId, current.leagueId),
+            inArray(leagueOccurrences.lifecycle, ['published', 'locked'] as const),
+            inArray(leagueOccurrences.status, ['scheduled', 'completed'] as const),
+          ));
+          for (const occurrence of occurrences) {
+            await materializeRosterPaymentOccurrenceInTransaction(tx, { organizationId: league.organizationId, leagueId: current.leagueId, occurrenceId: occurrence.id, actorUserId: auditUserId });
+          }
+        }
+      }
+    }
+    return updated;
+  });
   cacheInvalidate('bowlers:');
   return result;
 }
@@ -322,6 +459,8 @@ export async function updateBowlerLeagueOrder(id: number, newOrder: number): Pro
     if (!targetBowlerLeague) {
       throw new Error('Bowler league not found');
     }
+
+    await lockRosterLeague(tx, targetBowlerLeague.leagueId);
 
     await tx.execute(sql`SELECT id FROM ${teams} WHERE id = ${targetBowlerLeague.teamId} FOR UPDATE`);
 
@@ -351,9 +490,16 @@ export async function updateBowlerLeagueOrder(id: number, newOrder: number): Pro
 }
 
 export async function deleteBowlerLeague(id: number): Promise<boolean> {
-  const result = await db.delete(bowlerLeagues)
-    .where(eq(bowlerLeagues.id, id))
-    .returning();
+  const result = await db.transaction(async (tx) => {
+    const [current] = await tx.select({ leagueId: bowlerLeagues.leagueId, bowlerId: bowlerLeagues.bowlerId }).from(bowlerLeagues).where(eq(bowlerLeagues.id, id)).limit(1);
+    if (!current) return [];
+    await lockRosterLeague(tx, current.leagueId);
+    const [league] = await tx.select({ organizationId: leagues.organizationId }).from(leagues).where(eq(leagues.id, current.leagueId)).limit(1);
+    if (league?.organizationId !== null && league?.organizationId !== undefined) {
+      await clearMainRosterSlotsForBowler(tx, { organizationId: league.organizationId, leagueId: current.leagueId, bowlerId: current.bowlerId });
+    }
+    return tx.delete(bowlerLeagues).where(eq(bowlerLeagues.id, id)).returning();
+  });
   cacheInvalidate('bowlers:');
   return result.length > 0;
 }
@@ -519,9 +665,16 @@ export async function getBowlersByEmailSystemAdmin(email: string): Promise<Bowle
  * and stored payment-provider references and marks the bowler inactive.
  */
 export async function anonymizeBowler(id: number): Promise<Bowler> {
-  const [updated] = await db
-    .update(bowlers)
-    .set({
+  const [updated] = await db.transaction(async (tx) => {
+    const memberships = await tx.select({ leagueId: bowlerLeagues.leagueId }).from(bowlerLeagues).where(eq(bowlerLeagues.bowlerId, id));
+    for (const membership of memberships) {
+      const [league] = await tx.select({ organizationId: leagues.organizationId }).from(leagues).where(eq(leagues.id, membership.leagueId)).limit(1);
+      if (league?.organizationId !== null && league?.organizationId !== undefined) {
+        await clearMainRosterSlotsForBowler(tx, { organizationId: league.organizationId, leagueId: membership.leagueId, bowlerId: id });
+      }
+    }
+    return tx.update(bowlers)
+      .set({
       name: 'Deleted Bowler',
       email: null,
       phone: null,
@@ -533,8 +686,9 @@ export async function anonymizeBowler(id: number): Promise<Bowler> {
       paymentSyncLastAttemptAt: null,
       paymentSyncNextRetryAt: null,
     })
-    .where(eq(bowlers.id, id))
-    .returning();
+      .where(eq(bowlers.id, id))
+      .returning();
+  });
   cacheInvalidate('bowlers:');
   if (!updated) {
     throw new Error(`Failed to anonymize bowler ${id}`);
