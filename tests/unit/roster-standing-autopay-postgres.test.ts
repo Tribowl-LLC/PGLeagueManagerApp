@@ -422,8 +422,11 @@ describe("standing automatic payments on migrated PostgreSQL", () => {
   });
 
   it("binds consent replacement to a new version even at the same cutoff", async () => {
-    const target = await publishOccurrence("2039-03-05T19:00:00.000Z");
-    const firstConsent = await insertConsent({ version: 5, activatedAt: "2039-01-02T00:00:00.000Z" });
+    // This cutoff is earlier than every other standing fixture occurrence so
+    // the scheduler assertion below proves the replacement version is
+    // discoverable, rather than merely observing an unrelated later wake.
+    const target = await publishOccurrence("2039-01-01T18:00:00.000Z");
+    const firstConsent = await insertConsent({ version: 5, activatedAt: "2038-12-01T00:00:00.000Z" });
     const { activateStandingAutopayConsent, prepareStandingAutopayCutoff } = await import("../../server/services/roster-standing-autopay");
     const firstOperation = await prepareStandingAutopayCutoff({ organizationId, leagueId, consentId: firstConsent.id, cutoffAt: target.occurrence.startAt });
     expect(firstOperation).toBeDefined();
@@ -441,6 +444,15 @@ describe("standing automatic payments on migrated PostgreSQL", () => {
     const [releasedFirst] = await db.select().from(paymentOperationRosterSnapshotItems).where(eq(paymentOperationRosterSnapshotItems.operationId, firstOperation!.id));
     expect(canceledFirst.status).toBe("canceled");
     expect(releasedFirst.state).toBe("released");
+    // Keep unrelated retry work out of this scheduler assertion; the query
+    // must choose the replacement consent's restored cutoff itself.
+    await db.update(paymentOperations).set({ nextAttemptAt: "2099-01-01T00:00:00.000Z" }).where(and(
+      eq(paymentOperations.organizationId, organizationId),
+      eq(paymentOperations.operationType, "standing_autopay_charge"),
+      inArray(paymentOperations.status, ["pending", "retry_scheduled", "provider_unknown"] as const),
+    ));
+    const replacementWake = await getNextStandingAutopayWake();
+    expect(replacementWake).toMatchObject({ kind: "standing_cutoff", organizationId, leagueId, consentId: replacement.id, dueAt: "2039-01-01 18:00:00" });
     const replacementOperation = await prepareStandingAutopayCutoff({ organizationId, leagueId, consentId: replacement.id, cutoffAt: target.occurrence.startAt });
     expect(replacementOperation).toBeDefined();
     expect(replacementOperation!.id).not.toBe(firstOperation!.id);

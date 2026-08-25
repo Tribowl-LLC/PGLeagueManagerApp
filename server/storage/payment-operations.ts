@@ -3091,10 +3091,16 @@ export async function getNextStandingAutopayWake(): Promise<StandingAutopayWake 
        AND NOT EXISTS (
          SELECT 1
            FROM payment_operations blocked
+           INNER JOIN payment_operation_standing_autopay_bindings blocked_binding
+             ON blocked_binding.operation_id = blocked.id
+            AND blocked_binding.organization_id = blocked.organization_id
+            AND blocked_binding.league_id = blocked.league_id
           WHERE blocked.organization_id = c.organization_id
             AND blocked.league_id = c.league_id
             AND blocked.operation_type = 'standing_autopay_charge'
             AND blocked.status IN ('canceled', 'failed_terminal', 'action_required', 'reconciliation_required')
+            AND blocked_binding.consent_id = c.id
+            AND blocked_binding.consent_version = c.consent_version
            AND blocked.trigger_occurrence_id = cutoff_occurrence.id
            AND blocked.target_key LIKE concat(
               'standing-autopay:%:', cutoff_occurrence.current_revision
