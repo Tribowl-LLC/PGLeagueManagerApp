@@ -18,6 +18,8 @@ import {
 import { getTestDb, getTestPool } from "../setup/test-db";
 import { deleteOrganization } from "../../server/storage/organizations";
 import { createGame, deleteGame, updateGame } from "../../server/storage/games-scores";
+import { archiveLeague } from "../../server/storage/leagues";
+import { createTeam, deleteTeam, renumberActiveTeams, reorderTeams, updateTeam } from "../../server/storage/teams";
 import {
   CanonicalGamesScoresError,
   createAuthorizedScoreBatch,
@@ -476,5 +478,80 @@ describe("E2 canonical games and scores PostgreSQL behavior", () => {
     await expect(loadLeagueGames({ organizationId, leagueId }))
       .rejects.toMatchObject({ evidence: { classification: "duplicate_occurrence_game_number" } });
     if (duplicate) await db.delete(games).where(eq(games.id, duplicate.id));
+  });
+
+  it("lets an archive win the league lock before game and score writers, including a repeated archive", async () => {
+    await db.insert(bowlerLeagues).values({
+      bowlerId: foreignBowlerId,
+      leagueId: otherLeagueId,
+      teamId: otherTeamId,
+      active: true,
+    });
+    const baseline = await createGame({ leagueId: otherLeagueId, weekNumber: 1, gameNumber: 1, date: "2037-01-08" });
+    const blocker = await getTestPool().connect();
+    let archivePromise: Promise<unknown> | undefined;
+    let createPromise: Promise<unknown> | undefined;
+    let scorePromise: Promise<unknown> | undefined;
+    try {
+      // The archive acquires the same league advisory lock as every scoped
+      // writer. Holding it briefly makes the ordering deterministic: once the
+      // archive commits, both queued mutations must reread retired authority.
+      await blocker.query("BEGIN");
+      await blocker.query("SELECT pg_advisory_xact_lock($1::integer, $2::integer)", [otherOrganizationId, otherLeagueId]);
+      archivePromise = archiveLeague(otherLeagueId, otherOrganizationId);
+      let archiveWaiting = 0;
+      for (let attempt = 0; attempt < 200 && archiveWaiting < 1; attempt += 1) {
+        const waiting = await blocker.query<{ count: string }>(`
+          SELECT count(*)::text AS count
+          FROM pg_locks
+          WHERE locktype = 'advisory'
+            AND classid = $1::oid
+            AND objid = $2::oid
+            AND granted = false
+        `, [otherOrganizationId, otherLeagueId]);
+        archiveWaiting = Number(waiting.rows[0]?.count ?? 0);
+        if (archiveWaiting < 1) await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(archiveWaiting).toBeGreaterThanOrEqual(1);
+      createPromise = createGame({ leagueId: otherLeagueId, weekNumber: 1, gameNumber: 2, date: "2037-01-08" });
+      scorePromise = createAuthorizedScoreBatch({
+        organizationId: otherOrganizationId,
+        authorizedLeagueIds: [otherLeagueId],
+        batchScores: [scoreInput(baseline.id, { bowlerId: foreignBowlerId, teamId: otherTeamId })],
+      });
+      await blocker.query("COMMIT");
+      const archived = await archivePromise;
+      expect(archived).toMatchObject({ id: otherLeagueId, active: false, scheduleAuthority: "canonical" });
+      await expect(createPromise).rejects.toThrow(/archive|read-only|canonical/i);
+      await expect(scorePromise).rejects.toThrow();
+      expect(await db.select().from(games).where(eq(games.leagueId, otherLeagueId))).toHaveLength(1);
+      await expect(archiveLeague(otherLeagueId, otherOrganizationId)).resolves.toMatchObject({
+        id: otherLeagueId,
+        active: false,
+        scheduleAuthority: "canonical",
+      });
+    } finally {
+      await blocker.query("ROLLBACK").catch(() => undefined);
+      await Promise.allSettled([archivePromise, createPromise, scorePromise].filter((value): value is Promise<unknown> => value !== undefined));
+      blocker.release();
+    }
+  });
+
+  it("keeps retired legacy league evidence immutable at the database and child-writer boundaries", async () => {
+    const [retainedGame] = await db.select().from(games).where(eq(games.leagueId, fallbackLeagueId)).limit(1);
+    if (!retainedGame) throw new Error("retired legacy fixture game was not created");
+    await db.update(leagues).set({ active: false, scheduleAuthority: "retired_legacy" }).where(eq(leagues.id, fallbackLeagueId));
+    await expect(db.update(leagues).set({ name: "illegal retired rename" }).where(eq(leagues.id, fallbackLeagueId))).rejects.toThrow();
+    await expect(db.delete(leagues).where(eq(leagues.id, fallbackLeagueId))).rejects.toThrow();
+    await expect(updateGame(retainedGame.id, { date: retainedGame.date })).rejects.toThrow(/archive|read-only|canonical/i);
+    await expect(deleteGame(retainedGame.id)).rejects.toThrow();
+  });
+
+  it("fences every known team writer after a league archive", async () => {
+    await expect(createTeam({ leagueId: otherLeagueId, name: "late team", number: 2, active: true })).rejects.toThrow(/archive|read-only/i);
+    await expect(updateTeam(otherTeamId, { name: "late rename" })).rejects.toThrow(/archive|read-only/i);
+    await expect(deleteTeam(otherTeamId)).rejects.toThrow(/archive|read-only/i);
+    await expect(reorderTeams([{ id: otherTeamId, displayOrder: 0, number: 1 }])).rejects.toThrow(/archive|read-only/i);
+    await expect(renumberActiveTeams(otherLeagueId)).rejects.toThrow(/archive|read-only/i);
   });
 });

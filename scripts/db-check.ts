@@ -883,6 +883,7 @@ async function validateVersion(
       'fresh_active',
       'fresh_proof',
       'historical_discrepancy',
+      'financial_refusal',
       'adoption_template',
       'legacy_inert_rls',
       'adoption_success',
@@ -955,6 +956,26 @@ async function validateVersion(
       }
     } finally {
       await historicalClient.end().catch(() => undefined);
+    }
+
+    const financialRefusal = 'financial_refusal';
+    await createDatabase(adminUrl, financialRefusal, container);
+    const financialRefusalUrl = databaseUrl(port, financialRefusal);
+    const financialPre0034Run = await runCheckedMigrations(financialRefusalUrl, pre0034);
+    if (JSON.stringify(financialPre0034Run.applied) !== JSON.stringify(pre0034Tags)) {
+      throw new Error('The disposable financial-refusal fixture did not stop at migration 0033.');
+    }
+    await executeSql(financialRefusalUrl, [
+      readFileSync(resolve('tests', 'fixtures', 'migrations', '0034_active_payment_schedule.sql'), 'utf8'),
+    ]);
+    let financialRefused = false;
+    try {
+      await runCheckedMigrations(financialRefusalUrl);
+    } catch (error) {
+      financialRefused = String(error).includes('0034 refused: partial or contradictory canonical evidence');
+    }
+    if (!financialRefused) {
+      throw new Error('Migration 0034 did not refuse a league with an active executable payment schedule.');
     }
 
     const freshProof = 'fresh_proof';

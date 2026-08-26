@@ -20,9 +20,15 @@ import {
   scheduledPaymentOperationAllocations,
   users,
 } from "@shared/schema";
-import { getTestDb } from "../setup/test-db";
+import { getTestDb, getTestPool } from "../setup/test-db";
 import { expectErrorLog } from "../helpers/expected-error-logs";
 import { deleteOrganization } from "../../server/storage/organizations";
+import { archiveLeague } from "../../server/storage/leagues";
+import {
+  deactivatePaymentSchedule,
+  updatePaymentScheduleCard,
+  updatePaymentScheduleFields,
+} from "../../server/storage/payments";
 import {
   acquirePaymentOperationLease,
   acquireScheduledPaymentOperationDispatchCutoff,
@@ -711,6 +717,69 @@ describe("scheduled payment ledger cutover PostgreSQL behavior", () => {
     expect((await preparation).kind).toBe("stale");
     expect(await db.select().from(paymentOperations)
       .where(eq(paymentOperations.paymentScheduleId, schedule.id))).toHaveLength(0);
+  });
+
+  it("fences archive-first and callback-first cycle races without provider dispatch", async () => {
+    const callbackOwned = await createSchedule({ nextPaymentDate: cycleAt });
+    const callbackLock = await acquireLegacyScheduledCycleLock(callbackOwned.schedule.id, cycleAt);
+    if (!callbackLock) throw new Error("callback-first fixture did not acquire the cycle lock");
+    let archiveSettled = false;
+    const callbackFirstArchive = archiveLeague(callbackOwned.league.id, organizationId).finally(() => { archiveSettled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(archiveSettled).toBe(false);
+    // A legacy callback cannot acquire the exact cycle while archive waits for
+    // the callback's already-owned lock; releasing it lets archive fence the
+    // schedule before its transaction commits.
+    expect(await acquireLegacyScheduledCycleLock(callbackOwned.schedule.id, cycleAt)).toBeUndefined();
+    await callbackLock.release();
+    await expect(callbackFirstArchive).resolves.toMatchObject({ active: false, id: callbackOwned.league.id });
+
+    const archiveOwned = await createSchedule({ nextPaymentDate: "2032-02-05T18:30:00.000Z" });
+    const leagueBlocker = await getTestPool().connect();
+    let archiveFirst: Promise<unknown> | undefined;
+    try {
+      await leagueBlocker.query("BEGIN");
+      await leagueBlocker.query("SELECT pg_advisory_xact_lock($1::integer, $2::integer)", [organizationId, archiveOwned.league.id]);
+      archiveFirst = archiveLeague(archiveOwned.league.id, organizationId);
+      let archiveWaiting = 0;
+      for (let attempt = 0; attempt < 200 && archiveWaiting < 1; attempt += 1) {
+        const waiting = await leagueBlocker.query<{ count: string }>(`
+          SELECT count(*)::text AS count
+          FROM pg_locks
+          WHERE locktype = 'advisory'
+            AND classid = $1::oid
+            AND objid = $2::oid
+            AND granted = false
+        `, [organizationId, archiveOwned.league.id]);
+        archiveWaiting = Number(waiting.rows[0]?.count ?? 0);
+        if (archiveWaiting < 1) await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(archiveWaiting).toBeGreaterThanOrEqual(1);
+      // The archive holds the cycle fence while it waits on the league lock;
+      // a callback therefore returns without entering provider code.
+      expect(await acquireLegacyScheduledCycleLock(archiveOwned.schedule.id, archiveOwned.schedule.nextPaymentDate)).toBeUndefined();
+      await leagueBlocker.query("COMMIT");
+      await expect(archiveFirst).resolves.toMatchObject({ active: false, id: archiveOwned.league.id });
+    } finally {
+      await leagueBlocker.query("ROLLBACK").catch(() => undefined);
+      await Promise.allSettled([archiveFirst].filter((value): value is Promise<unknown> => value !== undefined));
+      leagueBlocker.release();
+    }
+  });
+
+  it("fences schedule preparation and all schedule writers after a repeated archive", async () => {
+    const { schedule, league } = await createSchedule({ nextPaymentDate: "2032-03-05T18:30:00.000Z" });
+    await expect(archiveLeague(league.id, organizationId)).resolves.toMatchObject({ active: false, id: league.id });
+    await expect(prepareScheduledPaymentCycle({ paymentScheduleId: schedule.id, billingCycleAt: schedule.nextPaymentDate, now: dueNow }))
+      .resolves.toMatchObject({ kind: "stale" });
+    await expect(updatePaymentScheduleFields(schedule.id, { amount: 2_100 })).rejects.toThrow(/archived|read-only/i);
+    await expect(updatePaymentScheduleCard(schedule.bowlerId, schedule.leagueId, "ccof:archived-card"))
+      .rejects.toThrow(/archived|read-only/i);
+    await expect(deactivatePaymentSchedule(schedule.id, "late archive writer"))
+      .rejects.toThrow(/archived|read-only/i);
+    await expect(archiveLeague(league.id, organizationId)).resolves.toMatchObject({ active: false, id: league.id });
+    const [stored] = await db.select().from(paymentSchedules).where(eq(paymentSchedules.id, schedule.id));
+    expect(stored).toMatchObject({ active: false, cancelReason: "league_archived" });
   });
 
   it("allows a later cycle after hard decline while blocking the owned cycle", async () => {

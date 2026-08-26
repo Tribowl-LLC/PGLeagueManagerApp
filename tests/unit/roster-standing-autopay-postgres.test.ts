@@ -372,6 +372,46 @@ describe("standing automatic payments on migrated PostgreSQL", () => {
     expect(updatedConsent).toMatchObject({ state: "revoked", consentVersion: 3, providerLocationId: "square-location-fixture" });
   });
 
+  it("moves provider-unknown consent work to reconciliation while preserving dispatch evidence", async () => {
+    const consent = await insertConsent({ version: 31, activatedAt: "2039-01-02T00:00:00.000Z" });
+    const target = await publishOccurrence("2039-02-26T19:00:00.000Z");
+    const { prepareStandingAutopayCutoff, revokeStandingAutopayConsent } = await import("../../server/services/roster-standing-autopay");
+    const operation = await prepareStandingAutopayCutoff({ organizationId, leagueId, consentId: consent.id, cutoffAt: target.occurrence.startAt });
+    if (!operation) throw new Error("provider-unknown revoke fixture was not prepared");
+    const dispatchClaimedAt = new Date().toISOString();
+    await db.update(paymentOperations).set({
+      status: "provider_unknown",
+      attemptCount: 1,
+      startedAt: dispatchClaimedAt,
+      nextAttemptAt: "2039-02-26T20:00:00.000Z",
+      dispatchClaimedAt,
+      providerObjectId: "square-payment-unknown",
+      errorClassification: "provider_unknown",
+      errorCode: "NETWORK_UNKNOWN",
+    }).where(eq(paymentOperations.id, operation.id));
+
+    await revokeStandingAutopayConsent({
+      organizationId,
+      leagueId,
+      payerBowlerId,
+      actorUserId,
+      request: { commandKey: `standing-revoke-provider-unknown-${randomUUID()}` },
+    });
+    const [updatedOperation] = await db.select().from(paymentOperations).where(eq(paymentOperations.id, operation.id));
+    const [snapshotItem] = await db.select().from(paymentOperationRosterSnapshotItems).where(eq(paymentOperationRosterSnapshotItems.operationId, operation.id));
+    expect(updatedOperation).toMatchObject({
+      status: "reconciliation_required",
+      nextAttemptAt: null,
+      leaseOwner: null,
+      leaseExpiresAt: null,
+      dispatchClaimedAt: expect.any(String),
+      providerObjectId: "square-payment-unknown",
+      completedAt: expect.any(String),
+    });
+    expect(new Date(updatedOperation.dispatchClaimedAt ?? "").toISOString()).toBe(dispatchClaimedAt);
+    expect(snapshotItem.state).toBe("reserved");
+  });
+
   it("rejects participant evidence tampering at the deferred database boundary", async () => {
     const standingOperation = await db.select({ id: paymentOperations.id, consentVersion: paymentOperationStandingAutopayBindings.consentVersion, obligationId: paymentOperationStandingAutopayParticipants.obligationId }).from(paymentOperations).innerJoin(paymentOperationStandingAutopayBindings, eq(paymentOperationStandingAutopayBindings.operationId, paymentOperations.id)).innerJoin(paymentOperationStandingAutopayParticipants, eq(paymentOperationStandingAutopayParticipants.operationId, paymentOperations.id)).where(and(eq(paymentOperations.organizationId, organizationId), eq(paymentOperations.operationType, "standing_autopay_charge"))).orderBy(sql`${paymentOperations.createdAt} DESC`).limit(1);
     expect(standingOperation).toHaveLength(1);
