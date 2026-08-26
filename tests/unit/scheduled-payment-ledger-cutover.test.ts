@@ -26,6 +26,9 @@ import { deleteOrganization } from "../../server/storage/organizations";
 import { archiveLeague } from "../../server/storage/leagues";
 import {
   deactivatePaymentSchedule,
+  deletePayment,
+  updatePayment,
+  updatePaymentReceiptCacheForOrganization,
   updatePaymentScheduleCard,
   updatePaymentScheduleFields,
 } from "../../server/storage/payments";
@@ -780,6 +783,26 @@ describe("scheduled payment ledger cutover PostgreSQL behavior", () => {
     await expect(archiveLeague(league.id, organizationId)).resolves.toMatchObject({ active: false, id: league.id });
     const [stored] = await db.select().from(paymentSchedules).where(eq(paymentSchedules.id, schedule.id));
     expect(stored).toMatchObject({ active: false, cancelReason: "league_archived" });
+  });
+
+  it("rechecks active canonical authority for public payment mutation while retaining receipt reconciliation", async () => {
+    const { league, bowler } = await createSchedule({ nextPaymentDate: "2032-04-05T18:30:00.000Z" });
+    const [payment] = await db.insert(payments).values({
+      bowlerId: bowler.id,
+      leagueId: league.id,
+      amount: 2_000,
+      weekOf: "2032-04-05T18:30:00.000Z",
+      status: "paid",
+      type: "cash",
+    }).returning();
+    if (!payment) throw new Error("payment authority fixture was not created");
+    await archiveLeague(league.id, organizationId);
+    await expect(updatePaymentReceiptCacheForOrganization(payment.id, organizationId, {
+      receiptUrl: "https://square.example.test/archived-receipt",
+      receiptNumber: "ARCHIVED-RECEIPT",
+    })).resolves.toMatchObject({ id: payment.id, receiptNumber: "ARCHIVED-RECEIPT" });
+    await expect(updatePayment(payment.id, { notes: "late public edit" })).rejects.toThrow(/archived|read-only/i);
+    await expect(deletePayment(payment.id)).rejects.toThrow(/archived|read-only/i);
   });
 
   it("allows a later cycle after hard decline while blocking the owned cycle", async () => {

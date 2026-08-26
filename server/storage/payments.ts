@@ -47,6 +47,10 @@ export class FinancialEvidenceIncompatibleError extends Error {
   constructor() { super("financial evidence is incompatible"); this.name = "FinancialEvidenceIncompatibleError"; }
 }
 
+export class ArchivedLeaguePaymentMutationError extends Error {
+  constructor() { super("Archived leagues are read-only"); this.name = "ArchivedLeaguePaymentMutationError"; }
+}
+
 interface PaymentFilters {
   bowlerId?: number;
   leagueId?: number;
@@ -341,7 +345,17 @@ export async function updatePayment(id: number, payment: UpdatePayment): Promise
       .innerJoin(leagues, eq(leagues.id, payments.leagueId))
       .where(eq(payments.id, id)).limit(1);
     if (!scope) return undefined;
-    if (scope.organizationId !== null) await lockLeagueSchedule(tx, scope.organizationId, scope.leagueId);
+    if (scope.organizationId !== null) {
+      await lockLeagueSchedule(tx, scope.organizationId, scope.leagueId);
+      const [authority] = await tx.select({ active: leagues.active, scheduleAuthority: leagues.scheduleAuthority })
+        .from(leagues)
+        .where(and(eq(leagues.id, scope.leagueId), eq(leagues.organizationId, scope.organizationId)))
+        .limit(1)
+        .for("share");
+      if (!authority || authority.active !== true || authority.scheduleAuthority !== "canonical") {
+        throw new ArchivedLeaguePaymentMutationError();
+      }
+    }
     const [current] = await tx.select({
       id: payments.id,
       paymentOperationId: payments.paymentOperationId,
@@ -429,7 +443,17 @@ export async function deletePayment(id: number): Promise<void> {
       .innerJoin(leagues, eq(leagues.id, payments.leagueId))
       .where(eq(payments.id, id)).limit(1);
     if (!scope) return;
-    if (scope.organizationId !== null) await lockLeagueSchedule(tx, scope.organizationId, scope.leagueId);
+    if (scope.organizationId !== null) {
+      await lockLeagueSchedule(tx, scope.organizationId, scope.leagueId);
+      const [authority] = await tx.select({ active: leagues.active, scheduleAuthority: leagues.scheduleAuthority })
+        .from(leagues)
+        .where(and(eq(leagues.id, scope.leagueId), eq(leagues.organizationId, scope.organizationId)))
+        .limit(1)
+        .for("share");
+      if (!authority || authority.active !== true || authority.scheduleAuthority !== "canonical") {
+        throw new ArchivedLeaguePaymentMutationError();
+      }
+    }
     const [payment] = await tx.select({
       id: payments.id,
       paymentOperationId: payments.paymentOperationId,

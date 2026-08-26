@@ -25,7 +25,10 @@ LOCK TABLE
   "autopay_consents",
   "payment_operations",
   "payment_operation_roster_snapshots",
-  "payment_operation_roster_snapshot_items"
+  "payment_operation_roster_snapshot_items",
+  "financial_commands",
+  "payment_operation_standing_autopay_bindings",
+  "payment_operation_standing_autopay_participants"
   IN SHARE ROW EXCLUSIVE MODE;
 --> statement-breakpoint
 
@@ -152,17 +155,22 @@ BEGIN
      GROUP BY l.organization_id, l.league_id
     HAVING count(*) <> 1
     UNION
-    SELECT l.organization_id, l.league_id
-      FROM live_runs l
-     WHERE l.state = 'approved'
-       AND NOT EXISTS (SELECT 1 FROM current_runs r
-         WHERE r.organization_id = l.organization_id AND r.league_id = l.league_id)
-    UNION
     SELECT r.organization_id, r.league_id
       FROM league_occurrence_billing_terms t
       JOIN league_occurrences o ON o.id = t.occurrence_id AND o.organization_id = t.organization_id AND o.league_id = t.league_id
       JOIN current_runs r ON r.organization_id = t.organization_id AND r.league_id = t.league_id
      WHERE t.state = 'published' AND o.generation_run_id IS DISTINCT FROM r.id
+       AND NOT (
+         o.generation_run_id IS NULL
+         AND o.kind IN ('makeup', 'position_round', 'rolloff', 'playoff', 'extension')
+         AND o.last_command_id IS NOT NULL
+         AND o.published_at IS NOT NULL
+         AND o.published_by_user_id IS NOT NULL
+         AND o.publication_command_id IS NOT NULL
+         AND t.published_at IS NOT NULL
+         AND t.published_by_user_id IS NOT NULL
+         AND t.publication_command_id IS NOT NULL
+       )
     UNION
     SELECT r.organization_id, r.league_id
       FROM league_occurrence_relationships x
@@ -174,6 +182,25 @@ BEGIN
            AND target.league_id = x.league_id AND target.generation_run_id = r.id
            AND target.lifecycle IN ('published', 'locked'))
        OR x.published_at IS NULL OR x.published_by_user_id IS NULL OR x.publication_command_id IS NULL)
+       AND NOT (
+         o.generation_run_id IS NULL
+         AND o.kind = 'makeup'
+         AND x.kind = 'makeup_for'
+         AND o.last_command_id IS NOT NULL
+         AND o.published_at IS NOT NULL
+         AND o.published_by_user_id IS NOT NULL
+         AND o.publication_command_id IS NOT NULL
+         AND x.last_command_id IS NOT NULL
+         AND x.published_at IS NOT NULL
+         AND x.published_by_user_id IS NOT NULL
+         AND x.publication_command_id IS NOT NULL
+         AND EXISTS (SELECT 1 FROM league_occurrences target
+           WHERE target.id = x.target_occurrence_id
+             AND target.organization_id = x.organization_id
+             AND target.league_id = x.league_id
+             AND target.generation_run_id = r.id
+             AND target.lifecycle IN ('published', 'locked'))
+       )
     UNION
     SELECT r.organization_id, r.league_id
       FROM league_schedule_exceptions x
@@ -196,7 +223,18 @@ BEGIN
              WHERE t.organization_id = r.organization_id AND t.league_id = r.league_id
                AND t.state = 'published'
                AND (o.generation_run_id IS DISTINCT FROM r.id
-                 OR t.published_at IS NULL OR t.published_by_user_id IS NULL OR t.publication_command_id IS NULL))
+                 OR t.published_at IS NULL OR t.published_by_user_id IS NULL OR t.publication_command_id IS NULL)
+               AND NOT (
+                 o.generation_run_id IS NULL
+                 AND o.kind IN ('makeup', 'position_round', 'rolloff', 'playoff', 'extension')
+                 AND o.last_command_id IS NOT NULL
+                 AND o.published_at IS NOT NULL
+                 AND o.published_by_user_id IS NOT NULL
+                 AND o.publication_command_id IS NOT NULL
+                 AND t.published_at IS NOT NULL
+                 AND t.published_by_user_id IS NOT NULL
+                 AND t.publication_command_id IS NOT NULL
+               ))
     UNION
     SELECT g.organization_id, g.league_id FROM canonical_collection_groups g
      WHERE g.state IN ('published', 'revoked')
@@ -264,6 +302,15 @@ BEGIN
          OR EXISTS (SELECT 1 FROM payment_operations p WHERE p.organization_id = l.organization_id AND p.league_id = l.id
            AND p.status IN ('pending', 'leased', 'provider_unknown', 'retry_scheduled', 'action_required', 'reconciliation_required'))
          OR EXISTS (SELECT 1 FROM payment_operation_roster_snapshot_items i WHERE i.organization_id = l.organization_id AND i.league_id = l.id AND i.state = 'reserved')
+         OR EXISTS (SELECT 1 FROM financial_commands c WHERE c.organization_id = l.organization_id AND c.league_id = l.id AND c.state = 'accepted')
+         OR EXISTS (SELECT 1 FROM payment_operation_standing_autopay_bindings b
+           LEFT JOIN payment_operations p ON p.id = b.operation_id AND p.organization_id = b.organization_id AND p.league_id = b.league_id
+           WHERE b.organization_id = l.organization_id AND b.league_id = l.id
+             AND (p.id IS NULL OR p.status IN ('pending', 'leased', 'provider_unknown', 'retry_scheduled', 'action_required', 'reconciliation_required')))
+         OR EXISTS (SELECT 1 FROM payment_operation_standing_autopay_participants q
+           LEFT JOIN payment_operations p ON p.id = q.operation_id AND p.organization_id = q.organization_id AND p.league_id = q.league_id
+           WHERE q.organization_id = l.organization_id AND q.league_id = l.id
+             AND (p.id IS NULL OR p.status IN ('pending', 'leased', 'provider_unknown', 'retry_scheduled', 'action_required', 'reconciliation_required')))
        )
   )
   SELECT array_agg(DISTINCT invalid.league_id ORDER BY invalid.league_id) INTO bad_leagues FROM invalid;

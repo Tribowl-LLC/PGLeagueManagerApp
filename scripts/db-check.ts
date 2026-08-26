@@ -958,6 +958,90 @@ async function validateVersion(
       await historicalClient.end().catch(() => undefined);
     }
 
+    const auditedSpecial = 'audited_post_set_special';
+    await createDatabase(adminUrl, auditedSpecial, container);
+    const auditedSpecialUrl = databaseUrl(port, auditedSpecial);
+    const auditedSpecialPre0034Run = await runCheckedMigrations(auditedSpecialUrl, pre0034);
+    if (JSON.stringify(auditedSpecialPre0034Run.applied) !== JSON.stringify(pre0034Tags)) {
+      throw new Error('The disposable audited-special fixture did not stop at migration 0033.');
+    }
+    await executeSql(auditedSpecialUrl, [
+      readFileSync(resolve('tests', 'fixtures', 'migrations', '0034_audited_post_set_special.sql'), 'utf8'),
+    ]);
+    const auditedSpecialMigration = await runCheckedMigrations(auditedSpecialUrl);
+    if (JSON.stringify(auditedSpecialMigration.applied) !== JSON.stringify([activeMigrationTags.at(-1)])) {
+      throw new Error('Migration 0034 refused valid audited post-set special evidence.');
+    }
+    const auditedSpecialClient = new pg.Client({ connectionString: auditedSpecialUrl, application_name: 'leaguevault-db-check-0034-audited-special' });
+    try {
+      await auditedSpecialClient.connect();
+      const result = await auditedSpecialClient.query<{ schedule_authority: string; special_count: string; special_term_count: string; relationship_count: string }>(`
+        SELECT l.schedule_authority,
+          (SELECT count(*)::text FROM league_occurrences o
+            WHERE o.organization_id = 34 AND o.league_id = 3401 AND o.generation_run_id IS NULL AND o.kind = 'makeup') AS special_count,
+          (SELECT count(*)::text FROM league_occurrence_billing_terms t
+            JOIN league_occurrences o ON o.id = t.occurrence_id
+            WHERE t.organization_id = 34 AND t.league_id = 3401 AND o.generation_run_id IS NULL AND t.state = 'published') AS special_term_count,
+          (SELECT count(*)::text FROM league_occurrence_relationships x
+            WHERE x.organization_id = 34 AND x.league_id = 3401 AND x.state = 'published' AND x.kind = 'makeup_for') AS relationship_count
+        FROM leagues l WHERE l.organization_id = 34 AND l.id = 3401
+      `);
+      const row = result.rows[0];
+      if (!row || row.schedule_authority !== 'canonical' || row.special_count !== '1' || row.special_term_count !== '1' || row.relationship_count !== '1') {
+        throw new Error('Migration 0034 did not retain valid audited post-set special evidence.');
+      }
+    } finally {
+      await auditedSpecialClient.end().catch(() => undefined);
+    }
+
+    const malformedSpecial = 'malformed_post_set_special';
+    await createDatabase(adminUrl, malformedSpecial, container);
+    const malformedSpecialUrl = databaseUrl(port, malformedSpecial);
+    const malformedSpecialPre0034Run = await runCheckedMigrations(malformedSpecialUrl, pre0034);
+    if (JSON.stringify(malformedSpecialPre0034Run.applied) !== JSON.stringify(pre0034Tags)) {
+      throw new Error('The disposable malformed-special fixture did not stop at migration 0033.');
+    }
+    await executeSql(malformedSpecialUrl, [
+      readFileSync(resolve('tests', 'fixtures', 'migrations', '0034_malformed_post_set_special.sql'), 'utf8'),
+    ]);
+    let malformedSpecialRefused = false;
+    try {
+      await runCheckedMigrations(malformedSpecialUrl);
+    } catch (error) {
+      malformedSpecialRefused = String(error).includes('0034 refused: partial or contradictory canonical evidence');
+    }
+    if (!malformedSpecialRefused) {
+      throw new Error('Migration 0034 accepted malformed post-set special evidence.');
+    }
+
+    const approvedOnly = 'approved_only_dormant';
+    await createDatabase(adminUrl, approvedOnly, container);
+    const approvedOnlyUrl = databaseUrl(port, approvedOnly);
+    const approvedOnlyPre0034Run = await runCheckedMigrations(approvedOnlyUrl, pre0034);
+    if (JSON.stringify(approvedOnlyPre0034Run.applied) !== JSON.stringify(pre0034Tags)) {
+      throw new Error('The disposable approved-only fixture did not stop at migration 0033.');
+    }
+    await executeSql(approvedOnlyUrl, [
+      readFileSync(resolve('tests', 'fixtures', 'migrations', '0034_approved_only_dormant.sql'), 'utf8'),
+    ]);
+    const approvedOnlyMigration = await runCheckedMigrations(approvedOnlyUrl);
+    if (JSON.stringify(approvedOnlyMigration.applied) !== JSON.stringify([activeMigrationTags.at(-1)])) {
+      throw new Error('Migration 0034 refused dormant approved-only evidence.');
+    }
+    const approvedOnlyClient = new pg.Client({ connectionString: approvedOnlyUrl, application_name: 'leaguevault-db-check-0034-approved-only' });
+    try {
+      await approvedOnlyClient.connect();
+      const result = await approvedOnlyClient.query<{ schedule_authority: string; active: boolean }>(
+        'SELECT schedule_authority, active FROM leagues WHERE organization_id = 36 AND id = 3601',
+      );
+      const row = result.rows[0];
+      if (!row || row.schedule_authority !== 'retired_legacy' || row.active !== false) {
+        throw new Error('Migration 0034 did not retire dormant approved-only evidence.');
+      }
+    } finally {
+      await approvedOnlyClient.end().catch(() => undefined);
+    }
+
     const financialRefusal = 'financial_refusal';
     await createDatabase(adminUrl, financialRefusal, container);
     const financialRefusalUrl = databaseUrl(port, financialRefusal);

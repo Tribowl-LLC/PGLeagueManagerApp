@@ -555,6 +555,18 @@ describe('PATCH /api/leagues/:id (rename) → fires Square resync for every bowl
     expect(await res.json()).toMatchObject({ success: false });
     expect(mockStorage.updateLeague).not.toHaveBeenCalled();
   });
+
+  it('requires the dedicated archive endpoint for active-state changes', async () => {
+    const league = makeLeague({ active: true });
+    mockStorage.getLeague.mockResolvedValue(league);
+    const res = await patch(`/api/leagues/${league.id}`, { active: false });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({
+      success: false,
+      error: { code: 'LEAGUE_ARCHIVE_ENDPOINT_REQUIRED' },
+    });
+    expect(mockStorage.updateLeague).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------

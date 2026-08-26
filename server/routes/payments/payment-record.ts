@@ -21,7 +21,7 @@ import { eq, and, gte, lte, sql } from 'drizzle-orm';
 import { payments as paymentsTable } from '@shared/schema';
 import { createLogger } from '../../logger';
 import { getPgErrorCode } from '../../utils/db-errors';
-import { CanonicalAllocationRequiredError, FinancialEvidenceIncompatibleError, PaymentDisputeEvidenceExistsError, PaymentEvidenceImmutableError, PaymentOccurrenceEvidenceExistsError } from '../../storage/payments.js';
+import { ArchivedLeaguePaymentMutationError, CanonicalAllocationRequiredError, FinancialEvidenceIncompatibleError, PaymentDisputeEvidenceExistsError, PaymentEvidenceImmutableError, PaymentOccurrenceEvidenceExistsError } from '../../storage/payments.js';
 
 const log = createLogger("Payments");
 
@@ -252,6 +252,9 @@ router.patch("/:id", paymentWriteLimiter, async (req, res) => {
     if (error instanceof PaymentEvidenceImmutableError) {
       return sendError(res, 'Payment evidence is immutable', 409, 'PAYMENT_EVIDENCE_RETAINED');
     }
+    if (error instanceof ArchivedLeaguePaymentMutationError) {
+      return sendError(res, error.message, 409, 'LEAGUE_ARCHIVED_READ_ONLY');
+    }
     sendError(res, 'Failed to update payment');
   }
 });
@@ -299,6 +302,9 @@ router.delete("/:id", paymentWriteLimiter, async (req, res) => {
     }
     if (error instanceof PaymentOccurrenceEvidenceExistsError) {
       return sendError(res, 'This payment is retained as occurrence allocation evidence and cannot be deleted.', 409, 'PAYMENT_EVIDENCE_RETAINED');
+    }
+    if (error instanceof ArchivedLeaguePaymentMutationError) {
+      return sendError(res, error.message, 409, 'LEAGUE_ARCHIVED_READ_ONLY');
     }
     log.error('Delete error:', error);
     sendError(res, 'Failed to delete payment');

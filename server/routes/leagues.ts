@@ -514,6 +514,19 @@ router.patch("/:id", async (req: Request, res) => {
     if (!isAdminCaller) {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
+
+    // Active-state transitions have a dedicated lock-coupled archive/restore
+    // endpoint.  Keeping them out of the generic PATCH prevents a stale
+    // metadata edit from bypassing schedule fencing and financial cleanup.
+    if (Object.prototype.hasOwnProperty.call(req.body ?? {}, "active")
+      && req.body.active !== league.active) {
+      return sendError(
+        res,
+        "League active state must be changed through the dedicated archive or restore endpoint",
+        409,
+        "LEAGUE_ARCHIVE_ENDPOINT_REQUIRED",
+      );
+    }
     
     // Non-admin users cannot change the organization of a league
     if (req.user?.role !== 'system_admin' && req.body.organizationId !== undefined
@@ -615,7 +628,7 @@ router.patch("/:id", async (req: Request, res) => {
       "weekDay", "competitionStartTime", "timezone", "totalBowlingWeeks", "paymentMode",
     ].some((field) => Object.prototype.hasOwnProperty.call(req.body ?? {}, field));
     const canonicalMetadataFieldChanged = [
-      "name", "description", "payingLineupSize", "active", "allowPublicSignup", "practiceStartTime",
+      "name", "description", "payingLineupSize", "allowPublicSignup", "practiceStartTime",
       "lineageFee", "prizeFundFee", "squareLineageItemId", "lineageItemVariationId",
       "squareLineageItemName", "squarePrizeFundItemId", "prizeFundItemVariationId",
       "squarePrizeFundItemName", "squareCategoryId",
@@ -676,7 +689,6 @@ router.patch("/:id", async (req: Request, res) => {
           ...(update.name === undefined ? {} : { name: update.name }),
           ...(update.description === undefined ? {} : { description: update.description }),
           ...(update.payingLineupSize === undefined ? {} : { payingLineupSize: update.payingLineupSize }),
-          ...(update.active === undefined ? {} : { active: update.active }),
           ...(update.allowPublicSignup === undefined ? {} : { allowPublicSignup: update.allowPublicSignup }),
           ...(update.practiceStartTime === undefined ? {} : { practiceStartTime: update.practiceStartTime }),
           ...(update.lineageFee === undefined ? {} : { lineageFee: update.lineageFee }),

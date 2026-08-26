@@ -589,6 +589,17 @@ function validateErrorDetails(
   return code;
 }
 
+function assertProviderEvidenceMatches(
+  operation: Pick<PaymentOperation, "providerObjectId" | "providerOrderId">,
+  providerObjectId: string | null | undefined,
+  providerOrderId: string | null | undefined,
+): void {
+  if ((operation.providerObjectId !== null && providerObjectId != null && operation.providerObjectId !== providerObjectId)
+    || (operation.providerOrderId !== null && providerOrderId != null && operation.providerOrderId !== providerOrderId)) {
+    throw new PaymentOperationImmutableMismatchError();
+  }
+}
+
 function validateFutureDueAt(value: Date, now: Date, label: string): string {
   const dueAt = toIso(value, label);
   const delayMs = value.getTime() - now.getTime();
@@ -2100,6 +2111,7 @@ export async function recordPaymentOperationProviderUnknown(
   const errorCode = validateErrorDetails("provider_unknown", input.errorCode);
 
   const updated = await db.transaction(async (tx) => {
+    const current = await lockCanonicalMutationScope(tx, input.organizationId, input.operationId);
     const [transitioned] = await tx
       .update(paymentOperations)
       .set({
@@ -2157,7 +2169,42 @@ export async function recordPaymentOperationProviderUnknown(
     // An exhausted unknown result is not proof of failure. Keep the exact
     // provider identity and fencing token for explicit reconciliation, and
     // deliberately omit a failed payment-history row.
-    return transitioned;
+    if (transitioned) return transitioned;
+
+    // Archive may win the league lock while the provider call is in flight.
+    // The archive deliberately leaves the dispatch token and reservations in
+    // place, so attach the late provider identity to that same fenced row but
+    // never reopen, finalize, or release it.
+    if (current?.operationType === "standing_autopay_charge"
+      && current.status === "reconciliation_required"
+      && current.leaseToken === input.leaseToken) {
+      assertProviderEvidenceMatches(current, input.providerObjectId, input.providerOrderId);
+      const [reconciled] = await tx.update(paymentOperations).set({
+        status: "reconciliation_required",
+        nextAttemptAt: null,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        providerObjectId: input.providerObjectId ?? undefined,
+        providerOrderId: input.providerOrderId ?? undefined,
+        errorClassification: "provider_unknown",
+        errorCode,
+        completedAt: current.completedAt ?? now,
+        updatedAt: now,
+      }).where(and(
+        eq(paymentOperations.organizationId, input.organizationId),
+        eq(paymentOperations.id, input.operationId),
+        eq(paymentOperations.status, "reconciliation_required"),
+        eq(paymentOperations.leaseToken, input.leaseToken),
+        input.providerObjectId == null
+          ? undefined
+          : or(isNull(paymentOperations.providerObjectId), eq(paymentOperations.providerObjectId, input.providerObjectId)),
+        input.providerOrderId == null
+          ? undefined
+          : or(isNull(paymentOperations.providerOrderId), eq(paymentOperations.providerOrderId, input.providerOrderId)),
+      )).returning();
+      return reconciled;
+    }
+    return undefined;
   });
   if (!updated) return throwInvalidTransition(input.organizationId, input.operationId);
   return updated;
@@ -2229,7 +2276,7 @@ async function recordTerminalErrorOutcome(
   const errorCode = validateErrorDetails(input.errorClassification, input.errorCode);
 
   const updated = await db.transaction(async (tx) => {
-    await lockCanonicalMutationScope(tx, input.organizationId, input.operationId);
+    const current = await lockCanonicalMutationScope(tx, input.organizationId, input.operationId);
     const [transitioned] = await tx
       .update(paymentOperations)
       .set({
@@ -2260,30 +2307,67 @@ async function recordTerminalErrorOutcome(
           ),
       ))
       .returning();
-    if (!transitioned) return undefined;
-    await insertLinkedPaymentRows(
-      tx,
-      input.organizationId,
-      input.operationId,
-      input.failedPaymentRows,
-    );
-    // A deterministic terminal failure before dispatch must not strand the
-    // cutoff reservation. Once dispatch has started we retain the reservation
-    // as fail-closed evidence until provider reconciliation resolves it.
-    if (
-      transitioned.operationType === "standing_autopay_charge"
-      && transitioned.leagueId !== null
-      && (transitioned.dispatchClaimedAt === null || transitioned.status === "action_required")
-      && transitioned.providerObjectId === null
-    ) {
-      await releaseRosterReservationsWithoutProviderEvidence(tx, {
-        organizationId: input.organizationId,
-        leagueId: transitioned.leagueId,
-        operationId: transitioned.id,
-      });
+    if (transitioned) {
+      await insertLinkedPaymentRows(
+        tx,
+        input.organizationId,
+        input.operationId,
+        input.failedPaymentRows,
+      );
+      // A deterministic terminal failure before dispatch must not strand the
+      // cutoff reservation. Once dispatch has started we retain the reservation
+      // as fail-closed evidence until provider reconciliation resolves it.
+      if (
+        transitioned.operationType === "standing_autopay_charge"
+        && transitioned.leagueId !== null
+        && (transitioned.dispatchClaimedAt === null || transitioned.status === "action_required")
+        && transitioned.providerObjectId === null
+      ) {
+        await releaseRosterReservationsWithoutProviderEvidence(tx, {
+          organizationId: input.organizationId,
+          leagueId: transitioned.leagueId,
+          operationId: transitioned.id,
+        });
+      }
+      if (transitioned.operationType === "canonical_autopay_charge") return transitioned;
+      return transitioned;
     }
-    if (transitioned.operationType === "canonical_autopay_charge") return transitioned;
-    return transitioned;
+
+    // An archive can win while an already-dispatched provider response is
+    // still being classified. Keep the archived reconciliation state and
+    // attach only immutable provider evidence; never release its reservation
+    // or turn the archive back into an action-required execution state.
+    if (input.status === "action_required"
+      && current?.operationType === "standing_autopay_charge"
+      && current.status === "reconciliation_required"
+      && current.leaseToken === input.leaseToken) {
+      assertProviderEvidenceMatches(current, input.providerObjectId, input.providerOrderId);
+      const [reconciled] = await tx.update(paymentOperations).set({
+        status: "reconciliation_required",
+        nextAttemptAt: null,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        providerObjectId: input.providerObjectId ?? undefined,
+        providerOrderId: input.providerOrderId ?? undefined,
+        errorClassification: "provider_unknown",
+        errorCode,
+        completedAt: current.completedAt ?? now,
+        updatedAt: now,
+      }).where(and(
+        eq(paymentOperations.organizationId, input.organizationId),
+        eq(paymentOperations.id, input.operationId),
+        eq(paymentOperations.status, "reconciliation_required"),
+        eq(paymentOperations.leaseToken, input.leaseToken),
+        input.providerObjectId == null
+          ? undefined
+          : or(isNull(paymentOperations.providerObjectId), eq(paymentOperations.providerObjectId, input.providerObjectId)),
+        input.providerOrderId == null
+          ? undefined
+          : or(isNull(paymentOperations.providerOrderId), eq(paymentOperations.providerOrderId, input.providerOrderId)),
+      )).returning();
+      return reconciled;
+    }
+    return undefined;
   });
   if (updated) return updated;
 
@@ -2639,9 +2723,35 @@ export async function finalizePaymentOperationSuccessInTransaction(
   if (
     existing.status === "reconciliation_required"
     && existing.leaseToken === input.leaseToken
-    && existing.providerObjectId === input.providerObjectId
-    && (input.providerOrderId == null || existing.providerOrderId === input.providerOrderId)
-  ) return existing;
+  ) {
+    assertProviderEvidenceMatches(existing, input.providerObjectId, input.providerOrderId);
+    if (existing.operationType === "standing_autopay_charge") {
+      const [reconciled] = await tx.update(paymentOperations).set({
+        status: "reconciliation_required",
+        providerObjectId: input.providerObjectId,
+        providerOrderId: input.providerOrderId ?? undefined,
+        nextAttemptAt: null,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        errorClassification: existing.errorClassification ?? "provider_unknown",
+        errorCode: existing.errorCode ?? "LEAGUE_ARCHIVED_AFTER_DISPATCH",
+        completedAt: existing.completedAt ?? now,
+        updatedAt: now,
+      }).where(and(
+        eq(paymentOperations.organizationId, input.organizationId),
+        eq(paymentOperations.id, input.operationId),
+        eq(paymentOperations.status, "reconciliation_required"),
+        eq(paymentOperations.leaseToken, input.leaseToken),
+        or(isNull(paymentOperations.providerObjectId), eq(paymentOperations.providerObjectId, input.providerObjectId)),
+        input.providerOrderId == null
+          ? undefined
+          : or(isNull(paymentOperations.providerOrderId), eq(paymentOperations.providerOrderId, input.providerOrderId)),
+      )).returning();
+      return reconciled ?? existing;
+    }
+    if (existing.providerObjectId === input.providerObjectId
+      && (input.providerOrderId == null || existing.providerOrderId === input.providerOrderId)) return existing;
+  }
   throw new PaymentOperationInvalidTransitionError(existing.status);
 }
 

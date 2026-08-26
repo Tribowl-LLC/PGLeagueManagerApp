@@ -47,6 +47,7 @@ import {
   restoreFallDraftOccurrence,
 } from "../../server/services/fall-draft-review";
 import { deleteOrganization } from "../../server/storage/organizations";
+import { archiveLeague } from "../../server/storage/leagues";
 import { getTestDb } from "../setup/test-db";
 
 const db = getTestDb();
@@ -147,6 +148,21 @@ afterAll(async () => {
 });
 
 describe("C2 Fall draft persisted review and editing", () => {
+  it("rejects every C2 mutation after a lock-coupled archive", async () => {
+    const f = await fixture("archive-c2-mutations");
+    await generateDraft(f);
+    const review = await loadFallDraftReview(scope(f));
+    const occurrenceId = review.occurrences[0]?.id;
+    if (!occurrenceId) throw new Error("archive C2 fixture has no occurrence");
+    await archiveLeague(f.leagueId, f.organizationId);
+    const archivedRequest = { occurrenceId } as never;
+    expect(await caughtCode(() => rescheduleFallDraftOccurrence({ ...scope(f), request: archivedRequest }))).toBe("league_archived");
+    expect(await caughtCode(() => cancelFallDraftOccurrence({ ...scope(f), request: archivedRequest }))).toBe("league_archived");
+    expect(await caughtCode(() => restoreFallDraftOccurrence({ ...scope(f), request: archivedRequest }))).toBe("league_archived");
+    expect(await caughtCode(() => approveAndPublishFallDraft({ ...scope(f), request: archivedRequest }))).toBe("league_archived");
+    expect(await caughtCode(() => rejectFallDraft({ ...scope(f), request: archivedRequest }))).toBe("league_archived");
+  });
+
   it("reads semantically compatible version-1 C1 snapshots without rewriting them", async () => {
     const f = await fixture("legacy-c1-snapshot");
     await generateDraft(f);

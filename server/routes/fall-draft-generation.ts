@@ -88,6 +88,7 @@ function sendFallDraftError(res: Parameters<typeof sendError>[0], caught: unknow
     invalid_scope: { status: 400, apiCode: "INVALID_REQUEST" },
     unauthorized_actor: { status: 403, apiCode: "FORBIDDEN" },
     league_not_found: { status: 404, apiCode: "LEAGUE_NOT_FOUND" },
+    league_archived: { status: 409, apiCode: "LEAGUE_ARCHIVED_READ_ONLY" },
     invalid_location: { status: 422, apiCode: "FALL_DRAFT_INELIGIBLE" },
     ineligible_league: { status: 422, apiCode: "FALL_DRAFT_INELIGIBLE" },
     incomplete_authoritative_input: { status: 422, apiCode: "FALL_DRAFT_INCOMPLETE_INPUT" },

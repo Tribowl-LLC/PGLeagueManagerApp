@@ -84,6 +84,7 @@ import {
 
 export type FallDraftReviewErrorCode =
   | "invalid_scope"
+  | "league_archived"
   | "unauthorized_actor"
   | "league_not_found"
   | "c1_run_not_found"
@@ -288,11 +289,14 @@ function assertRevisionChain<T extends { revisionNumber: number; beforeSnapshot:
 }
 
 async function loadRows(tx: LeagueScheduleTransaction, scope: FallDraftScope, lock: boolean): Promise<ReviewRows> {
-  const [league] = await tx.select({ paymentMode: leagues.paymentMode }).from(leagues).where(and(
+  const [league] = await tx.select({ paymentMode: leagues.paymentMode, active: leagues.active, scheduleAuthority: leagues.scheduleAuthority }).from(leagues).where(and(
     eq(leagues.id, scope.leagueId),
     eq(leagues.organizationId, scope.organizationId),
   )).limit(1);
   if (!league) throw new FallDraftReviewError("league_not_found", "league does not exist in the authorized organization");
+  if (lock && (league.active !== true || league.scheduleAuthority !== "canonical")) {
+    throw new FallDraftReviewError("league_archived", "inactive canonical leagues are read-only archives");
+  }
   if (league.paymentMode !== "weekly" && league.paymentMode !== "upfront") {
     throw new FallDraftReviewError("incompatible_canonical_state", "league payment timing is unsupported");
   }

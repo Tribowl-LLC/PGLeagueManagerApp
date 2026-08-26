@@ -34,6 +34,7 @@ import {
 } from "@shared/schema";
 import { getTestDb } from "../setup/test-db";
 import { deleteOrganization } from "../../server/storage/organizations";
+import { archiveLeague } from "../../server/storage/leagues";
 import { materializeRosterPaymentOccurrenceInTransaction } from "../../server/services/roster-payment-materializer";
 import { deleteLink } from "../../server/storage/bowler-payment-links";
 import { encrypt } from "../../server/utils/crypto";
@@ -41,7 +42,7 @@ import { PaymentProviderError } from "../../server/services/payment-errors";
 import { buildCanonicalScheduleCommandFingerprint, cancelOccurrence, restoreCancelledOccurrence } from "../../server/services/canonical-occurrence-transactions";
 import { readCanonicalPaymentReport } from "../../server/services/roster-payment-archive-report";
 import { updateBowlerLeague } from "../../server/storage/bowlers";
-import { getNextStandingAutopayWake } from "../../server/storage/payment-operations";
+import { finalizePaymentOperationSuccess, getNextStandingAutopayWake, recordPaymentOperationActionRequired, recordPaymentOperationProviderUnknown } from "../../server/storage/payment-operations";
 import { canonicalizePaymentOperationInput } from "../../server/services/payment-operation-idempotency";
 
 // This suite deliberately enables only the standing runtime in the isolated
@@ -895,6 +896,106 @@ describe("standing automatic payments on migrated PostgreSQL", () => {
   it("deletes standing participant and link child evidence before organization teardown", async () => {
     const doomedOrganizationId = organizationId;
     expect(doomedOrganizationId).toBeGreaterThan(0);
+
+    // Provider responses arrive outside the dispatch transaction. Hold three
+    // provider calls at that boundary, let archive win the league lock, and
+    // then release success/unknown/action-required outcomes. Every late
+    // response must attach only immutable evidence to the archived,
+    // token-fenced reconciliation row; reservations remain retained.
+    await db.update(bowlerLeagues).set({ active: true }).where(and(
+      eq(bowlerLeagues.leagueId, leagueId),
+      eq(bowlerLeagues.bowlerId, payerBowlerId),
+    ));
+    await db.update(teamPaymentSlots).set({ occupant: "main", mainBowlerId: payerBowlerId }).where(and(
+      eq(teamPaymentSlots.organizationId, organizationId),
+      eq(teamPaymentSlots.leagueId, leagueId),
+      eq(teamPaymentSlots.teamId, teamId),
+      eq(teamPaymentSlots.slotIndex, 0),
+    ));
+    const { prepareStandingAutopayCutoff } = await import("../../server/services/roster-standing-autopay");
+    const raceInputs = [
+      { version: 101, startAt: "2039-05-01T19:00:00.000Z", outcome: "success" as const },
+      { version: 102, startAt: "2039-05-08T19:00:00.000Z", outcome: "unknown" as const },
+      { version: 103, startAt: "2039-05-15T19:00:00.000Z", outcome: "action_required" as const },
+    ];
+    const prepared = [];
+    for (const input of raceInputs) {
+      const target = await publishOccurrence(input.startAt);
+      const consent = await insertConsent({ version: input.version, activatedAt: "2039-01-02T00:00:00.000Z" });
+      const operation = await prepareStandingAutopayCutoff({ organizationId, leagueId, consentId: consent.id, cutoffAt: target.occurrence.startAt });
+      if (!operation) throw new Error(`race operation ${input.outcome} was not prepared`);
+      prepared.push({ operation, outcome: input.outcome });
+    }
+
+    const leaseTokenById = new Map<string, string>();
+    for (const { operation } of prepared) {
+      const leaseToken = randomUUID();
+      const claimedAt = new Date().toISOString();
+      leaseTokenById.set(operation.id, leaseToken);
+      await db.update(paymentOperations).set({
+        status: "leased",
+        attemptCount: 1,
+        nextAttemptAt: null,
+        leaseOwner: `standing-race-${operation.id}`,
+        leaseToken,
+        leaseExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+        startedAt: claimedAt,
+        dispatchClaimedAt: claimedAt,
+        errorClassification: null,
+        errorCode: null,
+      }).where(eq(paymentOperations.id, operation.id));
+    }
+
+    const deferred = () => {
+      let resolve!: () => void;
+      const promise = new Promise<void>((next) => { resolve = next; });
+      return { promise, resolve };
+    };
+    const started = new Map<string, ReturnType<typeof deferred>>();
+    const release = new Map<string, ReturnType<typeof deferred>>();
+    for (const { operation } of prepared) {
+      started.set(operation.id, deferred());
+      release.set(operation.id, deferred());
+    }
+    const executions = prepared.map(({ operation, outcome }) => (async () => {
+      started.get(operation.id)?.resolve();
+      await release.get(operation.id)?.promise;
+      const leaseToken = leaseTokenById.get(operation.id)!;
+      const providerOrderId = `standing-race-order-${operation.id}`;
+      if (outcome === "success") return finalizePaymentOperationSuccess({ organizationId, operationId: operation.id, leaseToken, providerObjectId: `standing-race-payment-${operation.id}`, providerOrderId });
+      if (outcome === "unknown") return recordPaymentOperationProviderUnknown({ organizationId, operationId: operation.id, leaseToken, providerOrderId, errorCode: "PROVIDER_TIMEOUT", recoveryAt: new Date(Date.now() + 60_000) });
+      return recordPaymentOperationActionRequired({ organizationId, operationId: operation.id, leaseToken, providerOrderId, errorCode: "CARD_DECLINED" });
+    })());
+    await Promise.all([...started.values()].map((signal) => signal.promise));
+    await archiveLeague(leagueId, organizationId);
+    for (const signal of release.values()) signal.resolve();
+    const results = await Promise.all(executions);
+    expect(results.map((result) => result?.status)).toEqual([
+      "reconciliation_required",
+      "reconciliation_required",
+      "reconciliation_required",
+    ]);
+    const archivedOperations = await db.select().from(paymentOperations).where(and(
+      eq(paymentOperations.organizationId, organizationId),
+      inArray(paymentOperations.id, prepared.map(({ operation }) => operation.id)),
+    )).orderBy(paymentOperations.createdAt);
+    expect(archivedOperations).toHaveLength(3);
+    expect(archivedOperations[0]).toMatchObject({ status: "reconciliation_required", providerObjectId: `standing-race-payment-${prepared[0].operation.id}`, providerOrderId: `standing-race-order-${prepared[0].operation.id}`, errorClassification: "provider_unknown" });
+    expect(archivedOperations[1]).toMatchObject({ status: "reconciliation_required", providerObjectId: null, providerOrderId: `standing-race-order-${prepared[1].operation.id}`, errorClassification: "provider_unknown" });
+    expect(archivedOperations[2]).toMatchObject({ status: "reconciliation_required", providerObjectId: null, providerOrderId: `standing-race-order-${prepared[2].operation.id}`, errorClassification: "provider_unknown" });
+    for (const row of archivedOperations) {
+      expect(row.leaseToken).not.toBeNull();
+      expect(row.dispatchClaimedAt).not.toBeNull();
+      expect(row.leaseOwner).toBeNull();
+      expect(row.leaseExpiresAt).toBeNull();
+    }
+    const archivedItems = await db.select({ state: paymentOperationRosterSnapshotItems.state }).from(paymentOperationRosterSnapshotItems).where(and(
+      eq(paymentOperationRosterSnapshotItems.organizationId, organizationId),
+      inArray(paymentOperationRosterSnapshotItems.operationId, prepared.map(({ operation }) => operation.id)),
+    ));
+    expect(archivedItems).toHaveLength(3);
+    expect(archivedItems.every((row) => row.state === "reserved")).toBe(true);
+
     const participantBefore = await db.select({ id: paymentOperationStandingAutopayParticipants.id }).from(paymentOperationStandingAutopayParticipants).where(eq(paymentOperationStandingAutopayParticipants.organizationId, doomedOrganizationId));
     expect(participantBefore.length).toBeGreaterThan(0);
     await deleteOrganization(doomedOrganizationId);
