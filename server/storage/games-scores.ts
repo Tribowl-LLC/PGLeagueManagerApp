@@ -11,6 +11,7 @@ import {
   deleteCanonicalAwareGame,
   updateCanonicalAwareGame,
 } from '../services/canonical-games-scores.js';
+import { lockLeagueSchedule } from './league-schedule-lock.js';
 
 const log = createLogger("StorageGamesScores");
 
@@ -133,17 +134,38 @@ export async function getBowlerScores(bowlerId: number): Promise<Score[]> {
 }
 
 export async function createScore(score: InsertScore): Promise<Score> {
-  const [result] = await db.insert(scores).values(score).returning();
-  return result;
+  return db.transaction(async (tx) => {
+    const [scope] = await tx.select({ leagueId: games.leagueId, organizationId: leagues.organizationId }).from(games).innerJoin(leagues, eq(leagues.id, games.leagueId)).where(eq(games.id, score.gameId)).limit(1);
+    if (!scope) throw new Error('Game not found');
+    await lockLeagueSchedule(tx, scope.organizationId, scope.leagueId);
+    const [league] = await tx.select({ active: leagues.active, scheduleAuthority: leagues.scheduleAuthority }).from(leagues).where(eq(leagues.id, scope.leagueId)).limit(1).for('share');
+    if (!league?.active || league.scheduleAuthority !== 'canonical') throw new Error('Inactive or retired leagues are read-only');
+    const [result] = await tx.insert(scores).values(score).returning();
+    return result;
+  });
 }
 
 export async function updateScore(id: number, score: UpdateScore): Promise<Score> {
-  const [result] = await db.update(scores).set(score).where(eq(scores.id, id)).returning();
-  return result;
+  return db.transaction(async (tx) => {
+    const [scope] = await tx.select({ leagueId: games.leagueId, organizationId: leagues.organizationId }).from(scores).innerJoin(games, eq(games.id, scores.gameId)).innerJoin(leagues, eq(leagues.id, games.leagueId)).where(eq(scores.id, id)).limit(1);
+    if (!scope) throw new Error('Score not found');
+    await lockLeagueSchedule(tx, scope.organizationId, scope.leagueId);
+    const [league] = await tx.select({ active: leagues.active, scheduleAuthority: leagues.scheduleAuthority }).from(leagues).where(eq(leagues.id, scope.leagueId)).limit(1).for('share');
+    if (!league?.active || league.scheduleAuthority !== 'canonical') throw new Error('Inactive or retired leagues are read-only');
+    const [result] = await tx.update(scores).set(score).where(eq(scores.id, id)).returning();
+    return result;
+  });
 }
 
 export async function deleteScore(id: number): Promise<void> {
-  await db.delete(scores).where(eq(scores.id, id));
+  await db.transaction(async (tx) => {
+    const [scope] = await tx.select({ leagueId: games.leagueId, organizationId: leagues.organizationId }).from(scores).innerJoin(games, eq(games.id, scores.gameId)).innerJoin(leagues, eq(leagues.id, games.leagueId)).where(eq(scores.id, id)).limit(1);
+    if (!scope) return;
+    await lockLeagueSchedule(tx, scope.organizationId, scope.leagueId);
+    const [league] = await tx.select({ active: leagues.active, scheduleAuthority: leagues.scheduleAuthority }).from(leagues).where(eq(leagues.id, scope.leagueId)).limit(1).for('share');
+    if (!league?.active || league.scheduleAuthority !== 'canonical') throw new Error('Inactive or retired leagues are read-only');
+    await tx.delete(scores).where(eq(scores.id, id));
+  });
 }
 
 export async function createBatchScores(batchScores: InsertScore[]): Promise<Score[]> {
@@ -182,10 +204,25 @@ export async function createBatchScores(batchScores: InsertScore[]): Promise<Sco
       throw new Error('Invalid score data detected');
     }
 
-    const results = await db
-      .insert(scores)
-      .values(batchScores)
-      .returning();
+    const results = await db.transaction(async (tx) => {
+      const gameIds = [...new Set(batchScores.map((score) => score.gameId))];
+      const gameRows = await tx.select({ id: games.id, leagueId: games.leagueId, organizationId: leagues.organizationId })
+        .from(games).innerJoin(leagues, eq(leagues.id, games.leagueId))
+        .where(inArray(games.id, gameIds));
+      if (gameRows.length !== gameIds.length || gameRows.some((row) => row.leagueId !== gameRows[0]?.leagueId)) {
+        throw new Error('Scores must target games in one league');
+      }
+      const leagueId = gameRows[0]?.leagueId;
+      const organizationId = gameRows[0]?.organizationId;
+      if (!leagueId) throw new Error('Score game league is unavailable');
+      await lockLeagueSchedule(tx, organizationId, leagueId);
+      const [league] = await tx.select({ active: leagues.active, scheduleAuthority: leagues.scheduleAuthority, organizationId: leagues.organizationId })
+        .from(leagues).where(eq(leagues.id, leagueId)).limit(1).for('share');
+      if (!league || league.organizationId !== organizationId || !league.active || league.scheduleAuthority !== 'canonical') {
+        throw new Error('Inactive or retired leagues are read-only');
+      }
+      return tx.insert(scores).values(batchScores).returning();
+    });
 
     log.info('Successfully created scores:', {
       requested: batchScores.length,

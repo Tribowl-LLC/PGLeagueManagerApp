@@ -39,6 +39,7 @@ const WEEKDAY_INDEX: Record<typeof WEEKDAYS[number], number> = {
  */
 export function validateDoublePayDates(args: {
   doublePayDates: string[] | undefined | null;
+  paymentMode?: typeof PAYMENT_MODES[number] | null;
   skipDates?: string[] | null;
   cancelledDates?: string[] | null;
   weekDay?: typeof WEEKDAYS[number];
@@ -47,6 +48,9 @@ export function validateDoublePayDates(args: {
 }): { ok: true } | { ok: false; message: string } {
   const dpd = args.doublePayDates ?? [];
   if (dpd.length === 0) return { ok: true };
+  if (args.paymentMode === "upfront") {
+    return { ok: false, message: "Double-pay weeks are available only for weekly payment timing" };
+  }
 
   for (const raw of dpd) {
     if (typeof raw !== "string" || !ISO_DATE_RE.test(raw)) {
@@ -217,6 +221,7 @@ export const insertLeagueSchema = baseLeagueSchema.extend({
   .superRefine((data, ctx) => {
     const result = validateDoublePayDates({
       doublePayDates: data.doublePayDates,
+      paymentMode: data.paymentMode,
       skipDates: data.skipDates,
       cancelledDates: data.cancelledDates,
       weekDay: data.weekDay,
@@ -283,6 +288,7 @@ export const updateLeagueSchema = z.object({
   if (!data.doublePayDates) return;
   const result = validateDoublePayDates({
     doublePayDates: data.doublePayDates,
+    paymentMode: data.paymentMode,
     skipDates: data.skipDates,
     cancelledDates: data.cancelledDates,
     weekDay: data.weekDay,

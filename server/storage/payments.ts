@@ -465,15 +465,17 @@ export async function deletePayment(id: number): Promise<void> {
 
 export async function createPaymentSchedule(schedule: InsertPaymentSchedule): Promise<PaymentSchedule> {
   const { result, comparison } = await db.transaction(async (tx) => {
+    const [scope] = await tx.select({ organizationId: leagues.organizationId }).from(leagues).where(eq(leagues.id, schedule.leagueId)).limit(1);
+    if (!scope) throw new Error('Payment schedule league not found');
+    await lockLeagueSchedule(tx, scope.organizationId, schedule.leagueId);
     const [league] = await tx.select({ organizationId: leagues.organizationId, active: leagues.active, scheduleAuthority: leagues.scheduleAuthority })
-      .from(leagues).where(eq(leagues.id, schedule.leagueId)).limit(1);
-    if (!league) throw new Error('Payment schedule league not found');
+      .from(leagues).where(eq(leagues.id, schedule.leagueId)).limit(1).for('share');
+    if (!league || league.organizationId !== scope.organizationId) throw new Error('Payment schedule league scope changed');
     if (league.organizationId !== null && (league.active !== true || league.scheduleAuthority !== "canonical")) throw new Error("Archived leagues are read-only");
     if (league.organizationId === null) {
       const [legacyResult] = await tx.insert(paymentSchedules).values(schedule).returning();
       return { result: legacyResult, comparison: null };
     }
-    await lockLeagueSchedule(tx, league.organizationId, schedule.leagueId);
     const transactionTime = await occurrenceCompatibilityTransactionTime(tx);
     const compatibility = await resolveCanonicalOccurrenceCompatibility(tx, {
       subject: 'payment_schedule',
@@ -550,29 +552,30 @@ export async function getActiveSchedulesByLocationId(locationId: number): Promis
 }
 
 export async function deactivatePaymentSchedule(id: number, reason?: string): Promise<void> {
-  await db
-    .update(paymentSchedules)
-    .set({
-      active: false,
-      cancelledAt: new Date().toISOString(),
-      cancelReason: reason ?? null,
-    })
-    .where(eq(paymentSchedules.id, id));
+  await db.transaction(async (tx) => {
+    const [scope] = await tx.select({ leagueId: paymentSchedules.leagueId, organizationId: leagues.organizationId })
+      .from(paymentSchedules).innerJoin(leagues, eq(leagues.id, paymentSchedules.leagueId)).where(eq(paymentSchedules.id, id)).limit(1);
+    if (!scope) return;
+    await lockLeagueSchedule(tx, scope.organizationId, scope.leagueId);
+    const [league] = await tx.select({ active: leagues.active, scheduleAuthority: leagues.scheduleAuthority }).from(leagues).where(eq(leagues.id, scope.leagueId)).limit(1).for('share');
+    if (!league || !league.active || league.scheduleAuthority !== 'canonical') throw new Error('Archived leagues are read-only');
+    await tx.update(paymentSchedules).set({ active: false, cancelledAt: new Date().toISOString(), cancelReason: reason ?? null }).where(eq(paymentSchedules.id, id));
+  });
 }
 
 export async function updatePaymentScheduleFields(
   id: number,
   fields: UpdatePaymentSchedule
 ): Promise<PaymentSchedule> {
-  const preliminary = await getPaymentScheduleById(id);
-  if (!preliminary) throw new Error('Payment schedule not found');
-  const [league] = await db.select({ organizationId: leagues.organizationId })
-    .from(leagues).where(eq(leagues.id, preliminary.leagueId)).limit(1);
-  if (!league) throw new Error('Payment schedule league not found');
   const { updated, comparison } = await db.transaction(async (tx) => {
-    if (league.organizationId !== null) {
-      await lockLeagueSchedule(tx, league.organizationId, preliminary.leagueId);
-    }
+    const [scope] = await tx.select({ leagueId: paymentSchedules.leagueId, organizationId: leagues.organizationId })
+      .from(paymentSchedules).innerJoin(leagues, eq(leagues.id, paymentSchedules.leagueId)).where(eq(paymentSchedules.id, id)).limit(1);
+    if (!scope) throw new Error('Payment schedule not found');
+    await lockLeagueSchedule(tx, scope.organizationId, scope.leagueId);
+    const [league] = await tx.select({ organizationId: leagues.organizationId, active: leagues.active, scheduleAuthority: leagues.scheduleAuthority })
+      .from(leagues).where(eq(leagues.id, scope.leagueId)).limit(1).for('share');
+    if (!league || league.organizationId !== scope.organizationId) throw new Error('Payment schedule league scope changed');
+    if (league.organizationId !== null && (!league.active || league.scheduleAuthority !== 'canonical')) throw new Error('Archived leagues are read-only');
     const [current] = await tx.select().from(paymentSchedules)
       .where(eq(paymentSchedules.id, id)).limit(1).for('update');
     if (!current) throw new Error('Payment schedule not found');
@@ -608,14 +611,14 @@ export async function updatePaymentScheduleFields(
 }
 
 export async function updatePaymentScheduleCard(bowlerId: number, leagueId: number, cardId: string): Promise<void> {
-  await db
-    .update(paymentSchedules)
-    .set({ paymentCardId: cardId })
-    .where(
-      and(
-        eq(paymentSchedules.bowlerId, bowlerId),
-        eq(paymentSchedules.leagueId, leagueId),
-        eq(paymentSchedules.active, true)
-      )
-    );
+  await db.transaction(async (tx) => {
+    const [scope] = await tx.select({ organizationId: leagues.organizationId, active: leagues.active, scheduleAuthority: leagues.scheduleAuthority })
+      .from(leagues).where(eq(leagues.id, leagueId)).limit(1);
+    if (!scope) throw new Error('Payment schedule league not found');
+    await lockLeagueSchedule(tx, scope.organizationId, leagueId);
+    const [league] = await tx.select({ active: leagues.active, scheduleAuthority: leagues.scheduleAuthority, organizationId: leagues.organizationId })
+      .from(leagues).where(eq(leagues.id, leagueId)).limit(1).for('share');
+    if (!league || !league.active || league.scheduleAuthority !== 'canonical') throw new Error('Archived leagues are read-only');
+    await tx.update(paymentSchedules).set({ paymentCardId: cardId }).where(and(eq(paymentSchedules.bowlerId, bowlerId), eq(paymentSchedules.leagueId, leagueId), eq(paymentSchedules.active, true)));
+  });
 }

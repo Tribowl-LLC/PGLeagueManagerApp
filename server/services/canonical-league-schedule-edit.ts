@@ -27,6 +27,7 @@ import {
 } from "./canonical-occurrence-transactions.js";
 import { db } from "../db.js";
 import { revokeStandingAutopayForArchivedLeagueInTransaction } from "./roster-standing-autopay.js";
+import { validateDoublePayDates } from "@shared/schema/leagues";
 
 export class CanonicalLeagueScheduleEditError extends Error {
   constructor(public readonly code: "stale_revision" | "financial_conflict" | "invalid_edit" | "unsupported_edit", message: string) {
@@ -183,6 +184,16 @@ export async function editCanonicalLeagueSchedule(input: CanonicalLeagueSchedule
     if (!league) throw new CanonicalLeagueScheduleEditError("invalid_edit", "league is outside the requested tenant");
     if (league.scheduleAuthority !== "canonical") throw new CanonicalLeagueScheduleEditError("invalid_edit", "retired legacy leagues are not editable");
     if (!league.active) throw new CanonicalLeagueScheduleEditError("unsupported_edit", "inactive canonical leagues are read-only archives");
+    const doublePayValidation = validateDoublePayDates({
+      doublePayDates: input.doublePayDates,
+      paymentMode: league.paymentMode,
+      skipDates: input.skipDates ?? league.skipDates,
+      cancelledDates: input.cancelledDates ?? league.cancelledDates,
+      weekDay: input.weekDay ?? league.weekDay,
+      seasonStart: input.seasonStart ?? league.seasonStart,
+      seasonEnd: input.seasonEnd ?? league.seasonEnd,
+    });
+    if (!doublePayValidation.ok) throw new CanonicalLeagueScheduleEditError("invalid_edit", doublePayValidation.message);
     // The new roster schema owns lineup locking; the old activation relation
     // is deliberately absent after migration 0032.  League setup performs
     // the same canonical-evidence check under this advisory lock.

@@ -22,10 +22,12 @@ export async function getTeam(id: number): Promise<Team | undefined> {
 
 export async function createTeam(team: InsertTeam, recordedByUserId?: number): Promise<Team> {
   return db.transaction(async (tx) => {
-    const [league] = await tx.select({ organizationId: leagues.organizationId, payingLineupSize: leagues.payingLineupSize, active: leagues.active, scheduleAuthority: leagues.scheduleAuthority }).from(leagues).where(eq(leagues.id, team.leagueId)).limit(1);
-    if (!league) throw new Error('League not found');
+    const [scope] = await tx.select({ organizationId: leagues.organizationId }).from(leagues).where(eq(leagues.id, team.leagueId)).limit(1);
+    if (!scope) throw new Error('League not found');
+    await lockLeagueSchedule(tx, scope.organizationId, team.leagueId);
+    const [league] = await tx.select({ organizationId: leagues.organizationId, payingLineupSize: leagues.payingLineupSize, active: leagues.active, scheduleAuthority: leagues.scheduleAuthority }).from(leagues).where(eq(leagues.id, team.leagueId)).limit(1).for('share');
+    if (!league || league.organizationId !== scope.organizationId) throw new Error('League scope changed while waiting for schedule lock');
     if (!league.active || league.scheduleAuthority !== "canonical") throw new Error('League is a read-only archive');
-    if (league.organizationId !== null) await lockLeagueSchedule(tx, league.organizationId, team.leagueId);
     const [result] = await tx.insert(teams).values(team).returning();
     if (result && league.organizationId !== null && league.payingLineupSize !== null) {
       const actor = recordedByUserId ?? (await tx.select({ id: users.id }).from(users).where(and(
@@ -53,9 +55,11 @@ export async function updateTeam(id: number, team: UpdateTeam): Promise<Team> {
   return db.transaction(async (tx) => {
     const [current] = await tx.select({ leagueId: teams.leagueId }).from(teams).where(eq(teams.id, id)).limit(1);
     if (!current) throw new Error('Team not found');
-    const [league] = await tx.select({ organizationId: leagues.organizationId, active: leagues.active, scheduleAuthority: leagues.scheduleAuthority }).from(leagues).where(eq(leagues.id, current.leagueId)).limit(1);
+    const [scope] = await tx.select({ organizationId: leagues.organizationId }).from(leagues).where(eq(leagues.id, current.leagueId)).limit(1);
+    if (!scope) throw new Error('League not found');
+    await lockLeagueSchedule(tx, scope.organizationId, current.leagueId);
+    const [league] = await tx.select({ organizationId: leagues.organizationId, active: leagues.active, scheduleAuthority: leagues.scheduleAuthority }).from(leagues).where(eq(leagues.id, current.leagueId)).limit(1).for('share');
     if (!league || !league.active || league.scheduleAuthority !== "canonical") throw new Error('League is a read-only archive');
-    if (league?.organizationId !== null && league) await lockLeagueSchedule(tx, league.organizationId, current.leagueId);
     const [result] = await tx.update(teams).set(team).where(eq(teams.id, id)).returning();
     return result;
   });
@@ -65,9 +69,11 @@ export async function deleteTeam(id: number): Promise<void> {
   await db.transaction(async (tx) => {
     const [current] = await tx.select({ leagueId: teams.leagueId }).from(teams).where(eq(teams.id, id)).limit(1);
     if (!current) return;
-    const [league] = await tx.select({ organizationId: leagues.organizationId, active: leagues.active, scheduleAuthority: leagues.scheduleAuthority }).from(leagues).where(eq(leagues.id, current.leagueId)).limit(1);
+    const [scope] = await tx.select({ organizationId: leagues.organizationId }).from(leagues).where(eq(leagues.id, current.leagueId)).limit(1);
+    if (!scope) throw new Error('League not found');
+    await lockLeagueSchedule(tx, scope.organizationId, current.leagueId);
+    const [league] = await tx.select({ organizationId: leagues.organizationId, active: leagues.active, scheduleAuthority: leagues.scheduleAuthority }).from(leagues).where(eq(leagues.id, current.leagueId)).limit(1).for('share');
     if (!league || !league.active || league.scheduleAuthority !== "canonical") throw new Error('League is a read-only archive');
-    if (league?.organizationId !== null && league) await lockLeagueSchedule(tx, league.organizationId, current.leagueId);
     await tx.delete(teams).where(eq(teams.id, id));
   });
 }
@@ -90,14 +96,15 @@ export async function getTeamsByIds(ids: number[]): Promise<Team[]> {
 }
 
 export async function renumberActiveTeams(leagueId: number): Promise<void> {
-  const allTeams = await db.select().from(teams)
-    .where(eq(teams.leagueId, leagueId))
-    .orderBy(teams.displayOrder, teams.number);
-
-  const activeTeams = allTeams.filter(t => t.active);
-  const inactiveTeams = allTeams.filter(t => !t.active);
-
   await db.transaction(async (tx) => {
+    const [scope] = await tx.select({ organizationId: leagues.organizationId, active: leagues.active, scheduleAuthority: leagues.scheduleAuthority }).from(leagues).where(eq(leagues.id, leagueId)).limit(1).for('share');
+    if (!scope) throw new Error('League not found');
+    await lockLeagueSchedule(tx, scope.organizationId, leagueId);
+    const [league] = await tx.select({ active: leagues.active, scheduleAuthority: leagues.scheduleAuthority }).from(leagues).where(eq(leagues.id, leagueId)).limit(1).for('share');
+    if (!league || !league.active || league.scheduleAuthority !== 'canonical') throw new Error('League is a read-only archive');
+    const allTeams = await tx.select().from(teams).where(eq(teams.leagueId, leagueId)).orderBy(teams.displayOrder, teams.number);
+    const activeTeams = allTeams.filter(t => t.active);
+    const inactiveTeams = allTeams.filter(t => !t.active);
     for (let i = 0; i < allTeams.length; i++) {
       await tx.update(teams).set({ number: -(i + 1) }).where(eq(teams.id, allTeams[i].id));
     }
@@ -112,6 +119,17 @@ export async function renumberActiveTeams(leagueId: number): Promise<void> {
 
 export async function reorderTeams(updates: { id: number; displayOrder: number; number: number }[]): Promise<void> {
   await db.transaction(async (tx) => {
+    if (updates.length === 0) return;
+    const rows = await tx.select({ id: teams.id, leagueId: teams.leagueId }).from(teams).where(inArray(teams.id, updates.map((update) => update.id)));
+    const leagueId = rows[0]?.leagueId;
+    if (!leagueId || rows.length !== updates.length || rows.some((row) => row.leagueId !== leagueId)) throw new Error('Teams must belong to one league');
+    const [scope] = await tx.select({ organizationId: leagues.organizationId }).from(leagues).where(eq(leagues.id, leagueId)).limit(1);
+    if (!scope) throw new Error('League not found');
+    await lockLeagueSchedule(tx, scope.organizationId, leagueId);
+    const [league] = await tx.select({ active: leagues.active, scheduleAuthority: leagues.scheduleAuthority }).from(leagues).where(eq(leagues.id, leagueId)).limit(1).for('share');
+    if (!league || !league.active || league.scheduleAuthority !== 'canonical') throw new Error('League is a read-only archive');
+    const lockedRows = await tx.select({ id: teams.id }).from(teams).where(inArray(teams.id, updates.map((update) => update.id))).for('update');
+    if (lockedRows.length !== updates.length) throw new Error('Teams changed while waiting for schedule lock');
     for (let i = 0; i < updates.length; i++) {
       await tx.update(teams).set({ number: -(i + 1) }).where(eq(teams.id, updates[i].id));
     }

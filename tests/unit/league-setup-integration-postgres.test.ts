@@ -466,7 +466,7 @@ describe("authoritative league setup integration", () => {
       weekDay: "Sunday" as const,
       skipDates: ["2032-10-10"],
       cancelledDates: [],
-      doublePayDates: ["2032-11-07"],
+      doublePayDates: [],
       allowPublicSignup: true,
       paymentMode: "upfront" as const,
     };

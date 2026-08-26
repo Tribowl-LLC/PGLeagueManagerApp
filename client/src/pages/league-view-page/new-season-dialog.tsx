@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,17 +19,14 @@ import {
 } from "@/components/ui/dialog";
 import { Loader2, RefreshCw } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
-import type { ApiResponse, League, PaymentMode } from "@shared/schema";
+import type { ApiResponse, League, Location, PaymentMode } from "@shared/schema";
 import { WEEKDAYS } from "@shared/schema";
-import type { ScheduleWeekType } from "@shared/schedule-utils";
 import {
-  calculateSeasonEnd,
-  getAllBowlingDates,
-  getEffectiveBowlingWeeks,
   toIsoDateStr,
 } from "@shared/schedule-utils";
 import { getSeasonLabel } from "@shared/season-utils";
 import { LeagueSchedulePreview } from "@/components/league-schedule-preview";
+import { useLeagueScheduleDraft } from "@/hooks/use-league-schedule-draft";
 import { apiRequest } from "@/lib/queryClient";
 import {
   LEAGUE_ROLLOVER_SOURCE_CONTRACT_VERSION,
@@ -39,7 +36,6 @@ import {
 
 export type NewSeasonFormValues = {
   name?: string;
-  description?: string | null;
   payingLineupSize?: 3 | 4;
   locationId?: number | null;
   timezone?: string;
@@ -74,9 +70,7 @@ export function NewSeasonDialog({
   isPending: boolean;
   isSystemAdmin?: boolean;
 }) {
-  const [seasonStart, setSeasonStart] = useState("");
   const [name, setName] = useState(league.name);
-  const [description, setDescription] = useState(league.description ?? "");
   const [payingLineupSize, setPayingLineupSize] = useState<3 | 4>((league.payingLineupSize === 3 ? 3 : 4));
   const [locationId, setLocationId] = useState<number | "">(league.locationId ?? "");
   const [timezone, setTimezone] = useState(league.timezone ?? "");
@@ -85,14 +79,40 @@ export function NewSeasonDialog({
   const [weeklyFee, setWeeklyFee] = useState(league.weeklyFee);
   const [lineageFee, setLineageFee] = useState<number | null>(league.lineageFee ?? null);
   const [prizeFundFee, setPrizeFundFee] = useState<number | null>(league.prizeFundFee ?? null);
-  const [bowlingWeeks, setBowlingWeeks] = useState(league.totalBowlingWeeks ?? 30);
-  const [weekDay, setWeekDay] = useState<(typeof WEEKDAYS)[number]>(league.weekDay);
-  const [skipDates, setSkipDates] = useState<string[]>([]);
-  const [cancelledDates, setCancelledDates] = useState<string[]>([]);
-  const [doublePayDates, setDoublePayDates] = useState<string[]>([]);
   const [allowPublicSignup, setAllowPublicSignup] = useState(league.allowPublicSignup ?? false);
-  const [paymentMode, setPaymentMode] = useState<PaymentMode | "">("");
   const [showSchedule, setShowSchedule] = useState(false);
+  const scheduleDraft = useLeagueScheduleDraft({
+    initialBowlingWeeks: league.totalBowlingWeeks ?? 30,
+    initialWeekDay: league.weekDay,
+    initialPaymentMode: "",
+  });
+  const { seasonStart, setSeasonStart, bowlingWeeks, setBowlingWeeks, weekDay, setWeekDay,
+    skipDates, cancelledDates, doublePayDates,
+    paymentMode, setPaymentMode, computedSeasonEnd, effectiveBowlingWeeks, scheduleDates,
+    clearSchedule, toggleDateType, toggleDoublePayDate } = scheduleDraft;
+  const clearScheduleAndCollapse = () => {
+    clearSchedule();
+    setShowSchedule(false);
+  };
+  const { data: locationsResponse } = useQuery<{ data: Location[] }>({
+    queryKey: ["/api/locations"],
+    queryFn: async () => {
+      const response = await fetch("/api/locations");
+      if (!response.ok) throw new Error("Failed to load locations");
+      return response.json() as Promise<{ data: Location[] }>;
+    },
+    enabled: showNewSeason,
+  });
+  const activeLocations = (locationsResponse?.data ?? []).filter((location) => location.active);
+  const timezoneOptions = [
+    ["America/New_York", "Eastern (ET)"],
+    ["America/Chicago", "Central (CT)"],
+    ["America/Denver", "Mountain (MT)"],
+    ["America/Phoenix", "Arizona (MST)"],
+    ["America/Los_Angeles", "Pacific (PT)"],
+    ["America/Anchorage", "Alaska (AKT)"],
+    ["Pacific/Honolulu", "Hawaii (HST)"],
+  ] as const;
   const sourceQuerySuffix = isSystemAdmin ? `?organizationId=${league.organizationId}` : "";
   const sourceConfirmationQuery = useQuery<ApiResponse<LeagueRolloverSourceContract>>({
     queryKey: ["league-rollover-source", league.id, sourceQuerySuffix],
@@ -109,7 +129,6 @@ export function NewSeasonDialog({
     const carried = carriedSource?.carriedConfiguration;
     if (!carried) return;
     setName(carried.name);
-    setDescription(carried.description ?? "");
     setPayingLineupSize(carried.payingLineupSize);
     setLocationId(carried.locationId);
     setTimezone(carried.timezone);
@@ -123,7 +142,6 @@ export function NewSeasonDialog({
   const resetForm = useCallback(() => {
     setSeasonStart("");
     setName(league.name);
-    setDescription(league.description ?? "");
     setPayingLineupSize(league.payingLineupSize === 3 ? 3 : 4);
     setLocationId(league.locationId ?? "");
     setTimezone(league.timezone ?? "");
@@ -134,59 +152,15 @@ export function NewSeasonDialog({
     setPrizeFundFee(league.prizeFundFee ?? null);
     setBowlingWeeks(league.totalBowlingWeeks ?? 30);
     setWeekDay(league.weekDay);
-    setSkipDates([]);
-    setCancelledDates([]);
-    setDoublePayDates([]);
+    clearSchedule();
     setAllowPublicSignup(league.allowPublicSignup ?? false);
     setPaymentMode("");
     setShowSchedule(false);
-  }, [league.allowPublicSignup, league.competitionStartTime, league.description, league.lineageFee, league.locationId, league.name, league.payingLineupSize, league.practiceStartTime, league.prizeFundFee, league.timezone, league.totalBowlingWeeks, league.weekDay, league.weeklyFee]);
+  }, [clearSchedule, league.allowPublicSignup, league.competitionStartTime, league.lineageFee, league.locationId, league.name, league.payingLineupSize, league.practiceStartTime, league.prizeFundFee, league.timezone, league.totalBowlingWeeks, league.weekDay, league.weeklyFee, setBowlingWeeks, setPaymentMode, setSeasonStart, setWeekDay]);
 
   useEffect(() => {
     if (showNewSeason) resetForm();
   }, [resetForm, showNewSeason]);
-
-  const clearSchedule = () => {
-    setSkipDates([]);
-    setCancelledDates([]);
-    setDoublePayDates([]);
-    setShowSchedule(false);
-  };
-
-  const computedSeasonEnd = useMemo(() => {
-    if (!seasonStart || bowlingWeeks <= 0) return null;
-    return calculateSeasonEnd(seasonStart, weekDay, bowlingWeeks, skipDates, cancelledDates);
-  }, [bowlingWeeks, cancelledDates, seasonStart, skipDates, weekDay]);
-
-  const effectiveBowlingWeeks = useMemo(
-    () => getEffectiveBowlingWeeks(bowlingWeeks, cancelledDates),
-    [bowlingWeeks, cancelledDates],
-  );
-
-  const scheduleDates = useMemo(() => {
-    if (!seasonStart || bowlingWeeks <= 0) return [];
-    return getAllBowlingDates(
-      seasonStart,
-      weekDay,
-      bowlingWeeks,
-      skipDates,
-      cancelledDates,
-      doublePayDates,
-    );
-  }, [bowlingWeeks, cancelledDates, doublePayDates, seasonStart, skipDates, weekDay]);
-
-  const toggleDateType = (isoDate: string, currentType: ScheduleWeekType) => {
-    if (currentType === "normal") {
-      setSkipDates((prev) => [...prev, isoDate]);
-    } else if (currentType === "skip") {
-      setSkipDates((prev) => prev.filter((date) => date !== isoDate));
-      if (doublePayDates.length < 2) {
-        setDoublePayDates((prev) => [...prev, isoDate]);
-      }
-    } else {
-      setDoublePayDates((prev) => prev.filter((date) => date !== isoDate));
-    }
-  };
 
   const closeDialog = () => {
     setShowNewSeason(false);
@@ -196,9 +170,8 @@ export function NewSeasonDialog({
   const handleCreate = () => {
     if (!seasonStart || bowlingWeeks <= 0 || !computedSeasonEnd || paymentMode === "" || !carriedSource) return;
     const carried = carriedSource.carriedConfiguration;
-    const editableOverrides: Pick<NewSeasonFormValues, "name" | "description" | "payingLineupSize" | "locationId" | "timezone" | "practiceStartTime" | "competitionStartTime" | "weeklyFee" | "lineageFee" | "prizeFundFee"> = {};
+    const editableOverrides: Pick<NewSeasonFormValues, "name" | "payingLineupSize" | "locationId" | "timezone" | "practiceStartTime" | "competitionStartTime" | "weeklyFee" | "lineageFee" | "prizeFundFee"> = {};
     if (name.trim() !== carried.name) editableOverrides.name = name.trim();
-    if ((description.trim() || null) !== carried.description) editableOverrides.description = description.trim() || null;
     if (payingLineupSize !== carried.payingLineupSize) editableOverrides.payingLineupSize = payingLineupSize;
     if (locationId !== carried.locationId) editableOverrides.locationId = locationId === "" ? null : locationId;
     if (timezone !== carried.timezone) editableOverrides.timezone = timezone;
@@ -252,7 +225,7 @@ export function NewSeasonDialog({
                 value={seasonStart}
                 onChange={(event) => {
                   setSeasonStart(event.target.value);
-                  clearSchedule();
+                  clearScheduleAndCollapse();
                 }}
                 className="mt-1"
               />
@@ -289,7 +262,7 @@ export function NewSeasonDialog({
                 onChange={(event) => {
                   const value = Number(event.target.value);
                   setBowlingWeeks(Number.isFinite(value) ? Math.min(52, Math.max(0, value)) : 0);
-                  clearSchedule();
+                  clearScheduleAndCollapse();
                 }}
                 className="mt-1"
               />
@@ -305,7 +278,7 @@ export function NewSeasonDialog({
                 value={weekDay}
                 onValueChange={(value) => {
                   setWeekDay(value as (typeof WEEKDAYS)[number]);
-                  clearSchedule();
+                  clearScheduleAndCollapse();
                 }}
               >
                 <SelectTrigger id="new-season-week-day" className="mt-1">
@@ -374,10 +347,6 @@ export function NewSeasonDialog({
                   <label htmlFor="new-season-name" className="text-sm font-medium">League name</label>
                   <Input id="new-season-name" value={name} onChange={(event) => setName(event.target.value)} className="mt-1" />
                 </div>
-                <div>
-                  <label htmlFor="new-season-description" className="text-sm font-medium">Description</label>
-                  <Input id="new-season-description" value={description} onChange={(event) => setDescription(event.target.value)} className="mt-1" />
-                </div>
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <div>
                     <label htmlFor="new-season-lineup" className="text-sm font-medium">League lineup size</label>
@@ -387,14 +356,23 @@ export function NewSeasonDialog({
                     </Select>
                   </div>
                   <div>
-                    <label htmlFor="new-season-location" className="text-sm font-medium">Location ID</label>
-                    <Input id="new-season-location" type="number" min={1} value={locationId} onChange={(event) => setLocationId(event.target.value === "" ? "" : Number(event.target.value))} className="mt-1" />
+                    <label htmlFor="new-season-location" className="text-sm font-medium">Location</label>
+                    <Select value={locationId === "" ? "none" : String(locationId)} onValueChange={(value) => setLocationId(value === "none" ? "" : Number(value))}>
+                      <SelectTrigger id="new-season-location" className="mt-1"><SelectValue placeholder="Select a location" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">No Location</SelectItem>
+                        {activeLocations.map((location) => <SelectItem key={location.id} value={String(location.id)}>{location.name}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
                   </div>
                 </div>
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <div>
                     <label htmlFor="new-season-timezone" className="text-sm font-medium">Timezone</label>
-                    <Input id="new-season-timezone" value={timezone} onChange={(event) => setTimezone(event.target.value)} className="mt-1" />
+                    <Select value={timezone} onValueChange={setTimezone}>
+                      <SelectTrigger id="new-season-timezone" className="mt-1"><SelectValue placeholder="Select timezone" /></SelectTrigger>
+                      <SelectContent>{timezoneOptions.map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent>
+                    </Select>
                   </div>
                   <div>
                     <label htmlFor="new-season-practice" className="text-sm font-medium">Practice time</label>
@@ -407,18 +385,18 @@ export function NewSeasonDialog({
                     <Input id="new-season-competition" type="time" value={competitionStartTime} onChange={(event) => setCompetitionStartTime(event.target.value)} className="mt-1" />
                   </div>
                   <div>
-                    <label htmlFor="new-season-weekly-fee" className="text-sm font-medium">Weekly fee (cents)</label>
-                    <Input id="new-season-weekly-fee" type="number" min={1} value={weeklyFee} onChange={(event) => setWeeklyFee(Number(event.target.value))} className="mt-1" />
+                    <label htmlFor="new-season-weekly-fee" className="text-sm font-medium">Weekly fee</label>
+                    <Input id="new-season-weekly-fee" type="number" min={0} step="0.01" value={(weeklyFee / 100).toFixed(2)} onChange={(event) => setWeeklyFee(Math.round(Number(event.target.value) * 100))} className="mt-1" />
                   </div>
                 </div>
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <div>
-                    <label htmlFor="new-season-lineage-fee" className="text-sm font-medium">Lineage fee (cents)</label>
-                    <Input id="new-season-lineage-fee" type="number" min={0} value={lineageFee ?? ""} onChange={(event) => setLineageFee(event.target.value === "" ? null : Number(event.target.value))} className="mt-1" />
+                    <label htmlFor="new-season-lineage-fee" className="text-sm font-medium">Lineage fee</label>
+                    <Input id="new-season-lineage-fee" type="number" min={0} step="0.01" value={lineageFee === null ? "" : (lineageFee / 100).toFixed(2)} onChange={(event) => setLineageFee(event.target.value === "" ? null : Math.round(Number(event.target.value) * 100))} className="mt-1" />
                   </div>
                   <div>
-                    <label htmlFor="new-season-prize-fee" className="text-sm font-medium">Prize fund fee (cents)</label>
-                    <Input id="new-season-prize-fee" type="number" min={0} value={prizeFundFee ?? ""} onChange={(event) => setPrizeFundFee(event.target.value === "" ? null : Number(event.target.value))} className="mt-1" />
+                    <label htmlFor="new-season-prize-fee" className="text-sm font-medium">Prize fund fee</label>
+                    <Input id="new-season-prize-fee" type="number" min={0} step="0.01" value={prizeFundFee === null ? "" : (prizeFundFee / 100).toFixed(2)} onChange={(event) => setPrizeFundFee(event.target.value === "" ? null : Math.round(Number(event.target.value) * 100))} className="mt-1" />
                   </div>
                 </div>
               </div>
@@ -436,7 +414,9 @@ export function NewSeasonDialog({
             effectiveBowlingWeeks={effectiveBowlingWeeks}
             computedSeasonEnd={computedSeasonEnd}
             toggleDateType={toggleDateType}
+            toggleDoublePayDate={toggleDoublePayDate}
             allowCancelled={false}
+            allowDoublePay={paymentMode !== "upfront"}
           />
 
           {seasonStart && computedSeasonEnd && (

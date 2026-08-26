@@ -3,6 +3,7 @@ import { db } from "../db.js";
 import {
   bowlerLeagues,
   bowlers,
+  paymentSchedules,
   leagues,
   occurrencePaymentResponsibilities,
   teamPaymentSlots,
@@ -15,6 +16,7 @@ import { createLogger } from '../logger';
 import { cacheFetch, cacheInvalidate } from '../utils/cache';
 import { hasLeagueOccurrenceEvidence, hasOperationalLeagueOccurrenceEvidence } from './canonical-occurrence-evidence.js';
 import { lockLeagueSchedule } from './league-schedule-lock.js';
+import { withLegacyScheduledCycleLocksForLeague } from '../services/scheduled-payment-cycle-lock.js';
 import { revokeStandingAutopayForArchivedLeagueInTransaction } from '../services/roster-standing-autopay.js';
 
 const log = createLogger("StorageLeagues");
@@ -319,7 +321,7 @@ export async function deleteLeague(id: number, organizationId: number | null): P
 }
 
 export async function archiveLeague(id: number, organizationId?: number | null): Promise<League> {
-  const result = await db.transaction(async (tx) => {
+  const result = await withLegacyScheduledCycleLocksForLeague(id, () => db.transaction(async (tx) => {
     // The first read supplies the tenant key needed by the advisory lock. All
     // authorization-sensitive state is re-read under that lock below.
     const [scope] = await tx.select({ organizationId: leagues.organizationId })
@@ -335,16 +337,24 @@ export async function archiveLeague(id: number, organizationId?: number | null):
     const [current] = await tx.select().from(leagues).where(scopedWhere).limit(1).for('update');
     if (!current) throw new Error(`League with ID ${id} not found`);
     if (current.scheduleAuthority === 'retired_legacy') throw new LeagueRetiredLegacyError();
-    if (current.active && current.organizationId !== null) {
+    if (current.organizationId !== null) {
       await revokeStandingAutopayForArchivedLeagueInTransaction(tx, {
         organizationId: current.organizationId,
         leagueId: id,
       });
     }
+    // Legacy node-schedule callbacks may already be queued in memory. Keep
+    // the durable cursor permanently fenced when an archive wins the league
+    // lock so a callback can never dispatch the retired schedule.
+    await tx.update(paymentSchedules).set({
+      active: false,
+      cancelledAt: new Date().toISOString(),
+      cancelReason: "league_archived",
+    }).where(eq(paymentSchedules.leagueId, id));
     const [updated] = await tx.update(leagues).set({ active: false }).where(scopedWhere).returning();
     if (!updated) throw new Error(`League with ID ${id} not found`);
     return updated;
-  });
+  }));
   cacheInvalidate('leagues:');
   return result;
 }
@@ -366,4 +376,42 @@ export async function restoreLeague(id: number): Promise<League> {
 export async function getLeaguesByIds(ids: number[]): Promise<League[]> {
   if (ids.length === 0) return [];
   return db.select().from(leagues).where(and(inArray(leagues.id, ids), eq(leagues.scheduleAuthority, 'canonical')));
+}
+
+/** Bounded, tenant-scoped diagnostics for immutable retired legacy evidence. */
+export async function getRetiredLegacyScheduleDiagnostics(input: { organizationId: number; limit?: number }) {
+  const limit = Math.min(100, Math.max(1, input.limit ?? 50));
+  const result = await db.execute(sql`
+    SELECT l.id AS "leagueId", l.organization_id AS "organizationId", l.name,
+      l.schedule_authority AS "scheduleAuthority", l.active,
+      (SELECT count(*)::integer FROM league_occurrence_generation_runs r
+        WHERE r.organization_id = l.organization_id AND r.league_id = l.id) AS "generationRunCount",
+      (SELECT count(*)::integer FROM league_occurrences o
+        WHERE o.organization_id = l.organization_id AND o.league_id = l.id) AS "occurrenceCount",
+      (SELECT count(*)::integer FROM canonical_collection_groups g
+        WHERE g.organization_id = l.organization_id AND g.league_id = l.id) AS "collectionGroupCount",
+      (SELECT count(*)::integer FROM payment_schedules s
+        WHERE s.league_id = l.id AND s.active = TRUE) AS "activeLegacyScheduleCount",
+      (SELECT count(*)::integer FROM autopay_consents c
+        WHERE c.organization_id = l.organization_id AND c.league_id = l.id AND c.state = 'active') AS "activeConsentCount",
+      (SELECT count(*)::integer FROM payment_operations p
+        WHERE p.organization_id = l.organization_id AND p.league_id = l.id
+          AND p.status IN ('pending', 'leased', 'provider_unknown', 'retry_scheduled', 'action_required', 'reconciliation_required')) AS "nonterminalOperationCount",
+      (SELECT count(*)::integer FROM payment_operation_roster_snapshot_items i
+        WHERE i.organization_id = l.organization_id AND i.league_id = l.id AND i.state = 'reserved') AS "reservedSnapshotCount"
+    FROM leagues l
+    WHERE l.organization_id = ${input.organizationId}
+      AND l.schedule_authority = 'retired_legacy'
+    ORDER BY l.id
+    LIMIT ${limit}
+  `);
+  return result.rows.map((row) => {
+    const evidence = row;
+    const reasons: string[] = [];
+    if (Number(evidence.activeLegacyScheduleCount) > 0) reasons.push("active_legacy_schedule");
+    if (Number(evidence.activeConsentCount) > 0) reasons.push("active_consent");
+    if (Number(evidence.nonterminalOperationCount) > 0) reasons.push("nonterminal_operation");
+    if (Number(evidence.reservedSnapshotCount) > 0) reasons.push("reserved_snapshot");
+    return { ...evidence, evidence: reasons, reason: reasons.length > 0 ? reasons.join(",") : "retired_legacy_schedule_authority" };
+  });
 }

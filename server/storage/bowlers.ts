@@ -16,10 +16,11 @@ const log = createLogger("StorageBowlers");
 const BOWLERS_TTL = 30_000;
 
 async function lockRosterLeague(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], leagueId: number): Promise<void> {
-  const [league] = await tx.select({ organizationId: leagues.organizationId, active: leagues.active, scheduleAuthority: leagues.scheduleAuthority }).from(leagues).where(eq(leagues.id, leagueId)).limit(1);
-  if (!league) throw new Error('League not found');
-  if (!league.active || league.scheduleAuthority !== "canonical") throw new Error('League is a read-only archive');
-  if (league.organizationId !== null) await lockLeagueSchedule(tx, league.organizationId, leagueId);
+  const [scope] = await tx.select({ organizationId: leagues.organizationId }).from(leagues).where(eq(leagues.id, leagueId)).limit(1);
+  if (!scope) throw new Error('League not found');
+  if (scope.organizationId !== null) await lockLeagueSchedule(tx, scope.organizationId, leagueId);
+  const [league] = await tx.select({ active: leagues.active, scheduleAuthority: leagues.scheduleAuthority }).from(leagues).where(eq(leagues.id, leagueId)).limit(1).for('share');
+  if (!league || !league.active || league.scheduleAuthority !== "canonical") throw new Error('League is a read-only archive');
 }
 
 async function clearMainRosterSlotsForBowler(

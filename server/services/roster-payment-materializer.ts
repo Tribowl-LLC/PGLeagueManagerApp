@@ -104,8 +104,8 @@ export async function revokeStandingAutopayForBowlerInTransaction(
           eq(paymentOperationRosterSnapshotItems.state, "reserved"),
         ));
         await tx.update(paymentOperations).set({ status: "canceled", nextAttemptAt: null, leaseOwner: null, leaseToken: null, leaseExpiresAt: null, dispatchClaimedAt: null, completedAt: revokedAt, updatedAt: revokedAt }).where(and(eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.id, operation.id)));
-      } else if (["pending", "leased", "retry_scheduled", "provider_unknown"].includes(operation.status) && (operation.dispatchClaimedAt !== null || operation.providerObjectId !== null)) {
-        await tx.update(paymentOperations).set({ status: "reconciliation_required", nextAttemptAt: null, errorClassification: "provider_unknown", errorCode: "PARTICIPANT_INACTIVE_AFTER_DISPATCH", updatedAt: revokedAt }).where(and(eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.id, operation.id)));
+      } else if (["pending", "leased", "retry_scheduled", "provider_unknown"].includes(operation.status) && (operation.dispatchClaimedAt !== null || operation.providerObjectId !== null || operation.status === "provider_unknown")) {
+        await tx.update(paymentOperations).set({ status: "reconciliation_required", nextAttemptAt: null, leaseOwner: null, leaseExpiresAt: null, errorClassification: "provider_unknown", errorCode: "PARTICIPANT_INACTIVE_AFTER_DISPATCH", completedAt: revokedAt, updatedAt: revokedAt }).where(and(eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.id, operation.id)));
       }
     }
     await tx.update(autopayConsents).set({ state: "revoked", revokedAt }).where(and(eq(autopayConsents.id, consent.id), eq(autopayConsents.state, "active")));

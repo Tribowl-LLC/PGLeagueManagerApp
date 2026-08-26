@@ -96,8 +96,7 @@ async function loadLockedSchedule(
     .select()
     .from(paymentSchedules)
     .where(eq(paymentSchedules.id, paymentScheduleId))
-    .limit(1)
-    .for("update");
+    .limit(1);
   return schedule;
 }
 
@@ -348,25 +347,25 @@ export async function prepareScheduledPaymentCycle(input: {
   return serializable(async (tx) => {
     const advisoryKey = scheduledPaymentCycleLockKey(input.paymentScheduleId, expectedCycleAt);
     await tx.execute(sql`SELECT pg_advisory_xact_lock(${advisoryKey}::bigint)`);
-    const schedule = await loadLockedSchedule(tx, input.paymentScheduleId);
-    if (!schedule) return { kind: "stale" };
+    const candidate = await loadLockedSchedule(tx, input.paymentScheduleId);
+    if (!candidate) return { kind: "stale" };
 
     const [ownedLeague] = await tx
       .select({ organizationId: leagues.organizationId, active: leagues.active, scheduleAuthority: leagues.scheduleAuthority })
       .from(leagues)
-      .where(eq(leagues.id, schedule.leagueId))
+      .where(eq(leagues.id, candidate.leagueId))
       .limit(1);
     if (!ownedLeague?.organizationId) {
       throw new ScheduledPaymentPreparationError("scheduled payment league has no tenant owner");
     }
-    if (!ownedLeague.active || ownedLeague.scheduleAuthority !== "canonical") {
-      await tx.update(paymentSchedules).set({ active: false }).where(and(
-        eq(paymentSchedules.id, schedule.id),
-        eq(paymentSchedules.active, true),
-      ));
+    await lockLeagueSchedule(tx, ownedLeague.organizationId, candidate.leagueId);
+    const [schedule] = await tx.select().from(paymentSchedules).where(eq(paymentSchedules.id, input.paymentScheduleId)).limit(1).for("update");
+    const [currentLeague] = await tx.select({ organizationId: leagues.organizationId, active: leagues.active, scheduleAuthority: leagues.scheduleAuthority })
+      .from(leagues).where(eq(leagues.id, candidate.leagueId)).limit(1).for("share");
+    if (!schedule || !currentLeague?.active || currentLeague.scheduleAuthority !== "canonical" || currentLeague.organizationId !== ownedLeague.organizationId) {
+      if (schedule?.active) await tx.update(paymentSchedules).set({ active: false }).where(and(eq(paymentSchedules.id, input.paymentScheduleId), eq(paymentSchedules.active, true)));
       return { kind: "stale" };
     }
-    await lockLeagueSchedule(tx, ownedLeague.organizationId, schedule.leagueId);
 
     const existing = await getExistingCycleOperation(tx, schedule.id, expectedCycleAt);
     if (existing) {

@@ -110,7 +110,9 @@ describe("league setup integration API", () => {
     expect(retry.status).toBe(200);
     expect(retry.data.data).toMatchObject({ setupIntegration: { mode: "idempotent_retry", writesPerformed: false } });
     expect(retry.data.data?.canonicalDraftGeneration?.durableIds).toEqual(result.canonicalDraftGeneration?.durableIds);
-    const changed = await apiPost("/api/leagues", { ...body, paymentMode: "upfront" }, admin);
+    const invalidMode = await apiPost("/api/leagues", { ...body, paymentMode: "upfront" }, admin);
+    expect(invalidMode.status).toBe(400);
+    const changed = await apiPost("/api/leagues", { ...body, name: `${body.name} changed` }, admin);
     expect(changed.status).toBe(409);
     expect(changed.data.error?.code).toBe("IDEMPOTENCY_CONFLICT");
     const review = await apiGet<CanonicalDraftReview>(`/api/leagues/${result.id}/canonical-drafts/review`, admin);

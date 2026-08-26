@@ -546,6 +546,15 @@ describe('PATCH /api/leagues/:id (rename) → fires Square resync for every bowl
     });
     expect(mockSyncCustomerLeagueAttributes).not.toHaveBeenCalled();
   });
+
+  it('rejects a payment-mode-only PATCH that would leave double-pay dates on an upfront league', async () => {
+    const league = makeLeague({ paymentMode: 'weekly', doublePayDates: ['2026-09-15'] });
+    mockStorage.getLeague.mockResolvedValue(league);
+    const res = await patch(`/api/leagues/${league.id}`, { paymentMode: 'upfront' });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ success: false });
+    expect(mockStorage.updateLeague).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -810,7 +819,7 @@ describe('POST /api/leagues/:id/new-season → fires resync for every bowler clo
       weekDay: 'Tuesday',
       skipDates: ['2026-09-08'],
       cancelledDates: [],
-      doublePayDates: ['2026-09-15'],
+      doublePayDates: [],
       allowPublicSignup: true,
       paymentMode: 'upfront',
       setupIntegration: {
@@ -833,7 +842,7 @@ describe('POST /api/leagues/:id/new-season → fires resync for every bowler clo
         weekDay: 'Tuesday',
         skipDates: ['2026-09-08'],
         cancelledDates: [],
-        doublePayDates: ['2026-09-15'],
+        doublePayDates: [],
         allowPublicSignup: true,
         paymentMode: 'upfront',
         }),

@@ -589,11 +589,12 @@ router.patch("/:id", async (req: Request, res) => {
     // persisted-league + patch-body view so a `doublePayDates`-only
     // PATCH still gets fully checked.
     const canonicalScheduleValidationChanged = [
-      "doublePayDates", "skipDates", "cancelledDates", "seasonStart", "seasonEnd", "weekDay",
+      "doublePayDates", "skipDates", "cancelledDates", "seasonStart", "seasonEnd", "weekDay", "paymentMode",
     ].some((field) => Object.prototype.hasOwnProperty.call(req.body ?? {}, field));
     if (canonicalScheduleValidationChanged) {
       const result = validateDoublePayDates({
         doublePayDates: update.doublePayDates ?? league.doublePayDates ?? [],
+        paymentMode: update.paymentMode ?? league.paymentMode,
         skipDates: update.skipDates ?? league.skipDates ?? [],
         cancelledDates: update.cancelledDates ?? league.cancelledDates ?? [],
         weekDay: update.weekDay ?? league.weekDay,
@@ -611,7 +612,7 @@ router.patch("/:id", async (req: Request, res) => {
     const canonicalDoublePayDates = update.doublePayDates;
     const canonicalScheduleFieldChanged = [
       "doublePayDates", "skipDates", "cancelledDates", "seasonStart", "seasonEnd",
-      "weekDay", "competitionStartTime", "timezone", "totalBowlingWeeks",
+      "weekDay", "competitionStartTime", "timezone", "totalBowlingWeeks", "paymentMode",
     ].some((field) => Object.prototype.hasOwnProperty.call(req.body ?? {}, field));
     const canonicalMetadataFieldChanged = [
       "name", "description", "payingLineupSize", "active", "allowPublicSignup", "practiceStartTime",

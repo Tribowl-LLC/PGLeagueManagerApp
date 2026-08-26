@@ -36,7 +36,9 @@ export async function recoverRosterPaymentOperation(input: {
       .limit(1)
       .for("share");
     if (!league) throw new RosterPaymentRecoveryError("NOT_FOUND", "Payment operation not found", 404);
-    if (!league.active) throw new RosterPaymentRecoveryError("LEAGUE_ARCHIVED_READ_ONLY", "Inactive leagues are read-only archives", 409);
+    // Inactive canonical archives retain immutable provider evidence and may
+    // still be finalized/reconciled. Preparation and dispatch remain blocked
+    // by their separate active-authority gates.
     const [operation] = await tx.select().from(paymentOperations).where(and(
       eq(paymentOperations.organizationId, input.organizationId),
       eq(paymentOperations.leagueId, input.leagueId),
@@ -68,7 +70,7 @@ export async function recoverRosterPaymentOperation(input: {
           if (!finalization.finalized) throw new RosterPaymentRecoveryError("ROSTER_FINALIZATION_NOT_CONFIRMED", "Roster payment finalization was not confirmed", 409);
         } catch (error) {
           if (!isRosterSnapshotFinalizationError(error)) throw error;
-          await tx.update(paymentOperations).set({ status: "reconciliation_required", nextAttemptAt: null, errorClassification: "internal", errorCode: error.code, updatedAt: now }).where(and(eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.id, standing.id)));
+          await tx.update(paymentOperations).set({ status: "reconciliation_required", nextAttemptAt: null, leaseOwner: null, leaseExpiresAt: null, errorClassification: "internal", errorCode: error.code, completedAt: standing.completedAt ?? now, updatedAt: now }).where(and(eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.id, standing.id)));
           return standing;
         }
         if (standing.status === "reconciliation_required") {
@@ -104,8 +106,11 @@ export async function recoverRosterPaymentOperation(input: {
       const [reviewed] = await tx.update(paymentOperations).set({
         status: "reconciliation_required",
         nextAttemptAt: null,
+        leaseOwner: null,
+        leaseExpiresAt: null,
         errorClassification: "internal",
         errorCode: error.code,
+        completedAt: operation.completedAt ?? now,
         updatedAt: now,
       }).where(and(
         eq(paymentOperations.organizationId, input.organizationId),

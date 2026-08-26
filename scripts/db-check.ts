@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import {
   cpSync,
   mkdirSync,
+  rmSync,
   readFileSync,
   writeFileSync,
 } from 'node:fs';
@@ -365,6 +366,33 @@ function buildProofMigrationDirectory(artifactDirectory: string): { directory: s
   writeMigrationChecksumManifest(directory);
   loadActiveMigrations(directory);
   return { directory, metadata };
+}
+
+/** Build the exact pre-0034 history used by the PostgreSQL migration fixture.
+ * The fixture is deliberately applied to a disposable database whose journal
+ * stops at 0033, then the real 0034 migration is replayed through the checked
+ * migration runner. */
+function buildPre0034MigrationDirectory(artifactDirectory: string): string {
+  const directory = join(artifactDirectory, 'pre-0034-migrations');
+  cpSync(ACTIVE_MIGRATIONS_DIRECTORY, directory, { recursive: true });
+  rmSync(join(directory, '0034_canonical_schedule_authority.sql'));
+  const journalPath = join(directory, 'meta', '_journal.json');
+  const journal = JSON.parse(readFileSync(journalPath, 'utf8')) as {
+    version: string;
+    dialect: string;
+    entries: Array<Record<string, unknown>>;
+  };
+  journal.entries = journal.entries.slice(0, -1);
+  writeFileSync(journalPath, `${JSON.stringify(journal, null, 2)}\n`, 'utf8');
+  const checksumPath = join(directory, 'migration-checksums.json');
+  const checksums = JSON.parse(readFileSync(checksumPath, 'utf8')) as {
+    formatVersion: number;
+    entries: Array<Record<string, unknown>>;
+  };
+  checksums.entries = checksums.entries.slice(0, -1);
+  writeFileSync(checksumPath, `${JSON.stringify(checksums, null, 2)}\n`, 'utf8');
+  loadActiveMigrations(directory);
+  return directory;
 }
 
 async function assertOrganizationHostnameNamespaceGuard(connectionString: string): Promise<void> {
@@ -854,6 +882,7 @@ async function validateVersion(
     const approvedDatabases = [
       'fresh_active',
       'fresh_proof',
+      'historical_discrepancy',
       'adoption_template',
       'legacy_inert_rls',
       'adoption_success',
@@ -876,6 +905,7 @@ async function validateVersion(
     const adminUrl = databaseUrl(port, 'postgres');
     mkdirSync(join(artifactDirectory, `postgres-${version}`), { recursive: true });
     const proof = buildProofMigrationDirectory(join(artifactDirectory, `postgres-${version}`));
+    const pre0034 = buildPre0034MigrationDirectory(join(artifactDirectory, `postgres-${version}`));
     const activeMigrationTags = loadActiveMigrations().map((migration) => migration.tag);
 
     const freshActive = 'fresh_active';
@@ -888,6 +918,43 @@ async function validateVersion(
     await assertOrganizationHostnameNamespaceGuard(freshActiveUrl);
     if (!(await runCheckedMigrations(freshActiveUrl)).noOp) {
       throw new Error('Rerunning db:migrate on a fresh replay was not a no-op.');
+    }
+
+    const historicalDiscrepancy = 'historical_discrepancy';
+    await createDatabase(adminUrl, historicalDiscrepancy, container);
+    const historicalDiscrepancyUrl = databaseUrl(port, historicalDiscrepancy);
+    const pre0034Tags = activeMigrationTags.slice(0, -1);
+    const pre0034Run = await runCheckedMigrations(historicalDiscrepancyUrl, pre0034);
+    if (JSON.stringify(pre0034Run.applied) !== JSON.stringify(pre0034Tags)) {
+      throw new Error('The disposable migration fixture did not stop at migration 0033.');
+    }
+    await executeSql(historicalDiscrepancyUrl, [
+      readFileSync(resolve('tests', 'fixtures', 'migrations', '0034_open_historical_discrepancy.sql'), 'utf8'),
+    ]);
+    const historicalMigration = await runCheckedMigrations(historicalDiscrepancyUrl);
+    if (JSON.stringify(historicalMigration.applied) !== JSON.stringify([activeMigrationTags.at(-1)])) {
+      throw new Error('Migration 0034 did not replay after the real PostgreSQL historical-discrepancy fixture.');
+    }
+    const historicalClient = new pg.Client({ connectionString: historicalDiscrepancyUrl, application_name: 'leaguevault-db-check-0034-fixture' });
+    try {
+      await historicalClient.connect();
+      const result = await historicalClient.query<{ schedule_authority: string; discrepancy_count: string; open_count: string }>(`
+        SELECT l.schedule_authority,
+          r.discrepancy_count::text,
+          (SELECT count(*)::text FROM league_occurrence_generation_discrepancies d
+            WHERE d.organization_id = r.organization_id AND d.league_id = r.league_id
+              AND d.generation_run_id = r.id AND d.resolution_state = 'open') AS open_count
+        FROM leagues l
+        JOIN league_occurrence_generation_runs r
+          ON r.organization_id = l.organization_id AND r.league_id = l.id AND r.state = 'applied'
+        WHERE l.organization_id = 3 AND l.id = 7
+      `);
+      const row = result.rows[0];
+      if (!row || row.schedule_authority !== 'canonical' || row.discrepancy_count !== '34' || row.open_count !== '34') {
+        throw new Error('Migration 0034 did not preserve the fixture historical discrepancy count parity.');
+      }
+    } finally {
+      await historicalClient.end().catch(() => undefined);
     }
 
     const freshProof = 'fresh_proof';

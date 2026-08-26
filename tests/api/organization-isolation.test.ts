@@ -12,6 +12,8 @@ import {
   TEST_ORG_A_EMAIL,
   TEST_ORG_B_EMAIL,
   TEST_ORG_PASSWORD,
+  TEST_ADMIN_EMAIL,
+  TEST_ADMIN_PASSWORD,
 } from '../helpers';
 
 interface OrgUser {
@@ -55,12 +57,14 @@ function collectIds(data: unknown): number[] {
 describe('Organization Isolation', () => {
   let sessionA: AuthSession;
   let sessionB: AuthSession;
+  let systemAdmin: AuthSession;
   let orgALeagueId: number | null = null;
   let orgBLeagueId: number | null = null;
 
   beforeAll(async () => {
     sessionA = await login(TEST_ORG_A_EMAIL, TEST_ORG_PASSWORD);
     sessionB = await login(TEST_ORG_B_EMAIL, TEST_ORG_PASSWORD);
+    systemAdmin = await login(TEST_ADMIN_EMAIL, TEST_ADMIN_PASSWORD);
 
     const orgALeagues = await apiGet<League[]>('/api/leagues', sessionA);
     orgALeagueId = orgALeagues.data.data?.[0]?.id ?? null;
@@ -98,6 +102,25 @@ describe('Organization Isolation', () => {
     it('org B admin should NOT be able to list all organizations (admin-only)', async () => {
       const { status } = await apiGet<OrgUser[]>('/api/organizations', sessionB);
       expect(status).toBe(403);
+    });
+  });
+
+  describe('retired schedule diagnostics', () => {
+    it('denies ordinary organization admins and scopes system-admin reads by tenant', async () => {
+      expect(sessionB.user.organizationId).toBeTruthy();
+      const denied = await apiGet(
+        `/api/system-admin/retired-schedule-diagnostics?organizationId=${sessionB.user.organizationId}&limit=1`,
+        sessionA,
+      );
+      expect(denied.status).toBe(403);
+
+      const allowed = await apiGet<{ organizationId: number; rows: unknown[] }>(
+        `/api/system-admin/retired-schedule-diagnostics?organizationId=${sessionB.user.organizationId}&limit=1`,
+        systemAdmin,
+      );
+      expect(allowed.status).toBe(200);
+      expect(allowed.data.data?.organizationId).toBe(sessionB.user.organizationId);
+      expect(allowed.data.data?.rows.length).toBeLessThanOrEqual(1);
     });
   });
 

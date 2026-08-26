@@ -1,5 +1,5 @@
 import { format } from "date-fns";
-import { Pencil, Archive, RotateCcw, Trash } from "lucide-react";
+import { Pencil, Archive, Trash } from "lucide-react";
 import { Link } from "wouter";
 import {
   Table,
@@ -54,6 +54,7 @@ export function LeaguesTable({
       </TableHeader>
       <TableBody>
         {leagues.map((league) => {
+          const isReadOnlyArchive = !league.active || league.scheduleAuthority === "retired_legacy";
           const startDate = new Date(league.seasonStart);
           const endDate = new Date(league.seasonEnd);
           const bowlingDay = league.weekDay
@@ -88,24 +89,15 @@ export function LeaguesTable({
               </TableCell>
               <TableCell>
                 <div className="flex gap-x-2">
-                  {canManage && <>
-                    <Button variant="outline" size="sm" onClick={() => onEdit(league)}>
+                  {canManage && !isReadOnlyArchive && <>
+                    <Button aria-label={`Edit ${league.name}`} variant="outline" size="sm" onClick={() => onEdit(league)}>
                       <Pencil className="size-4" />
                     </Button>
                     {league.active ? (
                       <Button variant="outline" size="sm" onClick={() => onArchive(league.id)}>
                         <Archive className="size-4" />
                       </Button>
-                    ) : (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => onRestore(league.id)}
-                        disabled={isRestorePending}
-                      >
-                        <RotateCcw className="size-4" />
-                      </Button>
-                    )}
+                    ) : null}
                     <Button variant="destructive" size="sm" onClick={() => onDelete(league.id)}>
                       <Trash className="size-4" />
                     </Button>

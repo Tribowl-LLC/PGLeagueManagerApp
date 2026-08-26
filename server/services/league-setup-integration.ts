@@ -8,6 +8,7 @@ import {
   organizations,
   teams,
   teamPaymentSlots,
+  paymentSchedules,
   users,
   DEFAULT_TIMEZONE,
   type InsertLeague,
@@ -55,6 +56,7 @@ import { publishCanonicalDraftInTransaction } from "./fall-draft-review.js";
 import { persistCanonicalCollectionGroupsInTransaction, type PersistCanonicalCollectionGroupsResult } from "./canonical-collection-groups.js";
 import { CanonicalCollectionGroupingError } from "@shared/canonical-collection-groups";
 import { revokeStandingAutopayForArchivedLeagueInTransaction } from "./roster-standing-autopay.js";
+import { withLegacyScheduledCycleLocksForLeague } from "./scheduled-payment-cycle-lock.js";
 
 export const LEAGUE_SETUP_FALL_AUDIT_REASON = "Generate canonical Fall drafts during authoritative league setup";
 export const LEAGUE_SETUP_FUTURE_SEASON_AUDIT_REASON = "Generate canonical future-season drafts during authoritative league setup";
@@ -710,6 +712,7 @@ function buildNewSeasonLeague(
   }
   const doublePay = validateDoublePayDates({
     doublePayDates: values.doublePayDates,
+    paymentMode: values.paymentMode,
     skipDates: values.skipDates,
     cancelledDates: values.cancelledDates,
     weekDay,
@@ -983,6 +986,11 @@ async function createNewSeasonInTransaction(input: {
     organizationId: input.scope.organizationId,
     leagueId: source.id,
   });
+  await input.tx.update(paymentSchedules).set({
+    active: false,
+    cancelledAt: new Date().toISOString(),
+    cancelReason: "league_archived",
+  }).where(eq(paymentSchedules.leagueId, source.id));
   const [archived] = await input.tx.update(leagues).set({ active: false }).where(and(
     eq(leagues.id, source.id),
     eq(leagues.organizationId, input.scope.organizationId),
@@ -1027,10 +1035,10 @@ export async function createNewSeasonWithCanonicalSetup(input: {
   failureInjection?: LeagueSetupFailureStage;
   canonicalFailureInjection?: FallDraftFailureStage;
 }): Promise<SetupTransactionResult> {
-  const committed = await db.transaction(
+  const committed = await withLegacyScheduledCycleLocksForLeague(input.sourceLeagueId, () => db.transaction(
     (tx) => createNewSeasonInTransaction({ tx, ...input }),
     { isolationLevel: "read committed", accessMode: "read write" },
-  );
+  ));
   if (committed.result.setupIntegration.writesPerformed) invalidateSetupCaches();
   return committed;
 }

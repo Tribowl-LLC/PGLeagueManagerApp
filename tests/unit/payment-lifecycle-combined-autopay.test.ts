@@ -15,9 +15,28 @@ const fakeTx = {
     rows: [{ transaction_time: '2026-04-22T20:00:00.000Z' }],
   }),
   select: () => ({
-    from: () => ({
+    from: (table: unknown) => ({
       where: () => ({
-        limit: () => Promise.resolve([]),
+        limit: () => {
+          const nameSymbol = Object.getOwnPropertySymbols(table as object).find((s) => s.toString().includes('Name'));
+          const tableName = nameSymbol ? (table as Record<symbol, unknown>)[nameSymbol] : undefined;
+          if (tableName === 'payment_schedules') return Promise.resolve([{
+            id: 333, bowlerId: 42, leagueId: 11, amount: 2000,
+            frequency: 'weekly', paymentCardId: 'card_token_abcdef',
+            nextPaymentDate: '2026-04-22T19:00:00.000Z', active: true,
+            additionalBowlerIds: [77, 78], lastPaymentDate: null,
+            createdAt: '2026-04-01T00:00:00.000Z', cancelledAt: null, cancelReason: null,
+          }]);
+          if (tableName === 'leagues') return Promise.resolve([{
+            id: 11, organizationId: 1, weeklyFee: 2000,
+            lineageFee: 0, prizeFundFee: 0, seasonStart: '2026-01-01',
+            seasonEnd: '2026-04-01', totalBowlingWeeks: 12,
+            cancelledDates: [], skipDates: [], paymentMode: 'recurring',
+            timezone: 'America/Chicago', weekDay: 3, competitionStartTime: '19:00',
+            active: true, scheduleAuthority: 'canonical',
+          }]);
+          return Promise.resolve([]);
+        },
         orderBy: () => ({ limit: () => Promise.resolve([]) }),
       }),
     }),

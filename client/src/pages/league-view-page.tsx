@@ -63,6 +63,7 @@ export default function LeagueViewPage() {
   });
   const currentUser = currentUserResponse?.data;
   const canManageLeague = currentUser?.role === "system_admin" || currentUser?.role === "org_admin";
+  const isReadOnlyArchive = league !== undefined && (!league.active || league.scheduleAuthority === "retired_legacy");
 
   const { data: seasonHistoryResponse } = useQuery<{ success: true; data: League[] }>({
     queryKey: ['/api/leagues', leagueId, 'season-history'],
@@ -184,7 +185,7 @@ export default function LeagueViewPage() {
             )}
           </div>
           <div className="flex items-center gap-2">
-          {canManageLeague && <AlertDialog>
+          {canManageLeague && !isReadOnlyArchive && <AlertDialog>
             <AlertDialogTrigger asChild>
               <Button variant="outline" disabled={sendInvitesMutation.isPending}>
                 {sendInvitesMutation.isPending ? (
@@ -213,10 +214,17 @@ export default function LeagueViewPage() {
           </div>
         </div>
 
+        {isReadOnlyArchive && (
+          <div role="status" className="rounded-md border border-muted bg-muted/30 px-4 py-3 text-sm">
+            <div className="font-medium">Read-only archive</div>
+            <div className="text-muted-foreground">This league is retained for history. Editing, invites, roster changes, and restoration are unavailable.</div>
+          </div>
+        )}
+
         {inviteResult && <InviteResultCard inviteResult={inviteResult} />}
 
         <ErrorBoundary level="section">
-          <LeagueActionCards leagueId={leagueId} canManageRoster={canManageLeague} />
+          <LeagueActionCards leagueId={leagueId} canManageRoster={canManageLeague && !isReadOnlyArchive} />
         </ErrorBoundary>
 
         {league.organizationId && (
@@ -243,7 +251,7 @@ export default function LeagueViewPage() {
           <SeasonHistoryCard seasonHistory={seasonHistory} leagueId={leagueId} />
         )}
 
-        {canManageLeague && <NewSeasonDialog
+        {canManageLeague && !isReadOnlyArchive && <NewSeasonDialog
             league={league}
             showNewSeason={showNewSeason}
             setShowNewSeason={setShowNewSeason}

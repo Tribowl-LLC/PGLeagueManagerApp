@@ -137,7 +137,35 @@ const dbState: DbState = {
 };
 
 vi.mock('../../server/db', async () => {
-  const { leagues, bowlers } = await import('@shared/schema');
+  const { leagues, bowlers, paymentSchedules } = await import('@shared/schema');
+  const scheduleRow = () => ({
+    id: 333, bowlerId: 42, leagueId: 11, amount: 2000,
+    frequency: 'weekly', paymentCardId: 'card_token_123',
+    nextPaymentDate: '2026-04-22T19:00:00.000Z', active: true,
+    additionalBowlerIds: null, lastPaymentDate: null,
+    createdAt: '2026-04-01T00:00:00.000Z', cancelledAt: null, cancelReason: null,
+    nextOccurrenceId: null,
+  });
+  const selectBuilder = () => ({
+    from: (table: unknown) => ({
+      innerJoin: () => ({
+        where: () => ({
+          limit: () => Promise.resolve([{ schedule: scheduleRow(), league: dbState.league }]),
+        }),
+      }),
+      where: () => {
+        const rows = table === leagues
+          ? [dbState.league]
+          : table === bowlers
+            ? [dbState.bowler]
+            : table === paymentSchedules
+              ? [scheduleRow()]
+              : [];
+        const p = Promise.resolve(rows);
+        return Object.assign(p, { limit: () => Promise.resolve(rows) });
+      },
+    }),
+  });
   return {
     pool: {
       connect: async () => ({
@@ -155,41 +183,17 @@ vi.mock('../../server/db', async () => {
           }),
         }),
       }),
-      select: () => ({
-        from: (table: unknown) => ({
-          innerJoin: () => ({
-            where: () => ({
-              limit: () => Promise.resolve([{
-                schedule: {
-                  id: 333, bowlerId: 42, leagueId: 11, amount: 2000,
-                  frequency: 'weekly', paymentCardId: 'card_token_123',
-                  nextPaymentDate: '2026-04-22T19:00:00.000Z', active: true,
-                  additionalBowlerIds: null, lastPaymentDate: null,
-                  createdAt: '2026-04-01T00:00:00.000Z', cancelledAt: null, cancelReason: null,
-                },
-                league: dbState.league,
-              }]),
-            }),
-          }),
-          where: () => {
-            const rows =
-              table === leagues
-                ? [dbState.league]
-                : table === bowlers
-                  ? [dbState.bowler]
-                  : [];
-            const p = Promise.resolve(rows);
-            return Object.assign(p, { limit: () => Promise.resolve(rows) });
-          },
-        }),
-      }),
+      select: selectBuilder,
       insert: () => ({
         values: (v: Record<string, unknown>) => {
           dbState.insertedRows.push(v);
           return Promise.resolve();
         },
       }),
-      transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn({}),
+      transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn({
+        execute: vi.fn().mockResolvedValue({ rows: [] }),
+        select: selectBuilder,
+      }),
     },
   };
 });
@@ -294,6 +298,7 @@ beforeEach(() => {
     paymentMode: 'recurring', timezone: 'America/Chicago', weekDay: 3,
     competitionStartTime: '19:00',
     lineageItemVariationId: null, prizeFundItemVariationId: null,
+    active: true, scheduleAuthority: 'canonical',
   };
   dbState.bowler = {
     id: 42, organizationId: 1, name: 'Pat', email: 'pat@example.com',

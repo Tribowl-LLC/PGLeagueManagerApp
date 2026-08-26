@@ -176,8 +176,9 @@ export async function deleteLink(id: number): Promise<void> {
             await tx.update(paymentOperationRosterSnapshotItems).set({ state: "released" }).where(and(eq(paymentOperationRosterSnapshotItems.organizationId, link.organizationId), eq(paymentOperationRosterSnapshotItems.leagueId, leagueId), eq(paymentOperationRosterSnapshotItems.operationId, operation.id), eq(paymentOperationRosterSnapshotItems.state, "reserved")));
             const canceledAt = new Date().toISOString();
             await tx.update(paymentOperations).set({ status: "canceled", nextAttemptAt: null, leaseOwner: null, leaseToken: null, leaseExpiresAt: null, errorClassification: null, errorCode: null, completedAt: canceledAt, updatedAt: canceledAt }).where(and(eq(paymentOperations.organizationId, link.organizationId), eq(paymentOperations.id, operation.id)));
-          } else if (["pending", "leased", "provider_unknown", "retry_scheduled"].includes(operation.status) && (operation.dispatchClaimedAt !== null || operation.providerObjectId !== null)) {
-            await tx.update(paymentOperations).set({ status: "reconciliation_required", nextAttemptAt: null, errorClassification: "provider_unknown", errorCode: "PARTNER_LINK_RETIRED_AFTER_DISPATCH", updatedAt: new Date().toISOString() }).where(and(eq(paymentOperations.organizationId, link.organizationId), eq(paymentOperations.id, operation.id)));
+          } else if (["pending", "leased", "provider_unknown", "retry_scheduled"].includes(operation.status) && (operation.dispatchClaimedAt !== null || operation.providerObjectId !== null || operation.status === "provider_unknown")) {
+            const reconciledAt = new Date().toISOString();
+            await tx.update(paymentOperations).set({ status: "reconciliation_required", nextAttemptAt: null, leaseOwner: null, leaseExpiresAt: null, errorClassification: "provider_unknown", errorCode: "PARTNER_LINK_RETIRED_AFTER_DISPATCH", completedAt: reconciledAt, updatedAt: reconciledAt }).where(and(eq(paymentOperations.organizationId, link.organizationId), eq(paymentOperations.id, operation.id)));
           }
         }
         await tx.update(autopayConsents).set({ state: "revoked", revokedAt: new Date().toISOString() }).where(and(eq(autopayConsents.id, consent.id), eq(autopayConsents.state, "active")));
@@ -200,33 +201,44 @@ export async function pruneSchedulesForRemovedLink(
   const affected: { id: number; bowlerId: number; removedPartnerId: number }[] = [];
 
   const orgLeagues = await db
-    .select({ id: leagues.id })
+    .select({ id: leagues.id, organizationId: leagues.organizationId })
     .from(leagues)
-    .where(eq(leagues.organizationId, link.organizationId));
-  const orgLeagueIds = orgLeagues.map((l) => l.id);
-  if (orgLeagueIds.length === 0) return affected;
+    .where(and(
+      eq(leagues.organizationId, link.organizationId),
+      eq(leagues.active, true),
+      eq(leagues.scheduleAuthority, "canonical"),
+    ));
+  if (orgLeagues.length === 0) return affected;
 
   const directions: Array<[number, number]> = [
     [link.bowlerAId, link.bowlerBId],
     [link.bowlerBId, link.bowlerAId],
   ];
-  for (const [ownerBowlerId, partnerBowlerId] of directions) {
-    const updated = await db
-      .update(paymentSchedules)
-      .set({
-        additionalBowlerIds: sql`array_remove(${paymentSchedules.additionalBowlerIds}, ${partnerBowlerId})`,
-      })
-      .where(
-        and(
-          eq(paymentSchedules.bowlerId, ownerBowlerId),
-          inArray(paymentSchedules.leagueId, orgLeagueIds),
-          sql`${partnerBowlerId} = ANY(${paymentSchedules.additionalBowlerIds})`,
-        ),
-      )
-      .returning({ id: paymentSchedules.id });
-    for (const row of updated) {
-      affected.push({ id: row.id, bowlerId: ownerBowlerId, removedPartnerId: partnerBowlerId });
-    }
+  for (const league of orgLeagues) {
+    await db.transaction(async (tx) => {
+      await lockLeagueSchedule(tx, league.organizationId, league.id);
+      const [current] = await tx.select({ active: leagues.active, scheduleAuthority: leagues.scheduleAuthority })
+        .from(leagues).where(and(eq(leagues.id, league.id), eq(leagues.organizationId, link.organizationId))).limit(1).for("share");
+      if (!current?.active || current.scheduleAuthority !== "canonical") return;
+      for (const [ownerBowlerId, partnerBowlerId] of directions) {
+        const updated = await tx
+          .update(paymentSchedules)
+          .set({
+            additionalBowlerIds: sql`array_remove(${paymentSchedules.additionalBowlerIds}, ${partnerBowlerId})`,
+          })
+          .where(
+            and(
+              eq(paymentSchedules.bowlerId, ownerBowlerId),
+              eq(paymentSchedules.leagueId, league.id),
+              sql`${partnerBowlerId} = ANY(${paymentSchedules.additionalBowlerIds})`,
+            ),
+          )
+          .returning({ id: paymentSchedules.id });
+        for (const row of updated) {
+          affected.push({ id: row.id, bowlerId: ownerBowlerId, removedPartnerId: partnerBowlerId });
+        }
+      }
+    });
   }
   return affected;
 }

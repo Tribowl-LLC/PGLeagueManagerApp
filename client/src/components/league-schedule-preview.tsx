@@ -20,8 +20,11 @@ interface LeagueSchedulePreviewProps {
   effectiveBowlingWeeks: number;
   computedSeasonEnd: Date | null;
   toggleDateType: (isoDate: string, currentType: ScheduleWeekType) => void;
+  toggleDoublePayDate?: (isoDate: string) => void;
   /** Creation and rollover schedules support Bowling/No Bowling only. */
   allowCancelled?: boolean;
+  /** Double-pay is a weekly-only policy. */
+  allowDoublePay?: boolean;
 }
 
 export function LeagueSchedulePreview({
@@ -35,7 +38,9 @@ export function LeagueSchedulePreview({
   effectiveBowlingWeeks,
   computedSeasonEnd,
   toggleDateType,
+  toggleDoublePayDate,
   allowCancelled = true,
+  allowDoublePay = true,
 }: LeagueSchedulePreviewProps) {
   if (scheduleDates.length === 0) return null;
 
@@ -51,6 +56,8 @@ export function LeagueSchedulePreview({
         type="button"
         className="flex w-full items-center justify-between px-3 py-2 text-sm font-medium"
         onClick={() => setShowSchedule(s => !s)}
+        aria-expanded={showSchedule}
+        aria-controls="league-schedule-preview"
       >
         <span className="flex flex-col items-start gap-0.5">
           <span>Bowling Schedule (click weeks to customize)</span>
@@ -68,12 +75,16 @@ export function LeagueSchedulePreview({
       </button>
 
       {showSchedule && (
-        <div className="border-t">
+        <div id="league-schedule-preview" className="border-t">
           <div className="px-3 py-2 text-xs text-muted-foreground bg-muted/30">
-            Click a date to cycle: <span className="font-medium">Normal → Skip (No Bowling) {allowCancelled ? "→ Cancelled (no makeup) " : ""}→ 2× Pay (charged double, max 2 per league)</span>
+          Choose Bowling or No Bowling for each date{allowCancelled ? ", or Cancelled for an existing season" : ""}. {allowDoublePay ? "Use the separate 2× Pay toggle for up to two weekly dates." : ""}
           </div>
           <div className="divide-y max-h-72 overflow-y-auto">
             {scheduleDates.map((week) => {
+              const isDoublePay = doublePayDates.includes(week.isoDate);
+              const baseType = isDoublePay
+                ? (skipDates.includes(week.isoDate) ? "skip" : "normal")
+                : week.type;
               const weekLabel = week.type === 'skip'
                 ? 'Skip'
                 : allowCancelled && week.type === 'cancelled'
@@ -81,12 +92,12 @@ export function LeagueSchedulePreview({
                 : week.type === 'double-pay'
                 ? `Week ${week.bowlingWeekNumber} · 2× Pay`
                 : `Week ${week.bowlingWeekNumber}`;
-              return (
+                return (
+                <div key={week.isoDate} className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-muted/50 transition-colors">
                 <button
                   type="button"
-                  key={week.isoDate}
-                  onClick={() => toggleDateType(week.isoDate, week.type)}
-                  className={`flex w-full items-center justify-between px-3 py-1.5 text-sm hover:bg-muted/50 transition-colors ${
+                  onClick={() => toggleDateType(week.isoDate, baseType)}
+                  className={`flex min-w-0 flex-1 items-center justify-between text-left ${
                     week.type === 'skip'
                       ? 'bg-yellow-50 dark:bg-yellow-950/20'
                       : allowCancelled && week.type === 'cancelled'
@@ -96,6 +107,8 @@ export function LeagueSchedulePreview({
                       : ''
                   }`}
                   data-testid={`schedule-week-${week.isoDate}`}
+                  aria-pressed={baseType === "skip" || (allowCancelled && baseType === "cancelled")}
+                  aria-label={`${week.date.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}: ${baseType === "skip" ? "No Bowling" : baseType === "cancelled" ? "Cancelled" : "Bowling"}`}
                 >
                   <span className={week.type === 'skip' || (allowCancelled && week.type === 'cancelled') ? 'text-muted-foreground line-through' : ''}>
                     {week.date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}
@@ -119,6 +132,19 @@ export function LeagueSchedulePreview({
                     {weekLabel}
                   </Badge>
                 </button>
+                {allowDoublePay && toggleDoublePayDate && week.type !== "skip" && week.type !== "cancelled" && (
+                  <button
+                    type="button"
+                    className="shrink-0 rounded border px-2 py-1 text-xs hover:bg-muted"
+                    onClick={() => toggleDoublePayDate(week.isoDate)}
+                    aria-pressed={isDoublePay}
+                    aria-label={`${isDoublePay ? "Remove" : "Mark"} double pay for ${week.date.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}`}
+                    data-testid={`schedule-double-pay-${week.isoDate}`}
+                  >
+                    2× Pay
+                  </button>
+                )}
+                </div>
               );
             })}
           </div>

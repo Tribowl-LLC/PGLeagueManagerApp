@@ -447,7 +447,11 @@ export async function loadBowlerScoreHistory(input: {
     const leagueIds = (await tx.selectDistinct({ leagueId: games.leagueId }).from(scores)
       .innerJoin(games, eq(games.id, scores.gameId))
       .innerJoin(leagues, eq(leagues.id, games.leagueId))
-      .where(and(eq(scores.bowlerId, input.bowlerId), eq(leagues.organizationId, input.organizationId)))
+      .where(and(
+        eq(scores.bowlerId, input.bowlerId),
+        eq(leagues.organizationId, input.organizationId),
+        eq(leagues.scheduleAuthority, "canonical"),
+      ))
       .orderBy(asc(games.leagueId)))
       .map((row) => row.leagueId)
       .filter((leagueId) => allowed === null || allowed.has(leagueId));
@@ -527,16 +531,19 @@ function normalizeGameDate(value: string | Date): string {
 export async function createCanonicalAwareGame(game: InsertGame): Promise<Game> {
   const date = normalizeGameDate(game.date);
   return db.transaction(async (tx) => {
-    const [league] = await tx.select({ organizationId: leagues.organizationId, active: leagues.active, scheduleAuthority: leagues.scheduleAuthority })
+    const [scope] = await tx.select({ organizationId: leagues.organizationId })
       .from(leagues).where(eq(leagues.id, game.leagueId)).limit(1);
-    if (!league) throw new Error("League not found for createGame");
+    if (!scope) throw new Error("League not found for createGame");
+    await lockLeagueSchedule(tx, scope.organizationId, game.leagueId);
+    const [league] = await tx.select({ organizationId: leagues.organizationId, active: leagues.active, scheduleAuthority: leagues.scheduleAuthority })
+      .from(leagues).where(eq(leagues.id, game.leagueId)).limit(1).for("share");
+    if (!league || league.organizationId !== scope.organizationId) throw new Error("League scope changed while createGame was waiting for its schedule lock");
     if (!league.active || league.scheduleAuthority !== "canonical") throw new Error("Inactive or retired leagues are read-only");
     if (league.organizationId === null) {
       const [created] = await tx.insert(games).values({ ...game, date, occurrenceId: null }).returning();
       if (!created) throw new Error("Game was not created");
       return created;
     }
-    await lockLeagueSchedule(tx, league.organizationId, game.leagueId);
     const schedule = await scheduleSnapshot(tx, { organizationId: league.organizationId, leagueId: game.leagueId });
     if (schedule.authoritativeSource === "legacy_fallback") {
       const [created] = await tx.insert(games).values({ ...game, date, occurrenceId: null }).returning();
@@ -580,6 +587,11 @@ export async function updateCanonicalAwareGame(id: number, patch: UpdateGame): P
       });
     }
     await lockLeagueSchedule(tx, preRead.organizationId, preRead.leagueId);
+    const [lockedLeague] = await tx.select({ organizationId: leagues.organizationId, active: leagues.active, scheduleAuthority: leagues.scheduleAuthority })
+      .from(leagues).where(eq(leagues.id, preRead.leagueId)).limit(1).for("share");
+    if (!lockedLeague || lockedLeague.organizationId !== preRead.organizationId || !lockedLeague.active || lockedLeague.scheduleAuthority !== "canonical") {
+      throw new Error("Inactive or retired leagues are read-only");
+    }
     const [current] = await tx.select().from(games).where(eq(games.id, id)).limit(1).for("update");
     if (!current || current.leagueId !== preRead.leagueId) throw new Error("Game scope changed while updateGame was waiting for its league lock");
     const [league] = await tx.select({ organizationId: leagues.organizationId, active: leagues.active, scheduleAuthority: leagues.scheduleAuthority })
@@ -636,14 +648,17 @@ export async function deleteCanonicalAwareGame(id: number): Promise<void> {
     if (!preRead) return;
     if (!preRead.active || preRead.scheduleAuthority !== "canonical") throw new Error("Inactive or retired leagues are read-only");
     await lockLeagueSchedule(tx, preRead.organizationId, preRead.leagueId);
+    const [lockedLeague] = await tx.select({ organizationId: leagues.organizationId, active: leagues.active, scheduleAuthority: leagues.scheduleAuthority })
+      .from(leagues).where(eq(leagues.id, preRead.leagueId)).limit(1).for("share");
+    if (!lockedLeague || lockedLeague.organizationId !== preRead.organizationId || !lockedLeague.active || lockedLeague.scheduleAuthority !== "canonical") {
+      throw new Error("Inactive or retired leagues are read-only");
+    }
     const [current] = await tx.select().from(games).where(eq(games.id, id)).limit(1).for("update");
     if (!current) return;
     if (current.leagueId !== preRead.leagueId) throw new Error("Game scope changed while deleteGame was waiting for its league lock");
     if (current.occurrenceId !== null) {
-      const [league] = await tx.select({ organizationId: leagues.organizationId, active: leagues.active, scheduleAuthority: leagues.scheduleAuthority })
-        .from(leagues).where(eq(leagues.id, current.leagueId)).limit(1);
       throw new CanonicalGamesScoresError({
-        organizationId: league?.organizationId ?? 0,
+        organizationId: lockedLeague.organizationId ?? 0,
         leagueId: current.leagueId,
         classification: "linked_game_deletion_unsupported",
         gameCount: 1,
@@ -693,6 +708,11 @@ export async function createAuthorizedScoreBatch(input: {
     }
     const gameMap = new Map(lockedGames.map((row) => [row.id, row]));
     for (const leagueId of leagueIds) {
+      const [league] = await tx.select({ active: leagues.active, scheduleAuthority: leagues.scheduleAuthority })
+        .from(leagues).where(and(eq(leagues.id, leagueId), eq(leagues.organizationId, input.organizationId))).limit(1).for("share");
+      if (!league?.active || league.scheduleAuthority !== "canonical") {
+        throw new CanonicalGamesScoresError({ organizationId: input.organizationId, leagueId, classification: "score_reference_out_of_scope", scoreCount: input.batchScores.length });
+      }
       const schedule = await scheduleSnapshot(tx, { organizationId: input.organizationId, leagueId });
       await projectLeagueGames(tx, schedule, { organizationId: input.organizationId, leagueId });
     }

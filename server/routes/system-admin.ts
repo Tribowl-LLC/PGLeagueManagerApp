@@ -44,10 +44,27 @@ import {
   countAdminEmailChangeAudits,
   clampListLimit as clampAdminEmailChangeAuditListLimit,
 } from '../storage/admin-email-change-audits';
+import { getRetiredLegacyScheduleDiagnostics } from '../storage/leagues.js';
 
 const log = createLogger("SystemAdmin");
 
 const router = Router();
+
+router.get('/retired-schedule-diagnostics', requireAdmin, async (req: Request, res: Response) => {
+  const organizationId = Number(req.query.organizationId);
+  const limit = req.query.limit === undefined ? undefined : Number(req.query.limit);
+  if (!Number.isSafeInteger(organizationId) || organizationId <= 0
+    || (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > 100))) {
+    return sendError(res, 'organizationId and bounded limit are required', 400, 'INVALID_REQUEST');
+  }
+  try {
+    const rows = await getRetiredLegacyScheduleDiagnostics({ organizationId, limit });
+    return sendSuccess(res, { organizationId, limit: limit ?? 50, rows });
+  } catch (error) {
+    log.error('Error reading retired schedule diagnostics:', error);
+    return sendError(res, 'Failed to read retired schedule diagnostics', 500, 'SERVER_ERROR');
+  }
+});
 
 router.post('/create/:id', requireAdmin, async (req: Request, res: Response) => {
   try {

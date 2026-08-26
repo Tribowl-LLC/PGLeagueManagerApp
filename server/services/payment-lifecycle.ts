@@ -278,14 +278,43 @@ async function processLegacyScheduledPaymentJob(
       providerIdempotencyKey: operationIdentity.providerIdempotencyKey,
       requestKind: plan.lineItems.length > 0 ? "order" : "direct",
     });
+    // Revalidate active canonical authority under the league lock immediately
+    // before provider dispatch. The exact-cycle session lock is held by the
+    // caller across this transaction and the provider call; archive/rollover
+    // acquire the same cycle lock first, so archive-first has zero provider
+    // effect while callback-first may finish its already-authorized request.
+    const dispatchAuthorization = await db.transaction(async (tx) => {
+      await lockLeagueSchedule(tx, organizationId, league.id);
+      const [latestSchedule] = await tx.select().from(paymentSchedules).where(and(
+        eq(paymentSchedules.id, scheduleRecord.id),
+        eq(paymentSchedules.nextPaymentDate, scheduleRecord.nextPaymentDate),
+        eq(paymentSchedules.active, true),
+      )).limit(1);
+      const [latestLeague] = await tx.select().from(leagues).where(and(
+        eq(leagues.id, league.id),
+        eq(leagues.organizationId, organizationId),
+        eq(leagues.active, true),
+        eq(leagues.scheduleAuthority, "canonical"),
+      )).limit(1);
+      if (!latestSchedule || !latestLeague) {
+        logger.info(`[PaymentScheduler] Legacy callback fenced before provider dispatch`, { jobId, scheduleId: scheduleRecord.id });
+        return null;
+      }
+      return {
+        schedule: latestSchedule,
+        league: latestLeague,
+      };
+    });
+    if (!dispatchAuthorization) return;
+
     const paymentResult = await executeScheduledPayment(
-      scheduleRecord,
-      league,
+      dispatchAuthorization.schedule,
+      dispatchAuthorization.league,
       jobId,
       validPartnerIds.length,
       requestIdentity,
       {
-        canonicalAuthoritative: scheduleRecord.nextOccurrenceId != null,
+        canonicalAuthoritative: dispatchAuthorization.schedule.nextOccurrenceId != null,
         canonicalCollectionAmountMinor,
       },
     );

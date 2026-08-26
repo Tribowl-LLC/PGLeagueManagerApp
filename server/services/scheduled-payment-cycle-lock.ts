@@ -37,18 +37,23 @@ export interface LegacyScheduledCycleLock {
 export async function acquireLegacyScheduledCycleLock(
   paymentScheduleId: number,
   billingCycleAt: string | Date,
+  waitForLock = false,
 ): Promise<LegacyScheduledCycleLock | undefined> {
   const key = scheduledPaymentCycleLockKey(paymentScheduleId, billingCycleAt);
   const client = await pool.connect();
   let released = false;
   try {
-    const result = await client.query<{ acquired: boolean }>(
-      "SELECT pg_try_advisory_lock($1::bigint) AS acquired",
-      [key],
-    );
-    if (result.rows[0]?.acquired !== true) {
-      client.release();
-      return undefined;
+    if (waitForLock) {
+      await client.query("SELECT pg_advisory_lock($1::bigint)", [key]);
+    } else {
+      const result = await client.query<{ acquired: boolean }>(
+        "SELECT pg_try_advisory_lock($1::bigint) AS acquired",
+        [key],
+      );
+      if (result.rows[0]?.acquired !== true) {
+        client.release();
+        return undefined;
+      }
     }
   } catch (error) {
     client.release(true);
@@ -75,6 +80,41 @@ export async function acquireLegacyScheduledCycleLock(
       }
     },
   };
+}
+
+/**
+ * Archive/rollover fencing acquires every currently active legacy cycle lock
+ * in deterministic key order, then performs its short league transaction.
+ * The cycle locks deliberately sit outside the DB transaction so the lock
+ * order is cycle lock -> league advisory lock, matching the callback path.
+ */
+export async function withLegacyScheduledCycleLocksForLeague<T>(
+  leagueId: number,
+  work: () => Promise<T>,
+): Promise<T> {
+  const rows = await pool.query<{ id: number; next_payment_date: string }>(
+    `SELECT id, next_payment_date
+       FROM payment_schedules
+      WHERE league_id = $1 AND active = TRUE
+      ORDER BY id ASC, next_payment_date ASC`,
+    [leagueId],
+  );
+  const cycles = [...rows.rows].sort((left, right) => {
+    const leftKey = scheduledPaymentCycleLockKey(left.id, left.next_payment_date);
+    const rightKey = scheduledPaymentCycleLockKey(right.id, right.next_payment_date);
+    return leftKey.localeCompare(rightKey) || left.id - right.id;
+  });
+  const locks: LegacyScheduledCycleLock[] = [];
+  try {
+    for (const cycle of cycles) {
+      const lock = await acquireLegacyScheduledCycleLock(cycle.id, cycle.next_payment_date, true);
+      if (!lock) throw new Error("failed to acquire legacy scheduled payment cycle lock");
+      locks.push(lock);
+    }
+    return await work();
+  } finally {
+    for (const lock of locks.reverse()) await lock.release();
+  }
 }
 
 export async function withLegacyScheduledCycleLock<T>(

@@ -309,8 +309,8 @@ async function revokeConsentAndStopOperationsInTransaction(
     if (["pending", "leased", "retry_scheduled"].includes(operation.status) && operation.dispatchClaimedAt === null && operation.providerObjectId === null) {
       await tx.update(paymentOperationRosterSnapshotItems).set({ state: "released" }).where(and(eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId), eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId), eq(paymentOperationRosterSnapshotItems.operationId, operation.id), eq(paymentOperationRosterSnapshotItems.state, "reserved")));
       await tx.update(paymentOperations).set({ status: "canceled", nextAttemptAt: null, leaseOwner: null, leaseToken: null, leaseExpiresAt: null, dispatchClaimedAt: null, errorClassification: null, errorCode: null, completedAt: input.revokedAt, updatedAt: input.revokedAt }).where(and(eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.id, operation.id)));
-    } else if (["leased", "provider_unknown", "retry_scheduled", "pending"].includes(operation.status) && (operation.dispatchClaimedAt !== null || operation.providerObjectId !== null)) {
-      await tx.update(paymentOperations).set({ status: "reconciliation_required", nextAttemptAt: null, errorClassification: "provider_unknown", errorCode: "CONSENT_REVOKED_AFTER_DISPATCH", updatedAt: input.revokedAt }).where(and(eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.id, operation.id)));
+    } else if (["leased", "provider_unknown", "retry_scheduled", "pending"].includes(operation.status) && (operation.dispatchClaimedAt !== null || operation.providerObjectId !== null || operation.status === "provider_unknown")) {
+      await tx.update(paymentOperations).set({ status: "reconciliation_required", nextAttemptAt: null, leaseOwner: null, leaseExpiresAt: null, errorClassification: "provider_unknown", errorCode: "CONSENT_REVOKED_AFTER_DISPATCH", completedAt: input.revokedAt, updatedAt: input.revokedAt }).where(and(eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.id, operation.id)));
     }
   }
   return { ...input.consent, state: "revoked" as const, revokedAt: input.revokedAt };
@@ -410,6 +410,8 @@ export async function revokeStandingAutopayForArchivedLeagueInTransaction(
     seen.add(operation.id);
     const [paymentEvidence] = await tx.select({ id: payments.id }).from(payments).where(and(
       eq(payments.paymentOperationId, operation.id),
+      eq(payments.leagueId, input.leagueId),
+      sql`EXISTS (SELECT 1 FROM leagues payment_league WHERE payment_league.id = ${payments.leagueId} AND payment_league.organization_id = ${input.organizationId})`,
     )).limit(1);
     const providerEvidence = operation.providerObjectId !== null
       || operation.providerOrderId !== null

@@ -47,6 +47,16 @@ describe('insertLeagueSchema doublePayDates validation (Task #646)', () => {
     expect(r.success).toBe(true);
   });
 
+  it('rejects double-pay dates for upfront leagues', () => {
+    const r = insertLeagueSchema.safeParse({
+      ...BASE_VALID,
+      paymentMode: 'upfront',
+      doublePayDates: ['2026-06-10'],
+    });
+    expect(r.success).toBe(false);
+    if (!r.success) expect(JSON.stringify(r.error.issues)).toContain('weekly payment timing');
+  });
+
   it('rejects more than 2 dates', () => {
     const r = insertLeagueSchema.safeParse({
       ...BASE_VALID,
@@ -125,6 +135,11 @@ describe('updateLeagueSchema doublePayDates validation (Task #646)', () => {
       seasonEnd: new Date('2026-06-24T00:00:00.000Z'),
       doublePayDates: ['2026-06-15'], // Monday
     });
+    expect(r.success).toBe(false);
+  });
+
+  it('rejects an upfront partial update carrying double-pay dates', () => {
+    const r = updateLeagueSchema.safeParse({ paymentMode: 'upfront', doublePayDates: ['2026-06-17'] });
     expect(r.success).toBe(false);
   });
 });
