@@ -104,7 +104,7 @@ export function useBowlerPaymentSubmit({
           idempotencyKey: requestKey,
           requestFingerprint: quoteBody.data.fingerprint,
         }),
-      }), undefined, league.id);
+      }), league.id);
       const body = await response.json();
       if (!response.ok) throw makeApiError(body, response.status, "Payment failed");
       const status = body.data?.status;

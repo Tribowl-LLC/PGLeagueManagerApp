@@ -86,7 +86,7 @@ export function usePaymentFormSubmit({
           method: "POST",
           headers: paymentRequestHeaders(requestKey),
           body: JSON.stringify({ obligationIds, allocations, payerBowlerId: quoteBody.data.payerBowlerId ?? data.bowlerId, sourceId, sourceKind: cardMode === "saved" ? "saved_card" : "new_card", buyerEmail: buyerEmail?.trim() || null, storeCard: data.storeCard === true, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }),
-        }), undefined, data.leagueId);
+        }), data.leagueId);
         const body = await response.json();
         if (!response.ok) throw makeApiError(body, response.status, "Failed to process payment");
         assertRosterPaymentSucceeded(body.data?.status);

@@ -302,7 +302,7 @@ export default function PaymentHistoryPage() {
       if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw new Error(quoteBody.error?.message || "Exact payment obligations are unavailable.");
       const paymentScope = `history-wallet:${league.id}:${exactObligationIds.join(",")}:${quoteBody.data.fingerprint}`;
       const requestKey = walletRequestKeyRef.current ?? beginPaymentIntent(paymentScope);
-      const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-charge/2`, { method: "POST", headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" }, body: JSON.stringify({ obligationIds: exactObligationIds, allocations: occurrenceAllocations, payerBowlerId: quoteBody.data.payerBowlerId, sourceId: token, sourceKind: "wallet", buyerEmail: overrideEmail ?? bowlerEmail ?? null, storeCard: false, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }) }), league.organizationId, league.id);
+      const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-charge/2`, { method: "POST", headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" }, body: JSON.stringify({ obligationIds: exactObligationIds, allocations: occurrenceAllocations, payerBowlerId: quoteBody.data.payerBowlerId, sourceId: token, sourceKind: "wallet", buyerEmail: overrideEmail ?? bowlerEmail ?? null, storeCard: false, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }) }), league.id);
       const data = await response.json();
       const rosterStatus = data.data?.status ?? data.status;
       if (!response.ok) {
@@ -438,7 +438,7 @@ export default function PaymentHistoryPage() {
           idempotencyKey: requestKey,
           requestFingerprint: quoteBody.data.fingerprint,
         }),
-      }), league.organizationId, league.id);
+      }), league.id);
       const exactBody = await exactResponse.json().catch(() => ({}));
       if (!exactResponse.ok) throw makeApiError(exactBody, exactResponse.status, "Payment failed");
       assertRosterPaymentSucceeded(exactBody.data?.status ?? exactBody.status);

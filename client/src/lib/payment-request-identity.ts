@@ -128,7 +128,6 @@ export async function recoverRosterPaymentOperation(leagueId: number, operationI
 export async function paymentRequestWithRecovery(
   requestKey: string,
   request: () => Promise<Response>,
-  _organizationId?: number | null,
   rosterLeagueId?: number,
 ): Promise<Response> {
   type RecoveryOperation = {

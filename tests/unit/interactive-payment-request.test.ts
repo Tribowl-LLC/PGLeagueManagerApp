@@ -55,7 +55,7 @@ describe('interactive request-key recovery', () => {
     const initial = new Response(JSON.stringify({ data: { contractVersion: 'interactive-obligation-charge/2', operationId: '11111111-1111-4111-8111-111111111111', status: 'reconciliation_required' } }), { status: 202 });
     const recovered = new Response(JSON.stringify({ data: { contractVersion: 'interactive-obligation-recovery/1', operationId: '11111111-1111-4111-8111-111111111111', status: 'succeeded' } }), { status: 200 });
     csrfFetchMock.mockResolvedValueOnce(recovered);
-    await expect(paymentRequestWithRecovery('request-key-123456', () => Promise.resolve(initial), 42, 11)).resolves.toBe(recovered);
+    await expect(paymentRequestWithRecovery('request-key-123456', () => Promise.resolve(initial), 11)).resolves.toBe(recovered);
     expect(csrfFetchMock).toHaveBeenCalledWith('/api/financials/leagues/11/interactive-obligation-charge/2/operations/11111111-1111-4111-8111-111111111111/recover', expect.objectContaining({ method: 'POST' }));
   });
 
@@ -64,7 +64,6 @@ describe('interactive request-key recovery', () => {
     await expect(paymentRequestWithRecovery(
       'request-key-123456',
       () => Promise.resolve(initial),
-      42,
       11,
     )).resolves.toBe(initial);
     expect(csrfFetchMock).not.toHaveBeenCalled();
@@ -72,7 +71,7 @@ describe('interactive request-key recovery', () => {
 
   it('returns an exact succeeded response without another recovery request', async () => {
     const initial = exactResponse('succeeded', 201);
-    await expect(paymentRequestWithRecovery('request-key-123456', () => Promise.resolve(initial), 42, 11)).resolves.toBe(initial);
+    await expect(paymentRequestWithRecovery('request-key-123456', () => Promise.resolve(initial), 11)).resolves.toBe(initial);
     expect(csrfFetchMock).not.toHaveBeenCalled();
   });
 
@@ -82,7 +81,7 @@ describe('interactive request-key recovery', () => {
       operationId: '11111111-1111-4111-8111-111111111111',
       status,
     }), { status: 202 });
-    await expect(paymentRequestWithRecovery('request-key-123456', () => Promise.resolve(initial), 42, 11)).resolves.toBe(initial);
+    await expect(paymentRequestWithRecovery('request-key-123456', () => Promise.resolve(initial), 11)).resolves.toBe(initial);
     expect(csrfFetchMock).not.toHaveBeenCalled();
   });
 
@@ -93,7 +92,7 @@ describe('interactive request-key recovery', () => {
     expect(values.size).toBe(1);
     const initial = exactResponse(status, 202);
 
-    await expect(paymentRequestWithRecovery(requestKey, () => Promise.resolve(initial), 42, 11)).resolves.toBe(initial);
+    await expect(paymentRequestWithRecovery(requestKey, () => Promise.resolve(initial), 11)).resolves.toBe(initial);
     expect(csrfFetchMock).not.toHaveBeenCalled();
     expect(values.size).toBe(0);
     // A corrected retry gets a new idempotency key instead of replaying the
@@ -111,7 +110,7 @@ describe('interactive request-key recovery', () => {
     } }), { status: 409 });
     csrfFetchMock.mockResolvedValueOnce(recovery);
 
-    await expect(paymentRequestWithRecovery('request-key-123456', () => Promise.resolve(initial), 42, 11)).resolves.toBe(recovery);
+    await expect(paymentRequestWithRecovery('request-key-123456', () => Promise.resolve(initial), 11)).resolves.toBe(recovery);
     expect(csrfFetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -123,7 +122,6 @@ describe('interactive request-key recovery', () => {
     const result = await paymentRequestWithRecovery(
       'request-key-123456',
       () => Promise.resolve(initial),
-      42,
       11,
     );
 
@@ -137,7 +135,6 @@ describe('interactive request-key recovery', () => {
     await expect(paymentRequestWithRecovery(
       'request-key-123456',
       () => Promise.reject(new Error('connection reset')),
-      42,
       11,
     )).rejects.toThrow('connection reset');
     expect(csrfFetchMock).not.toHaveBeenCalled();
