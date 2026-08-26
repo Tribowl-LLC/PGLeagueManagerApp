@@ -89,7 +89,10 @@ const newSeasonRequestV1Schema = z.object({
   totalBowlingWeeks: z.number().int().positive().max(52).optional(),
   weekDay: z.enum(WEEKDAYS).optional(),
   skipDates: z.array(z.string()).default([]),
-  cancelledDates: z.array(z.string()).max(0, "Rollover creation supports No Bowling skips, not cancelled dates").default([]),
+  // Request/1 retained historical retries may carry the legacy cancellation
+  // array; the setup service compares it against durable state before any
+  // write. Fresh request/1 rollovers are rejected after that retry check.
+  cancelledDates: z.array(z.string()).default([]),
   doublePayDates: z.array(z.string()).max(2, "At most 2 double-pay weeks allowed").default([]),
   allowPublicSignup: z.boolean().optional(),
   paymentMode: z.enum(PAYMENT_MODES),

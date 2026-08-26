@@ -256,7 +256,7 @@ describe("league setup integration API", () => {
       totalBowlingWeeks: 3,
       weekDay: "Sunday" as const,
       skipDates: [],
-      cancelledDates: [],
+      cancelledDates: ["2032-10-17"],
       doublePayDates: [],
       allowPublicSignup: false,
       paymentMode: "weekly" as const,

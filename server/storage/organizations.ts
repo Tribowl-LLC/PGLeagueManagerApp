@@ -1,4 +1,4 @@
-import { eq, and, sql, inArray, or } from "drizzle-orm";
+import { asc, eq, and, sql, inArray, or } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   adminEmailChangeAudits,
@@ -153,9 +153,8 @@ export async function deleteOrganization(id: number): Promise<void> {
     await tx.execute(sql`SELECT set_config('leaguevault.organization_teardown', 'on', true)`);
     // Keep tenant mutation serialized while remaining compatible with the
     // KEY SHARE lock PostgreSQL takes to validate a concurrent webhook's
-    // organization FK. Locations are locked below before evidence deletion,
-    // so a new ingestion either commits first and is deleted here or observes
-    // the completed teardown and fails mapping, without a lock-order deadlock.
+    // organization FK. Existing league mutations lock league rows before
+    // locations, so teardown follows that same deterministic order.
     await tx.execute(sql`SELECT id FROM ${organizations} WHERE id = ${id} FOR NO KEY UPDATE`);
 
     // The system-admin-only delete route is an intentional full teardown.
@@ -182,12 +181,15 @@ export async function deleteOrganization(id: number): Promise<void> {
     const orgLeagues = await tx
       .select({ id: leagues.id })
       .from(leagues)
-      .where(eq(leagues.organizationId, id));
+      .where(eq(leagues.organizationId, id))
+      .orderBy(asc(leagues.id))
+      .for('update');
     const leagueIds = orgLeagues.map((league) => league.id);
     const orgLocations = await tx
       .select({ id: locations.id })
       .from(locations)
       .where(eq(locations.organizationId, id))
+      .orderBy(asc(locations.id))
       .for('update');
     const locationIds = orgLocations.map((location) => location.id);
 

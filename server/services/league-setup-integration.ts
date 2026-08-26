@@ -712,6 +712,7 @@ function buildNewSeasonLeague(
   source: League,
   values: NewSeasonSetupValues | NewSeasonSetupValuesV2 | NewSeasonSetupValuesV3,
   setupVersion: AnyLeagueSetupIntegrationIntent["contractVersion"],
+  allowLegacyCancelledDates = false,
 ): InsertLeague {
   const explicit = setupVersion === LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION_2 || setupVersion === LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION_3;
   if (explicit && (values.totalBowlingWeeks == null || values.weekDay == null || values.allowPublicSignup == null)) {
@@ -739,7 +740,7 @@ function buildNewSeasonLeague(
     seasonEnd: seasonEnd.toISOString(),
   });
   if (!doublePay.ok) throw new LeagueSetupIntegrationError("validation_error", doublePay.message);
-  if (values.cancelledDates.length > 0) {
+  if (values.cancelledDates.length > 0 && !allowLegacyCancelledDates) {
     throw new LeagueSetupIntegrationError("validation_error", "rollover creation supports No Bowling skips, not cancelled dates");
   }
   const name = values.name ?? source.name;
@@ -869,7 +870,7 @@ async function retryExistingNewSeasonV1BeforeSourceFreshness(input: {
     active: true,
     seasonNumber: persisted.seasonNumber - 1,
   };
-  const expected = buildNewSeasonLeague(syntheticSource, input.values, input.setup.contractVersion);
+  const expected = buildNewSeasonLeague(syntheticSource, input.values, input.setup.contractVersion, true);
   const start = dateOnly(expected.seasonStart);
   const seasonClassification = start ? getProductSeasonFromDateOnly(start) : null;
   if (!seasonClassification) {
@@ -922,14 +923,6 @@ async function createNewSeasonInTransaction(input: {
     });
     if (retry) return retry;
   }
-  const [sourceForLocation] = await input.tx.select({ locationId: leagues.locationId })
-    .from(leagues)
-    .where(and(
-      eq(leagues.id, input.sourceLeagueId),
-      eq(leagues.organizationId, input.scope.organizationId),
-    ));
-  const targetLocationBeforeLeagueLock = input.values.locationId ?? sourceForLocation?.locationId;
-  await assertLocationScope(input.tx, input.scope.organizationId, targetLocationBeforeLeagueLock);
   await lockLeagueSchedule(input.tx, input.scope.organizationId, input.sourceLeagueId);
   await authorizeSetupActor(input.tx, input.scope, true);
   const [source] = await input.tx.select().from(leagues).where(and(
@@ -958,7 +951,11 @@ async function createNewSeasonInTransaction(input: {
   const start = dateOnly(target.seasonStart);
   const seasonClassification = start ? getProductSeasonFromDateOnly(start) : null;
   if (!seasonClassification) throw new LeagueSetupIntegrationError("validation_error", "target season start must classify to a product season");
-  const fall = isActiveFall(target);
+  // Existing-league rollover follows the global league -> location lock
+  // order used by scheduled payment preparation and league PATCH. Fresh
+  // league creation may lock its new location first because no existing
+  // league/advisory lock can be waited on by that insert.
+  await assertLocationScope(input.tx, input.scope.organizationId, target.locationId);
   const confirmationFingerprint = input.setup.contractVersion !== LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION
     ? setupConfirmationFingerprint({
       setup: input.setup,
@@ -973,14 +970,6 @@ async function createNewSeasonInTransaction(input: {
     seasonClassification,
   });
   if (retry) return retry;
-  // A request/1 retry is allowed to reproduce retained historical setup
-  // state even after its original location was archived. Validate the
-  // active location only for a fresh rollover, after durable retry semantics
-  // have been checked; this also makes changed historical input report an
-  // idempotency conflict instead of a misleading location failure.
-  if (input.setup.contractVersion === LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION_2 || input.setup.contractVersion === LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION_3 || fall) {
-    await assertLocationScope(input.tx, input.scope.organizationId, target.locationId);
-  }
   if (input.setup.contractVersion === LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION) {
     throw new LeagueSetupIntegrationError(
       "idempotency_conflict",

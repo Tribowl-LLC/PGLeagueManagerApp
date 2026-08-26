@@ -34,6 +34,8 @@ import {
 import {
   LeagueCanonicalScheduleLockedError,
   LeagueLocationScopeError,
+  LeagueArchivedReadOnlyError,
+  restoreLeague,
   updateLeague,
 } from "../../server/storage/leagues";
 import {
@@ -318,7 +320,7 @@ describe("authoritative league setup integration", () => {
       totalBowlingWeeks: 6,
       weekDay: "Sunday" as const,
       skipDates: ["2032-10-10"],
-      cancelledDates: [],
+      cancelledDates: ["2032-10-17"],
       doublePayDates: ["2032-11-07"],
       allowPublicSignup: source.allowPublicSignup,
       paymentMode: "weekly" as const,
@@ -581,6 +583,33 @@ describe("authoritative league setup integration", () => {
     expect(location?.active).toBe(false);
   });
 
+  it("does not resurrect an archive that commits while restore waits for the league lock", async () => {
+    const f = await fixture("restore-archive-race");
+    const [league] = await db.insert(leagues).values(fallLeague(f)).returning();
+    let lockReady!: () => void;
+    const ready = new Promise<void>((resolve) => { lockReady = resolve; });
+    let releaseLock!: () => void;
+    const release = new Promise<void>((resolve) => { releaseLock = resolve; });
+    const holder = db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(${f.organizationId}::integer, ${league.id}::integer)`);
+      lockReady();
+      await release;
+    });
+    await ready;
+    const restore = restoreLeague(league.id);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    await db.update(leagues).set({ active: false }).where(eq(leagues.id, league.id));
+    releaseLock();
+    const [restoreResult, holderResult] = await Promise.allSettled([restore, holder]);
+    expect(restoreResult.status).toBe("rejected");
+    if (restoreResult.status === "rejected") {
+      expect(restoreResult.reason).toBeInstanceOf(LeagueArchivedReadOnlyError);
+    }
+    expect(holderResult.status).toBe("fulfilled");
+    const [stored] = await db.select({ active: leagues.active }).from(leagues).where(eq(leagues.id, league.id));
+    expect(stored?.active).toBe(false);
+  });
+
   it("does not deadlock when deleteLocation overlaps a league PATCH", async () => {
     const f = await fixture("location-delete-patch-race");
     const [league] = await db.insert(leagues).values(fallLeague(f)).returning();
@@ -666,6 +695,78 @@ describe("authoritative league setup integration", () => {
     expect(holderResult.status).toBe("fulfilled");
     const references = await db.select({ id: leagues.id }).from(leagues).where(eq(leagues.locationId, f.locationId));
     expect(references.length).toBe(2);
+  });
+
+  it("serializes deletion of an unreferenced target location against league PATCH", async () => {
+    const f = await fixture("location-delete-unreferenced-patch-race");
+    const [target] = await db.insert(locations).values({
+      name: "Unreferenced PATCH target",
+      organizationId: f.organizationId,
+    }).returning();
+    const [league] = await db.insert(leagues).values(fallLeague(f)).returning();
+    const [deleteResult, patchResult] = await Promise.allSettled([
+      deleteLocation(target.id),
+      updateLeague(league.id, { locationId: target.id }),
+    ]);
+    expect([deleteResult.status, patchResult.status].sort()).toEqual(["fulfilled", "rejected"]);
+    if (deleteResult.status === "fulfilled") {
+      expect(patchResult.status).toBe("rejected");
+      if (patchResult.status === "rejected") expect(patchResult.reason).toBeInstanceOf(LeagueLocationScopeError);
+      const [storedLeague] = await db.select({ locationId: leagues.locationId }).from(leagues).where(eq(leagues.id, league.id));
+      expect(storedLeague?.locationId).toBe(f.locationId);
+    } else {
+      expect(deleteResult.reason).toBeInstanceOf(LocationLeagueReferenceExistsError);
+      expect(patchResult.status).toBe("fulfilled");
+      const [storedLeague] = await db.select({ locationId: leagues.locationId }).from(leagues).where(eq(leagues.id, league.id));
+      expect(storedLeague?.locationId).toBe(target.id);
+    }
+  });
+
+  it("serializes deletion of an unreferenced target location against rollover override", async () => {
+    const f = await fixture("location-delete-unreferenced-rollover-race");
+    const [target] = await db.insert(locations).values({
+      name: "Unreferenced rollover target",
+      organizationId: f.organizationId,
+    }).returning();
+    const [source] = await db.insert(leagues).values(fallLeague(f, "weekly", {
+      seasonStart: "2031-01-05T00:00:00.000Z",
+      seasonEnd: "2031-03-23T00:00:00.000Z",
+      totalBowlingWeeks: 12,
+      skipDates: [],
+      cancelledDates: [],
+      doublePayDates: [],
+    })).returning();
+    const confirmation = await sourceConfirmation(f, source.id);
+    const [deleteResult, rolloverResult] = await Promise.allSettled([
+      deleteLocation(target.id),
+      createNewSeasonWithCanonicalSetup({
+        scope: { organizationId: f.organizationId, actorUserId: f.actorUserId },
+        sourceLeagueId: source.id,
+        values: {
+          locationId: target.id,
+          seasonStart: "2032-08-01",
+          totalBowlingWeeks: 3,
+          weekDay: "Sunday" as const,
+          skipDates: [],
+          cancelledDates: [],
+          doublePayDates: [],
+          allowPublicSignup: false,
+          paymentMode: "weekly" as const,
+        },
+        setup: setup(++sequence),
+        sourceConfirmation: confirmation,
+      }),
+    ]);
+    expect([deleteResult.status, rolloverResult.status].sort()).toEqual(["fulfilled", "rejected"]);
+    if (deleteResult.status === "fulfilled") {
+      expect(rolloverResult.status).toBe("rejected");
+      if (rolloverResult.status === "rejected") expect(rolloverResult.reason).toBeInstanceOf(LeagueSetupIntegrationError);
+      expect((await db.select({ id: locations.id }).from(locations).where(eq(locations.id, target.id)))).toHaveLength(0);
+    } else {
+      expect(deleteResult.reason).toBeInstanceOf(LocationLeagueReferenceExistsError);
+      expect(rolloverResult.status).toBe("fulfilled");
+      expect((await db.select({ id: leagues.id }).from(leagues).where(and(eq(leagues.previousSeasonId, source.id), eq(leagues.locationId, target.id)))).length).toBe(1);
+    }
   });
 
   it("conflicts when a system administrator reuses one setup key in another organization", async () => {

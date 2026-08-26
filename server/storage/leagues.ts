@@ -175,37 +175,10 @@ export async function updateLeague(id: number, league: UpdateLeague): Promise<Le
   }
 
   const result = await db.transaction(async (tx) => {
-    const [scope] = await tx.select({ organizationId: leagues.organizationId, locationId: leagues.locationId })
+    const [scope] = await tx.select({ organizationId: leagues.organizationId })
       .from(leagues)
       .where(eq(leagues.id, id));
     if (!scope) throw new Error(`League with ID ${id} not found`);
-
-    // Location assignment takes the location row lock before the league
-    // schedule/row locks. deleteLocation uses this same location-first order
-    // and refuses referenced rows, preventing an FK key-share deadlock.
-    const preflightOrganizationId = league.organizationId !== undefined
-      ? league.organizationId
-      : scope.organizationId;
-    const preflightLocationId = league.locationId !== undefined
-      ? league.locationId
-      : scope.locationId;
-    const preflightOrganizationChanged = league.organizationId !== undefined
-      && !sameValue(league.organizationId, scope.organizationId);
-    const preflightLocationRequired = preflightLocationId !== null
-      && (league.locationId !== undefined || preflightOrganizationChanged);
-    if (preflightLocationRequired) {
-      const [location] = preflightOrganizationId === null
-        ? []
-        : await tx.select({ id: locations.id })
-          .from(locations)
-          .where(and(
-            eq(locations.id, preflightLocationId),
-            eq(locations.organizationId, preflightOrganizationId),
-            eq(locations.active, true),
-          ))
-          .for('update');
-      if (!location) throw new LeagueLocationScopeError();
-    }
 
     await lockLeagueSchedule(tx, scope.organizationId, id);
     const [current] = await tx.select().from(leagues).where(eq(leagues.id, id)).for('update');
@@ -254,11 +227,10 @@ export async function updateLeague(id: number, league: UpdateLeague): Promise<Le
       }
     }
 
-    // Location authorization is intentionally re-read after the common
-    // league schedule/row locks. The preflight above owns the location lock
-    // for assignment changes; this read keeps the target invariant explicit
-    // without introducing a second lock-order edge. deleteLocation refuses
-    // referenced rows rather than clearing league references.
+    // Existing-league mutations take the league advisory/row locks before
+    // locking an assigned location. Scheduled payment preparation follows
+    // this same league -> location order. deleteLocation only locks and
+    // checks the location, then refuses referenced rows.
     // System-admin organization restamps validate the effective target org,
     // including an existing location when locationId is omitted.
     const targetOrganizationId = league.organizationId !== undefined
@@ -272,9 +244,6 @@ export async function updateLeague(id: number, league: UpdateLeague): Promise<Le
     const locationNeedsValidation = targetLocationId !== null
       && (league.locationId !== undefined || organizationChanged);
     if (locationNeedsValidation) {
-      if (preflightLocationRequired && league.locationId === undefined && targetLocationId !== preflightLocationId) {
-        throw new LeagueLocationScopeError();
-      }
       const [location] = targetOrganizationId === null
         ? []
         : await tx.select({ id: locations.id })
@@ -283,7 +252,8 @@ export async function updateLeague(id: number, league: UpdateLeague): Promise<Le
             eq(locations.id, targetLocationId),
             eq(locations.organizationId, targetOrganizationId),
             eq(locations.active, true),
-          ));
+          ))
+          .for('update');
       if (!location) throw new LeagueLocationScopeError();
     }
 
@@ -299,11 +269,8 @@ export async function updateLeague(id: number, league: UpdateLeague): Promise<Le
     )).returning();
     if (!updated) throw new Error(`League with ID ${id} not found`);
     if (locationNeedsValidation) {
-      // A concurrent archive may commit after the pre-update read but before
-      // this transaction's league update. Recheck before commit so an
-      // archive-first ordering cannot leave a newly assigned inactive
-      // location behind. If the archive wins after this check, its own
-      // operation is the later linearized mutation.
+      // The target row is already locked above after this league's advisory
+      // lock, so this final read observes the same linearized active state.
       const [stillValidLocation] = targetOrganizationId === null
         ? []
         : await tx.select({ id: locations.id })
@@ -449,8 +416,14 @@ export async function restoreLeague(id: number): Promise<League> {
     const [current] = await tx.select({ organizationId: leagues.organizationId, active: leagues.active, scheduleAuthority: leagues.scheduleAuthority }).from(leagues).where(eq(leagues.id, id)).limit(1);
     if (!current) throw new Error(`League with ID ${id} not found`);
     if (current.scheduleAuthority === 'retired_legacy') throw new LeagueRetiredLegacyError();
-    if (!current.active) throw new LeagueArchivedReadOnlyError();
     if (current.organizationId !== null) await lockLeagueSchedule(tx, current.organizationId, id);
+    const [locked] = await tx.select({ active: leagues.active, scheduleAuthority: leagues.scheduleAuthority })
+      .from(leagues)
+      .where(eq(leagues.id, id))
+      .for('update');
+    if (!locked) throw new Error(`League with ID ${id} not found`);
+    if (locked.scheduleAuthority === 'retired_legacy') throw new LeagueRetiredLegacyError();
+    if (!locked.active) throw new LeagueArchivedReadOnlyError();
     const [updated] = await tx.update(leagues).set({ active: true }).where(eq(leagues.id, id)).returning();
     return updated;
   });

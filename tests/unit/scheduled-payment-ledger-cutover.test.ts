@@ -23,7 +23,7 @@ import {
 import { getTestDb, getTestPool } from "../setup/test-db";
 import { expectErrorLog } from "../helpers/expected-error-logs";
 import { deleteOrganization } from "../../server/storage/organizations";
-import { archiveLeague } from "../../server/storage/leagues";
+import { archiveLeague, updateLeague } from "../../server/storage/leagues";
 import {
   deactivatePaymentSchedule,
   deletePayment,
@@ -670,6 +670,62 @@ describe("scheduled payment ledger cutover PostgreSQL behavior", () => {
     expect(results.map((result) => result.kind).sort()).toEqual(["existing", "prepared"]);
     expect(await db.select().from(paymentOperations)
       .where(eq(paymentOperations.paymentScheduleId, schedule.id))).toHaveLength(1);
+  });
+
+  it("serializes scheduled preparation and league PATCH without a lock inversion", async () => {
+    const { schedule, league } = await createSchedule({ nextPaymentDate: cycleAt });
+    let locationReady!: () => void;
+    const ready = new Promise<void>((resolve) => { locationReady = resolve; });
+    let releaseLocation!: () => void;
+    const release = new Promise<void>((resolve) => { releaseLocation = resolve; });
+    const holder = db.transaction(async (tx) => {
+      await tx.select({ id: locations.id })
+        .from(locations)
+        .where(eq(locations.id, locationId))
+        .for("update");
+      locationReady();
+      await release;
+    });
+    await ready;
+
+    // Queue PATCH behind the held location row before starting preparation.
+    // Under the former location -> league order, preparation then owns the
+    // league advisory lock and waits on this row while PATCH owns the row and
+    // waits on that advisory lock: PostgreSQL reliably reports 40P01.
+    const patch = updateLeague(league.id, { locationId });
+    let queued = false;
+    for (let attempt = 0; attempt < 200 && !queued; attempt += 1) {
+      const waiting = await getTestPool().query<{ count: string }>(`
+        SELECT count(*)::text AS count
+        FROM pg_locks
+        WHERE granted = false
+          AND (
+            (locktype = 'tuple' AND relation = 'locations'::regclass)
+            OR locktype = 'transactionid'
+          )
+      `);
+      queued = Number(waiting.rows[0]?.count ?? 0) > 0;
+      if (!queued) await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    if (!queued) {
+      releaseLocation();
+      await Promise.allSettled([patch, holder]);
+    }
+    expect(queued).toBe(true);
+    const preparation = prepareScheduledPaymentCycle({
+      paymentScheduleId: schedule.id,
+      billingCycleAt: cycleAt,
+      now: dueNow,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    releaseLocation();
+    const [patchResult, preparationResult, holderResult] = await Promise.allSettled([patch, preparation, holder]);
+    expect(patchResult.status).toBe("fulfilled");
+    expect(preparationResult.status).toBe("fulfilled");
+    expect(holderResult.status).toBe("fulfilled");
+    if (patchResult.status === "fulfilled") expect(patchResult.value).toMatchObject({ id: league.id, locationId });
+    if (preparationResult.status === "fulfilled") expect(preparationResult.value.kind).toBe("prepared");
+    expect(await db.select().from(paymentOperations).where(eq(paymentOperations.paymentScheduleId, schedule.id))).toHaveLength(1);
   });
 
   it("gives an upfront cycle durable identity before deactivating its schedule", async () => {
