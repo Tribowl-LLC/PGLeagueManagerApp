@@ -1,5 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "../db.js";
+import { getGeneralInteractivePaymentOperationForOrganization } from "../storage/payment-operations.js";
 import { paymentOperations, paymentOperationRosterSnapshots } from "@shared/schema";
 import { lockLeagueSchedule } from "../storage/league-schedule-lock.js";
 import {
@@ -12,6 +13,36 @@ export class RosterPaymentRecoveryError extends Error {
     super(message);
     this.name = "RosterPaymentRecoveryError";
   }
+}
+
+/**
+ * Recover one canonical interactive operation when the original charge
+ * response was lost before the client received its durable operation ID.
+ * The request key is looked up only inside the authenticated organization,
+ * league, and authorizing-user scope. This path never accepts a source token
+ * and never dispatches to the provider; it only delegates to the exact
+ * operation-id finalizer after the immutable operation has been identified.
+ */
+export async function recoverRosterPaymentOperationByRequestKey(input: {
+  organizationId: number;
+  leagueId: number;
+  requestKey: string;
+  actorUserId: number;
+}) {
+  const operation = await getGeneralInteractivePaymentOperationForOrganization(input.organizationId, input.requestKey);
+  if (
+    !operation
+    || operation.leagueId !== input.leagueId
+    || operation.authorizingUserId !== input.actorUserId
+  ) {
+    throw new RosterPaymentRecoveryError("NOT_FOUND", "Payment operation not found", 404);
+  }
+  return recoverRosterPaymentOperation({
+    organizationId: input.organizationId,
+    leagueId: input.leagueId,
+    operationId: operation.id,
+    actorUserId: input.actorUserId,
+  });
 }
 
 /** Recover roster allocations by durable operation identity. This path does

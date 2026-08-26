@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   saveRoster: vi.fn(),
   manual: vi.fn(),
   correct: vi.fn(),
+  recoverByRequestKey: vi.fn(),
 }));
 
 vi.mock("../../server/storage/index.js", () => ({ storage: { getLeague: (...args: unknown[]) => mocks.getLeague(...args) } }));
@@ -42,6 +43,13 @@ vi.mock("../../server/services/roster-payment-core.js", () => ({
   correctCanonicalAllocation: (...args: unknown[]) => mocks.correct(...args),
   RosterPaymentError: class extends Error {},
   RosterPaymentReplay: class extends Error {},
+}));
+vi.mock("../../server/services/roster-payment-recovery.js", () => ({
+  recoverRosterPaymentOperation: vi.fn(),
+  recoverRosterPaymentOperationByRequestKey: (...args: unknown[]) => mocks.recoverByRequestKey(...args),
+  RosterPaymentRecoveryError: class extends Error {
+    constructor(public readonly code: string, message: string, public readonly status = 409) { super(message); }
+  },
 }));
 
 const router = (await import("../../server/routes/roster-payments.js")).default;
@@ -112,14 +120,52 @@ describe("roster payment route authorization", () => {
     expect(mocks.charge).not.toHaveBeenCalled();
   });
 
-  it("keeps roster, manual, and correction mutations out of payment-manager scope", async () => {
+  it("allows location-scoped manual entries but keeps roster and corrections admin-only", async () => {
     mocks.hasPaymentManager.mockResolvedValue(true);
     const payload = { commandKey: "roster-1", requestFingerprint: "fp", lineupSize: 3, slots: [{ slotIndex: 0, occupant: "vacant" }, { slotIndex: 1, occupant: "vacant" }, { slotIndex: 2, occupant: "vacant" }] };
     expect((await request("/leagues/7/roster-payment-responsibility/1/teams/9", user("payment_manager"), { method: "POST", body: JSON.stringify(payload) })).status).toBe(404);
-    expect((await request("/leagues/7/canonical/manual-record/1", user("payment_manager"), { method: "POST", body: JSON.stringify({ obligationIds: ["00000000-0000-4000-8000-000000000001"], type: "cash", idempotencyKey: "m-1", requestFingerprint: "q" }) })).status).toBe(404);
+    mocks.manual.mockResolvedValue({ records: [] });
+    expect((await request("/leagues/7/canonical/manual-record/1", user("payment_manager"), { method: "POST", body: JSON.stringify({ obligationIds: ["00000000-0000-4000-8000-000000000001"], type: "cash", idempotencyKey: "m-1", requestFingerprint: "q" }) })).status).toBe(201);
     expect((await request("/leagues/7/canonical/corrections/1", user("payment_manager"), { method: "POST", body: JSON.stringify({ allocationId: "00000000-0000-4000-8000-000000000001", reason: "duplicate", idempotencyKey: "c-1", requestFingerprint: "q" }) })).status).toBe(404);
     expect(mocks.saveRoster).not.toHaveBeenCalled();
-    expect(mocks.manual).not.toHaveBeenCalled();
+    expect(mocks.manual).toHaveBeenCalled();
     expect(mocks.correct).not.toHaveBeenCalled();
+  });
+
+  it("keeps payment-manager card charges out of the cash/check-only boundary", async () => {
+    mocks.hasPaymentManager.mockResolvedValue(true);
+    const response = await request("/leagues/7/interactive-obligation-charge/2", user("payment_manager"), {
+      method: "POST",
+      body: JSON.stringify({
+        obligationIds: ["00000000-0000-4000-8000-000000000001"],
+        allocations: [{ obligationId: "00000000-0000-4000-8000-000000000001", amountMinor: 1000 }],
+        payerBowlerId: 42,
+        sourceId: "card-source",
+        sourceKind: "new_card",
+        buyerEmail: "payer@example.test",
+        storeCard: false,
+        idempotencyKey: "payment-manager-card-1",
+        requestFingerprint: "q",
+      }),
+    });
+    expect(response.status).toBe(404);
+    expect(mocks.charge).not.toHaveBeenCalled();
+  });
+
+  it("keeps request-key recovery bound to the authenticated league and actor", async () => {
+    mocks.recoverByRequestKey.mockResolvedValue({ id: "operation-1", status: "succeeded" });
+    const response = await request("/leagues/7/interactive-obligation-charge/2/recover-by-request-key", user("user", 11, 42), {
+      method: "POST",
+      body: JSON.stringify({ requestKey: "request-key-123456" }),
+    });
+    expect(response.status).toBe(200);
+    expect(mocks.recoverByRequestKey).toHaveBeenCalledWith({ organizationId: 11, leagueId: 7, requestKey: "request-key-123456", actorUserId: 1 });
+
+    mocks.getLeague.mockResolvedValue({ id: 7, organizationId: 22, payingLineupSize: 3 });
+    expect((await request("/leagues/7/interactive-obligation-charge/2/recover-by-request-key", user("user", 11, 42), {
+      method: "POST",
+      body: JSON.stringify({ requestKey: "request-key-123456" }),
+    })).status).toBe(404);
+    expect(mocks.recoverByRequestKey).toHaveBeenCalledTimes(1);
   });
 });

@@ -315,6 +315,7 @@ export default function PaymentHistoryPage() {
       walletRequestKeyRef.current = null;
       const walletLabel = walletType === 'apple_pay' ? 'Apple Pay' : 'Google Pay';
       toast({ title: "Payment Successful", description: `${walletLabel} payment completed.` });
+      queryClient.invalidateQueries({ queryKey: ["/api/financials/f5/payments"] });
       await invalidatePaymentHistoryFinancials(queryClient, leagueId, bowlerId);
       setPayDialogType(null);
     } catch (error) {
@@ -444,8 +445,12 @@ export default function PaymentHistoryPage() {
       assertRosterPaymentSucceeded(exactBody.data?.status ?? exactBody.status);
       clearPaymentIntent(paymentScope);
       toast({ title: "Payment Successful", description: `${formatCurrency(quoteBody.data.amountMinor)} ${dialogLabel} has been paid.` });
+      queryClient.invalidateQueries({ queryKey: ["/api/financials/f5/payments"] });
       await invalidatePaymentHistoryFinancials(queryClient, leagueId, bowlerId);
       setPayDialogType(null);
+      if (storeCard && cardMode === "new") {
+        queryClient.invalidateQueries({ queryKey: [`/api/payments-provider/cards/${bowlerId}`] });
+      }
       queryClient.invalidateQueries({ queryKey: ["/api/payments", { bowlerId, leagueId }] });
       queryClient.invalidateQueries({ queryKey: [`/api/bowlers/${bowlerId}/details`] });
     } catch (error) {

@@ -94,6 +94,10 @@ export function usePaymentFormSubmit({
         toast({ title: "Success", description: "Exact payment obligations charged successfully" });
       }
       queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/financials/f5/payments"] });
+      if (data.storeCard === true && cardMode === "new") {
+        queryClient.invalidateQueries({ queryKey: [`/api/payments-provider/cards/${data.bowlerId}`] });
+      }
       onClose();
     } catch (error) {
       if (isProviderNotConfiguredError(error)) {

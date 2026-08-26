@@ -27,6 +27,7 @@ import {
 } from "../services/roster-payment-core.js";
 import {
   recoverRosterPaymentOperation,
+  recoverRosterPaymentOperationByRequestKey,
   RosterPaymentRecoveryError,
 } from "../services/roster-payment-recovery.js";
 
@@ -251,6 +252,10 @@ router.post("/leagues/:leagueId/interactive-obligation-charge/2", paymentWriteLi
   if (!leagueId || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
   const parsed = interactiveObligationChargeRequestV2Schema.safeParse(req.body);
   if (!parsed.success) return sendError(res, "Invalid obligation charge request", 400, "INVALID_REQUEST");
+  // Payment managers are location-scoped cash/check operators. The UI hides
+  // card and wallet tabs for this role, but the server must enforce the same
+  // boundary because clients are not trusted authorization controls.
+  if (req.user.role === "payment_manager") return sendError(res, "Not found", 404, "NOT_FOUND");
   let league;
   try { league = await paymentScope(req, leagueId, parsed.data.obligationIds); } catch (error) { return handleError(res, error); }
   if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
@@ -258,6 +263,25 @@ router.post("/leagues/:leagueId/interactive-obligation-charge/2", paymentWriteLi
     const privileged = await hasAdminAccessToLeague(req, leagueId) || await hasPaymentManagerAccessToLeague(req, leagueId) || req.user.role === "system_admin";
     const result = await chargeInteractiveObligations({ organizationId: league.organizationId, leagueId, actorUserId: req.user.id, payerBowlerId: privileged ? parsed.data.payerBowlerId : req.user.bowlerId ?? undefined, request: parsed.data });
     return sendSuccess(res, rosterWireResult(result), result.status === "succeeded" ? 201 : 202);
+  } catch (error) { return handleError(res, error); }
+});
+
+router.post("/leagues/:leagueId/interactive-obligation-charge/2/recover-by-request-key", adminWriteLimiter, async (req, res) => {
+  const leagueId = leagueIdParam(String(req.params.leagueId));
+  const parsed = z.object({
+    requestKey: z.string().trim().min(16).max(109).regex(/^[A-Za-z0-9_-]+$/),
+  }).strict().safeParse(req.body);
+  if (!leagueId || !parsed.success || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
+  const league = await authorizedLeague(req, leagueId);
+  if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
+  try {
+    const result = await recoverRosterPaymentOperationByRequestKey({
+      organizationId: league.organizationId,
+      leagueId,
+      requestKey: parsed.data.requestKey,
+      actorUserId: req.user.id,
+    });
+    return sendSuccess(res, rosterWireResult({ contractVersion: "interactive-obligation-recovery/1", operationId: result.id, status: result.status }));
   } catch (error) { return handleError(res, error); }
 });
 
@@ -300,7 +324,7 @@ router.post("/leagues/:leagueId/standing-autopay/1/operations/:operationId/recov
 router.post("/leagues/:leagueId/canonical/manual-record/1", adminWriteLimiter, async (req, res) => {
   const leagueId = leagueIdParam(String(req.params.leagueId));
   if (!leagueId || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
-  const league = await authorizedLeague(req, leagueId, true, true);
+  const league = await authorizedLeague(req, leagueId, true);
   if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
   const parsed = canonicalManualRecordRequestSchema.safeParse(req.body);
   if (!parsed.success) return sendError(res, "Invalid manual payment request", 400, "INVALID_REQUEST");

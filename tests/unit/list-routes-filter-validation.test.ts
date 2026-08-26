@@ -106,6 +106,7 @@ vi.mock('../../server/middleware/organization', () => ({
 const fakeProvider = {
   providerName: 'square',
   listCardsOnFile: vi.fn().mockResolvedValue([]),
+  saveCardOnFile: vi.fn().mockResolvedValue(null),
   disableCard: vi.fn().mockResolvedValue(undefined),
 };
 vi.mock('../../server/services/payment-provider-factory', () => ({
@@ -241,6 +242,17 @@ async function get(path: string, user?: TestUser) {
 async function patchJson(path: string, body: unknown, user?: TestUser) {
   return fetch(`${baseUrl}${path}`, {
     method: 'PATCH',
+    headers: {
+      ...(user ? userHeader(user) : {}),
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+async function postJson(path: string, body: unknown, user?: TestUser) {
+  return fetch(`${baseUrl}${path}`, {
+    method: 'POST',
     headers: {
       ...(user ? userHeader(user) : {}),
       'content-type': 'application/json',
@@ -422,6 +434,14 @@ describe('GET /api/payments-provider/cards/:bowlerId — leagueId filter', () =>
     const res = await get('/api/payments-provider/cards/99?leagueId=', ORG_USER);
     expect(res.status).toBe(200);
     expect((await res.json()).data).toEqual([]);
+  });
+});
+
+describe('POST /api/payments-provider/cards/:bowlerId — payer ownership', () => {
+  it('does not let an administrator vault a card onto another bowler', async () => {
+    const res = await postJson('/api/payments-provider/cards/99', { sourceId: 'cnon_admin_other_bowler' }, ORG_USER);
+    expect(res.status).toBe(403);
+    expect(fakeProvider.saveCardOnFile).not.toHaveBeenCalled();
   });
 });
 

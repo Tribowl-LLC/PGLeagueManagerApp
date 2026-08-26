@@ -114,6 +114,10 @@ export function useBowlerPaymentSubmit({
       setShowPaymentSetup(false);
       queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
       queryClient.invalidateQueries({ queryKey: ["/api/financials", league.id] });
+      queryClient.invalidateQueries({ queryKey: ["/api/financials/f5/payments"] });
+      if (storeCard && cardMode === "new") {
+        queryClient.invalidateQueries({ queryKey: [`/api/payments-provider/cards/${bowler.id}`] });
+      }
     } catch (error) {
       logger.error("Payment", "Payment submission failed", error);
       if (isProviderNotConfiguredError(error)) {

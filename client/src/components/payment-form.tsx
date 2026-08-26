@@ -296,6 +296,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
       walletRequestKeyRef.current = null;
       toast({ title: "Success", description: `Payment processed via ${walletType === "apple_pay" ? "Apple Pay" : "Google Pay"}` });
       queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/financials/f5/payments"] });
       onClose();
     } catch (error) {
       if (isProviderNotConfiguredError(error)) {
@@ -455,6 +456,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
                 isWalletProcessing={isWalletProcessing}
                 applePayTokenizeOnly={applePayTokenizeOnly}
                 googlePayTokenizeOnly={googlePayTokenizeOnly}
+                allowStoreCard={!paymentManager && currentUser?.bowlerId === selectedBowlerId}
               />
             )}
             <PaymentFormActions

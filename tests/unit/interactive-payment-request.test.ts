@@ -43,6 +43,33 @@ describe('interactive request-key recovery', () => {
     expect(csrfFetchMock).not.toHaveBeenCalled();
   });
 
+  it('recovers a network-lost canonical request by its exact request key', async () => {
+    const request = vi.fn().mockRejectedValueOnce(new Error('connection reset'));
+    const recovered = new Response(JSON.stringify({ data: {
+      contractVersion: 'interactive-obligation-recovery/1',
+      operationId: '11111111-1111-4111-8111-111111111111',
+      status: 'succeeded',
+    } }), { status: 200 });
+    csrfFetchMock.mockResolvedValueOnce(recovered);
+
+    await expect(paymentRequestWithRecovery('request-key-123456', request, 11)).resolves.toBe(recovered);
+    expect(csrfFetchMock).toHaveBeenCalledWith(
+      '/api/financials/leagues/11/interactive-obligation-charge/2/recover-by-request-key',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ requestKey: 'request-key-123456' }),
+      }),
+    );
+  });
+
+  it('preserves a transport error when the exact request key was never persisted', async () => {
+    const request = vi.fn().mockRejectedValueOnce(new Error('connection reset'));
+    csrfFetchMock.mockResolvedValueOnce(new Response(null, { status: 404 }));
+
+    await expect(paymentRequestWithRecovery('request-key-123456', request, 11)).rejects.toThrow('connection reset');
+    expect(csrfFetchMock).toHaveBeenCalledOnce();
+  });
+
   it('does not invoke recovery for an ordinary bounded API response', async () => {
     const response = new Response(null, { status: 409 });
     const request = vi.fn().mockResolvedValueOnce(response);
@@ -131,13 +158,14 @@ describe('interactive request-key recovery', () => {
     expect(csrfFetchMock).not.toHaveBeenCalled();
   });
 
-  it('keeps a network-lost request without an operation identity unresolved', async () => {
+  it('keeps a network-lost request unresolved when exact recovery finds no operation', async () => {
+    csrfFetchMock.mockResolvedValueOnce(new Response(null, { status: 404 }));
     await expect(paymentRequestWithRecovery(
       'request-key-123456',
       () => Promise.reject(new Error('connection reset')),
       11,
     )).rejects.toThrow('connection reset');
-    expect(csrfFetchMock).not.toHaveBeenCalled();
+    expect(csrfFetchMock).toHaveBeenCalledOnce();
   });
 
   it('exposes state-specific recovery messages and only accepts succeeded', () => {

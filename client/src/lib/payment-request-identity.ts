@@ -120,6 +120,18 @@ export async function recoverRosterPaymentOperation(leagueId: number, operationI
   });
 }
 
+/** Recover a canonical interactive operation by its exact request identity
+ * after the charge response was lost before the operation ID reached the
+ * browser. The server scopes this lookup to the current tenant, league, and
+ * authorizing user and never receives or replays a provider source token. */
+export async function recoverRosterPaymentOperationByRequestKey(leagueId: number, requestKey: string): Promise<Response> {
+  return csrfFetch(`/api/financials/leagues/${leagueId}/interactive-obligation-charge/2/recover-by-request-key`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ requestKey }),
+  });
+}
+
 /**
  * Reconcile a durable payment operation when the request carrying a provider
  * token is lost to a network failure. The request key is the only recovery
@@ -208,8 +220,15 @@ export async function paymentRequestWithRecovery(
     }
     return await reconcileRosterResponse(initial);
   } catch (error) {
-    // A transport failure has no trustworthy response or operation identity.
-    // Preserve the request key for the caller's explicit recovery flow.
+    // A transport failure has no response or operation identity, but the
+    // exact request key can still identify a server-created operation. Ask
+    // the canonical, tenant/league/user-scoped recovery route to finalize
+    // that operation without sending another provider request. A 404 means
+    // the request never reached the server, so preserve the original error.
+    if (rosterLeagueId !== undefined) {
+      const recovered = await recoverRosterPaymentOperationByRequestKey(rosterLeagueId, requestKey).catch(() => null);
+      if (recovered && recovered.status !== 404) return await reconcileRosterResponse(recovered);
+    }
     throw error;
   }
 }
