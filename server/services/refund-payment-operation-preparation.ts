@@ -83,6 +83,13 @@ export async function prepareRefundPaymentOperation(input: PrepareRefundPaymentO
     if (!ownedBowler) {
       throw new RefundPreparationError("You don't have access to refund this payment", 403, "FORBIDDEN");
     }
+    // Refund preparation is a new product mutation.  Once canonical league
+    // authority is inactive or retired, reject before creating or replaying
+    // any operation; retained provider/webhook evidence has its own durable
+    // reconciliation paths and is never a reason to re-enable refunds.
+    if (owned.league.active !== true || owned.league.scheduleAuthority !== "canonical") {
+      throw new RefundPreparationError("Archived leagues are read-only", 409, "LEAGUE_ARCHIVED_READ_ONLY");
+    }
     if (locationId !== null) {
       const [ownedLocation] = await tx.select({ id: locations.id }).from(locations).where(and(
         eq(locations.id, locationId),

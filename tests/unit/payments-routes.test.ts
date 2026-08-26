@@ -64,6 +64,7 @@ const mockStorage = {
   getPaymentSchedule: vi.fn(),
   deactivatePaymentSchedule: vi.fn(),
   getPaymentById: vi.fn(),
+  getPaymentEvidenceByIdForOrganization: vi.fn(),
   updatePayment: vi.fn(),
   deletePayment: vi.fn(),
   refundPayment: vi.fn(),
@@ -548,7 +549,11 @@ describe('POST /api/payments/:id/refund', () => {
   };
 
   it('happy path: prepares and executes one durable refund → 200', async () => {
-    mockStorage.getPaymentById.mockResolvedValue({ ...cardPayment, status: 'refunded', squareRefundId: 'RF_1' });
+    mockStorage.getPaymentEvidenceByIdForOrganization.mockResolvedValue({
+      ...cardPayment,
+      status: 'refunded',
+      squareRefundId: 'RF_1',
+    });
 
     const res = await post('/api/payments/50/refund', { reason: 'cust' }, ORG_A_USER);
     expect(res.status).toBe(200);
@@ -559,6 +564,8 @@ describe('POST /api/payments/:id/refund', () => {
     }));
     expect(mockExecuteRefund).toHaveBeenCalledTimes(1);
     expect(mockRearmOperations).toHaveBeenCalledTimes(1);
+    expect(mockStorage.getPaymentEvidenceByIdForOrganization).toHaveBeenCalledWith(50, 1);
+    expect(mockStorage.getPaymentById).not.toHaveBeenCalled();
     expect((await res.json()).data.status).toBe('refunded');
   });
 

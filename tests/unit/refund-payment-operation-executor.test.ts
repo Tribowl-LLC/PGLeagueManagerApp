@@ -14,6 +14,12 @@ import {
 import { getTestDb } from "../setup/test-db";
 import { expectErrorLog } from "../helpers/expected-error-logs";
 import { deleteOrganization } from "../../server/storage/organizations";
+import { archiveLeague } from "../../server/storage/leagues";
+import {
+  getPaymentById,
+  getPaymentByIdForOrganization,
+  getPaymentEvidenceByIdForOrganization,
+} from "../../server/storage/payments";
 import {
   acquirePaymentOperationLease,
   finalizeRefundPaymentOperationSuccess,
@@ -268,6 +274,44 @@ describe("durable refund payment operations", () => {
     await expect(executor(owner, provider).execute({
       organizationId: other.organizationId,
       operationId: operation.id,
+      now: fixedNow,
+    })).resolves.toBeUndefined();
+    expect(provider.refundCalls).toHaveLength(0);
+  });
+
+  it("rejects new refunds after archive without creating an operation or calling Square", async () => {
+    const fixture = fixtures[0];
+    const [archivedLeague] = await db.insert(leagues).values({
+      name: "Refund Operation Archived League",
+      seasonStart: "2033-01-01T00:00:00.000Z",
+      seasonEnd: "2033-12-31T23:59:59.000Z",
+      weekDay: "Monday",
+      weeklyFee: 2_000,
+      organizationId: fixture.organizationId,
+      locationId: fixture.locationId,
+    }).returning({ id: leagues.id });
+    const payment = await createPaidPayment(fixture, { leagueId: archivedLeague.id });
+    await archiveLeague(archivedLeague.id, fixture.organizationId);
+    await db.update(leagues).set({ scheduleAuthority: "retired_legacy" })
+      .where(eq(leagues.id, archivedLeague.id));
+
+    expect(await getPaymentById(payment.id)).toBeUndefined();
+    expect(await getPaymentByIdForOrganization(payment.id, fixture.organizationId)).toBeUndefined();
+    expect(await getPaymentEvidenceByIdForOrganization(payment.id, fixture.organizationId)).toMatchObject({ id: payment.id });
+    expect(await getPaymentEvidenceByIdForOrganization(payment.id, fixtures[1].organizationId)).toBeUndefined();
+
+    await expect(prepare(fixture, payment.id)).rejects.toMatchObject({
+      statusCode: 409,
+      code: "LEAGUE_ARCHIVED_READ_ONLY",
+    });
+    const operations = await db.select().from(paymentOperations)
+      .where(eq(paymentOperations.targetKey, `${REFUND_TARGET_PREFIX}${payment.id}`));
+    expect(operations).toHaveLength(0);
+
+    const provider = new ScriptedRefundProvider(fixture.locationId);
+    await expect(executor(fixture, provider).execute({
+      organizationId: fixture.organizationId,
+      operationId: randomUUID(),
       now: fixedNow,
     })).resolves.toBeUndefined();
     expect(provider.refundCalls).toHaveLength(0);

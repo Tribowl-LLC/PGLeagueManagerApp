@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import {
   bowlers,
   bowlerLeagues,
@@ -121,11 +121,11 @@ afterAll(async () => {
   if (organizationId) await deleteOrganization(organizationId);
 });
 
-async function preparedRefund(amount = 2_000) {
+async function preparedRefund(amount = 2_000, targetLeagueId = leagueId) {
   const providerPaymentId = `payment-${randomUUID()}`;
   const [payment] = await db.insert(payments).values({
     bowlerId,
-    leagueId,
+    leagueId: targetLeagueId,
     amount,
     weekOf: "2034-03-01T00:00:00.000Z",
     status: "paid",
@@ -443,6 +443,41 @@ describe("Square webhook payment/refund PostgreSQL reconciliation", () => {
       squareRefundId: event.providerObjectId,
     });
     expect(storedEvent).toMatchObject({ status: "processed", attemptCount: 1 });
+  });
+
+  it("reconciles a retained refund after canonical authority is retired without a provider call", async () => {
+    const [retiredLeague] = await db.insert(leagues).values({
+      name: "Webhook Retained Refund Legacy League",
+      seasonStart: "2034-01-01T00:00:00.000Z",
+      seasonEnd: "2034-12-31T23:59:59.000Z",
+      weekDay: "Monday",
+      weeklyFee: 2_000,
+      organizationId,
+      locationId,
+    }).returning({ id: leagues.id });
+    const fixture = await preparedRefund(2_000, retiredLeague.id);
+    await db.update(leagues).set({ active: false, scheduleAuthority: "retired_legacy" })
+      .where(and(eq(leagues.id, retiredLeague.id), eq(leagues.organizationId, organizationId)));
+    const { event, recorded } = await ingest(refundBody({
+      eventId: `event-${randomUUID()}`,
+      refundId: `refund-${randomUUID()}`,
+      paymentId: fixture.providerPaymentId,
+      amount: fixture.payment.amount,
+      status: "COMPLETED",
+      version: 9,
+      updatedAt: "2034-03-02T00:02:00.000Z",
+    }));
+
+    await expect(processSquareWebhookEvent({
+      organizationId,
+      eventId: recorded.event.id,
+      event,
+      now: new Date("2034-03-02T00:02:01.000Z"),
+    })).resolves.toMatchObject({ acknowledged: true, businessStateChanged: true });
+    const [payment] = await db.select().from(payments).where(eq(payments.id, fixture.payment.id));
+    const [operation] = await db.select().from(paymentOperations).where(eq(paymentOperations.id, fixture.operation.id));
+    expect(payment).toMatchObject({ status: "refunded", squareRefundId: event.providerObjectId });
+    expect(operation).toMatchObject({ status: "succeeded", providerObjectId: event.providerObjectId });
   });
 
   it("ignores stale COMPLETED evidence when a newer provider version is already durable", async () => {

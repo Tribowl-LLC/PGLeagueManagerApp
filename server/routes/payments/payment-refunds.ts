@@ -58,7 +58,12 @@ async function respondWithRefundOperation(
     }) ?? current;
   }
   if (current.status === "succeeded") {
-    const payment = await storage.getPaymentById(paymentId);
+    // A provider-confirmed refund may finish after archive.  Resolve the
+    // retained payment only through the operation's tenant scope; ordinary
+    // product reads intentionally continue hiding retired legacy rows.
+    const payment = typeof storage.getPaymentEvidenceByIdForOrganization === "function"
+      ? await storage.getPaymentEvidenceByIdForOrganization(paymentId, organizationId)
+      : await storage.getPaymentById(paymentId);
     if (!payment || payment.status !== "refunded" || payment.squareRefundId !== current.providerObjectId) {
       throw new Error("completed refund operation is missing its local payment result");
     }

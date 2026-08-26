@@ -242,6 +242,23 @@ export async function getPaymentByIdForOrganization(id: number, organizationId: 
   return result?.payment;
 }
 
+/**
+ * Tenant-scoped provider/evidence lookup.
+ *
+ * Retired legacy rows stay hidden from ordinary product reads above, but a
+ * durable provider result may still need to finish a refund or be inspected
+ * during reconciliation after its league was archived.  Keep that exception
+ * explicit and tenant-bound rather than weakening getPaymentById*.
+ */
+export async function getPaymentEvidenceByIdForOrganization(id: number, organizationId: number): Promise<Payment | undefined> {
+  const [result] = await db.select({ payment: payments })
+    .from(payments)
+    .innerJoin(leagues, and(eq(leagues.id, payments.leagueId), eq(leagues.organizationId, organizationId)))
+    .where(eq(payments.id, id))
+    .limit(1);
+  return result?.payment;
+}
+
 export async function getPaymentByIdempotencyKey(key: string): Promise<Payment | undefined> {
   const [result] = await db.select().from(payments).where(eq(payments.idempotencyKey, key)).limit(1);
   return result;
