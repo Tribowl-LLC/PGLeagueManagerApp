@@ -153,8 +153,8 @@ export async function deleteOrganization(id: number): Promise<void> {
     await tx.execute(sql`SELECT set_config('leaguevault.organization_teardown', 'on', true)`);
     // Keep tenant mutation serialized while remaining compatible with the
     // KEY SHARE lock PostgreSQL takes to validate a concurrent webhook's
-    // organization FK. Existing league mutations lock league rows before
-    // locations, so teardown follows that same deterministic order.
+    // organization FK. Payment preparation locks schedules before league rows
+    // and locations, so teardown follows that same deterministic order.
     await tx.execute(sql`SELECT id FROM ${organizations} WHERE id = ${id} FOR NO KEY UPDATE`);
 
     // The system-admin-only delete route is an intentional full teardown.
@@ -178,6 +178,22 @@ export async function deleteOrganization(id: number): Promise<void> {
       .from(bowlers)
       .where(eq(bowlers.organizationId, id));
     const bowlerIds = orgBowlers.map((bowler) => bowler.id);
+    // Payment preparation locks each schedule row before it reaches the
+    // league advisory/row lock. Gather IDs without locking, then follow that
+    // same schedule -> league -> location order for teardown.
+    const candidateLeagues = await tx
+      .select({ id: leagues.id })
+      .from(leagues)
+      .where(eq(leagues.organizationId, id));
+    const candidateLeagueIds = candidateLeagues.map((league) => league.id);
+    if (candidateLeagueIds.length > 0) {
+      await tx
+        .select({ id: paymentSchedules.id })
+        .from(paymentSchedules)
+        .where(inArray(paymentSchedules.leagueId, candidateLeagueIds))
+        .orderBy(asc(paymentSchedules.id))
+        .for('update');
+    }
     const orgLeagues = await tx
       .select({ id: leagues.id })
       .from(leagues)

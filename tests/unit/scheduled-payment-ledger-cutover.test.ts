@@ -157,7 +157,11 @@ async function createSchedule(input: {
   nextPaymentDate?: string;
   order?: boolean;
   combined?: boolean;
+  organizationIdOverride?: number;
+  locationIdOverride?: number;
 } = {}) {
+  const fixtureOrganizationId = input.organizationIdOverride ?? organizationId;
+  const fixtureLocationId = input.locationIdOverride ?? locationId;
   const [league] = await db.insert(leagues).values({
     name: `Scheduled Ledger ${Math.random()}`,
     seasonStart: "2032-01-01T00:00:00.000Z",
@@ -169,15 +173,15 @@ async function createSchedule(input: {
     totalBowlingWeeks: 40,
     paymentMode: input.paymentMode ?? "weekly",
     lineageItemVariationId: input.order ? "catalog-lineage-variation" : null,
-    organizationId,
-    locationId,
+    organizationId: fixtureOrganizationId,
+    locationId: fixtureLocationId,
   }).returning();
   if (!league) throw new Error("league fixture was not created");
   const [bowler] = await db.insert(bowlers).values({
     name: `Scheduled Ledger Bowler ${Math.random()}`,
     email: `scheduled-${Math.random()}@example.test`,
     paymentCustomerId: `customer-${Math.random()}`,
-    organizationId,
+    organizationId: fixtureOrganizationId,
   }).returning();
   if (!bowler) throw new Error("bowler fixture was not created");
   let partnerId: number | null = null;
@@ -186,14 +190,14 @@ async function createSchedule(input: {
       name: `Scheduled Ledger Partner ${Math.random()}`,
       email: `scheduled-partner-${Math.random()}@example.test`,
       paymentCustomerId: `customer-partner-${Math.random()}`,
-      organizationId,
+      organizationId: fixtureOrganizationId,
     }).returning({ id: bowlers.id });
     if (!partner) throw new Error("partner fixture was not created");
     partnerId = partner.id;
     await db.insert(bowlerPaymentLinks).values({
       bowlerAId: bowler.id,
       bowlerBId: partner.id,
-      organizationId,
+      organizationId: fixtureOrganizationId,
       status: "accepted",
     });
   }
@@ -697,12 +701,12 @@ describe("scheduled payment ledger cutover PostgreSQL behavior", () => {
     for (let attempt = 0; attempt < 200 && !queued; attempt += 1) {
       const waiting = await getTestPool().query<{ count: string }>(`
         SELECT count(*)::text AS count
-        FROM pg_locks
-        WHERE granted = false
-          AND (
-            (locktype = 'tuple' AND relation = 'locations'::regclass)
-            OR locktype = 'transactionid'
-          )
+        FROM pg_stat_activity
+        WHERE datname = current_database()
+          AND state = 'active'
+          AND wait_event_type = 'Lock'
+          AND query ILIKE '%locations%'
+          AND query ILIKE '%for update%'
       `);
       queued = Number(waiting.rows[0]?.count ?? 0) > 0;
       if (!queued) await new Promise((resolve) => setTimeout(resolve, 10));
@@ -726,6 +730,31 @@ describe("scheduled payment ledger cutover PostgreSQL behavior", () => {
     if (patchResult.status === "fulfilled") expect(patchResult.value).toMatchObject({ id: league.id, locationId });
     if (preparationResult.status === "fulfilled") expect(preparationResult.value.kind).toBe("prepared");
     expect(await db.select().from(paymentOperations).where(eq(paymentOperations.paymentScheduleId, schedule.id))).toHaveLength(1);
+  });
+
+  it("serializes organization teardown with scheduled preparation without 40P01", async () => {
+    const [teardownOrganization] = await db.insert(organizations).values({
+      name: `Scheduled teardown race ${Math.random()}`,
+      slug: `scheduled-teardown-race-${Math.random()}`,
+    }).returning();
+    const [teardownLocation] = await db.insert(locations).values({
+      name: "Scheduled teardown race location",
+      organizationId: teardownOrganization.id,
+      squareCredentials: { appId: "sandbox-app", accessToken: "test-token", locationId: "SQUARE_LOCATION_TEST" },
+    }).returning();
+    const { schedule } = await createSchedule({
+      organizationIdOverride: teardownOrganization.id,
+      locationIdOverride: teardownLocation.id,
+      nextPaymentDate: cycleAt,
+    });
+    const [preparation, teardown] = await Promise.allSettled([
+      prepareScheduledPaymentCycle({ paymentScheduleId: schedule.id, billingCycleAt: cycleAt, now: dueNow }),
+      deleteOrganization(teardownOrganization.id),
+    ]);
+    expect(teardown.status).toBe("fulfilled");
+    if (preparation.status === "rejected") {
+      expect(String(preparation.reason)).not.toMatch(/40P01|deadlock detected/i);
+    }
   });
 
   it("gives an upfront cycle durable identity before deactivating its schedule", async () => {
