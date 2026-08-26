@@ -185,6 +185,27 @@ describe("league setup integration API", () => {
     expect(schedule.data.data).toMatchObject({ authoritativeSource: "canonical", operationalCanonicalStateExists: true });
   });
 
+  it("retries an exact setup after its location is archived but rejects changed semantics", async () => {
+    const [retryLocation] = await db.insert(locations).values({
+      name: "Setup API archived retry location",
+      organizationId,
+    }).returning();
+    const body = { ...futureBody(50), locationId: retryLocation.id };
+    const created = await apiPost<AnyLeagueSetupIntegrationResult>("/api/leagues", body, admin);
+    expect(created.status).toBe(201);
+    await db.update(locations).set({ active: false }).where(eq(locations.id, retryLocation.id));
+
+    const retry = await apiPost<AnyLeagueSetupIntegrationResult>("/api/leagues", body, admin);
+    expect(retry.status).toBe(200);
+    expect(retry.data.data).toMatchObject({
+      id: created.data.data?.id,
+      setupIntegration: { mode: "idempotent_retry", writesPerformed: false },
+    });
+    const changed = await apiPost("/api/leagues", { ...body, weeklyFee: body.weeklyFee + 1 }, admin);
+    expect(changed.status).toBe(409);
+    expect(changed.data.error?.code).toBe("IDEMPOTENCY_CONFLICT");
+  });
+
   it("rejects ordinary users and forbidden canonical claims without creating a league", async () => {
     const before = await db.select().from(leagues).where(eq(leagues.organizationId, organizationId));
     const unauthorized = await apiPost("/api/leagues", futureBody(2), regular);

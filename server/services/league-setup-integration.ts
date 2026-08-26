@@ -639,7 +639,6 @@ async function createLeagueInTransaction(input: {
   if ((input.setup.contractVersion === LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION_2 || input.setup.contractVersion === LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION_3) && input.league.active !== true) {
     throw new LeagueSetupIntegrationError("validation_error", "canonical setup requires an active future league");
   }
-  await assertLocationScope(input.tx, input.scope.organizationId, input.league.locationId);
   const commandKey = setupCommandKey(input.setup);
   await lockSetupIntent(input.tx, commandKey);
   await assertSetupKeyOrganization(input.tx, input.scope.organizationId, commandKey);
@@ -655,6 +654,11 @@ async function createLeagueInTransaction(input: {
     seasonClassification,
   });
   if (retry) return retry;
+  // Resolve idempotent retry state before validating the current location.
+  // Historical retries must remain durable zero-write operations even when
+  // their original location has since been archived. Only a genuinely new
+  // league is subject to the active-location requirement.
+  await assertLocationScope(input.tx, input.scope.organizationId, input.league.locationId);
   // An exact historical idempotency retry is not a new creation and may
   // legitimately reproduce the legacy Fall payload (including its old
   // cancelled-date array). Fresh canonical setup accepts only Bowling or

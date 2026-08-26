@@ -8,6 +8,7 @@ import {
   occurrencePaymentResponsibilities,
   teamPaymentSlots,
   teams,
+  locations,
   type League,
   type InsertLeague,
   type UpdateLeague,
@@ -62,6 +63,13 @@ export class LeagueRetiredLegacyError extends Error {
   constructor() {
     super('Retired legacy leagues are permanently inactive and immutable');
     this.name = 'LeagueRetiredLegacyError';
+  }
+}
+
+export class LeagueLocationScopeError extends Error {
+  constructor() {
+    super('League location must be active in the target organization');
+    this.name = 'LeagueLocationScopeError';
   }
 }
 
@@ -217,6 +225,36 @@ export async function updateLeague(id: number, league: UpdateLeague): Promise<Le
           throw new LeagueSubstituteConfigurationLockedError();
         }
       }
+    }
+
+    // Location authorization is intentionally re-read after the common
+    // league schedule/row locks. This makes a PATCH linearize cleanly with a
+    // concurrent location archive: an archive that commits first is observed
+    // as inactive, while a PATCH that locks first is the winning update.
+    // System-admin organization restamps validate the effective target org,
+    // including an existing location when locationId is omitted.
+    const targetOrganizationId = league.organizationId !== undefined
+      ? league.organizationId
+      : current.organizationId;
+    const targetLocationId = league.locationId !== undefined
+      ? league.locationId
+      : current.locationId;
+    const organizationChanged = league.organizationId !== undefined
+      && !sameValue(league.organizationId, current.organizationId);
+    const locationNeedsValidation = targetLocationId !== null
+      && (league.locationId !== undefined || organizationChanged);
+    if (locationNeedsValidation) {
+      const [location] = targetOrganizationId === null
+        ? []
+        : await tx.select({ id: locations.id })
+          .from(locations)
+          .where(and(
+            eq(locations.id, targetLocationId),
+            eq(locations.organizationId, targetOrganizationId),
+            eq(locations.active, true),
+          ))
+          .for('update');
+      if (!location) throw new LeagueLocationScopeError();
     }
 
     if (league.active === false && current.active && current.organizationId !== null) {

@@ -43,6 +43,7 @@ import {
   LeagueSubstituteConfigurationLockedError,
   LeagueArchivedReadOnlyError,
   LeagueRetiredLegacyError,
+  LeagueLocationScopeError,
 } from '../storage/leagues';
 import {
   leagueSetupIntegrationIntentSchema,
@@ -458,7 +459,7 @@ router.post("/", async (req: Request, res) => {
     if (!organization) return sendError(res, 'Organization not found', 404, 'NOT_FOUND');
     if (typeof req.body?.locationId === 'number') {
       const location = await storage.getLocation(req.body.locationId);
-      if (!location || location.organizationId !== effectiveOrgId || location.active !== true) {
+      if (!location || location.organizationId !== effectiveOrgId) {
         return sendError(res, 'Location not found for this organization', 404, 'NOT_FOUND');
       }
     }
@@ -822,6 +823,9 @@ router.patch("/:id", async (req: Request, res) => {
         409,
         'LEAGUE_SUBSTITUTE_CONFIGURATION_LOCKED',
       );
+    }
+    if (error instanceof LeagueLocationScopeError) {
+      return sendError(res, 'Location not found for this organization', 404, 'NOT_FOUND');
     }
     if (error instanceof LeagueArchivedReadOnlyError || error instanceof LeagueRetiredLegacyError) {
       return sendError(res, error.message, 409, 'LEAGUE_ARCHIVED_READ_ONLY');

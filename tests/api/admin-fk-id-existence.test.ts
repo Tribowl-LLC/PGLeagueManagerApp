@@ -366,10 +366,23 @@ describe('Task #518 — pin remaining admin FK id existence checks', () => {
         '/api/leagues',
         {
           name: 'Vitest #518 Inactive Loc',
-          seasonStart: '2025-01-01 00:00:00',
-          seasonEnd: '2025-12-31 00:00:00',
-          weekDay: 'Monday',
+          seasonStart: '2032-03-07',
+          weekDay: 'Sunday',
+          totalBowlingWeeks: 3,
+          skipDates: [],
+          cancelledDates: [],
+          doublePayDates: [],
+          active: true,
+          allowPublicSignup: false,
+          payingLineupSize: 4,
+          weeklyFee: 2_000,
+          paymentMode: 'weekly',
+          timezone: 'America/New_York',
           locationId: inactiveLocationOrgAId,
+          setupIntegration: {
+            contractVersion: 'league-setup-integration-request/2',
+            idempotencyKey: '40000000-0000-4000-8000-000000000518',
+          },
         },
         orgAAdmin,
       );
@@ -377,7 +390,7 @@ describe('Task #518 — pin remaining admin FK id existence checks', () => {
       expect(status).toBe(404);
       expect(data.success).toBe(false);
       expect(data.error?.code).toBe('NOT_FOUND');
-      expect(data.error?.message).toMatch(/location not found/i);
+      expect(data.error?.message).toMatch(/location(?: was)? not found/i);
     });
 
     it('returns 404 when an org_admin tries to stamp a league with a location from another organization', async () => {
@@ -449,6 +462,19 @@ describe('Task #518 — pin remaining admin FK id existence checks', () => {
 
       expect(status).toBe(404);
       expect(data.success).toBe(false);
+      expect(data.error?.message).toMatch(/location not found/i);
+    });
+
+    it('returns 404 when an org_admin patches a league with an inactive location', async () => {
+      const { status, data } = await apiPatch(
+        `/api/leagues/${leagueOrgAId}`,
+        { locationId: inactiveLocationOrgAId },
+        orgAAdmin,
+      );
+
+      expect(status).toBe(404);
+      expect(data.success).toBe(false);
+      expect(data.error?.code).toBe('NOT_FOUND');
       expect(data.error?.message).toMatch(/location not found/i);
     });
   });

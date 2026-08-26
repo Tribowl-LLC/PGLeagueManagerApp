@@ -30,7 +30,11 @@ import {
   applyFallDraftGenerationInTransaction,
   type FallDraftFailureStage,
 } from "../../server/services/fall-draft-generation";
-import { LeagueCanonicalScheduleLockedError, updateLeague } from "../../server/storage/leagues";
+import {
+  LeagueCanonicalScheduleLockedError,
+  LeagueLocationScopeError,
+  updateLeague,
+} from "../../server/storage/leagues";
 import { deleteOrganization } from "../../server/storage/organizations";
 import { getTestDb } from "../setup/test-db";
 
@@ -418,6 +422,62 @@ describe("authoritative league setup integration", () => {
     await expect(createLeagueWithCanonicalSetup({ ...request, league: { ...request.league, weeklyFee: 2_100 } }))
       .rejects.toMatchObject({ code: "idempotency_conflict" });
     expect(await db.select().from(leagues).where(eq(leagues.organizationId, f.organizationId))).toHaveLength(1);
+  });
+
+  it("allows an exact setup retry after its original location is archived", async () => {
+    const f = await fixture("archived-retry-location");
+    const request = {
+      scope: { organizationId: f.organizationId, actorUserId: f.actorUserId },
+      league: fallLeague(f),
+      setup: setup(++sequence),
+    };
+    const created = await createLeagueWithCanonicalSetup(request);
+    await db.update(locations).set({ active: false }).where(eq(locations.id, f.locationId));
+
+    const retry = await createLeagueWithCanonicalSetup(request);
+    expect(retry).toMatchObject({
+      id: created.id,
+      setupIntegration: { mode: "idempotent_retry", writesPerformed: false },
+    });
+    await expect(createLeagueWithCanonicalSetup({
+      ...request,
+      league: { ...request.league, weeklyFee: request.league.weeklyFee + 1 },
+    })).rejects.toMatchObject({ code: "idempotency_conflict" });
+  });
+
+  it("rechecks an active tenant location under the league lock for PATCH", async () => {
+    const f = await fixture("location-patch-guards");
+    const [league] = await db.insert(leagues).values(fallLeague(f)).returning();
+    const other = await fixture("location-patch-guards-other");
+
+    await expect(updateLeague(league.id, { locationId: other.locationId }))
+      .rejects.toBeInstanceOf(LeagueLocationScopeError);
+    await db.update(locations).set({ active: false }).where(eq(locations.id, f.locationId));
+    await expect(updateLeague(league.id, { locationId: f.locationId }))
+      .rejects.toBeInstanceOf(LeagueLocationScopeError);
+  });
+
+  it("linearizes location archive before a league PATCH", async () => {
+    const f = await fixture("location-patch-race");
+    const [league] = await db.insert(leagues).values(fallLeague(f)).returning();
+    let archiveUpdated!: () => void;
+    const archiveHasUpdated = new Promise<void>((resolve) => { archiveUpdated = resolve; });
+    let releaseArchive!: () => void;
+    const release = new Promise<void>((resolve) => { releaseArchive = resolve; });
+    const archive = db.transaction(async (tx) => {
+      await tx.select({ id: locations.id })
+        .from(locations)
+        .where(eq(locations.id, f.locationId))
+        .for("update");
+      await tx.update(locations).set({ active: false }).where(eq(locations.id, f.locationId));
+      archiveUpdated();
+      await release;
+    });
+    await archiveHasUpdated;
+    const patch = updateLeague(league.id, { locationId: f.locationId });
+    releaseArchive();
+    await archive;
+    await expect(patch).rejects.toBeInstanceOf(LeagueLocationScopeError);
   });
 
   it("conflicts when a system administrator reuses one setup key in another organization", async () => {
