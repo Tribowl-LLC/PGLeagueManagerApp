@@ -44,8 +44,6 @@ import {
 } from '../storage/leagues';
 import {
   leagueSetupIntegrationIntentSchema,
-  leagueSetupIntegrationIntentV2Schema,
-  leagueSetupIntegrationIntentV3Schema,
   leagueRolloverSourceConfirmationSchema,
 } from '@shared/league-setup-integration';
 import {
@@ -56,61 +54,30 @@ import {
 } from '../services/league-setup-integration.js';
 import { FallDraftGenerationError } from '../services/fall-draft-generation.js';
 import { CanonicalLeagueScheduleEditError, editCanonicalLeagueSchedule, readCanonicalLeagueScheduleRevision } from '../services/canonical-league-schedule-edit.js';
-import { hasOperationalLeagueOccurrenceEvidence } from '../storage/canonical-occurrence-evidence.js';
+import { hasCompleteOperationalLeagueSchedule } from '../services/league-occurrence-schedule.js';
 
 const log = createLogger("Leagues");
 
 const router = Router();
 
-const newSeasonRequestV1Schema = z.object({
+const newSeasonRequestSchema = z.object({
   seasonStart: dateSchema,
-  // Retained for older clients that still submit an explicit end date.
-  seasonEnd: dateSchema.optional(),
-  totalBowlingWeeks: z.number().int().positive().max(52).optional(),
-  weekDay: z.enum(WEEKDAYS).optional(),
-  skipDates: z.array(z.string()).default([]),
-  cancelledDates: z.array(z.string()).default([]),
-  doublePayDates: z.array(z.string()).max(2, "At most 2 double-pay weeks allowed").default([]),
-  allowPublicSignup: z.boolean().optional(),
+  totalBowlingWeeks: z.number().int().positive().max(52),
+  weekDay: z.enum(WEEKDAYS),
+  skipDates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)),
+  cancelledDates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)),
+  doublePayDates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).max(2, "At most 2 double-pay weeks allowed"),
+  allowPublicSignup: z.boolean(),
   paymentMode: z.enum(PAYMENT_MODES),
   setupIntegration: leagueSetupIntegrationIntentSchema,
-}).strict();
-
-const newSeasonRequestV2Schema = z.object({
-  seasonStart: dateSchema,
-  totalBowlingWeeks: z.number().int().positive().max(52),
-  weekDay: z.enum(WEEKDAYS),
-  skipDates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)),
-  cancelledDates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)),
-  doublePayDates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).max(2, "At most 2 double-pay weeks allowed"),
-  allowPublicSignup: z.boolean(),
-  paymentMode: z.enum(PAYMENT_MODES),
-  setupIntegration: leagueSetupIntegrationIntentV2Schema,
   sourceConfirmation: leagueRolloverSourceConfirmationSchema,
 }).strict();
 
-const newSeasonRequestV3Schema = z.object({
-  seasonStart: dateSchema,
-  totalBowlingWeeks: z.number().int().positive().max(52),
-  weekDay: z.enum(WEEKDAYS),
-  skipDates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)),
-  cancelledDates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)),
-  doublePayDates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).max(2, "At most 2 double-pay weeks allowed"),
-  allowPublicSignup: z.boolean(),
-  paymentMode: z.enum(PAYMENT_MODES),
-  setupIntegration: leagueSetupIntegrationIntentV3Schema,
-  sourceConfirmation: leagueRolloverSourceConfirmationSchema,
-}).strict();
-
-const newSeasonRequestSchema = z.union([newSeasonRequestV3Schema, newSeasonRequestV2Schema, newSeasonRequestV1Schema]);
-
-const directLeagueSetupV2TargetSchema = z.object({
+const directLeagueSetupTargetSchema = z.object({
   name: nameSchema,
   description: z.string().nullable().optional(),
-  // Missing is accepted only far enough to prove an exact pre-0031 setup
-  // retry. The setup service rejects a first write without this value.
-  payingLineupSize: z.union([z.literal(3), z.literal(4)]).optional(),
-  active: z.boolean().optional(),
+  payingLineupSize: z.union([z.literal(3), z.literal(4)]),
+  active: z.boolean(),
   organizationId: z.number().int().positive().optional(),
   locationId: z.number().int().positive().nullable().optional(),
   seasonStart: dateSchema,
@@ -134,12 +101,8 @@ const directLeagueSetupV2TargetSchema = z.object({
   prizeFundItemVariationId: z.string().nullable().optional(),
   squarePrizeFundItemName: z.string().nullable().optional(),
   squareCategoryId: z.string().nullable().optional(),
-  setupIntegration: leagueSetupIntegrationIntentV2Schema,
+  setupIntegration: leagueSetupIntegrationIntentSchema,
 }).strict();
-
-const directLeagueSetupV3TargetSchema = directLeagueSetupV2TargetSchema.extend({
-  setupIntegration: leagueSetupIntegrationIntentV3Schema,
-});
 
 function sendLeagueSetupError(res: Parameters<typeof sendError>[0], error: unknown): void {
   if (error instanceof z.ZodError) return handleZodError(res, error);
@@ -238,6 +201,16 @@ router.get("/", async (req: Request, res) => {
     if (locationId) {
       leagues = leagues.filter(l => l.locationId === locationId);
     }
+
+    // A league is product-visible only after its automatic canonical setup
+    // transaction has published a complete operational occurrence set.
+    leagues = (await Promise.all(leagues.map(async (league) => {
+      if (league.organizationId === null) return null;
+      return await hasCompleteOperationalLeagueSchedule({
+        organizationId: league.organizationId,
+        leagueId: league.id,
+      }) ? league : null;
+    }))).filter((league): league is NonNullable<typeof league> => league !== null);
 
     sendSuccess(res, leagues);
   } catch (error) {
@@ -353,6 +326,14 @@ router.get("/:id", async (req: Request, res) => {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
 
+    if (league.organizationId === null
+      || !(await hasCompleteOperationalLeagueSchedule({
+        organizationId: league.organizationId,
+        leagueId: league.id,
+      }))) {
+      return sendError(res, "This league does not have a complete canonical schedule", 409, "CANONICAL_SCHEDULE_REQUIRED");
+    }
+
     const canonicalScheduleRevision = league.organizationId === null
       ? null
       : await readCanonicalLeagueScheduleRevision({ organizationId: league.organizationId, leagueId: league.id });
@@ -376,11 +357,9 @@ router.post("/", async (req: Request, res) => {
     if (forbiddenSetupFields.some((field) => Object.prototype.hasOwnProperty.call(req.body ?? {}, field))) {
       return sendError(res, 'League setup contains server-owned canonical generation fields', 400, 'VALIDATION_ERROR');
     }
-    const submittedV2 = req.body?.setupIntegration?.contractVersion === "league-setup-integration-request/2";
-    // Derive seasonEnd server-side when totalBowlingWeeks is provided
-    let derivedSeasonEnd = !submittedV2 && req.body.seasonEnd
-      ? new Date(req.body.seasonEnd)
-      : undefined;
+    // Canonical setup derives seasonEnd from the schedule inputs. The client
+    // never supplies an independent end date that could diverge from it.
+    let derivedSeasonEnd: Date | undefined;
     if (
       req.body.totalBowlingWeeks != null &&
       req.body.seasonStart &&
@@ -439,35 +418,20 @@ router.post("/", async (req: Request, res) => {
       }
     }
 
-    const setup = z.union([
-      leagueSetupIntegrationIntentV3Schema,
-      leagueSetupIntegrationIntentV2Schema,
-      leagueSetupIntegrationIntentSchema,
-    ]).parse(req.body?.setupIntegration);
-    if (setup.contractVersion === "league-setup-integration-request/2" || setup.contractVersion === "league-setup-integration-request/3") {
-      if (Object.prototype.hasOwnProperty.call(req.body ?? {}, "seasonEnd")) {
-        return sendError(res, 'seasonEnd is derived by canonical v2 league setup', 400, 'VALIDATION_ERROR');
-      }
-      (setup.contractVersion === "league-setup-integration-request/3" ? directLeagueSetupV3TargetSchema : directLeagueSetupV2TargetSchema).parse(req.body);
+    if (Object.prototype.hasOwnProperty.call(req.body ?? {}, "seasonEnd")) {
+      return sendError(res, 'seasonEnd is derived by canonical setup', 400, 'VALIDATION_ERROR');
     }
-
-    const hasPayingLineupSize = Object.prototype.hasOwnProperty.call(req.body ?? {}, "payingLineupSize");
+    const parsedSetup = directLeagueSetupTargetSchema.parse(req.body);
+    const setup = parsedSetup.setupIntegration;
     const parsedLeague = insertLeagueSchema.parse({
       ...req.body,
-      // The public insert schema remains strict for all ordinary callers.
-      // A placeholder only normalizes the rest of a historical retry before
-      // the field is removed again and checked against durable null evidence.
-      payingLineupSize: hasPayingLineupSize ? req.body.payingLineupSize : 3,
       organizationId: effectiveOrgId,
       seasonStart: new Date(req.body.seasonStart),
-      seasonEnd: derivedSeasonEnd ?? new Date(req.body.seasonEnd)
+      seasonEnd: derivedSeasonEnd
     });
-    const league = hasPayingLineupSize
-      ? parsedLeague
-      : { ...parsedLeague, payingLineupSize: undefined };
     const created = await createLeagueWithCanonicalSetup({
       scope: { organizationId: effectiveOrgId, actorUserId: req.user.id },
-      league,
+      league: parsedLeague,
       setup,
     });
     sendSuccess(res, created, created.setupIntegration.mode === 'idempotent_retry' ? 200 : 201);
@@ -584,24 +548,22 @@ router.patch("/:id", async (req: Request, res) => {
       }
     }
 
-    // Authoritative canonical leagues revise collection-group evidence in the
-    // same tenant transaction. The legacy storage updater remains the
-    // compatibility path only when no published canonical schedule exists.
+    // Canonical leagues revise schedule and collection-group evidence in the
+    // same tenant transaction.
     const canonicalDoublePayDates = update.doublePayDates;
     const canonicalScheduleFieldChanged = [
       "doublePayDates", "skipDates", "cancelledDates", "seasonStart", "seasonEnd",
       "weekDay", "competitionStartTime", "timezone", "totalBowlingWeeks",
     ].some((field) => Object.prototype.hasOwnProperty.call(req.body ?? {}, field));
-    const canonicalMetadataFieldChanged = [
-      "name", "description", "payingLineupSize", "active", "allowPublicSignup", "practiceStartTime",
-      "lineageFee", "prizeFundFee", "squareLineageItemId", "lineageItemVariationId",
-      "squareLineageItemName", "squarePrizeFundItemId", "prizeFundItemVariationId",
-      "squarePrizeFundItemName", "squareCategoryId",
-    ].some((field) => Object.prototype.hasOwnProperty.call(req.body ?? {}, field));
-    const canonicalScheduleMutationChanged = canonicalScheduleFieldChanged || canonicalMetadataFieldChanged;
+    // Metadata does not alter the physical schedule. Only fields that alter
+    // canonical schedule evidence require a complete operational set.
+    const canonicalScheduleMutationChanged = canonicalScheduleFieldChanged;
     const hasCanonicalScheduleEvidence = canonicalScheduleMutationChanged && league.organizationId !== null
-      ? await hasOperationalLeagueOccurrenceEvidence(db, league.organizationId, id)
+      ? await hasCompleteOperationalLeagueSchedule({ organizationId: league.organizationId, leagueId: id })
       : false;
+    if (canonicalScheduleMutationChanged && !hasCanonicalScheduleEvidence) {
+      return sendError(res, "A complete canonical schedule is required before editing this league", 409, "CANONICAL_SCHEDULE_REQUIRED");
+    }
     let updated = league;
     let canonicalScheduleResponse: { state: "published"; collectionGroups: unknown[] } | undefined;
     if (hasCanonicalScheduleEvidence

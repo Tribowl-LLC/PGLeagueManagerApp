@@ -41,7 +41,7 @@ const ORDERING: LeagueStandingsReadContract["ordering"] = {
   version: LEAGUE_STANDINGS_ORDER_VERSION,
   occurrenceKeys: ["e1PhysicalOrder"],
   canonicalResultSessionKeys: ["occurrenceOrderIndex"],
-  legacyResultSessionKeys: ["e2FirstGameOrder"],
+  resultSessionKeys: ["occurrenceOrderIndex"],
   gameKeys: ["gameNumber", "gameId"],
   scoreKeys: ["teamNumber", "teamId", "position", "scoreId"],
   discrepancyKeys: ["classification", "stableIdentity", "gameId"],
@@ -116,7 +116,7 @@ function incompatible(
 }
 
 function canonicalIdentity(occurrenceId: string): CanonicalLeagueStandingsIdentity {
-  return { identitySource: "canonical_uuid", occurrenceId, legacyProjectionKey: null };
+  return { identitySource: "canonical_uuid", occurrenceId };
 }
 
 function eligibilityFor(
@@ -124,13 +124,6 @@ function eligibilityFor(
   occurrence: LeagueOccurrenceScheduleOccurrence,
   snapshot: Pick<CanonicalGamesScoresEvidenceSnapshot, "games" | "scores">,
 ): LeagueStandingsEligibility {
-  if (schedule.authoritativeSource === "legacy_fallback") {
-    return {
-      state: "legacy_unverified",
-      reason: "legacy_completion_and_policy_unproven",
-    };
-  }
-
   if (occurrence.lifecycle !== "published" && occurrence.lifecycle !== "locked") {
     return incompatible(schedule, "canonical_occurrence_flag_contradiction", snapshot);
   }
@@ -172,24 +165,8 @@ function occurrenceEvidence(
   snapshot: CanonicalGamesScoresEvidenceSnapshot,
 ): LeagueStandingsOccurrenceEvidence[] {
   const { schedule } = snapshot;
-  if ((schedule.authoritativeSource === "canonical") !== schedule.operationalCanonicalStateExists) {
-    return incompatible(schedule, "canonical_schedule_incompatible", snapshot);
-  }
   return schedule.occurrences.map((occurrence, orderIndex) => {
-    const identity = schedule.authoritativeSource === "canonical"
-      ? occurrence.occurrenceId
-        ? canonicalIdentity(occurrence.occurrenceId)
-        : incompatible(schedule, "canonical_occurrence_flag_contradiction", snapshot)
-      : occurrence.occurrenceId === null && occurrence.legacyProjectionKey
-        ? {
-            identitySource: "legacy_schedule_projection" as const,
-            occurrenceId: null,
-            legacyProjectionKey: occurrence.legacyProjectionKey,
-          }
-        : incompatible(schedule, "canonical_schedule_incompatible", snapshot);
-    if (schedule.authoritativeSource === "legacy_fallback" && occurrence.lifecycle !== "legacy") {
-      return incompatible(schedule, "canonical_schedule_incompatible", snapshot);
-    }
+    const identity = canonicalIdentity(occurrence.occurrenceId);
     return {
       orderIndex,
       identity,
@@ -246,8 +223,6 @@ function gameEvidence(
   return {
     gameId: game.id,
     gameNumber: game.gameNumber,
-    legacyWeekNumber: game.weekNumber,
-    legacyDate: game.date,
     scores: (scoresByGameId.get(game.id) ?? []).map(scoreEvidence).sort(compareScores),
   };
 }
@@ -269,18 +244,11 @@ function resultSessionEvidence(
 
   const grouped = new Map<string, CanonicalGameProjection[]>();
   for (const game of snapshot.games) {
-    const key = snapshot.schedule.authoritativeSource === "canonical"
-      ? game.identitySource === "canonical_uuid"
-        && game.occurrenceId
-        && game.occurrence?.occurrenceId === game.occurrenceId
-        ? `canonical:${game.occurrenceId}`
-        : incompatible(snapshot.schedule, "canonical_games_scores_incompatible", snapshot)
-      : game.identitySource === "legacy_projection"
-        && game.occurrenceId === null
-        && game.occurrence === null
-        && game.legacyProjectionKey
-        ? `legacy:${game.legacyProjectionKey}`
-        : incompatible(snapshot.schedule, "canonical_games_scores_incompatible", snapshot);
+    if (game.identitySource !== "canonical_uuid"
+      || game.occurrence.occurrenceId !== game.occurrenceId) {
+      return incompatible(snapshot.schedule, "canonical_games_scores_incompatible", snapshot);
+    }
+    const key = `canonical:${game.occurrenceId}`;
     const rows = grouped.get(key) ?? [];
     rows.push(game);
     grouped.set(key, rows);
@@ -298,64 +266,28 @@ function resultSessionEvidence(
   for (const games of grouped.values()) {
     const first = games[0];
     if (!first) continue;
-    if (snapshot.schedule.authoritativeSource === "canonical") {
-      if (!first.occurrenceId) {
-        return incompatible(snapshot.schedule, "canonical_result_occurrence_missing", snapshot);
-      }
-      const matching = canonicalOccurrences.get(first.occurrenceId) ?? [];
-      if (matching.length === 0) {
-        return incompatible(snapshot.schedule, "canonical_result_occurrence_missing", snapshot);
-      }
-      if (matching.length !== 1) {
-        return incompatible(snapshot.schedule, "canonical_result_occurrence_ambiguous", snapshot);
-      }
-      const occurrence = matching[0];
-      sessions.push({
-        orderIndex: occurrence.orderIndex,
-        identity: canonicalIdentity(first.occurrenceId),
-        occurrenceOrderIndex: occurrence.orderIndex,
-        eligibility: occurrence.eligibility,
-        games: games.map((game) => gameEvidence(game, scoresByGameId))
-          .sort((left, right) => left.gameNumber - right.gameNumber || left.gameId - right.gameId),
-      });
-    } else {
-      if (!first.legacyProjectionKey) {
-        return incompatible(snapshot.schedule, "canonical_games_scores_incompatible", snapshot);
-      }
-      sessions.push({
-        orderIndex: sessions.length,
-        identity: {
-          identitySource: "legacy_game_projection",
-          occurrenceId: null,
-          legacyProjectionKey: first.legacyProjectionKey,
-        },
-        occurrenceOrderIndex: null,
-        eligibility: {
-          state: "legacy_unverified",
-          reason: "legacy_completion_and_policy_unproven",
-        },
-        games: games.map((game) => gameEvidence(game, scoresByGameId))
-          .sort((left, right) => left.gameNumber - right.gameNumber || left.gameId - right.gameId),
-      });
-    }
-  }
-  if (snapshot.schedule.authoritativeSource === "canonical") {
-    sessions.sort((left, right) => (left.occurrenceOrderIndex ?? Number.MAX_SAFE_INTEGER)
-      - (right.occurrenceOrderIndex ?? Number.MAX_SAFE_INTEGER));
-    sessions.forEach((session, orderIndex) => {
-      session.orderIndex = orderIndex;
+    const matching = canonicalOccurrences.get(first.occurrenceId) ?? [];
+    if (matching.length === 0) return incompatible(snapshot.schedule, "canonical_result_occurrence_missing", snapshot);
+    if (matching.length !== 1) return incompatible(snapshot.schedule, "canonical_result_occurrence_ambiguous", snapshot);
+    const occurrence = matching[0];
+    sessions.push({
+      orderIndex: occurrence.orderIndex,
+      identity: canonicalIdentity(first.occurrenceId),
+      occurrenceOrderIndex: occurrence.orderIndex,
+      eligibility: occurrence.eligibility,
+      games: games.map((game) => gameEvidence(game, scoresByGameId))
+        .sort((left, right) => left.gameNumber - right.gameNumber || left.gameId - right.gameId),
     });
   }
+  sessions.sort((left, right) => left.occurrenceOrderIndex - right.occurrenceOrderIndex);
+  sessions.forEach((session, orderIndex) => { session.orderIndex = orderIndex; });
   return sessions;
 }
 
 function identitySortKey(identity: LeagueStandingsStableIdentity | null): string {
   if (identity === null) return "~";
   if (identity.identitySource === "canonical_uuid") return `canonical:${identity.occurrenceId}`;
-  if (identity.identitySource === "legacy_schedule_projection") {
-    return `legacy-schedule:${identity.legacyProjectionKey}`;
-  }
-  return `legacy-game:${identity.legacyProjectionKey}`;
+  return `canonical:${identity.occurrenceId}`;
 }
 
 function compareDiscrepancies(
@@ -432,24 +364,9 @@ function buildDiscrepancies(
     }
   }
 
-  if (snapshot.schedule.authoritativeSource === "legacy_fallback") {
-    const identities: LeagueStandingsStableIdentity[] = [
-      ...occurrences.map((occurrence) => occurrence.identity),
-      ...resultSessions.map((session) => session.identity),
-    ];
-    for (const identity of identities) {
-      add("legacy_completion_unproven", "warning", identity, null, 1);
-      add("legacy_standings_eligibility_unproven", "warning", identity, null, 1);
-    }
-    return combineDiscrepancies(discrepancies);
-  }
-
   const sessionsByOccurrence = new Map(resultSessions.flatMap((session) =>
-    session.identity.identitySource === "canonical_uuid"
-      ? [[session.identity.occurrenceId, session] as const]
-      : []));
+    [[session.identity.occurrenceId, session] as const]));
   for (const occurrence of occurrences) {
-    if (occurrence.identity.identitySource !== "canonical_uuid") continue;
     const resultSession = sessionsByOccurrence.get(occurrence.identity.occurrenceId);
     if (occurrence.eligibility.state === "eligible_result_input" && !resultSession) {
       add("completed_eligible_occurrence_without_games", "warning", occurrence.identity, null, 1);
@@ -482,7 +399,6 @@ function buildSummary(
     eligibleOccurrenceCount: occurrences.filter((row) => row.eligibility.state === "eligible_result_input").length,
     pendingOccurrenceCount: occurrences.filter((row) => row.eligibility.state === "pending_not_completed").length,
     excludedOccurrenceCount: occurrences.filter((row) => row.eligibility.state.startsWith("excluded_")).length,
-    legacyUnverifiedOccurrenceCount: occurrences.filter((row) => row.eligibility.state === "legacy_unverified").length,
     resultSessionCount: resultSessions.length,
     gameCount: resultSessions.reduce((sum, session) => sum + session.games.length, 0),
     scoreCount: resultSessions.reduce((sessionSum, session) => sessionSum
@@ -506,7 +422,6 @@ export function buildLeagueStandingsContract(
     organizationId: snapshot.schedule.organizationId,
     leagueId: snapshot.schedule.leagueId,
     authoritativeSource: snapshot.schedule.authoritativeSource,
-    operationalCanonicalStateExists: snapshot.schedule.operationalCanonicalStateExists,
     ranking: {
       state: RANKING.state,
       policyVersion: RANKING.policyVersion,
@@ -523,7 +438,6 @@ export function buildLeagueStandingsContract(
     organizationId: snapshot.schedule.organizationId,
     leagueId: snapshot.schedule.leagueId,
     authoritativeSource: snapshot.schedule.authoritativeSource,
-    operationalCanonicalStateExists: snapshot.schedule.operationalCanonicalStateExists,
     ranking: RANKING,
     occurrences,
     resultSessions,

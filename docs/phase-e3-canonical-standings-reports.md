@@ -38,16 +38,13 @@ provider call.
 
 E1 remains the only source-selection authority:
 
-- one complete published/locked operational set selects `canonical`;
-- no operational canonical set selects explicit `legacy_fallback`; and
-- partial, contradictory, or mixed operational evidence fails closed.
+- one complete published operational set selects `canonical`; and
+- missing, partial, contradictory, or mixed operational evidence fails closed.
 
-E3 never blends canonical and fallback evidence. On canonical leagues, result
-sessions group only by exact `games.occurrence_id` UUID and must resolve to
-exactly one occurrence in the operational E1 set. On fallback leagues,
-schedule rows retain `legacy_schedule_projection` identities while games use
-the separate `legacy_game_projection` domain. Those keys are intentionally not
-joined, even when their legacy dates or week numbers appear similar.
+E3 never blends or derives a fallback schedule. Result sessions group only by
+exact `games.occurrence_id` UUID and must resolve to exactly one occurrence in
+the operational E1 set. A league without that evidence returns the generic
+canonical incompatibility response.
 
 Score evidence is reduced to stable IDs, score/handicap/average/position,
 team number, vacant/absent/substitute flags, and lane. Bowler and team names,
@@ -79,10 +76,9 @@ A makeup is its own physical UUID; the response includes safe
 substitutes the source occurrence's identity. Cancelled occurrences remain in
 the evidence with their stable UUID and planned ordinal.
 
-Fallback schedule and result-session rows are always `legacy_unverified`.
-Legacy stored schedule status, date, week, or score presence cannot prove
-completion or standings eligibility, so E3 does not promote fallback evidence
-to eligible result input.
+Stored schedule dates, week numbers, or score presence cannot substitute for
+canonical occurrence evidence, so E3 does not promote incomplete evidence to
+eligible result input.
 
 ## Discrepancies and incompatibility
 
@@ -90,7 +86,6 @@ Successful responses include deterministic information or warning evidence
 for:
 
 - missing ranking and matchup policy;
-- unproven legacy completion and eligibility;
 - completed eligible occurrences without games;
 - completed eligible games without scores;
 - scheduled occurrences with score evidence;

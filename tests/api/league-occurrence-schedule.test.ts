@@ -14,11 +14,11 @@ import {
   users,
 } from "@shared/schema";
 import type { LeagueOccurrenceScheduleReadContract } from "@shared/league-occurrence-schedule";
-import type { FallDraftPreview } from "@shared/fall-draft-generation";
-import type { FallDraftReview } from "@shared/fall-draft-review";
+import { LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION } from "@shared/league-setup-integration";
 import { hashPassword } from "../../server/lib/password";
 import { deleteOrganization } from "../../server/storage/organizations";
 import { createGame } from "../../server/storage/games-scores";
+import { createLeagueWithCanonicalSetup } from "../../server/services/league-setup-integration";
 import {
   TEST_ADMIN_EMAIL,
   TEST_ADMIN_PASSWORD,
@@ -57,40 +57,58 @@ async function fixture(label: string): Promise<Fixture> {
     organizationId: organization.id,
   }).returning({ id: locations.id });
   if (!location) throw new Error("E1 location was not created");
-  const [league] = await db.insert(leagues).values({
-    name: `E1 ${label} Fall league`,
-    organizationId: organization.id,
-    locationId: location.id,
-    seasonStart: "2032-08-01",
-    seasonEnd: "2032-08-22",
-    weekDay: "Sunday",
-    competitionStartTime: "19:00",
-    timezone: "America/Detroit",
-    totalBowlingWeeks: 3,
-    weeklyFee: 2_000,
-    skipDates: ["2032-08-08"],
-    cancelledDates: ["2032-08-15"],
-    doublePayDates: ["2032-08-22"],
-  }).returning({ id: leagues.id });
-  if (!league) throw new Error("E1 league was not created");
-  const [team] = await db.insert(teams).values({ name: `E1 ${label} team`, number: 1, leagueId: league.id }).returning({ id: teams.id });
   const [bowler] = await db.insert(bowlers).values({ name: `E1 ${label} bowler`, organizationId: organization.id }).returning({ id: bowlers.id });
   const [peerBowler] = await db.insert(bowlers).values({ name: `E1 ${label} peer`, organizationId: organization.id }).returning({ id: bowlers.id });
-  if (!team || !bowler || !peerBowler) throw new Error("E1 roster fixture was not created");
-  await db.insert(bowlerLeagues).values([
-    { bowlerId: bowler.id, leagueId: league.id, teamId: team.id },
-    { bowlerId: peerBowler.id, leagueId: league.id, teamId: team.id },
-  ]);
+  if (!bowler || !peerBowler) throw new Error("E1 bowlers were not created");
   const hashed = await hashPassword(password);
   const adminEmail = `e1-${label}-admin-${suffix}@example.test`;
   const memberEmail = `e1-${label}-member-${suffix}@example.test`;
   const peerEmail = `e1-${label}-peer-${suffix}@example.test`;
   const unrosteredEmail = `e1-${label}-unrostered-${suffix}@example.test`;
-  await db.insert(users).values([
+  const [adminUser, memberUser, peerUser, unrosteredUser] = await db.insert(users).values([
     { email: adminEmail, password: hashed, name: `E1 ${label} admin`, role: "org_admin", organizationId: organization.id },
     { email: memberEmail, password: hashed, name: `E1 ${label} member`, role: "user", organizationId: organization.id, bowlerId: bowler.id },
     { email: peerEmail, password: hashed, name: `E1 ${label} peer`, role: "user", organizationId: organization.id, bowlerId: peerBowler.id },
     { email: unrosteredEmail, password: hashed, name: `E1 ${label} unrostered`, role: "user", organizationId: organization.id },
+  ]).returning();
+  if (!adminUser || !memberUser || !peerUser || !unrosteredUser) throw new Error("E1 users were not created");
+  const league = await createLeagueWithCanonicalSetup({
+    scope: { organizationId: organization.id, actorUserId: adminUser.id },
+    league: {
+      name: `E1 ${label} Fall league`,
+      description: null,
+      payingLineupSize: 4,
+      active: true,
+      allowPublicSignup: false,
+      seasonStart: "2032-08-01T00:00:00.000Z",
+      seasonEnd: "2032-08-22T00:00:00.000Z",
+      weekDay: "Sunday",
+      weeklyFee: 2_000,
+      lineageFee: null,
+      prizeFundFee: null,
+      practiceStartTime: undefined,
+      competitionStartTime: "19:00",
+      timezone: "America/Detroit",
+      paymentMode: "weekly",
+      organizationId: organization.id,
+      locationId: location.id,
+      seasonNumber: 1,
+      previousSeasonId: null,
+      totalBowlingWeeks: 3,
+      skipDates: ["2032-08-08"],
+      cancelledDates: ["2032-08-15"],
+      doublePayDates: ["2032-08-01"],
+    },
+    setup: {
+      contractVersion: LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION,
+      idempotencyKey: `10000000-0000-4000-8000-${label === "primary" ? "000000000001" : "000000000002"}`,
+    },
+  });
+  const [team] = await db.insert(teams).values({ name: `E1 ${label} team`, number: 1, leagueId: league.id }).returning({ id: teams.id });
+  if (!team) throw new Error("E1 team was not created");
+  await db.insert(bowlerLeagues).values([
+    { bowlerId: bowler.id, leagueId: league.id, teamId: team.id },
+    { bowlerId: peerBowler.id, leagueId: league.id, teamId: team.id },
   ]);
   return {
     organizationId: organization.id,
@@ -154,7 +172,7 @@ describe("E1 league occurrence schedule API", () => {
     expect(member.data.data).toMatchObject({
       organizationId: primary.organizationId,
       leagueId: primary.leagueId,
-      authoritativeSource: "legacy_fallback",
+      authoritativeSource: "canonical",
       administrator: null,
     });
 
@@ -177,108 +195,63 @@ describe("E1 league occurrence schedule API", () => {
     expect(scopedSystem.data.data?.administrator).not.toBeNull();
   });
 
-  it("exposes contextual Fall recovery, keeps draft-only state non-operational, then consumes the approved canonical set", async () => {
-    const initial = await apiGet<LeagueOccurrenceScheduleReadContract>(
-      `/api/leagues/${primary.leagueId}/occurrence-schedule`,
-      primary.admin,
-    );
-    expect(initial.data.data).toMatchObject({
-      contractVersion: "league-occurrence-schedule/2",
-      authoritativeSource: "legacy_fallback",
-      operationalCanonicalStateExists: false,
-      administrator: { fallRecoveryEligible: true, c2ReviewAvailable: false, reviewContractFamily: null },
-    });
-
-    const previewResponse = await apiPost<FallDraftPreview>(
-      `/api/leagues/${primary.leagueId}/canonical-fall-drafts/preview`,
-      { contractVersion: "fall-draft-preview-request/3" },
-      primary.admin,
-    );
-    const preview = previewResponse.data.data;
-    if (!preview) throw new Error("E1 C1 preview was not returned");
-    const applied = await apiPost(
-      `/api/leagues/${primary.leagueId}/canonical-fall-drafts/apply`,
-      {
-        contractVersion: "fall-draft-apply-request/3",
-        confirmedPreviewFingerprint: preview.previewFingerprint,
-        reason: "Create E1 contextual recovery draft",
-        idempotencyKey: `e1-draft-${primary.leagueId}`,
-      },
-      primary.admin,
-    );
-    expect(applied.status).toBe(201);
-
-    const draftOnly = await apiGet<LeagueOccurrenceScheduleReadContract>(
-      `/api/leagues/${primary.leagueId}/occurrence-schedule`,
-      primary.admin,
-    );
-    expect(draftOnly.data.data).toMatchObject({
-      authoritativeSource: "legacy_fallback",
-      operationalCanonicalStateExists: false,
-      administrator: { hasDraftEvidence: true, c2ReviewAvailable: true, reviewContractFamily: "fall", fallRecoveryEligible: false },
-    });
-    expect(draftOnly.data.data?.occurrences.every((row) => row.occurrenceId === null)).toBe(true);
-
-    const reviewResponse = await apiGet<FallDraftReview>(
-      `/api/leagues/${primary.leagueId}/canonical-fall-drafts/review`,
-      primary.admin,
-    );
-    const review = reviewResponse.data.data;
-    if (!review) throw new Error("E1 C2 review was not returned");
-    const approved = await apiPost(
-      `/api/leagues/${primary.leagueId}/canonical-fall-drafts/review/approve`,
-      {
-        contractVersion: "fall-draft-approve-request/1",
-        confirmedReviewFingerprint: review.reviewFingerprint,
-        reason: "Approve E1 canonical schedule",
-        idempotencyKey: `e1-approve-${primary.leagueId}`,
-        discrepancyDispositions: [],
-      },
-      primary.admin,
-    );
-    expect(approved.status).toBe(201);
-
+  it("fails closed when published canonical evidence is incomplete", async () => {
     const beforeRead = await writeSnapshot(primary.leagueId);
-    const canonicalRead = await apiGet<LeagueOccurrenceScheduleReadContract>(
-      `/api/leagues/${primary.leagueId}/occurrence-schedule`,
-      primary.admin,
-    );
-    const afterRead = await writeSnapshot(primary.leagueId);
-    expect(canonicalRead.status).toBe(200);
-    expect(canonicalRead.data.data).toMatchObject({
-      authoritativeSource: "canonical",
-      operationalCanonicalStateExists: true,
-    });
-    expect(canonicalRead.data.data?.occurrences).toHaveLength(3);
-    expect(canonicalRead.data.data?.occurrences.find((row) => row.status === "cancelled")).toMatchObject({
-      occurrenceId: expect.any(String),
-      plannedOrdinal: 2,
-      competitionNumber: null,
-    });
-    expect(canonicalRead.data.data?.skippedDates).toEqual([
-      expect.objectContaining({ localDate: "2032-08-08", durableCanonicalException: true }),
-    ]);
-    expect(canonicalRead.data.data?.occurrences.some((row) => row.authoritativeLocalDate === "2032-08-08")).toBe(false);
-    expect(afterRead).toEqual(beforeRead);
-
     const [currentRun] = await db.select().from(leagueOccurrenceGenerationRuns).where(
       eq(leagueOccurrenceGenerationRuns.leagueId, primary.leagueId),
     );
-    if (!currentRun) throw new Error("E1 approved generation run was not returned");
+    if (!currentRun) throw new Error("E1 canonical generation run was not returned");
     await db.update(leagueOccurrenceGenerationRuns).set({
       candidateOccurrenceCount: currentRun.candidateOccurrenceCount + 1,
       generatedOccurrenceCount: currentRun.generatedOccurrenceCount + 1,
     }).where(eq(leagueOccurrenceGenerationRuns.id, currentRun.id));
-    const partialSet = await apiGet<LeagueOccurrenceScheduleReadContract>(
+    const canonicalRead = await apiGet<LeagueOccurrenceScheduleReadContract>(
       `/api/leagues/${primary.leagueId}/occurrence-schedule`,
       primary.admin,
     );
-    expect(partialSet.status).toBe(409);
-    expect(partialSet.data.error?.code).toBe("CANONICAL_SCHEDULE_INCOMPATIBLE");
+    expect(canonicalRead.status).toBe(409);
+    expect(canonicalRead.data.error?.code).toBe("CANONICAL_SCHEDULE_INCOMPATIBLE");
+    const listedWhilePartial = await apiGet<Array<{ id: number }>>('/api/leagues', primary.admin);
+    expect(listedWhilePartial.status).toBe(200);
+    expect(listedWhilePartial.data.data?.some((league) => league.id === primary.leagueId)).toBe(false);
+    const detailWhilePartial = await apiGet(`/api/leagues/${primary.leagueId}`, primary.admin);
+    expect(detailWhilePartial.status).toBe(409);
+    expect(detailWhilePartial.data.error?.code).toBe("CANONICAL_SCHEDULE_REQUIRED");
     await db.update(leagueOccurrenceGenerationRuns).set({
       candidateOccurrenceCount: currentRun.candidateOccurrenceCount,
       generatedOccurrenceCount: currentRun.generatedOccurrenceCount,
     }).where(eq(leagueOccurrenceGenerationRuns.id, currentRun.id));
+    expect(await writeSnapshot(primary.leagueId)).toEqual(beforeRead);
+  });
+
+  it("hides an approved-only run whose occurrence set is incomplete", async () => {
+    const [currentRun] = await db.select().from(leagueOccurrenceGenerationRuns).where(
+      eq(leagueOccurrenceGenerationRuns.leagueId, primary.leagueId),
+    );
+    if (!currentRun) throw new Error("E1 approved-only generation run was not returned");
+    await db.update(leagueOccurrenceGenerationRuns).set({
+      state: "approved",
+      candidateOccurrenceCount: currentRun.candidateOccurrenceCount + 1,
+      generatedOccurrenceCount: currentRun.generatedOccurrenceCount + 1,
+    }).where(
+      eq(leagueOccurrenceGenerationRuns.id, currentRun.id),
+    );
+    try {
+      const listed = await apiGet<Array<{ id: number }>>('/api/leagues', primary.admin);
+      expect(listed.status).toBe(200);
+      expect(listed.data.data?.some((league) => league.id === primary.leagueId)).toBe(false);
+      const detail = await apiGet(`/api/leagues/${primary.leagueId}`, primary.admin);
+      expect(detail.status).toBe(409);
+      expect(detail.data.error?.code).toBe("CANONICAL_SCHEDULE_REQUIRED");
+    } finally {
+      await db.update(leagueOccurrenceGenerationRuns).set({
+        state: currentRun.state,
+        candidateOccurrenceCount: currentRun.candidateOccurrenceCount,
+        generatedOccurrenceCount: currentRun.generatedOccurrenceCount,
+      }).where(
+        eq(leagueOccurrenceGenerationRuns.id, currentRun.id),
+      );
+    }
   });
 
   it("cuts game and score routes to occurrence identity with tenant-safe atomic batches", async () => {
@@ -362,7 +335,6 @@ describe("E1 league occurrence schedule API", () => {
       kind: "latest_scored_session",
       identitySource: "canonical_uuid",
       occurrenceId: target.id,
-      legacyProjectionKey: null,
     });
     expect(latestScoreRead.data.data?.scores[0]?.game.occurrence?.occurrenceId).toBe(target.id);
     const missingSystemScoreScope = await apiGet(

@@ -39,7 +39,7 @@ let systemAdmin: AuthSession;
 
 function intent(value: number) {
   return {
-    contractVersion: "league-setup-integration-request/2",
+    contractVersion: "league-setup-integration-request/3",
     idempotencyKey: `20000000-0000-4000-8000-${String(value).padStart(12, "0")}`,
   };
 }
@@ -97,7 +97,7 @@ afterAll(async () => {
 });
 
 describe("league setup integration API", () => {
-  it("creates non-Fall drafts atomically, returns durable IDs on retry, and exposes them to generic review", async () => {
+  it("creates a non-Fall canonical schedule atomically and returns durable IDs on retry", async () => {
     const body = futureBody(1);
     const created = await apiPost<AnyLeagueSetupIntegrationResult>("/api/leagues", body, admin);
     expect(created.status).toBe(201);
@@ -115,21 +115,9 @@ describe("league setup integration API", () => {
     expect(changed.data.error?.code).toBe("IDEMPOTENCY_CONFLICT");
     const review = await apiGet<CanonicalDraftReview>(`/api/leagues/${result.id}/canonical-drafts/review`, admin);
     expect(review.status).toBe(200);
-    expect(review.data.data).toMatchObject({ generationRun: { state: "generated" }, generation: { paymentMode: "weekly", seasonClassification: "Spring" } });
+    expect(review.data.data).toMatchObject({ generationRun: { state: "applied" }, generation: { paymentMode: "weekly", seasonClassification: "Spring" } });
     const legacyAlias = await apiGet(`/api/leagues/${result.id}/canonical-fall-drafts/review`, admin);
     expect(legacyAlias.status).toBe(404);
-    if (!review.data.data) throw new Error("generic review response missing");
-    const published = await apiPost<CanonicalDraftMutationResult>(`/api/leagues/${result.id}/canonical-drafts/review/approve`, {
-      contractVersion: "canonical-draft-approve-request/1",
-      confirmedReviewFingerprint: review.data.data.reviewFingerprint,
-      reason: "Approve E4 generic setup evidence",
-      idempotencyKey: "e4-api-approve-1",
-      discrepancyDispositions: review.data.data.discrepancies
-        .filter((row) => row.resolutionState === "open")
-        .map((row) => ({ discrepancyId: row.id, disposition: "waived" })),
-    }, admin);
-    expect(published.status).toBe(201);
-    expect(published.data.data).toMatchObject({ review: { generationRun: { state: "applied" } } });
     const [publishedLeague] = await db.select().from(leagues).where(eq(leagues.id, result.id));
     if (!publishedLeague) throw new Error("published league row missing");
     const [publishedRun] = await db.select({ sourceScheduleRevision: leagueOccurrenceGenerationRuns.sourceScheduleRevision })
@@ -180,7 +168,7 @@ describe("league setup integration API", () => {
     expect(unsupportedScalar.data.error?.code).toBe("CANONICAL_SCHEDULE_UNSUPPORTED_EDIT");
     const schedule = await apiGet(`/api/leagues/${result.id}/occurrence-schedule`, admin);
     expect(schedule.status).toBe(200);
-    expect(schedule.data.data).toMatchObject({ authoritativeSource: "canonical", operationalCanonicalStateExists: true });
+    expect(schedule.data.data).toMatchObject({ authoritativeSource: "canonical" });
   });
 
   it("rejects ordinary users and forbidden canonical claims without creating a league", async () => {
@@ -330,6 +318,7 @@ describe("league setup integration API", () => {
     ]);
     const attempts = [{ response: first, key: 4 }, { response: second, key: 5 }];
     const successfulAttempt = attempts.find(({ response }) => response.status === 201);
+    if (!successfulAttempt) throw new Error("one concurrent rollover attempt should create the successor");
     const successful = successfulAttempt?.response;
     const rejected = [first, second].find((response) => response.status === 409);
     expect(successful?.data.data).toMatchObject({
@@ -344,20 +333,6 @@ describe("league setup integration API", () => {
     expect(await db.select().from(bowlerLeagues).where(eq(bowlerLeagues.leagueId, target.id))).toHaveLength(1);
     expect(await db.select().from(leagueOccurrenceGenerationRuns).where(eq(leagueOccurrenceGenerationRuns.leagueId, target.id))).toHaveLength(1);
     expect(await db.select().from(leagueOccurrences).where(eq(leagueOccurrences.leagueId, target.id))).toHaveLength(4);
-    const review = await apiGet<CanonicalDraftReview>(`/api/leagues/${target.id}/canonical-drafts/review`, admin);
-    expect(review.status).toBe(200);
-    if (!review.data.data || !successfulAttempt) throw new Error("successful rollover review is missing");
-    const published = await apiPost<CanonicalDraftMutationResult>(`/api/leagues/${target.id}/canonical-drafts/review/approve`, {
-      contractVersion: "canonical-draft-approve-request/1",
-      confirmedReviewFingerprint: review.data.data.reviewFingerprint,
-      reason: "Publish rollover before retry",
-      idempotencyKey: "e4-rollover-publish-before-retry",
-      discrepancyDispositions: review.data.data.discrepancies
-        .filter((row) => row.resolutionState === "open")
-        .map((row) => ({ discrepancyId: row.id, disposition: "waived" })),
-    }, admin);
-    expect(published.status).toBe(201);
-    expect(published.data.data).toMatchObject({ review: { generationRun: { state: "applied" } } });
 
     await db.update(leagues).set({ description: "Archived source changed after commit" }).where(eq(leagues.id, source.id));
     await db.update(teams).set({ name: "Archived source team changed" }).where(eq(teams.id, team.id));

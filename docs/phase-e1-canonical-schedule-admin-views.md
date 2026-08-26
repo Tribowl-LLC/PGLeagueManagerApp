@@ -1,8 +1,9 @@
 # Phase E1 canonical schedule and administrator views
 
-Phase E1 cuts the physical league schedule shown on the league page over to
-canonical occurrence identity when an operational canonical set exists. It
-does not change games, scores, standings, reports, rollover setup, payment
+Phase E1 establishes the retained product schedule as canonical occurrence
+evidence. Every product-visible league is created or rolled over with a
+complete canonical set; a missing or incompatible set fails closed. It does
+not change games, scores, standings, reports, rollover setup, payment
 schedules, provider execution, or the dormant D2 financial model.
 
 ## Read contract
@@ -17,7 +18,7 @@ schedules, provider execution, or the dormant D2 financial model.
 4. competition number, with null last;
 5. the stable occurrence-kind order (`regular`, `makeup`, `position_round`,
    `rolloff`, `playoff`, `extension`); and
-6. canonical UUID, or the explicitly noncanonical legacy projection key.
+6. canonical occurrence UUID.
 
 Canonical rows expose only schedule-safe evidence: UUID, kind, status,
 lifecycle, local date/time, IANA timezone, UTC start, selected offset, fold
@@ -61,16 +62,10 @@ The server owns one source-selection policy:
   contradictory linked activity returns
   `409 CANONICAL_SCHEDULE_INCOMPATIBLE`. E1 does not hide unsafe canonical
   evidence behind legacy derivation.
-- With no operational canonical state, the response is explicitly
-  `legacy_fallback`. It reuses `getAllBowlingDates`; it does not run A2, assign
-  UUIDs, resolve a synthetic UTC start, read games or payments to guess
-  identity, or use double-pay data as a physical schedule input.
-
-The legacy projection preserves existing Winter, Spring, Summer, Fall, and
-pre-integration leagues. Its local date, configured local start, timezone,
-planned slot, legacy competition number, cancellations, and skip arrays remain
-visible, while UUID, canonical UTC/DST evidence, revision, relationship, and
-billing ordinal remain absent.
+There is no legacy schedule projection. A league without a complete
+operational canonical set returns `409 CANONICAL_SCHEDULE_INCOMPATIBLE` and is
+omitted from product league lists. The endpoint never derives dates, assigns
+synthetic UUIDs, or guesses identity from games, payments, or legacy arrays.
 
 ## Authorization and isolation
 
@@ -95,17 +90,13 @@ The league page now leads with a general `Season schedule` card for every
 authorized viewer instead of an administrator-only top-level Fall generator
 card. It presents a responsive chronological list with explicit scheduled,
 cancelled, completed, skipped, makeup, and special-session labels. Planned,
-competition, and billing numbers have separate labels. The source badge and
-legacy warning make fallback status unambiguous. Loading, empty, incompatible
-or transport error, and retry states are explicit and accessible.
+competition, and billing numbers have separate labels. Loading, empty,
+incompatible, or transport error states are explicit and accessible.
 
 Administrator rows add lifecycle, revision, effective-lock, offset, fold, and
 resolver evidence. The administration section retains the existing C2 audited
-review and mutation panel when a C1 set exists. For an active pre-integration
-Fall league with zero canonical evidence, it contextually embeds the existing
-zero-write preview and confirmed draft-creation recovery path. Opening the
-schedule never generates, mutates, approves, publishes, repairs, or locks a
-canonical row. The C1/C2 request contracts and endpoints are unchanged.
+review and mutation panel for mid-season edits. Opening the schedule never
+generates, mutates, approves, publishes, repairs, or locks a canonical row.
 
 ## Date, time, and lock behavior
 

@@ -32,11 +32,9 @@ const canonical: LeagueOccurrenceScheduleReadContract = {
   organizationId: 3,
   leagueId: 7,
   authoritativeSource: "canonical",
-  operationalCanonicalStateExists: true,
   occurrences: [
     {
       occurrenceId: "20000000-0000-4000-8000-000000000001",
-      legacyProjectionKey: null,
       identitySource: "canonical_uuid",
       kind: "regular",
       status: "cancelled",
@@ -60,7 +58,6 @@ const canonical: LeagueOccurrenceScheduleReadContract = {
     },
     {
       occurrenceId: "20000000-0000-4000-8000-000000000002",
-      legacyProjectionKey: null,
       identitySource: "canonical_uuid",
       kind: "makeup",
       status: "completed",
@@ -100,7 +97,7 @@ const canonical: LeagueOccurrenceScheduleReadContract = {
     hasSupersededEvidence: false,
     hasRevokedEvidence: false,
   c2ReviewAvailable: true,
-  reviewContractFamily: "fall",
+  reviewContractFamily: "canonical",
     fallRecoveryEligible: false,
     counts: {
       generationRuns: 1,
@@ -148,38 +145,6 @@ describe("LeagueOccurrenceScheduleCard", () => {
     expect(screen.getByText("Audited C2 controls")).toBeVisible();
     expect(screen.queryByText("Fall canonical draft generation")).not.toBeInTheDocument();
     expect(screen.getAllByRole("listitem")[0]).toHaveClass("md:grid-cols-[minmax(190px,1.25fr)_minmax(170px,1fr)_minmax(220px,1.25fr)]");
-  });
-
-  it("labels legacy fallback, cancellation, missing UUIDs, and contextual Fall recovery", async () => {
-    const administrator = canonical.administrator;
-    if (!administrator) throw new Error("canonical component fixture is missing administrator evidence");
-    const fallback: LeagueOccurrenceScheduleReadContract = {
-      ...canonical,
-      authoritativeSource: "legacy_fallback",
-      operationalCanonicalStateExists: false,
-      occurrences: [{
-        ...canonical.occurrences[0],
-        occurrenceId: null,
-        legacyProjectionKey: "legacy:7:2032-11-07:4",
-        identitySource: "legacy_projection",
-        lifecycle: "legacy",
-        startAt: null,
-        selectedUtcOffsetMinutes: null,
-        foldResolution: null,
-        resolverVersion: null,
-        currentRevision: null,
-        billing: null,
-      }],
-      skippedDates: [],
-      administrator: { ...administrator, c2ReviewAvailable: false, reviewContractFamily: null, fallRecoveryEligible: true },
-    };
-    vi.spyOn(queryModule, "apiRequest").mockResolvedValue({ success: true, data: fallback });
-    renderCard();
-    expect(await screen.findByText("Legacy fallback")).toBeVisible();
-    expect(screen.getByRole("heading", { name: "Legacy schedule fallback" })).toBeVisible();
-    expect(screen.getByText("No canonical occurrence identity is assigned in legacy fallback.")).toBeVisible();
-    expect(screen.getByText("Contextual Fall recovery")).toBeVisible();
-    expect(screen.queryByText("Audited C2 controls")).not.toBeInTheDocument();
   });
 
   it("selects the generic review route for an E4 generation snapshot", async () => {

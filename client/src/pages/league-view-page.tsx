@@ -29,7 +29,7 @@ import { SeasonHistoryCard } from "./league-view-page/season-history-card";
 import { NewSeasonDialog, type NewSeasonFormValues } from "./league-view-page/new-season-dialog";
 import { LeagueOccurrenceScheduleCard } from "./league-view-page/league-occurrence-schedule-card";
 import {
-  LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION_3,
+  LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION,
   type AnyLeagueSetupIntegrationResult,
 } from "@shared/league-setup-integration";
 import { createSetupIdempotencyKeyRetainer } from "./league-view-page/fall-draft-secure-id";
@@ -84,7 +84,7 @@ export default function LeagueViewPage() {
       return await apiRequest<AnyLeagueSetupIntegrationResult>(`/api/leagues/${leagueId}/new-season${querySuffix}`, "POST", {
         ...values,
         setupIntegration: {
-          contractVersion: LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION_3,
+          contractVersion: LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION,
           idempotencyKey: newSeasonSetupIdempotency.current.keyFor({
             sourceLeagueId: leagueId,
             organizationId: organizationScope,

@@ -1,7 +1,13 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db } from '../../server/db';
-import { bowlerLeagues, bowlers as bowlersTable, teams as teamsTable } from '@shared/schema';
+import {
+  bowlerLeagues,
+  bowlers as bowlersTable,
+  teams as teamsTable,
+  locations as locationsTable,
+  teamPaymentSlots,
+} from '@shared/schema';
 import {
   login,
   apiGet,
@@ -64,6 +70,51 @@ describe('Organization Isolation', () => {
 
     const orgALeagues = await apiGet<League[]>('/api/leagues', sessionA);
     orgALeagueId = orgALeagues.data.data?.[0]?.id ?? null;
+    if (orgALeagueId === null) {
+      const organizationId = sessionA.user.organizationId;
+      if (organizationId == null) throw new Error('org A admin is missing organization scope');
+      const [location] = await db.select({ id: locationsTable.id })
+        .from(locationsTable)
+        .where(eq(locationsTable.organizationId, organizationId))
+        .limit(1);
+      let setupLocation = location;
+      if (!setupLocation) {
+        const [createdLocation] = await db.insert(locationsTable).values({
+          name: `Vitest Org A Canonical Lanes ${Date.now()}`,
+          organizationId,
+        }).returning({ id: locationsTable.id });
+        setupLocation = createdLocation;
+      }
+      if (!setupLocation) throw new Error('canonical org A league setup location was not created');
+      const created = await apiPost<League>('/api/leagues', {
+        name: `Vitest Org A Canonical League ${Date.now()}`,
+        description: null,
+        payingLineupSize: 4,
+        active: true,
+        allowPublicSignup: false,
+        seasonStart: '2035-09-03',
+        totalBowlingWeeks: 4,
+        weekDay: 'Monday',
+        skipDates: [],
+        cancelledDates: [],
+        doublePayDates: [],
+        competitionStartTime: '19:00',
+        timezone: 'America/New_York',
+        weeklyFee: 2000,
+        paymentMode: 'weekly',
+        locationId: setupLocation.id,
+        setupIntegration: {
+          contractVersion: 'league-setup-integration-request/3',
+          idempotencyKey: `13000000-0000-4000-8000-${String(Date.now()).slice(-12).padStart(12, '0')}`,
+        },
+      }, sessionA);
+      expect(created.status).toBe(201);
+      const createdLeague = created.data.data;
+      if (!createdLeague || typeof createdLeague.id !== 'number') {
+        throw new Error('canonical org A league setup did not return a league id');
+      }
+      orgALeagueId = createdLeague.id;
+    }
 
     // Make sure org B owns at least one league so we can test cross-org
     // fetch-by-id as org A. Reuse the first existing league when present.
@@ -71,14 +122,38 @@ describe('Organization Isolation', () => {
     if (existing.status === 200 && Array.isArray(existing.data.data) && existing.data.data.length > 0) {
       orgBLeagueId = existing.data.data[0].id;
     } else {
+      const locationResponse = await apiGet<Array<{ id: number }>>('/api/locations', sessionB);
+      let locationId = locationResponse.data.data?.[0]?.id;
+      if (locationId == null && sessionB.user.organizationId != null) {
+        const [location] = await db.insert(locationsTable).values({
+          name: 'Vitest Org B Isolation Lanes',
+          organizationId: sessionB.user.organizationId,
+        }).returning({ id: locationsTable.id });
+        locationId = location?.id;
+      }
       const created = await apiPost<League>(
         '/api/leagues',
         {
           name: 'Vitest Org B Isolation League',
-          seasonStart: new Date().toISOString(),
-          seasonEnd: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+          description: null,
+          payingLineupSize: 4,
+          active: true,
+          allowPublicSignup: false,
+          seasonStart: '2032-09-06',
+          totalBowlingWeeks: 4,
           weekDay: 'Monday',
           weeklyFee: 2000,
+          skipDates: [],
+          cancelledDates: [],
+          doublePayDates: [],
+          competitionStartTime: '19:00',
+          timezone: 'America/New_York',
+          paymentMode: 'weekly',
+          locationId,
+          setupIntegration: {
+            contractVersion: 'league-setup-integration-request/3',
+            idempotencyKey: '30000000-0000-4000-8000-000000000001',
+          },
         },
         sessionB,
       );
@@ -470,6 +545,9 @@ describe('Organization Isolation', () => {
       }
       if (orgBTeamId != null) {
         const id = orgBTeamId;
+        await tryRun(`team_payment_slots:${id}`, () =>
+          db.delete(teamPaymentSlots).where(eq(teamPaymentSlots.teamId, id)),
+        );
         await tryRun(`teams:${id}`, () =>
           db.delete(teamsTable).where(eq(teamsTable.id, id)),
         );
@@ -914,6 +992,9 @@ describe('Organization Isolation', () => {
       }
       if (orgBTeamId != null) {
         const id = orgBTeamId;
+        await tryRun(`team_payment_slots:${id}`, () =>
+          db.delete(teamPaymentSlots).where(eq(teamPaymentSlots.teamId, id)),
+        );
         await tryRun(`teams:${id}`, () =>
           db.delete(teamsTable).where(eq(teamsTable.id, id)),
         );
@@ -1167,14 +1248,15 @@ describe('Organization Isolation', () => {
       expect(status).toBe(403);
       expect(data.success).toBe(false);
 
-      // Positive control: session B (the owning org) reaches the handler
-      // and gets a 200 (with `null` data when no schedule exists).
+      // The legacy schedule endpoint is retired for roster-configured
+      // leagues. The owning org receives the same explicit retirement
+      // response; cross-tenant callers still fail before any data can leak.
       const owner = await apiGet(
         `/api/payment-schedules/${orgBBowlerId}/${orgBLeagueId}`,
         sessionB,
       );
-      expect(owner.status).toBe(200);
-      expect(owner.data.success).toBe(true);
+      expect(owner.status).toBe(410);
+      expect(owner.data.success).toBe(false);
     });
 
     it('org A GET /api/payment-schedules/setup-quote/<orgB bowler>/<orgB league> is retired without an oracle', async () => {

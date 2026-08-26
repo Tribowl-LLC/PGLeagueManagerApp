@@ -1,39 +1,35 @@
 # Phase E4 rollover and future-season generation
 
-Phase E4 makes authoritative league creation and season rollover create a
-complete canonical draft set for every wholly future Winter, Spring, Summer,
-and Fall season. It reuses the C1/A2 generator, mapping, transaction locks, and
-C2 mutation engine. It does not add a standalone non-Fall recovery generator,
-rewrite historical Fall evidence, or activate any financial consumer.
+Phase E4 makes authoritative league creation and season rollover create and
+publish a complete canonical set for every wholly future Winter, Spring,
+Summer, and Fall season. It reuses the C1/A2 generator, mapping, transaction
+locks, and C2 mutation engine. It does not rewrite historical evidence or
+activate any financial consumer.
 
 ## Versioned contracts
 
-New setup writes use `league-setup-integration-request/2` and return
-`league-setup-integration-result/2`. Their generated set is recorded with:
+New setup writes use `league-setup-integration-request/3` and return
+`league-setup-integration-result/3`. Their generated set is recorded with:
 
 - result `future-season-draft-generation-result/1`;
 - implementation `future-season-draft-generation/1`;
 - mapping `canonical-draft-mapping/1`; and
 - input snapshot `future-season-draft-generation-input-snapshot/1`.
 
-The setup-only input snapshot records the v2 setup confirmation fingerprint,
+The setup-only input snapshot records the v3 setup confirmation fingerprint,
 product-season classification, explicit payment mode, candidate-set
 fingerprint, and normalized A2 input. Non-Fall evidence is never stored under a
-Fall generation snapshot. Existing Fall preview/apply v1-v3 contracts and
-readers remain unchanged. Setup request v1 is accepted only when its derived
-command already owns one exact historical Fall setup result; it cannot create
-new state.
+Fall generation snapshot. Existing mid-season Fall preview/apply contracts
+remain available only for explicit canonical edits. There is no setup request
+compatibility parser.
 
-E4 sets are reviewed through `canonical-draft-review/1` and strict versioned
-canonical mutation requests under `/api/leagues/:id/canonical-drafts/review`.
-Those routes reuse the C2 mutation transaction and persistence algorithm with
-generic command fingerprints and audit payloads. The old
-`canonical-fall-drafts` routes remain limited to historical Fall snapshot
-families. There is no generic preview/apply endpoint.
+E4 sets are published inside the setup transaction. Mid-season edits use the
+existing versioned canonical mutation transaction and audit payloads. There is
+no additional setup approval step.
 
 ## Explicit target and confirmed carried configuration
 
-The v2 rollover request strictly requires `seasonStart`, `totalBowlingWeeks`,
+The v3 rollover request strictly requires `seasonStart`, `totalBowlingWeeks`,
 `weekDay`, all three schedule-date arrays, `allowPublicSignup`, and
 `paymentMode`. The server derives `seasonEnd`; omitted, unknown, defaulted, and
 retired fields fail validation. Weekly and upfront both retain the hardcoded
@@ -62,9 +58,10 @@ relationship are re-proved in the authorized tenant.
 After proof, the transaction inserts the target, locks it, copies teams with
 new IDs, copies every active/inactive roster membership with the same bowler,
 mapped team, active/order values and original `joinedAt`, generates new
-canonical UUIDs and revision-1 evidence, then archives the source last. Any
+canonical UUIDs and revision-1 evidence, publishes the canonical set, then
+archives the source last. Any
 failure rolls back the target, copied structure, canonical set, and archive.
-Identical v2 retries return the original target and canonical IDs with zero
+Identical v3 retries return the original target and canonical IDs with zero
 writes. Once a setup command exists, retry verification uses its immutable
 input snapshot, command family, and revision-1 entity snapshots before looking
 at mutable archived-source state; later generic C2 review/publication does not
@@ -79,12 +76,11 @@ evidence, refunds, disputes, webhooks, or historical payment certainty. The
 existing bowler external resync remains post-commit only and is skipped on a
 zero-write retry. No provider is called in the database transaction.
 
-## Compatibility and release
+## Release
 
-E1 administrator evidence identifies whether the one reviewable run uses the
-historical Fall or E4 generic family. Drafts remain non-operational. After the
-generic C2 route approves and publishes them, E1 selects the published UUID set
-exclusively and legacy schedule arrays are not blended.
+E1 exposes the published UUID set exclusively. Legacy schedule arrays are not
+used to render or identify a retained league. Missing or incompatible
+canonical evidence fails closed.
 
 E4 has no migration, backfill, environment variable, startup scan, worker,
 scheduler, or provider behavior change. Migration 0023 remains latest. Deploy

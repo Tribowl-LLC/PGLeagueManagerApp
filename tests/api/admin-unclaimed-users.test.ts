@@ -7,6 +7,8 @@ import {
   bowlerLeagues,
   teams as teamsTable,
   leagues as leaguesTable,
+  locations as locationsTable,
+  teamPaymentSlots,
 } from '@shared/schema';
 import { hashPassword } from '../../server/lib/password';
 import {
@@ -106,8 +108,53 @@ describe('Admin claim of self-registered users (Task #667)', () => {
     const leaguesRes = await apiGet<Array<{ id: number; name: string }>>('/api/leagues', sessionA);
     expect(leaguesRes.status).toBe(200);
     const leagues = Array.isArray(leaguesRes.data.data) ? leaguesRes.data.data : [];
-    expect(leagues.length).toBeGreaterThan(0);
-    leagueId = leagues[0].id;
+    if (leagues.length > 0) {
+      leagueId = leagues[0].id;
+    } else {
+      // Retained test fixtures are canonical-only. Seed a small canonical
+      // league when the shared org has only discarded legacy schedules.
+      const [location] = await db.select({ id: locationsTable.id })
+        .from(locationsTable)
+        .where(eq(locationsTable.organizationId, orgAId))
+        .limit(1);
+      let setupLocation = location;
+      if (!setupLocation) {
+        const [createdLocation] = await db.insert(locationsTable).values({
+          name: `Vitest Unclaimed Canonical Lanes ${stamp}`,
+          organizationId: orgAId,
+        }).returning({ id: locationsTable.id });
+        setupLocation = createdLocation;
+      }
+      if (!setupLocation) throw new Error('canonical league setup location was not created');
+      const created = await apiPost<{ id: number }>('/api/leagues', {
+        name: `Vitest Unclaimed Canonical League ${stamp}`,
+        description: null,
+        payingLineupSize: 4,
+        active: true,
+        allowPublicSignup: false,
+        seasonStart: '2035-09-03',
+        totalBowlingWeeks: 4,
+        weekDay: 'Monday',
+        skipDates: [],
+        cancelledDates: [],
+        doublePayDates: [],
+        competitionStartTime: '19:00',
+        timezone: 'America/New_York',
+        weeklyFee: 2000,
+        paymentMode: 'weekly',
+        locationId: setupLocation.id,
+        setupIntegration: {
+          contractVersion: 'league-setup-integration-request/3',
+          idempotencyKey: `10000000-0000-4000-8000-${String(stamp).slice(-12).padStart(12, '0')}`,
+        },
+      }, sessionA);
+      expect(created.status).toBe(201);
+      const createdLeague = created.data.data;
+      if (!createdLeague || typeof createdLeague.id !== 'number') {
+        throw new Error('canonical league setup did not return a league id');
+      }
+      leagueId = createdLeague.id;
+    }
 
     const teamRes = await apiPost<{ id: number }>(
       '/api/teams',
@@ -153,6 +200,9 @@ describe('Admin claim of self-registered users (Task #667)', () => {
     }
     if (createdTeamId != null) {
       const id = createdTeamId;
+      await tryRun('team_payment_slots', () =>
+        db.delete(teamPaymentSlots).where(eq(teamPaymentSlots.teamId, id)),
+      );
       await tryRun('teams', () => db.delete(teamsTable).where(eq(teamsTable.id, id)));
     }
 

@@ -7,7 +7,7 @@ import { useToast } from "@/hooks/use-toast";
 import { DEFAULT_WEEKLY_FEE_CENTS, DEFAULT_TIMEZONE } from "@shared/schema";
 import type { InsertLeagueInput, InsertLeague, League } from "@shared/schema";
 import {
-  LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION_3,
+  LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION,
   type AnyLeagueSetupIntegrationResult,
 } from "@shared/league-setup-integration";
 import { createSetupIdempotencyKeyRetainer } from "@/pages/league-view-page/fall-draft-secure-id";
@@ -194,7 +194,7 @@ export function useLeagueFormData({
         } : {
           ...canonicalCreatePayload,
           setupIntegration: {
-            contractVersion: LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION_3,
+            contractVersion: LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION,
             idempotencyKey: setupIdempotency.current.keyFor(canonicalCreatePayload),
           },
         },

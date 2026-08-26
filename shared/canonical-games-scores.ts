@@ -1,5 +1,5 @@
 import type { Game, Score } from "./schema/games";
-import type { LeagueOccurrenceScheduleOccurrence, LeagueOccurrenceScheduleSource } from "./league-occurrence-schedule";
+import type { LeagueOccurrenceScheduleOccurrence } from "./league-occurrence-schedule";
 
 export const CANONICAL_GAMES_SCORES_CONTRACT_VERSION = "canonical-games-scores/1" as const;
 export const CANONICAL_GAMES_SCORES_ORDER_VERSION = "canonical-games-scores-order/1" as const;
@@ -10,13 +10,10 @@ export const CANONICAL_GAMES_SCORES_INCOMPATIBILITY_CLASSIFICATIONS = [
   "unlinked_canonical_game",
   "game_occurrence_out_of_scope",
   "game_occurrence_not_operational",
-  "game_legacy_projection_mismatch",
   "linked_game_deletion_unsupported",
   "duplicate_occurrence_game_number",
-  "duplicate_legacy_game_key",
   "competition_mapping_missing",
   "competition_mapping_ambiguous",
-  "legacy_occurrence_access_unavailable",
   "latest_scored_session_ambiguous",
   "score_reference_out_of_scope",
   "score_team_relationship_invalid",
@@ -27,9 +24,10 @@ export type CanonicalGamesScoresIncompatibilityClassification =
   (typeof CANONICAL_GAMES_SCORES_INCOMPATIBILITY_CLASSIFICATIONS)[number];
 
 export interface CanonicalGameProjection extends Game {
-  identitySource: "canonical_uuid" | "legacy_projection";
-  legacyProjectionKey: string | null;
-  occurrence: LeagueOccurrenceScheduleOccurrence | null;
+  identitySource: "canonical_uuid";
+  /** Canonical consumers expose only linked games; the database remains nullable for staged rollout. */
+  occurrenceId: string;
+  occurrence: LeagueOccurrenceScheduleOccurrence;
 }
 
 export interface CanonicalScoreProjection extends Score {
@@ -44,8 +42,7 @@ interface GamesScoresReadBase {
   orderingVersion: typeof CANONICAL_GAMES_SCORES_ORDER_VERSION;
   organizationId: number;
   leagueId: number;
-  authoritativeSource: LeagueOccurrenceScheduleSource;
-  operationalCanonicalStateExists: boolean;
+  authoritativeSource: "canonical";
 }
 
 export interface LeagueGamesReadContract extends GamesScoresReadBase {
@@ -59,9 +56,8 @@ export interface LeagueScoresReadContract extends GamesScoresReadBase {
     | { kind: "occurrence_id"; occurrenceId: string }
     | {
         kind: "latest_scored_session";
-        identitySource: "canonical_uuid" | "legacy_projection" | null;
+        identitySource: "canonical_uuid" | null;
         occurrenceId: string | null;
-        legacyProjectionKey: string | null;
       };
   scores: CanonicalScoreProjection[];
 }
