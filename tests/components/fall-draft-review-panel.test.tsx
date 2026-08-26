@@ -4,13 +4,13 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FallDraftReviewPanel } from "@/pages/league-view-page/fall-draft-review-panel";
 import * as queryModule from "@/lib/queryClient";
-import type { FallDraftMutationResult, FallDraftReview } from "@shared/fall-draft-review";
+import type { CanonicalDraftMutationResult, CanonicalDraftReview } from "@shared/canonical-draft-review";
 
 const reviewFingerprint = "a".repeat(64);
 
-const review: FallDraftReview = {
-  reviewContractVersion: "fall-draft-review/2",
-  reviewFingerprintVersion: "fall-draft-review-fingerprint/2",
+const review: CanonicalDraftReview = {
+  reviewContractVersion: "canonical-draft-review/1",
+  reviewFingerprintVersion: "canonical-draft-review-fingerprint/1",
   reviewFingerprint,
   organizationId: 3,
   leagueId: 7,
@@ -38,7 +38,7 @@ const review: FallDraftReview = {
     supersededAt: null,
     supersededByCommandId: null,
   },
-  c1: {
+  generation: {
     inputSnapshotVersion: "fall-draft-generation-input-snapshot/3",
     paymentMode: "weekly",
     confirmedPreviewFingerprint: "c".repeat(64),
@@ -48,6 +48,7 @@ const review: FallDraftReview = {
     generatorVersion: "canonical-occurrence-generator/1",
     resultContractVersion: "canonical-occurrence-generation-result/1",
     dstResolverVersion: "canonical-dst-resolver/1;icu=test;tzdata=test",
+    seasonClassification: "Fall",
   },
   currentLegacyInput: { matches: true, currentInputFingerprint: "b".repeat(64), generatedInputFingerprint: "b".repeat(64) },
   occurrences: [{
@@ -161,11 +162,9 @@ const review: FallDraftReview = {
   }],
 };
 
-function renderPanel(value: FallDraftReview = review, contractFamily: "fall" | "canonical" = "fall") {
+function renderPanel(value: CanonicalDraftReview = review) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } });
-  const basePath = contractFamily === "canonical"
-    ? "/api/leagues/7/canonical-drafts"
-    : "/api/leagues/7/canonical-fall-drafts";
+  const basePath = "/api/leagues/7/canonical-drafts";
   client.setQueryData([`${basePath}/review`], { success: true, data: value });
   const scheduleQueryKey = ["league-occurrence-schedule", "/api/leagues/7/occurrence-schedule"];
   return {
@@ -175,7 +174,6 @@ function renderPanel(value: FallDraftReview = review, contractFamily: "fall" | "
           basePath={basePath}
           querySuffix=""
           enabled
-          contractFamily={contractFamily}
           scheduleQueryKey={scheduleQueryKey}
         />
       </QueryClientProvider>,
@@ -186,9 +184,9 @@ function renderPanel(value: FallDraftReview = review, contractFamily: "fall" | "
   };
 }
 
-function result(updatedReview: FallDraftReview, operation: FallDraftMutationResult["operation"]): FallDraftMutationResult {
+function result(updatedReview: CanonicalDraftReview, operation: CanonicalDraftMutationResult["operation"]): CanonicalDraftMutationResult {
   return {
-    resultContractVersion: "fall-draft-mutation-result/2",
+    resultContractVersion: "canonical-draft-mutation-result/1",
     operation,
     mode: "applied",
     commandIds: ["00000000-0000-4000-8000-000000000099"],
@@ -209,7 +207,7 @@ describe("FallDraftReviewPanel", () => {
   it("renders exact UUID, DST, lifecycle, numbering, billing, exception, fingerprint, and eligible controls", () => {
     renderPanel();
     expect(screen.getByText("League payment timing:").parentElement).toHaveTextContent("Weekly");
-    expect(screen.getByRole("heading", { name: "Audited C2 review and publication" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Canonical schedule administration" })).toBeVisible();
     expect(screen.getByText(reviewFingerprint)).toBeVisible();
     expect(screen.getByText((content) => content.includes(review.occurrences[0].id))).toBeVisible();
     expect(screen.getByText(/offset -240; unambiguous/)).toBeVisible();
@@ -231,39 +229,11 @@ describe("FallDraftReviewPanel", () => {
     expect(screen.queryByLabelText("Ambiguous fold")).not.toBeInTheDocument();
   });
 
-  it("requires a reason and confirmation and sends the exact fingerprint and revision for cancellation", async () => {
-    const user = userEvent.setup();
-    vi.stubGlobal("crypto", { randomUUID: () => "00000000-0000-4000-8000-000000000090" });
-    const updated: FallDraftReview = {
-      ...review,
-      reviewFingerprint: "9".repeat(64),
-      occurrences: [{ ...review.occurrences[0], status: "cancelled", competitionNumber: null, competitive: false, countsInStandings: false, currentRevision: 2 }],
-    };
-    const apiSpy = vi.spyOn(queryModule, "apiRequest").mockResolvedValue({ success: true, data: result(updated, "cancel") });
-    renderPanel();
-    await user.click(screen.getByRole("button", { name: "Cancel occurrence" }));
-    expect(screen.getByRole("button", { name: "Confirm cancel" })).toBeDisabled();
-    await user.type(screen.getByLabelText("Reason"), "Cancel reviewed future occurrence");
-    await user.click(screen.getByRole("button", { name: "Confirm cancel" }));
-    await waitFor(() => expect(apiSpy).toHaveBeenCalledWith(
-      "/api/leagues/7/canonical-fall-drafts/review/cancel",
-      "POST",
-      expect.objectContaining({
-        contractVersion: "fall-draft-cancel-request/1",
-        confirmedReviewFingerprint: reviewFingerprint,
-        expectedOccurrenceRevision: 1,
-        occurrenceId: review.occurrences[0].id,
-        reason: "Cancel reviewed future occurrence",
-      }),
-    ));
-    expect(await screen.findByText("The audited mutation was committed.")).toBeVisible();
-  });
-
-  it("uses generic E4 routes and strict request versions for canonical review", async () => {
+  it("uses the generic E4 route and strict request versions for canonical review", async () => {
     const user = userEvent.setup();
     vi.stubGlobal("crypto", { randomUUID: () => "00000000-0000-4000-8000-000000000092" });
     const apiSpy = vi.spyOn(queryModule, "apiRequest").mockResolvedValue({ success: true, data: result(review, "cancel") });
-    const rendered = renderPanel(review, "canonical");
+    const rendered = renderPanel(review);
     const invalidateSpy = vi.spyOn(rendered.client, "invalidateQueries");
     await user.click(screen.getByRole("button", { name: "Cancel occurrence" }));
     await user.type(screen.getByLabelText("Reason"), "Cancel generic future occurrence");
@@ -277,45 +247,6 @@ describe("FallDraftReviewPanel", () => {
       }),
     ));
     expect(rendered.client.getQueryData([`${rendered.basePath}/review`])).toEqual({ success: true, data: review });
-    expect(invalidateSpy).toHaveBeenCalledWith({
-      queryKey: rendered.scheduleQueryKey,
-      exact: true,
-      refetchType: "active",
-    });
-  });
-
-  it("requires every explicit discrepancy disposition before approval and describes excluded side effects", async () => {
-    const user = userEvent.setup();
-    vi.stubGlobal("crypto", { randomUUID: () => "00000000-0000-4000-8000-000000000091" });
-    const published: FallDraftReview = {
-      ...review,
-      reviewFingerprint: "8".repeat(64),
-      generationRun: { ...review.generationRun, state: "applied", approvalCommandId: "approved" },
-      occurrences: [{ ...review.occurrences[0], lifecycle: "published", publicationCommandId: "published", currentRevision: 2 }],
-      billingTerms: [{ ...review.billingTerms[0], state: "published", publicationCommandId: "published", currentRevision: 2 }],
-      scheduleExceptions: [{ ...review.scheduleExceptions[0], lifecycle: "published", publicationCommandId: "published", currentRevision: 2 }],
-      discrepancies: [{ ...review.discrepancies[0], resolutionState: "waived", resolutionCommandId: "approved" }],
-    };
-    const apiSpy = vi.spyOn(queryModule, "apiRequest").mockResolvedValue({ success: true, data: result(published, "approve_publish") });
-    const rendered = renderPanel(review, "canonical");
-    const invalidateSpy = vi.spyOn(rendered.client, "invalidateQueries");
-    await user.type(screen.getByLabelText("Reason for approval or rejection"), "Approve reviewed policy snapshots");
-    expect(screen.getByRole("button", { name: "Approve and publish reviewed set" })).toBeDisabled();
-    await user.click(screen.getByLabelText("Disposition"));
-    expect(screen.queryByRole("option", { name: "Resolved by current state" })).not.toBeInTheDocument();
-    await user.click(screen.getByRole("option", { name: "Waived knowingly" }));
-    await user.click(screen.getByRole("button", { name: "Approve and publish reviewed set" }));
-    expect(await screen.findByText(/creates no debts, games, standings results, payments, or collection plans/i)).toBeVisible();
-    await user.click(screen.getByRole("button", { name: "Approve and publish" }));
-    await waitFor(() => expect(apiSpy).toHaveBeenCalledWith(
-      "/api/leagues/7/canonical-drafts/review/approve",
-      "POST",
-      expect.objectContaining({
-        contractVersion: "canonical-draft-approve-request/1",
-        discrepancyDispositions: [{ discrepancyId: review.discrepancies[0].id, disposition: "waived" }],
-      }),
-    ));
-    expect(rendered.client.getQueryData([`${rendered.basePath}/review`])).toEqual({ success: true, data: published });
     expect(invalidateSpy).toHaveBeenCalledWith({
       queryKey: rendered.scheduleQueryKey,
       exact: true,

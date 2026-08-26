@@ -126,7 +126,7 @@ describe('LeagueViewPage system-admin new-season scope', () => {
         id: 43,
         active: true,
         previousSeasonId: league.id,
-        canonicalDraftGeneration: null,
+        canonicalGeneration: null,
         setupIntegration: { mode: 'created', writesPerformed: true },
       },
     });

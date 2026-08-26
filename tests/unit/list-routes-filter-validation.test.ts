@@ -55,6 +55,19 @@ const mockStorage = {
 };
 vi.mock('../../server/storage', () => ({ storage: mockStorage }));
 
+// The league list now intentionally hides rows without a complete canonical
+// schedule. These route tests mock storage rows, so mark their synthetic
+// rows as canonical to keep the filter-validation assertions focused. This
+// is the same complete-state predicate used by the schedule read contract;
+// the route must not drift to a looser existence check.
+vi.mock('../../server/services/league-occurrence-schedule.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../server/services/league-occurrence-schedule')>();
+  return {
+    ...actual,
+    hasCompleteOperationalLeagueSchedule: vi.fn().mockResolvedValue(true),
+  };
+});
+
 vi.mock('../../server/routes/payments/payment-reports.js', () => ({
   buildPayerNameMap: vi.fn().mockResolvedValue(new Map()),
 }));

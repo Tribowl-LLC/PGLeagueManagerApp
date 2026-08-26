@@ -16,8 +16,7 @@ import {
   type InsertLeague,
   type PaymentMode,
 } from "@shared/schema";
-import { LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION_2 } from "@shared/league-setup-integration";
-import { fallDraftSha256 } from "@shared/fall-draft-generation";
+import { LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION } from "@shared/league-setup-integration";
 import {
   createLeagueWithCanonicalSetup,
   createNewSeasonWithCanonicalSetup,
@@ -26,10 +25,7 @@ import {
   type LeagueSetupFailureStage,
   LEAGUE_SETUP_FALL_AUDIT_REASON,
 } from "../../server/services/league-setup-integration";
-import {
-  applyFallDraftGenerationInTransaction,
-  type FallDraftFailureStage,
-} from "../../server/services/fall-draft-generation";
+import { type FallDraftFailureStage } from "../../server/services/fall-draft-generation";
 import { LeagueCanonicalScheduleLockedError, updateLeague } from "../../server/storage/leagues";
 import { deleteOrganization } from "../../server/storage/organizations";
 import { getTestDb } from "../setup/test-db";
@@ -71,7 +67,7 @@ async function fixture(label: string): Promise<Fixture> {
 
 function setup(key: number) {
   return {
-    contractVersion: LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION_2,
+    contractVersion: LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION,
     idempotencyKey: `10000000-0000-4000-8000-${String(key).padStart(12, "0")}`,
   } as const;
 }
@@ -196,7 +192,7 @@ describe("authoritative league setup integration", () => {
     ["Winter", "2032-12-26T00:00:00.000Z", "2033-01-09T00:00:00.000Z", ["2032-12-26", "2033-01-02", "2033-01-09"]],
     ["Spring", "2032-03-07T00:00:00.000Z", "2032-03-21T00:00:00.000Z", ["2032-03-07", "2032-03-14", "2032-03-21"]],
     ["Summer", "2032-06-06T00:00:00.000Z", "2032-06-20T00:00:00.000Z", ["2032-06-06", "2032-06-13", "2032-06-20"]],
-  ] as const)("creates a database-backed complete generic draft for a future %s season", async (seasonClassification, seasonStart, seasonEnd, expectedDates) => {
+  ] as const)("creates and publishes a database-backed canonical schedule for a future %s season", async (seasonClassification, seasonStart, seasonEnd, expectedDates) => {
     const f = await fixture(`all-season-${seasonClassification}`);
     const result = await createLeagueWithCanonicalSetup({
       scope: { organizationId: f.organizationId, actorUserId: f.actorUserId },
@@ -210,7 +206,7 @@ describe("authoritative league setup integration", () => {
       }),
       setup: setup(++sequence),
     });
-    expect(result.canonicalDraftGeneration).toMatchObject({ seasonClassification, counts: { occurrences: 3 } });
+    expect(result.canonicalGeneration).toMatchObject({ seasonClassification, counts: { occurrences: 3 } });
     const persistedOccurrences = await db.select({
       localDate: leagueOccurrences.authoritativeLocalDate,
       lifecycle: leagueOccurrences.lifecycle,
@@ -219,7 +215,7 @@ describe("authoritative league setup integration", () => {
       .where(eq(leagueOccurrences.leagueId, result.id))
       .orderBy(asc(leagueOccurrences.authoritativeLocalDate));
     expect(persistedOccurrences.map((row) => row.localDate)).toEqual(expectedDates);
-    expect(persistedOccurrences.every((row) => row.lifecycle === "draft" && row.generationRunId !== null)).toBe(true);
+    expect(persistedOccurrences.every((row) => row.lifecycle === "published" && row.generationRunId !== null)).toBe(true);
   });
 
   it.each([
@@ -244,45 +240,7 @@ describe("authoritative league setup integration", () => {
     expect(await organizationCounts(f.organizationId)).toEqual(before);
   });
 
-  it("accepts request/1 only for an exact historical Fall setup retry", async () => {
-    const f = await fixture("v1-history");
-    const legacyIntent = {
-      contractVersion: "league-setup-integration-request/1" as const,
-      idempotencyKey: `30000000-0000-4000-8000-${String(++sequence).padStart(12, "0")}`,
-    };
-    const commandKey = `lvsetup:${fallDraftSha256(legacyIntent)}`;
-    const configuredLeague = fallLeague(f);
-    const { payingLineupSize: _historicallyAbsent, ...leagueInput } = configuredLeague;
-    const [persisted] = await db.insert(leagues).values({ ...configuredLeague, payingLineupSize: null }).returning();
-    await db.transaction((tx) => applyFallDraftGenerationInTransaction(tx, {
-      organizationId: f.organizationId,
-      leagueId: persisted.id,
-      actorUserId: f.actorUserId,
-      internalSetupApply: { idempotencyKey: commandKey, reason: LEAGUE_SETUP_FALL_AUDIT_REASON },
-    }));
-    const retried = await createLeagueWithCanonicalSetup({
-      scope: { organizationId: f.organizationId, actorUserId: f.actorUserId },
-      league: leagueInput,
-      setup: legacyIntent,
-    });
-    expect(retried).toMatchObject({
-      id: persisted.id,
-      setupIntegration: { requestContractVersion: "league-setup-integration-request/1", mode: "idempotent_retry", writesPerformed: false },
-    });
-    await expect(createLeagueWithCanonicalSetup({
-      scope: { organizationId: f.organizationId, actorUserId: f.actorUserId },
-      league: { ...leagueInput, name: "new v1 write forbidden" },
-      setup: { ...legacyIntent, idempotencyKey: `30000000-0000-4000-8000-${String(++sequence).padStart(12, "0")}` },
-    })).rejects.toMatchObject({ code: "idempotency_conflict" });
-
-    await expect(createLeagueWithCanonicalSetup({
-      scope: { organizationId: f.organizationId, actorUserId: f.actorUserId },
-      league: { ...leagueInput, name: "new setup still requires lineup size" },
-      setup: setup(++sequence),
-    })).rejects.toMatchObject({ code: "validation_error" });
-  });
-
-  it.each(["weekly", "upfront"] as const)("atomically creates complete %s Fall drafts with fixed policies", async (paymentMode) => {
+  it.each(["weekly", "upfront"] as const)("atomically creates and publishes complete %s Fall schedules with fixed policies", async (paymentMode) => {
     const f = await fixture(`complete-${paymentMode}`);
     const result = await createLeagueWithCanonicalSetup({
       scope: { organizationId: f.organizationId, actorUserId: f.actorUserId },
@@ -292,7 +250,7 @@ describe("authoritative league setup integration", () => {
     expect(result).toMatchObject({
       paymentMode,
       setupIntegration: { mode: "created", writesPerformed: true },
-      canonicalDraftGeneration: {
+      canonicalGeneration: {
         mode: "applied",
         writesPerformed: true,
         relationshipsCreated: false,
@@ -300,21 +258,21 @@ describe("authoritative league setup integration", () => {
       },
     });
     const [run] = await db.select().from(leagueOccurrenceGenerationRuns).where(eq(leagueOccurrenceGenerationRuns.leagueId, result.id));
-    expect(run).toMatchObject({ state: "generated", approvedAt: null, rejectedAt: null, sourceScheduleRevision: 1 });
+    expect(run).toMatchObject({ state: "applied", rejectedAt: null, sourceScheduleRevision: 1 });
     const occurrences = await db.select().from(leagueOccurrences).where(eq(leagueOccurrences.leagueId, result.id)).orderBy(asc(leagueOccurrences.plannedOrdinal));
     const terms = await db.select().from(leagueOccurrenceBillingTerms).where(eq(leagueOccurrenceBillingTerms.leagueId, result.id));
     const exceptions = await db.select().from(leagueScheduleExceptions).where(eq(leagueScheduleExceptions.leagueId, result.id));
     expect(occurrences).toHaveLength(6);
-    expect(occurrences.every((row) => row.lifecycle === "draft")).toBe(true);
+    expect(occurrences.every((row) => row.lifecycle === "published")).toBe(true);
     expect(new Set(occurrences.map((row) => row.selectedUtcOffsetMinutes))).toEqual(new Set([-240, -300]));
-    expect(terms.every((row) => row.state === "draft" && row.currency === "USD")).toBe(true);
+    expect(terms.every((row) => row.state === "published" && row.currency === "USD")).toBe(true);
     expect(terms.map((row) => row.billingOrdinal).filter((value) => value !== null).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5]);
     expect(terms.every((row) => row.obligationPolicy === "eligible_bowlers" || row.obligationPolicy === "none")).toBe(true);
     expect(exceptions).toHaveLength(1);
-    expect(exceptions[0]).toMatchObject({ lifecycle: "draft", localDate: "2032-10-10" });
+    expect(exceptions[0]).toMatchObject({ lifecycle: "published", localDate: "2032-10-10" });
   });
 
-  it("creates canonical drafts for a future Winter league", async () => {
+  it("creates and publishes a canonical schedule for a future Winter league", async () => {
     const f = await fixture("non-fall");
     const result = await createLeagueWithCanonicalSetup({
       scope: { organizationId: f.organizationId, actorUserId: f.actorUserId },
@@ -328,7 +286,7 @@ describe("authoritative league setup integration", () => {
       setup: setup(++sequence),
     });
     expect(result.setupIntegration).toMatchObject({ mode: "created", writesPerformed: true });
-    expect(result.canonicalDraftGeneration).toMatchObject({ seasonClassification: "Winter", mode: "applied" });
+    expect(result.canonicalGeneration).toMatchObject({ seasonClassification: "Winter", mode: "applied" });
     expect(await db.select().from(leagueScheduleCommands).where(eq(leagueScheduleCommands.leagueId, result.id))).not.toHaveLength(0);
   });
 
@@ -394,7 +352,7 @@ describe("authoritative league setup integration", () => {
       createLeagueWithCanonicalSetup(request),
     ]);
     expect(left.id).toBe(right.id);
-    expect(left.canonicalDraftGeneration?.durableIds).toEqual(right.canonicalDraftGeneration?.durableIds);
+    expect(left.canonicalGeneration?.durableIds).toEqual(right.canonicalGeneration?.durableIds);
     expect([left.setupIntegration.mode, right.setupIntegration.mode].sort()).toEqual(["created", "idempotent_retry"]);
     const retry = await createLeagueWithCanonicalSetup(request);
     expect(retry.setupIntegration).toMatchObject({ mode: "idempotent_retry", writesPerformed: false });
@@ -420,7 +378,7 @@ describe("authoritative league setup integration", () => {
     expect(await db.select().from(leagues).where(eq(leagues.organizationId, second.organizationId))).toHaveLength(0);
   });
 
-  it("copies the complete roster in order, creates drafts, and archives the source only at commit", async () => {
+  it("copies the complete roster in order, publishes the canonical schedule, and archives the source only at commit", async () => {
     const f = await fixture("new-season");
     const source = await createLeagueWithCanonicalSetup({
       scope: { organizationId: f.organizationId, actorUserId: f.actorUserId },
@@ -442,7 +400,7 @@ describe("authoritative league setup integration", () => {
       }),
       setup: setup(++sequence),
     });
-    const sourceOccurrenceIds = source.canonicalDraftGeneration?.durableIds.occurrenceIds ?? [];
+    const sourceOccurrenceIds = source.canonicalGeneration?.durableIds.occurrenceIds ?? [];
     const sourceTeams = await db.insert(teams).values([
       { name: "Second", number: 2, leagueId: source.id, active: false, displayOrder: 1 },
       { name: "First", number: 1, leagueId: source.id, active: true, displayOrder: 0 },
@@ -476,10 +434,10 @@ describe("authoritative league setup integration", () => {
       setup: setup(++sequence),
       sourceConfirmation: confirmedSource,
     });
-    expect(created.result).toMatchObject({ previousSeasonId: source.id, active: true, canonicalDraftGeneration: { mode: "applied" } });
-    expect(created.result.canonicalDraftGeneration?.durableIds.occurrenceIds)
+    expect(created.result).toMatchObject({ previousSeasonId: source.id, active: true, canonicalGeneration: { mode: "applied" } });
+    expect(created.result.canonicalGeneration?.durableIds.occurrenceIds)
       .not.toEqual(sourceOccurrenceIds);
-    expect(created.result.canonicalDraftGeneration?.durableIds.occurrenceIds.some((id) => sourceOccurrenceIds.includes(id)))
+    expect(created.result.canonicalGeneration?.durableIds.occurrenceIds.some((id) => sourceOccurrenceIds.includes(id)))
       .toBe(false);
     expect(await nonRolloverEvidenceCounts()).toEqual(untouchedEvidenceBefore);
     for (const table of [
@@ -645,6 +603,6 @@ describe("authoritative league setup integration", () => {
     await expect(updateLeague(created.id, { name: "Metadata remains editable", doublePayDates: ["2032-10-17"] }))
       .resolves.toMatchObject({ name: "Metadata remains editable", doublePayDates: ["2032-10-17"] });
     const counts = await db.select({ count: sql<number>`count(*)::integer` }).from(leagueOccurrences).where(eq(leagueOccurrences.leagueId, created.id));
-    expect(counts[0]?.count).toBe(created.canonicalDraftGeneration?.counts.occurrences);
+    expect(counts[0]?.count).toBe(created.canonicalGeneration?.counts.occurrences);
   });
 });

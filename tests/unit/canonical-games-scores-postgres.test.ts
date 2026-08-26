@@ -31,10 +31,8 @@ const suffix = `${process.env.VITEST_POOL_ID ?? "0"}-${Date.now()}`;
 let organizationId = 0;
 let otherOrganizationId = 0;
 let leagueId = 0;
-let fallbackLeagueId = 0;
 let otherLeagueId = 0;
 let teamId = 0;
-let fallbackTeamId = 0;
 let otherTeamId = 0;
 let bowlerId = 0;
 let foreignBowlerId = 0;
@@ -102,36 +100,26 @@ beforeAll(async () => {
     organizationId,
     locationId: location.id,
   }).returning();
-  const [fallbackLeague] = await db.insert(leagues).values({
-    ...leagueValues,
-    name: "E2 fallback league",
-    organizationId,
-    locationId: location.id,
-  }).returning();
   const [otherLeague] = await db.insert(leagues).values({
     ...leagueValues,
     name: "E2 other tenant league",
     organizationId: otherOrganizationId,
     locationId: otherLocation.id,
   }).returning();
-  if (!league || !fallbackLeague || !otherLeague) throw new Error("E2 leagues were not created");
+  if (!league || !otherLeague) throw new Error("E2 leagues were not created");
   leagueId = league.id;
-  fallbackLeagueId = fallbackLeague.id;
   otherLeagueId = otherLeague.id;
   const [team] = await db.insert(teams).values({ name: "E2 team", number: 1, leagueId }).returning();
-  const [fallbackTeam] = await db.insert(teams).values({ name: "E2 fallback team", number: 1, leagueId: fallbackLeagueId }).returning();
   const [otherTeam] = await db.insert(teams).values({ name: "E2 other team", number: 1, leagueId: otherLeagueId }).returning();
   const [bowler] = await db.insert(bowlers).values({ name: "E2 bowler", organizationId }).returning();
   const [foreignBowler] = await db.insert(bowlers).values({ name: "E2 foreign bowler", organizationId: otherOrganizationId }).returning();
-  if (!team || !fallbackTeam || !otherTeam || !bowler || !foreignBowler) throw new Error("E2 score principals were not created");
+  if (!team || !otherTeam || !bowler || !foreignBowler) throw new Error("E2 score principals were not created");
   teamId = team.id;
-  fallbackTeamId = fallbackTeam.id;
   otherTeamId = otherTeam.id;
   bowlerId = bowler.id;
   foreignBowlerId = foreignBowler.id;
   await db.insert(bowlerLeagues).values([
     { bowlerId, leagueId, teamId, active: true },
-    { bowlerId, leagueId: fallbackLeagueId, teamId: fallbackTeamId, active: true },
   ]);
 
   const [command] = await db.insert(leagueScheduleCommands).values({
@@ -240,26 +228,6 @@ beforeAll(async () => {
     publicationCommandId: command.id,
   });
 
-  await db.insert(leagueOccurrences).values({
-    organizationId,
-    leagueId: fallbackLeagueId,
-    locationId: location.id,
-    generationKey: `e2-draft-${suffix}`,
-    kind: "regular",
-    status: "scheduled",
-    lifecycle: "draft",
-    authoritativeLocalDate: "2037-01-08",
-    authoritativeLocalStartTime: "19:00:00",
-    timezone: "America/Detroit",
-    startAt: "2037-01-09T00:00:00.000Z",
-    selectedUtcOffsetMinutes: -300,
-    foldResolution: "unambiguous",
-    resolverVersion: "e2-test-resolver/1",
-    plannedOrdinal: 1,
-    competitionNumber: 1,
-    competitive: true,
-    countsInStandings: true,
-  });
 });
 
 afterAll(async () => {
@@ -268,33 +236,6 @@ afterAll(async () => {
 });
 
 describe("E2 canonical games and scores PostgreSQL behavior", () => {
-  it("keeps draft-only leagues on deterministic legacy fallback without synthesizing identity", async () => {
-    const first = await createGame({ leagueId: fallbackLeagueId, weekNumber: 1, gameNumber: 1, date: "2037-01-08" });
-    const second = await createGame({ leagueId: fallbackLeagueId, weekNumber: 1, gameNumber: 1, date: "2037-01-08" });
-    expect(first.occurrenceId).toBeNull();
-    expect(second.occurrenceId).toBeNull();
-    const before = await db.select().from(games).where(eq(games.leagueId, fallbackLeagueId));
-    const contract = await loadLeagueGames({ organizationId, leagueId: fallbackLeagueId, weekNumber: 1 });
-    const after = await db.select().from(games).where(eq(games.leagueId, fallbackLeagueId));
-    expect(contract).toMatchObject({ authoritativeSource: "legacy_fallback", operationalCanonicalStateExists: false });
-    expect(contract.games.map((row) => row.id)).toEqual([first.id, second.id]);
-    expect(contract.games.every((row) => row.identitySource === "legacy_projection" && row.occurrence === null)).toBe(true);
-    expect(after).toEqual(before);
-    await createAuthorizedScoreBatch({
-      organizationId,
-      authorizedLeagueIds: [fallbackLeagueId],
-      batchScores: [scoreInput(first.id, { teamId: fallbackTeamId })],
-    });
-    const recent = await loadLeagueScores({ organizationId, leagueId: fallbackLeagueId, latestScoredSession: true });
-    expect(recent.selection).toEqual({
-      kind: "latest_scored_session",
-      identitySource: "legacy_projection",
-      occurrenceId: null,
-      legacyProjectionKey: recent.scores[0]?.game.legacyProjectionKey,
-    });
-    expect(recent.scores).toHaveLength(1);
-  });
-
   it("links canonical games exactly, preserves distinct ordinals, and serializes duplicate creates", async () => {
     const first = await createGame({ leagueId, weekNumber: 7, gameNumber: 1, date: "2037-01-08" });
     const [secondAttempt, duplicateAttempt] = await Promise.allSettled([
@@ -381,7 +322,6 @@ describe("E2 canonical games and scores PostgreSQL behavior", () => {
       kind: "latest_scored_session",
       identitySource: "canonical_uuid",
       occurrenceId: makeupOccurrenceId,
-      legacyProjectionKey: null,
     });
     expect(latest.scores.map((row) => row.game.occurrence?.occurrenceId)).toEqual([makeupOccurrenceId]);
 

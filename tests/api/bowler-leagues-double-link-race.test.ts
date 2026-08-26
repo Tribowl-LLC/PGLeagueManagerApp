@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db } from '../../server/db';
-import { bowlerLeagues, bowlers as bowlersTable, teams as teamsTable } from '@shared/schema';
+import { bowlerLeagues, bowlers as bowlersTable, teams as teamsTable, locations, teamPaymentSlots } from '@shared/schema';
 import {
   login,
   apiGet,
@@ -96,8 +96,53 @@ describe('POST /api/bowler-leagues — non-bootstrap path is race-safe (task #47
     const leagues = await apiGet<League[]>('/api/leagues', setupSession);
     expect(leagues.status).toBe(200);
     const list = Array.isArray(leagues.data.data) ? leagues.data.data : [];
-    expect(list.length, 'expected at least one league for org B').toBeGreaterThan(0);
-    leagueId = list[0].id;
+    if (list.length > 0) {
+      leagueId = list[0].id;
+    } else {
+      const organizationId = setupSession.user.organizationId;
+      if (organizationId == null) throw new Error('org B admin is missing organization scope');
+      const [location] = await db.select({ id: locations.id })
+        .from(locations)
+        .where(eq(locations.organizationId, organizationId))
+        .limit(1);
+      let setupLocation = location;
+      if (!setupLocation) {
+        const [createdLocation] = await db.insert(locations).values({
+          name: `Vitest DoubleLink Canonical Lanes ${stamp}`,
+          organizationId,
+        }).returning({ id: locations.id });
+        setupLocation = createdLocation;
+      }
+      if (!setupLocation) throw new Error('canonical league setup location was not created');
+      const created = await apiPost<League>('/api/leagues', {
+        name: `Vitest DoubleLink Canonical League ${stamp}`,
+        description: null,
+        payingLineupSize: 4,
+        active: true,
+        allowPublicSignup: false,
+        seasonStart: '2035-09-03',
+        totalBowlingWeeks: 4,
+        weekDay: 'Monday',
+        skipDates: [],
+        cancelledDates: [],
+        doublePayDates: [],
+        competitionStartTime: '19:00',
+        timezone: 'America/New_York',
+        weeklyFee: 2000,
+        paymentMode: 'weekly',
+        locationId: setupLocation.id,
+        setupIntegration: {
+          contractVersion: 'league-setup-integration-request/3',
+          idempotencyKey: `12000000-0000-4000-8000-${String(stamp).slice(-12).padStart(12, '0')}`,
+        },
+      }, setupSession);
+      expect(created.status).toBe(201);
+      const createdLeague = created.data.data;
+      if (!createdLeague || typeof createdLeague.id !== 'number') {
+        throw new Error('canonical league setup did not return a league id');
+      }
+      leagueId = createdLeague.id;
+    }
 
     // Create a fresh team to use as the link target. Using a unique
     // number keeps this independent from the bootstrap suite's team.
@@ -138,6 +183,9 @@ describe('POST /api/bowler-leagues — non-bootstrap path is race-safe (task #47
     }
     if (teamId != null) {
       const id = teamId;
+      await tryRun(`team_payment_slots:${id}`, () =>
+        db.delete(teamPaymentSlots).where(eq(teamPaymentSlots.teamId, id)),
+      );
       await tryRun(`teams:${id}`, () =>
         db.delete(teamsTable).where(eq(teamsTable.id, id)),
       );

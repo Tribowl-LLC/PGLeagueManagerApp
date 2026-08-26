@@ -71,17 +71,15 @@ describe("LeaguesPage recent-score failure state", () => {
         json: async () => ({
           success: true,
           data: {
-            contractVersion: "canonical-games-scores/1",
+            contractVersion: "canonical-games-scores/2",
             orderingVersion: "canonical-games-scores-order/1",
             organizationId: 7,
             leagueId: 42,
             authoritativeSource: "canonical",
-            operationalCanonicalStateExists: true,
             selection: {
               kind: "latest_scored_session",
               identitySource: null,
               occurrenceId: null,
-              legacyProjectionKey: null,
             },
             scores: [],
           },

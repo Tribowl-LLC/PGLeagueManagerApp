@@ -626,7 +626,7 @@ function commandRequest(input: {
     materializationOperation: generic ? "future_season_draft_generation" : "fall_draft_generation",
     materializationPayload: input.role === "generate" ? {
       ...(generic ? {
-        setupRequestContractVersion: "league-setup-integration-request/2",
+        setupRequestContractVersion: "league-setup-integration-request/3",
         generationResultContractVersion: FUTURE_SEASON_DRAFT_RESULT_VERSION,
         implementationVersion: FUTURE_SEASON_DRAFT_IMPLEMENTATION_VERSION,
         mappingVersion: FUTURE_SEASON_DRAFT_MAPPING_VERSION,
@@ -778,7 +778,7 @@ function inputSnapshot(preview: FallDraftPreview, profile: DraftGenerationProfil
   if (profile.kind === "future_season") {
     return {
       snapshotContractVersion: FUTURE_SEASON_DRAFT_INPUT_SNAPSHOT_VERSION,
-      setupRequestContractVersion: "league-setup-integration-request/2",
+      setupRequestContractVersion: "league-setup-integration-request/3",
       setupConfirmationFingerprint: profile.setupConfirmationFingerprint,
       candidateSetFingerprint: preview.candidateSetFingerprint,
       seasonClassification: profile.seasonClassification,

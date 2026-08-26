@@ -187,8 +187,6 @@ function input(overrides: Partial<BuildLeagueOccurrenceScheduleInput> = {}): Bui
       competitionStartTime: "19:30",
       timezone: "America/Detroit",
       totalBowlingWeeks: 3,
-      skipDates: ["2031-03-16"],
-      cancelledDates: ["2031-03-23"],
     },
     canonical: {
       generationRuns: [run()],
@@ -206,7 +204,7 @@ function input(overrides: Partial<BuildLeagueOccurrenceScheduleInput> = {}): Bui
 describe("league occurrence schedule source selection", () => {
   it("consumes published Summer and published/locked future canonical schedules without legacy blending", () => {
     const summer = buildLeagueOccurrenceSchedule(input({
-      league: { ...input().league, seasonStart: "2031-06-01", skipDates: ["2040-01-01"], cancelledDates: ["2040-01-08"] },
+      league: { ...input().league, seasonStart: "2031-06-01" },
       canonical: { ...input().canonical, generationRuns: [run({ normalizedInputSnapshot: { contractVersion: "canonical-occurrence-input/1" } })] },
     }));
     expect(summer.authoritativeSource).toBe("canonical");
@@ -229,42 +227,6 @@ describe("league occurrence schedule source selection", () => {
     expect(fall.occurrences[0].effectiveLockReasons).toContain("canonical_lock");
   });
 
-  it("uses the established legacy projection only when no operational canonical state exists", () => {
-    const legacy = buildLeagueOccurrenceSchedule(input({
-      canonical: {
-        generationRuns: [], occurrences: [], billingTerms: [], scheduleExceptions: [], relationships: [],
-        linkedActivityOccurrenceIds: new Set(), hasAnyCanonicalEvidence: false,
-      },
-    }));
-    expect(legacy.authoritativeSource).toBe("legacy_fallback");
-    expect(legacy.occurrences.map((row) => ({
-      id: row.occurrenceId,
-      date: row.authoritativeLocalDate,
-      status: row.status,
-      planned: row.plannedOrdinal,
-      competition: row.competitionNumber,
-    }))).toEqual([
-      { id: null, date: "2031-03-02", status: "scheduled", planned: 1, competition: 1 },
-      { id: null, date: "2031-03-09", status: "scheduled", planned: 2, competition: 2 },
-      { id: null, date: "2031-03-23", status: "cancelled", planned: 3, competition: null },
-    ]);
-    expect(legacy.skippedDates).toEqual([expect.objectContaining({
-      localDate: "2031-03-16", durableCanonicalException: false, exceptionId: null,
-    })]);
-    expect(legacy.administrator?.fallRecoveryEligible).toBe(false);
-  });
-
-  it("makes contextual recovery available only for an active Fall league with zero canonical evidence", () => {
-    const recovery = buildLeagueOccurrenceSchedule(input({
-      league: { ...input().league, seasonStart: "2031-09-07" },
-      canonical: {
-        generationRuns: [], occurrences: [], billingTerms: [], scheduleExceptions: [], relationships: [],
-        linkedActivityOccurrenceIds: new Set(), hasAnyCanonicalEvidence: false,
-      },
-    }));
-    expect(recovery.administrator?.fallRecoveryEligible).toBe(true);
-  });
-
   it("keeps draft-only and rejected/discarded/revoked/superseded evidence out of operational output", () => {
     const draft = occurrence({ lifecycle: "draft", publishedAt: null, publishedByUserId: null, publicationCommandId: null });
     const discarded = occurrence({
@@ -280,7 +242,7 @@ describe("league occurrence schedule source selection", () => {
       discardedByUserId: 1,
       discardCommandId: commandId,
     });
-    const evidence = buildLeagueOccurrenceSchedule(input({
+    expect(() => buildLeagueOccurrenceSchedule(input({
       canonical: {
         generationRuns: [run({
           state: "rejected", approvedAt: null, approvedByUserId: null, approvalCommandId: null,
@@ -297,13 +259,7 @@ describe("league occurrence schedule source selection", () => {
         linkedActivityOccurrenceIds: new Set(),
         hasAnyCanonicalEvidence: true,
       },
-    }));
-    expect(evidence.authoritativeSource).toBe("legacy_fallback");
-    expect(evidence.occurrences.every((row) => row.occurrenceId === null)).toBe(true);
-    expect(evidence.administrator).toMatchObject({
-      hasDraftEvidence: true, hasRejectedEvidence: true, hasSupersededEvidence: true, hasRevokedEvidence: true,
-      c2ReviewAvailable: true, reviewContractFamily: "fall", fallRecoveryEligible: false,
-    });
+    }))).toThrowError();
   });
 
   it("retains cancelled and rescheduled UUID identity while keeping all ordinals distinct", () => {

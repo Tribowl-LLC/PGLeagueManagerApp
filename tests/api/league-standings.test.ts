@@ -41,9 +41,7 @@ const organizationsToDelete: number[] = [];
 interface Fixture {
   organizationId: number;
   leagueId: number;
-  fallbackLeagueId: number;
   teamId: number;
-  fallbackTeamId: number;
   bowlerId: number;
   inactiveBowlerId: number;
   actorUserId: number;
@@ -52,7 +50,6 @@ interface Fixture {
   cancelledOccurrenceId: string;
   gameId: number;
   scoreId: number;
-  fallbackGameId: number;
   admin: AuthSession;
   member: AuthSession;
   inactiveMember: AuthSession;
@@ -85,19 +82,13 @@ async function createFixture(label: string): Promise<Fixture> {
     ...commonLeague,
     name: `E3 ${label} canonical`,
   }).returning();
-  const [fallbackLeague] = await db.insert(leagues).values({
-    ...commonLeague,
-    name: `E3 ${label} fallback`,
-  }).returning();
-  if (!league || !fallbackLeague) throw new Error("E3 leagues were not created");
+  if (!league) throw new Error("E3 league was not created");
   const [team] = await db.insert(teams).values({ name: `E3 ${label} team`, number: 1, leagueId: league.id }).returning();
-  const [fallbackTeam] = await db.insert(teams).values({ name: `E3 ${label} fallback team`, number: 1, leagueId: fallbackLeague.id }).returning();
   const [bowler] = await db.insert(bowlers).values({ name: `E3 ${label} bowler`, organizationId: organization.id }).returning();
   const [inactiveBowler] = await db.insert(bowlers).values({ name: `E3 ${label} inactive`, organizationId: organization.id }).returning();
-  if (!team || !fallbackTeam || !bowler || !inactiveBowler) throw new Error("E3 roster was not created");
+  if (!team || !bowler || !inactiveBowler) throw new Error("E3 roster was not created");
   await db.insert(bowlerLeagues).values([
     { bowlerId: bowler.id, leagueId: league.id, teamId: team.id, active: true },
-    { bowlerId: bowler.id, leagueId: fallbackLeague.id, teamId: fallbackTeam.id, active: true },
     { bowlerId: inactiveBowler.id, leagueId: league.id, teamId: team.id, active: false },
   ]);
 
@@ -246,60 +237,10 @@ async function createFixture(label: string): Promise<Fixture> {
     completionCommandId: command.id,
   }).where(eq(leagueOccurrences.id, scheduled.id));
 
-  await db.insert(leagueOccurrences).values({
-    organizationId: organization.id,
-    leagueId: fallbackLeague.id,
-    locationId: location.id,
-    generationKey: `e3-draft-${label}-${suffix}`,
-    generationRunId: null,
-    kind: "regular",
-    status: "scheduled",
-    lifecycle: "draft",
-    authoritativeLocalDate: "2039-01-08",
-    authoritativeLocalStartTime: "19:00:00",
-    timezone: "America/Detroit",
-    startAt: "2039-01-09T00:00:00.000Z",
-    selectedUtcOffsetMinutes: -300,
-    foldResolution: "unambiguous",
-    resolverVersion: "e3-test-resolver/1",
-    plannedOrdinal: 1,
-    competitionNumber: 1,
-    competitive: true,
-    countsInStandings: true,
-  });
-  const fallbackGame = await createGame({
-    leagueId: fallbackLeague.id,
-    weekNumber: 1,
-    gameNumber: 1,
-    date: "2039-01-08",
-  });
-  await createAuthorizedScoreBatch({
-    organizationId: organization.id,
-    authorizedLeagueIds: [fallbackLeague.id],
-    batchScores: [{
-      gameId: fallbackGame.id,
-      bowlerId: bowler.id,
-      teamId: fallbackTeam.id,
-      score: 175,
-      handicap: 25,
-      average: 165,
-      position: 1,
-      isVacant: false,
-      isAbsent: false,
-      isSub: false,
-      laneNumber: 3,
-      frames: [],
-      splits: [],
-      notes: [],
-    }],
-  });
-
   return {
     organizationId: organization.id,
     leagueId: league.id,
-    fallbackLeagueId: fallbackLeague.id,
     teamId: team.id,
-    fallbackTeamId: fallbackTeam.id,
     bowlerId: bowler.id,
     inactiveBowlerId: inactiveBowler.id,
     actorUserId: actor.id,
@@ -308,7 +249,6 @@ async function createFixture(label: string): Promise<Fixture> {
     cancelledOccurrenceId: cancelled.id,
     gameId: createdGame.id,
     scoreId: createdScore.id,
-    fallbackGameId: fallbackGame.id,
     admin: await login(adminEmail, password),
     member: await login(memberEmail, password),
     inactiveMember: await login(inactiveEmail, password),
@@ -366,11 +306,10 @@ describe("E3 league standings evidence API", () => {
     const after = await evidenceSnapshot(primary.leagueId);
     expect(response.status).toBe(200);
     expect(response.data.data).toMatchObject({
-      contractVersion: "league-standings/1",
+      contractVersion: "league-standings/2",
       organizationId: primary.organizationId,
       leagueId: primary.leagueId,
       authoritativeSource: "canonical",
-      operationalCanonicalStateExists: true,
       ranking: { state: "policy_required", policyVersion: null, rows: [] },
       summary: {
         occurrenceCount: 2,
@@ -407,31 +346,6 @@ describe("E3 league standings evidence API", () => {
       primary.member,
     );
     expect(repeated.data.data?.evidenceFingerprint).toEqual(response.data.data?.evidenceFingerprint);
-  });
-
-  it("keeps fallback schedule and game projections explicitly separate", async () => {
-    const response = await apiGet<LeagueStandingsReadContract>(
-      `/api/leagues/${primary.fallbackLeagueId}/standings`,
-      primary.member,
-    );
-    expect(response.status).toBe(200);
-    expect(response.data.data).toMatchObject({
-      authoritativeSource: "legacy_fallback",
-      operationalCanonicalStateExists: false,
-      ranking: { state: "policy_required", rows: [] },
-    });
-    expect(response.data.data?.occurrences[0]).toMatchObject({
-      identity: { identitySource: "legacy_schedule_projection", occurrenceId: null },
-      eligibility: { state: "legacy_unverified" },
-    });
-    expect(response.data.data?.resultSessions[0]).toMatchObject({
-      identity: { identitySource: "legacy_game_projection", occurrenceId: null },
-      occurrenceOrderIndex: null,
-      eligibility: { state: "legacy_unverified" },
-      games: [{ gameId: primary.fallbackGameId }],
-    });
-    expect(response.data.data?.occurrences[0]?.identity.legacyProjectionKey)
-      .not.toBe(response.data.data?.resultSessions[0]?.identity.legacyProjectionKey);
   });
 
   it("requires active membership and preserves tenant-safe admin/system scope", async () => {

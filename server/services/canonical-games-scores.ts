@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import {
   bowlerLeagues,
   bowlers,
@@ -24,8 +24,7 @@ import {
   type LeagueGamesReadContract,
   type LeagueScoresReadContract,
 } from "@shared/canonical-games-scores";
-import { compareCanonicalOccurrenceCompatibility } from "@shared/canonical-occurrence-compatibility";
-import { canonicalJsonStringify, extractStoredDateOnly } from "@shared/completed-summer-comparator";
+import { canonicalJsonStringify } from "@shared/completed-summer-comparator";
 import type { LeagueOccurrenceScheduleReadContract } from "@shared/league-occurrence-schedule";
 import { db } from "../db.js";
 import { lockLeagueSchedule, type LeagueScheduleTransaction } from "../storage/league-schedule-lock.js";
@@ -112,19 +111,6 @@ async function scheduleSnapshot(
   }
 }
 
-function legacyProjectionKey(game: Game): string {
-  return `legacy-game:${game.leagueId}:${game.weekNumber}:${extractStoredDateOnly(game.date) ?? game.date}`;
-}
-
-function legacyProjection(game: Game): CanonicalGameProjection {
-  return {
-    ...game,
-    identitySource: "legacy_projection",
-    legacyProjectionKey: legacyProjectionKey(game),
-    occurrence: null,
-  };
-}
-
 function exactOccurrenceForCompetition(
   schedule: LeagueOccurrenceScheduleReadContract,
   input: LeagueReadInput,
@@ -157,25 +143,11 @@ async function projectLeagueGames(
   schedule: LeagueOccurrenceScheduleReadContract,
   input: LeagueReadInput,
 ): Promise<CanonicalGameProjection[]> {
-  if (schedule.authoritativeSource === "legacy_fallback") {
-    if (input.occurrenceId !== undefined) return error(input, "legacy_occurrence_access_unavailable");
-    const where = input.weekNumber === undefined
-      ? eq(games.leagueId, input.leagueId)
-      : and(eq(games.leagueId, input.leagueId), eq(games.weekNumber, input.weekNumber));
-    const rows = await executor.select().from(games).where(where).orderBy(
-      input.weekNumber === undefined ? desc(games.date) : asc(games.gameNumber),
-      asc(games.gameNumber),
-      asc(games.id),
-    );
-    return rows.map(legacyProjection);
-  }
-
   const rows = await executor.select().from(games)
     .where(eq(games.leagueId, input.leagueId))
     .orderBy(asc(games.id));
   const occurrenceMap = new Map(schedule.occurrences.flatMap((row) => row.occurrenceId ? [[row.occurrenceId, row] as const] : []));
   const occurrenceGameKeys = new Set<string>();
-  const legacyKeys = new Set<string>();
   const projected: CanonicalGameProjection[] = [];
 
   for (const row of rows) {
@@ -192,51 +164,18 @@ async function projectLeagueGames(
       return error(input, "duplicate_occurrence_game_number", { gameCount: rows.length });
     }
     occurrenceGameKeys.add(occurrenceGameKey);
-    const legacyKey = `${row.weekNumber}:${row.gameNumber}`;
-    if (legacyKeys.has(legacyKey)) {
-      return error(input, "duplicate_legacy_game_key", { gameCount: rows.length });
-    }
-    legacyKeys.add(legacyKey);
-    const compatibility = compareCanonicalOccurrenceCompatibility({
-      subject: "game",
-      organizationId: input.organizationId,
-      leagueId: input.leagueId,
-      canonicalStatePresent: true,
-      publishedStatePresent: true,
-      referencedOccurrenceInScope: true,
-      existingReferenceId: occurrenceId,
-      legacyCompetitionNumber: row.weekNumber,
-      legacyTimestamp: row.date,
-      duplicateLegacyKey: false,
-      candidates: [{
-        id: occurrenceId,
-        organizationId: input.organizationId,
-        leagueId: input.leagueId,
-        authoritativeLocalDate: occurrence.authoritativeLocalDate,
-        authoritativeLocalStartTime: occurrence.authoritativeLocalStartTime ?? "00:00:00",
-        timezone: occurrence.timezone,
-        startAt: occurrence.startAt ?? "",
-        foldResolution: occurrence.foldResolution ?? "unambiguous",
-        competitionNumber: occurrence.competitionNumber,
-        lifecycle: occurrence.lifecycle === "legacy" ? "draft" : occurrence.lifecycle,
-        status: occurrence.status,
-      }],
-    });
-    if (compatibility.classification !== "exact_match") {
-      return error(input, "game_legacy_projection_mismatch", { gameCount: rows.length });
-    }
     projected.push({
       ...row,
+      occurrenceId,
       identitySource: "canonical_uuid",
-      legacyProjectionKey: null,
       occurrence,
     });
   }
 
   const occurrenceOrder = new Map(schedule.occurrences.map((row, index) => [row.occurrenceId, index]));
   projected.sort((left, right) =>
-    (occurrenceOrder.get(left.occurrenceId) ?? Number.MAX_SAFE_INTEGER)
-      - (occurrenceOrder.get(right.occurrenceId) ?? Number.MAX_SAFE_INTEGER)
+    (occurrenceOrder.get(left.occurrence.occurrenceId) ?? Number.MAX_SAFE_INTEGER)
+      - (occurrenceOrder.get(right.occurrence.occurrenceId) ?? Number.MAX_SAFE_INTEGER)
     || left.gameNumber - right.gameNumber
     || left.id - right.id);
   const selectedIds = selectedCanonicalOccurrenceIds(schedule, input);
@@ -250,7 +189,6 @@ function baseContract(schedule: LeagueOccurrenceScheduleReadContract) {
     organizationId: schedule.organizationId,
     leagueId: schedule.leagueId,
     authoritativeSource: schedule.authoritativeSource,
-    operationalCanonicalStateExists: schedule.operationalCanonicalStateExists,
   } as const;
 }
 
@@ -356,33 +294,22 @@ export async function loadLeagueScores(input: LeagueReadInput): Promise<LeagueSc
     let projectedScores = await scoreRows(tx, gameContract.games, input.organizationId, input.leagueId);
     let selection: LeagueScoresReadContract["selection"];
     if (input.latestScoredSession) {
-      const sessions = new Map<string, {
-        identitySource: "canonical_uuid" | "legacy_projection";
-        occurrenceId: string | null;
-        legacyProjectionKey: string | null;
-        orderKey: string;
-      }>();
+      const sessions = new Map<string, { occurrenceId: string; orderKey: string }>();
       for (const row of projectedScores) {
         const occurrence = row.game.occurrence;
-        const identitySource = row.game.identitySource;
-        const identity = occurrence?.occurrenceId ?? row.game.legacyProjectionKey;
-        if (!identity) return error(input, "latest_scored_session_ambiguous", { scoreCount: projectedScores.length });
-        const orderKey = occurrence
-          ? `${occurrence.authoritativeLocalDate}T${occurrence.authoritativeLocalStartTime ?? "00:00:00"}`
-          : `${extractStoredDateOnly(row.game.date) ?? row.game.date}:${row.game.weekNumber.toString().padStart(10, "0")}:${identity}`;
-        sessions.set(`${identitySource}:${identity}`, {
-          identitySource,
-          occurrenceId: occurrence?.occurrenceId ?? null,
-          legacyProjectionKey: row.game.legacyProjectionKey,
+        const identity = occurrence.occurrenceId;
+        const orderKey = `${occurrence.authoritativeLocalDate}T${occurrence.authoritativeLocalStartTime ?? "00:00:00"}`;
+        sessions.set(identity, {
+          occurrenceId: identity,
           orderKey,
         });
       }
       const orderedSessions = [...sessions.entries()].sort((left, right) =>
         right[1].orderKey.localeCompare(left[1].orderKey) || right[0].localeCompare(left[0]))[0];
       const latest = orderedSessions;
-      if (latest?.[1].identitySource === "canonical_uuid") {
+      if (latest) {
         const tiedCanonicalSessions = [...sessions.values()].filter((session) =>
-          session.identitySource === "canonical_uuid" && session.orderKey === latest[1].orderKey);
+          session.orderKey === latest[1].orderKey);
         if (tiedCanonicalSessions.length !== 1) {
           return error(input, "latest_scored_session_ambiguous", { scoreCount: projectedScores.length });
         }
@@ -390,21 +317,18 @@ export async function loadLeagueScores(input: LeagueReadInput): Promise<LeagueSc
       if (latest) {
         const [latestKey, latestSession] = latest;
         projectedScores = projectedScores.filter((row) => {
-          const identity = row.game.occurrence?.occurrenceId ?? row.game.legacyProjectionKey;
-          return `${row.game.identitySource}:${identity}` === latestKey;
+          return row.game.occurrence.occurrenceId === latestKey;
         });
         selection = {
           kind: "latest_scored_session",
-          identitySource: latestSession.identitySource,
+          identitySource: "canonical_uuid",
           occurrenceId: latestSession.occurrenceId,
-          legacyProjectionKey: latestSession.legacyProjectionKey,
         };
       } else {
         selection = {
           kind: "latest_scored_session",
           identitySource: null,
           occurrenceId: null,
-          legacyProjectionKey: null,
         };
       }
     } else if (input.occurrenceId !== undefined) {
@@ -420,7 +344,6 @@ export async function loadLeagueScores(input: LeagueReadInput): Promise<LeagueSc
       organizationId: gameContract.organizationId,
       leagueId: gameContract.leagueId,
       authoritativeSource: gameContract.authoritativeSource,
-      operationalCanonicalStateExists: gameContract.operationalCanonicalStateExists,
       selection,
       scores: projectedScores,
     };
@@ -461,8 +384,8 @@ export async function loadBowlerScoreHistory(input: {
       allScores.push(...leagueScores.filter((row) => row.bowlerId === input.bowlerId));
     }
     allScores.sort((left, right) => {
-      const leftDate = left.game.occurrence?.authoritativeLocalDate ?? extractStoredDateOnly(left.game.date) ?? left.game.date;
-      const rightDate = right.game.occurrence?.authoritativeLocalDate ?? extractStoredDateOnly(right.game.date) ?? right.game.date;
+      const leftDate = left.game.occurrence.authoritativeLocalDate;
+      const rightDate = right.game.occurrence.authoritativeLocalDate;
       return rightDate.localeCompare(leftDate)
         || left.league.id - right.league.id
         || left.game.gameNumber - right.game.gameNumber
@@ -489,32 +412,12 @@ function validateCanonicalGameInput(
   if (!occurrenceId || occurrence.status !== "scheduled") {
     return error(input, "game_occurrence_not_operational");
   }
-  const comparison = compareCanonicalOccurrenceCompatibility({
-    subject: "game",
-    organizationId: input.organizationId,
-    leagueId: input.leagueId,
-    canonicalStatePresent: true,
-    publishedStatePresent: true,
-    referencedOccurrenceInScope: true,
-    existingReferenceId: occurrenceId,
-    legacyCompetitionNumber: input.weekNumber,
-    legacyTimestamp: input.date,
-    duplicateLegacyKey: false,
-    candidates: [{
-      id: occurrenceId,
-      organizationId: input.organizationId,
-      leagueId: input.leagueId,
-      authoritativeLocalDate: occurrence.authoritativeLocalDate,
-      authoritativeLocalStartTime: occurrence.authoritativeLocalStartTime ?? "00:00:00",
-      timezone: occurrence.timezone,
-      startAt: occurrence.startAt ?? "",
-      foldResolution: occurrence.foldResolution ?? "unambiguous",
-      competitionNumber: occurrence.competitionNumber,
-      lifecycle: occurrence.lifecycle === "legacy" ? "draft" : occurrence.lifecycle,
-      status: occurrence.status,
-    }],
-  });
-  if (comparison.classification !== "exact_match") return error(input, "game_legacy_projection_mismatch");
+  const dateOnly = input.date.slice(0, 10);
+  if (!Number.isFinite(new Date(input.date).getTime())
+    || occurrence.competitionNumber !== input.weekNumber
+    || occurrence.authoritativeLocalDate !== dateOnly) {
+    return error(input, "game_occurrence_out_of_scope");
+  }
   return { occurrence, occurrenceId };
 }
 
@@ -530,18 +433,9 @@ export async function createCanonicalAwareGame(game: InsertGame): Promise<Game> 
     const [league] = await tx.select({ organizationId: leagues.organizationId })
       .from(leagues).where(eq(leagues.id, game.leagueId)).limit(1);
     if (!league) throw new Error("League not found for createGame");
-    if (league.organizationId === null) {
-      const [created] = await tx.insert(games).values({ ...game, date, occurrenceId: null }).returning();
-      if (!created) throw new Error("Game was not created");
-      return created;
-    }
+    if (league.organizationId === null) return error({ organizationId: 0, leagueId: game.leagueId }, "game_occurrence_out_of_scope");
     await lockLeagueSchedule(tx, league.organizationId, game.leagueId);
     const schedule = await scheduleSnapshot(tx, { organizationId: league.organizationId, leagueId: game.leagueId });
-    if (schedule.authoritativeSource === "legacy_fallback") {
-      const [created] = await tx.insert(games).values({ ...game, date, occurrenceId: null }).returning();
-      if (!created) throw new Error("Game was not created");
-      return created;
-    }
     await projectLeagueGames(tx, schedule, { organizationId: league.organizationId, leagueId: game.leagueId });
     const { occurrenceId } = validateCanonicalGameInput(schedule, {
       organizationId: league.organizationId,
@@ -568,6 +462,9 @@ export async function updateCanonicalAwareGame(id: number, patch: UpdateGame): P
     }).from(games).innerJoin(leagues, eq(leagues.id, games.leagueId))
       .where(eq(games.id, id)).limit(1);
     if (!preRead) throw new Error("Game not found for updateGame");
+    if (preRead.organizationId === null) {
+      return error({ organizationId: 0, leagueId: preRead.leagueId }, "game_occurrence_out_of_scope");
+    }
     if (patch.leagueId !== undefined && patch.leagueId !== preRead.leagueId) {
       throw new CanonicalGamesScoresError({
         organizationId: preRead.organizationId ?? 0,
@@ -589,20 +486,9 @@ export async function updateCanonicalAwareGame(id: number, patch: UpdateGame): P
       gameNumber: patch.gameNumber ?? current.gameNumber,
       date: patch.date === undefined ? current.date : normalizeGameDate(patch.date),
     };
-    if (league.organizationId === null) {
-      if (current.occurrenceId !== null) throw new Error("Linked game cannot move to an organization-less league");
-      const [updated] = await tx.update(games).set(next).where(eq(games.id, id)).returning();
-      if (!updated) throw new Error("Game not found for updateGame");
-      return updated;
-    }
+    if (league.organizationId === null) return error({ organizationId: 0, leagueId: current.leagueId }, "game_occurrence_out_of_scope");
     const scope = { organizationId: league.organizationId, leagueId: current.leagueId };
     const schedule = await scheduleSnapshot(tx, scope);
-    if (schedule.authoritativeSource === "legacy_fallback") {
-      if (current.occurrenceId !== null) return error(scope, "game_occurrence_not_operational");
-      const [updated] = await tx.update(games).set(next).where(eq(games.id, id)).returning();
-      if (!updated) throw new Error("Game not found for updateGame");
-      return updated;
-    }
     await projectLeagueGames(tx, schedule, scope);
     if (current.occurrenceId === null) return error(scope, "unlinked_canonical_game");
     const { occurrenceId } = validateCanonicalGameInput(schedule, { ...scope, weekNumber: next.weekNumber, date: next.date });
@@ -627,6 +513,9 @@ export async function deleteCanonicalAwareGame(id: number): Promise<void> {
     }).from(games).innerJoin(leagues, eq(leagues.id, games.leagueId))
       .where(eq(games.id, id)).limit(1);
     if (!preRead) return;
+    if (preRead.organizationId === null) {
+      throw new CanonicalGamesScoresError({ organizationId: 0, leagueId: preRead.leagueId, classification: "game_occurrence_out_of_scope" });
+    }
     await lockLeagueSchedule(tx, preRead.organizationId, preRead.leagueId);
     const [current] = await tx.select().from(games).where(eq(games.id, id)).limit(1).for("update");
     if (!current) return;
@@ -641,7 +530,7 @@ export async function deleteCanonicalAwareGame(id: number): Promise<void> {
         gameCount: 1,
       });
     }
-    await tx.delete(games).where(eq(games.id, id));
+    throw new CanonicalGamesScoresError({ organizationId: preRead.organizationId, leagueId: preRead.leagueId, classification: "unlinked_canonical_game", gameCount: 1 });
   });
 }
 

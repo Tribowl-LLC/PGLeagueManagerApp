@@ -6,12 +6,11 @@ function score(input: {
   id: number;
   leagueId: number;
   gameNumber: number;
-  occurrenceId?: string;
-  legacyProjectionKey?: string;
+  occurrenceId: string;
   date?: string;
 }): CanonicalScoreProjection {
   const date = input.date ?? "2038-01-08 00:00:00";
-  const occurrenceId = input.occurrenceId ?? null;
+  const occurrenceId = input.occurrenceId;
   return {
     id: input.id,
     gameId: input.id,
@@ -38,11 +37,9 @@ function score(input: {
       gameNumber: input.gameNumber,
       date,
       occurrenceId,
-      identitySource: occurrenceId ? "canonical_uuid" : "legacy_projection",
-      legacyProjectionKey: input.legacyProjectionKey ?? null,
-      occurrence: occurrenceId ? {
+      identitySource: "canonical_uuid",
+      occurrence: {
         occurrenceId,
-        legacyProjectionKey: null,
         identitySource: "canonical_uuid",
         kind: "regular",
         status: "scheduled",
@@ -63,7 +60,7 @@ function score(input: {
         effectiveLockReasons: [],
         billing: null,
         relationships: [],
-      } : null,
+      },
     },
   };
 }
@@ -80,14 +77,4 @@ describe("bowler score history grouping", () => {
     expect(sessions[0]?.games.filter(Boolean)).toHaveLength(2);
   });
 
-  it("keeps deterministic fallback keys distinct and never fabricates a UUID", () => {
-    const sessions = groupBowlerScoreHistory([
-      score({ id: 3, leagueId: 1, gameNumber: 1, legacyProjectionKey: "legacy-game:1:7:2038-01-08" }),
-      score({ id: 4, leagueId: 2, gameNumber: 1, legacyProjectionKey: "legacy-game:2:7:2038-01-08" }),
-    ]);
-    expect(sessions.map((session) => session.identityKey)).toEqual([
-      "legacy-game:1:7:2038-01-08",
-      "legacy-game:2:7:2038-01-08",
-    ]);
-  });
 });

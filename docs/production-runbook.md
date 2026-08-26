@@ -449,7 +449,7 @@ the full contract, incompatibility behavior, smoke matrix, and E3 boundary.
 
 Phase E3 is a code-only, read-only evidence release. It adds
 `GET /api/leagues/:leagueId/standings` with the versioned
-`league-standings/1` contract, reusing the complete E1/E2 snapshot in one
+`league-standings/2` contract, reusing the complete E1/E2 snapshot in one
 repeatable-read/read-only transaction. The response explicitly reports
 `ranking.state = policy_required` and returns no ranked rows because matchup
 and ranking policy is not yet approved. Migration 0023 remains latest; do not
@@ -458,7 +458,7 @@ run a migration or backfill for E3.
 Keep Render Auto-Deploy Off and deploy only the exact CI-certified application
 commit. Smoke-test active-member, organization-administrator, and explicitly
 scoped system-administrator access; canonical UUID grouping and eligibility;
-separate legacy schedule/game projection domains; stable full-evidence
+canonical-only schedule/game/standings evidence; stable full-evidence
 fingerprints; bounded discrepancies; the generic incompatibility 409; and
 before/after zero-write evidence across canonical, game/score, D2, payment, and
 payment-operation tables. Confirm the Bowler Scores average, financial reports,
@@ -479,10 +479,9 @@ Authenticated smoke coverage must create only reviewed disposable test data:
 confirm that the source-confirmation response excludes provider/payment/PII
 fields, stale source configuration is rejected, and a wholly future rollover
 creates one target with copied teams/complete roster, null Square catalog IDs,
-new canonical UUIDs, and a generic draft review. Verify an exact retry performs
-zero writes and returns the same IDs. Approve/publish the disposable generic set
-through the canonical review route, confirm E1 becomes canonical-authoritative,
-and verify cross-tenant access fails closed. Confirm no D2, payment, operation,
+new canonical UUIDs, and a published canonical schedule. Verify an exact retry
+performs zero writes and returns the same IDs. Confirm E1 remains
+canonical-authoritative and verify cross-tenant access fails closed. Confirm no D2, payment, operation,
 refund, dispute, webhook, or unexpected provider evidence was created and no
 provider call occurred in the smoke window.
 
@@ -534,7 +533,7 @@ state.
 
 Before release, apply the single forward migration `0024_canonical_due_past_due_activation` and verify `npm run db:migration-bytes:check` plus `npm run db:check`. Confirm financial activation count is zero and provider mocks/call counters remain zero. F1 activation is dormant unless an authorized organization administrator explicitly reviews and confirms every three-or-four-slot responsibility group.
 
-Post-release smoke checks are read-only: an org-admin report returns the versioned source label; a system-admin report requires an explicit organization scope; an ordinary member receives only an active self-bowler league read; cross-tenant and inactive membership requests are nondisclosing. Verify legacy fallback and canonical review-required states are visible. Roll back the application release only; never reverse migration 0024 or delete activation evidence.
+Post-release smoke checks are read-only: an org-admin report returns the versioned canonical source label; a system-admin report requires an explicit organization scope; an ordinary member receives only an active self-bowler league read; cross-tenant and inactive membership requests are nondisclosing. Verify missing or incompatible canonical state fails closed. Roll back the application release only; never reverse migration 0024 or delete activation evidence.
 
 Permanent organization deletion is not available for a tenant with F1 activation
 evidence. The API returns a generic `409 FINANCIAL_ACTIVATION_RETENTION_REQUIRED`;

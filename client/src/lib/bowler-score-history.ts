@@ -12,11 +12,8 @@ export interface BowlerScoreSession {
 
 export function groupBowlerScoreHistory(scores: readonly CanonicalScoreProjection[]): BowlerScoreSession[] {
   return scores.reduce<BowlerScoreSession[]>((sessions, score) => {
-    const identityKey = score.game.occurrence?.occurrenceId
-      ?? score.game.legacyProjectionKey
-      ?? `legacy-game:${score.game.leagueId}:${score.game.weekNumber}:${score.game.date}`;
-    const authoritativeDate = score.game.occurrence?.authoritativeLocalDate
-      ?? score.game.date.slice(0, 10);
+    const identityKey = score.game.occurrence.occurrenceId;
+    const authoritativeDate = score.game.occurrence.authoritativeLocalDate;
     const existing = sessions.find((session) => session.identityKey === identityKey);
     if (!existing) {
       const session: BowlerScoreSession = {

@@ -26,7 +26,6 @@ function occurrence(
 ): LeagueOccurrenceScheduleOccurrence {
   return {
     occurrenceId: OCCURRENCE_ID,
-    legacyProjectionKey: null,
     identitySource: "canonical_uuid",
     kind: "regular",
     status: "scheduled",
@@ -53,10 +52,9 @@ function occurrence(
 
 function schedule(
   occurrences: LeagueOccurrenceScheduleOccurrence[],
-  source: "canonical" | "legacy_fallback" = "canonical",
 ): LeagueOccurrenceScheduleReadContract {
   return {
-    contractVersion: "league-occurrence-schedule/2",
+    contractVersion: "league-occurrence-schedule/3",
     ordering: {
       version: "league-occurrence-schedule-order/1",
       keys: [
@@ -70,8 +68,7 @@ function schedule(
     },
     organizationId: 10,
     leagueId: 20,
-    authoritativeSource: source,
-    operationalCanonicalStateExists: source === "canonical",
+    authoritativeSource: "canonical",
     occurrences,
     skippedDates: [],
     administrator: null,
@@ -89,11 +86,8 @@ function game(
     gameNumber: 1,
     date: "2038-01-08 00:00:00",
     occurrenceId: target.occurrenceId,
-    identitySource: target.identitySource === "canonical_uuid" ? "canonical_uuid" : "legacy_projection",
-    legacyProjectionKey: target.identitySource === "canonical_uuid"
-      ? null
-      : "legacy-game:20:7:2038-01-08",
-    occurrence: target.identitySource === "canonical_uuid" ? target : null,
+    identitySource: "canonical_uuid",
+    occurrence: target,
     ...overrides,
   };
 }
@@ -130,16 +124,15 @@ function snapshot(input: {
   occurrences?: LeagueOccurrenceScheduleOccurrence[];
   games?: CanonicalGameProjection[];
   scores?: CanonicalScoreProjection[];
-  source?: "canonical" | "legacy_fallback";
 } = {}): CanonicalGamesScoresEvidenceSnapshot {
   return {
-    schedule: schedule(input.occurrences ?? [occurrence()], input.source),
+    schedule: schedule(input.occurrences ?? [occurrence()]),
     games: input.games ?? [],
     scores: input.scores ?? [],
   };
 }
 
-describe("league-standings/1 evidence contract", () => {
+describe("league-standings/2 evidence contract", () => {
   it("publishes explicit versions and a policy-required non-ranking state", () => {
     const contract = buildLeagueStandingsContract(snapshot());
     expect(contract).toMatchObject({
@@ -265,84 +258,6 @@ describe("league-standings/1 evidence contract", () => {
     expect(JSON.stringify(contract)).not.toContain("frames");
   });
 
-  it("keeps fallback schedule and game identity domains separate and always unverified", () => {
-    const legacyOccurrence = occurrence({
-      occurrenceId: null,
-      legacyProjectionKey: "legacy:20:2038-01-08:1",
-      identitySource: "legacy_projection",
-      lifecycle: "legacy",
-      startAt: null,
-      selectedUtcOffsetMinutes: null,
-      foldResolution: null,
-      resolverVersion: null,
-      currentRevision: null,
-    });
-    const legacyGame = game(legacyOccurrence, {
-      occurrenceId: null,
-      occurrence: null,
-      identitySource: "legacy_projection",
-      legacyProjectionKey: "legacy-game:20:7:2038-01-08",
-    });
-    const legacyScore = score(legacyGame);
-    const contract = buildLeagueStandingsContract(snapshot({
-      source: "legacy_fallback",
-      occurrences: [legacyOccurrence],
-      games: [legacyGame],
-      scores: [legacyScore],
-    }));
-    expect(contract.occurrences[0]).toMatchObject({
-      identity: { identitySource: "legacy_schedule_projection", legacyProjectionKey: "legacy:20:2038-01-08:1" },
-      eligibility: { state: "legacy_unverified" },
-    });
-    expect(contract.resultSessions[0]).toMatchObject({
-      identity: { identitySource: "legacy_game_projection", legacyProjectionKey: "legacy-game:20:7:2038-01-08" },
-      occurrenceOrderIndex: null,
-      eligibility: { state: "legacy_unverified" },
-    });
-  });
-
-  it("audits duplicate score slots in fallback sessions with aggregated evidence", () => {
-    const legacyOccurrence = occurrence({
-      occurrenceId: null,
-      legacyProjectionKey: "legacy:20:2038-01-08:1",
-      identitySource: "legacy_projection",
-      lifecycle: "legacy",
-      startAt: null,
-      selectedUtcOffsetMinutes: null,
-      foldResolution: null,
-      resolverVersion: null,
-      currentRevision: null,
-    });
-    const legacyGame = game(legacyOccurrence, {
-      occurrenceId: null,
-      occurrence: null,
-      identitySource: "legacy_projection",
-      legacyProjectionKey: "legacy-game:20:7:2038-01-08",
-    });
-    const contract = buildLeagueStandingsContract(snapshot({
-      source: "legacy_fallback",
-      occurrences: [legacyOccurrence],
-      games: [legacyGame],
-      scores: [
-        score(legacyGame, { id: 201 }),
-        score(legacyGame, { id: 202 }),
-        score(legacyGame, { id: 203 }),
-      ],
-    }));
-    expect(contract.discrepancies.filter((row) => row.classification === "duplicate_score_slot"))
-      .toEqual([{
-        classification: "duplicate_score_slot",
-        severity: "warning",
-        identity: {
-          identitySource: "legacy_game_projection",
-          occurrenceId: null,
-          legacyProjectionKey: "legacy-game:20:7:2038-01-08",
-        },
-        gameId: legacyGame.id,
-        evidenceCount: 3,
-      }]);
-  });
-
   it("surfaces missing games, scoreless games, pending/excluded scores, and duplicate slots without ranking", () => {
     const eligibleWithoutGame = occurrence({
       occurrenceId: "11111111-1111-4111-8111-111111111112",
@@ -387,29 +302,6 @@ describe("league-standings/1 evidence contract", () => {
     expect(contract.discrepancies.find((row) => row.classification === "duplicate_score_slot"))
       .toMatchObject({ gameId: pendingGame.id, evidenceCount: 2 });
     expect(contract.ranking.rows).toEqual([]);
-  });
-
-  it("makes truncation explicit while fingerprinting the full discrepancy set", () => {
-    const legacyOccurrences = Array.from({ length: 101 }, (_, index) => occurrence({
-      occurrenceId: null,
-      legacyProjectionKey: `legacy:20:2038-01-${String(index + 1).padStart(3, "0")}:${index + 1}`,
-      identitySource: "legacy_projection",
-      lifecycle: "legacy",
-      startAt: null,
-      selectedUtcOffsetMinutes: null,
-      foldResolution: null,
-      resolverVersion: null,
-      currentRevision: null,
-      plannedOrdinal: index + 1,
-    }));
-    const contract = buildLeagueStandingsContract(snapshot({
-      source: "legacy_fallback",
-      occurrences: legacyOccurrences,
-    }));
-    expect(contract.summary.discrepancyCount).toBe(204);
-    expect(contract.summary.discrepanciesTruncated).toBe(true);
-    expect(contract.discrepancies).toHaveLength(MAX_LEAGUE_STANDINGS_DISCREPANCIES);
-    expect(contract.evidenceFingerprint.value).toMatch(/^[a-f0-9]{64}$/);
   });
 
   it("fingerprints semantic score evidence but ignores excluded names and notes", () => {
@@ -459,5 +351,5 @@ describe("league-standings/1 evidence contract", () => {
 });
 
 function canonicalIdentityForTest(occurrenceId: string) {
-  return { identitySource: "canonical_uuid", occurrenceId, legacyProjectionKey: null };
+  return { identitySource: "canonical_uuid", occurrenceId };
 }

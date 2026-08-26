@@ -11,7 +11,6 @@ import type {
   LeagueOccurrenceScheduleReadContract,
   LeagueOccurrenceScheduleSkippedDate,
 } from "@shared/league-occurrence-schedule";
-import { FallCanonicalRecoveryPanel } from "./fall-draft-generation-card";
 import { FallDraftReviewPanel } from "./fall-draft-review-panel";
 
 interface LeagueOccurrenceScheduleCardProps {
@@ -107,12 +106,8 @@ function ScheduleOccurrenceRow({ occurrence, isAdministrator }: {
       </dl>
 
       <div className="text-xs text-muted-foreground">
-        {occurrence.occurrenceId ? (
-          <p className="break-all"><span className="font-medium text-foreground">Occurrence UUID:</span> <span className="font-mono">{occurrence.occurrenceId}</span></p>
-        ) : (
-          <p>No canonical occurrence identity is assigned in legacy fallback.</p>
-        )}
-        {isAdministrator && occurrence.occurrenceId && (
+        <p className="break-all"><span className="font-medium text-foreground">Occurrence UUID:</span> <span className="font-mono">{occurrence.occurrenceId}</span></p>
+        {isAdministrator && (
           <div className="mt-1 space-y-1">
             <p>{occurrence.lifecycle} lifecycle · revision {occurrence.currentRevision}</p>
             <p>{occurrence.effectivelyLocked ? "Effectively locked" : "Not effectively locked"}</p>
@@ -176,7 +171,7 @@ export function LeagueOccurrenceScheduleCard({
       type: "occurrence",
       date: occurrence.authoritativeLocalDate,
       time: occurrence.authoritativeLocalStartTime,
-      stableKey: occurrence.occurrenceId ?? occurrence.legacyProjectionKey ?? "",
+      stableKey: occurrence.occurrenceId,
       occurrence,
     })),
     ...schedule.skippedDates.map((skippedDate): ScheduleDisplayRow => ({
@@ -187,7 +182,6 @@ export function LeagueOccurrenceScheduleCard({
       skippedDate,
     })),
   ].sort(compareRows) : [];
-  const fallAdminPath = `/api/leagues/${leagueId}/canonical-fall-drafts`;
   const canonicalAdminPath = `/api/leagues/${leagueId}/canonical-drafts`;
 
   return (
@@ -199,8 +193,8 @@ export function LeagueOccurrenceScheduleCard({
             <CardDescription>Physical sessions in league-local calendar time. Planned, competition, and billing numbers remain distinct.</CardDescription>
           </div>
           {schedule && (
-            <Badge variant={schedule.authoritativeSource === "canonical" ? "default" : "secondary"}>
-              {schedule.authoritativeSource === "canonical" ? "Canonical schedule" : "Legacy fallback"}
+            <Badge variant="default">
+              Canonical schedule
             </Badge>
           )}
         </div>
@@ -217,20 +211,10 @@ export function LeagueOccurrenceScheduleCard({
             <AlertCircle className="size-4" />
             <AlertTitle>Season schedule is unavailable</AlertTitle>
             <AlertDescription>
-              The server could not provide a safe schedule projection. Canonical incompatibilities never fall back to legacy dates.
+              The server could not provide a safe canonical schedule projection. Retry after the schedule is repaired.
               <Button variant="outline" size="sm" className="mt-3 block" onClick={() => scheduleQuery.refetch()}>
                 <RefreshCw className="mr-2 size-4" />Retry
               </Button>
-            </AlertDescription>
-          </Alert>
-        )}
-
-        {schedule?.authoritativeSource === "legacy_fallback" && (
-          <Alert>
-            <AlertCircle className="size-4" />
-            <AlertTitle>Legacy schedule fallback</AlertTitle>
-            <AlertDescription>
-              No operational published or locked canonical set exists. These dates remain usable, but they do not have durable occurrence UUIDs.
             </AlertDescription>
           </Alert>
         )}
@@ -254,7 +238,7 @@ export function LeagueOccurrenceScheduleCard({
             <div>
               <h3 id="schedule-administration-heading" className="text-lg font-semibold">Schedule administration</h3>
               <p className="text-sm text-muted-foreground">
-                Canonical lifecycle evidence is read-only here; C2 controls continue to use their audited confirmations.
+                Canonical lifecycle evidence is read-only here; the controls below are reserved for audited mid-season changes.
               </p>
             </div>
             {(schedule.administrator.hasDraftEvidence
@@ -268,15 +252,11 @@ export function LeagueOccurrenceScheduleCard({
                 {schedule.administrator.hasRevokedEvidence && <Badge variant="secondary">Revoked evidence</Badge>}
               </div>
             )}
-            {schedule.administrator.fallRecoveryEligible && (
-              <FallCanonicalRecoveryPanel leagueId={leagueId} organizationId={organizationId} isSystemAdmin={isSystemAdmin} />
-            )}
-            {schedule.administrator.c2ReviewAvailable && (
+            {schedule.administrator.c2ReviewAvailable && schedule.administrator.reviewContractFamily === "canonical" && (
               <FallDraftReviewPanel
-                basePath={schedule.administrator.reviewContractFamily === "canonical" ? canonicalAdminPath : fallAdminPath}
+                basePath={canonicalAdminPath}
                 querySuffix={querySuffix}
                 enabled
-                contractFamily={schedule.administrator.reviewContractFamily ?? "fall"}
                 scheduleQueryKey={["league-occurrence-schedule", endpoint]}
               />
             )}

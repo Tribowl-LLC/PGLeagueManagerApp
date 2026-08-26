@@ -1,30 +1,28 @@
 # Phase E2 canonical games and scores
 
-Phase E2 cuts game and score identity to canonical physical occurrences when
-an operational canonical schedule exists. Scores continue to inherit physical
+Phase E2 cuts game and score identity to canonical physical occurrences.
+Scores continue to inherit physical
 identity only through `scores.game_id`; there is no `scores.occurrence_id`.
 Standings, reports, payment behavior, and the dormant D2 financial model are
 outside this phase.
 
 ## Authoritative source selection
 
-Games and scores reuse the E1 `league-occurrence-schedule/2` snapshot builder
+Games and scores reuse the E1 `league-occurrence-schedule/3` snapshot builder
 inside repeatable-read read transactions and locked mutation transactions.
 There is no second definition of operational canonical state:
 
-- one published or locked operational set selects `canonical`;
-- draft-only, rejected, revoked, discarded, and superseded evidence selects
-  explicit `legacy_fallback`;
+- one complete published operational set selects `canonical`;
+- missing, draft-only, rejected, revoked, discarded, superseded, or mixed
+  evidence fails closed;
 - published/locked rows, generation-run counts, exceptions, relationships,
   billing summaries, or linked activity that do not form one safe E1 set fail
-  closed; and
-- canonical and legacy rows are never blended.
+  closed.
 
-E2 responses use `canonical-games-scores/1` and
-`canonical-games-scores-order/1`. They state `authoritativeSource` and retain
+E2 responses use `canonical-games-scores/2` and
+`canonical-games-scores-order/1`; fingerprint payloads use
+`canonical-games-scores-fingerprint/2`. They state `authoritativeSource` and retain
 the complete bounded E1 occurrence projection on every canonical nested game.
-Legacy games have `identitySource: legacy_projection`, a deterministic
-`legacyProjectionKey`, and no fabricated UUID or canonical time evidence.
 Reads do not generate, backfill, repair, lock, or otherwise mutate schedule,
 game, score, payment, or D2 rows.
 
@@ -59,7 +57,7 @@ carry the linked game projection, so the occurrence UUID survives every score
 read. Score storage is not filtered by `countsInStandings`; `competitive` and
 `countsInStandings` remain distinct schedule attributes for E3 to interpret.
 
-## Access contracts and compatibility adapters
+## Access contracts
 
 `GET /api/games` accepts an authorized `leagueId` plus at most one of
 `weekNumber` or `occurrenceId`. `GET /api/scores` has the same selection shape,
@@ -71,23 +69,18 @@ ordinal, or roster heuristic is used.
 
 `GET /api/scores?leagueId=...&selection=latest_scored_session` is the bounded
 recent-score consumer contract. The server first applies the E1 source policy,
-then selects the latest physical session that actually owns scores. Canonical
-selection groups only by occurrence UUID and orders by stored canonical local
-date/time; makeup or reschedule attributes therefore cannot be confused with a
-legacy-derived current week. Exact canonical date/time ties fail closed.
-Fallback selection uses the deterministic legacy projection identity and
-stored game date/week ordering. The response's `selection` evidence names the
-chosen UUID or legacy key, and returns null identity evidence when no scored
-session exists.
+then selects the latest physical session that actually owns scores. Selection
+groups only by occurrence UUID and orders by stored canonical local date/time;
+makeup or reschedule attributes therefore cannot be confused with a derived
+week. Exact canonical date/time ties fail closed.
 
 Canonical ordering is the E1 physical occurrence order, followed by game
 number and stable game ID, then team number, position, and stable score ID.
-Legacy game ordering retains the prior week-specific game-number order and the
-prior all-games reverse-date order with stable IDs as final ties.
+Game ordering retains the prior week-specific game-number order and the prior
+all-games reverse-date order with stable IDs as final ties.
 
 `GET /api/scores/history?bowlerId=...` returns authorized league history. The
-client groups canonical sessions by occurrence UUID. Fallback rows use the
-server-provided deterministic legacy projection key. It does not independently
+client groups sessions by occurrence UUID. It does not independently
 derive canonical identity from week/date. Self-history and administrator
 history derive league scope from retained, tenant-owned score/game evidence so
 roster deactivation or removal does not erase history. An ordinary user reading

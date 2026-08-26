@@ -3,11 +3,10 @@ import type {
   LeagueOccurrenceLifecycle,
   LeagueOccurrenceStatus,
 } from "./schema/canonical-occurrences";
-import type { LeagueOccurrenceScheduleSource } from "./league-occurrence-schedule";
 
-export const LEAGUE_STANDINGS_CONTRACT_VERSION = "league-standings/1" as const;
+export const LEAGUE_STANDINGS_CONTRACT_VERSION = "league-standings/2" as const;
 export const LEAGUE_STANDINGS_ORDER_VERSION = "league-standings-order/1" as const;
-export const LEAGUE_STANDINGS_FINGERPRINT_VERSION = "league-standings-fingerprint/1" as const;
+export const LEAGUE_STANDINGS_FINGERPRINT_VERSION = "league-standings-fingerprint/2" as const;
 export const LEAGUE_STANDINGS_FINGERPRINT_ALGORITHM = "sha256" as const;
 
 export const LEAGUE_STANDINGS_ELIGIBILITY_STATES = [
@@ -16,7 +15,6 @@ export const LEAGUE_STANDINGS_ELIGIBILITY_STATES = [
   "excluded_cancelled",
   "excluded_noncompetitive",
   "excluded_by_standings_flag",
-  "legacy_unverified",
 ] as const;
 export type LeagueStandingsEligibilityState =
   (typeof LEAGUE_STANDINGS_ELIGIBILITY_STATES)[number];
@@ -24,8 +22,6 @@ export type LeagueStandingsEligibilityState =
 export const LEAGUE_STANDINGS_DISCREPANCY_CLASSIFICATIONS = [
   "ranking_policy_required",
   "matchup_evidence_unavailable",
-  "legacy_completion_unproven",
-  "legacy_standings_eligibility_unproven",
   "completed_eligible_occurrence_without_games",
   "completed_eligible_game_without_scores",
   "excluded_occurrence_has_score_evidence",
@@ -52,25 +48,8 @@ export type LeagueStandingsIncompatibilityClassification =
 export interface CanonicalLeagueStandingsIdentity {
   identitySource: "canonical_uuid";
   occurrenceId: string;
-  legacyProjectionKey: null;
 }
-
-export interface LegacyScheduleStandingsIdentity {
-  identitySource: "legacy_schedule_projection";
-  occurrenceId: null;
-  legacyProjectionKey: string;
-}
-
-export interface LegacyGameStandingsIdentity {
-  identitySource: "legacy_game_projection";
-  occurrenceId: null;
-  legacyProjectionKey: string;
-}
-
-export type LeagueStandingsStableIdentity =
-  | CanonicalLeagueStandingsIdentity
-  | LegacyScheduleStandingsIdentity
-  | LegacyGameStandingsIdentity;
+export type LeagueStandingsStableIdentity = CanonicalLeagueStandingsIdentity;
 
 export interface LeagueStandingsEligibility {
   state: LeagueStandingsEligibilityState;
@@ -79,20 +58,19 @@ export interface LeagueStandingsEligibility {
     | "scheduled_not_completed"
     | "cancelled"
     | "noncompetitive"
-    | "counts_in_standings_false"
-    | "legacy_completion_and_policy_unproven";
+    | "counts_in_standings_false";
 }
 
 export interface LeagueStandingsOccurrenceEvidence {
   orderIndex: number;
-  identity: CanonicalLeagueStandingsIdentity | LegacyScheduleStandingsIdentity;
+  identity: CanonicalLeagueStandingsIdentity;
   kind: LeagueOccurrenceKind;
   status: Exclude<LeagueOccurrenceStatus, "discarded">;
-  lifecycle: LeagueOccurrenceLifecycle | "legacy";
+  lifecycle: LeagueOccurrenceLifecycle;
   authoritativeLocalDate: string;
   authoritativeLocalStartTime: string | null;
   timezone: string;
-  startAt: string | null;
+  startAt: string;
   plannedOrdinal: number | null;
   competitionNumber: number | null;
   competitive: boolean;
@@ -124,15 +102,13 @@ export interface LeagueStandingsScoreEvidence {
 export interface LeagueStandingsGameEvidence {
   gameId: number;
   gameNumber: number;
-  legacyWeekNumber: number;
-  legacyDate: string;
   scores: LeagueStandingsScoreEvidence[];
 }
 
 export interface LeagueStandingsResultSessionEvidence {
   orderIndex: number;
-  identity: CanonicalLeagueStandingsIdentity | LegacyGameStandingsIdentity;
-  occurrenceOrderIndex: number | null;
+  identity: CanonicalLeagueStandingsIdentity;
+  occurrenceOrderIndex: number;
   eligibility: LeagueStandingsEligibility;
   games: LeagueStandingsGameEvidence[];
 }
@@ -150,7 +126,6 @@ export interface LeagueStandingsSummary {
   eligibleOccurrenceCount: number;
   pendingOccurrenceCount: number;
   excludedOccurrenceCount: number;
-  legacyUnverifiedOccurrenceCount: number;
   resultSessionCount: number;
   gameCount: number;
   scoreCount: number;
@@ -164,15 +139,14 @@ export interface LeagueStandingsReadContract {
     version: typeof LEAGUE_STANDINGS_ORDER_VERSION;
     occurrenceKeys: readonly ["e1PhysicalOrder"];
     canonicalResultSessionKeys: readonly ["occurrenceOrderIndex"];
-    legacyResultSessionKeys: readonly ["e2FirstGameOrder"];
+    resultSessionKeys: readonly ["occurrenceOrderIndex"];
     gameKeys: readonly ["gameNumber", "gameId"];
     scoreKeys: readonly ["teamNumber", "teamId", "position", "scoreId"];
     discrepancyKeys: readonly ["classification", "stableIdentity", "gameId"];
   };
   organizationId: number;
   leagueId: number;
-  authoritativeSource: LeagueOccurrenceScheduleSource;
-  operationalCanonicalStateExists: boolean;
+  authoritativeSource: "canonical";
   ranking: {
     state: "policy_required";
     policyVersion: null;

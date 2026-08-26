@@ -10,7 +10,7 @@ export const FUTURE_SEASON_DRAFT_INPUT_SNAPSHOT_VERSION = "future-season-draft-g
 
 export interface FutureSeasonDraftInputSnapshot {
   snapshotContractVersion: typeof FUTURE_SEASON_DRAFT_INPUT_SNAPSHOT_VERSION;
-  setupRequestContractVersion: "league-setup-integration-request/2";
+  setupRequestContractVersion: "league-setup-integration-request/3";
   setupConfirmationFingerprint: string;
   candidateSetFingerprint: string;
   seasonClassification: ProductSeason;
@@ -53,7 +53,7 @@ export function isFutureSeasonDraftInputSnapshot(value: unknown): value is Futur
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const snapshot = value as Partial<FutureSeasonDraftInputSnapshot>;
   return snapshot.snapshotContractVersion === FUTURE_SEASON_DRAFT_INPUT_SNAPSHOT_VERSION
-    && snapshot.setupRequestContractVersion === "league-setup-integration-request/2"
+    && snapshot.setupRequestContractVersion === "league-setup-integration-request/3"
     && typeof snapshot.setupConfirmationFingerprint === "string"
     && /^[0-9a-f]{64}$/.test(snapshot.setupConfirmationFingerprint)
     && typeof snapshot.candidateSetFingerprint === "string"

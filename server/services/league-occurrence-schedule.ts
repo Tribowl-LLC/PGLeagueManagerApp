@@ -1,5 +1,4 @@
 import { and, asc, eq, sql } from "drizzle-orm";
-import { DEFAULT_TIMEZONE } from "@shared/schema/constants";
 import {
   leagueOccurrenceBillingTerms,
   leagueOccurrenceGenerationRuns,
@@ -30,7 +29,6 @@ import {
   type LeagueOccurrenceScheduleSkippedDate,
   type LeagueOccurrenceScheduleCollectionGroup,
 } from "@shared/league-occurrence-schedule";
-import { getAllBowlingDates } from "@shared/schedule-utils";
 import { getProductSeasonFromDateOnly } from "@shared/season-utils";
 import { db } from "../db.js";
 import { hasLeagueOccurrenceEvidence } from "../storage/canonical-occurrence-evidence.js";
@@ -61,8 +59,6 @@ type ScheduleLeague = Pick<
   | "competitionStartTime"
   | "timezone"
   | "totalBowlingWeeks"
-  | "skipDates"
-  | "cancelledDates"
 >;
 
 export interface LeagueOccurrenceScheduleCanonicalRows {
@@ -132,10 +128,7 @@ export function compareLeagueScheduleOccurrences(
     || compareNullableNumbers(left.plannedOrdinal, right.plannedOrdinal)
     || compareNullableNumbers(left.competitionNumber, right.competitionNumber)
     || ((KIND_ORDER.get(left.kind) ?? 99) - (KIND_ORDER.get(right.kind) ?? 99))
-    || compareStrings(
-      left.occurrenceId ?? left.legacyProjectionKey ?? "",
-      right.occurrenceId ?? right.legacyProjectionKey ?? "",
-    );
+    || compareStrings(left.occurrenceId, right.occurrenceId);
 }
 
 function dateOnly(value: string): string | null {
@@ -149,11 +142,6 @@ function dateOnly(value: string): string | null {
     return null;
   }
   return `${match[1]}-${match[2]}-${match[3]}`;
-}
-
-function normalizeLocalTime(value: string | null): string | null {
-  const match = value?.match(/^([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?/);
-  return match ? `${match[1]}:${match[2]}:${match[3] ?? "00"}` : null;
 }
 
 function normalizeUtcInstant(value: string, field: string): string {
@@ -519,7 +507,6 @@ function buildCanonicalSchedule(
     const term = matchingTerms[0] ?? null;
     return {
       occurrenceId: row.id,
-      legacyProjectionKey: null,
       identitySource: "canonical_uuid",
       kind: row.kind,
       status: row.status as "scheduled" | "cancelled" | "completed",
@@ -561,83 +548,12 @@ function buildCanonicalSchedule(
     currentRevision: row.currentRevision,
   })).sort((left, right) => compareStrings(left.localDate, right.localDate)
     || compareStrings(left.kind, right.kind)
-    || compareStrings(left.exceptionId ?? "", right.exceptionId ?? ""));
+    || compareStrings(left.exceptionId, right.exceptionId));
   return {
     ...scheduleBase(input),
     authoritativeSource: "canonical",
-    operationalCanonicalStateExists: true,
     occurrences,
     skippedDates,
-  };
-}
-
-function buildLegacySchedule(input: BuildLeagueOccurrenceScheduleInput): LeagueOccurrenceScheduleReadContract {
-  const timezone = input.league.timezone?.trim() || DEFAULT_TIMEZONE;
-  const totalBowlingWeeks = input.league.totalBowlingWeeks ?? 0;
-  const seasonStart = dateOnly(input.league.seasonStart);
-  const localStartTime = normalizeLocalTime(input.league.competitionStartTime);
-  const projected = seasonStart && Number.isSafeInteger(totalBowlingWeeks) && totalBowlingWeeks > 0
-    ? getAllBowlingDates(
-      seasonStart,
-      input.league.weekDay,
-      totalBowlingWeeks,
-      input.league.skipDates,
-      input.league.cancelledDates,
-      [],
-    )
-    : [];
-  let plannedOrdinal = 0;
-  const occurrences: LeagueOccurrenceScheduleOccurrence[] = [];
-  const skippedDates: LeagueOccurrenceScheduleSkippedDate[] = [];
-  for (const row of projected) {
-    if (row.type === "skip") {
-      skippedDates.push({
-        exceptionId: null,
-        kind: "skip",
-        localDate: row.isoDate,
-        timezone,
-        reason: "Legacy league skip date",
-        source: "legacy_array",
-        lifecycle: "legacy",
-        durableCanonicalException: false,
-        currentRevision: null,
-      });
-      continue;
-    }
-    plannedOrdinal += 1;
-    const status = row.type === "cancelled" ? "cancelled" as const : "scheduled" as const;
-    occurrences.push({
-      occurrenceId: null,
-      legacyProjectionKey: `legacy:${input.leagueId}:${row.isoDate}:${plannedOrdinal}`,
-      identitySource: "legacy_projection",
-      kind: "regular",
-      status,
-      lifecycle: "legacy",
-      authoritativeLocalDate: row.isoDate,
-      authoritativeLocalStartTime: localStartTime,
-      timezone,
-      startAt: null,
-      selectedUtcOffsetMinutes: null,
-      foldResolution: null,
-      resolverVersion: null,
-      plannedOrdinal,
-      competitionNumber: status === "cancelled" ? null : row.bowlingWeekNumber,
-      competitive: status !== "cancelled",
-      countsInStandings: status !== "cancelled",
-      currentRevision: null,
-      effectivelyLocked: false,
-      effectiveLockReasons: [],
-      billing: null,
-      relationships: [],
-      collectionGroups: [],
-    });
-  }
-  return {
-    ...scheduleBase(input),
-    authoritativeSource: "legacy_fallback",
-    operationalCanonicalStateExists: false,
-    occurrences: occurrences.sort(compareLeagueScheduleOccurrences),
-    skippedDates: skippedDates.sort((left, right) => compareStrings(left.localDate, right.localDate)),
   };
 }
 
@@ -648,21 +564,13 @@ export function buildLeagueOccurrenceSchedule(
   const operational = input.canonical.occurrences.filter(
     (row) => row.lifecycle === "published" || row.lifecycle === "locked",
   );
-  const operationalMarkerWithoutOccurrence = input.canonical.generationRuns.some(
-    (row) => row.state === "approved" || row.state === "applied",
-  ) || input.canonical.billingTerms.some((row) => row.state === "published")
-    || input.canonical.scheduleExceptions.some((row) => row.lifecycle === "published")
-    || input.canonical.relationships.some((row) => row.state === "published")
-    || input.canonical.linkedActivityOccurrenceIds.size > 0;
-  if (operational.length === 0 && operationalMarkerWithoutOccurrence) {
+  if (operational.length === 0) {
     throw new LeagueOccurrenceScheduleError(
       "incompatible_canonical_state",
-      "operational canonical evidence is incomplete and cannot safely fall back to legacy schedule data",
+      "operational canonical schedule evidence is missing or incomplete",
     );
   }
-  return operational.length > 0
-    ? buildCanonicalSchedule(input, operational)
-    : buildLegacySchedule(input);
+  return buildCanonicalSchedule(input, operational);
 }
 
 export type ScheduleExecutor = typeof db | LeagueScheduleTransaction;
@@ -754,8 +662,6 @@ export async function loadLeagueOccurrenceScheduleSnapshot(
     competitionStartTime: leagues.competitionStartTime,
     timezone: leagues.timezone,
     totalBowlingWeeks: leagues.totalBowlingWeeks,
-    skipDates: leagues.skipDates,
-    cancelledDates: leagues.cancelledDates,
   }).from(leagues).where(and(
     eq(leagues.id, input.leagueId),
     eq(leagues.organizationId, input.organizationId),
@@ -828,4 +734,27 @@ export async function loadLeagueOccurrenceSchedule(
     (tx) => loadLeagueOccurrenceScheduleSnapshot(input, tx),
     { isolationLevel: "repeatable read", accessMode: "read only" },
   );
+}
+
+/**
+ * Product-visible league surfaces use the same complete-state validator as
+ * the schedule endpoint. A row in an occurrence table, or an approved run
+ * by itself, is not sufficient: the current run, occurrence set, skips,
+ * relationships, billing terms, collection groups, and tenant links must all
+ * agree before a league is exposed.
+ */
+export async function hasCompleteOperationalLeagueSchedule(
+  input: Omit<LoadLeagueOccurrenceScheduleInput, "includeAdministratorEvidence">,
+  executor: typeof db = db,
+): Promise<boolean> {
+  try {
+    await loadLeagueOccurrenceSchedule({ ...input, includeAdministratorEvidence: false }, executor);
+    return true;
+  } catch (caught) {
+    if (caught instanceof LeagueOccurrenceScheduleError
+      && (caught.code === "league_not_found" || caught.code === "incompatible_canonical_state")) {
+      return false;
+    }
+    throw caught;
+  }
 }

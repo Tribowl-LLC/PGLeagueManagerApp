@@ -7,11 +7,12 @@ import type {
   LeagueScheduleExceptionKind,
 } from "./schema/canonical-occurrences";
 
-export const LEAGUE_OCCURRENCE_SCHEDULE_CONTRACT_VERSION = "league-occurrence-schedule/2" as const;
+export const LEAGUE_OCCURRENCE_SCHEDULE_CONTRACT_VERSION = "league-occurrence-schedule/3" as const;
 export const LEAGUE_OCCURRENCE_SCHEDULE_COLLECTION_GROUP_VERSION = "canonical-collection-group/1" as const;
 export const LEAGUE_OCCURRENCE_SCHEDULE_ORDER_VERSION = "league-occurrence-schedule-order/1" as const;
 
-export type LeagueOccurrenceScheduleSource = "canonical" | "legacy_fallback";
+/** Every product-visible league schedule is backed by durable canonical rows. */
+export type LeagueOccurrenceScheduleSource = "canonical";
 
 export type LeagueOccurrenceEffectiveLockReason =
   | "canonical_lock"
@@ -46,18 +47,17 @@ export interface LeagueOccurrenceScheduleCollectionGroup {
 }
 
 export interface LeagueOccurrenceScheduleOccurrence {
-  /** Canonical UUID when one exists. Legacy projections deliberately have no fabricated identity. */
-  occurrenceId: string | null;
-  legacyProjectionKey: string | null;
-  identitySource: "canonical_uuid" | "legacy_projection";
+  /** Stable physical-session identity. Never fabricate an identity from dates. */
+  occurrenceId: string;
+  identitySource: "canonical_uuid";
   kind: LeagueOccurrenceKind;
   status: Exclude<LeagueOccurrenceStatus, "discarded">;
-  lifecycle: LeagueOccurrenceLifecycle | "legacy";
+  lifecycle: LeagueOccurrenceLifecycle;
   authoritativeLocalDate: string;
   authoritativeLocalStartTime: string | null;
   timezone: string;
-  /** UTC ISO instant for canonical rows; legacy projections do not manufacture one. */
-  startAt: string | null;
+  /** UTC ISO instant resolved from the stored business-local schedule. */
+  startAt: string;
   selectedUtcOffsetMinutes: number | null;
   foldResolution: LeagueOccurrenceFoldResolution | null;
   resolverVersion: string | null;
@@ -74,15 +74,15 @@ export interface LeagueOccurrenceScheduleOccurrence {
 }
 
 export interface LeagueOccurrenceScheduleSkippedDate {
-  exceptionId: string | null;
+  exceptionId: string;
   kind: LeagueScheduleExceptionKind;
   localDate: string;
   timezone: string;
   reason: string;
-  source: "manual" | "legacy_import" | "generator" | "legacy_array";
-  lifecycle: "published" | "legacy";
-  durableCanonicalException: boolean;
-  currentRevision: number | null;
+  source: "manual" | "legacy_import" | "generator";
+  lifecycle: "published";
+  durableCanonicalException: true;
+  currentRevision: number;
 }
 
 export interface LeagueOccurrenceScheduleAdministratorEvidence {
@@ -120,8 +120,7 @@ export interface LeagueOccurrenceScheduleReadContract {
   };
   organizationId: number;
   leagueId: number;
-  authoritativeSource: LeagueOccurrenceScheduleSource;
-  operationalCanonicalStateExists: boolean;
+  authoritativeSource: "canonical";
   occurrences: LeagueOccurrenceScheduleOccurrence[];
   skippedDates: LeagueOccurrenceScheduleSkippedDate[];
   administrator: LeagueOccurrenceScheduleAdministratorEvidence | null;

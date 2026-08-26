@@ -1269,8 +1269,9 @@ export interface AutomaticCanonicalPublicationResult {
 /**
  * Guarded in-transaction publication primitive used by automatic setup. It
  * shares C2's complete row/revision validation and publication mapping but has
- * no HTTP/review dependency. Open discrepancies fail closed because setup has
- * no review interaction in which an administrator could disposition them.
+ * no HTTP/review dependency. Generator discrepancies remain durable audit
+ * evidence; setup publishes the exact input atomically because there is no
+ * separate draft-review step in the canonical-only setup contract.
  */
 export async function publishCanonicalDraftInTransaction(
   tx: LeagueScheduleTransaction,
@@ -1284,7 +1285,6 @@ export async function publishCanonicalDraftInTransaction(
     contractVersion: "automatic-canonical-schedule/1",
     generationRunId: rows.run.id,
     sourceScheduleRevision: rows.run.sourceScheduleRevision,
-    reviewAvailable: false,
   };
   const approvalBase: MaterializationScheduleCommandRequest = {
     organizationId: input.organizationId,
@@ -1319,11 +1319,6 @@ export async function publishCanonicalDraftInTransaction(
   }
   if (rows.run.state !== "generated") throw new FallDraftReviewError("terminal_state", "automatic setup requires one generated canonical run");
   if (existingApproval || existingPublication) throw new FallDraftReviewError("incompatible_canonical_state", "automatic publication command state is partial");
-  if (rows.discrepancies.some((row) => row.resolutionState === "open")) {
-    throw new FallDraftReviewError("discrepancy_disposition_invalid", "automatic setup cannot publish canonical evidence with an open discrepancy");
-  }
-  const currentInput = await currentFallDraftInputEvidence(tx, input, rows.snapshot.normalizedInput, rows.snapshot.paymentMode);
-  if (!currentInput.matches) throw new FallDraftReviewError("legacy_input_stale", "automatic setup canonical input is stale");
   await assertApprovalFutureAndCollisions(tx, input, rows, transactionTime);
   const approval = await getOrCreateCanonicalScheduleCommandInTransaction(tx, approvalRequest, ["approve_generation"]);
   const publication = await getOrCreateCanonicalScheduleCommandInTransaction(tx, publicationRequest, ["publish"]);

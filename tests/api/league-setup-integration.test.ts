@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 import {
   bowlerLeagues,
   bowlers,
@@ -12,7 +12,7 @@ import {
   teams,
   users,
 } from "@shared/schema";
-import type { AnyLeagueSetupIntegrationResult, LeagueRolloverSourceContract } from "@shared/league-setup-integration";
+import type { LeagueSetupIntegrationResult, LeagueRolloverSourceContract } from "@shared/league-setup-integration";
 import type { CanonicalDraftMutationResult, CanonicalDraftReview } from "@shared/canonical-draft-review";
 import { hashPassword } from "../../server/lib/password";
 import { deleteOrganization } from "../../server/storage/organizations";
@@ -39,7 +39,7 @@ let systemAdmin: AuthSession;
 
 function intent(value: number) {
   return {
-    contractVersion: "league-setup-integration-request/2",
+    contractVersion: "league-setup-integration-request/3",
     idempotencyKey: `20000000-0000-4000-8000-${String(value).padStart(12, "0")}`,
   };
 }
@@ -97,39 +97,25 @@ afterAll(async () => {
 });
 
 describe("league setup integration API", () => {
-  it("creates non-Fall drafts atomically, returns durable IDs on retry, and exposes them to generic review", async () => {
+  it("creates a non-Fall canonical schedule atomically and returns durable IDs on retry", async () => {
     const body = futureBody(1);
-    const created = await apiPost<AnyLeagueSetupIntegrationResult>("/api/leagues", body, admin);
+    const created = await apiPost<LeagueSetupIntegrationResult>("/api/leagues", body, admin);
     expect(created.status).toBe(201);
     expect(created.data.data).toMatchObject({
       setupIntegration: { mode: "created", writesPerformed: true },
-      canonicalDraftGeneration: { mode: "applied", writesPerformed: true },
+      canonicalGeneration: { mode: "applied", writesPerformed: true },
     });
-    const result = created.data.data as AnyLeagueSetupIntegrationResult;
-    const retry = await apiPost<AnyLeagueSetupIntegrationResult>("/api/leagues", body, admin);
+    const result = created.data.data as LeagueSetupIntegrationResult;
+    const retry = await apiPost<LeagueSetupIntegrationResult>("/api/leagues", body, admin);
     expect(retry.status).toBe(200);
     expect(retry.data.data).toMatchObject({ setupIntegration: { mode: "idempotent_retry", writesPerformed: false } });
-    expect(retry.data.data?.canonicalDraftGeneration?.durableIds).toEqual(result.canonicalDraftGeneration?.durableIds);
+    expect(retry.data.data?.canonicalGeneration?.durableIds).toEqual(result.canonicalGeneration?.durableIds);
     const changed = await apiPost("/api/leagues", { ...body, paymentMode: "upfront" }, admin);
     expect(changed.status).toBe(409);
     expect(changed.data.error?.code).toBe("IDEMPOTENCY_CONFLICT");
     const review = await apiGet<CanonicalDraftReview>(`/api/leagues/${result.id}/canonical-drafts/review`, admin);
     expect(review.status).toBe(200);
-    expect(review.data.data).toMatchObject({ generationRun: { state: "generated" }, generation: { paymentMode: "weekly", seasonClassification: "Spring" } });
-    const legacyAlias = await apiGet(`/api/leagues/${result.id}/canonical-fall-drafts/review`, admin);
-    expect(legacyAlias.status).toBe(404);
-    if (!review.data.data) throw new Error("generic review response missing");
-    const published = await apiPost<CanonicalDraftMutationResult>(`/api/leagues/${result.id}/canonical-drafts/review/approve`, {
-      contractVersion: "canonical-draft-approve-request/1",
-      confirmedReviewFingerprint: review.data.data.reviewFingerprint,
-      reason: "Approve E4 generic setup evidence",
-      idempotencyKey: "e4-api-approve-1",
-      discrepancyDispositions: review.data.data.discrepancies
-        .filter((row) => row.resolutionState === "open")
-        .map((row) => ({ discrepancyId: row.id, disposition: "waived" })),
-    }, admin);
-    expect(published.status).toBe(201);
-    expect(published.data.data).toMatchObject({ review: { generationRun: { state: "applied" } } });
+    expect(review.data.data).toMatchObject({ generationRun: { state: "applied" }, generation: { paymentMode: "weekly", seasonClassification: "Spring" } });
     const [publishedLeague] = await db.select().from(leagues).where(eq(leagues.id, result.id));
     if (!publishedLeague) throw new Error("published league row missing");
     const [publishedRun] = await db.select({ sourceScheduleRevision: leagueOccurrenceGenerationRuns.sourceScheduleRevision })
@@ -164,6 +150,36 @@ describe("league setup integration API", () => {
       name: "API builder-shaped metadata edit",
       description: "metadata survives canonical schedule mutation",
     });
+    const occurrencesBeforeFeePatch = await db.select({
+      id: leagueOccurrences.id,
+      authoritativeLocalDate: leagueOccurrences.authoritativeLocalDate,
+      plannedOrdinal: leagueOccurrences.plannedOrdinal,
+      competitionNumber: leagueOccurrences.competitionNumber,
+    }).from(leagueOccurrences)
+      .where(eq(leagueOccurrences.leagueId, result.id))
+      .orderBy(asc(leagueOccurrences.id));
+    const feePatch = await apiPatch(`/api/leagues/${result.id}`, {
+      lineageFee: 1_000,
+      prizeFundFee: 1_000,
+      scheduleRevision: durableBuilderEdit?.canonicalScheduleRevision,
+      idempotencyKey: "e4-api-fee-only-edit-1",
+    }, admin);
+    expect(feePatch.status).toBe(200);
+    expect(feePatch.data.data).toMatchObject({
+      id: result.id,
+      lineageFee: 1_000,
+      prizeFundFee: 1_000,
+      canonicalScheduleRevision: durableBuilderEdit?.canonicalScheduleRevision,
+    });
+    const occurrencesAfterFeePatch = await db.select({
+      id: leagueOccurrences.id,
+      authoritativeLocalDate: leagueOccurrences.authoritativeLocalDate,
+      plannedOrdinal: leagueOccurrences.plannedOrdinal,
+      competitionNumber: leagueOccurrences.competitionNumber,
+    }).from(leagueOccurrences)
+      .where(eq(leagueOccurrences.leagueId, result.id))
+      .orderBy(asc(leagueOccurrences.id));
+    expect(occurrencesAfterFeePatch).toEqual(occurrencesBeforeFeePatch);
     const unsupportedSkip = await apiPatch(`/api/leagues/${result.id}`, {
       skipDates: [...(durableBuilderEdit?.skipDates ?? []), "2032-03-21"],
       scheduleRevision: durableBuilderEdit?.canonicalScheduleRevision,
@@ -180,7 +196,7 @@ describe("league setup integration API", () => {
     expect(unsupportedScalar.data.error?.code).toBe("CANONICAL_SCHEDULE_UNSUPPORTED_EDIT");
     const schedule = await apiGet(`/api/leagues/${result.id}/occurrence-schedule`, admin);
     expect(schedule.status).toBe(200);
-    expect(schedule.data.data).toMatchObject({ authoritativeSource: "canonical", operationalCanonicalStateExists: true });
+    expect(schedule.data.data).toMatchObject({ authoritativeSource: "canonical" });
   });
 
   it("rejects ordinary users and forbidden canonical claims without creating a league", async () => {
@@ -250,12 +266,12 @@ describe("league setup integration API", () => {
     const missingScope = await apiPost("/api/leagues", futureBody(6), systemAdmin);
     expect(missingScope.status).toBe(400);
     expect(missingScope.data.error?.code).toBe("ORG_REQUIRED");
-    const created = await apiPost<AnyLeagueSetupIntegrationResult>("/api/leagues", {
+    const created = await apiPost<LeagueSetupIntegrationResult>("/api/leagues", {
       ...futureBody(7),
       organizationId,
     }, systemAdmin);
     expect(created.status).toBe(201);
-    expect(created.data.data).toMatchObject({ organizationId, canonicalDraftGeneration: { mode: "applied" } });
+    expect(created.data.data).toMatchObject({ organizationId, canonicalGeneration: { mode: "applied" } });
   });
 
   it("atomically copies a new Fall season and serializes competing successor requests", async () => {
@@ -325,39 +341,26 @@ describe("league setup integration API", () => {
     }, admin);
     expect(retiredEnd.status).toBe(400);
     const [first, second] = await Promise.all([
-      apiPost<AnyLeagueSetupIntegrationResult>(`/api/leagues/${source.id}/new-season`, { ...values, setupIntegration: intent(4), sourceConfirmation }, admin),
-      apiPost<AnyLeagueSetupIntegrationResult>(`/api/leagues/${source.id}/new-season`, { ...values, setupIntegration: intent(5), sourceConfirmation }, admin),
+      apiPost<LeagueSetupIntegrationResult>(`/api/leagues/${source.id}/new-season`, { ...values, setupIntegration: intent(4), sourceConfirmation }, admin),
+      apiPost<LeagueSetupIntegrationResult>(`/api/leagues/${source.id}/new-season`, { ...values, setupIntegration: intent(5), sourceConfirmation }, admin),
     ]);
     const attempts = [{ response: first, key: 4 }, { response: second, key: 5 }];
     const successfulAttempt = attempts.find(({ response }) => response.status === 201);
+    if (!successfulAttempt) throw new Error("one concurrent rollover attempt should create the successor");
     const successful = successfulAttempt?.response;
     const rejected = [first, second].find((response) => response.status === 409);
     expect(successful?.data.data).toMatchObject({
       previousSeasonId: source.id,
       setupIntegration: { mode: "created" },
-      canonicalDraftGeneration: { mode: "applied" },
+      canonicalGeneration: { mode: "applied" },
     });
     expect(rejected?.data.error?.code).toMatch(/STALE_SOURCE_LEAGUE|SUCCESSOR_SEASON_EXISTS/);
-    const target = successful?.data.data as AnyLeagueSetupIntegrationResult;
+    const target = successful?.data.data as LeagueSetupIntegrationResult;
     expect((await db.select().from(leagues).where(eq(leagues.id, source.id)))[0]?.active).toBe(false);
     expect(await db.select().from(teams).where(eq(teams.leagueId, target.id))).toHaveLength(1);
     expect(await db.select().from(bowlerLeagues).where(eq(bowlerLeagues.leagueId, target.id))).toHaveLength(1);
     expect(await db.select().from(leagueOccurrenceGenerationRuns).where(eq(leagueOccurrenceGenerationRuns.leagueId, target.id))).toHaveLength(1);
     expect(await db.select().from(leagueOccurrences).where(eq(leagueOccurrences.leagueId, target.id))).toHaveLength(4);
-    const review = await apiGet<CanonicalDraftReview>(`/api/leagues/${target.id}/canonical-drafts/review`, admin);
-    expect(review.status).toBe(200);
-    if (!review.data.data || !successfulAttempt) throw new Error("successful rollover review is missing");
-    const published = await apiPost<CanonicalDraftMutationResult>(`/api/leagues/${target.id}/canonical-drafts/review/approve`, {
-      contractVersion: "canonical-draft-approve-request/1",
-      confirmedReviewFingerprint: review.data.data.reviewFingerprint,
-      reason: "Publish rollover before retry",
-      idempotencyKey: "e4-rollover-publish-before-retry",
-      discrepancyDispositions: review.data.data.discrepancies
-        .filter((row) => row.resolutionState === "open")
-        .map((row) => ({ discrepancyId: row.id, disposition: "waived" })),
-    }, admin);
-    expect(published.status).toBe(201);
-    expect(published.data.data).toMatchObject({ review: { generationRun: { state: "applied" } } });
 
     await db.update(leagues).set({ description: "Archived source changed after commit" }).where(eq(leagues.id, source.id));
     await db.update(teams).set({ name: "Archived source team changed" }).where(eq(teams.id, team.id));
@@ -371,7 +374,7 @@ describe("league setup integration API", () => {
       roster: (await db.select().from(bowlerLeagues).where(eq(bowlerLeagues.leagueId, target.id))).length,
     });
     const beforeRetry = await targetCounts();
-    const retry = await apiPost<AnyLeagueSetupIntegrationResult>(`/api/leagues/${source.id}/new-season`, {
+    const retry = await apiPost<LeagueSetupIntegrationResult>(`/api/leagues/${source.id}/new-season`, {
       ...values,
       setupIntegration: intent(successfulAttempt.key),
       sourceConfirmation,
@@ -380,10 +383,10 @@ describe("league setup integration API", () => {
     expect(retry.data.data).toMatchObject({
       id: target.id,
       setupIntegration: { mode: "idempotent_retry", writesPerformed: false },
-      canonicalDraftGeneration: { mode: "idempotent_retry", writesPerformed: false },
+      canonicalGeneration: { mode: "idempotent_retry", writesPerformed: false },
     });
-    expect(retry.data.data?.canonicalDraftGeneration?.durableIds)
-      .toEqual(target.canonicalDraftGeneration?.durableIds);
+    expect(retry.data.data?.canonicalGeneration?.durableIds)
+      .toEqual(target.canonicalGeneration?.durableIds);
     expect(await targetCounts()).toEqual(beforeRetry);
   });
 });
