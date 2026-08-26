@@ -20,6 +20,7 @@ import {
   applePayJobItems,
   deletionRequests,
   orphanCleanupAudits,
+  leagues,
   paymentOperations,
   bowlers,
   identityLinkEvents,
@@ -215,11 +216,18 @@ describe('deleteUser — storage', () => {
   it('refuses to delete a user retained as an immutable payment actor', async () => {
     const orgId = await makeOrg();
     const userId = await makeUser({ role: 'user', organizationId: orgId });
+    const [league] = await db
+      .select({ id: leagues.id })
+      .from(leagues)
+      .where(eq(leagues.organizationId, orgId))
+      .limit(1);
+    if (!league) throw new Error('baseline league fixture is missing');
     const [operation] = await db.insert(paymentOperations).values({
       organizationId: orgId,
       authorizingUserId: userId,
       operationType: 'interactive_charge',
       targetKey: `interactive-charge:delete-actor-${userId}`,
+      leagueId: league.id,
       amountMinor: 1,
       currency: 'USD',
       requestFingerprint: `lvpayreq:v1:${'a'.repeat(64)}`,

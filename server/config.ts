@@ -10,7 +10,6 @@ import {
 const log = createLogger("Config");
 
 export const SCHEDULED_PAYMENT_EXECUTION_MODES = [
-  'legacy',
   'ledger_paused',
   'ledger_execute',
 ] as const;
@@ -25,9 +24,9 @@ export const envSchema = z.object({
 
   FIELD_ENCRYPTION_KEY: z.string().regex(/^[0-9a-fA-F]{64}$/, "FIELD_ENCRYPTION_KEY must be a 64-character hex string (32 bytes). Payment credentials cannot be stored without encryption."),
 
-  // Phase 2B is deliberately opt-in. Production-like runtimes must set this
-  // explicitly; local/test runtimes retain the legacy default so dormant
-  // infrastructure does not alter the scheduled-payment path.
+  // Scheduled ledger execution is deliberately opt-in. Production-like
+  // runtimes must set this explicitly; local/test runtimes default to the
+  // safe paused state.
   SCHEDULED_PAYMENT_EXECUTION_MODE: z.enum(SCHEDULED_PAYMENT_EXECUTION_MODES).optional(),
   ROSTER_STANDING_AUTOPAY_ENABLED: z
     .enum(["true", "false", "1", "0"])
@@ -155,7 +154,7 @@ export function validateScheduledPaymentExecutionMode(input: {
       reason: 'SCHEDULED_PAYMENT_EXECUTION_MODE must be explicitly set in production',
     };
   }
-  return { ok: true, mode: input.mode ?? 'legacy' };
+  return { ok: true, mode: input.mode ?? 'ledger_paused' };
 }
 
 // Minimum SETUP_SECRET length in characters. 32 chars of base64 is ~24 bytes
@@ -261,7 +260,7 @@ function validateEnv(): Env {
 
 export const env = validateEnv();
 export const scheduledPaymentExecutionMode: ScheduledPaymentExecutionMode =
-  env.SCHEDULED_PAYMENT_EXECUTION_MODE ?? 'legacy';
+  env.SCHEDULED_PAYMENT_EXECUTION_MODE ?? 'ledger_paused';
 export const rosterStandingAutopayEnabled = env.ROSTER_STANDING_AUTOPAY_ENABLED === true;
 
 // Enforce SETUP_SECRET strength at boot. Refuses to start the server when

@@ -15,24 +15,19 @@ The older phase-specific instructions below are historical release notes where
 they mention those retired authorities. Do not use their old migration,
 operation-type, scheduler, or activation instructions for the current app.
 
-Payment-operation schema releases additionally follow the exact old-instance
-drain, `ledger_paused` deploy, verification, activation, and rollback sequence
-in [Payment operation ledger](payment-operation-ledger.md#phase-2b-2-deployment-activation-and-rollback).
-Phase 3B durable refunds additionally require the
-[Maintenance Mode and old-instance drain procedure](payment-operation-ledger.md#phase-3b-deployment-mandatory-maintenance-mode-and-old-instance-drain)
-before migration 0013 or the new refund route is deployed. Do not use a
-rolling deployment: the pre-Phase-3B route has timestamp-based Square keys and
-no ledger guard.
-Production must set `SCHEDULED_PAYMENT_EXECUTION_MODE` explicitly; a missing
-value fails startup. Render Auto-Deploy must be Off before merging migration
-0008 or any later payment-operation schema release.
+Current payment-operation releases use the PR3 ledger contract. Production must
+set `SCHEDULED_PAYMENT_EXECUTION_MODE` explicitly; a missing value fails
+startup. The only accepted values are `ledger_paused` and `ledger_execute`.
+Keep `ledger_paused` during release and verification; use `ledger_execute` only
+after the separately approved automatic-payment gate. Render Auto-Deploy must
+remain Off for this release.
 
 F1 canonical due/past-due is a separate dormant gate. Keep
 `LEAGUEVAULT_F1_ACTIVATION_ENABLED` unset or false in every production
-environment. Do not enable it until legacy payment writers/history have been
-reconciled and the product owner has approved activation of individual
-leagues. Migration 0024 may be installed while activation remains dormant;
-production D2 activation rows must remain zero until that approval.
+environment. Do not enable it until the product owner has approved activation
+of individual leagues. Migration 0024 may be installed while activation
+remains dormant; production D2 activation rows must remain zero until that
+approval.
 
 F3 canonical auto-pay plans are a separately gated, setup-only release. Keep
 `LEAGUEVAULT_F3_CANONICAL_AUTOPAY_ENABLED` unset or false by default. Migration
@@ -48,18 +43,12 @@ obligation balances, so verify F2 manual quotes reject reserved capacity.
 After v2 evidence exists, rollback is a forward fix or traffic pause only;
 retain migration 0026 and its evidence.
 
-F4 canonical scheduled execution is independently gated. Keep
-`LEAGUEVAULT_F4_CANONICAL_AUTOPAY_EXECUTION_ENABLED` unset or false and leave
-`SCHEDULED_PAYMENT_EXECUTION_MODE` at `ledger_paused` (or `legacy`) until F1,
-F3, and F4 have separate approvals. Automatic F4 work is permitted only with
-`ledger_execute` and both F3/F4 gates enabled. Migration
-`0029_phase_f4_canonical_scheduled_execution` is forward-only with no
-backfill; it transactionally widens the three payment-operation CHECK
-constraints needed for the canonical domain and adds its tenant-scoped
-evidence/indexes. Deployment and migration never authorize provider calls. If
-a cutover issue occurs, pause traffic/disable the gate and retain uncertain F4
-operations for exact-key reconciliation; do not bulk-cancel or reinterpret
-legacy scheduled work.
+The former F4 scheduled-execution design is superseded by PR3 and is not an
+active release target. Keep
+`LEAGUEVAULT_F4_CANONICAL_AUTOPAY_EXECUTION_ENABLED` unset or false. The
+current PR3 application has no scheduled-charge or canonical-autopay
+operation; any future unattended execution requires a separately reviewed
+contract built on the retained roster snapshot/items and ledger controls.
 
 F5 canonical receipts and payment reporting are read-only and migration-free
 on top of the existing F1/F2/F3/F4 evidence and migration `0029`. Deploy only

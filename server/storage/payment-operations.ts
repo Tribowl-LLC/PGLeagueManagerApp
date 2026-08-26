@@ -34,7 +34,6 @@ import {
 } from "@shared/schema";
 import { db } from "../db.js";
 import {
-  bindInteractiveOccurrenceRequestFingerprint,
   buildPaymentOperationIdentity,
   INTERACTIVE_REQUEST_KEY_MAX_LENGTH,
   validateInteractiveRequestKey,
@@ -114,23 +113,23 @@ export class PaymentOperationValidationError extends Error {
 }
 export interface CreateOrGetInteractivePaymentOperationInput {
   organizationId: number;
+  leagueId: number;
   targetKey: string;
   amountMinor: number;
   currency: string;
   providerName: string;
-  authorizingUserId?: number | null;
-  immutableSemanticFingerprint?: string;
+  authorizingUserId: number;
   now?: Date;
 }
 
 export interface CreateOrGetGeneralInteractivePaymentOperationInput {
   organizationId: number;
+  leagueId: number;
   requestKey: string;
   amountMinor: number;
   currency: string;
   providerName: string;
-  authorizingUserId?: number | null;
-  immutableSemanticFingerprint?: string;
+  authorizingUserId: number;
   now?: Date;
 }
 
@@ -480,13 +479,7 @@ export async function createOrGetInteractivePaymentOperation(
     currency: input.currency,
     providerName: input.providerName,
   });
-  const identity = {
-    ...baseIdentity,
-    requestFingerprint: bindInteractiveOccurrenceRequestFingerprint(
-      baseIdentity.requestFingerprint,
-      input.immutableSemanticFingerprint,
-    ),
-  };
+  const identity = baseIdentity;
   const request = identity.normalizedRequest;
   const nowDate = input.now ?? new Date();
   if (!Number.isFinite(nowDate.getTime())) {
@@ -508,13 +501,14 @@ export async function createOrGetInteractivePaymentOperation(
       .values({
         organizationId: request.organizationId,
         operationType: "interactive_charge",
+        leagueId: input.leagueId,
         targetKey: request.targetKey,
         amountMinor: request.amountMinor,
         currency: request.currency,
         requestFingerprint: identity.requestFingerprint,
         providerIdempotencyKey: identity.providerIdempotencyKey,
         providerName: request.providerName,
-        authorizingUserId: input.authorizingUserId ?? null,
+        authorizingUserId: input.authorizingUserId,
         status: "pending",
         nextAttemptAt: now,
         createdAt: now,
@@ -530,6 +524,7 @@ export async function createOrGetInteractivePaymentOperation(
       .where(and(
         eq(paymentOperations.organizationId, input.organizationId),
         eq(paymentOperations.operationType, "interactive_charge"),
+        eq(paymentOperations.leagueId, input.leagueId),
         eq(paymentOperations.targetKey, request.targetKey),
       ))
       .limit(1);
@@ -568,19 +563,15 @@ export async function createOrGetGeneralInteractivePaymentOperation(
 ): Promise<PaymentOperation> {
   const operation = await createOrGetInteractivePaymentOperation({
     organizationId: input.organizationId,
+    leagueId: input.leagueId,
     targetKey: buildGeneralInteractiveTargetKey(input.requestKey),
     amountMinor: input.amountMinor,
     currency: input.currency,
     providerName: input.providerName,
     authorizingUserId: input.authorizingUserId,
-    immutableSemanticFingerprint: input.immutableSemanticFingerprint,
     now: input.now,
   }, existingTransaction);
-  // Existing pre-F2 operations have no actor evidence and retain their exact
-  // recovery behavior. Once actor evidence exists it is immutable.
-  if (operation.authorizingUserId !== null
-    && input.authorizingUserId != null
-    && operation.authorizingUserId !== input.authorizingUserId) {
+  if (operation.authorizingUserId !== input.authorizingUserId) {
     throw new PaymentOperationImmutableMismatchError();
   }
   return operation;
@@ -670,19 +661,19 @@ async function loadRosterOperationSnapshot(
     eq(paymentOperationRosterSnapshots.snapshotKind, "interactive"),
   )).limit(1);
   if (!stored) return undefined;
-  if (stored.requestKind === null || stored.sourceKind === null || stored.encryptedSourceId === null || stored.payerBowlerId === null || stored.weekOf === null) {
+  if (stored.requestKind === null || stored.sourceKind === null || stored.encryptedSourceId === null || stored.payerBowlerId === null || stored.quoteFingerprint === null) {
     throw new PaymentOperationImmutableMismatchError();
   }
   const requestKind = stored.requestKind;
   const sourceKind = stored.sourceKind;
   const encryptedSourceId = stored.encryptedSourceId;
   const payerBowlerId = stored.payerBowlerId;
-  const weekOf = stored.weekOf;
+  const quoteFingerprint = stored.quoteFingerprint;
   const allocations = Array.isArray(stored.obligations) ? stored.obligations : [];
   return reconstructRosterOperationSnapshot({
     organizationId: operation.organizationId, amountMinor: operation.amountMinor, currency: operation.currency,
     providerName: operation.providerName, providerIdempotencyKey: operation.providerIdempotencyKey,
-    stored: { ...stored, snapshotVersion: 2, requestKind, sourceKind, encryptedSourceId, payerBowlerId, weekOf },
+    stored: { ...stored, snapshotVersion: 2, requestKind, sourceKind, encryptedSourceId, payerBowlerId, quoteFingerprint },
     allocations: allocations as RosterOperationSemanticSnapshot["allocations"],
     lineItems: stored.lineItems,
   });
@@ -692,61 +683,38 @@ export async function persistRosterOperationSnapshot(
   operation: PaymentOperation,
   snapshot: RosterOperationSemanticSnapshot,
   transaction: PaymentOperationTransaction,
-  quoteFingerprint?: string | null,
 ): Promise<RosterOperationSemanticSnapshot> {
   if (snapshot.organizationId !== operation.organizationId) {
     throw new PaymentOperationValidationError("roster snapshot does not belong to the operation tenant");
   }
-  if (operation.operationType !== "interactive_charge" || (operation.leagueId !== null && operation.leagueId !== snapshot.leagueId) || snapshot.amountMinor !== operation.amountMinor || snapshot.currency !== operation.currency || snapshot.providerName !== operation.providerName) {
+  if (operation.operationType !== "interactive_charge" || operation.leagueId !== snapshot.leagueId || snapshot.amountMinor !== operation.amountMinor || snapshot.currency !== operation.currency || snapshot.providerName !== operation.providerName) {
     throw new PaymentOperationImmutableMismatchError();
   }
-  // Validate the composite tenant references before binding a previously
-  // unscoped operation to its league. This prevents a cross-tenant snapshot
-  // from reaching the database FK and turns it into the intended fail-closed
-  // application error.
+  // Validate the composite tenant references before writing the immutable
+  // snapshot. The operation is already scoped to this league and actor.
   await validateRosterOperationSnapshotTenantReferences(transaction, snapshot);
-  let operationForSnapshot = operation;
-  if (operation.leagueId === null) {
-    const [boundOperation] = await transaction.update(paymentOperations).set({ leagueId: snapshot.leagueId }).where(and(
-      eq(paymentOperations.id, operation.id),
-      eq(paymentOperations.organizationId, operation.organizationId),
-      isNull(paymentOperations.leagueId),
-    )).returning();
-    if (boundOperation) {
-      operationForSnapshot = boundOperation;
-    } else {
-      const [alreadyBound] = await transaction.select().from(paymentOperations).where(and(
-        eq(paymentOperations.id, operation.id),
-        eq(paymentOperations.organizationId, operation.organizationId),
-      )).limit(1).for("share");
-      if (!alreadyBound || alreadyBound.leagueId !== snapshot.leagueId) {
-        throw new PaymentOperationImmutableMismatchError();
-      }
-      operationForSnapshot = alreadyBound;
-    }
-  }
   const [storedOperation] = await transaction.select().from(paymentOperations).where(and(
-    eq(paymentOperations.id, operationForSnapshot.id), eq(paymentOperations.organizationId, operationForSnapshot.organizationId),
+    eq(paymentOperations.id, operation.id), eq(paymentOperations.organizationId, operation.organizationId),
   )).limit(1).for("share");
-  if (!storedOperation || storedOperation.operationType !== operationForSnapshot.operationType || storedOperation.leagueId !== snapshot.leagueId || storedOperation.targetKey !== operationForSnapshot.targetKey || storedOperation.amountMinor !== operationForSnapshot.amountMinor || storedOperation.currency !== operationForSnapshot.currency || storedOperation.providerName !== operationForSnapshot.providerName || storedOperation.requestFingerprint !== operationForSnapshot.requestFingerprint || storedOperation.providerIdempotencyKey !== operationForSnapshot.providerIdempotencyKey) {
+  if (!storedOperation || storedOperation.operationType !== operation.operationType || storedOperation.leagueId !== snapshot.leagueId || storedOperation.targetKey !== operation.targetKey || storedOperation.amountMinor !== operation.amountMinor || storedOperation.currency !== operation.currency || storedOperation.providerName !== operation.providerName || storedOperation.requestFingerprint !== operation.requestFingerprint || storedOperation.providerIdempotencyKey !== operation.providerIdempotencyKey) {
     throw new PaymentOperationImmutableMismatchError();
   }
   const encrypted = encryptRosterOperationSnapshot(snapshot);
   const [created] = await transaction.insert(paymentOperationRosterSnapshots).values({
-    operationId: operationForSnapshot.id, organizationId: snapshot.organizationId, leagueId: snapshot.leagueId, snapshotVersion: 2, snapshotKind: "interactive",
+    operationId: operation.id, organizationId: snapshot.organizationId, leagueId: snapshot.leagueId, snapshotVersion: 2, snapshotKind: "interactive",
     amountMinor: snapshot.amountMinor, currency: snapshot.currency, obligations: snapshot.allocations,
     locationId: encrypted.locationId, providerLocationId: encrypted.providerLocationId, payerBowlerId: encrypted.payerBowlerId, requestKind: encrypted.requestKind,
     encryptedSourceId: encrypted.encryptedSourceId, encryptedCustomerId: encrypted.encryptedCustomerId, encryptedBuyerEmail: encrypted.encryptedBuyerEmail,
-    storeCard: encrypted.storeCard, sourceKind: encrypted.sourceKind, weekOf: encrypted.weekOf, combinedChargeGroupId: encrypted.combinedChargeGroupId,
-    quoteFingerprint: quoteFingerprint ?? null, lineItems: snapshot.lineItems, snapshotFingerprint: encrypted.snapshotFingerprint,
+    storeCard: encrypted.storeCard, sourceKind: encrypted.sourceKind, combinedChargeGroupId: encrypted.combinedChargeGroupId,
+    quoteFingerprint: encrypted.quoteFingerprint, lineItems: snapshot.lineItems, snapshotFingerprint: encrypted.snapshotFingerprint,
   }).onConflictDoNothing().returning({ operationId: paymentOperationRosterSnapshots.operationId });
   if (!created) {
-    const existing = await loadRosterOperationSnapshot(transaction, operationForSnapshot);
+    const existing = await loadRosterOperationSnapshot(transaction, operation);
     if (!existing || fingerprintRosterOperationSnapshot(existing) !== encrypted.snapshotFingerprint) throw new PaymentOperationImmutableMismatchError();
     return existing;
   }
-  if (snapshot.storeCard) await initializeInteractiveCardSaveState(transaction, operationForSnapshot, snapshot);
-  const stored = await loadRosterOperationSnapshot(transaction, operationForSnapshot);
+  if (snapshot.storeCard) await initializeInteractiveCardSaveState(transaction, operation, snapshot);
+  const stored = await loadRosterOperationSnapshot(transaction, operation);
   if (!stored || fingerprintRosterOperationSnapshot(stored) !== encrypted.snapshotFingerprint) throw new PaymentOperationImmutableMismatchError();
   return stored;
 }
@@ -1195,9 +1163,8 @@ export async function acquireInteractivePaymentOperationDispatchCutoff(input: {
         eq(paymentOperations.operationType, "interactive_charge"),
       ))
       .limit(1);
-    // The retired D2 occurrence supplement used to provide this scope. A
-    // retained operation with no ledger league remains on legacy behavior;
-    // a roster operation never reaches this provider path.
+    // Every retained interactive operation is league-scoped. Refunds do not
+    // use this interactive dispatch cutoff.
     if (!scope || scope.leagueId === null) return null;
     await tx.execute(sql`SELECT pg_advisory_xact_lock(${input.organizationId}::integer, ${scope.leagueId}::integer)`);
     const [operation] = await tx.select({
@@ -2333,13 +2300,13 @@ export function buildNextPaymentOperationWakeQuery() {
       attempt_count,
       league_id,
       (due_at AT TIME ZONE 'UTC')::text AS due_at
-    FROM next_operation AS scheduled_payment_work
-    ORDER BY scheduled_payment_work.due_at ASC
+    FROM next_operation AS operation_work
+    ORDER BY operation_work.due_at ASC
     LIMIT 1
   `;
 }
 
-/** One indexed query for the earliest schedule preparation or operation work. */
+/** One indexed query for the earliest operation retry or reconciliation work. */
 export async function getNextPaymentOperationWake(): Promise<PaymentOperationWake | undefined> {
   const result = await db.execute<{
     kind: "operation";
@@ -2386,10 +2353,9 @@ export async function reconcilePaymentOperationSuccess(
   const now = toIso(input.now ?? new Date(), "now");
 
   const updated = await db.transaction(async (tx) => {
-    // Canonical reconciliation must enter through the same advisory → plan
-    // → operation lock order as dispatch and revocation. The helper performs
-    // only an unlocked scope read, then takes the canonical lock; legacy
-    // operations retain their historical operation-row lock behavior.
+    // Reconciliation must enter through the same advisory → plan → operation
+    // lock order as dispatch and revocation. The helper performs only an
+    // unlocked scope read, then takes the canonical lock.
     const current = await lockCanonicalMutationScope(tx, input.organizationId, input.operationId);
     if (!current) return undefined;
     const [transitioned] = await tx
@@ -2507,7 +2473,7 @@ export async function recordExpiredPaymentOperationAttemptExhausted(input: {
   });
 }
 
-/** Phase 2B-2 legacy guard; deliberately not wired into the scheduler here. */
+/** Cancel a pending or leased operation without changing provider evidence. */
 export async function cancelPaymentOperation(
   input: Omit<LeasedPaymentOperationInput, "leaseToken"> & { leaseToken?: string },
 ): Promise<PaymentOperation> {

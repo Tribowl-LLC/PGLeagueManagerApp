@@ -180,7 +180,6 @@ export interface IPaymentOperationStorage {
     operation: PaymentOperation,
     snapshot: import("../services/roster-operation-snapshot").RosterOperationSemanticSnapshot,
     transaction: import("./payment-operations").PaymentOperationTransaction,
-    quoteFingerprint?: string | null,
   ): Promise<import("../services/roster-operation-snapshot").RosterOperationSemanticSnapshot>;
   getRosterOperationSnapshotForOrganization(
     organizationId: number,

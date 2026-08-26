@@ -77,8 +77,8 @@ export const paymentOperations = pgTable("payment_operations", {
   organizationId: integer("organization_id")
     .notNull()
     .references(() => organizations.id, { onDelete: "cascade" }),
-  // Frozen actor evidence for interactive intent. Nullable preserves exact
-  // recovery semantics for pre-F2 rows; new F2 preparation always supplies it.
+  // Frozen actor evidence for interactive intent. Refunds are the only
+  // operation kind that may remain unscoped.
   authorizingUserId: integer("authorizing_user_id")
     .references(() => users.id, { onDelete: "restrict" }),
   operationType: text("operation_type", { enum: PAYMENT_OPERATION_TYPES }).notNull(),
@@ -257,7 +257,12 @@ export const paymentOperations = pgTable("payment_operations", {
       AND ${table.leagueId} IS NOT NULL
       AND ${table.authorizingUserId} IS NOT NULL
     ) OR (
-      ${table.operationType} IN ('interactive_charge', 'refund')
+      ${table.operationType} = 'interactive_charge'
+      AND ${table.leagueId} IS NOT NULL
+      AND ${table.authorizingUserId} IS NOT NULL
+      AND ${table.triggerOccurrenceId} IS NULL
+    ) OR (
+      ${table.operationType} = 'refund'
       AND ${table.triggerOccurrenceId} IS NULL
     )`,
   ),

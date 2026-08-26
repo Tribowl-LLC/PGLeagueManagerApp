@@ -16,8 +16,15 @@ Interactive and standing execution snapshots both use
 `payment_operation_roster_snapshots`; `payment_operation_roster_snapshot_items`
 remain the exact reservation boundary for obligations. Interactive snapshots
 also retain the encrypted source/customer/email references, payer and
-location, direct-versus-order request shape, ordered catalog line items, week,
-combined-charge group, quote fingerprint, and full execution fingerprint.
+location, direct-versus-order request shape, ordered catalog line items,
+per-allocation due timestamps, combined-charge group, required quote
+fingerprint, and full execution fingerprint. There is no redundant
+snapshot-level week; one operation may cover multiple obligations for the same
+payer across different occurrences.
+
+Interactive operations are created with their league and authorizing user
+already bound. Refunds are the only operation kind that may remain league- or
+actor-unscoped.
 
 Interactive preparation, dispatch, finalization, webhook completion, recovery,
 refund linkage, and reporting use the unified roster snapshot contract. The

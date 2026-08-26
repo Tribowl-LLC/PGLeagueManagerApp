@@ -1,7 +1,7 @@
 let ledgerExecute = false;
 let rearmLedgerWake: () => Promise<void> = async () => undefined;
 
-export function configureScheduledPaymentRuntime(input: {
+export function configurePaymentOperationRuntime(input: {
   ledgerExecute: boolean;
   rearm: () => Promise<void>;
 }): void {
@@ -9,10 +9,6 @@ export function configureScheduledPaymentRuntime(input: {
   rearmLedgerWake = input.rearm;
 }
 
-export function isScheduledPaymentLedgerExecute(): boolean {
-  return ledgerExecute;
-}
-
-export async function notifyScheduledPaymentMutation(): Promise<void> {
+export async function notifyPaymentOperationMutation(): Promise<void> {
   if (ledgerExecute) await rearmLedgerWake();
 }

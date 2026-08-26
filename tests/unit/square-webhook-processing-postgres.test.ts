@@ -291,6 +291,7 @@ async function preparedInteractiveCharge(options: { combined?: boolean } = {}) {
     })();
   const operation = await createOrGetGeneralInteractivePaymentOperation({
     organizationId,
+    leagueId,
     requestKey: `webhook-${randomUUID()}`,
     amountMinor: options.combined ? selected.reduce((total, row) => total + row.amountMinor, 0) : 2_000,
     currency: "USD",
@@ -306,7 +307,7 @@ async function preparedInteractiveCharge(options: { combined?: boolean } = {}) {
     providerName: "square",
     leagueId,
     locationId,
-    providerLocationId,
+    providerLocationId: null,
     payerBowlerId: bowlerId,
     requestKind: "direct",
     squarePaymentIdempotencyKey: deriveSquareOperationIdempotencyKey(
@@ -319,7 +320,7 @@ async function preparedInteractiveCharge(options: { combined?: boolean } = {}) {
     buyerEmail: "webhook@example.test",
     storeCard: false,
     sourceKind: "new_card",
-    weekOf: startAt,
+    quoteFingerprint: `lvrosterquote:v1:${"a".repeat(64)}`,
     combinedChargeGroupId: options.combined ? operation.id : null,
     allocations,
     lineItems: [],

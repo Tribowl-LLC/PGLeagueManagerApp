@@ -34,12 +34,16 @@ import { lockLeagueSchedule } from "../storage/league-schedule-lock.js";
 import type { PaymentOperationTransaction } from "../storage/payment-operations.js";
 import { prepareInteractivePaymentOperation } from "./interactive-payment-operation-preparation.js";
 import { interactivePaymentOperationExecutor } from "./interactive-payment-operation-executor.js";
+import { paymentOperationRetryExecutor } from "./payment-operation-retry-executor.js";
 import { getPaymentProvider } from "./payment-provider-factory.js";
 import { getProviderCustomerId } from "./payment-utils.js";
 import { decrypt } from "../utils/crypto.js";
 import { deriveRosterPaymentTimingInTransaction } from "./roster-payment-materializer.js";
+import { createLogger } from "../logger.js";
 
 export { calculateRosterPaymentTiming };
+
+const log = createLogger("RosterPaymentCore");
 
 export class RosterPaymentError extends Error {
   constructor(public readonly code: string, message: string, public readonly status = 409) {
@@ -831,7 +835,6 @@ export async function chargeInteractiveObligations(input: {
     // separated value. Interactive snapshot contracts require canonical ISO
     // datetimes, so normalize once before persisting the immutable operation
     // snapshot and every allocation row derived from it.
-    const canonicalWeekOf = new Date(first.dueAt).toISOString();
     const payerBowlerId = payerBowlerIdInput ?? first.payerBowlerId;
     if (input.request.sourceKind === "saved_card" && payerBowlerIdInput === undefined) {
       throw new RosterPaymentError("SAVED_CARD_PAYER_REQUIRED", "A saved payment method requires an authenticated payer", 403);
@@ -887,21 +890,24 @@ export async function chargeInteractiveObligations(input: {
       buyerEmail,
       storeCard: input.request.storeCard === true,
       sourceKind: input.request.sourceKind,
-      weekOf: canonicalWeekOf,
       combined: quote.obligations.length > 1,
-      allocations: quote.obligations.map((obligation, allocationIndex) => ({
-        allocationIndex,
-        bowlerId: obligation.payerBowlerId,
-        amountMinor: obligation.selectedMinor,
-        lineageAmountMinor: null,
-        prizeFundAmountMinor: null,
-        weekOf: new Date(obligation.dueAt).toISOString(),
-        notes: `Roster obligation ${obligation.id}`,
-        paidByUserId: input.actorUserId,
-        obligationId: obligation.id,
-        responsibilityId: obligation.responsibilityId,
-        responsibilityVersion: responsibilityVersionById.get(obligation.responsibilityId),
-      })),
+      allocations: quote.obligations.map((obligation, allocationIndex) => {
+        const responsibilityVersion = responsibilityVersionById.get(obligation.responsibilityId);
+        if (responsibilityVersion === undefined) throw new RosterPaymentError("RESERVATION_STALE", "A roster responsibility changed while the quote was being prepared", 409);
+        return {
+          allocationIndex,
+          bowlerId: obligation.payerBowlerId,
+          amountMinor: obligation.selectedMinor,
+          lineageAmountMinor: null,
+          prizeFundAmountMinor: null,
+          weekOf: new Date(obligation.dueAt).toISOString(),
+          notes: `Roster obligation ${obligation.id}`,
+          paidByUserId: input.actorUserId,
+          obligationId: obligation.id,
+          responsibilityId: obligation.responsibilityId,
+          responsibilityVersion,
+        };
+      }),
       lineItems: [],
       quoteFingerprint: quote.fingerprint,
       transaction: tx,
@@ -918,7 +924,21 @@ export async function chargeInteractiveObligations(input: {
     return { operation, quote, reused: false };
   });
   const operation = prepared.operation;
-  const executed = await interactivePaymentOperationExecutor.execute({ organizationId: input.organizationId, operationId: operation.id });
+  let executed: Awaited<ReturnType<typeof interactivePaymentOperationExecutor.execute>>;
+  try {
+    executed = await interactivePaymentOperationExecutor.execute({ organizationId: input.organizationId, operationId: operation.id });
+  } finally {
+    // The operation row is committed before execution begins. Re-arm the
+    // general retry scheduler after every outcome, including retry_scheduled
+    // and provider_unknown, so a one-shot checkout cannot strand durable work.
+    await paymentOperationRetryExecutor.rearm().catch((error: unknown) => {
+      log.error("Payment operation retry scheduler rearm failed after interactive checkout", {
+        organizationId: input.organizationId,
+        operationId: operation.id,
+        errorName: error instanceof Error ? error.name : "UnknownError",
+      });
+    });
+  }
   if (!executed || executed.status !== "succeeded") {
     if (executed && ["failed_terminal", "action_required", "canceled"].includes(executed.status)) {
       await db.transaction(async (tx) => {

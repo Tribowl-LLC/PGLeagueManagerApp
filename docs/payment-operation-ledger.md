@@ -84,7 +84,7 @@ domain-separated Square payment/order keys.
 
 The immutable encrypted snapshot covers tenant, league/location, payer,
 request kind, amount/currency, source/customer/email references, save-card
-intent, server-authoritative business-day `weekOf`, ordered allocations, and
+intent, ordered allocations with each obligation's exact due timestamp, and
 ordered Square line items. Same key plus the same fingerprint converges on one
 operation. A different fingerprint returns `409 IDEMPOTENCY_CONFLICT`; it can
 never silently adopt whichever concurrent request won the insert race.
@@ -443,7 +443,7 @@ and real PostgreSQL tests cover these boundaries:
 | Future cycles | An `action_required` or definite failed cycle does not block the next exact cycle; uncertain or leased work applies the documented broader guard. |
 | Payment semantics | Combined allocations, the single payer-level decline row, amounts, receipts, and schedule paid-in-full behavior remain unchanged. |
 | Isolation and scope | Cross-tenant preparation, claim, finalization, and visibility fail closed; interactive payments, refunds, and webhooks are unchanged. |
-| Wake/Neon behavior | The earliest of schedule preparation and operation execution arms one clamped wake; paused modes query nothing; empty work creates no timer; failures retain the 60-second overdue recovery bound. |
+| Wake/Neon behavior | The earliest operation retry or reconciliation arms one clamped wake; paused modes query nothing; empty work creates no timer; failures retain the 60-second overdue recovery bound. |
 | Query plan | `EXPLAIN` for the production unified query uses the active schedule partial index for schedule work and the operation due index for retry/lease work. |
 
 The real database coverage lives in
@@ -650,8 +650,8 @@ fall back to the legacy charge behavior. The status and recovery endpoints are
 tenant-scoped by the authenticated organization and allow a restarted client
 to recover an ephemeral-token operation by key without retokenizing.
 
-Preparation reconstructs and persists the exact business-time-zone `weekOf`,
-allocation order, split amounts, paid-by attribution, receipt email, save-card
+Preparation reconstructs and persists allocation order, each obligation's exact
+due timestamp, split amounts, paid-by attribution, receipt email, save-card
 intent, and ordered Square line items. Same key plus the same fingerprint
 converges on the existing operation; a fingerprint mismatch returns a
 conflict. Initial requests execute once after the preparation transaction

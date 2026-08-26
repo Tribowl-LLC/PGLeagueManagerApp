@@ -54,7 +54,7 @@ import type {
   RefundResult,
   SavedCard,
 } from "../../server/services/payment-provider";
-import type { RosterOperationSemanticSnapshot } from "../../server/services/roster-operation-snapshot";
+import { RosterOperationSnapshotValidationError, type RosterOperationSemanticSnapshot } from "../../server/services/roster-operation-snapshot";
 
 const db = getTestDb();
 const suffix = process.env.VITEST_POOL_ID ?? "0";
@@ -325,6 +325,8 @@ async function prepareOperation(
     sourceId?: string;
     snapshotVersion?: 2;
     authorizingUserId?: number | null;
+    amountMinor?: number;
+    additionalEvidence?: Array<Awaited<ReturnType<typeof createObligation>>>;
   } = {},
 ): Promise<{
   operation: Awaited<ReturnType<typeof createOrGetGeneralInteractivePaymentOperation>>;
@@ -334,11 +336,14 @@ async function prepareOperation(
   const snapshotVersion = options.snapshotVersion ?? 2;
   const sourceKind = options.sourceKind ?? "new_card";
   const evidence = await createObligation(fixture);
+  const evidenceRows = [evidence, ...(options.additionalEvidence ?? [])];
   const weekOf = new Date(evidence.obligation.dueAt).toISOString();
+  const amountMinor = options.amountMinor ?? 2_000;
   const operation = await createOrGetGeneralInteractivePaymentOperation({
     organizationId: fixture.organizationId,
+    leagueId: fixture.leagueId,
     requestKey: options.requestKey ?? `executor-${randomUUID()}`,
-    amountMinor: 2_000,
+    amountMinor,
     currency: "USD",
     providerName: "square",
     authorizingUserId: options.authorizingUserId ?? fixture.actorUserId,
@@ -352,7 +357,7 @@ async function prepareOperation(
     providerName: operation.providerName,
     leagueId: fixture.leagueId,
     locationId: fixture.locationId,
-    providerLocationId: fixture.providerLocationId,
+    providerLocationId: requestKind === "order" ? fixture.providerLocationId : null,
     payerBowlerId: fixture.bowlerId,
     requestKind,
     squarePaymentIdempotencyKey: deriveSquareOperationIdempotencyKey(
@@ -369,21 +374,21 @@ async function prepareOperation(
     buyerEmail: "executor@example.test",
     storeCard: options.storeCard ?? false,
     sourceKind,
-    weekOf,
-    combinedChargeGroupId: null,
-    allocations: [{
-      allocationIndex: 0,
+    quoteFingerprint: `lvrosterquote:v1:${"a".repeat(64)}`,
+    combinedChargeGroupId: evidenceRows.length > 1 ? operation.id : null,
+    allocations: evidenceRows.map((row, allocationIndex) => ({
+      allocationIndex,
       bowlerId: fixture.bowlerId,
-      amountMinor: operation.amountMinor,
-      lineageAmountMinor: 1_000,
-      prizeFundAmountMinor: 1_000,
-      weekOf,
+      amountMinor: row.obligation.amountMinor,
+      lineageAmountMinor: row.obligation.amountMinor / 2,
+      prizeFundAmountMinor: row.obligation.amountMinor / 2,
+      weekOf: new Date(row.obligation.dueAt).toISOString(),
       notes: "interactive executor test",
       paidByUserId: null,
-      obligationId: evidence.obligation.id,
-      responsibilityId: evidence.responsibility.id,
-      responsibilityVersion: evidence.responsibility.version,
-    }],
+      obligationId: row.obligation.id,
+      responsibilityId: row.responsibility.id,
+      responsibilityVersion: row.responsibility.version,
+    })),
     lineItems: requestKind === "order"
       ? [
         { lineItemIndex: 0, catalogObjectId: "LINEAGE_EXECUTOR", quantity: "1" },
@@ -393,15 +398,15 @@ async function prepareOperation(
   };
   await db.transaction(async (tx) => {
     await persistRosterOperationSnapshot(operation, snapshot, tx);
-    await tx.insert(paymentOperationRosterSnapshotItems).values({
+    await tx.insert(paymentOperationRosterSnapshotItems).values(evidenceRows.map((row, allocationIndex) => ({
       operationId: operation.id,
       organizationId: fixture.organizationId,
       leagueId: fixture.leagueId,
-      obligationId: evidence.obligation.id,
-      allocationIndex: 0,
-      amountMinor: operation.amountMinor,
-      state: "reserved",
-    });
+      obligationId: row.obligation.id,
+      allocationIndex,
+      amountMinor: row.obligation.amountMinor,
+      state: "reserved" as const,
+    })));
   });
   return { operation, snapshot };
 }
@@ -449,13 +454,13 @@ describe("interactive payment operation executor", () => {
     const fixture = fixtures[0];
     const operation = await createOrGetGeneralInteractivePaymentOperation({
       organizationId: fixture.organizationId,
+      leagueId: fixture.leagueId,
       requestKey: `missing-roster-snapshot-${randomUUID()}`,
       amountMinor: 2_000,
       currency: "USD",
       providerName: "square",
       authorizingUserId: fixture.actorUserId,
     });
-    await db.update(paymentOperations).set({ leagueId: fixture.leagueId }).where(eq(paymentOperations.id, operation.id));
     const provider = new ScriptedInteractiveProvider(fixture.locationId);
     expectErrorLog(/Interactive operation snapshot failed closed/);
     const result = await createExecutor(fixture, provider).execute({
@@ -466,6 +471,15 @@ describe("interactive payment operation executor", () => {
     expect(result?.status).toBe("failed_terminal");
     expect(result?.errorCode).toBe("SNAPSHOT_INVALID");
     expect(provider.processCalls).toHaveLength(0);
+  });
+
+  it("rejects direct snapshots carrying a provider location before provider I/O", async () => {
+    const fixture = fixtures[0];
+    const { operation, snapshot } = await prepareOperation(fixture);
+    await expect(db.transaction((tx) => persistRosterOperationSnapshot(operation, {
+      ...snapshot,
+      providerLocationId: fixture.providerLocationId,
+    }, tx))).rejects.toBeInstanceOf(RosterOperationSnapshotValidationError);
   });
 
   it("dispatches direct requests with the exact retained payment key", async () => {
@@ -488,7 +502,7 @@ describe("interactive payment operation executor", () => {
     expect(call?.idempotencyKey).toEqual({
       paymentKey: snapshot.squarePaymentIdempotencyKey,
       orderKey: undefined,
-      providerLocationId: snapshot.providerLocationId,
+      providerLocationId: undefined,
       referenceId: operation.id,
     });
     const [payment] = await db.select().from(payments)
@@ -498,6 +512,34 @@ describe("interactive payment operation executor", () => {
       providerPaymentId: "square-payment-default",
       idempotencyKey: operation.id,
     });
+  });
+
+  it("charges two obligations for the same payer across different occurrences", async () => {
+    const fixture = fixtures[0];
+    const secondEvidence = await createObligation(fixture);
+    const { operation, snapshot } = await prepareOperation(fixture, {
+      amountMinor: 4_000,
+      additionalEvidence: [secondEvidence],
+    });
+    const provider = new ScriptedInteractiveProvider(fixture.locationId);
+
+    await expect(createExecutor(fixture, provider).execute({
+      organizationId: fixture.organizationId,
+      operationId: operation.id,
+      now: fixedNow,
+    })).resolves.toMatchObject({ status: "succeeded" });
+
+    expect(provider.processCalls).toHaveLength(1);
+    expect(provider.processCalls[0]?.amount).toBe(4_000);
+    const paymentsForOperation = await db.select({ bowlerId: payments.bowlerId, weekOf: payments.weekOf, amount: payments.amount })
+      .from(payments)
+      .where(eq(payments.paymentOperationId, operation.id));
+    expect(paymentsForOperation).toHaveLength(2);
+    expect(new Set(paymentsForOperation.map((row) => row.weekOf))).toHaveLength(2);
+    expect(paymentsForOperation.every((row) => row.bowlerId === fixture.bowlerId && row.amount === 2_000)).toBe(true);
+    expect(snapshot.allocations).toHaveLength(2);
+    expect(snapshot.allocations[0]?.bowlerId).toBe(snapshot.allocations[1]?.bowlerId);
+    expect(snapshot.allocations[0]?.weekOf).not.toBe(snapshot.allocations[1]?.weekOf);
   });
 
   it("dispatches order requests with exact ordered line items and both retained keys", async () => {

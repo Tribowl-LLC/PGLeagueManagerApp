@@ -6,7 +6,11 @@ Setup integration request/result v3 is the authoritative path for ordinary leagu
 
 Double-pay is collection timing evidence. Selected trigger dates are sorted in league-local calendar order and paired one-for-one with the final N other billable occurrences. Each group stores the two durable occurrence UUIDs, term UUIDs, ordinals, dates, and exact amounts. Amounts and physical rows are never multiplied or copied. Canonical consumers use the group evidence once.
 
-For the durable scheduled-payment cursor, a trigger operation charges the sum of its two exact member amounts once; when the cursor reaches the paired physical occurrence, preparation records a skipped collection cycle and advances the cursor without a provider operation. A revoked/broken group removes that paired suppression, so the surviving occurrence is collected on its own date.
+Collection groups are schedule evidence only. PR3 has no durable payment
+schedule cursor or scheduled-charge operation: the roster payment runtime uses
+the group's exact occurrence members when it derives a reviewed collection
+amount. A revoked or broken group is therefore surfaced as a configuration
+failure; the system never substitutes a date, occurrence, or amount.
 
 ## Mutation and cancellation
 
@@ -16,7 +20,7 @@ Cancelling a future canonical occurrence retains its UUID and planned ordinal, m
 
 ## Release and rollback
 
-This canonical-only cutover is application-only and introduces no migration or backfill. The existing canonical collection-group tables and financial evidence remain unchanged. Setup and edit transactions either commit all canonical evidence or roll back without a visible draft. Existing E1-E4, active F1-F4, ledger identity, leases, provider idempotency, and reconciliation behavior remain unchanged; unsupported active-financial drift fails closed. Rollback is an application forward-fix or traffic pause; there is no schema rollback to perform.
+This canonical-only cutover is application-only and introduces no migration or backfill. The existing canonical collection-group tables and financial evidence remain unchanged. Setup and edit transactions either commit all canonical evidence or roll back without a visible draft. The PR3 ledger, leases, provider idempotency, and reconciliation behavior remain unchanged; unsupported active-financial drift fails closed. Rollback is an application forward-fix or traffic pause; there is no schema rollback to perform.
 
 ## Explicit historical repair
 

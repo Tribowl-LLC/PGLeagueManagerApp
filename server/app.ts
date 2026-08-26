@@ -38,7 +38,7 @@ import { setupAuth } from "./auth";
 import { paymentOperationRetryExecutor } from './services/payment-operation-retry-executor';
 import { rosterStandingAutopayOperationExecutor } from './services/roster-standing-autopay-executor';
 import { configureStandingAutopayRuntime } from './services/roster-standing-autopay';
-import { configureScheduledPaymentRuntime } from './services/scheduled-payment-runtime';
+import { configurePaymentOperationRuntime } from './services/payment-operation-runtime';
 import { startPaymentSyncRetrySweep } from './services/payment-sync-retry';
 import { bootstrapAllSquareCustomAttributeDefinitions } from './services/square-startup-bootstrap';
 import { verifySquareSdkVersion } from './services/square-provider';
@@ -129,7 +129,7 @@ export interface CreatedApp {
 export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp> {
   const suppress = opts.suppressBackgroundWorkers === true;
   configureStandingAutopayRuntime({ rearm: () => rosterStandingAutopayOperationExecutor.rearm() });
-  configureScheduledPaymentRuntime({
+  configurePaymentOperationRuntime({
     ledgerExecute: !suppress && scheduledPaymentExecutionMode === 'ledger_execute',
     rearm: () => paymentOperationRetryExecutor.rearm(),
   });

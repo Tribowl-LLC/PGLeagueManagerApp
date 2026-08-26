@@ -2122,7 +2122,7 @@
         },
         "payment_operations_operation_scope_check": {
           "name": "payment_operations_operation_scope_check",
-          "value": "(\n      \"payment_operations\".\"operation_type\" = 'standing_autopay_charge'\n      AND \"payment_operations\".\"league_id\" IS NOT NULL\n      AND \"payment_operations\".\"authorizing_user_id\" IS NOT NULL\n    ) OR (\n      \"payment_operations\".\"operation_type\" IN ('interactive_charge', 'refund')\n      AND \"payment_operations\".\"trigger_occurrence_id\" IS NULL\n    )"
+          "value": "(\n      \"payment_operations\".\"operation_type\" = 'standing_autopay_charge'\n      AND \"payment_operations\".\"league_id\" IS NOT NULL\n      AND \"payment_operations\".\"authorizing_user_id\" IS NOT NULL\n    ) OR (\n      \"payment_operations\".\"operation_type\" = 'interactive_charge'\n      AND \"payment_operations\".\"league_id\" IS NOT NULL\n      AND \"payment_operations\".\"authorizing_user_id\" IS NOT NULL\n      AND \"payment_operations\".\"trigger_occurrence_id\" IS NULL\n    ) OR (\n      \"payment_operations\".\"operation_type\" = 'refund'\n      AND \"payment_operations\".\"trigger_occurrence_id\" IS NULL\n    )"
         },
         "payment_operations_trigger_occurrence_check": {
           "name": "payment_operations_trigger_occurrence_check",
@@ -13606,12 +13606,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "week_of": {
-          "name": "week_of",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
         "combined_charge_group_id": {
           "name": "combined_charge_group_id",
           "type": "varchar(128)",
@@ -13786,7 +13780,7 @@
       "checkConstraints": {
         "payment_operation_roster_snapshots_amount_check": {
           "name": "payment_operation_roster_snapshots_amount_check",
-          "value": "\"payment_operation_roster_snapshots\".\"amount_minor\" > 0 AND \"payment_operation_roster_snapshots\".\"currency\" = 'USD' AND \"payment_operation_roster_snapshots\".\"snapshot_version\" = 2 AND \"payment_operation_roster_snapshots\".\"snapshot_kind\" IN ('interactive', 'standing_autopay') AND ((\"payment_operation_roster_snapshots\".\"snapshot_kind\" = 'interactive' AND \"payment_operation_roster_snapshots\".\"collection_mode\" IS NULL AND \"payment_operation_roster_snapshots\".\"cutoff_at\" IS NULL AND \"payment_operation_roster_snapshots\".\"request_kind\" IN ('direct', 'order') AND \"payment_operation_roster_snapshots\".\"encrypted_source_id\" IS NOT NULL AND \"payment_operation_roster_snapshots\".\"payer_bowler_id\" IS NOT NULL AND \"payment_operation_roster_snapshots\".\"week_of\" IS NOT NULL AND \"payment_operation_roster_snapshots\".\"source_kind\" IN ('new_card', 'saved_card', 'wallet')) OR (\"payment_operation_roster_snapshots\".\"snapshot_kind\" = 'standing_autopay' AND \"payment_operation_roster_snapshots\".\"collection_mode\" IN ('weekly', 'double_pay') AND \"payment_operation_roster_snapshots\".\"cutoff_at\" IS NOT NULL AND \"payment_operation_roster_snapshots\".\"request_kind\" IS NULL AND \"payment_operation_roster_snapshots\".\"encrypted_source_id\" IS NULL AND \"payment_operation_roster_snapshots\".\"payer_bowler_id\" IS NULL AND \"payment_operation_roster_snapshots\".\"week_of\" IS NULL AND \"payment_operation_roster_snapshots\".\"source_kind\" IS NULL))"
+          "value": "\"payment_operation_roster_snapshots\".\"amount_minor\" > 0 AND \"payment_operation_roster_snapshots\".\"currency\" = 'USD' AND \"payment_operation_roster_snapshots\".\"snapshot_version\" = 2 AND \"payment_operation_roster_snapshots\".\"snapshot_kind\" IN ('interactive', 'standing_autopay') AND ((\"payment_operation_roster_snapshots\".\"snapshot_kind\" = 'interactive' AND \"payment_operation_roster_snapshots\".\"collection_mode\" IS NULL AND \"payment_operation_roster_snapshots\".\"cutoff_at\" IS NULL AND \"payment_operation_roster_snapshots\".\"request_kind\" IN ('direct', 'order') AND \"payment_operation_roster_snapshots\".\"encrypted_source_id\" IS NOT NULL AND \"payment_operation_roster_snapshots\".\"payer_bowler_id\" IS NOT NULL AND \"payment_operation_roster_snapshots\".\"source_kind\" IN ('new_card', 'saved_card', 'wallet') AND \"payment_operation_roster_snapshots\".\"quote_fingerprint\" IS NOT NULL) OR (\"payment_operation_roster_snapshots\".\"snapshot_kind\" = 'standing_autopay' AND \"payment_operation_roster_snapshots\".\"collection_mode\" IN ('weekly', 'double_pay') AND \"payment_operation_roster_snapshots\".\"cutoff_at\" IS NOT NULL AND \"payment_operation_roster_snapshots\".\"request_kind\" IS NULL AND \"payment_operation_roster_snapshots\".\"encrypted_source_id\" IS NULL AND \"payment_operation_roster_snapshots\".\"payer_bowler_id\" IS NULL AND \"payment_operation_roster_snapshots\".\"source_kind\" IS NULL AND \"payment_operation_roster_snapshots\".\"quote_fingerprint\" IS NULL))"
         },
         "payment_operation_roster_snapshots_fingerprint_check": {
           "name": "payment_operation_roster_snapshots_fingerprint_check",
@@ -13794,7 +13788,7 @@
         },
         "payment_operation_roster_snapshots_quote_fingerprint_check": {
           "name": "payment_operation_roster_snapshots_quote_fingerprint_check",
-          "value": "\"payment_operation_roster_snapshots\".\"quote_fingerprint\" IS NULL OR \"payment_operation_roster_snapshots\".\"quote_fingerprint\" ~ '^lvrosterquote:v1:[0-9a-f]{64}$'"
+          "value": "(\"payment_operation_roster_snapshots\".\"quote_fingerprint\" IS NULL AND \"payment_operation_roster_snapshots\".\"snapshot_kind\" = 'standing_autopay') OR (\"payment_operation_roster_snapshots\".\"quote_fingerprint\" ~ '^lvrosterquote:v1:[0-9a-f]{64}$' AND \"payment_operation_roster_snapshots\".\"snapshot_kind\" = 'interactive')"
         },
         "payment_operation_roster_snapshots_request_shape_check": {
           "name": "payment_operation_roster_snapshots_request_shape_check",

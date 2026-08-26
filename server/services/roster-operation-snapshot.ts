@@ -28,9 +28,9 @@ const allocationSchema = z.object({
   weekOf: z.string().datetime(),
   notes: z.string().max(500).nullable(),
   paidByUserId: z.number().int().positive().nullable(),
-  obligationId: z.string().uuid().optional(),
-  responsibilityId: z.string().uuid().optional(),
-  responsibilityVersion: z.number().int().positive().optional(),
+  obligationId: z.string().uuid(),
+  responsibilityId: z.string().uuid(),
+  responsibilityVersion: z.number().int().positive(),
 }).strict();
 
 const lineItemSchema = z.object({
@@ -57,7 +57,7 @@ const semanticSnapshotSchema = z.object({
   buyerEmail: z.string().email().max(255).nullable(),
   storeCard: z.boolean(),
   sourceKind: rosterOperationSourceKindSchema,
-  weekOf: z.string().datetime(),
+  quoteFingerprint: z.string().regex(/^lvrosterquote:v1:[0-9a-f]{64}$/),
   combinedChargeGroupId: z.string().min(1).max(128).nullable(),
   allocations: z.array(allocationSchema).min(1).max(25),
   lineItems: z.array(lineItemSchema).max(25),
@@ -81,6 +81,13 @@ const semanticSnapshotSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ["squareOrderIdempotencyKey"],
       message: "direct requests cannot include an order idempotency key",
+    });
+  }
+  if (snapshot.requestKind === "direct" && snapshot.providerLocationId !== null) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["providerLocationId"],
+      message: "direct requests cannot include a provider location",
     });
   }
   if (snapshot.requestKind === "direct" && snapshot.lineItems.length !== 0) {
@@ -123,21 +130,6 @@ const semanticSnapshotSchema = z.object({
       message: "allocation total must match operation amount",
     });
   }
-  if (snapshot.allocations.some((row) => row.weekOf !== snapshot.weekOf)) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["allocations"],
-      message: "interactive allocations must use the snapshot week",
-    });
-  }
-  const bowlerIds = snapshot.allocations.map((row) => row.bowlerId);
-  if (new Set(bowlerIds).size !== bowlerIds.length) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["allocations"],
-      message: "interactive allocation bowlers must be unique",
-    });
-  }
 });
 
 export type RosterOperationSemanticSnapshot = z.infer<typeof semanticSnapshotSchema>;
@@ -155,7 +147,7 @@ export interface StoredRosterOperationSnapshot {
   encryptedBuyerEmail: string | null;
   storeCard: boolean;
   sourceKind: RosterOperationSourceKind | null;
-  weekOf: string;
+  quoteFingerprint: string;
   combinedChargeGroupId: string | null;
 }
 
@@ -176,7 +168,6 @@ function normalize(snapshot: RosterOperationSemanticSnapshot): RosterOperationSe
   }
   return {
     ...parsed.data,
-    weekOf: new Date(parsed.data.weekOf).toISOString(),
     allocations: parsed.data.allocations.map((allocation) => ({
       ...allocation,
       weekOf: new Date(allocation.weekOf).toISOString(),
@@ -211,7 +202,7 @@ export function encryptRosterOperationSnapshot(
     encryptedBuyerEmail: normalized.buyerEmail === null ? null : encrypt(normalized.buyerEmail),
     storeCard: normalized.storeCard,
     sourceKind: normalized.sourceKind,
-    weekOf: normalized.weekOf,
+    quoteFingerprint: normalized.quoteFingerprint,
     combinedChargeGroupId: normalized.combinedChargeGroupId,
   };
 }
@@ -226,14 +217,6 @@ function decryptRequired(ciphertext: string, label: string): string {
 
 function decryptOptional(ciphertext: string | null, label: string): string | null {
   return ciphertext === null ? null : decryptRequired(ciphertext, label);
-}
-
-function storedTimestampToIso(value: string): string {
-  const parsed = new Date(value);
-  if (!Number.isFinite(parsed.getTime())) {
-    throw new RosterOperationSnapshotValidationError("stored interactive snapshot timestamp is invalid");
-  }
-  return parsed.toISOString();
 }
 
 export function reconstructRosterOperationSnapshot(input: {
@@ -278,7 +261,7 @@ export function reconstructRosterOperationSnapshot(input: {
     sourceKind: input.stored.sourceKind ?? (() => {
       throw new RosterOperationSnapshotValidationError("roster operation snapshot source kind is missing");
     })(),
-    weekOf: storedTimestampToIso(input.stored.weekOf),
+    quoteFingerprint: input.stored.quoteFingerprint,
     combinedChargeGroupId: input.stored.combinedChargeGroupId,
     allocations: input.allocations,
     lineItems: input.lineItems,

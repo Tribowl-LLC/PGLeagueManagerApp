@@ -45,11 +45,7 @@ import {
   deriveSquareOperationIdempotencyKey,
 } from "../../server/services/payment-operation-idempotency";
 import { materializeRosterPaymentOccurrenceInTransaction } from "../../server/services/roster-payment-materializer";
-import {
-  bindInteractiveOccurrenceRequestFingerprint,
-  buildPaymentOperationIdentity,
-  fingerprintInteractiveOccurrenceIntent,
-} from "../../server/services/payment-operation-idempotency";
+import { buildPaymentOperationIdentity } from "../../server/services/payment-operation-idempotency";
 import type { RosterOperationSemanticSnapshot } from "../../server/services/roster-operation-snapshot";
 
 const db = getTestDb();
@@ -63,6 +59,8 @@ let orgAId: number;
 let orgBId: number;
 let scheduleAId: number;
 let scheduleBId: number;
+let scheduleAActorId: number;
+let scheduleBActorId: number;
 let nextCycleOffset = 0;
 
 function timestampToIso(value: string | null): string | null {
@@ -109,6 +107,8 @@ async function createFixtureSchedule(organizationId: number, label: string): Pro
     organizationId,
   }).returning({ id: users.id });
   if (!actor) throw new Error("fixture actor was not created");
+  if (label === "A") scheduleAActorId = actor.id;
+  if (label === "B") scheduleBActorId = actor.id;
 
   const [team] = await db.insert(teams).values({
     name: `Payment Operations Team ${label}`,
@@ -180,17 +180,14 @@ async function createOperation(
 ) {
   const operation = await createOrGetGeneralInteractivePaymentOperation({
     organizationId,
+    leagueId,
     requestKey: `ledger-${leagueId}-${requestTimestamp.getTime()}-${randomUUID()}`,
     amountMinor,
     currency: "USD",
     providerName: "square",
+    authorizingUserId: organizationId === orgAId ? scheduleAActorId : scheduleBActorId,
   });
-  const [linked] = await db.update(paymentOperations).set({ leagueId }).where(and(
-    eq(paymentOperations.organizationId, organizationId),
-    eq(paymentOperations.id, operation.id),
-  )).returning();
-  if (!linked) throw new Error("interactive operation could not be linked to its league");
-  return linked;
+  return operation;
 }
 
 async function getScheduleContext(scheduleId = scheduleAId): Promise<{
@@ -297,7 +294,7 @@ function buildInteractiveSnapshot(
     buyerEmail: "interactive@example.test",
     storeCard: false,
     sourceKind: "new_card",
-    weekOf,
+    quoteFingerprint: `lvrosterquote:v1:${"a".repeat(64)}`,
     combinedChargeGroupId: null,
     allocations: [{
       allocationIndex: 0,
@@ -345,6 +342,8 @@ describe("general interactive payment operation foundation", () => {
     const requestKey = `same-request-${randomUUID()}`;
     const input = {
       organizationId: orgAId,
+      leagueId: scheduleAId,
+      authorizingUserId: scheduleAActorId,
       requestKey,
       amountMinor: 2_000,
       currency: "USD",
@@ -367,6 +366,8 @@ describe("general interactive payment operation foundation", () => {
     const [first, second] = await Promise.all([
       createOrGetGeneralInteractivePaymentOperation({
         organizationId: orgAId,
+        leagueId: scheduleAId,
+        authorizingUserId: scheduleAActorId,
         requestKey: `new-request-a-${randomUUID()}`,
         amountMinor: 2_000,
         currency: "USD",
@@ -374,6 +375,8 @@ describe("general interactive payment operation foundation", () => {
       }),
       createOrGetGeneralInteractivePaymentOperation({
         organizationId: orgAId,
+        leagueId: scheduleAId,
+        authorizingUserId: scheduleAActorId,
         requestKey: `new-request-b-${randomUUID()}`,
         amountMinor: 2_000,
         currency: "USD",
@@ -387,6 +390,8 @@ describe("general interactive payment operation foundation", () => {
   it("bounds the request key so the namespaced target fits the ledger column", async () => {
     await expect(createOrGetGeneralInteractivePaymentOperation({
       organizationId: orgAId,
+      leagueId: scheduleAId,
+      authorizingUserId: scheduleAActorId,
       requestKey: "a".repeat(GENERAL_INTERACTIVE_REQUEST_KEY_MAX_LENGTH),
       amountMinor: 2_000,
       currency: "USD",
@@ -397,6 +402,8 @@ describe("general interactive payment operation foundation", () => {
 
     await expect(createOrGetGeneralInteractivePaymentOperation({
       organizationId: orgAId,
+      leagueId: scheduleAId,
+      authorizingUserId: scheduleAActorId,
       requestKey: "b".repeat(GENERAL_INTERACTIVE_REQUEST_KEY_MAX_LENGTH + 1),
       amountMinor: 2_000,
       currency: "USD",
@@ -408,6 +415,8 @@ describe("general interactive payment operation foundation", () => {
     const requestKey = `mismatch-${randomUUID()}`;
     await createOrGetGeneralInteractivePaymentOperation({
       organizationId: orgAId,
+      leagueId: scheduleAId,
+      authorizingUserId: scheduleAActorId,
       requestKey,
       amountMinor: 2_000,
       currency: "USD",
@@ -416,6 +425,8 @@ describe("general interactive payment operation foundation", () => {
 
     await expect(createOrGetGeneralInteractivePaymentOperation({
       organizationId: orgAId,
+      leagueId: scheduleAId,
+      authorizingUserId: scheduleAActorId,
       requestKey,
       amountMinor: 2_500,
       currency: "USD",
@@ -423,48 +434,11 @@ describe("general interactive payment operation foundation", () => {
     })).rejects.toBeInstanceOf(PaymentOperationImmutableMismatchError);
   });
 
-  it("binds canonical occurrence intent into immutable request identity and serializes distinct reservations", async () => {
-    const requestKeyA = `f2-reservation-a-${randomUUID()}`;
-    const requestKeyB = `f2-reservation-b-${randomUUID()}`;
-    const selections = [{ obligationId: randomUUID(), amountMinor: 2_000 }];
-    const intentA = fingerprintInteractiveOccurrenceIntent({ selections, quoteFingerprint: `lvpayquote:v1:${'a'.repeat(64)}` });
-    const intentB = fingerprintInteractiveOccurrenceIntent({ selections, quoteFingerprint: `lvpayquote:v1:${'b'.repeat(64)}` });
-    const [first, second] = await Promise.all([
-      createOrGetGeneralInteractivePaymentOperation({ organizationId: orgAId, requestKey: requestKeyA, amountMinor: 2_000, currency: 'USD', providerName: 'square', immutableSemanticFingerprint: intentA }),
-      createOrGetGeneralInteractivePaymentOperation({ organizationId: orgAId, requestKey: requestKeyB, amountMinor: 2_000, currency: 'USD', providerName: 'square', immutableSemanticFingerprint: intentB }),
-    ]);
-    expect(first.id).not.toBe(second.id);
-    expect(first.requestFingerprint).not.toBe(second.requestFingerprint);
-    const baseIdentity = buildPaymentOperationIdentity({
-      organizationId: orgAId,
-      operationType: 'interactive_charge',
-      targetKey: first.targetKey,
-      amountMinor: 2_000,
-      currency: 'USD',
-      providerName: 'square',
-    });
-    expect(first.requestFingerprint).toBe(bindInteractiveOccurrenceRequestFingerprint(baseIdentity.requestFingerprint, intentA));
-    await expect(createOrGetGeneralInteractivePaymentOperation({
-      organizationId: orgAId,
-      requestKey: requestKeyA,
-      amountMinor: 2_000,
-      currency: 'USD',
-      providerName: 'square',
-      immutableSemanticFingerprint: intentB,
-    })).rejects.toBeInstanceOf(PaymentOperationImmutableMismatchError);
-  });
-
-  it("normalizes selection order for the semantic fingerprint", () => {
-    const first = { obligationId: '11111111-1111-4111-8111-111111111111', amountMinor: 500 };
-    const second = { obligationId: '22222222-2222-4222-8222-222222222222', amountMinor: 1_500 };
-    const quoteFingerprint = `lvpayquote:v1:${'c'.repeat(64)}`;
-    expect(fingerprintInteractiveOccurrenceIntent({ selections: [first, second], quoteFingerprint }))
-      .toBe(fingerprintInteractiveOccurrenceIntent({ selections: [second, first], quoteFingerprint }));
-  });
-
   it("persists one encrypted, tenant-validated snapshot under concurrent duplicate preparation", async () => {
     const operation = await createOrGetGeneralInteractivePaymentOperation({
       organizationId: orgAId,
+      leagueId: scheduleAId,
+      authorizingUserId: scheduleAActorId,
       requestKey: `snapshot-${randomUUID()}`,
       amountMinor: 2_000,
       currency: "USD",
@@ -488,6 +462,8 @@ describe("general interactive payment operation foundation", () => {
   it("rejects a changed snapshot fingerprint instead of converging silently", async () => {
     const operation = await createOrGetGeneralInteractivePaymentOperation({
       organizationId: orgAId,
+      leagueId: scheduleAId,
+      authorizingUserId: scheduleAActorId,
       requestKey: `snapshot-mismatch-${randomUUID()}`,
       amountMinor: 2_000,
       currency: "USD",
@@ -505,6 +481,8 @@ describe("general interactive payment operation foundation", () => {
   it("returns a deterministic fingerprint mismatch to the losing concurrent preparer", async () => {
     const operation = await createOrGetGeneralInteractivePaymentOperation({
       organizationId: orgAId,
+      leagueId: scheduleAId,
+      authorizingUserId: scheduleAActorId,
       requestKey: `concurrent-mismatch-${randomUUID()}`,
       amountMinor: 2_000,
       currency: "USD",
@@ -527,6 +505,8 @@ describe("general interactive payment operation foundation", () => {
   it("rejects cross-tenant league, payer, and allocation references", async () => {
     const operation = await createOrGetGeneralInteractivePaymentOperation({
       organizationId: orgAId,
+      leagueId: scheduleAId,
+      authorizingUserId: scheduleAActorId,
       requestKey: `tenant-mismatch-${randomUUID()}`,
       amountMinor: 2_000,
       currency: "USD",
@@ -538,7 +518,7 @@ describe("general interactive payment operation foundation", () => {
     await expect(persistSnapshotWithReleasedReservation(
       operation,
       snapshot,
-    )).rejects.toBeInstanceOf(PaymentOperationValidationError);
+    )).rejects.toBeInstanceOf(PaymentOperationImmutableMismatchError);
     expect(await getRosterOperationSnapshotForOrganization(orgAId, operation.id))
       .toBeUndefined();
   });

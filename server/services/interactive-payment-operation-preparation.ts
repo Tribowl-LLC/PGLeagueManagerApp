@@ -11,8 +11,6 @@ import {
 } from "@shared/schema";
 import type { RosterOperationSemanticSnapshot } from "./roster-operation-snapshot.js";
 import { lockLeagueSchedule } from "../storage/league-schedule-lock.js";
-import { paymentOperations } from "@shared/schema";
-import { and, eq, isNull } from "drizzle-orm";
 
 export interface InteractivePaymentAllocationInput {
   allocationIndex: number;
@@ -23,9 +21,9 @@ export interface InteractivePaymentAllocationInput {
   weekOf: string;
   notes: string | null;
   paidByUserId: number | null;
-  obligationId?: string;
-  responsibilityId?: string;
-  responsibilityVersion?: number;
+  obligationId: string;
+  responsibilityId: string;
+  responsibilityVersion: number;
 }
 
 export interface InteractivePaymentOperationPreparationInput {
@@ -45,7 +43,6 @@ export interface InteractivePaymentOperationPreparationInput {
   buyerEmail: string | null;
   storeCard: boolean;
   sourceKind: RosterOperationSourceKind;
-  weekOf: string;
   combined: boolean;
   now?: Date;
   allocations: InteractivePaymentAllocationInput[];
@@ -54,7 +51,7 @@ export interface InteractivePaymentOperationPreparationInput {
     catalogObjectId: string;
     quantity: string;
   }>;
-  quoteFingerprint?: string;
+  quoteFingerprint: string;
   transaction?: PaymentOperationTransaction;
 }
 
@@ -85,7 +82,7 @@ export function buildInteractivePaymentSnapshot(
     buyerEmail: input.buyerEmail,
     storeCard: input.storeCard,
     sourceKind: input.sourceKind,
-    weekOf: input.weekOf,
+    quoteFingerprint: input.quoteFingerprint,
     combinedChargeGroupId: input.combined ? operation.id : null,
     allocations: input.allocations,
     lineItems: input.lineItems,
@@ -102,6 +99,7 @@ export async function prepareInteractivePaymentOperation(
     if (!input.transaction) await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
     const operation = await storage.createOrGetGeneralInteractivePaymentOperation({
       organizationId: input.organizationId,
+      leagueId: input.leagueId,
       requestKey: input.requestKey,
       amountMinor: input.amountMinor,
       currency: input.currency,
@@ -109,26 +107,15 @@ export async function prepareInteractivePaymentOperation(
       authorizingUserId: input.authorizingUserId,
       now: input.now,
     }, tx);
-    if (operation.leagueId !== null && operation.leagueId !== input.leagueId) {
+    if (operation.leagueId !== input.leagueId) {
       throw new PaymentOperationValidationError("interactive operation belongs to another league");
     }
-    let linkedOperation = operation;
-    if (operation.leagueId === null) {
-      const [updatedOperation] = await tx.update(paymentOperations).set({ leagueId: input.leagueId }).where(and(
-        eq(paymentOperations.id, operation.id),
-        eq(paymentOperations.organizationId, input.organizationId),
-        isNull(paymentOperations.leagueId),
-      )).returning();
-      if (!updatedOperation) throw new PaymentOperationValidationError("interactive operation could not be linked to its league");
-      linkedOperation = updatedOperation;
-    }
     await storage.persistRosterOperationSnapshot(
-      linkedOperation,
-      buildInteractivePaymentSnapshot(linkedOperation, input),
+      operation,
+      buildInteractivePaymentSnapshot(operation, input),
       tx,
-      input.quoteFingerprint,
     );
-    return linkedOperation;
+    return operation;
   };
   return input.transaction ? run(input.transaction) : db.transaction(run);
 }

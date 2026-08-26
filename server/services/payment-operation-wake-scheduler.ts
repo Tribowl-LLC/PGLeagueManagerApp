@@ -42,7 +42,7 @@ export class PaymentOperationWakeScheduler<TWake extends { kind: string; dueAt: 
   private readonly clearTimeoutFn: PaymentOperationClearTimeout;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private generation = 0;
-  private mode: ScheduledPaymentExecutionMode = "legacy";
+  private mode: ScheduledPaymentExecutionMode = "ledger_paused";
   private armPromise: Promise<void> | null = null;
 
   constructor(private readonly dependencies: PaymentOperationWakeSchedulerDependencies<TWake>) {
@@ -63,7 +63,7 @@ export class PaymentOperationWakeScheduler<TWake extends { kind: string; dueAt: 
 
   stop(): void {
     this.generation += 1;
-    this.mode = "legacy";
+    this.mode = "ledger_paused";
     if (this.timer !== null) {
       this.clearTimeoutFn(this.timer);
       this.timer = null;

@@ -37,7 +37,7 @@ import {
   processSquareWebhookEvent,
   type SquareWebhookProcessingResult,
 } from "../../storage/square-webhook-processing.js";
-import { notifyScheduledPaymentMutation } from "../../services/scheduled-payment-runtime.js";
+import { notifyPaymentOperationMutation } from "../../services/payment-operation-runtime.js";
 
 const log = createLogger("SquareWebhook");
 
@@ -275,7 +275,7 @@ export function registerSquareWebhookReceiver(
   const limiter = options.limiter ?? squareWebhookLimiter;
   const ingest = options.ingest ?? ingestSquareWebhookEvent;
   const process = options.process ?? processSquareWebhookEvent;
-  const rearm = options.rearm ?? notifyScheduledPaymentMutation;
+  const rearm = options.rearm ?? notifyPaymentOperationMutation;
 
   app.post(
     SQUARE_WEBHOOK_PATH,
