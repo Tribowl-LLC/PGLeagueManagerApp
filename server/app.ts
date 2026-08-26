@@ -35,7 +35,7 @@ import {
 } from "./db";
 import { installDbInvariants } from "./db-invariants";
 import { setupAuth } from "./auth";
-import { scheduledPaymentOperationExecutor } from './services/scheduled-payment-operation-executor';
+import { paymentOperationRetryExecutor } from './services/payment-operation-retry-executor';
 import { rosterStandingAutopayOperationExecutor } from './services/roster-standing-autopay-executor';
 import { configureStandingAutopayRuntime } from './services/roster-standing-autopay';
 import { configureScheduledPaymentRuntime } from './services/scheduled-payment-runtime';
@@ -131,7 +131,7 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
   configureStandingAutopayRuntime({ rearm: () => rosterStandingAutopayOperationExecutor.rearm() });
   configureScheduledPaymentRuntime({
     ledgerExecute: !suppress && scheduledPaymentExecutionMode === 'ledger_execute',
-    rearm: () => scheduledPaymentOperationExecutor.rearm(),
+    rearm: () => paymentOperationRetryExecutor.rearm(),
   });
 
   log.info('Runtime envelope', {
@@ -446,7 +446,7 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
 
   if (!suppress) {
     try {
-      await scheduledPaymentOperationExecutor.start(scheduledPaymentExecutionMode);
+      await paymentOperationRetryExecutor.start(scheduledPaymentExecutionMode);
       await rosterStandingAutopayOperationExecutor.start();
       log.info('Scheduled payment execution initialized', { mode: scheduledPaymentExecutionMode });
 
@@ -480,7 +480,7 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
   }
 
   const close = async (): Promise<void> => {
-    scheduledPaymentOperationExecutor.stop();
+    paymentOperationRetryExecutor.stop();
     rosterStandingAutopayOperationExecutor.stop();
     await new Promise<void>((resolve) => {
       server.close(() => resolve());

@@ -16,7 +16,7 @@ export const games = pgTable("games", {
   weekNumber: integer("week_number").notNull(),
   gameNumber: integer("game_number").notNull(),
   date: timestamp("date", { mode: "string" }).notNull(),
-  occurrenceId: uuid("occurrence_id"),
+  occurrenceId: uuid("occurrence_id").notNull(),
 }, (table) => ({
   leagueGameIdx: index("league_game_idx").on(table.leagueId, table.weekNumber, table.gameNumber),
   dateIdx: index("game_date_idx").on(table.date),

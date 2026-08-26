@@ -123,15 +123,10 @@ export const leagues = pgTable("leagues", {
   organizationId: integer("organization_id").references(() => organizations.id),
   locationId: integer("location_id").references(() => locations.id),
   totalBowlingWeeks: integer("total_bowling_weeks"),
-  // Retained for compatibility with existing production rows. The
-  // application no longer reads or writes this legacy field.
-  finalTwoWeeksDueWeek: integer("final_two_weeks_due_week"),
   skipDates: text("skip_dates").array().notNull().default(sql`'{}'`),
   cancelledDates: text("cancelled_dates").array().notNull().default(sql`'{}'`),
   // Up to 2 ISO `YYYY-MM-DD` bowling dates that should be charged at
   // 2× the weekly fee by the autopay scheduler (Task #646). Replaces
-  // the legacy `finalTwoWeeksDueWeek` lump-charge mechanism that was
-  // dropped in Task #760.
   doublePayDates: text("double_pay_dates").array().notNull().default(sql`'{}'`),
   // Durable optimistic revision for authoritative canonical schedule edits.
   // A zero value is retained for pre-canonical legacy rows and is initialized

@@ -15,15 +15,8 @@ import {
   paymentObligations,
   autopayConsents,
   autopayConsentPartners,
-  paymentSchedules,
   payments,
   paymentDisputes,
-  scheduledPaymentOperationAllocations,
-  scheduledPaymentOperationLineItems,
-  scheduledPaymentOperationSnapshots,
-  interactivePaymentOperationAllocations,
-  interactivePaymentOperationLineItems,
-  interactivePaymentOperationSnapshots,
   canonicalCollectionGroups,
   canonicalCollectionGroupMembers,
   bowlerPaymentLinks,
@@ -47,17 +40,11 @@ import {
   validateInteractiveRequestKey,
 } from "../services/payment-operation-idempotency.js";
 import {
-  encryptScheduledPaymentSnapshot,
-  fingerprintScheduledPaymentSnapshot,
-  reconstructScheduledPaymentSnapshot,
-  type ScheduledPaymentSemanticSnapshot,
-} from "../services/scheduled-payment-operation-snapshot.js";
-import {
-  encryptInteractivePaymentSnapshot,
-  fingerprintInteractivePaymentSnapshot,
-  reconstructInteractivePaymentSnapshot,
-  type InteractivePaymentSemanticSnapshot,
-} from "../services/interactive-payment-operation-snapshot.js";
+  encryptRosterOperationSnapshot,
+  fingerprintRosterOperationSnapshot,
+  reconstructRosterOperationSnapshot,
+  type RosterOperationSemanticSnapshot,
+} from "../services/roster-operation-snapshot.js";
 import { deriveSquareCardSaveIdempotencyKey } from "../services/payment-operation-idempotency.js";
 import {
   encryptRefundPaymentSnapshot,
@@ -75,7 +62,6 @@ import {
 } from "../services/roster-payment-finalizer.js";
 import { validateStandingConsentForDispatchInTransaction } from "../services/roster-standing-autopay.js";
 import { rosterStandingAutopayEnabled, scheduledPaymentExecutionMode } from "../config.js";
-
 async function releaseRosterReservationsWithoutProviderEvidence(
   tx: PaymentOperationTransaction,
   input: { organizationId: number; leagueId: number; operationId: string },
@@ -126,30 +112,6 @@ export class PaymentOperationValidationError extends Error {
     this.name = "PaymentOperationValidationError";
   }
 }
-
-export interface CreateOrGetScheduledPaymentOperationInput {
-  organizationId: number;
-  paymentScheduleId: number;
-  billingCycleAt: string | Date;
-  amountMinor: number;
-  currency: string;
-  providerName: string;
-  /** Server-resolved D1 trigger identity; never part of provider identity. */
-  triggerOccurrenceId?: string | null;
-}
-
-export interface CreateOrGetCanonicalAutopayPaymentOperationInput {
-  organizationId: number;
-  leagueId: number;
-  d2PlanId: string;
-  triggerOccurrenceId: string;
-  amountMinor: number;
-  currency: string;
-  providerName: string;
-  authorizingUserId: number;
-  now?: Date;
-}
-
 export interface CreateOrGetInteractivePaymentOperationInput {
   organizationId: number;
   targetKey: string;
@@ -183,71 +145,36 @@ export interface CreateOrGetRefundPaymentOperationInput {
 
 export type PaymentOperationTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
-/**
- * Canonical mutation lock order: advisory organization/league, D2 plan row,
- * then payment operation row. Revocation uses this same order. The initial
- * operation read is deliberately unlocked and only identifies the scope.
- */
-async function lockCanonicalMutationScope(
-  tx: PaymentOperationTransaction,
-  organizationId: number,
-  operationId: string,
-): Promise<PaymentOperation | undefined> {
-  const [candidate] = await tx.select({ operationType: paymentOperations.operationType, leagueId: paymentOperations.leagueId, canonicalPlanId: paymentOperations.canonicalPlanId })
-    .from(paymentOperations)
-    .where(and(eq(paymentOperations.organizationId, organizationId), eq(paymentOperations.id, operationId)))
-    .limit(1);
-  if (candidate?.operationType === "canonical_autopay_charge") {
-    // Automatic collection is dormant in PR1.  Retain the general operation
-    // row for archive/reconciliation status, but never follow its retired
-    // F1/D2/F3 plan identity.
-    if (candidate.leagueId !== null) {
-      await tx.execute(sql`SELECT pg_advisory_xact_lock(${organizationId}::integer, ${candidate.leagueId}::integer)`);
-    }
-    const [operation] = await tx.select().from(paymentOperations).where(and(eq(paymentOperations.organizationId, organizationId), eq(paymentOperations.id, operationId))).limit(1).for("update");
-    return operation;
-  }
-  if (candidate?.operationType === "standing_autopay_charge") {
-    if (candidate.leagueId !== null) {
-      await tx.execute(sql`SELECT pg_advisory_xact_lock(${organizationId}::integer, ${candidate.leagueId}::integer)`);
-    }
-    const [operation] = await tx.select().from(paymentOperations).where(and(eq(paymentOperations.organizationId, organizationId), eq(paymentOperations.id, operationId))).limit(1).for("update");
-    return operation;
-  }
-  if (!candidate) return undefined;
-  if (candidate.operationType === "interactive_charge") {
-      // Interactive operations created by the clean roster flow do not use
-      // this legacy provider finalizer.  Retained pre-roster rows may still
-      // have a league_id, so use the operation ledger as the scope source.
-      // The former occurrence supplement was part of the retired D2 model
-      // and is deliberately absent after migration 0032.
-      if (candidate.leagueId !== null) {
-        await tx.execute(sql`SELECT pg_advisory_xact_lock(${organizationId}::integer, ${candidate.leagueId}::integer)`);
-      }
-  }
-  if (candidate.operationType === "scheduled_charge") {
-      // Scheduled ledger rows retain a nullable legacy league_id; the
-      // immutable scheduled snapshot is the tenant-scoped source of the
-      // canonical league lock.  Finalization must serialize with occurrence
-      // cancellation before it records a provider success.
-      const [scheduledScope] = await tx.select({ leagueId: scheduledPaymentOperationSnapshots.leagueId })
-        .from(scheduledPaymentOperationSnapshots)
-        .where(eq(scheduledPaymentOperationSnapshots.operationId, operationId))
-        .limit(1);
-      if (scheduledScope?.leagueId != null) {
-        await tx.execute(sql`SELECT pg_advisory_xact_lock(${organizationId}::integer, ${scheduledScope.leagueId}::integer)`);
-      }
-  }
-  const [legacyOperation] = await tx.select().from(paymentOperations).where(and(eq(paymentOperations.organizationId, organizationId), eq(paymentOperations.id, operationId))).limit(1).for("update");
-  return legacyOperation;
-}
-
 export interface PaymentOperationLinkedPaymentInput {
   allocationIndex: number;
   values: Omit<
     typeof payments.$inferInsert,
     "paymentOperationId" | "paymentOperationAllocationIndex"
   >;
+}
+
+/** Serialize operation finalization with canonical schedule mutations. */
+async function lockCanonicalMutationScope(
+  tx: PaymentOperationTransaction,
+  organizationId: number,
+  operationId: string,
+): Promise<PaymentOperation | undefined> {
+  const [candidate] = await tx.select({
+    operationType: paymentOperations.operationType,
+    leagueId: paymentOperations.leagueId,
+  }).from(paymentOperations).where(and(
+    eq(paymentOperations.organizationId, organizationId),
+    eq(paymentOperations.id, operationId),
+  )).limit(1);
+  if (!candidate) return undefined;
+  if (candidate.leagueId !== null) {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(${organizationId}::integer, ${candidate.leagueId}::integer)`);
+  }
+  const [operation] = await tx.select().from(paymentOperations).where(and(
+    eq(paymentOperations.organizationId, organizationId),
+    eq(paymentOperations.id, operationId),
+  )).limit(1).for("update");
+  return operation;
 }
 
 export interface InteractiveCardSaveLeaseInput extends LeasedPaymentOperationInput {
@@ -353,48 +280,6 @@ function validateFailedPaymentRows(rows: PaymentOperationLinkedPaymentInput[] | 
   ) {
     throw new PaymentOperationValidationError(
       "scheduled failure history must be one ungrouped failed payer row",
-    );
-  }
-}
-
-async function validateSnapshotTenantReferences(
-  executor: PaymentOperationTransaction,
-  snapshot: ScheduledPaymentSemanticSnapshot,
-): Promise<void> {
-  const bowlerIds = [...new Set(snapshot.allocations.map((row) => row.bowlerId))];
-  const paidByUserIds = [...new Set(snapshot.allocations
-    .map((row) => row.paidByUserId)
-    .filter((id): id is number => id !== null))];
-  // PaymentOperationTransaction may be a single pinned pg client. Do not
-  // overlap its queries: pg@8 warns and pg@9 will reject that usage.
-  const ownedBowlers = await executor.select({ id: bowlers.id }).from(bowlers).where(and(
-    eq(bowlers.organizationId, snapshot.organizationId),
-    inArray(bowlers.id, bowlerIds),
-  ));
-  const ownedLeague = await executor.select({ id: leagues.id }).from(leagues).where(and(
-    eq(leagues.organizationId, snapshot.organizationId),
-    eq(leagues.id, snapshot.leagueId),
-  ));
-  const ownedPaidByUsers = paidByUserIds.length === 0
-    ? []
-    : await executor.select({ id: users.id }).from(users).where(and(
-      eq(users.organizationId, snapshot.organizationId),
-      inArray(users.id, paidByUserIds),
-    ));
-  const ownedLocations = snapshot.locationId === null
-    ? []
-    : await executor.select({ id: locations.id }).from(locations).where(and(
-      eq(locations.organizationId, snapshot.organizationId),
-      eq(locations.id, snapshot.locationId),
-    ));
-  if (
-    ownedBowlers.length !== bowlerIds.length
-    || ownedLeague.length !== 1
-    || ownedPaidByUsers.length !== paidByUserIds.length
-    || ownedLocations.length !== (snapshot.locationId === null ? 0 : 1)
-  ) {
-    throw new PaymentOperationValidationError(
-      "scheduled payment snapshot references do not belong to the operation tenant",
     );
   }
 }
@@ -517,63 +402,6 @@ async function deriveStandingPaymentRowsInTransaction(
   }));
 }
 
-async function deactivatePaidInFullSchedule(
-  executor: PaymentOperationTransaction,
-  operationId: string,
-  now: string,
-): Promise<void> {
-  const [context] = await executor
-    .select({
-      paymentScheduleId: paymentOperations.paymentScheduleId,
-      leagueId: scheduledPaymentOperationSnapshots.leagueId,
-      threshold: scheduledPaymentOperationSnapshots.paidInFullThresholdAmountMinor,
-      seasonStartAt: scheduledPaymentOperationSnapshots.seasonStartAt,
-      seasonEndAt: scheduledPaymentOperationSnapshots.seasonEndAt,
-      payerBowlerId: scheduledPaymentOperationAllocations.bowlerId,
-    })
-    .from(paymentOperations)
-    .innerJoin(
-      scheduledPaymentOperationSnapshots,
-      eq(scheduledPaymentOperationSnapshots.operationId, paymentOperations.id),
-    )
-    .innerJoin(
-      scheduledPaymentOperationAllocations,
-      and(
-        eq(scheduledPaymentOperationAllocations.operationId, paymentOperations.id),
-        eq(scheduledPaymentOperationAllocations.allocationIndex, 0),
-      ),
-    )
-    .where(eq(paymentOperations.id, operationId))
-    .limit(1);
-  if (
-    !context?.paymentScheduleId
-    || context.threshold === null
-    || context.seasonStartAt === null
-    || context.seasonEndAt === null
-  ) return;
-
-  const [paid] = await executor
-    .select({ total: sql<number>`COALESCE(SUM(${payments.amount}), 0)` })
-    .from(payments)
-    .where(and(
-      eq(payments.bowlerId, context.payerBowlerId),
-      eq(payments.leagueId, context.leagueId),
-      eq(payments.status, "paid"),
-      gte(payments.weekOf, context.seasonStartAt),
-      lte(payments.weekOf, context.seasonEndAt),
-    ));
-  if (Number(paid?.total ?? 0) < context.threshold) return;
-
-  await executor
-    .update(paymentSchedules)
-    .set({
-      active: false,
-      cancelledAt: now,
-      cancelReason: `paid_in_full:payment_operation=${operationId}`,
-    })
-    .where(eq(paymentSchedules.id, context.paymentScheduleId));
-}
-
 function validateErrorDetails(
   classification: PaymentOperationErrorClassification,
   code?: string | null,
@@ -599,23 +427,6 @@ function validateFutureDueAt(value: Date, now: Date, label: string): string {
   return dueAt;
 }
 
-function immutableScheduledOperationMatches(
-  operation: PaymentOperation,
-  expected: ReturnType<typeof buildPaymentOperationIdentity>,
-): boolean {
-  const request = expected.normalizedRequest;
-  return operation.organizationId === request.organizationId
-    && operation.operationType === request.operationType
-    && operation.targetKey === request.targetKey
-    && operation.paymentScheduleId === request.paymentScheduleId
-    && storedTimestampToIso(operation.billingCycleAt) === request.billingCycleAt
-    && operation.amountMinor === request.amountMinor
-    && operation.currency === request.currency
-    && operation.providerName === request.providerName
-    && operation.requestFingerprint === expected.requestFingerprint
-    && operation.providerIdempotencyKey === expected.providerIdempotencyKey;
-}
-
 function immutableInteractiveOperationMatches(
   operation: PaymentOperation,
   expected: ReturnType<typeof buildPaymentOperationIdentity>,
@@ -624,8 +435,6 @@ function immutableInteractiveOperationMatches(
   return operation.organizationId === request.organizationId
     && operation.operationType === "interactive_charge"
     && operation.targetKey === request.targetKey
-    && operation.paymentScheduleId === null
-    && operation.billingCycleAt === null
     && operation.amountMinor === request.amountMinor
     && operation.currency === request.currency
     && operation.providerName === request.providerName
@@ -648,8 +457,6 @@ function immutableRefundOperationMatches(
   return operation.organizationId === request.organizationId
     && operation.operationType === "refund"
     && operation.targetKey === request.targetKey
-    && operation.paymentScheduleId === null
-    && operation.billingCycleAt === null
     && operation.amountMinor === request.amountMinor
     && operation.currency === request.currency
     && operation.providerName === request.providerName
@@ -658,9 +465,8 @@ function immutableRefundOperationMatches(
 }
 
 /**
- * Creates dormant durable intent for one interactive charge. This primitive
- * does not acquire a lease or call a provider; an explicit executor must do
- * both in a later behavior-cutover release.
+ * Creates durable intent for one interactive charge. This primitive does not
+ * acquire a lease or call a provider; the explicit executor owns both steps.
  */
 export async function createOrGetInteractivePaymentOperation(
   input: CreateOrGetInteractivePaymentOperationInput,
@@ -752,9 +558,9 @@ export function getGeneralInteractiveTargetKey(requestKey: string): string {
 }
 
 /**
- * Creates dormant general interactive intent under a reserved target-key
- * namespace. Auto-pay setup uses its own `autopay-setup:` namespace and is
- * therefore unable to collide with a future regular checkout request.
+ * Creates general interactive intent under a reserved target-key namespace.
+ * Standing automatic payment uses its own operation namespace and cannot
+ * collide with a regular checkout request.
  */
 export async function createOrGetGeneralInteractivePaymentOperation(
   input: CreateOrGetGeneralInteractivePaymentOperationInput,
@@ -825,447 +631,123 @@ export async function createOrGetRefundPaymentOperation(
 }
 
 /**
- * Concurrent callers converge on the partial recurring-cycle uniqueness
- * constraint. A conflict is returned only when every immutable field still
- * matches; amount/currency/tenant/target drift fails closed.
+ * Concurrent callers converge on the operation target uniqueness constraint.
+ * A conflict is returned only when every immutable field still matches;
+ * amount/currency/tenant/target drift fails closed.
  */
-export async function createOrGetScheduledPaymentOperation(
-  input: CreateOrGetScheduledPaymentOperationInput,
-  existingTransaction?: PaymentOperationTransaction,
-): Promise<PaymentOperation> {
-  const identity = buildPaymentOperationIdentity({
-    organizationId: input.organizationId,
-    operationType: "scheduled_charge",
-    targetKey: `payment-schedule:${input.paymentScheduleId}`,
-    paymentScheduleId: input.paymentScheduleId,
-    billingCycleAt: input.billingCycleAt,
-    amountMinor: input.amountMinor,
-    currency: input.currency,
-    providerName: input.providerName,
-  });
-  const request = identity.normalizedRequest;
-  const now = new Date().toISOString();
-
-  const run = async (tx: PaymentOperationTransaction): Promise<PaymentOperation> => {
-    // Lock both the schedule and joined league rows for the duration of this
-    // short insert/get transaction. That closes the tenant-check TOCTOU window
-    // without ever spanning a provider call.
-    const [owned] = await tx
-      .select({
-        id: paymentSchedules.id,
-        leagueId: paymentSchedules.leagueId,
-        nextOccurrenceId: paymentSchedules.nextOccurrenceId,
-      })
-      .from(paymentSchedules)
-      .innerJoin(leagues, eq(paymentSchedules.leagueId, leagues.id))
-      .where(and(
-        eq(paymentSchedules.id, input.paymentScheduleId),
-        eq(leagues.organizationId, input.organizationId),
-      ))
-      .limit(1)
-      .for("share");
-    if (!owned) throw new PaymentOperationNotFoundError();
-
-    const [prior] = await tx
-      .select()
-      .from(paymentOperations)
-      .where(and(
-        eq(paymentOperations.operationType, "scheduled_charge"),
-        eq(paymentOperations.paymentScheduleId, input.paymentScheduleId),
-        sql`${paymentOperations.billingCycleAt} = ${request.billingCycleAt}`,
-      ))
-      .limit(1);
-    if (prior) {
-      if (!immutableScheduledOperationMatches(prior, identity)
-        || (prior.triggerOccurrenceId !== null
-          && prior.triggerOccurrenceId !== (input.triggerOccurrenceId ?? null))) {
-        throw new PaymentOperationImmutableMismatchError();
-      }
-      // A pre-D1 retry intentionally retains its original null reference even
-      // when the caller can now see canonical state.
-      if (prior.triggerOccurrenceId === null) return prior;
-    } else if ((input.triggerOccurrenceId ?? null) !== owned.nextOccurrenceId) {
-      throw new PaymentOperationImmutableMismatchError();
-    }
-    if (input.triggerOccurrenceId != null) {
-      const [trigger] = await tx.select({ id: leagueOccurrences.id })
-        .from(leagueOccurrences)
-        .where(and(
-          eq(leagueOccurrences.id, input.triggerOccurrenceId),
-          eq(leagueOccurrences.organizationId, input.organizationId),
-          eq(leagueOccurrences.leagueId, owned.leagueId),
-          eq(leagueOccurrences.startAt, request.billingCycleAt as string),
-          inArray(leagueOccurrences.lifecycle, ["published", "locked"]),
-          inArray(leagueOccurrences.status, ["scheduled", "completed"]),
-        ))
-        .limit(1)
-        .for("share");
-      if (!trigger) throw new PaymentOperationImmutableMismatchError();
-    }
-    if (prior) return prior;
-
-    const [created] = await tx
-      .insert(paymentOperations)
-      .values({
-        organizationId: request.organizationId,
-        operationType: request.operationType,
-        targetKey: request.targetKey,
-        paymentScheduleId: request.paymentScheduleId,
-        billingCycleAt: request.billingCycleAt,
-        triggerOccurrenceId: input.triggerOccurrenceId ?? null,
-        amountMinor: request.amountMinor,
-        currency: request.currency,
-        requestFingerprint: identity.requestFingerprint,
-        providerIdempotencyKey: identity.providerIdempotencyKey,
-        providerName: request.providerName,
-        status: "pending",
-        nextAttemptAt: now,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .onConflictDoNothing()
-      .returning();
-    if (created) return created;
-
-    const [existing] = await tx
-      .select()
-      .from(paymentOperations)
-      .where(and(
-        eq(paymentOperations.operationType, "scheduled_charge"),
-        eq(paymentOperations.paymentScheduleId, input.paymentScheduleId),
-        sql`${paymentOperations.billingCycleAt} = ${request.billingCycleAt}`,
-      ))
-      .limit(1);
-    if (!existing || !immutableScheduledOperationMatches(existing, identity)
-      || (existing.triggerOccurrenceId !== null
-        && existing.triggerOccurrenceId !== (input.triggerOccurrenceId ?? null))) {
-      throw new PaymentOperationImmutableMismatchError();
-    }
-    return existing;
-  };
-  return existingTransaction ? run(existingTransaction) : db.transaction(run);
-}
-
-/** F4 preparation identity. Exactly one operation is linked to one immutable
- * D2 plan; this namespace cannot collide with any legacy schedule or F2 key. */
-export async function createOrGetCanonicalAutopayPaymentOperation(
-  input: CreateOrGetCanonicalAutopayPaymentOperationInput,
-  existingTransaction?: PaymentOperationTransaction,
-): Promise<PaymentOperation> {
-  void input;
-  void existingTransaction;
- throw new PaymentOperationValidationError("automatic collection is dormant in PR1; use exact roster obligations");
-}
-
-async function loadScheduledPaymentOperationSnapshot(
-  executor: typeof db | PaymentOperationTransaction,
-  operation: PaymentOperation,
-): Promise<ScheduledPaymentSemanticSnapshot | undefined> {
-  if (operation.paymentScheduleId === null || operation.billingCycleAt === null) return undefined;
-  const [stored] = await executor
-    .select()
-    .from(scheduledPaymentOperationSnapshots)
-    .where(eq(scheduledPaymentOperationSnapshots.operationId, operation.id))
-    .limit(1);
-  if (!stored) return undefined;
-  const allocationRows = await executor
-    .select()
-    .from(scheduledPaymentOperationAllocations)
-    .where(eq(scheduledPaymentOperationAllocations.operationId, operation.id))
-    .orderBy(asc(scheduledPaymentOperationAllocations.allocationIndex));
-  const lineItemRows = await executor
-    .select()
-    .from(scheduledPaymentOperationLineItems)
-    .where(eq(scheduledPaymentOperationLineItems.operationId, operation.id))
-    .orderBy(asc(scheduledPaymentOperationLineItems.lineItemIndex));
-  return reconstructScheduledPaymentSnapshot({
-    organizationId: operation.organizationId,
-    paymentScheduleId: operation.paymentScheduleId,
-    billingCycleAt: storedTimestampToIso(operation.billingCycleAt) ?? operation.billingCycleAt,
-    amountMinor: operation.amountMinor,
-    currency: operation.currency,
-    providerName: operation.providerName,
-    providerIdempotencyKey: operation.providerIdempotencyKey,
-    stored,
-    allocations: allocationRows.map((row) => ({
-      allocationIndex: row.allocationIndex,
-      bowlerId: row.bowlerId,
-      amountMinor: row.amountMinor,
-      lineageAmountMinor: row.lineageAmountMinor,
-      prizeFundAmountMinor: row.prizeFundAmountMinor,
-      notes: row.notes,
-      paidByUserId: row.paidByUserId,
-    })),
-    lineItems: lineItemRows.map((row) => ({
-      lineItemIndex: row.lineItemIndex,
-      catalogObjectId: row.catalogObjectId,
-      quantity: row.quantity,
-    })),
-  });
-}
-
-/**
- * Persist or verify the encrypted structured snapshot inside the caller's
- * cycle-preparation transaction. Phase 2B-1 exposes this primitive but does
- * not call it from the production scheduler.
- */
-export async function persistScheduledPaymentOperationSnapshot(
-  operation: PaymentOperation,
-  snapshot: ScheduledPaymentSemanticSnapshot,
-  transaction: PaymentOperationTransaction,
-): Promise<ScheduledPaymentSemanticSnapshot> {
-  if (
-    operation.operationType !== "scheduled_charge"
-    || operation.paymentScheduleId === null
-    || operation.billingCycleAt === null
-    || snapshot.organizationId !== operation.organizationId
-    || snapshot.paymentScheduleId !== operation.paymentScheduleId
-    || new Date(snapshot.billingCycleAt).toISOString() !== storedTimestampToIso(operation.billingCycleAt)
-    || snapshot.amountMinor !== operation.amountMinor
-    || snapshot.currency !== operation.currency
-    || snapshot.providerName !== operation.providerName
-  ) {
-    throw new PaymentOperationImmutableMismatchError();
-  }
-
-  await validateSnapshotTenantReferences(transaction, snapshot);
-  const encrypted = encryptScheduledPaymentSnapshot(snapshot);
-  const [created] = await transaction
-    .insert(scheduledPaymentOperationSnapshots)
-    .values({ operationId: operation.id, ...encrypted })
-    .onConflictDoNothing()
-    .returning({ operationId: scheduledPaymentOperationSnapshots.operationId });
-  if (created) {
-    await transaction.insert(scheduledPaymentOperationAllocations).values(
-      snapshot.allocations.map((row) => ({ operationId: operation.id, ...row })),
-    );
-    if (snapshot.lineItems.length > 0) {
-      await transaction.insert(scheduledPaymentOperationLineItems).values(
-        snapshot.lineItems.map((row) => ({ operationId: operation.id, ...row })),
-      );
-    }
-  }
-
-  let stored: ScheduledPaymentSemanticSnapshot | undefined;
-  try {
-    stored = await loadScheduledPaymentOperationSnapshot(transaction, operation);
-  } catch (error) {
-    throw new PaymentOperationImmutableMismatchError({ cause: error });
-  }
-  if (!stored || encrypted.snapshotFingerprint !== fingerprintScheduledPaymentSnapshot(stored)) {
-    throw new PaymentOperationImmutableMismatchError();
-  }
-  return stored;
-}
-
-async function validateInteractiveSnapshotTenantReferences(
+async function validateRosterOperationSnapshotTenantReferences(
   executor: PaymentOperationTransaction,
-  snapshot: InteractivePaymentSemanticSnapshot,
+  snapshot: RosterOperationSemanticSnapshot,
 ): Promise<void> {
-  const bowlerIds = [...new Set([
-    snapshot.payerBowlerId,
-    ...snapshot.allocations.map((row) => row.bowlerId),
-  ])];
-  const paidByUserIds = [...new Set(snapshot.allocations
-    .map((row) => row.paidByUserId)
-    .filter((id): id is number => id !== null))];
-
-  const [ownedLeague] = await executor
-    .select({ id: leagues.id })
-    .from(leagues)
-    .where(and(
-      eq(leagues.id, snapshot.leagueId),
-      eq(leagues.organizationId, snapshot.organizationId),
-    ))
-    .limit(1);
-  const ownedBowlers = await executor
-    .select({ id: bowlers.id })
-    .from(bowlers)
-    .where(and(
-      eq(bowlers.organizationId, snapshot.organizationId),
-      inArray(bowlers.id, bowlerIds),
-    ));
-  const rosteredBowlers = await executor
-    .select({ bowlerId: bowlerLeagues.bowlerId })
-    .from(bowlerLeagues)
-    .innerJoin(bowlers, eq(bowlers.id, bowlerLeagues.bowlerId))
-    .where(and(
-      eq(bowlerLeagues.leagueId, snapshot.leagueId),
-      eq(bowlerLeagues.active, true),
-      eq(bowlers.organizationId, snapshot.organizationId),
-      inArray(bowlerLeagues.bowlerId, snapshot.allocations.map((row) => row.bowlerId)),
-    ));
-  const ownedPaidByUsers = paidByUserIds.length === 0
-    ? []
-    : await executor
-      .select({ id: users.id })
-      .from(users)
-      .where(and(
-        eq(users.organizationId, snapshot.organizationId),
-        inArray(users.id, paidByUserIds),
-      ));
-  const ownedLocation = snapshot.locationId === null
-    ? []
-    : await executor
-      .select({ id: locations.id })
-      .from(locations)
-      .where(and(
-        eq(locations.organizationId, snapshot.organizationId),
-        eq(locations.id, snapshot.locationId),
-      ));
-
-  if (
-    !ownedLeague
-    || ownedBowlers.length !== bowlerIds.length
-    || rosteredBowlers.length !== snapshot.allocations.length
-    || ownedPaidByUsers.length !== paidByUserIds.length
-    || ownedLocation.length !== (snapshot.locationId === null ? 0 : 1)
-  ) {
-    throw new PaymentOperationValidationError(
-      "interactive payment snapshot references do not belong to the operation tenant",
-    );
+  const bowlerIds = [...new Set([snapshot.payerBowlerId, ...snapshot.allocations.map((row) => row.bowlerId)])];
+  const paidByUserIds = [...new Set(snapshot.allocations.map((row) => row.paidByUserId).filter((id): id is number => id !== null))];
+  const [ownedLeague] = await executor.select({ id: leagues.id }).from(leagues).where(and(
+    eq(leagues.id, snapshot.leagueId), eq(leagues.organizationId, snapshot.organizationId),
+  )).limit(1);
+  const ownedBowlers = await executor.select({ id: bowlers.id }).from(bowlers).where(and(
+    eq(bowlers.organizationId, snapshot.organizationId), inArray(bowlers.id, bowlerIds),
+  ));
+  const ownedUsers = paidByUserIds.length === 0 ? [] : await executor.select({ id: users.id }).from(users).where(and(
+    eq(users.organizationId, snapshot.organizationId), inArray(users.id, paidByUserIds),
+  ));
+  const ownedLocation = snapshot.locationId === null ? [] : await executor.select({ id: locations.id }).from(locations).where(and(
+    eq(locations.organizationId, snapshot.organizationId), eq(locations.id, snapshot.locationId),
+  ));
+  if (!ownedLeague || ownedBowlers.length !== bowlerIds.length || ownedUsers.length !== paidByUserIds.length || ownedLocation.length !== (snapshot.locationId === null ? 0 : 1)) {
+    throw new PaymentOperationValidationError("roster operation snapshot references do not belong to the operation tenant");
   }
 }
 
-async function loadInteractivePaymentOperationSnapshot(
+async function loadRosterOperationSnapshot(
   executor: typeof db | PaymentOperationTransaction,
   operation: PaymentOperation,
-): Promise<InteractivePaymentSemanticSnapshot | undefined> {
-  if (
-    operation.operationType !== "interactive_charge"
-    || operation.paymentScheduleId !== null
-    || operation.billingCycleAt !== null
-  ) return undefined;
-
-  const [stored] = await executor
-    .select()
-    .from(interactivePaymentOperationSnapshots)
-    .where(eq(interactivePaymentOperationSnapshots.operationId, operation.id))
-    .limit(1);
+): Promise<RosterOperationSemanticSnapshot | undefined> {
+  if (operation.operationType !== "interactive_charge" || operation.leagueId === null) return undefined;
+  const [stored] = await executor.select().from(paymentOperationRosterSnapshots).where(and(
+    eq(paymentOperationRosterSnapshots.operationId, operation.id),
+    eq(paymentOperationRosterSnapshots.organizationId, operation.organizationId),
+    eq(paymentOperationRosterSnapshots.leagueId, operation.leagueId),
+    eq(paymentOperationRosterSnapshots.snapshotKind, "interactive"),
+  )).limit(1);
   if (!stored) return undefined;
-  if (stored.snapshotVersion !== 2 || stored.sourceKind === "legacy" || stored.sourceKind === null) {
-    throw new PaymentOperationValidationError("interactive payment snapshot uses a retired contract");
+  if (stored.requestKind === null || stored.sourceKind === null || stored.encryptedSourceId === null || stored.payerBowlerId === null || stored.weekOf === null) {
+    throw new PaymentOperationImmutableMismatchError();
   }
-  const canonicalStored = {
-    ...stored,
-    snapshotVersion: 2 as const,
-    sourceKind: stored.sourceKind,
-  };
-  const allocationRows = await executor
-    .select()
-    .from(interactivePaymentOperationAllocations)
-    .where(eq(interactivePaymentOperationAllocations.operationId, operation.id))
-    .orderBy(asc(interactivePaymentOperationAllocations.allocationIndex));
-  const lineItemRows = await executor
-    .select()
-    .from(interactivePaymentOperationLineItems)
-    .where(eq(interactivePaymentOperationLineItems.operationId, operation.id))
-    .orderBy(asc(interactivePaymentOperationLineItems.lineItemIndex));
-
-  return reconstructInteractivePaymentSnapshot({
-    organizationId: operation.organizationId,
-    amountMinor: operation.amountMinor,
-    currency: operation.currency,
-    providerName: operation.providerName,
-    providerIdempotencyKey: operation.providerIdempotencyKey,
-    stored: canonicalStored,
-    allocations: allocationRows.map((row) => ({
-      allocationIndex: row.allocationIndex,
-      bowlerId: row.bowlerId,
-      amountMinor: row.amountMinor,
-      lineageAmountMinor: row.lineageAmountMinor,
-      prizeFundAmountMinor: row.prizeFundAmountMinor,
-      weekOf: storedTimestampToIso(row.weekOf) ?? row.weekOf,
-      notes: row.notes,
-      paidByUserId: row.paidByUserId,
-    })),
-    lineItems: lineItemRows.map((row) => ({
-      lineItemIndex: row.lineItemIndex,
-      catalogObjectId: row.catalogObjectId,
-      quantity: row.quantity,
-    })),
+  const requestKind = stored.requestKind;
+  const sourceKind = stored.sourceKind;
+  const encryptedSourceId = stored.encryptedSourceId;
+  const payerBowlerId = stored.payerBowlerId;
+  const weekOf = stored.weekOf;
+  const allocations = Array.isArray(stored.obligations) ? stored.obligations : [];
+  return reconstructRosterOperationSnapshot({
+    organizationId: operation.organizationId, amountMinor: operation.amountMinor, currency: operation.currency,
+    providerName: operation.providerName, providerIdempotencyKey: operation.providerIdempotencyKey,
+    stored: { ...stored, snapshotVersion: 2, requestKind, sourceKind, encryptedSourceId, payerBowlerId, weekOf },
+    allocations: allocations as RosterOperationSemanticSnapshot["allocations"],
+    lineItems: stored.lineItems,
   });
 }
 
-export async function persistInteractivePaymentOperationSnapshot(
+export async function persistRosterOperationSnapshot(
   operation: PaymentOperation,
-  snapshot: InteractivePaymentSemanticSnapshot,
+  snapshot: RosterOperationSemanticSnapshot,
   transaction: PaymentOperationTransaction,
-): Promise<InteractivePaymentSemanticSnapshot> {
-  if (
-    operation.operationType !== "interactive_charge"
-    || !operation.targetKey.startsWith(GENERAL_INTERACTIVE_TARGET_PREFIX)
-    || operation.paymentScheduleId !== null
-    || operation.billingCycleAt !== null
-    || snapshot.organizationId !== operation.organizationId
-    || snapshot.amountMinor !== operation.amountMinor
-    || snapshot.currency !== operation.currency
-    || snapshot.providerName !== operation.providerName
-  ) {
+  quoteFingerprint?: string | null,
+): Promise<RosterOperationSemanticSnapshot> {
+  if (snapshot.organizationId !== operation.organizationId) {
+    throw new PaymentOperationValidationError("roster snapshot does not belong to the operation tenant");
+  }
+  if (operation.operationType !== "interactive_charge" || (operation.leagueId !== null && operation.leagueId !== snapshot.leagueId) || snapshot.amountMinor !== operation.amountMinor || snapshot.currency !== operation.currency || snapshot.providerName !== operation.providerName) {
     throw new PaymentOperationImmutableMismatchError();
   }
-
-  // Re-read and lock the durable parent in the caller transaction. The
-  // operation object is normally returned by the preparation call, but the
-  // tenant and immutable-field check must not rely on an untrusted or stale
-  // in-memory copy when this primitive is reused by a future route.
-  const [storedOperation] = await transaction
-    .select()
-    .from(paymentOperations)
-    .where(and(
+  // Validate the composite tenant references before binding a previously
+  // unscoped operation to its league. This prevents a cross-tenant snapshot
+  // from reaching the database FK and turns it into the intended fail-closed
+  // application error.
+  await validateRosterOperationSnapshotTenantReferences(transaction, snapshot);
+  let operationForSnapshot = operation;
+  if (operation.leagueId === null) {
+    const [boundOperation] = await transaction.update(paymentOperations).set({ leagueId: snapshot.leagueId }).where(and(
       eq(paymentOperations.id, operation.id),
       eq(paymentOperations.organizationId, operation.organizationId),
-    ))
-    .limit(1)
-    .for("share");
-  if (
-    !storedOperation
-    || storedOperation.operationType !== operation.operationType
-    || storedOperation.targetKey !== operation.targetKey
-    || storedOperation.paymentScheduleId !== operation.paymentScheduleId
-    || storedOperation.billingCycleAt !== operation.billingCycleAt
-    || storedOperation.amountMinor !== operation.amountMinor
-    || storedOperation.currency !== operation.currency
-    || storedOperation.providerName !== operation.providerName
-    || storedOperation.requestFingerprint !== operation.requestFingerprint
-    || storedOperation.providerIdempotencyKey !== operation.providerIdempotencyKey
-  ) {
-    throw new PaymentOperationImmutableMismatchError();
-  }
-
-  await validateInteractiveSnapshotTenantReferences(transaction, snapshot);
-  const encrypted = encryptInteractivePaymentSnapshot(snapshot);
-  const [created] = await transaction
-    .insert(interactivePaymentOperationSnapshots)
-    .values({ operationId: operation.id, ...encrypted })
-    .onConflictDoNothing()
-    .returning({ operationId: interactivePaymentOperationSnapshots.operationId });
-  if (created) {
-    await transaction.insert(interactivePaymentOperationAllocations).values(
-      snapshot.allocations.map((row) => ({ operationId: operation.id, ...row })),
-    );
-    if (snapshot.lineItems.length > 0) {
-      await transaction.insert(interactivePaymentOperationLineItems).values(
-        snapshot.lineItems.map((row) => ({ operationId: operation.id, ...row })),
-      );
+      isNull(paymentOperations.leagueId),
+    )).returning();
+    if (boundOperation) {
+      operationForSnapshot = boundOperation;
+    } else {
+      const [alreadyBound] = await transaction.select().from(paymentOperations).where(and(
+        eq(paymentOperations.id, operation.id),
+        eq(paymentOperations.organizationId, operation.organizationId),
+      )).limit(1).for("share");
+      if (!alreadyBound || alreadyBound.leagueId !== snapshot.leagueId) {
+        throw new PaymentOperationImmutableMismatchError();
+      }
+      operationForSnapshot = alreadyBound;
     }
   }
-
-  if (snapshot.snapshotVersion === 2) {
-    await initializeInteractiveCardSaveState(transaction, operation, snapshot);
-  }
-
-  let stored: InteractivePaymentSemanticSnapshot | undefined;
-  try {
-    stored = await loadInteractivePaymentOperationSnapshot(transaction, operation);
-  } catch (error) {
-    throw new PaymentOperationImmutableMismatchError({ cause: error });
-  }
-  const fingerprintsMatch = stored
-    && encrypted.snapshotFingerprint === fingerprintInteractivePaymentSnapshot(stored);
-  if (!stored || !fingerprintsMatch) {
+  const [storedOperation] = await transaction.select().from(paymentOperations).where(and(
+    eq(paymentOperations.id, operationForSnapshot.id), eq(paymentOperations.organizationId, operationForSnapshot.organizationId),
+  )).limit(1).for("share");
+  if (!storedOperation || storedOperation.operationType !== operationForSnapshot.operationType || storedOperation.leagueId !== snapshot.leagueId || storedOperation.targetKey !== operationForSnapshot.targetKey || storedOperation.amountMinor !== operationForSnapshot.amountMinor || storedOperation.currency !== operationForSnapshot.currency || storedOperation.providerName !== operationForSnapshot.providerName || storedOperation.requestFingerprint !== operationForSnapshot.requestFingerprint || storedOperation.providerIdempotencyKey !== operationForSnapshot.providerIdempotencyKey) {
     throw new PaymentOperationImmutableMismatchError();
   }
+  const encrypted = encryptRosterOperationSnapshot(snapshot);
+  const [created] = await transaction.insert(paymentOperationRosterSnapshots).values({
+    operationId: operationForSnapshot.id, organizationId: snapshot.organizationId, leagueId: snapshot.leagueId, snapshotVersion: 2, snapshotKind: "interactive",
+    amountMinor: snapshot.amountMinor, currency: snapshot.currency, obligations: snapshot.allocations,
+    locationId: encrypted.locationId, providerLocationId: encrypted.providerLocationId, payerBowlerId: encrypted.payerBowlerId, requestKind: encrypted.requestKind,
+    encryptedSourceId: encrypted.encryptedSourceId, encryptedCustomerId: encrypted.encryptedCustomerId, encryptedBuyerEmail: encrypted.encryptedBuyerEmail,
+    storeCard: encrypted.storeCard, sourceKind: encrypted.sourceKind, weekOf: encrypted.weekOf, combinedChargeGroupId: encrypted.combinedChargeGroupId,
+    quoteFingerprint: quoteFingerprint ?? null, lineItems: snapshot.lineItems, snapshotFingerprint: encrypted.snapshotFingerprint,
+  }).onConflictDoNothing().returning({ operationId: paymentOperationRosterSnapshots.operationId });
+  if (!created) {
+    const existing = await loadRosterOperationSnapshot(transaction, operationForSnapshot);
+    if (!existing || fingerprintRosterOperationSnapshot(existing) !== encrypted.snapshotFingerprint) throw new PaymentOperationImmutableMismatchError();
+    return existing;
+  }
+  if (snapshot.storeCard) await initializeInteractiveCardSaveState(transaction, operationForSnapshot, snapshot);
+  const stored = await loadRosterOperationSnapshot(transaction, operationForSnapshot);
+  if (!stored || fingerprintRosterOperationSnapshot(stored) !== encrypted.snapshotFingerprint) throw new PaymentOperationImmutableMismatchError();
   return stored;
 }
 
@@ -1294,7 +776,7 @@ function validateCardSaveErrorCode(errorCode: string): void {
 async function initializeInteractiveCardSaveState(
   transaction: PaymentOperationTransaction,
   operation: PaymentOperation,
-  snapshot: InteractivePaymentSemanticSnapshot,
+  snapshot: RosterOperationSemanticSnapshot,
 ): Promise<void> {
   // Preparation callers may use a deterministic/future transaction clock in
   // tests and recovery tooling. Keep the mutable side-effect timestamp at or
@@ -1518,47 +1000,13 @@ export async function getRefundPaymentOperationSnapshotForOrganization(
   return loadRefundPaymentOperationSnapshot(db, operation);
 }
 
-export async function getInteractivePaymentOperationSnapshotForOrganization(
+export async function getRosterOperationSnapshotForOrganization(
   organizationId: number,
   operationId: string,
-): Promise<InteractivePaymentSemanticSnapshot | undefined> {
+): Promise<RosterOperationSemanticSnapshot | undefined> {
   const operation = await getPaymentOperationForOrganization(organizationId, operationId);
   if (!operation) return undefined;
-  return loadInteractivePaymentOperationSnapshot(db, operation);
-}
-
-export async function getScheduledPaymentOperationSnapshotForOrganization(
-  organizationId: number,
-  operationId: string,
-): Promise<ScheduledPaymentSemanticSnapshot | undefined> {
-  const operation = await getPaymentOperationForOrganization(organizationId, operationId);
-  if (!operation) return undefined;
-  return loadScheduledPaymentOperationSnapshot(db, operation);
-}
-
-/**
- * Compare a scheduled operation's immutable Square seller-location identity
- * with the tenant-scoped credential currently configured for its location.
- * A null pre-cutover snapshot identity is deliberately accepted so legacy
- * operations retain their historical compatibility behavior.
- */
-export async function isScheduledPaymentProviderLocationCurrent(input: {
-  organizationId: number;
-  locationId: number | null;
-  providerLocationId: string | null;
-}): Promise<boolean> {
-  if (input.providerLocationId === null) return true;
-  if (input.locationId === null) return false;
-  const [location] = await db
-    .select({ squareCredentials: locations.squareCredentials })
-    .from(locations)
-    .where(and(
-      eq(locations.id, input.locationId),
-      eq(locations.organizationId, input.organizationId),
-    ))
-    .limit(1);
-  const credentials = locationSquareCredentialsSchema.safeParse(location?.squareCredentials);
-  return credentials.success && credentials.data?.locationId === input.providerLocationId;
+  return loadRosterOperationSnapshot(db, operation);
 }
 
 export async function getPaymentOperationForOrganization(
@@ -1723,107 +1171,6 @@ export async function acquirePaymentOperationLease(
     ))
     .returning();
   return leased;
-}
-
-/**
- * F4 dispatch cutoff shared with F3 revoke/supersede. Holding the same
- * organization/league advisory lock and plan/auth row locks makes revoke
- * first a durable zero-call outcome; once this returns true, the leased
- * operation owns the exact in-flight dispatch window.
- */
-export async function acquireCanonicalAutopayDispatchCutoff(input: {
-  organizationId: number;
-  leagueId: number;
-  operationId: string;
-  leaseToken: string;
-  now?: Date;
-}): Promise<boolean> {
-  // Automatic collection is PR2.  The dormant entry point must be a
-  // deterministic no-op and must never consult retired F1/F3/F4 relations.
-  void input;
-  return false;
-}
-
-export async function acquireScheduledPaymentOperationDispatchCutoff(input: {
-  organizationId: number;
-  operationId: string;
-  leaseToken: string;
-  now?: Date;
-}): Promise<boolean> {
-  return db.transaction(async (tx) => {
-    const [scope] = await tx.select({
-      leagueId: sql<number | null>`COALESCE(${paymentOperations.leagueId}, ${scheduledPaymentOperationSnapshots.leagueId})`,
-    }).from(paymentOperations).innerJoin(
-      scheduledPaymentOperationSnapshots,
-      eq(scheduledPaymentOperationSnapshots.operationId, paymentOperations.id),
-    ).where(and(
-      eq(paymentOperations.organizationId, input.organizationId),
-      eq(paymentOperations.id, input.operationId),
-      eq(paymentOperations.operationType, "scheduled_charge"),
-    )).limit(1);
-    if (!scope?.leagueId) return false;
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(${input.organizationId}::integer, ${scope.leagueId}::integer)`);
-    const [operation] = await tx.select({
-      id: paymentOperations.id,
-      status: paymentOperations.status,
-      leaseToken: paymentOperations.leaseToken,
-      leagueId: paymentOperations.leagueId,
-    }).from(paymentOperations).where(and(
-      eq(paymentOperations.organizationId, input.organizationId),
-      eq(paymentOperations.id, input.operationId),
-      eq(paymentOperations.operationType, "scheduled_charge"),
-    )).for("update");
-    if (!operation || operation.status !== "leased" || operation.leaseToken !== input.leaseToken) return false;
-    try {
-      await validateRosterSnapshotForDispatchInTransaction(tx, {
-        organizationId: input.organizationId,
-        leagueId: scope.leagueId,
-        operationId: input.operationId,
-      });
-    } catch (error) {
-      if (!isRosterSnapshotFinalizationError(error)) throw error;
-      await releaseRosterReservationsWithoutProviderEvidence(tx, {
-        organizationId: input.organizationId,
-        leagueId: scope.leagueId,
-        operationId: input.operationId,
-      });
-      const blockedAt = (input.now ?? new Date()).toISOString();
-      await tx.update(paymentOperations).set({
-        status: "reconciliation_required",
-        nextAttemptAt: null,
-        leaseOwner: null,
-        leaseToken: null,
-        leaseExpiresAt: null,
-        dispatchClaimedAt: null,
-        errorClassification: "internal",
-        errorCode: error.code,
-        completedAt: blockedAt,
-        updatedAt: blockedAt,
-      }).where(and(
-        eq(paymentOperations.organizationId, input.organizationId),
-        eq(paymentOperations.id, input.operationId),
-        eq(paymentOperations.status, "leased"),
-        eq(paymentOperations.leaseToken, input.leaseToken),
-      ));
-      return false;
-    }
-    const claimedAt = (input.now ?? new Date()).toISOString();
-    const [claimed] = await tx.update(paymentOperations).set({
-      dispatchClaimedAt: claimedAt,
-      updatedAt: claimedAt,
-    }).where(and(
-      eq(paymentOperations.organizationId, input.organizationId),
-      eq(paymentOperations.id, input.operationId),
-      eq(paymentOperations.status, "leased"),
-      eq(paymentOperations.leaseToken, input.leaseToken),
-      // The dispatch cutoff is a one-shot CAS for this lease token. Recovery
-      // and retry transitions clear the claim before issuing a fresh lease;
-      // a repeated call with the same token can therefore never re-authorize
-      // a provider request.
-      isNull(paymentOperations.dispatchClaimedAt),
-    )).returning({ id: paymentOperations.id });
-    return Boolean(claimed);
-  });
 }
 
 /**
@@ -2269,7 +1616,6 @@ async function recordTerminalErrorOutcome(
         operationId: transitioned.id,
       });
     }
-    if (transitioned.operationType === "canonical_autopay_charge") return transitioned;
     return transitioned;
   });
   if (updated) return updated;
@@ -2289,8 +1635,6 @@ async function recordTerminalErrorOutcome(
   throw new PaymentOperationInvalidTransitionError(existing.status);
 }
 
-// PR2 canonical plan cancellation is intentionally dormant.  The retained
-// operation ledger must not query relations removed by migration 0032.
 export async function recordPaymentOperationActionRequired(
   input: ErrorOutcomeInput,
 ): Promise<PaymentOperation> {
@@ -2321,159 +1665,12 @@ export async function recordPaymentOperationFailedTerminal(
   return recordTerminalErrorOutcome({ ...input, status: "failed_terminal" });
 }
 
-/**
- * Terminalize deterministic F4 evidence drift and release the exact D2
- * reservation in one serialized transaction. Provider-uncertain outcomes do
- * not use this path: they remain reconciliation_required with their identity.
- */
-export async function recordCanonicalAutopayPreDispatchFailure(
-  input: LeasedPaymentOperationInput & { errorCode?: string | null },
-): Promise<PaymentOperation | undefined> {
-  void input;
- return undefined;
-}
-
 export type FinalizePaymentOperationSuccessInput = LeasedPaymentOperationInput & {
   providerObjectId: string;
   providerOrderId?: string | null;
   paymentRows?: PaymentOperationLinkedPaymentInput[];
 };
 
-// F2 supplement evidence must be checked before the operation transition or
-// linked payment inserts. Webhook reconciliation catches immutable mismatch
-// as a bounded inbox failure; preflighting here keeps that failure from
-// committing a succeeded operation/payment without its occurrence evidence.
-async function validateInteractiveOccurrenceSupplementBeforeWrites(
-  tx: PaymentOperationTransaction,
-  operation: PaymentOperation,
-): Promise<void> {
-  // The D2 occurrence supplement is retired by migration 0032. The retained
-  // general ledger must not query or recreate that canonical evidence.
-  void tx;
-  void operation;
-  return;
-}
-
-/**
- * F4 has a stronger completion contract than the legacy occurrence
- * supplement: a canonical operation is not complete until its exact plan,
- * allocations, obligation states, and revision evidence are committed in
- * the same transaction as the succeeded operation and linked payments.
- */
-async function verifyCanonicalAutopayCompletionInTransaction(
-  tx: PaymentOperationTransaction,
-  operation: PaymentOperation,
-): Promise<void> {
-  if (operation.operationType !== "canonical_autopay_charge") return;
- return;
-}
-
-async function finalizeCanonicalAutopayInTransaction(
-  tx: PaymentOperationTransaction,
-  operation: PaymentOperation,
-  paymentRows: PaymentOperationLinkedPaymentInput[] | undefined,
-  now: string,
-): Promise<void> {
-  // No F4 canonical-autopay operation can be created after migration 0032.
-  // Keep this call-site fail-closed without touching retired relations.
-  if (operation.operationType !== "canonical_autopay_charge") return;
- return;
-}
-
-/** The occurrence rows are locked after the shared league advisory lock.  A
- * claim-first provider success must therefore be recorded as review evidence
- * when cancellation already won, without ever recreating active allocations
- * or reactivating a voided obligation. */
-async function interactiveCancellationWonInTransaction(
-  tx: PaymentOperationTransaction,
-  operation: PaymentOperation,
-): Promise<boolean> {
-  // There is no D2 occurrence supplement after migration 0032. Provider
-  // routes for the new system are disabled; retained operations have no
-  // canonical cancellation evidence to inspect here.
-  void tx;
-  void operation;
-  return false;
-}
-
-/**
- * A scheduled double-pay operation is prepared against the trigger UUID but
- * its immutable snapshot amount covers both members of the collection group.
- * Therefore cancellation of either physical member must be visible to the
- * claim-first finalizer.  The advisory lock is acquired by
- * lockCanonicalMutationScope before this check, matching cancelOccurrence's
- * lock order.
- */
-async function scheduledCancellationWonInTransaction(
-  tx: PaymentOperationTransaction,
-  operation: PaymentOperation,
-): Promise<boolean> {
-  if (operation.operationType !== "scheduled_charge" || operation.triggerOccurrenceId === null) return false;
-  const [scope] = await tx.select({
-    leagueId: scheduledPaymentOperationSnapshots.leagueId,
-    isDoublePay: scheduledPaymentOperationSnapshots.isDoublePay,
-  })
-    .from(scheduledPaymentOperationSnapshots)
-    .where(and(
-      eq(scheduledPaymentOperationSnapshots.operationId, operation.id),
-    )).limit(1);
-  if (!scope) return false;
-  if (!scope.isDoublePay) {
-    const [trigger] = await tx.select({ status: leagueOccurrences.status })
-      .from(leagueOccurrences)
-      .where(and(
-        eq(leagueOccurrences.id, operation.triggerOccurrenceId),
-        eq(leagueOccurrences.organizationId, operation.organizationId),
-        eq(leagueOccurrences.leagueId, scope.leagueId),
-      )).limit(1).for("update");
-    return trigger?.status === "cancelled";
-  }
-  const groupIds = await tx.selectDistinct({ groupId: canonicalCollectionGroupMembers.groupId })
-    .from(canonicalCollectionGroupMembers)
-    .innerJoin(canonicalCollectionGroups, and(
-      eq(canonicalCollectionGroups.id, canonicalCollectionGroupMembers.groupId),
-      eq(canonicalCollectionGroups.organizationId, operation.organizationId),
-      eq(canonicalCollectionGroups.leagueId, scope.leagueId),
-    ))
-    .where(and(
-      eq(canonicalCollectionGroupMembers.organizationId, operation.organizationId),
-      eq(canonicalCollectionGroupMembers.leagueId, scope.leagueId),
-      eq(canonicalCollectionGroupMembers.occurrenceId, operation.triggerOccurrenceId),
-    ));
-  if (groupIds.length === 0) {
-    const [trigger] = await tx.select({ status: leagueOccurrences.status })
-      .from(leagueOccurrences)
-      .where(and(
-        eq(leagueOccurrences.id, operation.triggerOccurrenceId),
-        eq(leagueOccurrences.organizationId, operation.organizationId),
-        eq(leagueOccurrences.leagueId, scope.leagueId),
-      )).limit(1).for("update");
-    return trigger?.status === "cancelled";
-  }
-  const memberRows = await tx.select({ occurrenceId: canonicalCollectionGroupMembers.occurrenceId })
-    .from(canonicalCollectionGroupMembers)
-    .where(and(
-      eq(canonicalCollectionGroupMembers.organizationId, operation.organizationId),
-      eq(canonicalCollectionGroupMembers.leagueId, scope.leagueId),
-      inArray(canonicalCollectionGroupMembers.groupId, groupIds.map((row) => row.groupId)),
-    ));
-  const occurrenceIds = [...new Set(memberRows.map((row) => row.occurrenceId))];
-  if (occurrenceIds.length === 0) return false;
-  const occurrences = await tx.select({ status: leagueOccurrences.status })
-    .from(leagueOccurrences)
-    .where(and(
-      eq(leagueOccurrences.organizationId, operation.organizationId),
-      eq(leagueOccurrences.leagueId, scope.leagueId),
-      inArray(leagueOccurrences.id, occurrenceIds),
-    )).orderBy(asc(leagueOccurrences.id)).for("update");
-  return occurrences.some((row) => row.status === "cancelled");
-}
-
-/**
- * Transaction-scoped success finalization. Interactive setup uses this to
- * commit the provider outcome, exact payment allocations, future schedule,
- * and setup completion atomically after the provider call.
- */
 export async function finalizePaymentOperationSuccessInTransaction(
   tx: PaymentOperationTransaction,
   input: FinalizePaymentOperationSuccessInput,
@@ -2484,18 +1681,14 @@ export async function finalizePaymentOperationSuccessInTransaction(
   if (input.providerOrderId != null) validateProviderOrderId(input.providerOrderId);
   const now = toIso(input.now ?? new Date(), "now");
   if (input.providerOrderId == null) {
-    const [interactiveSnapshot] = await tx.select({ requestKind: interactivePaymentOperationSnapshots.requestKind })
-      .from(interactivePaymentOperationSnapshots)
-      .where(eq(interactivePaymentOperationSnapshots.operationId, input.operationId))
+    const [rosterSnapshot] = await tx.select({ requestKind: paymentOperationRosterSnapshots.requestKind })
+      .from(paymentOperationRosterSnapshots)
+      .where(eq(paymentOperationRosterSnapshots.operationId, input.operationId))
       .limit(1);
-    if (interactiveSnapshot?.requestKind === "order") throw new PaymentOperationImmutableMismatchError();
+    if (rosterSnapshot?.requestKind === "order") throw new PaymentOperationImmutableMismatchError();
   }
   const preflightOperation = await lockCanonicalMutationScope(tx, input.organizationId, input.operationId);
-  const cancellationReviewRequired = preflightOperation?.operationType === "interactive_charge"
-    ? await interactiveCancellationWonInTransaction(tx, preflightOperation)
-    : preflightOperation?.operationType === "scheduled_charge"
-      ? await scheduledCancellationWonInTransaction(tx, preflightOperation)
-      : false;
+  const cancellationReviewRequired = false;
   if (preflightOperation) {
     // Provider identities are immutable evidence. A reclaim/finalization may
     // fill a previously empty identity, but it may never replace one retained
@@ -2505,12 +1698,6 @@ export async function finalizePaymentOperationSuccessInTransaction(
       || (preflightOperation.providerOrderId !== null
         && preflightOperation.providerOrderId !== input.providerOrderId)) {
       throw new PaymentOperationImmutableMismatchError();
-    }
-    if (preflightOperation.operationType === "canonical_autopay_charge") {
-      // The canonical finalizer repeats the immutable validation immediately
-      // before writes and owns plan/allocation completion atomically.
-    } else {
-      await validateInteractiveOccurrenceSupplementBeforeWrites(tx, preflightOperation);
     }
   }
 
@@ -2548,9 +1735,7 @@ export async function finalizePaymentOperationSuccessInTransaction(
       input.operationId,
       input.paymentRows,
     );
-    if (transitioned.operationType === "canonical_autopay_charge") {
-      await finalizeCanonicalAutopayInTransaction(tx, transitioned, input.paymentRows, now);
-    } else if (!cancellationReviewRequired && transitioned.leagueId !== null) {
+    if (!cancellationReviewRequired && transitioned.leagueId !== null) {
       try {
         await tx.transaction(async (finalizerTx) => {
           await finalizeRosterSnapshotInTransaction(finalizerTx, {
@@ -2578,7 +1763,6 @@ export async function finalizePaymentOperationSuccessInTransaction(
         return reviewed ?? transitioned;
       }
     }
-    if (!cancellationReviewRequired) await deactivatePaidInFullSchedule(tx, input.operationId, now);
     return transitioned;
   }
 
@@ -2593,7 +1777,6 @@ export async function finalizePaymentOperationSuccessInTransaction(
     && existing.providerObjectId === input.providerObjectId
     && (input.providerOrderId == null || existing.providerOrderId === input.providerOrderId)
   ) {
-    if (existing.operationType === "canonical_autopay_charge") await verifyCanonicalAutopayCompletionInTransaction(tx, existing);
     if ((existing.operationType === "interactive_charge" || existing.operationType === "standing_autopay_charge") && existing.leagueId !== null) {
       try {
         await tx.transaction(async (finalizerTx) => {
@@ -2692,37 +1875,9 @@ const webhookCompletableStatuses = new Set<PaymentOperation["status"]>([
   "reconciliation_required",
 ]);
 
-function scheduledWebhookPaymentRows(
+function rosterWebhookPaymentRows(
   operation: PaymentOperation,
-  snapshot: ScheduledPaymentSemanticSnapshot,
-  input: ProviderWebhookCompletionEvidence,
-): PaymentOperationLinkedPaymentInput[] {
-  const combinedChargeGroupId = snapshot.allocations.length > 1 ? operation.id : null;
-  return snapshot.allocations.map((allocation) => ({
-    allocationIndex: allocation.allocationIndex,
-    values: {
-      bowlerId: allocation.bowlerId,
-      leagueId: snapshot.leagueId,
-      amount: allocation.amountMinor,
-      lineageAmount: allocation.lineageAmountMinor,
-      prizeFundAmount: allocation.prizeFundAmountMinor,
-      weekOf: snapshot.billingCycleAt,
-      status: "paid" as const,
-      type: providerNameToPaymentType(snapshot.providerName),
-      providerPaymentId: input.providerPaymentId,
-      receiptUrl: input.receiptUrl ?? undefined,
-      receiptNumber: input.receiptNumber ?? undefined,
-      receiptEmailMissing: snapshot.buyerEmail === null,
-      notes: allocation.notes,
-      paidByUserId: allocation.paidByUserId,
-      combinedChargeGroupId,
-    },
-  }));
-}
-
-function interactiveWebhookPaymentRows(
-  operation: PaymentOperation,
-  snapshot: InteractivePaymentSemanticSnapshot,
+  snapshot: RosterOperationSemanticSnapshot,
   input: ProviderWebhookCompletionEvidence,
 ): PaymentOperationLinkedPaymentInput[] {
   return snapshot.allocations.map((allocation) => ({
@@ -2764,16 +1919,8 @@ export async function finalizeChargeFromWebhookEvidenceInTransaction(
   if (input.providerOrderId != null) validateProviderOrderId(input.providerOrderId);
   const now = toIso(input.now ?? new Date(), "now");
   const operation = await lockCanonicalMutationScope(tx, input.organizationId, input.operationId);
-  if (!operation || !["scheduled_charge", "interactive_charge", "canonical_autopay_charge", "standing_autopay_charge"].includes(operation.operationType)) {
+  if (!operation || !["interactive_charge", "standing_autopay_charge"].includes(operation.operationType)) {
     throw new PaymentOperationNotFoundError();
-  }
-  // Migration 0032 retires canonical automatic collection.  Historical
-  // operation rows remain readable and an already-succeeded webhook replay is
-  // idempotent, but no new provider evidence may traverse the removed F4/D2
-  // relations.
-  if (operation.operationType === "canonical_autopay_charge") {
-    if (operation.status === "succeeded" && operation.providerObjectId === input.providerObjectId) return operation;
-    throw new PaymentOperationValidationError("automatic collection is dormant in PR1; canonical webhook finalization is unavailable");
   }
   if (
     operation.providerName !== "square"
@@ -2783,25 +1930,16 @@ export async function finalizeChargeFromWebhookEvidenceInTransaction(
     || (operation.providerOrderId !== null && operation.providerOrderId !== input.providerOrderId)
   ) throw new PaymentOperationImmutableMismatchError();
 
-  let rows: PaymentOperationLinkedPaymentInput[];
-  if (operation.operationType === "scheduled_charge") {
-    const snapshot = await loadScheduledPaymentOperationSnapshot(tx, operation);
+  let rows: PaymentOperationLinkedPaymentInput[] = [];
+  if (operation.operationType === "interactive_charge") {
+    const snapshot = await loadRosterOperationSnapshot(tx, operation);
     if (
       !snapshot
       || snapshot.locationId !== input.locationId
       || (snapshot.providerLocationId !== null
         && snapshot.providerLocationId !== input.providerLocationId)
     ) throw new PaymentOperationImmutableMismatchError();
-    rows = scheduledWebhookPaymentRows(operation, snapshot, input);
-  } else if (operation.operationType === "interactive_charge") {
-    const snapshot = await loadInteractivePaymentOperationSnapshot(tx, operation);
-    if (
-      !snapshot
-      || snapshot.locationId !== input.locationId
-      || (snapshot.providerLocationId !== null
-        && snapshot.providerLocationId !== input.providerLocationId)
-    ) throw new PaymentOperationImmutableMismatchError();
-    rows = interactiveWebhookPaymentRows(operation, snapshot, input);
+    rows = rosterWebhookPaymentRows(operation, snapshot, input);
   } else if (operation.operationType === "standing_autopay_charge") {
     const [binding] = await tx.select({ providerLocationId: paymentOperationStandingAutopayBindings.providerLocationId, collectionMode: paymentOperationStandingAutopayBindings.collectionMode }).from(paymentOperationStandingAutopayBindings).innerJoin(autopayConsents, and(
       eq(autopayConsents.id, paymentOperationStandingAutopayBindings.consentId),
@@ -2843,8 +1981,6 @@ export async function finalizeChargeFromWebhookEvidenceInTransaction(
       },
     }));
     if (rows.length === 0) throw new PaymentOperationImmutableMismatchError();
-  } else {
-    throw new PaymentOperationValidationError("automatic collection is dormant in PR1; canonical webhook finalization is unavailable");
   }
 
   if (operation.status === "succeeded") {
@@ -3020,7 +2156,7 @@ export type StandingAutopayWake = {
 
 /**
  * Return the earliest standing-consent cutoff or retry.  The query deliberately
- * does not join payment_schedules or any retired plan table.  Reservations are
+ * does not join any retired schedule or plan table. Reservations are
  * considered only while unresolved; finalized evidence is history and must not
  * suppress a later partial collection.
  */
@@ -3255,40 +2391,6 @@ export async function reconcilePaymentOperationSuccess(
     // only an unlocked scope read, then takes the canonical lock; legacy
     // operations retain their historical operation-row lock behavior.
     const current = await lockCanonicalMutationScope(tx, input.organizationId, input.operationId);
-    if (current
-      && current.operationType === "canonical_autopay_charge"
-      && ((current.providerObjectId !== null && current.providerObjectId !== input.providerObjectId)
-        || (current.providerOrderId !== null && current.providerOrderId !== input.providerOrderId))) {
-      throw new PaymentOperationImmutableMismatchError();
-    }
-    if (current?.operationType === "canonical_autopay_charge") {
-      if (current.status !== "reconciliation_required" || current.leaseToken !== input.leaseToken) return undefined;
-      const [reclaimed] = await tx.update(paymentOperations).set({
-        status: "leased",
-        nextAttemptAt: null,
-        leaseOwner: "explicit-reconciliation",
-        leaseExpiresAt: new Date(new Date(now).getTime() + PAYMENT_OPERATION_MAX_LEASE_MS).toISOString(),
-        errorClassification: null,
-        errorCode: null,
-        completedAt: null,
-        updatedAt: now,
-      }).where(and(
-        eq(paymentOperations.organizationId, input.organizationId),
-        eq(paymentOperations.id, input.operationId),
-        eq(paymentOperations.status, "reconciliation_required"),
-        eq(paymentOperations.leaseToken, input.leaseToken),
-      )).returning();
-      if (!reclaimed) return undefined;
-      return finalizePaymentOperationSuccessInTransaction(tx, {
-        organizationId: input.organizationId,
-        operationId: reclaimed.id,
-        leaseToken: input.leaseToken,
-        providerObjectId: input.providerObjectId,
-        providerOrderId: input.providerOrderId,
-        paymentRows: input.paymentRows,
-        now: input.now,
-      });
-    }
     if (!current) return undefined;
     const [transitioned] = await tx
       .update(paymentOperations)
@@ -3349,7 +2451,6 @@ export async function reconcilePaymentOperationSuccess(
         return reviewed ?? transitioned;
       }
     }
-    await deactivatePaidInFullSchedule(tx, input.operationId, now);
     return transitioned;
   });
   if (updated) return updated;
@@ -3407,82 +2508,6 @@ export async function recordExpiredPaymentOperationAttemptExhausted(input: {
 }
 
 /** Phase 2B-2 legacy guard; deliberately not wired into the scheduler here. */
-export async function hasNonterminalScheduledPaymentOperation(input: {
-  organizationId: number;
-  paymentScheduleId: number;
-}): Promise<boolean> {
-  const [row] = await db
-    .select({ id: paymentOperations.id })
-    .from(paymentOperations)
-    .where(and(
-      eq(paymentOperations.organizationId, input.organizationId),
-      eq(paymentOperations.operationType, "scheduled_charge"),
-      eq(paymentOperations.paymentScheduleId, input.paymentScheduleId),
-      inArray(paymentOperations.status, [
-        "pending",
-        "leased",
-        "provider_unknown",
-        "retry_scheduled",
-        "reconciliation_required",
-      ]),
-    ))
-    .limit(1);
-  return row !== undefined;
-}
-
-export interface LegacyScheduledPaymentCycleBlock {
-  operationId: string;
-  status: PaymentOperation["status"];
-  scope: "exact_cycle" | "in_flight" | "uncertain";
-}
-
-/**
- * Called only while the exact-cycle PostgreSQL advisory lock is held. Exact
- * identity always wins; a lease or uncertain older outcome also blocks a
- * rollback-era legacy dispatch, while definite older outcomes do not.
- */
-export async function getLegacyScheduledPaymentCycleBlock(input: {
-  organizationId: number;
-  paymentScheduleId: number;
-  billingCycleAt: string | Date;
-}): Promise<LegacyScheduledPaymentCycleBlock | undefined> {
-  const billingCycleAt = input.billingCycleAt instanceof Date
-    ? toIso(input.billingCycleAt, "billingCycleAt")
-    : storedTimestampToIso(input.billingCycleAt);
-  if (billingCycleAt === null) {
-    throw new PaymentOperationValidationError("billingCycleAt must be a valid timestamp");
-  }
-  const [row] = await db
-    .select({
-      operationId: paymentOperations.id,
-      status: paymentOperations.status,
-      exactCycle: sql<boolean>`${paymentOperations.billingCycleAt} = ${billingCycleAt}::timestamp`,
-    })
-    .from(paymentOperations)
-    .where(and(
-      eq(paymentOperations.organizationId, input.organizationId),
-      eq(paymentOperations.operationType, "scheduled_charge"),
-      eq(paymentOperations.paymentScheduleId, input.paymentScheduleId),
-      or(
-        sql`${paymentOperations.billingCycleAt} = ${billingCycleAt}::timestamp`,
-        eq(paymentOperations.status, "leased"),
-        inArray(paymentOperations.status, ["provider_unknown", "reconciliation_required"]),
-      ),
-    ))
-    .orderBy(asc(paymentOperations.createdAt))
-    .limit(1);
-  if (!row) return undefined;
-  return {
-    operationId: row.operationId,
-    status: row.status,
-    scope: row.exactCycle
-      ? "exact_cycle"
-      : row.status === "leased"
-        ? "in_flight"
-        : "uncertain",
-  };
-}
-
 export async function cancelPaymentOperation(
   input: Omit<LeasedPaymentOperationInput, "leaseToken"> & { leaseToken?: string },
 ): Promise<PaymentOperation> {

@@ -12,7 +12,6 @@ import {
   leagueScheduleExceptions,
   games,
   paymentOperations,
-  scheduledPaymentOperationSnapshots,
   leagues,
   users,
   canonicalCollectionGroups,

@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
-  INTERACTIVE_PAYMENT_SNAPSHOT_VERSION,
-  type InteractivePaymentRequestKind,
-  type InteractivePaymentSourceKind,
+  ROSTER_OPERATION_SNAPSHOT_VERSION,
+  type RosterOperationRequestKind,
+  type RosterOperationSourceKind,
 } from "@shared/schema";
 import { decrypt, encrypt } from "../utils/crypto.js";
 import {
@@ -11,9 +11,9 @@ import {
   canonicalizePaymentOperationInput,
 } from "./payment-operation-idempotency.js";
 
-export const INTERACTIVE_PAYMENT_SNAPSHOT_FINGERPRINT_PREFIX = "lvpayexecic:v1:" as const;
+export const ROSTER_OPERATION_SNAPSHOT_FINGERPRINT_PREFIX = "lvrosterexec:v1:" as const;
 
-const interactivePaymentSourceKindSchema = z.enum([
+const rosterOperationSourceKindSchema = z.enum([
   "new_card",
   "saved_card",
   "wallet",
@@ -28,6 +28,9 @@ const allocationSchema = z.object({
   weekOf: z.string().datetime(),
   notes: z.string().max(500).nullable(),
   paidByUserId: z.number().int().positive().nullable(),
+  obligationId: z.string().uuid().optional(),
+  responsibilityId: z.string().uuid().optional(),
+  responsibilityVersion: z.number().int().positive().optional(),
 }).strict();
 
 const lineItemSchema = z.object({
@@ -37,7 +40,7 @@ const lineItemSchema = z.object({
 }).strict();
 
 const semanticSnapshotSchema = z.object({
-  snapshotVersion: z.literal(INTERACTIVE_PAYMENT_SNAPSHOT_VERSION),
+  snapshotVersion: z.literal(ROSTER_OPERATION_SNAPSHOT_VERSION),
   organizationId: z.number().int().positive(),
   amountMinor: z.number().int().positive(),
   currency: z.string().regex(/^USD$/),
@@ -53,7 +56,7 @@ const semanticSnapshotSchema = z.object({
   customerId: z.string().min(1).max(255).nullable(),
   buyerEmail: z.string().email().max(255).nullable(),
   storeCard: z.boolean(),
-  sourceKind: interactivePaymentSourceKindSchema,
+  sourceKind: rosterOperationSourceKindSchema,
   weekOf: z.string().datetime(),
   combinedChargeGroupId: z.string().min(1).max(128).nullable(),
   allocations: z.array(allocationSchema).min(1).max(25),
@@ -137,37 +140,37 @@ const semanticSnapshotSchema = z.object({
   }
 });
 
-export type InteractivePaymentSemanticSnapshot = z.infer<typeof semanticSnapshotSchema>;
+export type RosterOperationSemanticSnapshot = z.infer<typeof semanticSnapshotSchema>;
 
-export interface StoredInteractivePaymentSnapshot {
+export interface StoredRosterOperationSnapshot {
   snapshotVersion: number;
   snapshotFingerprint: string;
   leagueId: number;
   locationId: number | null;
   providerLocationId: string | null;
   payerBowlerId: number;
-  requestKind: InteractivePaymentRequestKind;
+  requestKind: RosterOperationRequestKind;
   encryptedSourceId: string;
   encryptedCustomerId: string | null;
   encryptedBuyerEmail: string | null;
   storeCard: boolean;
-  sourceKind: InteractivePaymentSourceKind | null;
+  sourceKind: RosterOperationSourceKind | null;
   weekOf: string;
   combinedChargeGroupId: string | null;
 }
 
-export class InteractivePaymentSnapshotValidationError extends Error {
+export class RosterOperationSnapshotValidationError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
-    this.name = "InteractivePaymentSnapshotValidationError";
+    this.name = "RosterOperationSnapshotValidationError";
   }
 }
 
-function normalize(snapshot: InteractivePaymentSemanticSnapshot): InteractivePaymentSemanticSnapshot {
+function normalize(snapshot: RosterOperationSemanticSnapshot): RosterOperationSemanticSnapshot {
   const parsed = semanticSnapshotSchema.safeParse(snapshot);
   if (!parsed.success) {
-    throw new InteractivePaymentSnapshotValidationError(
-      "interactive payment execution snapshot is invalid",
+    throw new RosterOperationSnapshotValidationError(
+      "roster operation execution snapshot is invalid",
       { cause: parsed.error },
     );
   }
@@ -181,23 +184,23 @@ function normalize(snapshot: InteractivePaymentSemanticSnapshot): InteractivePay
   };
 }
 
-export function fingerprintInteractivePaymentSnapshot(
-  snapshot: InteractivePaymentSemanticSnapshot,
+export function fingerprintRosterOperationSnapshot(
+  snapshot: RosterOperationSemanticSnapshot,
 ): string {
   const normalized = normalize(snapshot);
   const digest = createHash("sha256")
     .update(canonicalizePaymentOperationInput(normalized))
     .digest("hex");
-  return `lvpayexecic:v2:${digest}`;
+  return `lvrosterexec:v1:${digest}`;
 }
 
-export function encryptInteractivePaymentSnapshot(
-  snapshot: InteractivePaymentSemanticSnapshot,
-): StoredInteractivePaymentSnapshot {
+export function encryptRosterOperationSnapshot(
+  snapshot: RosterOperationSemanticSnapshot,
+): StoredRosterOperationSnapshot {
   const normalized = normalize(snapshot);
   return {
     snapshotVersion: normalized.snapshotVersion,
-    snapshotFingerprint: fingerprintInteractivePaymentSnapshot(normalized),
+    snapshotFingerprint: fingerprintRosterOperationSnapshot(normalized),
     leagueId: normalized.leagueId,
     locationId: normalized.locationId,
     providerLocationId: normalized.providerLocationId,
@@ -216,7 +219,7 @@ export function encryptInteractivePaymentSnapshot(
 function decryptRequired(ciphertext: string, label: string): string {
   const value = decrypt(ciphertext);
   if (value === null || value.length === 0) {
-    throw new InteractivePaymentSnapshotValidationError(`${label} could not be decrypted`);
+    throw new RosterOperationSnapshotValidationError(`${label} could not be decrypted`);
   }
   return value;
 }
@@ -228,25 +231,25 @@ function decryptOptional(ciphertext: string | null, label: string): string | nul
 function storedTimestampToIso(value: string): string {
   const parsed = new Date(value);
   if (!Number.isFinite(parsed.getTime())) {
-    throw new InteractivePaymentSnapshotValidationError("stored interactive snapshot timestamp is invalid");
+    throw new RosterOperationSnapshotValidationError("stored interactive snapshot timestamp is invalid");
   }
   return parsed.toISOString();
 }
 
-export function reconstructInteractivePaymentSnapshot(input: {
+export function reconstructRosterOperationSnapshot(input: {
   organizationId: number;
   amountMinor: number;
   currency: string;
   providerName: string;
   providerIdempotencyKey: string;
-  stored: StoredInteractivePaymentSnapshot;
-  allocations: InteractivePaymentSemanticSnapshot["allocations"];
-  lineItems: InteractivePaymentSemanticSnapshot["lineItems"];
-}): InteractivePaymentSemanticSnapshot {
+  stored: StoredRosterOperationSnapshot;
+  allocations: RosterOperationSemanticSnapshot["allocations"];
+  lineItems: RosterOperationSemanticSnapshot["lineItems"];
+}): RosterOperationSemanticSnapshot {
   if (
-    input.stored.snapshotVersion !== INTERACTIVE_PAYMENT_SNAPSHOT_VERSION
+    input.stored.snapshotVersion !== ROSTER_OPERATION_SNAPSHOT_VERSION
   ) {
-    throw new InteractivePaymentSnapshotValidationError("interactive payment snapshot version is unsupported");
+    throw new RosterOperationSnapshotValidationError("roster operation snapshot version is unsupported");
   }
   const squareIdentity = buildSquarePaymentRequestIdentity({
     providerIdempotencyKey: input.providerIdempotencyKey,
@@ -273,17 +276,17 @@ export function reconstructInteractivePaymentSnapshot(input: {
     buyerEmail: decryptOptional(input.stored.encryptedBuyerEmail, "buyer email"),
     storeCard: input.stored.storeCard,
     sourceKind: input.stored.sourceKind ?? (() => {
-      throw new InteractivePaymentSnapshotValidationError("interactive payment snapshot source kind is missing");
+      throw new RosterOperationSnapshotValidationError("roster operation snapshot source kind is missing");
     })(),
     weekOf: storedTimestampToIso(input.stored.weekOf),
     combinedChargeGroupId: input.stored.combinedChargeGroupId,
     allocations: input.allocations,
     lineItems: input.lineItems,
   });
-  const actualFingerprint = fingerprintInteractivePaymentSnapshot(snapshot);
+  const actualFingerprint = fingerprintRosterOperationSnapshot(snapshot);
   if (actualFingerprint !== input.stored.snapshotFingerprint) {
-    throw new InteractivePaymentSnapshotValidationError(
-      "interactive payment execution snapshot fingerprint mismatch",
+    throw new RosterOperationSnapshotValidationError(
+      "roster operation execution snapshot fingerprint mismatch",
     );
   }
   return snapshot;

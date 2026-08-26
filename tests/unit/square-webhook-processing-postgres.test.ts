@@ -1,19 +1,24 @@
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import {
   bowlers,
   bowlerLeagues,
   leagueOccurrenceBillingTerms,
   leagueOccurrences,
+  leagueScheduleCommands,
   leagues,
   locations,
   organizations,
+  occurrencePaymentResponsibilities,
+  paymentObligations,
   paymentDisputeNotifications,
   paymentDisputeReplayAudits,
   paymentDisputes,
+  paymentOperationRosterSnapshotItems,
   paymentOperations,
   payments,
+  teamPaymentSlots,
   teams,
   users,
   webhookEvents,
@@ -39,14 +44,15 @@ import {
   PaymentDisputeEvidenceExistsError,
 } from "../../server/storage/payments";
 import { normalizeSquareWebhookEvent } from "../../server/services/square-webhook-event";
+import { materializeRosterPaymentOccurrenceInTransaction } from "../../server/services/roster-payment-materializer";
 import { prepareRefundPaymentOperation } from "../../server/services/refund-payment-operation-preparation";
 import {
   acquirePaymentOperationLease,
   createOrGetGeneralInteractivePaymentOperation,
-  persistInteractivePaymentOperationSnapshot,
+  persistRosterOperationSnapshot,
 } from "../../server/storage/payment-operations";
 import { deriveSquareOperationIdempotencyKey } from "../../server/services/payment-operation-idempotency";
-import type { InteractivePaymentSemanticSnapshot } from "../../server/services/interactive-payment-operation-snapshot";
+import type { RosterOperationSemanticSnapshot } from "../../server/services/roster-operation-snapshot";
 
 const db = getTestDb();
 const suffix = process.env.VITEST_POOL_ID ?? "0";
@@ -60,6 +66,7 @@ let leagueId: number;
 let bowlerId: number;
 let secondBowlerId: number;
 let actorUserId: number;
+let webhookOccurrenceOrdinal = 0;
 
 beforeAll(async () => {
   const leftovers = await db.select({ id: organizations.id }).from(organizations)
@@ -82,6 +89,9 @@ beforeAll(async () => {
     seasonEnd: "2034-12-31T23:59:59.000Z",
     weekDay: "Monday",
     weeklyFee: 2_000,
+    payingLineupSize: 3,
+    substituteAccess: "team_only",
+    substitutePaymentRegime: "team_choice",
     organizationId,
     locationId,
   }).returning({ id: leagues.id });
@@ -115,6 +125,20 @@ beforeAll(async () => {
     organizationId,
   }).returning({ id: users.id });
   actorUserId = actor.id;
+  const [secondTeam] = await db.insert(teams).values({
+    name: "Webhook Processing Combined Team",
+    number: 2,
+    leagueId,
+  }).returning({ id: teams.id });
+  await db.insert(bowlerLeagues).values({ bowlerId: secondBowlerId, leagueId, teamId: secondTeam.id });
+  await db.insert(teamPaymentSlots).values([
+    { organizationId, leagueId, teamId: team.id, slotIndex: 0, lineupSize: 3, occupant: "main", mainBowlerId: bowlerId, recordedByUserId: actorUserId },
+    { organizationId, leagueId, teamId: team.id, slotIndex: 1, lineupSize: 3, occupant: "vacant", mainBowlerId: null, recordedByUserId: actorUserId },
+    { organizationId, leagueId, teamId: team.id, slotIndex: 2, lineupSize: 3, occupant: "vacant", mainBowlerId: null, recordedByUserId: actorUserId },
+    { organizationId, leagueId, teamId: secondTeam.id, slotIndex: 0, lineupSize: 3, occupant: "main", mainBowlerId: secondBowlerId, recordedByUserId: actorUserId },
+    { organizationId, leagueId, teamId: secondTeam.id, slotIndex: 1, lineupSize: 3, occupant: "vacant", mainBowlerId: null, recordedByUserId: actorUserId },
+    { organizationId, leagueId, teamId: secondTeam.id, slotIndex: 2, lineupSize: 3, occupant: "vacant", mainBowlerId: null, recordedByUserId: actorUserId },
+  ]);
 });
 
 afterAll(async () => {
@@ -152,18 +176,132 @@ async function preparedRefund(amount = 2_000) {
 }
 
 async function preparedInteractiveCharge(options: { combined?: boolean } = {}) {
+  webhookOccurrenceOrdinal += 1;
+  const commandId = randomUUID();
+  const occurrenceStart = new Date(Date.UTC(2034, 2, 5 + webhookOccurrenceOrdinal, 19, 0, 0));
+  const startAt = occurrenceStart.toISOString();
+  await db.insert(leagueScheduleCommands).values({
+    id: commandId,
+    organizationId,
+    leagueId,
+    actorUserId: actorUserId,
+    commandType: "publish",
+    idempotencyKey: `webhook-processing-publish-${suffix}-${webhookOccurrenceOrdinal}`,
+    requestFingerprint: `webhook-processing-fingerprint-${webhookOccurrenceOrdinal}`,
+  });
+  const [occurrence] = await db.insert(leagueOccurrences).values({
+    organizationId,
+    leagueId,
+    locationId,
+    generationKey: `webhook-processing-occurrence-${suffix}-${webhookOccurrenceOrdinal}`,
+    kind: "regular",
+    status: "scheduled",
+    lifecycle: "published",
+    authoritativeLocalDate: startAt.slice(0, 10),
+    authoritativeLocalStartTime: "19:00:00",
+    timezone: "UTC",
+    startAt,
+    selectedUtcOffsetMinutes: 0,
+    foldResolution: "unambiguous",
+    resolverVersion: "webhook-processing-test",
+    plannedOrdinal: webhookOccurrenceOrdinal,
+    competitionNumber: webhookOccurrenceOrdinal,
+    competitive: true,
+    countsInStandings: true,
+    publishedAt: startAt,
+    publishedByUserId: actorUserId,
+    publicationCommandId: commandId,
+    lastCommandId: commandId,
+  }).returning({ id: leagueOccurrences.id });
+  await db.transaction((tx) => materializeRosterPaymentOccurrenceInTransaction(tx, {
+    organizationId,
+    leagueId,
+    occurrenceId: occurrence.id,
+    actorUserId,
+  }));
+  const obligations = await db.select({
+    id: paymentObligations.id,
+    payerBowlerId: paymentObligations.payerBowlerId,
+    amountMinor: paymentObligations.amountMinor,
+    responsibilityId: occurrencePaymentResponsibilities.id,
+    responsibilityVersion: occurrencePaymentResponsibilities.version,
+  }).from(paymentObligations).innerJoin(occurrencePaymentResponsibilities, eq(
+    occurrencePaymentResponsibilities.id,
+    paymentObligations.responsibilityId,
+  )).where(and(
+    eq(paymentObligations.organizationId, organizationId),
+    eq(paymentObligations.leagueId, leagueId),
+    eq(paymentObligations.occurrenceId, occurrence.id),
+    eq(paymentObligations.state, "open"),
+  )).orderBy(asc(paymentObligations.payerBowlerId));
+  if (obligations.length < 2) throw new Error("webhook fixture obligations were not materialized");
+  const selected = options.combined ? obligations : obligations.filter((row) => row.payerBowlerId === bowlerId);
+  if ((!options.combined && selected.length !== 1) || (options.combined && selected.length !== 2)) {
+    throw new Error("webhook fixture obligation selection was not deterministic");
+  }
+  const allocations = options.combined
+    ? (() => {
+      const [first, second] = selected;
+      if (!first || !second) throw new Error("webhook fixture combined obligations were not selected");
+      return [
+        {
+          allocationIndex: 0,
+          bowlerId: first.payerBowlerId,
+          amountMinor: first.amountMinor,
+          lineageAmountMinor: 500,
+          prizeFundAmountMinor: 500,
+          weekOf: startAt,
+          notes: "Synthetic combined webhook allocation A",
+          paidByUserId: null,
+          obligationId: first.id,
+          responsibilityId: first.responsibilityId,
+          responsibilityVersion: first.responsibilityVersion,
+        },
+        {
+          allocationIndex: 1,
+          bowlerId: second.payerBowlerId,
+          amountMinor: second.amountMinor,
+          lineageAmountMinor: 500,
+          prizeFundAmountMinor: 500,
+          weekOf: startAt,
+          notes: "Synthetic combined webhook allocation B",
+          paidByUserId: null,
+          obligationId: second.id,
+          responsibilityId: second.responsibilityId,
+          responsibilityVersion: second.responsibilityVersion,
+        },
+      ];
+    })()
+    : (() => {
+      const [first] = selected;
+      if (!first) throw new Error("webhook fixture obligation was not selected");
+      return [{
+        allocationIndex: 0,
+        bowlerId: first.payerBowlerId,
+        amountMinor: first.amountMinor,
+        lineageAmountMinor: 1_000,
+        prizeFundAmountMinor: 1_000,
+        weekOf: startAt,
+        notes: "Synthetic webhook charge fixture",
+        paidByUserId: null,
+        obligationId: first.id,
+        responsibilityId: first.responsibilityId,
+        responsibilityVersion: first.responsibilityVersion,
+      }];
+    })();
   const operation = await createOrGetGeneralInteractivePaymentOperation({
     organizationId,
     requestKey: `webhook-${randomUUID()}`,
-    amountMinor: 2_000,
+    amountMinor: options.combined ? selected.reduce((total, row) => total + row.amountMinor, 0) : 2_000,
     currency: "USD",
     providerName: "square",
+    authorizingUserId: actorUserId,
     now: new Date("2034-03-05T00:00:00.000Z"),
   });
-  const snapshot: InteractivePaymentSemanticSnapshot = {
+  const snapshot: RosterOperationSemanticSnapshot = {
     snapshotVersion: 2,
     organizationId,
-    amountMinor: 2_000,
+    amountMinor: options.combined ? selected.reduce((total, row) => total + row.amountMinor, 0) : 2_000,
     currency: "USD",
     providerName: "square",
     leagueId,
@@ -181,42 +319,23 @@ async function preparedInteractiveCharge(options: { combined?: boolean } = {}) {
     buyerEmail: "webhook@example.test",
     storeCard: false,
     sourceKind: "new_card",
-    weekOf: "2034-03-05T00:00:00.000Z",
+    weekOf: startAt,
     combinedChargeGroupId: options.combined ? operation.id : null,
-    allocations: options.combined ? [
-      {
-        allocationIndex: 0,
-        bowlerId: secondBowlerId,
-        amountMinor: 1_000,
-        lineageAmountMinor: 500,
-        prizeFundAmountMinor: 500,
-        weekOf: "2034-03-05T00:00:00.000Z",
-        notes: "Synthetic combined webhook allocation A",
-        paidByUserId: null,
-      },
-      {
-        allocationIndex: 1,
-        bowlerId,
-        amountMinor: 1_000,
-        lineageAmountMinor: 500,
-        prizeFundAmountMinor: 500,
-        weekOf: "2034-03-05T00:00:00.000Z",
-        notes: "Synthetic combined webhook allocation B",
-        paidByUserId: null,
-      },
-    ] : [{
-        allocationIndex: 0,
-        bowlerId,
-        amountMinor: 2_000,
-        lineageAmountMinor: 1_000,
-        prizeFundAmountMinor: 1_000,
-        weekOf: "2034-03-05T00:00:00.000Z",
-        notes: "Synthetic webhook charge fixture",
-        paidByUserId: null,
-      }],
+    allocations,
     lineItems: [],
   };
-  await db.transaction((tx) => persistInteractivePaymentOperationSnapshot(operation, snapshot, tx));
+  await db.transaction(async (tx) => {
+    await persistRosterOperationSnapshot(operation, snapshot, tx);
+    await tx.insert(paymentOperationRosterSnapshotItems).values(selected.map((row, index) => ({
+      operationId: operation.id,
+      organizationId,
+      leagueId,
+      obligationId: row.id,
+      allocationIndex: index,
+      amountMinor: row.amountMinor,
+      state: "reserved" as const,
+    })));
+  });
   const leased = await acquirePaymentOperationLease({
     organizationId,
     operationId: operation.id,
@@ -258,7 +377,7 @@ function refundBody(input: {
   });
 }
 
-function paymentBody(input: { eventId: string; paymentId: string; operationId?: string }) {
+function paymentBody(input: { eventId: string; paymentId: string; operationId?: string; amount?: number }) {
   return JSON.stringify({
     merchant_id: merchantId,
     type: "payment.updated",
@@ -271,7 +390,7 @@ function paymentBody(input: { eventId: string; paymentId: string; operationId?: 
         id: input.paymentId,
         location_id: providerLocationId,
         status: "COMPLETED",
-        amount_money: { amount: 2_000, currency: "USD" },
+        amount_money: { amount: input.amount ?? 2_000, currency: "USD" },
         updated_at: "2034-03-05T00:01:00.000Z",
         ...(input.operationId ? { reference_id: input.operationId } : {}),
         receipt_url: "https://squareup.com/receipt/preview/synthetic-fixture",
@@ -341,6 +460,7 @@ async function completedInteractiveCharge(options: { combined?: boolean } = {}) 
     eventId: `event-${randomUUID()}`,
     paymentId: providerPaymentId,
     operationId: operation.id,
+    amount: operation.amountMinor,
   }));
   const result = await processSquareWebhookEvent({
     organizationId,

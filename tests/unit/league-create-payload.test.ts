@@ -35,14 +35,12 @@ describe("canonical league create payload", () => {
     const payload = buildCanonicalLeagueCreatePayload({
       ...parsed,
       previousSeasonId: 91,
-      finalTwoWeeksDueWeek: 30,
       organizationId: 999,
     });
 
     expect(payload).not.toHaveProperty("seasonEnd");
     expect(payload).not.toHaveProperty("seasonNumber");
     expect(payload).not.toHaveProperty("previousSeasonId");
-    expect(payload).not.toHaveProperty("finalTwoWeeksDueWeek");
     expect(payload).not.toHaveProperty("organizationId");
     expect(payload).toMatchObject({
       name: "Monday Farmington Mixed League",

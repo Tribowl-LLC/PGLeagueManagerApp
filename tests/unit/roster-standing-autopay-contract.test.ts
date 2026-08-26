@@ -47,11 +47,17 @@ describe("standing automatic-payment contract", () => {
 
   it("keeps the scheduler and migration on the clean standing boundary", () => {
     const wakeSource = readFileSync("server/storage/payment-operations.ts", "utf8");
-    const migration = readFileSync("migrations/0033_roster_standing_autopay.sql", "utf8");
+    const migration = readFileSync("migrations/0034_pr3_canonical_steady_state.sql", "utf8");
     expect(wakeSource).toContain("po.operation_type = 'standing_autopay_charge'");
     expect(wakeSource).toContain("po.status <> 'provider_unknown' OR po.provider_object_id IS NULL");
-    expect(migration).toContain("LOCK TABLE \"autopay_consents\", \"payment_schedules\", \"payment_operations\"");
-    expect(migration).toContain("no consent backfill is permitted");
+    expect(migration).toContain("LOCK TABLE \"payment_schedules\", \"autopay_setup_requests\"");
+    expect(migration).toContain("0034 refused: canonical financial or standing evidence is not empty");
     expect(migration).toContain("payment_operation_standing_autopay_bindings");
+    expect(migration).not.toContain("CASCADE");
+    expect(migration).toContain('DELETE FROM "refund_payment_operation_snapshots"');
+    expect(migration).toContain('DELETE FROM "payments"');
+    expect(migration).toContain('DELETE FROM "payment_operations"');
+    expect(migration).toContain('ALTER TABLE "games" ALTER COLUMN "occurrence_id" SET NOT NULL');
+    expect(migration).not.toContain('active legacy payment schedules require');
   });
 });

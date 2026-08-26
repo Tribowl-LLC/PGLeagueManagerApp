@@ -15,7 +15,7 @@ import { refundPaymentOperationExecutor } from "./refund-payment-operation-execu
 
 const log = createLogger("PaymentOperationLedger");
 
-export interface ScheduledPaymentOperationExecutorDependencies {
+export interface PaymentOperationRetryExecutorDependencies {
   now?: () => Date;
 }
 
@@ -36,11 +36,11 @@ function operationContext(operation: PaymentOperation): Record<string, unknown> 
  * standing autopay has its own consent-scoped executor, and no other payment
  * operation may dispatch a provider charge.
  */
-export class ScheduledPaymentOperationExecutor {
+export class PaymentOperationRetryExecutor {
   private readonly now: () => Date;
   private readonly wakeScheduler: PaymentOperationWakeScheduler;
 
-  constructor(dependencies: ScheduledPaymentOperationExecutorDependencies = {}) {
+  constructor(dependencies: PaymentOperationRetryExecutorDependencies = {}) {
     this.now = dependencies.now ?? (() => new Date());
     this.wakeScheduler = new PaymentOperationWakeScheduler({
       loadNextWake: getNextPaymentOperationWake,
@@ -105,4 +105,4 @@ export class ScheduledPaymentOperationExecutor {
   }
 }
 
-export const scheduledPaymentOperationExecutor = new ScheduledPaymentOperationExecutor();
+export const paymentOperationRetryExecutor = new PaymentOperationRetryExecutor();

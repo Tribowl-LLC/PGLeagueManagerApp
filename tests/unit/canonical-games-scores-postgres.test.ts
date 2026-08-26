@@ -389,17 +389,7 @@ describe("E2 canonical games and scores PostgreSQL behavior", () => {
     }
   });
 
-  it("fails closed on unlinked or duplicate canonical game evidence without guessing", async () => {
-    const [unlinked] = await db.insert(games).values({
-      leagueId,
-      weekNumber: 99,
-      gameNumber: 3,
-      date: "2037-02-01",
-    }).returning();
-    await expect(loadLeagueGames({ organizationId, leagueId }))
-      .rejects.toMatchObject({ evidence: { classification: "unlinked_canonical_game" } });
-    if (unlinked) await db.delete(games).where(eq(games.id, unlinked.id));
-
+  it("fails closed on duplicate canonical game evidence without guessing", async () => {
     const existing = (await db.select().from(games).where(and(
       eq(games.leagueId, leagueId),
       eq(games.occurrenceId, scheduledOccurrenceId),

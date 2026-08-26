@@ -29,7 +29,6 @@ on a column with an FK constraint, with the path that gates it.
 | `PATCH /api/teams/:id` | none (id-from-row) | n/a | n/a |
 | `POST /api/bowler-leagues` | body `bowlerId` / `leagueId` / `teamId` | `bowler_leagues.*_id` | `hasAccessToBowler` / `hasAccessToLeague` / `hasAccessToTeam` return false for missing rows -> 403 (no FK fallthrough). Pinned by `tests/api/bowler-leagues-bootstrap.test.ts` |
 | `PATCH /api/bowler-leagues/:id` | optional body `teamId` | `bowler_leagues.team_id` | `hasAccessToTeam(update.teamId)` returns false for missing -> 403 |
-| `POST /api/payment-schedules` | body `bowlerId` / `leagueId` | `payment_schedules.*_id` | `hasAccessToBowler` / `hasAccessToLeague` deny missing -> 403 |
 | `POST /api/payments` | body `leagueId` / `bowlerId` | `payments.league_id` / `payments.bowler_id` | League existence: existing 404. Bowler existence: added in #454 (returns 404 NOT_FOUND) |
 | `PATCH /api/payments/:id` | none (no FK columns updatable) | n/a | n/a |
 | `POST /api/leagues` | body `organizationId` (system_admin) / body `locationId` | `leagues.organization_id` / `leagues.location_id` | Existence + same-tenant for `locationId` added in #454 (404 NOT_FOUND). Org existence verified for both session-derived and override branches. Pinned by `tests/api/admin-fk-id-existence.test.ts` (#518: missing-org, missing-location, cross-tenant location) |

@@ -5,7 +5,6 @@ type CanonicalLeagueCreatePayload = Omit<
   | "seasonEnd"
   | "seasonNumber"
   | "previousSeasonId"
-  | "finalTwoWeeksDueWeek"
   | "organizationId"
 > & { organizationId?: number };
 
@@ -17,7 +16,6 @@ export function buildCanonicalLeagueCreatePayload(
     seasonEnd: _derivedSeasonEnd,
     seasonNumber: _serverOwnedSeasonNumber,
     previousSeasonId: _serverOwnedPreviousSeasonId,
-    finalTwoWeeksDueWeek: _retiredFinalTwoWeeksDueWeek,
     organizationId: _untrustedOrganizationId,
     ...target
   } = data;

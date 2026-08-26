@@ -111,10 +111,6 @@ export interface IPaymentOperationStorage {
     input: import("./payment-operations").CreateOrGetRefundPaymentOperationInput,
     existingTransaction?: import("./payment-operations").PaymentOperationTransaction,
   ): Promise<PaymentOperation>;
-  createOrGetScheduledPaymentOperation(
-    input: import("./payment-operations").CreateOrGetScheduledPaymentOperationInput,
-    existingTransaction?: import("./payment-operations").PaymentOperationTransaction,
-  ): Promise<PaymentOperation>;
   getPaymentOperationForOrganization(
     organizationId: number,
     operationId: string,
@@ -180,24 +176,16 @@ export interface IPaymentOperationStorage {
       paymentRows?: import("./payment-operations").PaymentOperationLinkedPaymentInput[];
     },
   ): Promise<PaymentOperation>;
-  persistScheduledPaymentOperationSnapshot(
+  persistRosterOperationSnapshot(
     operation: PaymentOperation,
-    snapshot: import("../services/scheduled-payment-operation-snapshot").ScheduledPaymentSemanticSnapshot,
+    snapshot: import("../services/roster-operation-snapshot").RosterOperationSemanticSnapshot,
     transaction: import("./payment-operations").PaymentOperationTransaction,
-  ): Promise<import("../services/scheduled-payment-operation-snapshot").ScheduledPaymentSemanticSnapshot>;
-  getScheduledPaymentOperationSnapshotForOrganization(
+    quoteFingerprint?: string | null,
+  ): Promise<import("../services/roster-operation-snapshot").RosterOperationSemanticSnapshot>;
+  getRosterOperationSnapshotForOrganization(
     organizationId: number,
     operationId: string,
-  ): Promise<import("../services/scheduled-payment-operation-snapshot").ScheduledPaymentSemanticSnapshot | undefined>;
-  persistInteractivePaymentOperationSnapshot(
-    operation: PaymentOperation,
-    snapshot: import("../services/interactive-payment-operation-snapshot").InteractivePaymentSemanticSnapshot,
-    transaction: import("./payment-operations").PaymentOperationTransaction,
-  ): Promise<import("../services/interactive-payment-operation-snapshot").InteractivePaymentSemanticSnapshot>;
-  getInteractivePaymentOperationSnapshotForOrganization(
-    organizationId: number,
-    operationId: string,
-  ): Promise<import("../services/interactive-payment-operation-snapshot").InteractivePaymentSemanticSnapshot | undefined>;
+  ): Promise<import("../services/roster-operation-snapshot").RosterOperationSemanticSnapshot | undefined>;
   persistRefundPaymentOperationSnapshot(
     operation: PaymentOperation,
     snapshot: import("../services/refund-payment-operation-snapshot").RefundPaymentSemanticSnapshot,
@@ -217,10 +205,6 @@ export interface IPaymentOperationStorage {
     now?: Date;
     failedPaymentRows?: import("./payment-operations").PaymentOperationLinkedPaymentInput[];
   }): Promise<PaymentOperation | undefined>;
-  hasNonterminalScheduledPaymentOperation(input: {
-    organizationId: number;
-    paymentScheduleId: number;
-  }): Promise<boolean>;
   cancelPaymentOperation(
     input: Omit<import("./payment-operations").LeasedPaymentOperationInput, "leaseToken"> & {
       leaseToken?: string;

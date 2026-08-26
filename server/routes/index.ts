@@ -137,12 +137,6 @@ export function registerRoutes(app: Express): void {
   app.use('/api/financials', requireAuth, rosterPaymentsRouter);
   app.use('/api/financials', requireAuth, rosterStandingAutopayRouter);
   app.use('/api/financials/f5', requireAuth, financialsF5Router);
-  // F3's authorization/plan workflow was part of the retired financial
-  // activation model. Keep the namespace explicit so stale clients fail
-  // closed instead of reaching code that references removed tables.
-  const retiredF3Router = Router();
-  retiredF3Router.use((_req, res) => sendError(res, 'Legacy autopay workflow is retired', 410, 'FINANCIAL_AUTOPAY_RETIRED'));
-  app.use('/api/financials/f3', requireAuth, retiredF3Router);
   app.use('/api/scores', requireAuth, scoresRouter);
   app.use('/api/games', requireAuth, gamesRouter);
   // The disabled-by-default Square receiver is registered earlier in

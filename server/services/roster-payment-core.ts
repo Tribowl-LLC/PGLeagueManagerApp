@@ -19,7 +19,6 @@ import {
   paymentOperations,
   paymentOperationRosterSnapshots,
   paymentOperationRosterSnapshotItems,
-  interactivePaymentOperationSnapshots,
   users,
   emailSchema,
   type TeamPaymentPolicy,
@@ -779,9 +778,16 @@ export async function chargeInteractiveObligations(input: {
       if (existingOperation.authorizingUserId !== input.actorUserId) {
         throw new RosterPaymentError("IDEMPOTENCY_CONFLICT", "The idempotency key belongs to another authorizing user", 409);
       }
-      const [existingInteractiveSnapshot] = await tx.select().from(interactivePaymentOperationSnapshots).where(eq(interactivePaymentOperationSnapshots.operationId, existingOperation.id)).limit(1).for("share");
+      const [existingInteractiveSnapshot] = await tx.select().from(paymentOperationRosterSnapshots).where(and(
+        eq(paymentOperationRosterSnapshots.operationId, existingOperation.id),
+        eq(paymentOperationRosterSnapshots.organizationId, input.organizationId),
+        eq(paymentOperationRosterSnapshots.leagueId, input.leagueId),
+        eq(paymentOperationRosterSnapshots.snapshotKind, "interactive"),
+      )).limit(1).for("share");
       const requestedPayer = input.payerBowlerId ?? input.request.payerBowlerId;
-      const storedSourceId = existingInteractiveSnapshot ? decrypt(existingInteractiveSnapshot.encryptedSourceId) : null;
+      const storedSourceId = existingInteractiveSnapshot?.encryptedSourceId
+        ? decrypt(existingInteractiveSnapshot.encryptedSourceId)
+        : null;
       // Buyer email is server-resolved into the immutable snapshot. It is
       // not a mutable provider/payment identity on replay, so a retry must
       // reuse that snapshot regardless of whether the browser sends an
@@ -810,7 +816,7 @@ export async function chargeInteractiveObligations(input: {
       const requestedIds = [...new Set(input.request.obligationIds)].sort();
       const existingIds = existingItems.map((item) => item.obligationId).sort();
       const requestedAmounts = new Map((input.request.allocations ?? []).map((item) => [item.obligationId, item.amountMinor]));
-      if (existingSnapshot.snapshotFingerprint !== input.request.requestFingerprint
+      if (existingSnapshot.quoteFingerprint !== input.request.requestFingerprint
         || requestedIds.length !== existingIds.length
         || requestedIds.some((id, index) => id !== existingIds[index])) {
         throw new RosterPaymentError("IDEMPOTENCY_CONFLICT", "The idempotency key was already used for a different obligation request", 409);
@@ -859,6 +865,15 @@ export async function chargeInteractiveObligations(input: {
     if (input.request.storeCard === true && !customerId) {
       throw new RosterPaymentError("CARD_CUSTOMER_REQUIRED", "A provider customer is required to save a card", 422);
     }
+    const responsibilityIds = [...new Set(quote.obligations.map((obligation) => obligation.responsibilityId))];
+    const responsibilityVersions = await tx.select({ id: occurrencePaymentResponsibilities.id, version: occurrencePaymentResponsibilities.version }).from(occurrencePaymentResponsibilities).where(and(
+      eq(occurrencePaymentResponsibilities.organizationId, input.organizationId),
+      eq(occurrencePaymentResponsibilities.leagueId, input.leagueId),
+      inArray(occurrencePaymentResponsibilities.id, responsibilityIds),
+      eq(occurrencePaymentResponsibilities.state, "active"),
+    )).for("share");
+    const responsibilityVersionById = new Map(responsibilityVersions.map((row) => [row.id, row.version]));
+    if (responsibilityIds.some((id) => !responsibilityVersionById.has(id))) throw new RosterPaymentError("RESERVATION_STALE", "A roster responsibility changed while the quote was being prepared", 409);
     const operation = await prepareInteractivePaymentOperation({
       organizationId: input.organizationId,
       authorizingUserId: input.actorUserId,
@@ -887,28 +902,13 @@ export async function chargeInteractiveObligations(input: {
         weekOf: new Date(obligation.dueAt).toISOString(),
         notes: `Roster obligation ${obligation.id}`,
         paidByUserId: input.actorUserId,
+        obligationId: obligation.id,
+        responsibilityId: obligation.responsibilityId,
+        responsibilityVersion: responsibilityVersionById.get(obligation.responsibilityId),
       })),
       lineItems: [],
+      quoteFingerprint: quote.fingerprint,
       transaction: tx,
-    });
-    const responsibilityIds = [...new Set(quote.obligations.map((obligation) => obligation.responsibilityId))];
-    const responsibilityVersions = await tx.select({ id: occurrencePaymentResponsibilities.id, version: occurrencePaymentResponsibilities.version }).from(occurrencePaymentResponsibilities).where(and(
-      eq(occurrencePaymentResponsibilities.organizationId, input.organizationId),
-      eq(occurrencePaymentResponsibilities.leagueId, input.leagueId),
-      inArray(occurrencePaymentResponsibilities.id, responsibilityIds),
-      eq(occurrencePaymentResponsibilities.state, "active"),
-    )).for("share");
-    const responsibilityVersionById = new Map(responsibilityVersions.map((row) => [row.id, row.version]));
-    if (responsibilityIds.some((id) => !responsibilityVersionById.has(id))) throw new RosterPaymentError("RESERVATION_STALE", "A roster responsibility changed while the quote was being prepared", 409);
-    await tx.insert(paymentOperationRosterSnapshots).values({
-      operationId: operation.id,
-      organizationId: input.organizationId,
-      leagueId: input.leagueId,
-      snapshotVersion: 1,
-      amountMinor: quote.amountMinor,
-      currency: quote.currency,
-      obligations: quote.obligations.map((obligation) => ({ id: obligation.id, responsibilityId: obligation.responsibilityId, responsibilityVersion: responsibilityVersionById.get(obligation.responsibilityId), payerBowlerId: obligation.payerBowlerId, amountMinor: obligation.selectedMinor, dueAt: obligation.dueAt, pastDueAt: obligation.pastDueAt })),
-      snapshotFingerprint: quote.fingerprint,
     });
     await tx.insert(paymentOperationRosterSnapshotItems).values(quote.obligations.map((obligation, allocationIndex) => ({
       operationId: operation.id,
@@ -961,7 +961,7 @@ export async function chargeInteractiveObligations(input: {
     }
     const obligations = await tx.select().from(paymentObligations).where(and(eq(paymentObligations.organizationId, input.organizationId), eq(paymentObligations.leagueId, input.leagueId), inArray(paymentObligations.id, snapshotItems.map((item) => item.obligationId)))).orderBy(asc(paymentObligations.dueAt), asc(paymentObligations.payerBowlerId), asc(paymentObligations.occurrenceId), asc(paymentObligations.id)).for("update");
     if (obligations.length !== snapshotItems.length) throw new RosterPaymentError("EXACT_OBLIGATIONS_REQUIRED", "The immutable roster snapshot references missing obligations", 409);
-    const snapshotRecords = Array.isArray(rosterSnapshot.obligations) ? rosterSnapshot.obligations as Array<{ id?: string; responsibilityId?: string; responsibilityVersion?: number }> : [];
+    const snapshotRecords = Array.isArray(rosterSnapshot.obligations) ? rosterSnapshot.obligations as Array<{ id?: string; obligationId?: string; responsibilityId?: string; responsibilityVersion?: number }> : [];
     const snapshotResponsibilityIds = [...new Set(snapshotRecords.map((record) => record.responsibilityId).filter((id): id is string => typeof id === "string"))];
     const liveResponsibilities = snapshotResponsibilityIds.length === 0 ? [] : await tx.select({ id: occurrencePaymentResponsibilities.id, version: occurrencePaymentResponsibilities.version, state: occurrencePaymentResponsibilities.state }).from(occurrencePaymentResponsibilities).where(and(
       eq(occurrencePaymentResponsibilities.organizationId, input.organizationId),
@@ -970,7 +970,7 @@ export async function chargeInteractiveObligations(input: {
     )).for("update");
     const liveResponsibilityById = new Map(liveResponsibilities.map((row) => [row.id, row]));
     const staleReservation = obligations.some((obligation) => {
-      const record = snapshotRecords.find((candidate) => candidate.id === obligation.id);
+      const record = snapshotRecords.find((candidate) => (candidate.id ?? candidate.obligationId) === obligation.id);
       const live = record?.responsibilityId ? liveResponsibilityById.get(record.responsibilityId) : undefined;
       return !record || record.responsibilityId !== obligation.responsibilityId || record.responsibilityVersion === undefined || !live || live.state !== "active" || live.version !== record.responsibilityVersion;
     });

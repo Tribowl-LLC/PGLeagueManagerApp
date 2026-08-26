@@ -22,7 +22,7 @@ export interface PaymentOperationWakeSchedulerDependencies<TWake extends { kind:
 }
 
 function wakeContext(input: unknown): Record<string, unknown> {
-  const wake = input as { kind?: string; organizationId?: number; operationId?: string; operationType?: string; status?: string; attemptCount?: number; leagueId?: number; d2PlanId?: string; paymentScheduleId?: number };
+  const wake = input as { kind?: string; organizationId?: number; operationId?: string; operationType?: string; status?: string; attemptCount?: number; leagueId?: number };
   return wake.kind === "operation"
     ? {
       workKind: wake.kind,

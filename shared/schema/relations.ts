@@ -4,7 +4,7 @@ import { locations } from "./locations";
 import { leagues } from "./leagues";
 import { teams } from "./teams";
 import { bowlers, bowlerLeagues } from "./bowlers";
-import { payments, paymentSchedules } from "./payments";
+import { payments } from "./payments";
 import { users } from "./users";
 import { games, scores } from "./games";
 
@@ -101,17 +101,6 @@ export const paymentRelations = relations(payments, ({ one }) => ({
   }),
   league: one(leagues, {
     fields: [payments.leagueId],
-    references: [leagues.id],
-  }),
-}));
-
-export const paymentScheduleRelations = relations(paymentSchedules, ({ one }) => ({
-  bowler: one(bowlers, {
-    fields: [paymentSchedules.bowlerId],
-    references: [bowlers.id],
-  }),
-  league: one(leagues, {
-    fields: [paymentSchedules.leagueId],
     references: [leagues.id],
   }),
 }));

@@ -135,14 +135,9 @@ async function nonRolloverEvidenceCounts() {
     "games",
     "scores",
     "payments",
-    "payment_schedules",
     "payment_operations",
-    "scheduled_payment_operation_snapshots",
-    "scheduled_payment_operation_allocations",
-    "scheduled_payment_operation_line_items",
-    "interactive_payment_operation_snapshots",
-    "interactive_payment_operation_allocations",
-    "interactive_payment_operation_line_items",
+    "payment_operation_roster_snapshots",
+    "payment_operation_roster_snapshot_items",
     "refund_payment_operation_snapshots",
     "payment_disputes",
     "payment_dispute_notifications",
@@ -157,10 +152,6 @@ async function nonRolloverEvidenceCounts() {
     "occurrence_collection_plans",
     "occurrence_collection_plan_items",
     "occurrence_collection_plan_revisions",
-    "payment_occurrence_allocations",
-    "payment_occurrence_allocation_revisions",
-    "payment_operation_occurrence_snapshots",
-    "payment_operation_occurrence_snapshot_allocations",
   ] as const;
   const result: Record<string, number> = {};
   for (const name of names) {
@@ -443,7 +434,6 @@ describe("authoritative league setup integration", () => {
     for (const table of [
       "games",
       "payments",
-      "payment_schedules",
       "bowler_occurrence_eligibilities",
       "bowler_occurrence_team_assignments",
       "bowler_occurrence_obligations",

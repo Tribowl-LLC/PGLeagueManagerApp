@@ -10,7 +10,7 @@ import {
   acquireInteractivePaymentOperationDispatchCutoff,
   finalizeInteractiveCardSave,
   finalizePaymentOperationSuccess,
-  getInteractivePaymentOperationSnapshotForOrganization,
+  getRosterOperationSnapshotForOrganization,
   getInteractiveCardSaveResponse,
   getPaymentOperationForOrganization,
   recordInteractiveCardSaveFailure,
@@ -66,7 +66,7 @@ function safeErrorCode(error: unknown): string {
 
 function paymentRows(
   operation: PaymentOperation,
-  snapshot: NonNullable<Awaited<ReturnType<typeof getInteractivePaymentOperationSnapshotForOrganization>>>,
+  snapshot: NonNullable<Awaited<ReturnType<typeof getRosterOperationSnapshotForOrganization>>>,
   result: PaymentResult,
 ): PaymentOperationLinkedPaymentInput[] {
   if (!result.id) return [];
@@ -169,9 +169,9 @@ export class InteractivePaymentOperationExecutor {
     const leaseToken = operation.leaseToken;
     if (!leaseToken) throw new Error("leased interactive operation has no fencing token");
     const now = this.now();
-    let snapshot: NonNullable<Awaited<ReturnType<typeof getInteractivePaymentOperationSnapshotForOrganization>>>;
+    let snapshot: NonNullable<Awaited<ReturnType<typeof getRosterOperationSnapshotForOrganization>>>;
     try {
-      const loaded = await getInteractivePaymentOperationSnapshotForOrganization(
+      const loaded = await getRosterOperationSnapshotForOrganization(
         operation.organizationId,
         operation.id,
       );

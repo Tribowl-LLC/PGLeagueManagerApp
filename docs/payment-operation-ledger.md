@@ -1,5 +1,20 @@
 # Payment operation ledger
 
+## Current steady state (PR3)
+
+PR3 is the current payment contract. `payment_operations` supports only
+`interactive_charge`, `standing_autopay_charge`, and `refund`; the general
+retry executor is `payment-operation-retry-executor`. There is no active
+scheduled-charge, canonical-autopay, payment-schedule, setup-request, or
+generic interactive-snapshot runtime. Interactive and standing execution use
+the roster snapshot/items contract described in
+[phase-pr3-canonical-steady-state](phase-pr3-canonical-steady-state.md).
+
+The phase notes below are retained as historical release records. Their old
+operation types, schedule/setup tables, and cutover procedures are not
+current runtime or release instructions and must not be used for a new
+deployment.
+
 ## Phase 2A boundary
 
 `payment_operations` is dormant infrastructure. Phase 2A creates the table,

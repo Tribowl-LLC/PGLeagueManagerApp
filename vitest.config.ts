@@ -107,9 +107,7 @@ const UNIT_NO_DB = [
   'tests/unit/rate-limit-environment.test.ts',
   'tests/unit/rate-limit-shared-store-coverage.test.ts',
   'tests/unit/subdomain-resolution-consistency.test.ts',
-  'tests/unit/scheduled-payment-operation-snapshot.test.ts',
   'tests/unit/location-webhook-retention-route.test.ts',
-  'tests/unit/weekly-billing-occurrence-planner.test.ts',
   'tests/unit/canonical-occurrence-generator.test.ts',
   'tests/unit/canonical-collection-groups.test.ts',
   'tests/unit/fall-draft-generation.test.ts',
@@ -123,18 +121,6 @@ const UNIT_NO_DB = [
   'tests/unit/roster-standing-autopay-wake.test.ts',
   'tests/unit/roster-payment-route-boundaries.test.ts',
   'tests/unit/use-bowler-payment-submit.test.ts',
-];
-
-/**
- * F1/D2/F3/F4 tests whose fixtures assert the pre-0032 authorities. Migration
- * 0032 intentionally drops those zero-row tables and PR1 replaces the
- * activation/plan/supplement flows with roster obligations and exact
- * allocations. These obsolete authority tests are removed from the active
- * suite; the replacement PR1 contract/API suites cover supported behavior.
- */
-const PR1_RETIRED_FINANCIAL_TESTS = [
-  'tests/api/financials-f1-boundary.test.ts',
-  'tests/api/f3-autopay-postgres-contract.test.ts',
 ];
 
 const PARALLEL_ISOLATED = [
@@ -296,7 +282,6 @@ export default defineConfig({
             ...PARALLEL_ISOLATED,
             ...PARALLEL_ISOLATED_WITH_APP,
             ...UNIT_NO_DB,
-            ...PR1_RETIRED_FINANCIAL_TESTS,
           ],
           setupFiles: ['./tests/setup/per-worker-setup.ts'],
           // Skip per-file module re-evaluation; reuse module contexts across
@@ -335,7 +320,6 @@ export default defineConfig({
           globalSetup: ['./tests/setup/global-setup.ts'],
           alias: sharedAlias,
           include: PARALLEL_ISOLATED,
-          exclude: PR1_RETIRED_FINANCIAL_TESTS,
           setupFiles: ['./tests/setup/per-worker-db-only.ts'],
           // Default `isolate: true` — these files have vi.mock factories
           // whose closures leak across files when the module registry is

@@ -2,11 +2,10 @@ import { pgTable, text, serial, integer, boolean, timestamp, index, uniqueIndex,
 import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
-import { PAYMENT_STATUSES, PAYMENT_TYPES, SCHEDULE_FREQUENCIES, positiveIntSchema, dateSchema } from "./constants";
+import { PAYMENT_STATUSES, PAYMENT_TYPES, positiveIntSchema, dateSchema } from "./constants";
 import { bowlers } from "./bowlers";
 import { leagues } from "./leagues";
 import { users } from "./users";
-import { leagueOccurrences } from "./canonical-occurrences";
 
 export const payments = pgTable("payments", {
   id: serial("id").primaryKey(),
@@ -87,49 +86,7 @@ export const payments = pgTable("payments", {
   ),
 }));
 
-export const paymentSchedules = pgTable("payment_schedules", {
-  id: serial("id").primaryKey(),
-  bowlerId: integer("bowler_id")
-    .notNull()
-    .references(() => bowlers.id, { onDelete: 'cascade' }),
-  leagueId: integer("league_id")
-    .notNull()
-    .references(() => leagues.id, { onDelete: 'cascade' }),
-  frequency: text("frequency", { enum: SCHEDULE_FREQUENCIES }).notNull(),
-  amount: integer("amount").notNull(),
-  nextPaymentDate: timestamp("next_payment_date", { mode: "string" }).notNull(),
-  nextOccurrenceId: uuid("next_occurrence_id"),
-  active: boolean("active").notNull().default(true),
-  createdAt: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
-  lastPaymentDate: timestamp("last_payment_date", { mode: "string" }),
-  paymentCardId: text("payment_card_id").notNull(),
-  cancelledAt: timestamp("cancelled_at", { mode: "string" }),
-  cancelReason: text("cancel_reason"),
-  // Combined autopay: additional linked bowlers whose share is charged
-  // to the payer's saved card each cycle. The scheduler iterates this
-  // list and produces a separate payment row per bowler. Empty/null =
-  // legacy single-bowler behavior.
-  additionalBowlerIds: integer("additional_bowler_ids").array(),
-}, (table) => ({
-  bowlerScheduleIdx: index("bowler_schedule_idx").on(table.bowlerId, table.leagueId),
-  nextPaymentIdx: index("next_payment_idx").on(table.nextPaymentDate),
-  activeNextPaymentIdx: index("payment_schedules_active_next_payment_idx")
-    .on(table.nextPaymentDate)
-    .where(sql`${table.active} = true`),
-  activeBowlerLeagueUnique: uniqueIndex("payment_schedules_active_bowler_league_unique")
-    .on(table.bowlerId, table.leagueId)
-    .where(sql`${table.active} = true`),
-  activeIdx: index("active_schedule_idx").on(table.active),
-  nextOccurrenceIdx: index("payment_schedules_next_occurrence_idx").on(table.nextOccurrenceId),
-  nextOccurrenceLeagueFk: foreignKey({
-    name: "payment_schedules_next_occurrence_league_fk",
-    columns: [table.nextOccurrenceId, table.leagueId],
-    foreignColumns: [leagueOccurrences.id, leagueOccurrences.leagueId],
-  }).onDelete("restrict"),
-}));
-
 const basePaymentSchema = createInsertSchema(payments);
-const basePaymentScheduleSchema = createInsertSchema(paymentSchedules);
 
 export const insertPaymentSchema = basePaymentSchema.extend({
   bowlerId: positiveIntSchema,
@@ -159,24 +116,6 @@ export const insertPaymentSchema = basePaymentSchema.extend({
   paymentOperationAllocationIndex: true,
 });
 
-export const insertPaymentScheduleSchema = basePaymentScheduleSchema.extend({
-  bowlerId: positiveIntSchema,
-  leagueId: positiveIntSchema,
-  frequency: z.enum(SCHEDULE_FREQUENCIES),
-  amount: positiveIntSchema,
-  nextPaymentDate: dateSchema,
-  active: z.boolean().default(true),
-  paymentCardId: z.string(),
-  additionalBowlerIds: z.array(z.number().int().positive()).optional().nullable(),
-}).omit({
-  id: true,
-  createdAt: true,
-  lastPaymentDate: true,
-  cancelledAt: true,
-  cancelReason: true,
-  nextOccurrenceId: true,
-});
-
 export const updatePaymentSchema = z.object({
   amount: positiveIntSchema,
   lineageAmount: z.number().int().min(0).nullable(),
@@ -198,23 +137,7 @@ export const updatePaymentSchema = z.object({
   paidByUserId: z.number().int().positive().nullable(),
 }).partial();
 
-export const updatePaymentScheduleSchema = z.object({
-  frequency: z.enum(SCHEDULE_FREQUENCIES),
-  amount: positiveIntSchema,
-  nextPaymentDate: dateSchema,
-  active: z.boolean(),
-  paymentCardId: z.string(),
-  lastPaymentDate: dateSchema.nullable(),
-  cancelledAt: dateSchema.nullable(),
-  cancelReason: z.string().nullable(),
-  additionalBowlerIds: z.array(z.number().int().positive()).nullable(),
-}).partial();
-
 export type Payment = typeof payments.$inferSelect;
 export type InsertPaymentInput = z.input<typeof insertPaymentSchema>;
 export type InsertPayment = z.output<typeof insertPaymentSchema>;
 export type UpdatePayment = z.infer<typeof updatePaymentSchema>;
-
-export type PaymentSchedule = typeof paymentSchedules.$inferSelect;
-export type InsertPaymentSchedule = z.infer<typeof insertPaymentScheduleSchema>;
-export type UpdatePaymentSchedule = z.infer<typeof updatePaymentScheduleSchema>;

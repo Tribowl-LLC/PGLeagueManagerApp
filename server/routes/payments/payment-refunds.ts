@@ -16,7 +16,7 @@ import {
   RefundPreparationError,
 } from "../../services/refund-payment-operation-preparation.js";
 import { refundPaymentOperationExecutor } from "../../services/refund-payment-operation-executor.js";
-import { scheduledPaymentOperationExecutor } from "../../services/scheduled-payment-operation-executor.js";
+import { paymentOperationRetryExecutor } from "../../services/payment-operation-retry-executor.js";
 
 const log = createLogger("Payments");
 const router = Router();
@@ -141,7 +141,7 @@ router.post("/:id/refund", paymentWriteLimiter, async (req, res) => {
   } finally {
     if (prepared) {
       try {
-        await scheduledPaymentOperationExecutor.rearm();
+        await paymentOperationRetryExecutor.rearm();
       } catch (error) {
         log.error("Refund operation wake rearm failed", { errorName: error instanceof Error ? error.name : "UnknownError" });
       }

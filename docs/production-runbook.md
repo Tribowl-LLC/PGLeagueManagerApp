@@ -1,5 +1,20 @@
 # Production Runbook
 
+## Current PR3 release boundary
+
+PR3 is the current payment steady state. The only active provider-operation
+types are `interactive_charge`, `standing_autopay_charge`, and `refund`.
+Interactive and standing execution use roster snapshots/items; payment
+schedules, setup requests, generic interactive snapshots, scheduled snapshots,
+and canonical-autopay operations are retired and are not deployment or
+rollback targets. Follow [phase-pr3-canonical-steady-state](phase-pr3-canonical-steady-state.md)
+for migration 0034's backup, maintenance pause, journal/checksum, migration-
+before-application, and destructive data-reset gates.
+
+The older phase-specific instructions below are historical release notes where
+they mention those retired authorities. Do not use their old migration,
+operation-type, scheduler, or activation instructions for the current app.
+
 Payment-operation schema releases additionally follow the exact old-instance
 drain, `ledger_paused` deploy, verification, activation, and rollback sequence
 in [Payment operation ledger](payment-operation-ledger.md#phase-2b-2-deployment-activation-and-rollback).
