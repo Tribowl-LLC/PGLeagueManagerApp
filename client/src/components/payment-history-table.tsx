@@ -144,6 +144,7 @@ export const PaymentHistoryTable = memo(function PaymentHistoryTable({
                       <Button
                         size="icon"
                         variant="ghost"
+                        aria-label={`Edit payment for ${bowler?.name ?? "unknown bowler"}`}
                         onClick={() => onStartEdit(payment)}
                       >
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="size-4 text-primary">
@@ -155,6 +156,7 @@ export const PaymentHistoryTable = memo(function PaymentHistoryTable({
                       <Button
                         size="icon"
                         variant="ghost"
+                        aria-label={`Delete payment for ${bowler?.name ?? "unknown bowler"}`}
                         onClick={() => onDelete(payment.id)}
                         disabled={isDeletePending}
                       >

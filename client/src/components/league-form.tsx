@@ -159,6 +159,22 @@ export function LeagueForm({ open, onClose, league, systemAdminOrganizationId }:
     clearSchedule();
   };
 
+  const handleValidSubmit = (data: InsertLeague) => {
+    if (!league && (!data.locationId || !activeLocations.some((location) => location.id === data.locationId))) {
+      form.setError("locationId", {
+        type: "required",
+        message: "Select an active location before creating the league.",
+      });
+      toast({
+        title: "Location required",
+        description: "Select an active location before creating the league.",
+        variant: "destructive",
+      });
+      return;
+    }
+    mutation.mutate(data);
+  };
+
   return (
     <>
       <Dialog open={open} onOpenChange={onClose}>
@@ -170,7 +186,7 @@ export function LeagueForm({ open, onClose, league, systemAdminOrganizationId }:
           <Form {...form}>
             <form
               onSubmit={form.handleSubmit(
-                (data) => mutation.mutate(data),
+                handleValidSubmit,
                 (errors) => {
                   const messages = Object.entries(errors).flatMap(([field, err]) => {
                     const msg = (err as { message?: string })?.message;
@@ -193,6 +209,7 @@ export function LeagueForm({ open, onClose, league, systemAdminOrganizationId }:
                   form={form}
                   activeLocations={activeLocations}
                   onLocationChange={handleLocationChange}
+                  locationRequired={!league}
                 />
 
                 <LeagueScheduleSection

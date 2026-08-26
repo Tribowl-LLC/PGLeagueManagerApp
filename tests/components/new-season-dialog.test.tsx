@@ -172,4 +172,60 @@ describe('NewSeasonDialog', () => {
     expect(screen.queryByText('No Location')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /create new season/i })).toBeDisabled();
   });
+
+  it('submits exactly two independent weekly double-pay dates and rejects a third', async () => {
+    const user = userEvent.setup();
+    const onCreate = vi.fn();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      success: true,
+      data: [{ id: 9, name: 'Lanes A', active: true }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } })));
+    apiRequestMock.mockResolvedValue({
+      success: true,
+      data: {
+        contractVersion: 'league-rollover-source/1',
+        fingerprintVersion: 'league-rollover-source-fingerprint/1',
+        fingerprint: 'c'.repeat(64),
+        organizationId: 3,
+        sourceLeagueId: 42,
+        carriedConfiguration: {
+          name: league.name,
+          description: null,
+          payingLineupSize: 4,
+          locationId: 9,
+          timezone: 'America/Chicago',
+          practiceStartTime: null,
+          competitionStartTime: '19:00',
+          weeklyFee: 2000,
+          lineageFee: null,
+          prizeFundFee: null,
+        },
+      },
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    render(
+      <QueryClientProvider client={client}>
+        <NewSeasonDialog league={league} showNewSeason setShowNewSeason={() => {}} onCreate={onCreate} isPending={false} />
+      </QueryClientProvider>,
+    );
+
+    fireEvent.change(screen.getByLabelText('New Season Start Date'), { target: { value: '2026-09-07' } });
+    await fireEvent.change(screen.getByLabelText('Bowling Weeks'), { target: { value: '12' } });
+    await screen.findByText('League lineup size');
+    await user.click(screen.getByLabelText('League Payment Timing'));
+    await user.click(screen.getByRole('option', { name: /weekly: bowlers pay each week/i }));
+    await user.click(screen.getByRole('button', { name: /bowling schedule/i }));
+    await user.click(screen.getByTestId('schedule-double-pay-2026-09-07'));
+    await user.click(screen.getByTestId('schedule-double-pay-2026-09-14'));
+    await user.click(screen.getByTestId('schedule-double-pay-2026-09-21'));
+    await user.click(screen.getByRole('button', { name: /create new season/i }));
+
+    expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({
+      paymentMode: 'weekly',
+      skipDates: [],
+      cancelledDates: [],
+      doublePayDates: ['2026-09-07', '2026-09-14'],
+    }));
+  });
 });

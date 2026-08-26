@@ -46,6 +46,8 @@ describe('PaymentHistoryTable bowler link', () => {
 
     const link = screen.getByRole('link', { name: /jane doe/i });
     expect(link).toHaveAttribute('href', '/bowlers/42?from=weekly-payments&fromLeagueId=99');
+    expect(screen.getByRole('button', { name: 'Edit payment for Jane Doe' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Delete payment for Jane Doe' })).toBeInTheDocument();
   });
 
   it('renders a plain bowler link when no suffix is provided', () => {

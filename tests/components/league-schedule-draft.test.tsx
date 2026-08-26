@@ -6,7 +6,7 @@ import { useLeagueScheduleDraft } from '@/hooks/use-league-schedule-draft';
 function Harness() {
   const draft = useLeagueScheduleDraft({
     initialSeasonStart: '2026-09-07',
-    initialBowlingWeeks: 2,
+    initialBowlingWeeks: 3,
     initialWeekDay: 'Monday',
     initialPaymentMode: 'weekly',
   });
@@ -14,6 +14,8 @@ function Harness() {
   return (
     <>
       <button type="button" onClick={() => draft.toggleDoublePayDate('2026-09-07')}>double</button>
+      <button type="button" onClick={() => draft.toggleDoublePayDate('2026-09-14')}>double-two</button>
+      <button type="button" onClick={() => draft.toggleDoublePayDate('2026-09-21')}>double-three</button>
       <button type="button" onClick={() => first && draft.toggleDateType(first.isoDate, first.type)}>base</button>
       <button type="button" onClick={() => draft.setPaymentMode('upfront')}>upfront</button>
       <output data-testid="draft-state">{JSON.stringify({ skip: draft.skipDates, double: draft.doublePayDates })}</output>
@@ -32,5 +34,18 @@ describe('shared league schedule draft contract', () => {
     expect(screen.getByTestId('draft-state')).toHaveTextContent('"double":[]');
     await user.click(screen.getByRole('button', { name: 'upfront' }));
     expect(screen.getByTestId('draft-state')).toHaveTextContent('"double":[]');
+  });
+
+  it('keeps two independent weekly double-pay dates and rejects a third', async () => {
+    const user = userEvent.setup();
+    render(<Harness />);
+
+    await user.click(screen.getByRole('button', { name: 'double' }));
+    await user.click(screen.getByRole('button', { name: 'double-two' }));
+    expect(screen.getByTestId('draft-state')).toHaveTextContent('"double":["2026-09-07","2026-09-14"]');
+
+    await user.click(screen.getByRole('button', { name: 'double-three' }));
+    expect(screen.getByTestId('draft-state')).toHaveTextContent('"double":["2026-09-07","2026-09-14"]');
+    expect(screen.getByTestId('draft-state')).not.toHaveTextContent('2026-09-21');
   });
 });

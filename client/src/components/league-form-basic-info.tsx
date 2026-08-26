@@ -21,24 +21,25 @@ interface LeagueBasicInfoProps {
   form: UseFormReturn<InsertLeagueInput, unknown, InsertLeague>;
   activeLocations: Location[];
   onLocationChange: (value: string) => void;
+  locationRequired?: boolean;
 }
 
-export function LeagueBasicInfo({ form, activeLocations, onLocationChange }: LeagueBasicInfoProps) {
+export function LeagueBasicInfo({ form, activeLocations, onLocationChange, locationRequired = false }: LeagueBasicInfoProps) {
   return (
     <>
-      {activeLocations.length > 0 && (
+      {(activeLocations.length > 0 || locationRequired) && (
         <FormField
           control={form.control}
           name="locationId"
           render={({ field }) => (
             <FormItem>
-              <FormLabel>Location</FormLabel>
+              <FormLabel>{locationRequired ? "Location (required)" : "Location"}</FormLabel>
               <Select
                 onValueChange={(value) => {
                   field.onChange(value === "none" ? null : parseInt(value));
                   onLocationChange(value);
                 }}
-                value={field.value ? String(field.value) : "none"}
+                value={field.value ? String(field.value) : locationRequired ? "" : "none"}
               >
                 <FormControl>
                   <SelectTrigger>
@@ -46,7 +47,7 @@ export function LeagueBasicInfo({ form, activeLocations, onLocationChange }: Lea
                   </SelectTrigger>
                 </FormControl>
                 <SelectContent>
-                  <SelectItem value="none">No Location</SelectItem>
+                  {!locationRequired && <SelectItem value="none">No Location</SelectItem>}
                   {activeLocations.map((location) => (
                     <SelectItem key={location.id} value={String(location.id)}>
                       {location.name}

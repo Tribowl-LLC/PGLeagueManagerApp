@@ -198,4 +198,24 @@ describe('LeagueForm — handleLocationChange clears stored lineage / prize-fund
     });
     expect(requestBody).not.toHaveProperty('seasonEnd');
   });
+
+  it('removes No Location from initial creation and validates the required location', async () => {
+    const user = userEvent.setup();
+    renderForm(null);
+
+    const locationTrigger = await screen.findByRole('combobox', { name: /location/i });
+    await user.click(locationTrigger);
+    expect(screen.queryByRole('option', { name: 'No Location' })).not.toBeInTheDocument();
+    await user.keyboard('{Escape}');
+
+    await user.type(screen.getByLabelText(/^Name$/), 'Location-required League');
+    await user.click(screen.getByLabelText('League Payment Timing'));
+    await user.click(screen.getByRole('option', { name: /weekly: bowlers pay each week/i }));
+    await user.click(screen.getByRole('combobox', { name: 'League Lineup Size' }));
+    await user.click(screen.getByRole('option', { name: 'Four Bowlers' }));
+    await user.click(screen.getByRole('button', { name: 'Add League' }));
+
+    expect(await screen.findByText('Select an active location before creating the league.')).toBeVisible();
+    expect(fetchMock.mock.calls.some(([input, init]) => String(input) === '/api/leagues' && init?.method === 'POST')).toBe(false);
+  });
 });
