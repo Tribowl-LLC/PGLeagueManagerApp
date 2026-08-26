@@ -732,7 +732,7 @@ describe("scheduled payment ledger cutover PostgreSQL behavior", () => {
     expect(await db.select().from(paymentOperations).where(eq(paymentOperations.paymentScheduleId, schedule.id))).toHaveLength(1);
   });
 
-  it("serializes organization teardown with scheduled preparation without 40P01", async () => {
+  it("serializes organization teardown with scheduled preparation without 40P01 or provider effect", async () => {
     const [teardownOrganization] = await db.insert(organizations).values({
       name: `Scheduled teardown race ${Math.random()}`,
       slug: `scheduled-teardown-race-${Math.random()}`,
@@ -747,13 +747,84 @@ describe("scheduled payment ledger cutover PostgreSQL behavior", () => {
       locationIdOverride: teardownLocation.id,
       nextPaymentDate: cycleAt,
     });
-    const [preparation, teardown] = await Promise.allSettled([
-      prepareScheduledPaymentCycle({ paymentScheduleId: schedule.id, billingCycleAt: cycleAt, now: dueNow }),
-      deleteOrganization(teardownOrganization.id),
-    ]);
-    expect(teardown.status).toBe("fulfilled");
-    if (preparation.status === "rejected") {
-      expect(String(preparation.reason)).not.toMatch(/40P01|deadlock detected/i);
+    const provider = new DeterministicSquareProvider(teardownLocation.id);
+    const blocker = await getTestPool().connect();
+    let teardown: Promise<void> | undefined;
+    let preparation: Promise<Awaited<ReturnType<typeof prepareScheduledPaymentCycle>>> | undefined;
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query(
+        `SELECT id FROM payment_schedules WHERE id = $1 FOR UPDATE`,
+        [schedule.id],
+      );
+
+      // Queue teardown behind the held schedule row. This is the first lock
+      // in deleteOrganization's schedule -> league -> location order, so the
+      // later preparation waiter must queue behind the same row rather than
+      // forming a lock-order cycle with teardown.
+      teardown = deleteOrganization(teardownOrganization.id);
+      let teardownWaiting = false;
+      for (let attempt = 0; attempt < 200 && !teardownWaiting; attempt += 1) {
+        const waiting = await getTestPool().query<{ count: string }>(`
+          SELECT count(*)::text AS count
+          FROM pg_stat_activity
+          WHERE datname = current_database()
+            AND pid <> pg_backend_pid()
+            AND state = 'active'
+            AND wait_event_type = 'Lock'
+            AND query ILIKE '%payment_schedules%'
+            AND query ILIKE '%league_id%'
+            AND query ILIKE '%order by%'
+            AND query ILIKE '%for update%'
+        `);
+        teardownWaiting = Number(waiting.rows[0]?.count ?? 0) > 0;
+        if (!teardownWaiting) await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(teardownWaiting).toBe(true);
+
+      // Start preparation only after teardown is observed waiting. Both
+      // contenders now wait on the known blocker, making the release and the
+      // resulting teardown-first outcome deterministic.
+      preparation = prepareScheduledPaymentCycle({
+        paymentScheduleId: schedule.id,
+        billingCycleAt: cycleAt,
+        now: dueNow,
+      });
+      let contendersWaiting = false;
+      for (let attempt = 0; attempt < 200 && !contendersWaiting; attempt += 1) {
+        const waiting = await getTestPool().query<{ count: string }>(`
+          SELECT count(*)::text AS count
+          FROM pg_stat_activity
+          WHERE datname = current_database()
+            AND pid <> pg_backend_pid()
+            AND state = 'active'
+            AND wait_event_type = 'Lock'
+            AND query ILIKE '%payment_schedules%'
+            AND query ILIKE '%for update%'
+        `);
+        contendersWaiting = Number(waiting.rows[0]?.count ?? 0) >= 2;
+        if (!contendersWaiting) await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(contendersWaiting).toBe(true);
+      await blocker.query("COMMIT");
+
+      const [teardownResult, preparationResult] = await Promise.allSettled([teardown, preparation]);
+      expect(teardownResult.status).toBe("fulfilled");
+      expect(preparationResult.status).toBe("fulfilled");
+      if (preparationResult.status === "fulfilled") {
+        expect(preparationResult.value.kind).toBe("stale");
+      }
+      expect(await db.select().from(paymentOperations)
+        .where(eq(paymentOperations.paymentScheduleId, schedule.id))).toHaveLength(0);
+      expect(provider.requests).toHaveLength(0);
+      expect(provider.providerEffects.size).toBe(0);
+    } finally {
+      await blocker.query("ROLLBACK").catch(() => undefined);
+      blocker.release();
+      const pending: Array<Promise<unknown>> = [];
+      if (teardown) pending.push(teardown);
+      if (preparation) pending.push(preparation);
+      await Promise.allSettled(pending);
     }
   });
 
