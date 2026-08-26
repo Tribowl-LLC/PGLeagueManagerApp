@@ -144,6 +144,13 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
   const paymentType = form.watch("type");
   const selectedBowlerId = form.watch("bowlerId");
   const watchedAmount = form.watch("amount");
+  const allowStoreCard = !paymentManager && currentUser?.bowlerId === selectedBowlerId;
+
+  useEffect(() => {
+    if (!allowStoreCard && form.getValues("storeCard")) {
+      form.setValue("storeCard", false, { shouldDirty: false });
+    }
+  }, [allowStoreCard, form]);
 
   const { data: savedCardsResponse } = useQuery<{ success: boolean; data: SavedCard[] }>({
     queryKey: [`/api/payments-provider/cards/${selectedBowlerId}`, leagueId],
@@ -375,6 +382,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
     occurrenceAllocations,
     occurrenceQuoteFingerprint,
     occurrenceReadiness,
+    allowStoreCard,
   });
   const handleOccurrenceChange = useCallback((next: { obligationId: string; amountMinor: number }[], fingerprint?: string) => {
     setOccurrenceAllocations(next);
@@ -456,7 +464,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
                 isWalletProcessing={isWalletProcessing}
                 applePayTokenizeOnly={applePayTokenizeOnly}
                 googlePayTokenizeOnly={googlePayTokenizeOnly}
-                allowStoreCard={!paymentManager && currentUser?.bowlerId === selectedBowlerId}
+                allowStoreCard={allowStoreCard}
               />
             )}
             <PaymentFormActions

@@ -981,6 +981,29 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
     expect(recovered).toMatchObject({ id: operation.id, status: "succeeded" });
   });
 
+  it("returns a discovered pending operation without provider recovery or redispatch", async () => {
+    const requestKey = `pending-recovery-${randomUUID()}`;
+    const operationId = randomUUID();
+    await db.insert(paymentOperations).values({
+      id: operationId,
+      organizationId,
+      authorizingUserId: actorUserId,
+      operationType: "interactive_charge",
+      targetKey: `interactive-charge:${requestKey}`,
+      leagueId,
+      amountMinor: 1_000,
+      currency: "USD",
+      requestFingerprint: `lvpayreq:v1:${"6".repeat(64)}`,
+      providerIdempotencyKey: `pending-recovery-${operationId}`.slice(0, 45),
+      providerName: "square",
+      status: "pending",
+      nextAttemptAt: "2038-06-01T20:00:00.000Z",
+    });
+
+    const discovered = await recoverRosterPaymentOperationByRequestKey({ organizationId, leagueId, requestKey, actorUserId });
+    expect(discovered).toMatchObject({ id: operationId, status: "pending", providerObjectId: null });
+  });
+
   it("waits for an in-flight preparation commit before recovering by request key", async () => {
     const fixture = await createOccurrence();
     const operationId = randomUUID();

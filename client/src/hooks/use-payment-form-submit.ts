@@ -30,6 +30,14 @@ interface UsePaymentFormSubmitOptions {
   occurrenceAllocations?: InteractiveOccurrenceSelection[];
   occurrenceQuoteFingerprint?: string;
   occurrenceReadiness?: InteractiveOccurrenceReadiness;
+  allowStoreCard?: boolean;
+}
+
+/** Resolve the vault request from both the form checkbox and the current
+ * payer ownership decision. A stale checked value must never survive a payer
+ * change into the provider charge payload. */
+export function resolveStoreCardRequest(allowStoreCard: boolean, requested: boolean | undefined): boolean {
+  return allowStoreCard && requested === true;
 }
 
 export function usePaymentFormSubmit({
@@ -43,6 +51,7 @@ export function usePaymentFormSubmit({
   locationId,
   occurrenceAllocations,
   occurrenceReadiness,
+  allowStoreCard = false,
 }: UsePaymentFormSubmitOptions) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -82,10 +91,11 @@ export function usePaymentFormSubmit({
       } else {
         const sourceId = cardMode === "saved" ? selectedSavedCardId : card ? await tokenizeCard(card) : "";
         if (!sourceId) throw new Error("Credit card form is not ready.");
+        const storeCard = resolveStoreCardRequest(allowStoreCard, data.storeCard);
         const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${data.leagueId}/interactive-obligation-charge/2`, {
           method: "POST",
           headers: paymentRequestHeaders(requestKey),
-          body: JSON.stringify({ obligationIds, allocations, payerBowlerId: quoteBody.data.payerBowlerId ?? data.bowlerId, sourceId, sourceKind: cardMode === "saved" ? "saved_card" : "new_card", buyerEmail: buyerEmail?.trim() || null, storeCard: data.storeCard === true, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }),
+          body: JSON.stringify({ obligationIds, allocations, payerBowlerId: quoteBody.data.payerBowlerId ?? data.bowlerId, sourceId, sourceKind: cardMode === "saved" ? "saved_card" : "new_card", buyerEmail: buyerEmail?.trim() || null, storeCard, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }),
         }), data.leagueId);
         const body = await response.json();
         if (!response.ok) throw makeApiError(body, response.status, "Failed to process payment");
@@ -95,7 +105,7 @@ export function usePaymentFormSubmit({
       }
       queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
       queryClient.invalidateQueries({ queryKey: ["/api/financials/f5/payments"] });
-      if (data.storeCard === true && cardMode === "new") {
+      if (allowStoreCard && data.storeCard === true && cardMode === "new") {
         queryClient.invalidateQueries({ queryKey: [`/api/payments-provider/cards/${data.bowlerId}`] });
       }
       onClose();

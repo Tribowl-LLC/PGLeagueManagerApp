@@ -153,12 +153,13 @@ describe("roster payment route authorization", () => {
   });
 
   it("keeps request-key recovery bound to the authenticated league and actor", async () => {
-    mocks.recoverByRequestKey.mockResolvedValue({ id: "operation-1", status: "succeeded" });
+    mocks.recoverByRequestKey.mockResolvedValue({ id: "operation-1", status: "pending" });
     const response = await request("/leagues/7/interactive-obligation-charge/2/recover-by-request-key", user("user", 11, 42), {
       method: "POST",
       body: JSON.stringify({ requestKey: "request-key-123456" }),
     });
     expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ data: { contractVersion: "interactive-obligation-recovery/1", operationId: "operation-1", status: "pending" } });
     expect(mocks.recoverByRequestKey).toHaveBeenCalledWith({ organizationId: 11, leagueId: 7, requestKey: "request-key-123456", actorUserId: 1 });
 
     mocks.getLeague.mockResolvedValue({ id: 7, organizationId: 22, payingLineupSize: 3 });

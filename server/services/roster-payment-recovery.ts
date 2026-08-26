@@ -47,6 +47,14 @@ export async function recoverRosterPaymentOperationByRequestKey(input: {
   if (!operation) {
     throw new RosterPaymentRecoveryError("NOT_FOUND", "Payment operation not found", 404);
   }
+  // A request-key retry must report an operation that is still owned by the
+  // ledger rather than attempting to recover it with a newly tokenized
+  // source. There is no provider-free finalization to perform until provider
+  // evidence exists. Terminal states are also returned unchanged so the
+  // caller can clear or retain its browser intent from the durable state.
+  if (operation.status !== "succeeded" && operation.status !== "reconciliation_required") {
+    return operation;
+  }
   return recoverRosterPaymentOperation({
     organizationId: input.organizationId,
     leagueId: input.leagueId,

@@ -21,6 +21,7 @@ describe('interactive request-key recovery', () => {
       status,
     },
   }), { status: httpStatus });
+  const noExistingOperation = () => new Response(null, { status: 404 });
 
   function installStorage() {
     const values = new Map<string, string>();
@@ -50,7 +51,7 @@ describe('interactive request-key recovery', () => {
       operationId: '11111111-1111-4111-8111-111111111111',
       status: 'succeeded',
     } }), { status: 200 });
-    csrfFetchMock.mockResolvedValueOnce(recovered);
+    csrfFetchMock.mockResolvedValueOnce(noExistingOperation()).mockResolvedValueOnce(recovered);
 
     await expect(paymentRequestWithRecovery('request-key-123456', request, 11)).resolves.toBe(recovered);
     expect(csrfFetchMock).toHaveBeenCalledWith(
@@ -62,12 +63,26 @@ describe('interactive request-key recovery', () => {
     );
   });
 
+  it.each(['pending', 'leased', 'provider_unknown', 'retry_scheduled'])('returns a pre-existing %s operation without invoking the charge callback', async (status) => {
+    const request = vi.fn().mockResolvedValue(exactResponse('succeeded', 201));
+    const existing = new Response(JSON.stringify({ data: {
+      contractVersion: 'interactive-obligation-recovery/1',
+      operationId: '11111111-1111-4111-8111-111111111111',
+      status,
+    } }), { status: 200 });
+    csrfFetchMock.mockResolvedValueOnce(existing);
+
+    await expect(paymentRequestWithRecovery('request-key-123456', request, 11)).resolves.toBe(existing);
+    expect(request).not.toHaveBeenCalled();
+    expect(csrfFetchMock).toHaveBeenCalledOnce();
+  });
+
   it('preserves a transport error when the exact request key was never persisted', async () => {
     const request = vi.fn().mockRejectedValueOnce(new Error('connection reset'));
-    csrfFetchMock.mockResolvedValueOnce(new Response(null, { status: 404 }));
+    csrfFetchMock.mockResolvedValueOnce(noExistingOperation()).mockResolvedValueOnce(noExistingOperation());
 
     await expect(paymentRequestWithRecovery('request-key-123456', request, 11)).rejects.toThrow('connection reset');
-    expect(csrfFetchMock).toHaveBeenCalledOnce();
+    expect(csrfFetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('does not invoke recovery for an ordinary bounded API response', async () => {
@@ -81,25 +96,27 @@ describe('interactive request-key recovery', () => {
   it('reconciles a roster operation by operation id after local finalization reports review', async () => {
     const initial = new Response(JSON.stringify({ data: { contractVersion: 'interactive-obligation-charge/2', operationId: '11111111-1111-4111-8111-111111111111', status: 'reconciliation_required' } }), { status: 202 });
     const recovered = new Response(JSON.stringify({ data: { contractVersion: 'interactive-obligation-recovery/1', operationId: '11111111-1111-4111-8111-111111111111', status: 'succeeded' } }), { status: 200 });
-    csrfFetchMock.mockResolvedValueOnce(recovered);
+    csrfFetchMock.mockResolvedValueOnce(noExistingOperation()).mockResolvedValueOnce(recovered);
     await expect(paymentRequestWithRecovery('request-key-123456', () => Promise.resolve(initial), 11)).resolves.toBe(recovered);
     expect(csrfFetchMock).toHaveBeenCalledWith('/api/financials/leagues/11/interactive-obligation-charge/2/operations/11111111-1111-4111-8111-111111111111/recover', expect.objectContaining({ method: 'POST' }));
   });
 
   it.each(['pending', 'provider_unknown', 'retry_scheduled'])('preserves exact %s without invoking roster recovery', async (status) => {
     const initial = exactResponse(status);
+    csrfFetchMock.mockResolvedValueOnce(noExistingOperation());
     await expect(paymentRequestWithRecovery(
       'request-key-123456',
       () => Promise.resolve(initial),
       11,
     )).resolves.toBe(initial);
-    expect(csrfFetchMock).not.toHaveBeenCalled();
+    expect(csrfFetchMock).toHaveBeenCalledOnce();
   });
 
   it('returns an exact succeeded response without another recovery request', async () => {
     const initial = exactResponse('succeeded', 201);
+    csrfFetchMock.mockResolvedValueOnce(noExistingOperation());
     await expect(paymentRequestWithRecovery('request-key-123456', () => Promise.resolve(initial), 11)).resolves.toBe(initial);
-    expect(csrfFetchMock).not.toHaveBeenCalled();
+    expect(csrfFetchMock).toHaveBeenCalledOnce();
   });
 
   it.each(['pending', 'provider_unknown', 'retry_scheduled'])('preserves generic %s operation state without exact recovery', async (status) => {
@@ -108,8 +125,9 @@ describe('interactive request-key recovery', () => {
       operationId: '11111111-1111-4111-8111-111111111111',
       status,
     }), { status: 202 });
+    csrfFetchMock.mockResolvedValueOnce(noExistingOperation());
     await expect(paymentRequestWithRecovery('request-key-123456', () => Promise.resolve(initial), 11)).resolves.toBe(initial);
-    expect(csrfFetchMock).not.toHaveBeenCalled();
+    expect(csrfFetchMock).toHaveBeenCalledOnce();
   });
 
   it.each(['failed_terminal', 'canceled', 'action_required'])('preserves exact terminal %s and rotates the browser intent', async (status) => {
@@ -118,9 +136,10 @@ describe('interactive request-key recovery', () => {
     const requestKey = beginPaymentIntent(scope);
     expect(values.size).toBe(1);
     const initial = exactResponse(status, 202);
+    csrfFetchMock.mockResolvedValueOnce(noExistingOperation());
 
     await expect(paymentRequestWithRecovery(requestKey, () => Promise.resolve(initial), 11)).resolves.toBe(initial);
-    expect(csrfFetchMock).not.toHaveBeenCalled();
+    expect(csrfFetchMock).toHaveBeenCalledOnce();
     expect(values.size).toBe(0);
     // A corrected retry gets a new idempotency key instead of replaying the
     // terminal operation with a changed card/source.
@@ -135,10 +154,10 @@ describe('interactive request-key recovery', () => {
       operationId: '11111111-1111-4111-8111-111111111111',
       status: 'reconciliation_required',
     } }), { status: 409 });
-    csrfFetchMock.mockResolvedValueOnce(recovery);
+    csrfFetchMock.mockResolvedValueOnce(noExistingOperation()).mockResolvedValueOnce(recovery);
 
     await expect(paymentRequestWithRecovery('request-key-123456', () => Promise.resolve(initial), 11)).resolves.toBe(recovery);
-    expect(csrfFetchMock).toHaveBeenCalledTimes(1);
+    expect(csrfFetchMock).toHaveBeenCalledTimes(2);
   });
 
   it.each(['STALE_QUOTE', 'INVALID_REQUEST'])('preserves an exact roster validation response without generic recovery (%s)', async (code) => {
@@ -146,6 +165,7 @@ describe('interactive request-key recovery', () => {
       success: false,
       error: { code, message: code === 'STALE_QUOTE' ? 'The quote is no longer current.' : 'The payment request is invalid.' },
     }), { status: code === 'STALE_QUOTE' ? 409 : 400 });
+    csrfFetchMock.mockResolvedValueOnce(noExistingOperation());
     const result = await paymentRequestWithRecovery(
       'request-key-123456',
       () => Promise.resolve(initial),
@@ -155,17 +175,17 @@ describe('interactive request-key recovery', () => {
     expect(result).toBe(initial);
     expect(result.status).toBe(code === 'STALE_QUOTE' ? 409 : 400);
     await expect(result.clone().json()).resolves.toMatchObject({ error: { code } });
-    expect(csrfFetchMock).not.toHaveBeenCalled();
+    expect(csrfFetchMock).toHaveBeenCalledOnce();
   });
 
   it('keeps a network-lost request unresolved when exact recovery finds no operation', async () => {
-    csrfFetchMock.mockResolvedValueOnce(new Response(null, { status: 404 }));
+    csrfFetchMock.mockResolvedValueOnce(noExistingOperation()).mockResolvedValueOnce(noExistingOperation());
     await expect(paymentRequestWithRecovery(
       'request-key-123456',
       () => Promise.reject(new Error('connection reset')),
       11,
     )).rejects.toThrow('connection reset');
-    expect(csrfFetchMock).toHaveBeenCalledOnce();
+    expect(csrfFetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('exposes state-specific recovery messages and only accepts succeeded', () => {

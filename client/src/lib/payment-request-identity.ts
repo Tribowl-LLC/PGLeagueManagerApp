@@ -206,6 +206,17 @@ export async function paymentRequestWithRecovery(
     // is accepted by checkout callers.
     return recovered ?? response;
   };
+
+  // Before tokenized-source submission, ask the server whether this exact
+  // request key already owns a durable operation. Only a scoped 404 means the
+  // key is new. Any other response is authoritative and returned without
+  // invoking the charge callback, so retries cannot submit a fresh source
+  // under a pending/leased/provider-unknown operation.
+  if (rosterLeagueId !== undefined) {
+    const existing = await recoverRosterPaymentOperationByRequestKey(rosterLeagueId, requestKey);
+    if (existing.status !== 404) return await reconcileRosterResponse(existing);
+  }
+
   try {
     const initial = await request();
     if (rosterLeagueId !== undefined && !initial.ok) {
