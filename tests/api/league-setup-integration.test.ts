@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 import {
   bowlerLeagues,
   bowlers,
@@ -150,6 +150,36 @@ describe("league setup integration API", () => {
       name: "API builder-shaped metadata edit",
       description: "metadata survives canonical schedule mutation",
     });
+    const occurrencesBeforeFeePatch = await db.select({
+      id: leagueOccurrences.id,
+      authoritativeLocalDate: leagueOccurrences.authoritativeLocalDate,
+      plannedOrdinal: leagueOccurrences.plannedOrdinal,
+      competitionNumber: leagueOccurrences.competitionNumber,
+    }).from(leagueOccurrences)
+      .where(eq(leagueOccurrences.leagueId, result.id))
+      .orderBy(asc(leagueOccurrences.id));
+    const feePatch = await apiPatch(`/api/leagues/${result.id}`, {
+      lineageFee: 1_000,
+      prizeFundFee: 1_000,
+      scheduleRevision: durableBuilderEdit?.canonicalScheduleRevision,
+      idempotencyKey: "e4-api-fee-only-edit-1",
+    }, admin);
+    expect(feePatch.status).toBe(200);
+    expect(feePatch.data.data).toMatchObject({
+      id: result.id,
+      lineageFee: 1_000,
+      prizeFundFee: 1_000,
+      canonicalScheduleRevision: durableBuilderEdit?.canonicalScheduleRevision,
+    });
+    const occurrencesAfterFeePatch = await db.select({
+      id: leagueOccurrences.id,
+      authoritativeLocalDate: leagueOccurrences.authoritativeLocalDate,
+      plannedOrdinal: leagueOccurrences.plannedOrdinal,
+      competitionNumber: leagueOccurrences.competitionNumber,
+    }).from(leagueOccurrences)
+      .where(eq(leagueOccurrences.leagueId, result.id))
+      .orderBy(asc(leagueOccurrences.id));
+    expect(occurrencesAfterFeePatch).toEqual(occurrencesBeforeFeePatch);
     const unsupportedSkip = await apiPatch(`/api/leagues/${result.id}`, {
       skipDates: [...(durableBuilderEdit?.skipDates ?? []), "2032-03-21"],
       scheduleRevision: durableBuilderEdit?.canonicalScheduleRevision,

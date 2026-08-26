@@ -543,7 +543,7 @@ router.patch("/:id", async (req: Request, res) => {
     const canonicalDoublePayDates = update.doublePayDates;
     const canonicalScheduleFieldChanged = [
       "doublePayDates", "skipDates", "cancelledDates", "seasonStart", "seasonEnd",
-      "weekDay", "competitionStartTime", "timezone", "totalBowlingWeeks",
+      "weekDay", "competitionStartTime", "timezone", "totalBowlingWeeks", "lineageFee", "prizeFundFee",
     ].some((field) => Object.prototype.hasOwnProperty.call(req.body ?? {}, field));
     // Metadata does not alter the physical schedule. Only fields that alter
     // canonical schedule evidence require a complete operational set.
