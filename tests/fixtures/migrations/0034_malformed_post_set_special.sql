@@ -1,6 +1,6 @@
--- The same audited post-set occurrence without its typed relationship must be
--- refused.  The fixture remains schema-valid so the refusal comes from the
--- migration's operational-set gate rather than a fixture constraint.
+-- This audited post-set fixture has a malformed operational shape: the
+-- special makeup occurrence has no published billing term.  It remains
+-- schema-valid so the refusal comes from the migration's operational-set gate.
 INSERT INTO organizations (id, name, slug)
 VALUES (35, '0034 malformed special organization', 'migration0034-malformed-special');
 INSERT INTO locations (id, name, organization_id)
@@ -21,7 +21,8 @@ INSERT INTO league_schedule_commands (
 ) VALUES
   ('35000000-0000-0000-0000-000000000001', 35, 3501, 3501, 'generate', '0034-malformed-generate', '0034-malformed-generate-fp', 'applied'),
   ('35000000-0000-0000-0000-000000000002', 35, 3501, 3501, 'approve_generation', '0034-malformed-approve', '0034-malformed-approve-fp', 'applied'),
-  ('35000000-0000-0000-0000-000000000003', 35, 3501, 3501, 'publish', '0034-malformed-publish', '0034-malformed-publish-fp', 'applied');
+  ('35000000-0000-0000-0000-000000000003', 35, 3501, 3501, 'publish', '0034-malformed-publish', '0034-malformed-publish-fp', 'applied'),
+  ('35000000-0000-0000-0000-000000000007', 35, 3501, 3501, 'create_makeup_relationship', '0034-malformed-relationship', '0034-malformed-relationship-fp', 'applied');
 INSERT INTO league_occurrence_generation_runs (
   id, organization_id, league_id, originating_command_id, generator_version,
   input_fingerprint, source_schedule_revision, normalized_input_snapshot,
@@ -59,5 +60,15 @@ INSERT INTO league_occurrence_billing_terms (
   default_amount_minor, currency, billing_ordinal, version, state, current_revision,
   last_command_id, published_at, published_by_user_id, publication_command_id
 ) VALUES
-  (35, 3501, '35000000-0000-0000-0000-000000000005', 'league_weekly_fee', 'eligible_bowlers', 2000, 'USD', 1, 1, 'published', 1, '35000000-0000-0000-0000-000000000003', now(), 3501, '35000000-0000-0000-0000-000000000003'),
-  (35, 3501, '35000000-0000-0000-0000-000000000006', 'league_weekly_fee', 'eligible_bowlers', 2000, 'USD', 2, 1, 'published', 1, '35000000-0000-0000-0000-000000000003', now(), 3501, '35000000-0000-0000-0000-000000000003');
+  (35, 3501, '35000000-0000-0000-0000-000000000005', 'league_weekly_fee', 'eligible_bowlers', 2000, 'USD', 1, 1, 'published', 1, '35000000-0000-0000-0000-000000000003', now(), 3501, '35000000-0000-0000-0000-000000000003');
+
+INSERT INTO league_occurrence_relationships (
+  organization_id, league_id, kind, source_occurrence_id, target_occurrence_id,
+  state, current_revision, last_command_id, published_at, published_by_user_id,
+  publication_command_id
+) VALUES (
+  35, 3501, 'makeup_for',
+  '35000000-0000-0000-0000-000000000006', '35000000-0000-0000-0000-000000000005',
+  'published', 1, '35000000-0000-0000-0000-000000000007', now(), 3501,
+  '35000000-0000-0000-0000-000000000007'
+);

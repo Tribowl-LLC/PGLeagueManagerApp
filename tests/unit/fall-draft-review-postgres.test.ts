@@ -30,8 +30,10 @@ import {
   FALL_DRAFT_RESCHEDULE_REQUEST_VERSION,
   FALL_DRAFT_RESTORE_REQUEST_VERSION,
   type FallDraftApproveRequest,
+  type FallDraftCancelRequest,
   type FallDraftRejectRequest,
   type FallDraftRescheduleRequest,
+  type FallDraftRestoreRequest,
 } from "@shared/fall-draft-review";
 import {
   applyFallDraftGeneration,
@@ -152,15 +154,53 @@ describe("C2 Fall draft persisted review and editing", () => {
     const f = await fixture("archive-c2-mutations");
     await generateDraft(f);
     const review = await loadFallDraftReview(scope(f));
-    const occurrenceId = review.occurrences[0]?.id;
-    if (!occurrenceId) throw new Error("archive C2 fixture has no occurrence");
+    const occurrence = review.occurrences[0];
+    if (!occurrence) throw new Error("archive C2 fixture has no occurrence");
     await archiveLeague(f.leagueId, f.organizationId);
-    const archivedRequest = { occurrenceId } as never;
-    expect(await caughtCode(() => rescheduleFallDraftOccurrence({ ...scope(f), request: archivedRequest }))).toBe("league_archived");
-    expect(await caughtCode(() => cancelFallDraftOccurrence({ ...scope(f), request: archivedRequest }))).toBe("league_archived");
-    expect(await caughtCode(() => restoreFallDraftOccurrence({ ...scope(f), request: archivedRequest }))).toBe("league_archived");
-    expect(await caughtCode(() => approveAndPublishFallDraft({ ...scope(f), request: archivedRequest }))).toBe("league_archived");
-    expect(await caughtCode(() => rejectFallDraft({ ...scope(f), request: archivedRequest }))).toBe("league_archived");
+    const requestBase = {
+      confirmedReviewFingerprint: "0".repeat(64),
+      reason: "archive C2 mutation guard",
+    };
+    const archivedRescheduleRequest: FallDraftRescheduleRequest = {
+      ...requestBase,
+      contractVersion: FALL_DRAFT_RESCHEDULE_REQUEST_VERSION,
+      idempotencyKey: "archive-c2-reschedule",
+      occurrenceId: occurrence.id,
+      expectedOccurrenceRevision: occurrence.currentRevision,
+      authoritativeLocalDate: occurrence.authoritativeLocalDate,
+      authoritativeLocalStartTime: occurrence.authoritativeLocalStartTime,
+      timezone: occurrence.timezone,
+    };
+    const archivedCancelRequest: FallDraftCancelRequest = {
+      ...requestBase,
+      contractVersion: FALL_DRAFT_CANCEL_REQUEST_VERSION,
+      idempotencyKey: "archive-c2-cancel",
+      occurrenceId: occurrence.id,
+      expectedOccurrenceRevision: occurrence.currentRevision,
+    };
+    const archivedRestoreRequest: FallDraftRestoreRequest = {
+      ...requestBase,
+      contractVersion: FALL_DRAFT_RESTORE_REQUEST_VERSION,
+      idempotencyKey: "archive-c2-restore",
+      occurrenceId: occurrence.id,
+      expectedOccurrenceRevision: occurrence.currentRevision,
+    };
+    const archivedApproveRequest: FallDraftApproveRequest = {
+      ...requestBase,
+      contractVersion: FALL_DRAFT_APPROVE_REQUEST_VERSION,
+      idempotencyKey: "archive-c2-approve",
+      discrepancyDispositions: [],
+    };
+    const archivedRejectRequest: FallDraftRejectRequest = {
+      ...requestBase,
+      contractVersion: FALL_DRAFT_REJECT_REQUEST_VERSION,
+      idempotencyKey: "archive-c2-reject",
+    };
+    expect(await caughtCode(() => rescheduleFallDraftOccurrence({ ...scope(f), request: archivedRescheduleRequest }))).toBe("league_archived");
+    expect(await caughtCode(() => cancelFallDraftOccurrence({ ...scope(f), request: archivedCancelRequest }))).toBe("league_archived");
+    expect(await caughtCode(() => restoreFallDraftOccurrence({ ...scope(f), request: archivedRestoreRequest }))).toBe("league_archived");
+    expect(await caughtCode(() => approveAndPublishFallDraft({ ...scope(f), request: archivedApproveRequest }))).toBe("league_archived");
+    expect(await caughtCode(() => rejectFallDraft({ ...scope(f), request: archivedRejectRequest }))).toBe("league_archived");
   });
 
   it("reads semantically compatible version-1 C1 snapshots without rewriting them", async () => {

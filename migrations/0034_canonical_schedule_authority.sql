@@ -152,6 +152,8 @@ BEGIN
     UNION
     SELECT l.organization_id, l.league_id
       FROM live_runs l
+     WHERE EXISTS (SELECT 1 FROM current_runs r
+        WHERE r.organization_id = l.organization_id AND r.league_id = l.league_id)
      GROUP BY l.organization_id, l.league_id
     HAVING count(*) <> 1
     UNION
@@ -235,6 +237,17 @@ BEGIN
                  AND t.published_by_user_id IS NOT NULL
                  AND t.publication_command_id IS NOT NULL
                ))
+    UNION
+    SELECT r.organization_id, r.league_id
+      FROM league_occurrences o
+      JOIN current_runs r ON r.organization_id = o.organization_id AND r.league_id = o.league_id
+     WHERE o.lifecycle IN ('published', 'locked')
+       AND (
+         o.planned_ordinal IS NULL
+         OR (SELECT count(*) FROM league_occurrence_billing_terms t
+             WHERE t.organization_id = o.organization_id AND t.league_id = o.league_id
+               AND t.occurrence_id = o.id AND t.state = 'published') <> 1
+       )
     UNION
     SELECT g.organization_id, g.league_id FROM canonical_collection_groups g
      WHERE g.state IN ('published', 'revoked')

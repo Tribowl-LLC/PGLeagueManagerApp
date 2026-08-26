@@ -1031,11 +1031,14 @@ async function validateVersion(
     const approvedOnlyClient = new pg.Client({ connectionString: approvedOnlyUrl, application_name: 'leaguevault-db-check-0034-approved-only' });
     try {
       await approvedOnlyClient.connect();
-      const result = await approvedOnlyClient.query<{ schedule_authority: string; active: boolean }>(
-        'SELECT schedule_authority, active FROM leagues WHERE organization_id = 36 AND id = 3601',
+      const result = await approvedOnlyClient.query<{ schedule_authority: string; active: boolean; approved_run_count: string }>(
+        `SELECT l.schedule_authority, l.active,
+           (SELECT count(*)::text FROM league_occurrence_generation_runs r
+             WHERE r.organization_id = 36 AND r.league_id = 3601 AND r.state = 'approved') AS approved_run_count
+         FROM leagues l WHERE l.organization_id = 36 AND l.id = 3601`,
       );
       const row = result.rows[0];
-      if (!row || row.schedule_authority !== 'retired_legacy' || row.active !== false) {
+      if (!row || row.schedule_authority !== 'retired_legacy' || row.active !== false || row.approved_run_count !== '2') {
         throw new Error('Migration 0034 did not retire dormant approved-only evidence.');
       }
     } finally {

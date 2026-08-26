@@ -13,7 +13,9 @@ INSERT INTO league_schedule_commands (
   idempotency_key, request_fingerprint, outcome
 ) VALUES
   ('36000000-0000-0000-0000-000000000001', 36, 3601, 3601, 'generate', '0034-approved-generate', '0034-approved-generate-fp', 'applied'),
-  ('36000000-0000-0000-0000-000000000002', 36, 3601, 3601, 'approve_generation', '0034-approved-approve', '0034-approved-approve-fp', 'applied');
+  ('36000000-0000-0000-0000-000000000002', 36, 3601, 3601, 'approve_generation', '0034-approved-approve', '0034-approved-approve-fp', 'applied'),
+  ('36000000-0000-0000-0000-000000000004', 36, 3601, 3601, 'generate', '0034-approved-generate-2', '0034-approved-generate-2-fp', 'applied'),
+  ('36000000-0000-0000-0000-000000000005', 36, 3601, 3601, 'approve_generation', '0034-approved-approve-2', '0034-approved-approve-2-fp', 'applied');
 INSERT INTO league_occurrence_generation_runs (
   id, organization_id, league_id, originating_command_id, generator_version,
   input_fingerprint, source_schedule_revision, normalized_input_snapshot,
@@ -26,4 +28,10 @@ INSERT INTO league_occurrence_generation_runs (
   '0034-approved-only-input-fp', 1, '{}'::jsonb, '2040-01-01', '2040-01-31',
   1, 0, 1, 0, 'approved', now(), 3601,
   '36000000-0000-0000-0000-000000000002'
+), (
+  '36000000-0000-0000-0000-000000000006', 36, 3601,
+  '36000000-0000-0000-0000-000000000004', 'fixture-0034-approved-only-2',
+  '0034-approved-only-input-fp-2', 1, '{}'::jsonb, '2040-02-01', '2040-02-29',
+  1, 0, 1, 0, 'approved', now(), 3601,
+  '36000000-0000-0000-0000-000000000005'
 );
