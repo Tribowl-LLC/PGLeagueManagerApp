@@ -94,7 +94,7 @@ export function NewSeasonDialog({
     clearSchedule();
     setShowSchedule(false);
   };
-  const { data: locationsResponse } = useQuery<{ data: Location[] }>({
+  const locationsQuery = useQuery<{ data: Location[] }>({
     queryKey: ["/api/locations"],
     queryFn: async () => {
       const response = await fetch("/api/locations");
@@ -103,7 +103,9 @@ export function NewSeasonDialog({
     },
     enabled: showNewSeason,
   });
-  const activeLocations = (locationsResponse?.data ?? []).filter((location) => location.active);
+  const activeLocations = (locationsQuery.data?.data ?? []).filter((location) => location.active);
+  const hasValidLocation = typeof locationId === "number"
+    && activeLocations.some((location) => location.id === locationId);
   const timezoneOptions = [
     ["America/New_York", "Eastern (ET)"],
     ["America/Chicago", "Central (CT)"],
@@ -168,12 +170,12 @@ export function NewSeasonDialog({
   };
 
   const handleCreate = () => {
-    if (!seasonStart || bowlingWeeks <= 0 || !computedSeasonEnd || paymentMode === "" || !carriedSource) return;
+    if (!seasonStart || bowlingWeeks <= 0 || !computedSeasonEnd || paymentMode === "" || !carriedSource || !hasValidLocation) return;
     const carried = carriedSource.carriedConfiguration;
     const editableOverrides: Pick<NewSeasonFormValues, "name" | "payingLineupSize" | "locationId" | "timezone" | "practiceStartTime" | "competitionStartTime" | "weeklyFee" | "lineageFee" | "prizeFundFee"> = {};
     if (name.trim() !== carried.name) editableOverrides.name = name.trim();
     if (payingLineupSize !== carried.payingLineupSize) editableOverrides.payingLineupSize = payingLineupSize;
-    if (locationId !== carried.locationId) editableOverrides.locationId = locationId === "" ? null : locationId;
+    if (locationId !== carried.locationId) editableOverrides.locationId = locationId;
     if (timezone !== carried.timezone) editableOverrides.timezone = timezone;
     if ((practiceStartTime || null) !== carried.practiceStartTime) editableOverrides.practiceStartTime = practiceStartTime || null;
     if ((competitionStartTime || null) !== carried.competitionStartTime) editableOverrides.competitionStartTime = competitionStartTime || null;
@@ -357,13 +359,19 @@ export function NewSeasonDialog({
                   </div>
                   <div>
                     <label htmlFor="new-season-location" className="text-sm font-medium">Location</label>
-                    <Select value={locationId === "" ? "none" : String(locationId)} onValueChange={(value) => setLocationId(value === "none" ? "" : Number(value))}>
+                    <Select value={locationId === "" ? "" : String(locationId)} onValueChange={(value) => setLocationId(Number(value))}>
                       <SelectTrigger id="new-season-location" className="mt-1"><SelectValue placeholder="Select a location" /></SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="none">No Location</SelectItem>
                         {activeLocations.map((location) => <SelectItem key={location.id} value={String(location.id)}>{location.name}</SelectItem>)}
                       </SelectContent>
                     </Select>
+                    {locationsQuery.isLoading && <p className="mt-1 text-xs text-muted-foreground">Loading active locations…</p>}
+                    {locationsQuery.isError && <p className="mt-1 text-xs text-destructive" role="alert">Active locations could not be loaded. Close and retry before creating the new season.</p>}
+                    {!locationsQuery.isLoading && !locationsQuery.isError && carriedSource && !hasValidLocation && (
+                      <p className="mt-1 text-xs text-destructive" role="alert">
+                        Select an active location before creating the new season. A location is required for rollover.
+                      </p>
+                    )}
                   </div>
                 </div>
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -433,7 +441,7 @@ export function NewSeasonDialog({
           <Button
             onClick={handleCreate}
             disabled={!seasonStart || bowlingWeeks <= 0 || !computedSeasonEnd || paymentMode === ""
-              || !carriedSource || sourceConfirmationQuery.isLoading
+              || !carriedSource || !hasValidLocation || sourceConfirmationQuery.isLoading
               || sourceConfirmationQuery.isError || isPending}
           >
             {isPending ? (

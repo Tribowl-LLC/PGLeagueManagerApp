@@ -62,4 +62,20 @@ describe('PaymentHistoryTable bowler link', () => {
     const link = screen.getByRole('link', { name: /jane doe/i });
     expect(link).toHaveAttribute('href', '/bowlers/42');
   });
+
+  it('hides every payment mutation affordance for a read-only archive', () => {
+    render(
+      <PaymentHistoryTable
+        payments={PAYMENTS}
+        bowlers={BOWLERS}
+        onStartEdit={() => {}}
+        onDelete={() => {}}
+        isDeletePending={false}
+        isAdmin
+        readOnly
+      />,
+    );
+
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+  });
 });

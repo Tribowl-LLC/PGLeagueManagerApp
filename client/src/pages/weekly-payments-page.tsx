@@ -95,6 +95,8 @@ export default function WeeklyPaymentsPage() {
   });
 
   const league = leagueResponse?.data;
+  const isReadOnlyArchive = league !== undefined
+    && (!league.active || league.scheduleAuthority === "retired_legacy");
   const enrichedBowlerLeagues = useMemo(() => bowlerLeaguesResponse?.data || [], [bowlerLeaguesResponse?.data]);
 
   const sortedBowlerLeagues = useMemo(() => {
@@ -218,6 +220,12 @@ export default function WeeklyPaymentsPage() {
 
           <div className="flex flex-col gap-y-4">
             <h1 className="text-2xl font-bold">{league.name}: Weekly Payments</h1>
+            {isReadOnlyArchive && (
+              <div role="status" className="rounded-md border border-muted bg-muted/30 px-4 py-3 text-sm">
+                <div className="font-medium">Read-only archive</div>
+                <div className="text-muted-foreground">Historical payments remain available for review. Recording, editing, deleting, and resending payment records are unavailable.</div>
+              </div>
+            )}
             <WeekNavigator
               selectedWeek={effectiveWeek}
               maxWeek={maxWeek}
@@ -239,7 +247,11 @@ export default function WeeklyPaymentsPage() {
                     <PageLoadingState fullPage={false} />
                   ) : (
                     <div className="space-y-6">
-                      {isMobile ? (
+                      {isReadOnlyArchive ? (
+                        <div role="status" className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
+                          Payment entry is unavailable for this archived league.
+                        </div>
+                      ) : isMobile ? (
                         <div className="space-y-3">
                           {sortedBowlerLeagues.length === 0 && (
                             <p className="text-center text-muted-foreground py-8">
@@ -312,6 +324,7 @@ export default function WeeklyPaymentsPage() {
                         isPaymentManager={isPaymentManager}
                         bowlerHrefSuffix={`?from=weekly-payments&fromLeagueId=${leagueId}`}
                         locationId={league?.locationId ?? null}
+                        readOnly={isReadOnlyArchive}
                       />
                     </div>
                   )}
@@ -320,19 +333,19 @@ export default function WeeklyPaymentsPage() {
             )}
           </ErrorBoundary>
 
-          <EditPaymentAmountDialog
+          {!isReadOnlyArchive && <EditPaymentAmountDialog
             editingPayment={editingPayment}
             onChange={setEditingPayment}
             onSave={handleSaveEdit}
             isPending={updatePaymentMutation.isPending}
-          />
+          />}
 
-          <DeletePaymentDialog
+          {!isReadOnlyArchive && <DeletePaymentDialog
             open={paymentToDelete !== null}
             onClose={() => setPaymentToDelete(null)}
             onConfirm={() => paymentToDelete !== null && handleDelete(paymentToDelete)}
             isPending={deletePaymentMutation.isPending}
-          />
+          />}
         </div>
       </ErrorBoundary>
     </Layout>

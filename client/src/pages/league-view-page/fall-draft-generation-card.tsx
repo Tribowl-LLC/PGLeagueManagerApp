@@ -31,6 +31,7 @@ interface FallCanonicalRecoveryPanelProps {
   leagueId: number;
   organizationId: number;
   isSystemAdmin: boolean;
+  readOnlyArchive?: boolean;
 }
 
 const previewRequestVersion = "fall-draft-preview-request/3" as const;
@@ -48,7 +49,12 @@ function shortFingerprint(value: string): string {
   return `${value.slice(0, 12)}…${value.slice(-8)}`;
 }
 
-export function FallCanonicalRecoveryPanel({ leagueId, organizationId, isSystemAdmin }: FallCanonicalRecoveryPanelProps) {
+export function FallCanonicalRecoveryPanel({
+  leagueId,
+  organizationId,
+  isSystemAdmin,
+  readOnlyArchive = false,
+}: FallCanonicalRecoveryPanelProps) {
   const [preview, setPreview] = useState<FallDraftPreview | null>(null);
   const [reason, setReason] = useState("");
   const [idempotencyKey, setIdempotencyKey] = useState("");
@@ -126,6 +132,13 @@ export function FallCanonicalRecoveryPanel({ leagueId, organizationId, isSystemA
           Preview the stored league schedule without writes, then create draft-only sessions for audited review.
         </p>
       </div>
+      {readOnlyArchive && (
+        <Alert role="status">
+          <AlertCircle className="size-4" />
+          <AlertTitle>Read-only archive</AlertTitle>
+          <AlertDescription>Canonical schedule evidence for this inactive or retired league can be reviewed, but preview and draft-creation mutations are unavailable.</AlertDescription>
+        </Alert>
+      )}
         {persistedQuery.isLoading && (
           <div className="flex items-center gap-2 text-sm text-muted-foreground" aria-live="polite">
             <Loader2 className="size-4 animate-spin" /> Checking for persisted drafts…
@@ -178,11 +191,11 @@ export function FallCanonicalRecoveryPanel({ leagueId, organizationId, isSystemA
           </Alert>
         )}
 
-        {!persistedQuery.isLoading && !persisted?.found && (
+        {!persistedQuery.isLoading && !persisted?.found && !readOnlyArchive && (
           <p className="text-sm text-muted-foreground">No C1 canonical draft generation exists for this league.</p>
         )}
 
-        {!persisted?.found && <Button onClick={() => previewMutation.mutate()} disabled={previewMutation.isPending}>
+        {!persisted?.found && !readOnlyArchive && <Button onClick={() => previewMutation.mutate()} disabled={previewMutation.isPending}>
           {previewMutation.isPending ? <Loader2 className="mr-2 size-4 animate-spin" /> : <RefreshCw className="mr-2 size-4" />}
           Generate zero-write preview
         </Button>}
@@ -280,13 +293,14 @@ export function FallCanonicalRecoveryPanel({ leagueId, organizationId, isSystemA
               </p>
             </div>
 
-            <div className="space-y-2">
+            {!readOnlyArchive && <div className="space-y-2">
               <Label htmlFor="fall-draft-reason">Reason for draft creation</Label>
               <Textarea id="fall-draft-reason" value={reason} onChange={(event) => setReason(event.target.value)}
                 placeholder="Explain why this deterministic preview is being created as canonical drafts" disabled={persisted?.found === true} />
             </div>
+            }
 
-            <AlertDialog>
+            {!readOnlyArchive && <AlertDialog>
               <AlertDialogTrigger asChild>
                 <Button disabled={!canConfirm}>Confirm and create canonical drafts</Button>
               </AlertDialogTrigger>
@@ -302,7 +316,7 @@ export function FallCanonicalRecoveryPanel({ leagueId, organizationId, isSystemA
                   <AlertDialogAction onClick={applyCurrentPreview}>Create drafts</AlertDialogAction>
                 </AlertDialogFooter>
               </AlertDialogContent>
-            </AlertDialog>
+            </AlertDialog>}
           </section>
         )}
 

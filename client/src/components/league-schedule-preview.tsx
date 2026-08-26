@@ -48,7 +48,7 @@ export function LeagueSchedulePreview({
     <div className="space-y-1.5">
       {!showSchedule && (
         <p className="text-xs text-muted-foreground px-1">
-          Click weeks to mark No Bowling skips{allowCancelled ? ", cancellations" : ""}, or double-pay.
+          Click weeks to mark No Bowling skips{allowCancelled ? ", cancellations" : ""}{allowDoublePay ? ", or double-pay" : ""}.
         </p>
       )}
       <div className="rounded-lg border">
@@ -66,7 +66,7 @@ export function LeagueSchedulePreview({
               {bowlingWeeks} planned week{bowlingWeeks !== 1 ? 's' : ''}
               {skipDates.length > 0 && ` · ${skipDates.length} holiday skip${skipDates.length !== 1 ? 's' : ''}`}
               {allowCancelled && cancelledDates.length > 0 && ` · ${cancelledDates.length} cancellation${cancelledDates.length !== 1 ? 's' : ''}`}
-              {doublePayDates.length > 0 && ` · ${doublePayDates.length} double-pay week${doublePayDates.length !== 1 ? 's' : ''}`}
+              {allowDoublePay && doublePayDates.length > 0 && ` · ${doublePayDates.length} double-pay week${doublePayDates.length !== 1 ? 's' : ''}`}
               {computedSeasonEnd && ` · ends ${computedSeasonEnd.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`}
             </span>
           )}

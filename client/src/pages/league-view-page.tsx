@@ -233,6 +233,7 @@ export default function LeagueViewPage() {
               leagueId={leagueId}
               organizationId={league.organizationId}
               viewerRole={currentUser?.role}
+              readOnlyArchive={isReadOnlyArchive}
             />
           </ErrorBoundary>
         )}

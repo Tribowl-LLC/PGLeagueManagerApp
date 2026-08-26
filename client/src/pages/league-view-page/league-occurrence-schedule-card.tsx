@@ -18,6 +18,7 @@ interface LeagueOccurrenceScheduleCardProps {
   leagueId: number;
   organizationId: number;
   viewerRole: User["role"] | undefined;
+  readOnlyArchive?: boolean;
 }
 
 type ScheduleDisplayRow =
@@ -159,6 +160,7 @@ export function LeagueOccurrenceScheduleCard({
   leagueId,
   organizationId,
   viewerRole,
+  readOnlyArchive = false,
 }: LeagueOccurrenceScheduleCardProps) {
   const isSystemAdmin = viewerRole === "system_admin";
   const isAdministrator = viewerRole === "org_admin" || isSystemAdmin;
@@ -254,7 +256,9 @@ export function LeagueOccurrenceScheduleCard({
             <div>
               <h3 id="schedule-administration-heading" className="text-lg font-semibold">Schedule administration</h3>
               <p className="text-sm text-muted-foreground">
-                Canonical lifecycle evidence is read-only here; C2 controls continue to use their audited confirmations.
+                {readOnlyArchive
+                  ? "This archived league's canonical lifecycle evidence is read-only; schedule mutations are unavailable."
+                  : "Canonical lifecycle evidence is read-only here; C2 controls continue to use their audited confirmations."}
               </p>
             </div>
             {(schedule.administrator.hasDraftEvidence
@@ -269,7 +273,12 @@ export function LeagueOccurrenceScheduleCard({
               </div>
             )}
             {schedule.administrator.fallRecoveryEligible && (
-              <FallCanonicalRecoveryPanel leagueId={leagueId} organizationId={organizationId} isSystemAdmin={isSystemAdmin} />
+              <FallCanonicalRecoveryPanel
+                leagueId={leagueId}
+                organizationId={organizationId}
+                isSystemAdmin={isSystemAdmin}
+                readOnlyArchive={readOnlyArchive}
+              />
             )}
             {schedule.administrator.c2ReviewAvailable && (
               <FallDraftReviewPanel
@@ -278,6 +287,7 @@ export function LeagueOccurrenceScheduleCard({
                 enabled
                 contractFamily={schedule.administrator.reviewContractFamily ?? "fall"}
                 scheduleQueryKey={["league-occurrence-schedule", endpoint]}
+                readOnlyArchive={readOnlyArchive}
               />
             )}
           </section>

@@ -46,6 +46,7 @@ interface FallDraftReviewPanelProps {
   enabled: boolean;
   contractFamily?: "fall" | "canonical";
   scheduleQueryKey: QueryKey;
+  readOnlyArchive?: boolean;
 }
 
 type DraftReview = FallDraftReview | CanonicalDraftReview;
@@ -79,6 +80,7 @@ export function FallDraftReviewPanel({
   enabled,
   contractFamily = "fall",
   scheduleQueryKey,
+  readOnlyArchive = false,
 }: FallDraftReviewPanelProps) {
   const queryClient = useQueryClient();
   const requestVersions = contractFamily === "canonical" ? {
@@ -248,6 +250,14 @@ export function FallDraftReviewPanel({
         <div className="flex items-center gap-2">{stateBadge(review)}<Button variant="outline" size="sm" onClick={() => reviewQuery.refetch()}><RefreshCw className="mr-2 size-4" />Refresh</Button></div>
       </div>
 
+      {readOnlyArchive && (
+        <Alert role="status">
+          <AlertCircle className="size-4" />
+          <AlertTitle>Read-only archive</AlertTitle>
+          <AlertDescription>This inactive or retired league's canonical review evidence is retained for history. Reschedule, cancel, restore, approve, and reject actions are unavailable.</AlertDescription>
+        </Alert>
+      )}
+
       <div className="grid gap-2 text-xs sm:grid-cols-2">
         <p className="break-all"><span className="font-medium">Review fingerprint:</span> <span className="font-mono">{review.reviewFingerprint}</span></p>
         <p><span className="font-medium">Generation state:</span> {review.generationRun.state}; source revision {review.generationRun.sourceScheduleRevision}</p>
@@ -265,7 +275,7 @@ export function FallDraftReviewPanel({
       <div className="overflow-x-auto rounded-md border">
         <table className="w-full min-w-[1180px] text-left text-sm">
           <caption className="sr-only">Persisted canonical occurrences and audited review controls</caption>
-          <thead className="bg-muted/50"><tr>{["UUID / revision", "Local / UTC / DST", "Lifecycle", "Numbers", "Billing policy / amount", "Exception evidence", "Actions"].map((heading) => <th key={heading} scope="col" className="px-3 py-2 font-medium">{heading}</th>)}</tr></thead>
+          <thead className="bg-muted/50"><tr>{["UUID / revision", "Local / UTC / DST", "Lifecycle", "Numbers", "Billing policy / amount", "Exception evidence", ...(readOnlyArchive ? [] : ["Actions"])].map((heading) => <th key={heading} scope="col" className="px-3 py-2 font-medium">{heading}</th>)}</tr></thead>
           <tbody className="divide-y">
             {review.occurrences.map((occurrence) => {
               const term = termByOccurrence.get(occurrence.id);
@@ -280,11 +290,11 @@ export function FallDraftReviewPanel({
                   <td className="px-3 py-2">planned {occurrence.plannedOrdinal ?? "—"}<br />competition {occurrence.competitionNumber ?? "—"}<br />billing {term?.billingOrdinal ?? "—"}<br />{occurrence.countsInStandings ? "standings" : "non-standings"}</td>
                   <td className="px-3 py-2">{term?.obligationPolicy ?? "—"}<br />{term ? formatMoney(term.defaultAmountMinor, term.currency) : "—"}<br />term rev {term?.currentRevision ?? "—"}</td>
                   <td className="px-3 py-2">{exception ? `${exception.kind}: ${exception.reason}` : "none"}</td>
-                  <td className="px-3 py-2"><div className="flex flex-col gap-2">
+                  {!readOnlyArchive && <td className="px-3 py-2"><div className="flex flex-col gap-2">
                     <Button size="sm" variant="outline" disabled={!editable || mutation.isPending} onClick={() => beginEntityAction("reschedule", occurrence)}>Reschedule</Button>
                     <Button size="sm" variant="destructive" disabled={!editable || mutation.isPending} onClick={() => beginEntityAction("cancel", occurrence)}>Cancel occurrence</Button>
                     <Button size="sm" variant="outline" disabled={!restorable || mutation.isPending} onClick={() => beginEntityAction("restore", occurrence)}>Restore draft</Button>
-                  </div></td>
+                  </div></td>}
                 </tr>
               );
             })}
@@ -300,12 +310,12 @@ export function FallDraftReviewPanel({
         {review.discrepancies.map((row) => (
           <div key={row.id} className="grid gap-2 rounded-md border p-3 sm:grid-cols-[1fr_220px]">
             <div className="text-sm"><p><span className="font-medium">{row.code}</span> ({row.severity}) — {row.resolutionState}</p><p className="break-all font-mono text-xs">{row.id}</p><p className="text-xs text-muted-foreground">Current evidence: {JSON.stringify(row.currentEvidence)}</p></div>
-            {row.resolutionState === "open" && <div><Label htmlFor={`fall-disposition-${row.id}`}>Disposition</Label><Select value={dispositions[row.id] ?? ""} onValueChange={(value: "resolved" | "waived") => setDispositions((current) => ({ ...current, [row.id]: value }))}><SelectTrigger id={`fall-disposition-${row.id}`}><SelectValue placeholder="Select disposition" /></SelectTrigger><SelectContent>{row.canResolve && <SelectItem value="resolved">Resolved by current state</SelectItem>}<SelectItem value="waived">Waived knowingly</SelectItem></SelectContent></Select></div>}
+            {row.resolutionState === "open" && !readOnlyArchive && <div><Label htmlFor={`fall-disposition-${row.id}`}>Disposition</Label><Select value={dispositions[row.id] ?? ""} onValueChange={(value: "resolved" | "waived") => setDispositions((current) => ({ ...current, [row.id]: value }))}><SelectTrigger id={`fall-disposition-${row.id}`}><SelectValue placeholder="Select disposition" /></SelectTrigger><SelectContent>{row.canResolve && <SelectItem value="resolved">Resolved by current state</SelectItem>}<SelectItem value="waived">Waived knowingly</SelectItem></SelectContent></Select></div>}
           </div>
         ))}
       </div>
 
-      {review.generationRun.state === "generated" && (
+      {review.generationRun.state === "generated" && !readOnlyArchive && (
         <div className="space-y-3 rounded-md border p-4">
           <div><Label htmlFor="fall-c2-decision-reason">Reason for approval or rejection</Label><Textarea id="fall-c2-decision-reason" value={decisionReason} onChange={(event) => setDecisionReason(event.target.value)} placeholder="Enter a trimmed audit reason before confirming either terminal decision" /></div>
           <div className="flex flex-wrap gap-2">
@@ -319,14 +329,14 @@ export function FallDraftReviewPanel({
       {mutation.isError && <Alert variant="destructive"><AlertCircle className="size-4" /><AlertTitle>Mutation rejected</AlertTitle><AlertDescription>{mutation.error instanceof Error ? mutation.error.message : "The server rejected this reviewed mutation."} The review is being refreshed before another confirmation.</AlertDescription></Alert>}
       {success && <Alert><CheckCircle2 className="size-4" /><AlertTitle>Audited state refreshed</AlertTitle><AlertDescription>{success}</AlertDescription></Alert>}
 
-      <Dialog open={entityAction !== null} onOpenChange={(open) => { if (!open && !mutation.isPending) setEntityAction(null); }}>
+      {!readOnlyArchive && <Dialog open={entityAction !== null} onOpenChange={(open) => { if (!open && !mutation.isPending) setEntityAction(null); }}>
         <DialogContent>
           <DialogHeader><DialogTitle>{entityAction?.action === "reschedule" ? "Reschedule occurrence" : entityAction?.action === "cancel" ? "Cancel occurrence" : "Restore cancelled draft"}</DialogTitle><DialogDescription>Confirm occurrence {entityAction?.occurrence.id} at expected revision {entityAction?.occurrence.currentRevision}. The current review fingerprint is sent with this request and stale state fails closed.</DialogDescription></DialogHeader>
           {entityAction?.action === "reschedule" && <div className="grid gap-3 sm:grid-cols-2"><div><Label htmlFor="fall-c2-local-date">Local date</Label><Input id="fall-c2-local-date" type="date" value={localDate} onChange={(event) => setLocalDate(event.target.value)} /></div><div><Label htmlFor="fall-c2-local-time">Local time</Label><Input id="fall-c2-local-time" type="time" step="1" value={localTime} onChange={(event) => setLocalTime(event.target.value)} /></div><div><Label htmlFor="fall-c2-timezone">IANA timezone</Label><Input id="fall-c2-timezone" value={timezone} onChange={(event) => setTimezone(event.target.value)} /></div></div>}
           <div><Label htmlFor="fall-c2-entity-reason">Reason</Label><Textarea id="fall-c2-entity-reason" value={entityReason} onChange={(event) => setEntityReason(event.target.value)} placeholder="Required trimmed audit reason" /></div>
           <DialogFooter><Button variant="outline" disabled={mutation.isPending} onClick={() => setEntityAction(null)}>Keep reviewing</Button><Button variant={entityAction?.action === "cancel" ? "destructive" : "default"} disabled={mutation.isPending || entityReason.length === 0 || entityReason.trim() !== entityReason || (entityAction?.action === "reschedule" && (!localDate || !localTime || !timezone))} onClick={submitEntityAction}>{mutation.isPending && <Loader2 className="mr-2 size-4 animate-spin" />}Confirm {entityAction?.action}</Button></DialogFooter>
         </DialogContent>
-      </Dialog>
+      </Dialog>}
     </section>
   );
 }

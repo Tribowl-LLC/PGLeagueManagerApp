@@ -59,6 +59,9 @@ export default function TeamsPage() {
   });
 
   const league = leagueResponse?.data;
+  const isReadOnlyArchive = league !== undefined
+    && (!league.active || league.scheduleAuthority === "retired_legacy");
+  const canWriteRoster = canManageRoster && !isReadOnlyArchive;
 
   const { data: teamsResponse, isLoading: loadingTeams } = useQuery<{ data: Team[] }>({
     queryKey: ["/api/teams", leagueId],
@@ -162,7 +165,13 @@ export default function TeamsPage() {
 
         <div className="space-y-4 mb-6">
           <h1 className="text-2xl font-bold">{league.name}</h1>
-          {canManageRoster && <div className="flex items-center gap-2">
+          {isReadOnlyArchive && (
+            <div role="status" className="rounded-md border border-muted bg-muted/30 px-4 py-3 text-sm">
+              <div className="font-medium">Read-only archive</div>
+              <div className="text-muted-foreground">This league is retained for history. Team and roster changes are unavailable.</div>
+            </div>
+          )}
+          {canWriteRoster && <div className="flex items-center gap-2">
             <Button onClick={() => setShowForm(true)}>
               <Plus className="size-4 mr-2" />
               Add Team
@@ -192,7 +201,7 @@ export default function TeamsPage() {
                 <TableHead>Number</TableHead>
                 <TableHead>Name</TableHead>
                 <TableHead>Status</TableHead>
-                {canManageRoster && <TableHead className="w-[50px]"></TableHead>}
+                {canWriteRoster && <TableHead className="w-[50px]"></TableHead>}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -209,7 +218,7 @@ export default function TeamsPage() {
                       {team.active ? "Active" : "Archived"}
                     </Badge>
                   </TableCell>
-                  {canManageRoster && <TableCell>
+                  {canWriteRoster && <TableCell>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button variant="ghost" size="sm" className="size-8 p-0">
@@ -246,20 +255,20 @@ export default function TeamsPage() {
           </Table>
         </div>
 
-        {canManageRoster && <TeamForm
+        {canWriteRoster && <TeamForm
           open={showForm}
           onClose={() => setShowForm(false)}
           leagueId={leagueId}
         />}
 
-        {canManageRoster && <ReorderTeamsDialog
+        {canWriteRoster && <ReorderTeamsDialog
           open={showReorder}
           onClose={() => setShowReorder(false)}
           teams={activeTeams}
           leagueId={leagueId}
         />}
 
-        {canManageRoster && <Dialog open={!!archiveTeam} onOpenChange={() => setArchiveTeam(null)}>
+        {canWriteRoster && <Dialog open={!!archiveTeam} onOpenChange={() => setArchiveTeam(null)}>
           <DialogContent>
             <DialogHeader>
               <DialogTitle>
@@ -286,7 +295,7 @@ export default function TeamsPage() {
           </DialogContent>
         </Dialog>}
 
-        {canManageRoster && <Dialog open={!!deleteTeam} onOpenChange={() => setDeleteTeam(null)}>
+        {canWriteRoster && <Dialog open={!!deleteTeam} onOpenChange={() => setDeleteTeam(null)}>
           <DialogContent>
             <DialogHeader>
               <DialogTitle>Delete Team</DialogTitle>

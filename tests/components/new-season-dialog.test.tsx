@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { League } from '@shared/schema';
 import { NewSeasonDialog } from '@/pages/league-view-page/new-season-dialog';
 
@@ -46,9 +46,17 @@ const league = {
 } satisfies League;
 
 describe('NewSeasonDialog', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it('calculates the end date and submits the edited bowling schedule', async () => {
     const user = userEvent.setup();
     const onCreate = vi.fn();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      success: true,
+      data: [{ id: 9, name: 'Lanes A', active: true }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } })));
     apiRequestMock.mockResolvedValue({
       success: true,
       data: {
@@ -123,5 +131,45 @@ describe('NewSeasonDialog', () => {
         confirmed: true,
       },
     });
+  });
+
+  it('requires an active location and does not offer No Location during rollover', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ success: true, data: [] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })));
+    apiRequestMock.mockResolvedValue({
+      success: true,
+      data: {
+        contractVersion: 'league-rollover-source/1',
+        fingerprintVersion: 'league-rollover-source-fingerprint/1',
+        fingerprint: 'b'.repeat(64),
+        organizationId: 3,
+        sourceLeagueId: 42,
+        carriedConfiguration: {
+          name: league.name,
+          description: null,
+          payingLineupSize: 4,
+          locationId: 9,
+          timezone: 'America/Chicago',
+          practiceStartTime: null,
+          competitionStartTime: '19:00',
+          weeklyFee: 2000,
+          lineageFee: null,
+          prizeFundFee: null,
+        },
+      },
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    render(
+      <QueryClientProvider client={client}>
+        <NewSeasonDialog league={league} showNewSeason setShowNewSeason={() => {}} onCreate={vi.fn()} isPending={false} />
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText(/select an active location before creating/i)).toBeVisible();
+    expect(screen.queryByText('No Location')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /create new season/i })).toBeDisabled();
   });
 });

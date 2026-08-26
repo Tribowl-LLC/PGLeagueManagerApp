@@ -41,4 +41,32 @@ describe('LeagueSchedulePreview accessibility state', () => {
     expect(doublePay).toHaveAttribute('aria-pressed', 'true');
     expect(doublePay).toHaveAccessibleName(/Remove double pay for September 7, 2026/);
   });
+
+  it('does not mention double-pay in collapsed upfront schedules', () => {
+    render(
+      <LeagueSchedulePreview
+        scheduleDates={[{
+          date: new Date('2026-09-07T00:00:00.000Z'),
+          isoDate: '2026-09-07',
+          type: 'normal',
+          bowlingWeekNumber: 1,
+        }]}
+        showSchedule={false}
+        setShowSchedule={vi.fn()}
+        bowlingWeeks={1}
+        skipDates={[]}
+        cancelledDates={[]}
+        doublePayDates={['2026-09-07']}
+        effectiveBowlingWeeks={1}
+        computedSeasonEnd={null}
+        toggleDateType={vi.fn()}
+        toggleDoublePayDate={vi.fn()}
+        allowCancelled={false}
+        allowDoublePay={false}
+      />,
+    );
+
+    expect(screen.getByText(/click weeks to mark no bowling skips/i)).toBeVisible();
+    expect(screen.queryByText(/double-pay/i)).not.toBeInTheDocument();
+  });
 });

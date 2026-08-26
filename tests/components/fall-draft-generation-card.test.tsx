@@ -106,12 +106,12 @@ const applyResult = {
   currentLegacyScheduleMatchesGenerationInput: true,
 } satisfies FallDraftApplyResult;
 
-function renderCard(status: FallDraftPersistedView = { found: false, result: null, currentLegacyScheduleMatchesGenerationInput: null }) {
+function renderCard(status: FallDraftPersistedView = { found: false, result: null, currentLegacyScheduleMatchesGenerationInput: null }, readOnlyArchive = false) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } });
   client.setQueryData(["/api/leagues/7/canonical-fall-drafts"], { success: true, data: status });
   return render(
     <QueryClientProvider client={client}>
-      <FallCanonicalRecoveryPanel leagueId={7} organizationId={3} isSystemAdmin={false} />
+      <FallCanonicalRecoveryPanel leagueId={7} organizationId={3} isSystemAdmin={false} readOnlyArchive={readOnlyArchive} />
     </QueryClientProvider>,
   );
 }
@@ -238,5 +238,13 @@ describe("FallCanonicalRecoveryPanel", () => {
     expect(apiSpy.mock.calls[1][2]).toMatchObject({
       idempotencyKey: "01020304-0506-4708-890a-0b0c0d0e0f10",
     });
+  });
+
+  it("renders archived draft evidence without preview or apply controls", () => {
+    renderCard({ found: false, result: null, currentLegacyScheduleMatchesGenerationInput: null }, true);
+
+    expect(screen.getByRole("status")).toHaveTextContent(/read-only archive/i);
+    expect(screen.queryByRole("button", { name: "Generate zero-write preview" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Confirm and create canonical drafts" })).not.toBeInTheDocument();
   });
 });

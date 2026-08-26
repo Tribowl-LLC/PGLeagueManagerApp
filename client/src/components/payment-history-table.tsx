@@ -44,6 +44,8 @@ interface PaymentHistoryTableProps {
    * to that location's settings card.
    */
   locationId?: number | null;
+  /** Archived canonical leagues retain payment history as a read-only view. */
+  readOnly?: boolean;
 }
 
 export const PaymentHistoryTable = memo(function PaymentHistoryTable({
@@ -57,6 +59,7 @@ export const PaymentHistoryTable = memo(function PaymentHistoryTable({
   isPaymentManager = false,
   bowlerHrefSuffix = "",
   locationId,
+  readOnly = false,
 }: PaymentHistoryTableProps) {
   const showTeamColumn = !!bowlerTeamMap;
   // admin "Resend receipt" entry-point on the weekly
@@ -124,7 +127,7 @@ export const PaymentHistoryTable = memo(function PaymentHistoryTable({
                   </TableCell>
                   <TableCell>
                     <ViewReceiptButton payment={payment} locationId={locationId} />
-                    {isAdmin
+                    {!readOnly && isAdmin
                       && payment.status === 'paid'
                       && (payment.type === 'square' || payment.type === 'credit_card') && (
                       <Button
@@ -137,7 +140,7 @@ export const PaymentHistoryTable = memo(function PaymentHistoryTable({
                         <Send className="size-4" />
                       </Button>
                     )}
-                    {(!isCardPaymentType(payment.type) || !isPaymentManager) && (
+                    {!readOnly && (!isCardPaymentType(payment.type) || !isPaymentManager) && (
                       <Button
                         size="icon"
                         variant="ghost"
@@ -148,7 +151,7 @@ export const PaymentHistoryTable = memo(function PaymentHistoryTable({
                         </svg>
                       </Button>
                     )}
-                    {(!isCardPaymentType(payment.type) || (isAdmin && !isPaymentManager)) && (
+                    {!readOnly && (!isCardPaymentType(payment.type) || (isAdmin && !isPaymentManager)) && (
                       <Button
                         size="icon"
                         variant="ghost"

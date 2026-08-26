@@ -57,6 +57,9 @@ export default function TeamViewPage() {
 
   const team = detailsResponse?.data?.team;
   const league = detailsResponse?.data?.league;
+  const isReadOnlyArchive = league !== undefined
+    && (!league.active || league.scheduleAuthority === "retired_legacy");
+  const canWriteRoster = canManageRoster && league !== undefined && !isReadOnlyArchive;
   const bowlerLeagues = useMemo(() => detailsResponse?.data?.bowlerLeagues || [], [detailsResponse?.data?.bowlerLeagues]);
   const bowlers = useMemo(() => detailsResponse?.data?.bowlers || [], [detailsResponse?.data?.bowlers]);
 
@@ -182,10 +185,17 @@ export default function TeamViewPage() {
       <TeamViewHeader
         teamName={team.name}
         leagueId={team.leagueId}
-        onEditClick={canManageRoster ? handleEditClick : undefined}
-        onCreateBowler={canManageRoster ? () => setShowForm(true) : undefined}
-        onAddExistingBowler={canManageRoster ? () => setShowAssignForm(true) : undefined}
+        onEditClick={canWriteRoster ? handleEditClick : undefined}
+        onCreateBowler={canWriteRoster ? () => setShowForm(true) : undefined}
+        onAddExistingBowler={canWriteRoster ? () => setShowAssignForm(true) : undefined}
       />
+
+      {isReadOnlyArchive && (
+        <div role="status" className="mb-6 rounded-md border border-muted bg-muted/30 px-4 py-3 text-sm">
+          <div className="font-medium">Read-only archive</div>
+          <div className="text-muted-foreground">This league is retained for history. Team and roster changes are unavailable.</div>
+        </div>
+      )}
 
 
       <TeamViewBowlersTable
@@ -193,15 +203,15 @@ export default function TeamViewPage() {
         league={league}
         teamId={teamId}
         leagueId={team.leagueId}
-        canManage={canManageRoster}
-        onEditBowler={canManageRoster ? (bowler) => {
+        canManage={canWriteRoster}
+        onEditBowler={canWriteRoster ? (bowler) => {
           setSelectedBowler(bowler);
           setShowForm(true);
         } : undefined}
-        onRemoveBowler={canManageRoster ? (target) => setShowRemoveDialog(target) : undefined}
+        onRemoveBowler={canWriteRoster ? (target) => setShowRemoveDialog(target) : undefined}
       />
 
-      {canManageRoster && teamBowlers.length > 1 && (
+      {canWriteRoster && teamBowlers.length > 1 && (
         <div className="mt-4">
           <Button variant="outline" onClick={() => setShowReorderDialog(true)}>
             Reorder Bowlers
@@ -210,7 +220,7 @@ export default function TeamViewPage() {
       )}
 
       {/* Edit Team Dialog */}
-      {canManageRoster && <TeamViewEditDialog
+      {canWriteRoster && <TeamViewEditDialog
         open={showEditDialog}
         onOpenChange={setShowEditDialog}
         form={editForm}
@@ -219,7 +229,7 @@ export default function TeamViewPage() {
       />}
 
       {/* Bowler Forms */}
-      {canManageRoster && <BowlerForm
+      {canWriteRoster && <BowlerForm
           open={showForm}
           onClose={() => {
             setShowForm(false);
@@ -229,14 +239,14 @@ export default function TeamViewPage() {
           bowler={selectedBowler}
         />}
 
-      {canManageRoster && <AssignBowlerForm
+      {canWriteRoster && <AssignBowlerForm
         open={showAssignForm}
         onClose={() => setShowAssignForm(false)}
         teamId={teamId}
         leagueId={team?.leagueId}
       />}
 
-      {canManageRoster && <ReorderBowlersDialog
+      {canWriteRoster && <ReorderBowlersDialog
         open={showReorderDialog}
         onClose={() => setShowReorderDialog(false)}
         bowlers={bowlers}
@@ -246,7 +256,7 @@ export default function TeamViewPage() {
       />}
 
       {/* Remove Bowler Confirmation Dialog */}
-      {canManageRoster && <TeamViewRemoveBowlerDialog
+      {canWriteRoster && <TeamViewRemoveBowlerDialog
         target={showRemoveDialog}
         onOpenChange={(open) => !open && setShowRemoveDialog(null)}
         onCancel={() => setShowRemoveDialog(null)}

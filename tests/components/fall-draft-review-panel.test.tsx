@@ -161,7 +161,7 @@ const review: FallDraftReview = {
   }],
 };
 
-function renderPanel(value: FallDraftReview = review, contractFamily: "fall" | "canonical" = "fall") {
+function renderPanel(value: FallDraftReview = review, contractFamily: "fall" | "canonical" = "fall", readOnlyArchive = false) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } });
   const basePath = contractFamily === "canonical"
     ? "/api/leagues/7/canonical-drafts"
@@ -177,6 +177,7 @@ function renderPanel(value: FallDraftReview = review, contractFamily: "fall" | "
           enabled
           contractFamily={contractFamily}
           scheduleQueryKey={scheduleQueryKey}
+          readOnlyArchive={readOnlyArchive}
         />
       </QueryClientProvider>,
     ),
@@ -335,5 +336,19 @@ describe("FallDraftReviewPanel", () => {
     expect(screen.getByRole("button", { name: "Reschedule" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Approve and publish reviewed set" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Reject complete draft set" })).not.toBeInTheDocument();
+  });
+
+  it("renders archived canonical review evidence without mutation controls", () => {
+    renderPanel(review, "canonical", true);
+
+    expect(screen.getByRole("status")).toHaveTextContent(/read-only archive/i);
+    expect(screen.getByText(reviewFingerprint)).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Reschedule" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cancel occurrence" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Restore draft" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Approve and publish reviewed set" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Reject complete draft set" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Disposition")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Reason for approval or rejection")).not.toBeInTheDocument();
   });
 });

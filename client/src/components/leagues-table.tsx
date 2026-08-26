@@ -94,11 +94,11 @@ export function LeaguesTable({
                       <Pencil className="size-4" />
                     </Button>
                     {league.active ? (
-                      <Button variant="outline" size="sm" onClick={() => onArchive(league.id)}>
+                      <Button aria-label={`Archive ${league.name}`} variant="outline" size="sm" onClick={() => onArchive(league.id)}>
                         <Archive className="size-4" />
                       </Button>
                     ) : null}
-                    <Button variant="destructive" size="sm" onClick={() => onDelete(league.id)}>
+                    <Button aria-label={`Delete ${league.name}`} variant="destructive" size="sm" onClick={() => onDelete(league.id)}>
                       <Trash className="size-4" />
                     </Button>
                   </>}
