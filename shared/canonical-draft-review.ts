@@ -11,8 +11,6 @@ export const CANONICAL_DRAFT_MUTATION_RESULT_VERSION = "canonical-draft-mutation
 export const CANONICAL_DRAFT_RESCHEDULE_REQUEST_VERSION = "canonical-draft-reschedule-request/1";
 export const CANONICAL_DRAFT_CANCEL_REQUEST_VERSION = "canonical-draft-cancel-request/1";
 export const CANONICAL_DRAFT_RESTORE_REQUEST_VERSION = "canonical-draft-restore-request/1";
-export const CANONICAL_DRAFT_APPROVE_REQUEST_VERSION = "canonical-draft-approve-request/1";
-export const CANONICAL_DRAFT_REJECT_REQUEST_VERSION = "canonical-draft-reject-request/1";
 
 const fingerprintSchema = z.string().regex(/^[0-9a-f]{64}$/);
 const idempotencyKeySchema = z.string().min(1).max(255)
@@ -53,26 +51,9 @@ export const canonicalDraftRestoreRequestSchema = z.object({
   expectedOccurrenceRevision: z.number().int().positive(),
 }).strict();
 
-export const canonicalDraftApproveRequestSchema = z.object({
-  contractVersion: z.literal(CANONICAL_DRAFT_APPROVE_REQUEST_VERSION),
-  ...mutationBase,
-  discrepancyDispositions: z.array(z.object({
-    discrepancyId: z.uuid(),
-    disposition: z.enum(["resolved", "waived"]),
-  }).strict()),
-}).strict();
-
-export const canonicalDraftRejectRequestSchema = z.object({
-  contractVersion: z.literal(CANONICAL_DRAFT_REJECT_REQUEST_VERSION),
-  ...mutationBase,
-}).strict();
-
 export type CanonicalDraftRescheduleRequest = z.infer<typeof canonicalDraftRescheduleRequestSchema>;
 export type CanonicalDraftCancelRequest = z.infer<typeof canonicalDraftCancelRequestSchema>;
 export type CanonicalDraftRestoreRequest = z.infer<typeof canonicalDraftRestoreRequestSchema>;
-export type CanonicalDraftApproveRequest = z.infer<typeof canonicalDraftApproveRequestSchema>;
-export type CanonicalDraftRejectRequest = z.infer<typeof canonicalDraftRejectRequestSchema>;
-
 export interface CanonicalDraftReview extends Omit<FallDraftReview,
   "reviewContractVersion" | "reviewFingerprintVersion" | "c1"> {
   reviewContractVersion: typeof CANONICAL_DRAFT_REVIEW_CONTRACT_VERSION;

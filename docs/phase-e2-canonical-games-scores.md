@@ -8,7 +8,7 @@ outside this phase.
 
 ## Authoritative source selection
 
-Games and scores reuse the E1 `league-occurrence-schedule/2` snapshot builder
+Games and scores reuse the E1 `league-occurrence-schedule/3` snapshot builder
 inside repeatable-read read transactions and locked mutation transactions.
 There is no second definition of operational canonical state:
 
@@ -19,8 +19,9 @@ There is no second definition of operational canonical state:
   billing summaries, or linked activity that do not form one safe E1 set fail
   closed.
 
-E2 responses use `canonical-games-scores/1` and
-`canonical-games-scores-order/1`. They state `authoritativeSource` and retain
+E2 responses use `canonical-games-scores/2` and
+`canonical-games-scores-order/1`; fingerprint payloads use
+`canonical-games-scores-fingerprint/2`. They state `authoritativeSource` and retain
 the complete bounded E1 occurrence projection on every canonical nested game.
 Reads do not generate, backfill, repair, lock, or otherwise mutate schedule,
 game, score, payment, or D2 rows.

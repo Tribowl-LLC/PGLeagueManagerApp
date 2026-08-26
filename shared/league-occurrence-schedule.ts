@@ -7,7 +7,7 @@ import type {
   LeagueScheduleExceptionKind,
 } from "./schema/canonical-occurrences";
 
-export const LEAGUE_OCCURRENCE_SCHEDULE_CONTRACT_VERSION = "league-occurrence-schedule/2" as const;
+export const LEAGUE_OCCURRENCE_SCHEDULE_CONTRACT_VERSION = "league-occurrence-schedule/3" as const;
 export const LEAGUE_OCCURRENCE_SCHEDULE_COLLECTION_GROUP_VERSION = "canonical-collection-group/1" as const;
 export const LEAGUE_OCCURRENCE_SCHEDULE_ORDER_VERSION = "league-occurrence-schedule-order/1" as const;
 

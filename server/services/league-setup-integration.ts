@@ -23,8 +23,7 @@ import {
   LEAGUE_SETUP_INTEGRATION_RESULT_VERSION,
   LEAGUE_ROLLOVER_SOURCE_CONTRACT_VERSION,
   LEAGUE_ROLLOVER_SOURCE_FINGERPRINT_VERSION,
-  type AnyLeagueSetupIntegrationIntent,
-  type AnyLeagueSetupIntegrationResult,
+  type LeagueSetupIntegrationIntent,
   type LeagueSetupIntegrationResult,
   type LeagueRolloverSourceConfirmation,
   type LeagueRolloverSourceContract,
@@ -91,7 +90,7 @@ export interface NewSeasonSetupValues {
 }
 
 interface SetupTransactionResult {
-  result: AnyLeagueSetupIntegrationResult;
+  result: LeagueSetupIntegrationResult;
   affectedBowlerIds: number[];
 }
 
@@ -127,7 +126,7 @@ function assertPositiveInteger(value: number, field: string): void {
   }
 }
 
-function setupCommandKey(intent: AnyLeagueSetupIntegrationIntent): string {
+function setupCommandKey(intent: LeagueSetupIntegrationIntent): string {
   return `lvsetup:${fallDraftSha256({
     contractVersion: intent.contractVersion,
     idempotencyKey: intent.idempotencyKey,
@@ -298,7 +297,7 @@ async function loadRolloverCarriedEvidence(
 }
 
 function setupConfirmationFingerprint(input: {
-  setup: AnyLeagueSetupIntegrationIntent;
+  setup: LeagueSetupIntegrationIntent;
   kind: "league" | "new_season";
   target: LeagueSetupTarget;
   sourceConfirmationFingerprint?: string;
@@ -337,9 +336,8 @@ function setupResult(
       requestContractVersion: LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION,
       mode,
       writesPerformed,
-      reviewAvailable: false,
     },
-    canonicalDraftGeneration: canonicalSchedule.generation,
+    canonicalGeneration: canonicalSchedule.generation,
     canonicalSchedule: {
       state: "published",
       approvalCommandId: canonicalSchedule.approvalCommandId,
@@ -442,7 +440,7 @@ async function retryExistingSetup(input: {
   expected: LeagueSetupTarget;
   commandKey: string;
   kind: "league" | "new_season";
-  setup: AnyLeagueSetupIntegrationIntent;
+  setup: LeagueSetupIntegrationIntent;
   setupConfirmationFingerprint?: string;
   seasonClassification?: ProductSeason;
 }): Promise<SetupTransactionResult | null> {
@@ -487,7 +485,7 @@ async function createLeagueInTransaction(input: {
   tx: LeagueScheduleTransaction;
   scope: LeagueSetupScope;
   league: LeagueSetupTarget;
-  setup: AnyLeagueSetupIntegrationIntent;
+  setup: LeagueSetupIntegrationIntent;
   failureInjection?: LeagueSetupFailureStage;
   canonicalFailureInjection?: FallDraftFailureStage;
 }): Promise<SetupTransactionResult> {
@@ -516,7 +514,7 @@ async function createLeagueInTransaction(input: {
   const [league] = await input.tx.insert(leagues).values(leagueToInsert).returning();
   if (!league) throw new LeagueSetupIntegrationError("transaction_failure", "league was not created");
   injectFailure(input.failureInjection, "after_league_insert");
-  const canonicalDraftGeneration = await applyFutureSeasonDraftGenerationInTransaction(input.tx, {
+  const canonicalGeneration = await applyFutureSeasonDraftGenerationInTransaction(input.tx, {
     ...input.scope,
     leagueId: league.id,
     seasonClassification,
@@ -532,7 +530,7 @@ async function createLeagueInTransaction(input: {
     scope: input.scope,
     setupKey: commandKey,
     reason: LEAGUE_SETUP_FUTURE_SEASON_AUDIT_REASON,
-    generation: canonicalDraftGeneration,
+    generation: canonicalGeneration,
   });
   return { result: setupResult(league, canonicalSchedule, "created", true), affectedBowlerIds: [] };
 }
@@ -598,7 +596,7 @@ async function retryExistingNewSeasonV2BeforeSourceFreshness(input: {
   scope: LeagueSetupScope;
   sourceLeagueId: number;
   values: NewSeasonSetupValues;
-  setup: AnyLeagueSetupIntegrationIntent;
+  setup: LeagueSetupIntegrationIntent;
   sourceConfirmation?: LeagueRolloverSourceConfirmation;
   commandKey: string;
 }): Promise<SetupTransactionResult | null> {
@@ -651,7 +649,7 @@ async function createNewSeasonInTransaction(input: {
   scope: LeagueSetupScope;
   sourceLeagueId: number;
   values: NewSeasonSetupValues;
-  setup: AnyLeagueSetupIntegrationIntent;
+  setup: LeagueSetupIntegrationIntent;
   sourceConfirmation?: LeagueRolloverSourceConfirmation;
   failureInjection?: LeagueSetupFailureStage;
   canonicalFailureInjection?: FallDraftFailureStage;
@@ -759,7 +757,7 @@ async function createNewSeasonInTransaction(input: {
   }
   injectFailure(input.failureInjection, "after_roster_copy");
 
-  const canonicalDraftGeneration = await applyFutureSeasonDraftGenerationInTransaction(input.tx, {
+  const canonicalGeneration = await applyFutureSeasonDraftGenerationInTransaction(input.tx, {
     ...input.scope,
     leagueId: league.id,
     seasonClassification,
@@ -776,7 +774,7 @@ async function createNewSeasonInTransaction(input: {
     scope: input.scope,
     setupKey: commandKey,
     reason: LEAGUE_SETUP_FUTURE_SEASON_AUDIT_REASON,
-    generation: canonicalDraftGeneration,
+    generation: canonicalGeneration,
   });
   const [archived] = await input.tx.update(leagues).set({ active: false }).where(and(
     eq(leagues.id, source.id),
@@ -799,10 +797,10 @@ function invalidateSetupCaches(): void {
 export async function createLeagueWithCanonicalSetup(input: {
   scope: LeagueSetupScope;
   league: LeagueSetupTarget;
-  setup: AnyLeagueSetupIntegrationIntent;
+  setup: LeagueSetupIntegrationIntent;
   failureInjection?: LeagueSetupFailureStage;
   canonicalFailureInjection?: FallDraftFailureStage;
-}): Promise<AnyLeagueSetupIntegrationResult> {
+}): Promise<LeagueSetupIntegrationResult> {
   const committed = await db.transaction(
     (tx) => createLeagueInTransaction({ tx, ...input }),
     { isolationLevel: "read committed", accessMode: "read write" },
@@ -815,7 +813,7 @@ export async function createNewSeasonWithCanonicalSetup(input: {
   scope: LeagueSetupScope;
   sourceLeagueId: number;
   values: NewSeasonSetupValues;
-  setup: AnyLeagueSetupIntegrationIntent;
+  setup: LeagueSetupIntegrationIntent;
   sourceConfirmation?: LeagueRolloverSourceConfirmation;
   failureInjection?: LeagueSetupFailureStage;
   canonicalFailureInjection?: FallDraftFailureStage;

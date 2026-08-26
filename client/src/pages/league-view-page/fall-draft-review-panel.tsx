@@ -1,18 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient, type QueryKey } from "@tanstack/react-query";
 import { AlertCircle, CheckCircle2, Loader2, RefreshCw } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -25,31 +14,23 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { apiRequest } from "@/lib/queryClient";
 import type { ApiResponse } from "@shared/schema";
-import type { FallDraftMutationResult, FallDraftReview, FallDraftReviewOccurrence } from "@shared/fall-draft-review";
+import type { FallDraftReviewOccurrence } from "@shared/fall-draft-review";
 import type { CanonicalDraftMutationResult, CanonicalDraftReview } from "@shared/canonical-draft-review";
 import { secureFallDraftIdempotencyKey } from "./fall-draft-secure-id";
 
 // Keep the browser bundle type-only with respect to the server-side SHA-256 contract module.
-const FALL_DRAFT_RESCHEDULE_REQUEST_VERSION = "fall-draft-reschedule-request/2";
-const FALL_DRAFT_CANCEL_REQUEST_VERSION = "fall-draft-cancel-request/1";
-const FALL_DRAFT_RESTORE_REQUEST_VERSION = "fall-draft-restore-request/1";
-const FALL_DRAFT_APPROVE_REQUEST_VERSION = "fall-draft-approve-request/1";
-const FALL_DRAFT_REJECT_REQUEST_VERSION = "fall-draft-reject-request/1";
-
 interface FallDraftReviewPanelProps {
   basePath: string;
   querySuffix: string;
   enabled: boolean;
-  contractFamily?: "fall" | "canonical";
   scheduleQueryKey: QueryKey;
 }
 
-type DraftReview = FallDraftReview | CanonicalDraftReview;
-type DraftMutationResult = FallDraftMutationResult | CanonicalDraftMutationResult;
+type DraftReview = CanonicalDraftReview;
+type DraftMutationResult = CanonicalDraftMutationResult;
 
 type EntityAction = "reschedule" | "cancel" | "restore";
 
@@ -69,7 +50,6 @@ function formatMoney(amountMinor: number, currency: string): string {
 function stateBadge(review: DraftReview) {
   if (review.generationRun.state === "rejected") return <Badge variant="destructive">Rejected</Badge>;
   if (review.generationRun.state === "applied") return <Badge variant="outline">Published</Badge>;
-  if (!review.currentLegacyInput.matches) return <Badge variant="destructive">Stale legacy input</Badge>;
   return <Badge variant="outline">Editable draft</Badge>;
 }
 
@@ -77,22 +57,13 @@ export function FallDraftReviewPanel({
   basePath,
   querySuffix,
   enabled,
-  contractFamily = "fall",
   scheduleQueryKey,
 }: FallDraftReviewPanelProps) {
   const queryClient = useQueryClient();
-  const requestVersions = contractFamily === "canonical" ? {
+  const requestVersions = {
     reschedule: "canonical-draft-reschedule-request/1",
     cancel: "canonical-draft-cancel-request/1",
     restore: "canonical-draft-restore-request/1",
-    approve: "canonical-draft-approve-request/1",
-    reject: "canonical-draft-reject-request/1",
-  } as const : {
-    reschedule: FALL_DRAFT_RESCHEDULE_REQUEST_VERSION,
-    cancel: FALL_DRAFT_CANCEL_REQUEST_VERSION,
-    restore: FALL_DRAFT_RESTORE_REQUEST_VERSION,
-    approve: FALL_DRAFT_APPROVE_REQUEST_VERSION,
-    reject: FALL_DRAFT_REJECT_REQUEST_VERSION,
   } as const;
   const reviewPath = `${basePath}/review${querySuffix}`;
   const queryKey = [reviewPath];
@@ -101,8 +72,6 @@ export function FallDraftReviewPanel({
   const [localDate, setLocalDate] = useState("");
   const [localTime, setLocalTime] = useState("");
   const [timezone, setTimezone] = useState("");
-  const [decisionReason, setDecisionReason] = useState("");
-  const [dispositions, setDispositions] = useState<Record<string, "resolved" | "waived">>({});
   const [identityError, setIdentityError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
@@ -113,9 +82,6 @@ export function FallDraftReviewPanel({
     retry: false,
   });
   const review = reviewQuery.data?.data;
-  const generationEvidence = review
-    ? "c1" in review ? review.c1 : review.generation
-    : null;
 
   const mutation = useMutation({
     mutationFn: async ({ endpoint, body }: { endpoint: string; body: unknown }) =>
@@ -125,8 +91,7 @@ export function FallDraftReviewPanel({
       await queryClient.invalidateQueries({ queryKey: scheduleQueryKey, exact: true, refetchType: "active" });
       setEntityAction(null);
       setEntityReason("");
-      setDecisionReason("");
-      setSuccess(response.data.mode === "idempotent_retry" ? "The original committed result was verified." : "The audited mutation was committed.");
+      setSuccess(response.data.mode === "idempotent_retry" ? "The original committed result was verified." : "The canonical schedule change was committed.");
       setIdentityError(null);
     },
     onError: () => {
@@ -134,19 +99,6 @@ export function FallDraftReviewPanel({
       void queryClient.invalidateQueries({ queryKey, exact: true });
     },
   });
-
-  useEffect(() => {
-    if (!review) return;
-    const currentIds = new Set(review.discrepancies.filter((row) => row.resolutionState === "open").map((row) => row.id));
-    setDispositions((current) => Object.fromEntries(Object.entries(current).filter(([id]) => currentIds.has(id))));
-  }, [review]);
-
-  const openDiscrepancies = review?.discrepancies.filter((row) => row.resolutionState === "open") ?? [];
-  const allDispositionsSelected = openDiscrepancies.every((row) => dispositions[row.id] !== undefined);
-  const decisionReasonValid = decisionReason.length > 0 && decisionReason.trim() === decisionReason;
-  const canApprove = review?.generationRun.state === "generated" && review.currentLegacyInput.matches
-    && allDispositionsSelected && decisionReasonValid && !mutation.isPending;
-  const canReject = review?.generationRun.state === "generated" && decisionReasonValid && !mutation.isPending;
 
   const termByOccurrence = useMemo(
     () => new Map(review?.billingTerms.map((term) => [term.occurrenceId, term]) ?? []),
@@ -205,45 +157,25 @@ export function FallDraftReviewPanel({
     });
   };
 
-  const submitDecision = (decision: "approve" | "reject") => {
-    if (!review || !decisionReasonValid) return;
-    const idempotencyKey = freshKey();
-    if (!idempotencyKey) return;
-    mutation.mutate({
-      endpoint: decision,
-      body: decision === "approve" ? {
-        contractVersion: requestVersions.approve,
-        confirmedReviewFingerprint: review.reviewFingerprint,
-        reason: decisionReason,
-        idempotencyKey,
-        discrepancyDispositions: openDiscrepancies.map((row) => ({ discrepancyId: row.id, disposition: dispositions[row.id] })),
-      } : {
-        contractVersion: requestVersions.reject,
-        confirmedReviewFingerprint: review.reviewFingerprint,
-        reason: decisionReason,
-        idempotencyKey,
-      },
-    });
-  };
 
   if (!enabled) return null;
-  if (reviewQuery.isLoading) return <p className="text-sm" aria-live="polite"><Loader2 className="mr-2 inline size-4 animate-spin" />Loading exact C2 review state…</p>;
+  if (reviewQuery.isLoading) return <p className="text-sm" aria-live="polite"><Loader2 className="mr-2 inline size-4 animate-spin" />Loading exact canonical schedule state…</p>;
   if (reviewQuery.isError || !review) {
     return (
       <Alert variant="destructive">
         <AlertCircle className="size-4" />
-        <AlertTitle>Could not load audited review state</AlertTitle>
+        <AlertTitle>Could not load canonical schedule state</AlertTitle>
         <AlertDescription><Button variant="outline" size="sm" className="mt-2" onClick={() => reviewQuery.refetch()}>Retry</Button></AlertDescription>
       </Alert>
     );
   }
 
   return (
-    <section className="space-y-5 border-t pt-5" aria-labelledby="fall-draft-review-heading">
+    <section className="space-y-5 border-t pt-5" aria-labelledby="canonical-schedule-administration-heading">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h3 id="fall-draft-review-heading" className="text-lg font-semibold">Audited C2 review and publication</h3>
-          <p className="text-sm text-muted-foreground">Exact persisted state; approval publishes policy snapshots only.</p>
+          <h3 id="canonical-schedule-administration-heading" className="text-lg font-semibold">Canonical schedule administration</h3>
+          <p className="text-sm text-muted-foreground">Exact persisted state; use these controls for necessary mid-season schedule changes.</p>
         </div>
         <div className="flex items-center gap-2">{stateBadge(review)}<Button variant="outline" size="sm" onClick={() => reviewQuery.refetch()}><RefreshCw className="mr-2 size-4" />Refresh</Button></div>
       </div>
@@ -251,20 +183,14 @@ export function FallDraftReviewPanel({
       <div className="grid gap-2 text-xs sm:grid-cols-2">
         <p className="break-all"><span className="font-medium">Review fingerprint:</span> <span className="font-mono">{review.reviewFingerprint}</span></p>
         <p><span className="font-medium">Generation state:</span> {review.generationRun.state}; source revision {review.generationRun.sourceScheduleRevision}</p>
-        <p className="break-all"><span className="font-medium">Generation confirmation:</span> <span className="font-mono">{generationEvidence?.confirmedPreviewFingerprint}</span></p>
-        <p className="break-all"><span className="font-medium">A2 input:</span> <span className="font-mono">{generationEvidence?.inputFingerprint}</span></p>
-        <p><span className="font-medium">League payment timing:</span> {generationEvidence?.paymentMode === "upfront" ? "Full season upfront" : "Weekly"}</p>
-        <p><span className="font-medium">Legacy input:</span> {review.currentLegacyInput.matches ? "Current" : "Stale — approval blocked"}</p>
-        <p><span className="font-medium">Versions:</span> {review.reviewContractVersion}; {generationEvidence?.generatorVersion}; {generationEvidence?.dstResolverVersion}</p>
+        <p className="break-all"><span className="font-medium">Generation input:</span> <span className="font-mono">{review.generation.inputFingerprint}</span></p>
+        <p><span className="font-medium">League payment timing:</span> {review.generation.paymentMode === "upfront" ? "Full season upfront" : "Weekly"}</p>
+        <p><span className="font-medium">Versions:</span> {review.reviewContractVersion}; {review.generation.generatorVersion}; {review.generation.dstResolverVersion}</p>
       </div>
-
-      {!review.currentLegacyInput.matches && review.generationRun.state === "generated" && (
-        <Alert variant="destructive"><AlertCircle className="size-4" /><AlertTitle>Authoritative legacy input changed</AlertTitle><AlertDescription>Investigate the stored league schedule. This durable C1 set remains readable but cannot be approved.</AlertDescription></Alert>
-      )}
 
       <div className="overflow-x-auto rounded-md border">
         <table className="w-full min-w-[1180px] text-left text-sm">
-          <caption className="sr-only">Persisted canonical occurrences and audited review controls</caption>
+          <caption className="sr-only">Persisted canonical occurrences and mid-season schedule controls</caption>
           <thead className="bg-muted/50"><tr>{["UUID / revision", "Local / UTC / DST", "Lifecycle", "Numbers", "Billing policy / amount", "Exception evidence", "Actions"].map((heading) => <th key={heading} scope="col" className="px-3 py-2 font-medium">{heading}</th>)}</tr></thead>
           <tbody className="divide-y">
             {review.occurrences.map((occurrence) => {
@@ -294,29 +220,8 @@ export function FallDraftReviewPanel({
 
       {review.scheduleExceptions.length > 0 && <div><h4 className="font-medium">Schedule exceptions and revisions</h4><ul className="mt-1 list-disc pl-5 text-sm">{review.scheduleExceptions.map((row) => <li key={row.id}><span className="font-mono">{row.id}</span>: {row.localDate}, {row.kind}, {row.lifecycle}, revision {row.currentRevision} — {row.reason}</li>)}</ul></div>}
 
-      <div className="space-y-3">
-        <h4 className="font-medium">Discrepancy review</h4>
-        {review.discrepancies.length === 0 && <p className="text-sm text-muted-foreground">No generation discrepancies require disposition.</p>}
-        {review.discrepancies.map((row) => (
-          <div key={row.id} className="grid gap-2 rounded-md border p-3 sm:grid-cols-[1fr_220px]">
-            <div className="text-sm"><p><span className="font-medium">{row.code}</span> ({row.severity}) — {row.resolutionState}</p><p className="break-all font-mono text-xs">{row.id}</p><p className="text-xs text-muted-foreground">Current evidence: {JSON.stringify(row.currentEvidence)}</p></div>
-            {row.resolutionState === "open" && <div><Label htmlFor={`fall-disposition-${row.id}`}>Disposition</Label><Select value={dispositions[row.id] ?? ""} onValueChange={(value: "resolved" | "waived") => setDispositions((current) => ({ ...current, [row.id]: value }))}><SelectTrigger id={`fall-disposition-${row.id}`}><SelectValue placeholder="Select disposition" /></SelectTrigger><SelectContent>{row.canResolve && <SelectItem value="resolved">Resolved by current state</SelectItem>}<SelectItem value="waived">Waived knowingly</SelectItem></SelectContent></Select></div>}
-          </div>
-        ))}
-      </div>
-
-      {review.generationRun.state === "generated" && (
-        <div className="space-y-3 rounded-md border p-4">
-          <div><Label htmlFor="fall-c2-decision-reason">Reason for approval or rejection</Label><Textarea id="fall-c2-decision-reason" value={decisionReason} onChange={(event) => setDecisionReason(event.target.value)} placeholder="Enter a trimmed audit reason before confirming either terminal decision" /></div>
-          <div className="flex flex-wrap gap-2">
-            <AlertDialog><AlertDialogTrigger asChild><Button disabled={!canApprove}>Approve and publish reviewed set</Button></AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Atomically approve and publish this exact review?</AlertDialogTitle><AlertDialogDescription>The server will reauthorize, lock the league, verify fingerprint {review.reviewFingerprint}, legacy input, future eligibility, collisions, revision chains, and every discrepancy disposition. This creates no debts, games, standings results, payments, or collection plans.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Keep reviewing</AlertDialogCancel><AlertDialogAction onClick={() => submitDecision("approve")}>Approve and publish</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
-            <AlertDialog><AlertDialogTrigger asChild><Button variant="destructive" disabled={!canReject}>Reject complete draft set</Button></AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Reject and terminalize this exact draft?</AlertDialogTitle><AlertDialogDescription>The server will preserve all UUIDs, generation keys, commands, and revisions, discard draft occurrences, supersede draft terms, revoke draft exceptions, and publish nothing.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Keep reviewing</AlertDialogCancel><AlertDialogAction onClick={() => submitDecision("reject")}>Reject draft set</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
-          </div>
-        </div>
-      )}
-
       {identityError && <Alert variant="destructive"><AlertCircle className="size-4" /><AlertTitle>Secure confirmation unavailable</AlertTitle><AlertDescription>{identityError}</AlertDescription></Alert>}
-      {mutation.isError && <Alert variant="destructive"><AlertCircle className="size-4" /><AlertTitle>Mutation rejected</AlertTitle><AlertDescription>{mutation.error instanceof Error ? mutation.error.message : "The server rejected this reviewed mutation."} The review is being refreshed before another confirmation.</AlertDescription></Alert>}
+      {mutation.isError && <Alert variant="destructive"><AlertCircle className="size-4" /><AlertTitle>Schedule change rejected</AlertTitle><AlertDescription>{mutation.error instanceof Error ? mutation.error.message : "The server rejected this canonical schedule change."} The schedule is being refreshed before another confirmation.</AlertDescription></Alert>}
       {success && <Alert><CheckCircle2 className="size-4" /><AlertTitle>Audited state refreshed</AlertTitle><AlertDescription>{success}</AlertDescription></Alert>}
 
       <Dialog open={entityAction !== null} onOpenChange={(open) => { if (!open && !mutation.isPending) setEntityAction(null); }}>

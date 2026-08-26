@@ -206,7 +206,7 @@ describe("authoritative league setup integration", () => {
       }),
       setup: setup(++sequence),
     });
-    expect(result.canonicalDraftGeneration).toMatchObject({ seasonClassification, counts: { occurrences: 3 } });
+    expect(result.canonicalGeneration).toMatchObject({ seasonClassification, counts: { occurrences: 3 } });
     const persistedOccurrences = await db.select({
       localDate: leagueOccurrences.authoritativeLocalDate,
       lifecycle: leagueOccurrences.lifecycle,
@@ -250,7 +250,7 @@ describe("authoritative league setup integration", () => {
     expect(result).toMatchObject({
       paymentMode,
       setupIntegration: { mode: "created", writesPerformed: true },
-      canonicalDraftGeneration: {
+      canonicalGeneration: {
         mode: "applied",
         writesPerformed: true,
         relationshipsCreated: false,
@@ -286,7 +286,7 @@ describe("authoritative league setup integration", () => {
       setup: setup(++sequence),
     });
     expect(result.setupIntegration).toMatchObject({ mode: "created", writesPerformed: true });
-    expect(result.canonicalDraftGeneration).toMatchObject({ seasonClassification: "Winter", mode: "applied" });
+    expect(result.canonicalGeneration).toMatchObject({ seasonClassification: "Winter", mode: "applied" });
     expect(await db.select().from(leagueScheduleCommands).where(eq(leagueScheduleCommands.leagueId, result.id))).not.toHaveLength(0);
   });
 
@@ -352,7 +352,7 @@ describe("authoritative league setup integration", () => {
       createLeagueWithCanonicalSetup(request),
     ]);
     expect(left.id).toBe(right.id);
-    expect(left.canonicalDraftGeneration?.durableIds).toEqual(right.canonicalDraftGeneration?.durableIds);
+    expect(left.canonicalGeneration?.durableIds).toEqual(right.canonicalGeneration?.durableIds);
     expect([left.setupIntegration.mode, right.setupIntegration.mode].sort()).toEqual(["created", "idempotent_retry"]);
     const retry = await createLeagueWithCanonicalSetup(request);
     expect(retry.setupIntegration).toMatchObject({ mode: "idempotent_retry", writesPerformed: false });
@@ -400,7 +400,7 @@ describe("authoritative league setup integration", () => {
       }),
       setup: setup(++sequence),
     });
-    const sourceOccurrenceIds = source.canonicalDraftGeneration?.durableIds.occurrenceIds ?? [];
+    const sourceOccurrenceIds = source.canonicalGeneration?.durableIds.occurrenceIds ?? [];
     const sourceTeams = await db.insert(teams).values([
       { name: "Second", number: 2, leagueId: source.id, active: false, displayOrder: 1 },
       { name: "First", number: 1, leagueId: source.id, active: true, displayOrder: 0 },
@@ -434,10 +434,10 @@ describe("authoritative league setup integration", () => {
       setup: setup(++sequence),
       sourceConfirmation: confirmedSource,
     });
-    expect(created.result).toMatchObject({ previousSeasonId: source.id, active: true, canonicalDraftGeneration: { mode: "applied" } });
-    expect(created.result.canonicalDraftGeneration?.durableIds.occurrenceIds)
+    expect(created.result).toMatchObject({ previousSeasonId: source.id, active: true, canonicalGeneration: { mode: "applied" } });
+    expect(created.result.canonicalGeneration?.durableIds.occurrenceIds)
       .not.toEqual(sourceOccurrenceIds);
-    expect(created.result.canonicalDraftGeneration?.durableIds.occurrenceIds.some((id) => sourceOccurrenceIds.includes(id)))
+    expect(created.result.canonicalGeneration?.durableIds.occurrenceIds.some((id) => sourceOccurrenceIds.includes(id)))
       .toBe(false);
     expect(await nonRolloverEvidenceCounts()).toEqual(untouchedEvidenceBefore);
     for (const table of [
@@ -603,6 +603,6 @@ describe("authoritative league setup integration", () => {
     await expect(updateLeague(created.id, { name: "Metadata remains editable", doublePayDates: ["2032-10-17"] }))
       .resolves.toMatchObject({ name: "Metadata remains editable", doublePayDates: ["2032-10-17"] });
     const counts = await db.select({ count: sql<number>`count(*)::integer` }).from(leagueOccurrences).where(eq(leagueOccurrences.leagueId, created.id));
-    expect(counts[0]?.count).toBe(created.canonicalDraftGeneration?.counts.occurrences);
+    expect(counts[0]?.count).toBe(created.canonicalGeneration?.counts.occurrences);
   });
 });

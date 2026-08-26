@@ -54,7 +54,7 @@ function schedule(
   occurrences: LeagueOccurrenceScheduleOccurrence[],
 ): LeagueOccurrenceScheduleReadContract {
   return {
-    contractVersion: "league-occurrence-schedule/2",
+    contractVersion: "league-occurrence-schedule/3",
     ordering: {
       version: "league-occurrence-schedule-order/1",
       keys: [
@@ -132,7 +132,7 @@ function snapshot(input: {
   };
 }
 
-describe("league-standings/1 evidence contract", () => {
+describe("league-standings/2 evidence contract", () => {
   it("publishes explicit versions and a policy-required non-ranking state", () => {
     const contract = buildLeagueStandingsContract(snapshot());
     expect(contract).toMatchObject({

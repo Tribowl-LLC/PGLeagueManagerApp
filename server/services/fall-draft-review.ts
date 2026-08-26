@@ -1285,7 +1285,6 @@ export async function publishCanonicalDraftInTransaction(
     contractVersion: "automatic-canonical-schedule/1",
     generationRunId: rows.run.id,
     sourceScheduleRevision: rows.run.sourceScheduleRevision,
-    reviewAvailable: false,
   };
   const approvalBase: MaterializationScheduleCommandRequest = {
     organizationId: input.organizationId,

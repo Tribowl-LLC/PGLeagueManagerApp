@@ -449,7 +449,7 @@ the full contract, incompatibility behavior, smoke matrix, and E3 boundary.
 
 Phase E3 is a code-only, read-only evidence release. It adds
 `GET /api/leagues/:leagueId/standings` with the versioned
-`league-standings/1` contract, reusing the complete E1/E2 snapshot in one
+`league-standings/2` contract, reusing the complete E1/E2 snapshot in one
 repeatable-read/read-only transaction. The response explicitly reports
 `ranking.state = policy_required` and returns no ranked rows because matchup
 and ranking policy is not yet approved. Migration 0023 remains latest; do not

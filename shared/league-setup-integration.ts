@@ -15,7 +15,6 @@ export const leagueSetupIntegrationIntentSchema = z.object({
 }).strict();
 
 export type LeagueSetupIntegrationIntent = z.infer<typeof leagueSetupIntegrationIntentSchema>;
-export type AnyLeagueSetupIntegrationIntent = LeagueSetupIntegrationIntent;
 
 export const leagueRolloverSourceConfirmationSchema = z.object({
   contractVersion: z.literal(LEAGUE_ROLLOVER_SOURCE_CONTRACT_VERSION),
@@ -53,9 +52,8 @@ export interface LeagueSetupIntegrationResult extends League {
     requestContractVersion: typeof LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION;
     mode: "created" | "idempotent_retry";
     writesPerformed: boolean;
-    reviewAvailable: false;
   };
-  canonicalDraftGeneration: FutureSeasonDraftGenerationResult;
+  canonicalGeneration: FutureSeasonDraftGenerationResult;
   canonicalSchedule: {
     state: "published";
     approvalCommandId: string;
@@ -63,5 +61,3 @@ export interface LeagueSetupIntegrationResult extends League {
     collectionGroups: CanonicalCollectionGroupEvidence[];
   };
 }
-
-export type AnyLeagueSetupIntegrationResult = LeagueSetupIntegrationResult;

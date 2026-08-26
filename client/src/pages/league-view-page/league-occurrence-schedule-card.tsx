@@ -238,7 +238,7 @@ export function LeagueOccurrenceScheduleCard({
             <div>
               <h3 id="schedule-administration-heading" className="text-lg font-semibold">Schedule administration</h3>
               <p className="text-sm text-muted-foreground">
-                Canonical lifecycle evidence is read-only here; C2 controls continue to use their audited confirmations.
+                Canonical lifecycle evidence is read-only here; the controls below are reserved for audited mid-season changes.
               </p>
             </div>
             {(schedule.administrator.hasDraftEvidence
@@ -257,7 +257,6 @@ export function LeagueOccurrenceScheduleCard({
                 basePath={canonicalAdminPath}
                 querySuffix={querySuffix}
                 enabled
-                contractFamily="canonical"
                 scheduleQueryKey={["league-occurrence-schedule", endpoint]}
               />
             )}

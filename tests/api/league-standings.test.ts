@@ -306,7 +306,7 @@ describe("E3 league standings evidence API", () => {
     const after = await evidenceSnapshot(primary.leagueId);
     expect(response.status).toBe(200);
     expect(response.data.data).toMatchObject({
-      contractVersion: "league-standings/1",
+      contractVersion: "league-standings/2",
       organizationId: primary.organizationId,
       leagueId: primary.leagueId,
       authoritativeSource: "canonical",

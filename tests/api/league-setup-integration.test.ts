@@ -12,7 +12,7 @@ import {
   teams,
   users,
 } from "@shared/schema";
-import type { AnyLeagueSetupIntegrationResult, LeagueRolloverSourceContract } from "@shared/league-setup-integration";
+import type { LeagueSetupIntegrationResult, LeagueRolloverSourceContract } from "@shared/league-setup-integration";
 import type { CanonicalDraftMutationResult, CanonicalDraftReview } from "@shared/canonical-draft-review";
 import { hashPassword } from "../../server/lib/password";
 import { deleteOrganization } from "../../server/storage/organizations";
@@ -99,25 +99,23 @@ afterAll(async () => {
 describe("league setup integration API", () => {
   it("creates a non-Fall canonical schedule atomically and returns durable IDs on retry", async () => {
     const body = futureBody(1);
-    const created = await apiPost<AnyLeagueSetupIntegrationResult>("/api/leagues", body, admin);
+    const created = await apiPost<LeagueSetupIntegrationResult>("/api/leagues", body, admin);
     expect(created.status).toBe(201);
     expect(created.data.data).toMatchObject({
       setupIntegration: { mode: "created", writesPerformed: true },
-      canonicalDraftGeneration: { mode: "applied", writesPerformed: true },
+      canonicalGeneration: { mode: "applied", writesPerformed: true },
     });
-    const result = created.data.data as AnyLeagueSetupIntegrationResult;
-    const retry = await apiPost<AnyLeagueSetupIntegrationResult>("/api/leagues", body, admin);
+    const result = created.data.data as LeagueSetupIntegrationResult;
+    const retry = await apiPost<LeagueSetupIntegrationResult>("/api/leagues", body, admin);
     expect(retry.status).toBe(200);
     expect(retry.data.data).toMatchObject({ setupIntegration: { mode: "idempotent_retry", writesPerformed: false } });
-    expect(retry.data.data?.canonicalDraftGeneration?.durableIds).toEqual(result.canonicalDraftGeneration?.durableIds);
+    expect(retry.data.data?.canonicalGeneration?.durableIds).toEqual(result.canonicalGeneration?.durableIds);
     const changed = await apiPost("/api/leagues", { ...body, paymentMode: "upfront" }, admin);
     expect(changed.status).toBe(409);
     expect(changed.data.error?.code).toBe("IDEMPOTENCY_CONFLICT");
     const review = await apiGet<CanonicalDraftReview>(`/api/leagues/${result.id}/canonical-drafts/review`, admin);
     expect(review.status).toBe(200);
     expect(review.data.data).toMatchObject({ generationRun: { state: "applied" }, generation: { paymentMode: "weekly", seasonClassification: "Spring" } });
-    const legacyAlias = await apiGet(`/api/leagues/${result.id}/canonical-fall-drafts/review`, admin);
-    expect(legacyAlias.status).toBe(404);
     const [publishedLeague] = await db.select().from(leagues).where(eq(leagues.id, result.id));
     if (!publishedLeague) throw new Error("published league row missing");
     const [publishedRun] = await db.select({ sourceScheduleRevision: leagueOccurrenceGenerationRuns.sourceScheduleRevision })
@@ -238,12 +236,12 @@ describe("league setup integration API", () => {
     const missingScope = await apiPost("/api/leagues", futureBody(6), systemAdmin);
     expect(missingScope.status).toBe(400);
     expect(missingScope.data.error?.code).toBe("ORG_REQUIRED");
-    const created = await apiPost<AnyLeagueSetupIntegrationResult>("/api/leagues", {
+    const created = await apiPost<LeagueSetupIntegrationResult>("/api/leagues", {
       ...futureBody(7),
       organizationId,
     }, systemAdmin);
     expect(created.status).toBe(201);
-    expect(created.data.data).toMatchObject({ organizationId, canonicalDraftGeneration: { mode: "applied" } });
+    expect(created.data.data).toMatchObject({ organizationId, canonicalGeneration: { mode: "applied" } });
   });
 
   it("atomically copies a new Fall season and serializes competing successor requests", async () => {
@@ -313,8 +311,8 @@ describe("league setup integration API", () => {
     }, admin);
     expect(retiredEnd.status).toBe(400);
     const [first, second] = await Promise.all([
-      apiPost<AnyLeagueSetupIntegrationResult>(`/api/leagues/${source.id}/new-season`, { ...values, setupIntegration: intent(4), sourceConfirmation }, admin),
-      apiPost<AnyLeagueSetupIntegrationResult>(`/api/leagues/${source.id}/new-season`, { ...values, setupIntegration: intent(5), sourceConfirmation }, admin),
+      apiPost<LeagueSetupIntegrationResult>(`/api/leagues/${source.id}/new-season`, { ...values, setupIntegration: intent(4), sourceConfirmation }, admin),
+      apiPost<LeagueSetupIntegrationResult>(`/api/leagues/${source.id}/new-season`, { ...values, setupIntegration: intent(5), sourceConfirmation }, admin),
     ]);
     const attempts = [{ response: first, key: 4 }, { response: second, key: 5 }];
     const successfulAttempt = attempts.find(({ response }) => response.status === 201);
@@ -324,10 +322,10 @@ describe("league setup integration API", () => {
     expect(successful?.data.data).toMatchObject({
       previousSeasonId: source.id,
       setupIntegration: { mode: "created" },
-      canonicalDraftGeneration: { mode: "applied" },
+      canonicalGeneration: { mode: "applied" },
     });
     expect(rejected?.data.error?.code).toMatch(/STALE_SOURCE_LEAGUE|SUCCESSOR_SEASON_EXISTS/);
-    const target = successful?.data.data as AnyLeagueSetupIntegrationResult;
+    const target = successful?.data.data as LeagueSetupIntegrationResult;
     expect((await db.select().from(leagues).where(eq(leagues.id, source.id)))[0]?.active).toBe(false);
     expect(await db.select().from(teams).where(eq(teams.leagueId, target.id))).toHaveLength(1);
     expect(await db.select().from(bowlerLeagues).where(eq(bowlerLeagues.leagueId, target.id))).toHaveLength(1);
@@ -346,7 +344,7 @@ describe("league setup integration API", () => {
       roster: (await db.select().from(bowlerLeagues).where(eq(bowlerLeagues.leagueId, target.id))).length,
     });
     const beforeRetry = await targetCounts();
-    const retry = await apiPost<AnyLeagueSetupIntegrationResult>(`/api/leagues/${source.id}/new-season`, {
+    const retry = await apiPost<LeagueSetupIntegrationResult>(`/api/leagues/${source.id}/new-season`, {
       ...values,
       setupIntegration: intent(successfulAttempt.key),
       sourceConfirmation,
@@ -355,10 +353,10 @@ describe("league setup integration API", () => {
     expect(retry.data.data).toMatchObject({
       id: target.id,
       setupIntegration: { mode: "idempotent_retry", writesPerformed: false },
-      canonicalDraftGeneration: { mode: "idempotent_retry", writesPerformed: false },
+      canonicalGeneration: { mode: "idempotent_retry", writesPerformed: false },
     });
-    expect(retry.data.data?.canonicalDraftGeneration?.durableIds)
-      .toEqual(target.canonicalDraftGeneration?.durableIds);
+    expect(retry.data.data?.canonicalGeneration?.durableIds)
+      .toEqual(target.canonicalGeneration?.durableIds);
     expect(await targetCounts()).toEqual(beforeRetry);
   });
 });

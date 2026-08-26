@@ -202,16 +202,6 @@ router.get("/", async (req: Request, res) => {
       leagues = leagues.filter(l => l.locationId === locationId);
     }
 
-    // A league is product-visible only after its automatic canonical setup
-    // transaction has published a complete operational occurrence set.
-    leagues = (await Promise.all(leagues.map(async (league) => {
-      if (league.organizationId === null) return null;
-      return await hasCompleteOperationalLeagueSchedule({
-        organizationId: league.organizationId,
-        leagueId: league.id,
-      }) ? league : null;
-    }))).filter((league): league is NonNullable<typeof league> => league !== null);
-
     sendSuccess(res, leagues);
   } catch (error) {
     sendError(res, 'Failed to fetch leagues');

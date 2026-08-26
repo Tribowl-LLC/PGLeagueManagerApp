@@ -1,26 +1,11 @@
 import { Router, type Request } from "express";
 import { z } from "zod";
 import {
-  fallDraftApplyRequestSchema,
-  fallDraftPreviewRequestSchema,
-} from "@shared/fall-draft-generation";
-import {
-  fallDraftApproveRequestSchema,
-  fallDraftCancelRequestSchema,
-  fallDraftRejectRequestSchema,
-  fallDraftRescheduleRequestSchema,
-  fallDraftRestoreRequestSchema,
-} from "@shared/fall-draft-review";
-import {
-  CANONICAL_DRAFT_APPROVE_REQUEST_VERSION,
   CANONICAL_DRAFT_CANCEL_REQUEST_VERSION,
-  CANONICAL_DRAFT_REJECT_REQUEST_VERSION,
   CANONICAL_DRAFT_RESCHEDULE_REQUEST_VERSION,
   CANONICAL_DRAFT_RESTORE_REQUEST_VERSION,
   CANONICAL_DRAFT_MUTATION_RESULT_VERSION,
-  canonicalDraftApproveRequestSchema,
   canonicalDraftCancelRequestSchema,
-  canonicalDraftRejectRequestSchema,
   canonicalDraftRescheduleRequestSchema,
   canonicalDraftRestoreRequestSchema,
   toCanonicalDraftReview,
@@ -31,19 +16,12 @@ import { isFutureSeasonDraftInputSnapshot } from "@shared/future-season-draft-ge
 import { filterByOrganization } from "../middleware/organization.js";
 import { singleRouteParam } from "../utils/route-params.js";
 import { handleZodError, sendError, sendSuccess } from "../utils/api.js";
-import {
-  applyFallDraftGeneration,
-  FallDraftGenerationError,
-  loadFallDraftPersistedView,
-  previewFallDraftGeneration,
-} from "../services/fall-draft-generation.js";
+import { FallDraftGenerationError } from "../services/fall-draft-generation.js";
 import { createLogger } from "../logger.js";
 import {
-  approveAndPublishFallDraft,
   cancelFallDraftOccurrence,
   FallDraftReviewError,
   loadFallDraftReview,
-  rejectFallDraft,
   rescheduleFallDraftOccurrence,
   restoreFallDraftOccurrence,
 } from "../services/fall-draft-review.js";
@@ -132,110 +110,6 @@ function requireAdminScope(req: Request, res: Parameters<typeof sendError>[0]) {
   return scope;
 }
 
-router.post("/:id/canonical-fall-drafts/preview", async (req: Request, res) => {
-  const scope = requireAdminScope(req, res);
-  if (!scope) return;
-  try {
-    fallDraftPreviewRequestSchema.parse(req.body);
-    const preview = await previewFallDraftGeneration(scope);
-    sendSuccess(res, preview);
-  } catch (caught) {
-    sendFallDraftError(res, caught);
-  }
-});
-
-router.post("/:id/canonical-fall-drafts/apply", async (req: Request, res) => {
-  const scope = requireAdminScope(req, res);
-  if (!scope) return;
-  try {
-    const apply = fallDraftApplyRequestSchema.parse(req.body);
-    const result = await applyFallDraftGeneration({ ...scope, apply });
-    sendSuccess(res, result, result.mode === "applied" ? 201 : 200);
-  } catch (caught) {
-    sendFallDraftError(res, caught);
-  }
-});
-
-router.get("/:id/canonical-fall-drafts", async (req: Request, res) => {
-  const scope = requireAdminScope(req, res);
-  if (!scope) return;
-  try {
-    sendSuccess(res, await loadFallDraftPersistedView(scope));
-  } catch (caught) {
-    sendFallDraftError(res, caught);
-  }
-});
-
-router.get("/:id/canonical-fall-drafts/review", async (req: Request, res) => {
-  const scope = requireAdminScope(req, res);
-  if (!scope) return;
-  try {
-    sendSuccess(res, await loadFallDraftReview(scope));
-  } catch (caught) {
-    sendFallDraftError(res, caught);
-  }
-});
-
-router.post("/:id/canonical-fall-drafts/review/reschedule", async (req: Request, res) => {
-  const scope = requireAdminScope(req, res);
-  if (!scope) return;
-  try {
-    const request = fallDraftRescheduleRequestSchema.parse(req.body);
-    const result = await rescheduleFallDraftOccurrence({ ...scope, request });
-    sendSuccess(res, result, result.mode === "applied" ? 201 : 200);
-  } catch (caught) {
-    sendFallDraftError(res, caught);
-  }
-});
-
-router.post("/:id/canonical-fall-drafts/review/cancel", async (req: Request, res) => {
-  const scope = requireAdminScope(req, res);
-  if (!scope) return;
-  try {
-    const request = fallDraftCancelRequestSchema.parse(req.body);
-    const result = await cancelFallDraftOccurrence({ ...scope, request });
-    sendSuccess(res, result, result.mode === "applied" ? 201 : 200);
-  } catch (caught) {
-    sendFallDraftError(res, caught);
-  }
-});
-
-router.post("/:id/canonical-fall-drafts/review/restore", async (req: Request, res) => {
-  const scope = requireAdminScope(req, res);
-  if (!scope) return;
-  try {
-    const request = fallDraftRestoreRequestSchema.parse(req.body);
-    const result = await restoreFallDraftOccurrence({ ...scope, request });
-    sendSuccess(res, result, result.mode === "applied" ? 201 : 200);
-  } catch (caught) {
-    sendFallDraftError(res, caught);
-  }
-});
-
-router.post("/:id/canonical-fall-drafts/review/approve", async (req: Request, res) => {
-  const scope = requireAdminScope(req, res);
-  if (!scope) return;
-  try {
-    const request = fallDraftApproveRequestSchema.parse(req.body);
-    const result = await approveAndPublishFallDraft({ ...scope, request });
-    sendSuccess(res, result, result.mode === "applied" ? 201 : 200);
-  } catch (caught) {
-    sendFallDraftError(res, caught);
-  }
-});
-
-router.post("/:id/canonical-fall-drafts/review/reject", async (req: Request, res) => {
-  const scope = requireAdminScope(req, res);
-  if (!scope) return;
-  try {
-    const request = fallDraftRejectRequestSchema.parse(req.body);
-    const result = await rejectFallDraft({ ...scope, request });
-    sendSuccess(res, result, result.mode === "applied" ? 201 : 200);
-  } catch (caught) {
-    sendFallDraftError(res, caught);
-  }
-});
-
 async function genericReview(scope: NonNullable<ReturnType<typeof authorizedScope>>): Promise<CanonicalDraftReview> {
   const review = await loadFallDraftReview({ ...scope, draftContractFamily: "future_season" });
   if (!isFutureSeasonDraftInputSnapshot(review.generationRun.normalizedInputSnapshot)) {
@@ -318,32 +192,6 @@ router.post("/:id/canonical-drafts/review/restore", async (req: Request, res) =>
     const result = await restoreFallDraftOccurrence({
       ...await genericMutationScope(scope, CANONICAL_DRAFT_RESTORE_REQUEST_VERSION, parsed.confirmedReviewFingerprint),
       request: { ...parsed, contractVersion: "fall-draft-restore-request/1" },
-    });
-    sendSuccess(res, genericMutationResult(result), result.mode === "applied" ? 201 : 200);
-  } catch (caught) { sendFallDraftError(res, caught); }
-});
-
-router.post("/:id/canonical-drafts/review/approve", async (req: Request, res) => {
-  const scope = requireAdminScope(req, res);
-  if (!scope) return;
-  try {
-    const parsed = canonicalDraftApproveRequestSchema.parse(req.body);
-    const result = await approveAndPublishFallDraft({
-      ...await genericMutationScope(scope, CANONICAL_DRAFT_APPROVE_REQUEST_VERSION, parsed.confirmedReviewFingerprint),
-      request: { ...parsed, contractVersion: "fall-draft-approve-request/1" },
-    });
-    sendSuccess(res, genericMutationResult(result), result.mode === "applied" ? 201 : 200);
-  } catch (caught) { sendFallDraftError(res, caught); }
-});
-
-router.post("/:id/canonical-drafts/review/reject", async (req: Request, res) => {
-  const scope = requireAdminScope(req, res);
-  if (!scope) return;
-  try {
-    const parsed = canonicalDraftRejectRequestSchema.parse(req.body);
-    const result = await rejectFallDraft({
-      ...await genericMutationScope(scope, CANONICAL_DRAFT_REJECT_REQUEST_VERSION, parsed.confirmedReviewFingerprint),
-      request: { ...parsed, contractVersion: "fall-draft-reject-request/1" },
     });
     sendSuccess(res, genericMutationResult(result), result.mode === "applied" ? 201 : 200);
   } catch (caught) { sendFallDraftError(res, caught); }

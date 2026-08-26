@@ -5,15 +5,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LeagueOccurrenceScheduleReadContract } from "@shared/league-occurrence-schedule";
 import * as queryModule from "@/lib/queryClient";
 
-vi.mock("@/pages/league-view-page/fall-draft-generation-card", () => ({
-  FallCanonicalRecoveryPanel: () => <div>Contextual Fall recovery</div>,
-}));
 vi.mock("@/pages/league-view-page/fall-draft-review-panel", () => ({
-  FallDraftReviewPanel: ({ basePath, contractFamily, scheduleQueryKey }: { basePath: string; contractFamily: string; scheduleQueryKey: unknown[] }) => (
+  FallDraftReviewPanel: ({ basePath, scheduleQueryKey }: { basePath: string; scheduleQueryKey: unknown[] }) => (
     <div
       data-testid="draft-review-panel"
       data-base-path={basePath}
-      data-contract-family={contractFamily}
       data-schedule-query-key={JSON.stringify(scheduleQueryKey)}
     >
       Audited C2 controls
@@ -24,7 +20,7 @@ vi.mock("@/pages/league-view-page/fall-draft-review-panel", () => ({
 import { LeagueOccurrenceScheduleCard } from "@/pages/league-view-page/league-occurrence-schedule-card";
 
 const canonical: LeagueOccurrenceScheduleReadContract = {
-  contractVersion: "league-occurrence-schedule/2",
+  contractVersion: "league-occurrence-schedule/3",
   ordering: {
     version: "league-occurrence-schedule-order/1",
     keys: ["authoritativeLocalDate", "authoritativeLocalStartTime", "plannedOrdinal", "competitionNumber", "kind", "stableIdentity"],
@@ -160,7 +156,6 @@ describe("LeagueOccurrenceScheduleCard", () => {
     renderCard();
     const panel = await screen.findByTestId("draft-review-panel");
     expect(panel).toHaveAttribute("data-base-path", "/api/leagues/7/canonical-drafts");
-    expect(panel).toHaveAttribute("data-contract-family", "canonical");
     expect(panel).toHaveAttribute(
       "data-schedule-query-key",
       JSON.stringify(["league-occurrence-schedule", "/api/leagues/7/occurrence-schedule"]),

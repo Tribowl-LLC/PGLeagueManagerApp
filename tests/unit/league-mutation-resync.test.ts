@@ -793,7 +793,7 @@ describe('POST /api/leagues/:id/new-season → fires resync for every bowler clo
           mode: 'created',
           writesPerformed: true,
         },
-        canonicalDraftGeneration: {},
+        canonicalGeneration: {},
       },
       affectedBowlerIds: sourceBlRows.map((row) => row.bowlerId),
     });

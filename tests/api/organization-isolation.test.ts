@@ -30,6 +30,7 @@ interface League {
   id: number;
   name: string;
   organizationId: number | null;
+  payingLineupSize?: number | null;
 }
 
 function hasStringEmail(value: unknown): value is { email: string } {
@@ -119,8 +120,11 @@ describe('Organization Isolation', () => {
     // Make sure org B owns at least one league so we can test cross-org
     // fetch-by-id as org A. Reuse the first existing league when present.
     const existing = await apiGet<League[]>('/api/leagues', sessionB);
-    if (existing.status === 200 && Array.isArray(existing.data.data) && existing.data.data.length > 0) {
-      orgBLeagueId = existing.data.data[0].id;
+    const canonicalExisting = existing.status === 200 && Array.isArray(existing.data.data)
+      ? existing.data.data.find((league) => league.payingLineupSize != null)
+      : undefined;
+    if (canonicalExisting) {
+      orgBLeagueId = canonicalExisting.id;
     } else {
       const locationResponse = await apiGet<Array<{ id: number }>>('/api/locations', sessionB);
       let locationId = locationResponse.data.data?.[0]?.id;
@@ -280,28 +284,6 @@ describe('Organization Isolation', () => {
       // Even error payloads must not leak the league's org id back to the caller.
       const payload = JSON.stringify(data);
       expect(payload).not.toContain(`"organizationId":${sessionB.user.organizationId}`);
-    });
-
-    it('org A admin fetching org B canonical Fall draft state must get a definitive 403/404', async () => {
-      expect(orgBLeagueId, 'expected an org B league id to test against').not.toBeNull();
-      const { status, data } = await apiGet(
-        `/api/leagues/${orgBLeagueId}/canonical-fall-drafts`,
-        sessionA,
-      );
-      expect([403, 404]).toContain(status);
-      expect(data.success).toBe(false);
-      expect(JSON.stringify(data)).not.toContain(`"organizationId":${sessionB.user.organizationId}`);
-    });
-
-    it('org A admin fetching org B canonical Fall draft review must get a definitive 403/404', async () => {
-      expect(orgBLeagueId, 'expected an org B league id to test against').not.toBeNull();
-      const { status, data } = await apiGet(
-        `/api/leagues/${orgBLeagueId}/canonical-fall-drafts/review`,
-        sessionA,
-      );
-      expect([403, 404]).toContain(status);
-      expect(data.success).toBe(false);
-      expect(JSON.stringify(data)).not.toContain(`"organizationId":${sessionB.user.organizationId}`);
     });
 
     it('org A admin fetching org B generic canonical review must get a definitive 403/404', async () => {

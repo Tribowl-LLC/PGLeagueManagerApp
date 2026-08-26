@@ -4,9 +4,9 @@ import type {
   LeagueOccurrenceStatus,
 } from "./schema/canonical-occurrences";
 
-export const LEAGUE_STANDINGS_CONTRACT_VERSION = "league-standings/1" as const;
+export const LEAGUE_STANDINGS_CONTRACT_VERSION = "league-standings/2" as const;
 export const LEAGUE_STANDINGS_ORDER_VERSION = "league-standings-order/1" as const;
-export const LEAGUE_STANDINGS_FINGERPRINT_VERSION = "league-standings-fingerprint/1" as const;
+export const LEAGUE_STANDINGS_FINGERPRINT_VERSION = "league-standings-fingerprint/2" as const;
 export const LEAGUE_STANDINGS_FINGERPRINT_ALGORITHM = "sha256" as const;
 
 export const LEAGUE_STANDINGS_ELIGIBILITY_STATES = [

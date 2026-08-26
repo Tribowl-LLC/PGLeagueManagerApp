@@ -195,7 +195,7 @@ describe("E1 league occurrence schedule API", () => {
     expect(scopedSystem.data.data?.administrator).not.toBeNull();
   });
 
-  it("fails closed when published canonical evidence is incomplete", async () => {
+  it("keeps incomplete canonical leagues listed but fails closed on detail reads", async () => {
     const beforeRead = await writeSnapshot(primary.leagueId);
     const [currentRun] = await db.select().from(leagueOccurrenceGenerationRuns).where(
       eq(leagueOccurrenceGenerationRuns.leagueId, primary.leagueId),
@@ -205,26 +205,29 @@ describe("E1 league occurrence schedule API", () => {
       candidateOccurrenceCount: currentRun.candidateOccurrenceCount + 1,
       generatedOccurrenceCount: currentRun.generatedOccurrenceCount + 1,
     }).where(eq(leagueOccurrenceGenerationRuns.id, currentRun.id));
-    const canonicalRead = await apiGet<LeagueOccurrenceScheduleReadContract>(
-      `/api/leagues/${primary.leagueId}/occurrence-schedule`,
-      primary.admin,
-    );
-    expect(canonicalRead.status).toBe(409);
-    expect(canonicalRead.data.error?.code).toBe("CANONICAL_SCHEDULE_INCOMPATIBLE");
-    const listedWhilePartial = await apiGet<Array<{ id: number }>>('/api/leagues', primary.admin);
-    expect(listedWhilePartial.status).toBe(200);
-    expect(listedWhilePartial.data.data?.some((league) => league.id === primary.leagueId)).toBe(false);
-    const detailWhilePartial = await apiGet(`/api/leagues/${primary.leagueId}`, primary.admin);
-    expect(detailWhilePartial.status).toBe(409);
-    expect(detailWhilePartial.data.error?.code).toBe("CANONICAL_SCHEDULE_REQUIRED");
-    await db.update(leagueOccurrenceGenerationRuns).set({
-      candidateOccurrenceCount: currentRun.candidateOccurrenceCount,
-      generatedOccurrenceCount: currentRun.generatedOccurrenceCount,
-    }).where(eq(leagueOccurrenceGenerationRuns.id, currentRun.id));
+    try {
+      const canonicalRead = await apiGet<LeagueOccurrenceScheduleReadContract>(
+        `/api/leagues/${primary.leagueId}/occurrence-schedule`,
+        primary.admin,
+      );
+      expect(canonicalRead.status).toBe(409);
+      expect(canonicalRead.data.error?.code).toBe("CANONICAL_SCHEDULE_INCOMPATIBLE");
+      const listedWhilePartial = await apiGet<Array<{ id: number }>>('/api/leagues', primary.admin);
+      expect(listedWhilePartial.status).toBe(200);
+      expect(listedWhilePartial.data.data?.some((league) => league.id === primary.leagueId)).toBe(true);
+      const detailWhilePartial = await apiGet(`/api/leagues/${primary.leagueId}`, primary.admin);
+      expect(detailWhilePartial.status).toBe(409);
+      expect(detailWhilePartial.data.error?.code).toBe("CANONICAL_SCHEDULE_REQUIRED");
+    } finally {
+      await db.update(leagueOccurrenceGenerationRuns).set({
+        candidateOccurrenceCount: currentRun.candidateOccurrenceCount,
+        generatedOccurrenceCount: currentRun.generatedOccurrenceCount,
+      }).where(eq(leagueOccurrenceGenerationRuns.id, currentRun.id));
+    }
     expect(await writeSnapshot(primary.leagueId)).toEqual(beforeRead);
   });
 
-  it("hides an approved-only run whose occurrence set is incomplete", async () => {
+  it("keeps incomplete approved-only leagues listed but fails closed on detail reads", async () => {
     const [currentRun] = await db.select().from(leagueOccurrenceGenerationRuns).where(
       eq(leagueOccurrenceGenerationRuns.leagueId, primary.leagueId),
     );
@@ -239,7 +242,7 @@ describe("E1 league occurrence schedule API", () => {
     try {
       const listed = await apiGet<Array<{ id: number }>>('/api/leagues', primary.admin);
       expect(listed.status).toBe(200);
-      expect(listed.data.data?.some((league) => league.id === primary.leagueId)).toBe(false);
+      expect(listed.data.data?.some((league) => league.id === primary.leagueId)).toBe(true);
       const detail = await apiGet(`/api/leagues/${primary.leagueId}`, primary.admin);
       expect(detail.status).toBe(409);
       expect(detail.data.error?.code).toBe("CANONICAL_SCHEDULE_REQUIRED");

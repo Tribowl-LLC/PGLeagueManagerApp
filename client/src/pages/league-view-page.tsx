@@ -30,7 +30,7 @@ import { NewSeasonDialog, type NewSeasonFormValues } from "./league-view-page/ne
 import { LeagueOccurrenceScheduleCard } from "./league-view-page/league-occurrence-schedule-card";
 import {
   LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION,
-  type AnyLeagueSetupIntegrationResult,
+  type LeagueSetupIntegrationResult,
 } from "@shared/league-setup-integration";
 import { createSetupIdempotencyKeyRetainer } from "./league-view-page/fall-draft-secure-id";
 
@@ -81,7 +81,7 @@ export default function LeagueViewPage() {
       const querySuffix = currentUser?.role === "system_admin" && organizationScope !== null
         ? `?organizationId=${organizationScope}`
         : "";
-      return await apiRequest<AnyLeagueSetupIntegrationResult>(`/api/leagues/${leagueId}/new-season${querySuffix}`, "POST", {
+      return await apiRequest<LeagueSetupIntegrationResult>(`/api/leagues/${leagueId}/new-season${querySuffix}`, "POST", {
         ...values,
         setupIntegration: {
           contractVersion: LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION,

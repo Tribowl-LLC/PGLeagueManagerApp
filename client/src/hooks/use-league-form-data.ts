@@ -8,7 +8,7 @@ import { DEFAULT_WEEKLY_FEE_CENTS, DEFAULT_TIMEZONE } from "@shared/schema";
 import type { InsertLeagueInput, InsertLeague, League } from "@shared/schema";
 import {
   LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION,
-  type AnyLeagueSetupIntegrationResult,
+  type LeagueSetupIntegrationResult,
 } from "@shared/league-setup-integration";
 import { createSetupIdempotencyKeyRetainer } from "@/pages/league-view-page/fall-draft-secure-id";
 import { buildCanonicalLeagueCreatePayload } from "@/lib/league-create-payload";
@@ -184,7 +184,7 @@ export function useLeagueFormData({
         semanticPayload,
         systemAdminOrganizationId,
       );
-      return apiRequest<AnyLeagueSetupIntegrationResult>(
+      return apiRequest<LeagueSetupIntegrationResult>(
         league ? `/api/leagues/${league.id}` : "/api/leagues",
         league ? "PATCH" : "POST",
         league ? {
@@ -204,7 +204,7 @@ export function useLeagueFormData({
       queryClient.invalidateQueries({ queryKey: ["/api/leagues"] });
       queryClient.invalidateQueries({ queryKey: ["/api/leagues/square-missing-alerts/recent"] });
       setupIdempotency.current.reset();
-      const canonicalCreated = !league && response.data.canonicalDraftGeneration !== null;
+      const canonicalCreated = !league;
       toast({
         title: league ? "League updated" : "League created",
         description: league

@@ -9,7 +9,7 @@ schedules, provider execution, or the dormant D2 financial model.
 ## Read contract
 
 `GET /api/leagues/:leagueId/occurrence-schedule` returns
-`league-occurrence-schedule/2`. Its deterministic ordering contract is
+`league-occurrence-schedule/3`. Its deterministic ordering contract is
 `league-occurrence-schedule-order/1`:
 
 1. authoritative local date;
@@ -87,16 +87,17 @@ Client-provided IDs select a candidate resource; they never confer authority.
 ## League and administrator UI
 
 The league page now leads with a general `Season schedule` card for every
-authorized viewer instead of an administrator-only top-level Fall generator
-card. It presents a responsive chronological list with explicit scheduled,
+authorized viewer. It presents a responsive chronological list with explicit scheduled,
 cancelled, completed, skipped, makeup, and special-session labels. Planned,
 competition, and billing numbers have separate labels. Loading, empty,
 incompatible, or transport error states are explicit and accessible.
 
 Administrator rows add lifecycle, revision, effective-lock, offset, fold, and
-resolver evidence. The administration section retains the existing C2 audited
-review and mutation panel for mid-season edits. Opening the schedule never
-generates, mutates, approves, publishes, repairs, or locks a canonical row.
+resolver evidence. The administration section retains only the audited
+reschedule, cancellation, and restoration controls needed for mid-season edits;
+league creation and rollover publish automatically, so there are no draft
+approval or rejection controls. Opening the schedule never generates, mutates,
+approves, publishes, repairs, or locks a canonical row.
 
 ## Date, time, and lock behavior
 

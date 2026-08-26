@@ -8,9 +8,9 @@ product policy and obscure that missing evidence.
 
 The endpoint is `GET /api/leagues/:leagueId/standings`, with the optional
 `organizationId` query parameter used for explicit tenant selection. Its
-contract version is `league-standings/1`; ordering and fingerprint semantics
+contract version is `league-standings/2`; ordering and fingerprint semantics
 are independently versioned as `league-standings-order/1` and
-`league-standings-fingerprint/1`.
+`league-standings-fingerprint/2`.
 
 Every successful response therefore returns:
 
@@ -169,4 +169,4 @@ canonical/game/score evidence intact; do not remove occurrence links, rewrite
 legacy rows, or manufacture result certainty. E3 has no data mutation to undo.
 A later ranked-standings phase must first approve and version the missing
 matchup and ranking policy, then cut consumers over without changing the
-meaning of `league-standings/1`.
+meaning of `league-standings/2`.

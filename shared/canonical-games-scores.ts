@@ -1,9 +1,9 @@
 import type { Game, Score } from "./schema/games";
 import type { LeagueOccurrenceScheduleOccurrence } from "./league-occurrence-schedule";
 
-export const CANONICAL_GAMES_SCORES_CONTRACT_VERSION = "canonical-games-scores/1" as const;
+export const CANONICAL_GAMES_SCORES_CONTRACT_VERSION = "canonical-games-scores/2" as const;
 export const CANONICAL_GAMES_SCORES_ORDER_VERSION = "canonical-games-scores-order/1" as const;
-export const CANONICAL_GAMES_SCORES_FINGERPRINT_VERSION = "canonical-games-scores-fingerprint/1" as const;
+export const CANONICAL_GAMES_SCORES_FINGERPRINT_VERSION = "canonical-games-scores-fingerprint/2" as const;
 
 export const CANONICAL_GAMES_SCORES_INCOMPATIBILITY_CLASSIFICATIONS = [
   "canonical_schedule_incompatible",
