@@ -1,18 +1,24 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { getTestDb } from "../setup/test-db";
 import {
   bowlers,
   bowlerLeagues,
+  leagueOccurrences,
+  leagueScheduleCommands,
   leagues,
+  locations,
   organizations,
+  occurrencePaymentResponsibilities,
+  paymentObligations,
+  paymentOperationRosterSnapshotItems,
   paymentOperations,
-  paymentSchedules,
   payments,
+  teamPaymentSlots,
   teams,
-  interactivePaymentOperationAllocations,
-  interactivePaymentOperationSnapshots,
+  users,
+  paymentOperationRosterSnapshots,
 } from "@shared/schema";
 import { deleteOrganization } from "../../server/storage/organizations";
 import {
@@ -23,15 +29,11 @@ import {
   GENERAL_INTERACTIVE_REQUEST_KEY_MAX_LENGTH,
   acquirePaymentOperationLease,
   cancelPaymentOperation,
-  createOrGetScheduledPaymentOperation,
   createOrGetGeneralInteractivePaymentOperation,
   finalizePaymentOperationSuccess,
   getPaymentOperationForOrganization,
-  getScheduledPaymentOperationSnapshotForOrganization,
-  hasNonterminalScheduledPaymentOperation,
-  persistScheduledPaymentOperationSnapshot,
-  persistInteractivePaymentOperationSnapshot,
-  getInteractivePaymentOperationSnapshotForOrganization,
+  persistRosterOperationSnapshot,
+  getRosterOperationSnapshotForOrganization,
   recordPaymentOperationActionRequired,
   recordPaymentOperationFailedTerminal,
   recordPaymentOperationProviderUnknown,
@@ -42,14 +44,9 @@ import {
 import {
   deriveSquareOperationIdempotencyKey,
 } from "../../server/services/payment-operation-idempotency";
-import {
-  bindInteractiveOccurrenceRequestFingerprint,
-  buildPaymentOperationIdentity,
-  fingerprintInteractiveOccurrenceIntent,
-} from "../../server/services/payment-operation-idempotency";
-import type { ScheduledPaymentSemanticSnapshot } from "../../server/services/scheduled-payment-operation-snapshot";
-import type { InteractivePaymentSemanticSnapshot } from "../../server/services/interactive-payment-operation-snapshot";
-import { encryptInteractivePaymentSnapshot } from "../../server/services/interactive-payment-operation-snapshot";
+import { materializeRosterPaymentOccurrenceInTransaction } from "../../server/services/roster-payment-materializer";
+import { buildPaymentOperationIdentity } from "../../server/services/payment-operation-idempotency";
+import type { RosterOperationSemanticSnapshot } from "../../server/services/roster-operation-snapshot";
 
 const db = getTestDb();
 const poolSuffix = process.env.VITEST_POOL_ID ?? "0";
@@ -62,6 +59,8 @@ let orgAId: number;
 let orgBId: number;
 let scheduleAId: number;
 let scheduleBId: number;
+let scheduleAActorId: number;
+let scheduleBActorId: number;
 let nextCycleOffset = 0;
 
 function timestampToIso(value: string | null): string | null {
@@ -81,15 +80,35 @@ async function createFixtureSchedule(organizationId: number, label: string): Pro
     seasonEnd: "2032-12-31T00:00:00.000Z",
     weekDay: "Monday",
     weeklyFee: 2_000,
+    payingLineupSize: 3,
+    substituteAccess: "team_only",
+    substitutePaymentRegime: "team_choice",
+    timezone: "UTC",
     organizationId,
   }).returning({ id: leagues.id });
   if (!league) throw new Error("fixture league was not created");
+  const [location] = await db.insert(locations).values({
+    organizationId,
+    name: `Payment Operations Location ${label}`,
+  }).returning({ id: locations.id });
+  if (!location) throw new Error("fixture location was not created");
+  await db.update(leagues).set({ locationId: location.id }).where(eq(leagues.id, league.id));
 
   const [bowler] = await db.insert(bowlers).values({
     name: `Payment Operations Bowler ${label}`,
     organizationId,
   }).returning({ id: bowlers.id });
   if (!bowler) throw new Error("fixture bowler was not created");
+  const [actor] = await db.insert(users).values({
+    email: `payment-operations-${label.toLowerCase()}-${poolSuffix}@example.test`,
+    password: "payment-operations-test-password-hash",
+    name: `Payment Operations Actor ${label}`,
+    role: "org_admin",
+    organizationId,
+  }).returning({ id: users.id });
+  if (!actor) throw new Error("fixture actor was not created");
+  if (label === "A") scheduleAActorId = actor.id;
+  if (label === "B") scheduleBActorId = actor.id;
 
   const [team] = await db.insert(teams).values({
     name: `Payment Operations Team ${label}`,
@@ -102,98 +121,104 @@ async function createFixtureSchedule(organizationId: number, label: string): Pro
     leagueId: league.id,
     teamId: team.id,
   });
-
-  const [schedule] = await db.insert(paymentSchedules).values({
-    bowlerId: bowler.id,
+  await db.insert(teamPaymentSlots).values([
+    { organizationId, leagueId: league.id, teamId: team.id, slotIndex: 0, lineupSize: 3, occupant: "main", mainBowlerId: bowler.id, recordedByUserId: actor.id },
+    { organizationId, leagueId: league.id, teamId: team.id, slotIndex: 1, lineupSize: 3, occupant: "vacant", mainBowlerId: null, recordedByUserId: actor.id },
+    { organizationId, leagueId: league.id, teamId: team.id, slotIndex: 2, lineupSize: 3, occupant: "vacant", mainBowlerId: null, recordedByUserId: actor.id },
+  ]);
+  const commandId = randomUUID();
+  await db.insert(leagueScheduleCommands).values({
+    id: commandId,
+    organizationId,
     leagueId: league.id,
-    frequency: "weekly",
-    amount: 2_000,
-    nextPaymentDate: "2032-01-05T23:30:00.000Z",
-    paymentCardId: `fake-card-${label.toLowerCase()}`,
-  }).returning({ id: paymentSchedules.id });
-  if (!schedule) throw new Error("fixture schedule was not created");
-  return schedule.id;
+    actorUserId: actor.id,
+    commandType: "publish",
+    idempotencyKey: `payment-operations-publish-${poolSuffix}-${label}`,
+    requestFingerprint: `payment-operations-fingerprint-${label}`,
+  });
+  const startAt = "2032-02-02T12:00:00.000Z";
+  const [occurrence] = await db.insert(leagueOccurrences).values({
+    organizationId,
+    leagueId: league.id,
+    locationId: location.id,
+    generationKey: `payment-operations-occurrence-${poolSuffix}-${label}`,
+    kind: "regular",
+    status: "scheduled",
+    lifecycle: "published",
+    authoritativeLocalDate: "2032-02-02",
+    authoritativeLocalStartTime: "12:00:00",
+    timezone: "UTC",
+    startAt,
+    selectedUtcOffsetMinutes: 0,
+    foldResolution: "unambiguous",
+    resolverVersion: "payment-operations-test",
+    plannedOrdinal: 1,
+    competitionNumber: 1,
+    competitive: true,
+    countsInStandings: true,
+    publishedAt: startAt,
+    publishedByUserId: actor.id,
+    publicationCommandId: commandId,
+    lastCommandId: commandId,
+  }).returning({ id: leagueOccurrences.id });
+  if (!occurrence) throw new Error("fixture occurrence was not created");
+  await db.transaction((tx) => materializeRosterPaymentOccurrenceInTransaction(tx, {
+    organizationId,
+    leagueId: league.id,
+    occurrenceId: occurrence.id,
+    actorUserId: actor.id,
+  }));
+
+  return league.id;
 }
 
 async function createOperation(
   organizationId = orgAId,
-  paymentScheduleId = scheduleAId,
-  billingCycleAt = cycleAt(),
+  leagueId = scheduleAId,
+  requestTimestamp = cycleAt(),
   amountMinor = 2_000,
 ) {
-  return createOrGetScheduledPaymentOperation({
+  const operation = await createOrGetGeneralInteractivePaymentOperation({
     organizationId,
-    paymentScheduleId,
-    billingCycleAt,
+    leagueId,
+    requestKey: `ledger-${leagueId}-${requestTimestamp.getTime()}-${randomUUID()}`,
     amountMinor,
     currency: "USD",
     providerName: "square",
+    authorizingUserId: organizationId === orgAId ? scheduleAActorId : scheduleBActorId,
   });
+  return operation;
 }
 
 async function getScheduleContext(scheduleId = scheduleAId): Promise<{
   bowlerId: number;
   leagueId: number;
+  obligationId: string;
+  responsibilityId: string;
+  responsibilityVersion: number;
+  weekOf: string;
 }> {
   const [schedule] = await db
     .select({
-      bowlerId: paymentSchedules.bowlerId,
-      leagueId: paymentSchedules.leagueId,
+      bowlerId: bowlers.id,
+      leagueId: leagues.id,
+      obligationId: paymentObligations.id,
+      responsibilityId: occurrencePaymentResponsibilities.id,
+      responsibilityVersion: occurrencePaymentResponsibilities.version,
+      weekOf: paymentObligations.dueAt,
     })
-    .from(paymentSchedules)
-    .where(eq(paymentSchedules.id, scheduleId))
+    .from(bowlerLeagues)
+    .innerJoin(bowlers, eq(bowlers.id, bowlerLeagues.bowlerId))
+    .innerJoin(leagues, eq(leagues.id, bowlerLeagues.leagueId))
+    .innerJoin(occurrencePaymentResponsibilities, eq(occurrencePaymentResponsibilities.leagueId, leagues.id))
+    .innerJoin(paymentObligations, eq(paymentObligations.responsibilityId, occurrencePaymentResponsibilities.id))
+    .where(and(
+      eq(bowlerLeagues.leagueId, scheduleId),
+      eq(occurrencePaymentResponsibilities.state, "active"),
+    ))
     .limit(1);
   if (!schedule) throw new Error("fixture schedule was not found");
   return schedule;
-}
-
-async function buildDirectSnapshot(
-  operation: Awaited<ReturnType<typeof createOperation>>,
-  overrides: Partial<ScheduledPaymentSemanticSnapshot> = {},
-): Promise<ScheduledPaymentSemanticSnapshot> {
-  if (!operation.paymentScheduleId || !operation.billingCycleAt) {
-    throw new Error("scheduled operation fixture is incomplete");
-  }
-  const { bowlerId, leagueId } = await getScheduleContext(operation.paymentScheduleId);
-  return {
-    snapshotVersion: 1,
-    organizationId: operation.organizationId,
-    paymentScheduleId: operation.paymentScheduleId,
-    billingCycleAt: timestampToIso(operation.billingCycleAt) ?? operation.billingCycleAt,
-    amountMinor: operation.amountMinor,
-    currency: operation.currency,
-    providerName: operation.providerName,
-    leagueId,
-    locationId: null,
-    providerLocationId: "L_IMMUTABLE_TEST",
-    requestKind: "direct",
-    squarePaymentIdempotencyKey: deriveSquareOperationIdempotencyKey(
-      operation.providerIdempotencyKey,
-      "payment",
-    ),
-    squareOrderIdempotencyKey: null,
-    autocomplete: true,
-    storeCard: false,
-    sourceId: "fake-encrypted-source-reference",
-    customerId: "fake-customer-reference",
-    buyerEmail: "fixture@example.test",
-    isDoublePay: false,
-    deactivateScheduleOnPreparation: false,
-    paidInFullThresholdAmountMinor: null,
-    seasonStartAt: null,
-    seasonEndAt: null,
-    allocations: [{
-      allocationIndex: 0,
-      bowlerId,
-      amountMinor: operation.amountMinor,
-      lineageAmountMinor: 0,
-      prizeFundAmountMinor: 0,
-      notes: null,
-      paidByUserId: null,
-    }],
-    lineItems: [],
-    ...overrides,
-  };
 }
 
 async function linkedPaymentValues(input: {
@@ -244,10 +269,10 @@ beforeAll(async () => {
 
 function buildInteractiveSnapshot(
   operation: Awaited<ReturnType<typeof createOrGetGeneralInteractivePaymentOperation>>,
-  context: { bowlerId: number; leagueId: number },
-  overrides: Partial<InteractivePaymentSemanticSnapshot> = {},
-): InteractivePaymentSemanticSnapshot {
-  const weekOf = "2032-02-02T00:00:00.000Z";
+  context: { bowlerId: number; leagueId: number; obligationId: string; responsibilityId: string; responsibilityVersion: number; weekOf: string },
+  overrides: Partial<RosterOperationSemanticSnapshot> = {},
+): RosterOperationSemanticSnapshot {
+  const weekOf = new Date(context.weekOf).toISOString();
   return {
     snapshotVersion: 2,
     organizationId: operation.organizationId,
@@ -269,7 +294,7 @@ function buildInteractiveSnapshot(
     buyerEmail: "interactive@example.test",
     storeCard: false,
     sourceKind: "new_card",
-    weekOf,
+    quoteFingerprint: `lvrosterquote:v1:${"a".repeat(64)}`,
     combinedChargeGroupId: null,
     allocations: [{
       allocationIndex: 0,
@@ -280,10 +305,36 @@ function buildInteractiveSnapshot(
       weekOf,
       notes: "Interactive test payment",
       paidByUserId: null,
+      obligationId: context.obligationId,
+      responsibilityId: context.responsibilityId,
+      responsibilityVersion: context.responsibilityVersion,
     }],
     lineItems: [],
     ...overrides,
   };
+}
+
+async function persistSnapshotWithReleasedReservation(
+  operation: Awaited<ReturnType<typeof createOrGetGeneralInteractivePaymentOperation>>,
+  snapshot: RosterOperationSemanticSnapshot,
+): Promise<RosterOperationSemanticSnapshot> {
+  const allocation = snapshot.allocations[0];
+  if (!allocation?.obligationId) throw new Error("snapshot fixture obligation is missing");
+  const obligationId = allocation.obligationId;
+  let persisted!: RosterOperationSemanticSnapshot;
+  await db.transaction(async (tx) => {
+    persisted = await persistRosterOperationSnapshot(operation, snapshot, tx);
+    await tx.insert(paymentOperationRosterSnapshotItems).values([{
+      operationId: operation.id,
+      organizationId: operation.organizationId,
+      leagueId: snapshot.leagueId,
+      obligationId,
+      allocationIndex: allocation.allocationIndex,
+      amountMinor: allocation.amountMinor,
+      state: "released",
+    }]).onConflictDoNothing();
+  });
+  return persisted;
 }
 
 describe("general interactive payment operation foundation", () => {
@@ -291,6 +342,8 @@ describe("general interactive payment operation foundation", () => {
     const requestKey = `same-request-${randomUUID()}`;
     const input = {
       organizationId: orgAId,
+      leagueId: scheduleAId,
+      authorizingUserId: scheduleAActorId,
       requestKey,
       amountMinor: 2_000,
       currency: "USD",
@@ -313,6 +366,8 @@ describe("general interactive payment operation foundation", () => {
     const [first, second] = await Promise.all([
       createOrGetGeneralInteractivePaymentOperation({
         organizationId: orgAId,
+        leagueId: scheduleAId,
+        authorizingUserId: scheduleAActorId,
         requestKey: `new-request-a-${randomUUID()}`,
         amountMinor: 2_000,
         currency: "USD",
@@ -320,6 +375,8 @@ describe("general interactive payment operation foundation", () => {
       }),
       createOrGetGeneralInteractivePaymentOperation({
         organizationId: orgAId,
+        leagueId: scheduleAId,
+        authorizingUserId: scheduleAActorId,
         requestKey: `new-request-b-${randomUUID()}`,
         amountMinor: 2_000,
         currency: "USD",
@@ -333,6 +390,8 @@ describe("general interactive payment operation foundation", () => {
   it("bounds the request key so the namespaced target fits the ledger column", async () => {
     await expect(createOrGetGeneralInteractivePaymentOperation({
       organizationId: orgAId,
+      leagueId: scheduleAId,
+      authorizingUserId: scheduleAActorId,
       requestKey: "a".repeat(GENERAL_INTERACTIVE_REQUEST_KEY_MAX_LENGTH),
       amountMinor: 2_000,
       currency: "USD",
@@ -343,6 +402,8 @@ describe("general interactive payment operation foundation", () => {
 
     await expect(createOrGetGeneralInteractivePaymentOperation({
       organizationId: orgAId,
+      leagueId: scheduleAId,
+      authorizingUserId: scheduleAActorId,
       requestKey: "b".repeat(GENERAL_INTERACTIVE_REQUEST_KEY_MAX_LENGTH + 1),
       amountMinor: 2_000,
       currency: "USD",
@@ -354,6 +415,8 @@ describe("general interactive payment operation foundation", () => {
     const requestKey = `mismatch-${randomUUID()}`;
     await createOrGetGeneralInteractivePaymentOperation({
       organizationId: orgAId,
+      leagueId: scheduleAId,
+      authorizingUserId: scheduleAActorId,
       requestKey,
       amountMinor: 2_000,
       currency: "USD",
@@ -362,6 +425,8 @@ describe("general interactive payment operation foundation", () => {
 
     await expect(createOrGetGeneralInteractivePaymentOperation({
       organizationId: orgAId,
+      leagueId: scheduleAId,
+      authorizingUserId: scheduleAActorId,
       requestKey,
       amountMinor: 2_500,
       currency: "USD",
@@ -369,48 +434,11 @@ describe("general interactive payment operation foundation", () => {
     })).rejects.toBeInstanceOf(PaymentOperationImmutableMismatchError);
   });
 
-  it("binds canonical occurrence intent into immutable request identity and serializes distinct reservations", async () => {
-    const requestKeyA = `f2-reservation-a-${randomUUID()}`;
-    const requestKeyB = `f2-reservation-b-${randomUUID()}`;
-    const selections = [{ obligationId: randomUUID(), amountMinor: 2_000 }];
-    const intentA = fingerprintInteractiveOccurrenceIntent({ selections, quoteFingerprint: `lvpayquote:v1:${'a'.repeat(64)}` });
-    const intentB = fingerprintInteractiveOccurrenceIntent({ selections, quoteFingerprint: `lvpayquote:v1:${'b'.repeat(64)}` });
-    const [first, second] = await Promise.all([
-      createOrGetGeneralInteractivePaymentOperation({ organizationId: orgAId, requestKey: requestKeyA, amountMinor: 2_000, currency: 'USD', providerName: 'square', immutableSemanticFingerprint: intentA }),
-      createOrGetGeneralInteractivePaymentOperation({ organizationId: orgAId, requestKey: requestKeyB, amountMinor: 2_000, currency: 'USD', providerName: 'square', immutableSemanticFingerprint: intentB }),
-    ]);
-    expect(first.id).not.toBe(second.id);
-    expect(first.requestFingerprint).not.toBe(second.requestFingerprint);
-    const baseIdentity = buildPaymentOperationIdentity({
-      organizationId: orgAId,
-      operationType: 'interactive_charge',
-      targetKey: first.targetKey,
-      amountMinor: 2_000,
-      currency: 'USD',
-      providerName: 'square',
-    });
-    expect(first.requestFingerprint).toBe(bindInteractiveOccurrenceRequestFingerprint(baseIdentity.requestFingerprint, intentA));
-    await expect(createOrGetGeneralInteractivePaymentOperation({
-      organizationId: orgAId,
-      requestKey: requestKeyA,
-      amountMinor: 2_000,
-      currency: 'USD',
-      providerName: 'square',
-      immutableSemanticFingerprint: intentB,
-    })).rejects.toBeInstanceOf(PaymentOperationImmutableMismatchError);
-  });
-
-  it("normalizes selection order for the semantic fingerprint", () => {
-    const first = { obligationId: '11111111-1111-4111-8111-111111111111', amountMinor: 500 };
-    const second = { obligationId: '22222222-2222-4222-8222-222222222222', amountMinor: 1_500 };
-    const quoteFingerprint = `lvpayquote:v1:${'c'.repeat(64)}`;
-    expect(fingerprintInteractiveOccurrenceIntent({ selections: [first, second], quoteFingerprint }))
-      .toBe(fingerprintInteractiveOccurrenceIntent({ selections: [second, first], quoteFingerprint }));
-  });
-
   it("persists one encrypted, tenant-validated snapshot under concurrent duplicate preparation", async () => {
     const operation = await createOrGetGeneralInteractivePaymentOperation({
       organizationId: orgAId,
+      leagueId: scheduleAId,
+      authorizingUserId: scheduleAActorId,
       requestKey: `snapshot-${randomUUID()}`,
       amountMinor: 2_000,
       currency: "USD",
@@ -420,38 +448,41 @@ describe("general interactive payment operation foundation", () => {
     const snapshot = buildInteractiveSnapshot(operation, context);
 
     const [first, second] = await Promise.all([
-      db.transaction((tx) => persistInteractivePaymentOperationSnapshot(operation, snapshot, tx)),
-      db.transaction((tx) => persistInteractivePaymentOperationSnapshot(operation, snapshot, tx)),
+      persistSnapshotWithReleasedReservation(operation, snapshot),
+      persistSnapshotWithReleasedReservation(operation, snapshot),
     ]);
     expect(first).toEqual(snapshot);
     expect(second).toEqual(snapshot);
-    expect(await getInteractivePaymentOperationSnapshotForOrganization(orgAId, operation.id))
+    expect(await getRosterOperationSnapshotForOrganization(orgAId, operation.id))
       .toEqual(snapshot);
-    expect(await getInteractivePaymentOperationSnapshotForOrganization(orgBId, operation.id))
+    expect(await getRosterOperationSnapshotForOrganization(orgBId, operation.id))
       .toBeUndefined();
   });
 
   it("rejects a changed snapshot fingerprint instead of converging silently", async () => {
     const operation = await createOrGetGeneralInteractivePaymentOperation({
       organizationId: orgAId,
+      leagueId: scheduleAId,
+      authorizingUserId: scheduleAActorId,
       requestKey: `snapshot-mismatch-${randomUUID()}`,
       amountMinor: 2_000,
       currency: "USD",
       providerName: "square",
     });
     const snapshot = buildInteractiveSnapshot(operation, await getScheduleContext(scheduleAId));
-    await db.transaction((tx) => persistInteractivePaymentOperationSnapshot(operation, snapshot, tx));
+    await persistSnapshotWithReleasedReservation(operation, snapshot);
 
-    await expect(db.transaction((tx) => persistInteractivePaymentOperationSnapshot(
+    await expect(persistSnapshotWithReleasedReservation(
       operation,
       { ...snapshot, sourceId: "cnon-different-source" },
-      tx,
-    ))).rejects.toBeInstanceOf(PaymentOperationImmutableMismatchError);
+    )).rejects.toBeInstanceOf(PaymentOperationImmutableMismatchError);
   });
 
   it("returns a deterministic fingerprint mismatch to the losing concurrent preparer", async () => {
     const operation = await createOrGetGeneralInteractivePaymentOperation({
       organizationId: orgAId,
+      leagueId: scheduleAId,
+      authorizingUserId: scheduleAActorId,
       requestKey: `concurrent-mismatch-${randomUUID()}`,
       amountMinor: 2_000,
       currency: "USD",
@@ -462,8 +493,8 @@ describe("general interactive payment operation foundation", () => {
     const secondSnapshot = { ...firstSnapshot, buyerEmail: "different@example.test" };
 
     const results = await Promise.allSettled([
-      db.transaction((tx) => persistInteractivePaymentOperationSnapshot(operation, firstSnapshot, tx)),
-      db.transaction((tx) => persistInteractivePaymentOperationSnapshot(operation, secondSnapshot, tx)),
+      persistSnapshotWithReleasedReservation(operation, firstSnapshot),
+      persistSnapshotWithReleasedReservation(operation, secondSnapshot),
     ]);
     expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
     const rejection = results.find((result) => result.status === "rejected");
@@ -474,62 +505,24 @@ describe("general interactive payment operation foundation", () => {
   it("rejects cross-tenant league, payer, and allocation references", async () => {
     const operation = await createOrGetGeneralInteractivePaymentOperation({
       organizationId: orgAId,
+      leagueId: scheduleAId,
+      authorizingUserId: scheduleAActorId,
       requestKey: `tenant-mismatch-${randomUUID()}`,
       amountMinor: 2_000,
       currency: "USD",
       providerName: "square",
     });
     const tenantBContext = await getScheduleContext(scheduleBId);
-    const snapshot = buildInteractiveSnapshot(operation, {
-      bowlerId: tenantBContext.bowlerId,
-      leagueId: tenantBContext.leagueId,
-    });
+    const snapshot = buildInteractiveSnapshot(operation, tenantBContext);
 
-    await expect(db.transaction((tx) => persistInteractivePaymentOperationSnapshot(
+    await expect(persistSnapshotWithReleasedReservation(
       operation,
       snapshot,
-      tx,
-    ))).rejects.toBeInstanceOf(PaymentOperationValidationError);
-    expect(await getInteractivePaymentOperationSnapshotForOrganization(orgAId, operation.id))
+    )).rejects.toBeInstanceOf(PaymentOperationImmutableMismatchError);
+    expect(await getRosterOperationSnapshotForOrganization(orgAId, operation.id))
       .toBeUndefined();
   });
 
-  it("enforces the allocation total at the PostgreSQL transaction boundary", async () => {
-    const operation = await createOrGetGeneralInteractivePaymentOperation({
-      organizationId: orgAId,
-      requestKey: `database-total-${randomUUID()}`,
-      amountMinor: 2_000,
-      currency: "USD",
-      providerName: "square",
-    });
-    const context = await getScheduleContext(scheduleAId);
-    const snapshot = buildInteractiveSnapshot(operation, context);
-    const stored = encryptInteractivePaymentSnapshot(snapshot);
-
-    try {
-      await db.transaction(async (tx) => {
-        await tx.insert(interactivePaymentOperationSnapshots).values({
-          operationId: operation.id,
-          ...stored,
-        });
-        await tx.insert(interactivePaymentOperationAllocations).values({
-          operationId: operation.id,
-          allocationIndex: 0,
-          bowlerId: context.bowlerId,
-          amountMinor: 1_999,
-          lineageAmountMinor: 1_000,
-          prizeFundAmountMinor: 999,
-          weekOf: snapshot.weekOf,
-          notes: null,
-          paidByUserId: null,
-        });
-      });
-      throw new Error("invalid allocation total was committed");
-    } catch (error) {
-      if (!(error instanceof Error) || !(error.cause instanceof Error)) throw error;
-      expect(error.cause.message).toMatch(/allocation total must equal operation amount/i);
-    }
-  });
 });
 
 afterAll(async () => {
@@ -538,83 +531,6 @@ afterAll(async () => {
 });
 
 describe("payment operation ledger PostgreSQL invariants", () => {
-  it("converges two schedule-cycle creates on one logical row", async () => {
-    const billingCycleAt = cycleAt();
-    const input = {
-      organizationId: orgAId,
-      paymentScheduleId: scheduleAId,
-      billingCycleAt,
-      amountMinor: 2_000,
-      currency: "USD",
-      providerName: "square",
-    };
-
-    const [first, second] = await Promise.all([
-      createOrGetScheduledPaymentOperation(input),
-      createOrGetScheduledPaymentOperation(input),
-    ]);
-    expect(second.id).toBe(first.id);
-
-    const rows = await db.select({ id: paymentOperations.id })
-      .from(paymentOperations)
-      .where(and(
-        eq(paymentOperations.paymentScheduleId, scheduleAId),
-        sql`${paymentOperations.billingCycleAt} = ${billingCycleAt.toISOString()}`,
-      ));
-    expect(rows).toHaveLength(1);
-  });
-
-  it("fails closed when an immutable recurring request changes", async () => {
-    const billingCycleAt = cycleAt();
-    await createOperation(orgAId, scheduleAId, billingCycleAt, 2_000);
-    await expect(createOperation(orgAId, scheduleAId, billingCycleAt, 2_500))
-      .rejects.toBeInstanceOf(PaymentOperationImmutableMismatchError);
-  });
-
-  it("persists and verifies the encrypted execution snapshot in the caller transaction", async () => {
-    const operation = await createOperation();
-    const snapshot = await buildDirectSnapshot(operation);
-    const persisted = await db.transaction(async (tx) =>
-      persistScheduledPaymentOperationSnapshot(operation, snapshot, tx));
-    expect(persisted).toEqual(snapshot);
-
-    const loaded = await getScheduledPaymentOperationSnapshotForOrganization(orgAId, operation.id);
-    expect(loaded).toEqual(snapshot);
-    expect(await getScheduledPaymentOperationSnapshotForOrganization(orgBId, operation.id))
-      .toBeUndefined();
-
-    await expect(db.transaction(async (tx) =>
-      persistScheduledPaymentOperationSnapshot(
-        operation,
-        { ...snapshot, sourceId: "changed-source-reference" },
-        tx,
-      )))
-      .rejects.toBeInstanceOf(PaymentOperationImmutableMismatchError);
-  });
-
-  it("rejects cross-tenant references before persisting an execution snapshot", async () => {
-    const operation = await createOperation();
-    const snapshot = await buildDirectSnapshot(operation);
-    const tenantBSchedule = await getScheduleContext(scheduleBId);
-
-    await expect(db.transaction(async (tx) =>
-      persistScheduledPaymentOperationSnapshot(
-        operation,
-        {
-          ...snapshot,
-          allocations: [{
-            ...snapshot.allocations[0],
-            bowlerId: tenantBSchedule.bowlerId,
-          }],
-        },
-        tx,
-      )))
-      .rejects.toBeInstanceOf(PaymentOperationValidationError);
-
-    expect(await getScheduledPaymentOperationSnapshotForOrganization(orgAId, operation.id))
-      .toBeUndefined();
-  });
-
   it("allows exactly one active lease and will not steal it before expiry", async () => {
     const operation = await createOperation();
     const now = new Date(Date.now() + 2_000);
@@ -1099,24 +1015,6 @@ describe("payment operation ledger PostgreSQL invariants", () => {
       now: new Date(afterExpiry.getTime() + 2),
     });
     expect(reconciled.status).toBe("succeeded");
-  });
-
-  it("exposes the dormant legacy guard without connecting it to production", async () => {
-    const operation = await createOperation();
-    expect(await hasNonterminalScheduledPaymentOperation({
-      organizationId: orgAId,
-      paymentScheduleId: scheduleAId,
-    })).toBe(true);
-    expect(await hasNonterminalScheduledPaymentOperation({
-      organizationId: orgBId,
-      paymentScheduleId: scheduleAId,
-    })).toBe(false);
-
-    await cancelPaymentOperation({
-      organizationId: orgAId,
-      operationId: operation.id,
-      now: new Date(Date.now() + 2_000),
-    });
   });
 
   it("records terminal failure and deliberate cancellation without raw error detail", async () => {

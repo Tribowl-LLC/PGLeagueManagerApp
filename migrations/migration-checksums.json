@@ -204,6 +204,12 @@
       "tag": "0033_roster_standing_autopay",
       "createdAt": 1787662614604,
       "hash": "2e2e58955a34c56ea731bb5dc8a7901314a33b89d275e6438cb7d3805c4a5dd7"
+    },
+    {
+      "idx": 34,
+      "tag": "0034_pr3_canonical_steady_state",
+      "createdAt": 1787766288339,
+      "hash": "44c32422e4c40d1ed65ae5196af9d3d3f0ff4172a33f66c8860700d88ab573ac"
     }
   ]
 }

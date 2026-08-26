@@ -251,7 +251,6 @@ describe("league setup integration API", () => {
       { ...futureBody(32), previousSeasonId: sameTenantPrevious.id },
       { ...futureBody(33), previousSeasonId: crossTenantPrevious.id },
       { ...futureBody(34), seasonNumber: 99 },
-      { ...futureBody(35), finalTwoWeeksDueWeek: 4 },
       { ...futureBody(36), unsupportedSetupField: "not accepted" },
     ];
     for (const body of attempts) {

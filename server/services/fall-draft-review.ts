@@ -13,7 +13,6 @@ import {
   leagueScheduleExceptions,
   games,
   paymentOperations,
-  paymentSchedules,
   paymentObligations,
   paymentAllocations,
   canonicalCollectionGroupMembers,
@@ -425,11 +424,8 @@ async function loadRows(tx: LeagueScheduleTransaction, scope: FallDraftScope, lo
     ));
   const linkedOperations = occurrenceIds.length === 0 ? [] : await tx.select({
     occurrenceId: paymentOperations.triggerOccurrenceId,
-    scheduleLeagueId: paymentSchedules.leagueId,
-  }).from(paymentOperations).innerJoin(
-    paymentSchedules,
-    eq(paymentSchedules.id, paymentOperations.paymentScheduleId),
-  ).where(and(
+    scheduleLeagueId: paymentOperations.leagueId,
+  }).from(paymentOperations).where(and(
     eq(paymentOperations.organizationId, scope.organizationId),
     inArray(paymentOperations.triggerOccurrenceId, occurrenceIds),
   ));

@@ -119,11 +119,11 @@ describe('NODE_ENV env-schema entry', () => {
 describe('SCHEDULED_PAYMENT_EXECUTION_MODE startup gate', () => {
   const field = envSchema.shape.SCHEDULED_PAYMENT_EXECUTION_MODE;
 
-  it.each(['legacy', 'ledger_paused', 'ledger_execute'])('accepts %s', (value) => {
+  it.each(['ledger_paused', 'ledger_execute'])('accepts %s', (value) => {
     expect(field.safeParse(value).success).toBe(true);
   });
 
-  it.each(['', 'paused', 'execute', 'LEGACY'])('rejects %s', (value) => {
+  it.each(['', 'paused', 'execute', 'legacy', 'LEGACY'])('rejects %s', (value) => {
     expect(field.safeParse(value).success).toBe(false);
   });
 
@@ -140,16 +140,16 @@ describe('SCHEDULED_PAYMENT_EXECUTION_MODE startup gate', () => {
     })).toMatchObject({ ok: false });
   });
 
-  it('keeps local and test runtimes on legacy when mode is omitted', () => {
+  it('keeps local and test runtimes paused when mode is omitted', () => {
     expect(validateScheduledPaymentExecutionMode({
       mode: undefined,
       nodeEnv: 'test',
       appEnv: 'dev',
-    })).toEqual({ ok: true, mode: 'legacy' });
+    })).toEqual({ ok: true, mode: 'ledger_paused' });
   });
 
   it('honors every explicit production mode', () => {
-    for (const mode of ['legacy', 'ledger_paused', 'ledger_execute'] as const) {
+    for (const mode of ['ledger_paused', 'ledger_execute'] as const) {
       expect(validateScheduledPaymentExecutionMode({
         mode,
         nodeEnv: 'production',

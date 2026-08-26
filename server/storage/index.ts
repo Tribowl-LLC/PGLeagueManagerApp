@@ -81,11 +81,8 @@ export class DatabaseStorage implements IStorage {
   createOrGetInteractivePaymentOperation!: IStorage["createOrGetInteractivePaymentOperation"];
   createOrGetGeneralInteractivePaymentOperation!: IStorage["createOrGetGeneralInteractivePaymentOperation"];
   createOrGetRefundPaymentOperation!: IStorage["createOrGetRefundPaymentOperation"];
-  createOrGetScheduledPaymentOperation!: IStorage["createOrGetScheduledPaymentOperation"];
-  persistScheduledPaymentOperationSnapshot!: IStorage["persistScheduledPaymentOperationSnapshot"];
-  getScheduledPaymentOperationSnapshotForOrganization!: IStorage["getScheduledPaymentOperationSnapshotForOrganization"];
-  persistInteractivePaymentOperationSnapshot!: IStorage["persistInteractivePaymentOperationSnapshot"];
-  getInteractivePaymentOperationSnapshotForOrganization!: IStorage["getInteractivePaymentOperationSnapshotForOrganization"];
+  persistRosterOperationSnapshot!: IStorage["persistRosterOperationSnapshot"];
+  getRosterOperationSnapshotForOrganization!: IStorage["getRosterOperationSnapshotForOrganization"];
   persistRefundPaymentOperationSnapshot!: IStorage["persistRefundPaymentOperationSnapshot"];
   getRefundPaymentOperationSnapshotForOrganization!: IStorage["getRefundPaymentOperationSnapshotForOrganization"];
   getPaymentOperationForOrganization!: IStorage["getPaymentOperationForOrganization"];
@@ -101,7 +98,6 @@ export class DatabaseStorage implements IStorage {
   reconcilePaymentOperationSuccess!: IStorage["reconcilePaymentOperationSuccess"];
   getNextPaymentOperationWake!: IStorage["getNextPaymentOperationWake"];
   recordExpiredPaymentOperationAttemptExhausted!: IStorage["recordExpiredPaymentOperationAttemptExhausted"];
-  hasNonterminalScheduledPaymentOperation!: IStorage["hasNonterminalScheduledPaymentOperation"];
   cancelPaymentOperation!: IStorage["cancelPaymentOperation"];
 
 

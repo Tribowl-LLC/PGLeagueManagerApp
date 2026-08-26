@@ -6,24 +6,10 @@ import {
   interactiveObligationQuoteRequestV2Schema,
   occurrenceResponsibilityInputSchema,
   rosterPaymentResponsibilityRequestSchema,
+  calculateRosterPaymentTiming,
 } from "@shared/roster-payment-contract";
-import {
-  validateInteractiveOccurrenceBaseAllocations,
-  validateInteractiveOccurrenceSelections,
-} from "../../server/services/interactive-occurrence-allocation";
-import { calculateRosterPaymentTiming } from "../../server/services/roster-payment-core";
 
 const id = "00000000-0000-4000-8000-000000000001";
-const id2 = "00000000-0000-4000-8000-000000000002";
-
-function expectAllocationError(fn: () => void, code: string): void {
-  try {
-    fn();
-    throw new Error("expected allocation validation to fail");
-  } catch (error) {
-    expect((error as { code?: string }).code).toBe(code);
-  }
-}
 
 describe("PR1 roster-driven payment contract", () => {
   it("requires exact stable slots and permits explicit VACANT without a bowler", () => {
@@ -64,24 +50,6 @@ describe("PR1 roster-driven payment contract", () => {
       dueAt: "2032-10-01T19:00:00.000Z",
       pastDueAt: "2032-10-01T22:00:00.000Z",
     });
-  });
-
-  it("allows partial exact allocations but never over-allocates an obligation", () => {
-    const rows = [{ obligationId: id, outstandingMinor: 1000 }];
-    expect(() => validateInteractiveOccurrenceSelections(rows, [{ obligationId: id, amountMinor: 400 }], 400)).not.toThrow();
-    expectAllocationError(() => validateInteractiveOccurrenceSelections(rows, [{ obligationId: id, amountMinor: 1200 }], 1200), "INVALID_SELECTION");
-    expectAllocationError(() => validateInteractiveOccurrenceSelections(rows, [{ obligationId: id, amountMinor: 400 }, { obligationId: id2, amountMinor: 100 }], 500), "INVALID_SELECTION");
-  });
-
-  it("requires all independent payer totals to be conserved", () => {
-    expect(() => validateInteractiveOccurrenceBaseAllocations(
-      [{ bowlerId: 10, amountMinor: 500 }, { bowlerId: 11, amountMinor: 500 }],
-      [{ bowlerId: 10, amountMinor: 500 }, { bowlerId: 11, amountMinor: 500 }],
-    )).not.toThrow();
-    expectAllocationError(() => validateInteractiveOccurrenceBaseAllocations(
-      [{ bowlerId: 10, amountMinor: 1000 }],
-      [{ bowlerId: 10, amountMinor: 500 }, { bowlerId: 11, amountMinor: 500 }],
-    ), "BASE_ALLOCATION_MISMATCH");
   });
 
   it("requires exact IDs for quote/charge/manual/correction commands", () => {

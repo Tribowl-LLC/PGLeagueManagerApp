@@ -47,11 +47,36 @@ describe("standing automatic-payment contract", () => {
 
   it("keeps the scheduler and migration on the clean standing boundary", () => {
     const wakeSource = readFileSync("server/storage/payment-operations.ts", "utf8");
-    const migration = readFileSync("migrations/0033_roster_standing_autopay.sql", "utf8");
+    const migration = readFileSync("migrations/0034_pr3_canonical_steady_state.sql", "utf8");
     expect(wakeSource).toContain("po.operation_type = 'standing_autopay_charge'");
     expect(wakeSource).toContain("po.status <> 'provider_unknown' OR po.provider_object_id IS NULL");
-    expect(migration).toContain("LOCK TABLE \"autopay_consents\", \"payment_schedules\", \"payment_operations\"");
-    expect(migration).toContain("no consent backfill is permitted");
+    expect(migration).toContain("LOCK TABLE \"payment_schedules\", \"autopay_setup_requests\"");
+    expect(migration).toContain("\"payments\", \"refund_payment_operation_snapshots\"");
+    expect(migration).toContain("0034 refused: canonical financial or standing evidence is not empty");
+    expect(migration).toContain("WHERE \"status\" NOT IN ('succeeded', 'action_required', 'failed_terminal', 'canceled')");
+    expect(migration).not.toContain('payment_operation_roster_snapshots" DROP COLUMN "week_of"');
     expect(migration).toContain("payment_operation_standing_autopay_bindings");
+    expect(migration).not.toContain("CASCADE");
+    expect(migration).toContain('DELETE FROM "refund_payment_operation_snapshots"');
+    expect(migration).toContain('DELETE FROM "payments"');
+    expect(migration).toContain('DELETE FROM "payment_operations"');
+    expect(migration).toContain('ALTER TABLE "games" ALTER COLUMN "occurrence_id" SET NOT NULL');
+    for (const obsoleteFunction of [
+      "enforce_d2_obligation_amount_immutable()",
+      "assert_d2_collection_plan_obligation_amount(integer, integer, uuid, integer)",
+      "enforce_d2_collection_plan_item_amount()",
+      "enforce_d2_collection_plan_state_amount()",
+      "enforce_d2_payment_allocation_conservation()",
+      "enforce_financial_activation_completeness()",
+      "prevent_financial_activation_evidence_mutation()",
+      "f3_immutable_evidence_guard()",
+      "f3_provenance_immutable_guard()",
+      "f3_policy_occurrence_commit_guard()",
+      "f3_policy_complete_set_guard()",
+      "f3_current_revision_evidence_guard()",
+      "canonical_autopay_snapshot_immutable_guard()",
+    ]) expect(migration).toContain(`DROP FUNCTION IF EXISTS ${obsoleteFunction}`);
+    expect(migration).not.toContain("DROP FUNCTION IF EXISTS roster_payment_append_only_guard");
+    expect(migration).not.toContain('active legacy payment schedules require');
   });
 });

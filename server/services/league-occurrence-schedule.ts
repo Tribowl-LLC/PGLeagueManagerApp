@@ -601,13 +601,13 @@ async function linkedActivityOccurrenceIds(
            AND g.league_id = ${leagueId}
            AND g.occurrence_id IN (${sql.join(occurrenceIds.map((id) => sql`${id}::uuid`), sql`, `)})
         UNION ALL
-        SELECT po.trigger_occurrence_id AS occurrence_id, ps.league_id AS evidence_league_id
+        SELECT po.trigger_occurrence_id AS occurrence_id, pl.id AS evidence_league_id
           FROM payment_operations po
-          JOIN payment_schedules ps ON ps.id = po.payment_schedule_id
-          JOIN leagues pl ON pl.id = ps.league_id
+          JOIN leagues pl ON pl.id = po.league_id
          WHERE po.organization_id = ${organizationId}
            AND pl.organization_id = ${organizationId}
-           AND ps.league_id = ${leagueId}
+           AND po.league_id = ${leagueId}
+           AND po.operation_type = 'standing_autopay_charge'
            AND po.trigger_occurrence_id IN (${sql.join(occurrenceIds.map((id) => sql`${id}::uuid`), sql`, `)})
         UNION ALL
         SELECT occurrence_id, league_id FROM occurrence_payment_responsibilities

@@ -44,7 +44,6 @@ import {
   games,
   scores,
   payments,
-  paymentSchedules,
   bowlerLeagues,
   bowlerPaymentLinks,
   emailChangeRequests,
@@ -205,20 +204,6 @@ async function main(): Promise<void> {
               : leagueFilter
                 ? inArray(payments.leagueId, leagueIds)
                 : inArray(payments.bowlerId, bowlerIds),
-          )
-        : 0,
-    paymentSchedules:
-      leagueFilter || bowlerFilter
-        ? await countWhere(
-            paymentSchedules,
-            leagueFilter && bowlerFilter
-              ? or(
-                  inArray(paymentSchedules.leagueId, leagueIds),
-                  inArray(paymentSchedules.bowlerId, bowlerIds),
-                )
-              : leagueFilter
-                ? inArray(paymentSchedules.leagueId, leagueIds)
-                : inArray(paymentSchedules.bowlerId, bowlerIds),
           )
         : 0,
     bowlerLeagues:
@@ -497,10 +482,6 @@ async function main(): Promise<void> {
             await countWhere(bowlerLeagues, inArray(bowlerLeagues.bowlerId, bowlerIds)),
           ],
           ['payments.bowler_id', await countWhere(payments, inArray(payments.bowlerId, bowlerIds))],
-          [
-            'payment_schedules.bowler_id',
-            await countWhere(paymentSchedules, inArray(paymentSchedules.bowlerId, bowlerIds)),
-          ],
         ] satisfies Array<[string, number]>)
       : []),
     // League-id FK columns.
@@ -509,10 +490,6 @@ async function main(): Promise<void> {
           ['teams.league_id', await countWhere(teams, inArray(teams.leagueId, leagueIds))],
           ['games.league_id', await countWhere(games, inArray(games.leagueId, leagueIds))],
           ['payments.league_id', await countWhere(payments, inArray(payments.leagueId, leagueIds))],
-          [
-            'payment_schedules.league_id',
-            await countWhere(paymentSchedules, inArray(paymentSchedules.leagueId, leagueIds)),
-          ],
           [
             'bowler_leagues.league_id',
             await countWhere(bowlerLeagues, inArray(bowlerLeagues.leagueId, leagueIds)),

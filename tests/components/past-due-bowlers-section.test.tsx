@@ -61,7 +61,6 @@ function makeLeague(id: number, active: boolean, seasonStart: string): League {
     organizationId: 1,
     locationId: null,
     totalBowlingWeeks: 12,
-    finalTwoWeeksDueWeek: null,
     skipDates: [],
     cancelledDates: [],
     doublePayDates: [],

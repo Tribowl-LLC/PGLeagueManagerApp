@@ -372,8 +372,6 @@ curated map, not a complete module inventory.
 - [`shared/schedule-utils.ts`](../shared/schedule-utils.ts) — bowling-week
   calendars, skip/cancelled/double-pay dates, season boundaries, and week
   numbering.
-- [`shared/financial-utils.ts`](../shared/financial-utils.ts) — source-of-truth
-  past-due calculations shared by the client UI and server-side payment guards.
 - [`shared/season-utils.ts`](../shared/season-utils.ts) — season-related
   domain calculations.
 - [`shared/password-validation.ts`](../shared/password-validation.ts) — shared
@@ -416,8 +414,8 @@ curated map, not a complete module inventory.
   subdomain detection for organization branding and context.
 - [`client/src/lib/financial-utils.ts`](../client/src/lib/financial-utils.ts)
   and [`client/src/lib/league-filter-utils.ts`](../client/src/lib/league-filter-utils.ts)
-  — presentation helpers that build on shared business calculations without
-  replacing server authorization or final payment decisions.
+  — presentation-only helpers; canonical financial amounts and due status come
+  from server contracts rather than browser-side calculators.
 
 ## Change Guidance
 

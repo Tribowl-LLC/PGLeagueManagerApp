@@ -18,6 +18,7 @@ import { bowlers } from "./bowlers";
 import { leagueOccurrences } from "./canonical-occurrences";
 import { canonicalCollectionGroupMembers, canonicalCollectionGroups } from "./canonical-collection-groups";
 import { leagues } from "./leagues";
+import { locations } from "./locations";
 import { organizations } from "./organizations";
 import { paymentOperations } from "./payment-operations";
 import { payments } from "./payments";
@@ -52,6 +53,11 @@ export const AUTOPAY_CONSENT_PAYMENT_MODES = ["weekly"] as const;
 export type AutopayConsentPaymentMode = (typeof AUTOPAY_CONSENT_PAYMENT_MODES)[number];
 export const ROSTER_OPERATION_SNAPSHOT_KINDS = ["interactive", "standing_autopay"] as const;
 export type RosterOperationSnapshotKind = (typeof ROSTER_OPERATION_SNAPSHOT_KINDS)[number];
+export const ROSTER_OPERATION_SNAPSHOT_VERSION = 2 as const;
+export const ROSTER_OPERATION_REQUEST_KINDS = ["direct", "order"] as const;
+export type RosterOperationRequestKind = (typeof ROSTER_OPERATION_REQUEST_KINDS)[number];
+export const ROSTER_OPERATION_SOURCE_KINDS = ["new_card", "saved_card", "wallet"] as const;
+export type RosterOperationSourceKind = (typeof ROSTER_OPERATION_SOURCE_KINDS)[number];
 export const STANDING_COLLECTION_MODES = ["weekly", "double_pay"] as const;
 export type StandingCollectionMode = (typeof STANDING_COLLECTION_MODES)[number];
 
@@ -345,19 +351,39 @@ export const financialCommands = pgTable("financial_commands", {
   stateCheck: check("financial_commands_state_check", sql`${table.state} IN (${commandStates}) AND length(btrim(${table.commandType})) > 0 AND length(btrim(${table.idempotencyKey})) > 0 AND length(btrim(${table.requestFingerprint})) > 0`),
 }));
 
-// The operation ledger stays general-purpose. PR2 may attach immutable exact
-// obligation snapshots without introducing another provider-side ledger.
+export interface RosterOperationLineItem {
+  lineItemIndex: number;
+  catalogObjectId: string;
+  quantity: string;
+}
+
+/** One immutable execution snapshot for either an interactive or standing operation. */
 export const paymentOperationRosterSnapshots = pgTable("payment_operation_roster_snapshots", {
   operationId: uuid("operation_id").primaryKey(),
   organizationId: integer("organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
   leagueId: integer("league_id").notNull(),
-  snapshotVersion: integer("snapshot_version").notNull().default(1),
+  snapshotVersion: integer("snapshot_version").notNull().default(ROSTER_OPERATION_SNAPSHOT_VERSION),
   snapshotKind: text("snapshot_kind", { enum: ROSTER_OPERATION_SNAPSHOT_KINDS }).notNull().default("interactive"),
   collectionMode: text("collection_mode", { enum: STANDING_COLLECTION_MODES }),
   cutoffAt: timestamp("cutoff_at", { withTimezone: true, mode: "string" }),
   amountMinor: integer("amount_minor").notNull(),
   currency: varchar("currency", { length: 3 }).notNull().default("USD"),
   obligations: jsonb("obligations").notNull(),
+  // Interactive provider request evidence. Standing operations keep these
+  // fields NULL; their consent/binding tables own automatic-payment source
+  // and provider-location authorization.
+  locationId: integer("location_id").references(() => locations.id, { onDelete: "restrict" }),
+  providerLocationId: varchar("provider_location_id", { length: 255 }),
+  payerBowlerId: integer("payer_bowler_id").references(() => bowlers.id, { onDelete: "restrict" }),
+  requestKind: text("request_kind", { enum: ROSTER_OPERATION_REQUEST_KINDS }),
+  encryptedSourceId: text("encrypted_source_id"),
+  encryptedCustomerId: text("encrypted_customer_id"),
+  encryptedBuyerEmail: text("encrypted_buyer_email"),
+  storeCard: boolean("store_card").notNull().default(false),
+  sourceKind: text("source_kind", { enum: ROSTER_OPERATION_SOURCE_KINDS }),
+  combinedChargeGroupId: varchar("combined_charge_group_id", { length: 128 }),
+  quoteFingerprint: varchar("quote_fingerprint", { length: 84 }),
+  lineItems: jsonb("line_items").$type<RosterOperationLineItem[]>().notNull().default(sql`'[]'::jsonb`),
   snapshotFingerprint: varchar("snapshot_fingerprint", { length: 128 }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull().defaultNow(),
 }, (table) => ({
@@ -365,7 +391,11 @@ export const paymentOperationRosterSnapshots = pgTable("payment_operation_roster
   leagueTenantFk: leagueTenantFk(table, "payment_operation_roster_snapshots_league_tenant_fk"),
   tenantIdentityUnique: uniqueIndex("payment_operation_roster_snapshots_tenant_identity_unique").on(table.operationId, table.organizationId, table.leagueId),
   versionUnique: uniqueIndex("payment_operation_roster_snapshots_version_unique").on(table.operationId, table.organizationId, table.leagueId, table.snapshotVersion),
-  amountCheck: check("payment_operation_roster_snapshots_amount_check", sql`${table.amountMinor} > 0 AND ${table.currency} = 'USD' AND ${table.snapshotVersion} > 0 AND ${table.snapshotKind} IN (${snapshotKinds}) AND ((${table.snapshotKind} = 'interactive' AND ${table.collectionMode} IS NULL AND ${table.cutoffAt} IS NULL) OR (${table.snapshotKind} = 'standing_autopay' AND ${table.collectionMode} IN (${collectionModes}) AND ${table.cutoffAt} IS NOT NULL))`),
+  amountCheck: check("payment_operation_roster_snapshots_amount_check", sql`${table.amountMinor} > 0 AND ${table.currency} = 'USD' AND ${table.snapshotVersion} = ${sql.raw(String(ROSTER_OPERATION_SNAPSHOT_VERSION))} AND ${table.snapshotKind} IN (${snapshotKinds}) AND ((${table.snapshotKind} = 'interactive' AND ${table.collectionMode} IS NULL AND ${table.cutoffAt} IS NULL AND ${table.requestKind} IN ('direct', 'order') AND ${table.encryptedSourceId} IS NOT NULL AND ${table.payerBowlerId} IS NOT NULL AND ${table.sourceKind} IN ('new_card', 'saved_card', 'wallet') AND ${table.quoteFingerprint} IS NOT NULL) OR (${table.snapshotKind} = 'standing_autopay' AND ${table.collectionMode} IN (${collectionModes}) AND ${table.cutoffAt} IS NOT NULL AND ${table.requestKind} IS NULL AND ${table.encryptedSourceId} IS NULL AND ${table.payerBowlerId} IS NULL AND ${table.sourceKind} IS NULL AND ${table.quoteFingerprint} IS NULL))`),
+  fingerprintCheck: check("payment_operation_roster_snapshots_fingerprint_check", sql`${table.snapshotFingerprint} ~ '^lv(rosterexec|standingcutoff):v1:[0-9a-f]{64}$'`),
+  quoteFingerprintCheck: check("payment_operation_roster_snapshots_quote_fingerprint_check", sql`(${table.quoteFingerprint} IS NULL AND ${table.snapshotKind} = 'standing_autopay') OR (${table.quoteFingerprint} ~ '^lvrosterquote:v1:[0-9a-f]{64}$' AND ${table.snapshotKind} = 'interactive')`),
+  requestShapeCheck: check("payment_operation_roster_snapshots_request_shape_check", sql`(${table.requestKind} = 'direct' AND ${table.lineItems} = '[]'::jsonb AND ${table.providerLocationId} IS NULL OR ${table.requestKind} = 'order' AND jsonb_array_length(${table.lineItems}) BETWEEN 1 AND 25 AND ${table.providerLocationId} IS NOT NULL OR ${table.requestKind} IS NULL AND ${table.lineItems} = '[]'::jsonb AND ${table.providerLocationId} IS NULL)`),
+  groupIdCheck: check("payment_operation_roster_snapshots_group_id_check", sql`${table.combinedChargeGroupId} IS NULL OR length(${table.combinedChargeGroupId}) > 0`),
 }));
 
 /** Unambiguous operation-to-consent identity and cutoff evidence. */

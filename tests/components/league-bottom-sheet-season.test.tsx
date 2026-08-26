@@ -38,7 +38,6 @@ const league = (overrides: Partial<League>): League => ({
   paymentMode: 'weekly',
   seasonNumber: 1,
   totalBowlingWeeks: 30,
-  finalTwoWeeksDueWeek: null,
   skipDates: [],
   cancelledDates: [],
   doublePayDates: [],

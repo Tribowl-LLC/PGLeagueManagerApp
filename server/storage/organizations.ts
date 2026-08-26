@@ -8,7 +8,6 @@ import {
   alerterState,
   applePayJobItems,
   applePayJobs,
-  autopaySetupRequests,
   bowlerPaymentLinks,
   bowlers,
   leagueOccurrenceBillingTermRevisions,
@@ -53,7 +52,6 @@ import {
   canonicalCollectionGroupMembers,
   canonicalCollectionGroupRevisions,
   canonicalCollectionGroupMemberRevisions,
-  paymentSchedules,
   users,
   webhookEvents,
   type Organization, type InsertOrganization, type UpdateOrganization,
@@ -285,10 +283,6 @@ export async function deleteOrganization(id: number): Promise<void> {
         .where(inArray(users.id, systemAdminIds));
     }
 
-    // Setup workflows retain restrictive operation/schedule references, so
-    // explicit tenant teardown removes them before either referenced table.
-    await tx.delete(autopaySetupRequests).where(eq(autopaySetupRequests.organizationId, id));
-
     // PR1 roster-driven evidence is tenant-owned and uses restrictive links.
     // Remove corrections/obligations/responsibilities before slots and the
     // retained general payment ledger. This path is the explicit teardown
@@ -317,10 +311,8 @@ export async function deleteOrganization(id: number): Promise<void> {
     // before either referenced audit store.
     await tx.delete(paymentDisputes).where(eq(paymentDisputes.organizationId, id));
 
-    // Payment operations intentionally retain a restrictive schedule FK so
-    // ordinary schedule deletion cannot erase the durable provider audit.
-    // Full tenant teardown is the explicit exception and removes these rows
-    // before deleting the organization's leagues/schedules.
+    // Full tenant teardown removes durable provider operations before deleting
+    // the organization's leagues.
     await tx.delete(paymentOperations).where(eq(paymentOperations.organizationId, id));
 
     // D1 compatibility references are restrictive by design. Full tenant
@@ -328,7 +320,6 @@ export async function deleteOrganization(id: number): Promise<void> {
     // ordinary row deletion remains blocked while evidence is linked.
     if (leagueIds.length > 0) {
       await tx.delete(games).where(inArray(games.leagueId, leagueIds));
-      await tx.delete(paymentSchedules).where(inArray(paymentSchedules.leagueId, leagueIds));
     }
 
     // Collection groups are retained canonical schedule evidence and must be

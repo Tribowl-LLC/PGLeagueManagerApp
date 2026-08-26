@@ -20,9 +20,11 @@ The capability is gated by `ROSTER_STANDING_AUTOPAY_ENABLED=true` and requires
 leagues continue to use interactive exact-obligation checkout; scheduled
 upfront collection is not supported.
 
-Legacy `payment_schedules` and F3 plan authorities are archive-only. Migration
-0033 refuses active schedules, non-terminal legacy automatic operations, or
-existing standing-consent rows rather than inferring a backfill. Provider
-unknown, cancellation, partner revocation, and roster drift preserve durable
-operation evidence and enter reconciliation; they never silently drop a
-participant or issue an automatic refund.
+Legacy `payment_schedules` and F3 plan authorities are removed by the PR3
+clean-slate migration after its terminal-operation and zero-canonical-evidence
+guard. All pre-cutover payment rows and provider-operation rows are discarded
+in dependency order; no old schedule or payment evidence is backfilled.
+Provider unknown,
+cancellation, partner revocation, and roster drift preserve durable operation
+evidence and enter reconciliation; they never silently drop a participant or
+issue an automatic refund.

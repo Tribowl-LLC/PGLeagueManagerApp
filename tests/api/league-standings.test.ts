@@ -273,8 +273,7 @@ async function evidenceSnapshot(leagueId: number): Promise<Record<string, string
       + (SELECT count(*) FROM league_occurrence_billing_term_revisions WHERE league_id = ${leagueId})
     )::text
     UNION ALL SELECT 'canonical_discrepancies', count(*)::text FROM league_occurrence_generation_discrepancies WHERE league_id = ${leagueId}
-    UNION ALL SELECT 'payment_schedules', count(*)::text FROM payment_schedules WHERE league_id = ${leagueId}
-    UNION ALL SELECT 'payment_operations', count(*)::text FROM payment_operations po JOIN payment_schedules ps ON ps.id = po.payment_schedule_id WHERE ps.league_id = ${leagueId}
+    UNION ALL SELECT 'payment_operations', count(*)::text FROM payment_operations WHERE league_id = ${leagueId}
     UNION ALL SELECT 'payments', count(*)::text FROM payments WHERE league_id = ${leagueId}
   `);
   return Object.fromEntries(result.rows.map((row) => [row.name, row.value]));
@@ -380,31 +379,6 @@ describe("E3 league standings evidence API", () => {
     expect((await apiGet(`/api/leagues/${primary.leagueId}/standings?organizationId=0`, systemAdmin)).status).toBe(400);
   });
 
-  it("returns one generic bounded 409 for incompatible canonical game evidence", async () => {
-    const [unlinked] = await db.insert(games).values({
-      leagueId: primary.leagueId,
-      weekNumber: 99,
-      gameNumber: 3,
-      date: "2039-02-01",
-      occurrenceId: null,
-    }).returning();
-    if (!unlinked) throw new Error("E3 incompatible fixture was not created");
-    try {
-      const response = await apiGet(
-        `/api/leagues/${primary.leagueId}/standings`,
-        primary.admin,
-      );
-      expect(response.status).toBe(409);
-      expect(response.data.error).toEqual({
-        code: "CANONICAL_STANDINGS_INCOMPATIBLE",
-        message: "Canonical standings evidence is incompatible and cannot be used safely",
-      });
-      expect(JSON.stringify(response.data)).not.toContain("unlinked_canonical_game");
-    } finally {
-      await db.delete(games).where(eq(games.id, unlinked.id));
-    }
-  });
-
   it("returns the same generic 409 for incompatible canonical schedule evidence", async () => {
     const [run] = await db.select().from(leagueOccurrenceGenerationRuns).where(
       eq(leagueOccurrenceGenerationRuns.leagueId, primary.leagueId),
@@ -475,28 +449,4 @@ describe("E3 league standings evidence API", () => {
     });
   });
 
-  it("translates E2 failures into bounded PII-safe service evidence", async () => {
-    const [unlinked] = await db.insert(games).values({
-      leagueId: primary.leagueId,
-      weekNumber: 99,
-      gameNumber: 3,
-      date: "2039-02-01",
-    }).returning();
-    if (!unlinked) throw new Error("E3 unlinked service fixture was not created");
-    try {
-      await expect(loadLeagueStandings({
-        organizationId: primary.organizationId,
-        leagueId: primary.leagueId,
-      })).rejects.toMatchObject({
-        evidence: {
-          classification: "canonical_games_scores_incompatible",
-          organizationId: primary.organizationId,
-          leagueId: primary.leagueId,
-          fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
-        },
-      });
-    } finally {
-      await db.delete(games).where(eq(games.id, unlinked.id));
-    }
-  });
 });

@@ -318,14 +318,14 @@ describe('GET /payments/:id/receipt (Task #503)', () => {
     mockStorage.getPaymentByIdForOrganization.mockResolvedValue(payment);
     mockStorage.getPaymentsByPaymentOperationId.mockResolvedValue([payment]);
     mockReadCanonicalReport.mockResolvedValue({
-      rows: [{ paymentId: 18, source: 'canonical_allocation', operationType: 'canonical_autopay_charge', amountMinor: 4000, currency: 'USD', refund: { present: true, amountMinor: 4000, providerRefundId: 'refund-secret' }, dispute: { present: true, amountMinor: 0, disputeId: null, scope: 'transaction', state: 'OPEN', reviewRequired: true }, allocations: [{ allocationId: 'alloc-f4', obligationId: 'ob-f4', occurrenceId: 'occ-trigger', bowlerId: 43, amountMinor: 4000, currency: 'USD', state: 'active' }], collectionEvidence: { d2PlanId: 'plan-1', planVersion: 2, collectionPointOccurrenceId: 'occ-trigger', coveredOccurrenceIds: ['occ-trigger', 'occ-paired'], timing: 'at_collection_point', grouping: 'double_pay' } }],
+      rows: [{ paymentId: 18, source: 'canonical_allocation', operationType: 'standing_autopay_charge', amountMinor: 4000, currency: 'USD', refund: { present: true, amountMinor: 4000, providerRefundId: 'refund-secret' }, dispute: { present: true, amountMinor: 0, disputeId: null, scope: 'transaction', state: 'OPEN', reviewRequired: true }, allocations: [{ allocationId: 'alloc-f4', obligationId: 'ob-f4', occurrenceId: 'occ-trigger', bowlerId: 43, amountMinor: 4000, currency: 'USD', state: 'active' }], collectionEvidence: { d2PlanId: 'plan-1', planVersion: 2, collectionPointOccurrenceId: 'occ-trigger', coveredOccurrenceIds: ['occ-trigger', 'occ-paired'], timing: 'at_collection_point', grouping: 'double_pay' } }],
       unlinkedHistory: [], totalTransactions: 1, limit: 200,
       paymentTiming: { paymentMode: 'upfront', upfrontDueAt: '2038-02-01T07:00:00.000Z', upfrontDueAtLocal: '2038-01-31', timezone: 'America/Los_Angeles', source: 'canonical_activation' },
     });
     const queryResults = [
       [{ organizationId: 1 }],
       [{ id: 'alloc-f4', obligationId: 'ob-f4', occurrenceId: 'occ-trigger', bowlerId: 43, amountMinor: 4000, currency: 'USD', state: 'active' }],
-      [{ id: 'f4-receipt-op', leagueId: 11, operationType: 'canonical_autopay_charge', status: 'succeeded', currency: 'USD', amountMinor: 4000 }],
+      [{ id: 'f4-receipt-op', leagueId: 11, operationType: 'standing_autopay_charge', status: 'succeeded', currency: 'USD', amountMinor: 4000 }],
       [], [], [],
     ];
     mockDb.select.mockImplementation(() => dbResult(queryResults.shift() ?? []));
@@ -335,7 +335,7 @@ describe('GET /payments/:id/receipt (Task #503)', () => {
     const partnerQueryResults = [
       [{ organizationId: 1 }],
       [{ id: 'alloc-f4', obligationId: 'ob-f4', occurrenceId: 'occ-trigger', bowlerId: 43, amountMinor: 4000, currency: 'USD', state: 'active' }],
-      [{ id: 'f4-receipt-op', leagueId: 11, operationType: 'canonical_autopay_charge', status: 'succeeded', currency: 'USD', amountMinor: 4000 }],
+      [{ id: 'f4-receipt-op', leagueId: 11, operationType: 'standing_autopay_charge', status: 'succeeded', currency: 'USD', amountMinor: 4000 }],
       [], [], [],
     ];
     mockDb.select.mockImplementation(() => dbResult(partnerQueryResults.shift() ?? []));

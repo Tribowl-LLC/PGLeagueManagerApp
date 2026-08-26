@@ -1,5 +1,12 @@
 # Phase F4: canonical scheduled execution
 
+> **Historical, superseded by PR3.** This document describes a proposed
+> `canonical_autopay_charge`/scheduled-execution design that is no longer in
+> the application. PR3 removes those operation types, payment schedules, and
+> scheduled execution snapshots. The current application has no F4 scheduled
+> provider runtime; any future automatic-execution phase requires a separately
+> reviewed contract built on the PR3 roster snapshot/items model.
+
 F4 is the separately gated worker-owned execution path for the immutable D2
 plans prepared by F3. It introduces the `canonical_autopay_charge` operation
 type and the `canonical-autopay-plan:<d2PlanId>` target namespace. Existing

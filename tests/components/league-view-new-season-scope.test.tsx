@@ -89,7 +89,6 @@ const league = {
   organizationId,
   locationId: 9,
   totalBowlingWeeks: 12,
-  finalTwoWeeksDueWeek: null,
   skipDates: [],
   cancelledDates: [],
   doublePayDates: [],

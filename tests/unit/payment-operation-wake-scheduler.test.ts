@@ -13,25 +13,22 @@ const wake: Extract<PaymentOperationWake, { kind: 'operation' }> = {
 };
 
 describe('scheduled ledger one-shot wake scheduler', () => {
-  it.each(['legacy', 'ledger_paused'] as const)(
-    '%s performs no queue query and creates no timer',
-    async (mode) => {
-      const loadNextWake = vi.fn();
-      const setTimeoutFn = vi.fn((callback: () => void, delayMs: number) =>
-        setTimeout(callback, delayMs));
-      const scheduler = new PaymentOperationWakeScheduler({
-        loadNextWake,
-        handleWake: vi.fn(),
-        setTimeoutFn,
-      });
+  it('ledger_paused performs no queue query and creates no timer', async () => {
+    const loadNextWake = vi.fn();
+    const setTimeoutFn = vi.fn((callback: () => void, delayMs: number) =>
+      setTimeout(callback, delayMs));
+    const scheduler = new PaymentOperationWakeScheduler({
+      loadNextWake,
+      handleWake: vi.fn(),
+      setTimeoutFn,
+    });
 
-      await scheduler.start(mode);
-      await scheduler.rearm();
+    await scheduler.start('ledger_paused');
+    await scheduler.rearm();
 
-      expect(loadNextWake).not.toHaveBeenCalled();
-      expect(setTimeoutFn).not.toHaveBeenCalled();
-    },
-  );
+    expect(loadNextWake).not.toHaveBeenCalled();
+    expect(setTimeoutFn).not.toHaveBeenCalled();
+  });
 
   it('arms only the earliest returned work and remains idle for an empty queue', async () => {
     const loadNextWake = vi.fn()
@@ -55,6 +52,29 @@ describe('scheduled ledger one-shot wake scheduler', () => {
     await scheduler.rearm();
     expect(loadNextWake).toHaveBeenCalledTimes(2);
     expect(setTimeoutFn).toHaveBeenCalledTimes(1);
+    scheduler.stop();
+  });
+
+  it('can be rearmed after starting with an empty queue', async () => {
+    const loadNextWake = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(wake);
+    const setTimeoutFn = vi.fn((callback: () => void, delayMs: number) =>
+      setTimeout(callback, delayMs));
+    const scheduler = new PaymentOperationWakeScheduler({
+      loadNextWake,
+      handleWake: vi.fn(),
+      now: () => new Date('2032-01-01T00:00:00.000Z'),
+      setTimeoutFn,
+      clearTimeoutFn: vi.fn(clearTimeout),
+    });
+
+    await scheduler.start('ledger_execute');
+    expect(setTimeoutFn).not.toHaveBeenCalled();
+    await scheduler.rearm();
+
+    expect(loadNextWake).toHaveBeenCalledTimes(2);
+    expect(setTimeoutFn).toHaveBeenCalledWith(expect.any(Function), 10_000);
     scheduler.stop();
   });
 

@@ -317,8 +317,8 @@ async function main(): Promise<void> {
       counts.usersBowlerIdNulled = ub.length;
     }
 
-    // 4. Delete leagues -> CASCADE drops teams, games, scores,
-    //    payments, payment_schedules, bowler_leagues for those leagues.
+    // 4. Delete leagues -> CASCADE drops teams, games, scores, payments,
+    //    and bowler_leagues for those leagues.
     if (doomedIds.length > 0) {
       const lg = await tx
         .delete(leagues)
@@ -327,10 +327,9 @@ async function main(): Promise<void> {
       counts.leagues = lg.length;
     }
 
-    // 5. Delete bowlers -> CASCADE drops bowler_leagues, payments,
-    //    scores, payment_schedules tied to those bowlers (already
-    //    mostly gone via the league cascade, but bowlers can outlive
-    //    a single league).
+    // 5. Delete bowlers -> CASCADE drops bowler_leagues, payments, and
+    //    scores tied to those bowlers (already mostly gone via the league
+    //    cascade, but bowlers can outlive a single league).
     if (doomedIds.length > 0) {
       const bw = await tx
         .delete(bowlers)

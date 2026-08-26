@@ -136,8 +136,7 @@ async function writeSnapshot(leagueId: number): Promise<Record<string, string>> 
     UNION ALL SELECT 'relationship_revisions', count(*)::text FROM league_occurrence_relationship_revisions WHERE league_id = ${leagueId}
     UNION ALL SELECT 'term_revisions', count(*)::text FROM league_occurrence_billing_term_revisions WHERE league_id = ${leagueId}
     UNION ALL SELECT 'discrepancies', count(*)::text FROM league_occurrence_generation_discrepancies WHERE league_id = ${leagueId}
-    UNION ALL SELECT 'payment_schedules', count(*)::text FROM payment_schedules WHERE league_id = ${leagueId}
-    UNION ALL SELECT 'payment_operations', count(*)::text FROM payment_operations po JOIN payment_schedules ps ON ps.id = po.payment_schedule_id WHERE ps.league_id = ${leagueId}
+    UNION ALL SELECT 'payment_operations', count(*)::text FROM payment_operations WHERE league_id = ${leagueId}
     UNION ALL SELECT 'payments', count(*)::text FROM payments WHERE league_id = ${leagueId}
   `);
   return Object.fromEntries(result.rows.map((row) => [row.name, row.value]));
@@ -372,11 +371,15 @@ describe("E1 league occurrence schedule API", () => {
     );
     expect(scopedSystemHistory.status).toBe(200);
 
+    const [otherOccurrence] = await db.select({ id: leagueOccurrences.id }).from(leagueOccurrences)
+      .where(eq(leagueOccurrences.leagueId, other.leagueId)).limit(1);
+    if (!otherOccurrence) throw new Error("E1 foreign occurrence fixture was not created");
     const [foreignGame] = await db.insert(games).values({
       leagueId: other.leagueId,
       weekNumber: 1,
       gameNumber: 1,
       date: "2032-08-01",
+      occurrenceId: otherOccurrence.id,
     }).returning();
     if (!foreignGame) throw new Error("E2 foreign game fixture was not created");
     const beforeMixed = await db.select().from(scores).where(eq(scores.gameId, game.id));

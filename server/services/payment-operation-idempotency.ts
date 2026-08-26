@@ -30,10 +30,8 @@ export function validateInteractiveRequestKey(value: string): string {
 export type SquareOperationIdempotencyDomain = "order" | "payment";
 
 const KEY_PREFIX_BY_TYPE: Record<PaymentOperationType, string> = {
-  scheduled_charge: "lv-op1-sc-",
   interactive_charge: "lv-op1-ic-",
   refund: "lv-op1-rf-",
-  canonical_autopay_charge: "lv-f4-pay-",
   standing_autopay_charge: "lv-pr2-pay-",
 };
 
@@ -44,8 +42,6 @@ export interface StablePaymentOperationRequest {
   amountMinor: number;
   currency: string;
   providerName: string;
-  paymentScheduleId?: number | null;
-  billingCycleAt?: string | Date | null;
 }
 
 export interface NormalizedPaymentOperationRequest {
@@ -53,8 +49,6 @@ export interface NormalizedPaymentOperationRequest {
   organizationId: number;
   operationType: PaymentOperationType;
   targetKey: string;
-  paymentScheduleId: number | null;
-  billingCycleAt: string | null;
   amountMinor: number;
   currency: string;
   providerName: string;
@@ -84,14 +78,6 @@ function requireUnpaddedToken(
   return value;
 }
 
-function normalizeUtcTimestamp(value: string | Date, label: string): string {
-  const parsed = value instanceof Date ? new Date(value.getTime()) : new Date(value);
-  if (!Number.isFinite(parsed.getTime())) {
-    throw new Error(`${label} must be a valid timestamp`);
-  }
-  return parsed.toISOString();
-}
-
 /** Deterministic JSON for the small immutable request object. */
 export function canonicalizePaymentOperationInput(value: unknown): string {
   if (value === null || typeof value !== "object") {
@@ -105,42 +91,6 @@ export function canonicalizePaymentOperationInput(value: unknown): string {
   return `{${entries.map(([key, item]) => (
     `${JSON.stringify(key)}:${canonicalizePaymentOperationInput(item)}`
   )).join(",")}}`;
-}
-
-/**
- * Binds an occurrence-aware selection and its immutable base quote evidence to
- * the logical operation fingerprint. The provider idempotency key remains the
- * operation key, while same-key retries with changed F2 semantics conflict
- * before any live balance quote or provider work is attempted.
- */
-export function normalizeInteractiveOccurrenceSelections<T extends { obligationId: string; amountMinor: number }>(
-  selections: T[],
-): T[] {
-  return [...selections].sort((left, right) => left.obligationId.localeCompare(right.obligationId));
-}
-
-export function fingerprintInteractiveOccurrenceIntent(input: {
-  selections: Array<{ obligationId: string; amountMinor: number }>;
-  quoteFingerprint: string;
-}): string {
-  const digest = createHash("sha256")
-    .update(canonicalizePaymentOperationInput({
-      selections: normalizeInteractiveOccurrenceSelections(input.selections),
-      quoteFingerprint: input.quoteFingerprint,
-    }))
-    .digest("hex");
-  return `lvpayintent:v1:${digest}`;
-}
-
-export function bindInteractiveOccurrenceRequestFingerprint(
-  baseRequestFingerprint: string,
-  occurrenceIntentFingerprint?: string,
-): string {
-  if (!occurrenceIntentFingerprint) return baseRequestFingerprint;
-  const digest = createHash("sha256")
-    .update(canonicalizePaymentOperationInput({ baseRequestFingerprint, occurrenceIntentFingerprint }))
-    .digest("hex");
-  return `${PAYMENT_OPERATION_FINGERPRINT_PREFIX}${digest}`;
 }
 
 export function normalizePaymentOperationRequest(
@@ -166,29 +116,11 @@ export function normalizePaymentOperationRequest(
     throw new Error("currency must be a three-letter ISO-style code");
   }
 
-  const paymentScheduleId = request.paymentScheduleId ?? null;
-  if (paymentScheduleId !== null) {
-    requirePositiveInteger(paymentScheduleId, "paymentScheduleId");
-  }
-  const billingCycleAt = request.billingCycleAt == null
-    ? null
-    : normalizeUtcTimestamp(request.billingCycleAt, "billingCycleAt");
-
-  if (request.operationType === "scheduled_charge") {
-    if (paymentScheduleId === null || billingCycleAt === null) {
-      throw new Error("scheduled charges require a payment schedule and billing cycle");
-    }
-  } else if (billingCycleAt !== null) {
-    throw new Error("billingCycleAt is reserved for scheduled charges");
-  }
-
   return {
     requestVersion: PAYMENT_OPERATION_REQUEST_VERSION,
     organizationId: request.organizationId,
     operationType: request.operationType,
     targetKey,
-    paymentScheduleId,
-    billingCycleAt,
     amountMinor: request.amountMinor,
     currency,
     providerName,
@@ -277,7 +209,7 @@ export function deriveSquareCardSaveIdempotencyKey(providerIdempotencyKey: strin
   return key;
 }
 
-/** Single versioned Square identity constructor used by legacy and ledger. */
+/** Single versioned Square identity constructor used by the payment ledger. */
 export function buildSquarePaymentRequestIdentity(input: {
   providerIdempotencyKey: string;
   requestKind: "direct" | "order";

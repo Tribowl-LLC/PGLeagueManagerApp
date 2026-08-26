@@ -23,7 +23,7 @@
  *     (resolved by email = 'admin@example.com' AND name LIKE 'Vitest %'
  *      AND role = 'system_admin'); defense-in-depth additional sweep by
  *     resource_type+resource_id of any doomed Vitest Audit resource.
- *   - dependent payments / bowler_leagues / scores / payment_schedules
+ *   - dependent payments / bowler_leagues / scores
  *     of doomed leagues / bowlers cascade automatically (FK ON DELETE
  *     CASCADE on `bowler_leagues.league_id`, `payments.league_id`,
  *     `payments.bowler_id`, `teams.league_id`, etc — see
@@ -319,8 +319,7 @@ async function main(): Promise<void> {
       counts.usersBowlerIdNulled = ub.length;
     }
 
-    // 4. Delete bowlers — cascades to payments, scores, bowler_leagues,
-    //    payment_schedules tied to that bowler.
+    // 4. Delete bowlers — cascades to payments, scores, and bowler_leagues.
     if (doomedBowlerIds.length > 0) {
       const bw = await tx
         .delete(bowlers)
@@ -330,7 +329,7 @@ async function main(): Promise<void> {
     }
 
     // 5. Delete leagues — cascades to teams, bowler_leagues, payments,
-    //    games, scores, payment_schedules tied to that league.
+    //    games, and scores tied to that league.
     if (doomedLeagueIds.length > 0) {
       const lg = await tx
         .delete(leagues)

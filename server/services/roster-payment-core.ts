@@ -19,7 +19,6 @@ import {
   paymentOperations,
   paymentOperationRosterSnapshots,
   paymentOperationRosterSnapshotItems,
-  interactivePaymentOperationSnapshots,
   users,
   emailSchema,
   type TeamPaymentPolicy,
@@ -29,16 +28,22 @@ import type {
   CanonicalManualRecordRequest,
   OccurrenceResponsibilityInput,
   RosterPaymentResponsibilityRequest,
+  calculateRosterPaymentTiming,
 } from "@shared/roster-payment-contract";
 import { lockLeagueSchedule } from "../storage/league-schedule-lock.js";
 import type { PaymentOperationTransaction } from "../storage/payment-operations.js";
 import { prepareInteractivePaymentOperation } from "./interactive-payment-operation-preparation.js";
 import { interactivePaymentOperationExecutor } from "./interactive-payment-operation-executor.js";
+import { paymentOperationRetryExecutor } from "./payment-operation-retry-executor.js";
 import { getPaymentProvider } from "./payment-provider-factory.js";
 import { getProviderCustomerId } from "./payment-utils.js";
-import { WEEKLY_BILLING_GRACE_PERIOD_MS } from "@shared/schedule-utils";
 import { decrypt } from "../utils/crypto.js";
 import { deriveRosterPaymentTimingInTransaction } from "./roster-payment-materializer.js";
+import { createLogger } from "../logger.js";
+
+export { calculateRosterPaymentTiming };
+
+const log = createLogger("RosterPaymentCore");
 
 export class RosterPaymentError extends Error {
   constructor(public readonly code: string, message: string, public readonly status = 409) {
@@ -145,12 +150,6 @@ export function canonicalCorrectionFingerprint(request: CanonicalCorrectionReque
     replacementWeekOf: request.replacementWeekOf ?? null,
     replacementNotes: request.replacementNotes ?? null,
   });
-}
-
-export function calculateRosterPaymentTiming(dueAt: string | Date): { dueAt: string; pastDueAt: string } {
-  const due = new Date(dueAt);
-  if (!Number.isFinite(due.getTime())) throw new RosterPaymentError("INVALID_DUE_AT", "The occurrence start time is invalid", 422);
-  return { dueAt: due.toISOString(), pastDueAt: new Date(due.getTime() + WEEKLY_BILLING_GRACE_PERIOD_MS).toISOString() };
 }
 
 async function leagueScope(organizationId: number, leagueId: number): Promise<{ id: number; organizationId: number; locationId: number | null; payingLineupSize: number | null; paymentMode: "weekly" | "upfront"; weeklyFee: number; substituteAccess: "team_only" | "floating"; substitutePaymentRegime: "team_choice" | "league_lineage_prize_split"; lineageFee: number | null; prizeFundFee: number | null }> {
@@ -779,9 +778,16 @@ export async function chargeInteractiveObligations(input: {
       if (existingOperation.authorizingUserId !== input.actorUserId) {
         throw new RosterPaymentError("IDEMPOTENCY_CONFLICT", "The idempotency key belongs to another authorizing user", 409);
       }
-      const [existingInteractiveSnapshot] = await tx.select().from(interactivePaymentOperationSnapshots).where(eq(interactivePaymentOperationSnapshots.operationId, existingOperation.id)).limit(1).for("share");
+      const [existingInteractiveSnapshot] = await tx.select().from(paymentOperationRosterSnapshots).where(and(
+        eq(paymentOperationRosterSnapshots.operationId, existingOperation.id),
+        eq(paymentOperationRosterSnapshots.organizationId, input.organizationId),
+        eq(paymentOperationRosterSnapshots.leagueId, input.leagueId),
+        eq(paymentOperationRosterSnapshots.snapshotKind, "interactive"),
+      )).limit(1).for("share");
       const requestedPayer = input.payerBowlerId ?? input.request.payerBowlerId;
-      const storedSourceId = existingInteractiveSnapshot ? decrypt(existingInteractiveSnapshot.encryptedSourceId) : null;
+      const storedSourceId = existingInteractiveSnapshot?.encryptedSourceId
+        ? decrypt(existingInteractiveSnapshot.encryptedSourceId)
+        : null;
       // Buyer email is server-resolved into the immutable snapshot. It is
       // not a mutable provider/payment identity on replay, so a retry must
       // reuse that snapshot regardless of whether the browser sends an
@@ -810,7 +816,7 @@ export async function chargeInteractiveObligations(input: {
       const requestedIds = [...new Set(input.request.obligationIds)].sort();
       const existingIds = existingItems.map((item) => item.obligationId).sort();
       const requestedAmounts = new Map((input.request.allocations ?? []).map((item) => [item.obligationId, item.amountMinor]));
-      if (existingSnapshot.snapshotFingerprint !== input.request.requestFingerprint
+      if (existingSnapshot.quoteFingerprint !== input.request.requestFingerprint
         || requestedIds.length !== existingIds.length
         || requestedIds.some((id, index) => id !== existingIds[index])) {
         throw new RosterPaymentError("IDEMPOTENCY_CONFLICT", "The idempotency key was already used for a different obligation request", 409);
@@ -829,7 +835,6 @@ export async function chargeInteractiveObligations(input: {
     // separated value. Interactive snapshot contracts require canonical ISO
     // datetimes, so normalize once before persisting the immutable operation
     // snapshot and every allocation row derived from it.
-    const canonicalWeekOf = new Date(first.dueAt).toISOString();
     const payerBowlerId = payerBowlerIdInput ?? first.payerBowlerId;
     if (input.request.sourceKind === "saved_card" && payerBowlerIdInput === undefined) {
       throw new RosterPaymentError("SAVED_CARD_PAYER_REQUIRED", "A saved payment method requires an authenticated payer", 403);
@@ -859,6 +864,15 @@ export async function chargeInteractiveObligations(input: {
     if (input.request.storeCard === true && !customerId) {
       throw new RosterPaymentError("CARD_CUSTOMER_REQUIRED", "A provider customer is required to save a card", 422);
     }
+    const responsibilityIds = [...new Set(quote.obligations.map((obligation) => obligation.responsibilityId))];
+    const responsibilityVersions = await tx.select({ id: occurrencePaymentResponsibilities.id, version: occurrencePaymentResponsibilities.version }).from(occurrencePaymentResponsibilities).where(and(
+      eq(occurrencePaymentResponsibilities.organizationId, input.organizationId),
+      eq(occurrencePaymentResponsibilities.leagueId, input.leagueId),
+      inArray(occurrencePaymentResponsibilities.id, responsibilityIds),
+      eq(occurrencePaymentResponsibilities.state, "active"),
+    )).for("share");
+    const responsibilityVersionById = new Map(responsibilityVersions.map((row) => [row.id, row.version]));
+    if (responsibilityIds.some((id) => !responsibilityVersionById.has(id))) throw new RosterPaymentError("RESERVATION_STALE", "A roster responsibility changed while the quote was being prepared", 409);
     const operation = await prepareInteractivePaymentOperation({
       organizationId: input.organizationId,
       authorizingUserId: input.actorUserId,
@@ -876,39 +890,27 @@ export async function chargeInteractiveObligations(input: {
       buyerEmail,
       storeCard: input.request.storeCard === true,
       sourceKind: input.request.sourceKind,
-      weekOf: canonicalWeekOf,
       combined: quote.obligations.length > 1,
-      allocations: quote.obligations.map((obligation, allocationIndex) => ({
-        allocationIndex,
-        bowlerId: obligation.payerBowlerId,
-        amountMinor: obligation.selectedMinor,
-        lineageAmountMinor: null,
-        prizeFundAmountMinor: null,
-        weekOf: new Date(obligation.dueAt).toISOString(),
-        notes: `Roster obligation ${obligation.id}`,
-        paidByUserId: input.actorUserId,
-      })),
+      allocations: quote.obligations.map((obligation, allocationIndex) => {
+        const responsibilityVersion = responsibilityVersionById.get(obligation.responsibilityId);
+        if (responsibilityVersion === undefined) throw new RosterPaymentError("RESERVATION_STALE", "A roster responsibility changed while the quote was being prepared", 409);
+        return {
+          allocationIndex,
+          bowlerId: obligation.payerBowlerId,
+          amountMinor: obligation.selectedMinor,
+          lineageAmountMinor: null,
+          prizeFundAmountMinor: null,
+          weekOf: new Date(obligation.dueAt).toISOString(),
+          notes: `Roster obligation ${obligation.id}`,
+          paidByUserId: input.actorUserId,
+          obligationId: obligation.id,
+          responsibilityId: obligation.responsibilityId,
+          responsibilityVersion,
+        };
+      }),
       lineItems: [],
+      quoteFingerprint: quote.fingerprint,
       transaction: tx,
-    });
-    const responsibilityIds = [...new Set(quote.obligations.map((obligation) => obligation.responsibilityId))];
-    const responsibilityVersions = await tx.select({ id: occurrencePaymentResponsibilities.id, version: occurrencePaymentResponsibilities.version }).from(occurrencePaymentResponsibilities).where(and(
-      eq(occurrencePaymentResponsibilities.organizationId, input.organizationId),
-      eq(occurrencePaymentResponsibilities.leagueId, input.leagueId),
-      inArray(occurrencePaymentResponsibilities.id, responsibilityIds),
-      eq(occurrencePaymentResponsibilities.state, "active"),
-    )).for("share");
-    const responsibilityVersionById = new Map(responsibilityVersions.map((row) => [row.id, row.version]));
-    if (responsibilityIds.some((id) => !responsibilityVersionById.has(id))) throw new RosterPaymentError("RESERVATION_STALE", "A roster responsibility changed while the quote was being prepared", 409);
-    await tx.insert(paymentOperationRosterSnapshots).values({
-      operationId: operation.id,
-      organizationId: input.organizationId,
-      leagueId: input.leagueId,
-      snapshotVersion: 1,
-      amountMinor: quote.amountMinor,
-      currency: quote.currency,
-      obligations: quote.obligations.map((obligation) => ({ id: obligation.id, responsibilityId: obligation.responsibilityId, responsibilityVersion: responsibilityVersionById.get(obligation.responsibilityId), payerBowlerId: obligation.payerBowlerId, amountMinor: obligation.selectedMinor, dueAt: obligation.dueAt, pastDueAt: obligation.pastDueAt })),
-      snapshotFingerprint: quote.fingerprint,
     });
     await tx.insert(paymentOperationRosterSnapshotItems).values(quote.obligations.map((obligation, allocationIndex) => ({
       operationId: operation.id,
@@ -922,7 +924,21 @@ export async function chargeInteractiveObligations(input: {
     return { operation, quote, reused: false };
   });
   const operation = prepared.operation;
-  const executed = await interactivePaymentOperationExecutor.execute({ organizationId: input.organizationId, operationId: operation.id });
+  let executed: Awaited<ReturnType<typeof interactivePaymentOperationExecutor.execute>>;
+  try {
+    executed = await interactivePaymentOperationExecutor.execute({ organizationId: input.organizationId, operationId: operation.id });
+  } finally {
+    // The operation row is committed before execution begins. Re-arm the
+    // general retry scheduler after every outcome, including retry_scheduled
+    // and provider_unknown, so a one-shot checkout cannot strand durable work.
+    await paymentOperationRetryExecutor.rearm().catch((error: unknown) => {
+      log.error("Payment operation retry scheduler rearm failed after interactive checkout", {
+        organizationId: input.organizationId,
+        operationId: operation.id,
+        errorName: error instanceof Error ? error.name : "UnknownError",
+      });
+    });
+  }
   if (!executed || executed.status !== "succeeded") {
     if (executed && ["failed_terminal", "action_required", "canceled"].includes(executed.status)) {
       await db.transaction(async (tx) => {
@@ -961,7 +977,7 @@ export async function chargeInteractiveObligations(input: {
     }
     const obligations = await tx.select().from(paymentObligations).where(and(eq(paymentObligations.organizationId, input.organizationId), eq(paymentObligations.leagueId, input.leagueId), inArray(paymentObligations.id, snapshotItems.map((item) => item.obligationId)))).orderBy(asc(paymentObligations.dueAt), asc(paymentObligations.payerBowlerId), asc(paymentObligations.occurrenceId), asc(paymentObligations.id)).for("update");
     if (obligations.length !== snapshotItems.length) throw new RosterPaymentError("EXACT_OBLIGATIONS_REQUIRED", "The immutable roster snapshot references missing obligations", 409);
-    const snapshotRecords = Array.isArray(rosterSnapshot.obligations) ? rosterSnapshot.obligations as Array<{ id?: string; responsibilityId?: string; responsibilityVersion?: number }> : [];
+    const snapshotRecords = Array.isArray(rosterSnapshot.obligations) ? rosterSnapshot.obligations as Array<{ id?: string; obligationId?: string; responsibilityId?: string; responsibilityVersion?: number }> : [];
     const snapshotResponsibilityIds = [...new Set(snapshotRecords.map((record) => record.responsibilityId).filter((id): id is string => typeof id === "string"))];
     const liveResponsibilities = snapshotResponsibilityIds.length === 0 ? [] : await tx.select({ id: occurrencePaymentResponsibilities.id, version: occurrencePaymentResponsibilities.version, state: occurrencePaymentResponsibilities.state }).from(occurrencePaymentResponsibilities).where(and(
       eq(occurrencePaymentResponsibilities.organizationId, input.organizationId),
@@ -970,7 +986,7 @@ export async function chargeInteractiveObligations(input: {
     )).for("update");
     const liveResponsibilityById = new Map(liveResponsibilities.map((row) => [row.id, row]));
     const staleReservation = obligations.some((obligation) => {
-      const record = snapshotRecords.find((candidate) => candidate.id === obligation.id);
+      const record = snapshotRecords.find((candidate) => (candidate.id ?? candidate.obligationId) === obligation.id);
       const live = record?.responsibilityId ? liveResponsibilityById.get(record.responsibilityId) : undefined;
       return !record || record.responsibilityId !== obligation.responsibilityId || record.responsibilityVersion === undefined || !live || live.state !== "active" || live.version !== record.responsibilityVersion;
     });

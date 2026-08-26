@@ -103,7 +103,7 @@ describe("F5 canonical payment report route", () => {
         authoritativeLocalDate: "2037-12-31",
         providerPaymentId: "provider-secret",
         paymentOperationId: "operation-secret",
-        operationType: "canonical_autopay_charge",
+        operationType: "standing_autopay_charge",
         operationStatus: "succeeded",
         allocatedMinor: 4000,
         unallocatedMinor: 0,
@@ -157,7 +157,7 @@ describe("F5 canonical payment report route", () => {
   it.each([
     { label: "no-operation shared payment", operationType: null, payer: null },
     { label: "F2 operation", operationType: "interactive_charge", payer: 42 },
-    { label: "F4 operation", operationType: "canonical_autopay_charge", payer: 42 },
+    { label: "standing operation", operationType: "standing_autopay_charge", payer: 42 },
   ])("keeps shared refund/dispute totals payer-scoped for $label", async ({ operationType, payer }) => {
     mocks.hasAdmin.mockResolvedValue(false);
     const baseRow = {

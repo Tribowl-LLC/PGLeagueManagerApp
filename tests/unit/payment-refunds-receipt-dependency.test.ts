@@ -51,8 +51,8 @@ vi.mock('../../server/services/refund-payment-operation-preparation', async (imp
 vi.mock('../../server/services/refund-payment-operation-executor', () => ({
   refundPaymentOperationExecutor: { execute: (...a: unknown[]) => mockExecuteRefund(...a) },
 }));
-vi.mock('../../server/services/scheduled-payment-operation-executor', () => ({
-  scheduledPaymentOperationExecutor: { rearm: vi.fn().mockResolvedValue(undefined) },
+vi.mock('../../server/services/payment-operation-retry-executor', () => ({
+  paymentOperationRetryExecutor: { rearm: vi.fn().mockResolvedValue(undefined) },
 }));
 
 // eslint-disable-next-line local/factory-must-use-schema -- mocked logger, not a schema row

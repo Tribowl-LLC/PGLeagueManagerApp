@@ -106,8 +106,8 @@ vi.mock('../../server/services/refund-payment-operation-preparation', async (imp
 vi.mock('../../server/services/refund-payment-operation-executor', () => ({
   refundPaymentOperationExecutor: { execute: (...a: unknown[]) => mockExecuteRefund(...a) },
 }));
-vi.mock('../../server/services/scheduled-payment-operation-executor', () => ({
-  scheduledPaymentOperationExecutor: { rearm: (...a: unknown[]) => mockRearmOperations(...a) },
+vi.mock('../../server/services/payment-operation-retry-executor', () => ({
+  paymentOperationRetryExecutor: { rearm: (...a: unknown[]) => mockRearmOperations(...a) },
 }));
 
 // No-op the per-IP rate limiter so a single test run doesn't get
