@@ -37,6 +37,7 @@ import {
   type LeagueSetupIntegrationResult,
   type LeagueSetupIntegrationIntentV2,
   type LeagueSetupIntegrationIntentV3,
+  type LeagueSetupIntegrationIntent,
   type LeagueSetupIntegrationResultV2,
   type LeagueSetupIntegrationResultV3,
   type LeagueRolloverSourceConfirmation,
@@ -227,9 +228,10 @@ async function assertLocationScope(
   lock = true,
 ): Promise<void> {
   if (!locationId) throw new LeagueSetupIntegrationError("location_not_found", "a location in the authorized organization is required for Fall setup");
-  // Lock the scoped row so a concurrent archive cannot turn an otherwise
-  // valid setup into a league attached to an inactive location between the
-  // check and the canonical league insert/rollover commit.
+  // Fresh creates/rollovers take the location lock before their league write.
+  // Exact retries intentionally skip this check, and read-only previews pass
+  // lock=false. Location deletion refuses while any league references the
+  // row, so this order cannot invert with a delete or its FK checks.
   const locationQuery = tx.select({ id: locations.id })
     .from(locations)
     .where(and(
@@ -843,6 +845,47 @@ async function retryExistingNewSeasonV2BeforeSourceFreshness(input: {
   });
 }
 
+async function retryExistingNewSeasonV1BeforeSourceFreshness(input: {
+  tx: LeagueScheduleTransaction;
+  scope: LeagueSetupScope;
+  sourceLeagueId: number;
+  values: NewSeasonSetupValues;
+  setup: LeagueSetupIntegrationIntent;
+  commandKey: string;
+}): Promise<SetupTransactionResult | null> {
+  const command = await existingSetupCommand(input.tx, input.scope.organizationId, input.commandKey);
+  if (!command) return null;
+  await lockLeagueSchedule(input.tx, input.scope.organizationId, command.leagueId);
+  const [persisted] = await input.tx.select().from(leagues).where(and(
+    eq(leagues.id, command.leagueId),
+    eq(leagues.organizationId, input.scope.organizationId),
+  )).for("update");
+  if (!persisted || persisted.previousSeasonId !== input.sourceLeagueId) {
+    throw new LeagueSetupIntegrationError("idempotency_conflict", "setup idempotency key is bound to another source league");
+  }
+  const syntheticSource: League = {
+    ...persisted,
+    id: input.sourceLeagueId,
+    active: true,
+    seasonNumber: persisted.seasonNumber - 1,
+  };
+  const expected = buildNewSeasonLeague(syntheticSource, input.values, input.setup.contractVersion);
+  const start = dateOnly(expected.seasonStart);
+  const seasonClassification = start ? getProductSeasonFromDateOnly(start) : null;
+  if (!seasonClassification) {
+    throw new LeagueSetupIntegrationError("validation_error", "target season start must classify to a product season");
+  }
+  return retryExistingSetup({
+    tx: input.tx,
+    scope: input.scope,
+    expected,
+    commandKey: input.commandKey,
+    kind: "new_season",
+    setup: input.setup,
+    seasonClassification,
+  });
+}
+
 async function createNewSeasonInTransaction(input: {
   tx: LeagueScheduleTransaction;
   scope: LeagueSetupScope;
@@ -868,7 +911,25 @@ async function createNewSeasonInTransaction(input: {
       commandKey,
     });
     if (retry) return retry;
+  } else {
+    const retry = await retryExistingNewSeasonV1BeforeSourceFreshness({
+      tx: input.tx,
+      scope: input.scope,
+      sourceLeagueId: input.sourceLeagueId,
+      values: input.values,
+      setup: input.setup,
+      commandKey,
+    });
+    if (retry) return retry;
   }
+  const [sourceForLocation] = await input.tx.select({ locationId: leagues.locationId })
+    .from(leagues)
+    .where(and(
+      eq(leagues.id, input.sourceLeagueId),
+      eq(leagues.organizationId, input.scope.organizationId),
+    ));
+  const targetLocationBeforeLeagueLock = input.values.locationId ?? sourceForLocation?.locationId;
+  await assertLocationScope(input.tx, input.scope.organizationId, targetLocationBeforeLeagueLock);
   await lockLeagueSchedule(input.tx, input.scope.organizationId, input.sourceLeagueId);
   await authorizeSetupActor(input.tx, input.scope, true);
   const [source] = await input.tx.select().from(leagues).where(and(
@@ -898,9 +959,6 @@ async function createNewSeasonInTransaction(input: {
   const seasonClassification = start ? getProductSeasonFromDateOnly(start) : null;
   if (!seasonClassification) throw new LeagueSetupIntegrationError("validation_error", "target season start must classify to a product season");
   const fall = isActiveFall(target);
-  if (input.setup.contractVersion === LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION_2 || input.setup.contractVersion === LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION_3 || fall) {
-    await assertLocationScope(input.tx, input.scope.organizationId, target.locationId);
-  }
   const confirmationFingerprint = input.setup.contractVersion !== LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION
     ? setupConfirmationFingerprint({
       setup: input.setup,
@@ -915,6 +973,14 @@ async function createNewSeasonInTransaction(input: {
     seasonClassification,
   });
   if (retry) return retry;
+  // A request/1 retry is allowed to reproduce retained historical setup
+  // state even after its original location was archived. Validate the
+  // active location only for a fresh rollover, after durable retry semantics
+  // have been checked; this also makes changed historical input report an
+  // idempotency conflict instead of a misleading location failure.
+  if (input.setup.contractVersion === LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION_2 || input.setup.contractVersion === LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION_3 || fall) {
+    await assertLocationScope(input.tx, input.scope.organizationId, target.locationId);
+  }
   if (input.setup.contractVersion === LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION) {
     throw new LeagueSetupIntegrationError(
       "idempotency_conflict",

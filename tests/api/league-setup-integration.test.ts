@@ -11,9 +11,12 @@ import {
   organizations,
   teams,
   users,
+  type InsertLeague,
 } from "@shared/schema";
 import type { AnyLeagueSetupIntegrationResult, LeagueRolloverSourceContract } from "@shared/league-setup-integration";
 import type { CanonicalDraftMutationResult, CanonicalDraftReview } from "@shared/canonical-draft-review";
+import { fallDraftSha256 } from "@shared/fall-draft-generation";
+import { calculateSeasonEnd } from "@shared/schedule-utils";
 import { hashPassword } from "../../server/lib/password";
 import { deleteOrganization } from "../../server/storage/organizations";
 import {
@@ -26,6 +29,10 @@ import {
   type AuthSession,
 } from "../helpers";
 import { getTestDb } from "../setup/test-db";
+import {
+  applyFallDraftGenerationInTransaction,
+} from "../../server/services/fall-draft-generation";
+import { LEAGUE_SETUP_FALL_AUDIT_REASON } from "../../server/services/league-setup-integration";
 
 const db = getTestDb();
 const suffix = `${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
@@ -41,6 +48,13 @@ function intent(value: number) {
   return {
     contractVersion: "league-setup-integration-request/2",
     idempotencyKey: `20000000-0000-4000-8000-${String(value).padStart(12, "0")}`,
+  };
+}
+
+function legacyIntent(value: number) {
+  return {
+    contractVersion: "league-setup-integration-request/1" as const,
+    idempotencyKey: `21000000-0000-4000-8000-${String(value).padStart(12, "0")}`,
   };
 }
 
@@ -204,6 +218,102 @@ describe("league setup integration API", () => {
     const changed = await apiPost("/api/leagues", { ...body, weeklyFee: body.weeklyFee + 1 }, admin);
     expect(changed.status).toBe(409);
     expect(changed.data.error?.code).toBe("IDEMPOTENCY_CONFLICT");
+  });
+
+  it("retries a historical request/1 rollover after its location is archived", async () => {
+    const [retryLocation] = await db.insert(locations).values({
+      name: "Setup API historical rollover location",
+      organizationId,
+    }).returning();
+    const [source] = await db.insert(leagues).values({
+      name: "API historical source",
+      description: "legacy rollover source",
+      payingLineupSize: 4,
+      active: true,
+      scheduleAuthority: "canonical",
+      allowPublicSignup: false,
+      seasonStart: "2031-01-05",
+      seasonEnd: "2031-03-23",
+      weekDay: "Sunday",
+      weeklyFee: 2_000,
+      lineageFee: 1_200,
+      prizeFundFee: 800,
+      practiceStartTime: "18:30",
+      competitionStartTime: "19:00",
+      timezone: "America/New_York",
+      paymentMode: "weekly",
+      organizationId,
+      locationId: retryLocation.id,
+      seasonNumber: 1,
+      totalBowlingWeeks: 12,
+      skipDates: [],
+      cancelledDates: [],
+      doublePayDates: [],
+    }).returning();
+    const values = {
+      name: "API historical successor",
+      seasonStart: "2032-10-03",
+      totalBowlingWeeks: 3,
+      weekDay: "Sunday" as const,
+      skipDates: [],
+      cancelledDates: [],
+      doublePayDates: [],
+      allowPublicSignup: false,
+      paymentMode: "weekly" as const,
+    };
+    const legacy = legacyIntent(51);
+    const commandKey = `lvsetup:${fallDraftSha256(legacy)}`;
+    const successorValues: InsertLeague = {
+      name: values.name,
+      description: source.description,
+      payingLineupSize: (source.payingLineupSize ?? 4) as 3 | 4,
+      active: true,
+      scheduleAuthority: "canonical",
+      allowPublicSignup: values.allowPublicSignup,
+      seasonStart: values.seasonStart,
+      seasonEnd: calculateSeasonEnd(new Date(values.seasonStart), values.weekDay, values.totalBowlingWeeks, values.skipDates, values.cancelledDates).toISOString(),
+      weekDay: values.weekDay,
+      weeklyFee: source.weeklyFee,
+      lineageFee: source.lineageFee,
+      prizeFundFee: source.prizeFundFee,
+      practiceStartTime: source.practiceStartTime ?? undefined,
+      competitionStartTime: source.competitionStartTime ?? undefined,
+      timezone: source.timezone ?? "America/New_York",
+      paymentMode: values.paymentMode,
+      organizationId,
+      locationId: retryLocation.id,
+      seasonNumber: source.seasonNumber + 1,
+      previousSeasonId: source.id,
+      totalBowlingWeeks: values.totalBowlingWeeks,
+      skipDates: values.skipDates,
+      cancelledDates: values.cancelledDates,
+      doublePayDates: values.doublePayDates,
+    };
+    const [successor] = await db.insert(leagues).values(successorValues).returning();
+    await db.transaction((tx) => applyFallDraftGenerationInTransaction(tx, {
+      organizationId,
+      leagueId: successor.id,
+      actorUserId: admin.user.id,
+      internalSetupApply: { idempotencyKey: commandKey, reason: LEAGUE_SETUP_FALL_AUDIT_REASON },
+    }));
+    await db.update(locations).set({ active: false }).where(eq(locations.id, retryLocation.id));
+
+    const retry = await apiPost<AnyLeagueSetupIntegrationResult>(`/api/leagues/${source.id}/new-season`, {
+      ...values,
+      setupIntegration: legacy,
+    }, admin);
+    expect(retry.status).toBe(200);
+    expect(retry.data.data).toMatchObject({
+      id: successor.id,
+      setupIntegration: { requestContractVersion: "league-setup-integration-request/1", mode: "idempotent_retry", writesPerformed: false },
+    });
+    const mismatch = await apiPost(`/api/leagues/${source.id}/new-season`, {
+      ...values,
+      name: "API historical successor mismatch",
+      setupIntegration: legacy,
+    }, admin);
+    expect(mismatch.status).toBe(409);
+    expect(mismatch.data.error?.code).toBe("IDEMPOTENCY_CONFLICT");
   });
 
   it("rejects ordinary users and forbidden canonical claims without creating a league", async () => {

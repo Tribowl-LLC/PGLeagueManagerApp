@@ -17,6 +17,7 @@ import {
   type PaymentMode,
 } from "@shared/schema";
 import { LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION_2 } from "@shared/league-setup-integration";
+import { calculateSeasonEnd } from "@shared/schedule-utils";
 import { fallDraftSha256 } from "@shared/fall-draft-generation";
 import {
   createLeagueWithCanonicalSetup,
@@ -35,6 +36,10 @@ import {
   LeagueLocationScopeError,
   updateLeague,
 } from "../../server/storage/leagues";
+import {
+  deleteLocation,
+  LocationLeagueReferenceExistsError,
+} from "../../server/storage/locations";
 import { deleteOrganization } from "../../server/storage/organizations";
 import { getTestDb } from "../setup/test-db";
 
@@ -288,6 +293,97 @@ describe("authoritative league setup integration", () => {
     })).rejects.toMatchObject({ code: "validation_error" });
   });
 
+  it("allows an exact historical request/1 rollover retry after its location is archived", async () => {
+    const f = await fixture("v1-rollover-archived-location");
+    const [source] = await db.insert(leagues).values(fallLeague(f, "weekly", {
+      seasonStart: "2031-01-05T00:00:00.000Z",
+      seasonEnd: "2031-03-23T00:00:00.000Z",
+      totalBowlingWeeks: 12,
+      skipDates: [],
+      cancelledDates: [],
+      doublePayDates: [],
+    })).returning();
+    const values = {
+      name: "Historical successor",
+      description: source.description,
+      payingLineupSize: 4 as const,
+      locationId: f.locationId,
+      timezone: source.timezone ?? undefined,
+      practiceStartTime: source.practiceStartTime,
+      competitionStartTime: source.competitionStartTime,
+      weeklyFee: source.weeklyFee,
+      lineageFee: source.lineageFee,
+      prizeFundFee: source.prizeFundFee,
+      seasonStart: "2032-10-03",
+      totalBowlingWeeks: 6,
+      weekDay: "Sunday" as const,
+      skipDates: ["2032-10-10"],
+      cancelledDates: [],
+      doublePayDates: ["2032-11-07"],
+      allowPublicSignup: source.allowPublicSignup,
+      paymentMode: "weekly" as const,
+    };
+    const targetSeasonEnd = calculateSeasonEnd(
+      new Date(values.seasonStart), values.weekDay, values.totalBowlingWeeks, values.skipDates, values.cancelledDates,
+    );
+    const legacyIntent = {
+      contractVersion: "league-setup-integration-request/1" as const,
+      idempotencyKey: `31000000-0000-4000-8000-${String(++sequence).padStart(12, "0")}`,
+    };
+    const commandKey = `lvsetup:${fallDraftSha256(legacyIntent)}`;
+    const successorValues: InsertLeague = {
+      name: values.name,
+      description: values.description,
+      payingLineupSize: values.payingLineupSize,
+      active: true,
+      scheduleAuthority: "canonical",
+      allowPublicSignup: values.allowPublicSignup,
+      seasonStart: values.seasonStart,
+      seasonEnd: targetSeasonEnd.toISOString(),
+      weekDay: values.weekDay,
+      weeklyFee: values.weeklyFee,
+      lineageFee: values.lineageFee,
+      prizeFundFee: values.prizeFundFee,
+      practiceStartTime: values.practiceStartTime ?? undefined,
+      competitionStartTime: values.competitionStartTime ?? undefined,
+      timezone: values.timezone ?? "America/New_York",
+      paymentMode: values.paymentMode,
+      organizationId: f.organizationId,
+      locationId: values.locationId,
+      seasonNumber: source.seasonNumber + 1,
+      previousSeasonId: source.id,
+      totalBowlingWeeks: values.totalBowlingWeeks,
+      skipDates: values.skipDates,
+      cancelledDates: values.cancelledDates,
+      doublePayDates: values.doublePayDates,
+    };
+    const [successor] = await db.insert(leagues).values(successorValues).returning();
+    await db.transaction((tx) => applyFallDraftGenerationInTransaction(tx, {
+      organizationId: f.organizationId,
+      leagueId: successor.id,
+      actorUserId: f.actorUserId,
+      internalSetupApply: { idempotencyKey: commandKey, reason: LEAGUE_SETUP_FALL_AUDIT_REASON },
+    }));
+    await db.update(locations).set({ active: false }).where(eq(locations.id, f.locationId));
+
+    const retry = await createNewSeasonWithCanonicalSetup({
+      scope: { organizationId: f.organizationId, actorUserId: f.actorUserId },
+      sourceLeagueId: source.id,
+      values,
+      setup: legacyIntent,
+    });
+    expect(retry.result).toMatchObject({
+      id: successor.id,
+      setupIntegration: { requestContractVersion: "league-setup-integration-request/1", mode: "idempotent_retry", writesPerformed: false },
+    });
+    await expect(createNewSeasonWithCanonicalSetup({
+      scope: { organizationId: f.organizationId, actorUserId: f.actorUserId },
+      sourceLeagueId: source.id,
+      values: { ...values, name: "mismatched historical successor" },
+      setup: legacyIntent,
+    })).rejects.toMatchObject({ code: "idempotency_conflict" });
+  });
+
   it.each(["weekly", "upfront"] as const)("atomically creates complete %s Fall drafts with fixed policies", async (paymentMode) => {
     const f = await fixture(`complete-${paymentMode}`);
     const result = await createLeagueWithCanonicalSetup({
@@ -457,7 +553,7 @@ describe("authoritative league setup integration", () => {
       .rejects.toBeInstanceOf(LeagueLocationScopeError);
   });
 
-  it("linearizes location archive before a league PATCH", async () => {
+  it("does not deadlock when location archival overlaps a league PATCH", async () => {
     const f = await fixture("location-patch-race");
     const [league] = await db.insert(leagues).values(fallLeague(f)).returning();
     let archiveUpdated!: () => void;
@@ -476,8 +572,100 @@ describe("authoritative league setup integration", () => {
     await archiveHasUpdated;
     const patch = updateLeague(league.id, { locationId: f.locationId });
     releaseArchive();
-    await archive;
-    await expect(patch).rejects.toBeInstanceOf(LeagueLocationScopeError);
+    const [archiveResult, patchResult] = await Promise.allSettled([archive, patch]);
+    expect(archiveResult.status).toBe("fulfilled");
+    if (patchResult.status === "rejected") {
+      expect(patchResult.reason).toBeInstanceOf(LeagueLocationScopeError);
+    }
+    const [location] = await db.select({ active: locations.active }).from(locations).where(eq(locations.id, f.locationId));
+    expect(location?.active).toBe(false);
+  });
+
+  it("does not deadlock when deleteLocation overlaps a league PATCH", async () => {
+    const f = await fixture("location-delete-patch-race");
+    const [league] = await db.insert(leagues).values(fallLeague(f)).returning();
+    let locationLocked!: () => void;
+    const lockReady = new Promise<void>((resolve) => { locationLocked = resolve; });
+    let releaseLocation!: () => void;
+    const release = new Promise<void>((resolve) => { releaseLocation = resolve; });
+    const holder = db.transaction(async (tx) => {
+      await tx.select({ id: locations.id })
+        .from(locations)
+        .where(eq(locations.id, f.locationId))
+        .for("update");
+      locationLocked();
+      await release;
+    });
+    await lockReady;
+    const deletion = deleteLocation(f.locationId);
+    const patch = updateLeague(league.id, { locationId: f.locationId });
+    releaseLocation();
+    const [deleteResult, patchResult, holderResult] = await Promise.allSettled([deletion, patch, holder]);
+    expect(deleteResult.status).toBe("rejected");
+    if (deleteResult.status === "rejected") {
+      expect(deleteResult.reason).toBeInstanceOf(LocationLeagueReferenceExistsError);
+    }
+    expect(holderResult.status).toBe("fulfilled");
+    if (patchResult.status === "rejected") {
+      expect(patchResult.reason).toBeInstanceOf(LeagueLocationScopeError);
+    }
+    const [remainingLeague] = await db.select({ locationId: leagues.locationId }).from(leagues).where(eq(leagues.id, league.id));
+    expect(remainingLeague?.locationId).toBe(f.locationId);
+    expect((await db.select({ id: locations.id }).from(locations).where(eq(locations.id, f.locationId)))[0]?.id).toBe(f.locationId);
+  });
+
+  it("refuses location deletion while rollover is assigning the same location", async () => {
+    const f = await fixture("location-delete-rollover-race");
+    const [source] = await db.insert(leagues).values(fallLeague(f, "weekly", {
+      seasonStart: "2031-01-05T00:00:00.000Z",
+      seasonEnd: "2031-03-23T00:00:00.000Z",
+      totalBowlingWeeks: 12,
+      skipDates: [],
+      cancelledDates: [],
+      doublePayDates: [],
+    })).returning();
+    const confirmation = await sourceConfirmation(f, source.id);
+    const values = {
+      seasonStart: "2032-08-01",
+      totalBowlingWeeks: 3,
+      weekDay: "Sunday" as const,
+      skipDates: [],
+      cancelledDates: [],
+      doublePayDates: [],
+      allowPublicSignup: false,
+      paymentMode: "weekly" as const,
+    };
+    let locationLocked!: () => void;
+    const lockReady = new Promise<void>((resolve) => { locationLocked = resolve; });
+    let releaseLocation!: () => void;
+    const release = new Promise<void>((resolve) => { releaseLocation = resolve; });
+    const holder = db.transaction(async (tx) => {
+      await tx.select({ id: locations.id })
+        .from(locations)
+        .where(eq(locations.id, f.locationId))
+        .for("update");
+      locationLocked();
+      await release;
+    });
+    await lockReady;
+    const deletion = deleteLocation(f.locationId);
+    const rollover = createNewSeasonWithCanonicalSetup({
+      scope: { organizationId: f.organizationId, actorUserId: f.actorUserId },
+      sourceLeagueId: source.id,
+      values,
+      setup: setup(++sequence),
+      sourceConfirmation: confirmation,
+    });
+    releaseLocation();
+    const [deleteResult, rolloverResult, holderResult] = await Promise.allSettled([deletion, rollover, holder]);
+    expect(deleteResult.status).toBe("rejected");
+    if (deleteResult.status === "rejected") {
+      expect(deleteResult.reason).toBeInstanceOf(LocationLeagueReferenceExistsError);
+    }
+    expect(rolloverResult.status).toBe("fulfilled");
+    expect(holderResult.status).toBe("fulfilled");
+    const references = await db.select({ id: leagues.id }).from(leagues).where(eq(leagues.locationId, f.locationId));
+    expect(references.length).toBe(2);
   });
 
   it("conflicts when a system administrator reuses one setup key in another organization", async () => {

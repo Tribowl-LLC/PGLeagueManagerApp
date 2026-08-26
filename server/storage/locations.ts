@@ -30,6 +30,20 @@ export class LocationOccurrenceEvidenceExistsError extends Error {
   }
 }
 
+export class LocationLeagueReferenceExistsError extends Error {
+  constructor() {
+    super('Location is still assigned to one or more leagues and must be archived or reassigned before deletion');
+    this.name = 'LocationLeagueReferenceExistsError';
+  }
+}
+
+export class LocationOrganizationImmutableError extends Error {
+  constructor() {
+    super('A location cannot be moved to another organization');
+    this.name = 'LocationOrganizationImmutableError';
+  }
+}
+
 function encryptSquareCreds(creds: LocationSquareCredentials | null | undefined): LocationSquareCredentials | null | undefined {
   if (!creds) return creds;
   return {
@@ -98,8 +112,19 @@ export async function updateLocation(id: number, data: UpdateLocation): Promise<
   if (data.squareCredentials !== undefined) {
     encrypted = { ...encrypted, squareCredentials: encryptSquareCreds(data.squareCredentials) };
   }
-  const [result] = await db.update(locations).set(encrypted).where(eq(locations.id, id)).returning();
-  return result;
+  return db.transaction(async (tx) => {
+    const [current] = await tx.select({ organizationId: locations.organizationId })
+      .from(locations)
+      .where(eq(locations.id, id))
+      .for('update');
+    if (!current) throw new Error(`Location with ID ${id} not found`);
+    if (data.organizationId !== undefined && data.organizationId !== current.organizationId) {
+      throw new LocationOrganizationImmutableError();
+    }
+    const [result] = await tx.update(locations).set(encrypted).where(eq(locations.id, id)).returning();
+    if (!result) throw new Error(`Location with ID ${id} not found`);
+    return result;
+  });
 }
 
 export async function deleteLocation(id: number): Promise<void> {
@@ -122,7 +147,16 @@ export async function deleteLocation(id: number): Promise<void> {
       throw new LocationOccurrenceEvidenceExistsError();
     }
 
-    await tx.update(leagues).set({ locationId: null }).where(eq(leagues.locationId, id));
+    // Do not clear league references while holding the location row lock.
+    // Rollover and league PATCH transactions may already hold a league lock
+    // and then perform an FK key-share read on this location; unlinking here
+    // would invert that order and can deadlock. Administrators must archive
+    // or reassign the leagues first, after which deletion is safe.
+    const [referencingLeague] = await tx.select({ id: leagues.id })
+      .from(leagues)
+      .where(eq(leagues.locationId, id))
+      .limit(1);
+    if (referencingLeague) throw new LocationLeagueReferenceExistsError();
     await tx.delete(locations).where(eq(locations.id, id));
   });
 }

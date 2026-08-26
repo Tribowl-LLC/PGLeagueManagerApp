@@ -9,6 +9,8 @@ import { createLogger } from '../logger';
 import { clearProviderCache } from '../services/payment-provider-factory';
 import type { User } from '@shared/schema';
 import {
+  LocationLeagueReferenceExistsError,
+  LocationOrganizationImmutableError,
   LocationOccurrenceEvidenceExistsError,
   LocationWebhookEvidenceExistsError,
 } from '../storage/locations';
@@ -130,6 +132,9 @@ router.patch('/:id', async (req: Request, res) => {
     }
 
     const validatedData = updateLocationSchema.parse(req.body);
+    if (validatedData.organizationId !== undefined && validatedData.organizationId !== location.organizationId) {
+      return sendError(res, 'A location cannot be moved to another organization', 400, 'LOCATION_ORGANIZATION_IMMUTABLE');
+    }
     const cleanedData: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(validatedData)) {
       if (value !== undefined && value !== null) {
@@ -145,6 +150,9 @@ router.patch('/:id', async (req: Request, res) => {
   } catch (error) {
     if (error instanceof z.ZodError) {
       return handleZodError(res, error);
+    }
+    if (error instanceof LocationOrganizationImmutableError) {
+      return sendError(res, error.message, 400, 'LOCATION_ORGANIZATION_IMMUTABLE');
     }
     log.error(`Error updating location with ID ${req.params.id}:`, error);
     sendError(res, 'Failed to update location', 500, 'ServerError');
@@ -232,6 +240,14 @@ router.delete('/:id', async (req: Request, res) => {
         'This location has retained canonical occurrence evidence. Archive the location instead of deleting it.',
         409,
         'LOCATION_OCCURRENCE_EVIDENCE_EXISTS',
+      );
+    }
+    if (error instanceof LocationLeagueReferenceExistsError) {
+      return sendError(
+        res,
+        'This location is still assigned to a league. Archive or reassign the league before deleting the location.',
+        409,
+        'LOCATION_LEAGUE_REFERENCED',
       );
     }
     log.error(`Error deleting location with ID ${req.params.id}:`, error);

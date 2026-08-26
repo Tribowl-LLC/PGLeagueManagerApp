@@ -11,9 +11,10 @@ import express from "express";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 
-const { EvidenceError, OccurrenceEvidenceError, mockStorage, fakeLogger } = vi.hoisted(() => ({
+const { EvidenceError, OccurrenceEvidenceError, LeagueReferenceError, mockStorage, fakeLogger } = vi.hoisted(() => ({
   EvidenceError: class LocationWebhookEvidenceExistsError extends Error {},
   OccurrenceEvidenceError: class LocationOccurrenceEvidenceExistsError extends Error {},
+  LeagueReferenceError: class LocationLeagueReferenceExistsError extends Error {},
   mockStorage: {
     getLocation: vi.fn(),
     deleteLocation: vi.fn(),
@@ -28,6 +29,7 @@ const { EvidenceError, OccurrenceEvidenceError, mockStorage, fakeLogger } = vi.h
 
 vi.mock("../../server/storage", () => ({ storage: mockStorage }));
 vi.mock("../../server/storage/locations", () => ({
+  LocationLeagueReferenceExistsError: LeagueReferenceError,
   LocationWebhookEvidenceExistsError: EvidenceError,
   LocationOccurrenceEvidenceExistsError: OccurrenceEvidenceError,
 }));
@@ -102,6 +104,23 @@ describe("DELETE /api/locations/:id webhook evidence retention", () => {
       error: {
         code: "LOCATION_OCCURRENCE_EVIDENCE_EXISTS",
         message: expect.stringContaining("Archive"),
+      },
+    });
+    expect(fakeLogger.error).not.toHaveBeenCalled();
+  });
+
+  it("returns a clean conflict when a location is still assigned to a league", async () => {
+    mockStorage.deleteLocation.mockRejectedValue(new LeagueReferenceError());
+
+    const response = await fetch(`${baseUrl}/api/locations/9`, { method: "DELETE" });
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body).toMatchObject({
+      success: false,
+      error: {
+        code: "LOCATION_LEAGUE_REFERENCED",
+        message: expect.stringContaining("assigned to a league"),
       },
     });
     expect(fakeLogger.error).not.toHaveBeenCalled();

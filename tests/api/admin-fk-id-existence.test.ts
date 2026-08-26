@@ -479,6 +479,46 @@ describe('Task #518 — pin remaining admin FK id existence checks', () => {
     });
   });
 
+  // -------------------- PATCH /api/locations/:id --------------------
+
+  describe('PATCH /api/locations/:id', () => {
+    it('rejects an org_admin attempt to move a location to another organization', async () => {
+      const { status, data } = await apiPatch(
+        `/api/locations/${inactiveLocationOrgAId}`,
+        { organizationId: orgBId },
+        orgAAdmin,
+      );
+
+      expect(status).toBe(400);
+      expect(data.success).toBe(false);
+      expect(data.error?.code).toBe('LOCATION_ORGANIZATION_IMMUTABLE');
+
+      const [location] = await db
+        .select({ organizationId: locations.organizationId })
+        .from(locations)
+        .where(eq(locations.id, inactiveLocationOrgAId));
+      expect(location?.organizationId).toBe(orgAId);
+    });
+
+    it('rejects a system_admin attempt to move a location to another organization', async () => {
+      const { status, data } = await apiPatch(
+        `/api/locations/${locationOrgBId}`,
+        { organizationId: orgAId },
+        sysAdmin,
+      );
+
+      expect(status).toBe(400);
+      expect(data.success).toBe(false);
+      expect(data.error?.code).toBe('LOCATION_ORGANIZATION_IMMUTABLE');
+
+      const [location] = await db
+        .select({ organizationId: locations.organizationId })
+        .from(locations)
+        .where(eq(locations.id, locationOrgBId));
+      expect(location?.organizationId).toBe(orgBId);
+    });
+  });
+
   // ---------------------- POST /api/locations ----------------------
 
   describe('POST /api/locations', () => {
