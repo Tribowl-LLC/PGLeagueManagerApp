@@ -363,6 +363,21 @@ describe("authoritative league setup integration", () => {
     expect(await organizationCounts(f.organizationId)).toEqual(before);
   });
 
+  it("rejects an inactive setup location inside the authoritative transaction", async () => {
+    const f = await fixture("inactive-location");
+    await db.update(locations).set({ active: false }).where(eq(locations.id, f.locationId));
+    const before = await organizationCounts(f.organizationId);
+
+    await expect(createLeagueWithCanonicalSetup({
+      scope: { organizationId: f.organizationId, actorUserId: f.actorUserId },
+      league: fallLeague(f),
+      setup: setup(++sequence),
+    })).rejects.toMatchObject({ code: "location_not_found" });
+
+    expect(await organizationCounts(f.organizationId)).toEqual(before);
+    expect(await db.select({ id: leagues.id }).from(leagues).where(eq(leagues.organizationId, f.organizationId))).toHaveLength(0);
+  });
+
   it.each([
     "after_commands",
     "after_generation_run",

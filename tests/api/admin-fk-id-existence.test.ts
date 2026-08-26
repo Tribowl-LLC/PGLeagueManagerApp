@@ -222,6 +222,7 @@ describe('Task #518 — pin remaining admin FK id existence checks', () => {
   let orgBId = 0;
   let leagueOrgAId = 0;
   let locationOrgBId = 0;
+  let inactiveLocationOrgAId = 0;
 
   // Cleanup buckets — every fixture row created in beforeAll, plus
   // any rows the happy-path tests may decide to write. The negative
@@ -283,6 +284,13 @@ describe('Task #518 — pin remaining admin FK id existence checks', () => {
       .returning({ id: locations.id });
     locationOrgBId = locB.id;
     createdLocationIds.push(locB.id);
+
+    const [inactiveLocA] = await db
+      .insert(locations)
+      .values({ name: 'Vitest #518 Inactive Loc A', organizationId: orgAId, active: false })
+      .returning({ id: locations.id });
+    inactiveLocationOrgAId = inactiveLocA.id;
+    createdLocationIds.push(inactiveLocA.id);
   });
 
   afterAll(async () => {
@@ -343,6 +351,25 @@ describe('Task #518 — pin remaining admin FK id existence checks', () => {
           seasonEnd: '2025-12-31 00:00:00',
           weekDay: 'Monday',
           locationId: MISSING_ID,
+        },
+        orgAAdmin,
+      );
+
+      expect(status).toBe(404);
+      expect(data.success).toBe(false);
+      expect(data.error?.code).toBe('NOT_FOUND');
+      expect(data.error?.message).toMatch(/location not found/i);
+    });
+
+    it('returns 404 when an org_admin posts with an inactive locationId', async () => {
+      const { status, data } = await apiPost(
+        '/api/leagues',
+        {
+          name: 'Vitest #518 Inactive Loc',
+          seasonStart: '2025-01-01 00:00:00',
+          seasonEnd: '2025-12-31 00:00:00',
+          weekDay: 'Monday',
+          locationId: inactiveLocationOrgAId,
         },
         orgAAdmin,
       );

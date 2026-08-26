@@ -101,7 +101,10 @@ export function LeagueSquareMissingBanner({ leagues, onEditLeague }: LeagueSquar
   }
   const visibleAlerts = Array.from(byLeague.values()).sort(
     (a, b) => new Date(b.sentAt).getTime() - new Date(a.sentAt).getTime(),
-  );
+  ).filter((alert) => {
+    const league = leagues.find((candidate) => candidate.id === alert.leagueId);
+    return league?.active === true && league.scheduleAuthority === "canonical";
+  });
   const newest = visibleAlerts[0] ?? null;
 
   if (!isAdmin || !userId || visibleAlerts.length === 0 || !newest) return null;
@@ -167,8 +170,12 @@ function LeagueSquareMissingBannerBody({
               <li key={alert.leagueId}>
                 <button
                   type="button"
-                  onClick={() => league && onEditLeague(league)}
-                  disabled={!league}
+                  onClick={() => {
+                    if (league?.active === true && league.scheduleAuthority === "canonical") {
+                      onEditLeague(league);
+                    }
+                  }}
+                  disabled={league?.active !== true || league.scheduleAuthority !== "canonical"}
                   className="text-left text-sm font-semibold underline underline-offset-2 hover:opacity-80 disabled:no-underline disabled:opacity-60 disabled:cursor-not-allowed"
                   data-testid={`button-fix-league-square-missing-${alert.leagueId}`}
                 >

@@ -52,6 +52,7 @@ function makeLeague(overrides: Partial<League>): League {
     name: "Monday League",
     description: null,
     active: true,
+    scheduleAuthority: "canonical",
     allowPublicSignup: false,
     seasonStart: "2026-01-01",
     seasonEnd: "2026-04-01",
@@ -228,6 +229,37 @@ describe("GET /api/leagues/square-missing-alerts/recent", () => {
     expect(storageMock.storage.getAllLeaguesSystemAdmin).toHaveBeenCalledTimes(1);
     expect(storageMock.storage.getLeagues).not.toHaveBeenCalled();
     expect(body.data.alerts.map((a) => a.leagueId).sort()).toEqual([1, 2]);
+  });
+
+  it("hides inactive canonical leagues from the product alert feed", async () => {
+    const active = makeLeague({ id: 1, organizationId: 100, name: "Active" });
+    const archived = makeLeague({ id: 2, organizationId: 100, name: "Archived", active: false });
+
+    storageMock.storage.getLeagues.mockResolvedValue([active, archived]);
+    storageMock.storage.listRecentAlerterEventsByPrefix.mockResolvedValue([
+      {
+        kind: "league_square_missing:1",
+        lastSentAt: new Date("2026-05-01T00:00:00Z"),
+        summary: leagueMissingSummary(active, [
+          { kind: "lineage", itemName: "A", variationId: "var-lineage" },
+        ]),
+      },
+      {
+        kind: "league_square_missing:2",
+        lastSentAt: new Date("2026-05-01T00:01:00Z"),
+        summary: leagueMissingSummary(archived, [
+          { kind: "lineage", itemName: "Archived", variationId: "var-lineage" },
+        ]),
+      },
+    ]);
+
+    const { body } = await fetchAlerts({
+      id: 10,
+      role: "org_admin",
+      organizationId: 100,
+    });
+
+    expect(body.data.alerts.map((alert) => alert.leagueId)).toEqual([1]);
   });
 
   it("auto-clears entries whose saved variation id no longer matches what was reported missing", async () => {

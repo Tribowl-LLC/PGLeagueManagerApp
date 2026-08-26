@@ -282,7 +282,8 @@ router.get("/", async (req: Request, res) => {
  *
  * Tenant scoping mirrors the rest of this router via
  * `filterByOrganization`: org-admins see only their own org's
- * leagues; system-admins see every alerted league. We additionally
+ * active canonical leagues; system-admins see every active canonical
+ * alerted league. We additionally
  * intersect against `getLeague` (org-admin) /
  * `getAllLeaguesSystemAdmin` (system-admin) so a league deleted
  * after the alert fired never surfaces.
@@ -326,7 +327,9 @@ router.get("/square-missing-alerts/recent", async (req: Request, res) => {
       if (!s || typeof s.leagueId !== 'number' || !Array.isArray(s.missing)) continue;
 
       const league = leagueById.get(s.leagueId);
-      if (!league) continue; // deleted, archived out of view, or another tenant.
+      if (!league || league.active !== true || league.scheduleAuthority !== "canonical") {
+        continue; // deleted, archived, legacy, or another tenant.
+      }
 
       // Auto-clear: only include the variations that the league
       // *still* points at. If admin re-picked a live item, the
@@ -455,7 +458,7 @@ router.post("/", async (req: Request, res) => {
     if (!organization) return sendError(res, 'Organization not found', 404, 'NOT_FOUND');
     if (typeof req.body?.locationId === 'number') {
       const location = await storage.getLocation(req.body.locationId);
-      if (!location || location.organizationId !== effectiveOrgId) {
+      if (!location || location.organizationId !== effectiveOrgId || location.active !== true) {
         return sendError(res, 'Location not found for this organization', 404, 'NOT_FOUND');
       }
     }

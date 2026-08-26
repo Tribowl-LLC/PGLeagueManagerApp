@@ -220,11 +220,24 @@ async function authorizeSetupActor(
   }
 }
 
-async function assertLocationScope(tx: LeagueScheduleTransaction, organizationId: number, locationId: number | null | undefined): Promise<void> {
+async function assertLocationScope(
+  tx: LeagueScheduleTransaction,
+  organizationId: number,
+  locationId: number | null | undefined,
+  lock = true,
+): Promise<void> {
   if (!locationId) throw new LeagueSetupIntegrationError("location_not_found", "a location in the authorized organization is required for Fall setup");
-  const [location] = await tx.select({ id: locations.id })
+  // Lock the scoped row so a concurrent archive cannot turn an otherwise
+  // valid setup into a league attached to an inactive location between the
+  // check and the canonical league insert/rollover commit.
+  const locationQuery = tx.select({ id: locations.id })
     .from(locations)
-    .where(and(eq(locations.id, locationId), eq(locations.organizationId, organizationId)));
+    .where(and(
+      eq(locations.id, locationId),
+      eq(locations.organizationId, organizationId),
+      eq(locations.active, true),
+    ));
+  const [location] = lock ? await locationQuery.for("update") : await locationQuery;
   if (!location) throw new LeagueSetupIntegrationError("location_not_found", "the setup location was not found in the authorized organization");
 }
 
@@ -1059,7 +1072,7 @@ export async function loadLeagueRolloverSource(input: {
     if (source.scheduleAuthority !== "canonical" || !source.active) {
       throw new LeagueSetupIntegrationError("stale_source_league", "only an active source league can be confirmed for rollover");
     }
-    await assertLocationScope(tx, input.scope.organizationId, source.locationId);
+    await assertLocationScope(tx, input.scope.organizationId, source.locationId, false);
     const evidence = await loadRolloverCarriedEvidence(tx, input.scope.organizationId, source.id, false);
     return rolloverSourceContract(source, evidence);
   }, { isolationLevel: "repeatable read", accessMode: "read only" });
