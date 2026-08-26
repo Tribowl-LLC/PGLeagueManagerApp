@@ -35,7 +35,6 @@ import {
 } from "./db";
 import { installDbInvariants } from "./db-invariants";
 import { setupAuth } from "./auth";
-import { paymentScheduler } from './services/payment-scheduler';
 import { scheduledPaymentOperationExecutor } from './services/scheduled-payment-operation-executor';
 import { rosterStandingAutopayOperationExecutor } from './services/roster-standing-autopay-executor';
 import { configureStandingAutopayRuntime } from './services/roster-standing-autopay';
@@ -449,11 +448,6 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
     try {
       await scheduledPaymentOperationExecutor.start(scheduledPaymentExecutionMode);
       await rosterStandingAutopayOperationExecutor.start();
-      if (scheduledPaymentExecutionMode !== 'ledger_execute') {
-        // Legacy payment_schedules are archive-only after the roster cutover;
-        // no scheduler wake, preparation, or provider dispatch is allowed.
-        log.info('Legacy payment scheduler remains disabled after roster cutover');
-      }
       log.info('Scheduled payment execution initialized', { mode: scheduledPaymentExecutionMode });
 
       await startPaymentSyncRetrySweep();
@@ -488,7 +482,6 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
   const close = async (): Promise<void> => {
     scheduledPaymentOperationExecutor.stop();
     rosterStandingAutopayOperationExecutor.stop();
-    paymentScheduler.cancelAllJobs();
     await new Promise<void>((resolve) => {
       server.close(() => resolve());
     });

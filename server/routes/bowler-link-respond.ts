@@ -190,14 +190,12 @@ router.get("/decline", async (req, res) => {
       });
       return res.status(page.status).type("html").send(page.html);
     }
-    const prunedSchedules = await links.pruneSchedulesForRemovedLink(link);
     await links.deleteLink(link.id);
     log.info("audit:bowler_link_decline_via_email", {
       linkId: link.id,
       organizationId: link.organizationId,
       bowlerAId: link.bowlerAId,
       bowlerBId: link.bowlerBId,
-      prunedScheduleCount: prunedSchedules.length,
     });
     const page = renderPage({
       status: 200,

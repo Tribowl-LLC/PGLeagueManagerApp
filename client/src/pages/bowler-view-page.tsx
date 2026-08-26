@@ -58,10 +58,6 @@ export default function BowlerViewPage() {
         return fromLeagueId && /^\d+$/.test(fromLeagueId)
           ? { href: `/reports/leagues/${fromLeagueId}/past-due`, label: "Back to Past Due", testid: "link-back-to-league-past-due" }
           : null;
-      case "weekly-payments":
-        return fromLeagueId && /^\d+$/.test(fromLeagueId)
-          ? { href: `/leagues/${fromLeagueId}/weekly-payments`, label: "Back to Weekly Payments", testid: "link-back-to-weekly-payments" }
-          : null;
       case "team":
         return fromTeamId && /^\d+$/.test(fromTeamId)
           ? { href: `/teams/${fromTeamId}`, label: "Back to Team", testid: "link-back-to-team" }
@@ -158,13 +154,11 @@ export default function BowlerViewPage() {
   const paymentBusinessDates = useMemo(() => {
     const map = new Map<number, string>();
     for (const row of paymentReportResponse?.data?.rows ?? []) if (row.paymentId !== null) map.set(row.paymentId, row.authoritativeLocalDate);
-    for (const row of paymentReportResponse?.data?.unlinkedHistory ?? []) if (row.paymentId !== null) map.set(row.paymentId, row.authoritativeLocalDate);
     return map;
   }, [paymentReportResponse?.data]);
   const paymentEvidenceStatuses = useMemo(() => {
     const map = new Map<number, CanonicalPaymentReport["rows"][number]["status"]>();
     for (const row of paymentReportResponse?.data?.rows ?? []) if (row.paymentId !== null) map.set(row.paymentId, row.status);
-    for (const row of paymentReportResponse?.data?.unlinkedHistory ?? []) if (row.paymentId !== null) map.set(row.paymentId, row.status);
     return map;
   }, [paymentReportResponse?.data]);
 
@@ -289,7 +283,7 @@ export default function BowlerViewPage() {
 
       <ErrorBoundary level="section">
         {paymentReportLoading ? <div className="text-sm text-muted-foreground">Loading canonical payment evidence…</div> : paymentReportError ? <div className="text-sm text-destructive">Financial evidence requires review; payment history is unavailable.</div> : <CanonicalPaymentEvidenceTable
-          rows={[...(paymentReportResponse?.data?.rows ?? []), ...(paymentReportResponse?.data?.unlinkedHistory ?? [])]}
+          rows={paymentReportResponse?.data?.rows ?? []}
           mode={paymentReportResponse?.data?.mode}
           paymentTiming={paymentReportResponse?.data?.paymentTiming}
           organizationId={bowler?.organizationId ?? null}

@@ -21,9 +21,6 @@ import { getOrganizationFilter, filterByOrganization } from '../middleware/organ
 import { hashPassword } from '../auth';
 import { sendInviteEmail } from '../services/email';
 import { linkUserToBowler } from '../services/identity-link.js';
-import { paymentScheduler } from '../services/payment-scheduler.js';
-import { isTestKickSuppressed, PAYMENT_SCHEDULER_KICK_HEADER } from '../utils/test-suppression';
-import { getNextLeagueDateTime } from '../utils/league-datetime.js';
 import { cacheInvalidate } from '../utils/cache.js';
 import { calculateSeasonEnd } from '@shared/schedule-utils';
 import { db } from '../db.js';
@@ -647,64 +644,6 @@ router.patch("/:id", async (req: Request, res) => {
     // Canonical roster obligations carry their split amounts as immutable
     // responsibility evidence. The historical payment projection backfill is
     // only valid before roster cutover and must never rewrite canonical rows.
-    const feesChanged = update.lineageFee !== undefined || update.prizeFundFee !== undefined;
-    if (feesChanged && updated.payingLineupSize == null) {
-      try {
-        const lineageFee = updated.lineageFee;
-        const prizeFundFee = updated.prizeFundFee;
-        const weeklyFee = updated.weeklyFee;
-        const bothSet = lineageFee != null && prizeFundFee != null;
-        const sumMatchesWeekly = bothSet && (lineageFee + prizeFundFee === weeklyFee);
-
-        if (bothSet && sumMatchesWeekly && weeklyFee > 0) {
-          await db.execute(sql`
-            UPDATE payments
-            SET
-              lineage_amount = ROUND(amount::numeric * ${lineageFee} / ${weeklyFee})::integer,
-              prize_fund_amount = ROUND(amount::numeric * ${prizeFundFee} / ${weeklyFee})::integer
-            WHERE league_id = ${id}
-              AND status = 'paid'
-          `);
-          log.info(`Backfilled payment splits for league ${id}: lineageFee=${lineageFee}, prizeFundFee=${prizeFundFee}`);
-        } else {
-          await db.execute(sql`
-            UPDATE payments
-            SET lineage_amount = NULL, prize_fund_amount = NULL
-            WHERE league_id = ${id}
-          `);
-          log.info(`Cleared payment splits for league ${id} (fees not fully configured)`);
-        }
-      } catch (backfillErr) {
-        log.error('Error backfilling payment splits:', backfillErr);
-      }
-    }
-
-    const timezoneChanged = update.timezone && update.timezone !== league.timezone;
-    if (timezoneChanged) {
-      const activeSchedules = await storage.getActiveSchedulesByLeague(id);
-      const tz = updated.timezone ?? DEFAULT_TIMEZONE;
-
-      for (const sched of activeSchedules) {
-        const nextDate = getNextLeagueDateTime(
-          new Date(),
-          updated.weekDay,
-          updated.competitionStartTime,
-          tz,
-          updated.skipDates ?? [],
-          updated.cancelledDates ?? []
-        );
-
-        await storage.updatePaymentScheduleFields(sched.id, { nextPaymentDate: nextDate.toISOString() });
-        if (!isTestKickSuppressed(req, PAYMENT_SCHEDULER_KICK_HEADER)) {
-          await paymentScheduler.removeSchedule(sched.id);
-          const updatedSched = await storage.getPaymentScheduleById(sched.id);
-          if (updatedSched && updatedSched.active) {
-            await paymentScheduler.addSchedule(updatedSched, updated.organizationId);
-          }
-        }
-      }
-    }
-
     if (canonicalScheduleResponse) {
       res.setHeader("ETag", `\"${updated.canonicalScheduleRevision}\"`);
       return sendSuccess(res, { ...updated, canonicalSchedule: canonicalScheduleResponse });

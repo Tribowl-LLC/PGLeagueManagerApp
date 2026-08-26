@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { PaymentsTable } from "@/components/payments-table";
@@ -68,7 +68,6 @@ describe("PaymentsTable dispute visibility", () => {
   it("shows a shared-transaction dispute on every allocation with expandable sanitized history", async () => {
     const user = userEvent.setup();
     const payments = [payment(1, 10), payment(2, 11)];
-    const onDelete = vi.fn();
     render(
       <PaymentsTable
         payments={payments}
@@ -79,23 +78,13 @@ describe("PaymentsTable dispute visibility", () => {
         ] as never}
         isAdmin
         onRefund={() => {}}
-        onDelete={onDelete}
         isRefundPending={false}
-        isDeletePending={false}
       />,
     );
 
     expect(screen.getAllByText("Dispute: Dispute accepted")).toHaveLength(2);
     expect(screen.getAllByText("paid")).toHaveLength(2);
     expect(screen.queryByText("Accepted by Square")).not.toBeInTheDocument();
-    const deleteButtons = screen.getAllByRole("button", {
-      name: "Payment deletion disabled while dispute evidence is retained",
-    });
-    expect(deleteButtons).toHaveLength(2);
-    for (const button of deleteButtons) expect(button).toBeDisabled();
-    await user.click(deleteButtons[0]);
-    expect(onDelete).not.toHaveBeenCalled();
-
     await user.click(screen.getAllByRole("button", { name: "Show dispute details" })[0]);
     expect(screen.getByText(/applies to the shared Square transaction/i)).toBeInTheDocument();
     expect(screen.getByText(/not assigned to this bowler alone/i)).toBeInTheDocument();

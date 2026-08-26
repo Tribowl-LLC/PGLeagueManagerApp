@@ -105,7 +105,6 @@ router.get("/payments", async (req, res) => {
     const redactedReport = {
       ...report,
       rows: report.rows.map(redact),
-      unlinkedHistory: report.unlinkedHistory.map(redact),
       transactions: report.transactions.map((transaction, index) => {
         const rows = transaction.rows.map(redact);
         const amountMinor = rows.reduce((sum, row) => sum + row.amountMinor, 0);

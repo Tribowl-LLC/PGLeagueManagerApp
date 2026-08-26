@@ -249,7 +249,7 @@ async function prepareOperation(
     storeCard?: boolean;
     sourceKind?: "new_card" | "saved_card" | "wallet";
     sourceId?: string;
-    snapshotVersion?: 1 | 2;
+    snapshotVersion?: 2;
     authorizingUserId?: number | null;
   } = {},
 ): Promise<{
@@ -258,9 +258,7 @@ async function prepareOperation(
 }> {
   const requestKind = options.requestKind ?? "direct";
   const snapshotVersion = options.snapshotVersion ?? 2;
-  const sourceKind = snapshotVersion === 1
-    ? "legacy"
-    : options.sourceKind ?? "new_card";
+  const sourceKind = options.sourceKind ?? "new_card";
   const operation = await createOrGetGeneralInteractivePaymentOperation({
     organizationId: fixture.organizationId,
     requestKey: options.requestKey ?? `executor-${randomUUID()}`,
@@ -792,60 +790,6 @@ describe("interactive payment operation executor", () => {
     expect(provider.processCalls).toHaveLength(1);
     expect(provider.processCalls[0]?.sourceId).toBe("ccof:executor-card-after-unknown");
   });
-
-  it.each([false, true])(
-    "moves an unresolved legacy operation with storeCard=%s to reconciliation before provider resolution",
-    async (storeCard) => {
-      const fixture = fixtures[0];
-      const { operation } = await prepareOperation(fixture, {
-        storeCard,
-        snapshotVersion: 1,
-      });
-      const leased = await acquirePaymentOperationLease({
-        organizationId: fixture.organizationId,
-        operationId: operation.id,
-        leaseOwner: `legacy-uncertain-${randomUUID()}`,
-        leaseDurationMs: 60_000,
-        now: fixedNow,
-      });
-      if (!leased?.leaseToken) throw new Error("legacy operation was not leased");
-      const recoveryAt = new Date(fixedNow.getTime() + 60_000);
-      await recordPaymentOperationProviderUnknown({
-        organizationId: fixture.organizationId,
-        operationId: operation.id,
-        leaseToken: leased.leaseToken,
-        recoveryAt,
-        errorCode: "PAYMENT_RESPONSE_UNKNOWN",
-        now: fixedNow,
-      });
-      const retryNow = new Date(recoveryAt.getTime() + 1);
-      const provider = new ScriptedInteractiveProvider(fixture.locationId);
-      const getProvider = vi.fn(async () => {
-        throw new ProviderNotConfiguredError("temporary configuration outage", fixture.locationId);
-      });
-
-      const result = await createExecutor(fixture, provider, {
-        now: () => retryNow,
-        getProvider,
-      }).execute({
-        organizationId: fixture.organizationId,
-        operationId: operation.id,
-        now: retryNow,
-      });
-
-      expect(result).toMatchObject({
-        status: "reconciliation_required",
-        errorClassification: "provider_unknown",
-        errorCode: "LEGACY_PAYMENT_OUTCOME_UNCERTAIN",
-      });
-      expect(getProvider).not.toHaveBeenCalled();
-      expect(provider.cardSaveCalls).toHaveLength(0);
-      expect(provider.processCalls).toHaveLength(0);
-      expect(provider.orderCalls).toHaveLength(0);
-      expect(await db.select().from(payments)
-        .where(eq(payments.paymentOperationId, operation.id))).toHaveLength(0);
-    },
-  );
 
   it("retains a successfully-created card when the payment is declined", async () => {
     const fixture = fixtures[0];

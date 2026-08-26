@@ -100,7 +100,9 @@ scheduled operation records only its trigger occurrence—not paid obligations.
 Exact matching is tenant/league scoped and DST-safe; mismatches remain null and
 are never guessed from proximity, amount, or roster membership. Linked games
 and scheduled operations are effective-lock evidence, while a schedule cursor
-alone is not. See `docs/phase-d1-canonical-occurrence-compatibility.md`.
+alone is not. Current payment consumers require the canonical occurrence and
+roster-obligation contracts directly; no date-based compatibility resolver is
+retained.
 
 Phase E1 makes a published or locked canonical occurrence set exclusively
 authoritative for the physical league schedule shown to users and

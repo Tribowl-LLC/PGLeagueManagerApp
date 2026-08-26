@@ -32,19 +32,10 @@ function wakeContext(input: unknown): Record<string, unknown> {
       status: wake.status,
       attemptCount: wake.attemptCount,
     }
-    : wake.kind === "canonical_plan" ? {
-      workKind: wake.kind,
-      organizationId: wake.organizationId,
-      leagueId: wake.leagueId,
-      d2PlanId: wake.d2PlanId,
-    } : {
-      workKind: wake.kind,
-      organizationId: wake.organizationId,
-      paymentScheduleId: wake.paymentScheduleId,
-    };
+    : { workKind: wake.kind };
 }
 
-/** Exactly one wake for the earliest durable schedule or operation work. */
+/** Exactly one wake for the earliest durable retry/reconciliation operation. */
 export class PaymentOperationWakeScheduler<TWake extends { kind: string; dueAt: string } = PaymentOperationWake> {
   private readonly now: () => Date;
   private readonly setTimeoutFn: PaymentOperationSetTimeout;

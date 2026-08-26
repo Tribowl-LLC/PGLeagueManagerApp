@@ -1,5 +1,5 @@
 import { Fragment, useState } from "react";
-import { ChevronDown, ChevronRight, Loader2, Trash2, RotateCcw, Send } from "lucide-react";
+import { ChevronDown, ChevronRight, RotateCcw, Send } from "lucide-react";
 import {
   Table,
   TableBody,
@@ -44,9 +44,7 @@ interface Props {
   isAdmin: boolean;
   isPaymentManager?: boolean;
   onRefund: (payment: Payment) => void;
-  onDelete: (id: number) => void;
   isRefundPending: boolean;
-  isDeletePending: boolean;
   /**
    * Used to resolve each payment's owning location (via leagueId) so
    * the PROVIDER_NOT_CONFIGURED toast raised by the receipt buttons
@@ -69,9 +67,7 @@ export function PaymentsTable({
   isAdmin,
   isPaymentManager = false,
   onRefund,
-  onDelete,
   isRefundPending,
-  isDeletePending,
   leagues = EMPTY_LEAGUES,
   paymentBusinessDates,
   paymentEvidenceStatuses,
@@ -118,7 +114,6 @@ export function PaymentsTable({
                 && payment.status === 'paid'
                 && (payment.type === 'square' || payment.type === 'credit_card');
               const disputes = payment.disputes ?? [];
-              const deleteBlockedByDispute = disputes.length > 0;
               const expanded = expandedPaymentIds.has(payment.id);
               return (
                 <Fragment key={payment.id}>
@@ -137,7 +132,7 @@ export function PaymentsTable({
                         }
                         className={payment.status === "refunded" ? "border-destructive text-destructive" : ""}
                       >
-                        {paymentEvidenceStatuses?.get(payment.id) === "unresolved" ? "Review required" : (paymentCanonicalRows?.get(payment.id)?.source === "unlinked_legacy" ? "Legacy history" : paymentCanonicalRows?.get(payment.id)?.source === "unresolved_operation" ? "Unresolved" : paymentCanonicalRows?.get(payment.id)?.status ?? payment.status)}
+                        {paymentEvidenceStatuses?.get(payment.id) === "unresolved" ? "Review required" : (paymentCanonicalRows?.get(payment.id)?.source === "unresolved_operation" ? "Unresolved" : paymentCanonicalRows?.get(payment.id)?.status ?? payment.status)}
                       </Badge>
                       {disputes.map((dispute) => (
                         <PaymentDisputeBadge key={dispute.id} dispute={dispute} />
@@ -190,28 +185,6 @@ export function PaymentsTable({
                           disabled={isRefundPending}
                         >
                           <RotateCcw className="size-4 text-destructive" />
-                        </Button>
-                      )}
-                      {(!isCardPaymentType(payment.type) || (isAdmin && !isPaymentManager)) && (
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          title={deleteBlockedByDispute
-                            ? "Payment deletion disabled while dispute evidence is retained"
-                            : "Delete payment"}
-                          aria-label={deleteBlockedByDispute
-                            ? "Payment deletion disabled while dispute evidence is retained"
-                            : "Delete payment"}
-                          onClick={() => {
-                            if (!deleteBlockedByDispute) onDelete(payment.id);
-                          }}
-                          disabled={isDeletePending || deleteBlockedByDispute}
-                        >
-                          {isDeletePending ? (
-                            <Loader2 className="size-4 animate-spin" />
-                          ) : (
-                            <Trash2 className="size-4 text-destructive" />
-                          )}
                         </Button>
                       )}
                     </div>

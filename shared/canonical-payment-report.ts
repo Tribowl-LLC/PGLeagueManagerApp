@@ -1,13 +1,10 @@
 import { createHash } from "node:crypto";
 
-export const CANONICAL_PAYMENT_REPORT_CONTRACT = "canonical-payment-report/1" as const;
-export const CANONICAL_PAYMENT_REPORT_ORDER = "league,business-date,bowler,occurrence,allocation,payment/1" as const;
-export const CANONICAL_PAYMENT_REPORT_FINGERPRINT_PREFIX = "lvpaymentreport:v1:" as const;
+export const CANONICAL_PAYMENT_REPORT_CONTRACT = "canonical-payment-report/2" as const;
+export const CANONICAL_PAYMENT_REPORT_ORDER = "league,business-date,bowler,occurrence,allocation,payment/2" as const;
+export const CANONICAL_PAYMENT_REPORT_FINGERPRINT_PREFIX = "lvpaymentreport:v2:" as const;
 
-export type CanonicalPaymentReportMode =
-  | "canonical"
-  | "canonical_with_unlinked_history"
-  | "legacy_fallback";
+export type CanonicalPaymentReportMode = "canonical";
 
 export type CanonicalPaymentEvidenceStatus =
   | "confirmed_paid"
@@ -24,7 +21,7 @@ export interface CanonicalPaymentReceiptSummary {
   receiptUrl: string | null;
   receiptNumber: string | null;
   deliveryEvidence: "delivery_not_recorded";
-  source?: "canonical_allocation" | "unlinked_legacy" | "unresolved_operation" | null;
+  source?: "canonical_allocation" | "unresolved_operation" | null;
   refund?: CanonicalPaymentRefundEvidence;
   dispute?: CanonicalPaymentDisputeEvidence;
   paymentTiming?: CanonicalPaymentTiming;
@@ -37,7 +34,7 @@ export interface CanonicalPaymentTiming {
   /** Date-only rendering in the league timezone; the instant above remains the audit value. */
   upfrontDueAtLocal?: string | null;
   timezone?: string;
-  source: "canonical_activation" | "roster_payment_responsibility" | "legacy_league";
+  source: "canonical";
 }
 
 export interface CanonicalCollectionEvidence {
@@ -60,7 +57,7 @@ export interface CanonicalPaymentDisputeEvidence {
   amountMinor: number;
   disputeId: string | null;
   /** Durable disputes are transaction-scoped; child rows carry presence only. */
-  scope?: "transaction" | "allocation" | "legacy_payment_row";
+  scope?: "transaction" | "allocation";
   state?: string | null;
   reviewRequired?: boolean;
 }
@@ -87,12 +84,12 @@ export interface CanonicalPaymentRow {
   authoritativeLocalDate: string;
   providerPaymentId: string | null;
   paymentOperationId: string | null;
-  operationType: "scheduled_charge" | "interactive_charge" | "refund" | "canonical_autopay_charge" | "standing_autopay_charge" | null;
+  operationType: "interactive_charge" | "refund" | "standing_autopay_charge" | null;
   operationStatus: string | null;
   allocatedMinor: number;
   unallocatedMinor: number;
   reviewRequired: boolean;
-  source: "canonical_allocation" | "unlinked_legacy" | "unresolved_operation";
+  source: "canonical_allocation" | "unresolved_operation";
   paymentTiming?: CanonicalPaymentTiming;
   refund: CanonicalPaymentRefundEvidence;
   dispute: CanonicalPaymentDisputeEvidence;
@@ -125,7 +122,6 @@ export interface CanonicalPaymentReportTotals {
   disputedReviewRequiredMinor: number;
   reviewRequiredMinor: number;
   unresolvedOperationMinor: number;
-  unallocatedLegacyMinor: number;
 }
 
 export interface CanonicalPaymentReport {
@@ -134,7 +130,7 @@ export interface CanonicalPaymentReport {
   organizationId: number;
   leagueId: number;
   mode: CanonicalPaymentReportMode;
-  authoritativeSource: "canonical" | "legacy_helper";
+  authoritativeSource: "canonical";
   asOf: string;
   fingerprint: string;
   page: number;
@@ -144,7 +140,6 @@ export interface CanonicalPaymentReport {
   totals: CanonicalPaymentReportTotals;
   rows: CanonicalPaymentRow[];
   transactions: CanonicalPaymentTransactionGroup[];
-  unlinkedHistory: CanonicalPaymentRow[];
   paymentTiming: CanonicalPaymentTiming;
 }
 

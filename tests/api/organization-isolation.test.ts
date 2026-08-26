@@ -1144,10 +1144,8 @@ describe('Organization Isolation', () => {
     });
 
     // ----------------------------------------------------------------
-    // Task #344 — extend the same cross-org leak coverage to remaining
-    // filtered list endpoints called out in the task: /api/bowler-leagues
-    // (?bowlerId | ?leagueId | ?teamId, plus unfiltered list scoping),
-    // /api/payment-schedules/:bowlerId/:leagueId, and /api/locations.
+    // Task #344 — extend the same cross-org leak coverage to the remaining
+    // filtered list endpoints: /api/bowler-leagues and /api/locations.
     // Reuses the org B fixtures created in this describe's beforeAll.
     // ----------------------------------------------------------------
     interface BowlerLeagueRow { id: number; bowlerId: number; leagueId: number; teamId: number }
@@ -1210,45 +1208,6 @@ describe('Organization Isolation', () => {
         sessionA,
       );
       expect(status).toBe(403);
-      expect(data.success).toBe(false);
-      const payload = JSON.stringify(data);
-      expect(payload).not.toContain(`Vitest #341 Bowler ${stamp}`);
-      expect(payload).not.toContain(`Vitest #341 Team ${stamp}`);
-    });
-
-    it('org A GET /api/payment-schedules/<orgB bowler>/<orgB league> → 403 (cross-org id pair denied)', async () => {
-      // The schedule fetch route gates on hasAccessToBowler. Whether or
-      // not a schedule row actually exists, session A must be denied —
-      // the response must never reveal schedule details OR the absence
-      // signal (200 + null) for an org B bowler.
-      expect(orgBBowlerId).not.toBeNull();
-      expect(orgBLeagueId).not.toBeNull();
-      const { status, data } = await apiGet(
-        `/api/payment-schedules/${orgBBowlerId}/${orgBLeagueId}`,
-        sessionA,
-      );
-      expect(status).toBe(403);
-      expect(data.success).toBe(false);
-
-      // The legacy schedule endpoint is retired for roster-configured
-      // leagues. The owning org receives the same explicit retirement
-      // response; cross-tenant callers still fail before any data can leak.
-      const owner = await apiGet(
-        `/api/payment-schedules/${orgBBowlerId}/${orgBLeagueId}`,
-        sessionB,
-      );
-      expect(owner.status).toBe(410);
-      expect(owner.data.success).toBe(false);
-    });
-
-    it('org A GET /api/payment-schedules/setup-quote/<orgB bowler>/<orgB league> is retired without an oracle', async () => {
-      expect(orgBBowlerId).not.toBeNull();
-      expect(orgBLeagueId).not.toBeNull();
-      const { status, data } = await apiGet(
-        `/api/payment-schedules/setup-quote/${orgBBowlerId}/${orgBLeagueId}`,
-        sessionA,
-      );
-      expect(status).toBe(410);
       expect(data.success).toBe(false);
       const payload = JSON.stringify(data);
       expect(payload).not.toContain(`Vitest #341 Bowler ${stamp}`);

@@ -6,7 +6,7 @@ const wake: Extract<PaymentOperationWake, { kind: 'operation' }> = {
   kind: 'operation',
   operationId: '00000000-0000-4000-8000-000000000001',
   organizationId: 1,
-  operationType: 'scheduled_charge',
+  operationType: 'interactive_charge',
   status: 'pending',
   attemptCount: 0,
   dueAt: '2032-01-01T00:00:10.000Z',
@@ -55,28 +55,6 @@ describe('scheduled ledger one-shot wake scheduler', () => {
     await scheduler.rearm();
     expect(loadNextWake).toHaveBeenCalledTimes(2);
     expect(setTimeoutFn).toHaveBeenCalledTimes(1);
-    scheduler.stop();
-  });
-
-  it('arms future schedule preparation even when there are no operations', async () => {
-    const scheduleWake: PaymentOperationWake = {
-      kind: 'schedule',
-      organizationId: 8,
-      paymentScheduleId: 44,
-      dueAt: '2032-01-01T00:00:30.000Z',
-    };
-    const setTimeoutFn = vi.fn((callback: () => void, delayMs: number) =>
-      setTimeout(callback, delayMs));
-    const scheduler = new PaymentOperationWakeScheduler({
-      loadNextWake: vi.fn().mockResolvedValue(scheduleWake),
-      handleWake: vi.fn(),
-      now: () => new Date('2032-01-01T00:00:00.000Z'),
-      setTimeoutFn,
-      clearTimeoutFn: vi.fn(clearTimeout),
-    });
-
-    await scheduler.start('ledger_execute');
-    expect(setTimeoutFn).toHaveBeenCalledWith(expect.any(Function), 30_000);
     scheduler.stop();
   });
 

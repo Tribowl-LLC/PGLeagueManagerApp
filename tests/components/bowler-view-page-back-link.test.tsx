@@ -207,23 +207,6 @@ describe('BowlerViewPage back link', () => {
     expect(screen.queryByTestId('link-back-to-league-past-due')).not.toBeInTheDocument();
   });
 
-  it('renders "Back to Weekly Payments" with a valid fromLeagueId', async () => {
-    renderPage('from=weekly-payments&fromLeagueId=99');
-
-    const backLink = await screen.findByTestId('link-back-to-weekly-payments');
-    expect(backLink).toHaveAttribute('href', '/leagues/99/weekly-payments');
-    expect(backLink).toHaveTextContent(/back to weekly payments/i);
-    expect(screen.queryByTestId('link-back-to-team')).not.toBeInTheDocument();
-  });
-
-  it('falls back to the team link when ?from=weekly-payments is missing fromLeagueId', async () => {
-    renderPage('from=weekly-payments');
-
-    const backLink = await screen.findByTestId('link-back-to-team');
-    expect(backLink).toHaveAttribute('href', `/teams/${TEAM_ID}`);
-    expect(screen.queryByTestId('link-back-to-weekly-payments')).not.toBeInTheDocument();
-  });
-
   it('renders "Back to Team" pointing at fromTeamId when ?from=team&fromTeamId=N', async () => {
     renderPage('from=team&fromTeamId=4242');
 

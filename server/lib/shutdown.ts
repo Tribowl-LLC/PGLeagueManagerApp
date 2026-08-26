@@ -1,7 +1,6 @@
 import type { Server } from "http";
 import type { Request, Response, NextFunction } from "express";
 import { cleanup as dbCleanup } from "../db";
-import { paymentScheduler } from "../services/payment-scheduler";
 import { scheduledPaymentOperationExecutor } from "../services/scheduled-payment-operation-executor";
 import { rosterStandingAutopayOperationExecutor } from "../services/roster-standing-autopay-executor";
 import { stopPaymentSyncRetrySweep } from "../services/payment-sync-retry";
@@ -36,7 +35,6 @@ export function registerShutdownHandlers(server: Server): void {
     const startTime = Date.now();
 
     try {
-      paymentScheduler?.cancelAllJobs();
       scheduledPaymentOperationExecutor.stop();
       rosterStandingAutopayOperationExecutor.stop();
       stopPaymentSyncRetrySweep();

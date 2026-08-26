@@ -90,17 +90,6 @@ function withTestBypassHeader(headers: Record<string, string>): Record<string, s
   // server/utils/test-suppression.ts), so it can never disable the
   // production worker.
   headers['x-test-suppress-apple-pay-kick'] = '1';
-  // Same shape, applied to the singleton `paymentScheduler` (#571).
-  // Routes that mutate payment schedules (POST/PATCH/DELETE
-  // /api/payment-schedules, the timezone-change branch of PATCH
-  // /api/leagues/:id, the paid-in-full auto-cancel branch of POST
-  // /api/payments-provider/payments) call into the dev server's
-  // singleton scheduler to register/cancel node-schedule jobs. With
-  // this header those calls are skipped in dev so a node-schedule
-  // timer can't fire mid-vitest-run and process a payment for a row
-  // another test file is asserting on. Same NODE_ENV gate — never
-  // honoured in production.
-  headers['x-test-suppress-payment-scheduler-kick'] = '1';
   return headers;
 }
 

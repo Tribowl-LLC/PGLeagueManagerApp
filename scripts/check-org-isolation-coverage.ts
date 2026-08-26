@@ -356,9 +356,8 @@ function checkCoverage(testSrc: string, c: Candidate): CoverageResult {
     // Replace each `:param` with a template-literal placeholder
     // pattern (`${...}`) — the isolation test references
     // parameterised paths exclusively via template literals (see
-    // existing patterns like `/api/leagues/${orgBLeagueId}` and
-    // `/api/payment-schedules/${orgBBowlerId}/${orgBLeagueId}`). A
-    // straight substring check would fail on multi-param paths
+    // existing patterns like `/api/leagues/${orgBLeagueId}`). A straight
+    // substring check would fail on multi-param paths
     // because they'd produce `/${/${`, so we build a regex that
     // accepts any non-`}` content inside each placeholder.
     const pattern = c.effectivePath

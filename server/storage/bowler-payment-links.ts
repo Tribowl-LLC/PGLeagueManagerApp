@@ -1,4 +1,4 @@
-import { and, eq, inArray, or, sql } from "drizzle-orm";
+import { and, eq, inArray, or } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   autopayConsentPartners,
@@ -185,50 +185,6 @@ export async function deleteLink(id: number): Promise<void> {
     }
     await tx.update(bowlerPaymentLinks).set({ status: "retired", respondedAt: new Date().toISOString() }).where(and(eq(bowlerPaymentLinks.id, id), inArray(bowlerPaymentLinks.status, ["pending", "accepted"] as const)));
   });
-}
-
-/**
- * Scrub each bowler's id from the OTHER bowler's combined-autopay
- * `additionalBowlerIds` arrays when a link is removed. The UPDATE is
- * org-scoped at write time by joining against leagues belonging to the
- * link's organization.
- */
-export async function pruneSchedulesForRemovedLink(
-  link: Pick<BowlerPaymentLink, "bowlerAId" | "bowlerBId" | "organizationId">,
-): Promise<{ id: number; bowlerId: number; removedPartnerId: number }[]> {
-  const { paymentSchedules, leagues } = await import("@shared/schema");
-  const affected: { id: number; bowlerId: number; removedPartnerId: number }[] = [];
-
-  const orgLeagues = await db
-    .select({ id: leagues.id })
-    .from(leagues)
-    .where(eq(leagues.organizationId, link.organizationId));
-  const orgLeagueIds = orgLeagues.map((l) => l.id);
-  if (orgLeagueIds.length === 0) return affected;
-
-  const directions: Array<[number, number]> = [
-    [link.bowlerAId, link.bowlerBId],
-    [link.bowlerBId, link.bowlerAId],
-  ];
-  for (const [ownerBowlerId, partnerBowlerId] of directions) {
-    const updated = await db
-      .update(paymentSchedules)
-      .set({
-        additionalBowlerIds: sql`array_remove(${paymentSchedules.additionalBowlerIds}, ${partnerBowlerId})`,
-      })
-      .where(
-        and(
-          eq(paymentSchedules.bowlerId, ownerBowlerId),
-          inArray(paymentSchedules.leagueId, orgLeagueIds),
-          sql`${partnerBowlerId} = ANY(${paymentSchedules.additionalBowlerIds})`,
-        ),
-      )
-      .returning({ id: paymentSchedules.id });
-    for (const row of updated) {
-      affected.push({ id: row.id, bowlerId: ownerBowlerId, removedPartnerId: partnerBowlerId });
-    }
-  }
-  return affected;
 }
 
 export async function arePartners(

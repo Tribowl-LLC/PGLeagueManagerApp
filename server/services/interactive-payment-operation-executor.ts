@@ -17,7 +17,6 @@ import {
   recordPaymentOperationActionRequired,
   recordPaymentOperationFailedTerminal,
   recordPaymentOperationProviderUnknown,
-  recordPaymentOperationReconciliationRequired,
   schedulePaymentOperationRetry,
   type PaymentOperationLinkedPaymentInput,
 } from "../storage/payment-operations.js";
@@ -163,13 +162,10 @@ export class InteractivePaymentOperationExecutor {
     if (!operation?.leaseToken) {
       return getPaymentOperationForOrganization(input.organizationId, input.operationId);
     }
-    return this.executeLeased(operation, current.status);
+    return this.executeLeased(operation);
   }
 
-  private async executeLeased(
-    operation: PaymentOperation,
-    previousStatus: PaymentOperation["status"],
-  ): Promise<PaymentOperation> {
+  private async executeLeased(operation: PaymentOperation): Promise<PaymentOperation> {
     const leaseToken = operation.leaseToken;
     if (!leaseToken) throw new Error("leased interactive operation has no fencing token");
     const now = this.now();
@@ -204,29 +200,6 @@ export class InteractivePaymentOperationExecutor {
       });
     }
 
-    if (snapshot.sourceKind === "legacy" && previousStatus !== "pending") {
-      return recordPaymentOperationReconciliationRequired({
-        organizationId: operation.organizationId,
-        operationId: operation.id,
-        leaseToken,
-        now,
-        errorCode: "LEGACY_PAYMENT_OUTCOME_UNCERTAIN",
-      });
-    }
-
-    if (snapshot.sourceKind === "legacy" && snapshot.storeCard) {
-      return this.recordFailure(
-        operation,
-        new PaymentProviderError(
-          "This payment must be submitted again from an updated payment app.",
-          "LEGACY_CARD_SAVE_UNSUPPORTED",
-          undefined,
-          { disposition: "invalid_request", providerCode: "LEGACY_CARD_SAVE_UNSUPPORTED" },
-        ),
-        false,
-      );
-    }
-
     let provider: PaymentProvider;
     try {
       provider = await this.getProvider(snapshot.locationId);
@@ -257,8 +230,6 @@ export class InteractivePaymentOperationExecutor {
         leaseToken,
         now: this.now(),
       });
-      // null is the intentional pre-F2/legacy path, which has no occurrence
-      // supplement and therefore keeps its existing provider behavior.
       dispatchCutoffClaimed = cutoff === null || cutoff;
       return dispatchCutoffClaimed;
     };
@@ -279,8 +250,7 @@ export class InteractivePaymentOperationExecutor {
         : this.recordFailure(operation, error, false);
     }
 
-    const requiresSavedCardOwnership = snapshot.sourceKind === "saved_card"
-      || (snapshot.sourceKind === "legacy" && sourceIsProviderCard);
+    const requiresSavedCardOwnership = snapshot.sourceKind === "saved_card";
 
     if (requiresSavedCardOwnership && !snapshot.customerId) {
       return this.recordFailure(

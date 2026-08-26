@@ -3,15 +3,13 @@ import type {
   Team, InsertTeam, UpdateTeam,
   Bowler, InsertBowler, UpdateBowler,
   BowlerLeague, InsertBowlerLeague, UpdateBowlerLeague,
-  Payment, InsertPayment, UpdatePayment,
+  Payment, UpdatePayment,
   Game, InsertGame, UpdateGame,
   Score, InsertScore, UpdateScore,
   User, InsertUser, UpdateUser,
   Organization, InsertOrganization, UpdateOrganization,
   Location, InsertLocation, UpdateLocation,
-  PaymentSchedule, InsertPaymentSchedule, UpdatePaymentSchedule,
   PaymentOperation, PaymentOperationErrorClassification,
-  AutopaySetupRequest,
   UserRole,
   LocationSquareCredentials,
   PaginatedResult,
@@ -93,22 +91,11 @@ export interface IPaymentStorage {
   getPaymentsByPaymentOperationId(organizationId: number, operationId: string): Promise<Payment[]>;
   getPaymentByDisputeId(disputeId: string): Promise<Payment | undefined>;
   getPaymentByProviderPaymentId(providerPaymentId: string): Promise<Payment | undefined>;
-  createPayment(payment: InsertPayment): Promise<Payment>;
-  createCombinedPayments(rows: InsertPayment[]): Promise<Array<{ id: number; bowlerId: number; amount: number }>>;
-  getPaymentsByCombinedGroupId(groupId: string): Promise<Payment[]>;
   updatePayment(id: number, payment: UpdatePayment): Promise<Payment>;
   updatePaymentReceiptCacheForOrganization(id: number, organizationId: number, fields: Pick<UpdatePayment, "receiptUrl" | "receiptNumber">): Promise<Payment | undefined>;
   refundPayment(id: number, providerRefundId?: string, reason?: string): Promise<Payment>;
   openDispute(id: number, disputeId: string): Promise<Payment>;
   deletePayment(id: number): Promise<void>;
-  createPaymentSchedule(schedule: InsertPaymentSchedule): Promise<PaymentSchedule>;
-  getPaymentSchedule(bowlerId: number, leagueId: number): Promise<PaymentSchedule | undefined>;
-  getPaymentScheduleById(id: number): Promise<PaymentSchedule | undefined>;
-  getActiveSchedulesByLeague(leagueId: number): Promise<PaymentSchedule[]>;
-  getActiveSchedulesByLocationId(locationId: number): Promise<PaymentSchedule[]>;
-  deactivatePaymentSchedule(id: number, reason?: string): Promise<void>;
-  updatePaymentScheduleFields(id: number, fields: UpdatePaymentSchedule): Promise<PaymentSchedule>;
-  updatePaymentScheduleCard(bowlerId: number, leagueId: number, cardId: string): Promise<void>;
 }
 
 export interface IPaymentOperationStorage {
@@ -241,30 +228,6 @@ export interface IPaymentOperationStorage {
   ): Promise<PaymentOperation>;
 }
 
-export interface IAutopaySetupRequestStorage {
-  createOrGetAutopaySetupRequest(
-    input: import("./autopay-setup-requests").CreateOrGetAutopaySetupRequestInput,
-  ): Promise<import("./autopay-setup-requests").AutopaySetupRequestWithOperation>;
-  getAutopaySetupRequestForOrganization(
-    organizationId: number,
-    requestId: string,
-  ): Promise<import("./autopay-setup-requests").AutopaySetupRequestWithOperation | undefined>;
-  getAutopaySetupRequestByOperationForOrganization(
-    organizationId: number,
-    operationId: string,
-  ): Promise<AutopaySetupRequest | undefined>;
-  completeAutopaySetupRequest(input: {
-    organizationId: number;
-    requestId: string;
-    paymentScheduleId?: number | null;
-    now?: Date;
-  }): Promise<AutopaySetupRequest>;
-  cancelAutopaySetupRequest(input: {
-    organizationId: number;
-    requestId: string;
-    now?: Date;
-  }): Promise<AutopaySetupRequest>;
-}
 
 export interface IGameScoreStorage {
   getGames(leagueId: number, weekNumber?: number): Promise<Game[]>;
@@ -501,7 +464,6 @@ export interface IStorage extends
   IBowlerStorage,
   IPaymentStorage,
   IPaymentOperationStorage,
-  IAutopaySetupRequestStorage,
   IGameScoreStorage,
   IUserStorage,
   IOrganizationStorage,

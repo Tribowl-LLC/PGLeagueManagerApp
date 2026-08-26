@@ -16,7 +16,6 @@ import { Router } from 'express';
 import { requireAuthenticated } from './shared.js';
 import { isPaymentManager } from '../../utils/access-control.js';
 import { sendError } from '../../utils/api.js';
-import chargesRouter from './charges.js';
 import customersRouter from './customers.js';
 import catalogRouter from './catalog.js';
 import cardsRouter from './cards.js';
@@ -46,7 +45,6 @@ router.use((req, res, next) => {
   return sendError(res, 'Payment manager provider access is restricted', 403, 'FORBIDDEN');
 });
 
-router.use(chargesRouter);
 router.use(customersRouter);
 router.use(catalogRouter);
 router.use(cardsRouter);

@@ -111,14 +111,6 @@ export function assertRosterPaymentSucceeded(status: unknown): void {
   if (message) throw new Error(message);
 }
 
-export async function recoverPaymentIntent(requestKey: string, organizationId?: number | null): Promise<Response> {
-  return csrfFetch('/api/payments-provider/payment-operations/recover', {
-    method: 'POST',
-    headers: paymentRequestHeaders(requestKey),
-    body: JSON.stringify(organizationId ? { organizationId } : {}),
-  });
-}
-
 /** Reconcile an exact roster operation by its durable operation identity. */
 export async function recoverRosterPaymentOperation(leagueId: number, operationId: string): Promise<Response> {
   return csrfFetch(`/api/financials/leagues/${leagueId}/interactive-obligation-charge/2/operations/${encodeURIComponent(operationId)}/recover`, {
@@ -136,7 +128,7 @@ export async function recoverRosterPaymentOperation(leagueId: number, operationI
 export async function paymentRequestWithRecovery(
   requestKey: string,
   request: () => Promise<Response>,
-  organizationId?: number | null,
+  _organizationId?: number | null,
   rosterLeagueId?: number,
 ): Promise<Response> {
   type RecoveryOperation = {
@@ -152,9 +144,8 @@ export async function paymentRequestWithRecovery(
       operationId?: string;
       status?: string;
     } | null;
-    // The exact roster route returns `{ data: ... }`, while the retained
-    // request-key recovery route returns a top-level operation status. Both
-    // identify the same durable operation when operationId is present.
+    // The exact roster route returns `{ data: ... }` and identifies the
+    // durable operation by its operationId.
     return body?.data ?? body?.error?.details ?? body ?? {};
   };
   const classifyRosterResponse = (operation: RecoveryOperation): ResponseDecision => {
@@ -213,23 +204,13 @@ export async function paymentRequestWithRecovery(
       // state. Do not replace a pending/unknown/action-required/terminal
       // response with a generic request-key 404.
       if (initialDecision !== 'unknown') return await reconcileRosterResponse(initial);
-      // A provider-success/local-finalization failure is commonly surfaced
-      // as 409/202 after dispatch. Re-read the durable request-key operation
-      // before exposing that non-terminal response to the caller. If the
-      // retained recovery route has no operation identity, it cannot prove
-      // that the request belongs to this roster checkout; preserve the
-      // original exact response (including STALE_QUOTE/INVALID_REQUEST).
-      const recovered = await recoverPaymentIntent(requestKey, organizationId).catch(() => null);
-      if (recovered) {
-        const operation = await readRecoveryOperation(recovered);
-        if (operation.operationId) return await reconcileRosterResponse(recovered);
-        return initial;
-      }
+      // Exact roster errors already contain the authoritative contract
+      // outcome. Never fall back to a broad request-key recovery endpoint.
     }
     return await reconcileRosterResponse(initial);
   } catch (error) {
-    const recovered = await recoverPaymentIntent(requestKey, organizationId).catch(() => null);
-    if (!recovered) throw error;
-    return await reconcileRosterResponse(recovered);
+    // A transport failure has no trustworthy response or operation identity.
+    // Preserve the request key for the caller's explicit recovery flow.
+    throw error;
   }
 }

@@ -1,7 +1,7 @@
 /**
  * Shared payment-provider error mapping (task #605).
  *
- * Charge (server/routes/payments-provider/charges.ts) and refund
+ * interactive roster charge and refund
  * (server/routes/payments/payment-refunds.ts) routes already surface
  * the typed `PaymentProviderError.userMessage` + `code` so admins see
  * the actionable reason ("Your payment was declined.", "Invalid

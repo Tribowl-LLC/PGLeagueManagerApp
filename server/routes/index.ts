@@ -22,7 +22,6 @@ import setupAdminRouter from './setup-admin.js';
 import systemAdminRouter from './system-admin.js';
 import userAvatarRouter from './user-avatar.js';
 import locationsRouter from './locations.js';
-import paymentSchedulesRouter from './payment-schedules.js';
 import accountRouter from './account.js';
 import { registerAuthRoutes } from './auth.js';
 import searchRouter from './search.js';
@@ -157,7 +156,6 @@ export function registerRoutes(app: Express): void {
   app.use('/api/system-admin', trustProxyProbeAuth, systemAdminRouter);
   app.use('/api/user', requireAuth, userAvatarRouter);
   app.use('/api/locations', requireAuth, locationsRouter);
-  app.use('/api/payment-schedules', requireAuth, paymentSchedulesRouter);
   app.use('/api/payment-disputes', requireOrgAdmin, paymentDisputesRouter);
   app.use('/api/account', accountRouter);
   app.use('/api/search', requireAuth, searchRouter);

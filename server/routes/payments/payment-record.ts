@@ -1,198 +1,25 @@
 /**
  * Payment record CRUD endpoints (mounted under /api/payments).
  *
- * Owns create / update / delete of payment rows. Refund handling lives in
- * `payment-refunds.ts` and listing/reporting lives in `payment-reports.ts`.
+ * Owns correction-safe update / delete of non-allocation payment rows.
+ * Canonical payment creation lives in `roster-payments.ts`; refund handling
+ * lives in `payment-refunds.ts` and listing/reporting in `payment-reports.ts`.
  */
 import { Router } from 'express';
 import { storage } from '../../storage';
-import { insertPaymentSchema, updatePaymentSchema } from "@shared/schema";
+import { updatePaymentSchema } from "@shared/schema";
 import { isCardPaymentType } from "@shared/schema/constants";
 import { z } from "zod";
 import { sendSuccess, sendError, handleZodError, sanitizePayment } from '../../utils/api.js';
 import { singleRouteParam } from '../../utils/route-params';
-import { hasAccessToPayment, hasAdminAccessToLeague, hasPaymentManagerAccessToLeague, hasPaymentManagerAccessToPayment, isPaymentManager, isSystemAdmin } from '../../utils/access-control.js';
+import { hasAccessToPayment, hasPaymentManagerAccessToPayment, isPaymentManager, isSystemAdmin } from '../../utils/access-control.js';
 import { paymentWriteLimiter } from '../../middleware/rate-limit.js';
-import { differenceInWeeks } from 'date-fns';
-import { paymentScheduler } from '../../services/payment-scheduler.js';
-import { isTestKickSuppressed, PAYMENT_SCHEDULER_KICK_HEADER } from '../../utils/test-suppression';
-import { db } from '../../db.js';
-import { eq, and, gte, lte, sql } from 'drizzle-orm';
-import { payments as paymentsTable } from '@shared/schema';
 import { createLogger } from '../../logger';
-import { getPgErrorCode } from '../../utils/db-errors';
-import { CanonicalAllocationRequiredError, FinancialEvidenceIncompatibleError, PaymentDisputeEvidenceExistsError, PaymentEvidenceImmutableError, PaymentOccurrenceEvidenceExistsError } from '../../storage/payments.js';
+import { PaymentDisputeEvidenceExistsError, PaymentEvidenceImmutableError, PaymentOccurrenceEvidenceExistsError } from '../../storage/payments.js';
 
 const log = createLogger("Payments");
 
 const router = Router();
-
-// Create new payment
-router.post("/", paymentWriteLimiter, async (req, res) => {
-  try {
-    const payment = insertPaymentSchema.parse(req.body);
-
-    // Validate check number if payment type is check
-    if (payment.type === 'check' && !payment.checkNumber) {
-      return sendError(res, 'Check number is required for check payments', 400, 'VALIDATION_ERROR');
-    }
-
-    if (isPaymentManager(req.user)) {
-      const allowedFields = new Set([
-        'bowlerId', 'leagueId', 'amount', 'weekOf', 'status', 'type',
-        'checkNumber', 'notes', 'idempotencyKey',
-      ]);
-      const hasSensitiveField = Object.keys(req.body as Record<string, unknown>)
-        .some((field) => !allowedFields.has(field));
-      if (isCardPaymentType(payment.type) || payment.status !== 'paid' || hasSensitiveField) {
-        return sendError(
-          res,
-          'Payment managers may create paid cash or check bookkeeping records only',
-          403,
-          'FORBIDDEN',
-        );
-      }
-    }
-    
-    const league = await storage.getLeague(payment.leagueId);
-    if (!league) {
-      return sendError(res, "League not found", 404, 'NOT_FOUND');
-    }
-    // Cash/check payment recording requires administrator access to the
-    // league and still respects the org-less deny rule.
-    const hasLeagueAccess = await hasAdminAccessToLeague(req, payment.leagueId)
-      || await hasPaymentManagerAccessToLeague(req, payment.leagueId);
-    if (!hasLeagueAccess) {
-      return sendError(res, "You don't have access to create payments for this league", 403, 'FORBIDDEN');
-    }
-
-    // Generic payment rows have no exact obligation identity. Tenant-owned
-    // leagues must use the canonical manual/interactive routes.
-    if (league.organizationId !== null) {
-      return sendError(res, 'Exact canonical obligation allocation is required', 409, 'CANONICAL_ALLOCATION_REQUIRED');
-    }
-
-    // Task #454: existence pre-check for the admin-supplied bowlerId.
-    // Without this, a typoed or stale bowler id falls through to the
-    // `payments.bowler_id -> bowlers.id` foreign-key constraint and
-    // surfaces as a generic 500. The cross-org dimension is implicitly
-    // covered: a bowler outside the league's org would still pass the
-    // existence check here, but `requireOrganizationAccess` above has
-    // already gated the *league*; the route only inserts payments for
-    // a league the caller owns. The new check is purely the typo /
-    // stale-id net mirroring the bowlers.ts (#422) reference fix.
-    const targetBowler = await storage.getBowler(payment.bowlerId);
-    if (!targetBowler) {
-      return sendError(res, "Bowler not found", 404, 'NOT_FOUND');
-    }
-
-    // P1 security: having admin access to the league is NOT sufficient to
-    // record a payment for an arbitrary bowler. The bowler must belong to
-    // the league's organization AND be actively rostered in this league —
-    // otherwise an administrator could pair a legitimate league with a
-    // non-rostered (or cross-org) bowler and corrupt balances/reports.
-    if (targetBowler.organizationId !== league.organizationId) {
-      return sendError(res, "Bowler is not in this league's organization", 403, 'FORBIDDEN');
-    }
-    if (!(await storage.isBowlerActiveInLeague(payment.bowlerId, payment.leagueId))) {
-      return sendError(res, 'Bowler is not rostered in this league', 400, 'BOWLER_NOT_IN_LEAGUE');
-    }
-
-    if (payment.idempotencyKey) {
-      const existing = await storage.getPaymentByIdempotencyKey(payment.idempotencyKey);
-      if (existing && existing.leagueId === payment.leagueId) {
-        log.info('Payment deduplicated by idempotency key:', { id: existing.id, idempotencyKey: payment.idempotencyKey });
-        return sendSuccess(res, sanitizePayment(existing), 200);
-      }
-      if (existing) {
-        return sendError(res, 'Duplicate idempotency key', 409, 'CONFLICT');
-      }
-    }
-
-    const lineageAmount = (league.lineageFee != null && league.weeklyFee > 0)
-      ? Math.round(payment.amount * league.lineageFee / league.weeklyFee)
-      : undefined;
-    const prizeFundAmount = (league.prizeFundFee != null && league.weeklyFee > 0)
-      ? Math.round(payment.amount * league.prizeFundFee / league.weeklyFee)
-      : undefined;
-
-    let created;
-    try {
-      created = await storage.createPayment({
-        ...payment,
-        lineageAmount,
-        prizeFundAmount,
-        // do NOT auto-stamp the admin actor as payer here.
-        // Admin-recorded cash/check entries must keep paidByUserId null
-        // (the admin is recording, not paying). Only honor an explicit
-        // paidByUserId provided by the caller (e.g. partner-pay surfaces
-        // that already resolved the payer user).
-        paidByUserId: payment.paidByUserId ?? null,
-      });
-    } catch (insertError: unknown) {
-      if (
-        payment.idempotencyKey &&
-        getPgErrorCode(insertError) === '23505'
-      ) {
-        const existing = await storage.getPaymentByIdempotencyKey(payment.idempotencyKey);
-        if (existing && existing.leagueId === payment.leagueId) {
-          log.info('Payment deduplicated after race condition:', { id: existing.id, idempotencyKey: payment.idempotencyKey });
-          return sendSuccess(res, sanitizePayment(existing), 200);
-        }
-        if (existing) {
-          return sendError(res, 'Duplicate idempotency key', 409, 'CONFLICT');
-        }
-      }
-      throw insertError;
-    }
-
-    if (payment.status === 'paid' && league.seasonStart && league.seasonEnd && league.weeklyFee) {
-      try {
-        const seasonStart = new Date(league.seasonStart);
-        const seasonEnd = new Date(league.seasonEnd);
-        const totalWeeks = Math.max(0, differenceInWeeks(seasonEnd, seasonStart));
-        const fullSeasonAmount = league.weeklyFee * totalWeeks;
-
-        if (fullSeasonAmount > 0) {
-          const totalPaidResult = await db
-            .select({ total: sql<number>`COALESCE(SUM(${paymentsTable.amount}), 0)` })
-            .from(paymentsTable)
-            .where(and(
-              eq(paymentsTable.bowlerId, payment.bowlerId),
-              eq(paymentsTable.leagueId, payment.leagueId),
-              eq(paymentsTable.status, 'paid'),
-              gte(paymentsTable.weekOf, seasonStart.toISOString()),
-              lte(paymentsTable.weekOf, seasonEnd.toISOString())
-            ));
-          const totalPaid = Number(totalPaidResult[0]?.total || 0);
-
-          if (totalPaid >= fullSeasonAmount) {
-            const activeSchedule = await storage.getPaymentSchedule(payment.bowlerId, payment.leagueId);
-            if (activeSchedule) {
-              await storage.deactivatePaymentSchedule(activeSchedule.id, `paid_in_full:payment_id=${created.id}`);
-              if (!isTestKickSuppressed(req, PAYMENT_SCHEDULER_KICK_HEADER)) {
-                await paymentScheduler.removeSchedule(activeSchedule.id);
-              }
-              log.info(`Bowler ${payment.bowlerId} paid in full for league ${payment.leagueId}, auto-cancelled schedule ${activeSchedule.id}`);
-            }
-          }
-        }
-      } catch (pifError) {
-        log.error('Error checking paid-in-full:', pifError);
-      }
-    }
-
-    sendSuccess(res, sanitizePayment(created), 201);
-  } catch (error) {
-    log.error('Create error:', error);
-    if (error instanceof z.ZodError) {
-      return handleZodError(res, error);
-    }
-    if (error instanceof CanonicalAllocationRequiredError) return sendError(res, 'Canonical allocation is required for this league', 409, 'CANONICAL_ALLOCATION_REQUIRED');
-    if (error instanceof FinancialEvidenceIncompatibleError) return sendError(res, 'Financial evidence requires review', 409, 'FINANCIAL_EVIDENCE_INCOMPATIBLE');
-    sendError(res, 'Failed to create payment');
-  }
-});
 
 // Update payment
 router.patch("/:id", paymentWriteLimiter, async (req, res) => {

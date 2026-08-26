@@ -228,7 +228,6 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
                 amountMinor={occurrenceAmountMinor}
                 bowlerIds={[bowlerId]}
                 enabled
-                canonical={league.payingLineupSize != null}
                 onChange={onOccurrenceChange}
                 onReadinessChange={onOccurrenceReadinessChange}
               />
