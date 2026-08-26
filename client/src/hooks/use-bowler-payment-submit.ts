@@ -17,32 +17,19 @@ import {
   paymentRequestHeaders,
   paymentRequestWithRecovery,
 } from "@/lib/payment-request-identity";
-import type { InteractiveOccurrenceReadiness } from "@/components/interactive-occurrence-selector";
 import type { League, Bowler } from "@shared/schema";
 import type { SquareCard } from "@/hooks/use-square-payment";
 
 type PaymentCard = SquareCard | null;
-type InteractiveOccurrenceSelection = { obligationId: string; amountMinor: number };
 
 interface UseBowlerPaymentSubmitOptions {
-  league: League;
-  bowler: Bowler;
-  weeklyFee: number;
+  league: Pick<League, "id" | "locationId">;
+  bowler: Pick<Bowler, "id">;
   card: PaymentCard;
   cardMode: "new" | "saved";
   selectedSavedCardId: string;
-  selectedSchedule: "weekly" | "custom";
   storeCard: boolean;
   buyerEmail?: string;
-  targetBowlerId?: number;
-  // Retained in the call shape so old screens can be simplified separately;
-  // canonical checkout never accepts combined or scheduled setup requests.
-  additionalBowlerIds?: number[];
-  autopayQuote?: unknown;
-  occurrenceAllocations?: InteractiveOccurrenceSelection[];
-  occurrenceQuoteFingerprint?: string;
-  occurrenceReadiness?: InteractiveOccurrenceReadiness;
-  financials: { fullSeasonAmount: number; remainingBalance: number; amountPastDue: number };
   calculateTotalAmount: () => number;
   setIsSubmitting: (v: boolean) => void;
   setShowPaymentSetup: (v: boolean) => void;
@@ -56,13 +43,10 @@ export function useBowlerPaymentSubmit({
   selectedSavedCardId,
   storeCard,
   buyerEmail,
-  targetBowlerId,
-  occurrenceAllocations,
-  occurrenceReadiness,
+  calculateTotalAmount,
   setIsSubmitting,
   setShowPaymentSetup,
 }: UseBowlerPaymentSubmitOptions) {
-  const chargeForBowlerId = targetBowlerId ?? bowler.id;
   const { toast } = useToast();
   const [, navigate] = useLocation();
 
@@ -70,32 +54,24 @@ export function useBowlerPaymentSubmit({
     try {
       if (cardMode === "new" && !card) throw new Error("Please enter your card details before proceeding.");
       if (cardMode === "saved" && !selectedSavedCardId) throw new Error("Please select a saved card.");
-      if (occurrenceReadiness !== undefined && occurrenceReadiness !== "ready") {
-        throw new Error(occurrenceReadiness === "error"
-          ? "Current payment obligations could not be loaded. Refresh before paying."
-          : "Select obligations totaling the payment amount before paying.");
-      }
-      const allocations = occurrenceAllocations ?? [];
-      if (allocations.length === 0) throw new Error("Select one or more exact payment obligations before paying.");
-      if (chargeForBowlerId !== bowler.id) throw new Error("Pay only obligations authorized for your account.");
-      const obligationIds = [...new Set(allocations.map((row) => row.obligationId))];
+      const amountMinor = calculateTotalAmount();
+      if (!Number.isSafeInteger(amountMinor) || amountMinor <= 0) throw new Error("Enter a valid payment amount.");
       const quoteResponse = await csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-quote/2`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ obligationIds, allocations, payerBowlerId: bowler.id }),
+        body: JSON.stringify({ amountMinor, payerBowlerId: bowler.id }),
       });
       const quoteBody = await quoteResponse.json().catch(() => ({}));
       if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw makeApiError(quoteBody, quoteResponse.status, "Payment quote is unavailable");
       const sourceId = cardMode === "saved" ? selectedSavedCardId : card ? await tokenizeCard(card) : "";
       if (!sourceId) throw new Error("A payment source is required.");
-      const paymentScope = `roster:${league.id}:${obligationIds.join(",")}:${quoteBody.data.fingerprint}:${cardMode}`;
+      const paymentScope = `roster:${league.id}:${bowler.id}:${amountMinor}:${quoteBody.data.fingerprint}:${cardMode}`;
       const requestKey = beginPaymentIntent(paymentScope);
       const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-charge/2`, {
         method: "POST",
         headers: paymentRequestHeaders(requestKey),
         body: JSON.stringify({
-          obligationIds,
-          allocations,
+          amountMinor,
           payerBowlerId: quoteBody.data.payerBowlerId ?? bowler.id,
           sourceId,
           sourceKind: cardMode === "saved" ? "saved_card" : "new_card",
@@ -110,7 +86,7 @@ export function useBowlerPaymentSubmit({
       const status = body.data?.status;
       assertRosterPaymentSucceeded(status);
       clearPaymentIntent(paymentScope);
-      toast({ title: "Payment submitted", description: status === "succeeded" ? "Your exact obligations were paid." : "Your payment is being confirmed." });
+      toast({ title: "Payment submitted", description: status === "succeeded" ? "Your payment was allocated automatically." : "Your payment is being confirmed." });
       setShowPaymentSetup(false);
       queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
       queryClient.invalidateQueries({ queryKey: ["/api/financials", league.id] });
@@ -128,5 +104,5 @@ export function useBowlerPaymentSubmit({
     } finally {
       setIsSubmitting(false);
     }
-  }, [card, cardMode, selectedSavedCardId, league, bowler, storeCard, buyerEmail, chargeForBowlerId, occurrenceAllocations, occurrenceReadiness, setIsSubmitting, setShowPaymentSetup, toast, navigate]);
+  }, [card, cardMode, selectedSavedCardId, league, bowler, storeCard, buyerEmail, calculateTotalAmount, setIsSubmitting, setShowPaymentSetup, toast, navigate]);
 }

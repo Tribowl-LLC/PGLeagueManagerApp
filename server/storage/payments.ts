@@ -37,7 +37,7 @@ interface PaymentFilters {
   leagueId?: number;
   leagueIds?: number[];
   teamId?: number;
-  weekOf?: Date;
+  createdAt?: Date;
   organizationId: number;
 }
 
@@ -45,7 +45,7 @@ interface AllPaymentFilters {
   bowlerId?: number;
   leagueId?: number;
   teamId?: number;
-  weekOf?: Date;
+  createdAt?: Date;
   organizationId?: number;
   leagueIds?: number[];
 }
@@ -54,6 +54,7 @@ export function buildPaymentConditions(filters: AllPaymentFilters, options?: { e
   const conditions = [];
 
   if (filters.organizationId !== undefined) {
+    conditions.push(eq(payments.organizationId, filters.organizationId));
     conditions.push(sql`${payments.leagueId} IN (SELECT "id" FROM ${leagues} WHERE ${leagues.organizationId} = ${filters.organizationId})`);
   } else if (options?.excludeOrgLessLeagues) {
     // Org-less resource policy (see server/utils/access-control.ts):
@@ -85,12 +86,13 @@ export function buildPaymentConditions(filters: AllPaymentFilters, options?: { e
         AND ${bowlerLeagues.leagueId} = ${payments.leagueId}
     )`);
   }
-  if (filters.weekOf !== undefined) {
-    const startDate = new Date(filters.weekOf);
+  if (filters.createdAt !== undefined) {
+    const startDate = new Date(filters.createdAt);
     startDate.setHours(0, 0, 0, 0);
-    const endDate = new Date(filters.weekOf);
+    const endDate = new Date(filters.createdAt);
     endDate.setHours(23, 59, 59, 999);
-    conditions.push(sql`${payments.weekOf} BETWEEN ${startDate} AND ${endDate}`);
+    // Date filtering is explicitly over the immutable tender timestamp.
+    conditions.push(sql`${payments.createdAt} BETWEEN ${startDate} AND ${endDate}`);
   }
 
   return conditions;
@@ -105,23 +107,23 @@ export async function getPayments(filters: PaymentFilters): Promise<Payment[]> {
     query.where(and(...conditions));
   }
 
-  query.orderBy(desc(payments.weekOf));
+  query.orderBy(desc(payments.createdAt));
 
   return query;
 }
 
-export async function getAllPaymentsSystemAdmin(filters?: { bowlerId?: number; leagueId?: number; teamId?: number; weekOf?: Date }): Promise<Payment[]> {
+export async function getAllPaymentsSystemAdmin(filters?: { bowlerId?: number; leagueId?: number; teamId?: number; createdAt?: Date }): Promise<Payment[]> {
   const conditions = buildPaymentConditions(filters ?? {}, { excludeOrgLessLeagues: true });
   const query = db.select().from(payments);
   if (conditions.length > 0) {
     query.where(and(...conditions));
   }
-  query.orderBy(desc(payments.weekOf));
+  query.orderBy(desc(payments.createdAt));
   return query;
 }
 
 export async function getAllPaymentsPaginatedSystemAdmin(
-  filters: { bowlerId?: number; leagueId?: number; teamId?: number; weekOf?: Date },
+  filters: { bowlerId?: number; leagueId?: number; teamId?: number; createdAt?: Date },
   page: number,
   limit: number
 ): Promise<PaginatedResult<Payment>> {
@@ -139,7 +141,7 @@ export async function getAllPaymentsPaginatedSystemAdmin(
   if (whereClause) {
     query.where(whereClause);
   }
-  query.orderBy(desc(payments.weekOf));
+  query.orderBy(desc(payments.createdAt));
   query.limit(limit);
   query.offset(offset);
 
@@ -176,7 +178,7 @@ export async function getPaymentsPaginated(
   if (whereClause) {
     query.where(whereClause);
   }
-  query.orderBy(desc(payments.weekOf));
+  query.orderBy(desc(payments.createdAt));
   query.limit(limit);
   query.offset(offset);
 
@@ -207,7 +209,7 @@ export async function getPaymentByIdForOrganization(id: number, organizationId: 
   const [result] = await db.select({ payment: payments })
     .from(payments)
     .innerJoin(leagues, and(eq(leagues.id, payments.leagueId), eq(leagues.organizationId, organizationId)))
-    .where(eq(payments.id, id))
+    .where(and(eq(payments.id, id), eq(payments.organizationId, organizationId)))
     .limit(1);
   return result?.payment;
 }
@@ -231,6 +233,7 @@ export async function getPaymentsByPaymentOperationId(
     .where(and(
       eq(paymentOperations.organizationId, organizationId),
       eq(paymentOperations.id, operationId),
+      eq(payments.organizationId, organizationId),
     ))
     .then((rows) => rows.map(({ payment }) => payment));
 }

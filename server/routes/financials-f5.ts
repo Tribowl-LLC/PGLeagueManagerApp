@@ -97,10 +97,13 @@ router.get("/payments", async (req, res) => {
       operationType: null,
       operationStatus: null,
       sharedTransaction: null,
-      allocations: visibleAllocations,
+      // Allocation IDs/obligation identities are audit-only. Ordinary
+      // payment history receives the tender summary and balance, never the
+      // internal child allocation evidence or interactive controls.
+      allocations: [],
       refund: { ...row.refund, amountMinor: safeRefundAmount, providerRefundId: null },
       dispute: { ...row.dispute, amountMinor: safeDisputeAmount, disputeId: null },
-      receipt: { ...row.receipt, paymentId: null, paymentOperationId: null, operationStatus: null, amountMinor: safeAmount, allocations: visibleAllocations, sharedTransaction: null, canResend: false, receiptUrl: null, receiptNumber: null, refund: { ...(row.receipt.refund ?? row.refund), amountMinor: safeRefundAmount, providerRefundId: null }, dispute: { ...(row.receipt.dispute ?? row.dispute), amountMinor: safeDisputeAmount, disputeId: null } },
+      receipt: { ...row.receipt, paymentId: null, paymentOperationId: null, operationStatus: null, amountMinor: safeAmount, allocations: [], sharedTransaction: null, canResend: false, receiptUrl: null, receiptNumber: null, refund: { ...(row.receipt.refund ?? row.refund), amountMinor: safeRefundAmount, providerRefundId: null }, dispute: { ...(row.receipt.dispute ?? row.dispute), amountMinor: safeDisputeAmount, disputeId: null } },
     }; };
     const redactedReport = {
       ...report,
@@ -112,7 +115,7 @@ router.get("/payments", async (req, res) => {
         const dispute = transaction.dispute
           ? { ...transaction.dispute, amountMinor: initiatingPayer ? transaction.dispute.amountMinor : 0, disputeId: null }
           : undefined;
-        return { ...transaction, groupKey: `transaction:${report.page}:${index + 1}`, paymentOperationId: null, combinedChargeGroupId: null, paymentIds: [], amountMinor, dispute, rows };
+        return { ...transaction, groupKey: `transaction:${report.page}:${index + 1}`, paymentOperationId: null, paymentIds: [], amountMinor, dispute, rows };
       }),
     };
     // `readCanonicalPaymentReport` computes these aggregates over the full

@@ -31,6 +31,7 @@ import {
   cancelPaymentOperation,
   createOrGetGeneralInteractivePaymentOperation,
   finalizePaymentOperationSuccess,
+  finalizeChargeFromWebhookEvidenceInTransaction,
   getPaymentOperationForOrganization,
   persistRosterOperationSnapshot,
   getRosterOperationSnapshotForOrganization,
@@ -222,25 +223,23 @@ async function getScheduleContext(scheduleId = scheduleAId): Promise<{
 }
 
 async function linkedPaymentValues(input: {
+  organizationId?: number;
   bowlerId: number;
   leagueId: number;
   amount?: number;
   status?: "paid" | "failed";
   providerPaymentId?: string;
-  combinedChargeGroupId?: string | null;
   notes?: string | null;
 }) {
   return {
+    organizationId: input.organizationId ?? orgAId,
     bowlerId: input.bowlerId,
     leagueId: input.leagueId,
     amount: input.amount ?? 2_000,
-    lineageAmount: 0,
-    prizeFundAmount: 0,
-    weekOf: "2032-02-02T12:00:00.000Z",
+    currency: "USD",
     status: input.status ?? "paid",
     type: "square" as const,
     providerPaymentId: input.providerPaymentId,
-    combinedChargeGroupId: input.combinedChargeGroupId,
     notes: input.notes,
   };
 }
@@ -272,7 +271,6 @@ function buildInteractiveSnapshot(
   context: { bowlerId: number; leagueId: number; obligationId: string; responsibilityId: string; responsibilityVersion: number; weekOf: string },
   overrides: Partial<RosterOperationSemanticSnapshot> = {},
 ): RosterOperationSemanticSnapshot {
-  const weekOf = new Date(context.weekOf).toISOString();
   return {
     snapshotVersion: 2,
     organizationId: operation.organizationId,
@@ -295,14 +293,10 @@ function buildInteractiveSnapshot(
     storeCard: false,
     sourceKind: "new_card",
     quoteFingerprint: `lvrosterquote:v1:${"a".repeat(64)}`,
-    combinedChargeGroupId: null,
     allocations: [{
       allocationIndex: 0,
       bowlerId: context.bowlerId,
       amountMinor: operation.amountMinor,
-      lineageAmountMinor: 1_000,
-      prizeFundAmountMinor: 1_000,
-      weekOf,
       notes: "Interactive test payment",
       paidByUserId: null,
       obligationId: context.obligationId,
@@ -317,6 +311,7 @@ function buildInteractiveSnapshot(
 async function persistSnapshotWithReleasedReservation(
   operation: Awaited<ReturnType<typeof createOrGetGeneralInteractivePaymentOperation>>,
   snapshot: RosterOperationSemanticSnapshot,
+  state: "released" | "reserved" = "released",
 ): Promise<RosterOperationSemanticSnapshot> {
   const allocation = snapshot.allocations[0];
   if (!allocation?.obligationId) throw new Error("snapshot fixture obligation is missing");
@@ -331,7 +326,7 @@ async function persistSnapshotWithReleasedReservation(
       obligationId,
       allocationIndex: allocation.allocationIndex,
       amountMinor: allocation.amountMinor,
-      state: "released",
+      state,
     }]).onConflictDoNothing();
   });
   return persisted;
@@ -711,13 +706,14 @@ describe("payment operation ledger PostgreSQL invariants", () => {
   });
 
   it("atomically finalizes one provider success with legitimate combined split rows", async () => {
-    const operation = await createOperation(undefined, undefined, undefined, 4_000);
-    const { bowlerId, leagueId } = await getScheduleContext();
-    const [partner] = await db.insert(bowlers).values({
-      name: "Payment Operations Combined Partner",
-      organizationId: orgAId,
-    }).returning({ id: bowlers.id });
-    if (!partner) throw new Error("combined partner was not created");
+    const operation = await createOperation();
+    const context = await getScheduleContext();
+    const { bowlerId, leagueId } = context;
+    await persistSnapshotWithReleasedReservation(
+      operation,
+      buildInteractiveSnapshot(operation, context),
+      "reserved",
+    );
     const now = new Date(Date.now() + 2_000);
     const leased = await acquirePaymentOperationLease({
       organizationId: orgAId,
@@ -727,28 +723,16 @@ describe("payment operation ledger PostgreSQL invariants", () => {
       now,
     });
     if (!leased?.leaseToken) throw new Error("combined success lease was not acquired");
-    const combinedChargeGroupId = "combined-operation-fixture";
     const providerPaymentId = "square-payment-combined";
-    const paymentRows = [
-      {
-        allocationIndex: 0,
-        values: await linkedPaymentValues({
-          bowlerId,
-          leagueId,
-          providerPaymentId,
-          combinedChargeGroupId,
-        }),
-      },
-      {
-        allocationIndex: 1,
-        values: await linkedPaymentValues({
-          bowlerId: partner.id,
-          leagueId,
-          providerPaymentId,
-          combinedChargeGroupId,
-        }),
-      },
-    ];
+    const paymentRows = [{
+      allocationIndex: 0,
+      values: await linkedPaymentValues({
+        bowlerId,
+        leagueId,
+        amount: 2_000,
+        providerPaymentId,
+      }),
+    }];
 
     await finalizePaymentOperationSuccess({
       organizationId: orgAId,
@@ -773,17 +757,21 @@ describe("payment operation ledger PostgreSQL invariants", () => {
       .select()
       .from(payments)
       .where(eq(payments.paymentOperationId, operation.id));
-    expect(rows).toHaveLength(2);
-    expect(rows.map((row) => row.paymentOperationAllocationIndex).sort()).toEqual([0, 1]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.amount).toBe(2_000);
     expect(new Set(rows.map((row) => row.providerPaymentId))).toEqual(new Set([providerPaymentId]));
-    expect(new Set(rows.map((row) => row.combinedChargeGroupId))).toEqual(
-      new Set([combinedChargeGroupId]),
-    );
   });
 
   it("rolls back operation success when local payment persistence fails", async () => {
-    const operation = await createOperation();
-    const { bowlerId, leagueId } = await getScheduleContext();
+    const freshLeagueId = await createFixtureSchedule(orgAId, "A-local-failure");
+    const operation = await createOperation(orgAId, freshLeagueId);
+    const context = await getScheduleContext(freshLeagueId);
+    const { bowlerId, leagueId } = context;
+    await persistSnapshotWithReleasedReservation(
+      operation,
+      buildInteractiveSnapshot(operation, context),
+      "reserved",
+    );
     const now = new Date(Date.now() + 2_000);
     const leased = await acquirePaymentOperationLease({
       organizationId: orgAId,
@@ -833,9 +821,8 @@ describe("payment operation ledger PostgreSQL invariants", () => {
     expect(recovered.status).toBe("succeeded");
   });
 
-  it("creates one deliberate combined failed-history row at action-required transition", async () => {
+  it("records terminal provider decline without a payment-history row", async () => {
     const operation = await createOperation(undefined, undefined, undefined, 4_000);
-    const { bowlerId, leagueId } = await getScheduleContext();
     const now = new Date(Date.now() + 2_000);
     const leased = await acquirePaymentOperationLease({
       organizationId: orgAId,
@@ -845,22 +832,11 @@ describe("payment operation ledger PostgreSQL invariants", () => {
       now,
     });
     if (!leased?.leaseToken) throw new Error("combined decline lease was not acquired");
-    const failedPaymentRows = [{
-      allocationIndex: 0,
-      values: await linkedPaymentValues({
-        bowlerId,
-        leagueId,
-        amount: 2_000,
-        status: "failed",
-        notes: "Failed scheduled payment: card action required",
-      }),
-    }];
     const transition = {
       organizationId: orgAId,
       operationId: operation.id,
       leaseToken: leased.leaseToken,
       errorCode: "CARD_DECLINED",
-      failedPaymentRows,
       now: new Date(now.getTime() + 1),
     };
     await recordPaymentOperationActionRequired(transition);
@@ -868,44 +844,54 @@ describe("payment operation ledger PostgreSQL invariants", () => {
 
     const rows = await db.select().from(payments)
       .where(eq(payments.paymentOperationId, operation.id));
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.status).toBe("failed");
-    expect(rows[0]?.amount).toBe(2_000);
+    expect(rows).toHaveLength(0);
+    expect((await getPaymentOperationForOrganization(orgAId, operation.id))?.status)
+      .toBe("action_required");
   });
 
-  it("rejects per-payee failed-history fanout for a combined decline", async () => {
-    const operation = await createOperation(undefined, undefined, undefined, 4_000);
-    const { bowlerId, leagueId } = await getScheduleContext();
-    const now = new Date(Date.now() + 2_000);
-    const leased = await acquirePaymentOperationLease({
+  it("retains cancellation-review provider evidence without creating an orphan parent", async () => {
+    const freshLeagueId = await createFixtureSchedule(orgAId, "A-cancellation-review");
+    const operation = await createOperation(orgAId, freshLeagueId);
+    const context = await getScheduleContext(freshLeagueId);
+    const [location] = await db.select({ id: locations.id }).from(locations)
+      .where(eq(locations.organizationId, orgAId)).limit(1);
+    if (!location) throw new Error("cancellation review fixture location is missing");
+    await persistSnapshotWithReleasedReservation(
+      operation,
+      buildInteractiveSnapshot(operation, context, { locationId: location.id }),
+      "reserved",
+    );
+    await db.update(paymentOperations).set({
+      status: "reconciliation_required",
+      nextAttemptAt: null,
+      errorClassification: "provider_unknown",
+      errorCode: "CANCELLATION_REVIEW",
+      completedAt: new Date().toISOString(),
+    }).where(and(
+      eq(paymentOperations.organizationId, orgAId),
+      eq(paymentOperations.id, operation.id),
+    ));
+
+    const providerPaymentId = "square-payment-cancellation-review";
+    const reviewed = await db.transaction((tx) => finalizeChargeFromWebhookEvidenceInTransaction(tx, {
       organizationId: orgAId,
       operationId: operation.id,
-      leaseOwner: "combined-decline-fanout-worker",
-      leaseDurationMs: 60_000,
-      now,
-    });
-    if (!leased?.leaseToken) throw new Error("combined fanout lease was not acquired");
-    const failed = await linkedPaymentValues({
-      bowlerId,
-      leagueId,
-      amount: 2_000,
-      status: "failed",
-    });
-
-    await expect(recordPaymentOperationActionRequired({
-      organizationId: orgAId,
-      operationId: operation.id,
-      leaseToken: leased.leaseToken,
-      errorCode: "CARD_DECLINED",
-      failedPaymentRows: [
-        { allocationIndex: 0, values: failed },
-        { allocationIndex: 1, values: failed },
-      ],
-      now: new Date(now.getTime() + 1),
-    })).rejects.toBeInstanceOf(PaymentOperationValidationError);
-
-    expect((await getPaymentOperationForOrganization(orgAId, operation.id))?.status)
-      .toBe("leased");
+      locationId: location.id,
+      providerObjectId: providerPaymentId,
+      providerPaymentId,
+      providerOrderId: null,
+      amountMinor: operation.amountMinor,
+      currency: operation.currency,
+      now: new Date(Date.now() + 2_000),
+    }));
+    expect(reviewed.status).toBe("reconciliation_required");
+    expect(reviewed.providerObjectId).toBe(providerPaymentId);
+    expect(await db.select().from(payments).where(eq(payments.paymentOperationId, operation.id)))
+      .toHaveLength(0);
+    expect(await db.select().from(paymentOperationRosterSnapshotItems).where(and(
+      eq(paymentOperationRosterSnapshotItems.operationId, operation.id),
+      eq(paymentOperationRosterSnapshotItems.state, "reserved"),
+    ))).toHaveLength(1);
   });
 
   it("atomically terminates the eighth failed attempt and cannot be leased again", async () => {

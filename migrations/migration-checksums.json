@@ -210,6 +210,12 @@
       "tag": "0034_pr3_canonical_steady_state",
       "createdAt": 1787766288339,
       "hash": "44c32422e4c40d1ed65ae5196af9d3d3f0ff4172a33f66c8860700d88ab573ac"
+    },
+    {
+      "idx": 35,
+      "tag": "0035_automatic_fifo_payment_allocation",
+      "createdAt": 1787782184136,
+      "hash": "e9dda933fdb6c144f1e008e43bf9fa63be207cc5e6be15f696e8784c25f0efe9"
     }
   ]
 }

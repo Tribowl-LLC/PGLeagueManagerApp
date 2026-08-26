@@ -78,7 +78,7 @@ interface OrphanBowlerLeagueRow {
 interface OrphanPaymentRow {
   id: number;
   amount: number;
-  weekOf: string;
+  createdAt: string;
   bowlerId: number;
   bowlerName: string | null;
   leagueId: number;
@@ -468,7 +468,7 @@ export default function DataIntegrityPage() {
           <TableRow key={`pay-${row.id}`}>
             <TableCell className="font-mono text-xs">{row.id}</TableCell>
             <TableCell className="font-medium">{formatCents(row.amount)}</TableCell>
-            <TableCell className="text-sm text-muted-foreground whitespace-nowrap">{formatDate(row.weekOf)}</TableCell>
+            <TableCell className="text-sm text-muted-foreground whitespace-nowrap">{formatDate(row.createdAt)}</TableCell>
             <TableCell>{row.bowlerName ?? `Bowler #${row.bowlerId}`}</TableCell>
             <TableCell>
               {row.parentLeagueExists ? (
@@ -503,7 +503,7 @@ export default function DataIntegrityPage() {
       case 'bowlerLeagues':
         return ['ID', 'Bowler', 'Parent league', ''];
       case 'payments':
-        return ['ID', 'Amount', 'Week of', 'Bowler', 'Parent league', ''];
+        return ['ID', 'Amount', 'Collected', 'Bowler', 'Parent league', ''];
       case 'users':
         return ['ID', 'Name', 'Email', 'Role', 'Created', ''];
     }

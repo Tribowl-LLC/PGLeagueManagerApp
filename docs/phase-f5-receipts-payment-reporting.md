@@ -10,7 +10,7 @@ link historical payments, or change provider behavior.
 The payment report contract is `canonical-payment-report/2`, ordered by league,
 authoritative local occurrence business date, bowler, occurrence, allocation,
 and payment. It reports confirmed, allocated, refunded, disputed,
-review-required, and unresolved-operation totals. A combined charge is one
+review-required, and unresolved-operation totals. Every tender is one
 transaction parent with exact allocation children; the parent is the
 pagination unit and children are never split across pages.
 
@@ -29,14 +29,14 @@ count. All money is rendered as USD minor units converted to readable dollar
 amounts; provider payloads and credentials are never returned to the client.
 
 The receipt contract remains `payment-receipt/1`. It carries scoped payment and
-operation identity, amount/currency, exact allocation children,
+operation identity, amount/currency, exact internal allocation children,
 refund/dispute/unresolved state, shared-transaction grouping, hosted receipt
 availability, resend capability, delivery evidence, and payment timing.
 Hosted receipt availability is separate from delivery evidence, which is
 `delivery_not_recorded` unless a future provider-delivery ledger is explicitly
 added. Initiating payers and scoped administrators may see a shared hosted
-receipt; partner payees see only their own allocation detail; ordinary users
-never receive provider/operation diagnostics. Cached receipts are served
+receipt; partner payees see only their own tender summary; ordinary users
+never receive provider/operation or allocation diagnostics. Cached receipts are served
 without provider access. An explicit user receipt request may perform the
 existing lazy provider `GetPayment` backfill through the internal tenant-scoped
 cache helper; reports never perform that lookup and no bulk receipt polling is
@@ -54,26 +54,29 @@ Missing or incompatible canonical evidence fails closed with HTTP 409.
 Operation-linked and occurrence-allocation-linked payments are immutable
 through public bookkeeping edits. Corrections append explicit evidence, while
 refunds and disputes retain the original allocation and remain review-required.
-Cash/check recording uses the canonical roster quote and exact obligation IDs;
-there is no generic payment-create path that can bypass canonical allocation.
+Cash/check recording uses the canonical FIFO quote; there is no generic
+payment-create path that can bypass canonical allocation. A cash/check
+correction voids the whole tender and records one `payment_voids` audit row;
+any replacement is a separate FIFO entry.
 
 F1 due/past-due remains the sole debt source. F5 collections never recompute
-debt from `weekOf` or payment totals. Refunds and disputes retain original
+debt from tender totals or occurrence display dates. Refunds and disputes retain original
 allocation evidence and do not reopen or reassign obligations. Settled and
 voided allocation details remain visible; voided obligations contribute zero
 outstanding.
 
 ## Rollout and validation
 
-F5 requires no new migration. Verify the existing migration journal and
-checksum state before release. Focused PostgreSQL and fake-provider tests
+F5 is released with migration `0035_automatic_fifo_payment_allocation`. Verify
+the migration guard, journal, and checksum state before release. Focused
+PostgreSQL and fake-provider tests
 prove pagination/conservation, partial and multi-obligation allocation,
 refund/dispute visibility, receipt privacy, tenant scope, immutable payment
 evidence, and zero report writes or provider calls during reporting.
 Rollback is an application traffic pause and forward fix.
 
 Focused coverage includes bounded parent pagination with atomic
-combined-operation children, canonical partial and settled/voided allocation
+multi-obligation children, canonical partial and settled/voided allocation
 reports, unresolved operation participants, semantic fingerprint stability,
 cross-tenant scope, tampered revision snapshots, receipt cache/lazy lookup,
 immutable payment mutation, payer privacy totals, payment timing, and

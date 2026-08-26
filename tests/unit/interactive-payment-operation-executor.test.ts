@@ -337,7 +337,6 @@ async function prepareOperation(
   const sourceKind = options.sourceKind ?? "new_card";
   const evidence = await createObligation(fixture);
   const evidenceRows = [evidence, ...(options.additionalEvidence ?? [])];
-  const weekOf = new Date(evidence.obligation.dueAt).toISOString();
   const amountMinor = options.amountMinor ?? 2_000;
   const operation = await createOrGetGeneralInteractivePaymentOperation({
     organizationId: fixture.organizationId,
@@ -375,14 +374,10 @@ async function prepareOperation(
     storeCard: options.storeCard ?? false,
     sourceKind,
     quoteFingerprint: `lvrosterquote:v1:${"a".repeat(64)}`,
-    combinedChargeGroupId: evidenceRows.length > 1 ? operation.id : null,
     allocations: evidenceRows.map((row, allocationIndex) => ({
       allocationIndex,
       bowlerId: fixture.bowlerId,
       amountMinor: row.obligation.amountMinor,
-      lineageAmountMinor: row.obligation.amountMinor / 2,
-      prizeFundAmountMinor: row.obligation.amountMinor / 2,
-      weekOf: new Date(row.obligation.dueAt).toISOString(),
       notes: "interactive executor test",
       paidByUserId: null,
       obligationId: row.obligation.id,
@@ -531,15 +526,13 @@ describe("interactive payment operation executor", () => {
 
     expect(provider.processCalls).toHaveLength(1);
     expect(provider.processCalls[0]?.amount).toBe(4_000);
-    const paymentsForOperation = await db.select({ bowlerId: payments.bowlerId, weekOf: payments.weekOf, amount: payments.amount })
+    const paymentsForOperation = await db.select({ bowlerId: payments.bowlerId, createdAt: payments.createdAt, amount: payments.amount })
       .from(payments)
       .where(eq(payments.paymentOperationId, operation.id));
-    expect(paymentsForOperation).toHaveLength(2);
-    expect(new Set(paymentsForOperation.map((row) => row.weekOf))).toHaveLength(2);
-    expect(paymentsForOperation.every((row) => row.bowlerId === fixture.bowlerId && row.amount === 2_000)).toBe(true);
+    expect(paymentsForOperation).toHaveLength(1);
+    expect(paymentsForOperation[0]).toMatchObject({ bowlerId: fixture.bowlerId, amount: 4_000 });
     expect(snapshot.allocations).toHaveLength(2);
     expect(snapshot.allocations[0]?.bowlerId).toBe(snapshot.allocations[1]?.bowlerId);
-    expect(snapshot.allocations[0]?.weekOf).not.toBe(snapshot.allocations[1]?.weekOf);
   });
 
   it("dispatches order requests with exact ordered line items and both retained keys", async () => {

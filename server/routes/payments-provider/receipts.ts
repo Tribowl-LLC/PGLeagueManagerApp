@@ -120,7 +120,7 @@ async function buildReceiptEvidence(paymentId: number, organizationId: number, v
   const adminPrivilege = viewer.role === 'system_admin' || viewer.role === 'org_admin' || viewer.role === 'payment_manager';
   const initiatingPayer = payment.paidByUserId === viewer.id || (row.initiatingPayerBowlerId !== null && row.initiatingPayerBowlerId !== undefined && row.initiatingPayerBowlerId === viewer.bowlerId);
   const hasOtherActiveAllocation = row.allocations.some((allocation) => allocation.state === 'active' && allocation.bowlerId !== payment.bowlerId);
-  const sharedAllowed = adminPrivilege || initiatingPayer || (row.paymentOperationId === null && (payment.combinedChargeGroupId ?? null) === null && !hasOtherActiveAllocation && viewer.bowlerId === payment.bowlerId);
+  const sharedAllowed = adminPrivilege || initiatingPayer || (row.paymentOperationId === null && !hasOtherActiveAllocation && viewer.bowlerId === payment.bowlerId);
   const evidenceAllocations = row.allocations.map((allocation) => ({ ...allocation, source: row.source }));
   const visibleAllocations = sharedAllowed ? evidenceAllocations : evidenceAllocations.filter((allocation) => allocation.bowlerId === viewer.bowlerId);
   const transactionDispute = transaction?.dispute ?? row.dispute;

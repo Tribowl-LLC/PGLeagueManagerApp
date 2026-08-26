@@ -39,9 +39,10 @@ describe("roster-driven payment contracts", () => {
     expect(parsed.success).toBe(true);
   });
 
-  it("requires exact obligation IDs and a quote fingerprint for manual entry", () => {
+  it("requires a positive tender amount and quote fingerprint for manual entry", () => {
     expect(canonicalManualRecordRequestSchema.safeParse({
-      obligationIds: ["00000000-0000-4000-8000-000000000001"],
+      amountMinor: 2_000,
+      payerBowlerId: 11,
       type: "cash",
       idempotencyKey: "manual-1",
       requestFingerprint: "lvrosterquote:v1:abc",

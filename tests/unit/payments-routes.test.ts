@@ -52,7 +52,6 @@ import {
 import express from 'express';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
-import { expectErrorLog } from '../helpers/expected-error-logs';
 
 const mockStorage = {
   getPaymentById: vi.fn(),
@@ -189,7 +188,6 @@ function userHeader(user: {
 }
 
 const ORG_A_USER = { id: 7, role: 'org_admin' as TestRole, organizationId: 1, bowlerId: null };
-const SYSADMIN = { id: 1, role: 'system_admin' as TestRole, organizationId: null, bowlerId: null };
 const REGULAR_USER = { id: 9, role: 'user' as TestRole, organizationId: 1, bowlerId: 5 };
 
 const LEAGUE_OK = {
@@ -223,108 +221,6 @@ async function del(path: string, user: object = ORG_A_USER) {
     headers: userHeader(user as Parameters<typeof userHeader>[0]),
   });
 }
-
-describe('PATCH /api/payments/:id', () => {
-  it('updates a payment on the happy path → 200', async () => {
-    mockStorage.updatePayment.mockResolvedValue({ id: 1, amount: 5000, type: 'cash' });
-    const res = await patch('/api/payments/1', { amount: 5000 });
-    expect(res.status).toBe(200);
-    expect((await res.json()).data.amount).toBe(5000);
-    expect(mockHasAccessToPayment).toHaveBeenCalledWith(expect.anything(), 1);
-  });
-
-  it('returns 403 for non-admin lacking access', async () => {
-    mockHasAccessToPayment.mockResolvedValue(false);
-    const res = await patch('/api/payments/1', { amount: 5000 });
-    expect(res.status).toBe(403);
-    expect((await res.json()).error.code).toBe('FORBIDDEN');
-    expect(mockStorage.updatePayment).not.toHaveBeenCalled();
-  });
-
-  it('skips access check entirely for system_admin', async () => {
-    mockStorage.updatePayment.mockResolvedValue({ id: 1, amount: 5000 });
-    const res = await patch('/api/payments/1', { amount: 5000 }, SYSADMIN);
-    expect(res.status).toBe(200);
-    expect(mockHasAccessToPayment).not.toHaveBeenCalled();
-  });
-
-  it('returns 404 when the payment does not exist', async () => {
-    mockStorage.updatePayment.mockResolvedValue(undefined);
-    const res = await patch('/api/payments/1', { amount: 5000 });
-    expect(res.status).toBe(404);
-    expect((await res.json()).error.code).toBe('NOT_FOUND');
-  });
-
-  it('rejects check type without a check number → 400', async () => {
-    const res = await patch('/api/payments/1', { type: 'check' });
-    expect(res.status).toBe(400);
-    expect((await res.json()).error.code).toBe('VALIDATION_ERROR');
-    expect(mockStorage.updatePayment).not.toHaveBeenCalled();
-  });
-
-  it('retains operation/allocation-linked evidence on public PATCH', async () => {
-    const { PaymentEvidenceImmutableError } = await import('../../server/storage/payments');
-    expectErrorLog(/Payment evidence is immutable/);
-    mockStorage.updatePayment.mockRejectedValue(new PaymentEvidenceImmutableError());
-    const res = await patch('/api/payments/1', { amount: 5000 });
-    expect(res.status).toBe(409);
-    expect((await res.json()).error.code).toBe('PAYMENT_EVIDENCE_RETAINED');
-  });
-});
-
-describe('DELETE /api/payments/:id', () => {
-  it('deletes a payment on the happy path → 200', async () => {
-    mockStorage.getPaymentById.mockResolvedValue({ id: 1, type: 'cash' });
-    mockStorage.deletePayment.mockResolvedValue(undefined);
-    const res = await del('/api/payments/1');
-    expect(res.status).toBe(200);
-    expect(mockStorage.deletePayment).toHaveBeenCalledWith(1);
-  });
-
-  it('returns 400 for an invalid (non-numeric) id', async () => {
-    const res = await del('/api/payments/not-a-number');
-    expect(res.status).toBe(400);
-    expect((await res.json()).error.code).toBe('INVALID_ID');
-    expect(mockStorage.getPaymentById).not.toHaveBeenCalled();
-  });
-
-  it('returns 404 when the payment does not exist', async () => {
-    mockStorage.getPaymentById.mockResolvedValue(undefined);
-    const res = await del('/api/payments/1');
-    expect(res.status).toBe(404);
-    expect((await res.json()).error.code).toBe('NOT_FOUND');
-  });
-
-  it('blocks non-admin users from deleting card payments → 403', async () => {
-    mockStorage.getPaymentById.mockResolvedValue({ id: 1, type: 'credit_card' });
-    const res = await del('/api/payments/1', REGULAR_USER);
-    expect(res.status).toBe(403);
-    expect((await res.json()).error.message).toMatch(/admins/i);
-    expect(mockStorage.deletePayment).not.toHaveBeenCalled();
-  });
-
-  it('returns 403 for non-admin lacking access', async () => {
-    mockStorage.getPaymentById.mockResolvedValue({ id: 1, type: 'cash' });
-    mockHasAccessToPayment.mockResolvedValue(false);
-    const res = await del('/api/payments/1');
-    expect(res.status).toBe(403);
-    expect((await res.json()).error.code).toBe('FORBIDDEN');
-    expect(mockStorage.deletePayment).not.toHaveBeenCalled();
-  });
-
-  it('returns a clear 409 when retained dispute evidence blocks deletion', async () => {
-    const { PaymentDisputeEvidenceExistsError } = await import('../../server/storage/payments');
-    mockStorage.getPaymentById.mockResolvedValue({ id: 1, type: 'cash' });
-    mockStorage.deletePayment.mockRejectedValue(new PaymentDisputeEvidenceExistsError());
-
-    const res = await del('/api/payments/1');
-    expect(res.status).toBe(409);
-    expect((await res.json()).error).toMatchObject({
-      code: 'PAYMENT_DISPUTE_EVIDENCE_EXISTS',
-      message: 'Payment cannot be deleted while retained dispute evidence exists',
-    });
-  });
-});
 
 describe('POST /api/payments/:id/refund', () => {
   const cardPayment = {

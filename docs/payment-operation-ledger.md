@@ -1,5 +1,17 @@
 # Payment operation ledger
 
+## Current payment-parent contract
+
+The active automatic FIFO implementation supersedes any older per-allocation
+payment-row examples in this historical ledger document. One real tender is
+one immutable `payments` parent and its child `payment_allocations`; a provider
+operation has at most one payment parent. Occurrence timing belongs to the
+canonical obligation/allocation evidence, not a payment `weekOf` column. Cash
+and check corrections are whole-payment voids recorded in `payment_voids`; card
+corrections use refund/reconciliation. See
+[Automatic FIFO payment allocation](automatic-fifo-payment-allocation.md) for
+the current contract.
+
 ## Current steady state (PR3)
 
 PR3 is the current payment contract. `payment_operations` supports only

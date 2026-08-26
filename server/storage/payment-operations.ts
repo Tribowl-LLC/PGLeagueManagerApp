@@ -72,6 +72,7 @@ async function releaseRosterReservationsWithoutProviderEvidence(
   )).for("share");
   if (operation?.providerObjectId) return;
   const [providerPayment] = await tx.select({ id: payments.id }).from(payments).where(and(
+    eq(payments.organizationId, input.organizationId),
     eq(payments.leagueId, input.leagueId),
     eq(payments.paymentOperationId, input.operationId),
   )).limit(1);
@@ -145,10 +146,11 @@ export interface CreateOrGetRefundPaymentOperationInput {
 export type PaymentOperationTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 export interface PaymentOperationLinkedPaymentInput {
-  allocationIndex: number;
+  /** Optional snapshot index used only to validate the immutable roster evidence. */
+  allocationIndex?: number;
   values: Omit<
     typeof payments.$inferInsert,
-    "paymentOperationId" | "paymentOperationAllocationIndex"
+    "paymentOperationId"
   >;
 }
 
@@ -204,7 +206,6 @@ interface ErrorOutcomeInput extends LeasedPaymentOperationInput {
   errorCode?: string | null;
   providerObjectId?: string | null;
   providerOrderId?: string | null;
-  failedPaymentRows?: PaymentOperationLinkedPaymentInput[];
 }
 
 function toIso(value: Date, label: string): string {
@@ -250,37 +251,12 @@ function validateProviderOrderId(providerOrderId: string): void {
 
 function validateLinkedPaymentRows(rows: PaymentOperationLinkedPaymentInput[] | undefined): void {
   if (rows === undefined) return;
-  const indexes = new Set<number>();
   for (const row of rows) {
-    if (!Number.isSafeInteger(row.allocationIndex) || row.allocationIndex < 0) {
+    if (row.allocationIndex !== undefined && (!Number.isSafeInteger(row.allocationIndex) || row.allocationIndex < 0)) {
       throw new PaymentOperationValidationError("payment allocation index must be a non-negative integer");
     }
-    if (indexes.has(row.allocationIndex)) {
-      throw new PaymentOperationValidationError("payment allocation indexes must be unique");
-    }
-    indexes.add(row.allocationIndex);
   }
-}
-
-function validateFailedPaymentRows(rows: PaymentOperationLinkedPaymentInput[] | undefined): void {
-  validateLinkedPaymentRows(rows);
-  if (rows === undefined) return;
-  if (rows.length > 1) {
-    throw new PaymentOperationValidationError(
-      "scheduled failure history permits only the payer-level row",
-    );
-  }
-  const row = rows[0];
-  if (!row) return;
-  if (
-    row.allocationIndex !== 0
-    || row.values.status !== "failed"
-    || row.values.combinedChargeGroupId != null
-  ) {
-    throw new PaymentOperationValidationError(
-      "scheduled failure history must be one ungrouped failed payer row",
-    );
-  }
+  if (rows.length > 1) throw new PaymentOperationValidationError("one provider operation must create exactly one tender parent row");
 }
 
 async function insertLinkedPaymentRows(
@@ -290,6 +266,16 @@ async function insertLinkedPaymentRows(
   rows: PaymentOperationLinkedPaymentInput[] | undefined,
 ): Promise<void> {
   if (!rows || rows.length === 0) return;
+  if (rows.length !== 1 || (rows[0]?.allocationIndex !== undefined && rows[0].allocationIndex !== 0)) {
+    throw new PaymentOperationValidationError("one provider operation must create exactly one tender parent row");
+  }
+  const [rosterSnapshot] = await executor.select({ amountMinor: paymentOperationRosterSnapshots.amountMinor }).from(paymentOperationRosterSnapshots).where(and(
+    eq(paymentOperationRosterSnapshots.operationId, operationId),
+    eq(paymentOperationRosterSnapshots.organizationId, organizationId),
+  )).limit(1);
+  if (rosterSnapshot && rows[0]?.values.amount !== rosterSnapshot.amountMinor) {
+    throw new PaymentOperationValidationError("a roster provider operation must create exactly one tender parent row");
+  }
   const bowlerIds = [...new Set(rows.map((row) => row.values.bowlerId))];
   const leagueIds = [...new Set(rows.map((row) => row.values.leagueId))];
   const paidByUserIds = [...new Set(rows
@@ -317,27 +303,20 @@ async function insertLinkedPaymentRows(
     throw new PaymentOperationValidationError("linked payment rows do not belong to the operation tenant");
   }
 
-  // A local finalization can commit provider/payment evidence before an
-  // allocation write fails. Recovery must be able to replay the same exact
-  // rows without violating the operation-allocation uniqueness boundary.
+  // Parent and child evidence are committed together inside the finalizer's
+  // savepoint; a failed allocation write rolls back the parent as well.
   const existingRows = await executor.select().from(payments).where(and(
+    eq(payments.organizationId, organizationId),
     eq(payments.paymentOperationId, operationId),
     eq(payments.leagueId, rows[0]?.values.leagueId ?? 0),
-  )).orderBy(asc(payments.paymentOperationAllocationIndex), asc(payments.id)).for("update");
-  const existingByIndex = new Map(existingRows.map((row) => [row.paymentOperationAllocationIndex, row]));
-  const missingRows: PaymentOperationLinkedPaymentInput[] = [];
-  for (const row of rows) {
-    const existing = existingByIndex.get(row.allocationIndex);
-    if (!existing) {
-      missingRows.push(row);
-      continue;
-    }
+  )).limit(1).for("update");
+  const row = rows[0];
+  const existing = existingRows[0];
+  if (existing) {
     if (
       existing.bowlerId !== row.values.bowlerId
       || existing.leagueId !== row.values.leagueId
       || existing.amount !== row.values.amount
-      || existing.lineageAmount !== row.values.lineageAmount
-      || existing.prizeFundAmount !== row.values.prizeFundAmount
       || existing.providerPaymentId !== row.values.providerPaymentId
       || existing.status !== row.values.status
       || existing.type !== row.values.type
@@ -352,13 +331,9 @@ async function insertLinkedPaymentRows(
         receiptNumber: existing.receiptNumber === null ? row.values.receiptNumber : undefined,
       }).where(and(eq(payments.id, existing.id), eq(payments.leagueId, row.values.leagueId)));
     }
+    return;
   }
-  if (missingRows.length === 0) return;
-  await executor.insert(payments).values(missingRows.map((row) => ({
-    ...row.values,
-    paymentOperationId: operationId,
-    paymentOperationAllocationIndex: row.allocationIndex,
-  })));
+  await executor.insert(payments).values({ ...row.values, paymentOperationId: operationId });
 }
 
 async function deriveStandingPaymentRowsInTransaction(
@@ -381,24 +356,22 @@ async function deriveStandingPaymentRowsInTransaction(
     eq(paymentOperationRosterSnapshotItems.operationId, operation.id),
   )).orderBy(asc(paymentOperationRosterSnapshotItems.allocationIndex));
   if (rows.length === 0) throw new PaymentOperationValidationError("standing operation snapshot has no payment rows");
-  return rows.map((row) => ({
-    allocationIndex: row.item.allocationIndex,
+  const first = rows[0];
+  return [{
+    allocationIndex: 0,
     values: {
-      bowlerId: row.obligation.payerBowlerId,
-      leagueId: operation.leagueId as number,
-      amount: row.item.amountMinor,
-      lineageAmount: null,
-      prizeFundAmount: null,
-      weekOf: row.obligation.dueAt,
+      organizationId: input.organizationId,
+      bowlerId: first.obligation.payerBowlerId,
+      leagueId: operation.leagueId,
+      amount: operation.amountMinor,
       status: "paid" as const,
       type: providerNameToPaymentType(input.providerName),
       providerPaymentId: input.providerPaymentId,
       receiptEmailMissing: false,
-      combinedChargeGroupId: null,
       paidByUserId: input.actorUserId,
       notes: "Roster standing automatic payment",
     },
-  }));
+  }];
 }
 
 function validateErrorDetails(
@@ -705,7 +678,7 @@ export async function persistRosterOperationSnapshot(
     amountMinor: snapshot.amountMinor, currency: snapshot.currency, obligations: snapshot.allocations,
     locationId: encrypted.locationId, providerLocationId: encrypted.providerLocationId, payerBowlerId: encrypted.payerBowlerId, requestKind: encrypted.requestKind,
     encryptedSourceId: encrypted.encryptedSourceId, encryptedCustomerId: encrypted.encryptedCustomerId, encryptedBuyerEmail: encrypted.encryptedBuyerEmail,
-    storeCard: encrypted.storeCard, sourceKind: encrypted.sourceKind, combinedChargeGroupId: encrypted.combinedChargeGroupId,
+    storeCard: encrypted.storeCard, sourceKind: encrypted.sourceKind,
     quoteFingerprint: encrypted.quoteFingerprint, lineItems: snapshot.lineItems, snapshotFingerprint: encrypted.snapshotFingerprint,
   }).onConflictDoNothing().returning({ operationId: paymentOperationRosterSnapshots.operationId });
   if (!created) {
@@ -1312,7 +1285,6 @@ export async function schedulePaymentOperationRetry(
   },
 ): Promise<PaymentOperation> {
   validateLeaseToken(input.leaseToken);
-  validateFailedPaymentRows(input.failedPaymentRows);
   if (input.providerObjectId != null) validateProviderObjectId(input.providerObjectId);
   if (input.providerOrderId != null) validateProviderOrderId(input.providerOrderId);
   const nowDate = input.now ?? new Date();
@@ -1374,14 +1346,6 @@ export async function schedulePaymentOperationRetry(
           ),
       ))
       .returning();
-    if (transitioned?.status === "failed_terminal") {
-      await insertLinkedPaymentRows(
-        tx,
-        input.organizationId,
-        input.operationId,
-        input.failedPaymentRows,
-      );
-    }
     return transitioned;
   });
   if (!updated) return throwInvalidTransition(input.organizationId, input.operationId);
@@ -1392,7 +1356,6 @@ export async function recordPaymentOperationProviderUnknown(
   input: ErrorOutcomeInput & { recoveryAt: Date },
 ): Promise<PaymentOperation> {
   validateLeaseToken(input.leaseToken);
-  validateFailedPaymentRows(input.failedPaymentRows);
   if (input.providerObjectId != null) validateProviderObjectId(input.providerObjectId);
   if (input.providerOrderId != null) validateProviderOrderId(input.providerOrderId);
   const nowDate = input.now ?? new Date();
@@ -1475,7 +1438,6 @@ export async function recordPaymentOperationConfigurationRetry(
   input: ErrorOutcomeInput & { recoveryAt: Date },
 ): Promise<PaymentOperation> {
   validateLeaseToken(input.leaseToken);
-  validateFailedPaymentRows(input.failedPaymentRows);
   if (input.providerObjectId != null) validateProviderObjectId(input.providerObjectId);
   if (input.providerOrderId != null) validateProviderOrderId(input.providerOrderId);
   const nowDate = input.now ?? new Date();
@@ -1523,7 +1485,6 @@ async function recordTerminalErrorOutcome(
   },
 ): Promise<PaymentOperation> {
   validateLeaseToken(input.leaseToken);
-  validateFailedPaymentRows(input.failedPaymentRows);
   if (input.providerObjectId != null) validateProviderObjectId(input.providerObjectId);
   if (input.providerOrderId != null) validateProviderOrderId(input.providerOrderId);
   const now = toIso(input.now ?? new Date(), "now");
@@ -1562,12 +1523,6 @@ async function recordTerminalErrorOutcome(
       ))
       .returning();
     if (!transitioned) return undefined;
-    await insertLinkedPaymentRows(
-      tx,
-      input.organizationId,
-      input.operationId,
-      input.failedPaymentRows,
-    );
     // A deterministic terminal failure before dispatch must not strand the
     // cutoff reservation. Once dispatch has started we retain the reservation
     // as fail-closed evidence until provider reconciliation resolves it.
@@ -1655,7 +1610,6 @@ export async function finalizePaymentOperationSuccessInTransaction(
     if (rosterSnapshot?.requestKind === "order") throw new PaymentOperationImmutableMismatchError();
   }
   const preflightOperation = await lockCanonicalMutationScope(tx, input.organizationId, input.operationId);
-  const cancellationReviewRequired = false;
   if (preflightOperation) {
     // Provider identities are immutable evidence. A reclaim/finalization may
     // fill a previously empty identity, but it may never replace one retained
@@ -1671,14 +1625,14 @@ export async function finalizePaymentOperationSuccessInTransaction(
   const [transitioned] = await tx
     .update(paymentOperations)
     .set({
-      status: cancellationReviewRequired ? "reconciliation_required" : "succeeded",
+      status: "succeeded",
       providerObjectId: input.providerObjectId,
       providerOrderId: input.providerOrderId ?? undefined,
       nextAttemptAt: null,
       leaseOwner: null,
       leaseExpiresAt: null,
-      errorClassification: cancellationReviewRequired ? "provider_unknown" : null,
-      errorCode: cancellationReviewRequired ? "CANCELLATION_REVIEW" : null,
+      errorClassification: null,
+      errorCode: null,
       completedAt: now,
       updatedAt: now,
     })
@@ -1696,15 +1650,19 @@ export async function finalizePaymentOperationSuccessInTransaction(
     ))
     .returning();
   if (transitioned) {
-    await insertLinkedPaymentRows(
-      tx,
-      input.organizationId,
-      input.operationId,
-      input.paymentRows,
-    );
-    if (!cancellationReviewRequired && transitioned.leagueId !== null) {
-      try {
-        await tx.transaction(async (finalizerTx) => {
+    try {
+      // Provider success, its one tender parent, and all canonical child
+      // allocations share one savepoint. If local finalization fails, the
+      // operation remains reconciliation evidence but no orphan parent can
+      // commit.
+      await tx.transaction(async (finalizerTx) => {
+        await insertLinkedPaymentRows(
+          finalizerTx,
+          input.organizationId,
+          input.operationId,
+          input.paymentRows,
+        );
+        if (transitioned.leagueId !== null) {
           await finalizeRosterSnapshotInTransaction(finalizerTx, {
             organizationId: input.organizationId,
             leagueId: transitioned.leagueId ?? 0,
@@ -1712,23 +1670,22 @@ export async function finalizePaymentOperationSuccessInTransaction(
             now,
             actorUserId: transitioned.authorizingUserId,
           });
-        });
-      } catch (error) {
-        if (!isRosterSnapshotFinalizationError(error)) throw error;
-        const [reviewed] = await tx.update(paymentOperations).set({
-          status: "reconciliation_required",
-          nextAttemptAt: null,
-          errorClassification: "internal",
-          errorCode: error.code,
-          completedAt: now,
-          updatedAt: now,
-        }).where(and(
-          eq(paymentOperations.organizationId, input.organizationId),
-          eq(paymentOperations.id, transitioned.id),
-          eq(paymentOperations.status, "succeeded"),
-        )).returning();
-        return reviewed ?? transitioned;
-      }
+        }
+      });
+    } catch (error) {
+      if (!isRosterSnapshotFinalizationError(error)) throw error;
+      const [reviewed] = await tx.update(paymentOperations).set({
+        status: "reconciliation_required",
+        nextAttemptAt: null,
+        errorClassification: "internal",
+        errorCode: error.code,
+        completedAt: now,
+      }).where(and(
+        eq(paymentOperations.organizationId, input.organizationId),
+        eq(paymentOperations.id, transitioned.id),
+        eq(paymentOperations.status, "succeeded"),
+      )).returning();
+      return reviewed ?? transitioned;
     }
     return transitioned;
   }
@@ -1847,27 +1804,26 @@ function rosterWebhookPaymentRows(
   snapshot: RosterOperationSemanticSnapshot,
   input: ProviderWebhookCompletionEvidence,
 ): PaymentOperationLinkedPaymentInput[] {
-  return snapshot.allocations.map((allocation) => ({
-    allocationIndex: allocation.allocationIndex,
+  const first = snapshot.allocations[0];
+  if (!first) return [];
+  return [{
+    allocationIndex: 0,
     values: {
-      bowlerId: allocation.bowlerId,
+      organizationId: input.organizationId,
+      bowlerId: snapshot.payerBowlerId ?? first.bowlerId,
       leagueId: snapshot.leagueId,
-      amount: allocation.amountMinor,
-      lineageAmount: allocation.lineageAmountMinor,
-      prizeFundAmount: allocation.prizeFundAmountMinor,
-      weekOf: allocation.weekOf,
+      amount: operation.amountMinor,
       status: "paid" as const,
       type: providerNameToPaymentType(snapshot.providerName),
       providerPaymentId: input.providerPaymentId,
       receiptUrl: input.receiptUrl ?? undefined,
       receiptNumber: input.receiptNumber ?? undefined,
       receiptEmailMissing: snapshot.buyerEmail === null,
-      combinedChargeGroupId: snapshot.combinedChargeGroupId,
-      idempotencyKey: allocation.allocationIndex === 0 ? operation.id : undefined,
-      notes: allocation.notes,
-      paidByUserId: allocation.paidByUserId,
+      idempotencyKey: operation.id,
+      notes: `Roster payment (${snapshot.allocations.length} allocations)`,
+      paidByUserId: first.paidByUserId,
     },
-  }));
+  }];
 }
 
 /**
@@ -1896,6 +1852,39 @@ export async function finalizeChargeFromWebhookEvidenceInTransaction(
     || (operation.providerObjectId !== null && operation.providerObjectId !== input.providerObjectId)
     || (operation.providerOrderId !== null && operation.providerOrderId !== input.providerOrderId)
   ) throw new PaymentOperationImmutableMismatchError();
+
+  // Cancellation won after dispatch, so the provider result is retained as
+  // reconciliation evidence only. The operator reconciliation path is the
+  // sole transition that may create the canonical tender parent and children
+  // for this operation; a webhook must never leave an orphan parent behind.
+  if (
+    operation.status === "reconciliation_required"
+    && operation.errorCode === "CANCELLATION_REVIEW"
+  ) {
+    const [reviewed] = await tx.update(paymentOperations).set({
+      providerObjectId: input.providerObjectId,
+      providerOrderId: input.providerOrderId ?? undefined,
+      errorClassification: "provider_unknown",
+      errorCode: "CANCELLATION_REVIEW",
+      completedAt: operation.completedAt ?? now,
+      updatedAt: now,
+    }).where(and(
+      eq(paymentOperations.organizationId, input.organizationId),
+      eq(paymentOperations.id, operation.id),
+      eq(paymentOperations.status, "reconciliation_required"),
+      or(
+        isNull(paymentOperations.providerObjectId),
+        eq(paymentOperations.providerObjectId, input.providerObjectId),
+      ),
+      input.providerOrderId == null
+        ? isNull(paymentOperations.providerOrderId)
+        : or(
+          isNull(paymentOperations.providerOrderId),
+          eq(paymentOperations.providerOrderId, input.providerOrderId),
+        ),
+    )).returning();
+    return reviewed ?? operation;
+  }
 
   let rows: PaymentOperationLinkedPaymentInput[] = [];
   if (operation.operationType === "interactive_charge") {
@@ -1927,26 +1916,24 @@ export async function finalizeChargeFromWebhookEvidenceInTransaction(
       eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId),
       eq(paymentOperationRosterSnapshotItems.leagueId, operation.leagueId ?? 0),
     )).orderBy(asc(paymentOperationRosterSnapshotItems.allocationIndex));
-    rows = standingRows.map((row) => ({
-      allocationIndex: row.item.allocationIndex,
+    const first = standingRows[0];
+    rows = first ? [{
+      allocationIndex: 0,
       values: {
-        bowlerId: row.obligation.payerBowlerId,
+        organizationId: input.organizationId,
+        bowlerId: first.obligation.payerBowlerId,
         leagueId: operation.leagueId ?? 0,
-        amount: row.item.amountMinor,
-        lineageAmount: null,
-        prizeFundAmount: null,
-        weekOf: row.obligation.dueAt,
+        amount: operation.amountMinor,
         status: "paid" as const,
         type: providerNameToPaymentType(operation.providerName),
         providerPaymentId: input.providerObjectId,
         receiptUrl: input.receiptUrl ?? undefined,
         receiptNumber: input.receiptNumber ?? undefined,
         receiptEmailMissing: false,
-        combinedChargeGroupId: binding.collectionMode === "double_pay" ? operation.id : null,
         paidByUserId: operation.authorizingUserId,
         notes: "Roster standing automatic payment",
       },
-    }));
+    }] : [];
     if (rows.length === 0) throw new PaymentOperationImmutableMismatchError();
   }
 
@@ -2045,7 +2032,7 @@ export async function finalizeRefundFromWebhookEvidenceInTransaction(
   ) throw new PaymentOperationImmutableMismatchError();
 
   const [currentPayment] = await tx.select().from(payments)
-    .where(eq(payments.id, snapshot.paymentId)).limit(1).for("update");
+    .where(and(eq(payments.id, snapshot.paymentId), eq(payments.organizationId, input.organizationId))).limit(1).for("update");
   if (operation.status === "succeeded") {
     if (
       operation.providerObjectId !== input.providerObjectId
@@ -2064,6 +2051,7 @@ export async function finalizeRefundFromWebhookEvidenceInTransaction(
     refundedAt: now,
   }).where(and(
     eq(payments.id, snapshot.paymentId),
+    eq(payments.organizationId, input.organizationId),
     eq(payments.leagueId, snapshot.leagueId),
     eq(payments.amount, snapshot.amountMinor),
     eq(payments.providerPaymentId, snapshot.providerPaymentId),
@@ -2389,33 +2377,33 @@ export async function reconcilePaymentOperationSuccess(
     const linkedRows = transitioned.operationType === "standing_autopay_charge" && (!input.paymentRows || input.paymentRows.length === 0)
       ? await deriveStandingPaymentRowsInTransaction(tx, { organizationId: input.organizationId, operationId: transitioned.id, providerPaymentId: input.providerObjectId, providerName: transitioned.providerName, actorUserId: transitioned.authorizingUserId })
       : input.paymentRows;
-    await insertLinkedPaymentRows(tx, input.organizationId, input.operationId, linkedRows);
-    if ((transitioned.operationType === "interactive_charge" || transitioned.operationType === "standing_autopay_charge") && transitioned.leagueId !== null) {
-      try {
-        await tx.transaction(async (finalizerTx) => {
+    try {
+      await tx.transaction(async (finalizerTx) => {
+        await insertLinkedPaymentRows(finalizerTx, input.organizationId, input.operationId, linkedRows);
+        if ((transitioned.operationType === "interactive_charge" || transitioned.operationType === "standing_autopay_charge") && transitioned.leagueId !== null) {
           await finalizeRosterSnapshotInTransaction(finalizerTx, {
             organizationId: input.organizationId,
-            leagueId: transitioned.leagueId as number,
+            leagueId: transitioned.leagueId,
             operationId: transitioned.id,
             now,
             actorUserId: transitioned.authorizingUserId,
           });
-        });
-      } catch (error) {
-        if (!isRosterSnapshotFinalizationError(error)) throw error;
-        const [reviewed] = await tx.update(paymentOperations).set({
-          status: "reconciliation_required",
-          nextAttemptAt: null,
-          errorClassification: "internal",
-          errorCode: error.code,
-          updatedAt: now,
-        }).where(and(
-          eq(paymentOperations.organizationId, input.organizationId),
-          eq(paymentOperations.id, transitioned.id),
-          eq(paymentOperations.status, "succeeded"),
-        )).returning();
-        return reviewed ?? transitioned;
-      }
+        }
+      });
+    } catch (error) {
+      if (!isRosterSnapshotFinalizationError(error)) throw error;
+      const [reviewed] = await tx.update(paymentOperations).set({
+        status: "reconciliation_required",
+        nextAttemptAt: null,
+        errorClassification: "internal",
+        errorCode: error.code,
+        updatedAt: now,
+      }).where(and(
+        eq(paymentOperations.organizationId, input.organizationId),
+        eq(paymentOperations.id, transitioned.id),
+        eq(paymentOperations.status, "succeeded"),
+      )).returning();
+      return reviewed ?? transitioned;
     }
     return transitioned;
   });
@@ -2443,9 +2431,7 @@ export async function recordExpiredPaymentOperationAttemptExhausted(input: {
   organizationId: number;
   operationId: string;
   now?: Date;
-  failedPaymentRows?: PaymentOperationLinkedPaymentInput[];
 }): Promise<PaymentOperation | undefined> {
-  validateFailedPaymentRows(input.failedPaymentRows);
   const now = toIso(input.now ?? new Date(), "now");
   return db.transaction(async (tx) => {
     await lockCanonicalMutationScope(tx, input.organizationId, input.operationId);

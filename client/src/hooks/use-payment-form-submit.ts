@@ -7,12 +7,10 @@ import { makeApiError, isProviderNotConfiguredError, providerNotConfiguredToast 
 import { sanitizePaymentErrorMessage } from "@/lib/payment-user-error";
 import { beginPaymentIntent, clearPaymentIntent, paymentRequestHeaders, paymentRequestWithRecovery, assertRosterPaymentSucceeded } from "@/lib/payment-request-identity";
 import { tokenizeCard } from "@/lib/square";
-import type { InteractiveOccurrenceReadiness } from "@/components/interactive-occurrence-selector";
 import type { InsertPaymentInput, InsertPayment } from "@shared/schema";
 import type { SquareCard } from "@/hooks/use-square-payment";
 
 type PaymentCard = SquareCard | null;
-type InteractiveOccurrenceSelection = { obligationId: string; amountMinor: number };
 
 interface UsePaymentFormSubmitOptions {
   form: UseFormReturn<InsertPaymentInput, unknown, InsertPayment>;
@@ -24,12 +22,6 @@ interface UsePaymentFormSubmitOptions {
   buyerEmail?: string;
   locationId?: number | null;
   organizationId?: number | null;
-  // Kept in the public hook shape while the form is collapsed to one
-  // canonical path. Every league now uses exact occurrence obligations.
-  canonical?: boolean;
-  occurrenceAllocations?: InteractiveOccurrenceSelection[];
-  occurrenceQuoteFingerprint?: string;
-  occurrenceReadiness?: InteractiveOccurrenceReadiness;
   allowStoreCard?: boolean;
 }
 
@@ -49,8 +41,6 @@ export function usePaymentFormSubmit({
   onClose,
   buyerEmail,
   locationId,
-  occurrenceAllocations,
-  occurrenceReadiness,
   allowStoreCard = false,
 }: UsePaymentFormSubmitOptions) {
   const { toast } = useToast();
@@ -60,29 +50,21 @@ export function usePaymentFormSubmit({
   return async (data: InsertPayment) => {
     try {
       setPaymentError(null);
-      if (occurrenceReadiness !== undefined && occurrenceReadiness !== "ready") {
-        throw new Error(occurrenceReadiness === "error"
-          ? "Current payment obligations could not be loaded. Refresh before paying."
-          : "Select obligations totaling the payment amount before paying.");
-      }
-      const allocations = occurrenceAllocations ?? [];
-      if (allocations.length === 0) throw new Error("Select one or more exact payment obligations before recording payment.");
-      const obligationIds = [...new Set(allocations.map((row) => row.obligationId))];
       const quoteResponse = await csrfFetch(`/api/financials/leagues/${data.leagueId}/interactive-obligation-quote/2`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ obligationIds, allocations, payerBowlerId: data.bowlerId }),
+        body: JSON.stringify({ amountMinor: data.amount, payerBowlerId: data.bowlerId }),
       });
       const quoteBody = await quoteResponse.json().catch(() => ({}));
       if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw makeApiError(quoteBody, quoteResponse.status, "Payment quote is unavailable");
-      const paymentScope = `admin:${data.leagueId}:${obligationIds.join(",")}:${quoteBody.data.fingerprint}:${data.type}:${cardMode}`;
+      const paymentScope = `admin:${data.leagueId}:${data.bowlerId}:${data.amount}:${quoteBody.data.fingerprint}:${data.type}:${cardMode}`;
       const requestKey = beginPaymentIntent(paymentScope);
 
       if (data.type === "cash" || data.type === "check") {
         const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${data.leagueId}/canonical/manual-record/1`, {
           method: "POST",
           headers: paymentRequestHeaders(requestKey),
-          body: JSON.stringify({ obligationIds, allocations, type: data.type, checkNumber: data.checkNumber, notes: data.notes ?? null, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }),
+          body: JSON.stringify({ amountMinor: data.amount, payerBowlerId: data.bowlerId, type: data.type, checkNumber: data.checkNumber, notes: data.notes ?? null, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }),
         }));
         const body = await response.json();
         if (!response.ok) throw makeApiError(body, response.status, "Failed to record payment");
@@ -95,7 +77,7 @@ export function usePaymentFormSubmit({
         const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${data.leagueId}/interactive-obligation-charge/2`, {
           method: "POST",
           headers: paymentRequestHeaders(requestKey),
-          body: JSON.stringify({ obligationIds, allocations, payerBowlerId: quoteBody.data.payerBowlerId ?? data.bowlerId, sourceId, sourceKind: cardMode === "saved" ? "saved_card" : "new_card", buyerEmail: buyerEmail?.trim() || null, storeCard, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }),
+          body: JSON.stringify({ amountMinor: data.amount, payerBowlerId: quoteBody.data.payerBowlerId ?? data.bowlerId, sourceId, sourceKind: cardMode === "saved" ? "saved_card" : "new_card", buyerEmail: buyerEmail?.trim() || null, storeCard, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }),
         }), data.leagueId);
         const body = await response.json();
         if (!response.ok) throw makeApiError(body, response.status, "Failed to process payment");

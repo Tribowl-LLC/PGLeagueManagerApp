@@ -1,6 +1,5 @@
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import type { InteractiveOccurrenceReadiness } from "@/components/interactive-occurrence-selector";
 
 interface PaymentFormActionsProps {
   onCancel: () => void;
@@ -14,7 +13,6 @@ interface PaymentFormActionsProps {
   selectedBowlerId: number | null | undefined;
   bowlerHasEmail: boolean;
   receiptEmail: string;
-  occurrenceReadiness?: InteractiveOccurrenceReadiness;
 }
 
 export function PaymentFormActions({
@@ -29,7 +27,6 @@ export function PaymentFormActions({
   selectedBowlerId,
   bowlerHasEmail,
   receiptEmail,
-  occurrenceReadiness = 'loading',
 }: PaymentFormActionsProps) {
   return (
     <div className="flex justify-end gap-x-2">
@@ -54,7 +51,6 @@ export function PaymentFormActions({
           // BUYER_EMAIL_REQUIRED; mirrored here so the user
           // never sees an avoidable round-trip.
           (paymentType === "credit_card" && !!selectedBowlerId && !bowlerHasEmail && !receiptEmail.trim())
-          || (paymentType === "credit_card" && occurrenceReadiness !== 'ready')
         }
       >
         {isSubmitting ? (

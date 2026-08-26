@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { and, asc, desc, eq, gte, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lte, lt, ne, or, sql } from "drizzle-orm";
 import {
   autopayConsentPartners,
   autopayConsents,
@@ -212,6 +212,37 @@ async function eligibleRows(
   return result;
 }
 
+/** Standing collection is deliberately current-only. Any older unpaid or
+ * reserved capacity must be settled by a one-time FIFO tender first. */
+async function assertNoStandingArrears(
+  tx: StandingTx,
+  input: { organizationId: number; leagueId: number; payerBowlerIds: number[]; activationAt: string; cutoffAt: string },
+): Promise<void> {
+  const rows = await tx.select({ obligation: paymentObligations }).from(paymentObligations).innerJoin(occurrencePaymentResponsibilities, and(
+    eq(paymentObligations.responsibilityId, occurrencePaymentResponsibilities.id),
+    eq(occurrencePaymentResponsibilities.organizationId, input.organizationId),
+    eq(occurrencePaymentResponsibilities.leagueId, input.leagueId),
+    eq(occurrencePaymentResponsibilities.state, "active"),
+  )).where(and(
+    eq(paymentObligations.organizationId, input.organizationId),
+    eq(paymentObligations.leagueId, input.leagueId),
+    inArray(paymentObligations.payerBowlerId, input.payerBowlerIds),
+    inArray(paymentObligations.state, ["open", "partially_settled"] as const),
+    lt(paymentObligations.dueAt, input.cutoffAt),
+  )).for("update");
+  for (const row of rows) {
+    const [allocated] = await tx.select({ total: sql<number>`COALESCE(SUM(${paymentAllocations.amountMinor}), 0)` }).from(paymentAllocations).where(and(
+      eq(paymentAllocations.organizationId, input.organizationId), eq(paymentAllocations.leagueId, input.leagueId), eq(paymentAllocations.obligationId, row.obligation.id), eq(paymentAllocations.state, "active"),
+    ));
+    const [reserved] = await tx.select({ total: sql<number>`COALESCE(SUM(${paymentOperationRosterSnapshotItems.amountMinor}), 0)` }).from(paymentOperationRosterSnapshotItems).where(and(
+      eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId), eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId), eq(paymentOperationRosterSnapshotItems.obligationId, row.obligation.id), eq(paymentOperationRosterSnapshotItems.state, "reserved"),
+    ));
+    if (row.obligation.amountMinor - Number(allocated?.total ?? 0) > 0 || Number(reserved?.total ?? 0) > 0) {
+      throw new StandingAutopayError("ARREARS_REQUIRE_ONE_TIME_FIFO", "Standing automatic payment is blocked until older unpaid obligations are settled by a one-time FIFO payment", 409);
+    }
+  }
+}
+
 /** A competing cutoff may temporarily own every remaining cent. It is not a
  * durable empty decision: once that operation is canceled/reconciled, the
  * same cutoff must be discoverable again. */
@@ -352,7 +383,8 @@ export async function activateStandingAutopayConsent(input: { organizationId: nu
   const providerLocationId = await providerLocationIdentity(provider);
   if (!provider.validateCardId(input.request.sourceId) || !provider.hasCardOnFile) throw new StandingAutopayError("PAYMENT_METHOD_INVALID", "The saved payment method is unavailable", 422);
   if (!(await provider.hasCardOnFile(customerId, input.request.sourceId))) throw new StandingAutopayError("PAYMENT_METHOD_NOT_OWNED", "The saved payment method is unavailable", 403);
-  const partnerIds = [...new Set(input.request.partnerBowlerIds)].filter((id) => id !== input.payerBowlerId).sort((a, b) => a - b);
+  if (input.request.partnerBowlerIds.length > 0) throw new StandingAutopayError("PARTNERS_NOT_SUPPORTED", "Automatic payment applies to one bowler; enter shared payments separately", 422);
+  const partnerIds: number[] = [];
   const commandFingerprint = digest("lvstandingcommand:v1:", { leagueId: input.leagueId, payerBowlerId: input.payerBowlerId, sourceId: input.request.sourceId, customerId, providerName, providerLocationId, partnerIds });
   const result = await db.transaction(async (tx) => {
     await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
@@ -436,6 +468,7 @@ export async function quoteStandingAutopay(input: { organizationId: number; leag
          AND paired_group.state = 'published'
     )`)).orderBy(asc(paymentObligations.dueAt)).limit(1);
     const cutoffAt = next?.dueAt ?? null;
+    if (cutoffAt) await assertNoStandingArrears(tx, { organizationId: input.organizationId, leagueId: input.leagueId, payerBowlerIds: payerIds, activationAt, cutoffAt: new Date(cutoffAt).toISOString() });
     const group = cutoffAt ? await groupForCutoff(tx, { organizationId: input.organizationId, leagueId: input.leagueId, cutoffAt }) : { mode: "weekly" as const, groupId: null, groupRevision: null, groupFingerprint: null, triggerOccurrenceId: "", triggerOccurrenceRevision: 0, pairedOccurrenceId: null, triggerMemberId: null, pairedMemberId: null, occurrenceIds: [] };
     if (group.suppressed) {
       return { contractVersion: "standing-autopay-quote/1" as const, organizationId: input.organizationId, leagueId: input.leagueId, consentId: consent.id, consentVersion: consent.consentVersion, cutoffAt: null, collectionMode: null, amountMinor: 0, obligations: [], fingerprint: digest("lvstandingquote:v1:", { consentId: consent.id, consentVersion: consent.consentVersion, suppressedOccurrenceId: group.triggerOccurrenceId }) };
@@ -464,6 +497,7 @@ export async function prepareStandingAutopayCutoff(input: { organizationId: numb
     if (!(await activeMembership(tx, input.organizationId, input.leagueId, payerIds))) throw new StandingAutopayError("BOWLER_NOT_IN_LEAGUE", "A standing payer is no longer active in the league", 409);
     const activationAt = new Date(consent.activatedAt).toISOString();
     const group = await groupForCutoff(tx, { organizationId: input.organizationId, leagueId: input.leagueId, cutoffAt });
+    await assertNoStandingArrears(tx, { organizationId: input.organizationId, leagueId: input.leagueId, payerBowlerIds: payerIds, activationAt, cutoffAt });
     if (group.suppressed) {
       const key = `${consent.id}:${consent.consentVersion}:${cutoffAt}:${group.triggerOccurrenceRevision}`;
       const fp = digest(CUTOFF_FP_PREFIX, { consentId: consent.id, consentVersion: consent.consentVersion, cutoffAt, blocked: "paired_occurrence_requires_trigger", pairedOccurrenceId: group.triggerOccurrenceId, pairedMemberId: group.pairedMemberId });
@@ -603,7 +637,9 @@ export async function getStandingAutopayExecutionSnapshot(input: { organizationI
 export async function standingPaymentRows(input: { organizationId: number; operationId: string; providerPaymentId: string; providerName: string; actorUserId: number | null; receiptUrl?: string | null; receiptNumber?: string | null }) {
   const snapshot = await getStandingAutopayExecutionSnapshot(input);
   if (!snapshot) throw new StandingAutopayError("SNAPSHOT_NOT_FOUND", "The standing operation snapshot is unavailable", 409);
-  return snapshot.items.map((row) => ({ allocationIndex: row.item.allocationIndex, values: { bowlerId: row.obligation.payerBowlerId, leagueId: snapshot.operation.leagueId ?? snapshot.binding.leagueId, amount: row.item.amountMinor, lineageAmount: null, prizeFundAmount: null, weekOf: row.obligation.dueAt, status: "paid" as const, type: snapshot.operation.providerName === "square" ? "square" as const : "credit_card" as const, providerPaymentId: input.providerPaymentId, receiptUrl: input.receiptUrl ?? undefined, receiptNumber: input.receiptNumber ?? undefined, receiptEmailMissing: false, combinedChargeGroupId: snapshot.binding.collectionMode === "double_pay" ? snapshot.operation.id : null, paidByUserId: input.actorUserId, notes: "Roster standing automatic payment" } }));
+  const first = snapshot.items[0];
+  if (!first) return [];
+  return [{ allocationIndex: 0, values: { organizationId: input.organizationId, bowlerId: first.obligation.payerBowlerId, leagueId: snapshot.operation.leagueId ?? snapshot.binding.leagueId, amount: snapshot.operation.amountMinor, status: "paid" as const, type: snapshot.operation.providerName === "square" ? "square" as const : "credit_card" as const, providerPaymentId: input.providerPaymentId, receiptUrl: input.receiptUrl ?? undefined, receiptNumber: input.receiptNumber ?? undefined, receiptEmailMissing: false, paidByUserId: input.actorUserId, notes: "Roster standing automatic payment" } }];
 }
 
 export async function validateStandingConsentForDispatchInTransaction(tx: StandingTx, input: { organizationId: number; leagueId: number; operationId: string; leagueIdAlreadyLocked?: boolean }) {

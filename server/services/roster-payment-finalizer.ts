@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import {
   occurrencePaymentResponsibilities,
   paymentAllocations,
@@ -145,10 +145,11 @@ export async function finalizeRosterSnapshotInTransaction(
   }
 
   const rows = await tx.select().from(payments).where(and(
+    eq(payments.organizationId, input.organizationId),
     eq(payments.leagueId, input.leagueId),
     eq(payments.paymentOperationId, operation.id),
-  )).orderBy(asc(payments.paymentOperationAllocationIndex), asc(payments.id)).for("update");
-  if (rows.length !== items.length) {
+  )).orderBy(asc(payments.id)).for("update");
+  if (rows.length !== 1 || rows[0]?.amount !== operation.amountMinor || rows[0]?.organizationId !== input.organizationId) {
     throw new RosterSnapshotFinalizationError("PAYMENT_EVIDENCE_INCOMPLETE", "Provider payment evidence is incomplete for the roster snapshot");
   }
 
@@ -195,8 +196,10 @@ export async function finalizeRosterSnapshotInTransaction(
     if (item.state === "released") throw new RosterSnapshotFinalizationError("RESERVATION_RELEASED", "The provider payment reservation was released before completion");
     if (item.state === "finalized") continue;
     const obligation = obligations.find((row) => row.id === item.obligationId);
-    const payment = rows.find((row) => row.paymentOperationAllocationIndex === item.allocationIndex);
-    if (!obligation || !payment || payment.amount !== item.amountMinor || payment.bowlerId !== obligation.payerBowlerId
+    const payment = rows[0];
+    if (!obligation || !payment || payment.amount !== operation.amountMinor
+      || (snapshot.snapshotKind === "interactive" && payment.bowlerId !== snapshot.payerBowlerId)
+      || payment.organizationId !== input.organizationId
       || payment.leagueId !== input.leagueId || payment.providerPaymentId !== operation.providerObjectId) {
       throw new RosterSnapshotFinalizationError("PAYMENT_EVIDENCE_MISMATCH", "Provider payment evidence does not match the immutable roster reservation");
     }
@@ -252,6 +255,17 @@ export async function finalizeRosterSnapshotInTransaction(
       eq(paymentOperationRosterSnapshotItems.state, "reserved"),
     ));
     created.push(allocation.id);
+  }
+  const [activeTotals] = await tx.select({ amountMinor: sql<number>`COALESCE(SUM(${paymentAllocations.amountMinor}), 0)` })
+    .from(paymentAllocations)
+    .where(and(
+      eq(paymentAllocations.organizationId, input.organizationId),
+      eq(paymentAllocations.leagueId, input.leagueId),
+      eq(paymentAllocations.paymentId, rows[0]?.id ?? 0),
+      eq(paymentAllocations.state, "active"),
+    ));
+  if (Number(activeTotals?.amountMinor ?? 0) !== rows[0]?.amount) {
+    throw new RosterSnapshotFinalizationError("PAYMENT_ALLOCATION_TOTAL_MISMATCH", "Active payment allocations must equal the tender total");
   }
   return { finalized: true, allocationIds: created };
 }

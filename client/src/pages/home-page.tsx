@@ -1,10 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
 import { Layout } from "@/components/layout";
-import { Trophy, Users, Activity, ArrowUpRight, DollarSign } from "lucide-react";
+import { Trophy, Users, Activity, ArrowUpRight } from "lucide-react";
 import { Link } from "wouter";
 import type { League, Payment, BowlerLeague, ApiResponse, Organization, User } from "@shared/schema";
 import type { CanonicalDuePastDueResponseV2 } from "@shared/roster-payment-contract";
-import { getPaymentSummary } from "@/lib/financial-utils";
 import { PastDueBowlersSection } from "@/components/past-due-bowlers-section";
 import { formatCurrency } from "@/lib/utils";
 import { ErrorBoundary } from "@/components/error-boundary";
@@ -145,9 +144,6 @@ export default function HomePage() {
   const activeBowlers = financialPopulationKeys.size || activeBowlerIds.size;
   const totalLeagues = activeLeagueIds.size;
 
-  const { paidPayments } = getPaymentSummary(payments);
-  const totalLineagePaid = paidPayments.reduce((sum, p) => sum + (p.lineageAmount ?? 0), 0);
-  const totalPrizeFundPaid = paidPayments.reduce((sum, p) => sum + (p.prizeFundAmount ?? 0), 0);
 
   const pastDueBowlerIds = new Set<number>();
   const reviewRequiredBowlerIds = new Set<string>();
@@ -236,27 +232,6 @@ export default function HomePage() {
                   <div className="text-xs font-medium text-emerald-600 flex items-center">
                     <ArrowUpRight className="size-3 mr-0.5" />
                   </div>
-                </div>
-              </div>
-            </Link>
-            <Link href="/payments">
-              <div className="bg-white p-3.5 border border-slate-200 rounded-lg shadow-sm hover:shadow-md transition-shadow cursor-pointer">
-                <div className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1.5">
-                  Lineage Collected
-                </div>
-                <div className="flex items-end justify-between">
-                  <div className="text-2xl font-bold text-slate-900">{formatCurrency(totalLineagePaid)}</div>
-                </div>
-              </div>
-            </Link>
-            <Link href="/payments">
-              <div className="bg-white p-3.5 border border-slate-200 rounded-lg shadow-sm hover:shadow-md transition-shadow cursor-pointer">
-                <div className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1.5">
-                  Prize Fund
-                </div>
-                <div className="flex items-end justify-between">
-                  <div className="text-2xl font-bold text-slate-900">{formatCurrency(totalPrizeFundPaid)}</div>
-                  <DollarSign className="size-3.5 text-slate-400 mb-1" />
                 </div>
               </div>
             </Link>

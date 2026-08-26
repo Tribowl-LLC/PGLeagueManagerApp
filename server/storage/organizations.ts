@@ -34,6 +34,7 @@ import {
   accountActionRequests,
   paymentDisputes,
   paymentOperations,
+  refundPaymentOperationSnapshots,
   teamPaymentSlots,
   teamPaymentSlotRevisions,
   teamPaymentPolicies,
@@ -41,6 +42,8 @@ import {
   occurrencePaymentResponsibilities,
   paymentObligations,
   paymentAllocations,
+  payments,
+  paymentVoids,
   autopayConsents,
   autopayConsentPartners,
   financialCommands,
@@ -289,7 +292,10 @@ export async function deleteOrganization(id: number): Promise<void> {
     // exception; ordinary mutations remain append-only/locked.
     await tx.delete(paymentOperationRosterSnapshotItems).where(eq(paymentOperationRosterSnapshotItems.organizationId, id));
     await tx.delete(paymentOperationRosterSnapshots).where(eq(paymentOperationRosterSnapshots.organizationId, id));
+    await tx.delete(paymentVoids).where(eq(paymentVoids.organizationId, id));
     await tx.delete(paymentAllocations).where(eq(paymentAllocations.organizationId, id));
+    await tx.delete(refundPaymentOperationSnapshots).where(sql`${refundPaymentOperationSnapshots.paymentId} IN (SELECT id FROM ${payments} WHERE ${payments.organizationId} = ${id})`);
+    await tx.delete(payments).where(eq(payments.organizationId, id));
     await tx.delete(paymentObligations).where(eq(paymentObligations.organizationId, id));
     await tx.delete(occurrencePaymentResponsibilities).where(eq(occurrencePaymentResponsibilities.organizationId, id));
     await tx.delete(teamPaymentPolicyRevisions).where(eq(teamPaymentPolicyRevisions.organizationId, id));

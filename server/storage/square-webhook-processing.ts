@@ -194,6 +194,7 @@ async function findRefundOperationId(
       eq(paymentOperations.amountMinor, event.amountMinor),
       eq(paymentOperations.currency, event.currency),
       eq(refundPaymentOperationSnapshots.locationId, row.locationId),
+      eq(payments.organizationId, row.organizationId),
       eq(payments.providerPaymentId, event.providerPaymentId),
     )).limit(2);
   if (candidates.length > 1) return "ambiguous";
@@ -294,10 +295,9 @@ async function findDisputeOperation(
   const allocations = await tx.select({
     amount: payments.amount,
     providerPaymentId: payments.providerPaymentId,
-  }).from(payments).where(eq(payments.paymentOperationId, operation.id)).limit(26);
+  }).from(payments).where(and(eq(payments.organizationId, row.organizationId), eq(payments.paymentOperationId, operation.id))).limit(2);
   if (
-    allocations.length === 0
-    || allocations.length > 25
+    allocations.length !== 1
     || allocations.some((payment) => payment.providerPaymentId !== event.providerPaymentId)
     || allocations.reduce((sum, payment) => sum + payment.amount, 0) !== operation.amountMinor
   ) {

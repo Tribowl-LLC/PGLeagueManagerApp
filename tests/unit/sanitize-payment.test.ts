@@ -28,12 +28,11 @@ const SENSITIVE_NAME_ALLOWLIST = new Set<string>([
 // nullable-only stripe columns) back via `Object.assign` below.
 function makeFullyPopulatedPayment(): Payment {
   const parsed = insertPaymentSchema.parse({
+    organizationId: 1,
     bowlerId: 7,
     leagueId: 11,
     amount: 2500,
-    lineageAmount: 500,
-    prizeFundAmount: 300,
-    weekOf: '2024-01-01T00:00:00.000Z',
+    currency: 'USD',
     status: 'paid',
     type: 'square',
     providerPaymentId: 'sq-payment-id',
@@ -83,9 +82,8 @@ describe('sanitizePayment', () => {
     expect(sanitized.bowlerId).toBe(7);
     expect(sanitized.leagueId).toBe(11);
     expect(sanitized.amount).toBe(2500);
-    expect(sanitized.lineageAmount).toBe(500);
-    expect(sanitized.prizeFundAmount).toBe(300);
-    expect(sanitized.weekOf).toBe('2024-01-01T00:00:00.000Z');
+    expect(sanitized.organizationId).toBe(1);
+    expect(sanitized.currency).toBe('USD');
     expect(sanitized.status).toBe('paid');
     expect(sanitized.type).toBe('square');
     expect(sanitized.createdAt).toBe('2024-01-01T00:00:00.000Z');

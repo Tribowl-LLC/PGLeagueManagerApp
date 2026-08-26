@@ -13,7 +13,7 @@ import { usePaymentProvider } from "@/hooks/use-payment-provider";
 import { useWalletPayments } from "@/hooks/use-wallet-payments";
 import { useSavedCardDefault } from "@/hooks/use-saved-card-default";
 import { Form } from "@/components/ui/form";
-import { insertPaymentSchema, DEFAULT_TIMEZONE, DEFAULT_WEEKLY_FEE_CENTS } from "@shared/schema";
+import { insertPaymentSchema, DEFAULT_WEEKLY_FEE_CENTS } from "@shared/schema";
 import type { InsertPaymentInput, InsertPayment, Bowler, League, User, ApiResponse } from "@shared/schema";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle } from "lucide-react";
@@ -34,7 +34,6 @@ import { PaymentCheckNumberField } from "@/components/payment-check-number-field
 import { PaymentReceiptEmailField } from "@/components/payment-receipt-email-field";
 import { PaymentProviderNotConfiguredAlert } from "@/components/payment-provider-not-configured-alert";
 import { PaymentFormActions } from "@/components/payment-form-actions";
-import { InteractiveOccurrenceSelector, type InteractiveOccurrenceReadiness } from "@/components/interactive-occurrence-selector";
 
 interface SavedCard {
   id: string;
@@ -64,9 +63,6 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
   const [squareLoadFailed, setSquareLoadFailed] = useState(false);
   const [cardMode, setCardMode] = useState<'new' | 'saved'>('new');
   const [selectedSavedCardId, setSelectedSavedCardId] = useState<string>('');
-  const [occurrenceAllocations, setOccurrenceAllocations] = useState<{ obligationId: string; amountMinor: number }[]>([]);
-  const [occurrenceQuoteFingerprint, setOccurrenceQuoteFingerprint] = useState<string | undefined>();
-  const [occurrenceReadiness, setOccurrenceReadiness] = useState<InteractiveOccurrenceReadiness>('loading');
   const [receiptEmail, setReceiptEmail] = useState<string>('');
   const initializationAttempted = useRef(false);
 
@@ -91,7 +87,6 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
     resolver: zodResolver(insertPaymentSchema),
     defaultValues: {
       amount: DEFAULT_WEEKLY_FEE_CENTS,
-      weekOf: new Date().toISOString(),
       status: "paid",
       type: "cash",
       leagueId: leagueId,
@@ -282,15 +277,13 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
     }
     const overrideEmail = !selected?.email && trimmedReceiptEmail ? trimmedReceiptEmail : undefined;
     try {
-      const exactObligationIds = [...new Set((occurrenceAllocations ?? []).map((row) => row.obligationId))];
       if (!leagueInfo || leagueInfo.id !== currentLeagueId) throw new Error("Payment league context is unavailable.");
-      if (exactObligationIds.length === 0) throw new Error("Wallet payments require exact obligations.");
-      const quoteResponse = await csrfFetch(`/api/financials/leagues/${currentLeagueId}/interactive-obligation-quote/2`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ obligationIds: exactObligationIds, allocations: occurrenceAllocations }) });
+      const quoteResponse = await csrfFetch(`/api/financials/leagues/${currentLeagueId}/interactive-obligation-quote/2`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ amountMinor: amount }) });
       const quoteBody = await quoteResponse.json();
-      if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw new Error(quoteBody.error?.message || "Exact payment obligations are unavailable.");
-      const paymentScope = `admin-wallet:${currentLeagueId}:${exactObligationIds.join(",")}:${quoteBody.data.fingerprint}`;
+      if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw new Error(quoteBody.error?.message || "Payment allocation is unavailable.");
+      const paymentScope = `admin-wallet:${currentLeagueId}:${bowlerId}:${amount}:${quoteBody.data.fingerprint}`;
       const requestKey = walletRequestKeyRef.current ?? beginPaymentIntent(paymentScope);
-      const exactResponse = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${currentLeagueId}/interactive-obligation-charge/2`, { method: "POST", headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" }, body: JSON.stringify({ obligationIds: exactObligationIds, allocations: occurrenceAllocations, payerBowlerId: quoteBody.data.payerBowlerId ?? bowlerId, sourceId: token, sourceKind: "wallet", buyerEmail: overrideEmail ?? selected?.email ?? null, storeCard: false, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }) }), currentLeagueId);
+      const exactResponse = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${currentLeagueId}/interactive-obligation-charge/2`, { method: "POST", headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" }, body: JSON.stringify({ amountMinor: amount, payerBowlerId: quoteBody.data.payerBowlerId ?? bowlerId, sourceId: token, sourceKind: "wallet", buyerEmail: overrideEmail ?? selected?.email ?? null, storeCard: false, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }) }), currentLeagueId);
       const exactBody = await exactResponse.json();
       const rosterStatus = exactBody.data?.status ?? exactBody.status;
       if (!exactResponse.ok) {
@@ -319,16 +312,15 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
       setPaymentError(errorMessage);
       toast({ title: "Error", description: errorMessage, variant: "destructive" });
     }
-  }, [form, toast, queryClient, onClose, bowlers, receiptEmail, navigate, leagueInfo, occurrenceAllocations]);
+  }, [form, toast, queryClient, onClose, bowlers, receiptEmail, navigate, leagueInfo]);
 
   const beginWalletPayment = useCallback(() => {
     const values = form.getValues();
     if (!values.bowlerId || !values.leagueId || !values.amount) return;
-    const exactObligationIds = [...new Set((occurrenceAllocations ?? []).map((row) => row.obligationId))];
     walletRequestKeyRef.current = beginPaymentIntent(
-      `admin-wallet:${values.leagueId}:${exactObligationIds.join(",")}:${occurrenceQuoteFingerprint ?? ""}`,
+      `admin-wallet:${values.leagueId}:${values.bowlerId}:${values.amount}`,
     );
-  }, [form, occurrenceAllocations, occurrenceQuoteFingerprint]);
+  }, [form]);
 
   const {
     applePayAvailable,
@@ -344,8 +336,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
   } = useWalletPayments({
     locationId: leagueInfo?.locationId ?? null,
     amountCents: watchedAmount || 0,
-    enabled: open && paymentType === 'credit_card' && supportsWallets
-      && occurrenceReadiness === 'ready',
+    enabled: open && paymentType === 'credit_card' && supportsWallets,
     onPaymentStarted: beginWalletPayment,
     onTokenReceived: handleWalletPayment,
     onError: (error) => setPaymentError(error),
@@ -356,12 +347,6 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
       cleanupWallet();
     }
   }, [open, cleanupWallet]);
-
-  useEffect(() => {
-    setOccurrenceAllocations([]);
-    setOccurrenceQuoteFingerprint(undefined);
-    setOccurrenceReadiness(open && (paymentType === 'credit_card' || leagueInfo?.payingLineupSize != null) ? 'loading' : 'disabled');
-  }, [open, selectedBowlerId, leagueInfo?.id, leagueInfo?.payingLineupSize, paymentType]);
 
   // When the selected bowler has no email on file, capture one inline so
   // Square's hosted receipt still fires for this charge.
@@ -378,16 +363,8 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
     buyerEmail: !bowlerHasEmail ? receiptEmail : undefined,
     locationId: leagueInfo?.locationId ?? null,
     organizationId: leagueInfo?.organizationId,
-    canonical: true,
-    occurrenceAllocations,
-    occurrenceQuoteFingerprint,
-    occurrenceReadiness,
     allowStoreCard,
   });
-  const handleOccurrenceChange = useCallback((next: { obligationId: string; amountMinor: number }[], fingerprint?: string) => {
-    setOccurrenceAllocations(next);
-    setOccurrenceQuoteFingerprint(fingerprint);
-  }, []);
 
   return (
     <Dialog open={open} onOpenChange={(isOpen) => !isOpen && onClose()}>
@@ -407,18 +384,6 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
               </Alert>
             )}
             <PaymentFormFields form={form} bowlers={bowlers} />
-            {selectedBowlerId && leagueInfo && (paymentType === "credit_card" || leagueInfo.payingLineupSize != null) && (
-              <InteractiveOccurrenceSelector
-                leagueId={leagueInfo.id}
-                organizationId={leagueInfo.organizationId ?? undefined}
-                timezone={leagueInfo.timezone || DEFAULT_TIMEZONE}
-                amountMinor={watchedAmount || 0}
-                bowlerIds={[selectedBowlerId]}
-                enabled={open}
-                onChange={handleOccurrenceChange}
-                onReadinessChange={setOccurrenceReadiness}
-              />
-            )}
             <PaymentMethodTabs
               form={form}
               paymentType={paymentType}
@@ -479,7 +444,6 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
               selectedBowlerId={selectedBowlerId}
               bowlerHasEmail={bowlerHasEmail}
               receiptEmail={receiptEmail}
-              occurrenceReadiness={occurrenceReadiness}
             />
           </form>
         </Form>

@@ -547,12 +547,11 @@ describe('GET /api/bowlers/:id/details — ordinary payment privacy', () => {
     mockStorage.getTeamsByIds.mockResolvedValue([]);
     mockStorage.getPayments.mockResolvedValue([{
       id: 501,
+      organizationId: 1,
       bowlerId: 99,
       leagueId: 11,
       amount: 2500,
-      lineageAmount: null,
-      prizeFundAmount: null,
-      weekOf: '2038-01-01T00:00:00.000Z',
+      currency: 'USD',
       status: 'paid',
       type: 'square',
       checkNumber: null,

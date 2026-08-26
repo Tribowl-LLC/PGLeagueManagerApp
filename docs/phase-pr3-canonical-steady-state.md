@@ -17,10 +17,9 @@ Interactive and standing execution snapshots both use
 remain the exact reservation boundary for obligations. Interactive snapshots
 also retain the encrypted source/customer/email references, payer and
 location, direct-versus-order request shape, ordered catalog line items,
-per-allocation due timestamps, combined-charge group, required quote
-fingerprint, and full execution fingerprint. There is no redundant
-snapshot-level week; one operation may cover multiple obligations for the same
-payer across different occurrences.
+the required FIFO quote fingerprint, and full execution fingerprint. One
+operation may cover multiple obligations for the same payer across different
+occurrences and always creates one tender parent with allocation children.
 
 Interactive operations are created with their league and authorizing user
 already bound. Refunds are the only operation kind that may remain league- or

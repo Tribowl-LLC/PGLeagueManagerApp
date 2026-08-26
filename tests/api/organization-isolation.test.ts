@@ -1,9 +1,16 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { randomUUID } from 'node:crypto';
+import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../../server/db';
 import {
   bowlerLeagues,
   bowlers as bowlersTable,
+  leagueOccurrences,
+  leagueScheduleCommands,
+  occurrencePaymentResponsibilities,
+  paymentAllocations,
+  paymentObligations,
+  payments,
   teams as teamsTable,
   locations as locationsTable,
   teamPaymentSlots,
@@ -676,7 +683,7 @@ describe('Organization Isolation', () => {
       expect(orgBTeamId).not.toBeNull();
       const before = await apiGet<Team>(`/api/teams/${orgBTeamId}`, sessionB);
       expect(before.status).toBe(200);
-      const beforeName = (before.data.data as Team | undefined)?.name;
+      const beforeName = before.data.data?.name;
 
       const { status, data } = await apiPatch<Team>(
         `/api/teams/${orgBTeamId}`,
@@ -689,8 +696,8 @@ describe('Organization Isolation', () => {
       // Confirm via session B that no mutation actually landed.
       const after = await apiGet<Team>(`/api/teams/${orgBTeamId}`, sessionB);
       expect(after.status).toBe(200);
-      expect((after.data.data as Team | undefined)?.name).toBe(beforeName);
-      expect((after.data.data as Team | undefined)?.name).not.toBe('PWNED-by-org-A');
+      expect(after.data.data?.name).toBe(beforeName);
+      expect(after.data.data?.name).not.toBe('PWNED-by-org-A');
     });
 
     it('org A DELETE /api/teams/:id (org B team) → 403/404 and the team still exists', async () => {
@@ -743,7 +750,7 @@ describe('Organization Isolation', () => {
       expect(orgBBowlerId).not.toBeNull();
       const before = await apiGet<Bowler>(`/api/bowlers/${orgBBowlerId}`, sessionB);
       expect(before.status).toBe(200);
-      const beforeName = (before.data.data as Bowler | undefined)?.name;
+      const beforeName = before.data.data?.name;
 
       const { status, data } = await apiPatch<Bowler>(
         `/api/bowlers/${orgBBowlerId}`,
@@ -755,8 +762,8 @@ describe('Organization Isolation', () => {
 
       const after = await apiGet<Bowler>(`/api/bowlers/${orgBBowlerId}`, sessionB);
       expect(after.status).toBe(200);
-      expect((after.data.data as Bowler | undefined)?.name).toBe(beforeName);
-      expect((after.data.data as Bowler | undefined)?.name).not.toBe('PWNED-bowler-by-org-A');
+      expect(after.data.data?.name).toBe(beforeName);
+      expect(after.data.data?.name).not.toBe('PWNED-bowler-by-org-A');
     });
 
     it('org A DELETE /api/bowlers/:id (org B bowler) → 403/404 and the bowler still exists', async () => {
@@ -802,6 +809,13 @@ describe('Organization Isolation', () => {
     let orgBBowlerId: number | null = null;
     let orgBBowlerLeagueId: number | null = null;
     let orgBPaymentId: number | null = null;
+    let orgBPaymentAllocationId: string | null = null;
+    let orgBPaymentObligationId: string | null = null;
+    let orgBPaymentResponsibilityId: string | null = null;
+    let orgBPaymentOccurrenceId: string | null = null;
+    let orgBPaymentCommandId: string | null = null;
+    let orgBPaymentSlotId: string | null = null;
+    let orgBPaymentSlotCreated = false;
 
     beforeAll(async () => {
       // Need the org B league — this is set in the outermost beforeAll.
@@ -884,19 +898,127 @@ describe('Organization Isolation', () => {
       // Insert an org B payment so /api/payments?bowlerId|leagueId
       // filters against a real org B row that an attacker could try to
       // fish out cross-org.
-      if (orgBBowlerId != null && orgBLeagueId != null) {
-        const [row] = await db
-          .insert(paymentsTable)
-          .values({
-            bowlerId: orgBBowlerId,
-            leagueId: orgBLeagueId,
+      if (orgBBowlerId != null && orgBLeagueId != null && orgBTeamId != null && orgBLocationId != null) {
+        const organizationId = sessionB.user.organizationId;
+        if (organizationId == null) throw new Error('org B admin is missing organization scope');
+        const bowlerId = orgBBowlerId;
+        const leagueId = orgBLeagueId;
+        const teamId = orgBTeamId;
+        const locationId = orgBLocationId;
+        const [existingSlot] = await db.select({ id: teamPaymentSlots.id })
+          .from(teamPaymentSlots)
+          .where(and(
+            eq(teamPaymentSlots.organizationId, organizationId),
+            eq(teamPaymentSlots.leagueId, leagueId),
+            eq(teamPaymentSlots.teamId, teamId),
+          )).limit(1);
+        let slotId = existingSlot?.id;
+        if (!slotId) {
+          const [slot] = await db.insert(teamPaymentSlots).values({
+            organizationId,
+            leagueId,
+            teamId,
+            slotIndex: 0,
+            lineupSize: 3,
+            occupant: 'main',
+            mainBowlerId: orgBBowlerId,
+            recordedByUserId: sessionB.user.id,
+          }).returning({ id: teamPaymentSlots.id });
+          slotId = slot?.id;
+          orgBPaymentSlotCreated = true;
+        }
+        if (!slotId) throw new Error('org B payment fixture slot was not created');
+        orgBPaymentSlotId = slotId;
+        const commandId = randomUUID();
+        orgBPaymentCommandId = commandId;
+        const occurrenceStart = new Date(Date.UTC(2037, 1, (stamp % 20) + 1, 19, 0, 0)).toISOString();
+        await db.insert(leagueScheduleCommands).values({
+          id: commandId,
+          organizationId,
+          leagueId,
+          actorUserId: sessionB.user.id,
+          commandType: 'publish',
+          idempotencyKey: `org-isolation-payment-${stamp}`,
+          requestFingerprint: `org-isolation-payment-fingerprint-${stamp}`,
+        });
+        const [occurrence] = await db.insert(leagueOccurrences).values({
+          organizationId,
+          leagueId,
+          locationId,
+          generationKey: `org-isolation-payment-${stamp}`,
+          kind: 'regular',
+          status: 'scheduled',
+          lifecycle: 'published',
+          authoritativeLocalDate: occurrenceStart.slice(0, 10),
+          authoritativeLocalStartTime: '19:00:00',
+          timezone: 'UTC',
+          startAt: occurrenceStart,
+          selectedUtcOffsetMinutes: 0,
+          foldResolution: 'unambiguous',
+          resolverVersion: 'organization-isolation-test',
+          plannedOrdinal: stamp % 100000,
+          competitionNumber: stamp % 100000,
+          publishedAt: occurrenceStart,
+          publishedByUserId: sessionB.user.id,
+          publicationCommandId: commandId,
+          lastCommandId: commandId,
+        }).returning({ id: leagueOccurrences.id });
+        orgBPaymentOccurrenceId = occurrence.id;
+        const [responsibility] = await db.insert(occurrencePaymentResponsibilities).values({
+          organizationId,
+          leagueId,
+          occurrenceId: occurrence.id,
+          teamId,
+          slotId,
+          slotIndex: 0,
+          positionIndex: 0,
+          responsibilityKind: 'main',
+          mainBowlerId: bowlerId,
+          payerBowlerId: bowlerId,
+          policy: 'main_pays_full',
+          amountMinor: 1234,
+          currency: 'USD',
+          dueAt: occurrenceStart,
+          pastDueAt: occurrenceStart,
+          recordedByUserId: sessionB.user.id,
+        }).returning({ id: occurrencePaymentResponsibilities.id });
+        orgBPaymentResponsibilityId = responsibility.id;
+        const [obligation] = await db.insert(paymentObligations).values({
+          organizationId,
+          leagueId,
+          occurrenceId: occurrence.id,
+          responsibilityId: responsibility.id,
+          payerBowlerId: bowlerId,
+          amountMinor: 1234,
+          currency: 'USD',
+          dueAt: occurrenceStart,
+          pastDueAt: occurrenceStart,
+          createdByUserId: sessionB.user.id,
+        }).returning({ id: paymentObligations.id });
+        orgBPaymentObligationId = obligation.id;
+        const [payment] = await db.transaction(async (tx) => {
+          const [created] = await tx.insert(paymentsTable).values({
+            organizationId,
+            bowlerId,
+            leagueId,
             amount: 1234,
-            weekOf: new Date().toISOString(),
+            currency: 'USD',
             type: 'cash',
             notes: `Vitest #341 Payment ${stamp}`,
-          })
-          .returning({ id: paymentsTable.id });
-        orgBPaymentId = row?.id ?? null;
+          }).returning({ id: paymentsTable.id });
+          const [allocation] = await tx.insert(paymentAllocations).values({
+            organizationId,
+            leagueId,
+            paymentId: created.id,
+            obligationId: obligation.id,
+            amountMinor: 1234,
+            currency: 'USD',
+            recordedByUserId: sessionB.user.id,
+          }).returning({ id: paymentAllocations.id });
+          orgBPaymentAllocationId = allocation.id;
+          return [created] as const;
+        });
+        orgBPaymentId = payment?.id ?? null;
       }
     });
 
@@ -921,9 +1043,46 @@ describe('Organization Isolation', () => {
 
       if (orgBPaymentId != null) {
         const id = orgBPaymentId;
-        await tryRun(`payments:${id}`, () =>
-          db.delete(paymentsTable).where(eq(paymentsTable.id, id)),
-        );
+        await tryRun(`payment-evidence:${id}`, () => db.transaction(async (tx) => {
+          await tx.execute(sql`SELECT set_config('leaguevault.organization_teardown', 'on', true)`);
+          await tx.delete(paymentAllocations).where(eq(paymentAllocations.paymentId, id));
+          await tx.delete(paymentsTable).where(eq(paymentsTable.id, id));
+        }));
+      }
+      if (orgBPaymentObligationId != null) {
+        const id = orgBPaymentObligationId;
+        await tryRun(`payment_obligations:${id}`, () => db.transaction(async (tx) => {
+          await tx.execute(sql`SELECT set_config('leaguevault.organization_teardown', 'on', true)`);
+          await tx.delete(paymentObligations).where(eq(paymentObligations.id, id));
+        }));
+      }
+      if (orgBPaymentResponsibilityId != null) {
+        const id = orgBPaymentResponsibilityId;
+        await tryRun(`occurrence_payment_responsibilities:${id}`, () => db.transaction(async (tx) => {
+          await tx.execute(sql`SELECT set_config('leaguevault.organization_teardown', 'on', true)`);
+          await tx.delete(occurrencePaymentResponsibilities).where(eq(occurrencePaymentResponsibilities.id, id));
+        }));
+      }
+      if (orgBPaymentOccurrenceId != null) {
+        const id = orgBPaymentOccurrenceId;
+        await tryRun(`league_occurrences:${id}`, () => db.transaction(async (tx) => {
+          await tx.execute(sql`SELECT set_config('leaguevault.organization_teardown', 'on', true)`);
+          await tx.delete(leagueOccurrences).where(eq(leagueOccurrences.id, id));
+        }));
+      }
+      if (orgBPaymentCommandId != null) {
+        const id = orgBPaymentCommandId;
+        await tryRun(`league_schedule_commands:${id}`, () => db.transaction(async (tx) => {
+          await tx.execute(sql`SELECT set_config('leaguevault.organization_teardown', 'on', true)`);
+          await tx.delete(leagueScheduleCommands).where(eq(leagueScheduleCommands.id, id));
+        }));
+      }
+      if (orgBPaymentSlotCreated && orgBPaymentSlotId != null) {
+        const id = orgBPaymentSlotId;
+        await tryRun(`team_payment_slots:${id}`, () => db.transaction(async (tx) => {
+          await tx.execute(sql`SELECT set_config('leaguevault.organization_teardown', 'on', true)`);
+          await tx.delete(teamPaymentSlots).where(eq(teamPaymentSlots.id, id));
+        }));
       }
       if (orgBBowlerLeagueId != null) {
         const id = orgBBowlerLeagueId;

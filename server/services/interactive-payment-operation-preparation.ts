@@ -16,9 +16,6 @@ export interface InteractivePaymentAllocationInput {
   allocationIndex: number;
   bowlerId: number;
   amountMinor: number;
-  lineageAmountMinor: number | null;
-  prizeFundAmountMinor: number | null;
-  weekOf: string;
   notes: string | null;
   paidByUserId: number | null;
   obligationId: string;
@@ -43,7 +40,6 @@ export interface InteractivePaymentOperationPreparationInput {
   buyerEmail: string | null;
   storeCard: boolean;
   sourceKind: RosterOperationSourceKind;
-  combined: boolean;
   now?: Date;
   allocations: InteractivePaymentAllocationInput[];
   lineItems: Array<{
@@ -83,7 +79,6 @@ export function buildInteractivePaymentSnapshot(
     storeCard: input.storeCard,
     sourceKind: input.sourceKind,
     quoteFingerprint: input.quoteFingerprint,
-    combinedChargeGroupId: input.combined ? operation.id : null,
     allocations: input.allocations,
     lineItems: input.lineItems,
   };

@@ -70,29 +70,28 @@ function paymentRows(
   result: PaymentResult,
 ): PaymentOperationLinkedPaymentInput[] {
   if (!result.id) return [];
-  return snapshot.allocations.map((allocation) => ({
-    allocationIndex: allocation.allocationIndex,
+  const first = snapshot.allocations[0];
+  if (!first) return [];
+  // A provider transaction is one tender regardless of how many canonical
+  // obligations it settles. Allocations remain the internal breakdown.
+  return [{
+    allocationIndex: 0,
     values: {
-      bowlerId: allocation.bowlerId,
+      organizationId: operation.organizationId,
+      bowlerId: snapshot.payerBowlerId ?? first.bowlerId,
       leagueId: snapshot.leagueId,
-      amount: allocation.amountMinor,
-      lineageAmount: allocation.lineageAmountMinor,
-      prizeFundAmount: allocation.prizeFundAmountMinor,
-      weekOf: allocation.weekOf,
+      amount: operation.amountMinor,
       status: "paid" as const,
       type: providerNameToPaymentType(snapshot.providerName),
       providerPaymentId: result.id,
       receiptUrl: result.receiptUrl,
       receiptNumber: result.receiptNumber,
       receiptEmailMissing: snapshot.providerName === "square" && snapshot.buyerEmail === null,
-      combinedChargeGroupId: snapshot.combinedChargeGroupId,
-      // payments.idempotency_key is globally unique, while the logical
-      // target key is only unique inside an organization.
-      idempotencyKey: allocation.allocationIndex === 0 ? operation.id : undefined,
-      notes: allocation.notes,
-      paidByUserId: allocation.paidByUserId,
+      idempotencyKey: operation.id,
+      notes: `Roster payment (${snapshot.allocations.length} allocation${snapshot.allocations.length === 1 ? "" : "s"})`,
+      paidByUserId: first.paidByUserId,
     },
-  }));
+  }];
 }
 
 function operationContext(operation: PaymentOperation): Record<string, unknown> {

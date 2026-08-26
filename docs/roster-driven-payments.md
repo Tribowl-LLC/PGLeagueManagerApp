@@ -1,4 +1,4 @@
-# Roster-driven payments (PR1)
+# Roster-driven payments
 
 PR1 makes the Team Rosters surface the sole source of payer responsibility for
 newly configured leagues. A league chooses a paying lineup size of three or
@@ -16,28 +16,26 @@ evidence only and never changes scoring.
 
 The `/2` due/past-due and interactive quote contracts read only
 `payment_obligations`; they never infer a balance from historical payments.
-The interactive charge endpoint accepts the same exact obligation IDs and
-quote fingerprint; it prepares a durable operation, calls the provider only
-after commit, and allocates the immutable provider result in a second locked
-transaction. Cash/check administration uses the exact obligation IDs and quote
-fingerprint.
+One-time cash, check, card, and wallet requests contain only amount and payer
+identity (plus tender/provider details where applicable). The server derives
+FIFO allocation and returns an opaque quote fingerprint. Finalization
+recomputes that allocation under the league lock and persists one tender parent
+with one child allocation per obligation.
 
-PR1 intentionally scopes an interactive charge to one payer identity. Accepted
-partner links remain available to retained archive/history surfaces, but the new
-roster checkout hides combined/partner controls and rejects partner IDs. This
-prevents one payer's card from selecting another payer's obligations until a
-separately reviewed multi-payer snapshot contract can bind each accepted
-partner, payment-method owner, and allocation in one immutable operation
-(planned for PR2).
-Corrections append a voided allocation record, and provider refunds/disputes
-retain allocation evidence while marking it for review.
+Every request is scoped to one payer and league. Accepted partner links remain
+available to archive/history surfaces but cannot select obligations in the
+checkout. A cash/check correction voids the whole tender and records one
+`payment_voids` row; a corrected payment is a separate FIFO entry. Provider
+refunds and disputes retain the original tender/allocation evidence.
 
 All roster, responsibility, quote, manual, and correction commands take the
 tenant+league advisory lock and record idempotency in `financial_commands`.
-Provider calls are outside these transactions. Automatic collection and
-standing consent remain dormant for PR2.
+Provider calls are outside these transactions. Standing automatic collection
+is current-point-only and refuses to run while any older open, partial, or
+reserved debt remains.
 
-Migration `0032_roster_driven_payments_core` refuses to run if any abandoned
-F1/D2/F3/F4 canonical evidence exists. Historical payments, refunds, disputes,
-the general operation ledger, operation snapshots, schedules, and canonical
-collection groups are retained as read-only history.
+Migration `0035_automatic_fifo_payment_allocation` is the clean-slate parent
+model boundary. It fails closed before destructive DDL if payment/provider
+evidence is present, makes tenant-safe parent/child keys and exact amount
+conservation constraints, and removes obsolete week/lineage/per-allocation
+payment fields. No old payment data is inferred or backfilled.

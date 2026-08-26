@@ -73,24 +73,6 @@ export const PaymentFormFields: FC<PaymentFormFieldsProps> = ({ form, bowlers })
         )}
       />
 
-      <FormField
-        control={form.control}
-        name="weekOf"
-        render={({ field }) => (
-          <FormItem>
-            <FormLabel>Week Of</FormLabel>
-            <FormControl>
-              <Input
-                type="date"
-                {...field}
-                value={field.value ? new Date(field.value).toISOString().split('T')[0] : ''}
-                onChange={(e) => field.onChange(new Date(e.target.value).toISOString())}
-              />
-            </FormControl>
-            <FormMessage />
-          </FormItem>
-        )}
-      />
     </>
   );
 };

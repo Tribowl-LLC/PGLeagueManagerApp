@@ -52,14 +52,13 @@ describe("PR1 roster-driven payment contract", () => {
     });
   });
 
-  it("requires exact IDs for quote/charge/manual/correction commands", () => {
-    expect(interactiveObligationQuoteRequestV2Schema.safeParse({ obligationIds: [id] }).success).toBe(true);
-    expect(interactiveObligationQuoteRequestV2Schema.safeParse({ obligationIds: [id], allocations: [{ obligationId: id, amountMinor: 400 }], payerBowlerId: 10 }).success).toBe(true);
-    expect(interactiveObligationChargeRequestV2Schema.safeParse({ obligationIds: [id], allocations: [{ obligationId: id, amountMinor: 400 }], payerBowlerId: 10, sourceId: "src", idempotencyKey: "charge", requestFingerprint: "ignored" }).success).toBe(true);
-    expect(interactiveObligationChargeRequestV2Schema.safeParse({ obligationIds: [id], allocations: [{ obligationId: id, amountMinor: 0 }], sourceId: "src", idempotencyKey: "charge", requestFingerprint: "ignored" }).success).toBe(false);
-    expect(canonicalManualRecordRequestSchema.safeParse({ obligationIds: [id], type: "check", idempotencyKey: "manual", requestFingerprint: "quote" }).success).toBe(false);
-    expect(canonicalCorrectionRequestSchema.safeParse({ allocationId: id, reason: "cash correction", idempotencyKey: "correction", requestFingerprint: "quote" }).success).toBe(true);
-    expect(canonicalCorrectionRequestSchema.safeParse({ allocationId: id, correctionMode: "replace", reason: "wrong cash amount", replacementAmountMinor: 1200, replacementType: "cash", replacementWeekOf: "2032-10-01T00:00:00.000Z", idempotencyKey: "correction-2", requestFingerprint: "quote" }).success).toBe(true);
-    expect(canonicalCorrectionRequestSchema.safeParse({ allocationId: id, correctionMode: "replace", reason: "wrong check", replacementAmountMinor: 1200, replacementType: "check", idempotencyKey: "correction-3", requestFingerprint: "quote" }).success).toBe(false);
+  it("accepts only server-derived FIFO tender inputs", () => {
+    expect(interactiveObligationQuoteRequestV2Schema.safeParse({ amountMinor: 400, payerBowlerId: 10 }).success).toBe(true);
+    expect(interactiveObligationQuoteRequestV2Schema.safeParse({ amountMinor: 0, payerBowlerId: 10 }).success).toBe(false);
+    expect(interactiveObligationQuoteRequestV2Schema.safeParse({ amountMinor: 400, obligationIds: [id] }).success).toBe(false);
+    expect(interactiveObligationChargeRequestV2Schema.safeParse({ amountMinor: 400, payerBowlerId: 10, sourceId: "src", idempotencyKey: "charge", requestFingerprint: "ignored" }).success).toBe(true);
+    expect(canonicalManualRecordRequestSchema.safeParse({ amountMinor: 400, payerBowlerId: 10, type: "check", checkNumber: "C-1", idempotencyKey: "manual", requestFingerprint: "quote" }).success).toBe(true);
+    expect(canonicalCorrectionRequestSchema.safeParse({ paymentId: 12, reason: "cash correction", idempotencyKey: "correction", requestFingerprint: "quote" }).success).toBe(true);
+    expect(canonicalCorrectionRequestSchema.safeParse({ paymentId: 12, correctionMode: "replace", reason: "unsupported", idempotencyKey: "correction-2", requestFingerprint: "quote" }).success).toBe(false);
   });
 });

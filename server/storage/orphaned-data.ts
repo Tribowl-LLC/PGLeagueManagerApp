@@ -66,7 +66,7 @@ export interface OrphanedBowlerLeagueRow {
 export interface OrphanedPaymentRow {
   id: number;
   amount: number;
-  weekOf: string;
+  createdAt: string;
   bowlerId: number;
   bowlerName: string | null;
   leagueId: number;
@@ -220,7 +220,7 @@ export async function listOrphanedPayments(): Promise<OrphanedPaymentRow[]> {
     .select({
       id: payments.id,
       amount: payments.amount,
-      weekOf: payments.weekOf,
+      createdAt: payments.createdAt,
       bowlerId: payments.bowlerId,
       bowlerName: bowlers.name,
       leagueId: payments.leagueId,
@@ -235,7 +235,7 @@ export async function listOrphanedPayments(): Promise<OrphanedPaymentRow[]> {
   return rows.map((r) => ({
     id: r.id,
     amount: r.amount,
-    weekOf: r.weekOf,
+    createdAt: r.createdAt,
     bowlerId: r.bowlerId,
     bowlerName: r.bowlerName,
     leagueId: r.leagueId,

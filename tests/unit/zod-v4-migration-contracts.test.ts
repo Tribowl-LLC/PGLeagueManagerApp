@@ -69,17 +69,17 @@ describe('Zod 4 migration contracts', () => {
 
   it('preserves payment defaults and parsed submission output', () => {
     const payment = insertPaymentSchema.parse({
+      organizationId: 1,
       bowlerId: 1,
       leagueId: 2,
       amount: 2500,
-      weekOf: '2026-09-07',
       type: 'cash',
     });
 
     expect(payment).toMatchObject({
       status: 'paid',
       receiptEmailMissing: false,
-      weekOf: '2026-09-07T00:00:00.000Z',
+      currency: 'USD',
     });
   });
 });

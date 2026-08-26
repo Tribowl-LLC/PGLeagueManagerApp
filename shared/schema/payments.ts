@@ -6,19 +6,19 @@ import { PAYMENT_STATUSES, PAYMENT_TYPES, positiveIntSchema, dateSchema } from "
 import { bowlers } from "./bowlers";
 import { leagues } from "./leagues";
 import { users } from "./users";
+import { organizations } from "./organizations";
 
 export const payments = pgTable("payments", {
   id: serial("id").primaryKey(),
+  organizationId: integer("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
   bowlerId: integer("bowler_id")
-    .notNull()
-    .references(() => bowlers.id, { onDelete: 'cascade' }),
+    .notNull(),
   leagueId: integer("league_id")
-    .notNull()
-    .references(() => leagues.id, { onDelete: 'cascade' }),
+    .notNull(),
   amount: integer("amount").notNull(),
-  lineageAmount: integer("lineage_amount"),
-  prizeFundAmount: integer("prize_fund_amount"),
-  weekOf: timestamp("week_of", { mode: "string" }).notNull(),
+  currency: text("currency").notNull().default("USD"),
   status: text("status", { enum: PAYMENT_STATUSES }).notNull().default('paid'),
   type: text("type", { enum: PAYMENT_TYPES }).notNull(),
   checkNumber: text("check_number"),
@@ -52,38 +52,36 @@ export const payments = pgTable("payments", {
   // adult bowler pays on behalf of a linked payment partner. NULL for
   // legacy / admin-entered / webhook-driven rows.
   paidByUserId: integer("paid_by_user_id").references(() => users.id, { onDelete: 'set null' }),
-  // Task #706: shared identifier for the N per-bowler rows that all
-  // came out of a single combined card transaction (self + accepted
-  // payment-link partners). NULL for ordinary single-bowler payments
-  // (legacy + non-combined). Lets the UI/audit surface "N rows from
-  // the same swipe" without coupling to providerPaymentId, which a
-  // future provider could legitimately reuse across rows for other
-  // reasons.
-  combinedChargeGroupId: text("combined_charge_group_id"),
-  // Additive Phase 2B lineage from a durable scheduled operation to each
-  // local split row. The allocation index is stable within the immutable
-  // operation snapshot, so combined rows can share one operation/provider
-  // payment while retries cannot insert the same logical row twice.
+  // One payment row is one real tender/provider transaction. A successful
+  // roster operation links to exactly one parent; its child obligations are
+  // recorded in payment_allocations.
   paymentOperationId: uuid("payment_operation_id"),
-  paymentOperationAllocationIndex: integer("payment_operation_allocation_index"),
   createdAt: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
 }, (table) => ({
   idBowlerLeagueUnique: uniqueIndex("payments_id_bowler_league_unique")
     .on(table.id, table.bowlerId, table.leagueId),
   idLeagueUnique: uniqueIndex("payments_id_league_unique")
     .on(table.id, table.leagueId),
+  tenantIdentityUnique: uniqueIndex("payments_tenant_identity_unique")
+    .on(table.id, table.organizationId, table.leagueId),
+  leagueTenantFk: foreignKey({
+    name: "payments_league_tenant_fk",
+    columns: [table.leagueId, table.organizationId],
+    foreignColumns: [leagues.id, leagues.organizationId],
+  }).onDelete("restrict"),
+  bowlerTenantFk: foreignKey({
+    name: "payments_bowler_tenant_fk",
+    columns: [table.bowlerId, table.organizationId],
+    foreignColumns: [bowlers.id, bowlers.organizationId],
+  }).onDelete("restrict"),
   bowlerIdx: index("payments_bowler_idx").on(table.bowlerId),
   leagueIdx: index("payments_league_idx").on(table.leagueId),
-  weekOfIdx: index("payments_week_of_idx").on(table.weekOf),
   paidByUserIdx: index("payments_paid_by_user_idx").on(table.paidByUserId),
-  combinedGroupIdx: index("payments_combined_group_idx").on(table.combinedChargeGroupId),
-  paymentOperationAllocationUnique: uniqueIndex("payments_operation_allocation_unique")
-    .on(table.paymentOperationId, table.paymentOperationAllocationIndex)
+  paymentOperationUnique: uniqueIndex("payments_operation_unique")
+    .on(table.paymentOperationId)
     .where(sql`${table.paymentOperationId} IS NOT NULL`),
-  paymentOperationLinkCheck: check(
-    "payments_payment_operation_link_check",
-    sql`(${table.paymentOperationId} IS NULL) = (${table.paymentOperationAllocationIndex} IS NULL)`,
-  ),
+  amountCheck: check("payments_amount_check", sql`${table.amount} > 0`),
+  currencyCheck: check("payments_currency_check", sql`${table.currency} = 'USD'`),
 }));
 
 const basePaymentSchema = createInsertSchema(payments);
@@ -92,9 +90,7 @@ export const insertPaymentSchema = basePaymentSchema.extend({
   bowlerId: positiveIntSchema,
   leagueId: positiveIntSchema,
   amount: positiveIntSchema,
-  lineageAmount: z.number().int().min(0).nullable().optional(),
-  prizeFundAmount: z.number().int().min(0).nullable().optional(),
-  weekOf: dateSchema,
+  currency: z.literal("USD").default("USD"),
   status: z.enum(PAYMENT_STATUSES).default("paid"),
   type: z.enum(PAYMENT_TYPES),
   checkNumber: z.string().optional(),
@@ -106,21 +102,16 @@ export const insertPaymentSchema = basePaymentSchema.extend({
   notes: z.string().optional(),
   storeCard: z.boolean().optional(),
   paidByUserId: z.number().int().positive().nullable().optional(),
-  combinedChargeGroupId: z.string().nullable().optional(),
 }).omit({
   id: true,
   createdAt: true,
   // Operation linkage is an internal, token-fenced finalization concern and
   // must never be accepted from ordinary payment API payloads.
   paymentOperationId: true,
-  paymentOperationAllocationIndex: true,
 });
 
 export const updatePaymentSchema = z.object({
   amount: positiveIntSchema,
-  lineageAmount: z.number().int().min(0).nullable(),
-  prizeFundAmount: z.number().int().min(0).nullable(),
-  weekOf: dateSchema,
   status: z.enum(PAYMENT_STATUSES),
   type: z.enum(PAYMENT_TYPES),
   checkNumber: z.string().nullable(),

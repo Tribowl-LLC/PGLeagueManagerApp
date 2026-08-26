@@ -30,7 +30,6 @@ import { PaymentHistoryContent } from "./payment-history-page/payment-history-co
 import { assertRosterPaymentSucceeded, beginPaymentIntent, clearPaymentIntent, isTerminalRosterPaymentFailure, paymentRequestHeaders, paymentRequestWithRecovery } from "@/lib/payment-request-identity";
 import { resolveInteractiveFinancialRead } from "@/lib/financial-read-contract";
 import { invalidatePaymentHistoryFinancials, paymentHistoryFinancialQueryKey } from "@/lib/payment-history-financial-query";
-import type { InteractiveOccurrenceReadiness } from "@/components/interactive-occurrence-selector";
 
 export default function PaymentHistoryPage() {
   const { toast } = useToast();
@@ -47,9 +46,6 @@ export default function PaymentHistoryPage() {
   const [selectedSavedCardId, setSelectedSavedCardId] = useState<string>('');
   const [storeCard, setStoreCard] = useState(false);
   const [receiptEmail, setReceiptEmail] = useState('');
-  const [occurrenceAllocations, setOccurrenceAllocations] = useState<{ obligationId: string; amountMinor: number }[]>([]);
-  const [occurrenceQuoteFingerprint, setOccurrenceQuoteFingerprint] = useState<string | undefined>();
-  const [occurrenceReadiness, setOccurrenceReadiness] = useState<InteractiveOccurrenceReadiness>('loading');
   const [canonicalReportPage, setCanonicalReportPage] = useState(1);
   const walletRequestKeyRef = useRef<string | null>(null);
 
@@ -230,10 +226,10 @@ export default function PaymentHistoryPage() {
           if (existing) return existing;
         }
         const displayStatus = row.status === "confirmed_paid" ? "paid" : row.status === "disputed" || row.status === "failed" || row.status === "pending" || row.status === "refunded" ? row.status : "pending";
-        const synthetic: Payment = { id: row.paymentId ?? 0, bowlerId: row.bowlerId, leagueId: row.leagueId, amount: row.amountMinor, lineageAmount: null, prizeFundAmount: null, weekOf: row.businessDate, status: displayStatus, type: row.paymentType, checkNumber: null, providerPaymentId: null, idempotencyKey: null, squareRefundId: null, refundReason: null, refundedAt: null, disputeId: null, disputedAt: null, receiptUrl: null, receiptNumber: null, receiptEmailMissing: true, notes: null, paidByUserId: null, combinedChargeGroupId: null, paymentOperationId: null, paymentOperationAllocationIndex: null, createdAt: row.businessDate };
+        const synthetic: Payment = { id: row.paymentId ?? 0, organizationId: currentUser?.data?.organizationId ?? 0, bowlerId: row.bowlerId, leagueId: row.leagueId, amount: row.amountMinor, currency: row.currency, status: displayStatus, type: row.paymentType, checkNumber: null, providerPaymentId: null, idempotencyKey: null, squareRefundId: null, refundReason: null, refundedAt: null, disputeId: null, disputedAt: null, receiptUrl: null, receiptNumber: null, receiptEmailMissing: true, notes: null, paidByUserId: null, paymentOperationId: null, createdAt: row.businessDate };
         return synthetic;
       });
-  }, [bowlerPayments, canonicalPaymentReport, bowlerId]);
+  }, [bowlerPayments, canonicalPaymentReport, bowlerId, currentUser?.data?.organizationId]);
   const paymentBusinessDates = new Map<number, string>();
   const paymentEvidenceStatuses = new Map<number, CanonicalPaymentRow["status"]>();
   for (const row of canonicalPaymentReport?.rows ?? []) {
@@ -274,7 +270,6 @@ export default function PaymentHistoryPage() {
 
   const handleWalletPayment = useCallback(async (token: string, walletType: 'apple_pay' | 'google_pay') => {
     if (resolvedFinancialRead.status === "unavailable" || loadingFinancialRead || financialReadError) return;
-    if (occurrenceReadiness !== 'ready') return;
     if (!bowlerId || !leagueId || !dialogAmountCents) return;
     // same inline email override as the card-form path so
     // Apple Pay / Google Pay charges also trigger Square's hosted
@@ -295,14 +290,12 @@ export default function PaymentHistoryPage() {
     if (!league || league.id !== leagueId) return;
     try {
       setIsWalletProcessing(true);
-      const exactObligationIds = [...new Set((occurrenceAllocations ?? []).map((row) => row.obligationId))];
-      if (exactObligationIds.length === 0) throw new Error("Wallet payments require exact obligations. Refresh and select the obligations to pay.");
-      const quoteResponse = await csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-quote/2`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ obligationIds: exactObligationIds, allocations: occurrenceAllocations }) });
+      const quoteResponse = await csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-quote/2`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ amountMinor: dialogAmountCents, payerBowlerId: bowlerId }) });
       const quoteBody = await quoteResponse.json();
-      if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw new Error(quoteBody.error?.message || "Exact payment obligations are unavailable.");
-      const paymentScope = `history-wallet:${league.id}:${exactObligationIds.join(",")}:${quoteBody.data.fingerprint}`;
+      if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw new Error(quoteBody.error?.message || "Payment allocation is unavailable.");
+      const paymentScope = `history-wallet:${league.id}:${bowlerId}:${dialogAmountCents}:${quoteBody.data.fingerprint}`;
       const requestKey = walletRequestKeyRef.current ?? beginPaymentIntent(paymentScope);
-      const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-charge/2`, { method: "POST", headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" }, body: JSON.stringify({ obligationIds: exactObligationIds, allocations: occurrenceAllocations, payerBowlerId: quoteBody.data.payerBowlerId, sourceId: token, sourceKind: "wallet", buyerEmail: overrideEmail ?? bowlerEmail ?? null, storeCard: false, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }) }), league.id);
+      const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-charge/2`, { method: "POST", headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" }, body: JSON.stringify({ amountMinor: dialogAmountCents, payerBowlerId: quoteBody.data.payerBowlerId ?? bowlerId, sourceId: token, sourceKind: "wallet", buyerEmail: overrideEmail ?? bowlerEmail ?? null, storeCard: false, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }) }), league.id);
       const data = await response.json();
       const rosterStatus = data.data?.status ?? data.status;
       if (!response.ok) {
@@ -331,17 +324,15 @@ export default function PaymentHistoryPage() {
     } finally {
       setIsWalletProcessing(false);
     }
-  }, [bowlerId, leagueId, league, dialogAmountCents, toast, bowlerEmail, receiptEmail, navigate, occurrenceAllocations, occurrenceReadiness, resolvedFinancialRead.status, loadingFinancialRead, financialReadError]);
+  }, [bowlerId, leagueId, league, dialogAmountCents, toast, bowlerEmail, receiptEmail, navigate, resolvedFinancialRead.status, loadingFinancialRead, financialReadError]);
 
   const beginWalletPayment = useCallback(() => {
     if (resolvedFinancialRead.status === "unavailable" || loadingFinancialRead || financialReadError) return;
-    if (occurrenceReadiness !== 'ready') return;
     if (!bowlerId || !leagueId || !dialogAmountCents) return;
-    const exactObligationIds = [...new Set((occurrenceAllocations ?? []).map((row) => row.obligationId))];
     walletRequestKeyRef.current = beginPaymentIntent(
-      `history-wallet:${leagueId}:${exactObligationIds.join(",")}:${occurrenceQuoteFingerprint ?? ""}`,
+      `history-wallet:${leagueId}:${bowlerId}:${dialogAmountCents}`,
     );
-  }, [bowlerId, dialogAmountCents, leagueId, occurrenceAllocations, occurrenceQuoteFingerprint, occurrenceReadiness, resolvedFinancialRead.status, loadingFinancialRead, financialReadError]);
+  }, [bowlerId, dialogAmountCents, leagueId, resolvedFinancialRead.status, loadingFinancialRead, financialReadError]);
 
   const {
     applePayAvailable,
@@ -357,8 +348,7 @@ export default function PaymentHistoryPage() {
   } = useWalletPayments({
     locationId: league?.locationId,
     amountCents: dialogAmountCents,
-    enabled: !!payDialogType && !!league?.locationId && supportsWallets
-      && occurrenceReadiness === 'ready',
+    enabled: !!payDialogType && !!league?.locationId && supportsWallets,
     onPaymentStarted: beginWalletPayment,
     onTokenReceived: handleWalletPayment,
     onError: (error) => toast({ title: "Wallet Payment Error", description: error, variant: "destructive" }),
@@ -373,12 +363,6 @@ export default function PaymentHistoryPage() {
   const handleDialogPayment = async () => {
     if (resolvedFinancialRead.status === "unavailable" || loadingFinancialRead || financialReadError) {
       toast({ title: "Payment unavailable", description: "Financial evidence is still loading or requires review.", variant: "destructive" });
-      return;
-    }
-    if (occurrenceReadiness !== 'ready') {
-      toast({ title: "Payment unavailable", description: occurrenceReadiness === 'error'
-        ? "Current obligations could not be loaded. Refresh before paying."
-        : "Select obligations totaling the payment amount before paying.", variant: "destructive" });
       return;
     }
     const dialogAmount = dialogAmountCents;
@@ -408,12 +392,10 @@ export default function PaymentHistoryPage() {
       const overrideEmail = !bowlerEmail && trimmedReceiptEmail ? trimmedReceiptEmail : undefined;
       if (!league || league.id !== leagueId) throw new Error("Payment league context is unavailable.");
 
-      const exactObligationIds = [...new Set((occurrenceAllocations ?? []).map((row) => row.obligationId))];
-      if (exactObligationIds.length === 0) throw new Error("Select one or more exact payment obligations before paying.");
       const quoteResponse = await csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-quote/2`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ obligationIds: exactObligationIds, allocations: occurrenceAllocations }),
+        body: JSON.stringify({ amountMinor: dialogAmount, payerBowlerId: bowlerId }),
       });
       const quoteBody = await quoteResponse.json().catch(() => ({}));
       if (!quoteResponse.ok || !quoteBody.data?.fingerprint || !Number.isSafeInteger(quoteBody.data?.amountMinor)) {
@@ -423,14 +405,13 @@ export default function PaymentHistoryPage() {
         ? selectedSavedCardId
         : card ? await tokenizeCard(card) : "";
       if (!sourceId) throw new Error("A payment source is required.");
-      const paymentScope = `history-roster:${league.id}:${exactObligationIds.join(",")}:${quoteBody.data.fingerprint}:${cardMode}`;
+      const paymentScope = `history-roster:${league.id}:${bowlerId}:${dialogAmount}:${quoteBody.data.fingerprint}:${cardMode}`;
       const requestKey = beginPaymentIntent(paymentScope);
       const exactResponse = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-charge/2`, {
         method: "POST",
         headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" },
         body: JSON.stringify({
-          obligationIds: exactObligationIds,
-          allocations: occurrenceAllocations,
+          amountMinor: dialogAmount,
           payerBowlerId: quoteBody.data.payerBowlerId,
           sourceId,
           sourceKind: cardMode === "saved" ? "saved_card" : "new_card",
@@ -467,17 +448,6 @@ export default function PaymentHistoryPage() {
       setIsSubmitting(false);
     }
   };
-
-  const handleOccurrenceChange = useCallback((next: { obligationId: string; amountMinor: number }[], fingerprint?: string) => {
-    setOccurrenceAllocations(next);
-    setOccurrenceQuoteFingerprint(fingerprint);
-  }, []);
-
-  useEffect(() => {
-    setOccurrenceAllocations([]);
-    setOccurrenceQuoteFingerprint(undefined);
-    setOccurrenceReadiness(payDialogType ? 'loading' : 'disabled');
-  }, [payDialogType, leagueId]);
 
   const checkoutAvailable = resolvedFinancialRead.status !== "unavailable" && !loadingFinancialRead && !financialReadError;
 
@@ -586,12 +556,6 @@ export default function PaymentHistoryPage() {
       canonicalRows={canonicalPaymentReport?.rows ?? []}
       canonicalMode={canonicalPaymentReport?.mode}
       canonicalPaymentTiming={canonicalPaymentReport?.paymentTiming}
-      occurrenceAmountMinor={checkoutAvailable ? dialogAmountCents : 0}
-      occurrenceAllocations={occurrenceAllocations}
-      occurrenceQuoteFingerprint={occurrenceQuoteFingerprint}
-      onOccurrenceChange={handleOccurrenceChange}
-      onOccurrenceReadinessChange={setOccurrenceReadiness}
-      occurrenceReadiness={occurrenceReadiness}
     />
   );
 }

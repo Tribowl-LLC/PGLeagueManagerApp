@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db.js";
-import { bowlers, leagueOccurrences, leagues, paymentAllocations, paymentDisputes, paymentObligations, paymentOperations, paymentOperationRosterSnapshots, paymentOperationRosterSnapshotItems, payments } from "@shared/schema";
+import { bowlers, leagueOccurrences, leagues, paymentAllocations, paymentDisputes, paymentObligations, paymentOperations, paymentOperationRosterSnapshots, paymentOperationRosterSnapshotItems, paymentVoids, payments } from "@shared/schema";
 import type { CanonicalPaymentReport, CanonicalPaymentRow, CanonicalPaymentReportTotals } from "@shared/canonical-payment-report";
 import { canonicalPaymentReportFingerprint } from "@shared/canonical-payment-report";
 
@@ -60,15 +60,16 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
       : [];
     const upfrontDueAt = upfrontEvidence?.dueAt ? new Date(upfrontEvidence.dueAt).toISOString() : null;
     const timezone = league.timezone ?? "UTC";
-    const conditions = [eq(payments.leagueId, input.leagueId)];
+    const conditions = [eq(payments.organizationId, input.organizationId), eq(payments.leagueId, input.leagueId)];
     if (input.bowlerId !== undefined) conditions.push(eq(payments.bowlerId, input.bowlerId));
     if (input.paymentId !== undefined) conditions.push(eq(payments.id, input.paymentId));
-    const paymentRows = await tx.select().from(payments).innerJoin(bowlers, eq(bowlers.id, payments.bowlerId)).where(and(...conditions, eq(bowlers.organizationId, input.organizationId))).orderBy(desc(payments.weekOf), desc(payments.id));
+    const paymentRows = await tx.select().from(payments).innerJoin(bowlers, eq(bowlers.id, payments.bowlerId)).where(and(...conditions, eq(bowlers.organizationId, input.organizationId))).orderBy(desc(payments.createdAt), desc(payments.id));
     const allPayments = paymentRows.map((row) => row.payments);
     const paymentIds = allPayments.map((row) => row.id);
     const operationIds = allPayments.flatMap((row) => row.paymentOperationId ? [row.paymentOperationId] : []);
     const allocations = paymentIds.length === 0 ? [] : await tx.select({ allocation: paymentAllocations, obligation: paymentObligations, occurrence: leagueOccurrences }).from(paymentAllocations).innerJoin(paymentObligations, and(eq(paymentObligations.id, paymentAllocations.obligationId), eq(paymentObligations.organizationId, input.organizationId), eq(paymentObligations.leagueId, input.leagueId))).innerJoin(leagueOccurrences, and(eq(leagueOccurrences.id, paymentObligations.occurrenceId), eq(leagueOccurrences.organizationId, input.organizationId), eq(leagueOccurrences.leagueId, input.leagueId))).where(and(eq(paymentAllocations.organizationId, input.organizationId), eq(paymentAllocations.leagueId, input.leagueId), inArray(paymentAllocations.paymentId, paymentIds))).orderBy(asc(leagueOccurrences.authoritativeLocalDate), asc(paymentObligations.payerBowlerId), asc(paymentObligations.occurrenceId), asc(paymentAllocations.id));
     const operations = operationIds.length === 0 ? [] : await tx.select().from(paymentOperations).where(and(eq(paymentOperations.organizationId, input.organizationId), inArray(paymentOperations.id, operationIds)));
+    const voids = paymentIds.length === 0 ? [] : await tx.select().from(paymentVoids).where(and(eq(paymentVoids.organizationId, input.organizationId), eq(paymentVoids.leagueId, input.leagueId), inArray(paymentVoids.paymentId, paymentIds)));
     const operationSnapshotItems = operationIds.length === 0 ? [] : await tx.select({ snapshot: paymentOperationRosterSnapshots, item: paymentOperationRosterSnapshotItems }).from(paymentOperationRosterSnapshotItems).innerJoin(paymentOperationRosterSnapshots, and(
       eq(paymentOperationRosterSnapshots.operationId, paymentOperationRosterSnapshotItems.operationId),
       eq(paymentOperationRosterSnapshots.organizationId, input.organizationId),
@@ -78,7 +79,6 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
       eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId),
       inArray(paymentOperationRosterSnapshotItems.operationId, operationIds),
     ));
-    const operationSnapshotItemByKey = new Map(operationSnapshotItems.map((row) => [`${row.item.operationId}:${row.item.allocationIndex}`, row]));
     const disputes = operationIds.length === 0 ? [] : await tx.select().from(paymentDisputes).where(and(eq(paymentDisputes.organizationId, input.organizationId), inArray(paymentDisputes.paymentOperationId, operationIds))).orderBy(desc(paymentDisputes.updatedAt));
     const rows: CanonicalPaymentRow[] = allPayments.map((payment) => {
       const linked = allocations.filter((candidate) => candidate.allocation.paymentId === payment.id);
@@ -87,48 +87,45 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
       }
       const operation = operations.find((candidate) => candidate.id === payment.paymentOperationId);
       const dispute = operation ? disputes.find((candidate) => candidate.paymentOperationId === operation.id) : undefined;
-      const corrected = linked.some((candidate) => candidate.allocation.state === "voided" && candidate.allocation.supersedesAllocationId !== null);
+      const voidEvidence = voids.find((candidate) => candidate.paymentId === payment.id);
+      const corrected = Boolean(voidEvidence) || linked.some((candidate) => candidate.allocation.state === "voided");
       // A provider operation is not confirmed financial evidence until its
       // immutable roster reservation has an active canonical allocation. A
       // payment row can exist after provider success but before (or instead
       // of) local allocation finalization; keep its operation identity for
       // recovery, but fail closed in F5 rather than counting it as paid.
+      const expectedSnapshots = payment.paymentOperationId !== null
+        ? operationSnapshotItems.filter((candidate) => candidate.item.operationId === payment.paymentOperationId)
+        : [];
+      // Every operation-linked parent must reconcile to every immutable
+      // snapshot item and matching active allocation.
       const activeLinked = linked.filter((candidate) => candidate.allocation.state === "active");
-      const expectedSnapshot = payment.paymentOperationId !== null && payment.paymentOperationAllocationIndex !== null
-        ? operationSnapshotItemByKey.get(`${payment.paymentOperationId}:${payment.paymentOperationAllocationIndex}`)
-        : undefined;
-      // Every operation-linked payment row must reconcile to exactly one
-      // immutable snapshot item and one matching active allocation. This
-      // prevents a partially finalized multi-item operation from being
-      // reported as confirmed merely because another item was allocated.
+      const activeTotal = activeLinked.reduce((sum, candidate) => sum + candidate.allocation.amountMinor, 0);
       const invalidCanonicalAllocation = payment.paymentOperationId !== null && (
-        !expectedSnapshot
-        || expectedSnapshot.item.state !== "finalized"
+        expectedSnapshots.length === 0
+        || expectedSnapshots.some((expected) => expected.item.state !== "finalized" || !activeLinked.some((candidate) => candidate.allocation.obligationId === expected.item.obligationId && candidate.allocation.amountMinor === expected.item.amountMinor && candidate.allocation.currency === expected.snapshot.currency))
+        || activeLinked.length !== expectedSnapshots.length
         || !operation
         || operation.status !== "succeeded"
-        || operation.amountMinor !== expectedSnapshot.snapshot.amountMinor
-        || operation.currency !== expectedSnapshot.snapshot.currency
+        || operation.amountMinor !== payment.amount
+        || activeTotal !== payment.amount
         || payment.providerPaymentId !== operation.providerObjectId
-        || activeLinked.length !== 1
-        || activeLinked[0]?.allocation.amountMinor !== payment.amount
-        || activeLinked[0]?.allocation.amountMinor !== expectedSnapshot.item.amountMinor
-        || activeLinked[0]?.allocation.currency !== expectedSnapshot.snapshot.currency
-        || activeLinked[0]?.obligation.id !== expectedSnapshot.item.obligationId
-        || activeLinked[0]?.obligation.payerBowlerId !== payment.bowlerId
+        || activeLinked.some((candidate) => candidate.obligation.payerBowlerId !== payment.bowlerId)
       );
       const reviewRequired = invalidCanonicalAllocation
         || linked.some((candidate) => candidate.allocation.reviewRequired)
         || Boolean(dispute && !["WON", "CLOSED"].includes(dispute.state));
       const allocationRows = linked.map((candidate) => ({ allocationId: candidate.allocation.id, obligationId: candidate.obligation.id, occurrenceId: candidate.obligation.occurrenceId, bowlerId: candidate.obligation.payerBowlerId, amountMinor: candidate.allocation.amountMinor, currency: candidate.allocation.currency, state: candidate.allocation.state === "active" ? "active" as const : "voided" as const }));
       const allocatedMinor = allocationRows.filter((candidate) => candidate.state === "active").reduce((sum, candidate) => sum + candidate.amountMinor, 0);
+      const manualGrossMismatch = payment.paymentOperationId === null && allocatedMinor !== payment.amount;
       const refundAmount = payment.refundedAt || payment.squareRefundId ? payment.amount : 0;
-      const canonicalDate = linked[0]?.occurrence.authoritativeLocalDate ?? leagueLocalDate(payment.weekOf, league.timezone);
+      const canonicalDate = linked[0]?.occurrence.authoritativeLocalDate ?? leagueLocalDate(payment.createdAt, league.timezone);
       const row: CanonicalPaymentRow = {
         paymentId: payment.id,
         leagueId: payment.leagueId,
         bowlerId: payment.bowlerId,
         amountMinor: payment.amount,
-        currency: "USD",
+        currency: payment.currency,
         status: rowStatus(payment, reviewRequired, corrected),
         paymentType: payment.type === "cash" || payment.type === "check" ? payment.type : payment.type === "square" ? "square" : "credit_card",
         businessDate: canonicalDate,
@@ -139,15 +136,15 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
         operationStatus: operation?.status ?? null,
         allocatedMinor,
         unallocatedMinor: Math.max(0, payment.amount - allocatedMinor),
-        reviewRequired,
-        source: invalidCanonicalAllocation || linked.length === 0 ? "unresolved_operation" : "canonical_allocation",
-        unresolved: invalidCanonicalAllocation || operation?.status === "provider_unknown" || operation?.status === "reconciliation_required",
+        reviewRequired: reviewRequired || manualGrossMismatch,
+        source: invalidCanonicalAllocation || linked.length === 0 || manualGrossMismatch ? "unresolved_operation" : "canonical_allocation",
+        unresolved: invalidCanonicalAllocation || manualGrossMismatch || operation?.status === "provider_unknown" || operation?.status === "reconciliation_required",
         refund: { present: refundAmount > 0, amountMinor: refundAmount, providerRefundId: payment.squareRefundId },
         dispute: { present: Boolean(dispute || payment.disputeId), amountMinor: dispute?.amountMinor ?? (payment.disputeId ? payment.amount : 0), disputeId: dispute?.providerDisputeId ?? payment.disputeId, scope: "transaction", state: dispute?.state ?? null, reviewRequired },
         receipt: { contractVersion: "payment-receipt/1", availability: payment.receiptUrl ? "available" : "unavailable", receiptUrl: payment.receiptUrl, receiptNumber: payment.receiptNumber, deliveryEvidence: "delivery_not_recorded", source: invalidCanonicalAllocation || linked.length === 0 ? "unresolved_operation" : "canonical_allocation", refund: { present: refundAmount > 0, amountMinor: refundAmount, providerRefundId: payment.squareRefundId }, dispute: { present: Boolean(dispute || payment.disputeId), amountMinor: dispute?.amountMinor ?? 0, disputeId: dispute?.providerDisputeId ?? payment.disputeId, scope: "transaction", state: dispute?.state ?? null, reviewRequired } },
         allocations: allocationRows,
-        correctionEvidence: corrected ? { status: "corrected", supersedesAllocationIds: linked.filter((candidate) => candidate.allocation.state === "voided" && candidate.allocation.supersedesAllocationId !== null).map((candidate) => candidate.allocation.supersedesAllocationId as string) } : undefined,
-        sharedTransaction: payment.combinedChargeGroupId ? { groupKey: payment.combinedChargeGroupId, childCount: 0 } : null,
+        correctionEvidence: voidEvidence ? { status: "voided", voidId: voidEvidence.id } : undefined,
+        sharedTransaction: null,
         // paidByUserId is a users.id actor and must never be interpreted as a
         // bowler identity. The recipient/payer comes from the canonical
         // obligation allocation; receipt authorization separately checks the
@@ -228,7 +225,7 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
         ?? (row.paymentOperationId ? `operation:${row.paymentOperationId}` : `payment:${row.paymentId}`);
       grouped.set(groupKey, [...(grouped.get(groupKey) ?? []), row]);
     }
-    const transactions = [...grouped.entries()].map(([groupKey, groupedRows]) => ({ groupKey, paymentOperationId: groupedRows[0]?.paymentOperationId ?? null, combinedChargeGroupId: groupedRows[0]?.sharedTransaction?.groupKey ?? null, amountMinor: groupedRows.reduce((sum, row) => sum + row.amountMinor, 0), currency: "USD", paymentIds: groupedRows.flatMap((row) => row.paymentId ? [row.paymentId] : []), rows: groupedRows }));
+    const transactions = [...grouped.entries()].map(([groupKey, groupedRows]) => ({ groupKey, paymentOperationId: groupedRows[0]?.paymentOperationId ?? null, amountMinor: groupedRows.reduce((sum, row) => sum + row.amountMinor, 0), currency: "USD", paymentIds: groupedRows.flatMap((row) => row.paymentId ? [row.paymentId] : []), rows: groupedRows }));
     const totals: CanonicalPaymentReportTotals = {
       grossConfirmedPaidMinor: rows.filter((row) => row.status === "confirmed_paid" || row.status === "refunded" || row.status === "disputed").reduce((sum, row) => sum + row.amountMinor, 0),
       activeAllocatedMinor: rows.reduce((sum, row) => sum + row.allocatedMinor, 0),
@@ -249,7 +246,7 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
 }
 
 export async function readPaymentReceiptProjection(input: { organizationId: number; paymentId: number }) {
-  const [paymentIdentity] = await db.select().from(payments).innerJoin(bowlers, eq(bowlers.id, payments.bowlerId)).where(and(eq(payments.id, input.paymentId), eq(bowlers.organizationId, input.organizationId))).limit(1);
+    const [paymentIdentity] = await db.select().from(payments).innerJoin(bowlers, eq(bowlers.id, payments.bowlerId)).where(and(eq(payments.id, input.paymentId), eq(payments.organizationId, input.organizationId), eq(bowlers.organizationId, input.organizationId))).limit(1);
   const paymentRecord = paymentIdentity?.payments;
   const report = await readCanonicalPaymentReport({ organizationId: input.organizationId, leagueId: paymentRecord?.leagueId ?? 0, paymentId: input.paymentId, page: 1, limit: 1 });
   const reportRow = report.rows[0];

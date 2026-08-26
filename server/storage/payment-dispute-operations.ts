@@ -165,7 +165,7 @@ export async function listPaymentDisputeNotifications(input: TenantPageInput) {
  * current league location here.
  */
 export async function listPaymentDisputeSummariesForPayments(input: {
-  paymentRows: Array<Pick<Payment, "id" | "paymentOperationId" | "combinedChargeGroupId">>;
+  paymentRows: Array<Pick<Payment, "id" | "paymentOperationId">>;
   organizationId: number | null;
 }): Promise<Map<number, PaymentRowDisputeSummary[]>> {
   const eligibleRows = input.paymentRows.filter((row) => row.paymentOperationId !== null);
@@ -173,7 +173,6 @@ export async function listPaymentDisputeSummariesForPayments(input: {
 
   const disputeRows = await db.select({
     paymentId: payments.id,
-    combinedChargeGroupId: payments.combinedChargeGroupId,
     organizationId: paymentDisputes.organizationId,
     id: paymentDisputes.id,
     providerDisputeId: paymentDisputes.providerDisputeId,
@@ -247,7 +246,7 @@ export async function listPaymentDisputeSummariesForPayments(input: {
       responseDueAt: row.responseDueAt,
       providerUpdatedAt: row.providerUpdatedAt,
       providerVersion: row.providerVersion,
-      sharedTransaction: row.combinedChargeGroupId !== null,
+      sharedTransaction: false,
       history: historyByDispute.get(row.id) ?? [],
     });
     result.set(row.paymentId, summaries);

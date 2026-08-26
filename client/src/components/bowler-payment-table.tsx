@@ -81,10 +81,10 @@ export const BowlerPaymentTable: FC<BowlerPaymentTableProps> = ({ payments, leag
           <div className="divide-y divide-slate-100">
             {payments.map((payment) => {
               const Icon = getPaymentIcon(payment.type);
-              const businessDate = paymentBusinessDates?.get(payment.id) ?? payment.weekOf;
+              const businessDate = paymentBusinessDates?.get(payment.id) ?? payment.createdAt;
               const evidenceStatus = paymentEvidenceStatuses?.get(payment.id);
               const weekNumber = evidenceStatus === undefined && league.seasonStart
-                ? Math.max(1, differenceInWeeks(new Date(payment.weekOf), new Date(league.seasonStart)) + 1)
+                ? Math.max(1, differenceInWeeks(new Date(payment.createdAt), new Date(league.seasonStart)) + 1)
                 : null;
 
               return (
