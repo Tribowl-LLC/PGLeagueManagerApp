@@ -33,8 +33,11 @@ router.post('/cards/:bowlerId', async (req, res) => {
       return sendError(res, 'Authentication required', 401, 'AUTH_REQUIRED');
     }
 
-    // Sensitive write: requires self-access or admin role (task #732).
-    if (!await hasSelfOrAdminAccessToBowler(req, bowlerId)) {
+    // Saving a provider card is payer-owned vault state. Administrators may
+    // manage a bowler's payment evidence, but may not vault their own card
+    // onto another bowler's customer record. The interactive charge path
+    // enforces the same invariant server-side for its `storeCard` flag.
+    if (req.user?.bowlerId !== bowlerId || !await hasSelfOrAdminAccessToBowler(req, bowlerId)) {
       return sendError(res, "You don't have access to this bowler", 403, 'FORBIDDEN');
     }
 

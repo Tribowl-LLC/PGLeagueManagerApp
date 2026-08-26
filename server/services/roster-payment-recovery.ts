@@ -1,5 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "../db.js";
+import { getGeneralInteractiveTargetKey } from "../storage/payment-operations.js";
 import { paymentOperations, paymentOperationRosterSnapshots } from "@shared/schema";
 import { lockLeagueSchedule } from "../storage/league-schedule-lock.js";
 import {
@@ -12,6 +13,54 @@ export class RosterPaymentRecoveryError extends Error {
     super(message);
     this.name = "RosterPaymentRecoveryError";
   }
+}
+
+/**
+ * Recover one canonical interactive operation when the original charge
+ * response was lost before the client received its durable operation ID.
+ * The request key is looked up only inside the authenticated organization,
+ * league, and authorizing-user scope. This path never accepts a source token
+ * and never dispatches to the provider; it only delegates to the exact
+ * operation-id finalizer after the immutable operation has been identified.
+ */
+export async function recoverRosterPaymentOperationByRequestKey(input: {
+  organizationId: number;
+  leagueId: number;
+  requestKey: string;
+  actorUserId: number;
+}) {
+  // Preparation holds this same league lock until the operation, snapshot,
+  // and reservation commit. Looking up the request key inside a transaction
+  // after acquiring the lock prevents a transport-loss recovery from seeing
+  // a false 404 against preparation's pre-commit MVCC snapshot.
+  const operation = await db.transaction(async (tx) => {
+    await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
+    const [candidate] = await tx.select().from(paymentOperations).where(and(
+      eq(paymentOperations.organizationId, input.organizationId),
+      eq(paymentOperations.leagueId, input.leagueId),
+      eq(paymentOperations.operationType, "interactive_charge"),
+      eq(paymentOperations.authorizingUserId, input.actorUserId),
+      eq(paymentOperations.targetKey, getGeneralInteractiveTargetKey(input.requestKey)),
+    )).limit(1).for("share");
+    return candidate;
+  });
+  if (!operation) {
+    throw new RosterPaymentRecoveryError("NOT_FOUND", "Payment operation not found", 404);
+  }
+  // A request-key retry must report an operation that is still owned by the
+  // ledger rather than attempting to recover it with a newly tokenized
+  // source. There is no provider-free finalization to perform until provider
+  // evidence exists. Terminal states are also returned unchanged so the
+  // caller can clear or retain its browser intent from the durable state.
+  if (operation.status !== "succeeded" && operation.status !== "reconciliation_required") {
+    return operation;
+  }
+  return recoverRosterPaymentOperation({
+    organizationId: input.organizationId,
+    leagueId: input.leagueId,
+    operationId: operation.id,
+    actorUserId: input.actorUserId,
+  });
 }
 
 /** Recover roster allocations by durable operation identity. This path does

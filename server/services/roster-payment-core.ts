@@ -20,6 +20,8 @@ import {
   paymentOperationRosterSnapshots,
   paymentOperationRosterSnapshotItems,
   interactivePaymentOperationSnapshots,
+  users,
+  emailSchema,
   type TeamPaymentPolicy,
 } from "@shared/schema";
 import type {
@@ -48,6 +50,18 @@ export class RosterPaymentReplay extends RosterPaymentError {
   constructor(public readonly result: unknown) {
     super("IDEMPOTENCY_REPLAY", "The command was already applied", 200);
   }
+}
+
+function resolveInteractiveBuyerEmail(providerName: string, requestedEmail: string | null | undefined, payerEmail: string | null | undefined): string | null {
+  // The payer profile is authoritative when it contains an address. The
+  // request value is only the explicit checkout fallback for a payer without
+  // one on file; this prevents an admin/browser payload from silently
+  // replacing the payer's stored receipt address.
+  const candidate = payerEmail?.trim() || requestedEmail?.trim() || null;
+  if (providerName !== "square") return candidate;
+  const parsed = emailSchema.max(255).safeParse(candidate);
+  if (!parsed.success) throw new RosterPaymentError("BUYER_EMAIL_REQUIRED", "A valid buyer email is required for Square payments", 422);
+  return parsed.data;
 }
 
 type RosterPaymentTransaction = PaymentOperationTransaction;
@@ -768,13 +782,15 @@ export async function chargeInteractiveObligations(input: {
       const [existingInteractiveSnapshot] = await tx.select().from(interactivePaymentOperationSnapshots).where(eq(interactivePaymentOperationSnapshots.operationId, existingOperation.id)).limit(1).for("share");
       const requestedPayer = input.payerBowlerId ?? input.request.payerBowlerId;
       const storedSourceId = existingInteractiveSnapshot ? decrypt(existingInteractiveSnapshot.encryptedSourceId) : null;
-      const storedBuyerEmail = existingInteractiveSnapshot?.encryptedBuyerEmail ? decrypt(existingInteractiveSnapshot.encryptedBuyerEmail) : null;
+      // Buyer email is server-resolved into the immutable snapshot. It is
+      // not a mutable provider/payment identity on replay, so a retry must
+      // reuse that snapshot regardless of whether the browser sends an
+      // explicit fallback, whitespace, or no email at all.
       if (!existingInteractiveSnapshot
         || (requestedPayer !== undefined && existingInteractiveSnapshot.payerBowlerId !== requestedPayer)
         || existingInteractiveSnapshot.sourceKind !== input.request.sourceKind
         || existingInteractiveSnapshot.storeCard !== (input.request.storeCard === true)
-        || storedSourceId !== input.request.sourceId
-        || storedBuyerEmail !== (input.request.buyerEmail ?? null)) {
+        || storedSourceId !== input.request.sourceId) {
         throw new RosterPaymentError("IDEMPOTENCY_CONFLICT", "The idempotency key was already used for a different payment identity", 409);
       }
       const [existingSnapshot] = await tx.select().from(paymentOperationRosterSnapshots).where(and(
@@ -823,6 +839,16 @@ export async function chargeInteractiveObligations(input: {
       eq(bowlers.organizationId, input.organizationId),
     )).limit(1).for("share");
     if (!payerBowler) throw new RosterPaymentError("NOT_FOUND", "The payment payer is unavailable", 404);
+    const buyerEmail = resolveInteractiveBuyerEmail(provider.providerName, input.request.buyerEmail, payerBowler.email);
+    if (input.request.storeCard === true) {
+      const [actor] = await tx.select({ bowlerId: users.bowlerId, organizationId: users.organizationId }).from(users).where(and(
+        eq(users.id, input.actorUserId),
+        eq(users.organizationId, input.organizationId),
+      )).limit(1).for("share");
+      if (!actor || actor.bowlerId !== payerBowlerId) {
+        throw new RosterPaymentError("CARD_SAVE_OWNER_REQUIRED", "Only the payer can save a card for this payment", 403);
+      }
+    }
     const customerId = getProviderCustomerId(payerBowler, provider);
     if (input.request.sourceKind === "saved_card" && !customerId) {
       throw new RosterPaymentError("SAVED_CARD_CUSTOMER_REQUIRED", "The saved payment method is not available for this payer", 422);
@@ -847,7 +873,7 @@ export async function chargeInteractiveObligations(input: {
       requestKind: "direct",
       sourceId: input.request.sourceId,
       customerId: customerId ?? null,
-      buyerEmail: input.request.buyerEmail ?? null,
+      buyerEmail,
       storeCard: input.request.storeCard === true,
       sourceKind: input.request.sourceKind,
       weekOf: canonicalWeekOf,

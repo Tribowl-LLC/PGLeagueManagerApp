@@ -50,6 +50,7 @@ interface PaymentCreditCardSectionProps {
   isWalletProcessing: boolean;
   applePayTokenizeOnly?: boolean;
   googlePayTokenizeOnly?: boolean;
+  allowStoreCard?: boolean;
 }
 
 export function PaymentCreditCardSection({
@@ -75,6 +76,7 @@ export function PaymentCreditCardSection({
   isWalletProcessing,
   applePayTokenizeOnly,
   googlePayTokenizeOnly,
+  allowStoreCard = true,
 }: PaymentCreditCardSectionProps) {
   const hasWalletOptions = applePayAvailable || googlePayAvailable;
 
@@ -205,29 +207,31 @@ export function PaymentCreditCardSection({
           </div>
         )}
         
-        <div className="flex items-center gap-x-2">
-          <FormField
-            control={form.control}
-            name="storeCard"
-            render={({ field }) => (
-              <FormItem className="flex flex-row items-center gap-x-2 gap-y-0">
-                <FormControl>
-                  <Checkbox
-                    id="storeCard"
-                    checked={field.value}
-                    onCheckedChange={field.onChange}
-                  />
-                </FormControl>
-                <label 
-                  htmlFor="storeCard" 
-                  className="text-sm font-medium leading-none cursor-pointer"
-                >
-                  Save card for future payments
-                </label>
-              </FormItem>
-            )}
-          />
-        </div>
+        {allowStoreCard && (
+          <div className="flex items-center gap-x-2">
+            <FormField
+              control={form.control}
+              name="storeCard"
+              render={({ field }) => (
+                <FormItem className="flex flex-row items-center gap-x-2 gap-y-0">
+                  <FormControl>
+                    <Checkbox
+                      id="storeCard"
+                      checked={field.value}
+                      onCheckedChange={field.onChange}
+                    />
+                  </FormControl>
+                  <label
+                    htmlFor="storeCard"
+                    className="text-sm font-medium leading-none cursor-pointer"
+                  >
+                    Save card for future payments
+                  </label>
+                </FormItem>
+              )}
+            />
+          </div>
+        )}
       </div>
     </div>
   );
