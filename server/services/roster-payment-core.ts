@@ -28,6 +28,7 @@ import type {
   CanonicalManualRecordRequest,
   OccurrenceResponsibilityInput,
   RosterPaymentResponsibilityRequest,
+  calculateRosterPaymentTiming,
 } from "@shared/roster-payment-contract";
 import { lockLeagueSchedule } from "../storage/league-schedule-lock.js";
 import type { PaymentOperationTransaction } from "../storage/payment-operations.js";
@@ -35,9 +36,10 @@ import { prepareInteractivePaymentOperation } from "./interactive-payment-operat
 import { interactivePaymentOperationExecutor } from "./interactive-payment-operation-executor.js";
 import { getPaymentProvider } from "./payment-provider-factory.js";
 import { getProviderCustomerId } from "./payment-utils.js";
-import { WEEKLY_BILLING_GRACE_PERIOD_MS } from "@shared/schedule-utils";
 import { decrypt } from "../utils/crypto.js";
 import { deriveRosterPaymentTimingInTransaction } from "./roster-payment-materializer.js";
+
+export { calculateRosterPaymentTiming };
 
 export class RosterPaymentError extends Error {
   constructor(public readonly code: string, message: string, public readonly status = 409) {
@@ -144,12 +146,6 @@ export function canonicalCorrectionFingerprint(request: CanonicalCorrectionReque
     replacementWeekOf: request.replacementWeekOf ?? null,
     replacementNotes: request.replacementNotes ?? null,
   });
-}
-
-export function calculateRosterPaymentTiming(dueAt: string | Date): { dueAt: string; pastDueAt: string } {
-  const due = new Date(dueAt);
-  if (!Number.isFinite(due.getTime())) throw new RosterPaymentError("INVALID_DUE_AT", "The occurrence start time is invalid", 422);
-  return { dueAt: due.toISOString(), pastDueAt: new Date(due.getTime() + WEEKLY_BILLING_GRACE_PERIOD_MS).toISOString() };
 }
 
 async function leagueScope(organizationId: number, leagueId: number): Promise<{ id: number; organizationId: number; locationId: number | null; payingLineupSize: number | null; paymentMode: "weekly" | "upfront"; weeklyFee: number; substituteAccess: "team_only" | "floating"; substitutePaymentRegime: "team_choice" | "league_lineage_prize_split"; lineageFee: number | null; prizeFundFee: number | null }> {

@@ -16,10 +16,9 @@ import {
   teams,
 } from "@shared/schema";
 import type * as schema from "@shared/schema";
+import { calculateRosterPaymentTiming } from "@shared/roster-payment-contract";
 
 type PaymentOperationTransaction = NodePgTransaction<typeof schema, ExtractTablesWithRelations<typeof schema>>;
-
-const GRACE_PERIOD_MS = 3 * 60 * 60 * 1000;
 
 /**
  * Return the authoritative timing for a roster obligation. Weekly leagues
@@ -37,8 +36,7 @@ export async function deriveRosterPaymentTimingInTransaction(
   const occurrenceStart = new Date(input.occurrenceStartAt);
   if (!Number.isFinite(occurrenceStart.getTime())) throw new Error("INVALID_OCCURRENCE_START");
   if (input.paymentMode === "weekly") {
-    const dueAt = occurrenceStart.toISOString();
-    return { dueAt, pastDueAt: new Date(occurrenceStart.getTime() + GRACE_PERIOD_MS).toISOString() };
+    return calculateRosterPaymentTiming(occurrenceStart);
   }
 
   // `past_due_at = due_at` identifies the clean-slate upfront timing without

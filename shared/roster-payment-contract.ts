@@ -1,8 +1,19 @@
 import { z } from "zod";
+import { WEEKLY_BILLING_GRACE_PERIOD_MS } from "./schedule-utils";
 
 export const ROSTER_PAYMENT_RESPONSIBILITY_CONTRACT = "roster-payment-responsibility/1" as const;
 export const CANONICAL_DUE_PAST_DUE_CONTRACT_V2 = "canonical-due-past-due/2" as const;
 export const INTERACTIVE_OBLIGATION_QUOTE_CONTRACT_V2 = "interactive-obligation-quote/2" as const;
+
+/** Centralized weekly obligation timing; safe for DB-free contract tests. */
+export function calculateRosterPaymentTiming(dueAt: string | Date): { dueAt: string; pastDueAt: string } {
+  const due = new Date(dueAt);
+  if (!Number.isFinite(due.getTime())) throw new Error("The occurrence start time is invalid");
+  return {
+    dueAt: due.toISOString(),
+    pastDueAt: new Date(due.getTime() + WEEKLY_BILLING_GRACE_PERIOD_MS).toISOString(),
+  };
+}
 
 export const rosterSlotInputSchema = z.object({
   slotIndex: z.number().int().min(0).max(3),

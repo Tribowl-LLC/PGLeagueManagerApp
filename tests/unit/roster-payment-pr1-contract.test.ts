@@ -6,8 +6,8 @@ import {
   interactiveObligationQuoteRequestV2Schema,
   occurrenceResponsibilityInputSchema,
   rosterPaymentResponsibilityRequestSchema,
+  calculateRosterPaymentTiming,
 } from "@shared/roster-payment-contract";
-import { calculateRosterPaymentTiming } from "../../server/services/roster-payment-core";
 
 const id = "00000000-0000-4000-8000-000000000001";
 
