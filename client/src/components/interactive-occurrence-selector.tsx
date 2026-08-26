@@ -7,7 +7,7 @@ import { csrfFetch } from "@/lib/queryClient";
 type Selection = { obligationId: string; amountMinor: number };
 type QuoteRow = { obligationId: string; bowlerId: number; amountMinor: number; outstandingMinor: number; dueAt: string | null };
 type Quote = { rows: QuoteRow[]; fingerprint: string; reservedByReadyAutopayPlan?: Array<{ obligationId: string; amountMinor: number; disposition: "reserved_by_ready_autopay_plan" }> };
-export type InteractiveOccurrenceReadiness = 'loading' | 'ready' | 'empty' | 'error' | 'legacy' | 'disabled';
+export type InteractiveOccurrenceReadiness = 'loading' | 'ready' | 'empty' | 'error' | 'disabled';
 
 const MAX_SAFE_MINOR_UNITS = Number.MAX_SAFE_INTEGER;
 
@@ -47,7 +47,6 @@ export function InteractiveOccurrenceSelector({
   bowlerIds,
   timezone,
   enabled,
-  canonical = false,
   onChange,
   onReadinessChange,
 }: {
@@ -57,7 +56,6 @@ export function InteractiveOccurrenceSelector({
   bowlerIds: number[];
   timezone: string;
   enabled: boolean;
-  canonical?: boolean;
   onChange: (selections: Selection[], fingerprint?: string) => void;
   onReadinessChange?: (readiness: InteractiveOccurrenceReadiness) => void;
 }) {
@@ -68,35 +66,24 @@ export function InteractiveOccurrenceSelector({
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const payees = useMemo(() => [...new Set(bowlerIds)].sort((a, b) => a - b), [bowlerIds]);
   const query = useQuery<Quote | null>({
-    queryKey: [canonical ? "/api/financials/roster-obligation-quote" : "/api/payments-provider/payments/quote", organizationId, leagueId, amountMinor, payees, canonical],
+    queryKey: ["/api/financials/leagues/:leagueId/interactive-obligation-quote/2", organizationId, leagueId, amountMinor, payees],
     enabled: enabled && amountMinor > 0 && payees.length > 0,
     staleTime: 0,
     retry: false,
     queryFn: async () => {
-      if (canonical) {
-        const dueResponse = await csrfFetch(`/api/financials/leagues/${leagueId}/canonical-due-past-due/2`);
-        const dueBody = await dueResponse.json() as { data?: { rows?: Array<{ id: string; payerBowlerId: number; amountMinor: number; outstandingMinor: number; dueAt: string; state: string }> }; error?: { message?: string } };
-        if (!dueResponse.ok || !dueBody.data?.rows) throw new Error(dueBody.error?.message || "Unable to load payment obligations.");
-        const available = dueBody.data.rows.filter((row) => payees.includes(row.payerBowlerId) && (row.state === "open" || row.state === "partially_settled"));
-        if (available.length === 0) return null;
-        const quoteResponse = await csrfFetch(`/api/financials/leagues/${leagueId}/interactive-obligation-quote/2`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ obligationIds: available.map((row) => row.id) }),
-        });
-        const quoteBody = await quoteResponse.json() as { data?: { fingerprint?: string }; error?: { message?: string } };
-        if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw new Error(quoteBody.error?.message || "Unable to quote payment obligations.");
-        return { fingerprint: quoteBody.data.fingerprint, rows: available.map((row) => ({ obligationId: row.id, bowlerId: row.payerBowlerId, amountMinor: row.amountMinor, outstandingMinor: row.outstandingMinor, dueAt: row.dueAt })) };
-      }
-      const response = await csrfFetch("/api/payments-provider/payments/quote", {
+      const dueResponse = await csrfFetch(`/api/financials/leagues/${leagueId}/canonical-due-past-due/2`);
+      const dueBody = await dueResponse.json() as { data?: { rows?: Array<{ id: string; payerBowlerId: number; amountMinor: number; outstandingMinor: number; dueAt: string; state: string }> }; error?: { message?: string } };
+      if (!dueResponse.ok || !dueBody.data?.rows) throw new Error(dueBody.error?.message || "Unable to load payment obligations.");
+      const available = dueBody.data.rows.filter((row) => payees.includes(row.payerBowlerId) && (row.state === "open" || row.state === "partially_settled"));
+      if (available.length === 0) return null;
+      const response = await csrfFetch(`/api/financials/leagues/${leagueId}/interactive-obligation-quote/2`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ leagueId, ...(organizationId ? { organizationId } : {}), amountMinor, payees: payees.map((bowlerId) => ({ bowlerId })) }),
+        body: JSON.stringify({ obligationIds: available.map((row) => row.id) }),
       });
-      const body = await response.json() as { error?: { code?: string; message?: string } } & Partial<Quote>;
-      if (!response.ok && body.error?.code === "OCCURRENCE_ALLOCATION_UNAVAILABLE") return null;
-      if (!response.ok || !body.rows || !body.fingerprint) throw new Error(body.error?.message || "Unable to load payment obligations.");
-      return body as Quote;
+      const body = await response.json() as { data?: { fingerprint?: string; reservedByReadyAutopayPlan?: Quote["reservedByReadyAutopayPlan"] }; error?: { message?: string } };
+      if (!response.ok || !body.data?.fingerprint) throw new Error(body.error?.message || "Unable to quote payment obligations.");
+      return { fingerprint: body.data.fingerprint, reservedByReadyAutopayPlan: body.data.reservedByReadyAutopayPlan, rows: available.map((row) => ({ obligationId: row.id, bowlerId: row.payerBowlerId, amountMinor: row.amountMinor, outstandingMinor: row.outstandingMinor, dueAt: row.dueAt })) };
     },
   });
 
@@ -126,7 +113,7 @@ export function InteractiveOccurrenceSelector({
       : query.error
         ? 'error'
         : !query.data
-          ? 'legacy'
+          ? 'empty'
           : invalidDraft
             ? 'empty'
             : selectedTotal === amountMinor && selections && Object.keys(selections).length > 0

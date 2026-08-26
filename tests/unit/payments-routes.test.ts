@@ -4,7 +4,7 @@
  * The /api/payments routes (now split across
  * `server/routes/payments/payment-record.ts` and
  * `server/routes/payments/payment-refunds.ts`) handle money movement,
- * idempotency-key dedup, paid-in-full schedule cancellation, refund
+ * idempotency-key rejection, canonical evidence immutability, refund
  * provider delegation, and access control. After the recent refactor
  * these had no dedicated route-level tests.
  *
@@ -20,7 +20,6 @@
  *     - check payment missing checkNumber → 400
  *     - idempotency dedup (same league) returns existing 200
  *     - idempotency conflict (different league) → 409
- *     - paid-in-full triggers schedule deactivation + scheduler removal
  *   PATCH  /api/payments/:id
  *     - happy path → 200
  *     - non-admin lacking access → 403
@@ -56,13 +55,6 @@ import type { Server } from 'node:http';
 import { expectErrorLog } from '../helpers/expected-error-logs';
 
 const mockStorage = {
-  getLeague: vi.fn(),
-  getBowler: vi.fn(),
-  isBowlerActiveInLeague: vi.fn(),
-  getPaymentByIdempotencyKey: vi.fn(),
-  createPayment: vi.fn(),
-  getPaymentSchedule: vi.fn(),
-  deactivatePaymentSchedule: vi.fn(),
   getPaymentById: vi.fn(),
   updatePayment: vi.fn(),
   deletePayment: vi.fn(),
@@ -72,26 +64,15 @@ const mockStorage = {
 vi.mock('../../server/storage', () => ({ storage: mockStorage }));
 
 const mockHasAccessToPayment = vi.fn();
-const mockRequireOrgAccess = vi.fn();
-const mockHasAdminAccessToLeague = vi.fn();
 // Keep the real pure role-check helpers (isSystemAdmin, isOrgOrHigher) via
-// importOriginal — only the DB-touching helpers are overridden. Payment routes
-// use hasAdminAccessToLeague/isSystemAdmin/isOrgOrHigher, so a hand-rolled partial mock drifts and throws
-// "No <export> defined on mock".
+// importOriginal; only the payment lookup helper is overridden.
 vi.mock('../../server/utils/access-control', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../server/utils/access-control')>();
   return {
     ...actual,
     hasAccessToPayment: (...a: unknown[]) => mockHasAccessToPayment(...a),
-    requireOrganizationAccess: (...a: unknown[]) => mockRequireOrgAccess(...a),
-    hasAdminAccessToLeague: (...a: unknown[]) => mockHasAdminAccessToLeague(...a),
   };
 });
-
-const mockRemoveSchedule = vi.fn();
-vi.mock('../../server/services/payment-scheduler', () => ({
-  paymentScheduler: { removeSchedule: (...a: unknown[]) => mockRemoveSchedule(...a) },
-}));
 
 const mockGetPaymentProvider = vi.fn();
 // Mirror the real factory, which re-exports the error classes from
@@ -127,18 +108,6 @@ vi.mock('../../server/services/refund-payment-operation-executor', () => ({
 }));
 vi.mock('../../server/services/scheduled-payment-operation-executor', () => ({
   scheduledPaymentOperationExecutor: { rearm: (...a: unknown[]) => mockRearmOperations(...a) },
-}));
-
-const mockSumQuery = vi.fn();
-vi.mock('../../server/db', () => ({
-  db: {
-    execute: () => Promise.resolve({ rows: [{ present: false }] }),
-    select: () => ({
-      from: () => ({
-        where: (..._a: unknown[]) => mockSumQuery(),
-      }),
-    }),
-  },
 }));
 
 // No-op the per-IP rate limiter so a single test run doesn't get
@@ -186,31 +155,12 @@ afterAll(async () => {
 beforeEach(() => {
   for (const fn of Object.values(mockStorage)) (fn as ReturnType<typeof vi.fn>).mockReset();
   mockHasAccessToPayment.mockReset();
-  mockRequireOrgAccess.mockReset();
-  mockHasAdminAccessToLeague.mockReset();
-  mockRemoveSchedule.mockReset();
   mockGetPaymentProvider.mockReset();
   mockPrepareRefund.mockReset();
   mockExecuteRefund.mockReset();
   mockRearmOperations.mockReset();
   mockRetryRefundAfterConfiguration.mockReset();
-  mockSumQuery.mockReset();
-  // Sensible defaults; individual tests override.
-  mockRequireOrgAccess.mockReturnValue(true);
   mockHasAccessToPayment.mockResolvedValue(true);
-  mockHasAdminAccessToLeague.mockResolvedValue(true);
-  mockSumQuery.mockResolvedValue([{ total: 0 }]);
-  // Task #454 added an existence pre-check on `payment.bowlerId` in
-  // `payment-record.ts`. Default to a valid bowler so tests focused on
-  // other concerns (idempotency, schedule deactivation, etc.) still
-  // reach the create path. Tests asserting the 404 NOT_FOUND branch can
-  // override this with `mockResolvedValue(undefined)`.
-  // Org id matches LEAGUE_OK so the P1 org-match guard (#737) passes by
-  // default; cross-org tests override with a different organizationId.
-  mockStorage.getBowler.mockResolvedValue({ id: 1, organizationId: 1 });
-  // P1 (#737): payment creation requires an active roster row. Default to
-  // rostered; the "not rostered" test overrides with false.
-  mockStorage.isBowlerActiveInLeague.mockResolvedValue(true);
   const operation = {
     id: '11111111-1111-4111-8111-111111111111',
     status: 'pending',
@@ -253,18 +203,6 @@ const LEAGUE_OK = {
   locationId: 99,
 };
 
-function basePayment(overrides: Record<string, unknown> = {}) {
-  return {
-    bowlerId: 42,
-    leagueId: LEAGUE_OK.id,
-    amount: 2000,
-    weekOf: '2026-01-05',
-    status: 'paid',
-    type: 'cash',
-    ...overrides,
-  };
-}
-
 async function post(path: string, body: unknown, user: object = ORG_A_USER) {
   return fetch(`${baseUrl}${path}`, {
     method: 'POST',
@@ -285,155 +223,6 @@ async function del(path: string, user: object = ORG_A_USER) {
     headers: userHeader(user as Parameters<typeof userHeader>[0]),
   });
 }
-
-describe('POST /api/payments', () => {
-  it('rejects generic cash/check writes once canonical activation is complete', async () => {
-    mockStorage.getLeague.mockResolvedValue(LEAGUE_OK);
-    mockSumQuery.mockResolvedValue([{ completenessMarker: true }]);
-    const res = await post('/api/payments', basePayment());
-    expect(res.status).toBe(409);
-    expect((await res.json()).error.code).toBe('CANONICAL_ALLOCATION_REQUIRED');
-    expect(mockStorage.createPayment).not.toHaveBeenCalled();
-  });
-
-  it('rejects raw card/square bookkeeping once canonical activation is complete', async () => {
-    mockStorage.getLeague.mockResolvedValue(LEAGUE_OK);
-    mockSumQuery.mockResolvedValue([{ completenessMarker: true }]);
-    const res = await post('/api/payments', basePayment({ type: 'square' }));
-    expect(res.status).toBe(409);
-    expect((await res.json()).error.code).toBe('CANONICAL_ALLOCATION_REQUIRED');
-    expect(mockStorage.createPayment).not.toHaveBeenCalled();
-  });
-
-  it('rejects inferred bookkeeping even when the league has legacy-shaped fields', async () => {
-    mockStorage.getLeague.mockResolvedValue(LEAGUE_OK);
-    mockStorage.createPayment.mockResolvedValue({ id: 555, ...basePayment() });
-
-    const res = await post('/api/payments', basePayment());
-    const body = await res.json();
-
-    expect(res.status).toBe(409);
-    expect(body.error.code).toBe('CANONICAL_ALLOCATION_REQUIRED');
-    expect(mockStorage.createPayment).not.toHaveBeenCalled();
-  });
-
-  // P1 (#737): admin access to the league is not enough — the bowler must
-  // be actively rostered in it and belong to its organization.
-  it('does not disclose bowler roster state through the retired inferred route', async () => {
-    mockStorage.getLeague.mockResolvedValue(LEAGUE_OK);
-    mockStorage.getBowler.mockResolvedValue({ id: 42, organizationId: LEAGUE_OK.organizationId });
-    mockStorage.isBowlerActiveInLeague.mockResolvedValue(false);
-
-    const res = await post('/api/payments', basePayment());
-    expect(res.status).toBe(409);
-    expect((await res.json()).error.code).toBe('CANONICAL_ALLOCATION_REQUIRED');
-    expect(mockStorage.createPayment).not.toHaveBeenCalled();
-  });
-
-  it('does not disclose cross-organization bowler state through the retired route', async () => {
-    mockStorage.getLeague.mockResolvedValue(LEAGUE_OK);
-    mockStorage.getBowler.mockResolvedValue({ id: 42, organizationId: LEAGUE_OK.organizationId + 1 });
-
-    const res = await post('/api/payments', basePayment());
-    expect(res.status).toBe(409);
-    expect((await res.json()).error.code).toBe('CANONICAL_ALLOCATION_REQUIRED');
-    expect(mockStorage.isBowlerActiveInLeague).not.toHaveBeenCalled();
-    expect(mockStorage.createPayment).not.toHaveBeenCalled();
-  });
-
-  it('returns 404 when the league does not exist', async () => {
-    mockStorage.getLeague.mockResolvedValue(undefined);
-
-    const res = await post('/api/payments', basePayment());
-    expect(res.status).toBe(404);
-    expect((await res.json()).error.code).toBe('NOT_FOUND');
-    expect(mockStorage.createPayment).not.toHaveBeenCalled();
-  });
-
-  it('returns 403 when caller has no access to the league org', async () => {
-    mockStorage.getLeague.mockResolvedValue(LEAGUE_OK);
-    // Creation gates on administrator access to the league.
-    mockHasAdminAccessToLeague.mockResolvedValue(false);
-
-    const res = await post('/api/payments', basePayment());
-    expect(res.status).toBe(403);
-    expect((await res.json()).error.code).toBe('FORBIDDEN');
-    expect(mockStorage.createPayment).not.toHaveBeenCalled();
-  });
-
-  it('rejects check payments without a check number → 400', async () => {
-    mockStorage.getLeague.mockResolvedValue(LEAGUE_OK);
-    const res = await post('/api/payments', basePayment({ type: 'check' }));
-    expect(res.status).toBe(400);
-    expect((await res.json()).error.code).toBe('VALIDATION_ERROR');
-    expect(mockStorage.createPayment).not.toHaveBeenCalled();
-  });
-
-  it('requires exact obligations before evaluating legacy idempotency keys', async () => {
-    mockStorage.getLeague.mockResolvedValue(LEAGUE_OK);
-    const existing = { id: 999, leagueId: LEAGUE_OK.id, idempotencyKey: 'k1' };
-    mockStorage.getPaymentByIdempotencyKey.mockResolvedValue(existing);
-
-    const res = await post('/api/payments', basePayment({ idempotencyKey: 'k1' }));
-    const body = await res.json();
-    expect(res.status).toBe(409);
-    expect(body.error.code).toBe('CANONICAL_ALLOCATION_REQUIRED');
-    expect(mockStorage.createPayment).not.toHaveBeenCalled();
-  });
-
-  it('does not reveal legacy idempotency conflicts before exact selection', async () => {
-    mockStorage.getLeague.mockResolvedValue(LEAGUE_OK);
-    mockStorage.getPaymentByIdempotencyKey.mockResolvedValue({
-      id: 998,
-      leagueId: 9999,
-      idempotencyKey: 'k1',
-    });
-
-    const res = await post('/api/payments', basePayment({ idempotencyKey: 'k1' }));
-    expect(res.status).toBe(409);
-    expect((await res.json()).error.code).toBe('CANONICAL_ALLOCATION_REQUIRED');
-    expect(mockStorage.createPayment).not.toHaveBeenCalled();
-  });
-
-  it('does not race legacy inserts after the clean-slate cutover', async () => {
-    mockStorage.getLeague.mockResolvedValue(LEAGUE_OK);
-    // First lookup misses (no existing row yet), insert races and loses,
-    // second lookup finds the row written by the winner.
-    const winner = { id: 1234, leagueId: LEAGUE_OK.id, idempotencyKey: 'race-1' };
-    mockStorage.getPaymentByIdempotencyKey
-      .mockResolvedValueOnce(undefined)
-      .mockResolvedValueOnce(winner);
-    const dupErr = Object.assign(new Error('duplicate key'), { code: '23505' });
-    mockStorage.createPayment.mockRejectedValue(dupErr);
-
-    const res = await post('/api/payments', basePayment({ idempotencyKey: 'race-1' }));
-    const body = await res.json();
-    expect(res.status).toBe(409);
-    expect(body.error.code).toBe('CANONICAL_ALLOCATION_REQUIRED');
-    expect(mockStorage.getPaymentByIdempotencyKey).not.toHaveBeenCalled();
-  });
-
-  it('does not deactivate a legacy schedule from an inferred payment', async () => {
-    const PIF_LEAGUE = {
-      ...LEAGUE_OK,
-      seasonStart: '2026-01-01',
-      seasonEnd: '2026-02-01', // ~4 full weeks → 4 * 2000 = 8000
-      weeklyFee: 2000,
-    };
-    mockStorage.getLeague.mockResolvedValue(PIF_LEAGUE);
-    mockStorage.createPayment.mockResolvedValue({ id: 777, ...basePayment() });
-    mockSumQuery.mockResolvedValue([{ total: 8000 }]); // already at full season
-    mockStorage.getPaymentSchedule.mockResolvedValue({ id: 333, active: true });
-    mockStorage.deactivatePaymentSchedule.mockResolvedValue(undefined);
-    mockRemoveSchedule.mockResolvedValue(undefined);
-
-    const res = await post('/api/payments', basePayment());
-    expect(res.status).toBe(409);
-    expect((await res.json()).error.code).toBe('CANONICAL_ALLOCATION_REQUIRED');
-    expect(mockStorage.deactivatePaymentSchedule).not.toHaveBeenCalled();
-    expect(mockRemoveSchedule).not.toHaveBeenCalled();
-  });
-});
 
 describe('PATCH /api/payments/:id', () => {
   it('updates a payment on the happy path → 200', async () => {

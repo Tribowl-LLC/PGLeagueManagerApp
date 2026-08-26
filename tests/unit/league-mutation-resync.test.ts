@@ -11,8 +11,8 @@
  * This file mounts the real `leagues` and `bowler-leagues` routers
  * onto an isolated Express app, mocks the boundary modules
  * (`storage`, `payment-provider-factory`,
- * `access-control`, `middleware/organization`, `db.js`,
- * `payment-scheduler.js`), and drives each mutation over real HTTP.
+ * `access-control`, `middleware/organization`, `db.js`), and drives each
+ * mutation over real HTTP.
  *
  * For every covered mutation we assert that the fake Square provider
  * received `syncCustomerLeagueAttributes(customerId, bowlerId, attrs)`
@@ -133,14 +133,9 @@ vi.mock('../../server/middleware/organization', () => ({
 }));
 
 // ---------------------------------------------------------------------------
-// Payment-scheduler / db / email / auth — only touched by route paths we
-// don't exercise (timezone changes, fee changes, send-invites). Mock just
-// enough to satisfy module load.
+// Database / email / auth — only touched by route paths we don't exercise.
+// Mock just enough to satisfy module load.
 // ---------------------------------------------------------------------------
-vi.mock('../../server/services/payment-scheduler.js', () => ({
-  paymentScheduler: { addSchedule: vi.fn(), removeSchedule: vi.fn() },
-}));
-
 vi.mock('../../server/db.js', () => ({
   db: {
     execute: vi.fn().mockResolvedValue({ rows: [] }),

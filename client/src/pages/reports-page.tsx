@@ -143,7 +143,6 @@ export default function ReportsPage() {
 
     const paymentReport = paymentReports.get(league.id);
     const collected = paymentReport?.totals.grossConfirmedPaidMinor ?? 0;
-    const unallocatedLegacy = paymentReport?.totals.unallocatedLegacyMinor ?? 0;
 
     const canonicalReport = financialLeagues.find((entry) => entry.leagueId === league.id)?.report;
     const pastDueBalance = canonicalReport?.rows.filter((row) => row.classification === "past_due").reduce((sum, row) => sum + row.outstandingMinor, 0) ?? 0;
@@ -152,7 +151,6 @@ export default function ReportsPage() {
     return {
       ...league,
       collected,
-      unallocatedLegacy,
       pastDueBalance,
       reviewCount,
       activeBowlerCount: leagueBowlers.filter(b => b.active).length,
@@ -227,7 +225,6 @@ export default function ReportsPage() {
                   <TableHead>Active Bowlers</TableHead>
                   <TableHead>Teams</TableHead>
                   <TableHead>Collections</TableHead>
-                  <TableHead>Unlinked history</TableHead>
                   <TableHead>Past Due</TableHead>
                   <TableHead>Review</TableHead>
                   <TableHead>Status</TableHead>
@@ -247,7 +244,6 @@ export default function ReportsPage() {
                     <TableCell>{league.activeBowlerCount}</TableCell>
                     <TableCell>{league.teamCount}</TableCell>
                     <TableCell>${(league.collected / 100).toFixed(2)}</TableCell>
-                    <TableCell>${(league.unallocatedLegacy / 100).toFixed(2)}</TableCell>
                     <TableCell className="text-destructive">
                       ${(league.pastDueBalance / 100).toFixed(2)}
                     </TableCell>

@@ -21,15 +21,15 @@ export function LeagueActionCards({ leagueId, canManageRoster }: { leagueId: num
         </Card>
       </Link>
 
-      <Link href={`/leagues/${leagueId}/weekly-payments`} className="block">
+      <Link href="/payments" className="block">
         <Card className="hover:bg-accent transition-colors">
           <CardHeader>
             <div className="flex justify-center mb-2">
               <CircleDollarSign className="size-6" />
             </div>
-            <CardTitle>Weekly Payments</CardTitle>
+            <CardTitle>Payment Records</CardTitle>
             <CardDescription>
-              Log and track weekly cash/check payments
+              Record and review canonical payment evidence
             </CardDescription>
           </CardHeader>
           <CardContent>

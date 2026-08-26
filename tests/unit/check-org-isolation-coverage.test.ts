@@ -136,25 +136,24 @@ await apiGet('/api/something-else', sessionA);
   });
 
   it('matches multi-param paths against template-literal references', () => {
-    // Real example: /api/payment-schedules/:bowlerId/:leagueId is
-    // referenced as `/api/payment-schedules/${orgBBowlerId}/${orgBLeagueId}`
-    // in the live test. The previous substring approach (replacing
-    // each `:param` with `${`) produced `/${/${` and false-flagged
-    // multi-param paths as uncovered. This test pins the regex fix.
+    // Parameterized paths are referenced as template literals in the live
+    // isolation tests. The previous substring approach (replacing each
+    // `:param` with `${`) produced `/${/${` and false-flagged multi-param
+    // paths as uncovered. This test pins the regex fix.
     const dir = makeFixture({
       'server/routes/index.ts': indexMounting(
-        '/api/payment-schedules',
-        'payment-schedules',
+        '/api/widgets',
+        'widgets',
       ),
-      'server/routes/payment-schedules.ts': `import { Router } from 'express';
+      'server/routes/widgets.ts': `import { Router } from 'express';
 const router = Router();
-router.get('/:bowlerId/:leagueId', async (req, res) => {
+router.get('/:widgetId/:ownerId', async (req, res) => {
   res.json({});
 });
 export default router;
 `,
       'tests/api/organization-isolation.test.ts': `import { apiGet } from '../helpers';
-await apiGet(\`/api/payment-schedules/\${orgBBowlerId}/\${orgBLeagueId}\`, sessionA);
+await apiGet(\`/api/widgets/\${otherWidgetId}/\${otherOwnerId}\`, sessionA);
 `,
     });
     const r = runIn(dir, ['--strict']);

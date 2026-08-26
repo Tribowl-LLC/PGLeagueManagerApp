@@ -235,7 +235,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
     });
     const report = await readCanonicalPaymentReport({ organizationId, leagueId, page: 1, limit: 20 });
     const unresolved = report.rows.find((row) => row.paymentOperationId === operationId);
-    expect(report.paymentTiming).toMatchObject({ paymentMode: "upfront", source: "roster_payment_responsibility" });
+    expect(report.paymentTiming).toMatchObject({ paymentMode: "upfront", source: "canonical" });
     expect(unresolved).toMatchObject({ source: "unresolved_operation", businessDate: "2038-02-03", authoritativeLocalDate: "2038-02-03", operationStatus: "provider_unknown" });
   });
 
@@ -251,7 +251,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
       paymentMode: "upfront",
       upfrontDueAt: new Date(first.obligation.dueAt).toISOString(),
       upfrontDueAtLocal: first.obligation.dueAt.slice(0, 10),
-      source: "roster_payment_responsibility",
+      source: "canonical",
     });
   });
 

@@ -2,8 +2,8 @@
  * Regression pin for tasks #511 and #514.
  *
  * `client/src/lib/square.ts` was rewritten twice to stop throwing
- * `Error(JSON.stringify(...))` from `createPayment` and
- * `createSquareCustomer`. Without these specs, a well-meaning refactor
+ * `Error(JSON.stringify(...))` from `createSquareCustomer`. Without this
+ * spec, a well-meaning refactor
  * could re-introduce the JSON-stringified message and the user-visible
  * toast would silently regress to `{"error":{"message":...}}`.
  *
@@ -28,7 +28,7 @@ vi.mock('@/lib/queryClient', () => ({
   csrfFetch: csrfFetchMock,
 }));
 
-import { createPayment, createSquareCustomer, tokenizeCard } from '@/lib/square';
+import { createSquareCustomer, tokenizeCard } from '@/lib/square';
 import { PROVIDER_NOT_CONFIGURED } from '@/lib/provider-not-configured';
 import type { SquareCard } from '@/hooks/use-square-payment';
 
@@ -74,10 +74,7 @@ function fakeResponse({ ok, status, jsonBody, textBody }: FakeResponseInit) {
 }
 
 // Hold a separately-typed handle to the mock so the beforeEach reset
-// doesn't need to re-cast `okTokenizeCard`. Stub the full `SquareCard`
-// surface (one of the two members of `createPayment`'s second-arg
-// union) so no `as unknown as Foo` double-cast is needed — the unused
-// `destroy`/`attach` stubs are required only to satisfy the interface.
+// doesn't need to re-cast `okTokenizeCard`.
 const okTokenize = vi.fn().mockResolvedValue({ status: 'OK', token: 'tok_abc123' });
 const okTokenizeCard: SquareCard = {
   tokenize: okTokenize,
@@ -94,114 +91,6 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.clearAllMocks();
-});
-
-describe('createPayment error contract (tasks #511 / #514)', () => {
-  it('(a) resolves with the payment result on a successful response', async () => {
-    csrfFetchMock.mockResolvedValueOnce(
-      fakeResponse({
-        ok: true,
-        status: 200,
-        jsonBody: {
-          id: 'pmt_123',
-          status: 'COMPLETED',
-          card: { last4: '1111', brand: 'VISA' },
-        },
-      }),
-    );
-
-    const result = await createPayment(2500, okTokenizeCard, 1, 2);
-
-    expect(result.id).toBe('pmt_123');
-    expect(result.status).toBe('COMPLETED');
-  });
-
-  it('(b) populates .message, .code, and .status from a structured error body', async () => {
-    csrfFetchMock.mockResolvedValueOnce(
-      fakeResponse({
-        ok: false,
-        status: 402,
-        jsonBody: {
-          error: { message: 'Card was declined.', code: 'CARD_DECLINED' },
-        },
-      }),
-    );
-
-    const err = await createPayment(2500, okTokenizeCard, 1, 2)
-      .then(
-        () => {
-          throw new Error('helper unexpectedly resolved instead of rejecting');
-        },
-        (e: unknown) => e as Error & { code?: string; status?: number },
-      );
-
-    expect(err).toBeInstanceOf(Error);
-    expect(err.message).toBe('Card was declined.');
-    expect(err.code).toBe('CARD_DECLINED');
-    expect(err.status).toBe(402);
-    // The whole point of this regression test: no JSON-shaped soup
-    // ever appears in the user-visible message.
-    expect(err.message).not.toMatch(/[{}]/);
-    expect(err.message).not.toMatch(/"error"/);
-  });
-
-  it('(c) falls back to plain-text body for non-JSON responses without leaking JSON', async () => {
-    csrfFetchMock.mockResolvedValueOnce(
-      fakeResponse({
-        ok: false,
-        status: 502,
-        textBody: 'Bad Gateway',
-      }),
-    );
-
-    const err = await createPayment(2500, okTokenizeCard, 1, 2)
-      .then(
-        () => {
-          throw new Error('helper unexpectedly resolved instead of rejecting');
-        },
-        (e: unknown) => e as Error & { code?: string; status?: number },
-      );
-
-    expect(err).toBeInstanceOf(Error);
-    expect(err.message).toBe('Bad Gateway');
-    // No structured code on the wire → the helper still attaches the
-    // `PAYMENT_FAILED` fallback so callers can branch on `.code`.
-    expect(err.code).toBe('PAYMENT_FAILED');
-    expect(err.status).toBe(502);
-    expect(err.message).not.toMatch(/[{}]/);
-  });
-
-  it('(d) preserves PROVIDER_NOT_CONFIGURED end-to-end through the outer catch', async () => {
-    csrfFetchMock.mockResolvedValueOnce(
-      fakeResponse({
-        ok: false,
-        status: 422,
-        jsonBody: {
-          error: {
-            message: "Square isn't connected for this location.",
-            code: PROVIDER_NOT_CONFIGURED,
-          },
-        },
-      }),
-    );
-
-    const err = await createPayment(2500, okTokenizeCard, 1, 2)
-      .then(
-        () => {
-          throw new Error('helper unexpectedly resolved instead of rejecting');
-        },
-        (e: unknown) => e as Error & { code?: string; status?: number },
-      );
-
-    expect(err).toBeInstanceOf(Error);
-    expect(err.code).toBe(PROVIDER_NOT_CONFIGURED);
-    expect(err.status).toBe(422);
-    expect(err.message).toBe("Square isn't connected for this location.");
-    // Crucially: the outer catch must NOT have downgraded `.code` to
-    // `PAYMENT_FAILED` nor stuffed a JSON blob into `.message`.
-    expect(err.code).not.toBe('PAYMENT_FAILED');
-    expect(err.message).not.toMatch(/[{}]/);
-  });
 });
 
 describe('createSquareCustomer error contract (tasks #511 / #514)', () => {
@@ -251,13 +140,13 @@ describe('createSquareCustomer error contract (tasks #511 / #514)', () => {
     expect(err.status).toBe(409);
     expect(err.message).not.toMatch(/[{}]/);
     expect(err.message).not.toMatch(/"error"/);
-    // task #545: parity with `createPayment` — the structured-body
-    // path must not prefix the message with "Failed to create Square
+    // The structured-body path must not prefix the message with "Failed
+    // to create Square
     // customer:" either.
     expect(err.message).not.toMatch(/^Failed to create Square customer:/);
   });
 
-  it('(c) falls back to plain-text body for non-JSON responses with the same shape as createPayment', async () => {
+  it('(c) falls back to plain-text body for non-JSON responses', async () => {
     csrfFetchMock.mockResolvedValueOnce(
       fakeResponse({
         ok: false,
@@ -275,11 +164,10 @@ describe('createSquareCustomer error contract (tasks #511 / #514)', () => {
       );
 
     expect(err).toBeInstanceOf(Error);
-    // task #545: `createSquareCustomer` now mirrors `createPayment`'s
-    // contract for plain-text upstream errors — `.message` is the
+    // Plain-text upstream errors preserve `.message` as the
     // upstream text verbatim (no "Failed to create Square customer: "
     // prefix), `.status` matches the HTTP status, and `.code` defaults
-    // to `CUSTOMER_CREATION_FAILED` (parallel to `PAYMENT_FAILED`) so
+    // to `CUSTOMER_CREATION_FAILED`.
     // callers can branch on it.
     expect(err.message).toBe('Internal Server Error');
     expect(err.code).toBe('CUSTOMER_CREATION_FAILED');

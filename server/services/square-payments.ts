@@ -618,7 +618,7 @@ export async function getPayment(
 ): Promise<PaymentVerification | null> {
   const client = await ctx.getClient();
   if (!client) {
-    // Intentionally degraded: GET /payments/:id/verify is a
+    // Intentionally degraded: provider-side payment verification is a
     // diagnostic read used by the admin reconciliation UI. It
     // wraps the call in a try/catch that already turns PNCE
     // (from the factory) and any thrown verification error

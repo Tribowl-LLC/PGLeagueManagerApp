@@ -101,23 +101,6 @@ describe("payment operation stable identity", () => {
 });
 
 describe("payment operation routing boundaries", () => {
-  it.each([
-    "server/services/payment-execution.ts",
-    "server/routes/payment-schedules.ts",
-    "server/routes/index.ts",
-    "server/index.ts",
-  ])("does not wire payment-operation execution into %s", (path) => {
-    const source = readFileSync(resolve(path), "utf8");
-    expect(source).not.toMatch(/payment-operation|paymentOperations/);
-  });
-
-  it("wires general interactive charges through the durable executor", () => {
-    const source = readFileSync(resolve("server/routes/payments-provider/charges.ts"), "utf8");
-    expect(source).toContain("prepareInteractivePaymentOperation");
-    expect(source).toContain("interactivePaymentOperationExecutor");
-    expect(source).not.toContain("refundPayment(");
-  });
-
   it("wires refunds through durable preparation and execution", () => {
     const source = readFileSync(resolve("server/routes/payments/payment-refunds.ts"), "utf8");
     expect(source).toContain("prepareRefundPaymentOperation");
@@ -129,12 +112,6 @@ describe("payment operation routing boundaries", () => {
     const source = readFileSync(resolve("server/services/scheduled-payment-operation-executor.ts"), "utf8");
     expect(source).toContain('wake.operationType === "refund"');
     expect(source).toContain("refundPaymentOperationExecutor.execute");
-  });
-
-  it("gates scheduled ledger startup on ledger_execute", () => {
-    const source = readFileSync(resolve("server/app.ts"), "utf8");
-    expect(source).toContain("scheduledPaymentOperationExecutor.start(scheduledPaymentExecutionMode)");
-    expect(source).toContain("scheduledPaymentExecutionMode !== 'ledger_execute'");
   });
 
   it("keeps transaction-capable finalization independent from provider refunds", () => {

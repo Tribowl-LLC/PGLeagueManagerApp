@@ -6,7 +6,7 @@ import { Layout } from "@/components/layout";
 import { PaymentForm } from "@/components/payment-form";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { Input } from "@/components/ui/input";
-import { Loader2, Plus, Search } from "lucide-react";
+import { Plus, Search } from "lucide-react";
 import { PageLoadingState } from "@/components/page-states";
 import type {
   Payment,
@@ -25,14 +25,6 @@ import {
 import { sanitizePaymentErrorMessage } from "@/lib/payment-user-error";
 import { refundOperationToast } from "@/lib/refund-operation";
 import { useToast } from "@/hooks/use-toast";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { PaymentsTable } from "@/components/payments-table";
 import { CanonicalPaymentEvidenceTable } from "@/components/canonical-payment-evidence-table";
 import { RefundPaymentDialog } from "@/components/refund-payment-dialog";
@@ -51,7 +43,6 @@ interface PaginatedPaymentsResponse {
 
 export default function PaymentsPage() {
   const [showForm, setShowForm] = useState(false);
-  const [paymentToDelete, setPaymentToDelete] = useState<number | null>(null);
   const [paymentToRefund, setPaymentToRefund] = useState<Payment | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [page, setPage] = useState(1);
@@ -98,24 +89,6 @@ export default function PaymentsPage() {
     queryKey: ["/api/bowlers"],
     enabled: !!paymentsResponse?.data?.length,
     staleTime: 1000 * 60 * 5,
-  });
-
-  const deletePaymentMutation = useMutation({
-    mutationFn: async (id: number) => {
-      const response = await apiRequest(`/api/payments/${id}`, "DELETE");
-      if (!response.success) {
-        throw new Error(`Failed to delete payment: ${response.error?.message || "Unknown error"}`);
-      }
-      return id;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
-      toast({ title: "Success", description: "Payment has been deleted." });
-      setPaymentToDelete(null);
-    },
-    onError: (error: Error) => {
-      toast({ title: "Error deleting payment", description: error.message, variant: "destructive" });
-    },
   });
 
   // Derive the active refund target's locationId so we can look up its
@@ -193,7 +166,6 @@ export default function PaymentsPage() {
     const map = new Map<number, string>();
     for (const report of financialReportData) {
       for (const row of report?.rows ?? []) if (row.paymentId !== null) map.set(row.paymentId, row.authoritativeLocalDate);
-      for (const row of report?.unlinkedHistory ?? []) if (row.paymentId !== null) map.set(row.paymentId, row.authoritativeLocalDate);
     }
     return map;
   })();
@@ -201,14 +173,13 @@ export default function PaymentsPage() {
     const map = new Map<number, CanonicalPaymentReport["rows"][number]["status"]>();
     for (const report of financialReportData) {
       for (const row of report?.rows ?? []) if (row.paymentId !== null) map.set(row.paymentId, row.status);
-      for (const row of report?.unlinkedHistory ?? []) if (row.paymentId !== null) map.set(row.paymentId, row.status);
     }
     return map;
   })();
   const paymentCanonicalRows = (() => {
     const map = new Map<number, CanonicalPaymentReport["rows"][number]>();
     for (const report of financialReportData) {
-      for (const row of [...(report?.rows ?? []), ...(report?.unlinkedHistory ?? [])]) {
+      for (const row of report?.rows ?? []) {
         if (row.paymentId !== null) map.set(row.paymentId, row);
       }
     }
@@ -216,7 +187,7 @@ export default function PaymentsPage() {
   })();
   const defaultLeagueId = reportLeagues.length > 0 ? reportLeagues[0].id : undefined;
   const financialRows = financialReportData.length > 0
-    ? [...(financialReportData[0]?.rows ?? []), ...(financialReportData[0]?.unlinkedHistory ?? [])]
+    ? financialReportData[0]?.rows ?? []
     : [];
 
   // The visible table is projection-owned. Raw payment rows are retained only
@@ -345,9 +316,7 @@ export default function PaymentsPage() {
             isAdmin={isAdmin}
             isPaymentManager={isPaymentManager}
             onRefund={setPaymentToRefund}
-            onDelete={setPaymentToDelete}
             isRefundPending={refundPaymentMutation.isPending}
-            isDeletePending={deletePaymentMutation.isPending}
             leagues={leagues}
             paymentBusinessDates={paymentBusinessDates}
             paymentEvidenceStatuses={paymentEvidenceStatuses}
@@ -375,29 +344,6 @@ export default function PaymentsPage() {
             leagueId={defaultLeagueId}
             paymentManager={isPaymentManager}
           />
-
-          <Dialog open={paymentToDelete !== null} onOpenChange={(open) => { if (!open) setPaymentToDelete(null); }}>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Delete Payment</DialogTitle>
-                <DialogDescription>
-                  Are you sure you want to delete this payment? This action cannot be undone.
-                </DialogDescription>
-              </DialogHeader>
-              <DialogFooter>
-                <Button variant="outline" onClick={() => setPaymentToDelete(null)}>Cancel</Button>
-                <Button
-                  variant="destructive"
-                  onClick={() => paymentToDelete && deletePaymentMutation.mutate(paymentToDelete)}
-                  disabled={deletePaymentMutation.isPending}
-                >
-                  {deletePaymentMutation.isPending ? (
-                    <Loader2 className="size-4 animate-spin" />
-                  ) : "Delete"}
-                </Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
 
           <RefundPaymentDialog
             payment={paymentToRefund}

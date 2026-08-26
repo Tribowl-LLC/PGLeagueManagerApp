@@ -32,6 +32,12 @@ function leagueLocalDate(instant: string, timezone: string | null): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: timezone ?? "UTC", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(instant));
 }
 
+function canonicalOperationType(value: string | null | undefined): CanonicalPaymentRow["operationType"] {
+  if (value === null || value === undefined) return null;
+  if (value === "interactive_charge" || value === "refund" || value === "standing_autopay_charge") return value;
+  throw new CanonicalPaymentReportIncompatibilityError("payment operation uses a retired execution type");
+}
+
 export async function readCanonicalPaymentReport(input: CanonicalPaymentReportInput): Promise<CanonicalPaymentReport> {
   const page = Math.max(1, input.page ?? 1);
   const limit = Math.min(200, Math.max(1, input.limit ?? 50));
@@ -66,6 +72,9 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
     const disputes = operationIds.length === 0 ? [] : await tx.select().from(paymentDisputes).where(and(eq(paymentDisputes.organizationId, input.organizationId), inArray(paymentDisputes.paymentOperationId, operationIds))).orderBy(desc(paymentDisputes.updatedAt));
     const rows: CanonicalPaymentRow[] = allPayments.map((payment) => {
       const linked = allocations.filter((candidate) => candidate.allocation.paymentId === payment.id);
+      if (linked.length === 0 && payment.paymentOperationId === null) {
+        throw new CanonicalPaymentReportIncompatibilityError("payment has no canonical allocation evidence");
+      }
       const operation = operations.find((candidate) => candidate.id === payment.paymentOperationId);
       const dispute = operation ? disputes.find((candidate) => candidate.paymentOperationId === operation.id) : undefined;
       const corrected = linked.some((candidate) => candidate.allocation.state === "voided" && candidate.allocation.supersedesAllocationId !== null);
@@ -86,16 +95,16 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
         authoritativeLocalDate: canonicalDate,
         providerPaymentId: payment.providerPaymentId,
         paymentOperationId: payment.paymentOperationId,
-        operationType: operation?.operationType ?? null,
+        operationType: canonicalOperationType(operation?.operationType),
         operationStatus: operation?.status ?? null,
         allocatedMinor,
         unallocatedMinor: Math.max(0, payment.amount - allocatedMinor),
         reviewRequired,
-        source: linked.length > 0 ? "canonical_allocation" : "unlinked_legacy",
+        source: linked.length > 0 ? "canonical_allocation" : "unresolved_operation",
         unresolved: operation?.status === "provider_unknown" || operation?.status === "reconciliation_required",
         refund: { present: refundAmount > 0, amountMinor: refundAmount, providerRefundId: payment.squareRefundId },
         dispute: { present: Boolean(dispute || payment.disputeId), amountMinor: dispute?.amountMinor ?? (payment.disputeId ? payment.amount : 0), disputeId: dispute?.providerDisputeId ?? payment.disputeId, scope: "transaction", state: dispute?.state ?? null, reviewRequired },
-        receipt: { contractVersion: "payment-receipt/1", availability: payment.receiptUrl ? "available" : "unavailable", receiptUrl: payment.receiptUrl, receiptNumber: payment.receiptNumber, deliveryEvidence: "delivery_not_recorded", source: linked.length > 0 ? "canonical_allocation" : "unlinked_legacy", refund: { present: refundAmount > 0, amountMinor: refundAmount, providerRefundId: payment.squareRefundId }, dispute: { present: Boolean(dispute || payment.disputeId), amountMinor: dispute?.amountMinor ?? 0, disputeId: dispute?.providerDisputeId ?? payment.disputeId, scope: "transaction", state: dispute?.state ?? null, reviewRequired } },
+        receipt: { contractVersion: "payment-receipt/1", availability: payment.receiptUrl ? "available" : "unavailable", receiptUrl: payment.receiptUrl, receiptNumber: payment.receiptNumber, deliveryEvidence: "delivery_not_recorded", source: linked.length > 0 ? "canonical_allocation" : "unresolved_operation", refund: { present: refundAmount > 0, amountMinor: refundAmount, providerRefundId: payment.squareRefundId }, dispute: { present: Boolean(dispute || payment.disputeId), amountMinor: dispute?.amountMinor ?? 0, disputeId: dispute?.providerDisputeId ?? payment.disputeId, scope: "transaction", state: dispute?.state ?? null, reviewRequired } },
         allocations: allocationRows,
         correctionEvidence: corrected ? { status: "corrected", supersedesAllocationIds: linked.filter((candidate) => candidate.allocation.state === "voided" && candidate.allocation.supersedesAllocationId !== null).map((candidate) => candidate.allocation.supersedesAllocationId as string) } : undefined,
         sharedTransaction: payment.combinedChargeGroupId ? { groupKey: payment.combinedChargeGroupId, childCount: 0 } : null,
@@ -152,7 +161,7 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
         authoritativeLocalDate,
         providerPaymentId: operation.providerObjectId,
         paymentOperationId: operation.id,
-        operationType: operation.operationType,
+        operationType: canonicalOperationType(operation.operationType),
         operationStatus: operation.status,
         allocatedMinor: 0,
         unallocatedMinor: snapshot.amountMinor,
@@ -187,9 +196,8 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
       disputedReviewRequiredMinor: rows.filter((row) => row.reviewRequired && row.dispute.present).reduce((sum, row) => sum + row.dispute.amountMinor, 0),
       reviewRequiredMinor: rows.filter((row) => row.reviewRequired).reduce((sum, row) => sum + row.amountMinor, 0),
       unresolvedOperationMinor: rows.filter((row) => row.unresolved).reduce((sum, row) => sum + row.amountMinor, 0),
-      unallocatedLegacyMinor: rows.filter((row) => row.source === "unlinked_legacy").reduce((sum, row) => sum + row.unallocatedMinor, 0),
     };
-    const reportWithoutFingerprint = { contractVersion: "canonical-payment-report/1" as const, orderVersion: "league,business-date,bowler,occurrence,allocation,payment/1" as const, organizationId: input.organizationId, leagueId: input.leagueId, mode: rows.some((row) => row.source === "unlinked_legacy") ? "canonical_with_unlinked_history" as const : "canonical" as const, authoritativeSource: "canonical" as const, asOf, page, limit, totalRows: rows.length, totalTransactions: transactions.length, totals, rows: rows.slice((page - 1) * limit, page * limit), transactions: transactions.slice((page - 1) * limit, page * limit), unlinkedHistory: rows.filter((row) => row.source === "unlinked_legacy"), paymentTiming: { paymentMode: league.paymentMode === "upfront" ? "upfront" as const : "weekly" as const, upfrontDueAt, upfrontDueAtLocal: upfrontDueAt ? leagueLocalDate(upfrontDueAt, timezone) : null, timezone, source: "roster_payment_responsibility" as const } };
+    const reportWithoutFingerprint = { contractVersion: "canonical-payment-report/2" as const, orderVersion: "league,business-date,bowler,occurrence,allocation,payment/2" as const, organizationId: input.organizationId, leagueId: input.leagueId, mode: "canonical" as const, authoritativeSource: "canonical" as const, asOf, page, limit, totalRows: rows.length, totalTransactions: transactions.length, totals, rows: rows.slice((page - 1) * limit, page * limit), transactions: transactions.slice((page - 1) * limit, page * limit), paymentTiming: { paymentMode: league.paymentMode === "upfront" ? "upfront" as const : "weekly" as const, upfrontDueAt, upfrontDueAtLocal: upfrontDueAt ? leagueLocalDate(upfrontDueAt, timezone) : null, timezone, source: "canonical" as const } };
     return { ...reportWithoutFingerprint, fingerprint: canonicalPaymentReportFingerprint(reportWithoutFingerprint) };
   };
   // Production always supplies a transaction-capable Drizzle database. A few

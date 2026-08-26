@@ -311,7 +311,6 @@ router.post("/:id/decline", async (req, res) => {
     if (user.bowlerId !== link.bowlerAId && user.bowlerId !== link.bowlerBId) {
       return sendError(res, "Not your invite", 403, "FORBIDDEN");
     }
-    const prunedSchedules = await links.pruneSchedulesForRemovedLink(link);
     await links.deleteLink(id);
     log.info("audit:bowler_link_decline", {
       actorUserId: user.id,
@@ -319,16 +318,7 @@ router.post("/:id/decline", async (req, res) => {
       linkId: id,
       bowlerAId: link.bowlerAId,
       bowlerBId: link.bowlerBId,
-      prunedScheduleCount: prunedSchedules.length,
     });
-    if (prunedSchedules.length > 0) {
-      log.info("bowler_link_decline:pruned_schedules", {
-        actorUserId: user.id,
-        organizationId: link.organizationId,
-        linkId: id,
-        prunedSchedules,
-      });
-    }
     return sendSuccess(res, { id });
   } catch (err) {
     log.error("decline error", err);
@@ -355,7 +345,6 @@ router.delete("/:id", async (req, res) => {
     if (!isAdmin && !isParty) {
       return sendError(res, "Not allowed", 403, "FORBIDDEN");
     }
-    const prunedSchedules = await links.pruneSchedulesForRemovedLink(link);
     await links.deleteLink(id);
     if (isAdmin) {
       log.info("admin_audit:bowler_link_remove", {
@@ -364,15 +353,6 @@ router.delete("/:id", async (req, res) => {
         linkId: id,
         bowlerAId: link.bowlerAId,
         bowlerBId: link.bowlerBId,
-        prunedScheduleCount: prunedSchedules.length,
-      });
-    }
-    if (prunedSchedules.length > 0) {
-      log.info("bowler_link_remove:pruned_schedules", {
-        actorUserId: user.id,
-        organizationId: link.organizationId,
-        linkId: id,
-        prunedSchedules,
       });
     }
     return sendSuccess(res, { id });

@@ -116,7 +116,7 @@ export function CanonicalPaymentEvidenceTable({ rows, mode, paymentTiming, organ
         {paymentTiming.paymentMode === "upfront" ? "Upfront payment" : "Weekly payment"}
         {paymentTiming.upfrontDueAt ? ` · due ${paymentTiming.upfrontDueAtLocal ?? paymentTiming.upfrontDueAt}` : ""}
         {` · timezone ${paymentTiming.timezone ?? "UTC"}`}
-        {` · ${paymentTiming.source === "canonical_activation" ? "canonical activation" : paymentTiming.source === "roster_payment_responsibility" ? "roster-driven canonical billing" : "legacy league timing"}`}
+        {` · ${paymentTiming.source === "canonical" ? "canonical billing" : "canonical billing"}`}
       </div>}
       {rows.length === 0 ? (
         <p className="text-sm text-muted-foreground">No payment evidence for this page.</p>

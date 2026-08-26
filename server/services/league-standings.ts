@@ -3,7 +3,7 @@ import type {
   CanonicalGameProjection,
   CanonicalScoreProjection,
 } from "@shared/canonical-games-scores";
-import { canonicalJsonStringify } from "@shared/completed-summer-comparator";
+import { canonicalJsonStringify } from "@shared/canonical-json";
 import {
   LEAGUE_STANDINGS_CONTRACT_VERSION,
   LEAGUE_STANDINGS_FINGERPRINT_ALGORITHM,

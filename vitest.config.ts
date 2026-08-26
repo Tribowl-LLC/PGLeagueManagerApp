@@ -108,17 +108,10 @@ const UNIT_NO_DB = [
   'tests/unit/rate-limit-shared-store-coverage.test.ts',
   'tests/unit/subdomain-resolution-consistency.test.ts',
   'tests/unit/scheduled-payment-operation-snapshot.test.ts',
-  'tests/unit/interactive-payment-operation-snapshot.test.ts',
   'tests/unit/location-webhook-retention-route.test.ts',
   'tests/unit/weekly-billing-occurrence-planner.test.ts',
   'tests/unit/canonical-occurrence-generator.test.ts',
   'tests/unit/canonical-collection-groups.test.ts',
-  'tests/unit/canonical-occurrence-compatibility.test.ts',
-  'tests/unit/canonical-occurrence-operator.test.ts',
-  'tests/unit/completed-summer-comparator.test.ts',
-  'tests/unit/completed-summer-operator.test.ts',
-  'tests/unit/completed-summer-operator-lifecycle.test.ts',
-  'tests/unit/completed-summer-materialization.test.ts',
   'tests/unit/fall-draft-generation.test.ts',
   'tests/unit/fall-draft-review.test.ts',
   'tests/unit/account-invitation-state.test.ts',
@@ -129,6 +122,7 @@ const UNIT_NO_DB = [
   'tests/unit/roster-standing-autopay-contract.test.ts',
   'tests/unit/roster-standing-autopay-wake.test.ts',
   'tests/unit/roster-payment-route-boundaries.test.ts',
+  'tests/unit/use-bowler-payment-submit.test.ts',
 ];
 
 /**
@@ -168,8 +162,6 @@ const PARALLEL_ISOLATED = [
   'tests/unit/bowler-sync-flag-on-failure.test.ts',
   'tests/unit/cards-disable-ownership-mismatch.test.ts',
   'tests/unit/change-password-notification.test.ts',
-  'tests/unit/charges-buyer-email-enforcement.test.ts',
-  'tests/unit/charges-receipt-persistence.test.ts',
   'tests/unit/confirm-email-change-no-token-leak.test.ts',
   'tests/unit/csrf-no-token-leak.test.ts', // Task #720 hoist preserved as precaution after sibling regressions (#722). Reverted.
   'tests/unit/customers-route-pnce-422.test.ts',
@@ -182,7 +174,6 @@ const PARALLEL_ISOLATED = [
   // This route contract mocks server/storage and the occurrence service; keep
   // its module registry isolated so parallel charge-route specs cannot reset
   // the hoisted activation/quote fakes mid-request.
-  'tests/unit/interactive-occurrence-quote-api.test.ts',
   'tests/unit/league-mutation-resync.test.ts',
   // Canonical Fall service suites use isolated PostgreSQL transactions but
   // never call an HTTP endpoint, so they do not need a spawned Express app.
@@ -194,21 +185,16 @@ const PARALLEL_ISOLATED = [
   // modules and must not share a mocked module registry with parallel route
   // suites.
   'tests/unit/users-org-required.test.ts',
-  'tests/unit/canonical-occurrence-compatibility-postgres.test.ts',
   'tests/unit/list-routes-filter-validation.test.ts',
   'tests/unit/locked-sweep.test.ts', // Task #720 moved to parallel as factory-safe; reverted defensively after sibling regressions (#722).
   'tests/unit/password-changed-i18n.test.ts',
   'tests/unit/payment-customer-sync.test.ts',
-  'tests/unit/autopay-setup-request-store-postgres.test.ts',
-  'tests/unit/autopay-setup-execution-postgres.test.ts',
   'tests/unit/payment-execution-double-pay.test.ts',
   'tests/unit/payment-execution-error-mapping.test.ts',
   'tests/unit/payment-execution-receipt-warn.test.ts',
-  'tests/unit/payment-lifecycle-receipt-persistence.test.ts',
   // This suite mocks both `server/db` exports, including the advisory-lock
   // pool. Under isolate:false a sibling's narrower db mock can remain cached
   // and remove `pool` before the scheduled-cycle lock is imported.
-  'tests/unit/payment-lifecycle-combined-autopay.test.ts',
   // Storage-only PostgreSQL race suite; it needs an isolated database but no
   // spawned Express process or mutable application singleton state.
   'tests/unit/payment-operations.test.ts',
@@ -216,13 +202,7 @@ const PARALLEL_ISOLATED = [
   'tests/unit/roster-standing-autopay-postgres.test.ts',
   'tests/unit/interactive-payment-operation-executor.test.ts',
   'tests/unit/refund-payment-operation-executor.test.ts',
-  'tests/unit/scheduled-payment-ledger-cutover.test.ts',
-  'tests/unit/payment-provider-error-mapping.test.ts',
-  'tests/unit/f3-workflow-postgres.test.ts',
-  'tests/unit/f4-canonical-autopay-integration-postgres.test.ts',
-  'tests/api/f3-autopay-enabled-router.test.ts',
   'tests/unit/payment-refunds-receipt-dependency.test.ts',
-  'tests/unit/payment-scheduler.test.ts',
   'tests/unit/payment-sync-retry-scheduler.test.ts',
   'tests/unit/payment-sync-retry.test.ts',
   'tests/unit/payments-by-org.test.ts', // Task #720 moved this to `parallel` but its vi.mock of server/storage poisons the shared module registry under isolate:false, breaking sibling api tests (#722). Reverted to parallel-isolated.
@@ -239,7 +219,6 @@ const PARALLEL_ISOLATED = [
   'tests/unit/square-provider-not-configured-422.test.ts',
   'tests/unit/webhook-event-inbox-postgres.test.ts',
   'tests/unit/square-webhook-processing-postgres.test.ts',
-  'tests/unit/use-bowler-payment-submit.test.ts',
 ];
 
 const sharedAlias = {

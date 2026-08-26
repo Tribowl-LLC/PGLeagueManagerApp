@@ -24,7 +24,6 @@ const BowlerScoresPage = lazy(() => import("@/pages/bowler-scores-page"));
 const LeagueScoresPage = lazy(() => import("@/pages/league-scores-page"));
 const PaymentsPage = lazy(() => import("@/pages/payments-page"));
 const PaymentHistoryPage = lazy(() => import("@/pages/payment-history-page"));
-const WeeklyPaymentsPage = lazy(() => import("@/pages/weekly-payments-page"));
 const ReportsPage = lazy(() => import("@/pages/reports-page"));
 const LeaguePastDuePage = lazy(() => import("@/pages/league-past-due-page"));
 const PastDuePage = lazy(() => import("@/pages/past-due-page"));
@@ -165,7 +164,6 @@ function Router() {
         <Route path="/bowlers/:bowlerId/scores">{guard('org', <BowlerScoresPage />)}</Route>
 
         {/* Organization Admin routes */}
-        <Route path="/leagues/:leagueId/weekly-payments">{guard('paymentManager', <WeeklyPaymentsPage />)}</Route>
         <Route path="/payments">{guard('paymentManager', <PaymentsPage />)}</Route>
         <Route path="/reports">{guard('paymentManager', <ReportsPage />)}</Route>
         <Route path="/reports/leagues/:leagueId/past-due">{guard('paymentManager', <LeaguePastDuePage />)}</Route>

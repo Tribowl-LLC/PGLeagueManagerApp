@@ -55,7 +55,6 @@ import {
 import {
   encryptInteractivePaymentSnapshot,
   fingerprintInteractivePaymentSnapshot,
-  fingerprintInteractivePaymentSnapshotAsLegacy,
   reconstructInteractivePaymentSnapshot,
   type InteractivePaymentSemanticSnapshot,
 } from "../services/interactive-payment-operation-snapshot.js";
@@ -1144,6 +1143,14 @@ async function loadInteractivePaymentOperationSnapshot(
     .where(eq(interactivePaymentOperationSnapshots.operationId, operation.id))
     .limit(1);
   if (!stored) return undefined;
+  if (stored.snapshotVersion !== 2 || stored.sourceKind === "legacy" || stored.sourceKind === null) {
+    throw new PaymentOperationValidationError("interactive payment snapshot uses a retired contract");
+  }
+  const canonicalStored = {
+    ...stored,
+    snapshotVersion: 2 as const,
+    sourceKind: stored.sourceKind,
+  };
   const allocationRows = await executor
     .select()
     .from(interactivePaymentOperationAllocations)
@@ -1161,7 +1168,7 @@ async function loadInteractivePaymentOperationSnapshot(
     currency: operation.currency,
     providerName: operation.providerName,
     providerIdempotencyKey: operation.providerIdempotencyKey,
-    stored,
+    stored: canonicalStored,
     allocations: allocationRows.map((row) => ({
       allocationIndex: row.allocationIndex,
       bowlerId: row.bowlerId,
@@ -1255,13 +1262,7 @@ export async function persistInteractivePaymentOperationSnapshot(
     throw new PaymentOperationImmutableMismatchError({ cause: error });
   }
   const fingerprintsMatch = stored
-    && (
-      encrypted.snapshotFingerprint === fingerprintInteractivePaymentSnapshot(stored)
-      || (
-        stored.snapshotVersion === 1
-        && encrypted.snapshotFingerprint === fingerprintInteractivePaymentSnapshotAsLegacy(snapshot)
-      )
-    );
+    && encrypted.snapshotFingerprint === fingerprintInteractivePaymentSnapshot(stored);
   if (!stored || !fingerprintsMatch) {
     throw new PaymentOperationImmutableMismatchError();
   }
@@ -2997,17 +2998,6 @@ export type PaymentOperationWake = {
   status: PaymentOperation["status"];
   attemptCount: number;
   dueAt: string;
-} | {
-  kind: "canonical_plan";
-  organizationId: number;
-  leagueId: number;
-  d2PlanId: string;
-  dueAt: string;
-} | {
-  kind: "schedule";
-  organizationId: number;
-  paymentScheduleId: number;
-  dueAt: string;
 };
 
 /** Work generated only from an active PR2 standing consent.  This is kept
@@ -3187,7 +3177,7 @@ export function buildNextPaymentOperationWakeQuery() {
         END AS due_at
       FROM ${paymentOperations}
       WHERE (
-        ${paymentOperations.operationType} NOT IN ('scheduled_charge', 'canonical_autopay_charge', 'standing_autopay_charge')
+        ${paymentOperations.operationType} IN ('interactive_charge', 'refund')
         AND (
           (${paymentOperations.status} IN ('pending', 'provider_unknown', 'retry_scheduled')
             AND ${paymentOperations.nextAttemptAt} IS NOT NULL)
@@ -3197,19 +3187,6 @@ export function buildNextPaymentOperationWakeQuery() {
       )
       ORDER BY due_at ASC, ${paymentOperations.id} ASC
       LIMIT 1
-    ), next_canonical_plan AS (
-      -- Automatic collection is dormant in PR1. Keep the union's stable
-      -- result shape without referencing the retired F3/D2/F4 tables.
-      SELECT
-        NULL::text AS kind,
-        NULL::integer AS organization_id,
-        NULL::text AS work_id,
-        NULL::text AS operation_type,
-        NULL::text AS status,
-        NULL::integer AS attempt_count,
-        NULL::integer AS league_id,
-        NULL::timestamp AS due_at
-      WHERE FALSE
     )
     SELECT
       kind,
@@ -3220,11 +3197,7 @@ export function buildNextPaymentOperationWakeQuery() {
       attempt_count,
       league_id,
       (due_at AT TIME ZONE 'UTC')::text AS due_at
-    FROM (
-      SELECT * FROM next_operation
-      UNION ALL
-      SELECT * FROM next_canonical_plan
-    ) AS scheduled_payment_work
+    FROM next_operation AS scheduled_payment_work
     ORDER BY scheduled_payment_work.due_at ASC
     LIMIT 1
   `;
@@ -3233,7 +3206,7 @@ export function buildNextPaymentOperationWakeQuery() {
 /** One indexed query for the earliest schedule preparation or operation work. */
 export async function getNextPaymentOperationWake(): Promise<PaymentOperationWake | undefined> {
   const result = await db.execute<{
-    kind: "operation" | "schedule" | "canonical_plan";
+    kind: "operation";
     organization_id: number;
     work_id: string;
     operation_type: PaymentOperation["operationType"] | null;
@@ -3244,24 +3217,6 @@ export async function getNextPaymentOperationWake(): Promise<PaymentOperationWak
   }>(buildNextPaymentOperationWakeQuery());
   const row = result.rows[0];
   if (!row) return undefined;
-  if (row.kind === "canonical_plan") {
-    if (row.league_id === null) throw new PaymentOperationValidationError("canonical plan wake row is incomplete");
-    return {
-      kind: "canonical_plan",
-      organizationId: Number(row.organization_id),
-      leagueId: Number(row.league_id),
-      d2PlanId: row.work_id,
-      dueAt: row.due_at,
-    };
-  }
-  if (row.kind === "schedule") {
-    return {
-      kind: "schedule",
-      organizationId: Number(row.organization_id),
-      paymentScheduleId: Number(row.work_id),
-      dueAt: row.due_at,
-    };
-  }
   if (row.operation_type === null || row.status === null || row.attempt_count === null) {
     throw new PaymentOperationValidationError("operation wake row is incomplete");
   }

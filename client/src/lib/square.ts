@@ -2,29 +2,11 @@ import { loadScript } from "@/lib/utils";
 import { logger } from "@/lib/logger";
 import { csrfFetch } from '@/lib/queryClient';
 import { makeApiError, type ApiErrorLike } from "@/lib/provider-not-configured";
-import type { SquareCard as SquareCardHook } from "@/hooks/use-square-payment";
-import { beginPaymentIntent, paymentRequestHeaders, recoverPaymentIntent } from "@/lib/payment-request-identity";
-import { interactiveIntentScopeSuffix } from "@/lib/interactive-payment-request";
 
 const SDK_LOAD_MAX_ATTEMPTS = 3;
 const SDK_LOAD_RETRY_DELAY_MS = 1000;
 const INIT_MAX_RETRIES = 2;
 const INIT_RETRY_DELAY_MS = 2000;
-
-interface PaymentResult {
-  id: string;
-  status: string;
-  savedCardId?: string | null;
-  card?: {
-    last4: string;
-    brand: string;
-  };
-  cardOnFile?: {
-    id: string;
-    last4: string;
-    brand: string;
-  };
-}
 
 interface SquareCustomer {
   id: string;
@@ -312,186 +294,6 @@ export async function tokenizeCard(
   throw makePaymentError('Please check your card details and try again.', 'TOKENIZATION_ERROR');
 }
 
-// task #514: text-cleanup applied to upstream messages so any
-// developer-only Square jargon (e.g. "Square API Error:" prefix or a
-// raw location ID) never reaches the user. Returns the cleaned
-// sentence ready for direct display.
-function cleanPaymentMessage(message: string): string {
-  return message
-    .replace(/Square API Error:/i, 'Payment Error:')
-    .replace(/location_id=/i, 'location ')
-    .replace(/\bLY5C3TE48WEXX\b/, 'configuration');
-}
-
-export async function createPayment(
-  amount: number,
-  cardInstance: SquareCardHook,
-  bowlerId: number,
-  leagueId: number,
-  storeCard = false,
-  buyerEmail?: string,
-  requestKey?: string,
-  occurrenceAllocations?: Array<{ obligationId: string; amountMinor: number }>,
-  occurrenceQuoteFingerprint?: string,
-): Promise<PaymentResult> {
-  try {
-    if (!cardInstance) {
-      throw makePaymentError(
-        'Please complete the card details before proceeding',
-        'INITIALIZATION_ERROR',
-      );
-    }
-
-    if (amount <= 0 || !Number.isInteger(amount)) {
-      throw makePaymentError(
-        'Invalid payment amount. Please enter a valid amount.',
-        'INVALID_AMOUNT',
-      );
-    }
-
-    const effectiveRequestKey = requestKey ?? (
-      typeof window === 'undefined'
-        ? crypto.randomUUID()
-        : beginPaymentIntent(`square:${leagueId}:${bowlerId}:${amount}:new:${storeCard}${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`)
-    );
-    let result;
-
-    try {
-      result = await cardInstance.tokenize();
-    } catch (tokenError) {
-      try {
-        result = await cardInstance.tokenize({
-          verificationDetails: {
-            amount: amount.toString(),
-            currencyCode: 'USD',
-            intent: 'CHARGE',
-            billingContact: {
-              familyName: 'Bowler',
-              givenName: 'League',
-              email: 'bowler@example.com',
-              country: 'US',
-              city: 'City',
-              addressLines: ['Address Line 1'],
-              postalCode: '12345'
-            },
-            customerInitiated: true,
-            sellerKeyedIn: false
-          }
-        });
-      } catch (secondTokenError) {
-        if (storeCard) {
-          try {
-            result = await cardInstance.tokenize({ cardOnFile: true });
-          } catch {
-            throw makePaymentError(
-              'Please check your card details and try again.',
-              'TOKENIZATION_ERROR',
-            );
-          }
-        } else {
-          throw secondTokenError;
-        }
-      }
-    }
-
-    if (result.token && (!('status' in result) || result.status === 'OK')) {
-      const paymentData = {
-        sourceId: result.token,
-        amount,
-        bowlerId,
-        leagueId,
-        storeCard,
-        sourceKind: 'new_card',
-        ...(buyerEmail ? { buyerEmail } : {}),
-        ...(occurrenceAllocations ? { occurrenceAllocations } : {}),
-        ...(occurrenceQuoteFingerprint ? { occurrenceQuoteFingerprint } : {}),
-      };
-
-      let response: Response;
-      try {
-        response = await csrfFetch('/api/payments-provider/payments', {
-          method: 'POST',
-          headers: paymentRequestHeaders(effectiveRequestKey),
-          body: JSON.stringify(paymentData),
-        });
-      } catch (networkError) {
-        // The token is intentionally not persisted. Recover the durable
-        // operation by key before surfacing a retry prompt, so the caller
-        // never retokenizes a new source for an unknown provider outcome.
-        const recovered = await recoverPaymentIntent(effectiveRequestKey).catch(() => null);
-        if (!recovered) throw networkError;
-        response = recovered;
-      }
-
-      // task #511: parse the body defensively so a non-JSON error
-      // response (e.g. an upstream proxy returning HTML) can't bubble
-      // up as a SyntaxError whose technical `.message` would land in
-      // the user-facing toast.
-      let responseData:
-        | (Partial<PaymentResult> & { [key: string]: unknown })
-        | null = null;
-      let responseTextFallback: string | null = null;
-      try {
-        responseData = await response.clone().json();
-      } catch {
-        responseData = null;
-        try {
-          responseTextFallback = await response.text();
-        } catch {
-          responseTextFallback = null;
-        }
-      }
-
-      if (!response.ok) {
-        // task #511: standardise on `makeApiError` so `.message`,
-        // `.code`, and `.status` are populated the same way the admin
-        // pages do it. Prefer the structured body, fall back to the
-        // raw text body for non-JSON responses, then run the message
-        // through `cleanPaymentMessage` to strip Square-developer
-        // jargon. Always ensure a `PAYMENT_FAILED` fallback `.code`.
-        const fallbackMessage =
-          (responseTextFallback ?? '').trim() || 'Payment processing failed';
-        const err = makeApiError(responseData, response.status, fallbackMessage);
-        err.message = cleanPaymentMessage(err.message);
-        if (!err.code) err.code = 'PAYMENT_FAILED';
-        throw err;
-      }
-
-      if (!responseData || !responseData.status || responseData.status !== 'COMPLETED') {
-        throw makePaymentError(
-          "We couldn't complete your payment. Please try again.",
-          'PAYMENT_INCOMPLETE',
-        );
-      }
-
-      return responseData as PaymentResult;
-    } else {
-      throw makePaymentError(
-        'Please check your card details and try again.',
-        'TOKENIZATION_ERROR',
-      );
-    }
-  } catch (error) {
-    // task #511: re-throw any already-typed payment error verbatim so
-    // its `.code` (esp. PROVIDER_NOT_CONFIGURED), `.status`, and
-    // friendly message survive. Anything else gets a clean
-    // PAYMENT_FAILED wrap so raw network/SDK errors don't leak as
-    // JSON-shaped or stack-trace `error.message` strings into a toast.
-    if (error instanceof Error && (error as ApiErrorLike).code) {
-      throw error;
-    }
-    if (error instanceof Error && error.message) {
-      const wrapped = new Error(cleanPaymentMessage(error.message)) as ApiErrorLike;
-      wrapped.code = 'PAYMENT_FAILED';
-      throw wrapped;
-    }
-    throw makePaymentError(
-      'Unable to process payment. Please try again later.',
-      'PAYMENT_FAILED',
-    );
-  }
-}
-
 export async function createSquareCustomer(name: string, email: string, teamId: number): Promise<SquareCustomer> {
   try {
     const response = await csrfFetch('/api/payments-provider/customers', {
@@ -503,15 +305,13 @@ export async function createSquareCustomer(name: string, email: string, teamId: 
     });
 
     if (!response.ok) {
-      // task #545: mirror `createPayment`'s `if (!response.ok)` shape
-      // so `.message`, `.code`, and `.status` are populated identically
-      // for both helpers. Parse JSON defensively, fall back to the raw
+      // Parse JSON defensively, falling back to the raw
       // text body for non-JSON responses (so we surface upstream
       // proxy/HTML error pages cleanly), and always attach a
       // `CUSTOMER_CREATION_FAILED` fallback `.code` when the body
       // didn't carry a structured one. The raw text body is the
       // user-visible message — no "Failed to create Square customer:"
-      // prefix is added, matching `createPayment`.
+      // prefix is added.
       let errorBody: unknown = null;
       let responseTextFallback: string | null = null;
       try {
@@ -536,10 +336,7 @@ export async function createSquareCustomer(name: string, email: string, teamId: 
   } catch (error) {
     // task #545: re-throw any already-typed API error verbatim so its
     // `.code` (e.g. PROVIDER_NOT_CONFIGURED) and `.status` survive.
-    // For unexpected (network/SDK) failures, wrap as
-    // `CUSTOMER_CREATION_FAILED` with a clean `.message` — same shape
-    // as `createPayment`'s `PAYMENT_FAILED` outer catch — so callers
-    // branching on `.code` keep working through this layer.
+    // Unexpected failures are wrapped as `CUSTOMER_CREATION_FAILED`.
     if (error instanceof Error && (error as ApiErrorLike).code) {
       throw error;
     }

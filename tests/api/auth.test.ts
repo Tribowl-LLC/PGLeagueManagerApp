@@ -57,11 +57,6 @@ describe('Authentication', () => {
       expect(status).toBe(401);
     });
 
-    it('blocks unauthenticated requests to /api/payment-schedules', async () => {
-      const { status } = await apiGet('/api/payment-schedules');
-      expect(status).toBe(401);
-    });
-
     it('blocks unauthenticated requests to /api/admin routes', async () => {
       const { status } = await apiGet('/api/admin/reports');
       expect(status).toBe(401);

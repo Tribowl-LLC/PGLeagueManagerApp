@@ -24,7 +24,7 @@ import {
   type LeagueGamesReadContract,
   type LeagueScoresReadContract,
 } from "@shared/canonical-games-scores";
-import { canonicalJsonStringify } from "@shared/completed-summer-comparator";
+import { canonicalJsonStringify } from "@shared/canonical-json";
 import type { LeagueOccurrenceScheduleReadContract } from "@shared/league-occurrence-schedule";
 import { db } from "../db.js";
 import { lockLeagueSchedule, type LeagueScheduleTransaction } from "../storage/league-schedule-lock.js";

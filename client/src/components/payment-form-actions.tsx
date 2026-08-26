@@ -54,7 +54,7 @@ export function PaymentFormActions({
           // BUYER_EMAIL_REQUIRED; mirrored here so the user
           // never sees an avoidable round-trip.
           (paymentType === "credit_card" && !!selectedBowlerId && !bowlerHasEmail && !receiptEmail.trim())
-          || (paymentType === "credit_card" && occurrenceReadiness !== 'legacy' && occurrenceReadiness !== 'ready')
+          || (paymentType === "credit_card" && occurrenceReadiness !== 'ready')
         }
       >
         {isSubmitting ? (

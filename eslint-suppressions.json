@@ -19,11 +19,6 @@
       "count": 1
     }
   },
-  "client/src/components/payment-status-section.tsx": {
-    "@tanstack/query/no-unstable-deps": {
-      "count": 1
-    }
-  },
   "client/src/components/reorder-teams-dialog.tsx": {
     "@typescript-eslint/no-non-null-assertion": {
       "count": 1
@@ -50,11 +45,6 @@
     },
     "react-hooks/exhaustive-deps": {
       "count": 1
-    }
-  },
-  "client/src/hooks/use-weekly-payments.ts": {
-    "@tanstack/query/no-unstable-deps": {
-      "count": 3
     }
   },
   "client/src/lib/league-filter-utils.ts": {
@@ -120,11 +110,6 @@
       "count": 1
     }
   },
-  "client/src/pages/weekly-payments-page.tsx": {
-    "@typescript-eslint/no-non-null-assertion": {
-      "count": 6
-    }
-  },
   "scripts/check-org-isolation-coverage.ts": {
     "@typescript-eslint/no-non-null-assertion": {
       "count": 1
@@ -179,19 +164,6 @@
     },
     "@typescript-eslint/no-non-null-assertion": {
       "count": 4
-    }
-  },
-  "server/services/payment-execution.ts": {
-    "@typescript-eslint/no-non-null-assertion": {
-      "count": 1
-    },
-    "@typescript-eslint/no-unnecessary-type-assertion": {
-      "count": 1
-    }
-  },
-  "server/services/payment-scheduler.ts": {
-    "@typescript-eslint/no-non-null-assertion": {
-      "count": 2
     }
   },
   "server/services/payment-sync-retry.ts": {
@@ -495,16 +467,6 @@
       "count": 1
     }
   },
-  "tests/unit/charges-buyer-email-enforcement.test.ts": {
-    "no-restricted-syntax": {
-      "count": 1
-    }
-  },
-  "tests/unit/charges-receipt-persistence.test.ts": {
-    "no-restricted-syntax": {
-      "count": 1
-    }
-  },
   "tests/unit/csrf-no-token-leak.test.ts": {
     "no-restricted-syntax": {
       "count": 8
@@ -555,16 +517,6 @@
     },
     "no-restricted-syntax": {
       "count": 6
-    }
-  },
-  "tests/unit/payment-execution-receipt-warn.test.ts": {
-    "no-restricted-syntax": {
-      "count": 1
-    }
-  },
-  "tests/unit/payment-lifecycle-receipt-persistence.test.ts": {
-    "no-restricted-syntax": {
-      "count": 1
     }
   },
   "tests/unit/payment-refunds-receipt-dependency.test.ts": {
@@ -665,7 +617,7 @@
   },
   "tests/unit/use-bowler-payment-submit.test.ts": {
     "no-restricted-syntax": {
-      "count": 3
+      "count": 2
     }
   }
 }

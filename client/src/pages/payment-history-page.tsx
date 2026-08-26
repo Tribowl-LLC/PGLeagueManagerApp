@@ -10,7 +10,7 @@ import { useSquarePayment } from "@/hooks/use-square-payment";
 import { usePaymentProvider } from "@/hooks/use-payment-provider";
 import { useWalletPayments } from "@/hooks/use-wallet-payments";
 import { useSavedCardDefault } from "@/hooks/use-saved-card-default";
-import { createPayment, tokenizeCard } from "@/lib/square";
+import { tokenizeCard } from "@/lib/square";
 import { logger } from "@/lib/logger";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, csrfFetch } from '@/lib/queryClient';
@@ -28,7 +28,6 @@ import { NoLeaguesView } from "./payment-history-page/no-leagues-view";
 import { NoLeagueView } from "./payment-history-page/no-league-view";
 import { PaymentHistoryContent } from "./payment-history-page/payment-history-content";
 import { assertRosterPaymentSucceeded, beginPaymentIntent, clearPaymentIntent, isTerminalRosterPaymentFailure, paymentRequestHeaders, paymentRequestWithRecovery } from "@/lib/payment-request-identity";
-import { buildInteractiveOccurrenceFields, interactiveIntentScopeSuffix } from "@/lib/interactive-payment-request";
 import { resolveInteractiveFinancialRead } from "@/lib/financial-read-contract";
 import { invalidatePaymentHistoryFinancials, paymentHistoryFinancialQueryKey } from "@/lib/payment-history-financial-query";
 import type { InteractiveOccurrenceReadiness } from "@/components/interactive-occurrence-selector";
@@ -223,7 +222,7 @@ export default function PaymentHistoryPage() {
   const canonicalPaymentReport = canonicalPaymentReportResponse?.data;
   const canonicalPayments = useMemo(() => {
     const rawById = new Map(bowlerPayments.map((payment) => [payment.id, payment]));
-    return [...(canonicalPaymentReport?.rows ?? []), ...(canonicalPaymentReport?.unlinkedHistory ?? [])]
+    return [...(canonicalPaymentReport?.rows ?? [])]
       .filter((row) => row.paymentId !== null && row.bowlerId === bowlerId)
       .map((row) => {
         if (row.paymentId !== null) {
@@ -237,7 +236,7 @@ export default function PaymentHistoryPage() {
   }, [bowlerPayments, canonicalPaymentReport, bowlerId]);
   const paymentBusinessDates = new Map<number, string>();
   const paymentEvidenceStatuses = new Map<number, CanonicalPaymentRow["status"]>();
-  for (const row of [...(canonicalPaymentReport?.rows ?? []), ...(canonicalPaymentReport?.unlinkedHistory ?? [])]) {
+  for (const row of canonicalPaymentReport?.rows ?? []) {
     if (row.paymentId !== null) {
       paymentBusinessDates.set(row.paymentId, row.authoritativeLocalDate);
       paymentEvidenceStatuses.set(row.paymentId, row.status);
@@ -275,7 +274,7 @@ export default function PaymentHistoryPage() {
 
   const handleWalletPayment = useCallback(async (token: string, walletType: 'apple_pay' | 'google_pay') => {
     if (resolvedFinancialRead.status === "unavailable" || loadingFinancialRead || financialReadError) return;
-    if (occurrenceReadiness !== 'legacy' && occurrenceReadiness !== 'ready') return;
+    if (occurrenceReadiness !== 'ready') return;
     if (!bowlerId || !leagueId || !dialogAmountCents) return;
     // same inline email override as the card-form path so
     // Apple Pay / Google Pay charges also trigger Square's hosted
@@ -293,65 +292,31 @@ export default function PaymentHistoryPage() {
       return;
     }
     const overrideEmail = !bowlerEmail && trimmedReceiptEmail ? trimmedReceiptEmail : undefined;
+    if (!league || league.id !== leagueId) return;
     try {
       setIsWalletProcessing(true);
       const exactObligationIds = [...new Set((occurrenceAllocations ?? []).map((row) => row.obligationId))];
-      if (league?.payingLineupSize != null) {
-        if (exactObligationIds.length === 0) throw new Error("Wallet payments for roster-configured leagues require exact obligations. Refresh and select the obligations to pay.");
-        const quoteResponse = await csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-quote/2`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ obligationIds: exactObligationIds, allocations: occurrenceAllocations }) });
-        const quoteBody = await quoteResponse.json();
-        if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw new Error(quoteBody.error?.message || "Exact payment obligations are unavailable.");
-        const requestKey = walletRequestKeyRef.current ?? beginPaymentIntent(`roster-wallet:${league.id}:${exactObligationIds.join(",")}:${quoteBody.data.fingerprint}`);
-        const exactResponse = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-charge/2`, { method: "POST", headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" }, body: JSON.stringify({ obligationIds: exactObligationIds, allocations: occurrenceAllocations, payerBowlerId: quoteBody.data.payerBowlerId, sourceId: token, sourceKind: "wallet", buyerEmail: overrideEmail ?? bowlerEmail ?? null, storeCard: false, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }) }), league.organizationId, league.id);
-        const exactBody = await exactResponse.json();
-        const rosterStatus = exactBody.data?.status ?? exactBody.status;
-        if (!exactResponse.ok) {
-          if (isTerminalRosterPaymentFailure(rosterStatus)) walletRequestKeyRef.current = null;
-          throw new Error(exactBody.error?.message || "Wallet payment failed.");
-        }
-        if (isTerminalRosterPaymentFailure(rosterStatus)) walletRequestKeyRef.current = null;
-        assertRosterPaymentSucceeded(rosterStatus);
-        walletRequestKeyRef.current = null;
-        toast({ title: "Payment Successful", description: `${walletType === "apple_pay" ? "Apple Pay" : "Google Pay"} payment completed.` });
-        return;
-      }
-      const paymentScope = `history-wallet:${bowlerId}:${leagueId}:${dialogAmountCents}${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
+      if (exactObligationIds.length === 0) throw new Error("Wallet payments require exact obligations. Refresh and select the obligations to pay.");
+      const quoteResponse = await csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-quote/2`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ obligationIds: exactObligationIds, allocations: occurrenceAllocations }) });
+      const quoteBody = await quoteResponse.json();
+      if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw new Error(quoteBody.error?.message || "Exact payment obligations are unavailable.");
+      const paymentScope = `history-wallet:${league.id}:${exactObligationIds.join(",")}:${quoteBody.data.fingerprint}`;
       const requestKey = walletRequestKeyRef.current ?? beginPaymentIntent(paymentScope);
-      const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch('/api/payments-provider/payments', {
-        method: 'POST',
-        headers: paymentRequestHeaders(requestKey),
-        body: JSON.stringify({
-          sourceId: token,
-          amount: dialogAmountCents,
-          bowlerId,
-          leagueId,
-          storeCard: false,
-          sourceKind: 'wallet',
-          ...(overrideEmail ? { buyerEmail: overrideEmail } : {}),
-          ...buildInteractiveOccurrenceFields(occurrenceAllocations, occurrenceQuoteFingerprint),
-        }),
-      }), league?.organizationId);
+      const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-charge/2`, { method: "POST", headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" }, body: JSON.stringify({ obligationIds: exactObligationIds, allocations: occurrenceAllocations, payerBowlerId: quoteBody.data.payerBowlerId, sourceId: token, sourceKind: "wallet", buyerEmail: overrideEmail ?? bowlerEmail ?? null, storeCard: false, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }) }), league.id);
       const data = await response.json();
+      const rosterStatus = data.data?.status ?? data.status;
       if (!response.ok) {
-        throw makeApiError(data, response.status, `Payment failed (HTTP ${response.status})`);
+        if (isTerminalRosterPaymentFailure(rosterStatus)) walletRequestKeyRef.current = null;
+        throw new Error(data.error?.message || "Wallet payment failed.");
       }
-      if (data.status !== 'COMPLETED') {
-        throw new Error('Your payment is still processing. Use payment recovery before entering card details again.');
-      }
+      if (isTerminalRosterPaymentFailure(rosterStatus)) walletRequestKeyRef.current = null;
+      assertRosterPaymentSucceeded(rosterStatus);
       clearPaymentIntent(paymentScope);
       walletRequestKeyRef.current = null;
       const walletLabel = walletType === 'apple_pay' ? 'Apple Pay' : 'Google Pay';
-      const dialogLabel = payDialogType === 'pastdue' ? 'past due amount' : 'remaining balance';
-      if (data.deduplicated) {
-        toast({ title: "Already Processed", description: `This ${walletLabel} payment was already recorded.` });
-      } else {
-        toast({ title: "Payment Successful", description: `${walletLabel} payment of ${formatCurrency(dialogAmountCents)} ${dialogLabel} completed.` });
-      }
+      toast({ title: "Payment Successful", description: `${walletLabel} payment completed.` });
       await invalidatePaymentHistoryFinancials(queryClient, leagueId, bowlerId);
       setPayDialogType(null);
-      queryClient.invalidateQueries({ queryKey: ["/api/payments", { bowlerId, leagueId }] });
-      queryClient.invalidateQueries({ queryKey: [`/api/bowlers/${bowlerId}/details`] });
-      queryClient.invalidateQueries({ queryKey: [`/api/payments-provider/cards/${bowlerId}`] });
     } catch (error) {
       logger.error('Wallet Payment', 'Payment failed', error);
       if (isProviderNotConfiguredError(error)) {
@@ -365,14 +330,15 @@ export default function PaymentHistoryPage() {
     } finally {
       setIsWalletProcessing(false);
     }
-  }, [bowlerId, leagueId, league?.id, dialogAmountCents, payDialogType, toast, bowlerEmail, receiptEmail, navigate, league?.locationId, league?.organizationId, league?.payingLineupSize, occurrenceAllocations, occurrenceQuoteFingerprint, occurrenceReadiness, resolvedFinancialRead.status, loadingFinancialRead, financialReadError]);
+  }, [bowlerId, leagueId, league, dialogAmountCents, toast, bowlerEmail, receiptEmail, navigate, occurrenceAllocations, occurrenceReadiness, resolvedFinancialRead.status, loadingFinancialRead, financialReadError]);
 
   const beginWalletPayment = useCallback(() => {
     if (resolvedFinancialRead.status === "unavailable" || loadingFinancialRead || financialReadError) return;
-    if (occurrenceReadiness !== 'legacy' && occurrenceReadiness !== 'ready') return;
+    if (occurrenceReadiness !== 'ready') return;
     if (!bowlerId || !leagueId || !dialogAmountCents) return;
+    const exactObligationIds = [...new Set((occurrenceAllocations ?? []).map((row) => row.obligationId))];
     walletRequestKeyRef.current = beginPaymentIntent(
-      `history-wallet:${bowlerId}:${leagueId}:${dialogAmountCents}${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`,
+      `history-wallet:${leagueId}:${exactObligationIds.join(",")}:${occurrenceQuoteFingerprint ?? ""}`,
     );
   }, [bowlerId, dialogAmountCents, leagueId, occurrenceAllocations, occurrenceQuoteFingerprint, occurrenceReadiness, resolvedFinancialRead.status, loadingFinancialRead, financialReadError]);
 
@@ -391,7 +357,7 @@ export default function PaymentHistoryPage() {
     locationId: league?.locationId,
     amountCents: dialogAmountCents,
     enabled: !!payDialogType && !!league?.locationId && supportsWallets
-      && (occurrenceReadiness === 'ready' || occurrenceReadiness === 'legacy'),
+      && occurrenceReadiness === 'ready',
     onPaymentStarted: beginWalletPayment,
     onTokenReceived: handleWalletPayment,
     onError: (error) => toast({ title: "Wallet Payment Error", description: error, variant: "destructive" }),
@@ -408,7 +374,7 @@ export default function PaymentHistoryPage() {
       toast({ title: "Payment unavailable", description: "Financial evidence is still loading or requires review.", variant: "destructive" });
       return;
     }
-    if (occurrenceReadiness !== 'legacy' && occurrenceReadiness !== 'ready') {
+    if (occurrenceReadiness !== 'ready') {
       toast({ title: "Payment unavailable", description: occurrenceReadiness === 'error'
         ? "Current obligations could not be loaded. Refresh before paying."
         : "Select obligations totaling the payment amount before paying.", variant: "destructive" });
@@ -439,91 +405,45 @@ export default function PaymentHistoryPage() {
       // one inline so Square's hosted receipt fires for this charge.
       const trimmedReceiptEmail = receiptEmail.trim();
       const overrideEmail = !bowlerEmail && trimmedReceiptEmail ? trimmedReceiptEmail : undefined;
+      if (!league || league.id !== leagueId) throw new Error("Payment league context is unavailable.");
 
-      // Roster-authoritative leagues always charge the exact quoted
-      // obligations. The historical amount endpoint remains available only
-      // for archive-compatible, non-roster leagues.
-      if (!league) throw new Error("League payment context is unavailable.");
-      if (league.payingLineupSize != null) {
-        const exactObligationIds = [...new Set((occurrenceAllocations ?? []).map((row) => row.obligationId))];
-        if (exactObligationIds.length === 0) throw new Error("Select one or more exact payment obligations before paying.");
-        const quoteResponse = await csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-quote/2`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ obligationIds: exactObligationIds, allocations: occurrenceAllocations }),
-        });
-        const quoteBody = await quoteResponse.json().catch(() => ({}));
-        if (!quoteResponse.ok || !quoteBody.data?.fingerprint || !Number.isSafeInteger(quoteBody.data?.amountMinor)) {
-          throw new Error(quoteBody.error?.message || "Exact payment obligations are unavailable. Refresh and try again.");
-        }
-        const sourceId = cardMode === "saved"
-          ? selectedSavedCardId
-          : card ? await tokenizeCard(card) : "";
-        if (!sourceId) throw new Error("A payment source is required.");
-        const paymentScope = `history-roster:${league.id}:${exactObligationIds.join(",")}:${quoteBody.data.fingerprint}:${cardMode}`;
-        const requestKey = beginPaymentIntent(paymentScope);
-        const exactResponse = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-charge/2`, {
-          method: "POST",
-          headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" },
-          body: JSON.stringify({
-            obligationIds: exactObligationIds,
-            allocations: occurrenceAllocations,
-            payerBowlerId: quoteBody.data.payerBowlerId,
-            sourceId,
-            sourceKind: cardMode === "saved" ? "saved_card" : "new_card",
-            buyerEmail: overrideEmail ?? null,
-            storeCard: cardMode === "new" ? storeCard : false,
-            idempotencyKey: requestKey,
-            requestFingerprint: quoteBody.data.fingerprint,
-          }),
-        }), league.organizationId, league.id);
-        const exactBody = await exactResponse.json().catch(() => ({}));
-        if (!exactResponse.ok) throw makeApiError(exactBody, exactResponse.status, "Payment failed");
-        assertRosterPaymentSucceeded(exactBody.data?.status ?? exactBody.status);
-        clearPaymentIntent(paymentScope);
-        toast({ title: "Payment Successful", description: `${formatCurrency(quoteBody.data.amountMinor)} ${dialogLabel} has been paid.` });
-        await invalidatePaymentHistoryFinancials(queryClient, leagueId, bowlerId);
-        setPayDialogType(null);
-        return;
+      const exactObligationIds = [...new Set((occurrenceAllocations ?? []).map((row) => row.obligationId))];
+      if (exactObligationIds.length === 0) throw new Error("Select one or more exact payment obligations before paying.");
+      const quoteResponse = await csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-quote/2`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ obligationIds: exactObligationIds, allocations: occurrenceAllocations }),
+      });
+      const quoteBody = await quoteResponse.json().catch(() => ({}));
+      if (!quoteResponse.ok || !quoteBody.data?.fingerprint || !Number.isSafeInteger(quoteBody.data?.amountMinor)) {
+        throw new Error(quoteBody.error?.message || "Exact payment obligations are unavailable. Refresh and try again.");
       }
-
-      if (cardMode === 'saved' && selectedSavedCardId) {
-        const paymentScope = `history:${bowlerId}:${leagueId}:${dialogAmount}:saved${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
-        const requestKey = beginPaymentIntent(paymentScope);
-          const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch('/api/payments-provider/payments', {
-          method: 'POST',
-          headers: paymentRequestHeaders(requestKey),
-          body: JSON.stringify({
-            sourceId: selectedSavedCardId,
-            amount: dialogAmount,
-            bowlerId,
-            leagueId,
-            storeCard: false,
-            sourceKind: 'saved_card',
-            ...(overrideEmail ? { buyerEmail: overrideEmail } : {}),
-            ...buildInteractiveOccurrenceFields(occurrenceAllocations, occurrenceQuoteFingerprint),
-          }),
-          }), league?.organizationId);
-        const responseData = await response.json();
-        if (!response.ok) {
-          throw makeApiError(responseData, response.status, 'Payment failed');
-        }
-        if (responseData.status !== 'COMPLETED') {
-          throw new Error('Your payment is still processing. Use payment recovery before entering card details again.');
-        }
-        clearPaymentIntent(paymentScope);
-      } else {
-        const paymentScope = `history:${bowlerId}:${leagueId}:${dialogAmount}:new:${storeCard}${interactiveIntentScopeSuffix(occurrenceAllocations, occurrenceQuoteFingerprint)}`;
-        const requestKey = beginPaymentIntent(paymentScope);
-        if (!card) throw new Error('Please enter your card details.');
-        await createPayment(dialogAmount, card, bowlerId, leagueId, storeCard, overrideEmail, requestKey, occurrenceAllocations, occurrenceQuoteFingerprint);
-        clearPaymentIntent(paymentScope);
-        if (storeCard) {
-          queryClient.invalidateQueries({ queryKey: [`/api/payments-provider/cards/${bowlerId}`] });
-        }
-      }
-
-      toast({ title: "Payment Successful", description: `${formatCurrency(dialogAmount)} ${dialogLabel} has been paid.` });
+      const sourceId = cardMode === "saved"
+        ? selectedSavedCardId
+        : card ? await tokenizeCard(card) : "";
+      if (!sourceId) throw new Error("A payment source is required.");
+      const paymentScope = `history-roster:${league.id}:${exactObligationIds.join(",")}:${quoteBody.data.fingerprint}:${cardMode}`;
+      const requestKey = beginPaymentIntent(paymentScope);
+      const exactResponse = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-charge/2`, {
+        method: "POST",
+        headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" },
+        body: JSON.stringify({
+          obligationIds: exactObligationIds,
+          allocations: occurrenceAllocations,
+          payerBowlerId: quoteBody.data.payerBowlerId,
+          sourceId,
+          sourceKind: cardMode === "saved" ? "saved_card" : "new_card",
+          buyerEmail: overrideEmail ?? null,
+          storeCard: cardMode === "new" ? storeCard : false,
+          idempotencyKey: requestKey,
+          requestFingerprint: quoteBody.data.fingerprint,
+        }),
+      }), league.id);
+      const exactBody = await exactResponse.json().catch(() => ({}));
+      if (!exactResponse.ok) throw makeApiError(exactBody, exactResponse.status, "Payment failed");
+      assertRosterPaymentSucceeded(exactBody.data?.status ?? exactBody.status);
+      clearPaymentIntent(paymentScope);
+      toast({ title: "Payment Successful", description: `${formatCurrency(quoteBody.data.amountMinor)} ${dialogLabel} has been paid.` });
       await invalidatePaymentHistoryFinancials(queryClient, leagueId, bowlerId);
       setPayDialogType(null);
       queryClient.invalidateQueries({ queryKey: ["/api/payments", { bowlerId, leagueId }] });
@@ -658,7 +578,7 @@ export default function PaymentHistoryPage() {
       onCanonicalReportPageChange={setCanonicalReportPage}
       paymentBusinessDates={paymentBusinessDates}
       paymentEvidenceStatuses={paymentEvidenceStatuses}
-      canonicalRows={[...(canonicalPaymentReport?.rows ?? []), ...(canonicalPaymentReport?.unlinkedHistory ?? [])]}
+      canonicalRows={canonicalPaymentReport?.rows ?? []}
       canonicalMode={canonicalPaymentReport?.mode}
       canonicalPaymentTiming={canonicalPaymentReport?.paymentTiming}
       occurrenceAmountMinor={checkoutAvailable ? dialogAmountCents : 0}

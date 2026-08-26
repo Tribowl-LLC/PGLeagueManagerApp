@@ -5,10 +5,9 @@
  * `?organizationId` guard on `POST /api/bowlers`) for every guard
  * #454 swept onto the admin surface.
  *
- * #454 added the original two regression cases at this layer for
- * the highest-blast-radius routes (`POST /api/payments` bowlerId
- * and `PATCH /api/organization-admin/users/:id/location`). #518
- * extends the same pattern to the rest of the routes #454 touched
+ * The suite covers the highest-blast-radius administrative FK routes,
+ * including `PATCH /api/organization-admin/users/:id/location`. #518
+ * extends the same pattern to the rest of the routes it touched
  * (`POST /api/leagues`, `PATCH /api/leagues/:id`, `POST /api/locations`,
  * `POST /api/org-admin/users/:id/add`, `POST /api/org-admin/users/create`)
  * so a future refactor that quietly removes one of those guards
@@ -116,65 +115,6 @@ describe('Task #454 — admin-supplied FK id existence checks', () => {
     if (leagueOrgAId) {
       await db.delete(leagues).where(eq(leagues.id, leagueOrgAId));
     }
-  });
-
-  describe('POST /api/payments', () => {
-    it('rejects the retired inferred payment route before FK lookup', async () => {
-      // 2_000_000_000 is well above any seeded bowler id but well within
-      // int range, so it parses cleanly and the only failure mode is
-      // the existence check (no FK fallthrough). Mirrors the missing-
-      // org id pattern in tests/api/bowler-creation-org-required.test.ts.
-      const missingBowlerId = 2_000_000_000;
-      const { status, data } = await apiPost(
-        '/api/payments',
-        {
-          bowlerId: missingBowlerId,
-          leagueId: leagueOrgAId,
-          amount: 100,
-          weekOf: '2025-01-06 00:00:00',
-          type: 'cash',
-          status: 'paid',
-        },
-        orgAAdmin,
-      );
-
-      expect(status).toBe(409);
-      expect(data.success).toBe(false);
-      expect(data.error?.code).toBe('CANONICAL_ALLOCATION_REQUIRED');
-
-      // Belt-and-suspenders: prove no row was inserted under the
-      // missing bowler id. If the existence check ever regresses,
-      // the FK fallthrough would leave the DB in the same state
-      // (the insert would have aborted), so this primarily catches
-      // the case where someone "fixes" the 500 by silently coercing
-      // the bowler id to something else.
-      const orphans = await db
-        .select({ id: payments.id })
-        .from(payments)
-        .where(eq(payments.bowlerId, missingBowlerId));
-      expect(orphans).toHaveLength(0);
-    });
-
-    it('rejects inferred cash entry even when the bowler exists', async () => {
-      // Closes the matrix so a regression that turns the existence
-      // check into a deny-everything guard would also be caught.
-      const { status, data } = await apiPost<{ id: number; bowlerId: number }>(
-        '/api/payments',
-        {
-          bowlerId,
-          leagueId: leagueOrgAId,
-          amount: 100,
-          weekOf: '2025-01-06 00:00:00',
-          type: 'cash',
-          status: 'paid',
-        },
-        orgAAdmin,
-      );
-
-      expect(status).toBe(409);
-      expect(data.success).toBe(false);
-      expect(data.error?.code).toBe('CANONICAL_ALLOCATION_REQUIRED');
-    });
   });
 
   describe('PATCH /api/organization-admin/users/:id/location', () => {

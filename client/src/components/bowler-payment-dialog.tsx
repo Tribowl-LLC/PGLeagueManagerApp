@@ -170,7 +170,7 @@ export const BowlerPaymentDialog: FC<BowlerPaymentDialogProps> = ({
             <button
               type="button"
               onClick={onApplePayClick}
-              disabled={isWalletProcessing || (occurrenceReadiness !== 'legacy' && occurrenceReadiness !== 'ready')}
+              disabled={isWalletProcessing || occurrenceReadiness !== 'ready'}
               style={{ ...APPLE_PAY_BUTTON_BASE_STYLE, opacity: isWalletProcessing ? 0.5 : 1 }}
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="19" height="24" viewBox="0 0 17 20" fill="white" style={{ position: 'relative', top: '-1px' }}>
@@ -204,7 +204,7 @@ export const BowlerPaymentDialog: FC<BowlerPaymentDialogProps> = ({
               type="button"
               aria-label="Pay with Google Pay"
               onClick={onGooglePayClick}
-              disabled={isWalletProcessing || (occurrenceReadiness !== 'legacy' && occurrenceReadiness !== 'ready')}
+              disabled={isWalletProcessing || occurrenceReadiness !== 'ready'}
               style={{ ...GOOGLE_PAY_BUTTON_BASE_STYLE, opacity: isWalletProcessing ? 0.5 : 1 }}
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="41" height="17" viewBox="0 0 41 17" fill="none">
@@ -332,7 +332,7 @@ export const BowlerPaymentDialog: FC<BowlerPaymentDialogProps> = ({
               // receipt" input is empty. Square will hard-reject the
               // request server-side; gating here gives instant UX.
               (!bowlerHasEmail && !receiptEmail.trim())
-              || (occurrenceReadiness !== 'legacy' && occurrenceReadiness !== 'ready')
+              || occurrenceReadiness !== 'ready'
             }
             className="w-full"
           >
