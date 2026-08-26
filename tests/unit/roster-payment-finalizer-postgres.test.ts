@@ -21,7 +21,7 @@ import {
   teams,
   users,
 } from "@shared/schema";
-import { getTestDb } from "../setup/test-db";
+import { getTestDb, getTestPool } from "../setup/test-db";
 import { deleteOrganization } from "../../server/storage/organizations";
 import { updateBowler } from "../../server/storage/bowlers";
 import { materializeRosterPaymentOccurrenceInTransaction } from "../../server/services/roster-payment-materializer";
@@ -111,7 +111,7 @@ async function createOccurrence() {
     idempotencyKey: `roster-finalizer-publish-${suffix}-${occurrenceOrdinal}`,
     requestFingerprint: `roster-finalizer-fingerprint-${occurrenceOrdinal}`,
   });
-  const startAt = `2038-02-${String(occurrenceOrdinal + 1).padStart(2, "0")}T19:00:00.000Z`;
+  const startAt = new Date(Date.UTC(2038, 1, occurrenceOrdinal + 1, 19, 0, 0)).toISOString();
   const [occurrence] = await db.insert(leagueOccurrences).values({
     organizationId,
     leagueId,
@@ -979,6 +979,106 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
     await expect(recoverRosterPaymentOperationByRequestKey({ organizationId, leagueId: leagueId + 1, requestKey, actorUserId })).rejects.toMatchObject({ code: "NOT_FOUND", status: 404 });
     const recovered = await recoverRosterPaymentOperationByRequestKey({ organizationId, leagueId, requestKey, actorUserId });
     expect(recovered).toMatchObject({ id: operation.id, status: "succeeded" });
+  });
+
+  it("waits for an in-flight preparation commit before recovering by request key", async () => {
+    const fixture = await createOccurrence();
+    const operationId = randomUUID();
+    const requestKey = `recovery-wait-${randomUUID()}`;
+    const providerPaymentId = `recovery-wait-provider-${operationId}`;
+    let preparationReady!: () => void;
+    let preparationFailed!: (error: unknown) => void;
+    let releasePreparation!: () => void;
+    const preparationReadyPromise = new Promise<void>((resolve, reject) => {
+      preparationReady = resolve;
+      preparationFailed = reject;
+    });
+    const preparationGate = new Promise<void>((resolve) => {
+      releasePreparation = resolve;
+    });
+
+    const preparation = db.transaction(async (tx) => {
+      await lockLeagueSchedule(tx, organizationId, leagueId);
+      await tx.insert(paymentOperations).values({
+        id: operationId,
+        organizationId,
+        authorizingUserId: actorUserId,
+        operationType: "interactive_charge",
+        targetKey: `interactive-charge:${requestKey}`,
+        leagueId,
+        amountMinor: fixture.obligation.amountMinor,
+        currency: "USD",
+        requestFingerprint: `lvpayreq:v1:${"4".repeat(64)}`,
+        providerIdempotencyKey: `recovery-wait-${operationId}`.slice(0, 45),
+        providerName: "square",
+        providerObjectId: providerPaymentId,
+        status: "succeeded",
+        nextAttemptAt: null,
+        completedAt: "2038-05-01T20:00:00.000Z",
+      });
+      await tx.insert(paymentOperationRosterSnapshots).values({
+        operationId,
+        organizationId,
+        leagueId,
+        snapshotVersion: 1,
+        amountMinor: fixture.obligation.amountMinor,
+        currency: "USD",
+        obligations: [{ id: fixture.obligation.id, responsibilityId: fixture.responsibility.id, responsibilityVersion: fixture.responsibility.version, payerBowlerId: fixture.obligation.payerBowlerId, amountMinor: fixture.obligation.amountMinor }],
+        snapshotFingerprint: `lvroster:recovery-wait:${"5".repeat(64)}`.slice(0, 128),
+      });
+      await tx.insert(paymentOperationRosterSnapshotItems).values({
+        operationId,
+        organizationId,
+        leagueId,
+        obligationId: fixture.obligation.id,
+        allocationIndex: 0,
+        amountMinor: fixture.obligation.amountMinor,
+        state: "reserved",
+      });
+      await tx.insert(payments).values({
+        bowlerId: fixture.obligation.payerBowlerId,
+        leagueId,
+        amount: fixture.obligation.amountMinor,
+        weekOf: fixture.obligation.dueAt,
+        status: "paid",
+        type: "square",
+        providerPaymentId,
+        paymentOperationId: operationId,
+        paymentOperationAllocationIndex: 0,
+        idempotencyKey: `${operationId}:0`,
+      });
+      preparationReady();
+      await preparationGate;
+    }).catch((error) => {
+      preparationFailed(error);
+      throw error;
+    });
+
+    await preparationReadyPromise;
+    const recovery = recoverRosterPaymentOperationByRequestKey({ organizationId, leagueId, requestKey, actorUserId });
+    let recoverySettled = false;
+    const recoveryWithState = recovery.finally(() => { recoverySettled = true; });
+    const lockClient = await getTestPool().connect();
+    try {
+      const deadline = Date.now() + 2_000;
+      let waiting = false;
+      while (!waiting && Date.now() < deadline) {
+        const result = await lockClient.query<{ waiting: boolean }>(
+          "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND classid = $1::oid AND objid = $2::oid AND granted = false) AS waiting",
+          [organizationId, leagueId],
+        );
+        waiting = result.rows[0]?.waiting === true;
+        if (!waiting) await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(waiting).toBe(true);
+      expect(recoverySettled).toBe(false);
+    } finally {
+      releasePreparation();
+      await preparation;
+      lockClient.release();
+    }
+
+    await expect(recoveryWithState).resolves.toMatchObject({ id: operationId, status: "succeeded" });
   });
 
   it("blocks an interactive provider cutoff when a reserved roster version is stale", async () => {

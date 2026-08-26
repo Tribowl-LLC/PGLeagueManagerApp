@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "../db.js";
-import { getGeneralInteractivePaymentOperationForOrganization } from "../storage/payment-operations.js";
+import { getGeneralInteractiveTargetKey } from "../storage/payment-operations.js";
 import { paymentOperations, paymentOperationRosterSnapshots } from "@shared/schema";
 import { lockLeagueSchedule } from "../storage/league-schedule-lock.js";
 import {
@@ -29,12 +29,22 @@ export async function recoverRosterPaymentOperationByRequestKey(input: {
   requestKey: string;
   actorUserId: number;
 }) {
-  const operation = await getGeneralInteractivePaymentOperationForOrganization(input.organizationId, input.requestKey);
-  if (
-    !operation
-    || operation.leagueId !== input.leagueId
-    || operation.authorizingUserId !== input.actorUserId
-  ) {
+  // Preparation holds this same league lock until the operation, snapshot,
+  // and reservation commit. Looking up the request key inside a transaction
+  // after acquiring the lock prevents a transport-loss recovery from seeing
+  // a false 404 against preparation's pre-commit MVCC snapshot.
+  const operation = await db.transaction(async (tx) => {
+    await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
+    const [candidate] = await tx.select().from(paymentOperations).where(and(
+      eq(paymentOperations.organizationId, input.organizationId),
+      eq(paymentOperations.leagueId, input.leagueId),
+      eq(paymentOperations.operationType, "interactive_charge"),
+      eq(paymentOperations.authorizingUserId, input.actorUserId),
+      eq(paymentOperations.targetKey, getGeneralInteractiveTargetKey(input.requestKey)),
+    )).limit(1).for("share");
+    return candidate;
+  });
+  if (!operation) {
     throw new RosterPaymentRecoveryError("NOT_FOUND", "Payment operation not found", 404);
   }
   return recoverRosterPaymentOperation({
