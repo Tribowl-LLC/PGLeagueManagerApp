@@ -293,7 +293,7 @@ export default function PaymentHistoryPage() {
       const quoteResponse = await csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-quote/2`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ amountMinor: dialogAmountCents, payerBowlerId: bowlerId }) });
       const quoteBody = await quoteResponse.json();
       if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw new Error(quoteBody.error?.message || "Payment allocation is unavailable.");
-      const paymentScope = `history-wallet:${league.id}:${bowlerId}:${dialogAmountCents}:${quoteBody.data.fingerprint}`;
+      const paymentScope = `history-wallet:${league.id}:${bowlerId}:${dialogAmountCents}`;
       const requestKey = walletRequestKeyRef.current ?? beginPaymentIntent(paymentScope);
       const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-charge/2`, { method: "POST", headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" }, body: JSON.stringify({ amountMinor: dialogAmountCents, payerBowlerId: quoteBody.data.payerBowlerId ?? bowlerId, sourceId: token, sourceKind: "wallet", buyerEmail: overrideEmail ?? bowlerEmail ?? null, storeCard: false, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }) }), league.id);
       const data = await response.json();

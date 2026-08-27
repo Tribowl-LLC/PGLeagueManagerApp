@@ -278,10 +278,10 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
     const overrideEmail = !selected?.email && trimmedReceiptEmail ? trimmedReceiptEmail : undefined;
     try {
       if (!leagueInfo || leagueInfo.id !== currentLeagueId) throw new Error("Payment league context is unavailable.");
-      const quoteResponse = await csrfFetch(`/api/financials/leagues/${currentLeagueId}/interactive-obligation-quote/2`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ amountMinor: amount }) });
+      const quoteResponse = await csrfFetch(`/api/financials/leagues/${currentLeagueId}/interactive-obligation-quote/2`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ amountMinor: amount, payerBowlerId: bowlerId }) });
       const quoteBody = await quoteResponse.json();
       if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw new Error(quoteBody.error?.message || "Payment allocation is unavailable.");
-      const paymentScope = `admin-wallet:${currentLeagueId}:${bowlerId}:${amount}:${quoteBody.data.fingerprint}`;
+      const paymentScope = `admin-wallet:${currentLeagueId}:${bowlerId}:${amount}`;
       const requestKey = walletRequestKeyRef.current ?? beginPaymentIntent(paymentScope);
       const exactResponse = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${currentLeagueId}/interactive-obligation-charge/2`, { method: "POST", headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" }, body: JSON.stringify({ amountMinor: amount, payerBowlerId: quoteBody.data.payerBowlerId ?? bowlerId, sourceId: token, sourceKind: "wallet", buyerEmail: overrideEmail ?? selected?.email ?? null, storeCard: false, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }) }), currentLeagueId);
       const exactBody = await exactResponse.json();

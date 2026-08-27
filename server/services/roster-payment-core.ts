@@ -113,8 +113,8 @@ async function completeFinancialCommand(tx: RosterPaymentTransaction, input: { o
   ));
 }
 
-function quoteFingerprint(obligations: Array<{ id: string; amountMinor: number; dueAt: string; payerBowlerId: number; pairedCollectionReady?: boolean }>): string {
-  const value = obligations.map((row) => [row.id, row.amountMinor, row.dueAt, row.payerBowlerId, row.pairedCollectionReady === true]).join("|");
+function quoteFingerprint(obligations: Array<{ id: string; amountMinor: number; dueAt: string; effectiveCollectionAt: string; payerBowlerId: number; pairedCollectionReady?: boolean }>): string {
+  const value = obligations.map((row) => [row.id, row.amountMinor, row.dueAt, row.effectiveCollectionAt, row.payerBowlerId, row.pairedCollectionReady === true]).join("|");
   return `lvrosterquote:v1:${createHash("sha256").update(value).digest("hex")}`;
 }
 
@@ -682,6 +682,7 @@ export type FifoPaymentCandidate = BaseFifoPaymentCandidate & {
   reservedMinor: number;
   reviewRequired: boolean;
   pairedCollectionReady: boolean;
+  effectiveCollectionAt: string;
 };
 
 /** Pure FIFO allocator used by the transaction-bound quote and finalizer. */
@@ -776,19 +777,22 @@ async function fifoCandidatesInTransaction(
     }
   }
   const triggerAtByGroup = new Map<string, string>();
-  const triggerOccurrences = groupRows.filter((row) => row.role === "trigger").map((row) => row.occurrenceId);
-  const triggerObligations = triggerOccurrences.length === 0 ? [] : await tx.select({ occurrenceId: paymentObligations.occurrenceId, dueAt: paymentObligations.dueAt }).from(paymentObligations).where(and(
-    eq(paymentObligations.organizationId, input.organizationId),
-    eq(paymentObligations.leagueId, input.leagueId),
-    eq(paymentObligations.payerBowlerId, input.payerBowlerId),
-    inArray(paymentObligations.occurrenceId, triggerOccurrences),
+  const groupIds = [...new Set(groupRows.map((row) => row.groupId))];
+  const triggerEvidence = groupIds.length === 0 ? [] : await tx.select({ groupId: canonicalCollectionGroupMembers.groupId, startAt: leagueOccurrences.startAt }).from(canonicalCollectionGroupMembers).innerJoin(leagueOccurrences, and(
+    eq(leagueOccurrences.id, canonicalCollectionGroupMembers.occurrenceId),
+    eq(leagueOccurrences.organizationId, input.organizationId),
+    eq(leagueOccurrences.leagueId, input.leagueId),
+  )).where(and(
+    eq(canonicalCollectionGroupMembers.organizationId, input.organizationId),
+    eq(canonicalCollectionGroupMembers.leagueId, input.leagueId),
+    eq(canonicalCollectionGroupMembers.role, "trigger"),
+    eq(canonicalCollectionGroupMembers.active, true),
+    inArray(canonicalCollectionGroupMembers.groupId, groupIds),
   ));
-  for (const row of groupRows) {
-    if (row.role === "trigger") {
-      const obligation = triggerObligations.find((candidate) => candidate.occurrenceId === row.occurrenceId);
-      if (obligation) triggerAtByGroup.set(row.groupId, new Date(obligation.dueAt).toISOString());
-    }
+  if (triggerEvidence.length !== groupIds.length || triggerEvidence.some((row, index) => triggerEvidence.findIndex((candidate) => candidate.groupId === row.groupId) !== index)) {
+    throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "Each published collection group must have exactly one trigger occurrence", 503);
   }
+  for (const row of triggerEvidence) triggerAtByGroup.set(row.groupId, new Date(row.startAt).toISOString());
   const allocations = await tx.select({ obligationId: paymentAllocations.obligationId, amountMinor: paymentAllocations.amountMinor, reviewRequired: paymentAllocations.reviewRequired }).from(paymentAllocations).where(and(
     eq(paymentAllocations.organizationId, input.organizationId),
     eq(paymentAllocations.leagueId, input.leagueId),
@@ -832,6 +836,7 @@ async function fifoCandidatesInTransaction(
       reservedMinor: reservedById.get(row.id) ?? 0,
       reviewRequired: reviewById.get(row.id) ?? false,
       pairedCollectionReady,
+      effectiveCollectionAt: member?.role === "paired" && pairedCollectionReady && triggerAt !== undefined ? triggerAt : new Date(row.dueAt).toISOString(),
     };
   });
 }
@@ -860,7 +865,7 @@ export async function quoteInteractiveObligations(input: FifoQuoteInput & { orga
       if (!row) throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "The FIFO allocation references missing obligation evidence", 503);
       return { ...row, selectedMinor: allocation.amountMinor };
     });
-    const fingerprintRows = selectedObligations.map((row) => ({ id: row.id, amountMinor: row.selectedMinor, dueAt: row.dueAt, payerBowlerId: row.payerBowlerId, pairedCollectionReady: row.pairedCollectionReady }));
+    const fingerprintRows = selectedObligations.map((row) => ({ id: row.id, amountMinor: row.selectedMinor, dueAt: row.dueAt, effectiveCollectionAt: row.effectiveCollectionAt, payerBowlerId: row.payerBowlerId, pairedCollectionReady: row.pairedCollectionReady }));
     return { contractVersion: "interactive-obligation-quote/2" as const, automaticContractVersion: "automatic-fifo-payment/1" as const, organizationId: input.organizationId, leagueId: input.leagueId, currency: "USD" as const, payerBowlerId, amountMinor, obligations: selectedObligations, allocations, fingerprint: quoteFingerprint(fingerprintRows) };
   };
   return input.transaction ? run(input.transaction) : db.transaction(run);
@@ -1130,7 +1135,7 @@ export async function correctCanonicalAllocation(input: { organizationId: number
       requestFingerprint: input.request.requestFingerprint,
     });
     const [payment] = await tx.select().from(payments).where(and(eq(payments.id, input.request.paymentId), eq(payments.organizationId, input.organizationId), eq(payments.leagueId, input.leagueId))).limit(1).for("share");
-    if (!payment || (payment.type !== "cash" && payment.type !== "check")) {
+    if (!payment || (payment.type !== "cash" && payment.type !== "check") || payment.status !== "paid" || payment.paymentOperationId !== null || payment.providerPaymentId !== null || payment.refundedAt !== null || payment.squareRefundId !== null || payment.disputeId !== null || payment.disputedAt !== null) {
       throw new RosterPaymentError("PROVIDER_ALLOCATION_IMMUTABLE", "Provider payment evidence requires refund or reconciliation; it cannot be directly corrected", 409);
     }
     if (input.request.requestFingerprint !== canonicalCorrectionFingerprint(input.request)) throw new RosterPaymentError("INVALID_FINGERPRINT", "The correction request fingerprint is invalid", 422);
@@ -1156,7 +1161,7 @@ export async function correctCanonicalAllocation(input: { organizationId: number
       const total = active.reduce((sum, row) => sum + row.amountMinor, 0);
       await tx.update(paymentObligations).set({ state: total >= obligation.amountMinor ? "settled" : total > 0 ? "partially_settled" : "open" }).where(and(eq(paymentObligations.id, obligation.id), eq(paymentObligations.organizationId, input.organizationId), eq(paymentObligations.leagueId, input.leagueId)));
     }
-    const result = { contractVersion: "canonical-correction/3" as const, mode: "void_only" as const, payment, voidEvidence, voidedAllocations: allocations, restoredObligationIds: obligationIds };
+    const result = { contractVersion: "canonical-correction/3" as const, mode: "void_only" as const, payment: { ...payment, status: "voided" as const }, voidEvidence, voidedAllocations: allocations, restoredObligationIds: obligationIds };
     await completeFinancialCommand(tx, { organizationId: input.organizationId, leagueId: input.leagueId, commandType: "roster_payment.void_payment", idempotencyKey: input.request.idempotencyKey, result });
     return result;
   });

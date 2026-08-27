@@ -87,12 +87,10 @@ export function buildPaymentConditions(filters: AllPaymentFilters, options?: { e
     )`);
   }
   if (filters.createdAt !== undefined) {
-    const startDate = new Date(filters.createdAt);
-    startDate.setHours(0, 0, 0, 0);
-    const endDate = new Date(filters.createdAt);
-    endDate.setHours(23, 59, 59, 999);
-    // Date filtering is explicitly over the immutable tender timestamp.
-    conditions.push(sql`${payments.createdAt} BETWEEN ${startDate} AND ${endDate}`);
+    const businessDate = filters.createdAt.toISOString().slice(0, 10);
+    // Compare the immutable tender timestamp in each league's business
+    // timezone; the server timezone must not affect a calendar-day filter.
+    conditions.push(sql`(${payments.createdAt} AT TIME ZONE COALESCE((SELECT ${leagues.timezone} FROM ${leagues} WHERE ${leagues.id} = ${payments.leagueId}), 'UTC'))::date = ${businessDate}::date`);
   }
 
   return conditions;

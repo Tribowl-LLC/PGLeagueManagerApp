@@ -639,7 +639,7 @@ export async function standingPaymentRows(input: { organizationId: number; opera
   if (!snapshot) throw new StandingAutopayError("SNAPSHOT_NOT_FOUND", "The standing operation snapshot is unavailable", 409);
   const first = snapshot.items[0];
   if (!first) return [];
-  return [{ allocationIndex: 0, values: { organizationId: input.organizationId, bowlerId: first.obligation.payerBowlerId, leagueId: snapshot.operation.leagueId ?? snapshot.binding.leagueId, amount: snapshot.operation.amountMinor, status: "paid" as const, type: snapshot.operation.providerName === "square" ? "square" as const : "credit_card" as const, providerPaymentId: input.providerPaymentId, receiptUrl: input.receiptUrl ?? undefined, receiptNumber: input.receiptNumber ?? undefined, receiptEmailMissing: false, paidByUserId: input.actorUserId, notes: "Roster standing automatic payment" } }];
+  return [{ allocationIndex: 0, values: { organizationId: input.organizationId, bowlerId: snapshot.consent.payerBowlerId, leagueId: snapshot.operation.leagueId ?? snapshot.binding.leagueId, amount: snapshot.operation.amountMinor, status: "paid" as const, type: snapshot.operation.providerName === "square" ? "square" as const : "credit_card" as const, providerPaymentId: input.providerPaymentId, receiptUrl: input.receiptUrl ?? undefined, receiptNumber: input.receiptNumber ?? undefined, receiptEmailMissing: false, paidByUserId: input.actorUserId, notes: "Roster standing automatic payment" } }];
 }
 
 export async function validateStandingConsentForDispatchInTransaction(tx: StandingTx, input: { organizationId: number; leagueId: number; operationId: string; leagueIdAlreadyLocked?: boolean }) {

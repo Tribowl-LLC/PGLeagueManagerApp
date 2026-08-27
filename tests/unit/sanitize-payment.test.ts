@@ -28,7 +28,6 @@ const SENSITIVE_NAME_ALLOWLIST = new Set<string>([
 // nullable-only stripe columns) back via `Object.assign` below.
 function makeFullyPopulatedPayment(): Payment {
   const parsed = insertPaymentSchema.parse({
-    organizationId: 1,
     bowlerId: 7,
     leagueId: 11,
     amount: 2500,
@@ -54,6 +53,7 @@ function makeFullyPopulatedPayment(): Payment {
   return Object.assign(
     {
       id: 1,
+      organizationId: 1,
       checkNumber: null,
       createdAt: '2024-01-01T00:00:00.000Z',
     },

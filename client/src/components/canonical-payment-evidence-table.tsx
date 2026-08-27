@@ -45,10 +45,11 @@ export function CanonicalPaymentEvidenceTable({ rows, mode, paymentTiming, organ
   };
   const correctionFingerprint = async (payload: {
     paymentId: number;
+    correctionMode: "void_only";
     reason: string;
   }) => {
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(payload)));
-    return `lvcorrection:v2:${Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("")}`;
+    return `lvcorrection:v3:${Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("")}`;
   };
   const submitCorrection = async (row: CanonicalPaymentRow) => {
     const trimmedReason = reason.trim();
@@ -64,6 +65,7 @@ export function CanonicalPaymentEvidenceTable({ rows, mode, paymentTiming, organ
       const idempotencyKey = crypto.randomUUID();
       const fingerprintPayload = {
         paymentId: row.paymentId,
+        correctionMode: "void_only" as const,
         reason: trimmedReason,
       };
       const response = await csrfFetch(`/api/financials/leagues/${row.leagueId}/canonical/corrections/1`, {

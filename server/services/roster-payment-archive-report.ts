@@ -110,16 +110,15 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
         || operation.amountMinor !== payment.amount
         || activeTotal !== payment.amount
         || payment.providerPaymentId !== operation.providerObjectId
-        || activeLinked.some((candidate) => candidate.obligation.payerBowlerId !== payment.bowlerId)
       );
       const reviewRequired = invalidCanonicalAllocation
         || linked.some((candidate) => candidate.allocation.reviewRequired)
         || Boolean(dispute && !["WON", "CLOSED"].includes(dispute.state));
       const allocationRows = linked.map((candidate) => ({ allocationId: candidate.allocation.id, obligationId: candidate.obligation.id, occurrenceId: candidate.obligation.occurrenceId, bowlerId: candidate.obligation.payerBowlerId, amountMinor: candidate.allocation.amountMinor, currency: candidate.allocation.currency, state: candidate.allocation.state === "active" ? "active" as const : "voided" as const }));
       const allocatedMinor = allocationRows.filter((candidate) => candidate.state === "active").reduce((sum, candidate) => sum + candidate.amountMinor, 0);
-      const manualGrossMismatch = payment.paymentOperationId === null && allocatedMinor !== payment.amount;
+      const manualGrossMismatch = !voidEvidence && payment.paymentOperationId === null && allocatedMinor !== payment.amount;
       const refundAmount = payment.refundedAt || payment.squareRefundId ? payment.amount : 0;
-      const canonicalDate = linked[0]?.occurrence.authoritativeLocalDate ?? leagueLocalDate(payment.createdAt, league.timezone);
+      const canonicalDate = leagueLocalDate(payment.createdAt, league.timezone);
       const row: CanonicalPaymentRow = {
         paymentId: payment.id,
         leagueId: payment.leagueId,
@@ -147,7 +146,7 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
         sharedTransaction: null,
         // paidByUserId is a users.id actor and must never be interpreted as a
         // bowler identity. The recipient/payer comes from the canonical
-        // obligation allocation; receipt authorization separately checks the
+        // tender parent; receipt authorization separately checks the
         // payment actor against users.id.
         initiatingPayerBowlerId: linked[0]?.obligation.payerBowlerId ?? null,
       };

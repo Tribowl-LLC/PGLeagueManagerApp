@@ -69,7 +69,6 @@ describe('Zod 4 migration contracts', () => {
 
   it('preserves payment defaults and parsed submission output', () => {
     const payment = insertPaymentSchema.parse({
-      organizationId: 1,
       bowlerId: 1,
       leagueId: 2,
       amount: 2500,

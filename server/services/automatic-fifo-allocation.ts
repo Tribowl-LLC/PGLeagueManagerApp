@@ -5,6 +5,7 @@ export type FifoPaymentCandidate = {
   memberOrdinal: number;
   billingOrdinal: number;
   occurrenceId: string;
+  effectiveCollectionAt: string;
   reservedMinor: number;
   reviewRequired: boolean;
   pairedCollectionReady: boolean;
@@ -31,7 +32,7 @@ export function allocateAutomaticFifoPayment(
       if (new Date(row.dueAt).getTime() <= now) return 0;
       return row.pairedCollectionReady ? 1 : 2;
     };
-    return rank(a) - rank(b) || a.dueAt.localeCompare(b.dueAt) || a.memberOrdinal - b.memberOrdinal || a.billingOrdinal - b.billingOrdinal || a.occurrenceId.localeCompare(b.occurrenceId) || a.id.localeCompare(b.id);
+    return rank(a) - rank(b) || a.effectiveCollectionAt.localeCompare(b.effectiveCollectionAt) || a.memberOrdinal - b.memberOrdinal || a.billingOrdinal - b.billingOrdinal || a.occurrenceId.localeCompare(b.occurrenceId) || a.id.localeCompare(b.id);
   });
   let remaining = amountMinor;
   const allocations: Array<{ obligationId: string; amountMinor: number }> = [];

@@ -7,6 +7,7 @@ import { bowlers } from "./bowlers";
 import { leagues } from "./leagues";
 import { users } from "./users";
 import { organizations } from "./organizations";
+import { paymentOperations } from "./payment-operations";
 
 export const payments = pgTable("payments", {
   id: serial("id").primaryKey(),
@@ -80,6 +81,11 @@ export const payments = pgTable("payments", {
   paymentOperationUnique: uniqueIndex("payments_operation_unique")
     .on(table.paymentOperationId)
     .where(sql`${table.paymentOperationId} IS NOT NULL`),
+  paymentOperationTenantFk: foreignKey({
+    name: "payments_payment_operation_tenant_fk",
+    columns: [table.paymentOperationId, table.organizationId, table.leagueId],
+    foreignColumns: [paymentOperations.id, paymentOperations.organizationId, paymentOperations.leagueId],
+  }).onDelete("restrict"),
   amountCheck: check("payments_amount_check", sql`${table.amount} > 0`),
   currencyCheck: check("payments_currency_check", sql`${table.currency} = 'USD'`),
 }));
@@ -105,6 +111,7 @@ export const insertPaymentSchema = basePaymentSchema.extend({
 }).omit({
   id: true,
   createdAt: true,
+  organizationId: true,
   // Operation linkage is an internal, token-fenced finalization concern and
   // must never be accepted from ordinary payment API payloads.
   paymentOperationId: true,

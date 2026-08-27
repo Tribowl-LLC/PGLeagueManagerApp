@@ -46,7 +46,9 @@ BEGIN
     OR EXISTS (SELECT 1 FROM payment_disputes)
     OR EXISTS (SELECT 1 FROM payment_dispute_notifications)
     OR EXISTS (SELECT 1 FROM payment_dispute_replay_audits)
-    OR EXISTS (SELECT 1 FROM webhook_events WHERE provider_payment_id IS NOT NULL)
+    OR EXISTS (SELECT 1 FROM webhook_events WHERE provider_payment_id IS NOT NULL
+      OR lower(provider_object_type) ~ '(payment|refund|dispute)'
+      OR lower(event_type) ~ '(payment|refund|dispute)')
   THEN
     RAISE EXCEPTION '0035 refused: payment/provider evidence exists; no destructive reshaping or backfill is allowed';
   END IF;
@@ -106,6 +108,7 @@ CREATE UNIQUE INDEX "payment_voids_tenant_identity_unique" ON "payment_voids" US
 CREATE UNIQUE INDEX "payment_voids_payment_unique" ON "payment_voids" USING btree ("organization_id","league_id","payment_id");--> statement-breakpoint
 ALTER TABLE "payments" ADD CONSTRAINT "payments_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "payments" ADD CONSTRAINT "payments_league_tenant_fk" FOREIGN KEY ("league_id","organization_id") REFERENCES "public"."leagues"("id","organization_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "payments" ADD CONSTRAINT "payments_payment_operation_tenant_fk" FOREIGN KEY ("payment_operation_id","organization_id","league_id") REFERENCES "public"."payment_operations"("id","organization_id","league_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "payments" ADD CONSTRAINT "payments_bowler_tenant_fk" FOREIGN KEY ("bowler_id","organization_id") REFERENCES "public"."bowlers"("id","organization_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 CREATE UNIQUE INDEX "payments_tenant_identity_unique" ON "payments" USING btree ("id","organization_id","league_id");--> statement-breakpoint
 ALTER TABLE "payment_allocations" ADD CONSTRAINT "payment_allocations_payment_fk" FOREIGN KEY ("payment_id","organization_id","league_id") REFERENCES "public"."payments"("id","organization_id","league_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
@@ -131,6 +134,10 @@ DECLARE
   parent_payment_id integer;
   parent_amount integer;
   parent_status text;
+  parent_currency text;
+  parent_provider_id text;
+  parent_operation_id uuid;
+  operation_row record;
   allocation_count integer;
   active_count integer;
   voided_count integer;
@@ -150,13 +157,27 @@ BEGIN
   ELSE
     parent_payment_id := COALESCE((to_jsonb(NEW)->>'payment_id')::integer, (to_jsonb(OLD)->>'payment_id')::integer);
   END IF;
-  SELECT amount, status
-    INTO parent_amount, parent_status
+  SELECT amount, status, currency, provider_payment_id, payment_operation_id
+    INTO parent_amount, parent_status, parent_currency, parent_provider_id, parent_operation_id
     FROM payments
    WHERE id = parent_payment_id
    FOR UPDATE;
   IF parent_amount IS NULL THEN
     RAISE EXCEPTION 'allocation payment is missing from its tenant scope';
+  END IF;
+  IF parent_operation_id IS NOT NULL THEN
+    SELECT operation_type, amount_minor, currency, provider_object_id
+      INTO operation_row
+      FROM payment_operations WHERE id = parent_operation_id FOR SHARE;
+    IF operation_row IS NULL
+      OR operation_row.operation_type NOT IN ('interactive_charge', 'standing_autopay_charge')
+      OR operation_row.amount_minor <> parent_amount
+      OR operation_row.currency <> parent_currency
+      OR operation_row.provider_object_id IS NULL
+      OR operation_row.provider_object_id <> parent_provider_id
+    THEN
+      RAISE EXCEPTION 'payment operation evidence does not match its tender parent';
+    END IF;
   END IF;
   SELECT EXISTS (SELECT 1 FROM payment_voids WHERE payment_id = parent_payment_id)
     INTO has_void;
@@ -225,6 +246,16 @@ CREATE CONSTRAINT TRIGGER payment_voids_allocation_conservation
 AFTER INSERT ON payment_voids
 DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
 EXECUTE FUNCTION roster_payment_allocation_conservation_guard();
+--> statement-breakpoint
+CREATE FUNCTION payment_voids_append_only_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF current_setting('leaguevault.organization_teardown', true) = 'on' THEN RETURN OLD; END IF;
+  RAISE EXCEPTION 'payment void evidence is append-only';
+END;
+$$;
+--> statement-breakpoint
+CREATE TRIGGER payment_voids_append_only BEFORE UPDATE OR DELETE ON payment_voids
+FOR EACH ROW EXECUTE FUNCTION payment_voids_append_only_guard();
 --> statement-breakpoint
 -- The pre-0035 append-only trigger function references the allocation
 -- correction/supersession columns that were removed above. Preserve that

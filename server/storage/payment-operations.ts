@@ -346,6 +346,16 @@ async function deriveStandingPaymentRowsInTransaction(
     eq(paymentOperations.operationType, "standing_autopay_charge"),
   )).limit(1).for("share");
   if (!operation || operation.leagueId === null) throw new PaymentOperationValidationError("standing operation scope is incomplete");
+  const [consent] = await tx.select({ payerBowlerId: autopayConsents.payerBowlerId }).from(paymentOperationStandingAutopayBindings).innerJoin(autopayConsents, and(
+    eq(autopayConsents.id, paymentOperationStandingAutopayBindings.consentId),
+    eq(autopayConsents.organizationId, input.organizationId),
+    eq(autopayConsents.leagueId, operation.leagueId),
+  )).where(and(
+    eq(paymentOperationStandingAutopayBindings.operationId, operation.id),
+    eq(paymentOperationStandingAutopayBindings.organizationId, input.organizationId),
+    eq(paymentOperationStandingAutopayBindings.leagueId, operation.leagueId),
+  )).limit(1);
+  if (!consent) throw new PaymentOperationValidationError("standing operation consent payer is missing");
   const rows = await tx.select({ item: paymentOperationRosterSnapshotItems, obligation: paymentObligations }).from(paymentOperationRosterSnapshotItems).innerJoin(paymentObligations, and(
     eq(paymentObligations.id, paymentOperationRosterSnapshotItems.obligationId),
     eq(paymentObligations.organizationId, input.organizationId),
@@ -361,7 +371,7 @@ async function deriveStandingPaymentRowsInTransaction(
     allocationIndex: 0,
     values: {
       organizationId: input.organizationId,
-      bowlerId: first.obligation.payerBowlerId,
+      bowlerId: consent.payerBowlerId,
       leagueId: operation.leagueId,
       amount: operation.amountMinor,
       status: "paid" as const,
@@ -1897,7 +1907,7 @@ export async function finalizeChargeFromWebhookEvidenceInTransaction(
     ) throw new PaymentOperationImmutableMismatchError();
     rows = rosterWebhookPaymentRows(operation, snapshot, input);
   } else if (operation.operationType === "standing_autopay_charge") {
-    const [binding] = await tx.select({ providerLocationId: paymentOperationStandingAutopayBindings.providerLocationId, collectionMode: paymentOperationStandingAutopayBindings.collectionMode }).from(paymentOperationStandingAutopayBindings).innerJoin(autopayConsents, and(
+    const [binding] = await tx.select({ providerLocationId: paymentOperationStandingAutopayBindings.providerLocationId, collectionMode: paymentOperationStandingAutopayBindings.collectionMode, payerBowlerId: autopayConsents.payerBowlerId }).from(paymentOperationStandingAutopayBindings).innerJoin(autopayConsents, and(
       eq(autopayConsents.id, paymentOperationStandingAutopayBindings.consentId),
       eq(autopayConsents.organizationId, input.organizationId),
       eq(autopayConsents.leagueId, operation.leagueId ?? 0),
@@ -1921,7 +1931,7 @@ export async function finalizeChargeFromWebhookEvidenceInTransaction(
       allocationIndex: 0,
       values: {
         organizationId: input.organizationId,
-        bowlerId: first.obligation.payerBowlerId,
+        bowlerId: binding.payerBowlerId,
         leagueId: operation.leagueId ?? 0,
         amount: operation.amountMinor,
         status: "paid" as const,

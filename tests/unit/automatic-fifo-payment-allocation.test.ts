@@ -4,6 +4,7 @@ import { allocateAutomaticFifoPayment, AutomaticFifoAllocationError, type FifoPa
 const candidate = (id: string, outstandingMinor: number, dueAt: string, extra: Partial<FifoPaymentCandidate> = {}): FifoPaymentCandidate => ({
   id,
   occurrenceId: `occ-${id}`,
+  effectiveCollectionAt: dueAt,
   outstandingMinor,
   dueAt,
   memberOrdinal: 0,
@@ -43,6 +44,22 @@ describe("automatic FIFO payment allocation", () => {
       { obligationId: "pair", amountMinor: 30_00 },
       { obligationId: "future", amountMinor: 30_00 },
     ]);
+  });
+
+  it("orders reached paired groups by trigger evidence rather than paired due dates", () => {
+    const rows = [
+      candidate("later-trigger", 30_00, "2026-03-01T00:00:00.000Z", { pairedCollectionReady: true, effectiveCollectionAt: "2026-02-10T00:00:00.000Z" }),
+      candidate("earlier-trigger", 30_00, "2026-04-01T00:00:00.000Z", { pairedCollectionReady: true, effectiveCollectionAt: "2026-02-01T00:00:00.000Z" }),
+    ];
+    expect(allocateAutomaticFifoPayment(60_00, rows, "weekly", "2026-02-11T00:00:00.000Z")).toEqual([
+      { obligationId: "earlier-trigger", amountMinor: 30_00 },
+      { obligationId: "later-trigger", amountMinor: 30_00 },
+    ]);
+  });
+
+  it("can collect a payer's paired obligation when the trigger obligation is not theirs", () => {
+    const paired = candidate("paired-only", 30_00, "2026-04-01T00:00:00.000Z", { pairedCollectionReady: true, effectiveCollectionAt: "2026-02-01T00:00:00.000Z" });
+    expect(allocateAutomaticFifoPayment(30_00, [paired], "weekly", "2026-02-02T00:00:00.000Z")).toEqual([{ obligationId: "paired-only", amountMinor: 30_00 }]);
   });
 
   it("fails at the oldest reserved capacity and rejects excess", () => {
