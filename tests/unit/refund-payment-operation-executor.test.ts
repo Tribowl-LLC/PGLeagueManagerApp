@@ -266,6 +266,26 @@ async function createPaidPayment(fixture: Fixture, overrides: Partial<typeof pay
     createdByUserId: fixture.actorUserId,
   }).returning({ id: paymentObligations.id });
   return db.transaction(async (tx) => {
+    const operationId = randomUUID();
+    await tx.insert(paymentOperations).values({
+      id: operationId,
+      organizationId: fixture.organizationId,
+      authorizingUserId: fixture.actorUserId,
+      operationType: "interactive_charge",
+      targetKey: `refund-fixture-${operationId}`,
+      leagueId,
+      amountMinor: amount,
+      currency: "USD",
+      requestFingerprint: `lvpayreq:v1:${operationId.replaceAll("-", "")}${randomUUID().replaceAll("-", "")}`,
+      providerIdempotencyKey: `refund-fixture-idempotency-${operationId}`.slice(0, 45),
+      providerName: "square",
+      providerObjectId: providerPaymentId,
+      status: "succeeded",
+      nextAttemptAt: null,
+      completedAt: fixedNow.toISOString(),
+      createdAt: fixedNow.toISOString(),
+      updatedAt: fixedNow.toISOString(),
+    });
     const [payment] = await tx.insert(payments).values({
       organizationId: fixture.organizationId,
       bowlerId: fixture.bowlerId,
@@ -275,6 +295,7 @@ async function createPaidPayment(fixture: Fixture, overrides: Partial<typeof pay
       status: "paid",
       type: "square",
       providerPaymentId,
+      paymentOperationId: operationId,
       ...overrides,
     }).returning();
     await tx.insert(paymentAllocations).values({
