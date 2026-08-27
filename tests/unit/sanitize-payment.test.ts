@@ -62,6 +62,9 @@ function makeFullyPopulatedPayment(): Payment {
 }
 
 describe('sanitizePayment', () => {
+  it('does not accept server-authorized organizationId in insert payloads', () => {
+    expect(insertPaymentSchema.parse({ organizationId: 99, bowlerId: 7, leagueId: 11, amount: 1, type: 'cash' })).not.toHaveProperty('organizationId');
+  });
   // No current column on `payments` is off the allowlist (the
   // operational fields explanation lives in the SAFE_PAYMENT_FIELDS
   // doc-comment), so the "strip" half of the contract is exercised by

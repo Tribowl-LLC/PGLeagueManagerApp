@@ -1466,6 +1466,15 @@
           ],
           "onDelete": "restrict",
           "onUpdate": "no action"
+        },
+        "payments_payment_operation_tenant_fk": {
+          "name": "payments_payment_operation_tenant_fk",
+          "tableFrom": "payments",
+          "tableTo": "payment_operations",
+          "columnsFrom": ["payment_operation_id", "organization_id", "league_id"],
+          "columnsTo": ["id", "organization_id", "league_id"],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -1487,6 +1496,10 @@
         "payments_currency_check": {
           "name": "payments_currency_check",
           "value": "\"payments\".\"currency\" = 'USD'"
+        },
+        "payments_provider_operation_pair_check": {
+          "name": "payments_provider_operation_pair_check",
+          "value": "(\"payments\".\"provider_payment_id\" IS NULL) = (\"payments\".\"payment_operation_id\" IS NULL)"
         }
       },
       "isRLSEnabled": false

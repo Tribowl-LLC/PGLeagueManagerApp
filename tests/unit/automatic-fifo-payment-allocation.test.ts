@@ -57,6 +57,17 @@ describe("automatic FIFO payment allocation", () => {
     ]);
   });
 
+  it("keeps an unreached paired occurrence in ordinary future-date order", () => {
+    const rows = [
+      candidate("normal-future", 30_00, "2026-03-01T00:00:00.000Z"),
+      candidate("unreached-pair", 30_00, "2026-04-01T00:00:00.000Z", { effectiveCollectionAt: "2026-02-01T00:00:00.000Z" }),
+    ];
+    expect(allocateAutomaticFifoPayment(60_00, rows, "weekly", "2026-02-01T00:00:00.000Z")).toEqual([
+      { obligationId: "normal-future", amountMinor: 30_00 },
+      { obligationId: "unreached-pair", amountMinor: 30_00 },
+    ]);
+  });
+
   it("can collect a payer's paired obligation when the trigger obligation is not theirs", () => {
     const paired = candidate("paired-only", 30_00, "2026-04-01T00:00:00.000Z", { pairedCollectionReady: true, effectiveCollectionAt: "2026-02-01T00:00:00.000Z" });
     expect(allocateAutomaticFifoPayment(30_00, [paired], "weekly", "2026-02-02T00:00:00.000Z")).toEqual([{ obligationId: "paired-only", amountMinor: 30_00 }]);
