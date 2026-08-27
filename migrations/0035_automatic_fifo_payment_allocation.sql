@@ -46,9 +46,12 @@ BEGIN
     OR EXISTS (SELECT 1 FROM payment_disputes)
     OR EXISTS (SELECT 1 FROM payment_dispute_notifications)
     OR EXISTS (SELECT 1 FROM payment_dispute_replay_audits)
-    OR EXISTS (SELECT 1 FROM webhook_events WHERE provider_payment_id IS NOT NULL
-      OR lower(provider_object_type) ~ '(payment|refund|dispute)'
-      OR lower(event_type) ~ '(payment|refund|dispute)')
+    -- Terminal inbox evidence is immutable provider history and remains
+    -- valid after this clean-slate ledger reshape. Only replayable or
+    -- incomplete events block the boundary.
+    OR EXISTS (SELECT 1 FROM webhook_events
+      WHERE status IN ('pending', 'processing', 'retry_scheduled')
+         OR completed_at IS NULL)
   THEN
     RAISE EXCEPTION '0035 refused: payment/provider evidence exists; no destructive reshaping or backfill is allowed';
   END IF;
