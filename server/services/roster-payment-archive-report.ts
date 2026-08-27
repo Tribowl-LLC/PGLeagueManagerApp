@@ -148,7 +148,7 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
         // bowler identity. The recipient/payer comes from the canonical
         // tender parent; receipt authorization separately checks the
         // payment actor against users.id.
-        initiatingPayerBowlerId: linked[0]?.obligation.payerBowlerId ?? null,
+        initiatingPayerBowlerId: payment.bowlerId,
       };
       return row;
     });

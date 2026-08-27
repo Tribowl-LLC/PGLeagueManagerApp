@@ -88,6 +88,7 @@ export const payments = pgTable("payments", {
   }).onDelete("restrict"),
   amountCheck: check("payments_amount_check", sql`${table.amount} > 0`),
   currencyCheck: check("payments_currency_check", sql`${table.currency} = 'USD'`),
+  providerOperationPairCheck: check("payments_provider_operation_pair_check", sql`(${table.providerPaymentId} IS NULL) = (${table.paymentOperationId} IS NULL)`),
 }));
 
 const basePaymentSchema = createInsertSchema(payments);

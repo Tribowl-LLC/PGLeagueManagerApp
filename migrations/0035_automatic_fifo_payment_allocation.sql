@@ -125,6 +125,7 @@ ALTER TABLE "payment_allocations" DROP COLUMN "correction_reason";--> statement-
 ALTER TABLE "payment_operation_roster_snapshots" DROP COLUMN "combined_charge_group_id";--> statement-breakpoint
 ALTER TABLE "payments" ADD CONSTRAINT "payments_amount_check" CHECK ("payments"."amount" > 0);--> statement-breakpoint
 ALTER TABLE "payments" ADD CONSTRAINT "payments_currency_check" CHECK ("payments"."currency" = 'USD');--> statement-breakpoint
+ALTER TABLE "payments" ADD CONSTRAINT "payments_provider_operation_pair_check" CHECK (("payments"."provider_payment_id" IS NULL) = ("payments"."payment_operation_id" IS NULL));--> statement-breakpoint
 ALTER TABLE "payment_allocations" ADD CONSTRAINT "payment_allocations_state_check" CHECK ("payment_allocations"."state" IN ('active', 'voided'));
 --> statement-breakpoint
 -- A canonical parent is one real tender. At the deferred commit boundary its
