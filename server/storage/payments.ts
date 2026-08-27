@@ -90,7 +90,7 @@ export function buildPaymentConditions(filters: AllPaymentFilters, options?: { e
     const businessDate = filters.createdAt.toISOString().slice(0, 10);
     // Compare the immutable tender timestamp in each league's business
     // timezone; the server timezone must not affect a calendar-day filter.
-    conditions.push(sql`(${payments.createdAt} AT TIME ZONE COALESCE((SELECT ${leagues.timezone} FROM ${leagues} WHERE ${leagues.id} = ${payments.leagueId}), 'UTC'))::date = ${businessDate}::date`);
+    conditions.push(sql`(${payments.createdAt} AT TIME ZONE 'UTC' AT TIME ZONE COALESCE((SELECT ${leagues.timezone} FROM ${leagues} WHERE ${leagues.id} = ${payments.leagueId}), 'UTC'))::date = ${businessDate}::date`);
   }
 
   return conditions;
