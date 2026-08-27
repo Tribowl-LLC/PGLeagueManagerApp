@@ -49,6 +49,8 @@ function futureBody(key: number) {
     name: `API atomic Spring ${key}`,
     description: "setup API coverage",
     payingLineupSize: 4,
+    substituteAccess: "team_only",
+    substitutePaymentRegime: "team_choice",
     active: true,
     allowPublicSignup: true,
     seasonStart: "2032-03-07",
@@ -118,6 +120,10 @@ describe("league setup integration API", () => {
     expect(review.data.data).toMatchObject({ generationRun: { state: "applied" }, generation: { paymentMode: "weekly", seasonClassification: "Spring" } });
     const [publishedLeague] = await db.select().from(leagues).where(eq(leagues.id, result.id));
     if (!publishedLeague) throw new Error("published league row missing");
+    expect(publishedLeague).toMatchObject({
+      substituteAccess: "team_only",
+      substitutePaymentRegime: "team_choice",
+    });
     const [publishedRun] = await db.select({ sourceScheduleRevision: leagueOccurrenceGenerationRuns.sourceScheduleRevision })
       .from(leagueOccurrenceGenerationRuns)
       .where(eq(leagueOccurrenceGenerationRuns.leagueId, result.id));
