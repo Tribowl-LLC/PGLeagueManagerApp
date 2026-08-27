@@ -246,7 +246,7 @@ export const paymentObligations = pgTable("payment_obligations", {
   amountCheck: check("payment_obligations_amount_check", sql`${table.amountMinor} > 0 AND ${table.currency} = 'USD' AND ${table.pastDueAt} >= ${table.dueAt}`),
 }));
 
-/** Allocation corrections are represented by new rows; provider/payment facts remain immutable. */
+/** Each child is the immutable allocation of one payment tender to one obligation. */
 export const paymentAllocations = pgTable("payment_allocations", {
   id: uuid("id").primaryKey().defaultRandom(),
   organizationId: integer("organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
@@ -256,22 +256,39 @@ export const paymentAllocations = pgTable("payment_allocations", {
   amountMinor: integer("amount_minor").notNull(),
   currency: varchar("currency", { length: 3 }).notNull().default("USD"),
   state: text("state", { enum: ALLOCATION_STATES }).notNull().default("active"),
-  supersedesAllocationId: uuid("supersedes_allocation_id"),
-  correctionReason: text("correction_reason"),
   reviewRequired: boolean("review_required").notNull().default(false),
   reviewReason: text("review_reason"),
   recordedByUserId: integer("recorded_by_user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
   createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull().defaultNow(),
 }, (table) => ({
   leagueTenantFk: leagueTenantFk(table, "payment_allocations_league_tenant_fk"),
-  paymentFk: foreignKey({ name: "payment_allocations_payment_fk", columns: [table.paymentId, table.leagueId], foreignColumns: [payments.id, payments.leagueId] }).onDelete("restrict"),
+  paymentFk: foreignKey({ name: "payment_allocations_payment_fk", columns: [table.paymentId, table.organizationId, table.leagueId], foreignColumns: [payments.id, payments.organizationId, payments.leagueId] }).onDelete("restrict"),
   obligationFk: foreignKey({ name: "payment_allocations_obligation_fk", columns: [table.obligationId, table.organizationId, table.leagueId], foreignColumns: [paymentObligations.id, paymentObligations.organizationId, paymentObligations.leagueId] }).onDelete("restrict"),
-  supersedesFk: foreignKey({ name: "payment_allocations_supersedes_fk", columns: [table.supersedesAllocationId, table.organizationId, table.leagueId], foreignColumns: [table.id, table.organizationId, table.leagueId] }).onDelete("restrict"),
   tenantIdentityUnique: uniqueIndex("payment_allocations_tenant_identity_unique").on(table.id, table.organizationId, table.leagueId),
+  paymentObligationUnique: uniqueIndex("payment_allocations_payment_obligation_unique").on(table.organizationId, table.leagueId, table.paymentId, table.obligationId),
   paymentIdx: index("payment_allocations_payment_idx").on(table.organizationId, table.leagueId, table.paymentId),
   obligationIdx: index("payment_allocations_obligation_idx").on(table.organizationId, table.leagueId, table.obligationId),
   amountCheck: check("payment_allocations_amount_check", sql`${table.amountMinor} > 0 AND ${table.currency} = 'USD'`),
-  stateCheck: check("payment_allocations_state_check", sql`${table.state} IN (${allocationStates}) AND (${table.state} = 'voided' OR ${table.supersedesAllocationId} IS NULL OR ${table.correctionReason} IS NOT NULL)`),
+  stateCheck: check("payment_allocations_state_check", sql`${table.state} IN (${allocationStates})`),
+}));
+
+/** Whole-tender correction evidence. A cash/check correction voids the
+ * payment and every active child allocation together; a replacement is a
+ * separate FIFO payment and is never attached to this record. */
+export const paymentVoids = pgTable("payment_voids", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  organizationId: integer("organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
+  leagueId: integer("league_id").notNull(),
+  paymentId: integer("payment_id").notNull(),
+  reason: text("reason").notNull(),
+  recordedByUserId: integer("recorded_by_user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+  createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull().defaultNow(),
+}, (table) => ({
+  leagueTenantFk: leagueTenantFk(table, "payment_voids_league_tenant_fk"),
+  paymentFk: foreignKey({ name: "payment_voids_payment_fk", columns: [table.paymentId, table.organizationId, table.leagueId], foreignColumns: [payments.id, payments.organizationId, payments.leagueId] }).onDelete("restrict"),
+  tenantIdentityUnique: uniqueIndex("payment_voids_tenant_identity_unique").on(table.id, table.organizationId, table.leagueId),
+  paymentUnique: uniqueIndex("payment_voids_payment_unique").on(table.organizationId, table.leagueId, table.paymentId),
+  reasonCheck: check("payment_voids_reason_check", sql`length(btrim(${table.reason})) BETWEEN 1 AND 500`),
 }));
 
 /** Standing-consent evidence for PR2. This table is intentionally dormant in PR1. */
@@ -381,7 +398,6 @@ export const paymentOperationRosterSnapshots = pgTable("payment_operation_roster
   encryptedBuyerEmail: text("encrypted_buyer_email"),
   storeCard: boolean("store_card").notNull().default(false),
   sourceKind: text("source_kind", { enum: ROSTER_OPERATION_SOURCE_KINDS }),
-  combinedChargeGroupId: varchar("combined_charge_group_id", { length: 128 }),
   quoteFingerprint: varchar("quote_fingerprint", { length: 84 }),
   lineItems: jsonb("line_items").$type<RosterOperationLineItem[]>().notNull().default(sql`'[]'::jsonb`),
   snapshotFingerprint: varchar("snapshot_fingerprint", { length: 128 }).notNull(),
@@ -395,7 +411,6 @@ export const paymentOperationRosterSnapshots = pgTable("payment_operation_roster
   fingerprintCheck: check("payment_operation_roster_snapshots_fingerprint_check", sql`${table.snapshotFingerprint} ~ '^lv(rosterexec|standingcutoff):v1:[0-9a-f]{64}$'`),
   quoteFingerprintCheck: check("payment_operation_roster_snapshots_quote_fingerprint_check", sql`(${table.quoteFingerprint} IS NULL AND ${table.snapshotKind} = 'standing_autopay') OR (${table.quoteFingerprint} ~ '^lvrosterquote:v1:[0-9a-f]{64}$' AND ${table.snapshotKind} = 'interactive')`),
   requestShapeCheck: check("payment_operation_roster_snapshots_request_shape_check", sql`(${table.requestKind} = 'direct' AND ${table.lineItems} = '[]'::jsonb AND ${table.providerLocationId} IS NULL OR ${table.requestKind} = 'order' AND jsonb_array_length(${table.lineItems}) BETWEEN 1 AND 25 AND ${table.providerLocationId} IS NOT NULL OR ${table.requestKind} IS NULL AND ${table.lineItems} = '[]'::jsonb AND ${table.providerLocationId} IS NULL)`),
-  groupIdCheck: check("payment_operation_roster_snapshots_group_id_check", sql`${table.combinedChargeGroupId} IS NULL OR length(${table.combinedChargeGroupId}) > 0`),
 }));
 
 /** Unambiguous operation-to-consent identity and cutoff evidence. */
@@ -490,6 +505,7 @@ export type TeamPaymentPolicyRevision = typeof teamPaymentPolicyRevisions.$infer
 export type OccurrencePaymentResponsibility = typeof occurrencePaymentResponsibilities.$inferSelect;
 export type PaymentObligation = typeof paymentObligations.$inferSelect;
 export type PaymentAllocation = typeof paymentAllocations.$inferSelect;
+export type PaymentVoid = typeof paymentVoids.$inferSelect;
 export type AutopayConsent = typeof autopayConsents.$inferSelect;
 export type AutopayConsentPartner = typeof autopayConsentPartners.$inferSelect;
 export type FinancialCommand = typeof financialCommands.$inferSelect;

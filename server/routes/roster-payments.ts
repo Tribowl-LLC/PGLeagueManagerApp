@@ -50,23 +50,14 @@ async function authorizedLeague(req: Request, leagueId: number, management = fal
   return league;
 }
 
-async function paymentScope(req: Request, leagueId: number, obligationIds: string[]) {
+async function paymentScope(req: Request, leagueId: number, payerBowlerId: number | undefined) {
   const league = await authorizedLeague(req, leagueId);
   if (!league || league.organizationId === null) return null;
   const privileged = await hasAdminAccessToLeague(req, leagueId) || await hasPaymentManagerAccessToLeague(req, leagueId) || req.user?.role === "system_admin";
   if (!privileged) {
-    let quote;
-    try {
-      quote = await quoteInteractiveObligations({ organizationId: league.organizationId, leagueId, obligationIds, payerBowlerId: req.user?.bowlerId ?? undefined });
-    } catch {
-      // Obligation existence, ownership, and state are deliberately folded
-      // into the same not-found response for an unprivileged caller.
-      return null;
-    }
-    for (const obligation of quote.obligations) {
-      const allowed = await canUserPayForBowler(req, obligation.payerBowlerId);
-      if (!allowed.allowed) return null;
-    }
+    if (payerBowlerId === undefined || payerBowlerId !== req.user?.bowlerId) return null;
+    const allowed = await canUserPayForBowler(req, payerBowlerId);
+    if (!allowed.allowed) return null;
   }
   return league;
 }
@@ -99,7 +90,7 @@ function wireObject(value: unknown): WireObject | null {
 function rosterWireResult(value: unknown): Record<string, unknown> {
   const source = wireObject(value) ?? {};
   const base: Record<string, unknown> = {};
-  for (const key of ["contractVersion", "organizationId", "leagueId", "teamId", "ready", "commandKey", "requestFingerprint", "mode", "restoredObligationId"]) {
+  for (const key of ["contractVersion", "automaticContractVersion", "organizationId", "leagueId", "teamId", "ready", "commandKey", "requestFingerprint", "mode", "restoredObligationId", "payerBowlerId", "amountMinor", "currency", "fingerprint"]) {
     if (source[key] !== undefined) base[key] = source[key];
   }
   if (source.operationId !== undefined) {
@@ -110,17 +101,14 @@ function rosterWireResult(value: unknown): Record<string, unknown> {
     const row = wireObject(slot) ?? {};
     return { id: row.id, teamId: row.teamId, slotIndex: row.slotIndex, occupant: row.occupant, mainBowlerId: row.mainBowlerId ?? null };
   });
-  const wireAllocation = (allocation: unknown): WireObject | null => {
-    const row = wireObject(allocation);
-    return row ? { id: row.id, obligationId: row.obligationId, paymentId: row.paymentId, amountMinor: row.amountMinor, currency: row.currency, state: row.state, reviewRequired: row.reviewRequired === true } : null;
-  };
   const wirePayment = (payment: unknown): WireObject | null => {
     const row = wireObject(payment);
-    return row ? { id: row.id, bowlerId: row.bowlerId, leagueId: row.leagueId, amount: row.amount, weekOf: row.weekOf, status: row.status, type: row.type, checkNumber: row.checkNumber ?? null, notes: row.notes ?? null } : null;
+    return row ? { id: row.id, bowlerId: row.bowlerId, leagueId: row.leagueId, amount: row.amount, currency: row.currency ?? "USD", createdAt: row.createdAt, status: row.status, type: row.type, checkNumber: row.checkNumber ?? null, notes: row.notes ?? null } : null;
   };
+  if (source.payment !== undefined) base.payment = wirePayment(source.payment);
   if (Array.isArray(source.records)) base.records = source.records.map((record) => {
     const row = wireObject(record) ?? {};
-    return { payment: wirePayment(row.payment), allocation: wireAllocation(row.allocation) };
+    return { payment: wirePayment(row.payment) };
   });
   if (Array.isArray(source.responsibilities)) base.responsibilities = source.responsibilities.map((record) => {
     const row = wireObject(record) ?? {};
@@ -150,20 +138,19 @@ function rosterWireResult(value: unknown): Record<string, unknown> {
       }) : [],
     };
   });
-  if (source.voidedAllocation !== undefined) base.voidedAllocation = wireAllocation(source.voidedAllocation);
+  const voidEvidence = wireObject(source.voidEvidence);
+  if (voidEvidence) {
+    base.voidEvidence = {
+      id: voidEvidence.id,
+      paymentId: voidEvidence.paymentId,
+      reason: voidEvidence.reason,
+      recordedAt: voidEvidence.recordedAt,
+    };
+  }
   const correctionEvidence = wireObject(source.correctionEvidence);
   if (correctionEvidence) {
-    base.correctionEvidence = correctionEvidence.id
-      ? wireAllocation(correctionEvidence)
-      : {
-        status: correctionEvidence.status,
-        supersedesAllocationIds: Array.isArray(correctionEvidence.supersedesAllocationIds)
-          ? correctionEvidence.supersedesAllocationIds
-          : [],
-      };
+    base.correctionEvidence = { status: correctionEvidence.status, voidId: correctionEvidence.voidId };
   }
-  const replacement = wireObject(source.replacement);
-  if (replacement) base.replacement = { payment: wirePayment(replacement.payment), allocation: wireAllocation(replacement.allocation) };
   return base;
 }
 
@@ -233,17 +220,18 @@ router.post("/leagues/:leagueId/interactive-obligation-quote/2", paymentWriteLim
   const parsed = interactiveObligationQuoteRequestV2Schema.safeParse(req.body);
   if (!parsed.success) return sendError(res, "Invalid obligation quote request", 400, "INVALID_REQUEST");
   let league;
-  try { league = await paymentScope(req, leagueId, parsed.data.obligationIds); } catch (error) { return handleError(res, error); }
-  if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
   const privileged = await hasAdminAccessToLeague(req, leagueId) || await hasPaymentManagerAccessToLeague(req, leagueId) || req.user.role === "system_admin";
+  const payerBowlerId = privileged ? parsed.data.payerBowlerId : req.user.bowlerId ?? undefined;
+  if (payerBowlerId === undefined) return sendError(res, "A payer bowler is required", 400, "INVALID_REQUEST");
+  try { league = await paymentScope(req, leagueId, payerBowlerId); } catch (error) { return handleError(res, error); }
+  if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
   try {
-    return sendSuccess(res, await quoteInteractiveObligations({
+    return sendSuccess(res, rosterWireResult(await quoteInteractiveObligations({
       organizationId: league.organizationId,
       leagueId,
-      obligationIds: parsed.data.obligationIds,
-      allocations: parsed.data.allocations,
-      payerBowlerId: privileged ? parsed.data.payerBowlerId : req.user.bowlerId ?? undefined,
-    }));
+      amountMinor: parsed.data.amountMinor,
+      payerBowlerId,
+    })));
   } catch (error) { return handleError(res, error); }
 });
 
@@ -257,11 +245,13 @@ router.post("/leagues/:leagueId/interactive-obligation-charge/2", paymentWriteLi
   // boundary because clients are not trusted authorization controls.
   if (req.user.role === "payment_manager") return sendError(res, "Not found", 404, "NOT_FOUND");
   let league;
-  try { league = await paymentScope(req, leagueId, parsed.data.obligationIds); } catch (error) { return handleError(res, error); }
+  const privileged = await hasAdminAccessToLeague(req, leagueId) || await hasPaymentManagerAccessToLeague(req, leagueId) || req.user.role === "system_admin";
+  const payerBowlerId = privileged ? parsed.data.payerBowlerId : req.user.bowlerId ?? undefined;
+  if (payerBowlerId === undefined) return sendError(res, "A payer bowler is required", 400, "INVALID_REQUEST");
+  try { league = await paymentScope(req, leagueId, payerBowlerId); } catch (error) { return handleError(res, error); }
   if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
   try {
-    const privileged = await hasAdminAccessToLeague(req, leagueId) || await hasPaymentManagerAccessToLeague(req, leagueId) || req.user.role === "system_admin";
-    const result = await chargeInteractiveObligations({ organizationId: league.organizationId, leagueId, actorUserId: req.user.id, payerBowlerId: privileged ? parsed.data.payerBowlerId : req.user.bowlerId ?? undefined, request: parsed.data });
+    const result = await chargeInteractiveObligations({ organizationId: league.organizationId, leagueId, actorUserId: req.user.id, payerBowlerId, request: parsed.data });
     return sendSuccess(res, rosterWireResult(result), result.status === "succeeded" ? 201 : 202);
   } catch (error) { return handleError(res, error); }
 });

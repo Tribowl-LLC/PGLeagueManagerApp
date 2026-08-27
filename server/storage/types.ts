@@ -81,10 +81,10 @@ export interface IBowlerStorage {
 }
 
 export interface IPaymentStorage {
-  getPayments(filters: { bowlerId?: number; leagueId?: number; leagueIds?: number[]; teamId?: number; weekOf?: Date; organizationId: number }): Promise<Payment[]>;
-  getAllPaymentsSystemAdmin(filters?: { bowlerId?: number; leagueId?: number; teamId?: number; weekOf?: Date }): Promise<Payment[]>;
-  getAllPaymentsPaginatedSystemAdmin(filters: { bowlerId?: number; leagueId?: number; teamId?: number; weekOf?: Date }, page: number, limit: number): Promise<PaginatedResult<Payment>>;
-  getPaymentsPaginated(filters: { bowlerId?: number; leagueId?: number; leagueIds?: number[]; teamId?: number; weekOf?: Date; organizationId: number }, page: number, limit: number): Promise<PaginatedResult<Payment>>;
+  getPayments(filters: { bowlerId?: number; leagueId?: number; leagueIds?: number[]; teamId?: number; createdAt?: Date; organizationId: number }): Promise<Payment[]>;
+  getAllPaymentsSystemAdmin(filters?: { bowlerId?: number; leagueId?: number; teamId?: number; createdAt?: Date }): Promise<Payment[]>;
+  getAllPaymentsPaginatedSystemAdmin(filters: { bowlerId?: number; leagueId?: number; teamId?: number; createdAt?: Date }, page: number, limit: number): Promise<PaginatedResult<Payment>>;
+  getPaymentsPaginated(filters: { bowlerId?: number; leagueId?: number; leagueIds?: number[]; teamId?: number; createdAt?: Date; organizationId: number }, page: number, limit: number): Promise<PaginatedResult<Payment>>;
   getPaymentById(id: number): Promise<Payment | undefined>;
   getPaymentByIdForOrganization(id: number, organizationId: number): Promise<Payment | undefined>;
   getPaymentByIdempotencyKey(key: string): Promise<Payment | undefined>;
@@ -133,7 +133,6 @@ export interface IPaymentOperationStorage {
       errorCode?: string | null;
       providerObjectId?: string | null;
       providerOrderId?: string | null;
-      failedPaymentRows?: import("./payment-operations").PaymentOperationLinkedPaymentInput[];
     },
   ): Promise<PaymentOperation>;
   recordPaymentOperationProviderUnknown(
@@ -142,7 +141,6 @@ export interface IPaymentOperationStorage {
       errorCode?: string | null;
       providerObjectId?: string | null;
       providerOrderId?: string | null;
-      failedPaymentRows?: import("./payment-operations").PaymentOperationLinkedPaymentInput[];
     },
   ): Promise<PaymentOperation>;
   recordPaymentOperationActionRequired(
@@ -150,7 +148,6 @@ export interface IPaymentOperationStorage {
       errorCode?: string | null;
       providerObjectId?: string | null;
       providerOrderId?: string | null;
-      failedPaymentRows?: import("./payment-operations").PaymentOperationLinkedPaymentInput[];
     },
   ): Promise<PaymentOperation>;
   recordPaymentOperationFailedTerminal(
@@ -159,7 +156,6 @@ export interface IPaymentOperationStorage {
       errorCode?: string | null;
       providerObjectId?: string | null;
       providerOrderId?: string | null;
-      failedPaymentRows?: import("./payment-operations").PaymentOperationLinkedPaymentInput[];
     },
   ): Promise<PaymentOperation>;
   finalizePaymentOperationSuccess(
@@ -202,7 +198,6 @@ export interface IPaymentOperationStorage {
     organizationId: number;
     operationId: string;
     now?: Date;
-    failedPaymentRows?: import("./payment-operations").PaymentOperationLinkedPaymentInput[];
   }): Promise<PaymentOperation | undefined>;
   cancelPaymentOperation(
     input: Omit<import("./payment-operations").LeasedPaymentOperationInput, "leaseToken"> & {

@@ -202,20 +202,19 @@ export default function PaymentsPage() {
       }
       const synthetic: Payment = {
         id: row.paymentId ?? 0,
+        organizationId: userResponse?.data?.organizationId ?? 0,
         bowlerId: row.bowlerId,
         leagueId: row.leagueId,
         amount: row.amountMinor,
+        currency: row.currency,
         status: row.status === "confirmed_paid" ? "paid" : row.status === "disputed" || row.status === "failed" || row.status === "pending" || row.status === "refunded" ? row.status : "pending",
         type: row.paymentType,
-        weekOf: row.businessDate,
         providerPaymentId: null,
         receiptUrl: null,
         receiptNumber: null,
         receiptEmailMissing: true,
         squareRefundId: row.refund.providerRefundId,
         disputeId: row.dispute.disputeId,
-        lineageAmount: null,
-        prizeFundAmount: null,
         checkNumber: null,
         idempotencyKey: null,
         refundReason: null,
@@ -223,14 +222,12 @@ export default function PaymentsPage() {
         disputedAt: null,
         notes: null,
         paidByUserId: null,
-        combinedChargeGroupId: null,
         paymentOperationId: null,
-        paymentOperationAllocationIndex: null,
         createdAt: row.businessDate,
       };
       return synthetic;
     });
-  }, [payments, paymentCanonicalRows]);
+  }, [payments, paymentCanonicalRows, userResponse?.data?.organizationId]);
   const filteredPayments = useMemo(() => {
     const source = projectionPayments;
     if (!searchQuery.trim()) return source;

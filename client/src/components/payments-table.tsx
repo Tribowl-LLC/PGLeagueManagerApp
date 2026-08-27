@@ -88,7 +88,7 @@ export function PaymentsTable({
         <TableHeader>
           <TableRow>
             <TableHead>Bowler</TableHead>
-            <TableHead>Week Of</TableHead>
+            <TableHead>Collected</TableHead>
             <TableHead>Amount</TableHead>
             <TableHead>Status</TableHead>
             <TableHead className="hidden md:table-cell">Payment Type</TableHead>
@@ -119,7 +119,7 @@ export function PaymentsTable({
                 <Fragment key={payment.id}>
                 <TableRow>
                   <TableCell>{bowler?.name || "Unknown Bowler"}</TableCell>
-                  <TableCell>{formatAuthoritativeLocalDate(paymentCanonicalRows?.get(payment.id)?.authoritativeLocalDate ?? paymentBusinessDates?.get(payment.id) ?? payment.weekOf)}</TableCell>
+                  <TableCell>{formatAuthoritativeLocalDate(paymentCanonicalRows?.get(payment.id)?.authoritativeLocalDate ?? paymentBusinessDates?.get(payment.id) ?? payment.createdAt)}</TableCell>
                   <TableCell>${((paymentCanonicalRows?.get(payment.id)?.amountMinor ?? payment.amount) / 100).toFixed(2)}</TableCell>
                   <TableCell>
                     <div className="flex flex-wrap items-center gap-2">

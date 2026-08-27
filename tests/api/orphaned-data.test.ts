@@ -246,27 +246,10 @@ describe('Orphaned Data API (system-admin)', () => {
     );
     inserted.bowlerLeagues.push(parentMissingBowlerLeagueId);
 
-    const [p1] = await db
-      .insert(payments)
-      .values({
-        bowlerId,
-        leagueId: orphanLeagueA,
-        amount: 100,
-        weekOf: '2025-01-06 00:00:00',
-        type: 'cash',
-      })
-      .returning({ id: payments.id });
-    orphanPaymentId = p1.id;
-    inserted.payments.push(orphanPaymentId);
-
-    parentMissingPaymentId = await insertChildBypassingLeagueFk(payments, 'payments', {
-      bowlerId,
-      leagueId: BOGUS_LEAGUE_ID,
-      amount: 100,
-      weekOf: '2025-01-06 00:00:00',
-      type: 'cash',
-    });
-    inserted.payments.push(parentMissingPaymentId);
+    // Payments are tenant-owned canonical evidence now. Their required
+    // organization/league/bowler composite FKs make both historical orphan
+    // shapes impossible, so this legacy fixture no longer stages payment
+    // rows for repair.
 
     const pwd = await hashPassword('Throwaway-Password-123!');
     const stamp = Date.now();
@@ -450,18 +433,16 @@ describe('Orphaned Data API (system-admin)', () => {
       expect(missing.parentLeagueExists).toBe(false);
     });
 
-    it('lists orphan payments including both variants', async () => {
+    it('does not expose orphan payments under canonical tenant FKs', async () => {
       const { data } = await apiGet<OrphanedChildRow[]>(
         '/api/system-admin/orphaned-data/payments',
         admin,
       );
       const rows = data.data ?? [];
-      const orphan = rows.find((r) => r.id === orphanPaymentId);
-      const missing = rows.find((r) => r.id === parentMissingPaymentId);
-      if (!orphan) throw new Error('expected orphan payment row');
-      if (!missing) throw new Error('expected parent-missing payment row');
-      expect(orphan.parentLeagueExists).toBe(true);
-      expect(missing.parentLeagueExists).toBe(false);
+      expect(rows).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: orphanPaymentId }),
+        expect.objectContaining({ id: parentMissingPaymentId }),
+      ]));
     });
 
     it('lists orphan users but excludes system_admin and non-orphan users', async () => {
@@ -500,15 +481,6 @@ describe('Orphaned Data API (system-admin)', () => {
     it('refuses to reassign bowlerLeagues with 400', async () => {
       const { status } = await apiPost(
         `/api/system-admin/orphaned-data/bowlerLeagues/${orphanBowlerLeagueId}/reassign`,
-        { organizationId: targetOrgId },
-        admin,
-      );
-      expect(status).toBe(400);
-    });
-
-    it('refuses to reassign payments with 400', async () => {
-      const { status } = await apiPost(
-        `/api/system-admin/orphaned-data/payments/${orphanPaymentId}/reassign`,
         { organizationId: targetOrgId },
         admin,
       );
@@ -638,10 +610,8 @@ describe('Orphaned Data API (system-admin)', () => {
   // ---- success paths ---------------------------------------------------
 
   describe('repair success paths', () => {
-    it('deletes orphan child rows (team / bowler-league / payment / parent-missing variants)', async () => {
+    it('deletes orphan child rows (team / bowler-league / parent-missing variants)', async () => {
       for (const [type, id] of [
-        ['payments', orphanPaymentId],
-        ['payments', parentMissingPaymentId],
         ['bowlerLeagues', orphanBowlerLeagueId],
         ['bowlerLeagues', parentMissingBowlerLeagueId],
         ['teams', orphanTeamId],
@@ -656,8 +626,6 @@ describe('Orphaned Data API (system-admin)', () => {
       }
 
       // Mark cleaned up so afterAll doesn't try again
-      orphanPaymentId = 0;
-      parentMissingPaymentId = 0;
       orphanBowlerLeagueId = 0;
       parentMissingBowlerLeagueId = 0;
       orphanTeamId = 0;
@@ -1102,18 +1070,8 @@ describe('Orphaned cleanup audit logging (system-admin)', () => {
     bowlerLeagueForDelete = bl1.id;
     inserted.bowlerLeagues.push(bowlerLeagueForDelete);
 
-    const [p1] = await db
-      .insert(payments)
-      .values({
-        bowlerId,
-        leagueId: parentOrphanLeagueId,
-        amount: 100,
-        weekOf: '2025-01-06 00:00:00',
-        type: 'cash',
-      })
-      .returning({ id: payments.id });
-    paymentForDelete = p1.id;
-    inserted.payments.push(paymentForDelete);
+    // Canonical payments require a valid tenant-owned league and bowler, so
+    // an orphan payment cannot be staged for the retired repair endpoint.
 
     const pwd = await hashPassword('Throwaway-Password-123!');
     const stamp = Date.now();
@@ -1418,27 +1376,6 @@ describe('Orphaned cleanup audit logging (system-admin)', () => {
         action: 'reassign',
         organizationId: targetOrgId,
       });
-    });
-
-    it('deleting an orphan payment writes a delete audit row (organizationId null)', async () => {
-      await refreshWatermark();
-      const { status } = await apiPost(
-        `/api/system-admin/orphaned-data/payments/${paymentForDelete}/delete`,
-        {},
-        admin,
-      );
-      expect(status).toBe(200);
-
-      const rows = await newAuditRows({ resourceType: 'payments', resourceId: paymentForDelete });
-      expect(rows.length).toBe(1);
-      expect(rows[0]).toMatchObject({
-        adminUserId: admin.user.id,
-        resourceType: 'payments',
-        resourceId: paymentForDelete,
-        action: 'delete',
-        organizationId: null,
-      });
-      paymentForDelete = 0;
     });
 
     it('deleting an orphan bowler-league writes a delete audit row', async () => {

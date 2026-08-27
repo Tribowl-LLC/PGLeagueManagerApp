@@ -1,10 +1,11 @@
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   bowlers,
   bowlerLeagues,
   leagueOccurrences,
+  leagueOccurrenceBillingTerms,
   leagueScheduleCommands,
   leagues,
   locations,
@@ -14,6 +15,7 @@ import {
   paymentObligations,
   paymentOperationRosterSnapshotItems,
   paymentOperations,
+  paymentVoids,
   paymentOperationRosterSnapshots,
   payments,
   teamPaymentSlots,
@@ -100,6 +102,41 @@ afterAll(async () => {
   if (organizationId) await deleteOrganization(organizationId);
 });
 
+// Each test owns its occurrence/payment evidence. Release only unfinished
+// reservations and void untouched obligations so the next FIFO test starts
+// with no historical debt; settled/payment evidence remains immutable.
+afterEach(async () => {
+  if (!organizationId) return;
+  await db.update(paymentOperationRosterSnapshotItems).set({ state: "released" }).where(and(
+    eq(paymentOperationRosterSnapshotItems.organizationId, organizationId),
+    eq(paymentOperationRosterSnapshotItems.state, "reserved"),
+  ));
+  await db.transaction(async (tx) => {
+    const activePayments = await tx.select({ paymentId: paymentAllocations.paymentId }).from(paymentAllocations).where(and(
+      eq(paymentAllocations.organizationId, organizationId),
+      eq(paymentAllocations.state, "active"),
+    ));
+    for (const paymentId of [...new Set(activePayments.map((row) => row.paymentId))]) {
+      await tx.insert(paymentVoids).values({ organizationId, leagueId, paymentId, reason: "test fixture cleanup", recordedByUserId: actorUserId });
+      await tx.update(payments).set({ status: "voided" }).where(and(eq(payments.id, paymentId), eq(payments.organizationId, organizationId), eq(payments.leagueId, leagueId)));
+      await tx.update(paymentAllocations).set({ state: "voided" }).where(and(
+        eq(paymentAllocations.organizationId, organizationId),
+        eq(paymentAllocations.leagueId, leagueId),
+        eq(paymentAllocations.paymentId, paymentId),
+        eq(paymentAllocations.state, "active"),
+      ));
+    }
+  });
+  await db.update(paymentObligations).set({ state: "voided", voidedAt: "2038-12-31T23:59:59.000Z" }).where(and(
+    eq(paymentObligations.organizationId, organizationId),
+    inArray(paymentObligations.state, ["open", "partially_settled"] as const),
+  ));
+  await db.update(occurrencePaymentResponsibilities).set({ state: "voided" }).where(and(
+    eq(occurrencePaymentResponsibilities.organizationId, organizationId),
+    eq(occurrencePaymentResponsibilities.state, "active"),
+  ));
+});
+
 async function createOccurrence() {
   occurrenceOrdinal += 1;
   const commandId = randomUUID();
@@ -136,6 +173,21 @@ async function createOccurrence() {
     publishedByUserId: actorUserId,
     publicationCommandId: commandId,
   }).returning({ id: leagueOccurrences.id });
+  await db.insert(leagueOccurrenceBillingTerms).values({
+    organizationId,
+    leagueId,
+    occurrenceId: occurrence.id,
+    purpose: "league_weekly_fee",
+    obligationPolicy: "eligible_bowlers",
+    defaultAmountMinor: 2_000,
+    currency: "USD",
+    billingOrdinal: occurrenceOrdinal,
+    version: 1,
+    state: "published",
+    publishedAt: startAt,
+    publishedByUserId: actorUserId,
+    publicationCommandId: commandId,
+  });
   await db.transaction(async (tx) => {
     await materializeRosterPaymentOccurrenceInTransaction(tx, { organizationId, leagueId, occurrenceId: occurrence.id, actorUserId });
   });
@@ -152,7 +204,13 @@ async function createOccurrence() {
   return { occurrence, responsibility, obligation };
 }
 
-async function createRosterOperation(obligationId: string, responsibilityId: string, operationAmount = 2_000) {
+async function createRosterOperation(
+  obligationId: string,
+  responsibilityId: string,
+  operationAmount = 2_000,
+  options: { withCanonicalPayment?: boolean } = {},
+) {
+  const withCanonicalPayment = options.withCanonicalPayment ?? true;
   const operationId = randomUUID();
   const providerPaymentId = `roster-provider-${operationId}`;
   return db.transaction(async (tx) => {
@@ -192,21 +250,48 @@ async function createRosterOperation(obligationId: string, responsibilityId: str
       lineItems: [],
       snapshotFingerprint: `lvrosterexec:v1:${"b".repeat(64)}`,
     });
-    await tx.insert(paymentOperationRosterSnapshotItems).values({ operationId, organizationId, leagueId, obligationId, allocationIndex: 0, amountMinor: operationAmount, state: "reserved" });
-    const [payment] = await tx.insert(payments).values({
-      bowlerId,
-      leagueId,
-      amount: operationAmount,
-      weekOf: "2038-02-01T19:00:00.000Z",
-      status: "paid",
-      type: "square",
-      providerPaymentId,
-      paymentOperationId: operationId,
-      paymentOperationAllocationIndex: 0,
-      idempotencyKey: `${operationId}:0`,
-    }).returning();
-    if (!operation || !payment) throw new Error("fixture operation/payment was not created");
-    return { operation, payment };
+    await tx.insert(paymentOperationRosterSnapshotItems).values({ operationId, organizationId, leagueId, obligationId, allocationIndex: 0, amountMinor: operationAmount, state: withCanonicalPayment ? "finalized" : "reserved" });
+    if (withCanonicalPayment) {
+      const [payment] = await tx.insert(payments).values({
+        organizationId,
+        bowlerId,
+        leagueId,
+        amount: operationAmount,
+        status: "paid",
+        type: "square",
+        providerPaymentId,
+        paymentOperationId: operationId,
+        idempotencyKey: `${operationId}:0`,
+      }).returning({ id: payments.id });
+      if (!payment) throw new Error("fixture payment was not created");
+      await tx.insert(paymentAllocations).values({
+        organizationId,
+        leagueId,
+        paymentId: payment.id,
+        obligationId,
+        amountMinor: operationAmount,
+        currency: "USD",
+        recordedByUserId: actorUserId,
+      });
+      const [obligation] = await tx.select({ amountMinor: paymentObligations.amountMinor }).from(paymentObligations).where(and(
+        eq(paymentObligations.id, obligationId),
+        eq(paymentObligations.organizationId, organizationId),
+        eq(paymentObligations.leagueId, leagueId),
+      )).limit(1);
+      const [activeTotal] = await tx.select({ amountMinor: sql<number>`COALESCE(SUM(${paymentAllocations.amountMinor}), 0)` }).from(paymentAllocations).where(and(
+        eq(paymentAllocations.organizationId, organizationId),
+        eq(paymentAllocations.leagueId, leagueId),
+        eq(paymentAllocations.obligationId, obligationId),
+        eq(paymentAllocations.state, "active"),
+      ));
+      await tx.update(paymentObligations).set({ state: Number(activeTotal?.amountMinor ?? 0) >= Number(obligation?.amountMinor ?? 0) ? "settled" : "partially_settled" }).where(and(
+        eq(paymentObligations.id, obligationId),
+        eq(paymentObligations.organizationId, organizationId),
+        eq(paymentObligations.leagueId, leagueId),
+      ));
+    }
+    if (!operation) throw new Error("fixture operation was not created");
+    return { operation };
   });
 }
 
@@ -262,6 +347,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
 
   it("does not count a provider-linked payment as confirmed before canonical allocation finalization", async () => {
     const fixture = await createOccurrence();
+    const beforeReport = await readCanonicalPaymentReport({ organizationId, leagueId, page: 1, limit: 100 });
     const operationId = randomUUID();
     await db.insert(paymentOperations).values({
       id: operationId,
@@ -275,7 +361,11 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
       requestFingerprint: `lvpayreq:v1:${"f".repeat(64)}`,
       providerIdempotencyKey: `report-missing-${operationId}`.slice(0, 45),
       providerName: "square",
-      status: "succeeded",
+      // Provider success without local finalization is retained as
+      // reconciliation evidence; no orphan parent payment is persisted.
+      status: "reconciliation_required",
+      errorClassification: "internal",
+      errorCode: "LOCAL_FINALIZATION_FAILED",
       nextAttemptAt: null,
       providerObjectId: `provider-${operationId}`,
       completedAt: "2038-02-01T20:00:00.000Z",
@@ -302,23 +392,17 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
       });
       await tx.insert(paymentOperationRosterSnapshotItems).values({ operationId, organizationId, leagueId, obligationId: fixture.obligation.id, allocationIndex: 0, amountMinor: fixture.obligation.amountMinor, state: "reserved" });
     });
-    const [payment] = await db.insert(payments).values({
-      bowlerId: fixture.obligation.payerBowlerId,
-      leagueId,
-      amount: fixture.obligation.amountMinor,
-      weekOf: fixture.obligation.dueAt,
-      status: "paid",
-      type: "square",
-      providerPaymentId: `provider-${operationId}`,
-      paymentOperationId: operationId,
-      paymentOperationAllocationIndex: 0,
-      idempotencyKey: `${operationId}:0`,
-    }).returning({ id: payments.id });
-
-    const report = await readCanonicalPaymentReport({ organizationId, leagueId, paymentId: payment.id, page: 1, limit: 20 });
-    const row = report.rows.find((candidate) => candidate.paymentId === payment.id);
+    const paymentsForOperation = await db.select({ id: payments.id }).from(payments).where(and(
+      eq(payments.organizationId, organizationId),
+      eq(payments.leagueId, leagueId),
+      eq(payments.paymentOperationId, operationId),
+    ));
+    expect(paymentsForOperation).toEqual([]);
+    const report = await readCanonicalPaymentReport({ organizationId, leagueId, page: 1, limit: 20 });
+    const row = report.rows.find((candidate) => candidate.paymentOperationId === operationId);
     expect(row).toMatchObject({
-      status: "review_required",
+      paymentId: null,
+      status: "unresolved",
       reviewRequired: true,
       unresolved: true,
       paymentOperationId: operationId,
@@ -326,8 +410,8 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
       unallocatedMinor: fixture.obligation.amountMinor,
     });
     expect(report.totals.grossConfirmedPaidMinor).toBe(0);
-    expect(report.totals.reviewRequiredMinor).toBe(fixture.obligation.amountMinor);
-    expect(report.totals.unresolvedOperationMinor).toBe(fixture.obligation.amountMinor);
+    expect(report.totals.reviewRequiredMinor - beforeReport.totals.reviewRequiredMinor).toBe(fixture.obligation.amountMinor);
+    expect(report.totals.unresolvedOperationMinor - beforeReport.totals.unresolvedOperationMinor).toBe(fixture.obligation.amountMinor);
   });
 
   it("fails closed for the unallocated item of a succeeded multi-item operation", async () => {
@@ -350,7 +434,9 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
       providerIdempotencyKey: `report-multi-${operationId}`.slice(0, 45),
       providerName: "square",
       providerObjectId: providerPaymentId,
-      status: "succeeded",
+      status: "reconciliation_required",
+      errorClassification: "internal",
+      errorCode: "LOCAL_FINALIZATION_FAILED",
       nextAttemptAt: null,
       completedAt: "2038-02-01T20:00:00.000Z",
     });
@@ -382,28 +468,11 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
         { operationId, organizationId, leagueId, obligationId: second.obligation.id, allocationIndex: 1, amountMinor: second.obligation.amountMinor, state: "finalized" },
       ]);
     });
-    const [firstPayment, secondPayment] = await db.insert(payments).values([
-      { bowlerId: first.obligation.payerBowlerId, leagueId, amount: first.obligation.amountMinor, weekOf: first.obligation.dueAt, status: "paid", type: "square", providerPaymentId, paymentOperationId: operationId, paymentOperationAllocationIndex: 0, idempotencyKey: `${operationId}:0` },
-      { bowlerId: second.obligation.payerBowlerId, leagueId, amount: second.obligation.amountMinor, weekOf: second.obligation.dueAt, status: "paid", type: "square", providerPaymentId, paymentOperationId: operationId, paymentOperationAllocationIndex: 1, idempotencyKey: `${operationId}:1` },
-    ]).returning({ id: payments.id });
-    await db.insert(paymentAllocations).values({
-      organizationId,
-      leagueId,
-      paymentId: firstPayment.id,
-      obligationId: first.obligation.id,
-      amountMinor: first.obligation.amountMinor,
-      currency: "USD",
-      recordedByUserId: actorUserId,
-    });
-
     const report = await readCanonicalPaymentReport({ organizationId, leagueId, page: 1, limit: 20 });
-    const firstRow = report.rows.find((row) => row.paymentId === firstPayment.id);
-    const missingRow = report.rows.find((row) => row.paymentId === secondPayment.id);
-    expect(firstRow).toMatchObject({ status: "confirmed_paid", reviewRequired: false, unresolved: false, allocatedMinor: first.obligation.amountMinor });
-    expect(missingRow).toMatchObject({ status: "review_required", reviewRequired: true, unresolved: true, paymentOperationId: operationId, allocatedMinor: 0, unallocatedMinor: second.obligation.amountMinor });
-    expect(report.totals.grossConfirmedPaidMinor - beforeReport.totals.grossConfirmedPaidMinor).toBe(first.obligation.amountMinor);
-    expect(report.totals.reviewRequiredMinor - beforeReport.totals.reviewRequiredMinor).toBe(second.obligation.amountMinor);
-    expect(report.totals.unresolvedOperationMinor - beforeReport.totals.unresolvedOperationMinor).toBe(second.obligation.amountMinor);
+    const firstRow = report.rows.find((row) => row.paymentOperationId === operationId);
+    expect(firstRow).toMatchObject({ paymentId: null, status: "unresolved", reviewRequired: true, unresolved: true, allocatedMinor: 0, unallocatedMinor: totalMinor });
+    expect(report.rows.filter((row) => row.paymentOperationId === operationId)).toHaveLength(1);
+    expect(report.totals.grossConfirmedPaidMinor - beforeReport.totals.grossConfirmedPaidMinor).toBe(0);
   });
 
   it("persists one upfront due instant with no grace window across later occurrences", async () => {
@@ -466,7 +535,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
 
   it("blocks reschedule when roster evidence is reserved or paid", async () => {
     const reservedFixture = await createOccurrence();
-    const reservedOperation = await createRosterOperation(reservedFixture.obligation.id, reservedFixture.responsibility.id);
+    const reservedOperation = await createRosterOperation(reservedFixture.obligation.id, reservedFixture.responsibility.id, 2_000, { withCanonicalPayment: false });
     const makeRequest = (occurrenceId: string, key: string) => ({
       organizationId,
       leagueId,
@@ -597,8 +666,8 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
     const firstQuote = await quoteInteractiveObligations({
       organizationId,
       leagueId,
-      obligationIds: [fixture.obligation.id],
-      allocations: [{ obligationId: fixture.obligation.id, amountMinor: 1_000 }],
+      amountMinor: 1_000,
+      payerBowlerId: fixture.obligation.payerBowlerId,
     });
     const execute = vi.spyOn(interactivePaymentOperationExecutor, "execute").mockImplementation(async ({ operationId }) => {
       const [operation] = await db.select().from(paymentOperations).where(eq(paymentOperations.id, operationId));
@@ -610,16 +679,22 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
       await db.transaction(async (tx) => {
         await tx.update(paymentOperations).set({ status: "succeeded", providerObjectId, completedAt: "2038-03-01T21:00:00.000Z", nextAttemptAt: null }).where(eq(paymentOperations.id, operationId));
         await tx.insert(payments).values({
+          organizationId,
           bowlerId: fixture.obligation.payerBowlerId,
           leagueId,
           amount: item.amountMinor,
-          weekOf: fixture.obligation.dueAt,
           status: "paid",
           type: "square",
           providerPaymentId: providerObjectId,
           paymentOperationId: operationId,
-          paymentOperationAllocationIndex: item.allocationIndex,
           idempotencyKey: `${operationId}:0`,
+        });
+        await finalizeRosterSnapshotInTransaction(tx, {
+          organizationId,
+          leagueId,
+          operationId,
+          now: "2038-03-01T21:00:00.000Z",
+          actorUserId,
         });
       });
       return (await db.select().from(paymentOperations).where(eq(paymentOperations.id, operationId)))[0];
@@ -633,8 +708,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
         actorUserId,
         payerBowlerId: fixture.obligation.payerBowlerId,
         request: {
-          obligationIds: [fixture.obligation.id],
-          allocations: [{ obligationId: fixture.obligation.id, amountMinor: 1_000 }],
+          amountMinor: 1_000,
           sourceId: "card-source-preparation-test",
           sourceKind: "new_card",
           storeCard: false,
@@ -655,8 +729,8 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
       const secondQuote = await quoteInteractiveObligations({
         organizationId,
         leagueId,
-        obligationIds: [fixture.obligation.id],
-        allocations: [{ obligationId: fixture.obligation.id, amountMinor: 1_000 }],
+        amountMinor: 1_000,
+        payerBowlerId: fixture.obligation.payerBowlerId,
       });
       expect(secondQuote.amountMinor).toBe(1_000);
       const secondResult = await chargeInteractiveObligations({
@@ -665,8 +739,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
         actorUserId,
         payerBowlerId: fixture.obligation.payerBowlerId,
         request: {
-          obligationIds: [fixture.obligation.id],
-          allocations: [{ obligationId: fixture.obligation.id, amountMinor: 1_000 }],
+          amountMinor: 1_000,
           sourceId: "card-source-preparation-test-second",
           sourceKind: "new_card",
           storeCard: false,
@@ -698,8 +771,8 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
     const quote = await quoteInteractiveObligations({
       organizationId,
       leagueId,
-      obligationIds: [fixture.obligation.id],
-      allocations: [{ obligationId: fixture.obligation.id, amountMinor: 1_000 }],
+      amountMinor: 1_000,
+      payerBowlerId: fixture.obligation.payerBowlerId,
     });
     const provider = vi.spyOn(paymentProviderFactory, "getPaymentProvider").mockResolvedValue({ providerName: "square" } as Awaited<ReturnType<typeof paymentProviderFactory.getPaymentProvider>>);
     const execute = vi.spyOn(interactivePaymentOperationExecutor, "execute");
@@ -710,8 +783,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
         actorUserId,
         payerBowlerId: fixture.obligation.payerBowlerId,
         request: {
-          obligationIds: [fixture.obligation.id],
-          allocations: [{ obligationId: fixture.obligation.id, amountMinor: 1_000 }],
+          amountMinor: 1_000,
           sourceId: `email-validation-${randomUUID()}`,
           sourceKind: "new_card",
           buyerEmail: requestedEmail,
@@ -734,8 +806,8 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
     const quote = await quoteInteractiveObligations({
       organizationId,
       leagueId,
-      obligationIds: [fixture.obligation.id],
-      allocations: [{ obligationId: fixture.obligation.id, amountMinor: 1_000 }],
+      amountMinor: 1_000,
+      payerBowlerId: fixture.obligation.payerBowlerId,
     });
     const provider = vi.spyOn(paymentProviderFactory, "getPaymentProvider").mockResolvedValue({ providerName: "square" } as Awaited<ReturnType<typeof paymentProviderFactory.getPaymentProvider>>);
     const execute = vi.spyOn(interactivePaymentOperationExecutor, "execute");
@@ -747,8 +819,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
         actorUserId,
         payerBowlerId: fixture.obligation.payerBowlerId,
         request: {
-          obligationIds: [fixture.obligation.id],
-          allocations: [{ obligationId: fixture.obligation.id, amountMinor: 1_000 }],
+          amountMinor: 1_000,
           sourceId: "admin-card-save-source",
           sourceKind: "new_card",
           buyerEmail: "roster-main@example.test",
@@ -785,8 +856,8 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
     const quote = await quoteInteractiveObligations({
       organizationId,
       leagueId,
-      obligationIds: [fixture.obligation.id],
-      allocations: [{ obligationId: fixture.obligation.id, amountMinor: 1_000 }],
+      amountMinor: 1_000,
+      payerBowlerId: fixture.obligation.payerBowlerId,
     });
     const provider = vi.spyOn(paymentProviderFactory, "getPaymentProvider").mockResolvedValue({ providerName: "square" } as Awaited<ReturnType<typeof paymentProviderFactory.getPaymentProvider>>);
     const execute = vi.spyOn(interactivePaymentOperationExecutor, "execute").mockResolvedValue(undefined);
@@ -797,8 +868,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
         actorUserId: payerUser.id,
         payerBowlerId: fixture.obligation.payerBowlerId,
         request: {
-          obligationIds: [fixture.obligation.id],
-          allocations: [{ obligationId: fixture.obligation.id, amountMinor: 1_000 }],
+          amountMinor: 1_000,
           sourceId: "self-card-save-source",
           sourceKind: "new_card",
           storeCard: true,
@@ -820,8 +890,8 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
     const quote = await quoteInteractiveObligations({
       organizationId,
       leagueId,
-      obligationIds: [fixture.obligation.id],
-      allocations: [{ obligationId: fixture.obligation.id, amountMinor: fixture.obligation.amountMinor }],
+      amountMinor: fixture.obligation.amountMinor,
+      payerBowlerId: fixture.obligation.payerBowlerId,
     });
     const requestKey = `email-replay-${randomUUID()}`;
     const provider = vi.spyOn(paymentProviderFactory, "getPaymentProvider").mockResolvedValue({ providerName: "square" } as Awaited<ReturnType<typeof paymentProviderFactory.getPaymentProvider>>);
@@ -835,17 +905,24 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
         await tx.update(paymentOperations).set({ status: "succeeded", providerObjectId, completedAt: "2038-04-01T21:00:00.000Z", nextAttemptAt: null }).where(eq(paymentOperations.id, operationId));
         const [item] = await tx.select().from(paymentOperationRosterSnapshotItems).where(eq(paymentOperationRosterSnapshotItems.operationId, operationId));
         if (!item) throw new Error("prepared roster item was not persisted");
-        await tx.insert(payments).values({
+        const [payment] = await tx.insert(payments).values({
+          organizationId,
           bowlerId: fixture.obligation.payerBowlerId,
           leagueId,
           amount: item.amountMinor,
-          weekOf: fixture.obligation.dueAt,
           status: "paid",
           type: "square",
           providerPaymentId: providerObjectId,
           paymentOperationId: operationId,
-          paymentOperationAllocationIndex: item.allocationIndex,
           idempotencyKey: `${operationId}:0`,
+        }).returning({ id: payments.id });
+        if (!payment) throw new Error("provider payment fixture was not persisted");
+        await finalizeRosterSnapshotInTransaction(tx, {
+          organizationId,
+          leagueId,
+          operationId,
+          now: "2038-04-01T21:00:00.000Z",
+          actorUserId,
         });
       });
       return (await db.select().from(paymentOperations).where(eq(paymentOperations.id, operationId)))[0];
@@ -857,8 +934,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
         actorUserId,
         payerBowlerId: fixture.obligation.payerBowlerId,
         request: {
-          obligationIds: [fixture.obligation.id],
-          allocations: [{ obligationId: fixture.obligation.id, amountMinor: fixture.obligation.amountMinor }],
+          amountMinor: fixture.obligation.amountMinor,
           sourceId: "email-replay-source",
           sourceKind: "new_card",
           buyerEmail: "browser-fallback@example.test",
@@ -877,8 +953,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
         actorUserId,
         payerBowlerId: fixture.obligation.payerBowlerId,
         request: {
-          obligationIds: [fixture.obligation.id],
-          allocations: [{ obligationId: fixture.obligation.id, amountMinor: fixture.obligation.amountMinor }],
+          amountMinor: fixture.obligation.amountMinor,
           sourceId: "email-replay-source",
           sourceKind: "new_card",
           buyerEmail: "another-browser-value@example.test",
@@ -887,7 +962,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
           requestFingerprint: quote.fingerprint,
         },
       });
-      expect(replay).toMatchObject({ operationId: first.operationId, status: "succeeded", records: [] });
+      expect(replay).toMatchObject({ operationId: first.operationId, status: "succeeded" });
       expect(execute).toHaveBeenCalledTimes(2);
     } finally {
       provider.mockRestore();
@@ -916,8 +991,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
         buyerEmail: null,
         storeCard: false,
         sourceKind: "new_card",
-        combined: false,
-        allocations: [{ allocationIndex: 0, bowlerId: fixture.obligation.payerBowlerId, amountMinor: fixture.obligation.amountMinor, lineageAmountMinor: null, prizeFundAmountMinor: null, weekOf: new Date(fixture.obligation.dueAt).toISOString(), notes: "webhook test", paidByUserId: actorUserId, obligationId: fixture.obligation.id, responsibilityId: fixture.responsibility.id, responsibilityVersion: fixture.responsibility.version }],
+        allocations: [{ allocationIndex: 0, bowlerId: fixture.obligation.payerBowlerId, amountMinor: fixture.obligation.amountMinor, notes: "webhook test", paidByUserId: actorUserId, obligationId: fixture.obligation.id, responsibilityId: fixture.responsibility.id, responsibilityVersion: fixture.responsibility.version }],
         lineItems: [],
         quoteFingerprint: `lvrosterquote:v1:${"a".repeat(64)}`,
         transaction: tx,
@@ -993,7 +1067,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
     const first = await db.transaction(async (tx) => finalizeRosterSnapshotInTransaction(tx, { organizationId, leagueId, operationId: operation.id, now: "2038-02-01T21:00:00.000Z", actorUserId }));
     const second = await db.transaction(async (tx) => finalizeRosterSnapshotInTransaction(tx, { organizationId, leagueId, operationId: operation.id, now: "2038-02-01T21:01:00.000Z", actorUserId }));
     expect(first.finalized).toBe(true);
-    expect(first.allocationIds).toHaveLength(1);
+    expect(first.allocationIds).toEqual([]);
     expect(second.allocationIds).toEqual([]);
     const [obligation] = await db.select({ state: paymentObligations.state }).from(paymentObligations).where(eq(paymentObligations.id, fixture.obligation.id));
     const allocations = await db.select().from(paymentAllocations).where(and(eq(paymentAllocations.obligationId, fixture.obligation.id), eq(paymentAllocations.state, "active")));
@@ -1109,17 +1183,24 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
         amountMinor: fixture.obligation.amountMinor,
         state: "reserved",
       });
-      await tx.insert(payments).values({
+      const [payment] = await tx.insert(payments).values({
+        organizationId,
         bowlerId: fixture.obligation.payerBowlerId,
         leagueId,
         amount: fixture.obligation.amountMinor,
-        weekOf: fixture.obligation.dueAt,
         status: "paid",
         type: "square",
         providerPaymentId,
         paymentOperationId: operationId,
-        paymentOperationAllocationIndex: 0,
         idempotencyKey: `${operationId}:0`,
+      }).returning({ id: payments.id });
+      if (!payment) throw new Error("provider payment fixture was not persisted");
+      await finalizeRosterSnapshotInTransaction(tx, {
+        organizationId,
+        leagueId,
+        operationId,
+        now: "2038-05-01T20:00:00.000Z",
+        actorUserId,
       });
       preparationReady();
       await preparationGate;
@@ -1157,8 +1238,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
 
   it("blocks an interactive provider cutoff when a reserved roster version is stale", async () => {
     const fixture = await createOccurrence();
-    const { operation } = await createRosterOperation(fixture.obligation.id, fixture.responsibility.id);
-    await db.delete(payments).where(eq(payments.paymentOperationId, operation.id));
+    const { operation } = await createRosterOperation(fixture.obligation.id, fixture.responsibility.id, 2_000, { withCanonicalPayment: false });
     await db.update(paymentOperations).set({ providerObjectId: null, status: "pending", nextAttemptAt: "2038-02-03T18:00:00.000Z", completedAt: null }).where(eq(paymentOperations.id, operation.id));
     const leaseToken = randomUUID();
     await db.update(paymentOperations).set({
@@ -1221,6 +1301,120 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
     await expect(createRosterOperation(fixture.obligation.id, fixture.responsibility.id, 2_500)).rejects.toThrow();
     const [remaining] = await db.select({ state: paymentObligations.state }).from(paymentObligations).where(eq(paymentObligations.id, fixture.obligation.id));
     expect(remaining?.state).toBe("open");
+  });
+
+  it("enforces exact one-parent gross conservation and whole-payment voids", async () => {
+    const underallocated = await createOccurrence();
+    await expect(db.transaction(async (tx) => {
+      const [payment] = await tx.insert(payments).values({
+        organizationId,
+        bowlerId,
+        leagueId,
+        amount: 2_000,
+        currency: "USD",
+        status: "paid",
+        type: "cash",
+        idempotencyKey: `conservation-under-${randomUUID()}`,
+      }).returning({ id: payments.id });
+      if (!payment) throw new Error("underallocated payment fixture was not created");
+      await tx.insert(paymentAllocations).values({
+        organizationId,
+        leagueId,
+        paymentId: payment.id,
+        obligationId: underallocated.obligation.id,
+        amountMinor: 1_000,
+        currency: "USD",
+        recordedByUserId: actorUserId,
+      });
+    })).rejects.toThrow();
+
+    const overallocated = await createOccurrence();
+    await expect(db.transaction(async (tx) => {
+      const [payment] = await tx.insert(payments).values({
+        organizationId,
+        bowlerId,
+        leagueId,
+        amount: 2_000,
+        currency: "USD",
+        status: "paid",
+        type: "cash",
+        idempotencyKey: `conservation-over-${randomUUID()}`,
+      }).returning({ id: payments.id });
+      if (!payment) throw new Error("overallocated payment fixture was not created");
+      await tx.insert(paymentAllocations).values({
+        organizationId,
+        leagueId,
+        paymentId: payment.id,
+        obligationId: overallocated.obligation.id,
+        amountMinor: 3_000,
+        currency: "USD",
+        recordedByUserId: actorUserId,
+      });
+    })).rejects.toThrow();
+
+    const first = await createOccurrence();
+    const second = await createOccurrence();
+    const paymentId = await db.transaction(async (tx) => {
+      const [payment] = await tx.insert(payments).values({
+        organizationId,
+        bowlerId,
+        leagueId,
+        amount: 4_000,
+        currency: "USD",
+        status: "paid",
+        type: "cash",
+        idempotencyKey: `conservation-exact-${randomUUID()}`,
+      }).returning({ id: payments.id });
+      if (!payment) throw new Error("exact payment fixture was not created");
+      await tx.insert(paymentAllocations).values([
+        { organizationId, leagueId, paymentId: payment.id, obligationId: first.obligation.id, amountMinor: 2_000, currency: "USD", recordedByUserId: actorUserId },
+        { organizationId, leagueId, paymentId: payment.id, obligationId: second.obligation.id, amountMinor: 2_000, currency: "USD", recordedByUserId: actorUserId },
+      ]);
+      return payment.id;
+    });
+    const exactAllocations = await db.select({ amountMinor: paymentAllocations.amountMinor }).from(paymentAllocations).where(eq(paymentAllocations.paymentId, paymentId));
+    expect(exactAllocations.map((row) => row.amountMinor).sort((a, b) => a - b)).toEqual([2_000, 2_000]);
+
+    const sharedObligation = await createOccurrence();
+    await db.transaction(async (tx) => {
+      const [payment] = await tx.insert(payments).values({
+        organizationId,
+        bowlerId,
+        leagueId,
+        amount: 1_500,
+        currency: "USD",
+        status: "paid",
+        type: "cash",
+        idempotencyKey: `conservation-shared-first-${randomUUID()}`,
+      }).returning({ id: payments.id });
+      if (!payment) throw new Error("first shared-obligation payment fixture was not created");
+      await tx.insert(paymentAllocations).values({ organizationId, leagueId, paymentId: payment.id, obligationId: sharedObligation.obligation.id, amountMinor: 1_500, currency: "USD", recordedByUserId: actorUserId });
+    });
+    await expect(db.transaction(async (tx) => {
+      const [payment] = await tx.insert(payments).values({
+        organizationId,
+        bowlerId,
+        leagueId,
+        amount: 1_000,
+        currency: "USD",
+        status: "paid",
+        type: "cash",
+        idempotencyKey: `conservation-shared-second-${randomUUID()}`,
+      }).returning({ id: payments.id });
+      if (!payment) throw new Error("second shared-obligation payment fixture was not created");
+      await tx.insert(paymentAllocations).values({ organizationId, leagueId, paymentId: payment.id, obligationId: sharedObligation.obligation.id, amountMinor: 1_000, currency: "USD", recordedByUserId: actorUserId });
+    })).rejects.toThrow();
+
+    await expect(db.transaction(async (tx) => {
+      await tx.insert(paymentVoids).values({ organizationId, leagueId, paymentId, reason: "mixed-state regression", recordedByUserId: actorUserId });
+      await tx.update(payments).set({ status: "voided" }).where(and(eq(payments.id, paymentId), eq(payments.organizationId, organizationId), eq(payments.leagueId, leagueId)));
+      await tx.update(paymentAllocations).set({ state: "voided" }).where(and(
+        eq(paymentAllocations.organizationId, organizationId),
+        eq(paymentAllocations.leagueId, leagueId),
+        eq(paymentAllocations.paymentId, paymentId),
+        eq(paymentAllocations.obligationId, first.obligation.id),
+      ));
+    })).rejects.toThrow();
   });
 
   it("keeps tenant-scoped reservation identity and allocation index unique", async () => {

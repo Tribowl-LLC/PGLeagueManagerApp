@@ -138,9 +138,9 @@ router.get("/", async (req, res) => {
     if (teamId === null) {
       return sendError(res, "Invalid team ID format", 400);
     }
-    const weekOf = parseOptionalDateParam(req.query.weekOf);
-    if (weekOf === null) {
-      return sendError(res, "Invalid weekOf date format", 400);
+    const createdAt = parseOptionalDateParam(req.query.createdAt);
+    if (createdAt === null) {
+      return sendError(res, "Invalid createdAt date format", 400);
     }
 
     // Effective org context: explicit param > sysadmin's own org > null (unaffiliated sysadmin)
@@ -210,7 +210,7 @@ router.get("/", async (req, res) => {
       leagueId,
       leagueIds: paymentManagerLeagueIds,
       teamId,
-      weekOf,
+      createdAt,
     };
 
     // The compatibility list endpoint predates the scoped F5 receipt

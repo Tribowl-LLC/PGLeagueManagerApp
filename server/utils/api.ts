@@ -290,12 +290,11 @@ export function sanitizeBowlers(bowlers: Bowler[]): SanitizedBowler[] {
 // until it's deliberately added here.
 const SAFE_PAYMENT_FIELDS = [
   'id',
+  'organizationId',
   'bowlerId',
   'leagueId',
   'amount',
-  'lineageAmount',
-  'prizeFundAmount',
-  'weekOf',
+  'currency',
   'status',
   'type',
   'checkNumber',

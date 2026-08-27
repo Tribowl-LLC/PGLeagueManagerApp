@@ -31,9 +31,7 @@ function makeFullyPopulatedPayment(): Payment {
     bowlerId: 7,
     leagueId: 11,
     amount: 2500,
-    lineageAmount: 500,
-    prizeFundAmount: 300,
-    weekOf: '2024-01-01T00:00:00.000Z',
+    currency: 'USD',
     status: 'paid',
     type: 'square',
     providerPaymentId: 'sq-payment-id',
@@ -55,6 +53,7 @@ function makeFullyPopulatedPayment(): Payment {
   return Object.assign(
     {
       id: 1,
+      organizationId: 1,
       checkNumber: null,
       createdAt: '2024-01-01T00:00:00.000Z',
     },
@@ -63,6 +62,9 @@ function makeFullyPopulatedPayment(): Payment {
 }
 
 describe('sanitizePayment', () => {
+  it('does not accept server-authorized organizationId in insert payloads', () => {
+    expect(insertPaymentSchema.parse({ organizationId: 99, bowlerId: 7, leagueId: 11, amount: 1, type: 'cash' })).not.toHaveProperty('organizationId');
+  });
   // No current column on `payments` is off the allowlist (the
   // operational fields explanation lives in the SAFE_PAYMENT_FIELDS
   // doc-comment), so the "strip" half of the contract is exercised by
@@ -83,9 +85,8 @@ describe('sanitizePayment', () => {
     expect(sanitized.bowlerId).toBe(7);
     expect(sanitized.leagueId).toBe(11);
     expect(sanitized.amount).toBe(2500);
-    expect(sanitized.lineageAmount).toBe(500);
-    expect(sanitized.prizeFundAmount).toBe(300);
-    expect(sanitized.weekOf).toBe('2024-01-01T00:00:00.000Z');
+    expect(sanitized.organizationId).toBe(1);
+    expect(sanitized.currency).toBe('USD');
     expect(sanitized.status).toBe('paid');
     expect(sanitized.type).toBe('square');
     expect(sanitized.createdAt).toBe('2024-01-01T00:00:00.000Z');

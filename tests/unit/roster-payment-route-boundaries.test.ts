@@ -89,7 +89,7 @@ beforeEach(() => {
   mocks.hasAdmin.mockResolvedValue(false);
   mocks.hasPaymentManager.mockResolvedValue(false);
   mocks.canPay.mockResolvedValue({ allowed: true });
-  mocks.quote.mockResolvedValue({ obligations: [{ id: "00000000-0000-4000-8000-000000000001", payerBowlerId: 42 }], amountMinor: 1000, currency: "USD", fingerprint: "quote" });
+  mocks.quote.mockResolvedValue({ contractVersion: "interactive-obligation-quote/2", automaticContractVersion: "automatic-fifo-payment/1", obligations: [{ id: "00000000-0000-4000-8000-000000000001", payerBowlerId: 42 }], amountMinor: 1000, currency: "USD", fingerprint: "quote" });
 });
 
 describe("roster payment route authorization", () => {
@@ -113,11 +113,45 @@ describe("roster payment route authorization", () => {
     mocks.canPay.mockResolvedValue({ allowed: false });
     const response = await request("/leagues/7/interactive-obligation-quote/2", user("user", 11, 42), {
       method: "POST",
-      body: JSON.stringify({ obligationIds: ["00000000-0000-4000-8000-000000000001"] }),
+      body: JSON.stringify({ amountMinor: 1000 }),
     });
     expect(response.status).toBe(404);
-    expect(mocks.quote).toHaveBeenCalled();
+    expect(mocks.quote).not.toHaveBeenCalled();
     expect(mocks.charge).not.toHaveBeenCalled();
+  });
+
+  it("returns only the automatic FIFO quote summary, never allocation controls", async () => {
+    mocks.hasAdmin.mockResolvedValue(true);
+    const response = await request("/leagues/7/interactive-obligation-quote/2", user("admin", 11), {
+      method: "POST",
+      body: JSON.stringify({ amountMinor: 1000, payerBowlerId: 42 }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.data).toMatchObject({ automaticContractVersion: "automatic-fifo-payment/1", amountMinor: 1000, currency: "USD", fingerprint: "quote" });
+    expect(body.data).not.toHaveProperty("obligations");
+    expect(body.data).not.toHaveProperty("allocations");
+  });
+
+  it("returns a whole-payment correction summary without allocation details", async () => {
+    mocks.hasAdmin.mockResolvedValue(true);
+    mocks.correct.mockResolvedValue({
+      contractVersion: "canonical-correction/3",
+      mode: "void_only",
+      payment: { id: 12, bowlerId: 42, leagueId: 7, amount: 1000, currency: "USD", status: "voided", type: "cash" },
+      voidEvidence: { id: "void-1", paymentId: 12, reason: "duplicate", recordedAt: "2038-01-01T00:00:00.000Z" },
+      voidedAllocations: [{ id: "allocation-1", obligationId: "obligation-1", amountMinor: 1000 }],
+      replacement: { payment: { id: 13 }, allocation: { id: "allocation-2" } },
+    });
+    const response = await request("/leagues/7/canonical/corrections/1", user("admin", 11), {
+      method: "POST",
+      body: JSON.stringify({ paymentId: 12, reason: "duplicate", idempotencyKey: "correction-1", requestFingerprint: "quote" }),
+    });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.data).toMatchObject({ mode: "void_only", payment: { id: 12, status: "voided" }, voidEvidence: { id: "void-1", paymentId: 12 } });
+    expect(body.data).not.toHaveProperty("voidedAllocations");
+    expect(body.data).not.toHaveProperty("replacement");
   });
 
   it("allows location-scoped manual entries but keeps roster and corrections admin-only", async () => {
@@ -125,8 +159,8 @@ describe("roster payment route authorization", () => {
     const payload = { commandKey: "roster-1", requestFingerprint: "fp", lineupSize: 3, slots: [{ slotIndex: 0, occupant: "vacant" }, { slotIndex: 1, occupant: "vacant" }, { slotIndex: 2, occupant: "vacant" }] };
     expect((await request("/leagues/7/roster-payment-responsibility/1/teams/9", user("payment_manager"), { method: "POST", body: JSON.stringify(payload) })).status).toBe(404);
     mocks.manual.mockResolvedValue({ records: [] });
-    expect((await request("/leagues/7/canonical/manual-record/1", user("payment_manager"), { method: "POST", body: JSON.stringify({ obligationIds: ["00000000-0000-4000-8000-000000000001"], type: "cash", idempotencyKey: "m-1", requestFingerprint: "q" }) })).status).toBe(201);
-    expect((await request("/leagues/7/canonical/corrections/1", user("payment_manager"), { method: "POST", body: JSON.stringify({ allocationId: "00000000-0000-4000-8000-000000000001", reason: "duplicate", idempotencyKey: "c-1", requestFingerprint: "q" }) })).status).toBe(404);
+    expect((await request("/leagues/7/canonical/manual-record/1", user("payment_manager"), { method: "POST", body: JSON.stringify({ amountMinor: 1000, payerBowlerId: 42, type: "cash", idempotencyKey: "m-1", requestFingerprint: "q" }) })).status).toBe(201);
+    expect((await request("/leagues/7/canonical/corrections/1", user("payment_manager"), { method: "POST", body: JSON.stringify({ paymentId: 12, reason: "duplicate", idempotencyKey: "c-1", requestFingerprint: "q" }) })).status).toBe(404);
     expect(mocks.saveRoster).not.toHaveBeenCalled();
     expect(mocks.manual).toHaveBeenCalled();
     expect(mocks.correct).not.toHaveBeenCalled();
@@ -137,8 +171,7 @@ describe("roster payment route authorization", () => {
     const response = await request("/leagues/7/interactive-obligation-charge/2", user("payment_manager"), {
       method: "POST",
       body: JSON.stringify({
-        obligationIds: ["00000000-0000-4000-8000-000000000001"],
-        allocations: [{ obligationId: "00000000-0000-4000-8000-000000000001", amountMinor: 1000 }],
+        amountMinor: 1000,
         payerBowlerId: 42,
         sourceId: "card-source",
         sourceKind: "new_card",

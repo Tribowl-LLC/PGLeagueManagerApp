@@ -35,12 +35,11 @@ const DISPUTE: PaymentRowDisputeSummary = {
 function payment(id: number, bowlerId: number): Payment & { disputes: PaymentRowDisputeSummary[] } {
   return {
     id,
+    organizationId: 1,
     bowlerId,
     leagueId: 7,
     amount: 2500,
-    lineageAmount: null,
-    prizeFundAmount: null,
-    weekOf: "2034-03-01T00:00:00.000Z",
+    currency: "USD",
     status: "paid",
     type: "cash",
     checkNumber: null,
@@ -56,9 +55,7 @@ function payment(id: number, bowlerId: number): Payment & { disputes: PaymentRow
     receiptEmailMissing: false,
     notes: null,
     paidByUserId: null,
-    combinedChargeGroupId: "shared-operation",
     paymentOperationId: "11111111-1111-4111-8111-111111111111",
-    paymentOperationAllocationIndex: id - 1,
     createdAt: "2034-03-01T00:00:00.000Z",
     disputes: [DISPUTE],
   };
@@ -67,7 +64,7 @@ function payment(id: number, bowlerId: number): Payment & { disputes: PaymentRow
 describe("PaymentsTable dispute visibility", () => {
   it("shows a shared-transaction dispute on every allocation with expandable sanitized history", async () => {
     const user = userEvent.setup();
-    const payments = [payment(1, 10), payment(2, 11)];
+    const payments = [payment(1, 10)];
     render(
       <PaymentsTable
         payments={payments}
@@ -82,8 +79,8 @@ describe("PaymentsTable dispute visibility", () => {
       />,
     );
 
-    expect(screen.getAllByText("Dispute: Dispute accepted")).toHaveLength(2);
-    expect(screen.getAllByText("paid")).toHaveLength(2);
+    expect(screen.getAllByText("Dispute: Dispute accepted")).toHaveLength(1);
+    expect(screen.getAllByText("paid")).toHaveLength(1);
     expect(screen.queryByText("Accepted by Square")).not.toBeInTheDocument();
     await user.click(screen.getAllByRole("button", { name: "Show dispute details" })[0]);
     expect(screen.getByText(/applies to the shared Square transaction/i)).toBeInTheDocument();

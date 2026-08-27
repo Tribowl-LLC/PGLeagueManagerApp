@@ -23,7 +23,7 @@ export type UserRole = (typeof USER_ROLES)[number];
 // Bowler-level schedule: how often an individual bowler's automatic payment recurs
 export const SCHEDULE_FREQUENCIES = ["weekly", "monthly", "upfront"] as const;
 
-export const PAYMENT_STATUSES = ["paid", "pending", "failed", "refunded", "disputed"] as const;
+export const PAYMENT_STATUSES = ["paid", "pending", "failed", "refunded", "disputed", "voided"] as const;
 export const PaymentStatus = {
   PAID: PAYMENT_STATUSES[0],
   PENDING: PAYMENT_STATUSES[1],
@@ -33,6 +33,7 @@ export const PaymentStatus = {
   // funds aren't necessarily moved yet — the dispute could still be
   // won.
   DISPUTED: PAYMENT_STATUSES[4],
+  VOIDED: PAYMENT_STATUSES[5],
 } as const;
 
 export const PAYMENT_TYPES = ["cash", "check", "credit_card", "square"] as const;

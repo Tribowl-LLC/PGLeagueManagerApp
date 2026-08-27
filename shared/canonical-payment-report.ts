@@ -97,7 +97,7 @@ export interface CanonicalPaymentRow {
   receipt: CanonicalPaymentReceiptSummary;
   sharedTransaction?: { groupKey: string | null; childCount: number } | null;
   allocations: CanonicalPaymentAllocationRow[];
-  correctionEvidence?: { status: "corrected"; supersedesAllocationIds: string[] };
+  correctionEvidence?: { status: "voided"; voidId: string };
   collectionEvidence?: CanonicalCollectionEvidence;
   /** Internal role projection hint; ordinary responses remove it. */
   initiatingPayerBowlerId?: number | null;
@@ -106,7 +106,6 @@ export interface CanonicalPaymentRow {
 export interface CanonicalPaymentTransactionGroup {
   groupKey: string;
   paymentOperationId: string | null;
-  combinedChargeGroupId: string | null;
   amountMinor: number;
   currency: string;
   paymentIds: number[];

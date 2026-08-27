@@ -89,6 +89,7 @@ const PARALLEL_ISOLATED_WITH_APP = [
  * error-log guard, so nothing preloads `pg` ahead of the mock.
  */
 const UNIT_NO_DB = [
+  'tests/unit/automatic-fifo-payment-allocation.test.ts',
   'tests/unit/league-create-payload.test.ts',
   'tests/unit/neon-branches-reveal-password.test.ts',
   'tests/unit/cleanup-connection-aware-sweep.test.ts',
@@ -120,7 +121,6 @@ const UNIT_NO_DB = [
   'tests/unit/roster-standing-autopay-contract.test.ts',
   'tests/unit/roster-standing-autopay-wake.test.ts',
   'tests/unit/roster-payment-route-boundaries.test.ts',
-  'tests/unit/use-bowler-payment-submit.test.ts',
 ];
 
 const PARALLEL_ISOLATED = [

@@ -1,6 +1,5 @@
 import { FC, RefObject } from "react";
 import { ChevronDown } from "lucide-react";
-import { DEFAULT_TIMEZONE } from "@shared/schema";
 import type { League, Payment, SavedCard, BowlerLeague } from "@shared/schema";
 import type { DoublePayStatus } from "@/lib/financial-utils";
 import type { CanonicalPaymentRow, CanonicalPaymentTiming } from "@shared/canonical-payment-report";
@@ -10,8 +9,6 @@ import { PaymentSummaryCards } from "@/components/payment-summary-cards";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { BowlerPaymentDialog } from "@/components/bowler-payment-dialog";
 import { LeagueSwitcherSheet } from "@/components/league-switcher-sheet";
-import { InteractiveOccurrenceSelector } from "@/components/interactive-occurrence-selector";
-import type { InteractiveOccurrenceReadiness } from "@/components/interactive-occurrence-selector";
 import { StandingAutopayCard } from "@/components/standing-autopay-card";
 
 interface PaymentHistoryContentProps {
@@ -75,12 +72,6 @@ interface PaymentHistoryContentProps {
   canonicalRows?: CanonicalPaymentRow[];
   canonicalMode?: string;
   canonicalPaymentTiming?: CanonicalPaymentTiming;
-  occurrenceAmountMinor?: number;
-  occurrenceAllocations: { obligationId: string; amountMinor: number }[];
-  occurrenceQuoteFingerprint?: string;
-  onOccurrenceChange: (selections: { obligationId: string; amountMinor: number }[], fingerprint?: string) => void;
-  onOccurrenceReadinessChange: (readiness: InteractiveOccurrenceReadiness) => void;
-  occurrenceReadiness: InteractiveOccurrenceReadiness;
 }
 
 export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
@@ -144,10 +135,6 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
   canonicalRows = [],
   canonicalMode,
   canonicalPaymentTiming,
-  occurrenceAmountMinor,
-  onOccurrenceChange,
-  onOccurrenceReadinessChange,
-  occurrenceReadiness,
 }) => {
   return (
     <BowlerLayout bowlerName={bowlerName} leagueName={league.name} currentLeagueId={leagueId}>
@@ -220,19 +207,6 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
             bowlerHasEmail={bowlerHasEmail}
             receiptEmail={receiptEmail}
             onReceiptEmailChange={onReceiptEmailChange}
-              occurrenceSelector={payDialogType && occurrenceAmountMinor ? (
-              <InteractiveOccurrenceSelector
-                key={`${payDialogType}:${occurrenceAmountMinor}`}
-                leagueId={league.id}
-                timezone={league.timezone || DEFAULT_TIMEZONE}
-                amountMinor={occurrenceAmountMinor}
-                bowlerIds={[bowlerId]}
-                enabled
-                onChange={onOccurrenceChange}
-                onReadinessChange={onOccurrenceReadinessChange}
-              />
-              ) : null}
-              occurrenceReadiness={occurrenceReadiness}
           />
         </ErrorBoundary>
 

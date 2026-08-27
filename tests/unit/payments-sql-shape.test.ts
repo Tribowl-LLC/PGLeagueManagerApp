@@ -27,7 +27,8 @@ describe('buildPaymentConditions — emitted SQL shape', () => {
 
   it('org-scoped path constrains payments to the supplied organization', () => {
     const sqlText = sqlFor(buildPaymentConditions({ organizationId: 42 }));
-    expect(sqlText).toMatch(/"league_id" in \(select "id" from "leagues" where "leagues"."organization_id" = \$1/i);
+    expect(sqlText).toMatch(/"organization_id" = \$1/i);
+    expect(sqlText).toMatch(/"league_id" in \(select "id" from "leagues" where "leagues"."organization_id" = \$\d+/i);
     expect(sqlText).not.toMatch(/is not null/i);
   });
 
@@ -41,7 +42,7 @@ describe('buildPaymentConditions — emitted SQL shape', () => {
     const sqlText = sqlFor(buildPaymentConditions({ organizationId: 42, teamId: 7 }));
     expect(sqlText).toMatch(/exists \(\s*select 1\s*from "bowler_leagues"/i);
     expect(sqlText).toMatch(/"bowler_leagues"\."bowler_id" = "payments"\."bowler_id"/i);
-    expect(sqlText).toMatch(/"bowler_leagues"\."team_id" = \$2/i);
+    expect(sqlText).toMatch(/"bowler_leagues"\."team_id" = \$\d+/i);
     expect(sqlText).toMatch(/"bowler_leagues"\."league_id" = "payments"\."league_id"/i);
   });
 });

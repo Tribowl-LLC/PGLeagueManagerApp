@@ -28,13 +28,8 @@ export function dollarsToMinorUnits(value: string): number | null {
  */
 export function CanonicalPaymentEvidenceTable({ rows, mode, paymentTiming, organizationId, title = "Payment evidence", canCorrect = false }: Props) {
   const [receiptLoading, setReceiptLoading] = useState<number | null>(null);
-  const [editingAllocationId, setEditingAllocationId] = useState<string | null>(null);
-  const [correctionMode, setCorrectionMode] = useState<"void_only" | "replace">("void_only");
+  const [editingPaymentId, setEditingPaymentId] = useState<number | null>(null);
   const [reason, setReason] = useState("");
-  const [replacementAmount, setReplacementAmount] = useState("");
-  const [replacementType, setReplacementType] = useState<"cash" | "check">("cash");
-  const [replacementCheckNumber, setReplacementCheckNumber] = useState("");
-  const [replacementNotes, setReplacementNotes] = useState("");
   const [correctionBusy, setCorrectionBusy] = useState(false);
   const [correctionError, setCorrectionError] = useState<string | null>(null);
   const openReceipt = async (paymentId: number) => {
@@ -49,50 +44,29 @@ export function CanonicalPaymentEvidenceTable({ rows, mode, paymentTiming, organ
     }
   };
   const correctionFingerprint = async (payload: {
-    allocationId: string;
-    correctionMode: "void_only" | "replace";
+    paymentId: number;
+    correctionMode: "void_only";
     reason: string;
-    replacementAmountMinor?: number | null;
-    replacementType?: "cash" | "check" | null;
-    replacementCheckNumber?: string | null;
-    replacementWeekOf?: string | null;
-    replacementNotes?: string | null;
   }) => {
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(payload)));
-    return `lvcorrection:v2:${Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("")}`;
+    return `lvcorrection:v3:${Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("")}`;
   };
-  const submitCorrection = async (row: CanonicalPaymentRow, allocationId: string) => {
+  const submitCorrection = async (row: CanonicalPaymentRow) => {
     const trimmedReason = reason.trim();
-    if (!trimmedReason) return;
-    const replacementAmountMinor = correctionMode === "replace" ? dollarsToMinorUnits(replacementAmount) : null;
-    if (correctionMode === "replace" && replacementAmountMinor === null) {
-      setCorrectionError("Enter a valid dollar amount with at most two decimal places.");
-      return;
-    }
+    if (!trimmedReason || row.paymentId === null) return;
     setCorrectionError(null);
     setCorrectionBusy(true);
     try {
       const payload = {
-        allocationId,
-        correctionMode,
+        paymentId: row.paymentId,
+        correctionMode: "void_only" as const,
         reason: trimmedReason,
-        ...(correctionMode === "replace" ? {
-          replacementAmountMinor: replacementAmountMinor as number,
-          replacementType,
-          ...(replacementType === "check" ? { replacementCheckNumber: replacementCheckNumber.trim() } : {}),
-          replacementNotes: replacementNotes.trim() || null,
-        } : {}),
       } as const;
       const idempotencyKey = crypto.randomUUID();
       const fingerprintPayload = {
-        allocationId,
-        correctionMode,
+        paymentId: row.paymentId,
+        correctionMode: "void_only" as const,
         reason: trimmedReason,
-        replacementAmountMinor,
-        replacementType: correctionMode === "replace" ? replacementType : null,
-        replacementCheckNumber: correctionMode === "replace" && replacementType === "check" ? replacementCheckNumber.trim() : null,
-        replacementWeekOf: null,
-        replacementNotes: correctionMode === "replace" ? replacementNotes.trim() || null : null,
       };
       const response = await csrfFetch(`/api/financials/leagues/${row.leagueId}/canonical/corrections/1`, {
         method: "POST",
@@ -100,7 +74,7 @@ export function CanonicalPaymentEvidenceTable({ rows, mode, paymentTiming, organ
         body: JSON.stringify({ ...payload, idempotencyKey, requestFingerprint: await correctionFingerprint(fingerprintPayload) }),
       });
       if (!response.ok) throw new Error("Payment correction could not be recorded");
-      setEditingAllocationId(null);
+      setEditingPaymentId(null);
       setReason("");
       window.location.reload();
     } catch {
@@ -144,17 +118,15 @@ export function CanonicalPaymentEvidenceTable({ rows, mode, paymentTiming, organ
               <span className="font-mono">{new Intl.NumberFormat("en-US", { style: "currency", currency: row.currency }).format(row.amountMinor / 100)}</span>
               <span className="text-xs text-muted-foreground">{row.paymentId === null ? "operation evidence" : `payment #${row.paymentId}`}</span>
               {paymentId !== null && ["confirmed_paid", "refunded", "disputed"].includes(row.status) && <button type="button" className="text-xs underline" disabled={receiptLoading === paymentId} onClick={() => void openReceipt(paymentId)}>{receiptLoading === paymentId ? "Loading receipt…" : "Receipt"}</button>}
-              {canCorrect && row.paymentId !== null && row.allocations.filter((allocation) => allocation.state === "active" && allocation.allocationId !== null).map((allocation) => (
-                <div key={`correction-${allocation.allocationId}`} className="col-span-full rounded border bg-muted/30 p-2 text-xs">
-                  {editingAllocationId === allocation.allocationId ? <div className="grid gap-2 md:grid-cols-2">
+              {canCorrect && row.paymentId !== null && ["cash", "check"].includes(row.paymentType) && row.allocations.some((allocation) => allocation.state === "active") && (
+                <div className="col-span-full rounded border bg-muted/30 p-2 text-xs">
+                  {editingPaymentId === row.paymentId ? <div className="grid gap-2 md:grid-cols-2">
                     <input aria-label="Correction reason" className="rounded border bg-background p-1" placeholder="Reason" value={reason} onChange={(event) => setReason(event.target.value)} />
-                    <select aria-label="Correction mode" className="rounded border bg-background p-1" value={correctionMode} onChange={(event) => setCorrectionMode(event.target.value as typeof correctionMode)}><option value="void_only">Void entry</option><option value="replace">Replace cash/check</option></select>
-                    {correctionMode === "replace" && <><input aria-label="Replacement amount" type="text" inputMode="decimal" className="rounded border bg-background p-1" placeholder="Amount in dollars (e.g. 20.00)" value={replacementAmount} onChange={(event) => setReplacementAmount(event.target.value)} /><select aria-label="Replacement type" className="rounded border bg-background p-1" value={replacementType} onChange={(event) => setReplacementType(event.target.value as typeof replacementType)}><option value="cash">Cash</option><option value="check">Check</option></select>{replacementType === "check" && <input aria-label="Replacement check number" className="rounded border bg-background p-1" placeholder="Check number" value={replacementCheckNumber} onChange={(event) => setReplacementCheckNumber(event.target.value)} />}<input aria-label="Replacement notes" className="rounded border bg-background p-1" placeholder="Notes (optional)" value={replacementNotes} onChange={(event) => setReplacementNotes(event.target.value)} /></>}
                     {correctionError && <p role="alert" className="text-destructive">{correctionError}</p>}
-                    <div className="flex gap-2"><button type="button" className="underline" disabled={correctionBusy} onClick={() => void submitCorrection(row, allocation.allocationId as string)}>Save correction</button><button type="button" className="underline" onClick={() => setEditingAllocationId(null)}>Cancel</button></div>
-                  </div> : <button type="button" className="underline" onClick={() => setEditingAllocationId(allocation.allocationId)}>Correct manual entry</button>}
+                    <div className="flex gap-2"><button type="button" className="underline" disabled={correctionBusy} onClick={() => void submitCorrection(row)}>Void payment</button><button type="button" className="underline" onClick={() => setEditingPaymentId(null)}>Cancel</button></div>
+                  </div> : <button type="button" className="underline" onClick={() => setEditingPaymentId(row.paymentId)}>Void cash/check payment</button>}
                 </div>
-              ))}
+              )}
             </article>
             );
           })}

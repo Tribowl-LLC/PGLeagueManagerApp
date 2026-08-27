@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-non-null-assertion, @typescript-eslint/consistent-type-assertions */
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import {
@@ -27,6 +27,7 @@ import {
   paymentOperationStandingAutopayBindings,
   paymentOperationStandingAutopayParticipants,
   paymentOperations,
+  paymentVoids,
   teamPaymentSlots,
   teams,
   users,
@@ -145,6 +146,41 @@ afterAll(async () => {
   if (organizationId) await deleteOrganization(organizationId);
 });
 
+// Standing tests intentionally leave durable operation/consent evidence, but
+// unfinished fixture obligations must not become accidental arrears for the
+// following independent scenario.
+afterEach(async () => {
+  if (!organizationId) return;
+  await db.update(paymentOperationRosterSnapshotItems).set({ state: "released" }).where(and(
+    eq(paymentOperationRosterSnapshotItems.organizationId, organizationId),
+    eq(paymentOperationRosterSnapshotItems.state, "reserved"),
+  ));
+  await db.transaction(async (tx) => {
+    const activePayments = await tx.select({ paymentId: paymentAllocations.paymentId }).from(paymentAllocations).where(and(
+      eq(paymentAllocations.organizationId, organizationId),
+      eq(paymentAllocations.state, "active"),
+    ));
+    for (const paymentId of [...new Set(activePayments.map((row) => row.paymentId))]) {
+      await tx.insert(paymentVoids).values({ organizationId, leagueId, paymentId, reason: "test fixture cleanup", recordedByUserId: actorUserId });
+      await tx.update(payments).set({ status: "voided" }).where(and(eq(payments.id, paymentId), eq(payments.organizationId, organizationId), eq(payments.leagueId, leagueId)));
+      await tx.update(paymentAllocations).set({ state: "voided" }).where(and(
+        eq(paymentAllocations.organizationId, organizationId),
+        eq(paymentAllocations.leagueId, leagueId),
+        eq(paymentAllocations.paymentId, paymentId),
+        eq(paymentAllocations.state, "active"),
+      ));
+    }
+  });
+  await db.update(paymentObligations).set({ state: "voided", voidedAt: "2039-12-31T23:59:59.000Z" }).where(and(
+    eq(paymentObligations.organizationId, organizationId),
+    inArray(paymentObligations.state, ["open", "partially_settled"] as const),
+  ));
+  await db.update(occurrencePaymentResponsibilities).set({ state: "voided" }).where(and(
+    eq(occurrencePaymentResponsibilities.organizationId, organizationId),
+    eq(occurrencePaymentResponsibilities.state, "active"),
+  ));
+});
+
 async function publishOccurrence(startAt: string) {
   occurrenceOrdinal += 1;
   const commandId = randomUUID();
@@ -181,6 +217,21 @@ async function publishOccurrence(startAt: string) {
     publishedByUserId: actorUserId,
     publicationCommandId: commandId,
   }).returning();
+  await db.insert(leagueOccurrenceBillingTerms).values({
+    organizationId,
+    leagueId,
+    occurrenceId: occurrence.id,
+    purpose: "league_weekly_fee",
+    obligationPolicy: "eligible_bowlers",
+    defaultAmountMinor: 2_000,
+    currency: "USD",
+    billingOrdinal: 1_000_000 + occurrenceOrdinal,
+    version: 1,
+    state: "published",
+    publishedAt: startAt,
+    publishedByUserId: actorUserId,
+    publicationCommandId: commandId,
+  });
   await db.transaction(async (tx) => {
     await materializeRosterPaymentOccurrenceInTransaction(tx, { organizationId, leagueId, occurrenceId: occurrence.id, actorUserId });
   });
@@ -256,13 +307,24 @@ async function createDoublePayGroup(trigger: Awaited<ReturnType<typeof publishOc
     state: "generated",
   });
   await db.update(leagueOccurrences).set({ generationRunId }).where(inArray(leagueOccurrences.id, [trigger.occurrence.id, paired.occurrence.id]));
-  const triggerTermId = randomUUID();
-  const pairedTermId = randomUUID();
-  const termOrdinal = occurrenceOrdinal * 2;
-  await db.insert(leagueOccurrenceBillingTerms).values([
-    { id: triggerTermId, organizationId, leagueId, occurrenceId: trigger.occurrence.id, purpose: "league_weekly_fee", obligationPolicy: "eligible_bowlers", defaultAmountMinor: 2_000, currency: "USD", billingOrdinal: termOrdinal, version: 1, state: "published", publishedAt: trigger.occurrence.startAt, publishedByUserId: actorUserId, publicationCommandId: generationCommandId },
-    { id: pairedTermId, organizationId, leagueId, occurrenceId: paired.occurrence.id, purpose: "league_weekly_fee", obligationPolicy: "eligible_bowlers", defaultAmountMinor: 2_000, currency: "USD", billingOrdinal: termOrdinal + 1, version: 1, state: "published", publishedAt: paired.occurrence.startAt, publishedByUserId: actorUserId, publicationCommandId: generationCommandId },
-  ]);
+  // Group members still need canonical ordinals distinct from the ordinary
+  // fixture terms published by publishOccurrence.
+  const termOrdinal = 100_000_000 + occurrenceOrdinal * 2;
+  const [triggerTerm] = await db.select({ id: leagueOccurrenceBillingTerms.id }).from(leagueOccurrenceBillingTerms).where(and(
+    eq(leagueOccurrenceBillingTerms.organizationId, organizationId),
+    eq(leagueOccurrenceBillingTerms.leagueId, leagueId),
+    eq(leagueOccurrenceBillingTerms.occurrenceId, trigger.occurrence.id),
+    eq(leagueOccurrenceBillingTerms.state, "published"),
+  ));
+  const [pairedTerm] = await db.select({ id: leagueOccurrenceBillingTerms.id }).from(leagueOccurrenceBillingTerms).where(and(
+    eq(leagueOccurrenceBillingTerms.organizationId, organizationId),
+    eq(leagueOccurrenceBillingTerms.leagueId, leagueId),
+    eq(leagueOccurrenceBillingTerms.occurrenceId, paired.occurrence.id),
+    eq(leagueOccurrenceBillingTerms.state, "published"),
+  ));
+  if (!triggerTerm || !pairedTerm) throw new Error("double-pay fixture billing terms are missing");
+  await db.update(leagueOccurrenceBillingTerms).set({ billingOrdinal: termOrdinal }).where(eq(leagueOccurrenceBillingTerms.id, triggerTerm.id));
+  await db.update(leagueOccurrenceBillingTerms).set({ billingOrdinal: termOrdinal + 1 }).where(eq(leagueOccurrenceBillingTerms.id, pairedTerm.id));
   const groupId = randomUUID();
   const groupFingerprint = uniqueFp("lvcollectiongroup:v1:");
   await db.insert(canonicalCollectionGroups).values({
@@ -285,14 +347,14 @@ async function createDoublePayGroup(trigger: Awaited<ReturnType<typeof publishOc
     publicationCommandId: generationCommandId,
   });
   await db.insert(canonicalCollectionGroupMembers).values([
-    { id: randomUUID(), organizationId, leagueId, groupId, generationRunId, occurrenceId: trigger.occurrence.id, billingTermId: triggerTermId, role: "trigger", memberOrdinal: 1, localDate: trigger.occurrence.authoritativeLocalDate, billingOrdinal: 1, amountMinor: 2_000, currency: "USD", active: true, currentRevision: 1 },
-    { id: randomUUID(), organizationId, leagueId, groupId, generationRunId, occurrenceId: paired.occurrence.id, billingTermId: pairedTermId, role: "paired", memberOrdinal: 2, localDate: paired.occurrence.authoritativeLocalDate, billingOrdinal: 2, amountMinor: 2_000, currency: "USD", active: true, currentRevision: 1 },
+    { id: randomUUID(), organizationId, leagueId, groupId, generationRunId, occurrenceId: trigger.occurrence.id, billingTermId: triggerTerm.id, role: "trigger", memberOrdinal: 1, localDate: trigger.occurrence.authoritativeLocalDate, billingOrdinal: termOrdinal, amountMinor: 2_000, currency: "USD", active: true, currentRevision: 1 },
+    { id: randomUUID(), organizationId, leagueId, groupId, generationRunId, occurrenceId: paired.occurrence.id, billingTermId: pairedTerm.id, role: "paired", memberOrdinal: 2, localDate: paired.occurrence.authoritativeLocalDate, billingOrdinal: termOrdinal + 1, amountMinor: 2_000, currency: "USD", active: true, currentRevision: 1 },
   ]);
   return groupId;
 }
 
 describe("standing automatic payments on migrated PostgreSQL", () => {
-  it("does not catch up pre-consent debt, advances a cutoff once, and preserves provider location evidence", async () => {
+  it("blocks pre-consent arrears until one-time FIFO settlement, then advances a cutoff", async () => {
     const beforeConsent = await publishOccurrence("2039-01-01T19:00:00.000Z");
     const afterConsent = await publishOccurrence("2039-01-08T19:00:00.000Z");
     const consent = await insertConsent({ version: 1, activatedAt: "2039-01-02T00:00:00.000Z" });
@@ -306,11 +368,34 @@ describe("standing automatic payments on migrated PostgreSQL", () => {
       eq(financialCommands.commandType, "standing_autopay_cutoff"),
     ));
     expect(noOpCommands).toMatchObject([{ state: "applied", result: { kind: "no_op" } }]);
+    await expect(quoteStandingAutopay({ organizationId, leagueId, payerBowlerId }))
+      .rejects.toMatchObject({ code: "ARREARS_REQUIRE_ONE_TIME_FIFO" });
+
+    await expect(prepareStandingAutopayCutoff({ organizationId, leagueId, consentId: consent.id, cutoffAt: afterConsent.occurrence.startAt }))
+      .rejects.toMatchObject({ code: "ARREARS_REQUIRE_ONE_TIME_FIFO" });
+    const { quoteInteractiveObligations, recordCanonicalManualPayment } = await import("../../server/services/roster-payment-core");
+    const arrearsQuote = await quoteInteractiveObligations({
+      organizationId,
+      leagueId,
+      amountMinor: beforeConsent.obligation.amountMinor,
+      payerBowlerId,
+    });
+    await recordCanonicalManualPayment({
+      organizationId,
+      leagueId,
+      actorUserId,
+      request: {
+        amountMinor: arrearsQuote.amountMinor,
+        payerBowlerId,
+        type: "cash",
+        idempotencyKey: "settle-pre-consent-" + randomUUID(),
+        requestFingerprint: arrearsQuote.fingerprint,
+      },
+    });
     const quote = await quoteStandingAutopay({ organizationId, leagueId, payerBowlerId });
     expect(quote.cutoffAt).toBe(afterConsent.occurrence.startAt);
     expect(quote.amountMinor).toBe(afterConsent.obligation.amountMinor);
     expect(quote.obligations.map((row) => row.occurrenceId)).toEqual([afterConsent.occurrence.id]);
-
     const operation = await prepareStandingAutopayCutoff({ organizationId, leagueId, consentId: consent.id, cutoffAt: afterConsent.occurrence.startAt });
     expect(operation).toMatchObject({ operationType: "standing_autopay_charge", amountMinor: afterConsent.obligation.amountMinor, providerName: "square" });
     const replay = await prepareStandingAutopayCutoff({ organizationId, leagueId, consentId: consent.id, cutoffAt: afterConsent.occurrence.startAt });
@@ -338,6 +423,11 @@ describe("standing automatic payments on migrated PostgreSQL", () => {
     expect(binding).toMatchObject({ collectionMode: "double_pay", triggerOccurrenceId: trigger.occurrence.id, pairedOccurrenceId: paired.occurrence.id });
     const futureItem = await db.select({ obligationId: paymentOperationRosterSnapshotItems.obligationId }).from(paymentOperationRosterSnapshotItems).where(and(eq(paymentOperationRosterSnapshotItems.operationId, operation!.id), eq(paymentOperationRosterSnapshotItems.obligationId, paired.obligation.id)));
     expect(futureItem).toHaveLength(1);
+    // Clear the successfully prepared pair before constructing the next
+    // incomplete group; the test is about the pair gate, not arrears from
+    // the prior independent operation.
+    await db.update(paymentOperationRosterSnapshotItems).set({ state: "released" }).where(eq(paymentOperationRosterSnapshotItems.operationId, operation!.id));
+    await db.update(paymentObligations).set({ state: "voided", voidedAt: "2039-01-31T00:00:00.000Z" }).where(inArray(paymentObligations.id, [trigger.obligation.id, paired.obligation.id]));
 
     const incompleteTrigger = await publishOccurrence("2039-02-05T19:00:00.000Z");
     const incompletePaired = await publishOccurrence("2039-02-12T19:00:00.000Z");
@@ -481,10 +571,10 @@ describe("standing automatic payments on migrated PostgreSQL", () => {
     const consent = await insertConsent({ version: 71, activatedAt: "2039-01-02T00:00:00.000Z" });
     const { prepareStandingAutopayCutoff } = await import("../../server/services/roster-standing-autopay");
     const { quoteInteractiveObligations, recordCanonicalManualPayment, RosterPaymentError } = await import("../../server/services/roster-payment-core");
-    const quote = await quoteInteractiveObligations({ organizationId, leagueId, obligationIds: [target.obligation.id], payerBowlerId });
+    const quote = await quoteInteractiveObligations({ organizationId, leagueId, amountMinor: target.obligation.amountMinor, payerBowlerId });
     const manualRequest = {
-      obligationIds: [target.obligation.id],
-      allocations: [{ obligationId: target.obligation.id, amountMinor: quote.amountMinor }],
+      amountMinor: quote.amountMinor,
+      payerBowlerId,
       type: "cash" as const,
       idempotencyKey: `standing-manual-race-${randomUUID()}`,
       requestFingerprint: quote.fingerprint,
@@ -516,7 +606,7 @@ describe("standing automatic payments on migrated PostgreSQL", () => {
     const target = await publishOccurrence("2039-03-16T19:00:00.000Z");
     const consent = await insertConsent({ version: 72, activatedAt: "2039-01-02T00:00:00.000Z" });
     const { prepareStandingAutopayCutoff } = await import("../../server/services/roster-standing-autopay");
-    const { canonicalRosterFingerprint, correctCanonicalAllocation, quoteInteractiveObligations, recordCanonicalManualPayment, RosterPaymentError, saveTeamRoster } = await import("../../server/services/roster-payment-core");
+    const { canonicalRosterFingerprint, correctCanonicalAllocation, RosterPaymentError, saveTeamRoster } = await import("../../server/services/roster-payment-core");
 
     // A roster mutation that would supersede the reserved responsibility is
     // rejected under the same league lock as cutoff preparation.
@@ -535,23 +625,40 @@ describe("standing automatic payments on migrated PostgreSQL", () => {
     rosterRequest.requestFingerprint = canonicalRosterFingerprint(rosterRequest);
     await expect(saveTeamRoster({ organizationId, leagueId, teamId, actorUserId, request: rosterRequest })).rejects.toMatchObject({ code: "OBLIGATION_RESERVED" });
 
-    // A partial manual entry leaves an open remainder. Once the standing
-    // cutoff reserves that remainder, correcting the original cash evidence
-    // must fail closed rather than reopen the obligation underneath it.
-    const manualTarget = await publishOccurrence("2039-03-17T19:00:00.000Z");
-    const manualQuote = await quoteInteractiveObligations({ organizationId, leagueId, obligationIds: [manualTarget.obligation.id], payerBowlerId, allocations: [{ obligationId: manualTarget.obligation.id, amountMinor: 1_000 }] });
-    const manual = await recordCanonicalManualPayment({ organizationId, leagueId, actorUserId, request: {
-      obligationIds: [manualTarget.obligation.id],
-      allocations: [{ obligationId: manualTarget.obligation.id, amountMinor: 1_000 }],
-      type: "cash",
-      idempotencyKey: `reserved-correction-manual-${randomUUID()}`,
-      requestFingerprint: manualQuote.fingerprint,
-      notes: "partial cash fixture",
-    } });
-    const manualOperation = await prepareStandingAutopayCutoff({ organizationId, leagueId, consentId: consent.id, cutoffAt: manualTarget.occurrence.startAt });
-    expect(manualOperation).toBeDefined();
+    // A cash tender already allocated to the reserved obligation must not be
+    // voided underneath the provider operation. This fixture writes the
+    // canonical parent/child pair directly so the test can isolate the
+    // correction lock without attempting a second FIFO quote against the
+    // standing reservation.
+    const manual = await db.transaction(async (tx) => {
+      const [payment] = await tx.insert(payments).values({
+        organizationId,
+        bowlerId: payerBowlerId,
+        leagueId,
+        amount: 1_000,
+        status: "paid",
+        type: "cash",
+        idempotencyKey: `reserved-correction-manual-${randomUUID()}`,
+        paidByUserId: actorUserId,
+      }).returning();
+      await tx.insert(paymentAllocations).values({
+        organizationId,
+        leagueId,
+        paymentId: payment.id,
+        obligationId: target.obligation.id,
+        amountMinor: 1_000,
+        currency: "USD",
+        recordedByUserId: actorUserId,
+      });
+      await tx.update(paymentObligations).set({ state: "partially_settled" }).where(and(
+        eq(paymentObligations.id, target.obligation.id),
+        eq(paymentObligations.organizationId, organizationId),
+        eq(paymentObligations.leagueId, leagueId),
+      ));
+      return payment;
+    });
     const correctionRequest = {
-      allocationId: manual.records[0].allocation.id,
+      paymentId: manual.id,
       correctionMode: "void_only" as const,
       reason: "reserved correction fixture",
       idempotencyKey: `reserved-correction-${randomUUID()}`,
@@ -620,25 +727,6 @@ describe("standing automatic payments on migrated PostgreSQL", () => {
     // public scheduler query must return it before preparation is replayed.
     const target = await publishOccurrence("2039-01-09T19:00:00.000Z");
     const consent = await insertConsent({ version: 12, activatedAt: "2039-01-02T00:00:00.000Z" });
-    // The schedule publication service normally creates this canonical term;
-    // the compact fixture publishes the occurrence directly, so provide the
-    // same term evidence for the production cancel/restore transaction.
-    await db.insert(leagueOccurrenceBillingTerms).values({
-      id: randomUUID(),
-      organizationId,
-      leagueId,
-      occurrenceId: target.occurrence.id,
-      purpose: "league_weekly_fee",
-      obligationPolicy: "eligible_bowlers",
-      defaultAmountMinor: 2_000,
-      currency: "USD",
-      billingOrdinal: occurrenceOrdinal,
-      version: 1,
-      state: "published",
-      publishedAt: target.occurrence.startAt,
-      publishedByUserId: actorUserId,
-      publicationCommandId: target.commandId,
-    });
     const { prepareStandingAutopayCutoff } = await import("../../server/services/roster-standing-autopay");
     const originalOperation = await prepareStandingAutopayCutoff({ organizationId, leagueId, consentId: consent.id, cutoffAt: target.occurrence.startAt });
     expect(originalOperation).toBeDefined();

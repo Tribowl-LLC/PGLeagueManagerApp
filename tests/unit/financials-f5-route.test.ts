@@ -133,7 +133,7 @@ describe("F5 canonical payment report route", () => {
         totalTransactions: 3,
         totals: { grossConfirmedPaidMinor: 2000, activeAllocatedMinor: 2000, refundedMinor: 0, disputedReviewRequiredMinor: 400, reviewRequiredMinor: 0, unresolvedOperationMinor: 0, unallocatedLegacyMinor: 0 },
         rows: [row],
-        transactions: [{ groupKey: "operation-secret", paymentOperationId: "operation-secret", combinedChargeGroupId: null, amountMinor: 4000, currency: "USD", rows: [row] }],
+        transactions: [{ groupKey: "operation-secret", paymentOperationId: "operation-secret", amountMinor: 4000, currency: "USD", rows: [row] }],
         unlinkedHistory: [],
       };
     };
@@ -147,9 +147,8 @@ describe("F5 canonical payment report route", () => {
     expect(pageTwo.status).toBe(200);
     expect(firstBody.data.totals).toEqual(secondBody.data.totals);
     expect(firstBody.data.totals).toMatchObject({ grossConfirmedPaidMinor: 2000, activeAllocatedMinor: 2000 });
-    expect(firstBody.data.rows[0]).toMatchObject({ amountMinor: 2000, paymentOperationId: null, providerPaymentId: null });
+    expect(firstBody.data.rows[0]).toMatchObject({ amountMinor: 2000, paymentOperationId: null, providerPaymentId: null, allocations: [] });
     expect(firstBody.data.rows[0].sharedTransaction).toBeNull();
-    expect(firstBody.data.rows[0].allocations).toEqual([expect.objectContaining({ bowlerId: 42, amountMinor: 2000 })]);
     expect(firstBody.data.transactions[0].amountMinor).toBe(2000);
     expect(firstBody.data.totals.disputedReviewRequiredMinor).toBe(400);
   });

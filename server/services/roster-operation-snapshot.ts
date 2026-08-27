@@ -23,9 +23,6 @@ const allocationSchema = z.object({
   allocationIndex: z.number().int().min(0),
   bowlerId: z.number().int().positive(),
   amountMinor: z.number().int().positive(),
-  lineageAmountMinor: z.number().int().min(0).nullable(),
-  prizeFundAmountMinor: z.number().int().min(0).nullable(),
-  weekOf: z.string().datetime(),
   notes: z.string().max(500).nullable(),
   paidByUserId: z.number().int().positive().nullable(),
   obligationId: z.string().uuid(),
@@ -58,7 +55,6 @@ const semanticSnapshotSchema = z.object({
   storeCard: z.boolean(),
   sourceKind: rosterOperationSourceKindSchema,
   quoteFingerprint: z.string().regex(/^lvrosterquote:v1:[0-9a-f]{64}$/),
-  combinedChargeGroupId: z.string().min(1).max(128).nullable(),
   allocations: z.array(allocationSchema).min(1).max(25),
   lineItems: z.array(lineItemSchema).max(25),
 }).strict().superRefine((snapshot, ctx) => {
@@ -148,7 +144,6 @@ export interface StoredRosterOperationSnapshot {
   storeCard: boolean;
   sourceKind: RosterOperationSourceKind | null;
   quoteFingerprint: string;
-  combinedChargeGroupId: string | null;
 }
 
 export class RosterOperationSnapshotValidationError extends Error {
@@ -168,10 +163,7 @@ function normalize(snapshot: RosterOperationSemanticSnapshot): RosterOperationSe
   }
   return {
     ...parsed.data,
-    allocations: parsed.data.allocations.map((allocation) => ({
-      ...allocation,
-      weekOf: new Date(allocation.weekOf).toISOString(),
-    })),
+    allocations: parsed.data.allocations,
   };
 }
 
@@ -203,7 +195,6 @@ export function encryptRosterOperationSnapshot(
     storeCard: normalized.storeCard,
     sourceKind: normalized.sourceKind,
     quoteFingerprint: normalized.quoteFingerprint,
-    combinedChargeGroupId: normalized.combinedChargeGroupId,
   };
 }
 
@@ -262,7 +253,6 @@ export function reconstructRosterOperationSnapshot(input: {
       throw new RosterOperationSnapshotValidationError("roster operation snapshot source kind is missing");
     })(),
     quoteFingerprint: input.stored.quoteFingerprint,
-    combinedChargeGroupId: input.stored.combinedChargeGroupId,
     allocations: input.allocations,
     lineItems: input.lineItems,
   });

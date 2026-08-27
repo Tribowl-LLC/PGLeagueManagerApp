@@ -132,7 +132,6 @@ describe('GET /api/payments — caller scope', () => {
       id: 91,
       leagueId: ORG_A_LEAGUE.id,
       paymentOperationId: '11111111-1111-4111-8111-111111111111',
-      combinedChargeGroupId: null,
     };
     const dispute = {
       id: '22222222-2222-4222-8222-222222222222',
@@ -199,7 +198,6 @@ describe('GET /api/payments — caller scope', () => {
       id: 93,
       leagueId: ORG_B_LEAGUE.id,
       paymentOperationId: '33333333-3333-4333-8333-333333333333',
-      combinedChargeGroupId: null,
     };
     mockStorage.getAllPaymentsPaginatedSystemAdmin.mockResolvedValue({
       items: [row],
@@ -456,11 +454,11 @@ describe('GET /api/payments — pagination', () => {
 });
 
 describe('GET /api/payments — base filter passthrough', () => {
-  it('forwards bowlerId, teamId, and weekOf to storage.getPayments', async () => {
+  it('forwards bowlerId, teamId, and tender date to storage.getPayments', async () => {
     mockStorage.getPayments.mockResolvedValue([]);
 
     const res = await get(
-      '/api/payments?bowlerId=42&teamId=7&weekOf=2026-01-05',
+      '/api/payments?bowlerId=42&teamId=7&createdAt=2026-01-05',
       ORG_A_USER,
     );
     expect(res.status).toBe(200);
@@ -470,8 +468,8 @@ describe('GET /api/payments — base filter passthrough', () => {
       bowlerId: 42,
       teamId: 7,
     });
-    expect(filters.weekOf).toBeInstanceOf(Date);
-    expect((filters.weekOf as Date).toISOString().slice(0, 10)).toBe(
+    expect(filters.createdAt).toBeInstanceOf(Date);
+    expect((filters.createdAt as Date).toISOString().slice(0, 10)).toBe(
       '2026-01-05',
     );
   });
@@ -525,13 +523,13 @@ describe('GET /api/payments — malformed filter inputs', () => {
     expect(mockStorage.getPayments).not.toHaveBeenCalled();
   });
 
-  it('rejects an unparseable ?weekOf date with a 400', async () => {
+  it('rejects an unparseable ?createdAt date with a 400', async () => {
     // `new Date('not-a-date')` returns Invalid Date silently — the
     // old behaviour forwarded that into storage, which usually blew
     // up further down the stack. The route now rejects up front.
-    const res = await get('/api/payments?weekOf=not-a-date', ORG_A_USER);
+    const res = await get('/api/payments?createdAt=not-a-date', ORG_A_USER);
     expect(res.status).toBe(400);
-    expect((await res.json()).error.message).toMatch(/week/i);
+    expect((await res.json()).error.message).toMatch(/createdAt/i);
     expect(mockStorage.getPayments).not.toHaveBeenCalled();
   });
 

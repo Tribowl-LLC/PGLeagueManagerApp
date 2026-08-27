@@ -40,7 +40,7 @@ export function BowlerPaymentHistoryTable({ payments, locationId, paymentBusines
           ) : (
             payments.map((payment) => (
               <TableRow key={payment.id}>
-                <TableCell>{formatAuthoritativeLocalDate(paymentBusinessDates?.get(payment.id) ?? payment.weekOf)}</TableCell>
+                <TableCell>{formatAuthoritativeLocalDate(paymentBusinessDates?.get(payment.id) ?? payment.createdAt)}</TableCell>
                 <TableCell className="capitalize">{payment.type.replace(/_/g, " ")}</TableCell>
                 <TableCell>${(payment.amount / 100).toFixed(2)}</TableCell>
                 <TableCell>

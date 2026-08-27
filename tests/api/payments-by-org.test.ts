@@ -19,13 +19,22 @@
  * system. See task #295's description for the source-of-truth matrix.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { eq, inArray } from 'drizzle-orm';
+import { randomUUID } from 'node:crypto';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../../server/db';
 import {
   leagues,
   bowlers,
+  leagueOccurrences,
+  leagueScheduleCommands,
+  locations,
+  occurrencePaymentResponsibilities,
+  paymentAllocations,
+  paymentObligations,
   payments,
   organizations,
+  teamPaymentSlots,
+  teams,
 } from '@shared/schema';
 import {
   login,
@@ -58,8 +67,145 @@ describe('GET /api/payments — SQL-level org filtering', () => {
   let leagueOrgBId = 0;
 
   let bowlerId = 0;
+  let bowlerOrgBId = 0;
   let paymentOrgAId = 0;
   let paymentOrgBId = 0;
+  const paymentEvidence: Array<{
+    organizationId: number;
+    paymentId: number;
+    allocationId: string;
+    obligationId: string;
+    responsibilityId: string;
+    occurrenceId: string;
+    commandId: string;
+    slotId: string;
+    teamId: number;
+    locationId: number;
+  }> = [];
+
+  async function createCanonicalPayment(input: {
+    organizationId: number;
+    leagueId: number;
+    bowlerId: number;
+    actorUserId: number;
+    amount: number;
+    label: string;
+  }): Promise<number> {
+    const [location] = await db.insert(locations).values({
+      organizationId: input.organizationId,
+      name: `${input.label} payment location`,
+    }).returning({ id: locations.id });
+    const [team] = await db.insert(teams).values({
+      name: `${input.label} payment team`,
+      number: Math.floor(Math.random() * 900_000) + 10_000,
+      leagueId: input.leagueId,
+    }).returning({ id: teams.id });
+    const [slot] = await db.insert(teamPaymentSlots).values({
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      teamId: team.id,
+      slotIndex: 0,
+      lineupSize: 3,
+      occupant: 'main',
+      mainBowlerId: input.bowlerId,
+      recordedByUserId: input.actorUserId,
+    }).returning({ id: teamPaymentSlots.id });
+    const commandId = randomUUID();
+    await db.insert(leagueScheduleCommands).values({
+      id: commandId,
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      actorUserId: input.actorUserId,
+      commandType: 'publish',
+      idempotencyKey: `${input.label}-${randomUUID()}`,
+      requestFingerprint: `payments-by-org-${randomUUID()}`,
+    });
+    const [occurrence] = await db.insert(leagueOccurrences).values({
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      locationId: location.id,
+      generationKey: `${input.label}-occurrence-${randomUUID()}`,
+      kind: 'regular',
+      status: 'scheduled',
+      lifecycle: 'published',
+      authoritativeLocalDate: '2037-04-01',
+      authoritativeLocalStartTime: '19:00:00',
+      timezone: 'UTC',
+      startAt: '2037-04-01T19:00:00.000Z',
+      selectedUtcOffsetMinutes: 0,
+      foldResolution: 'unambiguous',
+      resolverVersion: 'payments-by-org-test',
+      plannedOrdinal: 1,
+      competitionNumber: 1,
+      publishedAt: '2037-04-01T19:00:00.000Z',
+      publishedByUserId: input.actorUserId,
+      publicationCommandId: commandId,
+      lastCommandId: commandId,
+    }).returning({ id: leagueOccurrences.id });
+    const [responsibility] = await db.insert(occurrencePaymentResponsibilities).values({
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      occurrenceId: occurrence.id,
+      teamId: team.id,
+      slotId: slot.id,
+      slotIndex: 0,
+      positionIndex: 0,
+      responsibilityKind: 'main',
+      mainBowlerId: input.bowlerId,
+      payerBowlerId: input.bowlerId,
+      policy: 'main_pays_full',
+      amountMinor: input.amount,
+      currency: 'USD',
+      dueAt: '2037-04-01T19:00:00.000Z',
+      pastDueAt: '2037-04-01T19:00:00.000Z',
+      recordedByUserId: input.actorUserId,
+    }).returning({ id: occurrencePaymentResponsibilities.id });
+    const [obligation] = await db.insert(paymentObligations).values({
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      occurrenceId: occurrence.id,
+      responsibilityId: responsibility.id,
+      payerBowlerId: input.bowlerId,
+      amountMinor: input.amount,
+      currency: 'USD',
+      dueAt: '2037-04-01T19:00:00.000Z',
+      pastDueAt: '2037-04-01T19:00:00.000Z',
+      createdByUserId: input.actorUserId,
+    }).returning({ id: paymentObligations.id });
+    const [payment] = await db.transaction(async (tx) => {
+      const [created] = await tx.insert(payments).values({
+        organizationId: input.organizationId,
+        bowlerId: input.bowlerId,
+        leagueId: input.leagueId,
+        amount: input.amount,
+        type: 'cash',
+        status: 'paid',
+      }).returning({ id: payments.id });
+      const [allocation] = await tx.insert(paymentAllocations).values({
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        paymentId: created.id,
+        obligationId: obligation.id,
+        amountMinor: input.amount,
+        currency: 'USD',
+        recordedByUserId: input.actorUserId,
+      }).returning({ id: paymentAllocations.id });
+      paymentEvidence.push({
+        organizationId: input.organizationId,
+        paymentId: created.id,
+        allocationId: allocation.id,
+        obligationId: obligation.id,
+        responsibilityId: responsibility.id,
+        occurrenceId: occurrence.id,
+        commandId,
+        slotId: slot.id,
+        teamId: team.id,
+        locationId: location.id,
+      });
+      return [created] as const;
+    });
+    return payment.id;
+  }
 
   beforeAll(async () => {
     sysAdmin = await login(TEST_ADMIN_EMAIL, TEST_ADMIN_PASSWORD);
@@ -101,43 +247,52 @@ describe('GET /api/payments — SQL-level org filtering', () => {
       .values({ name: 'Vitest #295 Bowler', organizationId: orgAId })
       .returning({ id: bowlers.id });
     bowlerId = bw.id;
+    const [bwB] = await db
+      .insert(bowlers)
+      .values({ name: 'Vitest #295 Org-B Bowler', organizationId: orgBId })
+      .returning({ id: bowlers.id });
+    bowlerOrgBId = bwB.id;
 
-    const [pa] = await db
-      .insert(payments)
-      .values({
-        bowlerId,
-        leagueId: leagueOrgAId,
-        amount: 100,
-        weekOf: '2025-01-06 00:00:00',
-        type: 'cash',
-        status: 'paid',
-      })
-      .returning({ id: payments.id });
-    paymentOrgAId = pa.id;
-
-    const [pb] = await db
-      .insert(payments)
-      .values({
-        bowlerId,
-        leagueId: leagueOrgBId,
-        amount: 100,
-        weekOf: '2025-01-06 00:00:00',
-        type: 'cash',
-        status: 'paid',
-      })
-      .returning({ id: payments.id });
-    paymentOrgBId = pb.id;
+    paymentOrgAId = await createCanonicalPayment({
+      organizationId: orgAId,
+      leagueId: leagueOrgAId,
+      bowlerId,
+      actorUserId: orgAAdmin.user.id,
+      amount: 100,
+      label: 'payments-by-org-a',
+    });
+    paymentOrgBId = await createCanonicalPayment({
+      organizationId: orgBId,
+      leagueId: leagueOrgBId,
+      bowlerId: bowlerOrgBId,
+      actorUserId: orgBAdmin.user.id,
+      amount: 100,
+      label: 'payments-by-org-b',
+    });
   });
 
   afterAll(async () => {
     // Deterministic teardown: each step throws on failure so CI surfaces
     // any cleanup regression rather than masking it.
-    const paymentIds = [paymentOrgAId, paymentOrgBId].filter(Boolean);
-    if (paymentIds.length) {
-      await db.delete(payments).where(inArray(payments.id, paymentIds));
+    for (const evidence of paymentEvidence) {
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`SELECT set_config('leaguevault.organization_teardown', 'on', true)`);
+        await tx.delete(paymentAllocations).where(eq(paymentAllocations.id, evidence.allocationId));
+        await tx.delete(payments).where(eq(payments.id, evidence.paymentId));
+        await tx.delete(paymentObligations).where(eq(paymentObligations.id, evidence.obligationId));
+        await tx.delete(occurrencePaymentResponsibilities).where(eq(occurrencePaymentResponsibilities.id, evidence.responsibilityId));
+        await tx.delete(leagueOccurrences).where(eq(leagueOccurrences.id, evidence.occurrenceId));
+        await tx.delete(leagueScheduleCommands).where(eq(leagueScheduleCommands.id, evidence.commandId));
+        await tx.delete(teamPaymentSlots).where(eq(teamPaymentSlots.id, evidence.slotId));
+        await tx.delete(teams).where(eq(teams.id, evidence.teamId));
+        await tx.delete(locations).where(eq(locations.id, evidence.locationId));
+      });
     }
     if (bowlerId) {
       await db.delete(bowlers).where(eq(bowlers.id, bowlerId));
+    }
+    if (bowlerOrgBId) {
+      await db.delete(bowlers).where(eq(bowlers.id, bowlerOrgBId));
     }
     const leagueIds = [leagueOrgAId, leagueOrgBId].filter(Boolean);
     if (leagueIds.length) {

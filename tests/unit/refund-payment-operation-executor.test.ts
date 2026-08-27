@@ -3,12 +3,19 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq, inArray } from "drizzle-orm";
 import {
   bowlers,
+  leagueOccurrences,
+  leagueScheduleCommands,
   leagues,
   locations,
   organizations,
+  occurrencePaymentResponsibilities,
+  paymentAllocations,
+  paymentObligations,
   paymentOperations,
   payments,
   refundPaymentOperationSnapshots,
+  teamPaymentSlots,
+  teams,
   users,
 } from "@shared/schema";
 import { getTestDb } from "../setup/test-db";
@@ -48,6 +55,8 @@ interface Fixture {
   leagueId: number;
   bowlerId: number;
   actorUserId: number;
+  teamId: number;
+  slotId: string;
 }
 
 interface RefundCall {
@@ -107,6 +116,7 @@ class ScriptedRefundProvider implements PaymentProvider {
 
 const slugs = [`refund-operation-a-${suffix}`, `refund-operation-b-${suffix}`] as const;
 let fixtures: [Fixture, Fixture];
+let paidPaymentOrdinal = 0;
 
 async function createFixture(index: 0 | 1): Promise<Fixture> {
   const [organization] = await db.insert(organizations).values({
@@ -137,29 +147,168 @@ async function createFixture(index: 0 | 1): Promise<Fixture> {
     role: "org_admin",
     organizationId: organization.id,
   }).returning({ id: users.id });
+  const [team] = await db.insert(teams).values({
+    name: `Refund Operation Team ${index}`,
+    number: index + 1,
+    leagueId: league.id,
+  }).returning({ id: teams.id });
+  const [slot] = await db.insert(teamPaymentSlots).values({
+    organizationId: organization.id,
+    leagueId: league.id,
+    teamId: team.id,
+    slotIndex: 0,
+    lineupSize: 3,
+    occupant: "main",
+    mainBowlerId: bowler.id,
+    recordedByUserId: actor.id,
+  }).returning({ id: teamPaymentSlots.id });
   return {
     organizationId: organization.id,
     locationId: location.id,
     leagueId: league.id,
     bowlerId: bowler.id,
     actorUserId: actor.id,
+    teamId: team.id,
+    slotId: slot.id,
   };
 }
 
 async function createPaidPayment(fixture: Fixture, overrides: Partial<typeof payments.$inferInsert> = {}) {
-  const [payment] = await db.insert(payments).values({
-    bowlerId: fixture.bowlerId,
-    leagueId: fixture.leagueId,
-    amount: 2_000,
-    lineageAmount: 1_000,
-    prizeFundAmount: 1_000,
-    weekOf: "2033-03-01T00:00:00.000Z",
-    status: "paid",
-    type: "square",
-    providerPaymentId: `square-payment-${randomUUID()}`,
-    ...overrides,
-  }).returning();
-  return payment;
+  const amount = overrides.amount ?? 2_000;
+  const leagueId = overrides.leagueId ?? fixture.leagueId;
+  const providerPaymentId = overrides.providerPaymentId ?? `square-payment-${randomUUID()}`;
+  const commandId = randomUUID();
+  paidPaymentOrdinal += 1;
+  const occurrenceStart = new Date(Date.UTC(2033, 0, 1 + paidPaymentOrdinal, 19, 0, 0)).toISOString();
+  const [team] = leagueId === fixture.leagueId
+    ? [{ id: fixture.teamId }]
+    : await db.insert(teams).values({
+      name: `Refund Operation Alternate Team ${randomUUID()}`,
+      number: Math.floor(Math.random() * 900_000) + 10_000,
+      leagueId,
+    }).returning({ id: teams.id });
+  const [slot] = leagueId === fixture.leagueId
+    ? [{ id: fixture.slotId }]
+    : await db.insert(teamPaymentSlots).values({
+      organizationId: fixture.organizationId,
+      leagueId,
+      teamId: team.id,
+      slotIndex: 0,
+      lineupSize: 3,
+      occupant: "main",
+      mainBowlerId: fixture.bowlerId,
+      recordedByUserId: fixture.actorUserId,
+    }).returning({ id: teamPaymentSlots.id });
+  await db.insert(leagueScheduleCommands).values({
+    id: commandId,
+    organizationId: fixture.organizationId,
+    leagueId,
+    actorUserId: fixture.actorUserId,
+    commandType: "publish",
+    idempotencyKey: `refund-operation-publish-${randomUUID()}`,
+    requestFingerprint: `refund-operation-fingerprint-${randomUUID()}`,
+  });
+  const [occurrence] = await db.insert(leagueOccurrences).values({
+    organizationId: fixture.organizationId,
+    leagueId,
+    locationId: fixture.locationId,
+    generationKey: `refund-operation-occurrence-${randomUUID()}`,
+    kind: "regular",
+    status: "scheduled",
+    lifecycle: "published",
+    authoritativeLocalDate: occurrenceStart.slice(0, 10),
+    authoritativeLocalStartTime: "19:00:00",
+    timezone: "UTC",
+    startAt: occurrenceStart,
+    selectedUtcOffsetMinutes: 0,
+    foldResolution: "unambiguous",
+    resolverVersion: "refund-operation-test",
+    plannedOrdinal: paidPaymentOrdinal,
+    competitionNumber: paidPaymentOrdinal,
+    competitive: true,
+    countsInStandings: true,
+    publishedAt: occurrenceStart,
+    publishedByUserId: fixture.actorUserId,
+    publicationCommandId: commandId,
+    lastCommandId: commandId,
+  }).returning({ id: leagueOccurrences.id });
+  const [responsibility] = await db.insert(occurrencePaymentResponsibilities).values({
+    organizationId: fixture.organizationId,
+    leagueId,
+    occurrenceId: occurrence.id,
+    teamId: team.id,
+    slotId: slot.id,
+    slotIndex: 0,
+    positionIndex: 0,
+    version: 1,
+    state: "active",
+    responsibilityKind: "main",
+    mainBowlerId: fixture.bowlerId,
+    payerBowlerId: fixture.bowlerId,
+    policy: "main_pays_full",
+    amountMinor: amount,
+    currency: "USD",
+    dueAt: occurrenceStart,
+    pastDueAt: occurrenceStart,
+    recordedByUserId: fixture.actorUserId,
+  }).returning({ id: occurrencePaymentResponsibilities.id, version: occurrencePaymentResponsibilities.version });
+  const [obligation] = await db.insert(paymentObligations).values({
+    organizationId: fixture.organizationId,
+    leagueId,
+    occurrenceId: occurrence.id,
+    responsibilityId: responsibility.id,
+    payerBowlerId: fixture.bowlerId,
+    amountMinor: amount,
+    currency: "USD",
+    dueAt: occurrenceStart,
+    pastDueAt: occurrenceStart,
+    state: "open",
+    createdByUserId: fixture.actorUserId,
+  }).returning({ id: paymentObligations.id });
+  return db.transaction(async (tx) => {
+    const operationId = randomUUID();
+    await tx.insert(paymentOperations).values({
+      id: operationId,
+      organizationId: fixture.organizationId,
+      authorizingUserId: fixture.actorUserId,
+      operationType: "interactive_charge",
+      targetKey: `refund-fixture-${operationId}`,
+      leagueId,
+      amountMinor: amount,
+      currency: "USD",
+      requestFingerprint: `lvpayreq:v1:${operationId.replaceAll("-", "")}${randomUUID().replaceAll("-", "")}`,
+      providerIdempotencyKey: `refund-fixture-idempotency-${operationId}`.slice(0, 45),
+      providerName: "square",
+      providerObjectId: providerPaymentId,
+      status: "succeeded",
+      nextAttemptAt: null,
+      completedAt: fixedNow.toISOString(),
+      createdAt: fixedNow.toISOString(),
+      updatedAt: fixedNow.toISOString(),
+    });
+    const [payment] = await tx.insert(payments).values({
+      organizationId: fixture.organizationId,
+      bowlerId: fixture.bowlerId,
+      leagueId,
+      amount,
+      currency: "USD",
+      status: "paid",
+      type: "square",
+      providerPaymentId,
+      paymentOperationId: operationId,
+      ...overrides,
+    }).returning();
+    await tx.insert(paymentAllocations).values({
+      organizationId: fixture.organizationId,
+      leagueId,
+      paymentId: payment.id,
+      obligationId: obligation.id,
+      amountMinor: amount,
+      currency: "USD",
+      recordedByUserId: fixture.actorUserId,
+    });
+    return payment;
+  });
 }
 
 async function prepare(fixture: Fixture, paymentId: number, reason: string | undefined = "Customer request") {
@@ -473,20 +622,13 @@ describe("durable refund payment operations", () => {
   it("rejects stale fencing and preserves distinct combined-payment allocations", async () => {
     const fixture = fixtures[0];
     const sharedProviderId = `square-combined-${randomUUID()}`;
-    const group = `combined-${randomUUID()}`;
     const firstPayment = await createPaidPayment(fixture, {
       amount: 700,
-      lineageAmount: 500,
-      prizeFundAmount: 200,
       providerPaymentId: sharedProviderId,
-      combinedChargeGroupId: group,
     });
     const secondPayment = await createPaidPayment(fixture, {
       amount: 1_300,
-      lineageAmount: 500,
-      prizeFundAmount: 800,
       providerPaymentId: sharedProviderId,
-      combinedChargeGroupId: group,
     });
     const first = await prepare(fixture, firstPayment.id);
     const second = await prepare(fixture, secondPayment.id);
@@ -518,6 +660,6 @@ describe("durable refund payment operations", () => {
     expect(provider.refundCalls.map(call => call.amount)).toEqual([700, 1_300]);
     const rows = await db.select().from(payments).where(inArray(payments.id, [firstPayment.id, secondPayment.id]));
     expect(rows).toHaveLength(2);
-    expect(rows.every(row => row.status === "refunded" && row.combinedChargeGroupId === group)).toBe(true);
+    expect(rows.every(row => row.status === "refunded")).toBe(true);
   });
 });
