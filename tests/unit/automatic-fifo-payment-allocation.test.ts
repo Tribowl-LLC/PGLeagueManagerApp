@@ -60,7 +60,7 @@ describe("automatic FIFO payment allocation", () => {
   it("keeps an unreached paired occurrence in ordinary future-date order", () => {
     const rows = [
       candidate("normal-future", 30_00, "2026-03-01T00:00:00.000Z"),
-      candidate("unreached-pair", 30_00, "2026-04-01T00:00:00.000Z", { effectiveCollectionAt: "2026-02-01T00:00:00.000Z" }),
+      candidate("unreached-pair", 30_00, "2026-04-01T00:00:00.000Z"),
     ];
     expect(allocateAutomaticFifoPayment(60_00, rows, "weekly", "2026-02-01T00:00:00.000Z")).toEqual([
       { obligationId: "normal-future", amountMinor: 30_00 },
