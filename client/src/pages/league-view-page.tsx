@@ -27,7 +27,6 @@ import { InviteResultCard } from "./league-view-page/invite-result-card";
 import { LeagueActionCards } from "./league-view-page/league-action-cards";
 import { SeasonHistoryCard } from "./league-view-page/season-history-card";
 import { NewSeasonDialog, type NewSeasonFormValues } from "./league-view-page/new-season-dialog";
-import { LeagueOccurrenceScheduleCard } from "./league-view-page/league-occurrence-schedule-card";
 import {
   LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION,
   type LeagueSetupIntegrationResult,
@@ -99,9 +98,7 @@ export default function LeagueViewPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/leagues"] });
       toast({
         title: "New Season Created",
-        description: "canonicalSchedule" in newLeague
-          ? `${league?.name} new season and its canonical schedule were published. The previous season has been archived.`
-          : `${league?.name} new season has been created. The previous season has been archived.`,
+        description: `${league?.name} new season and schedule were created. The previous season has been archived.`,
       });
       setShowNewSeason(false);
       setLocation(`/leagues/${newLeague.id}`);
@@ -109,7 +106,7 @@ export default function LeagueViewPage() {
     onError: (error: Error) => {
       toast({
         title: "New season setup failed",
-        description: error.message || "No new season or canonical schedule was created.",
+        description: error.message || "No new season or schedule was created.",
         variant: "destructive",
       });
     },
@@ -218,16 +215,6 @@ export default function LeagueViewPage() {
         <ErrorBoundary level="section">
           <LeagueActionCards leagueId={leagueId} canManageRoster={canManageLeague} />
         </ErrorBoundary>
-
-        {league.organizationId && (
-          <ErrorBoundary level="section">
-            <LeagueOccurrenceScheduleCard
-              leagueId={leagueId}
-              organizationId={league.organizationId}
-              viewerRole={currentUser?.role}
-            />
-          </ErrorBoundary>
-        )}
 
         <ErrorBoundary level="section">
         {league.active && canManageLeague && (

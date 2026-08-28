@@ -1,10 +1,10 @@
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
-import { Users, CircleDollarSign } from "lucide-react";
+import { CalendarDays, Users, CircleDollarSign } from "lucide-react";
 import { Link } from "wouter";
 
 export function LeagueActionCards({ leagueId, canManageRoster }: { leagueId: number; canManageRoster: boolean }) {
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
       <Link href={`/leagues/${leagueId}/teams`} className="block">
         <Card className="hover:bg-accent transition-colors">
           <CardHeader>
@@ -21,6 +21,22 @@ export function LeagueActionCards({ leagueId, canManageRoster }: { leagueId: num
         </Card>
       </Link>
 
+      <Link href={`/leagues/${leagueId}/schedule`} className="block">
+        <Card className="hover:bg-accent transition-colors">
+          <CardHeader>
+            <div className="flex justify-center mb-2">
+              <CalendarDays className="size-6" />
+            </div>
+            <CardTitle>League Schedule</CardTitle>
+            <CardDescription>
+              {canManageRoster ? "View and manage league dates" : "View league dates"}
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+          </CardContent>
+        </Card>
+      </Link>
+
       <Link href="/payments" className="block">
         <Card className="hover:bg-accent transition-colors">
           <CardHeader>
@@ -29,7 +45,7 @@ export function LeagueActionCards({ leagueId, canManageRoster }: { leagueId: num
             </div>
             <CardTitle>Payment Records</CardTitle>
             <CardDescription>
-              Record and review canonical payment evidence
+              Record and review league payments
             </CardDescription>
           </CardHeader>
           <CardContent>
