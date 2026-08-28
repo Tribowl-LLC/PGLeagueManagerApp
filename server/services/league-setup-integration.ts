@@ -189,6 +189,8 @@ function normalizedLeagueSemantic(league: LeagueSetupTarget | League, kind: "lea
     name: league.name,
     description: league.description ?? null,
     ...(league.payingLineupSize === undefined ? {} : { payingLineupSize: league.payingLineupSize }),
+    substituteAccess: league.substituteAccess ?? "team_only",
+    substitutePaymentRegime: league.substitutePaymentRegime ?? "team_choice",
     active: league.active,
     allowPublicSignup: league.allowPublicSignup,
     seasonStart: new Date(league.seasonStart).toISOString(),

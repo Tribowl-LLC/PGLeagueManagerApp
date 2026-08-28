@@ -115,6 +115,12 @@ describe("league setup integration API", () => {
     const changed = await apiPost("/api/leagues", { ...body, paymentMode: "upfront" }, admin);
     expect(changed.status).toBe(409);
     expect(changed.data.error?.code).toBe("IDEMPOTENCY_CONFLICT");
+    const changedSubstitutePolicy = await apiPost("/api/leagues", {
+      ...body,
+      substituteAccess: "floating",
+    }, admin);
+    expect(changedSubstitutePolicy.status).toBe(409);
+    expect(changedSubstitutePolicy.data.error?.code).toBe("IDEMPOTENCY_CONFLICT");
     const review = await apiGet<CanonicalDraftReview>(`/api/leagues/${result.id}/canonical-drafts/review`, admin);
     expect(review.status).toBe(200);
     expect(review.data.data).toMatchObject({ generationRun: { state: "applied" }, generation: { paymentMode: "weekly", seasonClassification: "Spring" } });
