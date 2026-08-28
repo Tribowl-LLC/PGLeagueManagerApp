@@ -50,12 +50,6 @@ function formatLocalTime(value: string | null): string {
   return `${hour % 12 || 12}:${match[2]} ${hour < 12 ? "AM" : "PM"}`;
 }
 
-function formatOffset(value: number): string {
-  const sign = value >= 0 ? "+" : "−";
-  const absolute = Math.abs(value);
-  return `UTC${sign}${String(Math.floor(absolute / 60)).padStart(2, "0")}:${String(absolute % 60).padStart(2, "0")}`;
-}
-
 function occurrenceLabel(occurrence: LeagueOccurrenceScheduleOccurrence): string {
   if (occurrence.kind === "makeup") return "Makeup session";
   if (occurrence.kind === "regular") return "League session";
@@ -68,12 +62,10 @@ function statusBadge(status: LeagueOccurrenceScheduleOccurrence["status"]) {
   return <Badge variant="outline">Scheduled</Badge>;
 }
 
-function ScheduleOccurrenceRow({ occurrence, isAdministrator }: {
-  occurrence: LeagueOccurrenceScheduleOccurrence;
-  isAdministrator: boolean;
-}) {
+function ScheduleOccurrenceRow({ occurrence }: { occurrence: LeagueOccurrenceScheduleOccurrence }) {
+  const activeCollectionGroups = (occurrence.collectionGroups ?? []).filter((group) => group.state !== "revoked");
   return (
-    <li className="grid gap-3 px-4 py-4 md:grid-cols-[minmax(190px,1.25fr)_minmax(170px,1fr)_minmax(220px,1.25fr)]">
+    <li className="flex flex-col justify-between gap-3 px-4 py-4 sm:flex-row sm:items-start">
       <div>
         <div className="flex flex-wrap items-center gap-2">
           <h3 className={`font-medium ${occurrence.status === "cancelled" ? "text-muted-foreground line-through" : ""}`}>
@@ -81,14 +73,14 @@ function ScheduleOccurrenceRow({ occurrence, isAdministrator }: {
           </h3>
           {statusBadge(occurrence.status)}
           {occurrence.kind !== "regular" && <Badge variant="secondary">{occurrenceLabel(occurrence)}</Badge>}
-          {(occurrence.collectionGroups ?? []).map((group) => (
-            <Badge key={group.groupId} variant={group.state === "revoked" ? "secondary" : "default"}>
-              {group.state === "revoked" ? "Former double-pay" : group.role === "trigger" ? "Double-pay trigger" : "Double-pay paired"}
+          {activeCollectionGroups.map((group) => (
+            <Badge key={group.groupId} variant="default">
+              {group.role === "trigger" ? "Double-pay week" : "Paired double-pay week"}
             </Badge>
           ))}
         </div>
         <p className="mt-1 text-sm">
-          {formatLocalTime(occurrence.authoritativeLocalStartTime)} <span className="text-muted-foreground">({occurrence.timezone})</span>
+          {formatLocalTime(occurrence.authoritativeLocalStartTime)}
         </p>
         {occurrence.relationships.map((relationship) => (
           <p key={relationship.relationshipId} className="mt-1 text-xs text-muted-foreground">
@@ -98,54 +90,26 @@ function ScheduleOccurrenceRow({ occurrence, isAdministrator }: {
           </p>
         ))}
       </div>
-
-      <dl className="grid grid-cols-3 gap-2 text-sm">
-        <div><dt className="text-xs text-muted-foreground">Planned</dt><dd>{occurrence.plannedOrdinal ?? "—"}</dd></div>
-        <div><dt className="text-xs text-muted-foreground">Competition</dt><dd>{occurrence.competitionNumber ?? "—"}</dd></div>
-        <div><dt className="text-xs text-muted-foreground">Billing</dt><dd>{occurrence.billing?.billingOrdinal ?? "—"}</dd></div>
-      </dl>
-
-      <div className="text-xs text-muted-foreground">
-        <p className="break-all"><span className="font-medium text-foreground">Occurrence UUID:</span> <span className="font-mono">{occurrence.occurrenceId}</span></p>
-        {isAdministrator && (
-          <div className="mt-1 space-y-1">
-            <p>{occurrence.lifecycle} lifecycle · revision {occurrence.currentRevision}</p>
-            <p>{occurrence.effectivelyLocked ? "Effectively locked" : "Not effectively locked"}</p>
-            {occurrence.selectedUtcOffsetMinutes !== null && (
-              <p>{formatOffset(occurrence.selectedUtcOffsetMinutes)} · fold {occurrence.foldResolution} · {occurrence.resolverVersion}</p>
-            )}
-            {(occurrence.collectionGroups ?? []).map((group) => (
-              <p key={`${group.groupId}:detail`}>
-                Collection group {group.groupOrdinal} · {group.role} · {group.pairedLocalDate} · revision {group.currentRevision}
-              </p>
-            ))}
-          </div>
-        )}
-      </div>
+      {(occurrence.competitionNumber ?? occurrence.plannedOrdinal) != null && (
+        <p className="shrink-0 text-sm font-medium text-muted-foreground">
+          Week {occurrence.competitionNumber ?? occurrence.plannedOrdinal}
+        </p>
+      )}
     </li>
   );
 }
 
-function SkippedDateRow({ skippedDate, isAdministrator }: {
-  skippedDate: LeagueOccurrenceScheduleSkippedDate;
-  isAdministrator: boolean;
-}) {
+function SkippedDateRow({ skippedDate }: { skippedDate: LeagueOccurrenceScheduleSkippedDate }) {
   return (
-    <li className="grid gap-3 bg-muted/30 px-4 py-4 md:grid-cols-[minmax(190px,1.25fr)_minmax(170px,1fr)_minmax(220px,1.25fr)]">
+    <li className="flex flex-col justify-between gap-3 bg-muted/30 px-4 py-4 sm:flex-row sm:items-start">
       <div>
         <div className="flex flex-wrap items-center gap-2">
           <h3 className="font-medium text-muted-foreground line-through">{formatLocalDate(skippedDate.localDate)}</h3>
           <Badge variant="secondary">Skipped</Badge>
         </div>
-        <p className="mt-1 text-sm text-muted-foreground">No physical occurrence · {skippedDate.timezone}</p>
+        <p className="mt-1 text-sm text-muted-foreground">No league session</p>
       </div>
-      <p className="text-sm">{skippedDate.reason}</p>
-      <div className="text-xs text-muted-foreground">
-        <p>{skippedDate.durableCanonicalException ? "Published canonical exception" : "Legacy skip-date fallback"}</p>
-        {isAdministrator && skippedDate.exceptionId && (
-          <p className="mt-1 break-all font-mono">{skippedDate.exceptionId} · revision {skippedDate.currentRevision}</p>
-        )}
-      </div>
+      <p className="text-sm text-muted-foreground">{skippedDate.reason}</p>
     </li>
   );
 }
@@ -189,14 +153,9 @@ export function LeagueOccurrenceScheduleCard({
       <CardHeader>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <CardTitle as="h2" className="flex items-center gap-2"><CalendarDays className="size-5" />Season schedule</CardTitle>
-            <CardDescription>Physical sessions in league-local calendar time. Planned, competition, and billing numbers remain distinct.</CardDescription>
+            <CardTitle as="h2" className="flex items-center gap-2"><CalendarDays className="size-5" />Season Schedule</CardTitle>
+            <CardDescription>League dates and start times. Skipped and cancelled dates remain visible.</CardDescription>
           </div>
-          {schedule && (
-            <Badge variant="default">
-              Canonical schedule
-            </Badge>
-          )}
         </div>
       </CardHeader>
       <CardContent className="mt-5 space-y-5">
@@ -211,7 +170,7 @@ export function LeagueOccurrenceScheduleCard({
             <AlertCircle className="size-4" />
             <AlertTitle>Season schedule is unavailable</AlertTitle>
             <AlertDescription>
-              The server could not provide a safe canonical schedule projection. Retry after the schedule is repaired.
+              The schedule could not be loaded safely. Try again, or contact an administrator if the problem continues.
               <Button variant="outline" size="sm" className="mt-3 block" onClick={() => scheduleQuery.refetch()}>
                 <RefreshCw className="mr-2 size-4" />Retry
               </Button>
@@ -228,30 +187,13 @@ export function LeagueOccurrenceScheduleCard({
         {rows.length > 0 && (
           <ol className="divide-y rounded-md border" aria-label="Chronological season schedule">
             {rows.map((row) => row.type === "occurrence"
-              ? <ScheduleOccurrenceRow key={row.stableKey} occurrence={row.occurrence} isAdministrator={isAdministrator} />
-              : <SkippedDateRow key={row.stableKey} skippedDate={row.skippedDate} isAdministrator={isAdministrator} />)}
+              ? <ScheduleOccurrenceRow key={row.stableKey} occurrence={row.occurrence} />
+              : <SkippedDateRow key={row.stableKey} skippedDate={row.skippedDate} />)}
           </ol>
         )}
 
         {schedule?.administrator && isAdministrator && (
-          <section className="space-y-4 border-t pt-5" aria-labelledby="schedule-administration-heading">
-            <div>
-              <h3 id="schedule-administration-heading" className="text-lg font-semibold">Schedule administration</h3>
-              <p className="text-sm text-muted-foreground">
-                Canonical lifecycle evidence is read-only here; the controls below are reserved for audited mid-season changes.
-              </p>
-            </div>
-            {(schedule.administrator.hasDraftEvidence
-              || schedule.administrator.hasRejectedEvidence
-              || schedule.administrator.hasSupersededEvidence
-              || schedule.administrator.hasRevokedEvidence) && (
-              <div className="flex flex-wrap gap-2" aria-label="Canonical administrator evidence">
-                {schedule.administrator.hasDraftEvidence && <Badge variant="outline">Draft evidence</Badge>}
-                {schedule.administrator.hasRejectedEvidence && <Badge variant="destructive">Rejected evidence</Badge>}
-                {schedule.administrator.hasSupersededEvidence && <Badge variant="secondary">Superseded evidence</Badge>}
-                {schedule.administrator.hasRevokedEvidence && <Badge variant="secondary">Revoked evidence</Badge>}
-              </div>
-            )}
+          <section className="space-y-4 border-t pt-5">
             {schedule.administrator.c2ReviewAvailable && schedule.administrator.reviewContractFamily === "canonical" && (
               <FallDraftReviewPanel
                 basePath={canonicalAdminPath}

@@ -204,28 +204,25 @@ afterEach(() => {
 });
 
 describe("FallDraftReviewPanel", () => {
-  it("renders exact UUID, DST, lifecycle, numbering, billing, exception, fingerprint, and eligible controls", () => {
+  it("renders user-facing schedule controls without backend evidence", () => {
     renderPanel();
-    expect(screen.getByText("League payment timing:").parentElement).toHaveTextContent("Weekly");
-    expect(screen.getByRole("heading", { name: "Canonical schedule administration" })).toBeVisible();
-    expect(screen.getByText(reviewFingerprint)).toBeVisible();
-    expect(screen.getByText((content) => content.includes(review.occurrences[0].id))).toBeVisible();
-    expect(screen.getByText(/offset -240; unambiguous/)).toBeVisible();
-    expect(screen.getByText(/planned 1/)).toBeVisible();
-    expect(screen.getByText(/eligible_bowlers/)).toBeVisible();
-    expect(screen.getByText(/2032-08-15, skip, draft/)).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Edit Schedule" })).toBeVisible();
+    expect(screen.getByText(/Aug 1, 2032/)).toBeVisible();
+    expect(screen.getByText("7:00 PM")).toBeVisible();
+    expect(screen.queryByText(reviewFingerprint)).not.toBeInTheDocument();
+    expect(screen.queryByText((content) => content.includes(review.occurrences[0].id))).not.toBeInTheDocument();
+    expect(screen.queryByText(/eligible_bowlers/)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Reschedule" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Cancel occurrence" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Restore draft" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
   });
 
-  it("hardcodes ambiguous-fold rejection for rescheduling and does not expose a policy selector", async () => {
+  it("keeps timezone and ambiguous-fold policy behind the user-facing reschedule form", async () => {
     const user = userEvent.setup();
     renderPanel();
     await user.click(screen.getByRole("button", { name: "Reschedule" }));
-    expect(screen.getByLabelText("Local date")).toBeVisible();
-    expect(screen.getByLabelText("Local time")).toBeVisible();
-    expect(screen.getByLabelText("IANA timezone")).toBeVisible();
+    expect(screen.getByLabelText("New date")).toBeVisible();
+    expect(screen.getByLabelText("New start time")).toBeVisible();
+    expect(screen.queryByLabelText("IANA timezone")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Ambiguous fold")).not.toBeInTheDocument();
   });
 
@@ -235,9 +232,9 @@ describe("FallDraftReviewPanel", () => {
     const apiSpy = vi.spyOn(queryModule, "apiRequest").mockResolvedValue({ success: true, data: result(review, "cancel") });
     const rendered = renderPanel(review);
     const invalidateSpy = vi.spyOn(rendered.client, "invalidateQueries");
-    await user.click(screen.getByRole("button", { name: "Cancel occurrence" }));
-    await user.type(screen.getByLabelText("Reason"), "Cancel generic future occurrence");
-    await user.click(screen.getByRole("button", { name: "Confirm cancel" }));
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await user.type(screen.getByLabelText("Reason for change"), "Cancel generic future occurrence");
+    await user.click(screen.getByRole("button", { name: "Cancel league night" }));
     await waitFor(() => expect(apiSpy).toHaveBeenCalledWith(
       "/api/leagues/7/canonical-drafts/review/cancel",
       "POST",
@@ -254,16 +251,18 @@ describe("FallDraftReviewPanel", () => {
     });
   });
 
-  it("clearly displays stale, effectively locked, and terminal rejected states", () => {
+  it("disables editing for unavailable schedule rows without exposing internal state", () => {
     renderPanel({
       ...review,
       generationRun: { ...review.generationRun, state: "rejected", rejectedAt: "2030-01-01T00:00:00.000Z", rejectedByUserId: 5, rejectionReason: "Rejected", rejectionCommandId: "reject" },
       currentLegacyInput: { ...review.currentLegacyInput, matches: false },
       occurrences: [{ ...review.occurrences[0], status: "discarded", plannedOrdinal: null, competitionNumber: null, effectivelyLocked: true }],
     });
-    expect(screen.getByText("Rejected")).toBeVisible();
-    expect(screen.getByText("Effectively locked")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Reschedule" })).toBeDisabled();
+    expect(screen.getByText("Unavailable")).toBeVisible();
+    expect(screen.getByText("No changes available")).toBeVisible();
+    expect(screen.queryByText("Rejected")).not.toBeInTheDocument();
+    expect(screen.queryByText("Effectively locked")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Reschedule" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Approve and publish reviewed set" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Reject complete draft set" })).not.toBeInTheDocument();
   });

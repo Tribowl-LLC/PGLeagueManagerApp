@@ -50,6 +50,16 @@ const canonical: LeagueOccurrenceScheduleReadContract = {
       effectivelyLocked: false,
       effectiveLockReasons: [],
       billing: { purpose: "league_weekly_fee", obligationPolicy: "none", billingOrdinal: 12, version: 2, currentRevision: 2 },
+      collectionGroups: [{
+        groupId: "70000000-0000-4000-8000-000000000001",
+        groupOrdinal: 1,
+        kind: "double_pay",
+        role: "trigger",
+        pairedOccurrenceId: "20000000-0000-4000-8000-000000000002",
+        pairedLocalDate: "2032-11-14",
+        state: "published",
+        currentRevision: 1,
+      }],
       relationships: [],
     },
     {
@@ -122,25 +132,24 @@ afterEach(() => {
 });
 
 describe("LeagueOccurrenceScheduleCard", () => {
-  it("renders an accessible responsive canonical schedule with distinct states and ordinals", async () => {
+  it("renders a user-facing schedule without backend evidence", async () => {
     vi.spyOn(queryModule, "apiRequest").mockResolvedValue({ success: true, data: canonical });
     renderCard();
-    expect(await screen.findByRole("heading", { name: "Season schedule" })).toBeVisible();
-    expect(await screen.findByText("Canonical schedule")).toBeVisible();
-    expect(screen.getByRole("list", { name: "Chronological season schedule" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Season Schedule" })).toBeVisible();
+    expect(await screen.findByRole("list", { name: "Chronological season schedule" })).toBeVisible();
     expect(screen.getByText("Cancelled")).toBeVisible();
     expect(screen.getByText("Completed")).toBeVisible();
     expect(screen.getByText("Skipped")).toBeVisible();
     expect(screen.getByText("Makeup session")).toBeVisible();
     expect(screen.getByText("Makes up a cancelled session")).toBeVisible();
     expect(screen.getByText("Holiday closure")).toBeVisible();
-    expect(screen.getAllByText("Planned")[0].parentElement).toHaveTextContent("4");
-    expect(screen.getAllByText("Competition")[0].parentElement).toHaveTextContent("9");
-    expect(screen.getAllByText("Billing")[0].parentElement).toHaveTextContent("12");
-    expect(screen.getByText(/fold later/)).toBeVisible();
+    expect(screen.getByText("Week 9")).toBeVisible();
+    expect(screen.getByText("Double-pay week")).toBeVisible();
     expect(screen.getByText("Audited C2 controls")).toBeVisible();
-    expect(screen.queryByText("Fall canonical draft generation")).not.toBeInTheDocument();
-    expect(screen.getAllByRole("listitem")[0]).toHaveClass("md:grid-cols-[minmax(190px,1.25fr)_minmax(170px,1fr)_minmax(220px,1.25fr)]");
+    expect(screen.queryByText("Canonical schedule")).not.toBeInTheDocument();
+    expect(screen.queryByText(canonical.occurrences[0].occurrenceId)).not.toBeInTheDocument();
+    expect(screen.queryByText("Planned")).not.toBeInTheDocument();
+    expect(screen.queryByText(/fold later/)).not.toBeInTheDocument();
   });
 
   it("selects the generic review route for an E4 generation snapshot", async () => {
@@ -172,7 +181,7 @@ describe("LeagueOccurrenceScheduleCard", () => {
     const first = renderCard();
     expect(screen.getByText("Loading season schedule…")).toBeVisible();
     resolveFirst({ success: true, data: canonical });
-    expect(await screen.findByText("Canonical schedule")).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Season Schedule" })).toBeVisible();
     first.unmount();
 
     renderCard();
@@ -192,6 +201,6 @@ describe("LeagueOccurrenceScheduleCard", () => {
 
     renderCard("user");
     await waitFor(() => expect(api).toHaveBeenCalledWith("/api/leagues/7/occurrence-schedule", "GET"));
-    expect(screen.queryByRole("heading", { name: "Schedule administration" })).not.toBeInTheDocument();
+    expect(screen.queryByTestId("draft-review-panel")).not.toBeInTheDocument();
   });
 });

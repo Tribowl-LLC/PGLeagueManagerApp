@@ -210,7 +210,7 @@ export function useLeagueFormData({
         description: league
           ? "League has been updated successfully."
           : canonicalCreated
-            ? "League and its canonical schedule were published successfully."
+            ? "League and schedule created successfully."
             : "League has been created successfully.",
       });
       onClose();
