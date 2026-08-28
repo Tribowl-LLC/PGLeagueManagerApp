@@ -21,22 +21,6 @@ export function LeagueActionCards({ leagueId, canManageRoster }: { leagueId: num
         </Card>
       </Link>
 
-      <Link href={`/leagues/${leagueId}/schedule`} className="block">
-        <Card className="hover:bg-accent transition-colors">
-          <CardHeader>
-            <div className="flex justify-center mb-2">
-              <CalendarDays className="size-6" />
-            </div>
-            <CardTitle>League Schedule</CardTitle>
-            <CardDescription>
-              {canManageRoster ? "View and manage league dates" : "View league dates"}
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-          </CardContent>
-        </Card>
-      </Link>
-
       <Link href="/payments" className="block">
         <Card className="hover:bg-accent transition-colors">
           <CardHeader>
@@ -46,6 +30,22 @@ export function LeagueActionCards({ leagueId, canManageRoster }: { leagueId: num
             <CardTitle>Payment Records</CardTitle>
             <CardDescription>
               Record and review league payments
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+          </CardContent>
+        </Card>
+      </Link>
+
+      <Link href={`/leagues/${leagueId}/schedule`} className="block">
+        <Card className="hover:bg-accent transition-colors">
+          <CardHeader>
+            <div className="flex justify-center mb-2">
+              <CalendarDays className="size-6" />
+            </div>
+            <CardTitle>League Schedule</CardTitle>
+            <CardDescription>
+              {canManageRoster ? "View and manage league dates" : "View league dates"}
             </CardDescription>
           </CardHeader>
           <CardContent>

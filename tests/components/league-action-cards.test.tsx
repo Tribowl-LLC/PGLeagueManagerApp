@@ -6,6 +6,11 @@ describe("LeagueActionCards", () => {
   it("puts the user-facing schedule behind a league navigation card", () => {
     render(<LeagueActionCards leagueId={19073} canManageRoster />);
 
+    expect(screen.getAllByRole("link").map((link) => link.textContent)).toEqual([
+      expect.stringContaining("Roster Management"),
+      expect.stringContaining("Payment Records"),
+      expect.stringContaining("League Schedule"),
+    ]);
     expect(screen.getByRole("link", { name: /League Schedule/i })).toHaveAttribute(
       "href",
       "/leagues/19073/schedule",
