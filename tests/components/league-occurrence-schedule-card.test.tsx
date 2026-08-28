@@ -18,6 +18,7 @@ vi.mock("@/pages/league-view-page/fall-draft-review-panel", () => ({
 }));
 
 import { LeagueOccurrenceScheduleCard } from "@/pages/league-view-page/league-occurrence-schedule-card";
+import { formatScheduleLocalDate, formatScheduleLocalTime } from "@/pages/league-view-page/schedule-display";
 
 const canonical: LeagueOccurrenceScheduleReadContract = {
   contractVersion: "league-occurrence-schedule/3",
@@ -132,6 +133,12 @@ afterEach(() => {
 });
 
 describe("LeagueOccurrenceScheduleCard", () => {
+  it("uses one calendar-safe formatter for schedule dates and local start times", () => {
+    expect(formatScheduleLocalDate("2032-08-01")).toMatch(/Aug 1, 2032/);
+    expect(formatScheduleLocalTime("19:05:00")).toBe("7:05 PM");
+    expect(formatScheduleLocalTime(null)).toBe("Start time not configured");
+  });
+
   it("renders a user-facing schedule without backend evidence", async () => {
     vi.spyOn(queryModule, "apiRequest").mockResolvedValue({ success: true, data: canonical });
     renderCard();

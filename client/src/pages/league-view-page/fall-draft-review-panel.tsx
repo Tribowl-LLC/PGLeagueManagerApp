@@ -20,6 +20,7 @@ import type { ApiResponse } from "@shared/schema";
 import type { FallDraftReviewOccurrence } from "@shared/fall-draft-review";
 import type { CanonicalDraftMutationResult, CanonicalDraftReview } from "@shared/canonical-draft-review";
 import { secureFallDraftIdempotencyKey } from "./fall-draft-secure-id";
+import { formatScheduleLocalDate, formatScheduleLocalTime } from "./schedule-display";
 
 interface FallDraftReviewPanelProps {
   basePath: string;
@@ -35,26 +36,6 @@ interface EntityActionState {
   occurrence: FallDraftReviewOccurrence;
 }
 
-function formatLocalDate(value: string): string {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-  if (!match) return value;
-  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12));
-  return new Intl.DateTimeFormat(undefined, {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    timeZone: "UTC",
-  }).format(date);
-}
-
-function formatLocalTime(value: string): string {
-  const match = /^([01]\d|2[0-3]):([0-5]\d)/.exec(value);
-  if (!match) return value;
-  const hour = Number(match[1]);
-  return `${hour % 12 || 12}:${match[2]} ${hour < 12 ? "AM" : "PM"}`;
-}
-
 function actionTitle(action: EntityAction | undefined): string {
   if (action === "reschedule") return "Reschedule league night";
   if (action === "cancel") return "Cancel league night";
@@ -66,6 +47,12 @@ function statusBadge(occurrence: FallDraftReviewOccurrence) {
   if (occurrence.status === "completed") return <Badge variant="secondary">Completed</Badge>;
   if (occurrence.status === "scheduled") return <Badge variant="outline">Scheduled</Badge>;
   return <Badge variant="secondary">Unavailable</Badge>;
+}
+
+function scheduleMutationErrorMessage(error: unknown): string {
+  const fallback = "The schedule change could not be saved. The latest schedule has been reloaded.";
+  if (!(error instanceof Error)) return fallback;
+  return error.message.replace(/^\d{3}:\s*/, "").trim() || fallback;
 }
 
 export function FallDraftReviewPanel({
@@ -217,16 +204,23 @@ export function FallDraftReviewPanel({
                 && !occurrence.effectivelyLocked;
               return (
                 <tr key={occurrence.id}>
-                  <td className="px-3 py-3 font-medium">{formatLocalDate(occurrence.authoritativeLocalDate)}</td>
-                  <td className="px-3 py-3">{formatLocalTime(occurrence.authoritativeLocalStartTime)}</td>
+                  <td className="px-3 py-3 font-medium">{formatScheduleLocalDate(occurrence.authoritativeLocalDate)}</td>
+                  <td className="px-3 py-3">{formatScheduleLocalTime(occurrence.authoritativeLocalStartTime)}</td>
                   <td className="px-3 py-3">{statusBadge(occurrence)}</td>
                   <td className="px-3 py-3">
                     <div className="flex flex-wrap gap-2">
-                      {occurrence.status === "scheduled" && (
+                      {occurrence.status === "scheduled" && editable && (
                         <>
-                          <Button size="sm" variant="outline" disabled={!editable || mutation.isPending} onClick={() => beginEntityAction("reschedule", occurrence)}>Reschedule</Button>
-                          <Button size="sm" variant="destructive" disabled={!editable || mutation.isPending} onClick={() => beginEntityAction("cancel", occurrence)}>Cancel</Button>
+                          <Button size="sm" variant="outline" disabled={mutation.isPending} onClick={() => beginEntityAction("reschedule", occurrence)}>Reschedule</Button>
+                          <Button size="sm" variant="destructive" disabled={mutation.isPending} onClick={() => beginEntityAction("cancel", occurrence)}>Cancel</Button>
                         </>
+                      )}
+                      {occurrence.status === "scheduled" && !editable && (
+                        <span className="max-w-72 text-xs text-muted-foreground">
+                          {occurrence.effectivelyLocked
+                            ? "This league night cannot be changed because it has started or has linked activity."
+                            : "This league night is not available for editing."}
+                        </span>
                       )}
                       {occurrence.status === "cancelled" && restorable && (
                         <Button size="sm" variant="outline" disabled={mutation.isPending} onClick={() => beginEntityAction("restore", occurrence)}>Restore</Button>
@@ -244,7 +238,7 @@ export function FallDraftReviewPanel({
       </div>
 
       {identityError && <Alert variant="destructive"><AlertCircle className="size-4" /><AlertTitle>Secure confirmation unavailable</AlertTitle><AlertDescription>{identityError}</AlertDescription></Alert>}
-      {mutation.isError && <Alert variant="destructive"><AlertCircle className="size-4" /><AlertTitle>Schedule change rejected</AlertTitle><AlertDescription>The schedule change could not be saved. The latest schedule has been reloaded.</AlertDescription></Alert>}
+      {mutation.isError && <Alert variant="destructive"><AlertCircle className="size-4" /><AlertTitle>Schedule change rejected</AlertTitle><AlertDescription>{scheduleMutationErrorMessage(mutation.error)}</AlertDescription></Alert>}
       {success && <Alert><CheckCircle2 className="size-4" /><AlertTitle>{success}</AlertTitle></Alert>}
 
       <Dialog open={entityAction !== null} onOpenChange={(open) => { if (!open && !mutation.isPending) setEntityAction(null); }}>
@@ -252,7 +246,7 @@ export function FallDraftReviewPanel({
           <DialogHeader>
             <DialogTitle>{actionTitle(entityAction?.action)}</DialogTitle>
             <DialogDescription>
-              {entityAction ? `${formatLocalDate(entityAction.occurrence.authoritativeLocalDate)} at ${formatLocalTime(entityAction.occurrence.authoritativeLocalStartTime)}` : "Update this league night."}
+              {entityAction ? `${formatScheduleLocalDate(entityAction.occurrence.authoritativeLocalDate)} at ${formatScheduleLocalTime(entityAction.occurrence.authoritativeLocalStartTime)}` : "Update this league night."}
             </DialogDescription>
           </DialogHeader>
           {entityAction?.action === "reschedule" && (

@@ -251,6 +251,34 @@ describe("FallDraftReviewPanel", () => {
     });
   });
 
+  it("shows the sanitized server reason when a schedule change is rejected", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("crypto", { randomUUID: () => "00000000-0000-4000-8000-000000000093" });
+    vi.spyOn(queryModule, "apiRequest").mockImplementation(async (_path, method) => {
+      if (method === "GET") return { success: true, data: review };
+      throw new Error("409: Another league night already uses this date.");
+    });
+    renderPanel();
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await user.type(screen.getByLabelText("Reason for change"), "Weather cancellation");
+    await user.click(screen.getByRole("button", { name: "Cancel league night" }));
+
+    expect(await screen.findByText("Another league night already uses this date.")).toBeVisible();
+    expect(screen.queryByText(/latest schedule has been reloaded/i)).not.toBeInTheDocument();
+  });
+
+  it("explains why a scheduled league night is locked instead of showing unusable controls", () => {
+    renderPanel({
+      ...review,
+      occurrences: [{ ...review.occurrences[0], lifecycle: "published", effectivelyLocked: true }],
+    });
+
+    expect(screen.getByText("This league night cannot be changed because it has started or has linked activity.")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Reschedule" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
+  });
+
   it("disables editing for unavailable schedule rows without exposing internal state", () => {
     renderPanel({
       ...review,

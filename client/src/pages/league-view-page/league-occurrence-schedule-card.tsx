@@ -12,6 +12,7 @@ import type {
   LeagueOccurrenceScheduleSkippedDate,
 } from "@shared/league-occurrence-schedule";
 import { FallDraftReviewPanel } from "./fall-draft-review-panel";
+import { formatScheduleLocalDate, formatScheduleLocalTime } from "./schedule-display";
 
 interface LeagueOccurrenceScheduleCardProps {
   leagueId: number;
@@ -27,27 +28,6 @@ function compareRows(left: ScheduleDisplayRow, right: ScheduleDisplayRow): numbe
   if (left.date !== right.date) return left.date < right.date ? -1 : 1;
   if ((left.time ?? "") !== (right.time ?? "")) return (left.time ?? "") < (right.time ?? "") ? -1 : 1;
   return left.stableKey < right.stableKey ? -1 : left.stableKey > right.stableKey ? 1 : 0;
-}
-
-function formatLocalDate(value: string): string {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-  if (!match) return value;
-  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12));
-  return new Intl.DateTimeFormat(undefined, {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    timeZone: "UTC",
-  }).format(date);
-}
-
-function formatLocalTime(value: string | null): string {
-  if (!value) return "Start time not configured";
-  const match = /^([01]\d|2[0-3]):([0-5]\d)/.exec(value);
-  if (!match) return value;
-  const hour = Number(match[1]);
-  return `${hour % 12 || 12}:${match[2]} ${hour < 12 ? "AM" : "PM"}`;
 }
 
 function occurrenceLabel(occurrence: LeagueOccurrenceScheduleOccurrence): string {
@@ -69,7 +49,7 @@ function ScheduleOccurrenceRow({ occurrence }: { occurrence: LeagueOccurrenceSch
       <div>
         <div className="flex flex-wrap items-center gap-2">
           <h3 className={`font-medium ${occurrence.status === "cancelled" ? "text-muted-foreground line-through" : ""}`}>
-            {formatLocalDate(occurrence.authoritativeLocalDate)}
+            {formatScheduleLocalDate(occurrence.authoritativeLocalDate)}
           </h3>
           {statusBadge(occurrence.status)}
           {occurrence.kind !== "regular" && <Badge variant="secondary">{occurrenceLabel(occurrence)}</Badge>}
@@ -80,7 +60,7 @@ function ScheduleOccurrenceRow({ occurrence }: { occurrence: LeagueOccurrenceSch
           ))}
         </div>
         <p className="mt-1 text-sm">
-          {formatLocalTime(occurrence.authoritativeLocalStartTime)}
+          {formatScheduleLocalTime(occurrence.authoritativeLocalStartTime)}
         </p>
         {occurrence.relationships.map((relationship) => (
           <p key={relationship.relationshipId} className="mt-1 text-xs text-muted-foreground">
@@ -104,7 +84,7 @@ function SkippedDateRow({ skippedDate }: { skippedDate: LeagueOccurrenceSchedule
     <li className="flex flex-col justify-between gap-3 bg-muted/30 px-4 py-4 sm:flex-row sm:items-start">
       <div>
         <div className="flex flex-wrap items-center gap-2">
-          <h3 className="font-medium text-muted-foreground line-through">{formatLocalDate(skippedDate.localDate)}</h3>
+          <h3 className="font-medium text-muted-foreground line-through">{formatScheduleLocalDate(skippedDate.localDate)}</h3>
           <Badge variant="secondary">Skipped</Badge>
         </div>
         <p className="mt-1 text-sm text-muted-foreground">No league session</p>
