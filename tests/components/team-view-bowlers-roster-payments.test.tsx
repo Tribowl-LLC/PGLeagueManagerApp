@@ -3,6 +3,13 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Bowler, BowlerLeague, League, BowlerWithAccount } from "@shared/schema";
 
+const apiRequestMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@/lib/queryClient", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/queryClient")>()),
+  apiRequest: apiRequestMock,
+}));
+
 vi.mock("wouter", () => ({
   Link: ({ href, children, className }: { href: string; children: React.ReactNode; className?: string }) => <a href={href} className={className}>{children}</a>,
 }));
@@ -30,15 +37,13 @@ const rosterResponse = {
       { occurrenceId: "00000000-0000-0000-0000-000000000002", teamId: 9, slotIndex: 1, positionIndex: 1, responsibilityKind: "substitute", mainBowlerId: 13, substituteBowlerId: 12, payerBowlerId: 12, policy: "sub_pays_full", amountMinor: 2000, lineageAmountMinor: null, prizeFundAmountMinor: null },
     ],
     teams: [{ id: 9, policy: "main_pays_full", slots: [
-      { slotIndex: 0, occupant: "main", mainBowlerId: 10 },
-      { slotIndex: 1, occupant: "main", mainBowlerId: 13 },
-      { slotIndex: 2, occupant: "vacant", mainBowlerId: null },
+      { id: "slot-1", organizationId: 1, leagueId: 1, teamId: 9, lineupSize: 3, slotIndex: 0, occupant: "main", mainBowlerId: 10, currentRevision: 1 },
+      { id: "slot-2", organizationId: 1, leagueId: 1, teamId: 9, lineupSize: 3, slotIndex: 1, occupant: "main", mainBowlerId: 13, currentRevision: 1 },
+      { id: "slot-3", organizationId: 1, leagueId: 1, teamId: 9, lineupSize: 3, slotIndex: 2, occupant: "vacant", mainBowlerId: null, currentRevision: 1 },
     ] }],
   },
 };
 
-// The component only reads these fields; the complete persistence rows are
-// intentionally not duplicated in a UI fixture.
 // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 const league = { id: 1, weeklyFee: 2000, timezone: "America/Los_Angeles" } as League;
 // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
@@ -60,7 +65,10 @@ function renderRoster() {
   /></QueryClientProvider>);
 }
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  apiRequestMock.mockReset();
+  vi.unstubAllGlobals();
+});
 
 describe("Team Rosters payment responsibility surface", () => {
   it("edits one selected occurrence and hydrates overrides independently by occurrence and slot", async () => {
@@ -76,5 +84,24 @@ describe("Team Rosters payment responsibility surface", () => {
     await waitFor(() => expect(screen.getByText("Sub Two · $20.00")).toBeInTheDocument());
     expect(screen.getAllByLabelText(/Override kind/)).toHaveLength(3);
     expect(screen.queryByText("Sub One · $20.00")).not.toBeInTheDocument();
+  });
+
+  it("submits only the strict roster slot request fields when read data contains persistence metadata", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(rosterResponse), { status: 200, headers: { "content-type": "application/json" } })));
+    apiRequestMock.mockResolvedValue(new Response(null, { status: 200 }));
+    renderRoster();
+
+    await screen.findByText("Payment override for one occurrence");
+    fireEvent.click(screen.getByRole("button", { name: "Save roster" }));
+
+    await waitFor(() => expect(apiRequestMock).toHaveBeenCalledOnce());
+    const [url, method, body] = apiRequestMock.mock.calls[0] as [string, string, { slots: Array<Record<string, unknown>> }];
+    expect(url).toBe("/api/financials/leagues/1/roster-payment-responsibility/1/teams/9");
+    expect(method).toBe("POST");
+    expect(body.slots).toEqual([
+      { slotIndex: 0, occupant: "main", mainBowlerId: 10 },
+      { slotIndex: 1, occupant: "main", mainBowlerId: 13 },
+      { slotIndex: 2, occupant: "vacant", mainBowlerId: null },
+    ]);
   });
 });

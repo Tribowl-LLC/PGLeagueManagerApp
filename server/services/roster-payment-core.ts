@@ -165,7 +165,12 @@ export async function readRosterPaymentResponsibility(input: { organizationId: n
   const league = await leagueScope(input.organizationId, input.leagueId);
   const teamRows = await db.select({ id: teams.id, name: teams.name, number: teams.number })
     .from(teams).where(and(eq(teams.leagueId, input.leagueId), eq(teams.active, true))).orderBy(asc(teams.displayOrder), asc(teams.number), asc(teams.id));
-  const slots = await db.select().from(teamPaymentSlots)
+  const slots = await db.select({
+    teamId: teamPaymentSlots.teamId,
+    slotIndex: teamPaymentSlots.slotIndex,
+    occupant: teamPaymentSlots.occupant,
+    mainBowlerId: teamPaymentSlots.mainBowlerId,
+  }).from(teamPaymentSlots)
     .where(and(eq(teamPaymentSlots.organizationId, input.organizationId), eq(teamPaymentSlots.leagueId, input.leagueId)))
     .orderBy(asc(teamPaymentSlots.teamId), asc(teamPaymentSlots.slotIndex));
   const policyRows = await db.select().from(teamPaymentPolicies)
