@@ -20,7 +20,7 @@ interface TeamViewBowlersTableProps {
   onRemoveBowler?: (target: { bowlerId: number; name: string }) => void;
 }
 
-type Slot = { id?: string; slotIndex: number; occupant: "main" | "vacant" | "unassigned"; mainBowlerId?: number | null };
+type Slot = { slotIndex: number; occupant: "main" | "vacant" | "unassigned"; mainBowlerId?: number | null };
 type Occurrence = { id: string; startAt: string; status: "scheduled" | "completed" };
 type OccurrenceResponsibility = {
   occurrenceId: string;
@@ -74,7 +74,11 @@ export function TeamViewBowlersTable({ teamBowlers, league, teamId, leagueId, ca
   const [selectedOccurrenceId, setSelectedOccurrenceId] = useState("");
   useEffect(() => {
     if (!current) return;
-    setSlots(current.slots.map((slot) => ({ ...slot })));
+    setSlots(current.slots.map((slot) => ({
+      slotIndex: slot.slotIndex,
+      occupant: slot.occupant,
+      mainBowlerId: slot.mainBowlerId ?? null,
+    })));
     setPolicy(current.policy);
     const hydrated: Record<string, { occurrenceId: string; slotIndex: number; kind: OverrideKind; policy: OverridePolicy; bowlerId: number | null }> = {};
     for (const responsibility of rosterQuery.data?.data?.occurrenceResponsibilities ?? []) {
@@ -90,9 +94,16 @@ export function TeamViewBowlersTable({ teamBowlers, league, teamId, leagueId, ca
   const normalizedSlots = useMemo(() => Array.from({ length: lineupSize }, (_, slotIndex) => slots.find((slot) => slot.slotIndex === slotIndex) ?? { slotIndex, occupant: "unassigned" as const, mainBowlerId: null }), [lineupSize, slots]);
 
   const save = useMutation({
-    mutationFn: async () => apiRequest(`/api/financials/leagues/${leagueId}/roster-payment-responsibility/1/teams/${teamId}`, "POST", {
-      commandKey: crypto.randomUUID(), requestFingerprint: await rosterFingerprint(lineupSize, policy, normalizedSlots), lineupSize, policy, slots: normalizedSlots,
-    }),
+    mutationFn: async () => {
+      const requestSlots = normalizedSlots.map((slot) => ({
+        slotIndex: slot.slotIndex,
+        occupant: slot.occupant,
+        mainBowlerId: slot.mainBowlerId ?? null,
+      }));
+      return apiRequest(`/api/financials/leagues/${leagueId}/roster-payment-responsibility/1/teams/${teamId}`, "POST", {
+        commandKey: crypto.randomUUID(), requestFingerprint: await rosterFingerprint(lineupSize, policy, requestSlots), lineupSize, policy, slots: requestSlots,
+      });
+    },
     onSuccess: () => { void queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/roster-payment-responsibility/1`] }); toast({ title: "Team roster saved" }); },
     onError: (error: Error) => toast({ title: "Team roster could not be saved", description: error.message, variant: "destructive" }),
   });
