@@ -110,14 +110,17 @@ describe("automatic FIFO bowler payment flow", () => {
     expect(mocks.tokenizeCard).toHaveBeenCalledOnce();
   });
 
-  it("accepts one operator-entered tender amount and no occurrence selector", () => {
+  it("uses plus and minus controls to select a fixed number of weeks", async () => {
+    const onPaymentWeekCountChange = vi.fn();
+    const user = userEvent.setup();
     render(<BowlerPaymentDialog
       payDialogType="remaining"
       onClose={vi.fn()}
       remainingBalance={3_000}
-      paymentAmount="10.00"
-      paymentAmountMinor={1_000}
-      onPaymentAmountChange={vi.fn()}
+      paymentWeekCount={2}
+      maximumWeekCount={3}
+      paymentAmountMinor={2_000}
+      onPaymentWeekCountChange={onPaymentWeekCountChange}
       savedCards={[]}
       cardMode="new"
       setCardMode={vi.fn()}
@@ -132,9 +135,14 @@ describe("automatic FIFO bowler payment flow", () => {
       cleanupCard={vi.fn()}
     />);
 
-    expect(screen.getByRole("spinbutton", { name: "One-time payment amount" })).toHaveValue(10);
+    expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Number of weeks to pay" })).toHaveTextContent("2");
     expect(screen.getByText("Remaining balance: $30.00")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Pay $10.00" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pay $20.00" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Pay for one fewer week" }));
+    await user.click(screen.getByRole("button", { name: "Pay for one more week" }));
+    expect(onPaymentWeekCountChange).toHaveBeenNthCalledWith(1, 1);
+    expect(onPaymentWeekCountChange).toHaveBeenNthCalledWith(2, 3);
     expect(screen.queryByText(/week of/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/allocation/i)).not.toBeInTheDocument();
   });

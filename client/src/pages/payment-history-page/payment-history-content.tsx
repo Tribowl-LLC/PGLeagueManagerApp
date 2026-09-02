@@ -36,9 +36,10 @@ interface PaymentHistoryContentProps {
   onPayRemaining: () => void;
   payDialogType: 'pastdue' | 'remaining' | null;
   onCloseDialog: () => void;
-  paymentAmount: string;
-  paymentAmountMinor: number | null;
-  onPaymentAmountChange: (value: string) => void;
+  paymentWeekCount: number;
+  maximumWeekCount: number;
+  paymentAmountMinor: number;
+  onPaymentWeekCountChange: (value: number) => void;
   savedCards: SavedCard[];
   cardMode: 'new' | 'saved';
   setCardMode: (mode: 'new' | 'saved') => void;
@@ -102,9 +103,10 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
   onPayRemaining,
   payDialogType,
   onCloseDialog,
-  paymentAmount,
+  paymentWeekCount,
+  maximumWeekCount,
   paymentAmountMinor,
-  onPaymentAmountChange,
+  onPaymentWeekCountChange,
   savedCards,
   cardMode,
   setCardMode,
@@ -188,9 +190,10 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
             payDialogType={payDialogType}
             onClose={onCloseDialog}
             remainingBalance={remainingBalance}
-            paymentAmount={paymentAmount}
+            paymentWeekCount={paymentWeekCount}
+            maximumWeekCount={maximumWeekCount}
             paymentAmountMinor={paymentAmountMinor}
-            onPaymentAmountChange={onPaymentAmountChange}
+            onPaymentWeekCountChange={onPaymentWeekCountChange}
             fullBalanceOnly={league.paymentMode === "upfront"}
             savedCards={savedCards}
             cardMode={cardMode}

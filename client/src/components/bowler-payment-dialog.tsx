@@ -11,7 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Loader2, CreditCard, Wallet } from "lucide-react";
+import { Loader2, CreditCard, Minus, Plus, Wallet } from "lucide-react";
 import { formatCurrency } from "@/lib/utils";
 import type { SavedCard } from "@shared/schema";
 
@@ -54,9 +54,10 @@ interface BowlerPaymentDialogProps {
   payDialogType: 'pastdue' | 'remaining' | null;
   onClose: () => void;
   remainingBalance: number;
-  paymentAmount: string;
-  paymentAmountMinor: number | null;
-  onPaymentAmountChange: (value: string) => void;
+  paymentWeekCount: number;
+  maximumWeekCount: number;
+  paymentAmountMinor: number;
+  onPaymentWeekCountChange: (value: number) => void;
   fullBalanceOnly?: boolean;
   savedCards: SavedCard[];
   cardMode: 'new' | 'saved';
@@ -91,9 +92,10 @@ export const BowlerPaymentDialog: FC<BowlerPaymentDialogProps> = ({
   payDialogType,
   onClose,
   remainingBalance,
-  paymentAmount,
+  paymentWeekCount,
+  maximumWeekCount,
   paymentAmountMinor,
-  onPaymentAmountChange,
+  onPaymentWeekCountChange,
   fullBalanceOnly = false,
   savedCards,
   cardMode,
@@ -128,7 +130,7 @@ export const BowlerPaymentDialog: FC<BowlerPaymentDialogProps> = ({
     }
   };
 
-  const dialogAmount = paymentAmountMinor ?? 0;
+  const dialogAmount = paymentAmountMinor;
 
   return (
     <Dialog open={!!payDialogType} onOpenChange={(open) => !open && onClose()}>
@@ -142,29 +144,40 @@ export const BowlerPaymentDialog: FC<BowlerPaymentDialogProps> = ({
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4 py-4">
-          <div className="space-y-2 rounded-md border bg-muted/50 p-4">
-            <Label htmlFor="one-time-payment-amount">Payment amount</Label>
-            <Input
-              id="one-time-payment-amount"
-              aria-label="One-time payment amount"
-              type="number"
-              inputMode="decimal"
-              min="0.01"
-              max={(remainingBalance / 100).toFixed(2)}
-              step="0.01"
-              placeholder="0.00"
-              value={paymentAmount}
-              disabled={fullBalanceOnly}
-              onChange={(event) => onPaymentAmountChange(event.target.value)}
-            />
+          <div className="space-y-3 rounded-md border bg-muted/50 p-4">
+            <Label>Number of weeks</Label>
+            <div className="flex items-center justify-center gap-4">
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                aria-label="Pay for one fewer week"
+                disabled={fullBalanceOnly || paymentWeekCount <= 1}
+                onClick={() => onPaymentWeekCountChange(paymentWeekCount - 1)}
+              >
+                <Minus className="size-4" />
+              </Button>
+              <output aria-label="Number of weeks to pay" className="min-w-20 text-center text-2xl font-bold">
+                {paymentWeekCount}
+              </output>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                aria-label="Pay for one more week"
+                disabled={fullBalanceOnly || paymentWeekCount >= maximumWeekCount}
+                onClick={() => onPaymentWeekCountChange(paymentWeekCount + 1)}
+              >
+                <Plus className="size-4" />
+              </Button>
+            </div>
+            <div className="flex items-center justify-between border-t pt-3">
+              <span className="text-sm text-muted-foreground">Payment amount</span>
+              <span className="text-lg font-bold">{formatCurrency(dialogAmount)}</span>
+            </div>
             <p className="text-xs text-muted-foreground">
               Remaining balance: {formatCurrency(remainingBalance)}
             </p>
-            {paymentAmount.trim() && paymentAmountMinor === null && (
-              <p className="text-sm text-destructive" role="alert">
-                Enter an amount greater than $0.00 and no more than {formatCurrency(remainingBalance)}.
-              </p>
-            )}
           </div>
 
           {/*
@@ -344,7 +357,7 @@ export const BowlerPaymentDialog: FC<BowlerPaymentDialogProps> = ({
               (cardMode === 'saved' && !selectedSavedCardId) ||
               isSubmitting ||
               isWalletProcessing ||
-              paymentAmountMinor === null ||
+              paymentAmountMinor <= 0 ||
               // block submit when the
               // bowler has no email on file AND the inline "Email for
               // receipt" input is empty. Square will hard-reject the

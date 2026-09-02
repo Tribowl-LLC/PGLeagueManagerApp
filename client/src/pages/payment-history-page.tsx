@@ -30,7 +30,7 @@ import { PaymentHistoryContent } from "./payment-history-page/payment-history-co
 import { assertRosterPaymentSucceeded, beginPaymentIntent, clearPaymentIntent, isTerminalRosterPaymentFailure, paymentRequestHeaders, paymentRequestWithRecovery } from "@/lib/payment-request-identity";
 import { resolveInteractiveFinancialRead } from "@/lib/financial-read-contract";
 import { invalidatePaymentHistoryFinancials, paymentHistoryFinancialQueryKey } from "@/lib/payment-history-financial-query";
-import { parseOneTimePaymentAmount } from "./payment-history-page/one-time-payment-amount";
+import { buildOneTimePaymentOptions } from "./payment-history-page/one-time-payment-options";
 
 export default function PaymentHistoryPage() {
   const { toast } = useToast();
@@ -42,7 +42,7 @@ export default function PaymentHistoryPage() {
   );
   const [leagueSheetOpen, setLeagueSheetOpen] = useState(false);
   const [payDialogType, setPayDialogType] = useState<'pastdue' | 'remaining' | null>(null);
-  const [oneTimePaymentAmount, setOneTimePaymentAmount] = useState('');
+  const [oneTimePaymentWeekCount, setOneTimePaymentWeekCount] = useState(1);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [cardMode, setCardMode] = useState<'new' | 'saved'>('new');
   const [selectedSavedCardId, setSelectedSavedCardId] = useState<string>('');
@@ -241,8 +241,14 @@ export default function PaymentHistoryPage() {
     }
   }
 
-  const resolvedFinancialRead = resolveInteractiveFinancialRead(canonicalFinancialResponse?.data);
-  const canonicalRows = resolvedFinancialRead.status === "canonical" ? resolvedFinancialRead.rows : [];
+  const resolvedFinancialRead = useMemo(
+    () => resolveInteractiveFinancialRead(canonicalFinancialResponse?.data),
+    [canonicalFinancialResponse?.data],
+  );
+  const canonicalRows = useMemo(
+    () => resolvedFinancialRead.status === "canonical" ? resolvedFinancialRead.rows : [],
+    [resolvedFinancialRead],
+  );
   const financials = {
     weeksPassed: canonicalRows.filter((row) => row.classification !== "future").length,
     totalWeeksInSeason: canonicalRows.length,
@@ -268,30 +274,33 @@ export default function PaymentHistoryPage() {
   const weeksDueCount = league?.weeklyFee ? Math.round(totalSeasonDues / league.weeklyFee) : 0;
   const weeksPaid = league?.weeklyFee ? Math.round(totalPaidAmount / league.weeklyFee) : 0;
 
-  const parsedOneTimePaymentAmount = parseOneTimePaymentAmount(oneTimePaymentAmount, displayRemainingBalance);
-  const dialogAmountCents = league?.paymentMode === "upfront"
-    && parsedOneTimePaymentAmount !== displayRemainingBalance
-    ? null
-    : parsedOneTimePaymentAmount;
+  const oneTimePaymentOptions = useMemo(() => buildOneTimePaymentOptions(canonicalRows, displayRemainingBalance), [canonicalRows, displayRemainingBalance]);
+  const maximumWeekCount = oneTimePaymentOptions.length;
+  const selectedOneTimePayment = league?.paymentMode === "upfront"
+    ? oneTimePaymentOptions.at(-1)
+    : oneTimePaymentOptions.find((option) => option.weekCount === oneTimePaymentWeekCount);
+  const dialogAmountCents = selectedOneTimePayment?.amountMinor ?? 0;
 
   const openOneTimePayment = useCallback((suggestedAmountMinor?: number) => {
-    const initialAmount = league?.paymentMode === "upfront" ? displayRemainingBalance : suggestedAmountMinor;
-    setOneTimePaymentAmount(initialAmount && initialAmount > 0
-      ? (initialAmount / 100).toFixed(2)
-      : '');
+    const suggestedOption = suggestedAmountMinor && suggestedAmountMinor > 0
+      ? oneTimePaymentOptions.find((option) => option.amountMinor >= suggestedAmountMinor)
+      : undefined;
+    setOneTimePaymentWeekCount(league?.paymentMode === "upfront"
+      ? Math.max(1, maximumWeekCount)
+      : suggestedOption?.weekCount ?? 1);
     walletRequestKeyRef.current = null;
     setPayDialogType('remaining');
-  }, [displayRemainingBalance, league?.paymentMode]);
+  }, [league?.paymentMode, maximumWeekCount, oneTimePaymentOptions]);
 
   const closeOneTimePayment = useCallback(() => {
     setPayDialogType(null);
-    setOneTimePaymentAmount('');
+    setOneTimePaymentWeekCount(1);
     walletRequestKeyRef.current = null;
   }, []);
 
   const handleWalletPayment = useCallback(async (token: string, walletType: 'apple_pay' | 'google_pay') => {
     if (resolvedFinancialRead.status === "unavailable" || loadingFinancialRead || financialReadError) return;
-    if (!bowlerId || !leagueId || dialogAmountCents === null) return;
+    if (!bowlerId || !leagueId || dialogAmountCents <= 0) return;
     // same inline email override as the card-form path so
     // Apple Pay / Google Pay charges also trigger Square's hosted
     // receipt when no email is on file for the bowler. Mirrors the
@@ -349,7 +358,7 @@ export default function PaymentHistoryPage() {
 
   const beginWalletPayment = useCallback(() => {
     if (resolvedFinancialRead.status === "unavailable" || loadingFinancialRead || financialReadError) return;
-    if (!bowlerId || !leagueId || dialogAmountCents === null) return;
+    if (!bowlerId || !leagueId || dialogAmountCents <= 0) return;
     walletRequestKeyRef.current = beginPaymentIntent(
       `history-wallet:${leagueId}:${bowlerId}:${dialogAmountCents}`,
     );
@@ -368,8 +377,8 @@ export default function PaymentHistoryPage() {
     cleanup: cleanupWallet,
   } = useWalletPayments({
     locationId: league?.locationId,
-    amountCents: dialogAmountCents ?? 0,
-    enabled: !!payDialogType && dialogAmountCents !== null && !!league?.locationId && supportsWallets,
+    amountCents: dialogAmountCents,
+    enabled: !!payDialogType && dialogAmountCents > 0 && !!league?.locationId && supportsWallets,
     onPaymentStarted: beginWalletPayment,
     onTokenReceived: handleWalletPayment,
     onError: (error) => toast({ title: "Wallet Payment Error", description: error, variant: "destructive" }),
@@ -388,8 +397,8 @@ export default function PaymentHistoryPage() {
     }
     const dialogAmount = dialogAmountCents;
 
-    if (!bowlerId || !leagueId || dialogAmount === null) {
-      toast({ title: "Invalid amount", description: "Enter an amount greater than $0.00 and no more than your remaining balance.", variant: "destructive" });
+    if (!bowlerId || !leagueId || dialogAmount <= 0) {
+      toast({ title: "Payment unavailable", description: "No payable canonical weeks are available.", variant: "destructive" });
       return;
     }
 
@@ -540,11 +549,12 @@ export default function PaymentHistoryPage() {
       onPayRemaining={() => checkoutAvailable && openOneTimePayment()}
       payDialogType={payDialogType}
       onCloseDialog={closeOneTimePayment}
-      paymentAmount={oneTimePaymentAmount}
+      paymentWeekCount={Math.max(1, selectedOneTimePayment?.weekCount ?? oneTimePaymentWeekCount)}
+      maximumWeekCount={Math.max(1, maximumWeekCount)}
       paymentAmountMinor={dialogAmountCents}
-      onPaymentAmountChange={(value) => {
+      onPaymentWeekCountChange={(value) => {
         walletRequestKeyRef.current = null;
-        setOneTimePaymentAmount(value);
+        setOneTimePaymentWeekCount(value);
       }}
       savedCards={savedCards}
       cardMode={cardMode}
