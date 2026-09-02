@@ -50,7 +50,7 @@ export function hasPositivePaymentEvidence(rows: Array<{
     row.allocatedMinor > 0 && row.state !== "voided" && !row.reviewRequired,
   );
   const hasUnresolvedReview = rows.some((row) =>
-    row.state !== "voided" && row.reviewRequired && row.outstandingMinor > 0,
+    row.state !== "voided" && row.reviewRequired,
   );
   return hasConfirmedAllocation && !hasUnresolvedReview;
 }

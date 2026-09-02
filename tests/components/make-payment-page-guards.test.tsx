@@ -39,4 +39,11 @@ describe("dedicated make-payment guards", () => {
       { allocatedMinor: 100, outstandingMinor: 50, state: "open", reviewRequired: true },
     ])).toBe(false);
   });
+
+  it("fails closed for non-voided review evidence even with zero outstanding balance", () => {
+    expect(hasPositivePaymentEvidence([
+      { allocatedMinor: 100, outstandingMinor: 0, state: "settled", reviewRequired: false },
+      { allocatedMinor: 0, outstandingMinor: 0, state: "settled", reviewRequired: true },
+    ])).toBe(false);
+  });
 });
