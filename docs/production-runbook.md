@@ -280,9 +280,20 @@ tags (or `none`), and the displayed confirmation phrase. Its `production`
 environment requires operator approval, and the job uses the repository's
 `NEON_API_KEY` secret to verify the pinned production target, create a protected
 branch without a compute, acquire a direct connection string without printing
-it, run the checked migration with an exact-pending guard under the database
-advisory lock, and prove an immediate `pending=none` rerun. Preserve the
-workflow summary's backup ID and migration evidence in the release record.
+it, and run the checked migration with an exact-pending guard under the database
+advisory lock. Before executing SQL, the runner compares the live `public`
+catalog with the checked-in fingerprint for the last applied migration; after
+execution, the immediate `pending=none` rerun verifies the fingerprint for the
+new state. CI reproduces both release-boundary fingerprints from clean
+PostgreSQL 17 replays. A mismatch fails before migration SQL runs. The Neon API
+key is exposed only to the three control-plane steps that require it, not to
+checkout, dependency installation, or repository validation scripts. Preserve
+the workflow summary's backup ID and migration evidence in the release record.
+
+Every schema-release PR must add the checked-in fingerprint for its resulting
+migration under `migrations/schema-fingerprints/`; retain the prior release
+fingerprint because it is the pre-migration approval boundary. Do not hand-edit
+fingerprint digests or accept an unexpected production mismatch.
 
 If the workflow is unavailable, the manual operator procedure below remains
 the fail-closed fallback. Never run both executors concurrently.

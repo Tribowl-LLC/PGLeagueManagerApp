@@ -50,7 +50,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
       NEON_PROJECT_ID: dark-firefly-25282046
       NEON_PRODUCTION_BRANCH_ID: br-late-glitter-aqm4u4fc
       NEON_PRODUCTION_BRANCH_NAME: production
@@ -99,6 +98,8 @@ jobs:
         run: npm run db:migration-bytes:check
 
       - name: Verify Neon production target
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
         run: |
           test -n "$NEON_API_KEY"
           project_json="$(npx --yes "neon@$NEON_CLI_VERSION" projects get "$NEON_PROJECT_ID" --output json --no-color)"
@@ -115,6 +116,8 @@ jobs:
 
       - name: Create and verify protected pre-migration backup
         id: backup
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
         run: |
           backup_name="backup-pre-migration-${EXPECTED_SHA:0:12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           backup_json="$(npx --yes "neon@$NEON_CLI_VERSION" branches create \
@@ -135,7 +138,10 @@ jobs:
           printf 'backup_id=%s\n' "$backup_id" >> "$GITHUB_OUTPUT"
           printf 'Created protected Neon backup %s (%s) from production.\n' "$backup_name" "$backup_id"
 
-      - name: Apply only the explicitly expected migrations
+      - name: Acquire direct production connection string
+        id: connection
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
         run: |
           database_url="$(npx --yes "neon@$NEON_CLI_VERSION" connection-string "$NEON_PRODUCTION_BRANCH_ID" \
             --project-id "$NEON_PROJECT_ID" \
@@ -145,9 +151,9 @@ jobs:
             --no-color)"
           test -n "$database_url"
           echo "::add-mask::$database_url"
-          export DATABASE_URL="$database_url"
+          printf 'database_url=%s\n' "$database_url" >> "$GITHUB_OUTPUT"
 
-          node --input-type=module -e '
+          DATABASE_URL="$database_url" node --input-type=module -e '
             const target = new URL(process.env.DATABASE_URL);
             if (!/^postgres(ql)?:$/.test(target.protocol)) throw new Error("Unexpected database URL scheme.");
             if (target.hostname.includes("-pooler")) throw new Error("Production migrations require a direct Neon connection.");
@@ -155,9 +161,12 @@ jobs:
             if (decodeURIComponent(target.username) !== process.env.NEON_ROLE_NAME) throw new Error("Unexpected database role.");
           '
 
+      - name: Apply only the explicitly expected migrations
+        env:
+          DATABASE_URL: ${{ steps.connection.outputs.database_url }}
+        run: |
           DB_MIGRATION_EXPECTED_PENDING="$EXPECTED_PENDING_MIGRATIONS" npm run db:migrate
           DB_MIGRATION_EXPECTED_PENDING=none npm run db:migrate
-          unset DATABASE_URL
 
       - name: Record release evidence
         env:

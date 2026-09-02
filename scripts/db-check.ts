@@ -3,6 +3,7 @@ import {
   cpSync,
   mkdirSync,
   readFileSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -35,6 +36,11 @@ import {
   writeMigrationChecksumManifest,
 } from './lib/db-migration-assets';
 import { runCheckedMigrations } from './lib/db-migration-runner';
+import {
+  assertApprovedSchemaStateFingerprint,
+  createSchemaStateFingerprint,
+  loadApprovedSchemaStateFingerprint,
+} from './lib/db-schema-state-fingerprint';
 import {
   DISPOSABLE_DATABASE_LABELS,
   DISPOSABLE_DATABASE_OWNER,
@@ -365,6 +371,36 @@ function buildProofMigrationDirectory(artifactDirectory: string): { directory: s
   writeMigrationChecksumManifest(directory);
   loadActiveMigrations(directory);
   return { directory, metadata };
+}
+
+function buildPreviousMigrationDirectory(artifactDirectory: string): string {
+  const directory = join(artifactDirectory, 'previous-state-migrations');
+  cpSync(ACTIVE_MIGRATIONS_DIRECTORY, directory, { recursive: true });
+  const migrations = loadActiveMigrations(directory);
+  if (migrations.length < 2) throw new Error('Schema-state verification requires at least two migrations.');
+  const removed = migrations.at(-1);
+  if (!removed) throw new Error('Active migration history is empty.');
+  unlinkSync(join(directory, `${removed.tag}.sql`));
+
+  const journalPath = join(directory, 'meta', '_journal.json');
+  const journal = JSON.parse(readFileSync(journalPath, 'utf8')) as { entries: unknown[] };
+  journal.entries.pop();
+  writeFileSync(journalPath, `${JSON.stringify(journal, null, 2)}\n`, 'utf8');
+  writeMigrationChecksumManifest(directory);
+  return directory;
+}
+
+async function assertApprovedSchemaState(
+  connectionString: string,
+  migrationsDirectory = ACTIVE_MIGRATIONS_DIRECTORY,
+): Promise<void> {
+  const migration = loadActiveMigrations(migrationsDirectory).at(-1);
+  if (!migration) throw new Error('Schema-state verification requires a migration.');
+  const actual = createSchemaStateFingerprint(
+    await collectDatabaseInventory(connectionString),
+    migration,
+  );
+  assertApprovedSchemaStateFingerprint(actual, loadApprovedSchemaStateFingerprint(migration));
 }
 
 async function assertOrganizationHostnameNamespaceGuard(connectionString: string): Promise<void> {
@@ -853,6 +889,7 @@ async function validateVersion(
     const refusalDatabases = adoptionRefusalCases().map((_refusal, index) => `refusal_${index + 1}`);
     const approvedDatabases = [
       'fresh_active',
+      'schema_state_previous',
       'fresh_proof',
       'adoption_template',
       'legacy_inert_rls',
@@ -876,6 +913,9 @@ async function validateVersion(
     const adminUrl = databaseUrl(port, 'postgres');
     mkdirSync(join(artifactDirectory, `postgres-${version}`), { recursive: true });
     const proof = buildProofMigrationDirectory(join(artifactDirectory, `postgres-${version}`));
+    const previousMigrations = buildPreviousMigrationDirectory(
+      join(artifactDirectory, `postgres-${version}`),
+    );
     const activeMigrationTags = loadActiveMigrations().map((migration) => migration.tag);
 
     const freshActive = 'fresh_active';
@@ -888,6 +928,42 @@ async function validateVersion(
     await assertOrganizationHostnameNamespaceGuard(freshActiveUrl);
     if (!(await runCheckedMigrations(freshActiveUrl)).noOp) {
       throw new Error('Rerunning db:migrate on a fresh replay was not a no-op.');
+    }
+    await assertApprovedSchemaState(freshActiveUrl);
+
+    const previousState = 'schema_state_previous';
+    await createDatabase(adminUrl, previousState, container);
+    const previousStateUrl = databaseUrl(port, previousState);
+    await runCheckedMigrations(previousStateUrl, previousMigrations);
+    await assertApprovedSchemaState(previousStateUrl, previousMigrations);
+    await executeSql(previousStateUrl, ['ALTER TABLE alerter_state ADD COLUMN schema_state_drift_probe integer']);
+    let schemaDriftRefusal = '';
+    try {
+      await runCheckedMigrations(previousStateUrl, ACTIVE_MIGRATIONS_DIRECTORY, {
+        expectedPending: [activeMigrationTags.at(-1) ?? ''],
+      });
+    } catch (error) {
+      schemaDriftRefusal = error instanceof Error ? error.message : String(error);
+    }
+    if (
+      !schemaDriftRefusal.includes('schema-state fingerprint mismatch') ||
+      await journalEntryCount(previousStateUrl) !== activeMigrationTags.length - 1
+    ) {
+      throw new Error(
+        `Expected-pending migration mode did not refuse pre-migration schema drift without mutation: ${schemaDriftRefusal}`,
+      );
+    }
+    await executeSql(previousStateUrl, ['ALTER TABLE alerter_state DROP COLUMN schema_state_drift_probe']);
+    const guardedRun = await runCheckedMigrations(previousStateUrl, ACTIVE_MIGRATIONS_DIRECTORY, {
+      expectedPending: [activeMigrationTags.at(-1) ?? ''],
+    });
+    if (JSON.stringify(guardedRun.applied) !== JSON.stringify([activeMigrationTags.at(-1)])) {
+      throw new Error('Expected-pending migration mode did not apply only the final migration.');
+    }
+    if (!(await runCheckedMigrations(previousStateUrl, ACTIVE_MIGRATIONS_DIRECTORY, {
+      expectedPending: [],
+    })).noOp) {
+      throw new Error('Expected-pending migration mode did not verify the final schema as a no-op.');
     }
 
     const freshProof = 'fresh_proof';

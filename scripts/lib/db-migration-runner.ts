@@ -10,6 +10,7 @@ import {
   inspectApprovedJournal,
 } from './db-migration-journal';
 import { redactConnectionDetails } from './db-schema-inventory';
+import { verifyApprovedSchemaStateOnClient } from './db-schema-state-fingerprint';
 
 const MIGRATION_LOCK_KEY = 843_103_001;
 
@@ -131,6 +132,20 @@ export async function runCheckedMigrations(
     }
     const pending = migrations.slice(entries.length).map((migration) => migration.tag);
     assertExpectedPendingMigrations(pending, options.expectedPending);
+    if (options.expectedPending !== undefined) {
+      const currentMigration = migrations[entries.length - 1];
+      if (!currentMigration) {
+        throw new Error('Expected-pending migration mode requires a registered baseline before schema-state verification.');
+      }
+      const fingerprint = await verifyApprovedSchemaStateOnClient(
+        client,
+        connectionString,
+        currentMigration,
+      );
+      process.stdout.write(
+        `[db:migrate] schema-state=${currentMigration.tag} sha256:${fingerprint.digest}\n`,
+      );
+    }
     process.stdout.write(`[db:migrate] pending=${pending.length === 0 ? 'none' : pending.join(',')}\n`);
     if (pending.length === 0) return { pending, applied: [], noOp: true };
 
