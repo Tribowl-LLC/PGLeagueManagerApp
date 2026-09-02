@@ -36,6 +36,9 @@ interface PaymentHistoryContentProps {
   onPayRemaining: () => void;
   payDialogType: 'pastdue' | 'remaining' | null;
   onCloseDialog: () => void;
+  paymentAmount: string;
+  paymentAmountMinor: number | null;
+  onPaymentAmountChange: (value: string) => void;
   savedCards: SavedCard[];
   cardMode: 'new' | 'saved';
   setCardMode: (mode: 'new' | 'saved') => void;
@@ -99,6 +102,9 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
   onPayRemaining,
   payDialogType,
   onCloseDialog,
+  paymentAmount,
+  paymentAmountMinor,
+  onPaymentAmountChange,
   savedCards,
   cardMode,
   setCardMode,
@@ -181,8 +187,11 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
           <BowlerPaymentDialog
             payDialogType={payDialogType}
             onClose={onCloseDialog}
-            amountPastDue={amountPastDue}
             remainingBalance={remainingBalance}
+            paymentAmount={paymentAmount}
+            paymentAmountMinor={paymentAmountMinor}
+            onPaymentAmountChange={onPaymentAmountChange}
+            fullBalanceOnly={league.paymentMode === "upfront"}
             savedCards={savedCards}
             cardMode={cardMode}
             setCardMode={setCardMode}

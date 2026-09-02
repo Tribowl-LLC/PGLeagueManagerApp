@@ -53,8 +53,11 @@ const GOOGLE_PAY_BUTTON_BASE_STYLE: CSSProperties = {
 interface BowlerPaymentDialogProps {
   payDialogType: 'pastdue' | 'remaining' | null;
   onClose: () => void;
-  amountPastDue: number;
   remainingBalance: number;
+  paymentAmount: string;
+  paymentAmountMinor: number | null;
+  onPaymentAmountChange: (value: string) => void;
+  fullBalanceOnly?: boolean;
   savedCards: SavedCard[];
   cardMode: 'new' | 'saved';
   setCardMode: (mode: 'new' | 'saved') => void;
@@ -87,8 +90,11 @@ interface BowlerPaymentDialogProps {
 export const BowlerPaymentDialog: FC<BowlerPaymentDialogProps> = ({
   payDialogType,
   onClose,
-  amountPastDue,
   remainingBalance,
+  paymentAmount,
+  paymentAmountMinor,
+  onPaymentAmountChange,
+  fullBalanceOnly = false,
   savedCards,
   cardMode,
   setCardMode,
@@ -122,25 +128,43 @@ export const BowlerPaymentDialog: FC<BowlerPaymentDialogProps> = ({
     }
   };
 
-  const dialogAmount = payDialogType === 'pastdue' ? amountPastDue : remainingBalance;
+  const dialogAmount = paymentAmountMinor ?? 0;
 
   return (
     <Dialog open={!!payDialogType} onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>{payDialogType === 'pastdue' ? 'Pay Past Due Amount' : 'Pay Remaining Balance'}</DialogTitle>
+          <DialogTitle>Make a One-Time Payment</DialogTitle>
           <DialogDescription>
-            {payDialogType === 'pastdue'
-              ? `Pay your outstanding balance of ${formatCurrency(amountPastDue)}`
-              : `Pay off your remaining season balance of ${formatCurrency(remainingBalance)}`}
+            {fullBalanceOnly
+              ? `This prepaid league requires its full remaining balance of ${formatCurrency(remainingBalance)}.`
+              : `Enter any amount up to ${formatCurrency(remainingBalance)}. Your payment is automatically applied to your oldest open week first.`}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4 py-4">
-          <div className="rounded-md border p-4 bg-muted/50">
-            <div className="flex justify-between items-center">
-              <span className="text-sm text-muted-foreground">Amount</span>
-              <span className="text-lg font-bold">{formatCurrency(dialogAmount)}</span>
-            </div>
+          <div className="space-y-2 rounded-md border bg-muted/50 p-4">
+            <Label htmlFor="one-time-payment-amount">Payment amount</Label>
+            <Input
+              id="one-time-payment-amount"
+              aria-label="One-time payment amount"
+              type="number"
+              inputMode="decimal"
+              min="0.01"
+              max={(remainingBalance / 100).toFixed(2)}
+              step="0.01"
+              placeholder="0.00"
+              value={paymentAmount}
+              disabled={fullBalanceOnly}
+              onChange={(event) => onPaymentAmountChange(event.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">
+              Remaining balance: {formatCurrency(remainingBalance)}
+            </p>
+            {paymentAmount.trim() && paymentAmountMinor === null && (
+              <p className="text-sm text-destructive" role="alert">
+                Enter an amount greater than $0.00 and no more than {formatCurrency(remainingBalance)}.
+              </p>
+            )}
           </div>
 
           {/*
@@ -320,6 +344,7 @@ export const BowlerPaymentDialog: FC<BowlerPaymentDialogProps> = ({
               (cardMode === 'saved' && !selectedSavedCardId) ||
               isSubmitting ||
               isWalletProcessing ||
+              paymentAmountMinor === null ||
               // block submit when the
               // bowler has no email on file AND the inline "Email for
               // receipt" input is empty. Square will hard-reject the

@@ -118,7 +118,7 @@ export function PaymentSummaryCards({
       >
         <CardHeader className="pb-2">
           <CardTitle className="text-lg">Full Season Remaining Balance</CardTitle>
-          <CardDescription>{remainingBalance > 0 ? "Click to pay off balance" : "Fully paid"}</CardDescription>
+          <CardDescription>{remainingBalance > 0 ? "Click to make a one-time payment" : "Fully paid"}</CardDescription>
         </CardHeader>
         <CardContent>
           <p className="text-2xl font-bold">{formatCurrency(remainingBalance)}</p>
