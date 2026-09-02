@@ -38,20 +38,27 @@ import { functionDefinitionsDifferOnlyByInsignificantWhitespace } from './sql-de
 export const BASELINE_FINGERPRINT_FORMAT_VERSION = 3 as const;
 export const BASELINE_FINGERPRINT_PATH = resolve('migrations', 'baseline-fingerprint.json');
 
-const APPROVED_PROVIDER_MANAGED_PUBLIC_EXTENSIONS = [
+const APPROVED_NON_APPLICATION_EXTENSIONS = [
   { name: 'pg_session_jwt', schema: 'public', version: '0.5.0', relocatable: false },
   { name: 'pgcrypto', schema: 'public', version: '1.3', relocatable: true },
+  { name: 'plpgsql', schema: 'pg_catalog', version: '1.0', relocatable: false },
 ] as const;
 
-export function isApprovedProviderManagedPublicExtension(
+function isApprovedNonApplicationExtension(
   extension: DatabaseInventory['extensions'][number],
 ): boolean {
-  return APPROVED_PROVIDER_MANAGED_PUBLIC_EXTENSIONS.some((approved) =>
+  return APPROVED_NON_APPLICATION_EXTENSIONS.some((approved) =>
     approved.name === extension.name &&
     approved.schema === extension.schema &&
     approved.version === extension.version &&
     approved.relocatable === extension.relocatable
   );
+}
+
+export function fingerprintedApplicationExtensions(
+  extensions: DatabaseInventory['extensions'],
+): DatabaseInventory['extensions'] {
+  return extensions.filter((extension) => !isApprovedNonApplicationExtension(extension));
 }
 
 export const APPLICATION_TABLE_NAMES = [
@@ -279,9 +286,7 @@ export function applicationStructureFromInventory(
     tables,
     rewriteRules: sortObjects(inventory.rewriteRules.filter((rule) => rule.schema === 'public')),
     unsupportedPublicObjects: sortObjects(inventory.unsupportedPublicObjects),
-    extensions: sortObjects(inventory.extensions.filter((extension) =>
-      extension.schema === 'public' && !isApprovedProviderManagedPublicExtension(extension)
-    )),
+    extensions: sortObjects(fingerprintedApplicationExtensions(inventory.extensions)),
     columns: sortObjects(
       inventory.columns
         .filter((column) => column.schema === 'public')

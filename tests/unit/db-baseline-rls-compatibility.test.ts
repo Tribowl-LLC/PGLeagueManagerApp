@@ -223,7 +223,7 @@ describe('legacy inert-RLS baseline compatibility', () => {
     const withUnknownExtension = structuredClone(withProviderExtensions);
     withUnknownExtension.extensions.push({
       name: 'function_only_extension',
-      schema: 'public',
+      schema: 'private_extensions',
       version: '1.0',
       relocatable: true,
     });
@@ -234,13 +234,27 @@ describe('legacy inert-RLS baseline compatibility', () => {
       createSchemaStateFingerprint(canonical, baselineMigration()).digest,
     );
 
-    const withUnexpectedProviderVersion = structuredClone(withProviderExtensions);
-    withUnexpectedProviderVersion.extensions[0] = {
-      ...requiredAt(withUnexpectedProviderVersion.extensions, 0, 'extension'),
-      version: '0.6.0',
-    };
-    expect(createSchemaStateFingerprint(withUnexpectedProviderVersion, baselineMigration()).digest)
-      .not.toBe(createSchemaStateFingerprint(canonical, baselineMigration()).digest);
+    const alteredProviderExtensions = [
+      { field: 'name', extension: { name: 'pgcrypto-renamed' } },
+      { field: 'version', extension: { version: '0.6.0' } },
+      { field: 'schema', extension: { schema: 'private_extensions' } },
+      { field: 'relocatability', extension: { relocatable: true } },
+    ] as const;
+    for (const altered of alteredProviderExtensions) {
+      const inventory = structuredClone(withProviderExtensions);
+      inventory.extensions[0] = {
+        ...requiredAt(inventory.extensions, 0, 'extension'),
+        ...altered.extension,
+      };
+      expect(
+        createBaselineFingerprint(inventory).digest,
+        `baseline must fingerprint altered provider ${altered.field}`,
+      ).not.toBe(createBaselineFingerprint(canonical).digest);
+      expect(
+        createSchemaStateFingerprint(inventory, baselineMigration()).digest,
+        `release boundary must fingerprint altered provider ${altered.field}`,
+      ).not.toBe(createSchemaStateFingerprint(canonical, baselineMigration()).digest);
+    }
   });
 
   it('refuses function-body changes inside quoted content', () => {
