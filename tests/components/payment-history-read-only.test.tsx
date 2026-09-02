@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import type { League, SavedCard } from "@shared/schema";
 import { PaymentHistoryContent } from "@/pages/payment-history-page/payment-history-content";
-import { StandingAutopayCard } from "@/components/standing-autopay-card";
+import { formatNextPaymentDate, StandingAutopayCard } from "@/components/standing-autopay-card";
 import type { SquareCard } from "@/hooks/use-square-payment";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -20,7 +20,7 @@ vi.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast: vi.fn() }) }));
 vi.mock("@/lib/queryClient", () => ({ apiRequest: apiRequestMock, csrfFetch: csrfFetchMock, queryClient: { invalidateQueries: vi.fn() } }));
 vi.mock("@/lib/square", () => ({ tokenizeCard: tokenizeCardMock }));
 
-const league = { id: 17, name: "League", weeklyFee: 3000, organizationId: 1, locationId: null, paymentMode: "weekly" as const, payingLineupSize: null } satisfies Pick<League, "id" | "name" | "weeklyFee" | "organizationId" | "locationId" | "paymentMode" | "payingLineupSize">;
+const league = { id: 17, name: "League", weeklyFee: 3000, organizationId: 1, locationId: null, paymentMode: "weekly" as const, payingLineupSize: null, timezone: "America/Detroit" } satisfies Pick<League, "id" | "name" | "weeklyFee" | "organizationId" | "locationId" | "paymentMode" | "payingLineupSize" | "timezone">;
 const savedCard: SavedCard = { id: "card_1", brand: "VISA", last4: "4242", expMonth: 12, expYear: 2030 };
 const squareCard: SquareCard = { tokenize: async () => ({ status: "OK", token: "source_token" }), attach: async () => undefined, destroy: () => undefined };
 
@@ -31,6 +31,11 @@ beforeEach(() => {
 });
 
 describe("PaymentHistoryContent", () => {
+  it("formats the next automatic payment in the league timezone", () => {
+    expect(formatNextPaymentDate("2030-01-01T04:30:00.000Z", "America/Detroit")).toMatch(/December 31, 2029/);
+    expect(formatNextPaymentDate("2030-01-01T04:30:00.000Z", "Pacific/Kiritimati")).toMatch(/January 1, 2030/);
+  });
+
   it("is read-only action-wise and links summary cards to Make Payment", () => {
     render(<PaymentHistoryContent
       bowlerName="Bowler"
@@ -126,6 +131,25 @@ describe("PaymentHistoryContent", () => {
     /></QueryClientProvider>);
     expect(screen.getByRole("link", { name: "Profile" })).toHaveAttribute("href", "/profile");
     expect(screen.getByRole("button", { name: "Enable automatic payments" })).toBeDisabled();
+  });
+
+  it("shows the next scheduled automatic-payment date without implementation copy", async () => {
+    csrfFetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: { cutoffAt: "2030-01-10T00:30:00.000Z" } }),
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, queryFn: async () => ({ data: { state: "active", partnerBowlerIds: [] } }) } } });
+    render(<QueryClientProvider client={queryClient}><StandingAutopayCard
+      league={{ ...league, payingLineupSize: 4 }} bowlerId={42}
+      savedCards={[savedCard]} bowlerHasEmail={true} card={null} isInitialized={false}
+      cardEditorMode={null} initializeCard={vi.fn()} cleanupCard={vi.fn()} onCardEditorModeChange={vi.fn()}
+    /></QueryClientProvider>);
+    await waitFor(() => expect(screen.getByText(/Next Payment Scheduled:/)).toHaveTextContent("Next Payment Scheduled: January 9, 2030"));
+    expect(screen.queryByText(/exact remaining roster obligations|consent version/i)).not.toBeInTheDocument();
+    expect(csrfFetchMock).toHaveBeenCalledWith(
+      "/api/financials/leagues/17/standing-autopay/1/quote",
+      expect.objectContaining({ method: "POST" }),
+    );
   });
 
   it("reuses the consent command key when the outcome is unresolved", async () => {
