@@ -401,6 +401,14 @@ describe('Organization Isolation', () => {
       expect([403, 404]).toContain(standing.status);
       expect(standing.data.success).toBe(false);
       expect(JSON.stringify(standing.data)).not.toContain(`"organizationId":${sessionB.user.organizationId}`);
+
+      const standingQuote = await apiGet(
+        `/api/financials/leagues/${orgBLeagueId}/standing-autopay/1/quote`,
+        sessionA,
+      );
+      expect([403, 404]).toContain(standingQuote.status);
+      expect(standingQuote.data.success).toBe(false);
+      expect(JSON.stringify(standingQuote.data)).not.toContain(`"organizationId":${sessionB.user.organizationId}`);
     });
   });
 
