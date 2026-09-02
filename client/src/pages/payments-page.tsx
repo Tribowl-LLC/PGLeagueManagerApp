@@ -1,12 +1,11 @@
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import { useQuery, useMutation, useQueries } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Layout } from "@/components/layout";
-import { PaymentForm } from "@/components/payment-form";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { Input } from "@/components/ui/input";
-import { Plus, Search } from "lucide-react";
+import { Search } from "lucide-react";
 import { PageLoadingState } from "@/components/page-states";
 import type {
   Payment,
@@ -42,12 +41,17 @@ interface PaginatedPaymentsResponse {
 }
 
 export default function PaymentsPage() {
-  const [showForm, setShowForm] = useState(false);
   const [paymentToRefund, setPaymentToRefund] = useState<Payment | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
-  const [selectedLeagueId, setSelectedLeagueId] = useState<number | undefined>();
+  const [selectedLeagueId, setSelectedLeagueId] = useState<number | undefined>(() => {
+    if (typeof window === "undefined") return undefined;
+    const raw = new URLSearchParams(window.location.search).get("leagueId");
+    if (!raw || !/^\d+$/.test(raw)) return undefined;
+    const parsed = Number(raw);
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
+  });
   const { toast } = useToast();
   const [, navigate] = useLocation();
 
@@ -138,8 +142,26 @@ export default function PaymentsPage() {
 
   const payments = useMemo(() => paymentsResponse?.data || [], [paymentsResponse?.data]);
   const bowlers = useMemo(() => bowlersResponse?.data || [], [bowlersResponse?.data]);
-  const leagues = leaguesResponse?.data || [];
-  const reportLeagues = selectedLeagueId === undefined ? leagues.slice(0, 1) : leagues.filter((league) => league.id === selectedLeagueId);
+  const leagues = useMemo(() => leaguesResponse?.data ?? [], [leaguesResponse?.data]);
+  // A league action card carries its league context into the records page.
+  // If that league is not present in the server-authorized list (for example,
+  // a stale bookmark or a location-scoped payment manager), fall back to the
+  // first accessible league rather than rendering an empty financial report.
+  // Derive the fallback before building report queries so an inaccessible
+  // query parameter cannot produce an empty/unscoped intermediate report.
+  const accessibleSelectedLeagueId = selectedLeagueId !== undefined
+    && leagues.some((league) => league.id === selectedLeagueId)
+    ? selectedLeagueId
+    : leagues[0]?.id;
+  useEffect(() => {
+    if (accessibleSelectedLeagueId !== undefined && accessibleSelectedLeagueId !== selectedLeagueId) {
+      setSelectedLeagueId(accessibleSelectedLeagueId);
+      setPage(1);
+    }
+  }, [accessibleSelectedLeagueId, selectedLeagueId]);
+  const reportLeagues = accessibleSelectedLeagueId === undefined
+    ? []
+    : leagues.filter((league) => league.id === accessibleSelectedLeagueId);
   const financialReports = useQueries({
     queries: reportLeagues.map((league) => ({
       queryKey: ["/api/financials/f5/payments", league.id, page, pageSize, userResponse?.data?.organizationId, userResponse?.data?.role],
@@ -268,10 +290,6 @@ export default function PaymentsPage() {
         <div className="space-y-6">
           <div className="flex justify-between items-center">
             <h1 className="text-2xl font-bold">Payments</h1>
-            <Button onClick={() => setShowForm(true)}>
-              <Plus className="size-4 mr-2" />
-              Record Payment
-            </Button>
           </div>
 
           <div className="flex items-center gap-x-2 mb-6">
@@ -333,14 +351,6 @@ export default function PaymentsPage() {
               onPageSizeChange={handlePageSizeChange}
             />
           )}
-
-          <PaymentForm
-            open={showForm}
-            onClose={() => setShowForm(false)}
-            bowlers={bowlers}
-            leagueId={defaultLeagueId}
-            paymentManager={isPaymentManager}
-          />
 
           <RefundPaymentDialog
             payment={paymentToRefund}

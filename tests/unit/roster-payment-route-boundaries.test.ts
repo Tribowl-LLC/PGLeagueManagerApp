@@ -3,7 +3,14 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 
-const mocks = vi.hoisted(() => ({
+const mocks = vi.hoisted(() => {
+  class MockRosterPaymentError extends Error {
+    constructor(public readonly code: string, message: string, public readonly status = 409) { super(message); }
+  }
+  class MockRosterPaymentReplay extends MockRosterPaymentError {
+    constructor(public readonly result: unknown) { super("IDEMPOTENCY_REPLAY", "The command was already applied", 200); }
+  }
+  return {
   getLeague: vi.fn(),
   hasAccess: vi.fn(),
   hasAdmin: vi.fn(),
@@ -16,7 +23,10 @@ const mocks = vi.hoisted(() => ({
   manual: vi.fn(),
   correct: vi.fn(),
   recoverByRequestKey: vi.fn(),
-}));
+  RosterPaymentError: MockRosterPaymentError,
+  RosterPaymentReplay: MockRosterPaymentReplay,
+  };
+});
 
 vi.mock("../../server/storage/index.js", () => ({ storage: { getLeague: (...args: unknown[]) => mocks.getLeague(...args) } }));
 vi.mock("../../server/storage", () => ({ storage: { getLeague: (...args: unknown[]) => mocks.getLeague(...args) } }));
@@ -41,8 +51,8 @@ vi.mock("../../server/services/roster-payment-core.js", () => ({
   recordOccurrenceResponsibilities: vi.fn(),
   recordCanonicalManualPayment: (...args: unknown[]) => mocks.manual(...args),
   correctCanonicalAllocation: (...args: unknown[]) => mocks.correct(...args),
-  RosterPaymentError: class extends Error {},
-  RosterPaymentReplay: class extends Error {},
+  RosterPaymentError: mocks.RosterPaymentError,
+  RosterPaymentReplay: mocks.RosterPaymentReplay,
 }));
 vi.mock("../../server/services/roster-payment-recovery.js", () => ({
   recoverRosterPaymentOperation: vi.fn(),
@@ -59,6 +69,10 @@ let baseUrl: string;
 function user(role: string, organizationId = 11, bowlerId: number | null = null) {
   return { id: 1, role, organizationId, bowlerId };
 }
+
+// Build deterministic, obviously synthetic identities without embedding
+// token-shaped literals that secret scanners may mistake for credentials.
+const testRequestKey = (label: string): string => `test-${label}-${"x".repeat(16)}`;
 
 async function request(path: string, currentUser: ReturnType<typeof user>, init: RequestInit = {}) {
   return fetch(`${baseUrl}/api/financials${path}`, {
@@ -183,6 +197,103 @@ describe("roster payment route authorization", () => {
     });
     expect(response.status).toBe(404);
     expect(mocks.charge).not.toHaveBeenCalled();
+  });
+
+  it("quotes a bounded batch with one management request instead of one limiter hit per row", async () => {
+    mocks.hasAdmin.mockResolvedValue(true);
+    const rows = Array.from({ length: 31 }, (_, index) => ({
+      rowKey: `batch-row-${String(index).padStart(12, "0")}`,
+      amountMinor: 1000,
+      payerBowlerId: 42 + index,
+    }));
+    const response = await request("/leagues/7/canonical/manual-record-batch/quote/1", user("admin", 11), {
+      method: "POST",
+      body: JSON.stringify({ rows }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.data.contractVersion).toBe("canonical-manual-record-batch-quote/1");
+    expect(body.data.rows).toHaveLength(31);
+    expect(body.data.rows[0]).toMatchObject({ rowKey: rows[0].rowKey, success: true });
+    expect(mocks.quote).toHaveBeenCalledTimes(31);
+  });
+
+  it("returns independent mixed outcomes and rejects duplicate row idempotency keys", async () => {
+    mocks.hasAdmin.mockResolvedValue(true);
+    mocks.manual.mockImplementation(async (input: { request: { payerBowlerId: number } }) => {
+      if (input.request.payerBowlerId === 43) throw new mocks.RosterPaymentError("EXCESS_PAYMENT", "The payment amount exceeds the remaining eligible balance", 422);
+      return { contractVersion: "canonical-manual-record/1", records: [] };
+    });
+    const common = { amountMinor: 1000, type: "cash", requestFingerprint: "quote-fingerprint" };
+    const successKey = testRequestKey("success");
+    const failureKey = testRequestKey("failure");
+    const mixed = await request("/leagues/7/canonical/manual-record-batch/1", user("admin", 11), {
+      method: "POST",
+      body: JSON.stringify({ rows: [
+        { ...common, rowKey: successKey, payerBowlerId: 42, idempotencyKey: successKey },
+        { ...common, rowKey: failureKey, payerBowlerId: 43, idempotencyKey: failureKey },
+      ] }),
+    });
+    expect(mixed.status).toBe(200);
+    await expect(mixed.json()).resolves.toMatchObject({ data: { rows: [
+      { rowKey: successKey, success: true },
+      { rowKey: failureKey, success: false, error: { code: "EXCESS_PAYMENT" } },
+    ] } });
+
+    const duplicateKey = testRequestKey("duplicate");
+    const duplicate = await request("/leagues/7/canonical/manual-record-batch/1", user("admin", 11), {
+      method: "POST",
+      body: JSON.stringify({ rows: [
+        { ...common, rowKey: duplicateKey, payerBowlerId: 42, idempotencyKey: duplicateKey },
+        { ...common, rowKey: duplicateKey, payerBowlerId: 43, idempotencyKey: duplicateKey },
+      ] }),
+    });
+    expect(duplicate.status).toBe(400);
+    expect(mocks.manual).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects check numbers on cash rows at the batch boundary", async () => {
+    mocks.hasAdmin.mockResolvedValue(true);
+    const rowKey = testRequestKey("cash-row");
+    const idempotencyKey = testRequestKey("cash-command");
+    const response = await request("/leagues/7/canonical/manual-record-batch/1", user("admin", 11), {
+      method: "POST",
+      body: JSON.stringify({ rows: [{
+        rowKey,
+        amountMinor: 1000,
+        payerBowlerId: 42,
+        type: "cash",
+        checkNumber: "123",
+        idempotencyKey,
+        requestFingerprint: "quote-fingerprint",
+      }] }),
+    });
+    expect(response.status).toBe(400);
+    expect(mocks.manual).not.toHaveBeenCalled();
+  });
+
+  it("rejects duplicate payers even when their row keys are distinct", async () => {
+    mocks.hasAdmin.mockResolvedValue(true);
+    const firstKey = testRequestKey("payer-one");
+    const secondKey = testRequestKey("payer-two");
+    const response = await request("/leagues/7/canonical/manual-record-batch/1", user("admin", 11), {
+      method: "POST",
+      body: JSON.stringify({ rows: [
+        { rowKey: firstKey, amountMinor: 1000, payerBowlerId: 42, type: "cash", idempotencyKey: firstKey, requestFingerprint: "quote-fingerprint" },
+        { rowKey: secondKey, amountMinor: 1000, payerBowlerId: 42, type: "cash", idempotencyKey: secondKey, requestFingerprint: "quote-fingerprint" },
+      ] }),
+    });
+    expect(response.status).toBe(400);
+    expect(mocks.manual).not.toHaveBeenCalled();
+  });
+
+  it("keeps the batch route tenant and league scoped", async () => {
+    const response = await request("/leagues/7/canonical/manual-record-batch/quote/1", user("user", 11, 42), {
+      method: "POST",
+      body: JSON.stringify({ rows: [{ rowKey: testRequestKey("unauthorized"), amountMinor: 1000, payerBowlerId: 42 }] }),
+    });
+    expect(response.status).toBe(404);
+    expect(mocks.quote).not.toHaveBeenCalled();
   });
 
   it("keeps request-key recovery bound to the authenticated league and actor", async () => {

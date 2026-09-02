@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  canonicalManualRecordBatchQuoteRequestSchema,
+  canonicalManualRecordBatchRequestSchema,
   canonicalManualRecordRequestSchema,
   occurrenceResponsibilityInputSchema,
   rosterPaymentResponsibilityRequestSchema,
@@ -52,5 +54,23 @@ describe("roster-driven payment contracts", () => {
       idempotencyKey: "manual-1",
       requestFingerprint: "quote",
     }).success).toBe(false);
+  });
+
+  it("bounds management batches and keeps payer/idempotency identities distinct", () => {
+    const quoteRow = (index: number) => ({ rowKey: `batch-row-${String(index).padStart(12, "0")}`, amountMinor: 2_000, payerBowlerId: index + 1 });
+    expect(canonicalManualRecordBatchQuoteRequestSchema.safeParse({ rows: Array.from({ length: 200 }, (_, index) => quoteRow(index)) }).success).toBe(true);
+    expect(canonicalManualRecordBatchQuoteRequestSchema.safeParse({ rows: Array.from({ length: 201 }, (_, index) => quoteRow(index)) }).success).toBe(false);
+    expect(canonicalManualRecordBatchQuoteRequestSchema.safeParse({ rows: [quoteRow(1), quoteRow(1)] }).success).toBe(false);
+    expect(canonicalManualRecordBatchQuoteRequestSchema.safeParse({ rows: [quoteRow(1), quoteRow(2)] }).success).toBe(true);
+    expect(canonicalManualRecordBatchQuoteRequestSchema.safeParse({ rows: [quoteRow(1), { ...quoteRow(2), rowKey: "batch-row-other-123", payerBowlerId: 2 }] }).success).toBe(false);
+
+    const row = { rowKey: "batch-record-row-1234", amountMinor: 2_000, payerBowlerId: 11, type: "cash" as const, idempotencyKey: "batch-record-key-1234", requestFingerprint: "quote" };
+    expect(canonicalManualRecordBatchRequestSchema.safeParse({ rows: [row] }).success).toBe(false);
+    expect(canonicalManualRecordBatchRequestSchema.safeParse({ rows: [{ ...row, rowKey: row.idempotencyKey }] }).success).toBe(true);
+    expect(canonicalManualRecordBatchRequestSchema.safeParse({ rows: [{ ...row, rowKey: row.idempotencyKey, checkNumber: "123" }] }).success).toBe(false);
+    expect(canonicalManualRecordBatchRequestSchema.safeParse({ rows: [
+      { ...row, rowKey: "batch-record-key-one", idempotencyKey: "batch-record-key-one" },
+      { ...row, rowKey: "batch-record-key-two", idempotencyKey: "batch-record-key-two" },
+    ] }).success).toBe(false);
   });
 });
