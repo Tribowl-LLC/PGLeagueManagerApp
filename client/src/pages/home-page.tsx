@@ -133,13 +133,18 @@ export default function HomePage() {
   const activeLeagues = leagues.filter((l: League) => l.active);
   const activeLeagueIds = new Set(activeLeagues.map((l: League) => l.id));
   const activeBowlerIds = new Set<number>();
+  const activeLeagueBowlerKeys = new Set<string>();
   for (const bl of bowlerLeaguesData) {
-    if (bl.active && activeLeagueIds.has(bl.leagueId) && activeBowlerProfileIds.has(bl.bowlerId)) activeBowlerIds.add(bl.bowlerId);
+    if (bl.active && activeLeagueIds.has(bl.leagueId) && activeBowlerProfileIds.has(bl.bowlerId)) {
+      activeBowlerIds.add(bl.bowlerId);
+      activeLeagueBowlerKeys.add(`${bl.leagueId}:${bl.bowlerId}`);
+    }
   }
   const serverFinancialLeagues = financialReportResponse?.data?.leagues ?? [];
   const serverRows = serverFinancialLeagues
     .filter((entry) => activeLeagueIds.has(entry.leagueId))
     .flatMap((entry) => entry.report.rows.map((row) => ({ ...row, leagueId: entry.leagueId })));
+  const activeServerRows = serverRows.filter((row) => activeLeagueBowlerKeys.has(`${row.leagueId}:${row.payerBowlerId}`));
   // The dashboard denominator is always the unique set of active
   // bowler-league memberships in active leagues. Financial payer rows are
   // intentionally reserved for past-due numerators below.
@@ -149,7 +154,7 @@ export default function HomePage() {
 
   const pastDueBowlerIds = new Set<number>();
   const reviewRequiredBowlerIds = new Set<string>();
-  serverRows.forEach((row) => {
+  activeServerRows.forEach((row) => {
     if (row.classification === "past_due") pastDueBowlerIds.add(row.payerBowlerId);
     if (row.reviewRequired) reviewRequiredBowlerIds.add(`${row.leagueId}:${row.payerBowlerId}`);
   });
@@ -164,10 +169,10 @@ export default function HomePage() {
     const leagueBowlerCount = leagueBowlerIds.size;
     if (leagueBowlerCount === 0) return [];
 
-    const pastDueCount = new Set(serverRows
+    const pastDueCount = new Set(activeServerRows
       .filter((row) => row.leagueId === league.id && row.classification === "past_due")
       .map((row) => row.payerBowlerId)).size;
-    const reviewRequiredCount = new Set(serverRows
+    const reviewRequiredCount = new Set(activeServerRows
       .filter((row) => row.leagueId === league.id && row.reviewRequired)
       .map((row) => row.payerBowlerId)).size;
 

@@ -33,7 +33,7 @@ import {
 } from "../../server/services/roster-payment-finalizer";
 import { recoverRosterPaymentOperation, recoverRosterPaymentOperationByRequestKey } from "../../server/services/roster-payment-recovery";
 import { acquireInteractivePaymentOperationDispatchCutoff } from "../../server/storage/payment-operations";
-import { canonicalRosterFingerprint, chargeInteractiveObligations, quoteInteractiveObligations, saveTeamRoster } from "../../server/services/roster-payment-core";
+import { canonicalResponsibilityFingerprint, canonicalRosterFingerprint, chargeInteractiveObligations, quoteInteractiveObligations, recordOccurrenceResponsibilities, saveTeamRoster } from "../../server/services/roster-payment-core";
 import { interactivePaymentOperationExecutor } from "../../server/services/interactive-payment-operation-executor";
 import { paymentOperationRetryExecutor } from "../../server/services/payment-operation-retry-executor";
 import { prepareInteractivePaymentOperation } from "../../server/services/interactive-payment-operation-preparation";
@@ -1672,5 +1672,97 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
     crossTenantRequest.requestFingerprint = canonicalRosterFingerprint(crossTenantRequest);
     await expect(saveTeamRoster({ organizationId, leagueId, teamId: incrementalTeam.id, actorUserId, request: crossTenantRequest })).rejects.toMatchObject({ code: "BOWLER_NOT_IN_LEAGUE" });
     await deleteOrganization(otherOrganization.id);
+  });
+
+  it("records configured Main and VACANT overrides while rejecting an unassigned target", async () => {
+    const [overrideTeam] = await db.insert(teams).values({ name: "Partial Override Team", number: 31, leagueId }).returning({ id: teams.id });
+    const [overrideMain] = await db.insert(bowlers).values({ name: "Partial Override Main", organizationId }).returning({ id: bowlers.id });
+    await db.insert(bowlerLeagues).values({ bowlerId: overrideMain.id, leagueId, teamId: overrideTeam.id });
+    await db.insert(teamPaymentSlots).values([
+      { organizationId, leagueId, teamId: overrideTeam.id, slotIndex: 0, lineupSize: 3, occupant: "main", mainBowlerId: overrideMain.id, recordedByUserId: actorUserId },
+      { organizationId, leagueId, teamId: overrideTeam.id, slotIndex: 1, lineupSize: 3, occupant: "vacant", mainBowlerId: null, recordedByUserId: actorUserId },
+      { organizationId, leagueId, teamId: overrideTeam.id, slotIndex: 2, lineupSize: 3, occupant: "unassigned", mainBowlerId: null, recordedByUserId: actorUserId },
+    ]);
+
+    const fixture = await createOccurrence();
+    const dueAt = "2038-02-02T19:00:00.000Z";
+    const responsibilities = [
+      {
+        occurrenceId: fixture.occurrence.id,
+        teamId: overrideTeam.id,
+        slotIndex: 0,
+        positionIndex: 0,
+        kind: "main" as const,
+        mainBowlerId: overrideMain.id,
+        substituteBowlerId: null,
+        payerBowlerId: overrideMain.id,
+        policy: "main_pays_full" as const,
+        amountMinor: 2_000,
+        lineageAmountMinor: null,
+        prizeFundAmountMinor: null,
+        dueAt,
+        pastDueAt: "2038-02-01T22:00:00.000Z",
+        assignmentNote: "configured Main override",
+      },
+      {
+        occurrenceId: fixture.occurrence.id,
+        teamId: overrideTeam.id,
+        slotIndex: 1,
+        positionIndex: 1,
+        kind: "vacant" as const,
+        mainBowlerId: null,
+        substituteBowlerId: null,
+        payerBowlerId: null,
+        policy: "main_pays_full" as const,
+        amountMinor: 0,
+        lineageAmountMinor: null,
+        prizeFundAmountMinor: null,
+        dueAt,
+        pastDueAt: "2038-02-01T22:00:00.000Z",
+        assignmentNote: "configured VACANT override",
+      },
+    ];
+    await recordOccurrenceResponsibilities({
+      organizationId,
+      leagueId,
+      actorUserId,
+      commandKey: `partial-override-${randomUUID()}`,
+      requestFingerprint: canonicalResponsibilityFingerprint(responsibilities),
+      responsibilities,
+    });
+    const configuredRows = await db.select({ slotIndex: occurrencePaymentResponsibilities.slotIndex, responsibilityKind: occurrencePaymentResponsibilities.responsibilityKind }).from(occurrencePaymentResponsibilities).where(and(
+      eq(occurrencePaymentResponsibilities.organizationId, organizationId),
+      eq(occurrencePaymentResponsibilities.leagueId, leagueId),
+      eq(occurrencePaymentResponsibilities.occurrenceId, fixture.occurrence.id),
+      eq(occurrencePaymentResponsibilities.teamId, overrideTeam.id),
+      eq(occurrencePaymentResponsibilities.state, "active"),
+    )).orderBy(occurrencePaymentResponsibilities.slotIndex);
+    expect(configuredRows.map((row) => [row.slotIndex, row.responsibilityKind])).toEqual([[0, "main"], [1, "vacant"]]);
+
+    const unassignedResponsibility = {
+      ...responsibilities[0],
+      slotIndex: 2,
+      positionIndex: 2,
+      kind: "vacant" as const,
+      mainBowlerId: null,
+      payerBowlerId: null,
+      amountMinor: 0,
+      assignmentNote: "unassigned target must fail",
+    };
+    await expect(recordOccurrenceResponsibilities({
+      organizationId,
+      leagueId,
+      actorUserId,
+      commandKey: `unassigned-override-${randomUUID()}`,
+      requestFingerprint: canonicalResponsibilityFingerprint([unassignedResponsibility]),
+      responsibilities: [unassignedResponsibility],
+    })).rejects.toMatchObject({ code: "INCOMPLETE_ROSTER" });
+    expect(await db.select({ id: occurrencePaymentResponsibilities.id }).from(occurrencePaymentResponsibilities).where(and(
+      eq(occurrencePaymentResponsibilities.organizationId, organizationId),
+      eq(occurrencePaymentResponsibilities.leagueId, leagueId),
+      eq(occurrencePaymentResponsibilities.occurrenceId, fixture.occurrence.id),
+      eq(occurrencePaymentResponsibilities.teamId, overrideTeam.id),
+      eq(occurrencePaymentResponsibilities.slotIndex, 2),
+    ))).toHaveLength(0);
   });
 });

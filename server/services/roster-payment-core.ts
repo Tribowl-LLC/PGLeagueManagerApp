@@ -444,7 +444,6 @@ export async function recordOccurrenceResponsibilities(input: {
     if (occurrences.length !== occurrenceIds.length) throw new RosterPaymentError("OCCURRENCE_NOT_PUBLISHED", "Responsibilities require published canonical occurrences", 422);
     const teamIds = [...new Set(input.responsibilities.map((row) => row.teamId))];
     const slots = await tx.select().from(teamPaymentSlots).where(and(eq(teamPaymentSlots.organizationId, input.organizationId), eq(teamPaymentSlots.leagueId, input.leagueId), inArray(teamPaymentSlots.teamId, teamIds))).orderBy(asc(teamPaymentSlots.teamId), asc(teamPaymentSlots.slotIndex));
-    if (slots.some((slot) => slot.occupant === "unassigned") || teamIds.some((teamId) => slots.filter((slot) => slot.teamId === teamId).length !== lineupSize)) throw new RosterPaymentError("INCOMPLETE_ROSTER", "Payment readiness requires complete team rosters", 422);
     const activeResponsibilities = await tx.select({ occurrenceId: occurrencePaymentResponsibilities.occurrenceId, teamId: occurrencePaymentResponsibilities.teamId, slotIndex: occurrencePaymentResponsibilities.slotIndex, positionIndex: occurrencePaymentResponsibilities.positionIndex, mainBowlerId: occurrencePaymentResponsibilities.mainBowlerId, substituteBowlerId: occurrencePaymentResponsibilities.substituteBowlerId }).from(occurrencePaymentResponsibilities).where(and(
       eq(occurrencePaymentResponsibilities.organizationId, input.organizationId),
       eq(occurrencePaymentResponsibilities.leagueId, input.leagueId),
@@ -459,6 +458,7 @@ export async function recordOccurrenceResponsibilities(input: {
     for (const row of input.responsibilities) {
       const slot = slots.find((candidate) => candidate.teamId === row.teamId && candidate.slotIndex === row.slotIndex);
       if (!slot) throw new RosterPaymentError("INVALID_SLOT", "Responsibility slot is not part of this team roster", 422);
+      if (slot.occupant === "unassigned") throw new RosterPaymentError("INCOMPLETE_ROSTER", "A responsibility target slot must be configured", 422);
       if (row.positionIndex >= lineupSize) throw new RosterPaymentError("INVALID_POSITION", "Position is outside the configured paying lineup", 422);
       const positionKey = `${row.occurrenceId}:${row.teamId}:${row.positionIndex}`;
       if (seenPositions.has(positionKey)) throw new RosterPaymentError("DUPLICATE_POSITION", "A bowler may occupy only one position per occurrence", 422);
