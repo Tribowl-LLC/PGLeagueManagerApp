@@ -48,6 +48,18 @@ export function resetPaymentSelectionForLeagueChange(): { weekCount: number; int
   return { weekCount: 1, intentApplied: false };
 }
 
+export function resolveSavedCardReadState(
+  isEnabled: boolean,
+  hasResponse: boolean,
+  isLoading: boolean,
+  hasError: boolean,
+): "idle" | "loading" | "ready" | "unavailable" {
+  if (!isEnabled) return "idle";
+  if (hasResponse) return "ready";
+  if (isLoading || !hasError) return "loading";
+  return "unavailable";
+}
+
 export function hasPositivePaymentEvidence(rows: Array<{
   allocatedMinor: number;
   outstandingMinor: number;
@@ -142,18 +154,30 @@ export default function MakePaymentPage() {
     staleTime: 30_000,
     retry: false,
   });
-  const { data: savedCardsResponse } = useQuery<ApiResponse<SavedCard[]>>({
+  const savedCardsQueryEnabled = !!bowlerId && !!leagueId;
+  const {
+    data: savedCardsResponse,
+    isLoading: loadingSavedCards,
+    error: savedCardsError,
+    refetch: refetchSavedCards,
+  } = useQuery<ApiResponse<SavedCard[]>>({
     queryKey: [`/api/payments-provider/cards/${bowlerId}`, leagueId],
     queryFn: async () => {
       const response = await csrfFetch(`/api/payments-provider/cards/${bowlerId}?leagueId=${leagueId}`);
       if (!response.ok) throw new Error("Failed to fetch saved cards");
       return response.json();
     },
-    enabled: !!bowlerId && !!leagueId,
+    enabled: savedCardsQueryEnabled,
     staleTime: 5 * 60_000,
     retry: false,
   });
   const savedCards = savedCardsResponse?.data ?? [];
+  const savedCardReadState = resolveSavedCardReadState(
+    savedCardsQueryEnabled,
+    savedCardsResponse !== undefined,
+    loadingSavedCards,
+    savedCardsError !== null,
+  );
   useSavedCardDefault({ firstSavedCardId: savedCards[0]?.id ?? null, setCardMode, setSelectedSavedCardId, dependencyKey: String(leagueId ?? "") });
   const resolvedFinancial = useMemo(() => resolveInteractiveFinancialRead(financialResponse?.data), [financialResponse?.data]);
   const rows = useMemo(() => resolvedFinancial.status === "canonical" ? resolvedFinancial.rows : [], [resolvedFinancial]);
@@ -182,7 +206,10 @@ export default function MakePaymentPage() {
     setOneTimePaymentWeekCount(suggested?.weekCount ?? options.length);
     intentAppliedRef.current = true;
   }, [amountPastDue, intent, options]);
-  useEffect(() => { setCardEditorMode(savedCards.length === 0 ? "one-time" : null); }, [savedCards.length]);
+  useEffect(() => {
+    if (savedCardReadState !== "ready") return;
+    setCardEditorMode(savedCards.length === 0 ? "one-time" : null);
+  }, [savedCardReadState, savedCards.length]);
 
   const { card, isInitialized, initializeCard, cleanupCard } = useSquarePayment({
     locationId: league?.locationId,
@@ -235,7 +262,7 @@ export default function MakePaymentPage() {
     finally { setIsWalletProcessing(false); }
   }, [bowlerId, leagueId, league, resolvedFinancial.status, paymentAmountMinor, bowlerEmail, receiptEmail, toast, navigate, cleanupCard]);
   const beginWalletPayment = useCallback(() => { if (leagueId && bowlerId && paymentAmountMinor > 0) walletRequestKeyRef.current = beginPaymentIntent(`make-payment-wallet:${leagueId}:${bowlerId}:${paymentAmountMinor}`); }, [leagueId, bowlerId, paymentAmountMinor]);
-  const wallet = useWalletPayments({ locationId: league?.locationId, amountCents: paymentAmountMinor, enabled: !!league?.locationId && paymentAmountMinor > 0 && supportsWallets, onPaymentStarted: beginWalletPayment, onTokenReceived: handleWalletPayment, onError: (error) => toast({ title: "Wallet Payment Error", description: error, variant: "destructive" }) });
+  const wallet = useWalletPayments({ locationId: league?.locationId, amountCents: paymentAmountMinor, enabled: savedCardReadState === "ready" && !!league?.locationId && paymentAmountMinor > 0 && supportsWallets, onPaymentStarted: beginWalletPayment, onTokenReceived: handleWalletPayment, onError: (error) => toast({ title: "Wallet Payment Error", description: error, variant: "destructive" }) });
   const cleanupWallet = wallet.cleanup;
   useEffect(() => () => cleanupWallet(), [cleanupWallet]);
 
@@ -271,11 +298,12 @@ export default function MakePaymentPage() {
     finally { setIsSubmitting(false); }
   };
 
-  if (loadingUser || loadingDetails || loadingFinancial) return <PageLoadingState />;
+  if (loadingUser || loadingDetails || loadingFinancial || savedCardReadState === "loading") return <PageLoadingState />;
   if (userError) return <PageLoadingState message="Authentication required" />;
   if (currentUser?.data && !currentUser.data.bowlerId) return <PageLoadingState message="A bowler profile is required to make a payment" />;
   if (detailsError) return <MakePaymentReadError message="Payment profile data could not be loaded. Try again." onRetry={() => { void refetchDetails(); }} leagueId={selectedLeagueId ?? undefined} />;
   if (financialError) return <MakePaymentReadError message="Payment balance data could not be loaded. Try again." onRetry={() => { void refetchFinancial(); }} leagueId={selectedLeagueId ?? undefined} />;
+  if (savedCardReadState === "unavailable") return <MakePaymentReadError message="Saved payment methods could not be loaded. Try again." onRetry={() => { void refetchSavedCards(); }} leagueId={selectedLeagueId ?? undefined} />;
   if (!league || leagueId === undefined || !bowlerId) return <MakePaymentReadError message="Payment information is unavailable. Try again or view payment history." onRetry={() => { void refetchDetails(); void refetchFinancial(); }} leagueId={selectedLeagueId ?? undefined} />;
 
   const isPaidInFull = remainingBalance <= 0 && hasPositivePaymentEvidence(rows);

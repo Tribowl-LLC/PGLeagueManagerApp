@@ -62,7 +62,7 @@ export function useSquarePayment({ onError, locationId }: UseSquarePaymentOption
   }, []);
 
   const initializeCard = useCallback(async (container: HTMLDivElement) => {
-    if (!container || !mountedRef.current) {
+    if (!container || !container.isConnected || !mountedRef.current) {
       return;
     }
 
@@ -71,9 +71,15 @@ export function useSquarePayment({ onError, locationId }: UseSquarePaymentOption
     }
 
     initializingRef.current = true;
+    let initTimeout: ReturnType<typeof setTimeout> | undefined;
+    let pendingCard: SquareCard | null = null;
 
     try {
-      const initTimeout = setTimeout(() => {
+      initTimeout = setTimeout(() => {
+        if (!container.isConnected) {
+          initializingRef.current = false;
+          return;
+        }
         if (mountedRef.current && !cardRef.current) {
           setError('Card initialization timed out');
           initializingRef.current = false;
@@ -82,46 +88,65 @@ export function useSquarePayment({ onError, locationId }: UseSquarePaymentOption
             initializationAttempts.current++;
           } else {
             initializationAttempts.current = 0;
-            onErrorRef.current?.('Credit card form initialization timed out');
-            toast({
-              title: "Payment Form Notice",
-              description: "Credit card payment form unavailable. Please try another payment method.",
-              variant: "destructive",
-            });
+            if (onErrorRef.current) {
+              onErrorRef.current('Credit card form initialization timed out');
+            } else {
+              toast({
+                title: "Payment Form Notice",
+                description: "Credit card payment form unavailable. Please try another payment method.",
+                variant: "destructive",
+              });
+            }
           }
         }
       }, 8000);
 
       const payments = await initializeSquare(locationIdRef.current);
 
-      if (!mountedRef.current) {
+      if (!mountedRef.current || !container.isConnected) {
         clearTimeout(initTimeout);
         initializingRef.current = false;
         return;
       }
 
-      let newCard = getPreWarmedCard();
-      if (!newCard) {
-        newCard = await payments.card({ style: cardStyle });
+      pendingCard = getPreWarmedCard();
+      if (!pendingCard) {
+        pendingCard = await payments.card({ style: cardStyle });
       }
 
-      await newCard.attach(container);
+      if (!mountedRef.current || !container.isConnected) {
+        clearTimeout(initTimeout);
+        pendingCard.destroy();
+        initializingRef.current = false;
+        return;
+      }
+
+      await pendingCard.attach(container);
       clearTimeout(initTimeout);
 
-      if (mountedRef.current) {
-        cardRef.current = newCard;
-        setCard(newCard);
+      if (mountedRef.current && container.isConnected) {
+        cardRef.current = pendingCard;
+        setCard(pendingCard);
         setIsInitialized(true);
         setError(null);
         initializationAttempts.current = 0;
         initializingRef.current = false;
       } else {
-        newCard.destroy();
+        pendingCard.destroy();
         initializingRef.current = false;
       }
     } catch (err) {
-      logger.error('useSquarePayment', 'Card initialization error', err);
+      if (initTimeout) clearTimeout(initTimeout);
+      if (pendingCard && cardRef.current !== pendingCard) {
+        try { pendingCard.destroy(); } catch {}
+      }
       initializingRef.current = false;
+      // React may remove the editor while Square is resolving (for example,
+      // when a saved-card query finishes). That is cancellation, not a
+      // customer-facing provider failure, and retrying the detached node can
+      // only reproduce Square's ElementNotFoundError.
+      if (!container.isConnected || !mountedRef.current) return;
+      logger.error('useSquarePayment', 'Card initialization error', err);
       // task #514: sanitize the SDK init error before surfacing it,
       // so a stack-trace fragment or JSON-shaped string from the
       // Square SDK can't leak into the user-visible toast.
@@ -139,25 +164,28 @@ export function useSquarePayment({ onError, locationId }: UseSquarePaymentOption
           const delay = Math.min(1000 * Math.pow(2, initializationAttempts.current), 5000);
 
           setTimeout(() => {
-            if (mountedRef.current) {
+            if (mountedRef.current && container.isConnected) {
               initializeCard(container);
             }
           }, delay);
         } else {
           initializationAttempts.current = 0;
-          onErrorRef.current?.(errorMessage);
-          if (errorMessage.includes('failed to load') || errorMessage.includes('not properly loaded')) {
-            toast({
-              title: "Square Environment Mismatch",
-              description: "The payment form couldn't initialize due to a configuration mismatch. Please contact support for assistance.",
-              variant: "destructive",
-            });
+          if (onErrorRef.current) {
+            onErrorRef.current(errorMessage);
           } else {
-            toast({
-              title: "Payment Form Notice",
-              description: "Credit card payment form unavailable. Please try again or choose a different payment method.",
-              variant: "default",
-            });
+            if (errorMessage.includes('failed to load') || errorMessage.includes('not properly loaded')) {
+              toast({
+                title: "Square Environment Mismatch",
+                description: "The payment form couldn't initialize due to a configuration mismatch. Please contact support for assistance.",
+                variant: "destructive",
+              });
+            } else {
+              toast({
+                title: "Payment Form Notice",
+                description: "Credit card payment form unavailable. Please try again or choose a different payment method.",
+                variant: "default",
+              });
+            }
           }
         }
       }
