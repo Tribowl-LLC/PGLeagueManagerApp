@@ -1,6 +1,6 @@
 import { FC, ReactNode, Suspense } from "react";
 import { useLocation, Link } from "wouter";
-import { LayoutDashboard, History, UserCircle, Loader2, ArrowLeft } from "lucide-react";
+import { LayoutDashboard, History, UserCircle, Loader2, ArrowLeft, CreditCard } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import { Organization, User, ApiResponse } from "@shared/schema";
@@ -25,6 +25,9 @@ function buildNavItems(currentLeagueId?: number): NavItem[] {
   const paymentHistoryHref = currentLeagueId
     ? `/payment-history?leagueId=${currentLeagueId}`
     : '/payment-history';
+  const makePaymentHref = currentLeagueId
+    ? `/make-payment?leagueId=${currentLeagueId}`
+    : '/make-payment';
   return [
     {
       icon: LayoutDashboard,
@@ -33,8 +36,14 @@ function buildNavItems(currentLeagueId?: number): NavItem[] {
       baseHref: "/bowler-dashboard",
     },
     {
+      icon: CreditCard,
+      label: "Make Payment",
+      href: makePaymentHref,
+      baseHref: "/make-payment",
+    },
+    {
       icon: History,
-      label: "Payments",
+      label: "Payment History",
       href: paymentHistoryHref,
       baseHref: "/payment-history",
     },
@@ -121,7 +130,7 @@ export const BowlerLayout: FC<BowlerLayoutProps> = ({ children, bowlerName, leag
       </main>
 
       <nav className="flex-none bg-white border-t border-slate-200 z-20 shadow-[0_-4px_12px_rgba(0,0,0,0.06)]">
-        <div className="flex justify-center items-center gap-14 pt-2 pb-2" style={{ paddingBottom: 'max(8px, env(safe-area-inset-bottom, 8px))' }}>
+        <div className="grid grid-cols-4 w-full items-center gap-1 px-2 pt-2 pb-2" style={{ paddingBottom: 'max(8px, env(safe-area-inset-bottom, 8px))' }}>
           {navItems.map((item) => {
             const isActive = location === item.baseHref || location.startsWith(item.baseHref + '?') || location.startsWith(item.baseHref + '/');
             return (
@@ -131,7 +140,7 @@ export const BowlerLayout: FC<BowlerLayoutProps> = ({ children, bowlerName, leag
                 aria-label={item.label}
                 aria-current={isActive ? "page" : undefined}
                 className={cn(
-                  "flex flex-col items-center justify-center gap-0.5 w-16 no-underline rounded-md focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500",
+                  "flex min-w-0 flex-col items-center justify-center gap-0.5 w-full no-underline rounded-md focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500",
                   isActive ? "text-indigo-600" : "text-slate-400 active:text-slate-600"
                 )}
               >
@@ -142,7 +151,7 @@ export const BowlerLayout: FC<BowlerLayoutProps> = ({ children, bowlerName, leag
                   <item.icon className="size-7" />
                 </div>
                 <span className={cn(
-                  "text-[10px] tracking-wide",
+                  "text-[10px] tracking-wide text-center whitespace-nowrap",
                   isActive ? "font-bold" : "font-medium"
                 )}>{item.label}</span>
               </Link>

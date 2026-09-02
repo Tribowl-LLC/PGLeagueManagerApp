@@ -21,4 +21,13 @@ describe("PaymentOverviewCard", () => {
     expect(screen.queryByText(/canonical roster obligations/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Payment History/i)).not.toBeInTheDocument();
   });
+
+  it("links the dedicated payment flow from the bottom of the card", () => {
+    render(<PaymentOverviewCard
+      weeklyFee={3_000}
+      leagueId={17}
+      financials={{ fullSeasonAmount: 90_000, totalDueToDate: 90_000, totalPaid: 90_000, amountPastDue: 0, remainingBalance: 0 }}
+    />);
+    expect(screen.getByRole("link", { name: "Make A Payment" })).toHaveAttribute("href", "/make-payment?leagueId=17");
+  });
 });

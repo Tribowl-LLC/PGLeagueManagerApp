@@ -1,5 +1,6 @@
 import { FC } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Link } from "wouter";
 import { AlertTriangle, CheckCircle2 } from "lucide-react";
 import { formatCurrency } from "@/lib/utils";
 
@@ -14,10 +15,11 @@ interface FinancialsData {
 interface PaymentOverviewCardProps {
   weeklyFee: number;
   financials: FinancialsData;
+  leagueId?: number;
 }
 
 /** Read-only canonical payment summary for the bowler dashboard. */
-export const PaymentOverviewCard: FC<PaymentOverviewCardProps> = ({ weeklyFee, financials }) => (
+export const PaymentOverviewCard: FC<PaymentOverviewCardProps> = ({ weeklyFee, financials, leagueId }) => (
   <Card>
     <CardHeader>
       <CardTitle>Payment Overview</CardTitle>
@@ -53,13 +55,21 @@ export const PaymentOverviewCard: FC<PaymentOverviewCardProps> = ({ weeklyFee, f
           <span className="text-sm text-muted-foreground">Full Season Remaining Balance</span>
           <span className="text-sm font-medium">{formatCurrency(financials.remainingBalance)}</span>
         </div>
-        {financials.remainingBalance <= 0 && financials.totalPaid > 0 && (
+      {financials.remainingBalance <= 0 && financials.totalPaid > 0 && (
           <div className="flex items-center justify-center gap-2 rounded-md bg-green-500/10 p-3">
             <CheckCircle2 className="size-5 text-green-600" />
             <span className="text-sm font-semibold text-green-600">Season Paid in Full</span>
           </div>
         )}
       </div>
+      {leagueId !== undefined && (
+        <Link
+          href={`/make-payment?leagueId=${leagueId}`}
+          className="flex w-full items-center justify-center rounded-md bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground no-underline transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          Make A Payment
+        </Link>
+      )}
     </CardContent>
   </Card>
 );

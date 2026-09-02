@@ -19,14 +19,15 @@ import {
 import { buildPaymentErrorResponse } from '../../utils/payment-error-response.js';
 import { getProviderCustomerId, ensureProviderCustomer } from '../../services/payment-utils';
 import { getProviderForLeague } from './shared.js';
+import { paymentWriteLimiter } from '../../middleware/rate-limit.js';
 
 const log = createLogger('Payments');
 
 const router = Router();
 
-router.post('/cards/:bowlerId', async (req, res) => {
+router.post('/cards/:bowlerId', paymentWriteLimiter, async (req, res) => {
   try {
-    const bowlerId = parseInt(req.params.bowlerId);
+    const bowlerId = parseInt(String(req.params.bowlerId), 10);
     if (isNaN(bowlerId)) return sendError(res, 'Invalid bowler ID', 400);
 
     if (!req.isAuthenticated()) {
@@ -51,11 +52,15 @@ router.post('/cards/:bowlerId', async (req, res) => {
       return sendError(res, 'Bowler not found', 404, 'NOT_FOUND');
     }
 
-    const rawLeagueId = req.body.leagueId;
+    const rawLeagueId = req.body?.leagueId;
     let resolvedLeagueId: number | null = null;
-    if (rawLeagueId !== undefined && rawLeagueId !== null && rawLeagueId !== '') {
-      const parsed = parseInt(rawLeagueId);
-      if (isNaN(parsed)) {
+    if (rawLeagueId !== undefined) {
+      const parsed = typeof rawLeagueId === 'number'
+        ? rawLeagueId
+        : typeof rawLeagueId === 'string'
+          ? parseOptionalIntParam(rawLeagueId)
+          : null;
+      if (parsed === null || parsed === undefined || !Number.isSafeInteger(parsed) || parsed <= 0) {
         return sendError(res, 'Invalid league ID format', 400);
       }
       resolvedLeagueId = parsed;
@@ -64,6 +69,21 @@ router.post('/cards/:bowlerId', async (req, res) => {
       if (bowlerLeagues.length > 0) {
         resolvedLeagueId = bowlerLeagues[0].leagueId;
       }
+    }
+
+    if (resolvedLeagueId === null) {
+      return sendError(res, 'An active league is required to save a card', 400, 'INVALID_REQUEST');
+    }
+
+    // A submitted league is a trust boundary.  The caller must be in the
+    // same tenant and the target bowler must be actively rostered there
+    // before any provider/customer lookup or vault mutation occurs.
+    const league = await storage.getLeague(resolvedLeagueId);
+    if (!league || league.organizationId === null || (req.user.role !== 'system_admin' && req.user.organizationId !== league.organizationId)) {
+      return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
+    }
+    if (!(await storage.isBowlerActiveInLeague(bowlerId, resolvedLeagueId))) {
+      return sendError(res, "You don't have access to this bowler in this league", 403, 'FORBIDDEN');
     }
 
     const provider = resolvedLeagueId
