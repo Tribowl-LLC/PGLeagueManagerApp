@@ -112,7 +112,7 @@ export async function revokeStandingAutopayForBowlerInTransaction(
   }
 }
 
-async function assertOpenRosterEvidenceCanBeReplaced(
+export async function assertOpenRosterEvidenceCanBeReplaced(
   tx: PaymentOperationTransaction,
   input: { organizationId: number; leagueId: number },
   responsibilityId: string,
@@ -195,7 +195,7 @@ export async function materializeRosterPaymentOccurrenceInTransaction(
   const rosterRows = await tx.select().from(teamPaymentSlots)
     .where(and(eq(teamPaymentSlots.organizationId, input.organizationId), eq(teamPaymentSlots.leagueId, input.leagueId)))
     .orderBy(asc(teamPaymentSlots.teamId), asc(teamPaymentSlots.slotIndex));
-  const activeMainRows = await tx.select({ id: bowlers.id }).from(bowlers)
+  const activeMainRows = await tx.select({ bowlerId: bowlers.id, teamId: bowlerLeagues.teamId }).from(bowlers)
     .innerJoin(bowlerLeagues, and(
       eq(bowlerLeagues.bowlerId, bowlers.id),
       eq(bowlerLeagues.leagueId, input.leagueId),
@@ -204,7 +204,7 @@ export async function materializeRosterPaymentOccurrenceInTransaction(
       eq(bowlers.organizationId, input.organizationId),
       eq(bowlers.active, true),
     ));
-  const activeMainIds = new Set(activeMainRows.map((row) => row.id));
+  const activeMainKeys = new Set(activeMainRows.map((row) => `${row.teamId}:${row.bowlerId}`));
   const policies = await tx.select().from(teamPaymentPolicies).where(and(eq(teamPaymentPolicies.organizationId, input.organizationId), eq(teamPaymentPolicies.leagueId, input.leagueId)));
   const active = await tx.select().from(occurrencePaymentResponsibilities).where(and(
     eq(occurrencePaymentResponsibilities.organizationId, input.organizationId),
@@ -224,7 +224,7 @@ export async function materializeRosterPaymentOccurrenceInTransaction(
       const policy = policies.find((row) => row.teamId === team.id)?.defaultPolicy ?? "main_pays_full";
       const kind = slot.occupant === "vacant"
         ? "vacant" as const
-        : slot.occupant === "main" && slot.mainBowlerId !== null && activeMainIds.has(slot.mainBowlerId)
+        : slot.occupant === "main" && slot.mainBowlerId !== null && activeMainKeys.has(`${team.id}:${slot.mainBowlerId}`)
           ? "main" as const
           : null;
       const mainBowlerId = kind === "main" ? slot.mainBowlerId : null;

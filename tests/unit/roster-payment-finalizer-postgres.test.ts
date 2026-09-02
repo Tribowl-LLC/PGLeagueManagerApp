@@ -1299,6 +1299,8 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
 
   it.each(["dispatch_claimed_at", "provider_object_id", "provider_unknown"] as const)("rejects roster replacement when released snapshot evidence is fenced by %s", async (evidence) => {
     const fixture = await createOccurrence();
+    const [substitute] = await db.insert(bowlers).values({ name: `Explicit Override Substitute ${evidence}`, organizationId }).returning({ id: bowlers.id });
+    await db.insert(bowlerLeagues).values({ bowlerId: substitute.id, leagueId, teamId });
     const { operation } = await createRosterOperation(fixture.obligation.id, fixture.responsibility.id, 2_000, { withCanonicalPayment: false });
     await db.update(paymentOperationRosterSnapshotItems).set({ state: "released" }).where(eq(paymentOperationRosterSnapshotItems.operationId, operation.id));
     if (evidence === "dispatch_claimed_at") {
@@ -1347,6 +1349,31 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
       eq(occurrencePaymentResponsibilities.state, "active"),
     ));
     const [obligationBefore] = await db.select({ id: paymentObligations.id, state: paymentObligations.state, responsibilityId: paymentObligations.responsibilityId }).from(paymentObligations).where(eq(paymentObligations.id, fixture.obligation.id));
+    const explicitResponsibility = {
+      occurrenceId: fixture.occurrence.id,
+      teamId,
+      slotIndex: 0,
+      positionIndex: 0,
+      kind: "substitute" as const,
+      mainBowlerId: bowlerId,
+      substituteBowlerId: substitute.id,
+      payerBowlerId: substitute.id,
+      policy: "sub_pays_full" as const,
+      amountMinor: 2_000,
+      lineageAmountMinor: null,
+      prizeFundAmountMinor: null,
+      dueAt: "2038-02-02T19:00:00.000Z",
+      pastDueAt: "2038-02-02T22:00:00.000Z",
+      assignmentNote: `provider fence ${evidence}`,
+    };
+    await expect(recordOccurrenceResponsibilities({
+      organizationId,
+      leagueId,
+      actorUserId,
+      commandKey: `explicit-override-evidence-${evidence}-${randomUUID()}`,
+      requestFingerprint: canonicalResponsibilityFingerprint([explicitResponsibility]),
+      responsibilities: [explicitResponsibility],
+    })).rejects.toMatchObject({ code: "OBLIGATION_RESERVED" });
     const request = {
       commandKey: `evidence-fence-roster-${evidence}-${randomUUID()}`,
       requestFingerprint: "",
@@ -1377,6 +1404,71 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
     expect(policyAfter).toEqual(policyBefore);
     expect(responsibilityAfter).toEqual(responsibilityBefore);
     expect(obligationAfter).toEqual(obligationBefore);
+  });
+
+  it("requires Main membership on the selected team and rejects cross-team materialization", async () => {
+    const [sourceTeam] = await db.insert(teams).values({ name: "Cross Team Source", number: 32, leagueId }).returning({ id: teams.id });
+    const [targetTeam] = await db.insert(teams).values({ name: "Cross Team Target", number: 33, leagueId }).returning({ id: teams.id });
+    const [crossTeamMain] = await db.insert(bowlers).values({ name: "Cross Team Main", organizationId }).returning({ id: bowlers.id });
+    await db.insert(bowlerLeagues).values({ bowlerId: crossTeamMain.id, leagueId, teamId: sourceTeam.id });
+    await db.insert(teamPaymentSlots).values([
+      { organizationId, leagueId, teamId: targetTeam.id, slotIndex: 0, lineupSize: 3, occupant: "vacant", mainBowlerId: null, recordedByUserId: actorUserId },
+      { organizationId, leagueId, teamId: targetTeam.id, slotIndex: 1, lineupSize: 3, occupant: "vacant", mainBowlerId: null, recordedByUserId: actorUserId },
+      { organizationId, leagueId, teamId: targetTeam.id, slotIndex: 2, lineupSize: 3, occupant: "vacant", mainBowlerId: null, recordedByUserId: actorUserId },
+    ]);
+    const request = {
+      commandKey: `cross-team-roster-${randomUUID()}`,
+      requestFingerprint: "",
+      lineupSize: 3 as const,
+      policy: "main_pays_full" as const,
+      slots: [
+        { slotIndex: 0, occupant: "main" as const, mainBowlerId: crossTeamMain.id },
+        { slotIndex: 1, occupant: "vacant" as const, mainBowlerId: null },
+        { slotIndex: 2, occupant: "vacant" as const, mainBowlerId: null },
+      ],
+    };
+    request.requestFingerprint = canonicalRosterFingerprint(request);
+    await expect(saveTeamRoster({ organizationId, leagueId, teamId: targetTeam.id, actorUserId, request })).rejects.toMatchObject({ code: "BOWLER_NOT_IN_LEAGUE" });
+    const [unchangedSlot] = await db.select({ occupant: teamPaymentSlots.occupant, mainBowlerId: teamPaymentSlots.mainBowlerId }).from(teamPaymentSlots).where(and(
+      eq(teamPaymentSlots.organizationId, organizationId),
+      eq(teamPaymentSlots.leagueId, leagueId),
+      eq(teamPaymentSlots.teamId, targetTeam.id),
+      eq(teamPaymentSlots.slotIndex, 0),
+    ));
+    expect(unchangedSlot).toEqual({ occupant: "vacant", mainBowlerId: null });
+
+    // Simulate a legacy/corrupt cross-team slot directly to exercise the
+    // materializer's defense-in-depth team+bowler eligibility key.
+    await db.update(teamPaymentSlots).set({ occupant: "main", mainBowlerId: crossTeamMain.id }).where(and(
+      eq(teamPaymentSlots.organizationId, organizationId),
+      eq(teamPaymentSlots.leagueId, leagueId),
+      eq(teamPaymentSlots.teamId, targetTeam.id),
+      eq(teamPaymentSlots.slotIndex, 0),
+    ));
+    const fixture = await createOccurrence();
+    await db.transaction(async (tx) => {
+      await materializeRosterPaymentOccurrenceInTransaction(tx, { organizationId, leagueId, occurrenceId: fixture.occurrence.id, actorUserId, teamId: targetTeam.id });
+    });
+    const targetMainRows = await db.select({ id: occurrencePaymentResponsibilities.id }).from(occurrencePaymentResponsibilities).where(and(
+      eq(occurrencePaymentResponsibilities.organizationId, organizationId),
+      eq(occurrencePaymentResponsibilities.leagueId, leagueId),
+      eq(occurrencePaymentResponsibilities.occurrenceId, fixture.occurrence.id),
+      eq(occurrencePaymentResponsibilities.teamId, targetTeam.id),
+      eq(occurrencePaymentResponsibilities.slotIndex, 0),
+      eq(occurrencePaymentResponsibilities.responsibilityKind, "main"),
+      eq(occurrencePaymentResponsibilities.state, "active"),
+    ));
+    expect(targetMainRows).toHaveLength(0);
+    const targetObligations = await db.select({ id: paymentObligations.id }).from(paymentObligations).innerJoin(occurrencePaymentResponsibilities, eq(paymentObligations.responsibilityId, occurrencePaymentResponsibilities.id)).where(and(
+      eq(paymentObligations.organizationId, organizationId),
+      eq(paymentObligations.leagueId, leagueId),
+      eq(occurrencePaymentResponsibilities.organizationId, organizationId),
+      eq(occurrencePaymentResponsibilities.leagueId, leagueId),
+      eq(occurrencePaymentResponsibilities.occurrenceId, fixture.occurrence.id),
+      eq(occurrencePaymentResponsibilities.teamId, targetTeam.id),
+      eq(occurrencePaymentResponsibilities.slotIndex, 0),
+    ));
+    expect(targetObligations).toHaveLength(0);
   });
 
   it("rejects snapshot totals that disagree with the operation or obligation at commit", async () => {

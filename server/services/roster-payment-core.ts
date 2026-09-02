@@ -42,7 +42,7 @@ import { paymentOperationRetryExecutor } from "./payment-operation-retry-executo
 import { getPaymentProvider } from "./payment-provider-factory.js";
 import { getProviderCustomerId } from "./payment-utils.js";
 import { decrypt } from "../utils/crypto.js";
-import { deriveRosterPaymentTimingInTransaction, materializeRosterPaymentOccurrenceInTransaction } from "./roster-payment-materializer.js";
+import { assertOpenRosterEvidenceCanBeReplaced, deriveRosterPaymentTimingInTransaction, materializeRosterPaymentOccurrenceInTransaction } from "./roster-payment-materializer.js";
 import { createLogger } from "../logger.js";
 import { allocateAutomaticFifoPayment as allocateFifo, type FifoPaymentCandidate as BaseFifoPaymentCandidate, AutomaticFifoAllocationError } from "./automatic-fifo-allocation.js";
 
@@ -283,7 +283,7 @@ export async function saveTeamRoster(input: {
     if (new Set(selectedBowlerIds).size !== selectedBowlerIds.length) throw new RosterPaymentError("DUPLICATE_MAIN", "A bowler may occupy only one Main slot", 422);
     if (selectedBowlerIds.length > 0) {
       const members = await tx.select({ id: bowlers.id }).from(bowlers)
-        .innerJoin(bowlerLeagues, and(eq(bowlerLeagues.bowlerId, bowlers.id), eq(bowlerLeagues.leagueId, input.leagueId), eq(bowlerLeagues.active, true)))
+        .innerJoin(bowlerLeagues, and(eq(bowlerLeagues.bowlerId, bowlers.id), eq(bowlerLeagues.leagueId, input.leagueId), eq(bowlerLeagues.teamId, input.teamId), eq(bowlerLeagues.active, true)))
         .where(and(eq(bowlers.organizationId, input.organizationId), eq(bowlers.active, true), inArray(bowlers.id, selectedBowlerIds)));
       if (members.length !== selectedBowlerIds.length) throw new RosterPaymentError("BOWLER_NOT_IN_LEAGUE", "Main must be an active member of this league", 422);
     }
@@ -556,34 +556,19 @@ export async function recordOccurrenceResponsibilities(input: {
       let version = 1;
       let responsibilityKey: string | undefined;
       if (activeResponsibility) {
-        const currentObligations = await tx.select({ state: paymentObligations.state }).from(paymentObligations).where(and(
-          eq(paymentObligations.organizationId, input.organizationId),
-          eq(paymentObligations.leagueId, input.leagueId),
-          eq(paymentObligations.responsibilityId, activeResponsibility.id),
-        )).for("update");
-        // A standing operation reserves an otherwise-open obligation before
-        // provider dispatch. Treat that reservation as financial evidence:
-        // roster edits cannot supersede it in the same lock window. The
-        // league advisory lock is acquired by the caller, and the obligation
-        // row was just locked above, so this check has deterministic lock
-        // ordering with cutoff/manual paths.
-        const reservedEvidence = await tx.select({ id: paymentOperationRosterSnapshotItems.id }).from(paymentOperationRosterSnapshotItems)
-          .innerJoin(paymentObligations, and(
-            eq(paymentOperationRosterSnapshotItems.obligationId, paymentObligations.id),
-            eq(paymentOperationRosterSnapshotItems.organizationId, paymentObligations.organizationId),
-            eq(paymentOperationRosterSnapshotItems.leagueId, paymentObligations.leagueId),
-          ))
-          .where(and(
-            eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId),
-            eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId),
-            eq(paymentOperationRosterSnapshotItems.state, "reserved"),
-            eq(paymentObligations.responsibilityId, activeResponsibility.id),
-          )).limit(1).for("update");
-        if (reservedEvidence.length > 0) {
-          throw new RosterPaymentError("OBLIGATION_RESERVED", "A standing payment operation has reserved this roster responsibility", 409);
-        }
-        if (currentObligations.some((obligation) => obligation.state !== "open")) {
-          throw new RosterPaymentError("PAID_EVIDENCE_LOCKED", "A responsibility with settled or partially settled evidence cannot be replaced", 409);
+        try {
+          await assertOpenRosterEvidenceCanBeReplaced(tx, {
+            organizationId: input.organizationId,
+            leagueId: input.leagueId,
+          }, activeResponsibility.id);
+        } catch (error) {
+          if (error instanceof Error && error.message === "RESERVED_EVIDENCE_LOCKED") {
+            throw new RosterPaymentError("OBLIGATION_RESERVED", "A standing payment operation has reserved this roster responsibility", 409);
+          }
+          if (error instanceof Error && error.message === "PAID_EVIDENCE_LOCKED") {
+            throw new RosterPaymentError("PAID_EVIDENCE_LOCKED", "A responsibility with settled or partially settled evidence cannot be replaced", 409);
+          }
+          throw error;
         }
         await tx.update(occurrencePaymentResponsibilities).set({ state: "voided" }).where(eq(occurrencePaymentResponsibilities.id, activeResponsibility.id));
         await tx.update(paymentObligations).set({ state: "voided", voidedAt: new Date().toISOString() }).where(and(
