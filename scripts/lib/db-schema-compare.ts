@@ -10,6 +10,9 @@ export type ComparisonCategory =
   | 'environment'
   | 'schemas'
   | 'tables'
+  | 'nonTableRelations'
+  | 'rewriteRules'
+  | 'unsupportedPublicObjects'
   | 'tablePrivileges'
   | 'policies'
   | 'columns'
@@ -130,6 +133,23 @@ const CATEGORY_SPECS: CategorySpec[] = [
   },
   { name: 'schemas', values: (inventory) => asInventoryObjects(inventory.schemas), key: objectKey('name') },
   { name: 'tables', values: (inventory) => asInventoryObjects(inventory.tables), key: objectKey('schema', 'name') },
+  {
+    name: 'nonTableRelations',
+    values: (inventory) => asInventoryObjects(inventory.nonTableRelations),
+    key: objectKey('schema', 'name'),
+    normalize: normalizeDefinitionFields,
+  },
+  {
+    name: 'rewriteRules',
+    values: (inventory) => asInventoryObjects(inventory.rewriteRules),
+    key: objectKey('schema', 'relation', 'name'),
+    normalize: normalizeDefinitionFields,
+  },
+  {
+    name: 'unsupportedPublicObjects',
+    values: (inventory) => asInventoryObjects(inventory.unsupportedPublicObjects),
+    key: objectKey('kind', 'identity'),
+  },
   {
     name: 'tablePrivileges',
     values: (inventory) => asInventoryObjects(inventory.tablePrivileges),
@@ -267,6 +287,9 @@ export function assertDatabaseInventory(value: unknown, source: string): asserts
   for (const field of [
     'schemas',
     'tables',
+    'nonTableRelations',
+    'rewriteRules',
+    'unsupportedPublicObjects',
     'tablePrivileges',
     'policies',
     'columns',
@@ -296,6 +319,9 @@ export function compareDatabaseInventories(
     environment: emptyDifference(),
     schemas: emptyDifference(),
     tables: emptyDifference(),
+    nonTableRelations: emptyDifference(),
+    rewriteRules: emptyDifference(),
+    unsupportedPublicObjects: emptyDifference(),
     tablePrivileges: emptyDifference(),
     policies: emptyDifference(),
     columns: emptyDifference(),

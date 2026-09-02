@@ -3,6 +3,7 @@ import {
   cpSync,
   mkdirSync,
   readFileSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -36,6 +37,11 @@ import {
 } from './lib/db-migration-assets';
 import { runCheckedMigrations } from './lib/db-migration-runner';
 import {
+  assertApprovedSchemaStateFingerprint,
+  createSchemaStateFingerprint,
+  loadApprovedSchemaStateFingerprint,
+} from './lib/db-schema-state-fingerprint';
+import {
   DISPOSABLE_DATABASE_LABELS,
   DISPOSABLE_DATABASE_OWNER,
   disposableDatabaseMarker,
@@ -55,9 +61,17 @@ import {
 } from './lib/db-inventory-container';
 import {
   collectDatabaseInventory,
+  deriveDatabaseTargetFromConnectionString,
   fingerprintDatabaseHost,
   redactConnectionDetails,
 } from './lib/db-schema-inventory';
+
+function guardedMigrationOptions(connectionString: string, expectedPending: readonly string[]) {
+  return {
+    expectedPending,
+    expectedTarget: deriveDatabaseTargetFromConnectionString(connectionString),
+  };
+}
 
 const POSTGRES_USER = 'postgres';
 const POSTGRES_PASSWORD = 'leaguevault-db-check-local-only';
@@ -365,6 +379,56 @@ function buildProofMigrationDirectory(artifactDirectory: string): { directory: s
   writeMigrationChecksumManifest(directory);
   loadActiveMigrations(directory);
   return { directory, metadata };
+}
+
+function buildPreviousMigrationDirectory(artifactDirectory: string): string {
+  const directory = join(artifactDirectory, 'previous-state-migrations');
+  cpSync(ACTIVE_MIGRATIONS_DIRECTORY, directory, { recursive: true });
+  const migrations = loadActiveMigrations(directory);
+  if (migrations.length < 2) throw new Error('Schema-state verification requires at least two migrations.');
+  const removed = migrations.at(-1);
+  if (!removed) throw new Error('Active migration history is empty.');
+  unlinkSync(join(directory, `${removed.tag}.sql`));
+
+  const journalPath = join(directory, 'meta', '_journal.json');
+  const journal = JSON.parse(readFileSync(journalPath, 'utf8')) as { entries: unknown[] };
+  journal.entries.pop();
+  writeFileSync(journalPath, `${JSON.stringify(journal, null, 2)}\n`, 'utf8');
+  writeMigrationChecksumManifest(directory);
+  return directory;
+}
+
+function buildAtomicRollbackProofDirectory(
+  artifactDirectory: string,
+  proof: { directory: string; metadata: ProofMetadata },
+): string {
+  const directory = join(artifactDirectory, 'atomic-rollback-proof-migrations');
+  cpSync(proof.directory, directory, { recursive: true });
+  writeFileSync(
+    join(directory, `${proof.metadata.tag}.sql`),
+    [
+      'CREATE TABLE public.migration_atomic_rollback_probe (id integer PRIMARY KEY);',
+      '--> statement-breakpoint',
+      'SELECT * FROM public.migration_atomic_rollback_missing_relation;',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  writeMigrationChecksumManifest(directory);
+  return directory;
+}
+
+async function assertApprovedSchemaState(
+  connectionString: string,
+  migrationsDirectory = ACTIVE_MIGRATIONS_DIRECTORY,
+): Promise<void> {
+  const migration = loadActiveMigrations(migrationsDirectory).at(-1);
+  if (!migration) throw new Error('Schema-state verification requires a migration.');
+  const actual = createSchemaStateFingerprint(
+    await collectDatabaseInventory(connectionString),
+    migration,
+  );
+  assertApprovedSchemaStateFingerprint(actual, loadApprovedSchemaStateFingerprint(migration));
 }
 
 async function assertOrganizationHostnameNamespaceGuard(connectionString: string): Promise<void> {
@@ -853,6 +917,10 @@ async function validateVersion(
     const refusalDatabases = adoptionRefusalCases().map((_refusal, index) => `refusal_${index + 1}`);
     const approvedDatabases = [
       'fresh_active',
+      'schema_state_previous',
+      'atomic_migration_rollback',
+      'post_migration_fingerprint_rollback',
+      'foreign_table_column_fingerprint',
       'fresh_proof',
       'adoption_template',
       'legacy_inert_rls',
@@ -876,6 +944,13 @@ async function validateVersion(
     const adminUrl = databaseUrl(port, 'postgres');
     mkdirSync(join(artifactDirectory, `postgres-${version}`), { recursive: true });
     const proof = buildProofMigrationDirectory(join(artifactDirectory, `postgres-${version}`));
+    const atomicRollbackProof = buildAtomicRollbackProofDirectory(
+      join(artifactDirectory, `postgres-${version}`),
+      proof,
+    );
+    const previousMigrations = buildPreviousMigrationDirectory(
+      join(artifactDirectory, `postgres-${version}`),
+    );
     const activeMigrationTags = loadActiveMigrations().map((migration) => migration.tag);
 
     const freshActive = 'fresh_active';
@@ -888,6 +963,272 @@ async function validateVersion(
     await assertOrganizationHostnameNamespaceGuard(freshActiveUrl);
     if (!(await runCheckedMigrations(freshActiveUrl)).noOp) {
       throw new Error('Rerunning db:migrate on a fresh replay was not a no-op.');
+    }
+    await assertApprovedSchemaState(freshActiveUrl);
+
+    const previousState = 'schema_state_previous';
+    await createDatabase(adminUrl, previousState, container);
+    const previousStateUrl = databaseUrl(port, previousState);
+    await runCheckedMigrations(previousStateUrl, previousMigrations);
+    await assertApprovedSchemaState(previousStateUrl, previousMigrations);
+    await executeSql(previousStateUrl, ['ALTER TABLE alerter_state ADD COLUMN schema_state_drift_probe integer']);
+    let schemaDriftRefusal = '';
+    try {
+      await runCheckedMigrations(previousStateUrl, ACTIVE_MIGRATIONS_DIRECTORY,
+        guardedMigrationOptions(previousStateUrl, [activeMigrationTags.at(-1) ?? '']));
+    } catch (error) {
+      schemaDriftRefusal = error instanceof Error ? error.message : String(error);
+    }
+    if (
+      !schemaDriftRefusal.includes('schema-state fingerprint mismatch') ||
+      await journalEntryCount(previousStateUrl) !== activeMigrationTags.length - 1
+    ) {
+      throw new Error(
+        `Expected-pending migration mode did not refuse pre-migration schema drift without mutation: ${schemaDriftRefusal}`,
+      );
+    }
+    await executeSql(previousStateUrl, ['ALTER TABLE alerter_state DROP COLUMN schema_state_drift_probe']);
+    await executeSql(previousStateUrl, ['CREATE VIEW unexpected_schema_state_view AS SELECT 1 AS value']);
+    let relationDriftRefusal = '';
+    try {
+      await runCheckedMigrations(previousStateUrl, ACTIVE_MIGRATIONS_DIRECTORY,
+        guardedMigrationOptions(previousStateUrl, [activeMigrationTags.at(-1) ?? '']));
+    } catch (error) {
+      relationDriftRefusal = error instanceof Error ? error.message : String(error);
+    }
+    if (
+      !relationDriftRefusal.includes('schema-state fingerprint mismatch') ||
+      await journalEntryCount(previousStateUrl) !== activeMigrationTags.length - 1
+    ) {
+      throw new Error(
+        `Expected-pending migration mode did not refuse non-table relation drift without mutation: ${relationDriftRefusal}`,
+      );
+    }
+    await executeSql(previousStateUrl, ['DROP VIEW unexpected_schema_state_view']);
+    const guardedRun = await runCheckedMigrations(previousStateUrl, ACTIVE_MIGRATIONS_DIRECTORY,
+      guardedMigrationOptions(previousStateUrl, [activeMigrationTags.at(-1) ?? '']));
+    if (JSON.stringify(guardedRun.applied) !== JSON.stringify([activeMigrationTags.at(-1)])) {
+      throw new Error('Expected-pending migration mode did not apply only the final migration.');
+    }
+    if (!(await runCheckedMigrations(previousStateUrl, ACTIVE_MIGRATIONS_DIRECTORY,
+      guardedMigrationOptions(previousStateUrl, []))).noOp) {
+      throw new Error('Expected-pending migration mode did not verify the final schema as a no-op.');
+    }
+
+    const atomicRollbackDatabase = 'atomic_migration_rollback';
+    await createDatabase(adminUrl, atomicRollbackDatabase, container);
+    const atomicRollbackUrl = databaseUrl(port, atomicRollbackDatabase);
+    await runCheckedMigrations(atomicRollbackUrl);
+    let atomicRollbackRefusal = '';
+    try {
+      await runCheckedMigrations(atomicRollbackUrl, atomicRollbackProof,
+        guardedMigrationOptions(atomicRollbackUrl, [proof.metadata.tag]));
+    } catch (error) {
+      atomicRollbackRefusal = error instanceof Error ? error.message : String(error);
+    }
+    const atomicRollbackClient = new pg.Client({ connectionString: atomicRollbackUrl });
+    try {
+      await atomicRollbackClient.connect();
+      const marker = await atomicRollbackClient.query<{ relation: string | null }>(
+        "SELECT to_regclass('public.migration_atomic_rollback_probe')::text AS relation",
+      );
+      if (
+        !atomicRollbackRefusal.includes('migration_atomic_rollback_missing_relation') ||
+        marker.rows[0]?.relation !== null ||
+        await journalEntryCount(atomicRollbackUrl) !== activeMigrationTags.length
+      ) {
+        throw new Error(`Atomic expected-pending migration did not roll back DDL and journal state: ${atomicRollbackRefusal}`);
+      }
+    } finally {
+      await atomicRollbackClient.end().catch(() => undefined);
+    }
+    if (!(await runCheckedMigrations(atomicRollbackUrl, ACTIVE_MIGRATIONS_DIRECTORY,
+      guardedMigrationOptions(atomicRollbackUrl, []))).noOp) {
+      throw new Error('Atomic rollback did not preserve a retryable guarded migration state.');
+    }
+
+    const postFingerprintDatabase = 'post_migration_fingerprint_rollback';
+    await createDatabase(adminUrl, postFingerprintDatabase, container);
+    const postFingerprintUrl = databaseUrl(port, postFingerprintDatabase);
+    await runCheckedMigrations(postFingerprintUrl);
+    let postFingerprintRefusal = '';
+    try {
+      await runCheckedMigrations(postFingerprintUrl, proof.directory,
+        guardedMigrationOptions(postFingerprintUrl, [proof.metadata.tag]));
+    } catch (error) {
+      postFingerprintRefusal = error instanceof Error ? error.message : String(error);
+    }
+    const postFingerprintClient = new pg.Client({ connectionString: postFingerprintUrl });
+    try {
+      await postFingerprintClient.connect();
+      const marker = await postFingerprintClient.query<{ relation: string | null }>(
+        "SELECT to_regclass('migration_ordering_proof.applied_after_baseline')::text AS relation",
+      );
+      if (
+        !postFingerprintRefusal.includes('Could not load approved schema-state fingerprint') ||
+        marker.rows[0]?.relation !== null ||
+        await journalEntryCount(postFingerprintUrl) !== activeMigrationTags.length
+      ) {
+        throw new Error(
+          `Missing post-migration fingerprint did not roll back DDL and journal state: ${postFingerprintRefusal}`,
+        );
+      }
+    } finally {
+      await postFingerprintClient.end().catch(() => undefined);
+    }
+    if (!(await runCheckedMigrations(postFingerprintUrl, ACTIVE_MIGRATIONS_DIRECTORY,
+      guardedMigrationOptions(postFingerprintUrl, []))).noOp) {
+      throw new Error('Post-fingerprint rollback did not preserve a retryable guarded migration state.');
+    }
+
+    const foreignColumnDatabase = 'foreign_table_column_fingerprint';
+    await createDatabase(adminUrl, foreignColumnDatabase, container);
+    const foreignColumnUrl = databaseUrl(port, foreignColumnDatabase);
+    await executeSql(foreignColumnUrl, [
+      'CREATE EXTENSION postgres_fdw',
+      'CREATE SERVER db_check_foreign_server FOREIGN DATA WRAPPER postgres_fdw',
+      'CREATE FOREIGN TABLE public.db_check_foreign_table (id integer) SERVER db_check_foreign_server',
+    ]);
+    const finalMigration = loadActiveMigrations().at(-1);
+    if (!finalMigration) throw new Error('Foreign-table fingerprint proof requires an active migration.');
+    const beforeForeignColumnChange = createSchemaStateFingerprint(
+      await collectDatabaseInventory(foreignColumnUrl),
+      finalMigration,
+    );
+    await executeSql(foreignColumnUrl, [
+      'ALTER FOREIGN TABLE public.db_check_foreign_table ADD COLUMN changed_value text',
+    ]);
+    const afterForeignColumnChange = createSchemaStateFingerprint(
+      await collectDatabaseInventory(foreignColumnUrl),
+      finalMigration,
+    );
+    if (beforeForeignColumnChange.digest === afterForeignColumnChange.digest) {
+      throw new Error('Foreign-table column drift did not change the schema-state fingerprint.');
+    }
+    await executeSql(foreignColumnUrl, [
+      'ALTER FOREIGN TABLE public.db_check_foreign_table ADD CONSTRAINT db_check_foreign_id_positive CHECK (id > 0)',
+    ]);
+    const afterForeignConstraint = createSchemaStateFingerprint(
+      await collectDatabaseInventory(foreignColumnUrl),
+      finalMigration,
+    );
+    if (afterForeignColumnChange.digest === afterForeignConstraint.digest) {
+      throw new Error('Foreign-table constraint drift did not change the schema-state fingerprint.');
+    }
+    await executeSql(foreignColumnUrl, [
+      'CREATE VIEW public.db_check_behavior_view WITH (security_barrier=false) AS SELECT id FROM public.db_check_foreign_table',
+    ]);
+    const beforeViewOptionChange = createSchemaStateFingerprint(
+      await collectDatabaseInventory(foreignColumnUrl),
+      finalMigration,
+    );
+    await executeSql(foreignColumnUrl, [
+      'ALTER VIEW public.db_check_behavior_view SET (security_barrier=true)',
+    ]);
+    const afterViewOptionChange = createSchemaStateFingerprint(
+      await collectDatabaseInventory(foreignColumnUrl),
+      finalMigration,
+    );
+    if (beforeViewOptionChange.digest === afterViewOptionChange.digest) {
+      throw new Error('View option drift did not change the schema-state fingerprint.');
+    }
+    await executeSql(foreignColumnUrl, [
+      'CREATE MATERIALIZED VIEW public.db_check_materialized_view AS SELECT 1::integer AS id WITH NO DATA',
+    ]);
+    const beforeMaterializedIndex = createSchemaStateFingerprint(
+      await collectDatabaseInventory(foreignColumnUrl),
+      finalMigration,
+    );
+    await executeSql(foreignColumnUrl, [
+      'CREATE UNIQUE INDEX db_check_materialized_view_id_idx ON public.db_check_materialized_view (id)',
+    ]);
+    const afterMaterializedIndex = createSchemaStateFingerprint(
+      await collectDatabaseInventory(foreignColumnUrl),
+      finalMigration,
+    );
+    if (beforeMaterializedIndex.digest === afterMaterializedIndex.digest) {
+      throw new Error('Materialized-view index drift did not change the schema-state fingerprint.');
+    }
+    await executeSql(foreignColumnUrl, [
+      `CREATE FUNCTION public.db_check_view_trigger() RETURNS trigger LANGUAGE plpgsql AS
+       $$ BEGIN RETURN NEW; END $$`,
+    ]);
+    const beforeViewTrigger = createSchemaStateFingerprint(
+      await collectDatabaseInventory(foreignColumnUrl),
+      finalMigration,
+    );
+    await executeSql(foreignColumnUrl, [
+      `CREATE TRIGGER db_check_behavior_view_insert
+       INSTEAD OF INSERT ON public.db_check_behavior_view
+       FOR EACH ROW EXECUTE FUNCTION public.db_check_view_trigger()`,
+    ]);
+    const afterViewTrigger = createSchemaStateFingerprint(
+      await collectDatabaseInventory(foreignColumnUrl),
+      finalMigration,
+    );
+    if (beforeViewTrigger.digest === afterViewTrigger.digest) {
+      throw new Error('View trigger drift did not change the schema-state fingerprint.');
+    }
+    await executeSql(foreignColumnUrl, [
+      'CREATE TABLE public.db_check_relation_behavior (id integer, value integer)',
+    ]);
+    const beforeTableBehavior = createSchemaStateFingerprint(
+      await collectDatabaseInventory(foreignColumnUrl),
+      finalMigration,
+    );
+    await executeSql(foreignColumnUrl, [
+      'ALTER TABLE public.db_check_relation_behavior REPLICA IDENTITY FULL',
+      'ALTER TABLE public.db_check_relation_behavior SET (fillfactor = 70)',
+    ]);
+    const afterTableBehavior = createSchemaStateFingerprint(
+      await collectDatabaseInventory(foreignColumnUrl),
+      finalMigration,
+    );
+    if (beforeTableBehavior.digest === afterTableBehavior.digest) {
+      throw new Error('Ordinary-table behavior metadata drift did not change the schema-state fingerprint.');
+    }
+    await executeSql(foreignColumnUrl, [
+      `CREATE TABLE public.db_check_partitioned (id integer) PARTITION BY RANGE (id)`,
+      `CREATE TABLE public.db_check_partitioned_low PARTITION OF public.db_check_partitioned
+       FOR VALUES FROM (0) TO (10)`,
+    ]);
+    const partitionInventory = await collectDatabaseInventory(foreignColumnUrl);
+    const partitionedParent = partitionInventory.tables.find((table) =>
+      table.schema === 'public' && table.name === 'db_check_partitioned'
+    );
+    const partitionChild = partitionInventory.tables.find((table) =>
+      table.schema === 'public' && table.name === 'db_check_partitioned_low'
+    );
+    if (partitionedParent?.kind !== 'partitioned table' ||
+      partitionedParent.partitionKey !== 'RANGE (id)' ||
+      !partitionChild?.partition ||
+      partitionChild.partitionBound !== 'FOR VALUES FROM (0) TO (10)' ||
+      JSON.stringify(partitionChild.parents) !== JSON.stringify(['public.db_check_partitioned'])) {
+      throw new Error('Partition key, bound, or parent metadata was not inventoried exactly.');
+    }
+    await executeSql(foreignColumnUrl, [
+      `CREATE RULE db_check_relation_behavior_insert AS
+       ON INSERT TO public.db_check_relation_behavior DO INSTEAD NOTHING`,
+    ]);
+    const afterRewriteRule = createSchemaStateFingerprint(
+      await collectDatabaseInventory(foreignColumnUrl),
+      finalMigration,
+    );
+    if (afterTableBehavior.digest === afterRewriteRule.digest) {
+      throw new Error('User-defined rewrite-rule drift did not change the schema-state fingerprint.');
+    }
+    await executeSql(foreignColumnUrl, [
+      'CREATE STATISTICS db_check_unsupported_statistics ON id, value FROM public.db_check_relation_behavior',
+    ]);
+    let unsupportedObjectRefusal = '';
+    try {
+      createSchemaStateFingerprint(await collectDatabaseInventory(foreignColumnUrl), finalMigration);
+    } catch (error) {
+      unsupportedObjectRefusal = error instanceof Error ? error.message : String(error);
+    }
+    if (!unsupportedObjectRefusal.includes('unsupported public catalog objects') ||
+      !unsupportedObjectRefusal.includes('extended-statistics')) {
+      throw new Error(`Unsupported public catalog object did not fail closed: ${unsupportedObjectRefusal}`);
     }
 
     const freshProof = 'fresh_proof';

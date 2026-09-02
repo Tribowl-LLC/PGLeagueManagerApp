@@ -4,19 +4,60 @@ import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import {
   ACTIVE_MIGRATIONS_DIRECTORY,
   loadActiveMigrations,
+  type ActiveMigration,
 } from './db-migration-assets';
 import {
   assertJournalPrefix,
   inspectApprovedJournal,
+  restoreApprovedJournalSequenceState,
+  type JournalSequenceState,
 } from './db-migration-journal';
-import { redactConnectionDetails } from './db-schema-inventory';
+import {
+  assertExpectedConnectionUrlTarget,
+  redactConnectionDetails,
+  type ExpectedDatabaseTarget,
+} from './db-schema-inventory';
+import { verifyApprovedSchemaStateOnClient } from './db-schema-state-fingerprint';
+import { DATABASE_SCHEMA_WRITER_LOCK_KEY } from '../../shared/database-advisory-locks';
 
-const MIGRATION_LOCK_KEY = 843_103_001;
+export interface CheckedMigrationOptions {
+  expectedPending?: readonly string[];
+  expectedTarget?: ExpectedDatabaseTarget;
+}
 
 export interface CheckedMigrationResult {
   pending: string[];
   applied: string[];
   noOp: boolean;
+}
+
+export function parseExpectedPendingMigrations(value: string | undefined): string[] | undefined {
+  if (value === undefined) return undefined;
+  const normalized = value.trim();
+  if (normalized === 'none') return [];
+  if (normalized.length === 0) {
+    throw new Error('DB_MIGRATION_EXPECTED_PENDING must be "none" or a comma-separated migration tag list.');
+  }
+  const tags = normalized.split(',').map((tag) => tag.trim());
+  if (tags.some((tag) => !/^\d{4}_[a-z0-9_]+$/.test(tag))) {
+    throw new Error('DB_MIGRATION_EXPECTED_PENDING contains an invalid migration tag.');
+  }
+  if (new Set(tags).size !== tags.length) {
+    throw new Error('DB_MIGRATION_EXPECTED_PENDING must not contain duplicate migration tags.');
+  }
+  return tags;
+}
+
+export function assertExpectedPendingMigrations(
+  pending: readonly string[],
+  expected: readonly string[] | undefined,
+): void {
+  if (expected === undefined) return;
+  if (pending.length === expected.length && pending.every((tag, index) => tag === expected[index])) return;
+  const display = (tags: readonly string[]) => tags.length === 0 ? 'none' : tags.join(',');
+  throw new Error(
+    `Refusing migration because pending migrations (${display(pending)}) do not exactly match expected (${display(expected)}).`,
+  );
 }
 
 async function inspectJournalUnderLock(client: pg.Client) {
@@ -25,7 +66,7 @@ async function inspectJournalUnderLock(client: pg.Client) {
     await client.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ');
     transaction = true;
     await client.query("SET LOCAL statement_timeout = '30s'");
-    await client.query('SELECT pg_catalog.pg_advisory_xact_lock($1)', [MIGRATION_LOCK_KEY]);
+    await client.query('SELECT pg_catalog.pg_advisory_xact_lock($1)', [DATABASE_SCHEMA_WRITER_LOCK_KEY]);
     const inspection = await inspectApprovedJournal(client, { lock: true });
     await client.query('COMMIT');
     transaction = false;
@@ -73,9 +114,129 @@ async function hasApplicationOwnedPublicObjects(client: pg.Client): Promise<bool
   return result.rows[0]?.found === true;
 }
 
+function quoteIdentifier(identifier: string): string {
+  return `"${identifier.replaceAll('"', '""')}"`;
+}
+
+async function lockPublicRelationsForMigration(client: pg.Client): Promise<void> {
+  const relations = await client.query<{ schema_name: string; relation_name: string }>(`
+    SELECT namespace.nspname AS schema_name, relation.relname AS relation_name
+    FROM pg_catalog.pg_class relation
+    JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
+    WHERE namespace.nspname = 'public'
+      AND relation.relkind IN ('r', 'p', 'v', 'm', 'f')
+    ORDER BY namespace.nspname, relation.relname
+  `);
+  for (const relation of relations.rows) {
+    await client.query(
+      `LOCK TABLE ${quoteIdentifier(relation.schema_name)}.${quoteIdentifier(relation.relation_name)} ` +
+      'IN ACCESS SHARE MODE',
+    );
+  }
+}
+
+async function runExpectedMigrationsAtomically(
+  client: pg.Client,
+  connectionString: string,
+  migrations: ActiveMigration[],
+  expectedPending: readonly string[],
+  expectedTarget: ExpectedDatabaseTarget,
+): Promise<CheckedMigrationResult> {
+  let transaction = false;
+  let preMigrationSequenceState: JournalSequenceState | null = null;
+  let journalInsertAttempted = false;
+  try {
+    await client.query('BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE');
+    transaction = true;
+    await client.query("SET LOCAL statement_timeout = '30s'");
+    await client.query("SET LOCAL lock_timeout = '5s'");
+    await lockPublicRelationsForMigration(client);
+    const inspection = await inspectApprovedJournal(client, { lock: true });
+    preMigrationSequenceState = inspection.sequenceState;
+    const entries = inspection.entries;
+    assertJournalPrefix(entries, migrations);
+    if (entries.length === 0 && await hasApplicationOwnedPublicObjects(client)) {
+      throw new Error(
+        'Refusing to execute the baseline on a database that already contains application-owned public objects; use the guarded baseline-adoption workflow.',
+      );
+    }
+    const pendingMigrations = migrations.slice(entries.length);
+    const pending = pendingMigrations.map((migration) => migration.tag);
+    assertExpectedPendingMigrations(pending, expectedPending);
+    const currentMigration = migrations[entries.length - 1];
+    if (!currentMigration) {
+      throw new Error('Expected-pending migration mode requires a registered baseline before schema-state verification.');
+    }
+    const fingerprint = await verifyApprovedSchemaStateOnClient(
+      client,
+      connectionString,
+      currentMigration,
+      undefined,
+      expectedTarget,
+    );
+    process.stdout.write(
+      `[db:migrate] schema-state=${currentMigration.tag} sha256:${fingerprint.digest}\n`,
+    );
+    process.stdout.write(`[db:migrate] pending=${pending.length === 0 ? 'none' : pending.join(',')}\n`);
+
+    for (const migration of pendingMigrations) {
+      for (const statement of migration.sql.split('--> statement-breakpoint')) {
+        if (statement.trim()) await client.query(statement);
+      }
+      journalInsertAttempted = true;
+      await client.query(
+        'INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ($1, $2)',
+        [migration.hash, migration.createdAt],
+      );
+    }
+
+    const postEntries = (await inspectApprovedJournal(client, { lock: true })).entries;
+    assertJournalPrefix(postEntries, migrations);
+    if (postEntries.length !== migrations.length) {
+      throw new Error('Migration runner returned without recording the complete active migration history.');
+    }
+    const finalMigration = migrations.at(-1);
+    if (!finalMigration) throw new Error('Migration runner has no final schema state to verify.');
+    const finalFingerprint = await verifyApprovedSchemaStateOnClient(
+      client,
+      connectionString,
+      finalMigration,
+      undefined,
+      expectedTarget,
+    );
+    process.stdout.write(
+      `[db:migrate] schema-state=${finalMigration.tag} sha256:${finalFingerprint.digest}\n`,
+    );
+    await client.query('COMMIT');
+    transaction = false;
+    if (pending.length > 0) process.stdout.write(`[db:migrate] applied=${pending.join(',')}\n`);
+    return { pending, applied: pending, noOp: pending.length === 0 };
+  } catch (error) {
+    if (transaction) {
+      await client.query('ROLLBACK');
+      transaction = false;
+    }
+    if (journalInsertAttempted && preMigrationSequenceState) {
+      try {
+        await restoreApprovedJournalSequenceState(client, preMigrationSequenceState);
+      } catch (restoreError) {
+        const reason = restoreError instanceof Error ? restoreError.message : String(restoreError);
+        throw new Error(
+          `Migration rolled back, but restoring the journal sequence failed: ${reason}`,
+          { cause: error },
+        );
+      }
+    }
+    throw error;
+  } finally {
+    if (transaction) await client.query('ROLLBACK').catch(() => undefined);
+  }
+}
+
 export async function runCheckedMigrations(
   connectionString: string,
   migrationsDirectory = ACTIVE_MIGRATIONS_DIRECTORY,
+  options: CheckedMigrationOptions = {},
 ): Promise<CheckedMigrationResult> {
   const migrations = loadActiveMigrations(migrationsDirectory);
   const client = new pg.Client({
@@ -84,9 +245,24 @@ export async function runCheckedMigrations(
   });
   let lockHeld = false;
   try {
+    if (options.expectedPending !== undefined && !options.expectedTarget) {
+      throw new Error('Expected-pending migration mode requires independently verified target metadata.');
+    }
+    if (options.expectedTarget) {
+      assertExpectedConnectionUrlTarget(connectionString, options.expectedTarget);
+    }
     await client.connect();
-    await client.query('SELECT pg_advisory_lock($1)', [MIGRATION_LOCK_KEY]);
+    await client.query('SELECT pg_advisory_lock($1)', [DATABASE_SCHEMA_WRITER_LOCK_KEY]);
     lockHeld = true;
+    if (options.expectedPending !== undefined && options.expectedTarget) {
+      return await runExpectedMigrationsAtomically(
+        client,
+        connectionString,
+        migrations,
+        options.expectedPending,
+        options.expectedTarget,
+      );
+    }
     const inspection = await inspectJournalUnderLock(client);
     const entries = inspection.entries;
     assertJournalPrefix(entries, migrations);
@@ -96,6 +272,7 @@ export async function runCheckedMigrations(
       );
     }
     const pending = migrations.slice(entries.length).map((migration) => migration.tag);
+    assertExpectedPendingMigrations(pending, options.expectedPending);
     process.stdout.write(`[db:migrate] pending=${pending.length === 0 ? 'none' : pending.join(',')}\n`);
     if (pending.length === 0) return { pending, applied: [], noOp: true };
 
@@ -111,7 +288,10 @@ export async function runCheckedMigrations(
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(redactConnectionDetails(message, connectionString));
   } finally {
-    if (lockHeld) await client.query('SELECT pg_advisory_unlock($1)', [MIGRATION_LOCK_KEY]).catch(() => undefined);
+    if (lockHeld) {
+      await client.query('SELECT pg_advisory_unlock($1)', [DATABASE_SCHEMA_WRITER_LOCK_KEY])
+        .catch(() => undefined);
+    }
     await client.end().catch(() => undefined);
   }
 }

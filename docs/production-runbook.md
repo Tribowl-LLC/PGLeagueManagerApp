@@ -273,10 +273,49 @@ below.
 
 Schema changes require a deliberate release step:
 
+The preferred executor is the manual **Production database migration** GitHub
+Actions workflow. Dispatch it from `main` only after Exact main certification
+succeeds. Enter the full certified SHA, the exact ordered pending migration
+tags (or `none`), and the displayed confirmation phrase. Its `production`
+environment requires operator approval, and the job uses the repository's
+`NEON_API_KEY` secret to verify the pinned production target, create a protected
+branch without a compute, acquire a direct connection string without printing
+it, and run the checked migration with an exact-pending guard under the database
+advisory lock. Before executing SQL, the runner compares the live `public`
+catalog—including tables, views, materialized views, and foreign tables—with
+the checked-in fingerprint for the last applied migration. Fingerprinting,
+migration SQL, journal registration, and post-journal verification share one
+serializable transaction, so a failed migration cannot commit a partial
+release. The approved legacy inert-RLS/function normalization remains narrowly
+supported. After execution, the immediate `pending=none` rerun verifies the
+fingerprint for the new state. CI reproduces both release-boundary fingerprints
+from clean PostgreSQL 17 replays and proves table and non-table drift refusal. A
+mismatch fails before migration SQL runs. Immediately before that transaction,
+the workflow fetches and remotely rechecks `main` against the certified SHA.
+The Neon API
+key is exposed only to the three control-plane steps that require it, not to
+checkout, dependency installation, or repository validation scripts. Preserve
+the workflow summary's backup ID and migration evidence in the release record;
+the recovery summary runs even after failure and instructs operators not to
+deploy.
+
+Every schema-release PR must add the checked-in fingerprint for its resulting
+migration under `migrations/schema-fingerprints/`; retain the prior release
+fingerprint because it is the pre-migration approval boundary. Do not hand-edit
+fingerprint digests or accept an unexpected production mismatch.
+
+If the workflow is unavailable, the manual operator procedure below remains
+the fail-closed fallback. Never run both executors concurrently.
+
 1. Create a current Neon backup or branch suitable for restoration.
 2. Confirm the target Neon project, branch, host, database name, and user.
 3. Set `DATABASE_URL` only in the shell or deployment environment where the
-   intended target has been independently verified.
+   intended target has been independently verified. Separately record the
+   verified endpoint as `DB_MIGRATION_EXPECTED_HOST_FINGERPRINT` (the lowercase
+   SHA-256 of `hostname:port`, prefixed with `sha256:`), database as
+   `DB_MIGRATION_EXPECTED_DATABASE`, and role as
+   `DB_MIGRATION_EXPECTED_ROLE`. Do not calculate these expected values from
+   the `DATABASE_URL` that they are intended to check.
 4. For the organization-hostname namespace migration, run
    `npm run db:audit:organization-hostnames` against the independently verified
    target. The command is read-only and returns a non-zero status for
@@ -287,8 +326,16 @@ Schema changes require a deliberate release step:
 5. Confirm the exact checked-in migration SQL was reviewed and the adopted
    target has the exact active journal prefix. If the baseline row is absent or
    differs, stop: baseline adoption must never be repeated.
-6. Run `npm run db:migrate` with exactly one executor for the environment.
-   Abort on any journal mismatch or migration failure.
+6. Set `DB_MIGRATION_EXPECTED_PENDING` to the exact ordered, comma-separated
+   migration tags approved for this release, then run `npm run db:migrate`
+   with exactly one executor for the environment. Keep all three independently
+   recorded `DB_MIGRATION_EXPECTED_*` target values set. Never omit these
+   guards on a production fallback. The runner verifies the URL endpoint before
+   connecting and the server-reported database and role inside its locked
+   inventory transaction. Abort on any target, fingerprint, journal,
+   pending-list, or migration failure. After it succeeds, set
+   `DB_MIGRATION_EXPECTED_PENDING=none` and rerun `npm run db:migrate`; it must
+   verify the resulting fingerprint and report no pending migrations.
 7. Apply the schema change to the intended database and record the result.
 8. Deploy the matching CI-verified application commit.
 9. Verify `/api/health`, login, the changed workflow, and relevant provider or

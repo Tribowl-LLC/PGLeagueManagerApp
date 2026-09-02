@@ -464,10 +464,13 @@ describe('normalized migration baseline tools', () => {
 
   it('pins the complete application structure without physical column order or provider objects', () => {
     const fingerprint = loadApprovedBaselineFingerprint();
-    expect(fingerprint.formatVersion).toBe(2);
-    expect(fingerprint.digest).toBe('1c3c518e09d155bc3d447399c6c7a41ee4433423ed445b5f4a7554ed7607772a');
+    expect(fingerprint.formatVersion).toBe(3);
+    expect(fingerprint.digest).toBe('59f14220a5d640a9688b7297d40dbe1246eb2533f805c8f3b47da821795b849e');
     expect(fingerprint.counts).toEqual({
       tables: 29,
+      rewriteRules: 0,
+      unsupportedPublicObjects: 0,
+      extensions: 0,
       columns: 307,
       sequences: 26,
       constraints: 95,
@@ -479,6 +482,20 @@ describe('normalized migration baseline tools', () => {
     });
     expect(fingerprint.structure.tables.map((table) => table.name)).toEqual(APPLICATION_TABLE_NAMES);
     expect(fingerprint.structure.tables.every((table) => !table.rowSecurity && !table.forceRowSecurity)).toBe(true);
+    expect(fingerprint.structure.tables.every((table) =>
+      table.replicaIdentity === 'default' &&
+      table.options.length === 0 &&
+      table.accessMethod === 'heap' &&
+      table.tablespace === null &&
+      !table.partition &&
+      table.partitionKey === null &&
+      table.partitionBound === null &&
+      table.parents.length === 0 &&
+      table.ofType === null
+    )).toBe(true);
+    expect(fingerprint.structure.rewriteRules).toEqual([]);
+    expect(fingerprint.structure.unsupportedPublicObjects).toEqual([]);
+    expect(fingerprint.structure.extensions).toEqual([]);
     expect(fingerprint.structure.sequences.every((sequence) => sequence.persistence === 'permanent')).toBe(true);
     expect(fingerprint.structure.columns.every((column) => !('ordinal' in column))).toBe(true);
     expect(fingerprint.structure.types.map((type) => `${type.schema}.${type.name}`)).toEqual(['public.user_role']);

@@ -23,6 +23,32 @@ export interface JournalSequenceState {
   isCalled: boolean;
 }
 
+export async function restoreApprovedJournalSequenceState(
+  client: pg.Client,
+  state: JournalSequenceState,
+): Promise<void> {
+  let transaction = false;
+  try {
+    await client.query('BEGIN');
+    transaction = true;
+    await client.query(
+      `LOCK TABLE ${DRIZZLE_JOURNAL_SCHEMA}.${DRIZZLE_JOURNAL_TABLE} IN SHARE MODE`,
+    );
+    await client.query(
+      `SELECT pg_catalog.setval(
+        '${DRIZZLE_JOURNAL_SCHEMA}.${DRIZZLE_JOURNAL_SEQUENCE}'::pg_catalog.regclass,
+        $1::bigint,
+        $2::boolean
+      )`,
+      [state.lastValue, state.isCalled],
+    );
+    await client.query('COMMIT');
+    transaction = false;
+  } finally {
+    if (transaction) await client.query('ROLLBACK').catch(() => undefined);
+  }
+}
+
 export interface JournalInspectionOptions {
   lock?: boolean;
 }

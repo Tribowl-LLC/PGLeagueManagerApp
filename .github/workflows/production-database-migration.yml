@@ -1,0 +1,231 @@
+name: Production database migration
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Full certified main commit SHA to migrate and later deploy
+        required: true
+        type: string
+      expected_pending_migrations:
+        description: Exact ordered comma-separated migration tags, or none
+        required: true
+        default: 0036_standing_autopay_preparation_attempts
+        type: string
+      confirmation:
+        description: Type MIGRATE_LEAGUEVAULT_PRODUCTION
+        required: true
+        type: string
+
+concurrency:
+  group: production-database-migration
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  validate:
+    name: Validate production migration request
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    env:
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
+      EXPECTED_PENDING_MIGRATIONS: ${{ inputs.expected_pending_migrations }}
+      CONFIRMATION: ${{ inputs.confirmation }}
+    steps:
+      - name: Validate main ref and explicit confirmation
+        run: |
+          test "$GITHUB_REF" = refs/heads/main
+          test "$CONFIRMATION" = MIGRATE_LEAGUEVAULT_PRODUCTION
+          printf '%s' "$EXPECTED_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          printf '%s' "$EXPECTED_PENDING_MIGRATIONS" | \
+            grep -Eq '^(none|[0-9]{4}_[a-z0-9_]+(,[0-9]{4}_[a-z0-9_]+)*)$'
+
+  migrate:
+    name: Migrate production database
+    needs: validate
+    environment: production
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NEON_PROJECT_ID: dark-firefly-25282046
+      NEON_PRODUCTION_BRANCH_ID: br-late-glitter-aqm4u4fc
+      NEON_PRODUCTION_BRANCH_NAME: production
+      NEON_DATABASE_NAME: neondb
+      NEON_ROLE_NAME: neondb_owner
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
+      EXPECTED_PENDING_MIGRATIONS: ${{ inputs.expected_pending_migrations }}
+      NEON_CLI_VERSION: 4.14.0
+    steps:
+      - name: Check out the dispatched main commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Prove exact certified main target
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$GITHUB_REF" = refs/heads/main
+          printf '%s' "$EXPECTED_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test "$(git rev-parse origin/main)" = "$EXPECTED_SHA"
+          test -z "$(git status --short)"
+
+          certification="$(gh run list \
+            --workflow exact-main-certification.yml \
+            --branch main \
+            --commit "$EXPECTED_SHA" \
+            --status success \
+            --limit 1 \
+            --json headSha,conclusion \
+            --jq '.[0] | select(.conclusion == "success") | .headSha')"
+          test "$certification" = "$EXPECTED_SHA"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.22.0'
+          cache: npm
+
+      - name: Install exact dependencies
+        run: npm ci
+
+      - name: Verify exact migration bytes and metadata
+        run: npm run db:migration-bytes:check
+
+      - name: Install pinned Neon CLI without production credentials
+        run: |
+          npm install --global --ignore-scripts --no-audit --no-fund "neon@$NEON_CLI_VERSION"
+          test "$(neon --version)" = "$NEON_CLI_VERSION"
+
+      - name: Verify Neon production target
+        id: target
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+        run: |
+          test -n "$NEON_API_KEY"
+          project_json="$(neon projects get "$NEON_PROJECT_ID" --output json --no-color)"
+          printf '%s' "$project_json" | jq -e \
+            --arg id "$NEON_PROJECT_ID" \
+            '(.project // .) | .id == $id' >/dev/null
+
+          branch_json="$(neon branches get "$NEON_PRODUCTION_BRANCH_ID" \
+            --project-id "$NEON_PROJECT_ID" --output json --no-color)"
+          printf '%s' "$branch_json" | jq -e \
+            --arg id "$NEON_PRODUCTION_BRANCH_ID" \
+            --arg name "$NEON_PRODUCTION_BRANCH_NAME" \
+            '(.branch // .) | .id == $id and .name == $name and .default == true and .protected == true' >/dev/null
+
+          endpoints_json="$(neon api "/projects/$NEON_PROJECT_ID/endpoints" --output json --no-color)"
+          endpoint_host="$(printf '%s' "$endpoints_json" | jq -er \
+            --arg branch "$NEON_PRODUCTION_BRANCH_ID" \
+            '[.endpoints[] | select(.branch_id == $branch and .type == "read_write") | .host] | unique |
+             if length == 1 and .[0] != "" then .[0] else error("expected exactly one production read-write endpoint") end')"
+          host_fingerprint="$(EXPECTED_ENDPOINT_HOST="$endpoint_host" node --input-type=module -e '
+            import { createHash } from "node:crypto";
+            const endpoint = `${process.env.EXPECTED_ENDPOINT_HOST.toLowerCase()}:5432`;
+            process.stdout.write(`sha256:${createHash("sha256").update(endpoint).digest("hex")}`);
+          ')"
+          printf '%s' "$host_fingerprint" | grep -Eq '^sha256:[0-9a-f]{64}$'
+          printf 'host_fingerprint=%s\n' "$host_fingerprint" >> "$GITHUB_OUTPUT"
+
+      - name: Create and verify protected pre-migration backup
+        id: backup
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+        run: |
+          backup_name="backup-pre-migration-${EXPECTED_SHA:0:12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          backup_json="$(neon branches create \
+            --project-id "$NEON_PROJECT_ID" \
+            --parent "$NEON_PRODUCTION_BRANCH_ID" \
+            --name "$backup_name" \
+            --no-compute \
+            --no-secrets \
+            --protected \
+            --output json \
+            --no-color)"
+          backup_id="$(printf '%s' "$backup_json" | jq -er \
+            --arg name "$backup_name" \
+            --arg parent "$NEON_PRODUCTION_BRANCH_ID" \
+            '(.branch // .) | select(.name == $name and .parent_id == $parent and .protected == true) | .id')"
+          test -n "$backup_id"
+          printf 'backup_name=%s\n' "$backup_name" >> "$GITHUB_OUTPUT"
+          printf 'backup_id=%s\n' "$backup_id" >> "$GITHUB_OUTPUT"
+          printf 'Created protected Neon backup %s (%s) from production.\n' "$backup_name" "$backup_id"
+
+      - name: Acquire direct production connection string
+        id: connection
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+        run: |
+          database_url="$(neon connection-string "$NEON_PRODUCTION_BRANCH_ID" \
+            --project-id "$NEON_PROJECT_ID" \
+            --database-name "$NEON_DATABASE_NAME" \
+            --role-name "$NEON_ROLE_NAME" \
+            --ssl verify-full \
+            --no-color)"
+          test -n "$database_url"
+          echo "::add-mask::$database_url"
+          printf 'database_url=%s\n' "$database_url" >> "$GITHUB_OUTPUT"
+
+          actual_host_fingerprint="$(DATABASE_URL="$database_url" node --input-type=module -e '
+            import { createHash } from "node:crypto";
+            const target = new URL(process.env.DATABASE_URL);
+            if (!/^postgres(ql)?:$/.test(target.protocol)) throw new Error("Unexpected database URL scheme.");
+            if (target.hostname.includes("-pooler")) throw new Error("Production migrations require a direct Neon connection.");
+            if (decodeURIComponent(target.pathname.slice(1)) !== process.env.NEON_DATABASE_NAME) throw new Error("Unexpected database name.");
+            if (decodeURIComponent(target.username) !== process.env.NEON_ROLE_NAME) throw new Error("Unexpected database role.");
+            const endpoint = `${target.hostname.toLowerCase()}:${target.port || "5432"}`;
+            process.stdout.write(`sha256:${createHash("sha256").update(endpoint).digest("hex")}`);
+          ')"
+          test "$actual_host_fingerprint" = "${{ steps.target.outputs.host_fingerprint }}"
+
+      - name: Apply only the explicitly expected migrations
+        id: migration
+        env:
+          DATABASE_URL: ${{ steps.connection.outputs.database_url }}
+          DB_MIGRATION_EXPECTED_HOST_FINGERPRINT: ${{ steps.target.outputs.host_fingerprint }}
+          DB_MIGRATION_EXPECTED_DATABASE: ${{ env.NEON_DATABASE_NAME }}
+          DB_MIGRATION_EXPECTED_ROLE: ${{ env.NEON_ROLE_NAME }}
+        run: |
+          git fetch --no-tags origin main
+          test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_SHA"
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$EXPECTED_SHA"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          git diff --exit-code
+          git diff --cached --exit-code
+          DB_MIGRATION_EXPECTED_PENDING="$EXPECTED_PENDING_MIGRATIONS" npm run db:migrate
+          DB_MIGRATION_EXPECTED_PENDING=none npm run db:migrate
+
+      - name: Record release evidence
+        if: ${{ always() }}
+        env:
+          BACKUP_ID: ${{ steps.backup.outputs.backup_id }}
+          BACKUP_NAME: ${{ steps.backup.outputs.backup_name }}
+          BACKUP_OUTCOME: ${{ steps.backup.outcome }}
+          MIGRATION_OUTCOME: ${{ steps.migration.outcome }}
+        run: |
+          {
+            echo '### Production database migration'
+            echo
+            echo "- Commit: \`$EXPECTED_SHA\`"
+            echo "- Expected migrations: \`$EXPECTED_PENDING_MIGRATIONS\`"
+            echo "- Backup step: \`$BACKUP_OUTCOME\`"
+            if [ -n "$BACKUP_ID" ] && [ -n "$BACKUP_NAME" ]; then
+              echo "- Recovery branch: \`$BACKUP_NAME\` (\`$BACKUP_ID\`)"
+            else
+              echo '- Recovery branch: unavailable because backup creation did not complete'
+            fi
+            echo "- Migration step: \`$MIGRATION_OUTCOME\`"
+            if [ "$MIGRATION_OUTCOME" = success ]; then
+              echo '- Verification: checked migration completed and immediate rerun reported no pending migrations'
+              echo '- Next gate: manually deploy this exact commit to Render and complete production verification'
+            else
+              echo '- Recovery action: do not deploy; inspect the failed step and preserve the recovery branch if one was created'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

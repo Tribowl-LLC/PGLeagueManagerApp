@@ -26,6 +26,7 @@ import {
   USERS_ROLE_ORG_REQUIRED_FUNCTION_SQL,
 } from '@shared/database-invariants';
 import * as schema from '@shared/schema';
+import { DATABASE_SCHEMA_WRITER_LOCK_KEY } from '@shared/database-advisory-locks';
 import { db as defaultDb } from './db';
 
 export type AnyDb = NodePgDatabase<typeof schema>;
@@ -41,16 +42,16 @@ export async function installDbInvariants(db: AnyDb = defaultDb): Promise<void> 
   //
   // We wrap the install in `db.transaction()` (Drizzle pins the
   // transaction to a single pg client) and acquire
-  // `pg_advisory_xact_lock(7220001)` inside it. Transaction-scoped
+  // the shared schema-writer advisory lock inside it. Transaction-scoped
   // advisory locks are bound to that pinned connection by definition,
   // and Postgres releases them automatically at COMMIT/ROLLBACK — no
   // chance of leaking a lock onto a pooled connection that goes back to
   // the pool while still holding it. CREATE FUNCTION / DROP TRIGGER /
   // CREATE TRIGGER / CREATE TABLE IF NOT EXISTS are all transactional
-  // in Postgres, so the entire install is atomic per-DB.
-  // Lock key derived from the function name; arbitrary but stable.
+  // in Postgres, so the entire install is atomic per-DB and serialized
+  // against baseline adoption and checked migrations.
   await db.transaction(async (tx) => {
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(7220001)`);
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(${DATABASE_SCHEMA_WRITER_LOCK_KEY})`);
 
     // Retire the legacy CHECK constraint of the same name if it still
     // exists from older schema versions.

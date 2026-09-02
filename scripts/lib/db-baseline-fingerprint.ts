@@ -35,7 +35,7 @@ const BASELINE_INVARIANT_TRIGGER_NAMES = [
 ] as const;
 import { functionDefinitionsDifferOnlyByInsignificantWhitespace } from './sql-definition-normalization';
 
-export const BASELINE_FINGERPRINT_FORMAT_VERSION = 2 as const;
+export const BASELINE_FINGERPRINT_FORMAT_VERSION = 3 as const;
 export const BASELINE_FINGERPRINT_PATH = resolve('migrations', 'baseline-fingerprint.json');
 
 export const APPLICATION_TABLE_NAMES = [
@@ -74,9 +74,9 @@ export const APPLICATION_SEQUENCE_NAMES = APPLICATION_TABLE_NAMES
   .filter((name) => !['alerter_state', 'rate_limit_buckets', 'session'].includes(name))
   .map((name) => `${name}_id_seq`);
 
-type StructuralTable = Pick<
+type StructuralTable = Omit<
   TableInfo,
-  'schema' | 'name' | 'kind' | 'persistence' | 'rowSecurity' | 'forceRowSecurity'
+  'owner' | 'connectedRoleOwnsTable' | 'connectedRolePrivileges' | 'connectedRoleRlsMode'
 >;
 type StructuralColumn = Omit<ColumnInfo, 'ordinal'>;
 type StructuralSequence = Omit<SequenceInfo, 'owner' | 'connectedRoleCanAlter'>;
@@ -89,6 +89,9 @@ export interface ApplicationSchemaStructure {
     rlsExpected: 'disabled-with-no-policies';
   };
   tables: StructuralTable[];
+  rewriteRules: DatabaseInventory['rewriteRules'];
+  unsupportedPublicObjects: DatabaseInventory['unsupportedPublicObjects'];
+  extensions: DatabaseInventory['extensions'];
   columns: StructuralColumn[];
   sequences: StructuralSequence[];
   constraints: ConstraintInfo[];
@@ -110,6 +113,9 @@ export interface BaselineFingerprint {
   digest: string;
   counts: {
     tables: number;
+    rewriteRules: number;
+    unsupportedPublicObjects: number;
+    extensions: number;
     columns: number;
     sequences: number;
     constraints: number;
@@ -152,6 +158,12 @@ function exactNames(actual: readonly string[], expected: readonly string[], labe
 }
 
 function assertCompleteStructure(structure: ApplicationSchemaStructure): void {
+  if (structure.rewriteRules.length > 0) {
+    throw new Error('Application fingerprint requires no user-defined public rewrite rules.');
+  }
+  if (structure.unsupportedPublicObjects.length > 0) {
+    throw new Error('Application fingerprint contains unsupported public catalog objects.');
+  }
   exactNames(
     structure.tables.map((table) => table.name),
     APPLICATION_TABLE_NAMES,
@@ -238,14 +250,8 @@ export function applicationStructureFromInventory(
   const tables = sortObjects(
     inventory.tables
       .filter((table) => table.schema === 'public')
-      .map((table): StructuralTable => ({
-        schema: table.schema,
-        name: table.name,
-        kind: table.kind,
-        persistence: table.persistence,
-        rowSecurity: table.rowSecurity,
-        forceRowSecurity: table.forceRowSecurity,
-      })),
+      .map(({ owner: _owner, connectedRoleOwnsTable: _owns, connectedRolePrivileges: _privileges,
+        connectedRoleRlsMode: _rlsMode, ...table }): StructuralTable => table),
   );
   const structure: ApplicationSchemaStructure = {
     scope: {
@@ -255,6 +261,9 @@ export function applicationStructureFromInventory(
       rlsExpected: 'disabled-with-no-policies',
     },
     tables,
+    rewriteRules: sortObjects(inventory.rewriteRules.filter((rule) => rule.schema === 'public')),
+    unsupportedPublicObjects: sortObjects(inventory.unsupportedPublicObjects),
+    extensions: sortObjects(inventory.extensions.filter((extension) => extension.schema === 'public')),
     columns: sortObjects(
       inventory.columns
         .filter((column) => column.schema === 'public')
@@ -287,6 +296,9 @@ function digestStructure(structure: ApplicationSchemaStructure): string {
 function structureCounts(structure: ApplicationSchemaStructure): BaselineFingerprint['counts'] {
   return {
     tables: structure.tables.length,
+    rewriteRules: structure.rewriteRules.length,
+    unsupportedPublicObjects: structure.unsupportedPublicObjects.length,
+    extensions: structure.extensions.length,
     columns: structure.columns.length,
     sequences: structure.sequences.length,
     constraints: structure.constraints.length,

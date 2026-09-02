@@ -1,0 +1,25 @@
+{
+  "formatVersion": 2,
+  "algorithm": "sha256",
+  "migration": {
+    "tag": "0036_standing_autopay_preparation_attempts",
+    "hash": "d46a2cf796f85cbe9dcc8d6c2af89a093007b55f1f374a2530c81ce574be8617",
+    "createdAt": 1788372833469
+  },
+  "digest": "46a73ae60ae18ef81a31406c2f85b23cdbb060a695127e4b888f7a71b1d2c169",
+  "counts": {
+    "tables": 64,
+    "columns": 874,
+    "nonTableRelations": 0,
+    "rewriteRules": 0,
+    "unsupportedPublicObjects": 0,
+    "extensions": 0,
+    "sequences": 23,
+    "constraints": 486,
+    "indexes": 268,
+    "types": 1,
+    "functions": 15,
+    "triggers": 29,
+    "policies": 0
+  }
+}

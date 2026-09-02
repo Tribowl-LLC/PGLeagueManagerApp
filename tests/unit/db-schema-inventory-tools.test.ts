@@ -37,7 +37,7 @@ import { normalizeSqlDefinition } from '../../scripts/lib/sql-definition-normali
 
 function emptyInventory(database: string): DatabaseInventory {
   return {
-    formatVersion: 3,
+    formatVersion: 7,
     target: {
       hostFingerprint: 'sha256:test',
       database,
@@ -51,6 +51,9 @@ function emptyInventory(database: string): DatabaseInventory {
     },
     schemas: [],
     tables: [],
+    nonTableRelations: [],
+    rewriteRules: [],
+    unsupportedPublicObjects: [],
     tablePrivileges: [],
     policies: [],
     columns: [],
@@ -80,6 +83,15 @@ function testTable(name: string, rowSecurity = false): TableInfo {
     name,
     kind: 'table',
     persistence: 'permanent',
+    replicaIdentity: 'default',
+    options: [],
+    accessMethod: 'heap',
+    tablespace: null,
+    partition: false,
+    partitionKey: null,
+    partitionBound: null,
+    parents: [],
+    ofType: null,
     rowSecurity,
     forceRowSecurity: false,
     owner: 'inventory_reader',
@@ -166,6 +178,11 @@ describe('database schema inventory tools', () => {
       dataType: 'integer', typeSchema: 'pg_catalog', typeName: 'int4', nullable: false,
       default: null, identity: null, generated: null, collation: null,
     }];
+    left.nonTableRelations = [{
+      schema: 'public', name: 'unexpected_view', kind: 'view', persistence: 'permanent',
+      replicaIdentity: 'nothing', definition: 'SELECT 1 AS value;', options: [],
+      accessMethod: null, tablespace: null, foreignServer: null, foreignOptions: [],
+    }];
 
     const right = emptyInventory('journal');
     right.tables = [
@@ -186,12 +203,18 @@ describe('database schema inventory tools', () => {
     expect(comparison.categories.columns.changed).toEqual([
       { key: 'public.shared.id', fields: ['nullable'] },
     ]);
+    expect(comparison.categories.nonTableRelations.missingFromRight).toEqual([
+      'public.unexpected_view',
+    ]);
     expect(comparison.hasDifferences).toBe(true);
   });
 
   it('validates the inventory format before comparison', () => {
-    expect(() => assertDatabaseInventory({ formatVersion: 3 }, 'partial.json')).toThrow(
+    expect(() => assertDatabaseInventory({ formatVersion: 7 }, 'partial.json')).toThrow(
       'partial.json is missing target metadata',
+    );
+    expect(() => assertDatabaseInventory({ formatVersion: 5 }, 'legacy.json')).toThrow(
+      'unsupported inventory format 5',
     );
     expect(() => assertDatabaseInventory({ formatVersion: 99 }, 'future.json')).toThrow(
       'unsupported inventory format 99',
