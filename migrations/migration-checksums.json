@@ -216,6 +216,12 @@
       "tag": "0035_automatic_fifo_payment_allocation",
       "createdAt": 1787782184136,
       "hash": "2de08c0d243e9dab21b1c815db9769f59636d48f98f5f2dd13f6060ae051b8db"
+    },
+    {
+      "idx": 36,
+      "tag": "0036_standing_autopay_preparation_attempts",
+      "createdAt": 1788372833469,
+      "hash": "d46a2cf796f85cbe9dcc8d6c2af89a093007b55f1f374a2530c81ce574be8617"
     }
   ]
 }

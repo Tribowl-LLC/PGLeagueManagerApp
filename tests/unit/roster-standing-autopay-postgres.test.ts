@@ -28,6 +28,7 @@ import {
   paymentOperationStandingAutopayParticipants,
   paymentOperations,
   paymentVoids,
+  standingAutopayPreparationAttempts,
   teamPaymentSlots,
   teams,
   users,
@@ -42,7 +43,7 @@ import { PaymentProviderError } from "../../server/services/payment-errors";
 import { buildCanonicalScheduleCommandFingerprint, cancelOccurrence, restoreCancelledOccurrence } from "../../server/services/canonical-occurrence-transactions";
 import { readCanonicalPaymentReport } from "../../server/services/roster-payment-archive-report";
 import { updateBowlerLeague } from "../../server/storage/bowlers";
-import { getNextStandingAutopayWake } from "../../server/storage/payment-operations";
+import { getNextStandingAutopayWake, recordStandingAutopayPreparationFailure } from "../../server/storage/payment-operations";
 import { canonicalizePaymentOperationInput } from "../../server/services/payment-operation-idempotency";
 
 // This suite deliberately enables only the standing runtime in the isolated
@@ -409,6 +410,84 @@ describe("standing automatic payments on migrated PostgreSQL", () => {
     expect(items[0].state).toBe("reserved");
     const participants = await db.select().from(paymentOperationStandingAutopayParticipants).where(eq(paymentOperationStandingAutopayParticipants.operationId, operation!.id));
     expect(participants).toMatchObject([{ obligationId: afterConsent.obligation.id, bowlerId: payerBowlerId, role: "payer", consentVersion: 1 }]);
+  });
+
+  it("moves a preparation retry behind another payer at the same cutoff and durably stops after the retry limit", async () => {
+    const [secondTeam] = await db.insert(teams).values({ name: `Standing Retry Team ${randomUUID()}`, number: 900_000 + occurrenceOrdinal, leagueId }).returning({ id: teams.id });
+    const [secondPayer] = await db.insert(bowlers).values({ name: "Standing Retry Payer", organizationId, paymentCustomerId: `retry-customer-${randomUUID()}` }).returning({ id: bowlers.id });
+    const [secondUser] = await db.insert(users).values({
+      email: `standing-autopay-retry-${randomUUID()}@example.test`,
+      password: "deterministic-test-password-hash",
+      name: "Standing Retry Payer Account",
+      role: "user",
+      organizationId,
+      bowlerId: secondPayer.id,
+    }).returning({ id: users.id });
+    await db.insert(bowlerLeagues).values({ bowlerId: secondPayer.id, leagueId, teamId: secondTeam.id, active: true });
+    const secondSlots = await db.insert(teamPaymentSlots).values([
+      { organizationId, leagueId, teamId: secondTeam.id, slotIndex: 0, lineupSize: 3, occupant: "main", mainBowlerId: secondPayer.id, recordedByUserId: actorUserId },
+      { organizationId, leagueId, teamId: secondTeam.id, slotIndex: 1, lineupSize: 3, occupant: "vacant", mainBowlerId: null, recordedByUserId: actorUserId },
+      { organizationId, leagueId, teamId: secondTeam.id, slotIndex: 2, lineupSize: 3, occupant: "vacant", mainBowlerId: null, recordedByUserId: actorUserId },
+    ]).returning({ id: teamPaymentSlots.id });
+    const target = await publishOccurrence("2039-01-10T19:00:00.000Z");
+    const firstConsent = await insertConsent({ version: 6, activatedAt: "2039-01-02T00:00:00.000Z" });
+    const [secondConsent] = await db.insert(autopayConsents).values({
+      organizationId,
+      leagueId,
+      payerBowlerId: secondPayer.id,
+      consentVersion: 1,
+      state: "active",
+      paymentMode: "weekly",
+      consentFingerprint: uniqueFp("lvstandingconsent:v1:"),
+      providerName: "square",
+      providerLocationId: "square-location-fixture",
+      encryptedSourceId: encrypt("retry-source-fixture"),
+      encryptedCustomerId: encrypt("retry-customer-fixture"),
+      createdByUserId: secondUser.id,
+      activatedAt: "2039-01-02T00:00:00.000Z",
+    }).returning();
+
+    try {
+      await db.update(paymentOperations).set({ nextAttemptAt: "2099-01-01T00:00:00.000Z" }).where(and(
+        eq(paymentOperations.organizationId, organizationId),
+        eq(paymentOperations.operationType, "standing_autopay_charge"),
+        inArray(paymentOperations.status, ["pending", "retry_scheduled", "provider_unknown"] as const),
+      ));
+      const firstWake = await getNextStandingAutopayWake();
+      expect(firstWake).toMatchObject({ kind: "standing_cutoff", cutoffAt: "2039-01-10 19:00:00", preparationAttemptCount: 0 });
+      if (!firstWake || firstWake.kind !== "standing_cutoff") throw new Error("expected a standing cutoff wake");
+      const otherConsentId = firstWake.consentId === firstConsent.id ? secondConsent.id : firstConsent.id;
+      const failureInput = {
+        organizationId,
+        leagueId,
+        consentId: firstWake.consentId,
+        consentVersion: firstWake.consentVersion,
+        cutoffAt: firstWake.cutoffAt,
+        occurrenceRevision: firstWake.occurrenceRevision,
+        errorCode: "PREPARATION_UNKNOWN",
+        terminal: false,
+        now: new Date(target.occurrence.startAt),
+      };
+      const retry = await recordStandingAutopayPreparationFailure(failureInput);
+      expect(retry).toMatchObject({ state: "retry_scheduled", attemptCount: 1, nextAttemptAt: "2039-01-10 19:01:00" });
+
+      const nextWake = await getNextStandingAutopayWake();
+      expect(nextWake).toMatchObject({ kind: "standing_cutoff", consentId: otherConsentId, cutoffAt: firstWake.cutoffAt, dueAt: firstWake.cutoffAt });
+
+      await recordStandingAutopayPreparationFailure(failureInput);
+      await recordStandingAutopayPreparationFailure(failureInput);
+      await recordStandingAutopayPreparationFailure(failureInput);
+      const terminal = await recordStandingAutopayPreparationFailure(failureInput);
+      expect(terminal).toMatchObject({ state: "failed_terminal", attemptCount: 5, nextAttemptAt: null });
+      const [durableAttempt] = await db.select().from(standingAutopayPreparationAttempts).where(eq(standingAutopayPreparationAttempts.consentId, firstWake.consentId));
+      expect(durableAttempt).toMatchObject({ state: "failed_terminal", attemptCount: 5, lastErrorCode: "PREPARATION_UNKNOWN" });
+      expect(await getNextStandingAutopayWake()).toMatchObject({ kind: "standing_cutoff", consentId: otherConsentId });
+    } finally {
+      await db.delete(standingAutopayPreparationAttempts).where(and(eq(standingAutopayPreparationAttempts.organizationId, organizationId), eq(standingAutopayPreparationAttempts.consentId, secondConsent.id)));
+      await db.update(autopayConsents).set({ state: "revoked", revokedAt: "2039-12-31T23:59:59.000Z" }).where(eq(autopayConsents.id, secondConsent.id));
+      await db.update(teamPaymentSlots).set({ occupant: "vacant", mainBowlerId: null }).where(eq(teamPaymentSlots.id, secondSlots[0].id));
+      await db.update(bowlerLeagues).set({ active: false }).where(and(eq(bowlerLeagues.bowlerId, secondPayer.id), eq(bowlerLeagues.leagueId, leagueId)));
+    }
   });
 
   it("allows an exact future paired occurrence, but blocks an incomplete pair atomically", async () => {

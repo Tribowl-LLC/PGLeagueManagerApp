@@ -4,9 +4,9 @@ import { PAYMENT_OPERATION_MAX_ATTEMPTS, PAYMENT_OPERATION_MAX_LEASE_MS, type Pa
 import { acquirePaymentOperationLease, acquireStandingAutopayDispatchCutoff, finalizePaymentOperationSuccess, getPaymentOperationForOrganization, recordPaymentOperationActionRequired, recordPaymentOperationFailedTerminal, recordPaymentOperationProviderUnknown, schedulePaymentOperationRetry } from "../storage/payment-operations.js";
 import { getPaymentProvider } from "./payment-provider-factory.js";
 import { PaymentProviderError, ProviderNotConfiguredError, sanitizeProviderErrorCode, type PaymentProviderFailureDisposition } from "./payment-errors.js";
-import { getStandingAutopayExecutionSnapshot, standingPaymentRows } from "./roster-standing-autopay.js";
+import { getStandingAutopayExecutionSnapshot, StandingAutopayError, standingPaymentRows } from "./roster-standing-autopay.js";
 import { PaymentOperationWakeScheduler } from "./payment-operation-wake-scheduler.js";
-import { getNextStandingAutopayWake, type StandingAutopayWake } from "../storage/payment-operations.js";
+import { getNextStandingAutopayWake, recordStandingAutopayPreparationFailure, type StandingAutopayWake } from "../storage/payment-operations.js";
 import { createLogger } from "../logger.js";
 import { rosterStandingAutopayEnabled, scheduledPaymentExecutionMode } from "../config.js";
 
@@ -59,8 +59,35 @@ export class RosterStandingAutopayOperationExecutor {
     if (!rosterStandingAutopayEnabled || scheduledPaymentExecutionMode !== "ledger_execute") return;
     if (wake.kind === "standing_cutoff") {
       const { prepareStandingAutopayCutoff } = await import("./roster-standing-autopay.js");
-      const operation = await prepareStandingAutopayCutoff({ organizationId: wake.organizationId, leagueId: wake.leagueId, consentId: wake.consentId, cutoffAt: wake.dueAt });
-      if (operation) await this.execute({ organizationId: operation.organizationId, operationId: operation.id });
+      try {
+        const operation = await prepareStandingAutopayCutoff({ organizationId: wake.organizationId, leagueId: wake.leagueId, consentId: wake.consentId, cutoffAt: wake.cutoffAt });
+        if (operation) await this.execute({ organizationId: operation.organizationId, operationId: operation.id });
+      } catch (error) {
+        const errorCode = error instanceof StandingAutopayError ? error.code : "PREPARATION_UNKNOWN";
+        const failure = await recordStandingAutopayPreparationFailure({
+          organizationId: wake.organizationId,
+          leagueId: wake.leagueId,
+          consentId: wake.consentId,
+          consentVersion: wake.consentVersion,
+          cutoffAt: wake.cutoffAt,
+          occurrenceRevision: wake.occurrenceRevision,
+          errorCode,
+          // Preparation failures happen before provider dispatch, so every
+          // class is safe to move behind the other due payers and retry. The
+          // durable recorder dead-letters a cutoff after its bounded limit.
+          terminal: false,
+        });
+        log.warn("Standing automatic-payment preparation failed without blocking other payers", {
+          organizationId: wake.organizationId,
+          leagueId: wake.leagueId,
+          consentId: wake.consentId,
+          cutoffAt: wake.cutoffAt,
+          errorCode,
+          attemptCount: failure.attemptCount,
+          failureState: failure.state,
+          nextAttemptAt: failure.nextAttemptAt,
+        });
+      }
       return;
     }
     if (wake.kind !== "standing_operation") return;

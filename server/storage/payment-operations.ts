@@ -2109,6 +2109,10 @@ export type StandingAutopayWake = {
   organizationId: number;
   leagueId: number;
   consentId: string;
+  consentVersion: number;
+  cutoffAt: string;
+  occurrenceRevision: number;
+  preparationAttemptCount: number;
   dueAt: string;
 } | {
   kind: "standing_operation";
@@ -2118,6 +2122,62 @@ export type StandingAutopayWake = {
   status: PaymentOperation["status"];
   attemptCount: number;
 };
+
+export const STANDING_AUTOPAY_PREPARATION_MAX_ATTEMPTS = 5;
+const STANDING_AUTOPAY_PREPARATION_MIN_RETRY_SECONDS = 60;
+const STANDING_AUTOPAY_PREPARATION_MAX_RETRY_SECONDS = 6 * 60 * 60;
+
+export async function recordStandingAutopayPreparationFailure(input: {
+  organizationId: number;
+  leagueId: number;
+  consentId: string;
+  consentVersion: number;
+  cutoffAt: string;
+  occurrenceRevision: number;
+  errorCode: string;
+  terminal: boolean;
+  now?: Date;
+}): Promise<{ state: "retry_scheduled" | "failed_terminal"; attemptCount: number; nextAttemptAt: string | null }> {
+  const now = input.now ?? new Date();
+  const errorCode = input.errorCode.trim().replace(/[^A-Za-z0-9_.:-]/g, "_").slice(0, 128) || "PREPARATION_FAILED";
+  const firstAttemptTerminal = input.terminal || STANDING_AUTOPAY_PREPARATION_MAX_ATTEMPTS <= 1;
+  const firstRetryAt = firstAttemptTerminal ? null : new Date(now.getTime() + STANDING_AUTOPAY_PREPARATION_MIN_RETRY_SECONDS * 1000).toISOString();
+  const result = await db.execute<{ state: "retry_scheduled" | "failed_terminal"; attempt_count: number; next_attempt_at: string | null }>(sql`
+    INSERT INTO standing_autopay_preparation_attempts (
+      organization_id, league_id, consent_id, consent_version, cutoff_at,
+      occurrence_revision, state, attempt_count, next_attempt_at,
+      last_error_code, created_at, updated_at
+    ) VALUES (
+      ${input.organizationId}, ${input.leagueId}, ${input.consentId}::uuid,
+      ${input.consentVersion}, ${input.cutoffAt}::timestamptz,
+      ${input.occurrenceRevision}, ${firstAttemptTerminal ? "failed_terminal" : "retry_scheduled"},
+      1, ${firstRetryAt}::timestamptz, ${errorCode}, ${now.toISOString()}::timestamptz,
+      ${now.toISOString()}::timestamptz
+    )
+    ON CONFLICT (organization_id, league_id, consent_id, consent_version, cutoff_at, occurrence_revision)
+    DO UPDATE SET
+      attempt_count = standing_autopay_preparation_attempts.attempt_count + 1,
+      state = CASE
+        WHEN ${input.terminal} OR standing_autopay_preparation_attempts.attempt_count + 1 >= ${STANDING_AUTOPAY_PREPARATION_MAX_ATTEMPTS}
+          THEN 'failed_terminal'
+        ELSE 'retry_scheduled'
+      END,
+      next_attempt_at = CASE
+        WHEN ${input.terminal} OR standing_autopay_preparation_attempts.attempt_count + 1 >= ${STANDING_AUTOPAY_PREPARATION_MAX_ATTEMPTS}
+          THEN NULL
+        ELSE ${now.toISOString()}::timestamptz + make_interval(secs => LEAST(
+          ${STANDING_AUTOPAY_PREPARATION_MAX_RETRY_SECONDS},
+          ${STANDING_AUTOPAY_PREPARATION_MIN_RETRY_SECONDS} * power(2, standing_autopay_preparation_attempts.attempt_count)
+        )::integer)
+      END,
+      last_error_code = EXCLUDED.last_error_code,
+      updated_at = EXCLUDED.updated_at
+    RETURNING state, attempt_count, (next_attempt_at AT TIME ZONE 'UTC')::text AS next_attempt_at
+  `);
+  const row = result.rows[0];
+  if (!row) throw new PaymentOperationValidationError("standing preparation failure was not recorded");
+  return { state: row.state, attemptCount: Number(row.attempt_count), nextAttemptAt: row.next_attempt_at };
+}
 
 /**
  * Return the earliest standing-consent cutoff or retry.  The query deliberately
@@ -2132,21 +2192,26 @@ export async function getNextStandingAutopayWake(): Promise<StandingAutopayWake 
     organization_id: number;
     league_id: number | null;
     consent_id: string | null;
+    consent_version: number | null;
+    cutoff_at: string | null;
+    occurrence_revision: number | null;
+    preparation_attempt_count: number | null;
     work_id: string | null;
     status: PaymentOperation["status"] | null;
     attempt_count: number | null;
     due_at: string;
   }>(sql`
-    WITH next_cutoff AS (
-      SELECT
-        'standing_cutoff'::text AS kind,
+    WITH eligible_cutoffs AS (
+      SELECT DISTINCT
         c.organization_id,
         c.league_id,
-        c.id::text AS consent_id,
-        NULL::text AS work_id,
-        NULL::text AS status,
-        NULL::integer AS attempt_count,
-        MIN(o.due_at) AS due_at
+        c.id AS consent_id,
+        c.consent_version,
+        o.due_at AS cutoff_at,
+        cutoff_occurrence.current_revision AS occurrence_revision,
+        preparation.state AS preparation_state,
+        COALESCE(preparation.attempt_count, 0) AS preparation_attempt_count,
+        preparation.next_attempt_at
       FROM autopay_consents c
       INNER JOIN payment_obligations o
         ON o.organization_id = c.organization_id
@@ -2158,7 +2223,14 @@ export async function getNextStandingAutopayWake(): Promise<StandingAutopayWake 
         ON cutoff_occurrence.id = o.occurrence_id
        AND cutoff_occurrence.organization_id = o.organization_id
        AND cutoff_occurrence.league_id = o.league_id
-       AND NOT EXISTS (
+      LEFT JOIN standing_autopay_preparation_attempts preparation
+        ON preparation.organization_id = c.organization_id
+       AND preparation.league_id = c.league_id
+       AND preparation.consent_id = c.id
+       AND preparation.consent_version = c.consent_version
+       AND preparation.cutoff_at = o.due_at
+       AND preparation.occurrence_revision = cutoff_occurrence.current_revision
+      WHERE NOT EXISTS (
          SELECT 1 FROM payment_operation_roster_snapshot_items ri
          WHERE ri.organization_id = o.organization_id
            AND ri.league_id = o.league_id
@@ -2216,11 +2288,34 @@ export async function getNextStandingAutopayWake(): Promise<StandingAutopayWake 
              AND cp.partner_bowler_id = o.payer_bowler_id
          )
        )
-      WHERE c.state = 'active'
+        AND c.state = 'active'
         AND c.payment_mode = 'weekly'
         AND c.revoked_at IS NULL
-      GROUP BY c.organization_id, c.league_id, c.id
-      ORDER BY MIN(o.due_at) ASC, c.id ASC
+    ), ranked_cutoffs AS (
+      SELECT eligible_cutoffs.*,
+        row_number() OVER (
+          PARTITION BY organization_id, league_id, consent_id
+          ORDER BY cutoff_at ASC, occurrence_revision ASC
+        ) AS consent_cutoff_rank
+      FROM eligible_cutoffs
+    ), next_cutoff AS (
+      SELECT
+        'standing_cutoff'::text AS kind,
+        organization_id,
+        league_id,
+        consent_id::text AS consent_id,
+        consent_version,
+        cutoff_at,
+        occurrence_revision,
+        preparation_attempt_count,
+        NULL::text AS work_id,
+        preparation_state::text AS status,
+        NULL::integer AS attempt_count,
+        GREATEST(cutoff_at, COALESCE(next_attempt_at, cutoff_at)) AS due_at
+      FROM ranked_cutoffs
+      WHERE consent_cutoff_rank = 1
+        AND preparation_state IS DISTINCT FROM 'failed_terminal'
+      ORDER BY GREATEST(cutoff_at, COALESCE(next_attempt_at, cutoff_at)) ASC, consent_id ASC
       LIMIT 1
     ), next_operation AS (
       SELECT
@@ -2228,6 +2323,10 @@ export async function getNextStandingAutopayWake(): Promise<StandingAutopayWake 
         po.organization_id,
         po.league_id,
         NULL::text AS consent_id,
+        NULL::integer AS consent_version,
+        NULL::timestamptz AS cutoff_at,
+        NULL::integer AS occurrence_revision,
+        NULL::integer AS preparation_attempt_count,
         po.id::text AS work_id,
         po.status,
         po.attempt_count,
@@ -2240,7 +2339,9 @@ export async function getNextStandingAutopayWake(): Promise<StandingAutopayWake 
       ORDER BY CASE WHEN po.status = 'leased' THEN po.lease_expires_at ELSE po.next_attempt_at END ASC, po.id ASC
       LIMIT 1
     )
-    SELECT kind, organization_id, league_id, consent_id, work_id, status, attempt_count,
+    SELECT kind, organization_id, league_id, consent_id, consent_version,
+      (cutoff_at AT TIME ZONE 'UTC')::text AS cutoff_at,
+      occurrence_revision, preparation_attempt_count, work_id, status, attempt_count,
       (due_at AT TIME ZONE 'UTC')::text AS due_at
     FROM (
       SELECT * FROM next_cutoff
@@ -2253,8 +2354,18 @@ export async function getNextStandingAutopayWake(): Promise<StandingAutopayWake 
   const row = result.rows[0];
   if (!row) return undefined;
   if (row.kind === "standing_cutoff") {
-    if (row.league_id === null || row.consent_id === null) throw new PaymentOperationValidationError("standing cutoff wake row is incomplete");
-    return { kind: "standing_cutoff", organizationId: Number(row.organization_id), leagueId: Number(row.league_id), consentId: row.consent_id, dueAt: row.due_at };
+    if (row.league_id === null || row.consent_id === null || row.consent_version === null || row.cutoff_at === null || row.occurrence_revision === null || row.preparation_attempt_count === null) throw new PaymentOperationValidationError("standing cutoff wake row is incomplete");
+    return {
+      kind: "standing_cutoff",
+      organizationId: Number(row.organization_id),
+      leagueId: Number(row.league_id),
+      consentId: row.consent_id,
+      consentVersion: Number(row.consent_version),
+      cutoffAt: row.cutoff_at,
+      occurrenceRevision: Number(row.occurrence_revision),
+      preparationAttemptCount: Number(row.preparation_attempt_count),
+      dueAt: row.due_at,
+    };
   }
   if (row.work_id === null || row.status === null || row.attempt_count === null) throw new PaymentOperationValidationError("standing operation wake row is incomplete");
   return { kind: "standing_operation", organizationId: Number(row.organization_id), operationId: row.work_id, dueAt: row.due_at, status: row.status, attemptCount: Number(row.attempt_count) };
