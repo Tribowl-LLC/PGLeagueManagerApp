@@ -148,9 +148,9 @@ describe("automatic FIFO bowler payment flow", () => {
   });
 
   it.each([
-    ["card", { isSubmitting: true }],
-    ["wallet", { isWalletProcessing: true }],
-  ] as const)("locks the week selection while a %s payment is in flight", (_kind, processingProps) => {
+    ["card", true, false],
+    ["wallet", false, true],
+  ] as const)("locks the week selection while a %s payment is in flight", (_kind, isSubmitting, isWalletProcessing) => {
     render(<BowlerPaymentDialog
       payDialogType="remaining"
       onClose={vi.fn()}
@@ -166,7 +166,8 @@ describe("automatic FIFO bowler payment flow", () => {
       setSelectedSavedCardId={vi.fn()}
       storeCard={false}
       setStoreCard={vi.fn()}
-      {...processingProps}
+      isSubmitting={isSubmitting}
+      isWalletProcessing={isWalletProcessing}
       onSubmit={vi.fn()}
       isInitialized
       initializeCard={vi.fn()}
