@@ -5,7 +5,7 @@ import { Route, Router } from "wouter";
 import { memoryLocation } from "wouter/memory-location";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CanonicalDuePastDueResponseV2 } from "@shared/roster-payment-contract";
-import ManagePaymentsPage, { buildManagePaymentRows, formatDueDate, type EnrichedMembership, type RosterResponse } from "@/pages/manage-payments-page";
+import ManagePaymentsPage, { buildManagePaymentRows, buildPaymentIntentScope, formatDueDate, type EnrichedMembership, type RosterResponse } from "@/pages/manage-payments-page";
 
 const csrfFetchMock = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/queryClient", () => ({ csrfFetch: csrfFetchMock }));
@@ -108,6 +108,13 @@ describe("ManagePaymentsPage", () => {
     expect(formatDueDate("2030-01-01T04:30:00.000Z", "Pacific/Kiritimati")).toMatch(/Jan 1, 2030/);
   });
 
+  it("encodes check numbers and notes without delimiter collisions in payment intent scopes", () => {
+    const firstScope = buildPaymentIntentScope(7, 1, 2_000, "check", "a:b", "c");
+    const secondScope = buildPaymentIntentScope(7, 1, 2_000, "check", "a", "b:c");
+
+    expect(firstScope).not.toBe(secondScope);
+  });
+
   it("groups active real bowlers, omits inactive/VACANT members, deduplicates payers, and disables zero balances", () => {
     const due: CanonicalDuePastDueResponseV2 = {
       contractVersion: "canonical-due-past-due/2",
@@ -178,6 +185,24 @@ describe("ManagePaymentsPage", () => {
     expect(screen.getByRole("spinbutton", { name: "Amount paid by Alex Bowler" })).toBeDisabled();
     expect(screen.getByRole("spinbutton", { name: "Amount paid by Casey Bowler" })).toHaveValue(20);
     expect(screen.getByText("The payment amount exceeds the remaining eligible balance")).toBeInTheDocument();
+  });
+
+  it("preserves the actionable server message when payment quotes return a non-2xx response", async () => {
+    const client = createManageQueryClient();
+    seedManagePage(client, [membership(1, 1, "Alex Bowler", 10)], dueResponse([dueRow(1, 2_000)]));
+    csrfFetchMock.mockImplementation(async (url: string) => {
+      if (url.includes("/quote/")) {
+        return new Response(JSON.stringify({ error: { message: "The quote service rejected this request" } }), { status: 422 });
+      }
+      throw new Error("record should not be called after quote failure");
+    });
+    renderManagePage(client);
+
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Amount paid by Alex Bowler" }), { target: { value: "20" } });
+    fireEvent.click(screen.getByRole("button", { name: "Record Payments" }));
+
+    await waitFor(() => expect(screen.getByText("The quote service rejected this request")).toBeInTheDocument());
+    expect(csrfFetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("locks a transport-unknown result to its exact key and retries without quoting a new intent", async () => {

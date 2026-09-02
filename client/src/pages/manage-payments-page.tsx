@@ -88,13 +88,28 @@ function isAmbiguousRecordFailure(status: number, code?: string): boolean {
   return status >= 500 || code === "INTERNAL_ERROR";
 }
 
-async function errorFromResponse(response: Response, fallback: string): Promise<Error> {
-  const body = await response.json().catch(() => null) as { error?: { message?: string }; message?: string; data?: unknown } | null;
-  return errorFromBody(body, fallback, response.status);
-}
-
 function formatMoney(amountMinor: number): string {
   return `$${(amountMinor / 100).toFixed(2)}`;
+}
+
+export function buildPaymentIntentScope(
+  leagueId: number,
+  bowlerId: number,
+  amountMinor: number,
+  type: "cash" | "check",
+  checkNumber: string,
+  notes: string,
+): string {
+  return JSON.stringify({
+    version: 1,
+    kind: "manage-manual-payment",
+    leagueId,
+    bowlerId,
+    amountMinor,
+    type,
+    checkNumber,
+    notes,
+  });
 }
 
 export function formatDueDate(value: string | null, timezone: string | null | undefined): string {
@@ -258,7 +273,7 @@ export default function ManagePaymentsPage() {
         activeSubmissions.current.delete(row.bowlerId);
         continue;
       }
-      const scope = `manage:${leagueId}:${row.bowlerId}:${amountMinor}:${values.type}:${values.checkNumber.trim()}:${values.notes.trim()}`;
+      const scope = buildPaymentIntentScope(leagueId, row.bowlerId, amountMinor, values.type, values.checkNumber.trim(), values.notes.trim());
       const intentScope = values.intentScope ?? scope;
       const requestKey = values.requestKey ?? beginPaymentIntent(intentScope);
       updateRow(row.key, { intentScope, requestKey });
@@ -275,7 +290,8 @@ export default function ManagePaymentsPage() {
           body: JSON.stringify({ rows: quotedRows }),
         });
         const quoteBody = await quoteResponse.json().catch(() => null) as { data?: { rows?: Array<{ rowKey: string; success: boolean; data?: { fingerprint?: string; payerBowlerId?: number }; error?: { message?: string } }> } } | null;
-        if (!quoteResponse.ok || !quoteBody?.data?.rows) throw await errorFromResponse(quoteResponse, "Payment quotes are unavailable");
+        if (!quoteResponse.ok) throw errorFromBody(quoteBody, "Payment quotes are unavailable", quoteResponse.status);
+        if (!quoteBody?.data?.rows) throw new Error("Payment quotes are unavailable");
         for (const result of quoteBody.data.rows) {
           const row = prepared.find((candidate) => candidate.requestKey === result.rowKey);
           if (!row) continue;
