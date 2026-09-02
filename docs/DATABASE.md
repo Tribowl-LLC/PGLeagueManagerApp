@@ -432,11 +432,13 @@ rewrite rules, and zero policies. It records RLS disabled on every application
 table and fails closed on unsupported user-defined `public` catalog objects.
 Provider-managed schemas, roles and extension-owned implementation objects,
 privileges, role-owner identities/capability metadata, connection metadata,
-and physical column ordinals are deliberately excluded. Provider-managed
-extension installation/version metadata is also excluded; extension-owned
-catalog objects are excluded independently. Column names and all other
-declared properties remain exact, so historical physical order can differ
-without weakening adoption checks.
+and physical column ordinals are deliberately excluded. The exact reviewed
+Neon-managed `pg_session_jwt` 0.5.0 and `pgcrypto` 1.3 installations in
+`public` are also excluded; any other extension identity, version, schema, or
+relocatability remains fingerprinted. Extension-owned catalog objects are
+excluded independently. Column names and all other declared properties remain
+exact, so historical physical order can differ without weakening adoption
+checks.
 
 The approved identity is:
 

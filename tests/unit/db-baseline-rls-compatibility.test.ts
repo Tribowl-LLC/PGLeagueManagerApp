@@ -209,7 +209,7 @@ describe('legacy inert-RLS baseline compatibility', () => {
     );
   });
 
-  it('excludes provider-managed extension metadata from baseline fingerprints', () => {
+  it('excludes only approved provider-managed extension metadata from fingerprints', () => {
     const canonical = canonicalInventory();
     const withProviderExtensions = structuredClone(canonical);
     withProviderExtensions.extensions = [
@@ -219,6 +219,28 @@ describe('legacy inert-RLS baseline compatibility', () => {
     expect(createBaselineFingerprint(withProviderExtensions).digest).toBe(
       createBaselineFingerprint(canonical).digest,
     );
+
+    const withUnknownExtension = structuredClone(withProviderExtensions);
+    withUnknownExtension.extensions.push({
+      name: 'function_only_extension',
+      schema: 'public',
+      version: '1.0',
+      relocatable: true,
+    });
+    expect(createBaselineFingerprint(withUnknownExtension).digest).not.toBe(
+      createBaselineFingerprint(canonical).digest,
+    );
+    expect(createSchemaStateFingerprint(withUnknownExtension, baselineMigration()).digest).not.toBe(
+      createSchemaStateFingerprint(canonical, baselineMigration()).digest,
+    );
+
+    const withUnexpectedProviderVersion = structuredClone(withProviderExtensions);
+    withUnexpectedProviderVersion.extensions[0] = {
+      ...requiredAt(withUnexpectedProviderVersion.extensions, 0, 'extension'),
+      version: '0.6.0',
+    };
+    expect(createSchemaStateFingerprint(withUnexpectedProviderVersion, baselineMigration()).digest)
+      .not.toBe(createSchemaStateFingerprint(canonical, baselineMigration()).digest);
   });
 
   it('refuses function-body changes inside quoted content', () => {

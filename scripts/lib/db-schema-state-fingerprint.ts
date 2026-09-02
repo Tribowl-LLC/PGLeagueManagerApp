@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import type { ActiveMigration } from './db-migration-assets';
 import {
   APPLICATION_TABLE_NAMES,
+  isApprovedProviderManagedPublicExtension,
   loadApprovedBaselineFingerprint,
 } from './db-baseline-fingerprint';
 import {
@@ -134,9 +135,11 @@ function schemaStateStructure(inventory: DatabaseInventory): SchemaStateStructur
     rewriteRules: sortObjects(inventory.rewriteRules
       .filter((rule) => rule.schema === 'public')),
     unsupportedPublicObjects: [],
-    // Extension installation/version is provider-managed metadata. Extension-owned
-    // catalog objects are excluded independently by the inventory collectors.
-    extensions: [],
+    // Only the exact reviewed provider-managed installations are excluded.
+    // Extension-owned catalog objects are excluded independently by the collectors.
+    extensions: sortObjects(inventory.extensions.filter((extension) =>
+      extension.schema === 'public' && !isApprovedProviderManagedPublicExtension(extension)
+    )),
     sequences: sortObjects(inventory.sequences
       .filter((sequence) => sequence.schema === 'public')
       .map(({ owner: _owner, connectedRoleCanAlter: _canAlter, ...sequence }) => sequence)),
