@@ -26,6 +26,7 @@ const BowlerScoresPage = lazy(() => import("@/pages/bowler-scores-page"));
 const LeagueScoresPage = lazy(() => import("@/pages/league-scores-page"));
 const PaymentsPage = lazy(() => import("@/pages/payments-page"));
 const PaymentHistoryPage = lazy(() => import("@/pages/payment-history-page"));
+const MakePaymentPage = lazy(() => import("@/pages/make-payment-page"));
 const ReportsPage = lazy(() => import("@/pages/reports-page"));
 const LeaguePastDuePage = lazy(() => import("@/pages/league-past-due-page"));
 const PastDuePage = lazy(() => import("@/pages/past-due-page"));
@@ -146,6 +147,7 @@ function Router() {
         {/* Authenticated user routes */}
         <Route path="/bowler-dashboard">{guard('auth', <BowlerDashboardPage />)}</Route>
         <Route path="/payment-history">{guard('auth', <PaymentHistoryPage />)}</Route>
+        <Route path="/make-payment">{guard('auth', <MakePaymentPage />)}</Route>
         <Route path="/profile">{guard('auth', <ProfileSettingsPage />)}</Route>
         {/* Task #455: forced-rotation landing after an admin reset.
             Guarded by `auth` (anonymous traffic gets bounced to login),

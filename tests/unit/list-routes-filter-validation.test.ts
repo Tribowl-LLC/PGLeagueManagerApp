@@ -51,6 +51,7 @@ const mockStorage = {
   getBowler: vi.fn(),
   getPayments: vi.fn(),
   isBowlerLinked: vi.fn(),
+  isBowlerActiveInLeague: vi.fn(),
   getLocation: vi.fn(),
 };
 vi.mock('../../server/storage', () => ({ storage: mockStorage }));
@@ -122,6 +123,7 @@ vi.mock('../../server/services/payment-provider', () => ({
 }));
 vi.mock('../../server/services/payment-utils', () => ({
   getProviderCustomerId: () => 'cust_1',
+  ensureProviderCustomer: vi.fn().mockResolvedValue('cust_1'),
 }));
 vi.mock('../../server/routes/payments-provider/shared.js', () => ({
   getProviderForLeague: vi.fn(async () => fakeProvider),
@@ -219,6 +221,7 @@ beforeEach(() => {
   });
   mockStorage.getPayments.mockResolvedValue([]);
   mockStorage.isBowlerLinked.mockResolvedValue(false);
+  mockStorage.isBowlerActiveInLeague.mockResolvedValue(true);
   mockStorage.getLocation.mockResolvedValue({ id: 1, organizationId: 1 });
   mockStorage.getLeague.mockResolvedValue({ id: 11, organizationId: 1 });
 });
@@ -440,6 +443,29 @@ describe('GET /api/payments-provider/cards/:bowlerId — leagueId filter', () =>
 describe('POST /api/payments-provider/cards/:bowlerId — payer ownership', () => {
   it('does not let an administrator vault a card onto another bowler', async () => {
     const res = await postJson('/api/payments-provider/cards/99', { sourceId: 'cnon_admin_other_bowler' }, ORG_USER);
+    expect(res.status).toBe(403);
+    expect(fakeProvider.saveCardOnFile).not.toHaveBeenCalled();
+  });
+
+  it('vaults an own card only after the submitted league is tenant-scoped and active', async () => {
+    fakeProvider.saveCardOnFile.mockResolvedValue({ id: 'card_own', last4: '4242', brand: 'VISA' });
+    const ownUser: TestUser = { id: 8, role: 'user', organizationId: 1, bowlerId: 99 };
+    mockStorage.getLeague.mockResolvedValue({ id: 11, organizationId: 1 });
+    mockStorage.isBowlerActiveInLeague.mockResolvedValue(true);
+    const res = await postJson('/api/payments-provider/cards/99', { sourceId: 'cnon_own', leagueId: 11 }, ownUser);
+    expect(res.status).toBe(200);
+    expect(fakeProvider.saveCardOnFile).toHaveBeenCalledWith('cnon_own', 'cust_1');
+  });
+
+  it.each([
+    ['cross-organization league', { id: 11, organizationId: 2 }, true],
+    ['inactive membership', { id: 11, organizationId: 1 }, false],
+  ])('denies %s before any provider mutation', async (_case, league, active) => {
+    const ownUser: TestUser = { id: 8, role: 'user', organizationId: 1, bowlerId: 99 };
+    mockStorage.getLeague.mockResolvedValue(league);
+    mockStorage.isBowlerActiveInLeague.mockResolvedValue(active);
+    fakeProvider.saveCardOnFile.mockClear();
+    const res = await postJson('/api/payments-provider/cards/99', { sourceId: 'cnon_denied', leagueId: 11 }, ownUser);
     expect(res.status).toBe(403);
     expect(fakeProvider.saveCardOnFile).not.toHaveBeenCalled();
   });

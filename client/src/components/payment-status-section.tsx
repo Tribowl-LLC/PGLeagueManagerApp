@@ -62,5 +62,5 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({ league, bo
   if (isLoading) return <p className="text-sm text-muted-foreground">Loading canonical payment evidence…</p>;
   if (error) return <p className="text-sm text-destructive">Canonical payment evidence requires review.</p>;
 
-  return <PaymentOverviewCard weeklyFee={weeklyFee} financials={financials} />;
+  return <PaymentOverviewCard weeklyFee={weeklyFee} leagueId={league.id} financials={financials} />;
 };

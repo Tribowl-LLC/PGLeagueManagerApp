@@ -2,6 +2,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { format, parseISO } from "date-fns";
 import { formatCurrency } from "@/lib/utils";
 import { CheckCircle2, CircleDollarSign } from "lucide-react";
+import { Link } from "wouter";
 
 interface DoublePayInfo {
   dates: string[];
@@ -24,6 +25,8 @@ interface PaymentSummaryCardsProps {
   doublePay: DoublePayInfo;
   onPayPastDue: () => void;
   onPayRemaining: () => void;
+  pastDueHref?: string;
+  remainingHref?: string;
 }
 
 export function PaymentSummaryCards({
@@ -39,6 +42,8 @@ export function PaymentSummaryCards({
   doublePay,
   onPayPastDue,
   onPayRemaining,
+  pastDueHref,
+  remainingHref,
 }: PaymentSummaryCardsProps) {
   const isPaidInFull = remainingBalance <= 0 && totalPaidAmount > 0;
 
@@ -99,31 +104,52 @@ export function PaymentSummaryCards({
         </CardContent>
       </Card>
 
-      <Card
-        className={amountPastDue > 0 ? "cursor-pointer transition-colors hover:border-destructive/50 hover:bg-destructive/5" : ""}
-        onClick={() => amountPastDue > 0 && onPayPastDue()}
-      >
-        <CardHeader className="pb-2">
-          <CardTitle className="text-lg">Amount Past Due to Date</CardTitle>
-          <CardDescription>{amountPastDue > 0 ? "Click to make a payment" : "No amount past due"}</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <p className="text-2xl font-bold text-destructive">{formatCurrency(amountPastDue)}</p>
-        </CardContent>
-      </Card>
+      {pastDueHref ? (
+        <Link
+          href={pastDueHref}
+          aria-label="Amount Past Due to Date — Make a payment"
+          onClick={() => amountPastDue > 0 && onPayPastDue()}
+          className="block no-underline text-inherit"
+        >
+          <Card className={amountPastDue > 0 ? "cursor-pointer transition-colors hover:border-destructive/50 hover:bg-destructive/5" : ""}>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-lg">Amount Past Due to Date</CardTitle>
+              <CardDescription>{amountPastDue > 0 ? "Make a payment" : "No amount past due"}</CardDescription>
+            </CardHeader>
+            <CardContent><p className="text-2xl font-bold text-destructive">{formatCurrency(amountPastDue)}</p></CardContent>
+          </Card>
+        </Link>
+      ) : (
+        <Card
+          className={amountPastDue > 0 ? "cursor-pointer transition-colors hover:border-destructive/50 hover:bg-destructive/5" : ""}
+          onClick={() => amountPastDue > 0 && onPayPastDue()}
+        >
+          <CardHeader className="pb-2"><CardTitle className="text-lg">Amount Past Due to Date</CardTitle><CardDescription>{amountPastDue > 0 ? "Click to make a payment" : "No amount past due"}</CardDescription></CardHeader>
+          <CardContent><p className="text-2xl font-bold text-destructive">{formatCurrency(amountPastDue)}</p></CardContent>
+        </Card>
+      )}
 
-      <Card
-        className={remainingBalance > 0 ? "cursor-pointer transition-colors hover:border-primary/50 hover:bg-primary/5" : ""}
-        onClick={() => remainingBalance > 0 && onPayRemaining()}
-      >
-        <CardHeader className="pb-2">
-          <CardTitle className="text-lg">Full Season Remaining Balance</CardTitle>
-          <CardDescription>{remainingBalance > 0 ? "Click to make a one-time payment" : "Fully paid"}</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <p className="text-2xl font-bold">{formatCurrency(remainingBalance)}</p>
-        </CardContent>
-      </Card>
+      {remainingHref ? (
+        <Link
+          href={remainingHref}
+          aria-label="Full Season Remaining Balance — Make a payment"
+          onClick={() => remainingBalance > 0 && onPayRemaining()}
+          className="block no-underline text-inherit"
+        >
+          <Card className={remainingBalance > 0 ? "cursor-pointer transition-colors hover:border-primary/50 hover:bg-primary/5" : ""}>
+            <CardHeader className="pb-2"><CardTitle className="text-lg">Full Season Remaining Balance</CardTitle><CardDescription>{remainingBalance > 0 ? "Make a one-time payment" : "Fully paid"}</CardDescription></CardHeader>
+            <CardContent><p className="text-2xl font-bold">{formatCurrency(remainingBalance)}</p></CardContent>
+          </Card>
+        </Link>
+      ) : (
+        <Card
+          className={remainingBalance > 0 ? "cursor-pointer transition-colors hover:border-primary/50 hover:bg-primary/5" : ""}
+          onClick={() => remainingBalance > 0 && onPayRemaining()}
+        >
+          <CardHeader className="pb-2"><CardTitle className="text-lg">Full Season Remaining Balance</CardTitle><CardDescription>{remainingBalance > 0 ? "Click to make a one-time payment" : "Fully paid"}</CardDescription></CardHeader>
+          <CardContent><p className="text-2xl font-bold">{formatCurrency(remainingBalance)}</p></CardContent>
+        </Card>
+      )}
 
       {doublePay.dates.length > 0 && (
         <Card className="border-emerald-500/50 bg-emerald-500/5">
