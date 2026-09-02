@@ -2,7 +2,6 @@ import { FC } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { AlertTriangle, CheckCircle2 } from "lucide-react";
 import { formatCurrency } from "@/lib/utils";
-import type { League } from "@shared/schema";
 
 interface FinancialsData {
   fullSeasonAmount: number;
@@ -13,21 +12,17 @@ interface FinancialsData {
 }
 
 interface PaymentOverviewCardProps {
-  league: League;
   weeklyFee: number;
   financials: FinancialsData;
 }
 
 /** Read-only canonical payment summary for the bowler dashboard. */
-export const PaymentOverviewCard: FC<PaymentOverviewCardProps> = ({ league, weeklyFee, financials }) => (
+export const PaymentOverviewCard: FC<PaymentOverviewCardProps> = ({ weeklyFee, financials }) => (
   <Card>
     <CardHeader>
       <CardTitle>Payment Overview</CardTitle>
     </CardHeader>
     <CardContent className="pt-6 space-y-4">
-      <p className="text-sm text-muted-foreground">
-        {league.name} payments are based on exact canonical roster obligations. Make a payment or manage automatic payments from Payment History.
-      </p>
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <span className="text-sm text-muted-foreground">Full Season Total Due</span>
