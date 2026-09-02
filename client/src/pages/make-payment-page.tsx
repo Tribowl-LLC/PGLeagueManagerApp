@@ -40,8 +40,19 @@ export function clampPaymentWeekCount(value: number, maximum: number): number {
   return Math.min(Math.max(1, value), maximum);
 }
 
-export function hasPositivePaymentEvidence(rows: Array<{ allocatedMinor: number }>): boolean {
-  return rows.some((row) => row.allocatedMinor > 0);
+export function hasPositivePaymentEvidence(rows: Array<{
+  allocatedMinor: number;
+  outstandingMinor: number;
+  state: string;
+  reviewRequired: boolean;
+}>): boolean {
+  const hasConfirmedAllocation = rows.some((row) =>
+    row.allocatedMinor > 0 && row.state !== "voided" && !row.reviewRequired,
+  );
+  const hasUnresolvedReview = rows.some((row) =>
+    row.state !== "voided" && row.reviewRequired && row.outstandingMinor > 0,
+  );
+  return hasConfirmedAllocation && !hasUnresolvedReview;
 }
 
 function invalidatePaymentViews(leagueId: number, bowlerId: number): void {

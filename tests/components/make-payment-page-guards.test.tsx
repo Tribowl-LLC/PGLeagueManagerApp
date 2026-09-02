@@ -29,7 +29,14 @@ describe("dedicated make-payment guards", () => {
 
   it("requires positive allocation evidence before showing paid in full", () => {
     expect(hasPositivePaymentEvidence([])).toBe(false);
-    expect(hasPositivePaymentEvidence([{ allocatedMinor: 0 }])).toBe(false);
-    expect(hasPositivePaymentEvidence([{ allocatedMinor: 1 }])).toBe(true);
+    expect(hasPositivePaymentEvidence([{ allocatedMinor: 0, outstandingMinor: 0, state: "settled", reviewRequired: false }])).toBe(false);
+    expect(hasPositivePaymentEvidence([{ allocatedMinor: 1, outstandingMinor: 0, state: "settled", reviewRequired: false }])).toBe(true);
+  });
+
+  it("fails closed when review-required outstanding evidence accompanies a positive allocation", () => {
+    expect(hasPositivePaymentEvidence([
+      { allocatedMinor: 100, outstandingMinor: 0, state: "settled", reviewRequired: false },
+      { allocatedMinor: 100, outstandingMinor: 50, state: "open", reviewRequired: true },
+    ])).toBe(false);
   });
 });
