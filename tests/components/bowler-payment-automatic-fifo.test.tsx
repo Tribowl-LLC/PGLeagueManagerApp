@@ -146,4 +146,34 @@ describe("automatic FIFO bowler payment flow", () => {
     expect(screen.queryByText(/week of/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/allocation/i)).not.toBeInTheDocument();
   });
+
+  it.each([
+    ["card", { isSubmitting: true }],
+    ["wallet", { isWalletProcessing: true }],
+  ] as const)("locks the week selection while a %s payment is in flight", (_kind, processingProps) => {
+    render(<BowlerPaymentDialog
+      payDialogType="remaining"
+      onClose={vi.fn()}
+      remainingBalance={3_000}
+      paymentWeekCount={2}
+      maximumWeekCount={3}
+      paymentAmountMinor={2_000}
+      onPaymentWeekCountChange={vi.fn()}
+      savedCards={[]}
+      cardMode="new"
+      setCardMode={vi.fn()}
+      selectedSavedCardId=""
+      setSelectedSavedCardId={vi.fn()}
+      storeCard={false}
+      setStoreCard={vi.fn()}
+      {...processingProps}
+      onSubmit={vi.fn()}
+      isInitialized
+      initializeCard={vi.fn()}
+      cleanupCard={vi.fn()}
+    />);
+
+    expect(screen.getByRole("button", { name: "Pay for one fewer week" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Pay for one more week" })).toBeDisabled();
+  });
 });

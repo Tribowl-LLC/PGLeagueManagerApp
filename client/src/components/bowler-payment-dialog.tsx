@@ -131,6 +131,7 @@ export const BowlerPaymentDialog: FC<BowlerPaymentDialogProps> = ({
   };
 
   const dialogAmount = paymentAmountMinor;
+  const paymentInFlight = isSubmitting || isWalletProcessing;
 
   return (
     <Dialog open={!!payDialogType} onOpenChange={(open) => !open && onClose()}>
@@ -140,7 +141,7 @@ export const BowlerPaymentDialog: FC<BowlerPaymentDialogProps> = ({
           <DialogDescription>
             {fullBalanceOnly
               ? `This prepaid league requires its full remaining balance of ${formatCurrency(remainingBalance)}.`
-              : `Enter any amount up to ${formatCurrency(remainingBalance)}. Your payment is automatically applied to your oldest open week first.`}
+              : `Choose how many weeks to pay. Your payment is automatically applied to your oldest open week first.`}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4 py-4">
@@ -152,7 +153,7 @@ export const BowlerPaymentDialog: FC<BowlerPaymentDialogProps> = ({
                 variant="outline"
                 size="icon"
                 aria-label="Pay for one fewer week"
-                disabled={fullBalanceOnly || paymentWeekCount <= 1}
+                disabled={fullBalanceOnly || paymentInFlight || paymentWeekCount <= 1}
                 onClick={() => onPaymentWeekCountChange(paymentWeekCount - 1)}
               >
                 <Minus className="size-4" />
@@ -165,7 +166,7 @@ export const BowlerPaymentDialog: FC<BowlerPaymentDialogProps> = ({
                 variant="outline"
                 size="icon"
                 aria-label="Pay for one more week"
-                disabled={fullBalanceOnly || paymentWeekCount >= maximumWeekCount}
+                disabled={fullBalanceOnly || paymentInFlight || paymentWeekCount >= maximumWeekCount}
                 onClick={() => onPaymentWeekCountChange(paymentWeekCount + 1)}
               >
                 <Plus className="size-4" />
