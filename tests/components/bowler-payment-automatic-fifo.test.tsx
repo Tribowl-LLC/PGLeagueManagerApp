@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { BowlerPaymentDialog } from "@/components/bowler-payment-dialog";
+import { PaymentSummaryCards } from "@/components/payment-summary-cards";
 import { useBowlerPaymentSubmit } from "@/hooks/use-bowler-payment-submit";
 import type { Bowler, League } from "@shared/schema";
 
@@ -63,6 +64,28 @@ function SubmitProbe() {
 }
 
 describe("automatic FIFO bowler payment flow", () => {
+  it("offers a one-time payment as soon as future roster obligations create a remaining balance", async () => {
+    const onPayRemaining = vi.fn();
+    const user = userEvent.setup();
+    render(<PaymentSummaryCards
+      totalWeeksInSeason={32}
+      fullSeasonAmount={96_000}
+      weeklyFee={3_000}
+      weeksDueCount={0}
+      totalSeasonDues={0}
+      weeksPaid={0}
+      totalPaidAmount={0}
+      amountPastDue={0}
+      remainingBalance={96_000}
+      doublePay={{ dates: [], perWeekExtra: 0, totalExtra: 0, pastExtra: 0, isPaid: false }}
+      onPayPastDue={vi.fn()}
+      onPayRemaining={onPayRemaining}
+    />);
+
+    await user.click(screen.getByText("Click to make a one-time payment"));
+    expect(onPayRemaining).toHaveBeenCalledOnce();
+  });
+
   it("quotes and charges only amount plus authorized payer", async () => {
     mocks.csrfFetch.mockImplementation(async (url: string) => ({
       ok: true,
@@ -87,12 +110,17 @@ describe("automatic FIFO bowler payment flow", () => {
     expect(mocks.tokenizeCard).toHaveBeenCalledOnce();
   });
 
-  it("shows one tender amount and no occurrence selector", () => {
+  it("uses plus and minus controls to select a fixed number of weeks", async () => {
+    const onPaymentWeekCountChange = vi.fn();
+    const user = userEvent.setup();
     render(<BowlerPaymentDialog
       payDialogType="remaining"
       onClose={vi.fn()}
-      amountPastDue={0}
       remainingBalance={3_000}
+      paymentWeekCount={2}
+      maximumWeekCount={3}
+      paymentAmountMinor={2_000}
+      onPaymentWeekCountChange={onPaymentWeekCountChange}
       savedCards={[]}
       cardMode="new"
       setCardMode={vi.fn()}
@@ -107,9 +135,46 @@ describe("automatic FIFO bowler payment flow", () => {
       cleanupCard={vi.fn()}
     />);
 
-    expect(screen.getByText("Amount")).toBeInTheDocument();
-    expect(screen.getByText("$30.00")).toBeInTheDocument();
+    expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Number of weeks to pay" })).toHaveTextContent("2");
+    expect(screen.getByText("Remaining balance: $30.00")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pay $20.00" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Pay for one fewer week" }));
+    await user.click(screen.getByRole("button", { name: "Pay for one more week" }));
+    expect(onPaymentWeekCountChange).toHaveBeenNthCalledWith(1, 1);
+    expect(onPaymentWeekCountChange).toHaveBeenNthCalledWith(2, 3);
     expect(screen.queryByText(/week of/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/allocation/i)).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["card", true, false],
+    ["wallet", false, true],
+  ] as const)("locks the week selection while a %s payment is in flight", (_kind, isSubmitting, isWalletProcessing) => {
+    render(<BowlerPaymentDialog
+      payDialogType="remaining"
+      onClose={vi.fn()}
+      remainingBalance={3_000}
+      paymentWeekCount={2}
+      maximumWeekCount={3}
+      paymentAmountMinor={2_000}
+      onPaymentWeekCountChange={vi.fn()}
+      savedCards={[]}
+      cardMode="new"
+      setCardMode={vi.fn()}
+      selectedSavedCardId=""
+      setSelectedSavedCardId={vi.fn()}
+      storeCard={false}
+      setStoreCard={vi.fn()}
+      isSubmitting={isSubmitting}
+      isWalletProcessing={isWalletProcessing}
+      onSubmit={vi.fn()}
+      isInitialized
+      initializeCard={vi.fn()}
+      cleanupCard={vi.fn()}
+    />);
+
+    expect(screen.getByRole("button", { name: "Pay for one fewer week" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Pay for one more week" })).toBeDisabled();
   });
 });

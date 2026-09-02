@@ -103,9 +103,11 @@ export function useWalletPayments({
   const googlePayInstanceRef = useRef<SquareWalletPayment | null>(null);
   const mountedRef = useRef(true);
   const initializedRef = useRef(false);
+  const amountCentsRef = useRef(amountCents);
   const onTokenReceivedRef = useRef(onTokenReceived);
   const onErrorRef = useRef(onError);
 
+  amountCentsRef.current = amountCents;
   onTokenReceivedRef.current = onTokenReceived;
   onErrorRef.current = onError;
 
@@ -177,7 +179,11 @@ export function useWalletPayments({
         if (cancelled || !mountedRef.current) return;
         setDebugStatus(`square-ready`);
 
-        const amount = amountCents > 0 ? (amountCents / 100).toFixed(2) : '1.00';
+        // Initialization is deliberately delayed so the wallet containers can
+        // mount. Read the current amount after that delay instead of capturing
+        // the amount from the render that scheduled it.
+        const currentAmountCents = amountCentsRef.current;
+        const amount = currentAmountCents > 0 ? (currentAmountCents / 100).toFixed(2) : '1.00';
         const paymentRequest = payments.paymentRequest({
           countryCode: 'US',
           currencyCode: 'USD',

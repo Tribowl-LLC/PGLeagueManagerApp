@@ -42,9 +42,6 @@
   "client/src/hooks/use-wallet-payments.ts": {
     "@typescript-eslint/no-non-null-assertion": {
       "count": 2
-    },
-    "react-hooks/exhaustive-deps": {
-      "count": 1
     }
   },
   "client/src/lib/league-filter-utils.ts": {

@@ -30,6 +30,7 @@ import { PaymentHistoryContent } from "./payment-history-page/payment-history-co
 import { assertRosterPaymentSucceeded, beginPaymentIntent, clearPaymentIntent, isTerminalRosterPaymentFailure, paymentRequestHeaders, paymentRequestWithRecovery } from "@/lib/payment-request-identity";
 import { resolveInteractiveFinancialRead } from "@/lib/financial-read-contract";
 import { invalidatePaymentHistoryFinancials, paymentHistoryFinancialQueryKey } from "@/lib/payment-history-financial-query";
+import { buildOneTimePaymentOptions } from "./payment-history-page/one-time-payment-options";
 
 export default function PaymentHistoryPage() {
   const { toast } = useToast();
@@ -41,6 +42,7 @@ export default function PaymentHistoryPage() {
   );
   const [leagueSheetOpen, setLeagueSheetOpen] = useState(false);
   const [payDialogType, setPayDialogType] = useState<'pastdue' | 'remaining' | null>(null);
+  const [oneTimePaymentWeekCount, setOneTimePaymentWeekCount] = useState(1);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [cardMode, setCardMode] = useState<'new' | 'saved'>('new');
   const [selectedSavedCardId, setSelectedSavedCardId] = useState<string>('');
@@ -239,8 +241,14 @@ export default function PaymentHistoryPage() {
     }
   }
 
-  const resolvedFinancialRead = resolveInteractiveFinancialRead(canonicalFinancialResponse?.data);
-  const canonicalRows = resolvedFinancialRead.status === "canonical" ? resolvedFinancialRead.rows : [];
+  const resolvedFinancialRead = useMemo(
+    () => resolveInteractiveFinancialRead(canonicalFinancialResponse?.data),
+    [canonicalFinancialResponse?.data],
+  );
+  const canonicalRows = useMemo(
+    () => resolvedFinancialRead.status === "canonical" ? resolvedFinancialRead.rows : [],
+    [resolvedFinancialRead],
+  );
   const financials = {
     weeksPassed: canonicalRows.filter((row) => row.classification !== "future").length,
     totalWeeksInSeason: canonicalRows.length,
@@ -266,11 +274,33 @@ export default function PaymentHistoryPage() {
   const weeksDueCount = league?.weeklyFee ? Math.round(totalSeasonDues / league.weeklyFee) : 0;
   const weeksPaid = league?.weeklyFee ? Math.round(totalPaidAmount / league.weeklyFee) : 0;
 
-  const dialogAmountCents = payDialogType === 'pastdue' ? displayAmountPastDue : displayRemainingBalance;
+  const oneTimePaymentOptions = useMemo(() => buildOneTimePaymentOptions(canonicalRows, displayRemainingBalance), [canonicalRows, displayRemainingBalance]);
+  const maximumWeekCount = oneTimePaymentOptions.length;
+  const selectedOneTimePayment = league?.paymentMode === "upfront"
+    ? oneTimePaymentOptions.at(-1)
+    : oneTimePaymentOptions.find((option) => option.weekCount === oneTimePaymentWeekCount);
+  const dialogAmountCents = selectedOneTimePayment?.amountMinor ?? 0;
+
+  const openOneTimePayment = useCallback((suggestedAmountMinor?: number) => {
+    const suggestedOption = suggestedAmountMinor && suggestedAmountMinor > 0
+      ? oneTimePaymentOptions.find((option) => option.amountMinor >= suggestedAmountMinor)
+      : undefined;
+    setOneTimePaymentWeekCount(league?.paymentMode === "upfront"
+      ? Math.max(1, maximumWeekCount)
+      : suggestedOption?.weekCount ?? 1);
+    walletRequestKeyRef.current = null;
+    setPayDialogType('remaining');
+  }, [league?.paymentMode, maximumWeekCount, oneTimePaymentOptions]);
+
+  const closeOneTimePayment = useCallback(() => {
+    setPayDialogType(null);
+    setOneTimePaymentWeekCount(1);
+    walletRequestKeyRef.current = null;
+  }, []);
 
   const handleWalletPayment = useCallback(async (token: string, walletType: 'apple_pay' | 'google_pay') => {
     if (resolvedFinancialRead.status === "unavailable" || loadingFinancialRead || financialReadError) return;
-    if (!bowlerId || !leagueId || !dialogAmountCents) return;
+    if (!bowlerId || !leagueId || dialogAmountCents <= 0) return;
     // same inline email override as the card-form path so
     // Apple Pay / Google Pay charges also trigger Square's hosted
     // receipt when no email is on file for the bowler. Mirrors the
@@ -310,7 +340,7 @@ export default function PaymentHistoryPage() {
       toast({ title: "Payment Successful", description: `${walletLabel} payment completed.` });
       queryClient.invalidateQueries({ queryKey: ["/api/financials/f5/payments"] });
       await invalidatePaymentHistoryFinancials(queryClient, leagueId, bowlerId);
-      setPayDialogType(null);
+      closeOneTimePayment();
     } catch (error) {
       logger.error('Wallet Payment', 'Payment failed', error);
       if (isProviderNotConfiguredError(error)) {
@@ -324,11 +354,11 @@ export default function PaymentHistoryPage() {
     } finally {
       setIsWalletProcessing(false);
     }
-  }, [bowlerId, leagueId, league, dialogAmountCents, toast, bowlerEmail, receiptEmail, navigate, resolvedFinancialRead.status, loadingFinancialRead, financialReadError]);
+  }, [bowlerId, leagueId, league, dialogAmountCents, toast, bowlerEmail, receiptEmail, navigate, resolvedFinancialRead.status, loadingFinancialRead, financialReadError, closeOneTimePayment]);
 
   const beginWalletPayment = useCallback(() => {
     if (resolvedFinancialRead.status === "unavailable" || loadingFinancialRead || financialReadError) return;
-    if (!bowlerId || !leagueId || !dialogAmountCents) return;
+    if (!bowlerId || !leagueId || dialogAmountCents <= 0) return;
     walletRequestKeyRef.current = beginPaymentIntent(
       `history-wallet:${leagueId}:${bowlerId}:${dialogAmountCents}`,
     );
@@ -348,7 +378,7 @@ export default function PaymentHistoryPage() {
   } = useWalletPayments({
     locationId: league?.locationId,
     amountCents: dialogAmountCents,
-    enabled: !!payDialogType && !!league?.locationId && supportsWallets,
+    enabled: !!payDialogType && dialogAmountCents > 0 && !!league?.locationId && supportsWallets,
     onPaymentStarted: beginWalletPayment,
     onTokenReceived: handleWalletPayment,
     onError: (error) => toast({ title: "Wallet Payment Error", description: error, variant: "destructive" }),
@@ -366,10 +396,9 @@ export default function PaymentHistoryPage() {
       return;
     }
     const dialogAmount = dialogAmountCents;
-    const dialogLabel = payDialogType === 'pastdue' ? 'past due amount' : 'remaining balance';
 
-    if (!bowlerId || !leagueId || !dialogAmount) {
-      toast({ title: "Error", description: "Missing payment information.", variant: "destructive" });
+    if (!bowlerId || !leagueId || dialogAmount <= 0) {
+      toast({ title: "Payment unavailable", description: "No payable canonical weeks are available.", variant: "destructive" });
       return;
     }
 
@@ -425,10 +454,10 @@ export default function PaymentHistoryPage() {
       if (!exactResponse.ok) throw makeApiError(exactBody, exactResponse.status, "Payment failed");
       assertRosterPaymentSucceeded(exactBody.data?.status ?? exactBody.status);
       clearPaymentIntent(paymentScope);
-      toast({ title: "Payment Successful", description: `${formatCurrency(quoteBody.data.amountMinor)} ${dialogLabel} has been paid.` });
+      toast({ title: "Payment Successful", description: `${formatCurrency(quoteBody.data.amountMinor)} has been paid.` });
       queryClient.invalidateQueries({ queryKey: ["/api/financials/f5/payments"] });
       await invalidatePaymentHistoryFinancials(queryClient, leagueId, bowlerId);
-      setPayDialogType(null);
+      closeOneTimePayment();
       if (storeCard && cardMode === "new") {
         queryClient.invalidateQueries({ queryKey: [`/api/payments-provider/cards/${bowlerId}`] });
       }
@@ -516,10 +545,17 @@ export default function PaymentHistoryPage() {
       amountPastDue={displayAmountPastDue}
       remainingBalance={displayRemainingBalance}
       doublePay={doublePay}
-      onPayPastDue={() => checkoutAvailable && setPayDialogType('pastdue')}
-      onPayRemaining={() => checkoutAvailable && setPayDialogType('remaining')}
+      onPayPastDue={() => checkoutAvailable && openOneTimePayment(displayAmountPastDue)}
+      onPayRemaining={() => checkoutAvailable && openOneTimePayment()}
       payDialogType={payDialogType}
-      onCloseDialog={() => setPayDialogType(null)}
+      onCloseDialog={closeOneTimePayment}
+      paymentWeekCount={Math.max(1, selectedOneTimePayment?.weekCount ?? oneTimePaymentWeekCount)}
+      maximumWeekCount={Math.max(1, maximumWeekCount)}
+      paymentAmountMinor={dialogAmountCents}
+      onPaymentWeekCountChange={(value) => {
+        walletRequestKeyRef.current = null;
+        setOneTimePaymentWeekCount(value);
+      }}
       savedCards={savedCards}
       cardMode={cardMode}
       setCardMode={setCardMode}

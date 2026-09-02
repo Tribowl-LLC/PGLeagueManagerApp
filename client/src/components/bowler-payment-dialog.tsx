@@ -11,7 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Loader2, CreditCard, Wallet } from "lucide-react";
+import { Loader2, CreditCard, Minus, Plus, Wallet } from "lucide-react";
 import { formatCurrency } from "@/lib/utils";
 import type { SavedCard } from "@shared/schema";
 
@@ -53,8 +53,12 @@ const GOOGLE_PAY_BUTTON_BASE_STYLE: CSSProperties = {
 interface BowlerPaymentDialogProps {
   payDialogType: 'pastdue' | 'remaining' | null;
   onClose: () => void;
-  amountPastDue: number;
   remainingBalance: number;
+  paymentWeekCount: number;
+  maximumWeekCount: number;
+  paymentAmountMinor: number;
+  onPaymentWeekCountChange: (value: number) => void;
+  fullBalanceOnly?: boolean;
   savedCards: SavedCard[];
   cardMode: 'new' | 'saved';
   setCardMode: (mode: 'new' | 'saved') => void;
@@ -87,8 +91,12 @@ interface BowlerPaymentDialogProps {
 export const BowlerPaymentDialog: FC<BowlerPaymentDialogProps> = ({
   payDialogType,
   onClose,
-  amountPastDue,
   remainingBalance,
+  paymentWeekCount,
+  maximumWeekCount,
+  paymentAmountMinor,
+  onPaymentWeekCountChange,
+  fullBalanceOnly = false,
   savedCards,
   cardMode,
   setCardMode,
@@ -122,25 +130,55 @@ export const BowlerPaymentDialog: FC<BowlerPaymentDialogProps> = ({
     }
   };
 
-  const dialogAmount = payDialogType === 'pastdue' ? amountPastDue : remainingBalance;
+  const dialogAmount = paymentAmountMinor;
+  const paymentInFlight = isSubmitting || isWalletProcessing;
 
   return (
     <Dialog open={!!payDialogType} onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>{payDialogType === 'pastdue' ? 'Pay Past Due Amount' : 'Pay Remaining Balance'}</DialogTitle>
+          <DialogTitle>Make a One-Time Payment</DialogTitle>
           <DialogDescription>
-            {payDialogType === 'pastdue'
-              ? `Pay your outstanding balance of ${formatCurrency(amountPastDue)}`
-              : `Pay off your remaining season balance of ${formatCurrency(remainingBalance)}`}
+            {fullBalanceOnly
+              ? `This prepaid league requires its full remaining balance of ${formatCurrency(remainingBalance)}.`
+              : `Choose how many weeks to pay. Your payment is automatically applied to your oldest open week first.`}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4 py-4">
-          <div className="rounded-md border p-4 bg-muted/50">
-            <div className="flex justify-between items-center">
-              <span className="text-sm text-muted-foreground">Amount</span>
+          <div className="space-y-3 rounded-md border bg-muted/50 p-4">
+            <Label>Number of weeks</Label>
+            <div className="flex items-center justify-center gap-4">
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                aria-label="Pay for one fewer week"
+                disabled={fullBalanceOnly || paymentInFlight || paymentWeekCount <= 1}
+                onClick={() => onPaymentWeekCountChange(paymentWeekCount - 1)}
+              >
+                <Minus className="size-4" />
+              </Button>
+              <output aria-label="Number of weeks to pay" className="min-w-20 text-center text-2xl font-bold">
+                {paymentWeekCount}
+              </output>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                aria-label="Pay for one more week"
+                disabled={fullBalanceOnly || paymentInFlight || paymentWeekCount >= maximumWeekCount}
+                onClick={() => onPaymentWeekCountChange(paymentWeekCount + 1)}
+              >
+                <Plus className="size-4" />
+              </Button>
+            </div>
+            <div className="flex items-center justify-between border-t pt-3">
+              <span className="text-sm text-muted-foreground">Payment amount</span>
               <span className="text-lg font-bold">{formatCurrency(dialogAmount)}</span>
             </div>
+            <p className="text-xs text-muted-foreground">
+              Remaining balance: {formatCurrency(remainingBalance)}
+            </p>
           </div>
 
           {/*
@@ -320,6 +358,7 @@ export const BowlerPaymentDialog: FC<BowlerPaymentDialogProps> = ({
               (cardMode === 'saved' && !selectedSavedCardId) ||
               isSubmitting ||
               isWalletProcessing ||
+              paymentAmountMinor <= 0 ||
               // block submit when the
               // bowler has no email on file AND the inline "Email for
               // receipt" input is empty. Square will hard-reject the
