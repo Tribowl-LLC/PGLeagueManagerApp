@@ -464,23 +464,29 @@ describe("standing automatic payments on migrated PostgreSQL", () => {
         consentVersion: firstWake.consentVersion,
         cutoffAt: firstWake.cutoffAt,
         occurrenceRevision: firstWake.occurrenceRevision,
+        expectedAttemptCount: 0,
         errorCode: "PREPARATION_UNKNOWN",
         terminal: false,
         now: new Date(target.occurrence.startAt),
       };
       const retry = await recordStandingAutopayPreparationFailure(failureInput);
       expect(retry).toMatchObject({ state: "retry_scheduled", attemptCount: 1, nextAttemptAt: "2039-01-10 19:01:00" });
+      const duplicate = await recordStandingAutopayPreparationFailure(failureInput);
+      expect(duplicate).toMatchObject({ state: "retry_scheduled", attemptCount: 1, nextAttemptAt: "2039-01-10 19:01:00" });
 
       const nextWake = await getNextStandingAutopayWake();
       expect(nextWake).toMatchObject({ kind: "standing_cutoff", consentId: otherConsentId, cutoffAt: firstWake.cutoffAt, dueAt: firstWake.cutoffAt });
 
-      await recordStandingAutopayPreparationFailure(failureInput);
-      await recordStandingAutopayPreparationFailure(failureInput);
-      await recordStandingAutopayPreparationFailure(failureInput);
-      const terminal = await recordStandingAutopayPreparationFailure(failureInput);
-      expect(terminal).toMatchObject({ state: "failed_terminal", attemptCount: 5, nextAttemptAt: null });
+      let terminal = retry;
+      let cappedRetry: typeof retry | undefined;
+      for (let expectedAttemptCount = 1; expectedAttemptCount < 11; expectedAttemptCount += 1) {
+        terminal = await recordStandingAutopayPreparationFailure({ ...failureInput, expectedAttemptCount });
+        if (terminal.attemptCount === 10) cappedRetry = terminal;
+      }
+      expect(cappedRetry).toMatchObject({ state: "retry_scheduled", attemptCount: 10, nextAttemptAt: "2039-01-11 01:00:00" });
+      expect(terminal).toMatchObject({ state: "failed_terminal", attemptCount: 11, nextAttemptAt: null });
       const [durableAttempt] = await db.select().from(standingAutopayPreparationAttempts).where(eq(standingAutopayPreparationAttempts.consentId, firstWake.consentId));
-      expect(durableAttempt).toMatchObject({ state: "failed_terminal", attemptCount: 5, lastErrorCode: "PREPARATION_UNKNOWN" });
+      expect(durableAttempt).toMatchObject({ state: "failed_terminal", attemptCount: 11, lastErrorCode: "PREPARATION_UNKNOWN" });
       expect(await getNextStandingAutopayWake()).toMatchObject({ kind: "standing_cutoff", consentId: otherConsentId });
     } finally {
       await db.delete(standingAutopayPreparationAttempts).where(and(eq(standingAutopayPreparationAttempts.organizationId, organizationId), eq(standingAutopayPreparationAttempts.consentId, secondConsent.id)));

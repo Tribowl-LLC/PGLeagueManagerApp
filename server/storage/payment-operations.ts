@@ -2123,7 +2123,7 @@ export type StandingAutopayWake = {
   attemptCount: number;
 };
 
-export const STANDING_AUTOPAY_PREPARATION_MAX_ATTEMPTS = 5;
+export const STANDING_AUTOPAY_PREPARATION_MAX_ATTEMPTS = 11;
 const STANDING_AUTOPAY_PREPARATION_MIN_RETRY_SECONDS = 60;
 const STANDING_AUTOPAY_PREPARATION_MAX_RETRY_SECONDS = 6 * 60 * 60;
 
@@ -2134,6 +2134,7 @@ export async function recordStandingAutopayPreparationFailure(input: {
   consentVersion: number;
   cutoffAt: string;
   occurrenceRevision: number;
+  expectedAttemptCount: number;
   errorCode: string;
   terminal: boolean;
   now?: Date;
@@ -2143,36 +2144,52 @@ export async function recordStandingAutopayPreparationFailure(input: {
   const firstAttemptTerminal = input.terminal || STANDING_AUTOPAY_PREPARATION_MAX_ATTEMPTS <= 1;
   const firstRetryAt = firstAttemptTerminal ? null : new Date(now.getTime() + STANDING_AUTOPAY_PREPARATION_MIN_RETRY_SECONDS * 1000).toISOString();
   const result = await db.execute<{ state: "retry_scheduled" | "failed_terminal"; attempt_count: number; next_attempt_at: string | null }>(sql`
-    INSERT INTO standing_autopay_preparation_attempts (
-      organization_id, league_id, consent_id, consent_version, cutoff_at,
-      occurrence_revision, state, attempt_count, next_attempt_at,
-      last_error_code, created_at, updated_at
-    ) VALUES (
-      ${input.organizationId}, ${input.leagueId}, ${input.consentId}::uuid,
-      ${input.consentVersion}, ${input.cutoffAt}::timestamptz,
-      ${input.occurrenceRevision}, ${firstAttemptTerminal ? "failed_terminal" : "retry_scheduled"},
-      1, ${firstRetryAt}::timestamptz, ${errorCode}, ${now.toISOString()}::timestamptz,
-      ${now.toISOString()}::timestamptz
+    WITH recorded AS (
+      INSERT INTO standing_autopay_preparation_attempts (
+        organization_id, league_id, consent_id, consent_version, cutoff_at,
+        occurrence_revision, state, attempt_count, next_attempt_at,
+        last_error_code, created_at, updated_at
+      ) VALUES (
+        ${input.organizationId}, ${input.leagueId}, ${input.consentId}::uuid,
+        ${input.consentVersion}, ${input.cutoffAt}::timestamptz,
+        ${input.occurrenceRevision}, ${firstAttemptTerminal ? "failed_terminal" : "retry_scheduled"},
+        1, ${firstRetryAt}::timestamptz, ${errorCode}, ${now.toISOString()}::timestamptz,
+        ${now.toISOString()}::timestamptz
+      )
+      ON CONFLICT (organization_id, league_id, consent_id, consent_version, cutoff_at, occurrence_revision)
+      DO UPDATE SET
+        attempt_count = standing_autopay_preparation_attempts.attempt_count + 1,
+        state = CASE
+          WHEN ${input.terminal} OR standing_autopay_preparation_attempts.attempt_count + 1 >= ${STANDING_AUTOPAY_PREPARATION_MAX_ATTEMPTS}
+            THEN 'failed_terminal'
+          ELSE 'retry_scheduled'
+        END,
+        next_attempt_at = CASE
+          WHEN ${input.terminal} OR standing_autopay_preparation_attempts.attempt_count + 1 >= ${STANDING_AUTOPAY_PREPARATION_MAX_ATTEMPTS}
+            THEN NULL
+          ELSE ${now.toISOString()}::timestamptz + make_interval(secs => LEAST(
+            ${STANDING_AUTOPAY_PREPARATION_MAX_RETRY_SECONDS},
+            ${STANDING_AUTOPAY_PREPARATION_MIN_RETRY_SECONDS} * power(2, standing_autopay_preparation_attempts.attempt_count)
+          )::integer)
+        END,
+        last_error_code = EXCLUDED.last_error_code,
+        updated_at = EXCLUDED.updated_at
+      WHERE standing_autopay_preparation_attempts.attempt_count = ${input.expectedAttemptCount}
+      RETURNING state, attempt_count, next_attempt_at
     )
-    ON CONFLICT (organization_id, league_id, consent_id, consent_version, cutoff_at, occurrence_revision)
-    DO UPDATE SET
-      attempt_count = standing_autopay_preparation_attempts.attempt_count + 1,
-      state = CASE
-        WHEN ${input.terminal} OR standing_autopay_preparation_attempts.attempt_count + 1 >= ${STANDING_AUTOPAY_PREPARATION_MAX_ATTEMPTS}
-          THEN 'failed_terminal'
-        ELSE 'retry_scheduled'
-      END,
-      next_attempt_at = CASE
-        WHEN ${input.terminal} OR standing_autopay_preparation_attempts.attempt_count + 1 >= ${STANDING_AUTOPAY_PREPARATION_MAX_ATTEMPTS}
-          THEN NULL
-        ELSE ${now.toISOString()}::timestamptz + make_interval(secs => LEAST(
-          ${STANDING_AUTOPAY_PREPARATION_MAX_RETRY_SECONDS},
-          ${STANDING_AUTOPAY_PREPARATION_MIN_RETRY_SECONDS} * power(2, standing_autopay_preparation_attempts.attempt_count)
-        )::integer)
-      END,
-      last_error_code = EXCLUDED.last_error_code,
-      updated_at = EXCLUDED.updated_at
-    RETURNING state, attempt_count, (next_attempt_at AT TIME ZONE 'UTC')::text AS next_attempt_at
+    SELECT state, attempt_count, (next_attempt_at AT TIME ZONE 'UTC')::text AS next_attempt_at
+    FROM recorded
+    UNION ALL
+    SELECT state, attempt_count, (next_attempt_at AT TIME ZONE 'UTC')::text AS next_attempt_at
+    FROM standing_autopay_preparation_attempts
+    WHERE organization_id = ${input.organizationId}
+      AND league_id = ${input.leagueId}
+      AND consent_id = ${input.consentId}::uuid
+      AND consent_version = ${input.consentVersion}
+      AND cutoff_at = ${input.cutoffAt}::timestamptz
+      AND occurrence_revision = ${input.occurrenceRevision}
+      AND NOT EXISTS (SELECT 1 FROM recorded)
+    LIMIT 1
   `);
   const row = result.rows[0];
   if (!row) throw new PaymentOperationValidationError("standing preparation failure was not recorded");

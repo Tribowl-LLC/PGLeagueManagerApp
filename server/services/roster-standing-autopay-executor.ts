@@ -59,9 +59,9 @@ export class RosterStandingAutopayOperationExecutor {
     if (!rosterStandingAutopayEnabled || scheduledPaymentExecutionMode !== "ledger_execute") return;
     if (wake.kind === "standing_cutoff") {
       const { prepareStandingAutopayCutoff } = await import("./roster-standing-autopay.js");
+      let operation: PaymentOperation | undefined;
       try {
-        const operation = await prepareStandingAutopayCutoff({ organizationId: wake.organizationId, leagueId: wake.leagueId, consentId: wake.consentId, cutoffAt: wake.cutoffAt });
-        if (operation) await this.execute({ organizationId: operation.organizationId, operationId: operation.id });
+        operation = await prepareStandingAutopayCutoff({ organizationId: wake.organizationId, leagueId: wake.leagueId, consentId: wake.consentId, cutoffAt: wake.cutoffAt });
       } catch (error) {
         const errorCode = error instanceof StandingAutopayError ? error.code : "PREPARATION_UNKNOWN";
         const failure = await recordStandingAutopayPreparationFailure({
@@ -71,6 +71,7 @@ export class RosterStandingAutopayOperationExecutor {
           consentVersion: wake.consentVersion,
           cutoffAt: wake.cutoffAt,
           occurrenceRevision: wake.occurrenceRevision,
+          expectedAttemptCount: wake.preparationAttemptCount,
           errorCode,
           // Preparation failures happen before provider dispatch, so every
           // class is safe to move behind the other due payers and retry. The
@@ -88,6 +89,7 @@ export class RosterStandingAutopayOperationExecutor {
           nextAttemptAt: failure.nextAttemptAt,
         });
       }
+      if (operation) await this.execute({ organizationId: operation.organizationId, operationId: operation.id });
       return;
     }
     if (wake.kind !== "standing_operation") return;

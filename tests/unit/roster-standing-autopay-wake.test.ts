@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PaymentOperationWakeScheduler } from "../../server/services/payment-operation-wake-scheduler";
 
 const executorMocks = vi.hoisted(() => ({
@@ -35,6 +35,10 @@ vi.mock("../../server/storage/payment-operations.js", () => ({
 }));
 
 describe("standing automatic-payment wake isolation", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it("supports a separate cutoff/operation wake shape", async () => {
     const loadNextWake = vi.fn().mockResolvedValue({ kind: "standing_cutoff", organizationId: 7, leagueId: 11, consentId: "consent", dueAt: new Date(Date.now() + 60_000).toISOString() });
     const handleWake = vi.fn().mockResolvedValue(undefined);
@@ -70,8 +74,30 @@ describe("standing automatic-payment wake isolation", () => {
       consentId: wake.consentId,
       cutoffAt: wake.cutoffAt,
       occurrenceRevision: 2,
+      expectedAttemptCount: 0,
       errorCode: "ARREARS_REQUIRE_ONE_TIME_FIFO",
       terminal: false,
     }));
+  });
+
+  it("does not classify an execution failure as a preparation failure", async () => {
+    const { RosterStandingAutopayOperationExecutor } = await import("../../server/services/roster-standing-autopay-executor.js");
+    executorMocks.prepareCutoff.mockResolvedValueOnce({ organizationId: 7, id: "7f0d3323-25bc-455b-a6d1-b378f73bc557" });
+    const executor = new RosterStandingAutopayOperationExecutor();
+    vi.spyOn(executor, "execute").mockRejectedValueOnce(new Error("local finalization failed"));
+    const wake = {
+      kind: "standing_cutoff" as const,
+      organizationId: 7,
+      leagueId: 11,
+      consentId: "18d4239f-4b5f-47fb-af07-205965611574",
+      consentVersion: 3,
+      cutoffAt: "2039-01-10 19:00:00",
+      occurrenceRevision: 2,
+      preparationAttemptCount: 0,
+      dueAt: "2039-01-10 19:00:00",
+    };
+
+    await expect(executor.handleWake(wake)).rejects.toThrow("local finalization failed");
+    expect(executorMocks.recordPreparationFailure).not.toHaveBeenCalled();
   });
 });

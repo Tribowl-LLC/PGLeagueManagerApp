@@ -21,7 +21,7 @@ and occurrence revision. A transient failure is deferred with exponential
 backoff (one minute through six hours), so another payer due at the same time
 becomes the next scheduler wake instead of being held behind the failure. Each
 payer remains FIFO: a failed older cutoff prevents that payer's later cutoffs
-from overtaking it. Five consecutive preparation failures become terminal for
+from overtaking it. Eleven consecutive preparation failures become terminal for
 that consent cutoff while other payers continue normally.
 
 The capability is gated by `ROSTER_STANDING_AUTOPAY_ENABLED=true` and requires
