@@ -62,6 +62,37 @@ describe("PaymentHistoryContent", () => {
     expect(screen.queryByText(/Square|card details|automatic weekly payments/i)).not.toBeInTheDocument();
   });
 
+  it("does not make zero-balance summary cards actionable", () => {
+    render(<PaymentHistoryContent
+      bowlerName="Bowler"
+      league={league}
+      leagueId={17}
+      hasMultipleLeagues={false}
+      leagueSheetOpen={false}
+      onOpenLeagueSheet={vi.fn()}
+      onCloseLeagueSheet={vi.fn()}
+      bowlerLeagues={[]}
+      leagueMap={new Map()}
+      onSelectLeague={vi.fn()}
+      totalWeeksInSeason={10}
+      fullSeasonAmount={30000}
+      weeksDueCount={3}
+      totalSeasonDues={9000}
+      weeksPaid={3}
+      totalPaidAmount={9000}
+      amountPastDue={0}
+      remainingBalance={0}
+      doublePay={{ dates: [], perWeekExtra: 0, totalExtra: 0, pastExtra: 0, isPaid: true }}
+      canonicalPaymentLoading={false}
+      canonicalPaymentError={null}
+      canonicalRows={[]}
+    />);
+    expect(screen.queryByRole("link", { name: /Amount Past Due/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Remaining Balance/ })).not.toBeInTheDocument();
+    expect(screen.getByText("No amount past due")).toBeInTheDocument();
+    expect(screen.getByText("Fully paid")).toBeInTheDocument();
+  });
+
   it("disables automatic-payment setup without a profile email", () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, queryFn: async () => ({ data: { state: "none", partnerBowlerIds: [] } }) } } });
     render(<QueryClientProvider client={queryClient}><StandingAutopayCard

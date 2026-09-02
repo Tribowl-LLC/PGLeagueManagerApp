@@ -458,6 +458,21 @@ describe('POST /api/payments-provider/cards/:bowlerId — payer ownership', () =
   });
 
   it.each([
+    ['partially numeric string', '11abc'],
+    ['decimal string', '11.5'],
+    ['zero number', 0],
+    ['negative number', -11],
+    ['object', { id: 11 }],
+    ['array', [11]],
+  ])('rejects a malformed positive-integer leagueId (%s) before provider mutation', async (_case, leagueId) => {
+    const ownUser: TestUser = { id: 8, role: 'user', organizationId: 1, bowlerId: 99 };
+    fakeProvider.saveCardOnFile.mockClear();
+    const res = await postJson('/api/payments-provider/cards/99', { sourceId: 'cnon_malformed', leagueId }, ownUser);
+    expect(res.status).toBe(400);
+    expect(fakeProvider.saveCardOnFile).not.toHaveBeenCalled();
+  });
+
+  it.each([
     ['cross-organization league', { id: 11, organizationId: 2 }, true],
     ['inactive membership', { id: 11, organizationId: 1 }, false],
   ])('denies %s before any provider mutation', async (_case, league, active) => {

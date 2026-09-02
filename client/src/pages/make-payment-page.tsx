@@ -27,6 +27,23 @@ import { resolveInteractiveFinancialRead } from "@/lib/financial-read-contract";
 
 type EditorMode = "one-time" | "autopay" | null;
 
+/** Keep the in-memory wallet identity in step with the durable intent. */
+export function clearWalletRequestKeyForTerminalStatus(
+  status: unknown,
+  requestKeyRef: { current: string | null },
+): void {
+  if (isTerminalRosterPaymentFailure(status)) requestKeyRef.current = null;
+}
+
+export function clampPaymentWeekCount(value: number, maximum: number): number {
+  if (maximum <= 0) return 1;
+  return Math.min(Math.max(1, value), maximum);
+}
+
+export function hasPositivePaymentEvidence(rows: Array<{ allocatedMinor: number }>): boolean {
+  return rows.some((row) => row.allocatedMinor > 0);
+}
+
 function invalidatePaymentViews(leagueId: number, bowlerId: number): void {
   void queryClient.invalidateQueries({ queryKey: paymentHistoryFinancialQueryKey(leagueId, bowlerId) });
   void queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/canonical-due-past-due/2`, bowlerId] });
@@ -111,13 +128,20 @@ export default function MakePaymentPage() {
   const options = useMemo(() => buildOneTimePaymentOptions(rows, remainingBalance), [rows, remainingBalance]);
   const maximumWeekCount = options.length;
   const fullBalanceOnly = league?.paymentMode === "upfront";
-  const selectedOption = fullBalanceOnly ? options.at(-1) : options.find((option) => option.weekCount === oneTimePaymentWeekCount);
+  const clampedWeekCount = clampPaymentWeekCount(oneTimePaymentWeekCount, maximumWeekCount);
+  const selectedOption = fullBalanceOnly ? options.at(-1) : options.find((option) => option.weekCount === clampedWeekCount);
   const paymentAmountMinor = selectedOption?.amountMinor ?? 0;
   const bowlerEmail = details?.bowler?.email ?? "";
 
   useEffect(() => {
     if (fullBalanceOnly && maximumWeekCount > 0) setOneTimePaymentWeekCount(maximumWeekCount);
   }, [fullBalanceOnly, maximumWeekCount]);
+  useEffect(() => {
+    setOneTimePaymentWeekCount((current) => {
+      const next = clampPaymentWeekCount(current, maximumWeekCount);
+      return next === current ? current : next;
+    });
+  }, [maximumWeekCount]);
   useEffect(() => {
     if (intent !== "past-due" || intentAppliedRef.current || amountPastDue <= 0 || options.length === 0) return;
     const suggested = options.find((option) => option.amountMinor >= amountPastDue);
@@ -160,7 +184,8 @@ export default function MakePaymentPage() {
       const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-charge/2`, { method: "POST", headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" }, body: JSON.stringify({ amountMinor: paymentAmountMinor, payerBowlerId: quoteBody.data.payerBowlerId ?? bowlerId, sourceId: token, sourceKind: "wallet", buyerEmail: (overrideEmail ?? bowlerEmail) || null, storeCard: false, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }) }), league.id);
       const body = await response.json().catch(() => ({}));
       const status = body.data?.status ?? body.status;
-      if (!response.ok) { if (isTerminalRosterPaymentFailure(status)) walletRequestKeyRef.current = null; throw makeApiError(body, response.status, "Wallet payment failed."); }
+      clearWalletRequestKeyForTerminalStatus(status, walletRequestKeyRef);
+      if (!response.ok) throw makeApiError(body, response.status, "Wallet payment failed.");
       assertRosterPaymentSucceeded(status);
       clearPaymentIntent(scope);
       walletRequestKeyRef.current = null;
@@ -212,7 +237,7 @@ export default function MakePaymentPage() {
   if (currentUser?.data && !currentUser.data.bowlerId) return <PageLoadingState message="A bowler profile is required to make a payment" />;
   if (detailsError || financialError || !league || leagueId === undefined || !bowlerId) return <PageLoadingState message="Payment information is unavailable" />;
 
-  const isPaidInFull = remainingBalance <= 0;
+  const isPaidInFull = remainingBalance <= 0 && hasPositivePaymentEvidence(rows);
   return <BowlerLayout bowlerName={details?.bowler?.name ?? ""} leagueName={league.name} currentLeagueId={leagueId}>
     <div className="space-y-6">
       <div>
@@ -222,7 +247,7 @@ export default function MakePaymentPage() {
       <ErrorBoundary level="section">
         {isPaidInFull ? <div className="rounded-lg border border-green-500/50 bg-green-500/5 p-6 text-center"><h2 className="text-lg font-semibold text-green-700">Season Paid in Full</h2><p className="mt-1 text-sm text-muted-foreground">There is no remaining one-time balance.</p></div> : <BowlerOneTimePaymentCard
           remainingBalance={remainingBalance}
-          paymentWeekCount={Math.max(1, selectedOption?.weekCount ?? oneTimePaymentWeekCount)}
+          paymentWeekCount={clampedWeekCount}
           maximumWeekCount={Math.max(1, maximumWeekCount)}
           paymentAmountMinor={paymentAmountMinor}
           fullBalanceOnly={fullBalanceOnly}

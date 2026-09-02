@@ -77,8 +77,8 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
             doublePay={doublePay}
             onPayPastDue={() => undefined}
             onPayRemaining={() => undefined}
-            pastDueHref={pastDueHref}
-            remainingHref={makePaymentHref}
+            pastDueHref={amountPastDue > 0 ? pastDueHref : undefined}
+            remainingHref={remainingBalance > 0 ? makePaymentHref : undefined}
           />
         </ErrorBoundary>
 

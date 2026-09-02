@@ -52,11 +52,15 @@ router.post('/cards/:bowlerId', paymentWriteLimiter, async (req, res) => {
       return sendError(res, 'Bowler not found', 404, 'NOT_FOUND');
     }
 
-    const rawLeagueId = req.body.leagueId;
+    const rawLeagueId = req.body?.leagueId;
     let resolvedLeagueId: number | null = null;
-    if (rawLeagueId !== undefined && rawLeagueId !== null && rawLeagueId !== '') {
-      const parsed = parseInt(rawLeagueId);
-      if (isNaN(parsed)) {
+    if (rawLeagueId !== undefined) {
+      const parsed = typeof rawLeagueId === 'number'
+        ? rawLeagueId
+        : typeof rawLeagueId === 'string'
+          ? parseOptionalIntParam(rawLeagueId)
+          : null;
+      if (parsed === null || parsed === undefined || !Number.isSafeInteger(parsed) || parsed <= 0) {
         return sendError(res, 'Invalid league ID format', 400);
       }
       resolvedLeagueId = parsed;
