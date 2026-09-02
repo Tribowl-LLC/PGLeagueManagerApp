@@ -278,10 +278,13 @@ Actions workflow. Dispatch it from `main` only after Exact main certification
 succeeds. Enter the full certified SHA, the exact ordered pending migration
 tags (or `none`), and the displayed confirmation phrase. Its `production`
 environment requires operator approval, and the job uses the repository's
-`NEON_API_KEY` secret to verify the pinned production target, create a protected
-branch without a compute, acquire a direct connection string without printing
-it, and run the checked migration with an exact-pending guard under the database
-advisory lock. Before executing SQL, the runner compares the live `public`
+`NEON_API_KEY` secret to verify the pinned protected production target, create
+an unprotected recovery branch without a compute or returned credentials,
+acquire a direct connection string without printing it, and run the checked
+migration with an exact-pending guard under the database advisory lock. Branch
+protection prevents destructive branch operations but is not required for the
+recovery branch to preserve the pre-migration database state. Before executing
+SQL, the runner compares the live `public`
 catalog—including tables, views, materialized views, and foreign tables—with
 the checked-in fingerprint for the last applied migration. Fingerprinting,
 migration SQL, journal registration, and post-journal verification share one
@@ -297,7 +300,8 @@ key is exposed only to the three control-plane steps that require it, not to
 checkout, dependency installation, or repository validation scripts. Preserve
 the workflow summary's backup ID and migration evidence in the release record;
 the recovery summary runs even after failure and instructs operators not to
-deploy.
+deploy. Retain that unprotected recovery branch through release verification,
+then delete it so temporary backups do not accumulate.
 
 Every schema-release PR must add the checked-in fingerprint for its resulting
 migration under `migrations/schema-fingerprints/`; retain the prior release

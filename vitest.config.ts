@@ -116,6 +116,7 @@ const UNIT_NO_DB = [
   'tests/unit/fall-draft-review.test.ts',
   'tests/unit/account-invitation-state.test.ts',
   'tests/unit/payment-manager-access-control.test.ts',
+  'tests/unit/production-database-migration-workflow.test.ts',
   'tests/unit/test-template-migration-source.test.ts',
   'tests/unit/zod-v4-migration-contracts.test.ts',
   'tests/unit/roster-payment-pr1-contract.test.ts',

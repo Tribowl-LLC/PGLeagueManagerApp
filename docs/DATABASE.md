@@ -545,6 +545,11 @@ journal history unreliable, so they are treated as drift rather than shortcuts.
 - The backup must be associated with the verified production project, branch,
   host, and database. A local or test backup is not a production recovery
   plan.
+- The GitHub migration workflow creates its recovery branch explicitly
+  unprotected, without a compute or returned credentials. Neon branch
+  protection controls destructive branch operations; it is not required for
+  the branch to preserve the pre-migration database state. Keep the recorded
+  branch ID through release verification, then delete the recovery branch.
 - `npm run db:migrate` does not create a backup. This repository has no package
   script that replaces Neon backup/restore operations.
 - Keep the restore plan and the reviewed schema-change output available until
