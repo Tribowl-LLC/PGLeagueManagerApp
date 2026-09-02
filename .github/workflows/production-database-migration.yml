@@ -97,17 +97,22 @@ jobs:
       - name: Verify exact migration bytes and metadata
         run: npm run db:migration-bytes:check
 
+      - name: Install pinned Neon CLI without production credentials
+        run: |
+          npm install --global --ignore-scripts --no-audit --no-fund "neon@$NEON_CLI_VERSION"
+          test "$(neon --version)" = "$NEON_CLI_VERSION"
+
       - name: Verify Neon production target
         env:
           NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
         run: |
           test -n "$NEON_API_KEY"
-          project_json="$(npx --yes "neon@$NEON_CLI_VERSION" projects get "$NEON_PROJECT_ID" --output json --no-color)"
+          project_json="$(neon projects get "$NEON_PROJECT_ID" --output json --no-color)"
           printf '%s' "$project_json" | jq -e \
             --arg id "$NEON_PROJECT_ID" \
             '(.project // .) | .id == $id' >/dev/null
 
-          branch_json="$(npx --yes "neon@$NEON_CLI_VERSION" branches get "$NEON_PRODUCTION_BRANCH_ID" \
+          branch_json="$(neon branches get "$NEON_PRODUCTION_BRANCH_ID" \
             --project-id "$NEON_PROJECT_ID" --output json --no-color)"
           printf '%s' "$branch_json" | jq -e \
             --arg id "$NEON_PRODUCTION_BRANCH_ID" \
@@ -120,7 +125,7 @@ jobs:
           NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
         run: |
           backup_name="backup-pre-migration-${EXPECTED_SHA:0:12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          backup_json="$(npx --yes "neon@$NEON_CLI_VERSION" branches create \
+          backup_json="$(neon branches create \
             --project-id "$NEON_PROJECT_ID" \
             --parent "$NEON_PRODUCTION_BRANCH_ID" \
             --name "$backup_name" \
@@ -143,7 +148,7 @@ jobs:
         env:
           NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
         run: |
-          database_url="$(npx --yes "neon@$NEON_CLI_VERSION" connection-string "$NEON_PRODUCTION_BRANCH_ID" \
+          database_url="$(neon connection-string "$NEON_PRODUCTION_BRANCH_ID" \
             --project-id "$NEON_PROJECT_ID" \
             --database-name "$NEON_DATABASE_NAME" \
             --role-name "$NEON_ROLE_NAME" \
