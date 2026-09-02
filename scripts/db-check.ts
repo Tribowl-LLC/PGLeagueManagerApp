@@ -1039,6 +1039,11 @@ async function validateVersion(
     } finally {
       await atomicRollbackClient.end().catch(() => undefined);
     }
+    if (!(await runCheckedMigrations(atomicRollbackUrl, ACTIVE_MIGRATIONS_DIRECTORY, {
+      expectedPending: [],
+    })).noOp) {
+      throw new Error('Atomic rollback did not preserve a retryable guarded migration state.');
+    }
 
     const postFingerprintDatabase = 'post_migration_fingerprint_rollback';
     await createDatabase(adminUrl, postFingerprintDatabase, container);
@@ -1069,6 +1074,11 @@ async function validateVersion(
       }
     } finally {
       await postFingerprintClient.end().catch(() => undefined);
+    }
+    if (!(await runCheckedMigrations(postFingerprintUrl, ACTIVE_MIGRATIONS_DIRECTORY, {
+      expectedPending: [],
+    })).noOp) {
+      throw new Error('Post-fingerprint rollback did not preserve a retryable guarded migration state.');
     }
 
     const foreignColumnDatabase = 'foreign_table_column_fingerprint';

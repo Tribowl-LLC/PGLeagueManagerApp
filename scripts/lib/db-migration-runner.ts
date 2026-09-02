@@ -9,6 +9,8 @@ import {
 import {
   assertJournalPrefix,
   inspectApprovedJournal,
+  restoreApprovedJournalSequenceState,
+  type JournalSequenceState,
 } from './db-migration-journal';
 import { redactConnectionDetails } from './db-schema-inventory';
 import { verifyApprovedSchemaStateOnClient } from './db-schema-state-fingerprint';
@@ -135,6 +137,8 @@ async function runExpectedMigrationsAtomically(
   expectedPending: readonly string[],
 ): Promise<CheckedMigrationResult> {
   let transaction = false;
+  let preMigrationSequenceState: JournalSequenceState | null = null;
+  let journalInsertAttempted = false;
   try {
     await client.query('BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE');
     transaction = true;
@@ -142,6 +146,7 @@ async function runExpectedMigrationsAtomically(
     await client.query("SET LOCAL lock_timeout = '5s'");
     await lockPublicRelationsForMigration(client);
     const inspection = await inspectApprovedJournal(client, { lock: true });
+    preMigrationSequenceState = inspection.sequenceState;
     const entries = inspection.entries;
     assertJournalPrefix(entries, migrations);
     if (entries.length === 0 && await hasApplicationOwnedPublicObjects(client)) {
@@ -170,6 +175,7 @@ async function runExpectedMigrationsAtomically(
       for (const statement of migration.sql.split('--> statement-breakpoint')) {
         if (statement.trim()) await client.query(statement);
       }
+      journalInsertAttempted = true;
       await client.query(
         'INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ($1, $2)',
         [migration.hash, migration.createdAt],
@@ -195,6 +201,23 @@ async function runExpectedMigrationsAtomically(
     transaction = false;
     if (pending.length > 0) process.stdout.write(`[db:migrate] applied=${pending.join(',')}\n`);
     return { pending, applied: pending, noOp: pending.length === 0 };
+  } catch (error) {
+    if (transaction) {
+      await client.query('ROLLBACK');
+      transaction = false;
+    }
+    if (journalInsertAttempted && preMigrationSequenceState) {
+      try {
+        await restoreApprovedJournalSequenceState(client, preMigrationSequenceState);
+      } catch (restoreError) {
+        const reason = restoreError instanceof Error ? restoreError.message : String(restoreError);
+        throw new Error(
+          `Migration rolled back, but restoring the journal sequence failed: ${reason}`,
+          { cause: error },
+        );
+      }
+    }
+    throw error;
   } finally {
     if (transaction) await client.query('ROLLBACK').catch(() => undefined);
   }
