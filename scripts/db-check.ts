@@ -1095,6 +1095,70 @@ async function validateVersion(
     if (beforeForeignColumnChange.digest === afterForeignColumnChange.digest) {
       throw new Error('Foreign-table column drift did not change the schema-state fingerprint.');
     }
+    await executeSql(foreignColumnUrl, [
+      'ALTER FOREIGN TABLE public.db_check_foreign_table ADD CONSTRAINT db_check_foreign_id_positive CHECK (id > 0)',
+    ]);
+    const afterForeignConstraint = createSchemaStateFingerprint(
+      await collectDatabaseInventory(foreignColumnUrl),
+      finalMigration,
+    );
+    if (afterForeignColumnChange.digest === afterForeignConstraint.digest) {
+      throw new Error('Foreign-table constraint drift did not change the schema-state fingerprint.');
+    }
+    await executeSql(foreignColumnUrl, [
+      'CREATE VIEW public.db_check_behavior_view WITH (security_barrier=false) AS SELECT id FROM public.db_check_foreign_table',
+    ]);
+    const beforeViewOptionChange = createSchemaStateFingerprint(
+      await collectDatabaseInventory(foreignColumnUrl),
+      finalMigration,
+    );
+    await executeSql(foreignColumnUrl, [
+      'ALTER VIEW public.db_check_behavior_view SET (security_barrier=true)',
+    ]);
+    const afterViewOptionChange = createSchemaStateFingerprint(
+      await collectDatabaseInventory(foreignColumnUrl),
+      finalMigration,
+    );
+    if (beforeViewOptionChange.digest === afterViewOptionChange.digest) {
+      throw new Error('View option drift did not change the schema-state fingerprint.');
+    }
+    await executeSql(foreignColumnUrl, [
+      'CREATE MATERIALIZED VIEW public.db_check_materialized_view AS SELECT 1::integer AS id WITH NO DATA',
+    ]);
+    const beforeMaterializedIndex = createSchemaStateFingerprint(
+      await collectDatabaseInventory(foreignColumnUrl),
+      finalMigration,
+    );
+    await executeSql(foreignColumnUrl, [
+      'CREATE UNIQUE INDEX db_check_materialized_view_id_idx ON public.db_check_materialized_view (id)',
+    ]);
+    const afterMaterializedIndex = createSchemaStateFingerprint(
+      await collectDatabaseInventory(foreignColumnUrl),
+      finalMigration,
+    );
+    if (beforeMaterializedIndex.digest === afterMaterializedIndex.digest) {
+      throw new Error('Materialized-view index drift did not change the schema-state fingerprint.');
+    }
+    await executeSql(foreignColumnUrl, [
+      `CREATE FUNCTION public.db_check_view_trigger() RETURNS trigger LANGUAGE plpgsql AS
+       $$ BEGIN RETURN NEW; END $$`,
+    ]);
+    const beforeViewTrigger = createSchemaStateFingerprint(
+      await collectDatabaseInventory(foreignColumnUrl),
+      finalMigration,
+    );
+    await executeSql(foreignColumnUrl, [
+      `CREATE TRIGGER db_check_behavior_view_insert
+       INSTEAD OF INSERT ON public.db_check_behavior_view
+       FOR EACH ROW EXECUTE FUNCTION public.db_check_view_trigger()`,
+    ]);
+    const afterViewTrigger = createSchemaStateFingerprint(
+      await collectDatabaseInventory(foreignColumnUrl),
+      finalMigration,
+    );
+    if (beforeViewTrigger.digest === afterViewTrigger.digest) {
+      throw new Error('View trigger drift did not change the schema-state fingerprint.');
+    }
 
     const freshProof = 'fresh_proof';
     await createDatabase(adminUrl, freshProof, container);

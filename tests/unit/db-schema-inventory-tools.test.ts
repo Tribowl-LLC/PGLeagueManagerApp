@@ -37,7 +37,7 @@ import { normalizeSqlDefinition } from '../../scripts/lib/sql-definition-normali
 
 function emptyInventory(database: string): DatabaseInventory {
   return {
-    formatVersion: 5,
+    formatVersion: 6,
     target: {
       hostFingerprint: 'sha256:test',
       database,
@@ -169,7 +169,7 @@ describe('database schema inventory tools', () => {
     }];
     left.nonTableRelations = [{
       schema: 'public', name: 'unexpected_view', kind: 'view', persistence: 'permanent',
-      definition: 'SELECT 1 AS value;', foreignServer: null, foreignOptions: [],
+      definition: 'SELECT 1 AS value;', options: [], foreignServer: null, foreignOptions: [],
     }];
 
     const right = emptyInventory('journal');
@@ -198,11 +198,11 @@ describe('database schema inventory tools', () => {
   });
 
   it('validates the inventory format before comparison', () => {
-    expect(() => assertDatabaseInventory({ formatVersion: 5 }, 'partial.json')).toThrow(
+    expect(() => assertDatabaseInventory({ formatVersion: 6 }, 'partial.json')).toThrow(
       'partial.json is missing target metadata',
     );
-    expect(() => assertDatabaseInventory({ formatVersion: 4 }, 'legacy.json')).toThrow(
-      'unsupported inventory format 4',
+    expect(() => assertDatabaseInventory({ formatVersion: 5 }, 'legacy.json')).toThrow(
+      'unsupported inventory format 5',
     );
     expect(() => assertDatabaseInventory({ formatVersion: 99 }, 'future.json')).toThrow(
       'unsupported inventory format 99',

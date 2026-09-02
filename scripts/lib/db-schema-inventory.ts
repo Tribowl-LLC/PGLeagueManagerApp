@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import pg, { type QueryResultRow } from 'pg';
 import { normalizeSqlDefinition } from './sql-definition-normalization';
 
-export const DB_INVENTORY_FORMAT_VERSION = 5 as const;
+export const DB_INVENTORY_FORMAT_VERSION = 6 as const;
 
 export type TablePrivilege =
   | 'delete'
@@ -56,6 +56,7 @@ export interface NonTableRelationInfo {
   kind: 'view' | 'materialized view' | 'foreign table';
   persistence: 'permanent' | 'unlogged' | 'temporary';
   definition: string | null;
+  options: string[];
   foreignServer: string | null;
   foreignOptions: string[];
 }
@@ -316,6 +317,7 @@ interface NonTableRelationRow extends QueryResultRow {
   kind: NonTableRelationInfo['kind'];
   persistence: NonTableRelationInfo['persistence'];
   definition: string | null;
+  relation_options: string[];
   foreign_server: string | null;
   foreign_options: string[];
 }
@@ -1006,6 +1008,7 @@ async function collectDatabaseInventoryInternal(
         END AS persistence,
         CASE WHEN c.relkind IN ('v', 'm') THEN pg_catalog.pg_get_viewdef(c.oid, true) ELSE NULL END
           AS definition,
+        COALESCE(c.reloptions, ARRAY[]::text[]) AS relation_options,
         foreign_server.srvname AS foreign_server,
         COALESCE(foreign_table.ftoptions, ARRAY[]::text[]) AS foreign_options
       FROM pg_catalog.pg_class c
@@ -1262,7 +1265,7 @@ async function collectDatabaseInventoryInternal(
       LEFT JOIN pg_catalog.pg_class rc ON rc.oid = con.confrelid
       LEFT JOIN pg_catalog.pg_namespace rn ON rn.oid = rc.relnamespace
       WHERE con.contype IN ('p', 'f', 'u', 'c', 'x')
-        AND c.relkind IN ('r', 'p')
+        AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
         AND ${USER_SCHEMA_PREDICATE}
       ORDER BY n.nspname, c.relname, con.conname
     `);
@@ -1287,7 +1290,7 @@ async function collectDatabaseInventoryInternal(
       JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
       JOIN pg_catalog.pg_class ic ON ic.oid = i.indexrelid
       JOIN pg_catalog.pg_am am ON am.oid = ic.relam
-      WHERE c.relkind IN ('r', 'p')
+      WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f')
         AND ${USER_SCHEMA_PREDICATE}
       ORDER BY n.nspname, c.relname, ic.relname
     `);
@@ -1396,7 +1399,7 @@ async function collectDatabaseInventoryInternal(
       JOIN pg_catalog.pg_proc p ON p.oid = tg.tgfoid
       JOIN pg_catalog.pg_namespace pn ON pn.oid = p.pronamespace
       WHERE NOT tg.tgisinternal
-        AND c.relkind IN ('r', 'p')
+        AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
         AND ${USER_SCHEMA_PREDICATE}
       ORDER BY n.nspname, c.relname, tg.tgname
     `);
@@ -1511,6 +1514,7 @@ async function collectDatabaseInventoryInternal(
         kind: row.kind,
         persistence: row.persistence,
         definition: normalizeSqlDefinition(row.definition),
+        options: [...row.relation_options].sort(compareText),
         foreignServer: row.foreign_server,
         foreignOptions: [...row.foreign_options].sort(compareText),
       })),

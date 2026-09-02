@@ -501,8 +501,11 @@ Follow the schema-release procedure in
 4. Run the pre-migration identity, canonical fingerprint, journal, and approved
    legacy inert-RLS checks. Abort before executing SQL if any check differs
    from the reviewed expectation.
-5. Run `npm run db:migrate` with one migration executor. Abort for an
-   unexpected journal or migration failure and record the result.
+5. Set `DB_MIGRATION_EXPECTED_PENDING` to the exact ordered migration tags
+   approved for the release and run `npm run db:migrate` with one migration
+   executor. Abort for an unexpected fingerprint, journal, pending list, or
+   migration failure. Then rerun with `DB_MIGRATION_EXPECTED_PENDING=none` and
+   require an exact fingerprint-verified no-op before recording success.
 6. Deploy the matching CI-verified application commit after the schema change
    is applied successfully. For a destructive contract migration whose prior
    application still selects the retiring objects, follow the migration's

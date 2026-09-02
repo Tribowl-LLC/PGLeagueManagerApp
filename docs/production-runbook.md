@@ -321,8 +321,13 @@ the fail-closed fallback. Never run both executors concurrently.
 5. Confirm the exact checked-in migration SQL was reviewed and the adopted
    target has the exact active journal prefix. If the baseline row is absent or
    differs, stop: baseline adoption must never be repeated.
-6. Run `npm run db:migrate` with exactly one executor for the environment.
-   Abort on any journal mismatch or migration failure.
+6. Set `DB_MIGRATION_EXPECTED_PENDING` to the exact ordered, comma-separated
+   migration tags approved for this release, then run `npm run db:migrate`
+   with exactly one executor for the environment. Never omit this variable on
+   a production fallback. Abort on any fingerprint, journal, pending-list, or
+   migration failure. After it succeeds, set
+   `DB_MIGRATION_EXPECTED_PENDING=none` and rerun `npm run db:migrate`; it must
+   verify the resulting fingerprint and report no pending migrations.
 7. Apply the schema change to the intended database and record the result.
 8. Deploy the matching CI-verified application commit.
 9. Verify `/api/health`, login, the changed workflow, and relevant provider or
