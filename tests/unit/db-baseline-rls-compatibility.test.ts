@@ -162,6 +162,101 @@ describe('legacy inert-RLS baseline compatibility', () => {
     );
   });
 
+  it('normalizes the approved legacy state after later migrations retire baseline tables and functions', () => {
+    const canonical = canonicalInventory();
+    canonical.tables = canonical.tables.slice(0, -4);
+    canonical.functions = canonical.functions.filter((fn) =>
+      !['league_secretary_org_match_fn', 'users_org_change_revoke_secretaries_fn'].includes(fn.name)
+    );
+    canonical.triggers = canonical.triggers.filter((trigger) =>
+      !['league_secretary_org_match_fn', 'users_org_change_revoke_secretaries_fn']
+        .includes(trigger.functionName)
+    );
+
+    const legacy = structuredClone(canonical);
+    legacy.tables = legacy.tables.map((table) => ({
+      ...table,
+      rowSecurity: true,
+      connectedRoleRlsMode: 'bypass-bypassrls',
+    }));
+    legacy.functions.push(...loadApprovedBaselineFingerprint().structure.functions.filter((fn) =>
+      ['league_secretary_org_match_fn', 'users_org_change_revoke_secretaries_fn'].includes(fn.name)
+    ));
+    legacy.extensions = [
+      { name: 'pg_session_jwt', schema: 'public', version: '0.5.0', relocatable: false },
+      { name: 'pgcrypto', schema: 'public', version: '1.3', relocatable: true },
+    ];
+
+    expect(createSchemaStateFingerprint(legacy, baselineMigration()).digest).toBe(
+      createSchemaStateFingerprint(canonical, baselineMigration()).digest,
+    );
+
+    legacy.functions.push({
+      ...requiredAt(loadApprovedBaselineFingerprint().structure.functions, 0, 'function'),
+      name: 'show_db_tree',
+    });
+    expect(createSchemaStateFingerprint(legacy, baselineMigration()).digest).not.toBe(
+      createSchemaStateFingerprint(canonical, baselineMigration()).digest,
+    );
+  });
+
+  it('refuses mixed RLS among the surviving baseline tables at a release boundary', () => {
+    const inventory = legacyInertRlsInventory();
+    inventory.tables.pop();
+    inventory.tables[0] = { ...requiredAt(inventory.tables, 0, 'table'), rowSecurity: false };
+    expect(() => createSchemaStateFingerprint(inventory, baselineMigration())).toThrow(
+      'unapproved legacy RLS configuration',
+    );
+  });
+
+  it('excludes only approved provider-managed extension metadata from fingerprints', () => {
+    const canonical = canonicalInventory();
+    const withProviderExtensions = structuredClone(canonical);
+    withProviderExtensions.extensions = [
+      { name: 'pg_session_jwt', schema: 'public', version: '0.5.0', relocatable: false },
+      { name: 'pgcrypto', schema: 'public', version: '1.3', relocatable: true },
+    ];
+    expect(createBaselineFingerprint(withProviderExtensions).digest).toBe(
+      createBaselineFingerprint(canonical).digest,
+    );
+
+    const withUnknownExtension = structuredClone(withProviderExtensions);
+    withUnknownExtension.extensions.push({
+      name: 'function_only_extension',
+      schema: 'private_extensions',
+      version: '1.0',
+      relocatable: true,
+    });
+    expect(createBaselineFingerprint(withUnknownExtension).digest).not.toBe(
+      createBaselineFingerprint(canonical).digest,
+    );
+    expect(createSchemaStateFingerprint(withUnknownExtension, baselineMigration()).digest).not.toBe(
+      createSchemaStateFingerprint(canonical, baselineMigration()).digest,
+    );
+
+    const alteredProviderExtensions = [
+      { field: 'name', extension: { name: 'pgcrypto-renamed' } },
+      { field: 'version', extension: { version: '0.6.0' } },
+      { field: 'schema', extension: { schema: 'private_extensions' } },
+      { field: 'relocatability', extension: { relocatable: true } },
+    ] as const;
+    for (const altered of alteredProviderExtensions) {
+      const inventory = structuredClone(withProviderExtensions);
+      inventory.extensions[0] = {
+        ...requiredAt(inventory.extensions, 0, 'extension'),
+        ...altered.extension,
+      };
+      expect(
+        createBaselineFingerprint(inventory).digest,
+        `baseline must fingerprint altered provider ${altered.field}`,
+      ).not.toBe(createBaselineFingerprint(canonical).digest);
+      expect(
+        createSchemaStateFingerprint(inventory, baselineMigration()).digest,
+        `release boundary must fingerprint altered provider ${altered.field}`,
+      ).not.toBe(createSchemaStateFingerprint(canonical, baselineMigration()).digest);
+    }
+  });
+
   it('refuses function-body changes inside quoted content', () => {
     const inventory = legacyInertRlsInventory();
     const original = requiredAt(inventory.functions, 0, 'function');

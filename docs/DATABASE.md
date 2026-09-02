@@ -338,16 +338,20 @@ provider clone compare cleanly.
 
 ### Approved legacy inert RLS state
 
-Production retains one reviewed legacy difference from a fresh baseline: all
-application tables have row-level security (RLS) enabled, but no RLS policies
-exist and `FORCE ROW LEVEL SECURITY` is not enabled. The application role's
-reviewed ownership and bypass behavior make the bare flags inert. This state is
-intentional; it does not provide active RLS authorization.
+Production retains one reviewed legacy difference from a fresh baseline: the
+surviving baseline-era application tables have row-level security (RLS)
+enabled, but no RLS policies exist and `FORCE ROW LEVEL SECURITY` is not
+enabled. Later migrations intentionally removed some baseline tables. The
+application role's reviewed ownership and bypass behavior make the bare flags
+inert. This state is intentional; it does not provide active RLS authorization.
 
 Verification tooling recognizes this exact state as `legacy-inert-rls` and
-normalizes only the RLS-enabled flags when comparing production with the
-canonical fingerprint. The exception exists for fingerprint comparison only.
-It does not change the raw inventory, create policies, weaken any other schema
+normalizes only the RLS-enabled flags on that complete surviving set when
+comparing production with the canonical fingerprint. At post-retirement
+release boundaries it also ignores the exact approved definitions of the two
+retired baseline secretary trigger functions, but only when no trigger still
+references them. The exception exists for fingerprint comparison only. It does
+not change the raw inventory, create policies, weaken any other schema
 comparison, or make a mixed RLS state acceptable.
 
 Do not "fix" the difference by disabling RLS in production or copying the bare
@@ -428,10 +432,13 @@ rewrite rules, and zero policies. It records RLS disabled on every application
 table and fails closed on unsupported user-defined `public` catalog objects.
 Provider-managed schemas, roles and extension-owned implementation objects,
 privileges, role-owner identities/capability metadata, connection metadata,
-and physical column ordinals are deliberately excluded. Public extension
-identity/version metadata is included. Column names and all other declared
-properties remain exact, so historical physical order can differ without
-weakening adoption checks.
+and physical column ordinals are deliberately excluded. The exact reviewed
+Neon-managed `pg_session_jwt` 0.5.0 and `pgcrypto` 1.3 installations in
+`public` are also excluded; any other extension identity, version, schema, or
+relocatability remains fingerprinted. Extension-owned catalog objects are
+excluded independently. Column names and all other declared properties remain
+exact, so historical physical order can differ without weakening adoption
+checks.
 
 The approved identity is:
 
