@@ -53,16 +53,6 @@ export function StandingAutopayCard({ league, bowlerId, savedCards, bowlerHasEma
   const active = consent?.state === "active";
   const quoteQuery = useQuery<QuoteResponse>({
     queryKey: [`/api/financials/leagues/${league.id}/standing-autopay/1/quote`],
-    queryFn: async () => {
-      const response = await csrfFetch(`/api/financials/leagues/${league.id}/standing-autopay/1/quote`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-      });
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(body.error?.message || "The next automatic payment is unavailable");
-      return body as QuoteResponse;
-    },
     enabled: enabled && active,
     retry: false,
   });
@@ -136,11 +126,14 @@ export function StandingAutopayCard({ league, bowlerId, savedCards, bowlerHasEma
       : quoteQuery.data?.data.cutoffAt
         ? formatNextPaymentDate(quoteQuery.data.data.cutoffAt, league.timezone)
         : "None";
+  const quoteError = quoteQuery.error instanceof Error
+    ? quoteQuery.error.message.replace(/^\d{3}:\s*/, "")
+    : "The next automatic payment is unavailable.";
   return <Card data-testid="standing-autopay-card">
     <CardHeader><CardTitle className="flex items-center justify-between">Automatic Payments {active ? <Badge>Enabled</Badge> : <Badge variant="secondary">Off</Badge>}</CardTitle></CardHeader>
     <CardContent className="space-y-3">
       {!bowlerHasEmail && <p className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">Add an email address to your <Link href="/profile" className="font-semibold underline">Profile</Link> before enabling automatic payments. A temporary receipt email cannot be used.</p>}
-      {active && !replaceMode && !addingCard ? <><p className="text-sm">Next Payment Scheduled: <span className="font-medium">{nextPayment}</span></p><div className="flex flex-wrap gap-2"><Button type="button" variant="outline" disabled={revoke.isPending} onClick={() => revoke.mutate()}>Revoke automatic payments</Button><Button type="button" variant="outline" disabled={!bowlerHasEmail} onClick={() => setReplaceMode(true)}>Replace payment method</Button></div></> : <>
+      {active && !replaceMode && !addingCard ? <><p className="text-sm">Next Payment Scheduled: <span className="font-medium">{nextPayment}</span></p>{quoteQuery.isError && <p role="alert" className="text-sm text-destructive">{quoteError}</p>}<div className="flex flex-wrap gap-2"><Button type="button" variant="outline" disabled={revoke.isPending} onClick={() => revoke.mutate()}>Revoke automatic payments</Button><Button type="button" variant="outline" disabled={!bowlerHasEmail} onClick={() => setReplaceMode(true)}>Replace payment method</Button></div></> : <>
         {savedCards.length > 0 && !addingCard && <label className="block text-sm">Saved card<select className="mt-1 w-full rounded border bg-background p-2" value={selectedCard} onChange={(event) => setSelectedCard(event.target.value)} disabled={!bowlerHasEmail}><option value="">Select a card</option>{savedCards.map((saved) => <option key={saved.id} value={saved.id}>{saved.brand} ending {saved.last4}</option>)}</select></label>}
         {!addingCard && savedCards.length === 0 && <Button type="button" variant="outline" disabled={!bowlerHasEmail} onClick={() => { cleanupCard(); onCardEditorModeChange("autopay"); }}>Add new card</Button>}
         {addingCard || savedCards.length === 0 ? <div className="space-y-3"><p className="text-sm font-medium">{savedCards.length ? "Add a new card" : "Add a card for automatic payments"}</p><div ref={(element) => { if (element && cardEditorMode === "autopay") void initializeCard(element); }} className="min-h-[80px] rounded-md border p-3" style={cardEditorMode === "autopay" ? undefined : { display: "none" }} /><div className="flex flex-wrap gap-2"><Button type="button" disabled={!bowlerHasEmail || !isInitialized || setupPending} onClick={() => void saveAndEnable()}>{setupPending ? "Saving card and enabling…" : "Save card and enable automatic payments"}</Button>{addingCard && <Button type="button" variant="ghost" disabled={setupPending} onClick={() => { cleanupCard(); onCardEditorModeChange(null); }}>Cancel</Button>}</div></div> : null}

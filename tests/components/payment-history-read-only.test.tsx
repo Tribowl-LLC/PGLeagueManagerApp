@@ -134,11 +134,9 @@ describe("PaymentHistoryContent", () => {
   });
 
   it("shows the next scheduled automatic-payment date without implementation copy", async () => {
-    csrfFetchMock.mockResolvedValue({
-      ok: true,
-      json: async () => ({ data: { cutoffAt: "2030-01-10T00:30:00.000Z" } }),
-    });
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, queryFn: async () => ({ data: { state: "active", partnerBowlerIds: [] } }) } } });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, queryFn: async ({ queryKey }) => String(queryKey[0]).endsWith("/quote")
+      ? ({ data: { cutoffAt: "2030-01-10T00:30:00.000Z" } })
+      : ({ data: { state: "active", partnerBowlerIds: [] } }) } } });
     render(<QueryClientProvider client={queryClient}><StandingAutopayCard
       league={{ ...league, payingLineupSize: 4 }} bowlerId={42}
       savedCards={[savedCard]} bowlerHasEmail={true} card={null} isInitialized={false}
@@ -146,10 +144,22 @@ describe("PaymentHistoryContent", () => {
     /></QueryClientProvider>);
     await waitFor(() => expect(screen.getByText(/Next Payment Scheduled:/)).toHaveTextContent("Next Payment Scheduled: January 9, 2030"));
     expect(screen.queryByText(/exact remaining roster obligations|consent version/i)).not.toBeInTheDocument();
-    expect(csrfFetchMock).toHaveBeenCalledWith(
-      "/api/financials/leagues/17/standing-autopay/1/quote",
-      expect.objectContaining({ method: "POST" }),
-    );
+    expect(csrfFetchMock).not.toHaveBeenCalled();
+  });
+
+  it("shows the recovery message when the next automatic payment is blocked", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, queryFn: async ({ queryKey }) => {
+      if (String(queryKey[0]).endsWith("/quote")) throw new Error("409: Pay older unpaid obligations with a one-time payment before automatic payments can resume.");
+      return { data: { state: "active", partnerBowlerIds: [] } };
+    } } } });
+    render(<QueryClientProvider client={queryClient}><StandingAutopayCard
+      league={{ ...league, payingLineupSize: 4 }} bowlerId={42}
+      savedCards={[savedCard]} bowlerHasEmail={true} card={null} isInitialized={false}
+      cardEditorMode={null} initializeCard={vi.fn()} cleanupCard={vi.fn()} onCardEditorModeChange={vi.fn()}
+    /></QueryClientProvider>);
+    await waitFor(() => expect(screen.getByText(/Next Payment Scheduled:/)).toHaveTextContent("Next Payment Scheduled: Unavailable"));
+    expect(screen.getByRole("alert")).toHaveTextContent("Pay older unpaid obligations with a one-time payment before automatic payments can resume.");
+    expect(screen.getByRole("alert")).not.toHaveTextContent("409:");
   });
 
   it("reuses the consent command key when the outcome is unresolved", async () => {
