@@ -103,6 +103,7 @@ jobs:
           test "$(neon --version)" = "$NEON_CLI_VERSION"
 
       - name: Verify Neon production target
+        id: target
         env:
           NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
         run: |
@@ -118,6 +119,19 @@ jobs:
             --arg id "$NEON_PRODUCTION_BRANCH_ID" \
             --arg name "$NEON_PRODUCTION_BRANCH_NAME" \
             '(.branch // .) | .id == $id and .name == $name and .default == true and .protected == true' >/dev/null
+
+          endpoints_json="$(neon api "/projects/$NEON_PROJECT_ID/endpoints" --output json --no-color)"
+          endpoint_host="$(printf '%s' "$endpoints_json" | jq -er \
+            --arg branch "$NEON_PRODUCTION_BRANCH_ID" \
+            '[.endpoints[] | select(.branch_id == $branch and .type == "read_write") | .host] | unique |
+             if length == 1 and .[0] != "" then .[0] else error("expected exactly one production read-write endpoint") end')"
+          host_fingerprint="$(EXPECTED_ENDPOINT_HOST="$endpoint_host" node --input-type=module -e '
+            import { createHash } from "node:crypto";
+            const endpoint = `${process.env.EXPECTED_ENDPOINT_HOST.toLowerCase()}:5432`;
+            process.stdout.write(`sha256:${createHash("sha256").update(endpoint).digest("hex")}`);
+          ')"
+          printf '%s' "$host_fingerprint" | grep -Eq '^sha256:[0-9a-f]{64}$'
+          printf 'host_fingerprint=%s\n' "$host_fingerprint" >> "$GITHUB_OUTPUT"
 
       - name: Create and verify protected pre-migration backup
         id: backup
@@ -158,18 +172,25 @@ jobs:
           echo "::add-mask::$database_url"
           printf 'database_url=%s\n' "$database_url" >> "$GITHUB_OUTPUT"
 
-          DATABASE_URL="$database_url" node --input-type=module -e '
+          actual_host_fingerprint="$(DATABASE_URL="$database_url" node --input-type=module -e '
+            import { createHash } from "node:crypto";
             const target = new URL(process.env.DATABASE_URL);
             if (!/^postgres(ql)?:$/.test(target.protocol)) throw new Error("Unexpected database URL scheme.");
             if (target.hostname.includes("-pooler")) throw new Error("Production migrations require a direct Neon connection.");
             if (decodeURIComponent(target.pathname.slice(1)) !== process.env.NEON_DATABASE_NAME) throw new Error("Unexpected database name.");
             if (decodeURIComponent(target.username) !== process.env.NEON_ROLE_NAME) throw new Error("Unexpected database role.");
-          '
+            const endpoint = `${target.hostname.toLowerCase()}:${target.port || "5432"}`;
+            process.stdout.write(`sha256:${createHash("sha256").update(endpoint).digest("hex")}`);
+          ')"
+          test "$actual_host_fingerprint" = "${{ steps.target.outputs.host_fingerprint }}"
 
       - name: Apply only the explicitly expected migrations
         id: migration
         env:
           DATABASE_URL: ${{ steps.connection.outputs.database_url }}
+          DB_MIGRATION_EXPECTED_HOST_FINGERPRINT: ${{ steps.target.outputs.host_fingerprint }}
+          DB_MIGRATION_EXPECTED_DATABASE: ${{ env.NEON_DATABASE_NAME }}
+          DB_MIGRATION_EXPECTED_ROLE: ${{ env.NEON_ROLE_NAME }}
         run: |
           git fetch --no-tags origin main
           test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_SHA"

@@ -1,16 +1,19 @@
 {
-  "formatVersion": 1,
+  "formatVersion": 2,
   "algorithm": "sha256",
   "migration": {
     "tag": "0035_automatic_fifo_payment_allocation",
     "hash": "2de08c0d243e9dab21b1c815db9769f59636d48f98f5f2dd13f6060ae051b8db",
     "createdAt": 1787782184136
   },
-  "digest": "9eedf761b4db72f06e5ec6355488baa9b24a213dd60080b990ac4d67c4d9c2a5",
+  "digest": "0631685a9661927c2188d30b5eacba3f7429680f0e60867874e8a76bf1756843",
   "counts": {
     "tables": 63,
     "columns": 861,
     "nonTableRelations": 0,
+    "rewriteRules": 0,
+    "unsupportedPublicObjects": 0,
+    "extensions": 0,
     "sequences": 23,
     "constraints": 481,
     "indexes": 265,

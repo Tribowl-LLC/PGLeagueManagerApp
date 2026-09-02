@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { DATABASE_SCHEMA_WRITER_LOCK_KEY } from '../../shared/database-advisory-locks';
+import { parseExpectedMigrationTarget } from '../../scripts/db-migrate';
 import {
   assertExpectedPendingMigrations,
   parseExpectedPendingMigrations,
@@ -38,6 +39,33 @@ describe('production migration expected-pending guard', () => {
       '0035_first',
       '0036_second',
     ])).toThrow('do not exactly match expected');
+  });
+
+  it('requires a complete independently supplied target in guarded mode', () => {
+    expect(() => parseExpectedMigrationTarget({}, true)).toThrow(
+      'Required migration target variable(s) are absent',
+    );
+    expect(() => parseExpectedMigrationTarget({
+      DB_MIGRATION_EXPECTED_HOST_FINGERPRINT: `sha256:${'a'.repeat(64)}`,
+      DB_MIGRATION_EXPECTED_DATABASE: 'neondb',
+    }, true)).toThrow('DB_MIGRATION_EXPECTED_ROLE');
+  });
+
+  it('accepts only a complete target with a valid endpoint fingerprint', () => {
+    const environment = {
+      DB_MIGRATION_EXPECTED_HOST_FINGERPRINT: `sha256:${'a'.repeat(64)}`,
+      DB_MIGRATION_EXPECTED_DATABASE: 'neondb',
+      DB_MIGRATION_EXPECTED_ROLE: 'neondb_owner',
+    };
+    expect(parseExpectedMigrationTarget(environment, true)).toEqual({
+      hostFingerprint: environment.DB_MIGRATION_EXPECTED_HOST_FINGERPRINT,
+      database: 'neondb',
+      role: 'neondb_owner',
+    });
+    expect(() => parseExpectedMigrationTarget({
+      ...environment,
+      DB_MIGRATION_EXPECTED_HOST_FINGERPRINT: 'sha256:not-a-digest',
+    }, true)).toThrow('lowercase SHA-256 fingerprint');
   });
 
   it('keeps every production schema writer on the shared migration lock', () => {

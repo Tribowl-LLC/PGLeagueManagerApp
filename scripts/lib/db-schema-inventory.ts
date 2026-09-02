@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import pg, { type QueryResultRow } from 'pg';
 import { normalizeSqlDefinition } from './sql-definition-normalization';
 
-export const DB_INVENTORY_FORMAT_VERSION = 6 as const;
+export const DB_INVENTORY_FORMAT_VERSION = 7 as const;
 
 export type TablePrivilege =
   | 'delete'
@@ -42,6 +42,15 @@ export interface TableInfo {
   name: string;
   kind: 'table' | 'partitioned table';
   persistence: 'permanent' | 'unlogged' | 'temporary';
+  replicaIdentity: 'default' | 'nothing' | 'full' | 'index';
+  options: string[];
+  accessMethod: string | null;
+  tablespace: string | null;
+  partition: boolean;
+  partitionKey: string | null;
+  partitionBound: string | null;
+  parents: string[];
+  ofType: string | null;
   rowSecurity: boolean;
   forceRowSecurity: boolean;
   owner: string;
@@ -55,10 +64,28 @@ export interface NonTableRelationInfo {
   name: string;
   kind: 'view' | 'materialized view' | 'foreign table';
   persistence: 'permanent' | 'unlogged' | 'temporary';
+  replicaIdentity: 'default' | 'nothing' | 'full' | 'index';
   definition: string | null;
   options: string[];
+  accessMethod: string | null;
+  tablespace: string | null;
   foreignServer: string | null;
   foreignOptions: string[];
+}
+
+export interface RewriteRuleInfo {
+  schema: string;
+  relation: string;
+  name: string;
+  event: 'select' | 'update' | 'insert' | 'delete';
+  instead: boolean;
+  enabled: 'origin' | 'replica' | 'always' | 'disabled';
+  definition: string;
+}
+
+export interface UnsupportedPublicObjectInfo {
+  kind: string;
+  identity: string;
 }
 
 export interface TablePrivilegeInfo {
@@ -268,6 +295,8 @@ export interface DatabaseInventory {
   schemas: SchemaInfo[];
   tables: TableInfo[];
   nonTableRelations: NonTableRelationInfo[];
+  rewriteRules: RewriteRuleInfo[];
+  unsupportedPublicObjects: UnsupportedPublicObjectInfo[];
   tablePrivileges: TablePrivilegeInfo[];
   policies: PolicyInfo[];
   columns: ColumnInfo[];
@@ -304,6 +333,15 @@ interface TableRow extends QueryResultRow {
   table_name: string;
   kind: TableInfo['kind'];
   persistence: TableInfo['persistence'];
+  replica_identity: string;
+  relation_options: string[];
+  access_method: string | null;
+  tablespace_name: string | null;
+  is_partition: boolean;
+  partition_key: string | null;
+  partition_bound: string | null;
+  parents: string[];
+  of_type: string | null;
   row_security: boolean;
   force_row_security: boolean;
   owner_name: string;
@@ -316,10 +354,28 @@ interface NonTableRelationRow extends QueryResultRow {
   relation_name: string;
   kind: NonTableRelationInfo['kind'];
   persistence: NonTableRelationInfo['persistence'];
+  replica_identity: string;
   definition: string | null;
   relation_options: string[];
+  access_method: string | null;
+  tablespace_name: string | null;
   foreign_server: string | null;
   foreign_options: string[];
+}
+
+interface RewriteRuleRow extends QueryResultRow {
+  schema_name: string;
+  relation_name: string;
+  rule_name: string;
+  event_type: string;
+  is_instead: boolean;
+  enabled: string;
+  definition: string;
+}
+
+interface UnsupportedPublicObjectRow extends QueryResultRow {
+  kind: string;
+  identity: string;
 }
 
 interface TablePrivilegeRow extends QueryResultRow {
@@ -970,6 +1026,25 @@ async function collectDatabaseInventoryInternal(
           WHEN 't' THEN 'temporary'
           ELSE 'permanent'
         END AS persistence,
+        c.relreplident AS replica_identity,
+        COALESCE(c.reloptions, ARRAY[]::text[]) AS relation_options,
+        access_method.amname AS access_method,
+        tablespace.spcname AS tablespace_name,
+        c.relispartition AS is_partition,
+        CASE WHEN c.relkind = 'p' THEN pg_catalog.pg_get_partkeydef(c.oid) ELSE NULL END
+          AS partition_key,
+        pg_catalog.pg_get_expr(c.relpartbound, c.oid, true) AS partition_bound,
+        ARRAY(
+          SELECT parent_namespace.nspname || '.' || parent.relname
+          FROM pg_catalog.pg_inherits inheritance
+          JOIN pg_catalog.pg_class parent ON parent.oid = inheritance.inhparent
+          JOIN pg_catalog.pg_namespace parent_namespace ON parent_namespace.oid = parent.relnamespace
+          WHERE inheritance.inhrelid = c.oid
+          ORDER BY inheritance.inhseqno, parent_namespace.nspname, parent.relname
+        )::text[] AS parents,
+        CASE WHEN c.reloftype = 0 THEN NULL
+          ELSE type_namespace.nspname || '.' || row_type.typname
+        END AS of_type,
         c.relrowsecurity AS row_security,
         c.relforcerowsecurity AS force_row_security,
         pg_catalog.pg_get_userbyid(c.relowner) AS owner_name,
@@ -987,6 +1062,10 @@ async function collectDatabaseInventoryInternal(
         ]::text[], NULL) AS connected_role_privileges
       FROM pg_catalog.pg_class c
       JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+      LEFT JOIN pg_catalog.pg_am access_method ON access_method.oid = c.relam
+      LEFT JOIN pg_catalog.pg_tablespace tablespace ON tablespace.oid = c.reltablespace
+      LEFT JOIN pg_catalog.pg_type row_type ON row_type.oid = c.reloftype
+      LEFT JOIN pg_catalog.pg_namespace type_namespace ON type_namespace.oid = row_type.typnamespace
       WHERE c.relkind IN ('r', 'p')
         AND ${USER_SCHEMA_PREDICATE}
       ORDER BY n.nspname, c.relname
@@ -1006,13 +1085,18 @@ async function collectDatabaseInventoryInternal(
           WHEN 't' THEN 'temporary'
           ELSE 'permanent'
         END AS persistence,
+        c.relreplident AS replica_identity,
         CASE WHEN c.relkind IN ('v', 'm') THEN pg_catalog.pg_get_viewdef(c.oid, true) ELSE NULL END
           AS definition,
         COALESCE(c.reloptions, ARRAY[]::text[]) AS relation_options,
+        access_method.amname AS access_method,
+        tablespace.spcname AS tablespace_name,
         foreign_server.srvname AS foreign_server,
         COALESCE(foreign_table.ftoptions, ARRAY[]::text[]) AS foreign_options
       FROM pg_catalog.pg_class c
       JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+      LEFT JOIN pg_catalog.pg_am access_method ON access_method.oid = c.relam
+      LEFT JOIN pg_catalog.pg_tablespace tablespace ON tablespace.oid = c.reltablespace
       LEFT JOIN pg_catalog.pg_foreign_table foreign_table ON foreign_table.ftrelid = c.oid
       LEFT JOIN pg_catalog.pg_foreign_server foreign_server ON foreign_server.oid = foreign_table.ftserver
       WHERE c.relkind IN ('v', 'm', 'f')
@@ -1404,6 +1488,114 @@ async function collectDatabaseInventoryInternal(
       ORDER BY n.nspname, c.relname, tg.tgname
     `);
 
+    const rewriteRulesResult = await client.query<RewriteRuleRow>(`
+      SELECT
+        n.nspname AS schema_name,
+        c.relname AS relation_name,
+        rule.rulename AS rule_name,
+        rule.ev_type::text AS event_type,
+        rule.is_instead,
+        rule.ev_enabled::text AS enabled,
+        pg_catalog.pg_get_ruledef(rule.oid, true) AS definition
+      FROM pg_catalog.pg_rewrite rule
+      JOIN pg_catalog.pg_class c ON c.oid = rule.ev_class
+      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+      WHERE ${USER_SCHEMA_PREDICATE}
+        AND NOT (rule.rulename = '_RETURN' AND rule.ev_type = '1')
+      ORDER BY n.nspname, c.relname, rule.rulename
+    `);
+
+    const unsupportedPublicObjectsResult = await client.query<UnsupportedPublicObjectRow>(`
+      SELECT kind, identity
+      FROM (
+        SELECT 'aggregate-or-window-function'::text AS kind,
+          n.nspname || '.' || p.proname || '(' || pg_catalog.pg_get_function_identity_arguments(p.oid) || ')'
+            AS identity,
+          'pg_catalog.pg_proc'::pg_catalog.regclass AS classid,
+          p.oid AS object_id
+        FROM pg_catalog.pg_proc p
+        JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public' AND p.prokind IN ('a', 'w')
+        UNION ALL
+        SELECT 'operator', n.nspname || '.' || op.oprname || '(' ||
+          pg_catalog.format_type(op.oprleft, NULL) || ',' ||
+          pg_catalog.format_type(op.oprright, NULL) || ')',
+          'pg_catalog.pg_operator'::pg_catalog.regclass, op.oid
+        FROM pg_catalog.pg_operator op
+        JOIN pg_catalog.pg_namespace n ON n.oid = op.oprnamespace
+        WHERE n.nspname = 'public'
+        UNION ALL
+        SELECT 'operator-class', n.nspname || '.' || operator_class.opcname,
+          'pg_catalog.pg_opclass'::pg_catalog.regclass, operator_class.oid
+        FROM pg_catalog.pg_opclass operator_class
+        JOIN pg_catalog.pg_namespace n ON n.oid = operator_class.opcnamespace
+        WHERE n.nspname = 'public'
+        UNION ALL
+        SELECT 'operator-family', n.nspname || '.' || operator_family.opfname,
+          'pg_catalog.pg_opfamily'::pg_catalog.regclass, operator_family.oid
+        FROM pg_catalog.pg_opfamily operator_family
+        JOIN pg_catalog.pg_namespace n ON n.oid = operator_family.opfnamespace
+        WHERE n.nspname = 'public'
+        UNION ALL
+        SELECT 'collation', n.nspname || '.' || coll.collname,
+          'pg_catalog.pg_collation'::pg_catalog.regclass, coll.oid
+        FROM pg_catalog.pg_collation coll
+        JOIN pg_catalog.pg_namespace n ON n.oid = coll.collnamespace
+        WHERE n.nspname = 'public'
+        UNION ALL
+        SELECT 'conversion', n.nspname || '.' || conv.conname,
+          'pg_catalog.pg_conversion'::pg_catalog.regclass, conv.oid
+        FROM pg_catalog.pg_conversion conv
+        JOIN pg_catalog.pg_namespace n ON n.oid = conv.connamespace
+        WHERE n.nspname = 'public'
+        UNION ALL
+        SELECT 'extended-statistics', n.nspname || '.' || statistics.stxname,
+          'pg_catalog.pg_statistic_ext'::pg_catalog.regclass, statistics.oid
+        FROM pg_catalog.pg_statistic_ext statistics
+        JOIN pg_catalog.pg_namespace n ON n.oid = statistics.stxnamespace
+        WHERE n.nspname = 'public'
+        UNION ALL
+        SELECT 'text-search-configuration', n.nspname || '.' || configuration.cfgname,
+          'pg_catalog.pg_ts_config'::pg_catalog.regclass, configuration.oid
+        FROM pg_catalog.pg_ts_config configuration
+        JOIN pg_catalog.pg_namespace n ON n.oid = configuration.cfgnamespace
+        WHERE n.nspname = 'public'
+        UNION ALL
+        SELECT 'text-search-dictionary', n.nspname || '.' || dictionary.dictname,
+          'pg_catalog.pg_ts_dict'::pg_catalog.regclass, dictionary.oid
+        FROM pg_catalog.pg_ts_dict dictionary
+        JOIN pg_catalog.pg_namespace n ON n.oid = dictionary.dictnamespace
+        WHERE n.nspname = 'public'
+        UNION ALL
+        SELECT 'text-search-parser', n.nspname || '.' || parser.prsname,
+          'pg_catalog.pg_ts_parser'::pg_catalog.regclass, parser.oid
+        FROM pg_catalog.pg_ts_parser parser
+        JOIN pg_catalog.pg_namespace n ON n.oid = parser.prsnamespace
+        WHERE n.nspname = 'public'
+        UNION ALL
+        SELECT 'text-search-template', n.nspname || '.' || template.tmplname,
+          'pg_catalog.pg_ts_template'::pg_catalog.regclass, template.oid
+        FROM pg_catalog.pg_ts_template template
+        JOIN pg_catalog.pg_namespace n ON n.oid = template.tmplnamespace
+        WHERE n.nspname = 'public'
+      ) candidate
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_depend dependency
+        WHERE dependency.classid = candidate.classid
+          AND dependency.objid = candidate.object_id
+          AND dependency.deptype = 'e'
+      )
+      UNION ALL
+      SELECT 'publication-membership', publication.pubname || ':' || n.nspname || '.' || c.relname
+      FROM pg_catalog.pg_publication_rel membership
+      JOIN pg_catalog.pg_publication publication ON publication.oid = membership.prpubid
+      JOIN pg_catalog.pg_class c ON c.oid = membership.prrelid
+      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public'
+      ORDER BY kind, identity
+    `);
+
     const extensionsResult = await client.query<ExtensionRow>(`
       SELECT
         e.extname AS extension_name,
@@ -1500,6 +1692,16 @@ async function collectDatabaseInventoryInternal(
           name: row.table_name,
           kind: row.kind,
           persistence: row.persistence,
+          replicaIdentity: row.replica_identity === 'n' ? 'nothing' : row.replica_identity === 'f'
+            ? 'full' : row.replica_identity === 'i' ? 'index' : 'default',
+          options: [...row.relation_options].sort(compareText),
+          accessMethod: row.access_method,
+          tablespace: row.tablespace_name,
+          partition: row.is_partition,
+          partitionKey: normalizeSqlDefinition(row.partition_key),
+          partitionBound: normalizeSqlDefinition(row.partition_bound),
+          parents: row.parents,
+          ofType: row.of_type,
           rowSecurity: row.row_security,
           forceRowSecurity: row.force_row_security,
           owner: row.owner_name,
@@ -1513,10 +1715,29 @@ async function collectDatabaseInventoryInternal(
         name: row.relation_name,
         kind: row.kind,
         persistence: row.persistence,
+        replicaIdentity: row.replica_identity === 'n' ? 'nothing' : row.replica_identity === 'f'
+          ? 'full' : row.replica_identity === 'i' ? 'index' : 'default',
         definition: normalizeSqlDefinition(row.definition),
         options: [...row.relation_options].sort(compareText),
+        accessMethod: row.access_method,
+        tablespace: row.tablespace_name,
         foreignServer: row.foreign_server,
         foreignOptions: [...row.foreign_options].sort(compareText),
+      })),
+      rewriteRules: rewriteRulesResult.rows.map((row) => ({
+        schema: row.schema_name,
+        relation: row.relation_name,
+        name: row.rule_name,
+        event: row.event_type === '2' ? 'update' : row.event_type === '3'
+          ? 'insert' : row.event_type === '4' ? 'delete' : 'select',
+        instead: row.is_instead,
+        enabled: row.enabled === 'D' ? 'disabled' : row.enabled === 'R'
+          ? 'replica' : row.enabled === 'A' ? 'always' : 'origin',
+        definition: normalizeSqlDefinition(row.definition) ?? '',
+      })),
+      unsupportedPublicObjects: unsupportedPublicObjectsResult.rows.map((row) => ({
+        kind: row.kind,
+        identity: row.identity,
       })),
       tablePrivileges: tablePrivilegesResult.rows.map((row) => ({
         schema: row.schema_name,

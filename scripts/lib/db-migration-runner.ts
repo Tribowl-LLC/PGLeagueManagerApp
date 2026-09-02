@@ -12,12 +12,17 @@ import {
   restoreApprovedJournalSequenceState,
   type JournalSequenceState,
 } from './db-migration-journal';
-import { redactConnectionDetails } from './db-schema-inventory';
+import {
+  assertExpectedConnectionUrlTarget,
+  redactConnectionDetails,
+  type ExpectedDatabaseTarget,
+} from './db-schema-inventory';
 import { verifyApprovedSchemaStateOnClient } from './db-schema-state-fingerprint';
 import { DATABASE_SCHEMA_WRITER_LOCK_KEY } from '../../shared/database-advisory-locks';
 
 export interface CheckedMigrationOptions {
   expectedPending?: readonly string[];
+  expectedTarget?: ExpectedDatabaseTarget;
 }
 
 export interface CheckedMigrationResult {
@@ -135,6 +140,7 @@ async function runExpectedMigrationsAtomically(
   connectionString: string,
   migrations: ActiveMigration[],
   expectedPending: readonly string[],
+  expectedTarget: ExpectedDatabaseTarget,
 ): Promise<CheckedMigrationResult> {
   let transaction = false;
   let preMigrationSequenceState: JournalSequenceState | null = null;
@@ -165,6 +171,8 @@ async function runExpectedMigrationsAtomically(
       client,
       connectionString,
       currentMigration,
+      undefined,
+      expectedTarget,
     );
     process.stdout.write(
       `[db:migrate] schema-state=${currentMigration.tag} sha256:${fingerprint.digest}\n`,
@@ -193,6 +201,8 @@ async function runExpectedMigrationsAtomically(
       client,
       connectionString,
       finalMigration,
+      undefined,
+      expectedTarget,
     );
     process.stdout.write(
       `[db:migrate] schema-state=${finalMigration.tag} sha256:${finalFingerprint.digest}\n`,
@@ -235,15 +245,22 @@ export async function runCheckedMigrations(
   });
   let lockHeld = false;
   try {
+    if (options.expectedPending !== undefined && !options.expectedTarget) {
+      throw new Error('Expected-pending migration mode requires independently verified target metadata.');
+    }
+    if (options.expectedTarget) {
+      assertExpectedConnectionUrlTarget(connectionString, options.expectedTarget);
+    }
     await client.connect();
     await client.query('SELECT pg_advisory_lock($1)', [DATABASE_SCHEMA_WRITER_LOCK_KEY]);
     lockHeld = true;
-    if (options.expectedPending !== undefined) {
+    if (options.expectedPending !== undefined && options.expectedTarget) {
       return await runExpectedMigrationsAtomically(
         client,
         connectionString,
         migrations,
         options.expectedPending,
+        options.expectedTarget,
       );
     }
     const inspection = await inspectJournalUnderLock(client);

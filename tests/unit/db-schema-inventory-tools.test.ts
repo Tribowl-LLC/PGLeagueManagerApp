@@ -37,7 +37,7 @@ import { normalizeSqlDefinition } from '../../scripts/lib/sql-definition-normali
 
 function emptyInventory(database: string): DatabaseInventory {
   return {
-    formatVersion: 6,
+    formatVersion: 7,
     target: {
       hostFingerprint: 'sha256:test',
       database,
@@ -52,6 +52,8 @@ function emptyInventory(database: string): DatabaseInventory {
     schemas: [],
     tables: [],
     nonTableRelations: [],
+    rewriteRules: [],
+    unsupportedPublicObjects: [],
     tablePrivileges: [],
     policies: [],
     columns: [],
@@ -81,6 +83,15 @@ function testTable(name: string, rowSecurity = false): TableInfo {
     name,
     kind: 'table',
     persistence: 'permanent',
+    replicaIdentity: 'default',
+    options: [],
+    accessMethod: 'heap',
+    tablespace: null,
+    partition: false,
+    partitionKey: null,
+    partitionBound: null,
+    parents: [],
+    ofType: null,
     rowSecurity,
     forceRowSecurity: false,
     owner: 'inventory_reader',
@@ -169,7 +180,8 @@ describe('database schema inventory tools', () => {
     }];
     left.nonTableRelations = [{
       schema: 'public', name: 'unexpected_view', kind: 'view', persistence: 'permanent',
-      definition: 'SELECT 1 AS value;', options: [], foreignServer: null, foreignOptions: [],
+      replicaIdentity: 'nothing', definition: 'SELECT 1 AS value;', options: [],
+      accessMethod: null, tablespace: null, foreignServer: null, foreignOptions: [],
     }];
 
     const right = emptyInventory('journal');
@@ -198,7 +210,7 @@ describe('database schema inventory tools', () => {
   });
 
   it('validates the inventory format before comparison', () => {
-    expect(() => assertDatabaseInventory({ formatVersion: 6 }, 'partial.json')).toThrow(
+    expect(() => assertDatabaseInventory({ formatVersion: 7 }, 'partial.json')).toThrow(
       'partial.json is missing target metadata',
     );
     expect(() => assertDatabaseInventory({ formatVersion: 5 }, 'legacy.json')).toThrow(

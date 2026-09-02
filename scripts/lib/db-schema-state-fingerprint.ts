@@ -9,11 +9,12 @@ import {
 import {
   collectDatabaseInventoryOnClient,
   type DatabaseInventory,
+  type ExpectedDatabaseTarget,
 } from './db-schema-inventory';
 import type pg from 'pg';
 import { functionDefinitionsDifferOnlyByInsignificantWhitespace } from './sql-definition-normalization';
 
-export const SCHEMA_STATE_FINGERPRINT_FORMAT_VERSION = 1 as const;
+export const SCHEMA_STATE_FINGERPRINT_FORMAT_VERSION = 2 as const;
 export const SCHEMA_STATE_FINGERPRINT_DIRECTORY = resolve('migrations', 'schema-fingerprints');
 
 interface SchemaStateStructure {
@@ -28,6 +29,9 @@ interface SchemaStateStructure {
     'owner' | 'connectedRoleOwnsTable' | 'connectedRolePrivileges' | 'connectedRoleRlsMode'>>;
   columns: Array<Omit<DatabaseInventory['columns'][number], 'ordinal'>>;
   nonTableRelations: DatabaseInventory['nonTableRelations'];
+  rewriteRules: DatabaseInventory['rewriteRules'];
+  unsupportedPublicObjects: DatabaseInventory['unsupportedPublicObjects'];
+  extensions: DatabaseInventory['extensions'];
   sequences: Array<Omit<DatabaseInventory['sequences'][number], 'owner' | 'connectedRoleCanAlter'>>;
   constraints: DatabaseInventory['constraints'];
   indexes: DatabaseInventory['indexes'];
@@ -94,6 +98,12 @@ function normalizeLegacyInertRls(inventory: DatabaseInventory): {
 }
 
 function schemaStateStructure(inventory: DatabaseInventory): SchemaStateStructure {
+  if (inventory.unsupportedPublicObjects.length > 0) {
+    throw new Error(
+      `Schema-state verification refuses unsupported public catalog objects: ${inventory.unsupportedPublicObjects
+        .map((object) => `${object.kind}:${object.identity}`).join(', ')}.`,
+    );
+  }
   const normalized = normalizeLegacyInertRls(inventory);
   const approvedBaselineFunctions = new Map(
     loadApprovedBaselineFingerprint().structure.functions.map((fn) => [
@@ -118,6 +128,11 @@ function schemaStateStructure(inventory: DatabaseInventory): SchemaStateStructur
       .map(({ ordinal: _ordinal, ...column }) => column)),
     nonTableRelations: sortObjects(inventory.nonTableRelations
       .filter((relation) => relation.schema === 'public')),
+    rewriteRules: sortObjects(inventory.rewriteRules
+      .filter((rule) => rule.schema === 'public')),
+    unsupportedPublicObjects: [],
+    extensions: sortObjects(inventory.extensions
+      .filter((extension) => extension.schema === 'public')),
     sequences: sortObjects(inventory.sequences
       .filter((sequence) => sequence.schema === 'public')
       .map(({ owner: _owner, connectedRoleCanAlter: _canAlter, ...sequence }) => sequence)),
@@ -150,6 +165,9 @@ function structureCounts(structure: SchemaStateStructure): SchemaStateFingerprin
     tables: structure.tables.length,
     columns: structure.columns.length,
     nonTableRelations: structure.nonTableRelations.length,
+    rewriteRules: structure.rewriteRules.length,
+    unsupportedPublicObjects: structure.unsupportedPublicObjects.length,
+    extensions: structure.extensions.length,
     sequences: structure.sequences.length,
     constraints: structure.constraints.length,
     indexes: structure.indexes.length,
@@ -236,9 +254,10 @@ export async function verifyApprovedSchemaStateOnClient(
   connectionString: string,
   migration: ActiveMigration,
   directory = SCHEMA_STATE_FINGERPRINT_DIRECTORY,
+  expectedTarget?: ExpectedDatabaseTarget,
 ): Promise<SchemaStateFingerprint> {
   const approved = loadApprovedSchemaStateFingerprint(migration, directory);
-  const inventory = await collectDatabaseInventoryOnClient(client, connectionString);
+  const inventory = await collectDatabaseInventoryOnClient(client, connectionString, { expectedTarget });
   const actual = createSchemaStateFingerprint(inventory, migration);
   assertApprovedSchemaStateFingerprint(actual, approved);
   return actual;

@@ -310,7 +310,12 @@ the fail-closed fallback. Never run both executors concurrently.
 1. Create a current Neon backup or branch suitable for restoration.
 2. Confirm the target Neon project, branch, host, database name, and user.
 3. Set `DATABASE_URL` only in the shell or deployment environment where the
-   intended target has been independently verified.
+   intended target has been independently verified. Separately record the
+   verified endpoint as `DB_MIGRATION_EXPECTED_HOST_FINGERPRINT` (the lowercase
+   SHA-256 of `hostname:port`, prefixed with `sha256:`), database as
+   `DB_MIGRATION_EXPECTED_DATABASE`, and role as
+   `DB_MIGRATION_EXPECTED_ROLE`. Do not calculate these expected values from
+   the `DATABASE_URL` that they are intended to check.
 4. For the organization-hostname namespace migration, run
    `npm run db:audit:organization-hostnames` against the independently verified
    target. The command is read-only and returns a non-zero status for
@@ -323,9 +328,12 @@ the fail-closed fallback. Never run both executors concurrently.
    differs, stop: baseline adoption must never be repeated.
 6. Set `DB_MIGRATION_EXPECTED_PENDING` to the exact ordered, comma-separated
    migration tags approved for this release, then run `npm run db:migrate`
-   with exactly one executor for the environment. Never omit this variable on
-   a production fallback. Abort on any fingerprint, journal, pending-list, or
-   migration failure. After it succeeds, set
+   with exactly one executor for the environment. Keep all three independently
+   recorded `DB_MIGRATION_EXPECTED_*` target values set. Never omit these
+   guards on a production fallback. The runner verifies the URL endpoint before
+   connecting and the server-reported database and role inside its locked
+   inventory transaction. Abort on any target, fingerprint, journal,
+   pending-list, or migration failure. After it succeeds, set
    `DB_MIGRATION_EXPECTED_PENDING=none` and rerun `npm run db:migrate`; it must
    verify the resulting fingerprint and report no pending migrations.
 7. Apply the schema change to the intended database and record the result.

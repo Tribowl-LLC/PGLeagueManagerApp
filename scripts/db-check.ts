@@ -61,9 +61,17 @@ import {
 } from './lib/db-inventory-container';
 import {
   collectDatabaseInventory,
+  deriveDatabaseTargetFromConnectionString,
   fingerprintDatabaseHost,
   redactConnectionDetails,
 } from './lib/db-schema-inventory';
+
+function guardedMigrationOptions(connectionString: string, expectedPending: readonly string[]) {
+  return {
+    expectedPending,
+    expectedTarget: deriveDatabaseTargetFromConnectionString(connectionString),
+  };
+}
 
 const POSTGRES_USER = 'postgres';
 const POSTGRES_PASSWORD = 'leaguevault-db-check-local-only';
@@ -966,9 +974,8 @@ async function validateVersion(
     await executeSql(previousStateUrl, ['ALTER TABLE alerter_state ADD COLUMN schema_state_drift_probe integer']);
     let schemaDriftRefusal = '';
     try {
-      await runCheckedMigrations(previousStateUrl, ACTIVE_MIGRATIONS_DIRECTORY, {
-        expectedPending: [activeMigrationTags.at(-1) ?? ''],
-      });
+      await runCheckedMigrations(previousStateUrl, ACTIVE_MIGRATIONS_DIRECTORY,
+        guardedMigrationOptions(previousStateUrl, [activeMigrationTags.at(-1) ?? '']));
     } catch (error) {
       schemaDriftRefusal = error instanceof Error ? error.message : String(error);
     }
@@ -984,9 +991,8 @@ async function validateVersion(
     await executeSql(previousStateUrl, ['CREATE VIEW unexpected_schema_state_view AS SELECT 1 AS value']);
     let relationDriftRefusal = '';
     try {
-      await runCheckedMigrations(previousStateUrl, ACTIVE_MIGRATIONS_DIRECTORY, {
-        expectedPending: [activeMigrationTags.at(-1) ?? ''],
-      });
+      await runCheckedMigrations(previousStateUrl, ACTIVE_MIGRATIONS_DIRECTORY,
+        guardedMigrationOptions(previousStateUrl, [activeMigrationTags.at(-1) ?? '']));
     } catch (error) {
       relationDriftRefusal = error instanceof Error ? error.message : String(error);
     }
@@ -999,15 +1005,13 @@ async function validateVersion(
       );
     }
     await executeSql(previousStateUrl, ['DROP VIEW unexpected_schema_state_view']);
-    const guardedRun = await runCheckedMigrations(previousStateUrl, ACTIVE_MIGRATIONS_DIRECTORY, {
-      expectedPending: [activeMigrationTags.at(-1) ?? ''],
-    });
+    const guardedRun = await runCheckedMigrations(previousStateUrl, ACTIVE_MIGRATIONS_DIRECTORY,
+      guardedMigrationOptions(previousStateUrl, [activeMigrationTags.at(-1) ?? '']));
     if (JSON.stringify(guardedRun.applied) !== JSON.stringify([activeMigrationTags.at(-1)])) {
       throw new Error('Expected-pending migration mode did not apply only the final migration.');
     }
-    if (!(await runCheckedMigrations(previousStateUrl, ACTIVE_MIGRATIONS_DIRECTORY, {
-      expectedPending: [],
-    })).noOp) {
+    if (!(await runCheckedMigrations(previousStateUrl, ACTIVE_MIGRATIONS_DIRECTORY,
+      guardedMigrationOptions(previousStateUrl, []))).noOp) {
       throw new Error('Expected-pending migration mode did not verify the final schema as a no-op.');
     }
 
@@ -1017,9 +1021,8 @@ async function validateVersion(
     await runCheckedMigrations(atomicRollbackUrl);
     let atomicRollbackRefusal = '';
     try {
-      await runCheckedMigrations(atomicRollbackUrl, atomicRollbackProof, {
-        expectedPending: [proof.metadata.tag],
-      });
+      await runCheckedMigrations(atomicRollbackUrl, atomicRollbackProof,
+        guardedMigrationOptions(atomicRollbackUrl, [proof.metadata.tag]));
     } catch (error) {
       atomicRollbackRefusal = error instanceof Error ? error.message : String(error);
     }
@@ -1039,9 +1042,8 @@ async function validateVersion(
     } finally {
       await atomicRollbackClient.end().catch(() => undefined);
     }
-    if (!(await runCheckedMigrations(atomicRollbackUrl, ACTIVE_MIGRATIONS_DIRECTORY, {
-      expectedPending: [],
-    })).noOp) {
+    if (!(await runCheckedMigrations(atomicRollbackUrl, ACTIVE_MIGRATIONS_DIRECTORY,
+      guardedMigrationOptions(atomicRollbackUrl, []))).noOp) {
       throw new Error('Atomic rollback did not preserve a retryable guarded migration state.');
     }
 
@@ -1051,9 +1053,8 @@ async function validateVersion(
     await runCheckedMigrations(postFingerprintUrl);
     let postFingerprintRefusal = '';
     try {
-      await runCheckedMigrations(postFingerprintUrl, proof.directory, {
-        expectedPending: [proof.metadata.tag],
-      });
+      await runCheckedMigrations(postFingerprintUrl, proof.directory,
+        guardedMigrationOptions(postFingerprintUrl, [proof.metadata.tag]));
     } catch (error) {
       postFingerprintRefusal = error instanceof Error ? error.message : String(error);
     }
@@ -1075,9 +1076,8 @@ async function validateVersion(
     } finally {
       await postFingerprintClient.end().catch(() => undefined);
     }
-    if (!(await runCheckedMigrations(postFingerprintUrl, ACTIVE_MIGRATIONS_DIRECTORY, {
-      expectedPending: [],
-    })).noOp) {
+    if (!(await runCheckedMigrations(postFingerprintUrl, ACTIVE_MIGRATIONS_DIRECTORY,
+      guardedMigrationOptions(postFingerprintUrl, []))).noOp) {
       throw new Error('Post-fingerprint rollback did not preserve a retryable guarded migration state.');
     }
 
@@ -1168,6 +1168,67 @@ async function validateVersion(
     );
     if (beforeViewTrigger.digest === afterViewTrigger.digest) {
       throw new Error('View trigger drift did not change the schema-state fingerprint.');
+    }
+    await executeSql(foreignColumnUrl, [
+      'CREATE TABLE public.db_check_relation_behavior (id integer, value integer)',
+    ]);
+    const beforeTableBehavior = createSchemaStateFingerprint(
+      await collectDatabaseInventory(foreignColumnUrl),
+      finalMigration,
+    );
+    await executeSql(foreignColumnUrl, [
+      'ALTER TABLE public.db_check_relation_behavior REPLICA IDENTITY FULL',
+      'ALTER TABLE public.db_check_relation_behavior SET (fillfactor = 70)',
+    ]);
+    const afterTableBehavior = createSchemaStateFingerprint(
+      await collectDatabaseInventory(foreignColumnUrl),
+      finalMigration,
+    );
+    if (beforeTableBehavior.digest === afterTableBehavior.digest) {
+      throw new Error('Ordinary-table behavior metadata drift did not change the schema-state fingerprint.');
+    }
+    await executeSql(foreignColumnUrl, [
+      `CREATE TABLE public.db_check_partitioned (id integer) PARTITION BY RANGE (id)`,
+      `CREATE TABLE public.db_check_partitioned_low PARTITION OF public.db_check_partitioned
+       FOR VALUES FROM (0) TO (10)`,
+    ]);
+    const partitionInventory = await collectDatabaseInventory(foreignColumnUrl);
+    const partitionedParent = partitionInventory.tables.find((table) =>
+      table.schema === 'public' && table.name === 'db_check_partitioned'
+    );
+    const partitionChild = partitionInventory.tables.find((table) =>
+      table.schema === 'public' && table.name === 'db_check_partitioned_low'
+    );
+    if (partitionedParent?.kind !== 'partitioned table' ||
+      partitionedParent.partitionKey !== 'RANGE (id)' ||
+      !partitionChild?.partition ||
+      partitionChild.partitionBound !== 'FOR VALUES FROM (0) TO (10)' ||
+      JSON.stringify(partitionChild.parents) !== JSON.stringify(['public.db_check_partitioned'])) {
+      throw new Error('Partition key, bound, or parent metadata was not inventoried exactly.');
+    }
+    await executeSql(foreignColumnUrl, [
+      `CREATE RULE db_check_relation_behavior_insert AS
+       ON INSERT TO public.db_check_relation_behavior DO INSTEAD NOTHING`,
+    ]);
+    const afterRewriteRule = createSchemaStateFingerprint(
+      await collectDatabaseInventory(foreignColumnUrl),
+      finalMigration,
+    );
+    if (afterTableBehavior.digest === afterRewriteRule.digest) {
+      throw new Error('User-defined rewrite-rule drift did not change the schema-state fingerprint.');
+    }
+    await executeSql(foreignColumnUrl, [
+      'CREATE STATISTICS db_check_unsupported_statistics ON id, value FROM public.db_check_relation_behavior',
+    ]);
+    let unsupportedObjectRefusal = '';
+    try {
+      createSchemaStateFingerprint(await collectDatabaseInventory(foreignColumnUrl), finalMigration);
+    } catch (error) {
+      unsupportedObjectRefusal = error instanceof Error ? error.message : String(error);
+    }
+    if (!unsupportedObjectRefusal.includes('unsupported public catalog objects') ||
+      !unsupportedObjectRefusal.includes('extended-statistics')) {
+      throw new Error(`Unsupported public catalog object did not fail closed: ${unsupportedObjectRefusal}`);
     }
 
     const freshProof = 'fresh_proof';

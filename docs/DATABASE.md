@@ -418,17 +418,20 @@ there is no last migration, so it causes every checked-in migration to run; it
 is not evidence that a baseline is satisfied. The runner does not reconcile
 stored hashes against the checked-in files.
 
-`migrations/baseline-fingerprint.json` is fingerprint format version 2. Older
+`migrations/baseline-fingerprint.json` is fingerprint format version 3. Older
 format versions are refused rather than silently reinterpreted. It contains a
 SHA-256 digest plus the exact normalized structural inventory for the 29
 application tables, 307 declared columns, 26 owned integer sequences and their
-settings/ownership/default linkages, constraints, physical indexes,
-`public.user_role`, three functions, three triggers, and zero policies. It
-records RLS disabled on every application table. Provider-managed schemas,
-roles, extensions, privileges, role-owner identities/capability metadata,
-connection metadata, and physical column ordinals are deliberately excluded.
-Column names and all other declared properties remain exact, so historical
-physical order can differ without weakening adoption checks.
+settings/ownership/default linkages, relation behavior metadata, constraints,
+physical indexes, `public.user_role`, three functions, three triggers, zero
+rewrite rules, and zero policies. It records RLS disabled on every application
+table and fails closed on unsupported user-defined `public` catalog objects.
+Provider-managed schemas, roles and extension-owned implementation objects,
+privileges, role-owner identities/capability metadata, connection metadata,
+and physical column ordinals are deliberately excluded. Public extension
+identity/version metadata is included. Column names and all other declared
+properties remain exact, so historical physical order can differ without
+weakening adoption checks.
 
 The approved identity is:
 
@@ -437,7 +440,7 @@ The approved identity is:
   `9f4398b0e90bb5a5e33406cc5f35faf73b9c9dcbff3c781bacc892479c31a302`
 - journal `created_at`: `1784104330176`
 - structural fingerprint SHA-256:
-  `1c3c518e09d155bc3d447399c6c7a41ee4433423ed445b5f4a7554ed7607772a`
+  `59f14220a5d640a9688b7297d40dbe1246eb2533f805c8f3b47da821795b849e`
 
 `npm run db:fingerprint -- --verify` collects catalog state inside a confirmed
 `REPEATABLE READ, READ ONLY` transaction, reads no application rows, fails on
@@ -502,9 +505,13 @@ Follow the schema-release procedure in
    legacy inert-RLS checks. Abort before executing SQL if any check differs
    from the reviewed expectation.
 5. Set `DB_MIGRATION_EXPECTED_PENDING` to the exact ordered migration tags
-   approved for the release and run `npm run db:migrate` with one migration
-   executor. Abort for an unexpected fingerprint, journal, pending list, or
-   migration failure. Then rerun with `DB_MIGRATION_EXPECTED_PENDING=none` and
+   approved for the release. Also set `DB_MIGRATION_EXPECTED_HOST_FINGERPRINT`,
+   `DB_MIGRATION_EXPECTED_DATABASE`, and `DB_MIGRATION_EXPECTED_ROLE` from the
+   target identity independently verified in step 1; do not derive these
+   fallback guard values from `DATABASE_URL`. Run `npm run db:migrate` with one
+   migration executor. Abort for an unexpected target, fingerprint, journal,
+   pending list, or migration failure. Then rerun with
+   `DB_MIGRATION_EXPECTED_PENDING=none` and the same target guard values, and
    require an exact fingerprint-verified no-op before recording success.
 6. Deploy the matching CI-verified application commit after the schema change
    is applied successfully. For a destructive contract migration whose prior

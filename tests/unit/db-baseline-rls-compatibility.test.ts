@@ -21,7 +21,7 @@ function requiredAt<T>(values: readonly T[], index: number, label: string): T {
 function canonicalInventory(): DatabaseInventory {
   const approved = loadApprovedBaselineFingerprint();
   return {
-    formatVersion: 6,
+    formatVersion: 7,
     target: {
       hostFingerprint: `sha256:${'a'.repeat(64)}`,
       database: 'leaguevault_compatibility_fixture',
@@ -42,6 +42,8 @@ function canonicalInventory(): DatabaseInventory {
       connectedRoleRlsMode: 'not-enabled',
     })),
     nonTableRelations: [],
+    rewriteRules: structuredClone(approved.structure.rewriteRules),
+    unsupportedPublicObjects: [],
     tablePrivileges: [],
     policies: [],
     columns: approved.structure.columns.map((column, ordinal) => ({ ...column, ordinal: ordinal + 1 })),
