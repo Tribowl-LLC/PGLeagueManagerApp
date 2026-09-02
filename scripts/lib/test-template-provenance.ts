@@ -26,6 +26,7 @@ export const TEMPLATE_HASH_INPUTS: readonly TemplateHashInput[] = [
   { root: 'shared/schema', kind: 'directory', recursive: true },
   { root: 'shared/schema.ts', kind: 'file' },
   { root: 'shared/database-invariants.ts', kind: 'file' },
+  { root: 'shared/database-advisory-locks.ts', kind: 'file' },
   { root: 'server/db-invariants.ts', kind: 'file' },
   { root: 'tests/setup/seed-test-users.ts', kind: 'file' },
   { root: 'tests/setup/per-worker-lock.ts', kind: 'file' },

@@ -911,6 +911,8 @@ async function validateVersion(
       'fresh_active',
       'schema_state_previous',
       'atomic_migration_rollback',
+      'post_migration_fingerprint_rollback',
+      'foreign_table_column_fingerprint',
       'fresh_proof',
       'adoption_template',
       'legacy_inert_rls',
@@ -1036,6 +1038,62 @@ async function validateVersion(
       }
     } finally {
       await atomicRollbackClient.end().catch(() => undefined);
+    }
+
+    const postFingerprintDatabase = 'post_migration_fingerprint_rollback';
+    await createDatabase(adminUrl, postFingerprintDatabase, container);
+    const postFingerprintUrl = databaseUrl(port, postFingerprintDatabase);
+    await runCheckedMigrations(postFingerprintUrl);
+    let postFingerprintRefusal = '';
+    try {
+      await runCheckedMigrations(postFingerprintUrl, proof.directory, {
+        expectedPending: [proof.metadata.tag],
+      });
+    } catch (error) {
+      postFingerprintRefusal = error instanceof Error ? error.message : String(error);
+    }
+    const postFingerprintClient = new pg.Client({ connectionString: postFingerprintUrl });
+    try {
+      await postFingerprintClient.connect();
+      const marker = await postFingerprintClient.query<{ relation: string | null }>(
+        "SELECT to_regclass('migration_ordering_proof.applied_after_baseline')::text AS relation",
+      );
+      if (
+        !postFingerprintRefusal.includes('Could not load approved schema-state fingerprint') ||
+        marker.rows[0]?.relation !== null ||
+        await journalEntryCount(postFingerprintUrl) !== activeMigrationTags.length
+      ) {
+        throw new Error(
+          `Missing post-migration fingerprint did not roll back DDL and journal state: ${postFingerprintRefusal}`,
+        );
+      }
+    } finally {
+      await postFingerprintClient.end().catch(() => undefined);
+    }
+
+    const foreignColumnDatabase = 'foreign_table_column_fingerprint';
+    await createDatabase(adminUrl, foreignColumnDatabase, container);
+    const foreignColumnUrl = databaseUrl(port, foreignColumnDatabase);
+    await executeSql(foreignColumnUrl, [
+      'CREATE EXTENSION postgres_fdw',
+      'CREATE SERVER db_check_foreign_server FOREIGN DATA WRAPPER postgres_fdw',
+      'CREATE FOREIGN TABLE public.db_check_foreign_table (id integer) SERVER db_check_foreign_server',
+    ]);
+    const finalMigration = loadActiveMigrations().at(-1);
+    if (!finalMigration) throw new Error('Foreign-table fingerprint proof requires an active migration.');
+    const beforeForeignColumnChange = createSchemaStateFingerprint(
+      await collectDatabaseInventory(foreignColumnUrl),
+      finalMigration,
+    );
+    await executeSql(foreignColumnUrl, [
+      'ALTER FOREIGN TABLE public.db_check_foreign_table ADD COLUMN changed_value text',
+    ]);
+    const afterForeignColumnChange = createSchemaStateFingerprint(
+      await collectDatabaseInventory(foreignColumnUrl),
+      finalMigration,
+    );
+    if (beforeForeignColumnChange.digest === afterForeignColumnChange.digest) {
+      throw new Error('Foreign-table column drift did not change the schema-state fingerprint.');
     }
 
     const freshProof = 'fresh_proof';

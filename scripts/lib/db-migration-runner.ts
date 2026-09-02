@@ -12,8 +12,7 @@ import {
 } from './db-migration-journal';
 import { redactConnectionDetails } from './db-schema-inventory';
 import { verifyApprovedSchemaStateOnClient } from './db-schema-state-fingerprint';
-
-const MIGRATION_LOCK_KEY = 843_103_001;
+import { DATABASE_SCHEMA_WRITER_LOCK_KEY } from '../../shared/database-advisory-locks';
 
 export interface CheckedMigrationOptions {
   expectedPending?: readonly string[];
@@ -60,7 +59,7 @@ async function inspectJournalUnderLock(client: pg.Client) {
     await client.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ');
     transaction = true;
     await client.query("SET LOCAL statement_timeout = '30s'");
-    await client.query('SELECT pg_catalog.pg_advisory_xact_lock($1)', [MIGRATION_LOCK_KEY]);
+    await client.query('SELECT pg_catalog.pg_advisory_xact_lock($1)', [DATABASE_SCHEMA_WRITER_LOCK_KEY]);
     const inspection = await inspectApprovedJournal(client, { lock: true });
     await client.query('COMMIT');
     transaction = false;
@@ -182,6 +181,16 @@ async function runExpectedMigrationsAtomically(
     if (postEntries.length !== migrations.length) {
       throw new Error('Migration runner returned without recording the complete active migration history.');
     }
+    const finalMigration = migrations.at(-1);
+    if (!finalMigration) throw new Error('Migration runner has no final schema state to verify.');
+    const finalFingerprint = await verifyApprovedSchemaStateOnClient(
+      client,
+      connectionString,
+      finalMigration,
+    );
+    process.stdout.write(
+      `[db:migrate] schema-state=${finalMigration.tag} sha256:${finalFingerprint.digest}\n`,
+    );
     await client.query('COMMIT');
     transaction = false;
     if (pending.length > 0) process.stdout.write(`[db:migrate] applied=${pending.join(',')}\n`);
@@ -204,7 +213,7 @@ export async function runCheckedMigrations(
   let lockHeld = false;
   try {
     await client.connect();
-    await client.query('SELECT pg_advisory_lock($1)', [MIGRATION_LOCK_KEY]);
+    await client.query('SELECT pg_advisory_lock($1)', [DATABASE_SCHEMA_WRITER_LOCK_KEY]);
     lockHeld = true;
     if (options.expectedPending !== undefined) {
       return await runExpectedMigrationsAtomically(
@@ -239,7 +248,10 @@ export async function runCheckedMigrations(
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(redactConnectionDetails(message, connectionString));
   } finally {
-    if (lockHeld) await client.query('SELECT pg_advisory_unlock($1)', [MIGRATION_LOCK_KEY]).catch(() => undefined);
+    if (lockHeld) {
+      await client.query('SELECT pg_advisory_unlock($1)', [DATABASE_SCHEMA_WRITER_LOCK_KEY])
+        .catch(() => undefined);
+    }
     await client.end().catch(() => undefined);
   }
 }

@@ -38,12 +38,12 @@ import {
   type VerifiedNeonRehearsal,
 } from './neon-rehearsal-verifier';
 import { hasProductionDeploymentEvidence } from '../../server/utils/db-safety';
+import { DATABASE_SCHEMA_WRITER_LOCK_KEY } from '../../shared/database-advisory-locks';
 
 export const ADOPTION_CONFIRMATION = 'ADOPT_LEAGUEVAULT_BASELINE_WITHOUT_DDL';
 export const BACKUP_ATTESTATION = 'BACKUP_AND_RESTORE_VERIFIED';
 export const PRODUCTION_ENVIRONMENT_CLASS = 'neon-production';
 export const PRODUCTION_JOURNAL_RELATION = 'drizzle.__drizzle_migrations';
-const ADOPTION_LOCK_KEY = 843_103_001;
 
 const REQUIRED_ADOPTION_KEYS = [
   'DB_ADOPTION_EXPECTED_DATABASE',
@@ -622,7 +622,7 @@ async function atomicallyRegisterBaseline(
   let transaction = false;
   try {
     await client.connect();
-    await client.query('SELECT pg_catalog.pg_advisory_lock($1)', [ADOPTION_LOCK_KEY]);
+    await client.query('SELECT pg_catalog.pg_advisory_lock($1)', [DATABASE_SCHEMA_WRITER_LOCK_KEY]);
     sessionLock = true;
     await client.query('BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE');
     transaction = true;
@@ -634,7 +634,7 @@ async function atomicallyRegisterBaseline(
     // inventory cannot observe a snapshot from before a lock wait.
     await client.query(applicationTableLockSql());
     await lockSequenceDefinitions(client, approved.structure.sequences);
-    await client.query('SELECT pg_catalog.pg_advisory_xact_lock($1)', [ADOPTION_LOCK_KEY]);
+    await client.query('SELECT pg_catalog.pg_advisory_xact_lock($1)', [DATABASE_SCHEMA_WRITER_LOCK_KEY]);
     await runtime.afterApplicationLocks?.(client);
 
     if (request.environmentClass === PRODUCTION_ENVIRONMENT_CLASS) {
@@ -702,7 +702,8 @@ async function atomicallyRegisterBaseline(
   } finally {
     if (transaction) await client.query('ROLLBACK').catch(() => undefined);
     if (sessionLock) {
-      await client.query('SELECT pg_catalog.pg_advisory_unlock($1)', [ADOPTION_LOCK_KEY]).catch(() => undefined);
+      await client.query('SELECT pg_catalog.pg_advisory_unlock($1)', [DATABASE_SCHEMA_WRITER_LOCK_KEY])
+        .catch(() => undefined);
     }
     await client.end().catch(() => undefined);
   }

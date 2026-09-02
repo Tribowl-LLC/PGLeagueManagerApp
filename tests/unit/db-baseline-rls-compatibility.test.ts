@@ -21,7 +21,7 @@ function requiredAt<T>(values: readonly T[], index: number, label: string): T {
 function canonicalInventory(): DatabaseInventory {
   const approved = loadApprovedBaselineFingerprint();
   return {
-    formatVersion: 4,
+    formatVersion: 5,
     target: {
       hostFingerprint: `sha256:${'a'.repeat(64)}`,
       database: 'leaguevault_compatibility_fixture',

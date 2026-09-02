@@ -1,4 +1,7 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { DATABASE_SCHEMA_WRITER_LOCK_KEY } from '../../shared/database-advisory-locks';
 import {
   assertExpectedPendingMigrations,
   parseExpectedPendingMigrations,
@@ -35,5 +38,18 @@ describe('production migration expected-pending guard', () => {
       '0035_first',
       '0036_second',
     ])).toThrow('do not exactly match expected');
+  });
+
+  it('keeps every production schema writer on the shared migration lock', () => {
+    expect(DATABASE_SCHEMA_WRITER_LOCK_KEY).toBe(843_103_001);
+    for (const path of [
+      'scripts/lib/db-migration-runner.ts',
+      'scripts/lib/db-baseline-adoption.ts',
+      'server/db-invariants.ts',
+      'server/migrations/migrate-avatars.ts',
+    ]) {
+      expect(readFileSync(resolve(path), 'utf8'), path)
+        .toContain('DATABASE_SCHEMA_WRITER_LOCK_KEY');
+    }
   });
 });

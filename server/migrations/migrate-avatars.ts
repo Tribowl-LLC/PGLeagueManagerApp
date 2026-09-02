@@ -4,10 +4,18 @@ import { eq, like, sql } from "drizzle-orm";
 import fs from "fs";
 import path from "path";
 import { createLogger } from '../logger';
+import { DATABASE_SCHEMA_WRITER_LOCK_KEY } from '@shared/database-advisory-locks';
 
 const log = createLogger("AvatarMigration");
 
 const AVATARS_DIR = path.join(process.cwd(), "uploads", "avatars");
+
+async function dropLegacyAvatarTable(): Promise<void> {
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(${DATABASE_SCHEMA_WRITER_LOCK_KEY})`);
+    await tx.execute(sql`DROP TABLE IF EXISTS user_avatars`);
+  });
+}
 
 const EXT_MAP: Record<string, string> = {
   "image/jpeg": "jpg",
@@ -37,7 +45,7 @@ export async function migrateAvatarsFromDBToDisk(): Promise<boolean> {
 
   if (rows.rows.length === 0) {
     log.info("No avatars in DB to migrate, dropping user_avatars table");
-    await db.execute(sql`DROP TABLE IF EXISTS user_avatars`);
+    await dropLegacyAvatarTable();
     return true;
   }
 
@@ -75,7 +83,7 @@ export async function migrateAvatarsFromDBToDisk(): Promise<boolean> {
     return false;
   }
 
-  await db.execute(sql`DROP TABLE IF EXISTS user_avatars`);
+  await dropLegacyAvatarTable();
   log.info("All avatars migrated successfully, user_avatars table dropped");
   return true;
 }

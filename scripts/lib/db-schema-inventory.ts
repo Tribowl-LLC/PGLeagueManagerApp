@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import pg, { type QueryResultRow } from 'pg';
 import { normalizeSqlDefinition } from './sql-definition-normalization';
 
-export const DB_INVENTORY_FORMAT_VERSION = 4 as const;
+export const DB_INVENTORY_FORMAT_VERSION = 5 as const;
 
 export type TablePrivilege =
   | 'delete'
@@ -1150,7 +1150,7 @@ async function collectDatabaseInventoryInternal(
       LEFT JOIN pg_catalog.pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum
       LEFT JOIN pg_catalog.pg_collation coll ON coll.oid = a.attcollation AND a.attcollation <> 0
       LEFT JOIN pg_catalog.pg_namespace cn ON cn.oid = coll.collnamespace
-      WHERE c.relkind IN ('r', 'p')
+      WHERE c.relkind IN ('r', 'p', 'f')
         AND a.attnum > 0
         AND NOT a.attisdropped
         AND ${USER_SCHEMA_PREDICATE}
