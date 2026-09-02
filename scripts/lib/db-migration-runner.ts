@@ -13,10 +13,43 @@ import { redactConnectionDetails } from './db-schema-inventory';
 
 const MIGRATION_LOCK_KEY = 843_103_001;
 
+export interface CheckedMigrationOptions {
+  expectedPending?: readonly string[];
+}
+
 export interface CheckedMigrationResult {
   pending: string[];
   applied: string[];
   noOp: boolean;
+}
+
+export function parseExpectedPendingMigrations(value: string | undefined): string[] | undefined {
+  if (value === undefined) return undefined;
+  const normalized = value.trim();
+  if (normalized === 'none') return [];
+  if (normalized.length === 0) {
+    throw new Error('DB_MIGRATION_EXPECTED_PENDING must be "none" or a comma-separated migration tag list.');
+  }
+  const tags = normalized.split(',').map((tag) => tag.trim());
+  if (tags.some((tag) => !/^\d{4}_[a-z0-9_]+$/.test(tag))) {
+    throw new Error('DB_MIGRATION_EXPECTED_PENDING contains an invalid migration tag.');
+  }
+  if (new Set(tags).size !== tags.length) {
+    throw new Error('DB_MIGRATION_EXPECTED_PENDING must not contain duplicate migration tags.');
+  }
+  return tags;
+}
+
+export function assertExpectedPendingMigrations(
+  pending: readonly string[],
+  expected: readonly string[] | undefined,
+): void {
+  if (expected === undefined) return;
+  if (pending.length === expected.length && pending.every((tag, index) => tag === expected[index])) return;
+  const display = (tags: readonly string[]) => tags.length === 0 ? 'none' : tags.join(',');
+  throw new Error(
+    `Refusing migration because pending migrations (${display(pending)}) do not exactly match expected (${display(expected)}).`,
+  );
 }
 
 async function inspectJournalUnderLock(client: pg.Client) {
@@ -76,6 +109,7 @@ async function hasApplicationOwnedPublicObjects(client: pg.Client): Promise<bool
 export async function runCheckedMigrations(
   connectionString: string,
   migrationsDirectory = ACTIVE_MIGRATIONS_DIRECTORY,
+  options: CheckedMigrationOptions = {},
 ): Promise<CheckedMigrationResult> {
   const migrations = loadActiveMigrations(migrationsDirectory);
   const client = new pg.Client({
@@ -96,6 +130,7 @@ export async function runCheckedMigrations(
       );
     }
     const pending = migrations.slice(entries.length).map((migration) => migration.tag);
+    assertExpectedPendingMigrations(pending, options.expectedPending);
     process.stdout.write(`[db:migrate] pending=${pending.length === 0 ? 'none' : pending.join(',')}\n`);
     if (pending.length === 0) return { pending, applied: [], noOp: true };
 

@@ -1,11 +1,12 @@
 import { pathToFileURL } from 'node:url';
-import { runCheckedMigrations } from './lib/db-migration-runner';
+import { parseExpectedPendingMigrations, runCheckedMigrations } from './lib/db-migration-runner';
 import { redactConnectionDetails } from './lib/db-schema-inventory';
 
 export async function migrateConfiguredDatabase(environment: NodeJS.ProcessEnv = process.env): Promise<void> {
   const connectionString = environment.DATABASE_URL;
   if (!connectionString) throw new Error('DATABASE_URL is required for db:migrate.');
-  await runCheckedMigrations(connectionString);
+  const expectedPending = parseExpectedPendingMigrations(environment.DB_MIGRATION_EXPECTED_PENDING);
+  await runCheckedMigrations(connectionString, undefined, { expectedPending });
 }
 
 const isMain = import.meta.url === pathToFileURL(process.argv[1] ?? '').href;

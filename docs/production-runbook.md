@@ -273,6 +273,20 @@ below.
 
 Schema changes require a deliberate release step:
 
+The preferred executor is the manual **Production database migration** GitHub
+Actions workflow. Dispatch it from `main` only after Exact main certification
+succeeds. Enter the full certified SHA, the exact ordered pending migration
+tags (or `none`), and the displayed confirmation phrase. Its `production`
+environment requires operator approval, and the job uses the repository's
+`NEON_API_KEY` secret to verify the pinned production target, create a protected
+branch without a compute, acquire a direct connection string without printing
+it, run the checked migration with an exact-pending guard under the database
+advisory lock, and prove an immediate `pending=none` rerun. Preserve the
+workflow summary's backup ID and migration evidence in the release record.
+
+If the workflow is unavailable, the manual operator procedure below remains
+the fail-closed fallback. Never run both executors concurrently.
+
 1. Create a current Neon backup or branch suitable for restoration.
 2. Confirm the target Neon project, branch, host, database name, and user.
 3. Set `DATABASE_URL` only in the shell or deployment environment where the
