@@ -167,23 +167,40 @@ jobs:
           '
 
       - name: Apply only the explicitly expected migrations
+        id: migration
         env:
           DATABASE_URL: ${{ steps.connection.outputs.database_url }}
         run: |
+          git fetch --no-tags origin main
+          test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_SHA"
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$EXPECTED_SHA"
           DB_MIGRATION_EXPECTED_PENDING="$EXPECTED_PENDING_MIGRATIONS" npm run db:migrate
           DB_MIGRATION_EXPECTED_PENDING=none npm run db:migrate
 
       - name: Record release evidence
+        if: ${{ always() }}
         env:
           BACKUP_ID: ${{ steps.backup.outputs.backup_id }}
           BACKUP_NAME: ${{ steps.backup.outputs.backup_name }}
+          BACKUP_OUTCOME: ${{ steps.backup.outcome }}
+          MIGRATION_OUTCOME: ${{ steps.migration.outcome }}
         run: |
           {
             echo '### Production database migration'
             echo
             echo "- Commit: \`$EXPECTED_SHA\`"
             echo "- Expected migrations: \`$EXPECTED_PENDING_MIGRATIONS\`"
-            echo "- Backup: \`$BACKUP_NAME\` (\`$BACKUP_ID\`)"
-            echo '- Verification: checked migration completed and immediate rerun reported no pending migrations'
-            echo '- Next gate: manually deploy this exact commit to Render and complete production verification'
+            echo "- Backup step: \`$BACKUP_OUTCOME\`"
+            if [ -n "$BACKUP_ID" ] && [ -n "$BACKUP_NAME" ]; then
+              echo "- Recovery branch: \`$BACKUP_NAME\` (\`$BACKUP_ID\`)"
+            else
+              echo '- Recovery branch: unavailable because backup creation did not complete'
+            fi
+            echo "- Migration step: \`$MIGRATION_OUTCOME\`"
+            if [ "$MIGRATION_OUTCOME" = success ]; then
+              echo '- Verification: checked migration completed and immediate rerun reported no pending migrations'
+              echo '- Next gate: manually deploy this exact commit to Render and complete production verification'
+            else
+              echo '- Recovery action: do not deploy; inspect the failed step and preserve the recovery branch if one was created'
+            fi
           } >> "$GITHUB_STEP_SUMMARY"

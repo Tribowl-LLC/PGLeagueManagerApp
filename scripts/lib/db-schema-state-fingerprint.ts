@@ -2,12 +2,16 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { ActiveMigration } from './db-migration-assets';
-import { APPLICATION_TABLE_NAMES } from './db-baseline-fingerprint';
+import {
+  APPLICATION_TABLE_NAMES,
+  loadApprovedBaselineFingerprint,
+} from './db-baseline-fingerprint';
 import {
   collectDatabaseInventoryOnClient,
   type DatabaseInventory,
 } from './db-schema-inventory';
 import type pg from 'pg';
+import { functionDefinitionsDifferOnlyByInsignificantWhitespace } from './sql-definition-normalization';
 
 export const SCHEMA_STATE_FINGERPRINT_FORMAT_VERSION = 1 as const;
 export const SCHEMA_STATE_FINGERPRINT_DIRECTORY = resolve('migrations', 'schema-fingerprints');
@@ -23,6 +27,7 @@ interface SchemaStateStructure {
   tables: Array<Omit<DatabaseInventory['tables'][number],
     'owner' | 'connectedRoleOwnsTable' | 'connectedRolePrivileges' | 'connectedRoleRlsMode'>>;
   columns: Array<Omit<DatabaseInventory['columns'][number], 'ordinal'>>;
+  nonTableRelations: DatabaseInventory['nonTableRelations'];
   sequences: Array<Omit<DatabaseInventory['sequences'][number], 'owner' | 'connectedRoleCanAlter'>>;
   constraints: DatabaseInventory['constraints'];
   indexes: DatabaseInventory['indexes'];
@@ -90,6 +95,12 @@ function normalizeLegacyInertRls(inventory: DatabaseInventory): {
 
 function schemaStateStructure(inventory: DatabaseInventory): SchemaStateStructure {
   const normalized = normalizeLegacyInertRls(inventory);
+  const approvedBaselineFunctions = new Map(
+    loadApprovedBaselineFingerprint().structure.functions.map((fn) => [
+      `${fn.schema}.${fn.name}(${fn.identityArguments})`,
+      fn,
+    ]),
+  );
   return {
     scope: {
       schema: 'public',
@@ -105,13 +116,28 @@ function schemaStateStructure(inventory: DatabaseInventory): SchemaStateStructur
     columns: sortObjects(inventory.columns
       .filter((column) => column.schema === 'public')
       .map(({ ordinal: _ordinal, ...column }) => column)),
+    nonTableRelations: sortObjects(inventory.nonTableRelations
+      .filter((relation) => relation.schema === 'public')),
     sequences: sortObjects(inventory.sequences
       .filter((sequence) => sequence.schema === 'public')
       .map(({ owner: _owner, connectedRoleCanAlter: _canAlter, ...sequence }) => sequence)),
     constraints: sortObjects(inventory.constraints.filter((constraint) => constraint.schema === 'public')),
     indexes: sortObjects(inventory.indexes.filter((index) => index.schema === 'public')),
     types: sortObjects(inventory.types.filter((type) => type.schema === 'public')),
-    functions: sortObjects(inventory.functions.filter((fn) => fn.schema === 'public')),
+    functions: sortObjects(inventory.functions
+      .filter((fn) => fn.schema === 'public')
+      .map((fn) => {
+        if (!normalized.normalized) return fn;
+        const expected = approvedBaselineFunctions.get(
+          `${fn.schema}.${fn.name}(${fn.identityArguments})`,
+        );
+        return expected && functionDefinitionsDifferOnlyByInsignificantWhitespace(
+          fn.definition,
+          expected.definition,
+        )
+          ? { ...fn, definition: expected.definition }
+          : fn;
+      })),
     triggers: sortObjects(inventory.triggers.filter((trigger) => trigger.schema === 'public')),
     policies: sortObjects(inventory.policies
       .filter((policy) => policy.schema === 'public')
@@ -123,6 +149,7 @@ function structureCounts(structure: SchemaStateStructure): SchemaStateFingerprin
   return {
     tables: structure.tables.length,
     columns: structure.columns.length,
+    nonTableRelations: structure.nonTableRelations.length,
     sequences: structure.sequences.length,
     constraints: structure.constraints.length,
     indexes: structure.indexes.length,
@@ -211,19 +238,8 @@ export async function verifyApprovedSchemaStateOnClient(
   directory = SCHEMA_STATE_FINGERPRINT_DIRECTORY,
 ): Promise<SchemaStateFingerprint> {
   const approved = loadApprovedSchemaStateFingerprint(migration, directory);
-  let transaction = false;
-  try {
-    await client.query('BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE');
-    transaction = true;
-    await client.query("SET LOCAL statement_timeout = '30s'");
-    await client.query("SET LOCAL lock_timeout = '5s'");
-    const inventory = await collectDatabaseInventoryOnClient(client, connectionString);
-    const actual = createSchemaStateFingerprint(inventory, migration);
-    assertApprovedSchemaStateFingerprint(actual, approved);
-    await client.query('COMMIT');
-    transaction = false;
-    return actual;
-  } finally {
-    if (transaction) await client.query('ROLLBACK').catch(() => undefined);
-  }
+  const inventory = await collectDatabaseInventoryOnClient(client, connectionString);
+  const actual = createSchemaStateFingerprint(inventory, migration);
+  assertApprovedSchemaStateFingerprint(actual, approved);
+  return actual;
 }

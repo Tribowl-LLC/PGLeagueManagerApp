@@ -6,10 +6,11 @@
     "hash": "d46a2cf796f85cbe9dcc8d6c2af89a093007b55f1f374a2530c81ce574be8617",
     "createdAt": 1788372833469
   },
-  "digest": "51f755dd9afaa47f940c2b89e6985da1d51ba4d2e899f9556942665220570f64",
+  "digest": "dd69b9896308242e0457a9a53c0430e72a1887a212f8bd54dc75754738299e1d",
   "counts": {
     "tables": 64,
     "columns": 874,
+    "nonTableRelations": 0,
     "sequences": 23,
     "constraints": 486,
     "indexes": 268,

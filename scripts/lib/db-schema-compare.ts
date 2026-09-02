@@ -10,6 +10,7 @@ export type ComparisonCategory =
   | 'environment'
   | 'schemas'
   | 'tables'
+  | 'nonTableRelations'
   | 'tablePrivileges'
   | 'policies'
   | 'columns'
@@ -130,6 +131,12 @@ const CATEGORY_SPECS: CategorySpec[] = [
   },
   { name: 'schemas', values: (inventory) => asInventoryObjects(inventory.schemas), key: objectKey('name') },
   { name: 'tables', values: (inventory) => asInventoryObjects(inventory.tables), key: objectKey('schema', 'name') },
+  {
+    name: 'nonTableRelations',
+    values: (inventory) => asInventoryObjects(inventory.nonTableRelations),
+    key: objectKey('schema', 'name'),
+    normalize: normalizeDefinitionFields,
+  },
   {
     name: 'tablePrivileges',
     values: (inventory) => asInventoryObjects(inventory.tablePrivileges),
@@ -267,6 +274,7 @@ export function assertDatabaseInventory(value: unknown, source: string): asserts
   for (const field of [
     'schemas',
     'tables',
+    'nonTableRelations',
     'tablePrivileges',
     'policies',
     'columns',
@@ -296,6 +304,7 @@ export function compareDatabaseInventories(
     environment: emptyDifference(),
     schemas: emptyDifference(),
     tables: emptyDifference(),
+    nonTableRelations: emptyDifference(),
     tablePrivileges: emptyDifference(),
     policies: emptyDifference(),
     columns: emptyDifference(),

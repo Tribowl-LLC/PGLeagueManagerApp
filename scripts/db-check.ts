@@ -390,6 +390,26 @@ function buildPreviousMigrationDirectory(artifactDirectory: string): string {
   return directory;
 }
 
+function buildAtomicRollbackProofDirectory(
+  artifactDirectory: string,
+  proof: { directory: string; metadata: ProofMetadata },
+): string {
+  const directory = join(artifactDirectory, 'atomic-rollback-proof-migrations');
+  cpSync(proof.directory, directory, { recursive: true });
+  writeFileSync(
+    join(directory, `${proof.metadata.tag}.sql`),
+    [
+      'CREATE TABLE public.migration_atomic_rollback_probe (id integer PRIMARY KEY);',
+      '--> statement-breakpoint',
+      'SELECT * FROM public.migration_atomic_rollback_missing_relation;',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  writeMigrationChecksumManifest(directory);
+  return directory;
+}
+
 async function assertApprovedSchemaState(
   connectionString: string,
   migrationsDirectory = ACTIVE_MIGRATIONS_DIRECTORY,
@@ -890,6 +910,7 @@ async function validateVersion(
     const approvedDatabases = [
       'fresh_active',
       'schema_state_previous',
+      'atomic_migration_rollback',
       'fresh_proof',
       'adoption_template',
       'legacy_inert_rls',
@@ -913,6 +934,10 @@ async function validateVersion(
     const adminUrl = databaseUrl(port, 'postgres');
     mkdirSync(join(artifactDirectory, `postgres-${version}`), { recursive: true });
     const proof = buildProofMigrationDirectory(join(artifactDirectory, `postgres-${version}`));
+    const atomicRollbackProof = buildAtomicRollbackProofDirectory(
+      join(artifactDirectory, `postgres-${version}`),
+      proof,
+    );
     const previousMigrations = buildPreviousMigrationDirectory(
       join(artifactDirectory, `postgres-${version}`),
     );
@@ -954,6 +979,24 @@ async function validateVersion(
       );
     }
     await executeSql(previousStateUrl, ['ALTER TABLE alerter_state DROP COLUMN schema_state_drift_probe']);
+    await executeSql(previousStateUrl, ['CREATE VIEW unexpected_schema_state_view AS SELECT 1 AS value']);
+    let relationDriftRefusal = '';
+    try {
+      await runCheckedMigrations(previousStateUrl, ACTIVE_MIGRATIONS_DIRECTORY, {
+        expectedPending: [activeMigrationTags.at(-1) ?? ''],
+      });
+    } catch (error) {
+      relationDriftRefusal = error instanceof Error ? error.message : String(error);
+    }
+    if (
+      !relationDriftRefusal.includes('schema-state fingerprint mismatch') ||
+      await journalEntryCount(previousStateUrl) !== activeMigrationTags.length - 1
+    ) {
+      throw new Error(
+        `Expected-pending migration mode did not refuse non-table relation drift without mutation: ${relationDriftRefusal}`,
+      );
+    }
+    await executeSql(previousStateUrl, ['DROP VIEW unexpected_schema_state_view']);
     const guardedRun = await runCheckedMigrations(previousStateUrl, ACTIVE_MIGRATIONS_DIRECTORY, {
       expectedPending: [activeMigrationTags.at(-1) ?? ''],
     });
@@ -964,6 +1007,35 @@ async function validateVersion(
       expectedPending: [],
     })).noOp) {
       throw new Error('Expected-pending migration mode did not verify the final schema as a no-op.');
+    }
+
+    const atomicRollbackDatabase = 'atomic_migration_rollback';
+    await createDatabase(adminUrl, atomicRollbackDatabase, container);
+    const atomicRollbackUrl = databaseUrl(port, atomicRollbackDatabase);
+    await runCheckedMigrations(atomicRollbackUrl);
+    let atomicRollbackRefusal = '';
+    try {
+      await runCheckedMigrations(atomicRollbackUrl, atomicRollbackProof, {
+        expectedPending: [proof.metadata.tag],
+      });
+    } catch (error) {
+      atomicRollbackRefusal = error instanceof Error ? error.message : String(error);
+    }
+    const atomicRollbackClient = new pg.Client({ connectionString: atomicRollbackUrl });
+    try {
+      await atomicRollbackClient.connect();
+      const marker = await atomicRollbackClient.query<{ relation: string | null }>(
+        "SELECT to_regclass('public.migration_atomic_rollback_probe')::text AS relation",
+      );
+      if (
+        !atomicRollbackRefusal.includes('migration_atomic_rollback_missing_relation') ||
+        marker.rows[0]?.relation !== null ||
+        await journalEntryCount(atomicRollbackUrl) !== activeMigrationTags.length
+      ) {
+        throw new Error(`Atomic expected-pending migration did not roll back DDL and journal state: ${atomicRollbackRefusal}`);
+      }
+    } finally {
+      await atomicRollbackClient.end().catch(() => undefined);
     }
 
     const freshProof = 'fresh_proof';

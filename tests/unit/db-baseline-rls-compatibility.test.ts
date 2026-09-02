@@ -9,6 +9,8 @@ import type {
   DatabaseInventory,
   PolicyInfo,
 } from '../../scripts/lib/db-schema-inventory';
+import { baselineMigration } from '../../scripts/lib/db-migration-assets';
+import { createSchemaStateFingerprint } from '../../scripts/lib/db-schema-state-fingerprint';
 
 function requiredAt<T>(values: readonly T[], index: number, label: string): T {
   const value = values[index];
@@ -19,7 +21,7 @@ function requiredAt<T>(values: readonly T[], index: number, label: string): T {
 function canonicalInventory(): DatabaseInventory {
   const approved = loadApprovedBaselineFingerprint();
   return {
-    formatVersion: 3,
+    formatVersion: 4,
     target: {
       hostFingerprint: `sha256:${'a'.repeat(64)}`,
       database: 'leaguevault_compatibility_fixture',
@@ -39,6 +41,7 @@ function canonicalInventory(): DatabaseInventory {
       connectedRolePrivileges: [],
       connectedRoleRlsMode: 'not-enabled',
     })),
+    nonTableRelations: [],
     tablePrivileges: [],
     policies: [],
     columns: approved.structure.columns.map((column, ordinal) => ({ ...column, ordinal: ordinal + 1 })),
@@ -140,6 +143,21 @@ describe('legacy inert-RLS baseline compatibility', () => {
       definition: reformatted,
     };
     expect(() => verifyBaselineInventory(canonical)).toThrow('fingerprint mismatch');
+  });
+
+  it('preserves the same narrow function normalization in release-boundary fingerprints', () => {
+    const canonical = canonicalInventory();
+    const legacy = legacyInertRlsInventory();
+    const original = requiredAt(legacy.functions, 0, 'function');
+    legacy.functions[0] = {
+      ...original,
+      definition: original.definition.replace(/\n {2,}/g, (whitespace) =>
+        whitespace.replace(/ +$/, '        ')),
+    };
+
+    expect(createSchemaStateFingerprint(legacy, baselineMigration()).digest).toBe(
+      createSchemaStateFingerprint(canonical, baselineMigration()).digest,
+    );
   });
 
   it('refuses function-body changes inside quoted content', () => {

@@ -282,13 +282,22 @@ environment requires operator approval, and the job uses the repository's
 branch without a compute, acquire a direct connection string without printing
 it, and run the checked migration with an exact-pending guard under the database
 advisory lock. Before executing SQL, the runner compares the live `public`
-catalog with the checked-in fingerprint for the last applied migration; after
-execution, the immediate `pending=none` rerun verifies the fingerprint for the
-new state. CI reproduces both release-boundary fingerprints from clean
-PostgreSQL 17 replays. A mismatch fails before migration SQL runs. The Neon API
+catalog—including tables, views, materialized views, and foreign tables—with
+the checked-in fingerprint for the last applied migration. Fingerprinting,
+migration SQL, journal registration, and post-journal verification share one
+serializable transaction, so a failed migration cannot commit a partial
+release. The approved legacy inert-RLS/function normalization remains narrowly
+supported. After execution, the immediate `pending=none` rerun verifies the
+fingerprint for the new state. CI reproduces both release-boundary fingerprints
+from clean PostgreSQL 17 replays and proves table and non-table drift refusal. A
+mismatch fails before migration SQL runs. Immediately before that transaction,
+the workflow fetches and remotely rechecks `main` against the certified SHA.
+The Neon API
 key is exposed only to the three control-plane steps that require it, not to
 checkout, dependency installation, or repository validation scripts. Preserve
-the workflow summary's backup ID and migration evidence in the release record.
+the workflow summary's backup ID and migration evidence in the release record;
+the recovery summary runs even after failure and instructs operators not to
+deploy.
 
 Every schema-release PR must add the checked-in fingerprint for its resulting
 migration under `migrations/schema-fingerprints/`; retain the prior release

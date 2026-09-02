@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import pg, { type QueryResultRow } from 'pg';
 import { normalizeSqlDefinition } from './sql-definition-normalization';
 
-export const DB_INVENTORY_FORMAT_VERSION = 3 as const;
+export const DB_INVENTORY_FORMAT_VERSION = 4 as const;
 
 export type TablePrivilege =
   | 'delete'
@@ -48,6 +48,16 @@ export interface TableInfo {
   connectedRoleOwnsTable: boolean;
   connectedRolePrivileges: TablePrivilege[];
   connectedRoleRlsMode: ConnectedRoleRlsMode;
+}
+
+export interface NonTableRelationInfo {
+  schema: string;
+  name: string;
+  kind: 'view' | 'materialized view' | 'foreign table';
+  persistence: 'permanent' | 'unlogged' | 'temporary';
+  definition: string | null;
+  foreignServer: string | null;
+  foreignOptions: string[];
 }
 
 export interface TablePrivilegeInfo {
@@ -256,6 +266,7 @@ export interface DatabaseInventory {
   target: DatabaseTarget;
   schemas: SchemaInfo[];
   tables: TableInfo[];
+  nonTableRelations: NonTableRelationInfo[];
   tablePrivileges: TablePrivilegeInfo[];
   policies: PolicyInfo[];
   columns: ColumnInfo[];
@@ -297,6 +308,16 @@ interface TableRow extends QueryResultRow {
   owner_name: string;
   connected_role_owns_table: boolean;
   connected_role_privileges: TablePrivilege[];
+}
+
+interface NonTableRelationRow extends QueryResultRow {
+  schema_name: string;
+  relation_name: string;
+  kind: NonTableRelationInfo['kind'];
+  persistence: NonTableRelationInfo['persistence'];
+  definition: string | null;
+  foreign_server: string | null;
+  foreign_options: string[];
 }
 
 interface TablePrivilegeRow extends QueryResultRow {
@@ -969,6 +990,33 @@ async function collectDatabaseInventoryInternal(
       ORDER BY n.nspname, c.relname
     `);
 
+    const nonTableRelationsResult = await client.query<NonTableRelationRow>(`
+      SELECT
+        n.nspname AS schema_name,
+        c.relname AS relation_name,
+        CASE c.relkind
+          WHEN 'v' THEN 'view'
+          WHEN 'm' THEN 'materialized view'
+          ELSE 'foreign table'
+        END AS kind,
+        CASE c.relpersistence
+          WHEN 'u' THEN 'unlogged'
+          WHEN 't' THEN 'temporary'
+          ELSE 'permanent'
+        END AS persistence,
+        CASE WHEN c.relkind IN ('v', 'm') THEN pg_catalog.pg_get_viewdef(c.oid, true) ELSE NULL END
+          AS definition,
+        foreign_server.srvname AS foreign_server,
+        COALESCE(foreign_table.ftoptions, ARRAY[]::text[]) AS foreign_options
+      FROM pg_catalog.pg_class c
+      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+      LEFT JOIN pg_catalog.pg_foreign_table foreign_table ON foreign_table.ftrelid = c.oid
+      LEFT JOIN pg_catalog.pg_foreign_server foreign_server ON foreign_server.oid = foreign_table.ftserver
+      WHERE c.relkind IN ('v', 'm', 'f')
+        AND ${USER_SCHEMA_PREDICATE}
+      ORDER BY n.nspname, c.relname
+    `);
+
     const tablePrivilegesResult = await client.query<TablePrivilegeRow>(`
       SELECT
         n.nspname AS schema_name,
@@ -1457,6 +1505,15 @@ async function collectDatabaseInventoryInternal(
           connectedRoleRlsMode,
         };
       }),
+      nonTableRelations: nonTableRelationsResult.rows.map((row) => ({
+        schema: row.schema_name,
+        name: row.relation_name,
+        kind: row.kind,
+        persistence: row.persistence,
+        definition: normalizeSqlDefinition(row.definition),
+        foreignServer: row.foreign_server,
+        foreignOptions: [...row.foreign_options].sort(compareText),
+      })),
       tablePrivileges: tablePrivilegesResult.rows.map((row) => ({
         schema: row.schema_name,
         table: row.table_name,
