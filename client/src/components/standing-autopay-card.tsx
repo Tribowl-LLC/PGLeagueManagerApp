@@ -31,6 +31,7 @@ export function StandingAutopayCard({ league, bowlerId, savedCards, bowlerHasEma
   const { toast } = useToast();
   const [selectedCard, setSelectedCard] = useState(savedCards[0]?.id ?? "");
   const [replaceMode, setReplaceMode] = useState(false);
+  const [isSavingAndEnabling, setIsSavingAndEnabling] = useState(false);
   const consentCommandKeyRef = useRef(commandKey("standing-consent"));
   const revokeCommandKeyRef = useRef(commandKey("standing-revoke"));
   const suppressConsentErrorToastRef = useRef(false);
@@ -66,9 +67,10 @@ export function StandingAutopayCard({ league, bowlerId, savedCards, bowlerHasEma
   });
 
   const saveAndEnable = async () => {
-    if (!bowlerHasEmail) return;
+    if (!bowlerHasEmail || isSavingAndEnabling || activate.isPending) return;
     if (!card || !isInitialized) { toast({ title: "Card details required", description: "Enter your card details before continuing.", variant: "destructive" }); return; }
     let savedCardId: string | null = null;
+    setIsSavingAndEnabling(true);
     try {
       const sourceId = await tokenizeCard(card);
       const response = await csrfFetch(`/api/payments-provider/cards/${bowlerId}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceId, leagueId: league.id }) });
@@ -88,6 +90,8 @@ export function StandingAutopayCard({ league, bowlerId, savedCards, bowlerHasEma
     } catch (error) {
       toast({ title: savedCardId ? "Card saved; automatic payments still need setup" : "Automatic payments unavailable", description: error instanceof Error ? error.message : "Unable to save this card.", variant: "destructive" });
       void queryClient.invalidateQueries({ queryKey: [`/api/payments-provider/cards/${bowlerId}`] });
+    } finally {
+      setIsSavingAndEnabling(false);
     }
   };
 
@@ -96,6 +100,7 @@ export function StandingAutopayCard({ league, bowlerId, savedCards, bowlerHasEma
 
   const active = consent?.state === "active";
   const addingCard = cardEditorMode === "autopay";
+  const setupPending = isSavingAndEnabling || activate.isPending;
   return <Card data-testid="standing-autopay-card">
     <CardHeader><CardTitle className="flex items-center justify-between">Automatic Payments {active ? <Badge>Enabled</Badge> : <Badge variant="secondary">Off</Badge>}</CardTitle></CardHeader>
     <CardContent className="space-y-3">
@@ -104,8 +109,8 @@ export function StandingAutopayCard({ league, bowlerId, savedCards, bowlerHasEma
       {active && !replaceMode && !addingCard ? <><p className="text-sm">Saved payment method and consent version are active.</p><div className="flex flex-wrap gap-2"><Button type="button" variant="outline" disabled={revoke.isPending} onClick={() => revoke.mutate()}>Revoke automatic payments</Button><Button type="button" variant="outline" disabled={!bowlerHasEmail} onClick={() => setReplaceMode(true)}>Replace payment method</Button></div></> : <>
         {savedCards.length > 0 && !addingCard && <label className="block text-sm">Saved card<select className="mt-1 w-full rounded border bg-background p-2" value={selectedCard} onChange={(event) => setSelectedCard(event.target.value)} disabled={!bowlerHasEmail}><option value="">Select a card</option>{savedCards.map((saved) => <option key={saved.id} value={saved.id}>{saved.brand} ending {saved.last4}</option>)}</select></label>}
         {!addingCard && savedCards.length === 0 && <Button type="button" variant="outline" disabled={!bowlerHasEmail} onClick={() => { cleanupCard(); onCardEditorModeChange("autopay"); }}>Add new card</Button>}
-        {addingCard || savedCards.length === 0 ? <div className="space-y-3"><p className="text-sm font-medium">{savedCards.length ? "Add a new card" : "Add a card for automatic payments"}</p><div ref={(element) => { if (element && cardEditorMode === "autopay") void initializeCard(element); }} className="min-h-[80px] rounded-md border p-3" style={cardEditorMode === "autopay" ? undefined : { display: "none" }} /><div className="flex flex-wrap gap-2"><Button type="button" disabled={!bowlerHasEmail || !isInitialized || activate.isPending} onClick={() => void saveAndEnable()}>Save card and enable automatic payments</Button>{addingCard && <Button type="button" variant="ghost" onClick={() => { cleanupCard(); onCardEditorModeChange(null); }}>Cancel</Button>}</div></div> : null}
-        {!addingCard && savedCards.length > 0 && <div className="flex flex-wrap gap-2"><Button type="button" disabled={!bowlerHasEmail || !selectedCard || activate.isPending} onClick={() => activate.mutate(selectedCard)}>{active ? "Replace payment method" : "Enable automatic payments"}</Button>{active && <Button type="button" variant="ghost" onClick={() => setReplaceMode(false)}>Cancel</Button>}<Button type="button" variant="outline" disabled={!bowlerHasEmail} onClick={() => { cleanupCard(); onCardEditorModeChange("autopay"); setReplaceMode(true); }}>Add new card</Button></div>}
+        {addingCard || savedCards.length === 0 ? <div className="space-y-3"><p className="text-sm font-medium">{savedCards.length ? "Add a new card" : "Add a card for automatic payments"}</p><div ref={(element) => { if (element && cardEditorMode === "autopay") void initializeCard(element); }} className="min-h-[80px] rounded-md border p-3" style={cardEditorMode === "autopay" ? undefined : { display: "none" }} /><div className="flex flex-wrap gap-2"><Button type="button" disabled={!bowlerHasEmail || !isInitialized || setupPending} onClick={() => void saveAndEnable()}>{setupPending ? "Saving card and enabling…" : "Save card and enable automatic payments"}</Button>{addingCard && <Button type="button" variant="ghost" disabled={setupPending} onClick={() => { cleanupCard(); onCardEditorModeChange(null); }}>Cancel</Button>}</div></div> : null}
+        {!addingCard && savedCards.length > 0 && <div className="flex flex-wrap gap-2"><Button type="button" disabled={!bowlerHasEmail || !selectedCard || setupPending} onClick={() => activate.mutate(selectedCard)}>{active ? "Replace payment method" : "Enable automatic payments"}</Button>{active && <Button type="button" variant="ghost" disabled={setupPending} onClick={() => setReplaceMode(false)}>Cancel</Button>}<Button type="button" variant="outline" disabled={!bowlerHasEmail || setupPending} onClick={() => { cleanupCard(); onCardEditorModeChange("autopay"); setReplaceMode(true); }}>Add new card</Button></div>}
       </>}
     </CardContent>
   </Card>;

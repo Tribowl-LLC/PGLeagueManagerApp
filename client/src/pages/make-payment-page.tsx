@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useLocation, useSearch } from "wouter";
+import { Link, useLocation, useSearch } from "wouter";
 import type { ApiResponse, BowlerDetailsResponse, League, SavedCard, User } from "@shared/schema";
 import type { CanonicalDuePastDueResponseV2 } from "@shared/roster-payment-contract";
 import { BowlerLayout } from "@/components/bowler-layout";
 import { LeagueSwitcherSheet } from "@/components/league-switcher-sheet";
 import { BowlerOneTimePaymentCard } from "@/components/bowler-one-time-payment-card";
 import { StandingAutopayCard } from "@/components/standing-autopay-card";
-import { PageLoadingState } from "@/components/page-states";
+import { PageErrorState, PageLoadingState } from "@/components/page-states";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { useSelectedLeague } from "@/hooks/use-selected-league";
 import { useSquarePayment } from "@/hooks/use-square-payment";
@@ -40,6 +40,14 @@ export function clampPaymentWeekCount(value: number, maximum: number): number {
   return Math.min(Math.max(1, value), maximum);
 }
 
+export function shouldReinitializeOneTimeCardEditor(cardMode: "new" | "saved", savedCardCount: number): boolean {
+  return cardMode === "new" && savedCardCount === 0;
+}
+
+export function resetPaymentSelectionForLeagueChange(): { weekCount: number; intentApplied: boolean } {
+  return { weekCount: 1, intentApplied: false };
+}
+
 export function hasPositivePaymentEvidence(rows: Array<{
   allocatedMinor: number;
   outstandingMinor: number;
@@ -53,6 +61,20 @@ export function hasPositivePaymentEvidence(rows: Array<{
     row.state !== "voided" && row.reviewRequired,
   );
   return hasConfirmedAllocation && !hasUnresolvedReview;
+}
+
+export function MakePaymentReadError({ message, onRetry, leagueId }: { message: string; onRetry: () => void; leagueId?: number }) {
+  const historyHref = leagueId ? `/payment-history?leagueId=${leagueId}` : "/payment-history";
+  return (
+    <BowlerLayout bowlerName="" leagueName="Payment information unavailable" currentLeagueId={leagueId}>
+      <div className="space-y-4">
+        <PageErrorState message={message} onRetry={onRetry} />
+        <p className="text-sm text-muted-foreground">
+          You can try loading the payment data again or <Link href={historyHref} className="underline">view payment history</Link>.
+        </p>
+      </div>
+    </BowlerLayout>
+  );
 }
 
 function invalidatePaymentViews(leagueId: number, bowlerId: number): void {
@@ -82,12 +104,13 @@ export default function MakePaymentPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isWalletProcessing, setIsWalletProcessing] = useState(false);
   const [cardEditorMode, setCardEditorMode] = useState<EditorMode>(null);
+  const [oneTimeCardEditorKey, setOneTimeCardEditorKey] = useState(0);
   const walletRequestKeyRef = useRef<string | null>(null);
   const intentAppliedRef = useRef(false);
 
   const { data: currentUser, isLoading: loadingUser, error: userError } = useQuery<ApiResponse<User>>({ queryKey: ["/api/user"] });
   const bowlerId = currentUser?.data?.bowlerId;
-  const { data: detailsResponse, isLoading: loadingDetails, error: detailsError } = useQuery<ApiResponse<BowlerDetailsResponse>>({
+  const { data: detailsResponse, isLoading: loadingDetails, error: detailsError, refetch: refetchDetails } = useQuery<ApiResponse<BowlerDetailsResponse>>({
     queryKey: [`/api/bowlers/${bowlerId}/details`, { includePayments: true }],
     queryFn: async ({ signal }) => {
       const response = await fetch(`/api/bowlers/${bowlerId}/details?includePayments=true`, { credentials: "include", headers: { Accept: "application/json" }, signal });
@@ -108,7 +131,7 @@ export default function MakePaymentPage() {
   const league = leagueId === undefined ? undefined : leagueMap.get(leagueId);
   const hasMultipleLeagues = bowlerLeagues.length > 1;
 
-  const { data: financialResponse, isLoading: loadingFinancial, error: financialError } = useQuery<ApiResponse<CanonicalDuePastDueResponseV2>>({
+  const { data: financialResponse, isLoading: loadingFinancial, error: financialError, refetch: refetchFinancial } = useQuery<ApiResponse<CanonicalDuePastDueResponseV2>>({
     queryKey: paymentHistoryFinancialQueryKey(leagueId ?? 0, bowlerId ?? 0),
     queryFn: async ({ signal }) => {
       const response = await fetch(`/api/financials/leagues/${leagueId}/canonical-due-past-due/2?bowlerId=${bowlerId}`, { credentials: "include", headers: { Accept: "application/json" }, signal });
@@ -171,6 +194,9 @@ export default function MakePaymentPage() {
     if (previousLeagueIdRef.current !== undefined && previousLeagueIdRef.current !== leagueId) {
       cleanupCard();
       walletRequestKeyRef.current = null;
+      const resetSelection = resetPaymentSelectionForLeagueChange();
+      setOneTimePaymentWeekCount(resetSelection.weekCount);
+      intentAppliedRef.current = resetSelection.intentApplied;
       setCardEditorMode(savedCards.length === 0 ? "one-time" : null);
     }
     previousLeagueIdRef.current = leagueId;
@@ -234,7 +260,9 @@ export default function MakePaymentPage() {
       assertRosterPaymentSucceeded(body.data?.status ?? body.status);
       clearPaymentIntent(scope);
       cleanupCard();
-      setCardEditorMode(null);
+      const reinitializeOneTimeEditor = shouldReinitializeOneTimeCardEditor(cardMode, savedCards.length);
+      setCardEditorMode(reinitializeOneTimeEditor ? "one-time" : null);
+      if (reinitializeOneTimeEditor) setOneTimeCardEditorKey((key) => key + 1);
       toast({ title: "Payment Successful", description: `${formatCurrency(paymentAmountMinor)} has been paid.` });
       await invalidatePaymentHistoryFinancials(queryClient, leagueId, bowlerId);
       invalidatePaymentViews(leagueId, bowlerId);
@@ -246,7 +274,9 @@ export default function MakePaymentPage() {
   if (loadingUser || loadingDetails || loadingFinancial) return <PageLoadingState />;
   if (userError) return <PageLoadingState message="Authentication required" />;
   if (currentUser?.data && !currentUser.data.bowlerId) return <PageLoadingState message="A bowler profile is required to make a payment" />;
-  if (detailsError || financialError || !league || leagueId === undefined || !bowlerId) return <PageLoadingState message="Payment information is unavailable" />;
+  if (detailsError) return <MakePaymentReadError message="Payment profile data could not be loaded. Try again." onRetry={() => { void refetchDetails(); }} leagueId={selectedLeagueId ?? undefined} />;
+  if (financialError) return <MakePaymentReadError message="Payment balance data could not be loaded. Try again." onRetry={() => { void refetchFinancial(); }} leagueId={selectedLeagueId ?? undefined} />;
+  if (!league || leagueId === undefined || !bowlerId) return <MakePaymentReadError message="Payment information is unavailable. Try again or view payment history." onRetry={() => { void refetchDetails(); void refetchFinancial(); }} leagueId={selectedLeagueId ?? undefined} />;
 
   const isPaidInFull = remainingBalance <= 0 && hasPositivePaymentEvidence(rows);
   return <BowlerLayout bowlerName={details?.bowler?.name ?? ""} leagueName={league.name} currentLeagueId={leagueId}>
@@ -257,6 +287,7 @@ export default function MakePaymentPage() {
       </div>
       <ErrorBoundary level="section">
         {isPaidInFull ? <div className="rounded-lg border border-green-500/50 bg-green-500/5 p-6 text-center"><h2 className="text-lg font-semibold text-green-700">Season Paid in Full</h2><p className="mt-1 text-sm text-muted-foreground">There is no remaining one-time balance.</p></div> : <BowlerOneTimePaymentCard
+          key={oneTimeCardEditorKey}
           remainingBalance={remainingBalance}
           paymentWeekCount={clampedWeekCount}
           maximumWeekCount={Math.max(1, maximumWeekCount)}

@@ -58,7 +58,7 @@ export default function PaymentHistoryPage() {
     },
     enabled: !!bowlerId && !!leagueId && !!details && !hasPayments,
   });
-  const { data: reportResponse, isLoading: loadingReport, error: reportError } = useQuery<ApiResponse<CanonicalPaymentReport>>({
+  const { data: reportResponse, isLoading: loadingReport, error: reportError, refetch: refetchReport } = useQuery<ApiResponse<CanonicalPaymentReport>>({
     queryKey: ["/api/financials/f5/payments", { bowlerId, leagueId, page: canonicalReportPage }],
     queryFn: async ({ signal }) => {
       const response = await fetch(`/api/financials/f5/payments?leagueId=${leagueId}&bowlerId=${bowlerId}&page=${canonicalReportPage}&limit=200`, { credentials: "include", headers: { Accept: "application/json" }, signal });
@@ -102,7 +102,6 @@ export default function PaymentHistoryPage() {
   if (currentUser?.data && !currentUser.data.bowlerId) return <NoBowlerView userName={currentUser.data.name} isSystemAdmin={currentUser.data.role === "system_admin"} />;
   if (bowlerId && bowlerError) return <BowlerErrorView />;
   const bowlerName = details?.bowler?.name ?? "";
-  if (reportError) return <p className="p-6 text-destructive">Payment evidence requires review; no canonical history is shown.</p>;
   if (!bowlerLeagues.length) return <NoLeaguesView bowlerName={bowlerName} />;
   if (!league || leagueId === undefined) return <NoLeagueView bowlerName={bowlerName} bowlerId={bowlerId} leagueId={leagueId} />;
 
@@ -128,6 +127,7 @@ export default function PaymentHistoryPage() {
     doublePay={financials.doublePay}
     canonicalPaymentLoading={loadingReport}
     canonicalPaymentError={reportError}
+    onCanonicalReportRetry={() => { void refetchReport(); }}
     canonicalReportPage={canonicalReportPage}
     canonicalReportTotalPages={report ? Math.max(1, Math.ceil(report.totalTransactions / report.limit)) : undefined}
     onCanonicalReportPageChange={setCanonicalReportPage}

@@ -93,6 +93,23 @@ describe("PaymentHistoryContent", () => {
     expect(screen.getByText("Fully paid")).toBeInTheDocument();
   });
 
+  it("keeps report failures inside the layout and offers a retry", async () => {
+    const retry = vi.fn();
+    render(<PaymentHistoryContent
+      bowlerName="Bowler" league={league} leagueId={17} hasMultipleLeagues={false}
+      leagueSheetOpen={false} onOpenLeagueSheet={vi.fn()} onCloseLeagueSheet={vi.fn()}
+      bowlerLeagues={[]} leagueMap={new Map()} onSelectLeague={vi.fn()}
+      totalWeeksInSeason={10} fullSeasonAmount={30000} weeksDueCount={3} totalSeasonDues={9000}
+      weeksPaid={1} totalPaidAmount={3000} amountPastDue={6000} remainingBalance={27000}
+      doublePay={{ dates: [], perWeekExtra: 0, totalExtra: 0, pastExtra: 0, isPaid: false }}
+      canonicalPaymentLoading={false} canonicalPaymentError={new Error("report unavailable")}
+      onCanonicalReportRetry={retry}
+    />);
+    expect(screen.getByRole("heading", { name: "Payment History" })).toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
+    expect(retry).toHaveBeenCalledOnce();
+  });
+
   it("disables automatic-payment setup without a profile email", () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, queryFn: async () => ({ data: { state: "none", partnerBowlerIds: [] } }) } } });
     render(<QueryClientProvider client={queryClient}><StandingAutopayCard
@@ -146,5 +163,27 @@ describe("PaymentHistoryContent", () => {
     expect(csrfFetchMock).toHaveBeenCalledWith("/api/payments-provider/cards/42", expect.objectContaining({ method: "POST" }));
     expect(JSON.parse(String(csrfFetchMock.mock.calls[0]?.[1]?.body))).toEqual({ sourceId: "source_token", leagueId: 17 });
     expect(apiRequestMock.mock.calls[0]?.[2]).toMatchObject({ sourceId: "saved_1" });
+  });
+
+  it("locks card setup while tokenize, vault, and consent are pending", async () => {
+    let resolveTokenize!: (token: string) => void;
+    tokenizeCardMock.mockReturnValue(new Promise<string>((resolve) => { resolveTokenize = resolve; }));
+    csrfFetchMock.mockResolvedValue({ ok: true, json: async () => ({ data: { savedCardId: "saved_pending" } }) });
+    apiRequestMock.mockResolvedValue({ success: true, data: { state: "active" } });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, queryFn: async () => ({ data: { state: "none", partnerBowlerIds: [] } }) } } });
+    const user = userEvent.setup();
+    render(<QueryClientProvider client={queryClient}><StandingAutopayCard
+      league={{ ...league, payingLineupSize: 5 }} bowlerId={42} savedCards={[]}
+      bowlerHasEmail={true} card={squareCard} isInitialized={true} cardEditorMode="autopay"
+      initializeCard={vi.fn()} cleanupCard={vi.fn()} onCardEditorModeChange={vi.fn()}
+    /></QueryClientProvider>);
+    const save = screen.getByRole("button", { name: "Save card and enable automatic payments" });
+    const click = user.click(save);
+    await waitFor(() => expect(save).toBeDisabled());
+    await user.click(save);
+    expect(tokenizeCardMock).toHaveBeenCalledOnce();
+    resolveTokenize("source_pending");
+    await click;
+    await waitFor(() => expect(apiRequestMock).toHaveBeenCalledOnce());
   });
 });

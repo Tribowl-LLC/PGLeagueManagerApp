@@ -6,6 +6,7 @@ import { CanonicalPaymentEvidenceTable } from "@/components/canonical-payment-ev
 import { BowlerLayout } from "@/components/bowler-layout";
 import { PaymentSummaryCards } from "@/components/payment-summary-cards";
 import { ErrorBoundary } from "@/components/error-boundary";
+import { PageErrorState } from "@/components/page-states";
 import { LeagueSwitcherSheet } from "@/components/league-switcher-sheet";
 import type { DoublePayStatus } from "@/lib/financial-utils";
 
@@ -31,6 +32,7 @@ interface PaymentHistoryContentProps {
   doublePay: DoublePayStatus;
   canonicalPaymentLoading: boolean;
   canonicalPaymentError: Error | null;
+  onCanonicalReportRetry?: () => void;
   canonicalReportPage?: number;
   canonicalReportTotalPages?: number;
   onCanonicalReportPageChange?: (page: number) => void;
@@ -45,7 +47,7 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
   onSelectLeague, totalWeeksInSeason, fullSeasonAmount, weeksDueCount,
   totalSeasonDues, weeksPaid, totalPaidAmount, amountPastDue, remainingBalance,
   doublePay, canonicalPaymentLoading, canonicalPaymentError, canonicalReportPage,
-  canonicalReportTotalPages, onCanonicalReportPageChange, canonicalRows = [],
+  onCanonicalReportRetry, canonicalReportTotalPages, onCanonicalReportPageChange, canonicalRows = [],
   canonicalMode, canonicalPaymentTiming,
 }) => {
   const makePaymentHref = `/make-payment?leagueId=${leagueId}`;
@@ -86,7 +88,7 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
           {canonicalPaymentLoading ? (
             <div className="text-sm text-muted-foreground">Loading canonical payment evidence…</div>
           ) : canonicalPaymentError ? (
-            <div className="text-sm text-destructive">Financial evidence requires review; payment history is unavailable.</div>
+            <PageErrorState message="Financial evidence requires review; payment history is unavailable." onRetry={onCanonicalReportRetry} />
           ) : (
             <CanonicalPaymentEvidenceTable rows={canonicalRows} mode={canonicalMode} paymentTiming={canonicalPaymentTiming} organizationId={league.organizationId} title="Payment history" />
           )}

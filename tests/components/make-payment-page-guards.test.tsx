@@ -1,9 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import {
   clampPaymentWeekCount,
   clearWalletRequestKeyForTerminalStatus,
   hasPositivePaymentEvidence,
+  MakePaymentReadError,
+  resetPaymentSelectionForLeagueChange,
+  shouldReinitializeOneTimeCardEditor,
 } from "@/pages/make-payment-page";
+
+vi.mock("@/components/bowler-layout", () => ({ BowlerLayout: ({ children }: { children: ReactNode }) => <div data-testid="bowler-layout">{children}</div> }));
 
 describe("dedicated make-payment guards", () => {
   it.each(["failed_terminal", "canceled", "action_required"])("clears the in-memory wallet key for terminal HTTP-202 status %s", (status) => {
@@ -16,6 +24,16 @@ describe("dedicated make-payment guards", () => {
     const requestKeyRef = { current: "wallet-request-key" };
     clearWalletRequestKeyForTerminalStatus("provider_unknown", requestKeyRef);
     expect(requestKeyRef.current).toBe("wallet-request-key");
+  });
+
+  it("reinitializes an unsaved-card editor after a partial payment when no card was saved", () => {
+    expect(shouldReinitializeOneTimeCardEditor("new", 0)).toBe(true);
+    expect(shouldReinitializeOneTimeCardEditor("new", 1)).toBe(false);
+    expect(shouldReinitializeOneTimeCardEditor("saved", 0)).toBe(false);
+  });
+
+  it("resets week count and past-due intent when changing leagues", () => {
+    expect(resetPaymentSelectionForLeagueChange()).toEqual({ weekCount: 1, intentApplied: false });
   });
 
   it.each([
@@ -45,5 +63,15 @@ describe("dedicated make-payment guards", () => {
       { allocatedMinor: 100, outstandingMinor: 0, state: "settled", reviewRequired: false },
       { allocatedMinor: 0, outstandingMinor: 0, state: "settled", reviewRequired: true },
     ])).toBe(false);
+  });
+
+  it("keeps payment-read failures inside the bowler layout with retry and history navigation", async () => {
+    const retry = vi.fn();
+    render(<MakePaymentReadError message="Payment balance data could not be loaded. Try again." onRetry={retry} leagueId={17} />);
+    expect(screen.getByTestId("bowler-layout")).toBeInTheDocument();
+    expect(screen.getByText("Payment balance data could not be loaded. Try again.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "view payment history" })).toHaveAttribute("href", "/payment-history?leagueId=17");
+    await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
+    expect(retry).toHaveBeenCalledOnce();
   });
 });
