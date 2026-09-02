@@ -210,4 +210,76 @@ describe("ManagePaymentsPage", () => {
     const retryRecordBody = JSON.parse(String(csrfFetchMock.mock.calls[2]?.[1]?.body)) as { rows: Array<{ rowKey: string }> };
     expect(retryRecordBody.rows[0]?.rowKey).toBe(firstRecordBody.rows[0]?.rowKey);
   });
+
+  it.each([500, 504])("locks an HTTP %s record response to its exact key and retries without quoting a new intent", async (status) => {
+    const client = createManageQueryClient();
+    seedManagePage(client, [membership(1, 1, "Alex Bowler", 10)], dueResponse([dueRow(1, 2_000)]));
+    let recordAttempts = 0;
+    csrfFetchMock.mockImplementation(async (url: string, init: RequestInit = {}) => {
+      const body = JSON.parse(String(init.body)) as { rows: Array<{ rowKey: string; payerBowlerId: number }> };
+      if (url.includes("/quote/")) {
+        return new Response(JSON.stringify({ data: { rows: [{ rowKey: body.rows[0]?.rowKey, success: true, data: { fingerprint: "server-failure-fingerprint", payerBowlerId: 1 } }] } }), { status: 200 });
+      }
+      recordAttempts += 1;
+      if (recordAttempts === 1) {
+        return new Response(JSON.stringify({ error: { message: `Server failed with ${status}` } }), { status });
+      }
+      return new Response(JSON.stringify({ data: { rows: [{ rowKey: body.rows[0]?.rowKey, success: true }] } }), { status: 200 });
+    });
+    renderManagePage(client);
+
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Amount paid by Alex Bowler" }), { target: { value: "20" } });
+    fireEvent.click(screen.getByRole("button", { name: "Record Payments" }));
+    await waitFor(() => expect(screen.getByText(`Server failed with ${status}`)).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Retry exact payment" })).toBeInTheDocument();
+    expect(screen.getByRole("spinbutton", { name: "Amount paid by Alex Bowler" })).toHaveValue(20);
+    expect(screen.getByRole("spinbutton", { name: "Amount paid by Alex Bowler" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry exact payment" }));
+    await waitFor(() => expect(csrfFetchMock).toHaveBeenCalledTimes(3));
+    expect(csrfFetchMock).toHaveBeenCalledTimes(3);
+    expect(String(csrfFetchMock.mock.calls[0]?.[0])).toContain("/canonical/manual-record-batch/quote/1");
+    expect(String(csrfFetchMock.mock.calls[1]?.[0])).toContain("/canonical/manual-record-batch/1");
+    expect(String(csrfFetchMock.mock.calls[2]?.[0])).toContain("/canonical/manual-record-batch/1");
+    const firstRecordBody = JSON.parse(String(csrfFetchMock.mock.calls[1]?.[1]?.body)) as { rows: Array<{ rowKey: string }> };
+    const retryRecordBody = JSON.parse(String(csrfFetchMock.mock.calls[2]?.[1]?.body)) as { rows: Array<{ rowKey: string }> };
+    expect(retryRecordBody.rows[0]?.rowKey).toBe(firstRecordBody.rows[0]?.rowKey);
+    await waitFor(() => expect(screen.getByRole("spinbutton", { name: "Amount paid by Alex Bowler" })).toHaveValue(null));
+  });
+
+  it("locks a 200 INTERNAL_ERROR row to its exact key and retries without quoting a new intent", async () => {
+    const client = createManageQueryClient();
+    seedManagePage(client, [membership(1, 1, "Alex Bowler", 10)], dueResponse([dueRow(1, 2_000)]));
+    let recordAttempts = 0;
+    csrfFetchMock.mockImplementation(async (url: string, init: RequestInit = {}) => {
+      const body = JSON.parse(String(init.body)) as { rows: Array<{ rowKey: string; payerBowlerId: number }> };
+      if (url.includes("/quote/")) {
+        return new Response(JSON.stringify({ data: { rows: [{ rowKey: body.rows[0]?.rowKey, success: true, data: { fingerprint: "internal-error-fingerprint", payerBowlerId: 1 } }] } }), { status: 200 });
+      }
+      recordAttempts += 1;
+      if (recordAttempts === 1) {
+        return new Response(JSON.stringify({ data: { rows: [{ rowKey: body.rows[0]?.rowKey, success: false, error: { code: "INTERNAL_ERROR", message: "The server could not confirm the payment" } }] } }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ data: { rows: [{ rowKey: body.rows[0]?.rowKey, success: true }] } }), { status: 200 });
+    });
+    renderManagePage(client);
+
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Amount paid by Alex Bowler" }), { target: { value: "20" } });
+    fireEvent.click(screen.getByRole("button", { name: "Record Payments" }));
+    await waitFor(() => expect(screen.getByText("The server could not confirm the payment")).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Retry exact payment" })).toBeInTheDocument();
+    expect(screen.getByRole("spinbutton", { name: "Amount paid by Alex Bowler" })).toHaveValue(20);
+    expect(screen.getByRole("spinbutton", { name: "Amount paid by Alex Bowler" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry exact payment" }));
+    await waitFor(() => expect(csrfFetchMock).toHaveBeenCalledTimes(3));
+    expect(csrfFetchMock).toHaveBeenCalledTimes(3);
+    expect(String(csrfFetchMock.mock.calls[0]?.[0])).toContain("/canonical/manual-record-batch/quote/1");
+    expect(String(csrfFetchMock.mock.calls[1]?.[0])).toContain("/canonical/manual-record-batch/1");
+    expect(String(csrfFetchMock.mock.calls[2]?.[0])).toContain("/canonical/manual-record-batch/1");
+    const firstRecordBody = JSON.parse(String(csrfFetchMock.mock.calls[1]?.[1]?.body)) as { rows: Array<{ rowKey: string }> };
+    const retryRecordBody = JSON.parse(String(csrfFetchMock.mock.calls[2]?.[1]?.body)) as { rows: Array<{ rowKey: string }> };
+    expect(retryRecordBody.rows[0]?.rowKey).toBe(firstRecordBody.rows[0]?.rowKey);
+    await waitFor(() => expect(screen.getByRole("spinbutton", { name: "Amount paid by Alex Bowler" })).toHaveValue(null));
+  });
 });

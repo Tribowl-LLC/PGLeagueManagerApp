@@ -84,6 +84,10 @@ function errorFromBody(body: { error?: { message?: string }; message?: string; d
   return new Error(body?.error?.message || body?.message || `${fallback}${status ? ` (${status})` : ""}`);
 }
 
+function isAmbiguousRecordFailure(status: number, code?: string): boolean {
+  return status >= 500 || code === "INTERNAL_ERROR";
+}
+
 async function errorFromResponse(response: Response, fallback: string): Promise<Error> {
   const body = await response.json().catch(() => null) as { error?: { message?: string }; message?: string; data?: unknown } | null;
   return errorFromBody(body, fallback, response.status);
@@ -324,11 +328,15 @@ export default function ManagePaymentsPage() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ rows: recordableRows.map(({ request }) => request) }),
         });
-        const body = await response.json().catch(() => null) as { data?: { rows?: Array<{ rowKey: string; success: boolean; error?: { message?: string } }> } } | null;
+        const body = await response.json().catch(() => null) as { data?: { rows?: Array<{ rowKey: string; success: boolean; error?: { code?: string; message?: string } }> } } | null;
         if (!response.ok) {
+          const responseError = errorFromBody(body, "Payments could not be recorded", response.status);
+          const preserveIntent = isAmbiguousRecordFailure(response.status);
           for (const { row } of recordableRows) {
-            if (row.intentScope) clearPaymentIntent(row.intentScope);
-            updateRow(row.key, { result: "failure", error: errorFromBody(body, "Payments could not be recorded", response.status).message, intentScope: null, requestKey: null, fingerprint: null, retryLocked: false });
+            if (!preserveIntent && row.intentScope) clearPaymentIntent(row.intentScope);
+            updateRow(row.key, preserveIntent
+              ? { result: "failure", error: responseError.message, retryLocked: true }
+              : { result: "failure", error: responseError.message, intentScope: null, requestKey: null, fingerprint: null, retryLocked: false });
             activeSubmissions.current.delete(row.bowlerId);
           }
         } else {
@@ -341,8 +349,12 @@ export default function ManagePaymentsPage() {
               if (row.intentScope) clearPaymentIntent(row.intentScope);
               updateRow(row.key, { amount: "", checkNumber: "", notes: "", intentScope: null, requestKey: null, fingerprint: null, retryLocked: false, result: "success", error: null });
             } else {
-              if (row.intentScope) clearPaymentIntent(row.intentScope);
-              updateRow(row.key, { result: "failure", error: result?.error?.message || "Payment could not be recorded.", intentScope: null, requestKey: null, fingerprint: null, retryLocked: false });
+              const errorCode = result?.error?.code;
+              const preserveIntent = isAmbiguousRecordFailure(response.status, errorCode);
+              if (!preserveIntent && row.intentScope) clearPaymentIntent(row.intentScope);
+              updateRow(row.key, preserveIntent
+                ? { result: "failure", error: result?.error?.message || "Payment result is unknown; retry to confirm.", retryLocked: true }
+                : { result: "failure", error: result?.error?.message || "Payment could not be recorded.", intentScope: null, requestKey: null, fingerprint: null, retryLocked: false });
             }
             activeSubmissions.current.delete(row.bowlerId);
           }
