@@ -133,7 +133,7 @@ jobs:
           printf '%s' "$host_fingerprint" | grep -Eq '^sha256:[0-9a-f]{64}$'
           printf 'host_fingerprint=%s\n' "$host_fingerprint" >> "$GITHUB_OUTPUT"
 
-      - name: Create and verify protected pre-migration backup
+      - name: Create and verify unprotected pre-migration backup
         id: backup
         env:
           NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
@@ -145,17 +145,17 @@ jobs:
             --name "$backup_name" \
             --no-compute \
             --no-secrets \
-            --protected \
+            --no-protected \
             --output json \
             --no-color)"
           backup_id="$(printf '%s' "$backup_json" | jq -er \
             --arg name "$backup_name" \
             --arg parent "$NEON_PRODUCTION_BRANCH_ID" \
-            '(.branch // .) | select(.name == $name and .parent_id == $parent and .protected == true) | .id')"
+            '(.branch // .) | select(.name == $name and .parent_id == $parent and .protected == false) | .id')"
           test -n "$backup_id"
           printf 'backup_name=%s\n' "$backup_name" >> "$GITHUB_OUTPUT"
           printf 'backup_id=%s\n' "$backup_id" >> "$GITHUB_OUTPUT"
-          printf 'Created protected Neon backup %s (%s) from production.\n' "$backup_name" "$backup_id"
+          printf 'Created unprotected Neon backup %s (%s) from production.\n' "$backup_name" "$backup_id"
 
       - name: Acquire direct production connection string
         id: connection
@@ -218,6 +218,7 @@ jobs:
             echo "- Backup step: \`$BACKUP_OUTCOME\`"
             if [ -n "$BACKUP_ID" ] && [ -n "$BACKUP_NAME" ]; then
               echo "- Recovery branch: \`$BACKUP_NAME\` (\`$BACKUP_ID\`)"
+              echo '- Recovery branch protection: `unprotected` (retain through release verification, then delete)'
             else
               echo '- Recovery branch: unavailable because backup creation did not complete'
             fi
