@@ -253,6 +253,13 @@
       "when": 1787782184136,
       "tag": "0035_automatic_fifo_payment_allocation",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1788372833469,
+      "tag": "0036_standing_autopay_preparation_attempts",
+      "breakpoints": true
     }
   ]
 }

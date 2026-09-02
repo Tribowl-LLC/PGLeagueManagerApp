@@ -46,6 +46,7 @@ import {
   paymentVoids,
   autopayConsents,
   autopayConsentPartners,
+  standingAutopayPreparationAttempts,
   financialCommands,
   paymentOperationRosterSnapshots,
   paymentOperationRosterSnapshotItems,
@@ -302,6 +303,7 @@ export async function deleteOrganization(id: number): Promise<void> {
     await tx.delete(teamPaymentPolicies).where(eq(teamPaymentPolicies.organizationId, id));
     await tx.delete(teamPaymentSlotRevisions).where(eq(teamPaymentSlotRevisions.organizationId, id));
     await tx.delete(teamPaymentSlots).where(eq(teamPaymentSlots.organizationId, id));
+    await tx.delete(standingAutopayPreparationAttempts).where(eq(standingAutopayPreparationAttempts.organizationId, id));
     await tx.delete(autopayConsents).where(eq(autopayConsents.organizationId, id));
     await tx.delete(financialCommands).where(eq(financialCommands.organizationId, id));
 

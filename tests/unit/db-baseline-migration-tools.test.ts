@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(36);
+    expect(migrations).toHaveLength(37);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -442,6 +442,14 @@ describe('normalized migration baseline tools', () => {
     expect(migrations[33]?.sql).toContain('0033 requires an empty autopay_consents table');
     expect(migrations[33]?.sql).toContain('CREATE TABLE "payment_operation_standing_autopay_bindings"');
     expect(migrations[33]?.sql).toContain("standing_autopay_charge");
+    expect(migrations[36]).toMatchObject({
+      idx: 36,
+      tag: '0036_standing_autopay_preparation_attempts',
+      createdAt: 1788372833469,
+      hash: 'd46a2cf796f85cbe9dcc8d6c2af89a093007b55f1f374a2530c81ce574be8617',
+    });
+    expect(migrations[36]?.sql).toContain('CREATE TABLE "standing_autopay_preparation_attempts"');
+    expect(migrations[36]?.sql).toContain('standing_autopay_preparation_attempts_cutoff_unique');
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 

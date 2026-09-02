@@ -51,6 +51,8 @@ export const AUTOPAY_CONSENT_STATES = ["pending", "active", "revoked", "expired"
 export type AutopayConsentState = (typeof AUTOPAY_CONSENT_STATES)[number];
 export const AUTOPAY_CONSENT_PAYMENT_MODES = ["weekly"] as const;
 export type AutopayConsentPaymentMode = (typeof AUTOPAY_CONSENT_PAYMENT_MODES)[number];
+export const STANDING_AUTOPAY_PREPARATION_STATES = ["retry_scheduled", "failed_terminal"] as const;
+export type StandingAutopayPreparationState = (typeof STANDING_AUTOPAY_PREPARATION_STATES)[number];
 export const ROSTER_OPERATION_SNAPSHOT_KINDS = ["interactive", "standing_autopay"] as const;
 export type RosterOperationSnapshotKind = (typeof ROSTER_OPERATION_SNAPSHOT_KINDS)[number];
 export const ROSTER_OPERATION_SNAPSHOT_VERSION = 2 as const;
@@ -73,6 +75,7 @@ const obligationComponents = sql.raw(OBLIGATION_COMPONENTS.map((value) => `'${va
 const allocationStates = sql.raw(ALLOCATION_STATES.map((value) => `'${value}'`).join(", "));
 const consentStates = sql.raw(AUTOPAY_CONSENT_STATES.map((value) => `'${value}'`).join(", "));
 const consentPaymentModes = sql.raw(AUTOPAY_CONSENT_PAYMENT_MODES.map((value) => `'${value}'`).join(", "));
+const standingPreparationStates = sql.raw(STANDING_AUTOPAY_PREPARATION_STATES.map((value) => `'${value}'`).join(", "));
 const snapshotKinds = sql.raw(ROSTER_OPERATION_SNAPSHOT_KINDS.map((value) => `'${value}'`).join(", "));
 const collectionModes = sql.raw(STANDING_COLLECTION_MODES.map((value) => `'${value}'`).join(", "));
 const commandStates = sql.raw(FINANCIAL_COMMAND_STATES.map((value) => `'${value}'`).join(", "));
@@ -348,6 +351,31 @@ export const autopayConsentPartners = pgTable("autopay_consent_partners", {
   versionCheck: check("autopay_consent_partners_version_check", sql`${table.consentVersion} > 0 AND ${table.linkFingerprint} ~ '^lvpartnerlink:v1:[0-9a-f]{64}$'`),
 }));
 
+/** Durable failure state for one consent cutoff. A retry is deliberately
+ * scheduled behind other due consents instead of holding the global wake
+ * queue at the same failing cutoff. */
+export const standingAutopayPreparationAttempts = pgTable("standing_autopay_preparation_attempts", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  organizationId: integer("organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
+  leagueId: integer("league_id").notNull(),
+  consentId: uuid("consent_id").notNull(),
+  consentVersion: integer("consent_version").notNull(),
+  cutoffAt: timestamp("cutoff_at", { withTimezone: true, mode: "string" }).notNull(),
+  occurrenceRevision: integer("occurrence_revision").notNull(),
+  state: text("state", { enum: STANDING_AUTOPAY_PREPARATION_STATES }).notNull(),
+  attemptCount: integer("attempt_count").notNull().default(1),
+  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true, mode: "string" }),
+  lastErrorCode: varchar("last_error_code", { length: 128 }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull().defaultNow(),
+}, (table) => ({
+  leagueTenantFk: leagueTenantFk(table, "standing_autopay_preparation_attempts_league_tenant_fk"),
+  consentFk: foreignKey({ name: "standing_autopay_preparation_attempts_consent_fk", columns: [table.consentId, table.organizationId, table.leagueId], foreignColumns: [autopayConsents.id, autopayConsents.organizationId, autopayConsents.leagueId] }).onDelete("restrict"),
+  cutoffUnique: uniqueIndex("standing_autopay_preparation_attempts_cutoff_unique").on(table.organizationId, table.leagueId, table.consentId, table.consentVersion, table.cutoffAt, table.occurrenceRevision),
+  wakeIdx: index("standing_autopay_preparation_attempts_wake_idx").on(table.state, table.nextAttemptAt),
+  stateCheck: check("standing_autopay_preparation_attempts_state_check", sql`${table.state} IN (${standingPreparationStates}) AND ${table.consentVersion} > 0 AND ${table.occurrenceRevision} > 0 AND ${table.attemptCount} > 0 AND length(btrim(${table.lastErrorCode})) > 0 AND ((${table.state} = 'retry_scheduled' AND ${table.nextAttemptAt} IS NOT NULL) OR (${table.state} = 'failed_terminal' AND ${table.nextAttemptAt} IS NULL))`),
+}));
+
 /** Idempotent command/audit ledger. Commands never make provider calls in a transaction. */
 export const financialCommands = pgTable("financial_commands", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -508,6 +536,7 @@ export type PaymentAllocation = typeof paymentAllocations.$inferSelect;
 export type PaymentVoid = typeof paymentVoids.$inferSelect;
 export type AutopayConsent = typeof autopayConsents.$inferSelect;
 export type AutopayConsentPartner = typeof autopayConsentPartners.$inferSelect;
+export type StandingAutopayPreparationAttempt = typeof standingAutopayPreparationAttempts.$inferSelect;
 export type FinancialCommand = typeof financialCommands.$inferSelect;
 export type PaymentOperationRosterSnapshot = typeof paymentOperationRosterSnapshots.$inferSelect;
 export type PaymentOperationRosterSnapshotItem = typeof paymentOperationRosterSnapshotItems.$inferSelect;
