@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Layout } from "@/components/layout";
 import { Trophy, Users, Activity, ArrowUpRight } from "lucide-react";
 import { Link } from "wouter";
-import type { League, Payment, BowlerLeague, ApiResponse, Organization, User } from "@shared/schema";
+import type { League, Payment, Bowler, BowlerLeague, ApiResponse, Organization, User } from "@shared/schema";
 import type { CanonicalDuePastDueResponseV2 } from "@shared/roster-payment-contract";
 import { PastDueBowlersSection } from "@/components/past-due-bowlers-section";
 import { formatCurrency } from "@/lib/utils";
@@ -88,6 +88,12 @@ export default function HomePage() {
     retry: false,
   });
 
+  const { data: bowlersResponse, isLoading: loadingBowlers, error: bowlersError, refetch: refetchBowlers } = useQuery<ApiResponse<Bowler[]>>({
+    queryKey: ["/api/bowlers"],
+    staleTime: 1000 * 30,
+    retry: false,
+  });
+
   const { data: userResponse } = useQuery<ApiResponse<User>>({
     queryKey: ["/api/user"],
     staleTime: 1000 * 60 * 5,
@@ -110,38 +116,34 @@ export default function HomePage() {
   });
 
   const adminFinancialLoading = (userResponse?.data?.role === "org_admin" || userResponse?.data?.role === "system_admin" || String(userResponse?.data?.role) === "payment_manager") && loadingFinancialReport;
-  if (loadingLeagues || loadingPayments || loadingBowlerLeagues || adminFinancialLoading) {
+  if (loadingLeagues || loadingPayments || loadingBowlerLeagues || loadingBowlers || adminFinancialLoading) {
     return <Layout><DashboardSkeleton /></Layout>;
   }
 
-  const error = leaguesError || paymentsError || bowlerLeaguesError || (userResponse?.data?.role === "org_admin" || userResponse?.data?.role === "system_admin" || String(userResponse?.data?.role) === "payment_manager" ? financialReportError : null);
+  const error = leaguesError || paymentsError || bowlerLeaguesError || bowlersError || (userResponse?.data?.role === "org_admin" || userResponse?.data?.role === "system_admin" || String(userResponse?.data?.role) === "payment_manager" ? financialReportError : null);
   if (error) {
-    return <Layout><PageErrorState message={`Error loading data: ${(error as Error).message}`} onRetry={() => { refetchLeagues(); refetchPayments(); refetchBowlerLeagues(); refetchFinancialReport(); }} /></Layout>;
+    return <Layout><PageErrorState message={`Error loading data: ${(error as Error).message}`} onRetry={() => { refetchLeagues(); refetchPayments(); refetchBowlerLeagues(); refetchBowlers(); refetchFinancialReport(); }} /></Layout>;
   }
 
   const leagues = leaguesResponse?.data || [];
   const payments = paymentsResponse?.data || [];
   const bowlerLeaguesData = bowlerLeaguesResponse?.data || [];
+  const activeBowlerProfileIds = new Set((bowlersResponse?.data || []).filter((bowler) => bowler.active).map((bowler) => bowler.id));
 
   const activeLeagues = leagues.filter((l: League) => l.active);
   const activeLeagueIds = new Set(activeLeagues.map((l: League) => l.id));
-  const activeLeagueById = new Map<number, League>(activeLeagues.map((l: League) => [l.id, l]));
   const activeBowlerIds = new Set<number>();
   for (const bl of bowlerLeaguesData) {
-    if (bl.active && activeLeagueIds.has(bl.leagueId)) activeBowlerIds.add(bl.bowlerId);
+    if (bl.active && activeLeagueIds.has(bl.leagueId) && activeBowlerProfileIds.has(bl.bowlerId)) activeBowlerIds.add(bl.bowlerId);
   }
   const serverFinancialLeagues = financialReportResponse?.data?.leagues ?? [];
-  const serverRows = serverFinancialLeagues.flatMap((entry) => entry.report.rows.map((row) => ({ ...row, leagueId: entry.leagueId })));
-  // Keep the denominator source-consistent per league. A mixed organization
-  // may have canonical responsibility rows for one league and legacy
-  // membership fallback for another; collapsing those into one global
-  // canonical-vs-roster switch misstates the rate.
-  const financialPopulationKeys = new Set<number>();
-  for (const league of activeLeagues) {
-    const report = serverFinancialLeagues.find((entry) => entry.leagueId === league.id)?.report;
-    if (report) for (const row of report.rows) financialPopulationKeys.add(row.payerBowlerId);
-  }
-  const activeBowlers = financialPopulationKeys.size || activeBowlerIds.size;
+  const serverRows = serverFinancialLeagues
+    .filter((entry) => activeLeagueIds.has(entry.leagueId))
+    .flatMap((entry) => entry.report.rows.map((row) => ({ ...row, leagueId: entry.leagueId })));
+  // The dashboard denominator is always the unique set of active
+  // bowler-league memberships in active leagues. Financial payer rows are
+  // intentionally reserved for past-due numerators below.
+  const activeBowlers = activeBowlerIds.size;
   const totalLeagues = activeLeagueIds.size;
 
 
@@ -157,10 +159,9 @@ export default function HomePage() {
   const leagueHealthData = activeLeagues.flatMap(league => {
     const leagueBowlerIds = new Set<number>();
     for (const bl of bowlerLeaguesData) {
-      if (bl.leagueId === league.id && bl.active) leagueBowlerIds.add(bl.bowlerId);
+      if (bl.leagueId === league.id && bl.active && activeBowlerProfileIds.has(bl.bowlerId)) leagueBowlerIds.add(bl.bowlerId);
     }
-    const leagueReport = serverFinancialLeagues.find((entry) => entry.leagueId === league.id)?.report;
-    const leagueBowlerCount = leagueReport ? new Set(leagueReport.rows.map((row) => row.payerBowlerId)).size : leagueBowlerIds.size;
+    const leagueBowlerCount = leagueBowlerIds.size;
     if (leagueBowlerCount === 0) return [];
 
     const pastDueCount = new Set(serverRows

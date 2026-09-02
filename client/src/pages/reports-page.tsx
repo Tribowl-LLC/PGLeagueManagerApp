@@ -127,18 +127,19 @@ export default function ReportsPage() {
   }
   if (financialError || paymentReportError || !financialResponse?.data?.leagues) return <Layout><p className="p-6 text-destructive">Financial evidence requires review; no balance is shown.</p></Layout>;
 
-  // Fix the bowler-team relationship logic
+  // Reports count the unique active bowlers represented by active
+  // memberships in each league. Financial payer rows remain the source for
+  // past-due balances and are intentionally not used as the denominator.
   const financialLeagues = financialResponse?.data.leagues || [];
+  const bowlersById = new Map(bowlers.map((bowler) => [bowler.id, bowler]));
   const leagueFinancials = leagues.map(league => {
     const leagueTeams = teams.filter(team => team.leagueId === league.id);
-
-    // Use bowlerLeagues to get the correct bowler-team associations
-    const leagueBowlers = bowlers.filter(bowler =>
-      bowlerLeagues.some(bl =>
-        bl.bowlerId === bowler.id &&
-        bl.leagueId === league.id &&
-        leagueTeams.some(team => team.id === bl.teamId)
-      )
+    const leagueTeamIds = new Set(leagueTeams.map((team) => team.id));
+    const activeBowlerIds = new Set(
+      bowlerLeagues
+        .filter((membership) => membership.leagueId === league.id && membership.active && leagueTeamIds.has(membership.teamId))
+        .filter((membership) => bowlersById.get(membership.bowlerId)?.active === true)
+        .map((membership) => membership.bowlerId),
     );
 
     const paymentReport = paymentReports.get(league.id);
@@ -153,7 +154,7 @@ export default function ReportsPage() {
       collected,
       pastDueBalance,
       reviewCount,
-      activeBowlerCount: leagueBowlers.filter(b => b.active).length,
+      activeBowlerCount: activeBowlerIds.size,
       teamCount: leagueTeams.length,
     };
   });

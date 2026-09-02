@@ -42,7 +42,7 @@ import { paymentOperationRetryExecutor } from "./payment-operation-retry-executo
 import { getPaymentProvider } from "./payment-provider-factory.js";
 import { getProviderCustomerId } from "./payment-utils.js";
 import { decrypt } from "../utils/crypto.js";
-import { deriveRosterPaymentTimingInTransaction } from "./roster-payment-materializer.js";
+import { deriveRosterPaymentTimingInTransaction, materializeRosterPaymentOccurrenceInTransaction } from "./roster-payment-materializer.js";
 import { createLogger } from "../logger.js";
 import { allocateAutomaticFifoPayment as allocateFifo, type FifoPaymentCandidate as BaseFifoPaymentCandidate, AutomaticFifoAllocationError } from "./automatic-fifo-allocation.js";
 
@@ -213,6 +213,7 @@ export async function readRosterPaymentResponsibility(input: { organizationId: n
     .from(bowlerLeagues)
     .innerJoin(bowlers, eq(bowlers.id, bowlerLeagues.bowlerId))
     .where(and(
+      eq(bowlers.organizationId, input.organizationId),
       eq(bowlerLeagues.leagueId, input.leagueId),
       eq(bowlerLeagues.active, true),
       eq(bowlers.active, true),
@@ -315,87 +316,32 @@ export async function saveTeamRoster(input: {
         await tx.insert(teamPaymentPolicyRevisions).values({ organizationId: input.organizationId, leagueId: input.leagueId, policyId: created.id, revisionNumber: 1, beforeSnapshot: null, afterSnapshot: created, recordedByUserId: input.actorUserId });
       }
     }
-    // A complete league roster is the sole activation signal in PR1. Once
-    // every team has stable slots, resolve published/locked occurrences in
-    // this same tenant+league transaction. Existing explicit substitute rows
-    // remain evidence and are not overwritten by a default roster refresh.
-    const rosterTeams = await tx.select({ id: teams.id }).from(teams).where(and(eq(teams.leagueId, input.leagueId), eq(teams.active, true)));
-    const rosterRows = await tx.select().from(teamPaymentSlots).where(and(eq(teamPaymentSlots.organizationId, input.organizationId), eq(teamPaymentSlots.leagueId, input.leagueId))).orderBy(asc(teamPaymentSlots.teamId), asc(teamPaymentSlots.slotIndex));
-    const rosterReady = rosterTeams.length > 0 && rosterTeams.every((candidate) => {
-      const candidateSlots = rosterRows.filter((slot) => slot.teamId === candidate.id);
-      return candidateSlots.length === league.payingLineupSize && candidateSlots.every((slot) => slot.occupant !== "unassigned");
-    });
-    if (rosterReady) {
-      const policies = await tx.select().from(teamPaymentPolicies).where(and(eq(teamPaymentPolicies.organizationId, input.organizationId), eq(teamPaymentPolicies.leagueId, input.leagueId)));
-      const occurrences = await tx.select({ id: leagueOccurrences.id, startAt: leagueOccurrences.startAt }).from(leagueOccurrences).where(and(
-        eq(leagueOccurrences.organizationId, input.organizationId),
-        eq(leagueOccurrences.leagueId, input.leagueId),
-        inArray(leagueOccurrences.lifecycle, ["published", "locked"] as const),
-        inArray(leagueOccurrences.status, ["scheduled", "completed"] as const),
-      )).orderBy(asc(leagueOccurrences.startAt), asc(leagueOccurrences.id));
-      const active = await tx.select({ occurrenceId: occurrencePaymentResponsibilities.occurrenceId, teamId: occurrencePaymentResponsibilities.teamId, slotIndex: occurrencePaymentResponsibilities.slotIndex, responsibilityKind: occurrencePaymentResponsibilities.responsibilityKind, mainBowlerId: occurrencePaymentResponsibilities.mainBowlerId, substituteBowlerId: occurrencePaymentResponsibilities.substituteBowlerId, payerBowlerId: occurrencePaymentResponsibilities.payerBowlerId, policy: occurrencePaymentResponsibilities.policy }).from(occurrencePaymentResponsibilities).where(and(
-        eq(occurrencePaymentResponsibilities.organizationId, input.organizationId),
-        eq(occurrencePaymentResponsibilities.leagueId, input.leagueId),
-        eq(occurrencePaymentResponsibilities.state, "active"),
-      ));
-      for (const occurrence of occurrences) {
-        const { dueAt, pastDueAt } = await deriveRosterPaymentTimingInTransaction(tx, {
+    // Default materialization is centralized in the publication primitive.
+    // Saving one team refreshes only that team's stable positions; incomplete
+    // teams and unassigned positions do not block other configured evidence.
+    const occurrences = await tx.select({ id: leagueOccurrences.id }).from(leagueOccurrences).where(and(
+      eq(leagueOccurrences.organizationId, input.organizationId),
+      eq(leagueOccurrences.leagueId, input.leagueId),
+      inArray(leagueOccurrences.lifecycle, ["published", "locked"] as const),
+      inArray(leagueOccurrences.status, ["scheduled", "completed"] as const),
+    )).orderBy(asc(leagueOccurrences.startAt), asc(leagueOccurrences.id));
+    for (const occurrence of occurrences) {
+      try {
+        await materializeRosterPaymentOccurrenceInTransaction(tx, {
           organizationId: input.organizationId,
           leagueId: input.leagueId,
-          paymentMode: league.paymentMode,
-          occurrenceStartAt: occurrence.startAt,
+          occurrenceId: occurrence.id,
+          actorUserId: input.actorUserId,
+          teamId: input.teamId,
         });
-        const responsibilities = rosterTeams.flatMap((team) => rosterRows
-          .filter((slot) => slot.teamId === team.id)
-          .filter((slot) => {
-            const current = active.find((row) => row.occurrenceId === occurrence.id && row.teamId === team.id && row.slotIndex === slot.slotIndex);
-            // Keep an identical open roster resolution stable across retries
-            // and unrelated roster saves. Explicit substitute/split evidence
-            // is an occurrence override and therefore remains authoritative.
-            if (current && ["substitute", "split"].includes(current.responsibilityKind)) return false;
-            const kind = slot.occupant === "main" ? "main" : "vacant";
-            const mainBowlerId = slot.occupant === "main" ? slot.mainBowlerId : null;
-            const payerBowlerId = slot.occupant === "main" ? slot.mainBowlerId : null;
-            const policy = policies.find((policy) => policy.teamId === team.id)?.defaultPolicy ?? "main_pays_full";
-            return !current
-              || current.responsibilityKind !== kind
-              || current.mainBowlerId !== mainBowlerId
-              || current.substituteBowlerId !== null
-              || current.payerBowlerId !== payerBowlerId
-              || current.policy !== policy;
-          })
-          .map((slot) => ({
-            occurrenceId: occurrence.id,
-            teamId: team.id,
-            slotIndex: slot.slotIndex,
-            positionIndex: slot.slotIndex,
-            kind: slot.occupant === "main" ? "main" as const : "vacant" as const,
-            mainBowlerId: slot.occupant === "main" ? slot.mainBowlerId : null,
-            substituteBowlerId: null,
-            payerBowlerId: slot.occupant === "main" ? slot.mainBowlerId : null,
-            policy: policies.find((policy) => policy.teamId === team.id)?.defaultPolicy ?? "main_pays_full",
-            amountMinor: slot.occupant === "main" ? league.weeklyFee : 0,
-            lineageAmountMinor: null,
-            prizeFundAmountMinor: null,
-            dueAt,
-            pastDueAt,
-            assignmentNote: "roster_default",
-          })));
-        if (responsibilities.length === 0) continue;
-        const materializationFingerprint = canonicalResponsibilityFingerprint(responsibilities);
-        try {
-          await recordOccurrenceResponsibilities({
-            organizationId: input.organizationId,
-            leagueId: input.leagueId,
-            actorUserId: input.actorUserId,
-            commandKey: `roster:${occurrence.id}:${materializationFingerprint.slice(-32)}`,
-            requestFingerprint: materializationFingerprint,
-            responsibilities,
-            transaction: tx,
-          });
-        } catch (error) {
-          if (!(error instanceof RosterPaymentReplay)) throw error;
+      } catch (error) {
+        if (error instanceof Error && error.message === "RESERVED_EVIDENCE_LOCKED") {
+          throw new RosterPaymentError("OBLIGATION_RESERVED", "A payment operation has reserved this roster responsibility", 409);
         }
+        if (error instanceof Error && error.message === "PAID_EVIDENCE_LOCKED") {
+          throw new RosterPaymentError("PAID_EVIDENCE_LOCKED", "A responsibility with settled or partially settled evidence cannot be replaced", 409);
+        }
+        throw error;
       }
     }
     const result = { contractVersion: "roster-payment-responsibility/1" as const, organizationId: input.organizationId, leagueId: input.leagueId, teamId: input.teamId, ready: saved.every((row) => row.occupant !== "unassigned"), slots: saved };

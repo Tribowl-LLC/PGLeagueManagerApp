@@ -4,8 +4,11 @@ PR1 makes the Team Rosters surface the sole source of payer responsibility for
 newly configured leagues. A league chooses a paying lineup size of three or
 four, substitute access (`team_only` or `floating`), and a substitute payment
 regime (`team_choice` or `league_lineage_prize_split`). Each team then stores
-stable slots `0..lineupSize-1`; every slot is initially `unassigned` and must be
-set to a Main bowler or explicit `vacant` before payment readiness is true.
+stable slots `0..lineupSize-1`; every slot is initially `unassigned`. There is
+no league- or team-completion activation gate: each saved Main or explicit
+`vacant` position is materialized independently, while `unassigned` positions
+remain without responsibility or obligation. Readiness fields are informational
+only.
 
 Canonical occurrence evidence is recorded through
 `roster-payment-responsibility/1`. It creates immutable responsibility versions

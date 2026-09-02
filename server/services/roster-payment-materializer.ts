@@ -1,6 +1,8 @@
-import { and, asc, eq, inArray, or, sql, type ExtractTablesWithRelations } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, or, sql, type ExtractTablesWithRelations } from "drizzle-orm";
 import type { NodePgTransaction } from "drizzle-orm/node-postgres";
 import {
+  bowlers,
+  bowlerLeagues,
   leagueOccurrences,
   leagues,
   autopayConsentPartners,
@@ -110,8 +112,61 @@ export async function revokeStandingAutopayForBowlerInTransaction(
   }
 }
 
+async function assertOpenRosterEvidenceCanBeReplaced(
+  tx: PaymentOperationTransaction,
+  input: { organizationId: number; leagueId: number },
+  responsibilityId: string,
+  existingObligations?: Array<typeof paymentObligations.$inferSelect>,
+): Promise<Array<typeof paymentObligations.$inferSelect>> {
+  const obligations = existingObligations ?? await tx.select().from(paymentObligations).where(and(
+    eq(paymentObligations.organizationId, input.organizationId),
+    eq(paymentObligations.leagueId, input.leagueId),
+    eq(paymentObligations.responsibilityId, responsibilityId),
+  )).for("update");
+  if (obligations.some((row) => row.state !== "open")) throw new Error("PAID_EVIDENCE_LOCKED");
+  const obligationIds = obligations.map((row) => row.id);
+  if (obligationIds.length === 0) return obligations;
+
+  const allocations = await tx.select({ id: paymentAllocations.id }).from(paymentAllocations).where(and(
+    eq(paymentAllocations.organizationId, input.organizationId),
+    eq(paymentAllocations.leagueId, input.leagueId),
+    inArray(paymentAllocations.obligationId, obligationIds),
+    eq(paymentAllocations.state, "active"),
+  )).for("update");
+  if (allocations.length > 0) throw new Error("PAID_EVIDENCE_LOCKED");
+
+  const reservedEvidence = await tx.select({ id: paymentOperationRosterSnapshotItems.id }).from(paymentOperationRosterSnapshotItems).where(and(
+    eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId),
+    eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId),
+    inArray(paymentOperationRosterSnapshotItems.obligationId, obligationIds),
+    inArray(paymentOperationRosterSnapshotItems.state, ["reserved", "finalized"] as const),
+  )).for("update");
+  if (reservedEvidence.length > 0) throw new Error("RESERVED_EVIDENCE_LOCKED");
+
+  // A provider-bound operation is immutable evidence even if its snapshot
+  // item was not left in the live reserved state. This keeps roster changes
+  // fail-closed around dispatch races and unknown provider outcomes.
+  const providerEvidence = await tx.select({ id: paymentOperations.id }).from(paymentOperationRosterSnapshotItems)
+    .innerJoin(paymentOperations, and(
+      eq(paymentOperations.id, paymentOperationRosterSnapshotItems.operationId),
+      eq(paymentOperations.organizationId, paymentOperationRosterSnapshotItems.organizationId),
+      eq(paymentOperations.leagueId, paymentOperationRosterSnapshotItems.leagueId),
+    )).where(and(
+      eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId),
+      eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId),
+      inArray(paymentOperationRosterSnapshotItems.obligationId, obligationIds),
+      or(
+        isNotNull(paymentOperations.providerObjectId),
+        isNotNull(paymentOperations.dispatchClaimedAt),
+        eq(paymentOperations.status, "provider_unknown"),
+      ),
+    )).for("update");
+  if (providerEvidence.length > 0) throw new Error("RESERVED_EVIDENCE_LOCKED");
+  return obligations;
+}
+
 /**
- * Database-only publication hook for a roster-ready occurrence. It is kept
+ * Database-only publication hook for a configured roster occurrence. It is kept
  * free of the provider factory and app db singleton so schedule operators can
  * use it inside their existing transaction without importing payment I/O.
  */
@@ -135,13 +190,21 @@ export async function materializeRosterPaymentOccurrenceInTransaction(
     )).limit(1);
   if (!occurrence) return false;
   const rosterTeams = await tx.select({ id: teams.id }).from(teams).where(and(eq(teams.leagueId, input.leagueId), eq(teams.active, true)));
+  const selectedTeams = rosterTeams.filter((team) => input.teamId === undefined || team.id === input.teamId);
+  if (selectedTeams.length === 0) return false;
   const rosterRows = await tx.select().from(teamPaymentSlots)
     .where(and(eq(teamPaymentSlots.organizationId, input.organizationId), eq(teamPaymentSlots.leagueId, input.leagueId)))
     .orderBy(asc(teamPaymentSlots.teamId), asc(teamPaymentSlots.slotIndex));
-  if (rosterTeams.length === 0 || !rosterTeams.every((team) => {
-    const rows = rosterRows.filter((slot) => slot.teamId === team.id);
-    return rows.length === league.payingLineupSize && rows.every((slot) => slot.occupant !== "unassigned");
-  })) return false;
+  const activeMainRows = await tx.select({ id: bowlers.id }).from(bowlers)
+    .innerJoin(bowlerLeagues, and(
+      eq(bowlerLeagues.bowlerId, bowlers.id),
+      eq(bowlerLeagues.leagueId, input.leagueId),
+      eq(bowlerLeagues.active, true),
+    )).where(and(
+      eq(bowlers.organizationId, input.organizationId),
+      eq(bowlers.active, true),
+    ));
+  const activeMainIds = new Set(activeMainRows.map((row) => row.id));
   const policies = await tx.select().from(teamPaymentPolicies).where(and(eq(teamPaymentPolicies.organizationId, input.organizationId), eq(teamPaymentPolicies.leagueId, input.leagueId)));
   const active = await tx.select().from(occurrencePaymentResponsibilities).where(and(
     eq(occurrencePaymentResponsibilities.organizationId, input.organizationId),
@@ -156,15 +219,20 @@ export async function materializeRosterPaymentOccurrenceInTransaction(
     occurrenceStartAt: occurrence.startAt,
   });
   const { dueAt, pastDueAt } = timing;
-  for (const team of rosterTeams.filter((row) => input.teamId === undefined || row.id === input.teamId)) {
+  for (const team of selectedTeams) {
     for (const slot of rosterRows.filter((row) => row.teamId === team.id)) {
       const policy = policies.find((row) => row.teamId === team.id)?.defaultPolicy ?? "main_pays_full";
-      const kind = slot.occupant === "main" ? "main" as const : "vacant" as const;
+      const kind = slot.occupant === "vacant"
+        ? "vacant" as const
+        : slot.occupant === "main" && slot.mainBowlerId !== null && activeMainIds.has(slot.mainBowlerId)
+          ? "main" as const
+          : null;
       const mainBowlerId = kind === "main" ? slot.mainBowlerId : null;
       const payerBowlerId = mainBowlerId;
       const current = active.find((row) => row.teamId === team.id && row.slotIndex === slot.slotIndex && row.positionIndex === slot.slotIndex);
-      if (current && current.responsibilityKind === kind && current.mainBowlerId === mainBowlerId && current.substituteBowlerId === null && current.payerBowlerId === payerBowlerId && current.policy === policy && current.dueAt === dueAt && current.pastDueAt === pastDueAt) continue;
-      if (current && input.reschedule) {
+      const currentIsOverride = current !== undefined && (current.responsibilityKind === "substitute" || current.responsibilityKind === "split");
+      if (current && !currentIsOverride && kind !== null && current.responsibilityKind === kind && current.mainBowlerId === mainBowlerId && current.substituteBowlerId === null && current.payerBowlerId === payerBowlerId && current.policy === policy && current.dueAt === dueAt && current.pastDueAt === pastDueAt) continue;
+      if (current && input.reschedule && (currentIsOverride || kind !== null)) {
         // A safe future schedule correction preserves the resolved payer and
         // component facts while issuing a new responsibility/obligation
         // version with the corrected due instants. The caller has already
@@ -176,24 +244,7 @@ export async function materializeRosterPaymentOccurrenceInTransaction(
           eq(paymentObligations.leagueId, input.leagueId),
           eq(paymentObligations.responsibilityId, current.id),
         )).orderBy(asc(paymentObligations.dueAt), asc(paymentObligations.payerBowlerId), asc(paymentObligations.id)).for("update");
-        if (currentObligations.some((row) => row.state !== "open")) throw new Error("PAID_EVIDENCE_LOCKED");
-        if (currentObligations.length > 0) {
-          const obligationIds = currentObligations.map((row) => row.id);
-          const allocations = await tx.select({ id: paymentAllocations.id }).from(paymentAllocations).where(and(
-            eq(paymentAllocations.organizationId, input.organizationId),
-            eq(paymentAllocations.leagueId, input.leagueId),
-            inArray(paymentAllocations.obligationId, obligationIds),
-            eq(paymentAllocations.state, "active"),
-          )).for("update");
-          if (allocations.length > 0) throw new Error("PAID_EVIDENCE_LOCKED");
-          const reservations = await tx.select({ id: paymentOperationRosterSnapshotItems.id }).from(paymentOperationRosterSnapshotItems).where(and(
-            eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId),
-            eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId),
-            inArray(paymentOperationRosterSnapshotItems.obligationId, obligationIds),
-            inArray(paymentOperationRosterSnapshotItems.state, ["reserved", "finalized"] as const),
-          )).for("update");
-          if (reservations.length > 0) throw new Error("RESERVED_EVIDENCE_LOCKED");
-        }
+        await assertOpenRosterEvidenceCanBeReplaced(tx, input, current.id, currentObligations);
         await tx.update(occurrencePaymentResponsibilities).set({ state: "voided" }).where(and(
           eq(occurrencePaymentResponsibilities.id, current.id),
           eq(occurrencePaymentResponsibilities.organizationId, input.organizationId),
@@ -250,32 +301,19 @@ export async function materializeRosterPaymentOccurrenceInTransaction(
         }
         continue;
       }
-      if (current && (current.responsibilityKind === "substitute" || current.responsibilityKind === "split")) continue;
+      if (currentIsOverride) continue;
       if (current) {
-        const currentObligations = await tx.select({ state: paymentObligations.state }).from(paymentObligations).where(and(
+        const currentObligations = await tx.select().from(paymentObligations).where(and(
           eq(paymentObligations.organizationId, input.organizationId),
           eq(paymentObligations.leagueId, input.leagueId),
           eq(paymentObligations.responsibilityId, current.id),
-        ));
+        )).for("update");
         // Settled/voided responsibility history is immutable. A roster
         // invalidation must not rewrite that evidence or fail the membership
         // mutation; leave the historical version in place and continue with
         // future/open occurrences. Reserved evidence remains a hard fence.
         if (currentObligations.some((row) => row.state !== "open")) continue;
-        const obligationIds = await tx.select({ id: paymentObligations.id }).from(paymentObligations).where(and(
-          eq(paymentObligations.organizationId, input.organizationId),
-          eq(paymentObligations.leagueId, input.leagueId),
-          eq(paymentObligations.responsibilityId, current.id),
-        ));
-        if (obligationIds.length > 0) {
-          const reservations = await tx.select({ id: paymentOperationRosterSnapshotItems.id }).from(paymentOperationRosterSnapshotItems).where(and(
-            eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId),
-            eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId),
-            inArray(paymentOperationRosterSnapshotItems.obligationId, obligationIds.map((row) => row.id)),
-            inArray(paymentOperationRosterSnapshotItems.state, ["reserved", "finalized"] as const),
-          ));
-          if (reservations.length > 0) throw new Error("RESERVED_EVIDENCE_LOCKED");
-        }
+        await assertOpenRosterEvidenceCanBeReplaced(tx, input, current.id, currentObligations);
         await tx.update(occurrencePaymentResponsibilities).set({ state: "voided" }).where(and(
           eq(occurrencePaymentResponsibilities.id, current.id),
           eq(occurrencePaymentResponsibilities.organizationId, input.organizationId),
@@ -289,7 +327,8 @@ export async function materializeRosterPaymentOccurrenceInTransaction(
           eq(paymentObligations.state, "open"),
         ));
       }
-      const [latestVersion] = await tx.select({ version: sql<number>`COALESCE(MAX(${occurrencePaymentResponsibilities.version}), 0)` })
+      if (kind === null) continue;
+      const [latestResponsibility] = await tx.select({ version: occurrencePaymentResponsibilities.version, responsibilityKey: occurrencePaymentResponsibilities.responsibilityKey })
         .from(occurrencePaymentResponsibilities)
         .where(and(
           eq(occurrencePaymentResponsibilities.organizationId, input.organizationId),
@@ -298,8 +337,8 @@ export async function materializeRosterPaymentOccurrenceInTransaction(
           eq(occurrencePaymentResponsibilities.teamId, team.id),
           eq(occurrencePaymentResponsibilities.slotIndex, slot.slotIndex),
           eq(occurrencePaymentResponsibilities.positionIndex, slot.slotIndex),
-        ));
-      const nextVersion = Math.max(current?.version ?? 0, Number(latestVersion?.version ?? 0)) + 1;
+        )).orderBy(desc(occurrencePaymentResponsibilities.version)).limit(1).for("update");
+      const nextVersion = Math.max(current?.version ?? 0, latestResponsibility?.version ?? 0) + 1;
       const [responsibility] = await tx.insert(occurrencePaymentResponsibilities).values({
         organizationId: input.organizationId,
         leagueId: input.leagueId,
@@ -308,6 +347,7 @@ export async function materializeRosterPaymentOccurrenceInTransaction(
         slotId: slot.id,
         slotIndex: slot.slotIndex,
         positionIndex: slot.slotIndex,
+        ...(latestResponsibility ? { responsibilityKey: latestResponsibility.responsibilityKey } : {}),
         version: nextVersion,
         state: "active",
         responsibilityKind: kind,

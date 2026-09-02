@@ -104,7 +104,14 @@ export function TeamViewBowlersTable({ teamBowlers, league, teamId, leagueId, ca
         commandKey: crypto.randomUUID(), requestFingerprint: await rosterFingerprint(lineupSize, policy, requestSlots), lineupSize, policy, slots: requestSlots,
       });
     },
-    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/roster-payment-responsibility/1`] }); toast({ title: "Team roster saved" }); },
+    onSuccess: () => {
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/roster-payment-responsibility/1`] }),
+        queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/canonical-due-past-due/2`] }),
+        queryClient.invalidateQueries({ predicate: ({ queryKey }) => typeof queryKey[0] === "string" && queryKey[0].startsWith("/api/financials/due-past-due") }),
+      ]);
+      toast({ title: "Team roster saved" });
+    },
     onError: (error: Error) => toast({ title: "Team roster could not be saved", description: error.message, variant: "destructive" }),
   });
 
