@@ -38,13 +38,14 @@ describe("dedicated make-payment guards", () => {
   });
 
   it.each([
-    [false, true, false, "loading"],
-    [false, false, false, "loading"],
-    [false, false, true, "unavailable"],
-    [true, false, false, "ready"],
-    [true, false, true, "ready"],
-  ] as const)("resolves saved-card data state without discarding cached data", (hasResponse, isLoading, hasError, expected) => {
-    expect(resolveSavedCardReadState(hasResponse, isLoading, hasError)).toBe(expected);
+    [false, false, false, false, "idle"],
+    [true, false, true, false, "loading"],
+    [true, false, false, false, "loading"],
+    [true, false, false, true, "unavailable"],
+    [true, true, false, false, "ready"],
+    [true, true, false, true, "ready"],
+  ] as const)("resolves saved-card data state without loading disabled queries or discarding cached data", (isEnabled, hasResponse, isLoading, hasError, expected) => {
+    expect(resolveSavedCardReadState(isEnabled, hasResponse, isLoading, hasError)).toBe(expected);
   });
 
   it.each([

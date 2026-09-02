@@ -49,10 +49,12 @@ export function resetPaymentSelectionForLeagueChange(): { weekCount: number; int
 }
 
 export function resolveSavedCardReadState(
+  isEnabled: boolean,
   hasResponse: boolean,
   isLoading: boolean,
   hasError: boolean,
-): "loading" | "ready" | "unavailable" {
+): "idle" | "loading" | "ready" | "unavailable" {
+  if (!isEnabled) return "idle";
   if (hasResponse) return "ready";
   if (isLoading || !hasError) return "loading";
   return "unavailable";
@@ -152,6 +154,7 @@ export default function MakePaymentPage() {
     staleTime: 30_000,
     retry: false,
   });
+  const savedCardsQueryEnabled = !!bowlerId && !!leagueId;
   const {
     data: savedCardsResponse,
     isLoading: loadingSavedCards,
@@ -164,12 +167,13 @@ export default function MakePaymentPage() {
       if (!response.ok) throw new Error("Failed to fetch saved cards");
       return response.json();
     },
-    enabled: !!bowlerId && !!leagueId,
+    enabled: savedCardsQueryEnabled,
     staleTime: 5 * 60_000,
     retry: false,
   });
   const savedCards = savedCardsResponse?.data ?? [];
   const savedCardReadState = resolveSavedCardReadState(
+    savedCardsQueryEnabled,
     savedCardsResponse !== undefined,
     loadingSavedCards,
     savedCardsError !== null,
