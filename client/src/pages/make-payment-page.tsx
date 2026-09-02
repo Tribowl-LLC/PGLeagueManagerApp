@@ -142,7 +142,12 @@ export default function MakePaymentPage() {
     staleTime: 30_000,
     retry: false,
   });
-  const { data: savedCardsResponse } = useQuery<ApiResponse<SavedCard[]>>({
+  const {
+    data: savedCardsResponse,
+    isLoading: loadingSavedCards,
+    error: savedCardsError,
+    refetch: refetchSavedCards,
+  } = useQuery<ApiResponse<SavedCard[]>>({
     queryKey: [`/api/payments-provider/cards/${bowlerId}`, leagueId],
     queryFn: async () => {
       const response = await csrfFetch(`/api/payments-provider/cards/${bowlerId}?leagueId=${leagueId}`);
@@ -182,7 +187,10 @@ export default function MakePaymentPage() {
     setOneTimePaymentWeekCount(suggested?.weekCount ?? options.length);
     intentAppliedRef.current = true;
   }, [amountPastDue, intent, options]);
-  useEffect(() => { setCardEditorMode(savedCards.length === 0 ? "one-time" : null); }, [savedCards.length]);
+  useEffect(() => {
+    if (loadingSavedCards || savedCardsError) return;
+    setCardEditorMode(savedCards.length === 0 ? "one-time" : null);
+  }, [loadingSavedCards, savedCardsError, savedCards.length]);
 
   const { card, isInitialized, initializeCard, cleanupCard } = useSquarePayment({
     locationId: league?.locationId,
@@ -271,11 +279,12 @@ export default function MakePaymentPage() {
     finally { setIsSubmitting(false); }
   };
 
-  if (loadingUser || loadingDetails || loadingFinancial) return <PageLoadingState />;
+  if (loadingUser || loadingDetails || loadingFinancial || loadingSavedCards) return <PageLoadingState />;
   if (userError) return <PageLoadingState message="Authentication required" />;
   if (currentUser?.data && !currentUser.data.bowlerId) return <PageLoadingState message="A bowler profile is required to make a payment" />;
   if (detailsError) return <MakePaymentReadError message="Payment profile data could not be loaded. Try again." onRetry={() => { void refetchDetails(); }} leagueId={selectedLeagueId ?? undefined} />;
   if (financialError) return <MakePaymentReadError message="Payment balance data could not be loaded. Try again." onRetry={() => { void refetchFinancial(); }} leagueId={selectedLeagueId ?? undefined} />;
+  if (savedCardsError) return <MakePaymentReadError message="Saved payment methods could not be loaded. Try again." onRetry={() => { void refetchSavedCards(); }} leagueId={selectedLeagueId ?? undefined} />;
   if (!league || leagueId === undefined || !bowlerId) return <MakePaymentReadError message="Payment information is unavailable. Try again or view payment history." onRetry={() => { void refetchDetails(); void refetchFinancial(); }} leagueId={selectedLeagueId ?? undefined} />;
 
   const isPaidInFull = remainingBalance <= 0 && hasPositivePaymentEvidence(rows);
