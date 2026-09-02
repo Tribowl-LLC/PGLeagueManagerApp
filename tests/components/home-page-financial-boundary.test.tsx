@@ -99,6 +99,7 @@ describe('HomePage F1 financial boundary', () => {
 
     expect(screen.getByText('1 of 2')).toBeInTheDocument();
     expect(screen.getByText('1 (100%)')).toBeInTheDocument();
+    expect(screen.getByText('2 review required (excluded)')).toBeInTheDocument();
     expect(screen.queryByText('3 (300%)')).not.toBeInTheDocument();
   });
 

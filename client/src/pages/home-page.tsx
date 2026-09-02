@@ -156,6 +156,8 @@ export default function HomePage() {
   const reviewRequiredBowlerIds = new Set<string>();
   activeServerRows.forEach((row) => {
     if (row.classification === "past_due") pastDueBowlerIds.add(row.payerBowlerId);
+  });
+  serverRows.forEach((row) => {
     if (row.reviewRequired) reviewRequiredBowlerIds.add(`${row.leagueId}:${row.payerBowlerId}`);
   });
 
@@ -172,7 +174,7 @@ export default function HomePage() {
     const pastDueCount = new Set(activeServerRows
       .filter((row) => row.leagueId === league.id && row.classification === "past_due")
       .map((row) => row.payerBowlerId)).size;
-    const reviewRequiredCount = new Set(activeServerRows
+    const reviewRequiredCount = new Set(serverRows
       .filter((row) => row.leagueId === league.id && row.reviewRequired)
       .map((row) => row.payerBowlerId)).size;
 
