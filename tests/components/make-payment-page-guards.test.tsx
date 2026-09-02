@@ -7,6 +7,7 @@ import {
   clearWalletRequestKeyForTerminalStatus,
   hasPositivePaymentEvidence,
   MakePaymentReadError,
+  resolveSavedCardReadState,
   resetPaymentSelectionForLeagueChange,
   shouldReinitializeOneTimeCardEditor,
 } from "@/pages/make-payment-page";
@@ -34,6 +35,17 @@ describe("dedicated make-payment guards", () => {
 
   it("resets week count and past-due intent when changing leagues", () => {
     expect(resetPaymentSelectionForLeagueChange()).toEqual({ weekCount: 1, intentApplied: false });
+  });
+
+  it.each([
+    [false, false, false, false, "idle"],
+    [true, false, true, false, "loading"],
+    [true, false, false, false, "loading"],
+    [true, false, false, true, "unavailable"],
+    [true, true, false, false, "ready"],
+    [true, true, false, true, "ready"],
+  ] as const)("resolves saved-card data state without loading disabled queries or discarding cached data", (isEnabled, hasResponse, isLoading, hasError, expected) => {
+    expect(resolveSavedCardReadState(isEnabled, hasResponse, isLoading, hasError)).toBe(expected);
   });
 
   it.each([
