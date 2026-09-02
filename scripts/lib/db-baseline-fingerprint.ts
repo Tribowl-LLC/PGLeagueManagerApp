@@ -263,7 +263,7 @@ export function applicationStructureFromInventory(
     tables,
     rewriteRules: sortObjects(inventory.rewriteRules.filter((rule) => rule.schema === 'public')),
     unsupportedPublicObjects: sortObjects(inventory.unsupportedPublicObjects),
-    extensions: sortObjects(inventory.extensions.filter((extension) => extension.schema === 'public')),
+    extensions: [],
     columns: sortObjects(
       inventory.columns
         .filter((column) => column.schema === 'public')

@@ -16,6 +16,10 @@ import { functionDefinitionsDifferOnlyByInsignificantWhitespace } from './sql-de
 
 export const SCHEMA_STATE_FINGERPRINT_FORMAT_VERSION = 2 as const;
 export const SCHEMA_STATE_FINGERPRINT_DIRECTORY = resolve('migrations', 'schema-fingerprints');
+const LEGACY_RETIRED_FUNCTION_NAMES = new Set([
+  'league_secretary_org_match_fn',
+  'users_org_change_revoke_secretaries_fn',
+]);
 
 interface SchemaStateStructure {
   scope: {
@@ -61,14 +65,11 @@ function normalizeLegacyInertRls(inventory: DatabaseInventory): {
   tables: DatabaseInventory['tables'];
   normalized: boolean;
 } {
-  const publicTables = inventory.tables.filter((table) => table.schema === 'public');
-  const baselineTables = APPLICATION_TABLE_NAMES.map((name) =>
-    publicTables.find((table) => table.name === name),
+  const baselineNames = new Set<string>(APPLICATION_TABLE_NAMES);
+  const baselineTables = inventory.tables.filter((table) =>
+    table.schema === 'public' && baselineNames.has(table.name),
   );
-  if (baselineTables.some((table) => table === undefined)) {
-    return { tables: inventory.tables, normalized: false };
-  }
-  const enabled = baselineTables.filter((table) => table?.rowSecurity);
+  const enabled = baselineTables.filter((table) => table.rowSecurity);
   if (enabled.length === 0) return { tables: inventory.tables, normalized: false };
   if (
     enabled.length !== baselineTables.length ||
@@ -76,7 +77,7 @@ function normalizeLegacyInertRls(inventory: DatabaseInventory): {
     inventory.target.roleSuperuser ||
     !inventory.target.roleBypassRls ||
     baselineTables.some((table) =>
-      !table?.connectedRoleOwnsTable || table.connectedRoleRlsMode !== 'bypass-bypassrls'
+      !table.connectedRoleOwnsTable || table.connectedRoleRlsMode !== 'bypass-bypassrls'
     ) ||
     inventory.policies.some((policy) =>
       policy.schema === 'public' && APPLICATION_TABLE_NAMES.includes(
@@ -86,7 +87,6 @@ function normalizeLegacyInertRls(inventory: DatabaseInventory): {
   ) {
     throw new Error('Schema-state verification refuses an unapproved legacy RLS configuration.');
   }
-  const baselineNames = new Set<string>(APPLICATION_TABLE_NAMES);
   return {
     normalized: true,
     tables: inventory.tables.map((table) =>
@@ -111,6 +111,9 @@ function schemaStateStructure(inventory: DatabaseInventory): SchemaStateStructur
       fn,
     ]),
   );
+  const triggerFunctions = new Set(inventory.triggers.map((trigger) =>
+    `${trigger.functionSchema}.${trigger.functionName}(${trigger.functionIdentityArguments})`,
+  ));
   return {
     scope: {
       schema: 'public',
@@ -131,8 +134,9 @@ function schemaStateStructure(inventory: DatabaseInventory): SchemaStateStructur
     rewriteRules: sortObjects(inventory.rewriteRules
       .filter((rule) => rule.schema === 'public')),
     unsupportedPublicObjects: [],
-    extensions: sortObjects(inventory.extensions
-      .filter((extension) => extension.schema === 'public')),
+    // Extension installation/version is provider-managed metadata. Extension-owned
+    // catalog objects are excluded independently by the inventory collectors.
+    extensions: [],
     sequences: sortObjects(inventory.sequences
       .filter((sequence) => sequence.schema === 'public')
       .map(({ owner: _owner, connectedRoleCanAlter: _canAlter, ...sequence }) => sequence)),
@@ -141,17 +145,22 @@ function schemaStateStructure(inventory: DatabaseInventory): SchemaStateStructur
     types: sortObjects(inventory.types.filter((type) => type.schema === 'public')),
     functions: sortObjects(inventory.functions
       .filter((fn) => fn.schema === 'public')
-      .map((fn) => {
+      .flatMap((fn) => {
         if (!normalized.normalized) return fn;
-        const expected = approvedBaselineFunctions.get(
-          `${fn.schema}.${fn.name}(${fn.identityArguments})`,
-        );
-        return expected && functionDefinitionsDifferOnlyByInsignificantWhitespace(
+        const identity = `${fn.schema}.${fn.name}(${fn.identityArguments})`;
+        const expected = approvedBaselineFunctions.get(identity);
+        const approvedDefinition = expected && functionDefinitionsDifferOnlyByInsignificantWhitespace(
           fn.definition,
           expected.definition,
-        )
-          ? { ...fn, definition: expected.definition }
-          : fn;
+        );
+        if (
+          LEGACY_RETIRED_FUNCTION_NAMES.has(fn.name) &&
+          approvedDefinition &&
+          !triggerFunctions.has(identity)
+        ) {
+          return [];
+        }
+        return [approvedDefinition ? { ...fn, definition: expected.definition } : fn];
       })),
     triggers: sortObjects(inventory.triggers.filter((trigger) => trigger.schema === 'public')),
     policies: sortObjects(inventory.policies

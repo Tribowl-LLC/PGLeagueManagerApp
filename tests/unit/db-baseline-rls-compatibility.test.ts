@@ -162,6 +162,65 @@ describe('legacy inert-RLS baseline compatibility', () => {
     );
   });
 
+  it('normalizes the approved legacy state after later migrations retire baseline tables and functions', () => {
+    const canonical = canonicalInventory();
+    canonical.tables = canonical.tables.slice(0, -4);
+    canonical.functions = canonical.functions.filter((fn) =>
+      !['league_secretary_org_match_fn', 'users_org_change_revoke_secretaries_fn'].includes(fn.name)
+    );
+    canonical.triggers = canonical.triggers.filter((trigger) =>
+      !['league_secretary_org_match_fn', 'users_org_change_revoke_secretaries_fn']
+        .includes(trigger.functionName)
+    );
+
+    const legacy = structuredClone(canonical);
+    legacy.tables = legacy.tables.map((table) => ({
+      ...table,
+      rowSecurity: true,
+      connectedRoleRlsMode: 'bypass-bypassrls',
+    }));
+    legacy.functions.push(...loadApprovedBaselineFingerprint().structure.functions.filter((fn) =>
+      ['league_secretary_org_match_fn', 'users_org_change_revoke_secretaries_fn'].includes(fn.name)
+    ));
+    legacy.extensions = [
+      { name: 'pg_session_jwt', schema: 'public', version: '0.5.0', relocatable: false },
+      { name: 'pgcrypto', schema: 'public', version: '1.3', relocatable: true },
+    ];
+
+    expect(createSchemaStateFingerprint(legacy, baselineMigration()).digest).toBe(
+      createSchemaStateFingerprint(canonical, baselineMigration()).digest,
+    );
+
+    legacy.functions.push({
+      ...requiredAt(loadApprovedBaselineFingerprint().structure.functions, 0, 'function'),
+      name: 'show_db_tree',
+    });
+    expect(createSchemaStateFingerprint(legacy, baselineMigration()).digest).not.toBe(
+      createSchemaStateFingerprint(canonical, baselineMigration()).digest,
+    );
+  });
+
+  it('refuses mixed RLS among the surviving baseline tables at a release boundary', () => {
+    const inventory = legacyInertRlsInventory();
+    inventory.tables.pop();
+    inventory.tables[0] = { ...requiredAt(inventory.tables, 0, 'table'), rowSecurity: false };
+    expect(() => createSchemaStateFingerprint(inventory, baselineMigration())).toThrow(
+      'unapproved legacy RLS configuration',
+    );
+  });
+
+  it('excludes provider-managed extension metadata from baseline fingerprints', () => {
+    const canonical = canonicalInventory();
+    const withProviderExtensions = structuredClone(canonical);
+    withProviderExtensions.extensions = [
+      { name: 'pg_session_jwt', schema: 'public', version: '0.5.0', relocatable: false },
+      { name: 'pgcrypto', schema: 'public', version: '1.3', relocatable: true },
+    ];
+    expect(createBaselineFingerprint(withProviderExtensions).digest).toBe(
+      createBaselineFingerprint(canonical).digest,
+    );
+  });
+
   it('refuses function-body changes inside quoted content', () => {
     const inventory = legacyInertRlsInventory();
     const original = requiredAt(inventory.functions, 0, 'function');
