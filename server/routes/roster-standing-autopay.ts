@@ -68,15 +68,21 @@ router.post("/leagues/:leagueId/standing-autopay/1/revoke", paymentWriteLimiter,
   try { return sendSuccess(res, await revokeStandingAutopayConsent({ organizationId: league.organizationId, leagueId, payerBowlerId: ownPayerId, actorUserId: req.user.id, request: parsed.data })); } catch (error) { return fail(res, error); }
 });
 
-router.post("/leagues/:leagueId/standing-autopay/1/quote", paymentWriteLimiter, async (req, res) => {
+async function sendStandingAutopayQuote(req: Request, res: Response) {
   const leagueId = leagueIdParam(req.params.leagueId);
   if (!leagueId || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
   const league = await scope(req, leagueId);
   const ownPayerId = payerId(req);
   if (!league || league.organizationId === null || ownPayerId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
+  try { return sendSuccess(res, await quoteStandingAutopay({ organizationId: league.organizationId, leagueId, payerBowlerId: ownPayerId })); } catch (error) { return fail(res, error); }
+}
+
+router.get("/leagues/:leagueId/standing-autopay/1/quote", sendStandingAutopayQuote);
+
+router.post("/leagues/:leagueId/standing-autopay/1/quote", paymentWriteLimiter, async (req, res) => {
   const parsed = standingAutopayQuoteRequestSchema.safeParse(req.body);
   if (!parsed.success) return sendError(res, "Invalid standing quote request", 400, "INVALID_REQUEST");
-  try { return sendSuccess(res, await quoteStandingAutopay({ organizationId: league.organizationId, leagueId, payerBowlerId: ownPayerId })); } catch (error) { return fail(res, error); }
+  return sendStandingAutopayQuote(req, res);
 });
 
 export default router;

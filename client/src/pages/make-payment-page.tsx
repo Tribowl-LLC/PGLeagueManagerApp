@@ -92,6 +92,7 @@ export function MakePaymentReadError({ message, onRetry, leagueId }: { message: 
 function invalidatePaymentViews(leagueId: number, bowlerId: number): void {
   void queryClient.invalidateQueries({ queryKey: paymentHistoryFinancialQueryKey(leagueId, bowlerId) });
   void queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/canonical-due-past-due/2`, bowlerId] });
+  void queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/standing-autopay/1/quote`] });
   void queryClient.invalidateQueries({ queryKey: ["/api/financials/f5/payments"] });
   void queryClient.invalidateQueries({ queryKey: ["/api/payments", { bowlerId, leagueId }] });
   void queryClient.invalidateQueries({ queryKey: ["/api/payments", bowlerId] });
