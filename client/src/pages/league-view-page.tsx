@@ -62,6 +62,16 @@ export default function LeagueViewPage() {
   });
   const currentUser = currentUserResponse?.data;
   const canManageLeague = currentUser?.role === "system_admin" || currentUser?.role === "org_admin";
+  // Payment managers are location-scoped operators. This client-side
+  // projection controls navigation only; the league payment routes still
+  // enforce the same organization/location boundary on the server.
+  const canManagePayments = canManageLeague || (
+    String(currentUser?.role) === "payment_manager"
+    && currentUser?.organizationId !== null
+    && currentUser?.locationId !== null
+    && league?.organizationId === currentUser?.organizationId
+    && league?.locationId === currentUser?.locationId
+  );
 
   const { data: seasonHistoryResponse } = useQuery<{ success: true; data: League[] }>({
     queryKey: ['/api/leagues', leagueId, 'season-history'],
@@ -213,7 +223,11 @@ export default function LeagueViewPage() {
         {inviteResult && <InviteResultCard inviteResult={inviteResult} />}
 
         <ErrorBoundary level="section">
-          <LeagueActionCards leagueId={leagueId} canManageRoster={canManageLeague} />
+          <LeagueActionCards
+            leagueId={leagueId}
+            canManageRoster={canManageLeague}
+            canManagePayments={canManagePayments}
+          />
         </ErrorBoundary>
 
         <ErrorBoundary level="section">

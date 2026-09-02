@@ -16,6 +16,7 @@ import LoginPage from "@/pages/login-page";
 const HomePage = lazy(() => import("@/pages/home-page"));
 const LeaguesPage = lazy(() => import("@/pages/leagues-page"));
 const LeagueViewPage = lazy(() => import("@/pages/league-view-page"));
+const ManagePaymentsPage = lazy(() => import("@/pages/manage-payments-page"));
 const LeagueSchedulePage = lazy(() => import("@/pages/league-schedule-page"));
 const TeamsPage = lazy(() => import("@/pages/teams-page"));
 const TeamViewPage = lazy(() => import("@/pages/team-view-page"));
@@ -156,6 +157,7 @@ function Router() {
         <Route path="/home">{guard('org', <HomePage />)}</Route>
         <Route path="/locations">{guard('orgAdmin', <LocationsPage />)}</Route>
         <Route path="/leagues">{guard('org', <LeaguesPage />)}</Route>
+        <Route path="/leagues/:leagueId/payments/manage">{guard('paymentManager', <ManagePaymentsPage />)}</Route>
         <Route path="/leagues/:leagueId">{guard('org', <LeagueViewPage />)}</Route>
         <Route path="/leagues/:leagueId/schedule">{guard('org', <LeagueSchedulePage />)}</Route>
         <Route path="/leagues/:leagueId/teams">{guard('org', <TeamsPage />)}</Route>

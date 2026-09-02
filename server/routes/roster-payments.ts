@@ -2,6 +2,8 @@ import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import {
   canonicalCorrectionRequestSchema,
+  canonicalManualRecordBatchQuoteRequestSchema,
+  canonicalManualRecordBatchRequestSchema,
   canonicalManualRecordRequestSchema,
   interactiveObligationChargeRequestV2Schema,
   interactiveObligationQuoteRequestV2Schema,
@@ -319,6 +321,67 @@ router.post("/leagues/:leagueId/canonical/manual-record/1", adminWriteLimiter, a
   const parsed = canonicalManualRecordRequestSchema.safeParse(req.body);
   if (!parsed.success) return sendError(res, "Invalid manual payment request", 400, "INVALID_REQUEST");
   try { return sendSuccess(res, rosterWireResult(await recordCanonicalManualPayment({ organizationId: league.organizationId, leagueId, actorUserId: req.user.id, request: parsed.data })), 201); } catch (error) { return handleError(res, error); }
+});
+
+/**
+ * Management-only batch quote/record surfaces. A league night may contain
+ * more rows than the interactive payment limiter permits, so one bounded
+ * request handles the batch while each row still gets an independent,
+ * server-authoritative FIFO quote and canonical manual-record transaction.
+ */
+router.post("/leagues/:leagueId/canonical/manual-record-batch/quote/1", adminWriteLimiter, async (req, res) => {
+  const leagueId = leagueIdParam(String(req.params.leagueId));
+  if (!leagueId || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
+  const league = await authorizedLeague(req, leagueId, true);
+  if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
+  const parsed = canonicalManualRecordBatchQuoteRequestSchema.safeParse(req.body);
+  if (!parsed.success) return sendError(res, "Invalid manual payment batch", 400, "INVALID_REQUEST");
+  const rows = [];
+  for (const row of parsed.data.rows) {
+    try {
+      const quote = await quoteInteractiveObligations({
+        organizationId: league.organizationId,
+        leagueId,
+        amountMinor: row.amountMinor,
+        payerBowlerId: row.payerBowlerId,
+      });
+      rows.push({ rowKey: row.rowKey, success: true as const, data: rosterWireResult(quote) });
+    } catch (error) {
+      if (error instanceof RosterPaymentError) rows.push({ rowKey: row.rowKey, success: false as const, error: { code: error.code, message: error.message } });
+      else rows.push({ rowKey: row.rowKey, success: false as const, error: { code: "INTERNAL_ERROR", message: "Unable to quote this payment" } });
+    }
+  }
+  return sendSuccess(res, { contractVersion: "canonical-manual-record-batch-quote/1" as const, leagueId, rows });
+});
+
+router.post("/leagues/:leagueId/canonical/manual-record-batch/1", adminWriteLimiter, async (req, res) => {
+  const leagueId = leagueIdParam(String(req.params.leagueId));
+  if (!leagueId || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
+  const league = await authorizedLeague(req, leagueId, true);
+  if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
+  const parsed = canonicalManualRecordBatchRequestSchema.safeParse(req.body);
+  if (!parsed.success) return sendError(res, "Invalid manual payment batch", 400, "INVALID_REQUEST");
+  const rows = [];
+  for (const row of parsed.data.rows) {
+    try {
+      const result = await recordCanonicalManualPayment({
+        organizationId: league.organizationId,
+        leagueId,
+        actorUserId: req.user.id,
+        request: row,
+      });
+      rows.push({ rowKey: row.rowKey, success: true as const, data: rosterWireResult(result) });
+    } catch (error) {
+      if (error instanceof RosterPaymentReplay) {
+        rows.push({ rowKey: row.rowKey, success: true as const, replay: true as const, data: rosterWireResult(error.result) });
+      } else if (error instanceof RosterPaymentError) {
+        rows.push({ rowKey: row.rowKey, success: false as const, error: { code: error.code, message: error.message } });
+      } else {
+        rows.push({ rowKey: row.rowKey, success: false as const, error: { code: "INTERNAL_ERROR", message: "Unable to record this payment" } });
+      }
+    }
+  }
+  return sendSuccess(res, { contractVersion: "canonical-manual-record-batch/1" as const, leagueId, rows });
 });
 
 router.post("/leagues/:leagueId/canonical/corrections/1", adminWriteLimiter, async (req, res) => {
