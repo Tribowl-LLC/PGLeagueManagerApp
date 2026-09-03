@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => {
     getLeague: vi.fn(),
     hasAccess: vi.fn(),
     quote: vi.fn(),
+    readStatus: vi.fn(),
     paymentWriteLimiter: vi.fn((_req: unknown, _res: unknown, next: () => void) => next()),
     MockStandingAutopayError,
     MockStandingAutopayReplay,
@@ -30,7 +31,7 @@ vi.mock("../../server/middleware/rate-limit.js", () => ({ paymentWriteLimiter: m
 vi.mock("../../server/services/roster-standing-autopay.js", () => ({
   activateStandingAutopayConsent: vi.fn(),
   quoteStandingAutopay: (...args: unknown[]) => mocks.quote(...args),
-  readStandingAutopayConsent: vi.fn(),
+  readStandingAutopayConsent: (...args: unknown[]) => mocks.readStatus(...args),
   revokeStandingAutopayConsent: vi.fn(),
   StandingAutopayError: mocks.MockStandingAutopayError,
   StandingAutopayReplay: mocks.MockStandingAutopayReplay,
@@ -42,6 +43,12 @@ let baseUrl: string;
 
 async function request(organizationId: number) {
   return fetch(`${baseUrl}/api/financials/leagues/7/standing-autopay/1/quote`, {
+    headers: { "x-test-user": JSON.stringify({ id: 1, role: "user", organizationId, bowlerId: 42 }) },
+  });
+}
+
+async function requestStatus(organizationId: number) {
+  return fetch(`${baseUrl}/api/financials/leagues/7/standing-autopay/1`, {
     headers: { "x-test-user": JSON.stringify({ id: 1, role: "user", organizationId, bowlerId: 42 }) },
   });
 }
@@ -66,6 +73,7 @@ beforeEach(() => {
   mocks.getLeague.mockResolvedValue({ id: 7, organizationId: 11 });
   mocks.hasAccess.mockResolvedValue(true);
   mocks.quote.mockResolvedValue({ contractVersion: "standing-autopay-quote/1", cutoffAt: "2030-01-10T00:30:00.000Z" });
+  mocks.readStatus.mockResolvedValue({ contractVersion: "standing-autopay-consent/1", paymentAttention: "scheduled_payment_declined" });
 });
 
 describe("standing automatic-payment quote read boundary", () => {
@@ -81,5 +89,20 @@ describe("standing automatic-payment quote read boundary", () => {
     expect(response.status).toBe(404);
     expect(mocks.quote).not.toHaveBeenCalled();
     expect(mocks.paymentWriteLimiter).not.toHaveBeenCalled();
+  });
+});
+
+describe("standing automatic-payment status read boundary", () => {
+  it("returns the narrow scheduled-decline attention signal for the authenticated payer", async () => {
+    const response = await requestStatus(11);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ data: { paymentAttention: "scheduled_payment_declined" } });
+    expect(mocks.readStatus).toHaveBeenCalledWith({ organizationId: 11, leagueId: 7, payerBowlerId: 42 });
+  });
+
+  it("does not disclose standing status across tenant boundaries", async () => {
+    const response = await requestStatus(22);
+    expect(response.status).toBe(404);
+    expect(mocks.readStatus).not.toHaveBeenCalled();
   });
 });

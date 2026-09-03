@@ -55,11 +55,13 @@ vi.mock('square', () => ({
     statusCode?: number;
     body?: unknown;
     errors?: Array<{ category?: string; code?: string; detail?: string; field?: string }>;
+    rawResponse?: Response;
     constructor(args: {
       message?: string;
       statusCode?: number;
       body?: unknown;
       errors?: Array<{ category?: string; code?: string; detail?: string; field?: string }>;
+      rawResponse?: Response;
     } = {}) {
       super(args.message ?? 'SquareError');
       this.name = 'SquareError';
@@ -68,6 +70,7 @@ vi.mock('square', () => ({
       this.errors = args.errors ?? (
         args.body as { errors?: Array<{ category?: string; code?: string; detail?: string; field?: string }> }
       )?.errors;
+      this.rawResponse = args.rawResponse;
     }
   },
 }));
@@ -600,6 +603,54 @@ describe('Square Service', () => {
           referenceId: '00000000-0000-4000-8000-000000000001',
         }),
       );
+      expect(mocks.payments.create.mock.calls[0]?.[0]).not.toHaveProperty('customerDetails');
+    });
+
+    it('marks standing unattended direct charges without changing payment identity or amount', async () => {
+      mocks.payments.create.mockResolvedValueOnce({
+        payment: { id: 'standing-payment-id', status: 'COMPLETED' },
+      });
+      const provider = new SquarePaymentProvider(1);
+      const identity = {
+        paymentKey: 'standing-payment-operation-key',
+        providerLocationId: 'LOC_123',
+        referenceId: '00000000-0000-4000-8000-000000000002',
+      };
+
+      await provider.processPayment('saved-card-id', 2_500, false, 'customer-id', undefined, identity, 'standing_unattended');
+
+      expect(mocks.payments.create).toHaveBeenCalledWith({
+        sourceId: 'saved-card-id',
+        idempotencyKey: identity.paymentKey,
+        amountMoney: { amount: BigInt(2_500), currency: 'USD' },
+        autocomplete: true,
+        locationId: identity.providerLocationId,
+        referenceId: identity.referenceId,
+        customerId: 'customer-id',
+        customerDetails: { customerInitiated: false, sellerKeyedIn: false },
+      });
+    });
+
+    it('logs only safe Square decline diagnostics, including x-request-id', async () => {
+      mocks.payments.create.mockRejectedValueOnce(new SquareError({
+        statusCode: 400,
+        body: { errors: [{ category: 'PAYMENT_METHOD_ERROR', code: 'GENERIC_DECLINE', detail: 'sensitive provider detail' }] },
+        rawResponse: new Response(null, { status: 400, headers: { 'x-request-id': 'square-request-123' } }),
+      }));
+      const provider = new SquarePaymentProvider(1);
+
+      await expect(provider.processPayment('saved-card-id', 2_500, false, 'customer-id', undefined, 'decline-key'))
+        .rejects.toMatchObject({ disposition: 'action_required', providerCode: 'GENERIC_DECLINE' });
+
+      expect(mocks.log.error).toHaveBeenCalledWith('Square payment failed', {
+        httpStatus: 400,
+        squareErrorCategory: 'PAYMENT_METHOD_ERROR',
+        squareErrorCode: 'GENERIC_DECLINE',
+        squareRequestId: 'square-request-123',
+      });
+      expect(mocks.payments.create).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(mocks.log.error.mock.calls)).not.toContain('sensitive provider detail');
+      expect(JSON.stringify(mocks.log.error.mock.calls)).not.toContain('customer-id');
     });
 
     it('throws ProviderNotConfiguredError when no Square credentials configured (task #332)', async () => {

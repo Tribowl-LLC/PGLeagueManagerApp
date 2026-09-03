@@ -61,6 +61,14 @@ export interface PaymentRequestIdentity {
 
 export type PaymentIdempotencyInput = string | PaymentRequestIdentity;
 
+/**
+ * Describes who initiated a direct card payment at the point of charge.
+ * Existing interactive charges retain their historical default; standing
+ * automatic charges explicitly identify themselves as unattended so providers
+ * can apply the correct card-network indicators.
+ */
+export type PaymentInitiationClassification = 'standing_unattended';
+
 export interface CatalogCategory {
   id: string;
   name: string;
@@ -102,6 +110,7 @@ export interface PaymentProvider {
     customerId?: string,
     buyerEmail?: string,
     idempotencyKey?: PaymentIdempotencyInput,
+    initiation?: PaymentInitiationClassification,
   ): Promise<PaymentResult>;
 
   createOrderWithPayment(

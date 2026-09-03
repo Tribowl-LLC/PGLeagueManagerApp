@@ -30,6 +30,8 @@ export type StandingAutopayConsentWire = {
   state: "pending" | "active" | "revoked" | "expired" | "none";
   paymentMode: "weekly";
   partnerBowlerIds: number[];
+  /** A narrow signal for an unresolved scheduled-payment decline. */
+  paymentAttention: "scheduled_payment_declined" | null;
 };
 
 export type StandingAutopayQuoteWire = {

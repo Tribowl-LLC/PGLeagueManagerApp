@@ -13,6 +13,7 @@ import type {
   PaymentVerification,
   OrderLineItem,
   PaymentIdempotencyInput,
+  PaymentInitiationClassification,
 } from './payment-provider';
 
 const log = createLogger("SquareService");
@@ -113,30 +114,55 @@ export function classifySquareFailure(error: unknown): {
   disposition: PaymentProviderFailureDisposition;
   providerCode: string;
   statusCode?: number;
+  category?: string;
+  requestId?: string;
 } {
   const apiErr = error instanceof getSquareErrorCtor() ? error : null;
   const statusCode = apiErr?.statusCode;
   const detail = apiErr?.errors?.[0]?.detail;
   const providerCode = sanitizeProviderErrorCode(apiErr?.errors?.[0]?.code, 'SQUARE_TRANSPORT_UNKNOWN');
+  const rawCategory = apiErr?.errors?.[0]?.category;
+  const category = typeof rawCategory === 'string'
+    ? sanitizeProviderErrorCode(rawCategory, 'SQUARE_ERROR')
+    : undefined;
+  const rawRequestId = apiErr?.rawResponse?.headers?.get('x-request-id')
+    ?? apiErr?.rawResponse?.headers?.get('x-square-request-id')
+    ?? apiErr?.rawResponse?.headers?.get('square-request-id');
+  const requestId = typeof rawRequestId === 'string'
+    && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(rawRequestId)
+    ? rawRequestId
+    : undefined;
   if (statusCode === 401 || statusCode === 403) {
-    return { detail, disposition: 'configuration', providerCode, statusCode };
+    return { detail, disposition: 'configuration', providerCode, statusCode, category, requestId };
   }
   if (statusCode === 429 || DEFINITE_TRANSIENT_CODES.has(providerCode)) {
-    return { detail, disposition: 'transient', providerCode, statusCode };
+    return { detail, disposition: 'transient', providerCode, statusCode, category, requestId };
   }
   if (statusCode === 402 || HARD_CARD_CODES.has(providerCode)) {
-    return { detail, disposition: 'action_required', providerCode, statusCode };
+    return { detail, disposition: 'action_required', providerCode, statusCode, category, requestId };
   }
   if (CONFIGURATION_CODES.has(providerCode)) {
-    return { detail, disposition: 'configuration', providerCode, statusCode };
+    return { detail, disposition: 'configuration', providerCode, statusCode, category, requestId };
   }
   if (typeof statusCode === 'number' && statusCode >= 400 && statusCode < 500) {
-    return { detail, disposition: 'invalid_request', providerCode, statusCode };
+    return { detail, disposition: 'invalid_request', providerCode, statusCode, category, requestId };
   }
   // A transport exception, timeout, or provider 5xx after dispatch may have
   // accepted the POST. Scheduled-operation callers must reconcile it with the
   // same immutable request instead of guessing that it failed.
-  return { detail, disposition: 'provider_unknown', providerCode, statusCode };
+  return { detail, disposition: 'provider_unknown', providerCode, statusCode, category, requestId };
+}
+
+function logSquareFailure(
+  operation: string,
+  failure: ReturnType<typeof classifySquareFailure>,
+): void {
+  log.error(`Square ${operation} failed`, {
+    httpStatus: failure.statusCode,
+    squareErrorCategory: failure.category,
+    squareErrorCode: failure.providerCode,
+    squareRequestId: failure.requestId,
+  });
 }
 
 export async function processPayment(
@@ -147,6 +173,7 @@ export async function processPayment(
   customerId?: string,
   buyerEmail?: string,
   idempotencyKey?: PaymentIdempotencyInput,
+  initiation?: PaymentInitiationClassification,
 ): Promise<PaymentResult> {
   const client = await ctx.getClient();
   if (!client) {
@@ -203,6 +230,13 @@ export async function processPayment(
       paymentRequest.buyerEmailAddress = buyerEmail;
     }
 
+    if (initiation === 'standing_unattended') {
+      paymentRequest.customerDetails = {
+        customerInitiated: false,
+        sellerKeyedIn: false,
+      };
+    }
+
     const response = await client.payments.create(paymentRequest);
 
     if (!response?.payment) {
@@ -246,6 +280,7 @@ export async function processPayment(
     // legacy `.result.errors[]` wrapper is gone. We capture the first
     // `detail` for server-side logs only — never forwarded to the user.
     const failure = classifySquareFailure(error);
+    logSquareFailure('payment', failure);
     // Preserve the established interactive API mapping by HTTP status. The
     // richer `disposition` metadata is additive for the future ledger worker.
     if (failure.statusCode === 400) {

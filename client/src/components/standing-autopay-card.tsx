@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link } from "wouter";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import type { League, SavedCard } from "@shared/schema";
-import type { StandingAutopayQuoteWire } from "@shared/standing-autopay-contract";
+import type { StandingAutopayConsentWire, StandingAutopayQuoteWire } from "@shared/standing-autopay-contract";
 import { apiRequest, csrfFetch, queryClient } from "@/lib/queryClient";
 import { tokenizeCard } from "@/lib/square";
 import type { SquareCard } from "@/hooks/use-square-payment";
@@ -11,7 +11,6 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
 
-type Consent = { state: "none" | "pending" | "active" | "revoked" | "expired"; partnerBowlerIds: number[] };
 type QuoteResponse = { data: StandingAutopayQuoteWire };
 type EditorMode = "one-time" | "autopay" | null;
 type Props = {
@@ -48,12 +47,13 @@ export function StandingAutopayCard({ league, bowlerId, savedCards, bowlerHasEma
   const revokeCommandKeyRef = useRef(commandKey("standing-revoke"));
   const suppressConsentErrorToastRef = useRef(false);
   const enabled = league.payingLineupSize !== null;
-  const statusQuery = useQuery<{ data: Consent }>({ queryKey: [`/api/financials/leagues/${league.id}/standing-autopay/1`], enabled, retry: false });
+  const statusQuery = useQuery<{ data: StandingAutopayConsentWire }>({ queryKey: [`/api/financials/leagues/${league.id}/standing-autopay/1`], enabled, retry: false });
   const consent = statusQuery.data?.data;
   const active = consent?.state === "active";
+  const paymentAttention = consent?.paymentAttention ?? null;
   const quoteQuery = useQuery<QuoteResponse>({
     queryKey: [`/api/financials/leagues/${league.id}/standing-autopay/1/quote`],
-    enabled: enabled && active,
+    enabled: enabled && active && paymentAttention === null,
     retry: false,
   });
 
@@ -133,7 +133,7 @@ export function StandingAutopayCard({ league, bowlerId, savedCards, bowlerHasEma
     <CardHeader><CardTitle className="flex items-center justify-between">Automatic Payments {active ? <Badge>Enabled</Badge> : <Badge variant="secondary">Off</Badge>}</CardTitle></CardHeader>
     <CardContent className="space-y-3">
       {!bowlerHasEmail && <p className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">Add an email address to your <Link href="/profile" className="font-semibold underline">Profile</Link> before enabling automatic payments. A temporary receipt email cannot be used.</p>}
-      {active && !replaceMode && !addingCard ? <><p className="text-sm">Next Payment Scheduled: <span className="font-medium">{nextPayment}</span></p>{quoteQuery.isError && <p role="alert" className="text-sm text-destructive">{quoteError}</p>}<div className="flex flex-wrap gap-2"><Button type="button" variant="outline" disabled={revoke.isPending} onClick={() => revoke.mutate()}>Revoke automatic payments</Button><Button type="button" variant="outline" disabled={!bowlerHasEmail} onClick={() => setReplaceMode(true)}>Replace payment method</Button></div></> : <>
+      {active && !replaceMode && !addingCard ? <>{paymentAttention === "scheduled_payment_declined" ? <div role="alert" className="space-y-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900"><p>Your scheduled automatic payment was declined. Use the One-Time Payment section above to settle this balance before automatic payments can resume.</p></div> : <><p className="text-sm">Next Payment Scheduled: <span className="font-medium">{nextPayment}</span></p>{quoteQuery.isError && <p role="alert" className="text-sm text-destructive">{quoteError}</p>}</>}<div className="flex flex-wrap gap-2"><Button type="button" variant="outline" disabled={revoke.isPending} onClick={() => revoke.mutate()}>Revoke automatic payments</Button><Button type="button" variant="outline" disabled={!bowlerHasEmail} onClick={() => setReplaceMode(true)}>Replace payment method</Button></div></> : <>
         {savedCards.length > 0 && !addingCard && <label className="block text-sm">Saved card<select className="mt-1 w-full rounded border bg-background p-2" value={selectedCard} onChange={(event) => setSelectedCard(event.target.value)} disabled={!bowlerHasEmail}><option value="">Select a card</option>{savedCards.map((saved) => <option key={saved.id} value={saved.id}>{saved.brand} ending {saved.last4}</option>)}</select></label>}
         {!addingCard && savedCards.length === 0 && <Button type="button" variant="outline" disabled={!bowlerHasEmail} onClick={() => { cleanupCard(); onCardEditorModeChange("autopay"); }}>Add new card</Button>}
         {addingCard || savedCards.length === 0 ? <div className="space-y-3"><p className="text-sm font-medium">{savedCards.length ? "Add a new card" : "Add a card for automatic payments"}</p><div ref={(element) => { if (element && cardEditorMode === "autopay") void initializeCard(element); }} className="min-h-[80px] rounded-md border p-3" style={cardEditorMode === "autopay" ? undefined : { display: "none" }} /><div className="flex flex-wrap gap-2"><Button type="button" disabled={!bowlerHasEmail || !isInitialized || setupPending} onClick={() => void saveAndEnable()}>{setupPending ? "Saving card and enabling…" : "Save card and enable automatic payments"}</Button>{addingCard && <Button type="button" variant="ghost" disabled={setupPending} onClick={() => { cleanupCard(); onCardEditorModeChange(null); }}>Cancel</Button>}</div></div> : null}
