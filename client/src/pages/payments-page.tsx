@@ -90,7 +90,9 @@ export default function PaymentsPage() {
 
   const { data: bowlersResponse, isLoading: loadingBowlers } = useQuery<{ data: Bowler[] }>({
     queryKey: ["/api/bowlers"],
-    enabled: !!paymentsResponse?.data?.length,
+    // Operation-only reconciliation evidence has no finalized payment row,
+    // but the review section still needs the owning bowler's name.
+    enabled: !!userResponse?.data,
     staleTime: 1000 * 60 * 5,
   });
 

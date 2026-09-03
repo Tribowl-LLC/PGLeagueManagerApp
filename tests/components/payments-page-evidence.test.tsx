@@ -49,6 +49,7 @@ function renderPage(rows: CanonicalPaymentRow[]) {
   client.setQueryData(["/api/user"], { success: true, data: { id: 1, role: "org_admin", organizationId: 1 } });
   client.setQueryData(["/api/leagues"], { data: [{ id: 7, name: "Test League", organizationId: 1, locationId: 2 }] });
   client.setQueryData(["/api/payments", "paginated", "with-disputes", 1, 50], { success: true, data: [], pagination: { page: 1, limit: 50, total: 0, totalPages: 1 } });
+  client.setQueryData(["/api/bowlers"], { data: [{ id: 42, name: "Review Bowler", organizationId: 1 }] });
   client.setQueryData(["/api/financials/f5/payments", 7, 1, 50, 1, "org_admin"], { data: report(rows) });
   return render(<QueryClientProvider client={client}><PaymentsPage /></QueryClientProvider>);
 }
@@ -58,6 +59,7 @@ describe("PaymentsPage canonical evidence presentation", () => {
     renderPage([orphanRow]);
 
     expect(await screen.findByRole("heading", { name: "Payments needing review" })).toBeInTheDocument();
+    expect(screen.getByText("Review Bowler")).toBeInTheDocument();
     expect(screen.getByText("$30.00")).toBeInTheDocument();
     expect(screen.queryByText("Financial payment evidence")).not.toBeInTheDocument();
     expect(screen.queryByTestId("canonical-payment-evidence-table")).not.toBeInTheDocument();
