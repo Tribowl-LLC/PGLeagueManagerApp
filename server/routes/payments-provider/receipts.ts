@@ -121,7 +121,18 @@ async function buildReceiptEvidence(paymentId: number, organizationId: number, v
   const initiatingPayer = payment.paidByUserId === viewer.id || (row.initiatingPayerBowlerId !== null && row.initiatingPayerBowlerId !== undefined && row.initiatingPayerBowlerId === viewer.bowlerId);
   const hasOtherActiveAllocation = row.allocations.some((allocation) => allocation.state === 'active' && allocation.bowlerId !== payment.bowlerId);
   const sharedAllowed = adminPrivilege || initiatingPayer || (row.paymentOperationId === null && !hasOtherActiveAllocation && viewer.bowlerId === payment.bowlerId);
-  const evidenceAllocations = row.allocations.map((allocation) => ({ ...allocation, source: row.source }));
+  // Keep payment-receipt/1 an explicit projection. The canonical report may
+  // add operator-facing fields that are not part of the versioned receipt API.
+  const evidenceAllocations = row.allocations.map((allocation) => ({
+    allocationId: allocation.allocationId,
+    obligationId: allocation.obligationId,
+    occurrenceId: allocation.occurrenceId,
+    bowlerId: allocation.bowlerId,
+    amountMinor: allocation.amountMinor,
+    currency: allocation.currency,
+    state: allocation.state,
+    source: row.source,
+  }));
   const visibleAllocations = sharedAllowed ? evidenceAllocations : evidenceAllocations.filter((allocation) => allocation.bowlerId === viewer.bowlerId);
   const transactionDispute = transaction?.dispute ?? row.dispute;
   const visibleDispute = {

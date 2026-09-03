@@ -66,6 +66,8 @@ export interface CanonicalPaymentAllocationRow {
   allocationId: string | null;
   obligationId: string | null;
   occurrenceId: string | null;
+  /** League-local calendar date for operator-facing allocation details. */
+  occurrenceLocalDate?: string | null;
   bowlerId: number;
   amountMinor: number;
   currency: string;

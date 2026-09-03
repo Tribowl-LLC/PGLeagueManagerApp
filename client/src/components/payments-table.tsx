@@ -8,17 +8,18 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Badge } from "@/components/ui/badge";
+import { Badge, badgeVariants } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { isCardPaymentType } from "@shared/schema/constants";
 import { ResendReceiptDialog } from "@/components/resend-receipt-dialog";
-import { ViewReceiptButton } from "@/components/view-receipt-button";
 import {
   PaymentDisputeBadge,
   PaymentDisputeDetails,
 } from "@/components/payment-dispute-details";
 import type { Payment, PaymentRowDisputeSummary, Bowler, League } from "@shared/schema";
 import type { CanonicalPaymentRow } from "@shared/canonical-payment-report";
+import { PaymentDetailsDialog, paymentEvidenceDisplayStatus } from "@/components/payment-details-dialog";
 
 type PaymentWithDisputes = Payment & { disputes?: PaymentRowDisputeSummary[] };
 
@@ -52,8 +53,8 @@ interface Props {
    */
   leagues?: League[];
   paymentBusinessDates?: Map<number, string>;
-  paymentEvidenceStatuses?: Map<number, CanonicalPaymentRow["status"]>;
   paymentCanonicalRows?: Map<number, CanonicalPaymentRow>;
+  organizationId?: number | null;
 }
 
 // Stable default reference so the optional `leagues` prop doesn't create a
@@ -70,10 +71,11 @@ export function PaymentsTable({
   isRefundPending,
   leagues = EMPTY_LEAGUES,
   paymentBusinessDates,
-  paymentEvidenceStatuses,
   paymentCanonicalRows,
+  organizationId,
 }: Props) {
   const [resendTarget, setResendTarget] = useState<Payment | null>(null);
+  const [detailsTarget, setDetailsTarget] = useState<Payment | null>(null);
   const [expandedPaymentIds, setExpandedPaymentIds] = useState<Set<number>>(new Set());
   const leagueLocationMap = new Map<number, number | null>();
   for (const league of leagues) {
@@ -107,6 +109,13 @@ export function PaymentsTable({
           ) : (
             filteredPayments.map((payment) => {
               const bowler = bowlers.find((b) => b.id === payment.bowlerId);
+              const canonicalRow = paymentCanonicalRows?.get(payment.id);
+              const canonicalStatusLabel = canonicalRow ? paymentEvidenceDisplayStatus(canonicalRow) : null;
+              const canonicalStatusVariant = canonicalStatusLabel === "Review required" ? "destructive" :
+                canonicalRow?.status === "confirmed_paid" ? "default" :
+                canonicalRow?.status === "pending" ? "secondary" :
+                canonicalRow?.status === "failed" || canonicalRow?.status === "review_required" ? "destructive" :
+                "outline";
               // Resend is offered for any paid card row; the server
               // resolves provider/receipt availability and returns a
               // clean error for non-Square rows.
@@ -123,17 +132,18 @@ export function PaymentsTable({
                   <TableCell>${((paymentCanonicalRows?.get(payment.id)?.amountMinor ?? payment.amount) / 100).toFixed(2)}</TableCell>
                   <TableCell>
                     <div className="flex flex-wrap items-center gap-2">
-                      <Badge
-                        variant={
-                          (paymentCanonicalRows?.get(payment.id)?.status ?? payment.status) === "confirmed_paid" || payment.status === "paid" ? "default" :
-                          (paymentCanonicalRows?.get(payment.id)?.status ?? payment.status) === "pending" ? "secondary" :
-                          (paymentCanonicalRows?.get(payment.id)?.status ?? payment.status) === "failed" ? "destructive" :
-                          "outline"
-                        }
-                        className={payment.status === "refunded" ? "border-destructive text-destructive" : ""}
-                      >
-                        {paymentEvidenceStatuses?.get(payment.id) === "unresolved" ? "Review required" : (paymentCanonicalRows?.get(payment.id)?.source === "unresolved_operation" ? "Unresolved" : paymentCanonicalRows?.get(payment.id)?.status ?? payment.status)}
-                      </Badge>
+                      {canonicalRow ? (
+                        <button
+                          type="button"
+                          className={cn(badgeVariants({ variant: canonicalStatusVariant }), "cursor-pointer")}
+                          aria-label={`View payment details: ${canonicalStatusLabel}`}
+                          onClick={() => setDetailsTarget(payment)}
+                        >
+                          {canonicalStatusLabel}
+                        </button>
+                      ) : (
+                        <Badge variant="outline">{payment.status}</Badge>
+                      )}
                       {disputes.map((dispute) => (
                         <PaymentDisputeBadge key={dispute.id} dispute={dispute} />
                       ))}
@@ -161,10 +171,6 @@ export function PaymentsTable({
                           {expanded ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
                         </Button>
                       )}
-                      <ViewReceiptButton
-                        payment={payment}
-                        locationId={leagueLocationMap.get(payment.leagueId) ?? null}
-                      />
                       {canResend && (
                         <Button
                           size="icon"
@@ -216,6 +222,15 @@ export function PaymentsTable({
         }
         onClose={() => setResendTarget(null)}
         locationId={resendTargetLocationId}
+      />
+      <PaymentDetailsDialog
+        key={detailsTarget?.id ?? "closed"}
+        payment={detailsTarget}
+        evidence={detailsTarget ? paymentCanonicalRows?.get(detailsTarget.id) ?? null : null}
+        bowlerName={detailsTarget ? bowlers.find((bowler) => bowler.id === detailsTarget.bowlerId)?.name || "Unknown Bowler" : ""}
+        canCorrect={isAdmin && !isPaymentManager}
+        organizationId={organizationId}
+        onClose={() => setDetailsTarget(null)}
       />
     </div>
   );

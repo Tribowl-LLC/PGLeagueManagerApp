@@ -114,7 +114,7 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
       const reviewRequired = invalidCanonicalAllocation
         || linked.some((candidate) => candidate.allocation.reviewRequired)
         || Boolean(dispute && !["WON", "CLOSED"].includes(dispute.state));
-      const allocationRows = linked.map((candidate) => ({ allocationId: candidate.allocation.id, obligationId: candidate.obligation.id, occurrenceId: candidate.obligation.occurrenceId, bowlerId: candidate.obligation.payerBowlerId, amountMinor: candidate.allocation.amountMinor, currency: candidate.allocation.currency, state: candidate.allocation.state === "active" ? "active" as const : "voided" as const }));
+      const allocationRows = linked.map((candidate) => ({ allocationId: candidate.allocation.id, obligationId: candidate.obligation.id, occurrenceId: candidate.obligation.occurrenceId, occurrenceLocalDate: candidate.occurrence.authoritativeLocalDate, bowlerId: candidate.obligation.payerBowlerId, amountMinor: candidate.allocation.amountMinor, currency: candidate.allocation.currency, state: candidate.allocation.state === "active" ? "active" as const : "voided" as const }));
       const allocatedMinor = allocationRows.filter((candidate) => candidate.state === "active").reduce((sum, candidate) => sum + candidate.amountMinor, 0);
       const manualGrossMismatch = !voidEvidence && payment.paymentOperationId === null && allocatedMinor !== payment.amount;
       const refundAmount = payment.refundedAt || payment.squareRefundId ? payment.amount : 0;

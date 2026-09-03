@@ -206,7 +206,7 @@ describe('GET /payments/:id/receipt (Task #503)', () => {
     mockStorage.getPaymentById.mockResolvedValue(payment);
     mockStorage.getPaymentsByPaymentOperationId.mockResolvedValue([payment]);
     mockReadCanonicalReport.mockResolvedValue({
-      rows: [{ paymentId: 15, source: 'canonical_allocation', operationType: 'interactive_charge', amountMinor: 2000, currency: 'USD', allocations: [{ allocationId: 'alloc-1', obligationId: 'ob-1', occurrenceId: 'occ-1', bowlerId: 43, amountMinor: 2000, currency: 'USD', state: 'active' }], refund: { present: false, amountMinor: 0, providerRefundId: null }, dispute: { present: false, amountMinor: 0, disputeId: null, scope: 'legacy_payment_row', state: null, reviewRequired: false } }],
+      rows: [{ paymentId: 15, source: 'canonical_allocation', operationType: 'interactive_charge', amountMinor: 2000, currency: 'USD', allocations: [{ allocationId: 'alloc-1', obligationId: 'ob-1', occurrenceId: 'occ-1', occurrenceLocalDate: '2038-02-03', bowlerId: 43, amountMinor: 2000, currency: 'USD', state: 'active' }], refund: { present: false, amountMinor: 0, providerRefundId: null }, dispute: { present: false, amountMinor: 0, disputeId: null, scope: 'legacy_payment_row', state: null, reviewRequired: false } }],
       unlinkedHistory: [],
       paymentTiming: { paymentMode: 'weekly', upfrontDueAt: null, upfrontDueAtLocal: null, timezone: 'UTC', source: 'canonical_activation' },
     });
@@ -223,7 +223,9 @@ describe('GET /payments/:id/receipt (Task #503)', () => {
 
     const payerResponse = await get('/api/payments-provider/payments/15/receipt', PAYER);
     expect(payerResponse.status).toBe(200);
-    expect((await payerResponse.json()).data).toMatchObject({ receiptUrl: 'https://cached/shared', receiptNumber: 'N-shared', paymentTiming: { source: 'canonical_activation', paymentMode: 'weekly' } });
+    const payerBody = (await payerResponse.json()).data;
+    expect(payerBody).toMatchObject({ receiptUrl: 'https://cached/shared', receiptNumber: 'N-shared', paymentTiming: { source: 'canonical_activation', paymentMode: 'weekly' } });
+    expect(payerBody.allocations[0]).not.toHaveProperty('occurrenceLocalDate');
 
     const partnerQueryResults = makeQueryResults();
     mockDb.select.mockImplementation(() => dbResult(partnerQueryResults.shift() ?? []));

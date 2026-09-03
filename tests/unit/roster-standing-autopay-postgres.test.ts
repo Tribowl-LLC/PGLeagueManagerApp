@@ -996,6 +996,7 @@ describe("standing automatic payments on migrated PostgreSQL", () => {
     expect(payment).toMatchObject({ receiptUrl: "https://square.example.test/standing-receipt", receiptNumber: "standing-receipt-11" });
     const report = await readCanonicalPaymentReport({ organizationId, leagueId, paymentId: payment.id, page: 1, limit: 10 });
     expect(report.rows[0]?.receipt).toMatchObject({ availability: "available", receiptUrl: "https://square.example.test/standing-receipt", receiptNumber: "standing-receipt-11" });
+    expect(report.rows[0]?.allocations[0]?.occurrenceLocalDate).toBe(target.occurrence.authoritativeLocalDate);
   });
 
   it("retains partner participant evidence until tenant teardown", async () => {
