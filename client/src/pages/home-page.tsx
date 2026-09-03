@@ -169,13 +169,13 @@ export default function HomePage() {
       if (bl.leagueId === league.id && bl.active && activeBowlerProfileIds.has(bl.bowlerId)) leagueBowlerIds.add(bl.bowlerId);
     }
     const leagueBowlerCount = leagueBowlerIds.size;
-    if (leagueBowlerCount === 0) return [];
+    const reviewRequiredCount = new Set(serverRows
+      .filter((row) => row.leagueId === league.id && row.reviewRequired)
+      .map((row) => row.payerBowlerId)).size;
+    if (leagueBowlerCount === 0 && reviewRequiredCount === 0) return [];
 
     const pastDueCount = new Set(activeServerRows
       .filter((row) => row.leagueId === league.id && row.classification === "past_due")
-      .map((row) => row.payerBowlerId)).size;
-    const reviewRequiredCount = new Set(serverRows
-      .filter((row) => row.leagueId === league.id && row.reviewRequired)
       .map((row) => row.payerBowlerId)).size;
 
     return [{

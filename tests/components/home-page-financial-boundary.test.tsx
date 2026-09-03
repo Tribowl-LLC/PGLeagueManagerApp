@@ -103,6 +103,25 @@ describe('HomePage F1 financial boundary', () => {
     expect(screen.queryByText('3 (300%)')).not.toBeInTheDocument();
   });
 
+  it('retains a zero-bowler league card when review evidence is present', () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, queryFn: async () => ({ data: [] }) } } });
+    queryClient.setQueryData(['/api/leagues'], { data: [{ id: 1, name: 'Review League', active: true }] });
+    queryClient.setQueryData(['/api/payments'], { data: [] });
+    queryClient.setQueryData(['/api/bowlers'], { data: [] });
+    queryClient.setQueryData(['/api/bowler-leagues'], { data: [] });
+    queryClient.setQueryData(['/api/user'], { data: { role: 'org_admin', organizationId: 1, name: 'Admin' } });
+    queryClient.setQueryData(['/api/financials/due-past-due'], { data: { leagues: [
+      { leagueId: 1, report: { mode: 'canonical', rows: [{ payerBowlerId: 9, classification: 'past_due', outstandingMinor: 100, reviewRequired: true }] } },
+    ] } });
+
+    render(<QueryClientProvider client={queryClient}><HomePage /></QueryClientProvider>);
+
+    const card = screen.getByText('Review League').closest('a');
+    expect(card).not.toBeNull();
+    expect(card).toHaveTextContent('0 bowlers');
+    expect(screen.getByText('1 review required (excluded)')).toBeInTheDocument();
+  });
+
   it('scopes the system-admin org-wide request and query key to the selected organization', async () => {
     const requestedUrls: string[] = [];
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
