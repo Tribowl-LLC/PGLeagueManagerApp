@@ -65,18 +65,27 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
     <Card data-testid="one-time-payment-card">
       <CardHeader>
         <CardTitle>One-Time Payment</CardTitle>
-        <CardDescription>{fullBalanceOnly ? `This prepaid league requires its full remaining balance of ${formatCurrency(remainingBalance)}.` : "Choose how many weeks to pay. Your payment is automatically applied to your oldest open week first."}</CardDescription>
+        {!fullBalanceOnly && <CardDescription>Choose how many weeks to pay. Your payment is automatically applied to your oldest open week first.</CardDescription>}
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="space-y-3 rounded-md border bg-muted/50 p-4">
-          <Label>Number of weeks</Label>
-          <div className="flex items-center justify-center gap-4">
-            <Button type="button" variant="outline" size="icon" aria-label="Pay for one fewer week" disabled={fullBalanceOnly || paymentInFlight || paymentWeekCount <= 1} onClick={() => onPaymentWeekCountChange(paymentWeekCount - 1)}><Minus className="size-4" /></Button>
-            <output aria-label="Number of weeks to pay" className="min-w-20 text-center text-2xl font-bold">{paymentWeekCount}</output>
-            <Button type="button" variant="outline" size="icon" aria-label="Pay for one more week" disabled={fullBalanceOnly || paymentInFlight || paymentWeekCount >= maximumWeekCount} onClick={() => onPaymentWeekCountChange(paymentWeekCount + 1)}><Plus className="size-4" /></Button>
-          </div>
-          <div className="flex items-center justify-between border-t pt-3"><span className="text-sm text-muted-foreground">Payment amount</span><span className="text-lg font-bold">{formatCurrency(paymentAmountMinor)}</span></div>
-          <p className="text-xs text-muted-foreground">Remaining balance: {formatCurrency(remainingBalance)}</p>
+          {fullBalanceOnly ? (
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-muted-foreground">Full Season Remaining Balance</span>
+              <span className="text-lg font-bold">{formatCurrency(remainingBalance)}</span>
+            </div>
+          ) : (
+            <>
+              <Label>Number of weeks</Label>
+              <div className="flex items-center justify-center gap-4">
+                <Button type="button" variant="outline" size="icon" aria-label="Pay for one fewer week" disabled={paymentInFlight || paymentWeekCount <= 1} onClick={() => onPaymentWeekCountChange(paymentWeekCount - 1)}><Minus className="size-4" /></Button>
+                <output aria-label="Number of weeks to pay" className="min-w-20 text-center text-2xl font-bold">{paymentWeekCount}</output>
+                <Button type="button" variant="outline" size="icon" aria-label="Pay for one more week" disabled={paymentInFlight || paymentWeekCount >= maximumWeekCount} onClick={() => onPaymentWeekCountChange(paymentWeekCount + 1)}><Plus className="size-4" /></Button>
+              </div>
+              <div className="flex items-center justify-between border-t pt-3"><span className="text-sm text-muted-foreground">Payment amount</span><span className="text-lg font-bold">{formatCurrency(paymentAmountMinor)}</span></div>
+              <p className="text-xs text-muted-foreground">Remaining balance: {formatCurrency(remainingBalance)}</p>
+            </>
+          )}
         </div>
 
         {!applePayTokenizeOnly && applePayRef && <div ref={applePayRef} className={applePayAvailable ? "min-h-[48px] overflow-hidden rounded-md bg-black" : undefined} style={applePayAvailable ? undefined : { display: "none" }} />}

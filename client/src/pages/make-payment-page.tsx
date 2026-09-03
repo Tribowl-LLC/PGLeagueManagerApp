@@ -190,7 +190,7 @@ export default function MakePaymentPage() {
   const fullBalanceOnly = league?.paymentMode === "upfront";
   const clampedWeekCount = clampPaymentWeekCount(oneTimePaymentWeekCount, maximumWeekCount);
   const selectedOption = fullBalanceOnly ? options.at(-1) : options.find((option) => option.weekCount === clampedWeekCount);
-  const paymentAmountMinor = selectedOption?.amountMinor ?? 0;
+  const paymentAmountMinor = fullBalanceOnly ? remainingBalance : selectedOption?.amountMinor ?? 0;
   const bowlerEmail = details?.bowler?.email ?? "";
 
   useEffect(() => {
@@ -352,7 +352,7 @@ export default function MakePaymentPage() {
           onReceiptEmailChange={setReceiptEmail}
         />}
       </ErrorBoundary>
-      <ErrorBoundary level="section"><StandingAutopayCard league={league} bowlerId={bowlerId} savedCards={savedCards} bowlerHasEmail={!!bowlerEmail} card={card} isInitialized={isInitialized && cardEditorMode === "autopay"} cardEditorMode={cardEditorMode} initializeCard={initializeCard} cleanupCard={cleanupCard} onCardEditorModeChange={selectEditorMode} /></ErrorBoundary>
+      {league.paymentMode !== "upfront" && <ErrorBoundary level="section"><StandingAutopayCard league={league} bowlerId={bowlerId} savedCards={savedCards} bowlerHasEmail={!!bowlerEmail} card={card} isInitialized={isInitialized && cardEditorMode === "autopay"} cardEditorMode={cardEditorMode} initializeCard={initializeCard} cleanupCard={cleanupCard} onCardEditorModeChange={selectEditorMode} /></ErrorBoundary>}
     </div>
     <LeagueSwitcherSheet open={leagueSheetOpen} onClose={() => setLeagueSheetOpen(false)} bowlerLeagues={bowlerLeagues} leagueMap={leagueMap} selectedLeagueId={leagueId} onSelect={(nextId) => { setSelectedLeagueId(nextId); intentAppliedRef.current = false; navigate(`/make-payment?leagueId=${nextId}`); }} />
   </BowlerLayout>;
