@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { PaymentsTable } from "@/components/payments-table";
 import { SQUARE_DISPUTES_DASHBOARD_URL } from "@/components/payment-dispute-details";
 import type { Payment, PaymentRowDisputeSummary } from "@shared/schema";
+import type { CanonicalPaymentRow } from "@shared/canonical-payment-report";
 
 const DISPUTE: PaymentRowDisputeSummary = {
   id: "22222222-2222-4222-8222-222222222222",
@@ -91,5 +92,37 @@ describe("PaymentsTable dispute visibility", () => {
     expect(screen.getByRole("list", { name: "Sanitized dispute state history" }))
       .toHaveTextContent("Dispute state updated");
     expect(screen.queryByText(/response deadline passed/i)).not.toBeInTheDocument();
+  });
+
+  it("opens canonical allocation details from the payment status pill", async () => {
+    const user = userEvent.setup();
+    const payments = [payment(1, 10)];
+    const evidence: CanonicalPaymentRow = {
+      paymentId: 1, leagueId: 7, bowlerId: 10, amountMinor: 2500, currency: "USD",
+      status: "confirmed_paid", paymentType: "cash", businessDate: "2034-03-01",
+      authoritativeLocalDate: "2034-03-01", providerPaymentId: null,
+      paymentOperationId: null, operationType: null, operationStatus: null,
+      allocatedMinor: 2500, unallocatedMinor: 0, reviewRequired: false,
+      source: "canonical_allocation", unresolved: false,
+      refund: { present: false, amountMinor: 0, providerRefundId: null },
+      dispute: { present: false, amountMinor: 0, disputeId: null },
+      receipt: { contractVersion: "payment-receipt/1", availability: "unavailable", receiptUrl: null, receiptNumber: null, deliveryEvidence: "delivery_not_recorded" },
+      allocations: [{ allocationId: "allocation-1", obligationId: "obligation-1", occurrenceId: "occurrence-1", occurrenceLocalDate: "2034-02-28", bowlerId: 10, amountMinor: 2500, currency: "USD", state: "active" }],
+    };
+    render(
+      <PaymentsTable
+        payments={payments}
+        filteredPayments={payments}
+        bowlers={[{ id: 10, name: "First Bowler" }] as never}
+        isAdmin
+        onRefund={() => {}}
+        isRefundPending={false}
+        paymentCanonicalRows={new Map([[1, evidence]])}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "View payment details: Confirmed paid" }));
+    expect(screen.getByRole("dialog", { name: "Payment Details" })).toBeInTheDocument();
+    expect(screen.getByText("02/28/2034")).toBeInTheDocument();
   });
 });

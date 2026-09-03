@@ -25,7 +25,6 @@ import { sanitizePaymentErrorMessage } from "@/lib/payment-user-error";
 import { refundOperationToast } from "@/lib/refund-operation";
 import { useToast } from "@/hooks/use-toast";
 import { PaymentsTable } from "@/components/payments-table";
-import { CanonicalPaymentEvidenceTable } from "@/components/canonical-payment-evidence-table";
 import { RefundPaymentDialog } from "@/components/refund-payment-dialog";
 import { PaginationControls } from "@/components/pagination-controls";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -191,13 +190,6 @@ export default function PaymentsPage() {
     }
     return map;
   })();
-  const paymentEvidenceStatuses = (() => {
-    const map = new Map<number, CanonicalPaymentReport["rows"][number]["status"]>();
-    for (const report of financialReportData) {
-      for (const row of report?.rows ?? []) if (row.paymentId !== null) map.set(row.paymentId, row.status);
-    }
-    return map;
-  })();
   const paymentCanonicalRows = (() => {
     const map = new Map<number, CanonicalPaymentReport["rows"][number]>();
     for (const report of financialReportData) {
@@ -211,6 +203,7 @@ export default function PaymentsPage() {
   const financialRows = financialReportData.length > 0
     ? financialReportData[0]?.rows ?? []
     : [];
+  const orphanedFinancialRows = financialRows.filter((row) => row.paymentId === null);
 
   // The visible table is projection-owned. Raw payment rows are retained only
   // as optional action metadata; a canonical row is never hidden because the
@@ -314,14 +307,26 @@ export default function PaymentsPage() {
             )}
           </div>
 
-          <CanonicalPaymentEvidenceTable
-            rows={financialRows}
-            mode={financialReportData[0]?.mode}
-            paymentTiming={financialReportData[0]?.paymentTiming}
-            organizationId={financialReportData[0]?.organizationId ?? userResponse?.data?.organizationId ?? null}
-            title="Financial payment evidence"
-            canCorrect={userResponse?.data?.role === "org_admin" || userResponse?.data?.role === "system_admin"}
-          />
+          {orphanedFinancialRows.length > 0 && (
+            <section className="space-y-2 rounded-md border border-destructive/40 bg-destructive/5 p-4" aria-labelledby="payments-needing-review-heading">
+              <h2 id="payments-needing-review-heading" className="font-semibold">Payments needing review</h2>
+              <p className="text-sm text-muted-foreground">These payment attempts do not yet have a finalized payment record. Review reconciliation before taking further action.</p>
+              <div className="divide-y rounded-md border bg-background">
+                {orphanedFinancialRows.map((row, index) => {
+                  const bowler = bowlers.find((candidate) => candidate.id === row.bowlerId);
+                  return (
+                    <div key={`${row.paymentOperationId ?? "payment-attempt"}-${index}`} className="grid gap-1 px-3 py-2 text-sm sm:grid-cols-[1fr_auto] sm:items-center">
+                      <div>
+                        <div className="font-medium">{bowler?.name || "Unknown Bowler"}</div>
+                        <div className="text-muted-foreground">{row.authoritativeLocalDate} · {row.status === "pending" ? "Pending confirmation" : "Review required"}</div>
+                      </div>
+                      <div className="font-medium">{new Intl.NumberFormat("en-US", { style: "currency", currency: row.currency }).format(row.amountMinor / 100)}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          )}
 
           <div aria-label="Payment management actions">
           <PaymentsTable
@@ -334,7 +339,6 @@ export default function PaymentsPage() {
             isRefundPending={refundPaymentMutation.isPending}
             leagues={leagues}
             paymentBusinessDates={paymentBusinessDates}
-            paymentEvidenceStatuses={paymentEvidenceStatuses}
             paymentCanonicalRows={paymentCanonicalRows}
           />
           </div>

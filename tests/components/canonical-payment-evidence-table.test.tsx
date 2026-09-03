@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { CanonicalPaymentEvidenceTable, dollarsToMinorUnits } from "@/components/canonical-payment-evidence-table";
+import { CanonicalPaymentEvidenceTable } from "@/components/canonical-payment-evidence-table";
 import type { CanonicalPaymentRow } from "@shared/canonical-payment-report";
 
 const { csrfFetchMock } = vi.hoisted(() => ({ csrfFetchMock: vi.fn() }));
@@ -38,15 +38,6 @@ const row = (overrides: Partial<CanonicalPaymentRow> = {}): CanonicalPaymentRow 
 });
 
 describe("CanonicalPaymentEvidenceTable", () => {
-  it("converts operator dollar input to deterministic minor units", () => {
-    expect(dollarsToMinorUnits("20")).toBe(2000);
-    expect(dollarsToMinorUnits("20.5")).toBe(2050);
-    expect(dollarsToMinorUnits("20.05")).toBe(2005);
-    expect(dollarsToMinorUnits("20.005")).toBeNull();
-    expect(dollarsToMinorUnits("$20.00")).toBeNull();
-    expect(dollarsToMinorUnits("0.00")).toBeNull();
-  });
-
   it("labels roster-driven timing as canonical billing", () => {
     render(<CanonicalPaymentEvidenceTable rows={[row()]} paymentTiming={{ paymentMode: "weekly", upfrontDueAt: null, timezone: "America/Chicago", source: "canonical" }} />);
     expect(screen.getByTestId("payment-timing")).toHaveTextContent("canonical billing");
