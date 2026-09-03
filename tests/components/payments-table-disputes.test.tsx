@@ -121,7 +121,9 @@ describe("PaymentsTable dispute visibility", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "View payment details: Confirmed paid" }));
+    const trigger = screen.getByRole("button", { name: "View payment details: Confirmed paid" });
+    expect(trigger.querySelector("div")).toBeNull();
+    await user.click(trigger);
     expect(screen.getByRole("dialog", { name: "Payment Details" })).toBeInTheDocument();
     expect(screen.getByText("02/28/2034")).toBeInTheDocument();
   });

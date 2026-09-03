@@ -10,7 +10,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { csrfFetch, queryClient } from "@/lib/queryClient";
-import type { CanonicalPaymentRow } from "@shared/canonical-payment-report";
+import type { CanonicalPaymentRow, CanonicalPaymentTiming } from "@shared/canonical-payment-report";
 import type { Payment } from "@shared/schema";
 
 type Props = {
@@ -18,6 +18,8 @@ type Props = {
   evidence: CanonicalPaymentRow | null;
   bowlerName: string;
   canCorrect: boolean;
+  organizationId?: number | null;
+  paymentTiming?: CanonicalPaymentTiming;
   onClose: () => void;
 };
 
@@ -59,11 +61,13 @@ async function correctionFingerprint(payload: { paymentId: number; correctionMod
   return `lvcorrection:v3:${Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("")}`;
 }
 
-export function PaymentDetailsDialog({ payment, evidence, bowlerName, canCorrect, onClose }: Props) {
+export function PaymentDetailsDialog({ payment, evidence, bowlerName, canCorrect, organizationId, paymentTiming, onClose }: Props) {
   const [editingCorrection, setEditingCorrection] = useState(false);
   const [reason, setReason] = useState("");
   const [correctionBusy, setCorrectionBusy] = useState(false);
   const [correctionError, setCorrectionError] = useState<string | null>(null);
+  const [receiptLoading, setReceiptLoading] = useState(false);
+  const [receiptError, setReceiptError] = useState<string | null>(null);
 
   if (!payment || !evidence) return null;
 
@@ -72,6 +76,26 @@ export function PaymentDetailsDialog({ payment, evidence, bowlerName, canCorrect
     && (evidence.paymentType === "cash" || evidence.paymentType === "check")
     && evidence.allocations.some((allocation) => allocation.state === "active");
   const displayStatus = paymentEvidenceDisplayStatus(evidence);
+  const canOpenReceipt = evidence.paymentId !== null && ["confirmed_paid", "refunded", "disputed"].includes(evidence.status);
+
+  const openReceipt = async () => {
+    if (evidence.paymentId === null) return;
+    setReceiptLoading(true);
+    setReceiptError(null);
+    try {
+      const scope = organizationId !== null && organizationId !== undefined
+        ? `?organizationId=${encodeURIComponent(organizationId)}`
+        : "";
+      const response = await csrfFetch(`/api/payments-provider/payments/${evidence.paymentId}/receipt${scope}`);
+      const body = await response.json() as { data?: { receiptUrl?: string | null }; error?: { message?: string } };
+      if (!response.ok || !body.data?.receiptUrl) throw new Error(body.error?.message || "Receipt is unavailable");
+      window.open(body.data.receiptUrl, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      setReceiptError(error instanceof Error ? error.message : "Receipt is unavailable");
+    } finally {
+      setReceiptLoading(false);
+    }
+  };
 
   const submitCorrection = async () => {
     const trimmedReason = reason.trim();
@@ -124,6 +148,14 @@ export function PaymentDetailsDialog({ payment, evidence, bowlerName, canCorrect
           <div><dt className="text-muted-foreground">Settlement</dt><dd><Badge variant="outline">{displayStatus}</Badge></dd></div>
         </dl>
 
+        {paymentTiming && (
+          <p className="text-sm text-muted-foreground" data-testid="payment-timing">
+            {paymentTiming.paymentMode === "upfront" ? "Upfront payment" : "Weekly payment"}
+            {paymentTiming.upfrontDueAt ? ` · due ${paymentTiming.upfrontDueAtLocal ?? paymentTiming.upfrontDueAt}` : ""}
+            {` · timezone ${paymentTiming.timezone ?? "UTC"} · canonical billing`}
+          </p>
+        )}
+
         <section className="space-y-2" aria-labelledby="payment-allocation-heading">
           <h3 id="payment-allocation-heading" className="font-medium">Applied to</h3>
           {evidence.allocations.length === 0 ? (
@@ -172,7 +204,10 @@ export function PaymentDetailsDialog({ payment, evidence, bowlerName, canCorrect
           </section>
         )}
 
+        {receiptError && <p role="alert" className="text-sm text-destructive">{receiptError}</p>}
+
         <DialogFooter>
+          {canOpenReceipt && <Button variant="outline" disabled={receiptLoading} onClick={() => void openReceipt()}>{receiptLoading ? "Loading receipt…" : "Receipt"}</Button>}
           <Button variant="outline" disabled={correctionBusy} onClick={onClose}>Close</Button>
         </DialogFooter>
       </DialogContent>

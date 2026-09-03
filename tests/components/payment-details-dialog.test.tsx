@@ -74,7 +74,7 @@ beforeEach(() => {
 
 describe("PaymentDetailsDialog", () => {
   it("shows friendly canonical allocation dates without internal identifiers", () => {
-    render(<PaymentDetailsDialog payment={payment} evidence={evidence} bowlerName="Test Bowler" canCorrect onClose={() => {}} />);
+    render(<PaymentDetailsDialog payment={payment} evidence={evidence} bowlerName="Test Bowler" canCorrect paymentTiming={{ paymentMode: "weekly", upfrontDueAt: null, timezone: "America/Detroit", source: "canonical" }} onClose={() => {}} />);
 
     expect(screen.getByRole("dialog", { name: "Payment Details" })).toBeInTheDocument();
     expect(screen.getByText("Confirmed paid")).toBeInTheDocument();
@@ -84,6 +84,7 @@ describe("PaymentDetailsDialog", () => {
     expect(screen.getByText("$20.00")).toBeInTheDocument();
     expect(screen.queryByText("occurrence-1")).not.toBeInTheDocument();
     expect(screen.queryByText("obligation-1")).not.toBeInTheDocument();
+    expect(screen.getByTestId("payment-timing")).toHaveTextContent("Weekly payment · timezone America/Detroit · canonical billing");
   });
 
   it("preserves the authorized cash correction flow and refreshes both projections", async () => {
@@ -117,5 +118,17 @@ describe("PaymentDetailsDialog", () => {
   it("does not offer manual correction for provider payments", () => {
     render(<PaymentDetailsDialog payment={{ ...payment, type: "credit_card" }} evidence={{ ...evidence, paymentType: "credit_card" }} bowlerName="Test Bowler" canCorrect onClose={() => {}} />);
     expect(screen.queryByRole("button", { name: "Void cash/check payment" })).not.toBeInTheDocument();
+  });
+
+  it("opens canonical receipts through the organization-scoped endpoint", async () => {
+    const user = userEvent.setup();
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    mocks.csrfFetch.mockResolvedValueOnce(new Response(JSON.stringify({ data: { receiptUrl: "https://receipt.example.test" } }), { status: 200 }));
+    render(<PaymentDetailsDialog payment={payment} evidence={{ ...evidence, status: "refunded" }} bowlerName="Test Bowler" canCorrect={false} organizationId={11} onClose={() => {}} />);
+
+    await user.click(screen.getByRole("button", { name: "Receipt" }));
+    await waitFor(() => expect(mocks.csrfFetch).toHaveBeenCalledWith("/api/payments-provider/payments/12/receipt?organizationId=11"));
+    expect(open).toHaveBeenCalledWith("https://receipt.example.test", "_blank", "noopener,noreferrer");
+    open.mockRestore();
   });
 });

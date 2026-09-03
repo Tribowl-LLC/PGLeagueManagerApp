@@ -8,8 +8,9 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Badge } from "@/components/ui/badge";
+import { Badge, badgeVariants } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { isCardPaymentType } from "@shared/schema/constants";
 import { ResendReceiptDialog } from "@/components/resend-receipt-dialog";
 import { ViewReceiptButton } from "@/components/view-receipt-button";
@@ -18,7 +19,7 @@ import {
   PaymentDisputeDetails,
 } from "@/components/payment-dispute-details";
 import type { Payment, PaymentRowDisputeSummary, Bowler, League } from "@shared/schema";
-import type { CanonicalPaymentRow } from "@shared/canonical-payment-report";
+import type { CanonicalPaymentRow, CanonicalPaymentTiming } from "@shared/canonical-payment-report";
 import { PaymentDetailsDialog, paymentEvidenceDisplayStatus } from "@/components/payment-details-dialog";
 
 type PaymentWithDisputes = Payment & { disputes?: PaymentRowDisputeSummary[] };
@@ -54,6 +55,8 @@ interface Props {
   leagues?: League[];
   paymentBusinessDates?: Map<number, string>;
   paymentCanonicalRows?: Map<number, CanonicalPaymentRow>;
+  organizationId?: number | null;
+  paymentTiming?: CanonicalPaymentTiming;
 }
 
 // Stable default reference so the optional `leagues` prop doesn't create a
@@ -71,6 +74,8 @@ export function PaymentsTable({
   leagues = EMPTY_LEAGUES,
   paymentBusinessDates,
   paymentCanonicalRows,
+  organizationId,
+  paymentTiming,
 }: Props) {
   const [resendTarget, setResendTarget] = useState<Payment | null>(null);
   const [detailsTarget, setDetailsTarget] = useState<Payment | null>(null);
@@ -109,6 +114,11 @@ export function PaymentsTable({
               const bowler = bowlers.find((b) => b.id === payment.bowlerId);
               const canonicalRow = paymentCanonicalRows?.get(payment.id);
               const canonicalStatusLabel = canonicalRow ? paymentEvidenceDisplayStatus(canonicalRow) : null;
+              const canonicalStatusVariant = canonicalStatusLabel === "Review required" ? "destructive" :
+                canonicalRow?.status === "confirmed_paid" ? "default" :
+                canonicalRow?.status === "pending" ? "secondary" :
+                canonicalRow?.status === "failed" || canonicalRow?.status === "review_required" ? "destructive" :
+                "outline";
               // Resend is offered for any paid card row; the server
               // resolves provider/receipt availability and returns a
               // clean error for non-Square rows.
@@ -128,22 +138,11 @@ export function PaymentsTable({
                       {canonicalRow ? (
                         <button
                           type="button"
-                          className="rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                          className={cn(badgeVariants({ variant: canonicalStatusVariant }), "cursor-pointer")}
                           aria-label={`View payment details: ${canonicalStatusLabel}`}
                           onClick={() => setDetailsTarget(payment)}
                         >
-                          <Badge
-                            variant={
-                              canonicalStatusLabel === "Review required" ? "destructive" :
-                              canonicalRow.status === "confirmed_paid" ? "default" :
-                              canonicalRow.status === "pending" ? "secondary" :
-                              canonicalRow.status === "failed" || canonicalRow.status === "review_required" ? "destructive" :
-                              "outline"
-                            }
-                            className={payment.status === "refunded" ? "border-destructive text-destructive" : "cursor-pointer"}
-                          >
-                            {canonicalStatusLabel}
-                          </Badge>
+                          {canonicalStatusLabel}
                         </button>
                       ) : (
                         <Badge variant="outline">{payment.status}</Badge>
@@ -237,6 +236,8 @@ export function PaymentsTable({
         evidence={detailsTarget ? paymentCanonicalRows?.get(detailsTarget.id) ?? null : null}
         bowlerName={detailsTarget ? bowlers.find((bowler) => bowler.id === detailsTarget.bowlerId)?.name || "Unknown Bowler" : ""}
         canCorrect={isAdmin && !isPaymentManager}
+        organizationId={organizationId}
+        paymentTiming={paymentTiming}
         onClose={() => setDetailsTarget(null)}
       />
     </div>

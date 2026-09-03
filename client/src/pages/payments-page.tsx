@@ -342,6 +342,8 @@ export default function PaymentsPage() {
             leagues={leagues}
             paymentBusinessDates={paymentBusinessDates}
             paymentCanonicalRows={paymentCanonicalRows}
+            organizationId={financialReportData[0]?.organizationId ?? userResponse?.data?.organizationId ?? null}
+            paymentTiming={financialReportData[0]?.paymentTiming}
           />
           </div>
 
