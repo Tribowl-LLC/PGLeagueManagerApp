@@ -460,7 +460,7 @@ export async function updateBowlerLeague(id: number, bowlerLeague: UpdateBowlerL
           ));
           for (const occurrence of occurrences) {
             try {
-              await materializeRosterPaymentOccurrenceInTransaction(tx, { organizationId: league.organizationId, leagueId: current.leagueId, occurrenceId: occurrence.id, actorUserId: auditUserId });
+              await materializeRosterPaymentOccurrenceInTransaction(tx, { organizationId: league.organizationId, leagueId: current.leagueId, occurrenceId: occurrence.id, actorUserId: auditUserId, teamId: current.teamId });
             } catch (error) {
               if (error instanceof Error && ["RESERVED_EVIDENCE_LOCKED", "PAID_EVIDENCE_LOCKED"].includes(error.message)) continue;
               throw error;

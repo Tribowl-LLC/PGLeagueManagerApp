@@ -1,28 +1,30 @@
 # Phase F1: canonical due and past-due
 
 F1 is the read contract for roster-driven payment obligations. There is no
-standalone activation step: once a league has a complete canonical roster,
-the roster save transaction materializes responsibility and obligation rows
-for every published canonical occurrence. Incomplete or contradictory
-evidence remains unavailable rather than producing a guessed balance.
+standalone activation step and no league- or team-completion activation gate.
+Saving a team materializes each configured Main or explicit VACANT position
+for every published canonical occurrence; unassigned positions produce no
+responsibility or obligation and do not block other teams or positions.
 
 ## Contract and lifecycle
 
 The source is the published or locked canonical occurrence set, its current
 billing terms, and the league's configured lineup size. League setup is the
-single source of truth for three or four paying positions. A complete team
-roster uses stable slots `0..size-1`; an explicit substitute or split
-responsibility is an occurrence-level override. A VACANT slot produces no
-obligation. No date, week number, score, roster membership, payment amount,
-or provider fact is used to infer a payer.
+single source of truth for three or four paying positions. A team roster uses
+stable slots `0..size-1`; an explicit substitute or split responsibility is an
+occurrence-level override. A VACANT slot produces a zero-obligation
+responsibility, while an unassigned slot produces no responsibility. No date,
+week number, score, roster membership, payment amount, or provider fact is used
+to infer a payer.
 
 The roster transaction takes the tenant/league advisory lock, re-reads the
 canonical schedule and current team facts, and writes responsibility,
 obligation, revision, and financial-command evidence atomically. Repeating the
 same command returns the original result; changed semantics are rejected by
 the command fingerprint and effective payment-evidence locks. Open
-responsibilities may be corrected by a new explicit occurrence command, while
-settled, reserved, or partially allocated evidence fails closed.
+responsibilities may be corrected by a new explicit occurrence command;
+settled or partially allocated history is preserved, while reserved or
+provider-bound evidence fails closed.
 
 Every write remains tenant-scoped and provider-free. Responsibility and
 obligation revisions are retained as audit evidence; the current source is
@@ -67,7 +69,7 @@ never rewritten.
 | privileged read in the own tenant | version-2 canonical obligation report |
 | ordinary member read | only that payer's authorized obligations |
 | system-admin read | explicit organization and league scope required |
-| incomplete roster or evidence | bounded unavailable/error; no guessed debt |
+| unassigned roster position | no responsibility or obligation for that position |
 | VACANT slot | no payment obligation for that slot |
 | explicit substitute/split override | exact responsibility and component obligations |
 | partial allocation | remaining balance is conserved and deterministic |

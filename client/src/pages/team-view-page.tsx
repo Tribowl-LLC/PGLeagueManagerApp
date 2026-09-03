@@ -110,8 +110,17 @@ export default function TeamViewPage() {
         "DELETE"
       );
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [`/api/teams/${teamId}/details`] });
+    onSuccess: async () => {
+      const leagueId = team?.leagueId;
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: [`/api/teams/${teamId}/details`] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/bowler-leagues"] }),
+        ...(leagueId === undefined ? [] : [
+          queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/roster-payment-responsibility/1`] }),
+          queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/canonical-due-past-due/2`] }),
+        ]),
+        queryClient.invalidateQueries({ predicate: ({ queryKey }) => typeof queryKey[0] === "string" && queryKey[0].startsWith("/api/financials/due-past-due") }),
+      ]);
       setShowRemoveDialog(null);
       toast({
         title: "Bowler removed",
