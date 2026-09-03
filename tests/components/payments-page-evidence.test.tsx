@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import PaymentsPage from "@/pages/payments-page";
 import type { CanonicalPaymentReport, CanonicalPaymentRow } from "@shared/canonical-payment-report";
@@ -47,7 +48,10 @@ function report(rows: CanonicalPaymentRow[]): CanonicalPaymentReport {
 function renderPage(rows: CanonicalPaymentRow[]) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, queryFn: async () => ({ data: [] }) } } });
   client.setQueryData(["/api/user"], { success: true, data: { id: 1, role: "org_admin", organizationId: 1 } });
-  client.setQueryData(["/api/leagues"], { data: [{ id: 7, name: "Test League", organizationId: 1, locationId: 2 }] });
+  client.setQueryData(["/api/leagues"], { data: [
+    { id: 7, name: "Test League", organizationId: 1, locationId: 2, active: true },
+    { id: 8, name: "Archived League", organizationId: 1, locationId: 2, active: false },
+  ] });
   client.setQueryData(["/api/payments", "paginated", "with-disputes", 1, 50], { success: true, data: [], pagination: { page: 1, limit: 50, total: 0, totalPages: 1 } });
   client.setQueryData(["/api/bowlers"], { data: [{ id: 42, name: "Review Bowler", organizationId: 1 }] });
   client.setQueryData(["/api/financials/f5/payments", 7, 1, 50, 1, "org_admin"], { data: report(rows) });
@@ -70,5 +74,15 @@ describe("PaymentsPage canonical evidence presentation", () => {
     renderPage([]);
     expect(await screen.findByRole("heading", { name: "Payments" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Payments needing review" })).not.toBeInTheDocument();
+  });
+
+  it("lists only active leagues in the financial scope selector", async () => {
+    const user = userEvent.setup();
+    renderPage([]);
+
+    await user.click(await screen.findByRole("combobox", { name: "Financial league scope" }));
+
+    expect(screen.getByRole("option", { name: "Test League" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Archived League" })).not.toBeInTheDocument();
   });
 });

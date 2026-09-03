@@ -143,7 +143,10 @@ export default function PaymentsPage() {
 
   const payments = useMemo(() => paymentsResponse?.data || [], [paymentsResponse?.data]);
   const bowlers = useMemo(() => bowlersResponse?.data || [], [bowlersResponse?.data]);
-  const leagues = useMemo(() => leaguesResponse?.data ?? [], [leaguesResponse?.data]);
+  const leagues = useMemo(
+    () => (leaguesResponse?.data ?? []).filter((league) => league.active),
+    [leaguesResponse?.data],
+  );
   // A league action card carries its league context into the records page.
   // If that league is not present in the server-authorized list (for example,
   // a stale bookmark or a location-scoped payment manager), fall back to the
