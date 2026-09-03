@@ -48,6 +48,10 @@ vi.mock('@/components/payment-sync-retry-status', () => ({
   PaymentSyncRetryStatus: () => <div data-testid="stub-retry-status" />,
 }));
 
+vi.mock('@/components/admin-bowler-link-panel', () => ({
+  AdminBowlerLinkPanel: () => <div data-testid="stub-admin-bowler-link-panel" />,
+}));
+
 let currentSearch = '';
 let currentPath = '/bowlers/55';
 vi.mock('wouter', async () => {
@@ -99,9 +103,10 @@ const DETAILS: BowlerDetailsResponse = {
   ],
 };
 
-function renderPage(search: string) {
+function renderPage(search: string, role: 'user' | 'org_admin' | 'system_admin' = 'user') {
   currentSearch = search;
   currentPath = `/bowlers/${BOWLER_ID}${search ? `?${search}` : ''}`;
+  const systemScope = role === 'system_admin' ? '&organizationId=1' : '';
 
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0, staleTime: Infinity } },
@@ -110,8 +115,8 @@ function renderPage(search: string) {
     [`/api/bowlers/${BOWLER_ID}/details`],
     { success: true, data: DETAILS },
   );
-  qc.setQueryData(['/api/user'], { success: true, data: { role: 'user', organizationId: 1 } });
-  qc.setQueryData(["/api/financials/leagues", LEAGUE_ID, "canonical-due-past-due/2", BOWLER_ID, ""], {
+  qc.setQueryData(['/api/user'], { success: true, data: { role, organizationId: 1 } });
+  qc.setQueryData(["/api/financials/leagues", LEAGUE_ID, "canonical-due-past-due/2", BOWLER_ID, systemScope], {
     success: true,
     data: {
       contractVersion: "canonical-due-past-due/2",
@@ -123,6 +128,10 @@ function renderPage(search: string) {
       rows: [],
       totals: { amountMinor: 0, allocatedMinor: 0, outstandingMinor: 0, collectiblePastDueMinor: 0, reviewCount: 0, settledCount: 0, voidedCount: 0 },
     },
+  });
+  qc.setQueryData(["/api/financials/f5/payments", LEAGUE_ID, BOWLER_ID, 1, role, 1], {
+    success: true,
+    data: { rows: [], totalTransactions: 0, mode: "canonical", paymentTiming: "weekly" },
   });
 
   return render(
@@ -229,5 +238,17 @@ describe('BowlerViewPage back link', () => {
     expect(backLink).toHaveAttribute('href', '/home');
     expect(backLink).toHaveTextContent(/back to dashboard/i);
     expect(screen.queryByTestId('link-back-to-team')).not.toBeInTheDocument();
+  });
+
+  it.each(['org_admin', 'system_admin'] as const)('shows payment-partner management to %s', async (role) => {
+    renderPage('', role);
+
+    expect(await screen.findByTestId('stub-admin-bowler-link-panel')).toBeInTheDocument();
+  });
+
+  it('does not show payment-partner management to a regular user', () => {
+    renderPage('', 'user');
+
+    expect(screen.queryByTestId('stub-admin-bowler-link-panel')).not.toBeInTheDocument();
   });
 });

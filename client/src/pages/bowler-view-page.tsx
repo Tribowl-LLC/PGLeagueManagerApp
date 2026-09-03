@@ -39,9 +39,10 @@ export default function BowlerViewPage() {
   const currentUserRole = currentUserResponse?.data?.role;
   const systemScope = currentUserRole === "system_admin" && currentUserResponse?.data?.organizationId ? `&organizationId=${encodeURIComponent(currentUserResponse.data.organizationId)}` : "";
   const canEditBowler = currentUserRole === "system_admin" || currentUserRole === "org_admin";
-  // Payment-partner linking is a tenant-admin workflow. Keep the legacy
-  // system-admin bowler-link UI retired under the staff/bowler split.
-  const canManagePaymentLinks = currentUserRole === "org_admin";
+  // Payment-partner linking is an administrator workflow. The panel scopes
+  // every operation to the selected bowler's organization, so platform
+  // administrators can use the same tenant-safe flow as organization admins.
+  const canManagePaymentLinks = currentUserRole === "org_admin" || currentUserRole === "system_admin";
 
   const search = useSearch();
   const explicitBackLink = useMemo(() => {
