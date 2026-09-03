@@ -10,7 +10,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { csrfFetch, queryClient } from "@/lib/queryClient";
-import type { CanonicalPaymentRow, CanonicalPaymentTiming } from "@shared/canonical-payment-report";
+import type { CanonicalPaymentRow } from "@shared/canonical-payment-report";
 import type { Payment } from "@shared/schema";
 
 type Props = {
@@ -19,7 +19,6 @@ type Props = {
   bowlerName: string;
   canCorrect: boolean;
   organizationId?: number | null;
-  paymentTiming?: CanonicalPaymentTiming;
   onClose: () => void;
 };
 
@@ -61,7 +60,7 @@ async function correctionFingerprint(payload: { paymentId: number; correctionMod
   return `lvcorrection:v3:${Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("")}`;
 }
 
-export function PaymentDetailsDialog({ payment, evidence, bowlerName, canCorrect, organizationId, paymentTiming, onClose }: Props) {
+export function PaymentDetailsDialog({ payment, evidence, bowlerName, canCorrect, organizationId, onClose }: Props) {
   const [editingCorrection, setEditingCorrection] = useState(false);
   const [reason, setReason] = useState("");
   const [correctionBusy, setCorrectionBusy] = useState(false);
@@ -147,14 +146,6 @@ export function PaymentDetailsDialog({ payment, evidence, bowlerName, canCorrect
           <div><dt className="text-muted-foreground">Payment type</dt><dd>{paymentTypeLabel(payment)}</dd></div>
           <div><dt className="text-muted-foreground">Settlement</dt><dd><Badge variant="outline">{displayStatus}</Badge></dd></div>
         </dl>
-
-        {paymentTiming && (
-          <p className="text-sm text-muted-foreground" data-testid="payment-timing">
-            {paymentTiming.paymentMode === "upfront" ? "Upfront payment" : "Weekly payment"}
-            {paymentTiming.upfrontDueAt ? ` · due ${paymentTiming.upfrontDueAtLocal ?? paymentTiming.upfrontDueAt}` : ""}
-            {` · timezone ${paymentTiming.timezone ?? "UTC"} · canonical billing`}
-          </p>
-        )}
 
         <section className="space-y-2" aria-labelledby="payment-allocation-heading">
           <h3 id="payment-allocation-heading" className="font-medium">Applied to</h3>

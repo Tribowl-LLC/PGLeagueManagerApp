@@ -74,7 +74,7 @@ beforeEach(() => {
 
 describe("PaymentDetailsDialog", () => {
   it("shows friendly canonical allocation dates without internal identifiers", () => {
-    render(<PaymentDetailsDialog payment={payment} evidence={evidence} bowlerName="Test Bowler" canCorrect paymentTiming={{ paymentMode: "weekly", upfrontDueAt: null, timezone: "America/Detroit", source: "canonical" }} onClose={() => {}} />);
+    render(<PaymentDetailsDialog payment={payment} evidence={evidence} bowlerName="Test Bowler" canCorrect onClose={() => {}} />);
 
     expect(screen.getByRole("dialog", { name: "Payment Details" })).toBeInTheDocument();
     expect(screen.getByText("Confirmed paid")).toBeInTheDocument();
@@ -84,7 +84,6 @@ describe("PaymentDetailsDialog", () => {
     expect(screen.getByText("$20.00")).toBeInTheDocument();
     expect(screen.queryByText("occurrence-1")).not.toBeInTheDocument();
     expect(screen.queryByText("obligation-1")).not.toBeInTheDocument();
-    expect(screen.getByTestId("payment-timing")).toHaveTextContent("Weekly payment · timezone America/Detroit · canonical billing");
   });
 
   it("preserves the authorized cash correction flow and refreshes both projections", async () => {

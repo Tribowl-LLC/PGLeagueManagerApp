@@ -61,6 +61,7 @@ describe("PaymentsPage canonical evidence presentation", () => {
     expect(await screen.findByRole("heading", { name: "Payments needing review" })).toBeInTheDocument();
     expect(screen.getByText("Review Bowler")).toBeInTheDocument();
     expect(screen.getByText("$30.00")).toBeInTheDocument();
+    expect(screen.getByTestId("payment-timing-summary")).toHaveTextContent("Weekly payment · timezone America/Detroit · canonical billing");
     expect(screen.queryByText("Financial payment evidence")).not.toBeInTheDocument();
     expect(screen.queryByTestId("canonical-payment-evidence-table")).not.toBeInTheDocument();
   });

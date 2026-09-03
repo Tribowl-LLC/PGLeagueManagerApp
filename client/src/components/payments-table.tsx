@@ -13,13 +13,12 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { isCardPaymentType } from "@shared/schema/constants";
 import { ResendReceiptDialog } from "@/components/resend-receipt-dialog";
-import { ViewReceiptButton } from "@/components/view-receipt-button";
 import {
   PaymentDisputeBadge,
   PaymentDisputeDetails,
 } from "@/components/payment-dispute-details";
 import type { Payment, PaymentRowDisputeSummary, Bowler, League } from "@shared/schema";
-import type { CanonicalPaymentRow, CanonicalPaymentTiming } from "@shared/canonical-payment-report";
+import type { CanonicalPaymentRow } from "@shared/canonical-payment-report";
 import { PaymentDetailsDialog, paymentEvidenceDisplayStatus } from "@/components/payment-details-dialog";
 
 type PaymentWithDisputes = Payment & { disputes?: PaymentRowDisputeSummary[] };
@@ -56,7 +55,6 @@ interface Props {
   paymentBusinessDates?: Map<number, string>;
   paymentCanonicalRows?: Map<number, CanonicalPaymentRow>;
   organizationId?: number | null;
-  paymentTiming?: CanonicalPaymentTiming;
 }
 
 // Stable default reference so the optional `leagues` prop doesn't create a
@@ -75,7 +73,6 @@ export function PaymentsTable({
   paymentBusinessDates,
   paymentCanonicalRows,
   organizationId,
-  paymentTiming,
 }: Props) {
   const [resendTarget, setResendTarget] = useState<Payment | null>(null);
   const [detailsTarget, setDetailsTarget] = useState<Payment | null>(null);
@@ -174,10 +171,6 @@ export function PaymentsTable({
                           {expanded ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
                         </Button>
                       )}
-                      <ViewReceiptButton
-                        payment={payment}
-                        locationId={leagueLocationMap.get(payment.leagueId) ?? null}
-                      />
                       {canResend && (
                         <Button
                           size="icon"
@@ -237,7 +230,6 @@ export function PaymentsTable({
         bowlerName={detailsTarget ? bowlers.find((bowler) => bowler.id === detailsTarget.bowlerId)?.name || "Unknown Bowler" : ""}
         canCorrect={isAdmin && !isPaymentManager}
         organizationId={organizationId}
-        paymentTiming={paymentTiming}
         onClose={() => setDetailsTarget(null)}
       />
     </div>

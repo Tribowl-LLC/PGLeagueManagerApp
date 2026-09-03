@@ -309,6 +309,14 @@ export default function PaymentsPage() {
             )}
           </div>
 
+          {financialReportData[0]?.paymentTiming && (
+            <p className="text-sm text-muted-foreground" data-testid="payment-timing-summary">
+              {financialReportData[0].paymentTiming.paymentMode === "upfront" ? "Upfront payment" : "Weekly payment"}
+              {financialReportData[0].paymentTiming.upfrontDueAt ? ` · due ${financialReportData[0].paymentTiming.upfrontDueAtLocal ?? financialReportData[0].paymentTiming.upfrontDueAt}` : ""}
+              {` · timezone ${financialReportData[0].paymentTiming.timezone ?? "UTC"} · canonical billing`}
+            </p>
+          )}
+
           {orphanedFinancialRows.length > 0 && (
             <section className="space-y-2 rounded-md border border-destructive/40 bg-destructive/5 p-4" aria-labelledby="payments-needing-review-heading">
               <h2 id="payments-needing-review-heading" className="font-semibold">Payments needing review</h2>
@@ -343,7 +351,6 @@ export default function PaymentsPage() {
             paymentBusinessDates={paymentBusinessDates}
             paymentCanonicalRows={paymentCanonicalRows}
             organizationId={financialReportData[0]?.organizationId ?? userResponse?.data?.organizationId ?? null}
-            paymentTiming={financialReportData[0]?.paymentTiming}
           />
           </div>
 
