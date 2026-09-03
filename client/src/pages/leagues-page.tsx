@@ -58,6 +58,7 @@ export default function LeaguesPage() {
 
   const { data: locationsResponse } = useQuery<{ data: Location[] }>({
     queryKey: ["/api/locations"],
+    enabled: canManageLeagues,
   });
 
   const allLocations = locationsResponse?.data || [];
