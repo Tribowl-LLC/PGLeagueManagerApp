@@ -16,6 +16,15 @@ evidence, financial command and reservations before committing; provider I/O
 occurs only after commit. Success creates one tender parent and one allocation
 per covered obligation.
 
+Standing provider charges are classified as unattended card-not-present
+payments. The consent status read (`GET .../standing-autopay/1`) includes only
+the narrow `paymentAttention: "scheduled_payment_declined"` signal when the
+current consent has an actionable hard-declined charge with at least one
+unsettled obligation. It does not expose provider or operation identifiers.
+The signal clears when a one-time FIFO payment settles those obligations, so
+the normal next-cutoff quote becomes visible again; the client refetches both
+status and quote after a successful one-time payment.
+
 Cutoff preparation failures are recorded durably per consent version, cutoff,
 and occurrence revision. A transient failure is deferred with exponential
 backoff (one minute through six hours), so another payer due at the same time

@@ -6,11 +6,13 @@ import {
   clampPaymentWeekCount,
   clearWalletRequestKeyForTerminalStatus,
   hasPositivePaymentEvidence,
+  invalidatePaymentViews,
   MakePaymentReadError,
   resolveSavedCardReadState,
   resetPaymentSelectionForLeagueChange,
   shouldReinitializeOneTimeCardEditor,
 } from "@/pages/make-payment-page";
+import { queryClient } from "@/lib/queryClient";
 
 vi.mock("@/components/bowler-layout", () => ({ BowlerLayout: ({ children }: { children: ReactNode }) => <div data-testid="bowler-layout">{children}</div> }));
 
@@ -25,6 +27,14 @@ describe("dedicated make-payment guards", () => {
     const requestKeyRef = { current: "wallet-request-key" };
     clearWalletRequestKeyForTerminalStatus("provider_unknown", requestKeyRef);
     expect(requestKeyRef.current).toBe("wallet-request-key");
+  });
+
+  it("invalidates standing status and quote after a successful one-time payment", () => {
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries").mockResolvedValue(undefined);
+    invalidatePaymentViews(17, 42);
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/financials/leagues/17/standing-autopay/1"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/financials/leagues/17/standing-autopay/1/quote"] });
+    invalidate.mockRestore();
   });
 
   it("reinitializes an unsaved-card editor after a partial payment when no card was saved", () => {

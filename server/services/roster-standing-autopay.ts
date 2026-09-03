@@ -345,7 +345,71 @@ async function revokeConsentAndStopOperationsInTransaction(
   return { ...input.consent, state: "revoked" as const, revokedAt: input.revokedAt };
 }
 
-function consentWire(consent: typeof autopayConsents.$inferSelect | undefined, partners: number[], organizationId: number, leagueId: number, payerBowlerId: number) {
+async function latestActionableStandingOperation(
+  tx: StandingTx,
+  input: { organizationId: number; leagueId: number },
+  consent: typeof autopayConsents.$inferSelect | undefined,
+  payerBowlerId: number,
+): Promise<"scheduled_payment_declined" | null> {
+  if (!consent) return null;
+  const [row] = await tx.select({ id: paymentOperations.id }).from(paymentOperations).innerJoin(
+    paymentOperationStandingAutopayBindings,
+    and(
+      eq(paymentOperationStandingAutopayBindings.operationId, paymentOperations.id),
+      eq(paymentOperationStandingAutopayBindings.organizationId, input.organizationId),
+      eq(paymentOperationStandingAutopayBindings.leagueId, input.leagueId),
+    ),
+  ).innerJoin(
+    autopayConsents,
+    and(
+      eq(autopayConsents.id, paymentOperationStandingAutopayBindings.consentId),
+      eq(autopayConsents.consentVersion, paymentOperationStandingAutopayBindings.consentVersion),
+      eq(autopayConsents.organizationId, input.organizationId),
+      eq(autopayConsents.leagueId, input.leagueId),
+      eq(autopayConsents.payerBowlerId, payerBowlerId),
+    ),
+  ).where(and(
+    eq(paymentOperations.organizationId, input.organizationId),
+    eq(paymentOperations.leagueId, input.leagueId),
+    eq(paymentOperations.operationType, "standing_autopay_charge"),
+    eq(paymentOperations.status, "action_required"),
+    sql`EXISTS (
+      SELECT 1
+      FROM payment_operation_roster_snapshot_items snapshot_item
+      INNER JOIN payment_obligations obligation
+        ON obligation.id = snapshot_item.obligation_id
+       AND obligation.organization_id = snapshot_item.organization_id
+       AND obligation.league_id = snapshot_item.league_id
+      WHERE snapshot_item.organization_id = ${input.organizationId}
+        AND snapshot_item.league_id = ${input.leagueId}
+        AND snapshot_item.operation_id = ${paymentOperations.id}
+        AND obligation.state IN ('open', 'partially_settled')
+        AND obligation.amount_minor > (
+          SELECT COALESCE(SUM(allocation.amount_minor), 0)
+          FROM payment_allocations allocation
+          WHERE allocation.organization_id = ${input.organizationId}
+            AND allocation.league_id = ${input.leagueId}
+            AND allocation.obligation_id = obligation.id
+            AND allocation.state = 'active'
+        )
+    )`,
+  )).orderBy(
+    desc(paymentOperations.completedAt),
+    desc(paymentOperations.updatedAt),
+    desc(paymentOperations.id),
+  ).limit(1);
+  if (!row) return null;
+  return "scheduled_payment_declined";
+}
+
+function consentWire(
+  consent: typeof autopayConsents.$inferSelect | undefined,
+  partners: number[],
+  organizationId: number,
+  leagueId: number,
+  payerBowlerId: number,
+  paymentAttention: "scheduled_payment_declined" | null = null,
+) {
   return {
     contractVersion: "standing-autopay-consent/1" as const,
     organizationId, leagueId, payerBowlerId,
@@ -354,6 +418,7 @@ function consentWire(consent: typeof autopayConsents.$inferSelect | undefined, p
     state: consent?.state ?? "none",
     paymentMode: "weekly" as const,
     partnerBowlerIds: partners,
+    paymentAttention,
   };
 }
 
@@ -366,7 +431,8 @@ export async function readStandingAutopayConsent(input: { organizationId: number
     await leagueFor(tx, input.organizationId, input.leagueId);
     const consent = await activeConsent(tx, input);
     const partners = consent ? await consentPartners(tx, { organizationId: input.organizationId, leagueId: input.leagueId, consentId: consent.id, consentVersion: consent.consentVersion, payerBowlerId: input.payerBowlerId }) : [];
-    return consentWire(consent, partners.map((row) => row.partnerBowlerId), input.organizationId, input.leagueId, input.payerBowlerId);
+    const paymentAttention = await latestActionableStandingOperation(tx, input, consent, input.payerBowlerId);
+    return consentWire(consent, partners.map((row) => row.partnerBowlerId), input.organizationId, input.leagueId, input.payerBowlerId, paymentAttention);
   });
 }
 

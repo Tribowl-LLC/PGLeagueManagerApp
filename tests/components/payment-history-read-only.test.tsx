@@ -162,6 +162,26 @@ describe("PaymentHistoryContent", () => {
     expect(screen.getByRole("alert")).not.toHaveTextContent("409:");
   });
 
+  it("prioritizes the actionable scheduled decline over the misleading arrears quote", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, queryFn: async ({ queryKey }) => {
+      if (String(queryKey[0]).endsWith("/quote")) throw new Error("409: Pay older unpaid obligations with a one-time payment before automatic payments can resume.");
+      return { data: {
+        state: "active",
+        partnerBowlerIds: [],
+        paymentAttention: "scheduled_payment_declined",
+      } };
+    } } } });
+    render(<QueryClientProvider client={queryClient}><StandingAutopayCard
+      league={{ ...league, payingLineupSize: 4 }} bowlerId={42}
+      savedCards={[savedCard]} bowlerHasEmail={true} card={null} isInitialized={false}
+      cardEditorMode={null} initializeCard={vi.fn()} cleanupCard={vi.fn()} onCardEditorModeChange={vi.fn()}
+    /></QueryClientProvider>);
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("scheduled automatic payment was declined"));
+    expect(screen.getByRole("alert")).toHaveTextContent("Use the One-Time Payment section above");
+    expect(screen.queryByText(/Next Payment Scheduled:/)).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).not.toHaveTextContent("ARREARS_REQUIRE_ONE_TIME_FIFO");
+  });
+
   it("reuses the consent command key when the outcome is unresolved", async () => {
     apiRequestMock.mockRejectedValue(new Error("temporary network failure"));
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, queryFn: async () => ({ data: { state: "none", partnerBowlerIds: [] } }) } } });

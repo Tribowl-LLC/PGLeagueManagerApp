@@ -130,7 +130,7 @@ export class RosterStandingAutopayOperationExecutor {
     if (!cutoffClaimed) return getPaymentOperationForOrganization(operation.organizationId, operation.id);
     let result;
     try {
-      result = await provider.processPayment(sourceId, operation.amountMinor, false, customerId, undefined, { paymentKey: operation.providerIdempotencyKey, providerLocationId: snapshot.binding.providerLocationId, referenceId: operation.id });
+      result = await provider.processPayment(sourceId, operation.amountMinor, false, customerId, undefined, { paymentKey: operation.providerIdempotencyKey, providerLocationId: snapshot.binding.providerLocationId, referenceId: operation.id }, "standing_unattended");
       if (result.status !== "COMPLETED" || !result.id) throw new PaymentProviderError("The standing payment outcome could not be confirmed.", "PAYMENT_NOT_COMPLETED", undefined, { disposition: "provider_unknown", providerCode: "PAYMENT_NOT_COMPLETED", providerOrderId: result.orderId });
     } catch (error) {
       return this.recordFailure(operation, leaseToken, error, true);
