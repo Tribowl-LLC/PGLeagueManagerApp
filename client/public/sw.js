@@ -3,7 +3,7 @@
 // Bump this value for every web release that changes the Vite output. Keeping
 // release caches separate prevents an older service worker from satisfying a
 // new entry module with a stale hashed chunk after a deploy.
-const CACHE_NAME = 'leaguevault-v3';
+const CACHE_NAME = 'leaguevault-v4';
 const STATIC_ASSETS = [
   '/',
   '/manifest.json',
@@ -35,6 +35,11 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
+
+  // Third-party SDKs own their loading, caching, and failure behavior. In
+  // particular, proxying Square through this worker can replace its script or
+  // stylesheet with an app fallback response and corrupt provider startup.
+  if (url.origin !== self.location.origin) return;
 
   const isJavaScriptRequest = event.request.destination === 'script'
     || (url.pathname.startsWith('/assets/') && /\.m?js$/i.test(url.pathname));

@@ -1,166 +1,196 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  loadScript: vi.fn(),
-  logger: {
-    error: vi.fn(),
-    warn: vi.fn(),
-    debug: vi.fn(),
-  },
+  logger: { error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
-vi.mock("@/lib/utils", () => ({ loadScript: mocks.loadScript }));
 vi.mock("@/lib/logger", () => ({ logger: mocks.logger }));
 
 import {
   initializeSquare,
-  resetSquarePayments,
+  refreshSquarePaymentConfiguration,
+  resetSquarePaymentsForTests,
   SQUARE_INITIALIZATION_FALLBACK_MESSAGE,
 } from "@/lib/square";
 
-describe("Square initialization recovery", () => {
+const configResponse = (appId: string, locationId: string) =>
+  new Response(JSON.stringify({ appId, locationId }), {
+    headers: { "Content-Type": "application/json" },
+  });
+
+const paymentSet = () => ({
+  card: vi.fn(),
+  paymentRequest: vi.fn(),
+  applePay: vi.fn(),
+  googlePay: vi.fn(),
+});
+
+async function currentSquareScript(): Promise<HTMLScriptElement> {
+  await vi.waitFor(() => {
+    expect(document.querySelector('script[src*="square.js"]')).not.toBeNull();
+  });
+  return document.querySelector('script[src*="square.js"]') as HTMLScriptElement;
+}
+
+describe("Square initialization ownership", () => {
   beforeEach(() => {
-    vi.useFakeTimers();
-    resetSquarePayments();
+    resetSquarePaymentsForTests();
+    document.querySelectorAll('script[src*="square.js"]').forEach((script) => script.remove());
     window.Square = undefined;
-    mocks.loadScript.mockReset();
     mocks.logger.error.mockReset();
-    mocks.logger.warn.mockReset();
-    mocks.logger.debug.mockReset();
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ appId: "sandbox-app", locationId: "LOC123" }), {
-        headers: { "Content-Type": "application/json" },
-      }),
-    ));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(configResponse("sandbox-app", "LOC123")));
   });
 
   afterEach(() => {
-    resetSquarePayments();
+    resetSquarePaymentsForTests();
+    document.querySelectorAll('script[src*="square.js"]').forEach((script) => script.remove());
+    window.Square = undefined;
     vi.unstubAllGlobals();
     vi.useRealTimers();
   });
 
-  it("reloads the SDK after a timed-out handshake instead of retrying the stale global", async () => {
-    let scriptLoads = 0;
-    let paymentInitializations = 0;
-    mocks.loadScript.mockImplementation(async () => {
-      scriptLoads += 1;
-      const firstAttempt = scriptLoads === 1;
-      Object.defineProperty(window, "Square", {
-        configurable: true,
-        value: {
-          payments: vi.fn(() => {
-            paymentInitializations += 1;
-            return firstAttempt
-              ? new Promise(() => {})
-              : Promise.resolve({ card: vi.fn() });
-          }),
-        },
-      });
-    });
+  it("shares one SDK load and one payments instance across concurrent consumers", async () => {
+    const payments = paymentSet();
+    const paymentsFactory = vi.fn().mockResolvedValue(payments);
+    const cardConsumer = initializeSquare(1);
+    const walletConsumer = initializeSquare(1);
+    const script = await currentSquareScript();
+    window.Square = { payments: paymentsFactory };
+    script.dispatchEvent(new Event("load"));
 
-    const pending = initializeSquare(1);
-    await vi.advanceTimersByTimeAsync(10_000);
-    await vi.advanceTimersByTimeAsync(1_000);
-    await expect(pending).resolves.toEqual(expect.objectContaining({ card: expect.any(Function) }));
-
-    expect(scriptLoads).toBe(2);
-    expect(paymentInitializations).toBe(2);
-    expect(mocks.logger.error).not.toHaveBeenCalled();
+    await expect(cardConsumer).resolves.toBe(payments);
+    await expect(walletConsumer).resolves.toBe(payments);
+    expect(document.querySelectorAll('script[src*="square.js"]')).toHaveLength(1);
+    expect(paymentsFactory).toHaveBeenCalledOnce();
+    expect(fetch).toHaveBeenCalledOnce();
   });
 
-  it("returns a stable fallback after bounded retries exhaust", async () => {
-    mocks.loadScript.mockRejectedValue(new Error("network unavailable"));
+  it("supports overlapping locations without allowing one to invalidate the other", async () => {
+    vi.stubGlobal("fetch", vi.fn((url: string) => Promise.resolve(
+      url.includes("locationId=1")
+        ? configResponse("sandbox-app", "LOC1")
+        : configResponse("sandbox-app", "LOC2"),
+    )));
+    const one = paymentSet();
+    const two = paymentSet();
+    const paymentsFactory = vi.fn((_appId: string, locationId: string) =>
+      Promise.resolve(locationId === "LOC1" ? one : two));
+    const locationOne = initializeSquare(1);
+    const locationTwo = initializeSquare(2);
+    const script = await currentSquareScript();
+    window.Square = { payments: paymentsFactory };
+    script.dispatchEvent(new Event("load"));
+
+    await expect(locationOne).resolves.toBe(one);
+    await expect(locationTwo).resolves.toBe(two);
+    expect(paymentsFactory).toHaveBeenCalledTimes(2);
+    expect(document.querySelectorAll('script[src*="square.js"]')).toHaveLength(1);
+  });
+
+  it("retries only an explicit script network failure", async () => {
+    vi.useFakeTimers();
+    const pending = initializeSquare(1);
+    const first = await currentSquareScript();
+    first.dispatchEvent(new Event("error"));
+    await vi.advanceTimersByTimeAsync(500);
+
+    const second = await currentSquareScript();
+    expect(second).not.toBe(first);
+    const payments = paymentSet();
+    window.Square = { payments: vi.fn().mockResolvedValue(payments) };
+    second.dispatchEvent(new Event("load"));
+    await expect(pending).resolves.toBe(payments);
+  });
+
+  it("does not reinject an SDK that evaluated without its payments API", async () => {
+    const pending = initializeSquare(1);
+    const script = await currentSquareScript();
+    script.dispatchEvent(new Event("load"));
+
+    await expect(pending).rejects.toThrow(SQUARE_INITIALIZATION_FALLBACK_MESSAGE);
+    await expect(initializeSquare(1)).rejects.toThrow(SQUARE_INITIALIZATION_FALLBACK_MESSAGE);
+    expect(document.querySelectorAll('script[src*="square.js"]')).toHaveLength(1);
+    expect(mocks.logger.error).toHaveBeenCalledOnce();
+  });
+
+  it("retries a settled payments handshake without reloading the SDK", async () => {
+    vi.useFakeTimers();
+    const payments = paymentSet();
+    const paymentsFactory = vi.fn()
+      .mockRejectedValueOnce(new Error("temporary provider handshake failure"))
+      .mockResolvedValue(payments);
+    window.Square = { payments: paymentsFactory };
+
+    const pending = initializeSquare(1);
+    await vi.advanceTimersByTimeAsync(750);
+    await expect(pending).resolves.toBe(payments);
+    expect(paymentsFactory).toHaveBeenCalledTimes(2);
+    expect(document.querySelectorAll('script[src*="square.js"]')).toHaveLength(0);
+  });
+
+  it("allows a later mount to retry after config transport recovers", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValue(configResponse("sandbox-app", "LOC1")));
+
+    await expect(initializeSquare(1)).rejects.toThrow(SQUARE_INITIALIZATION_FALLBACK_MESSAGE);
+    const recovered = initializeSquare(1);
+    const script = await currentSquareScript();
+    const payments = paymentSet();
+    window.Square = { payments: vi.fn().mockResolvedValue(payments) };
+    script.dispatchEvent(new Event("load"));
+
+    await expect(recovered).resolves.toBe(payments);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("invalidates credential-bound location state while preserving SDK ownership", async () => {
+    const firstPayments = paymentSet();
+    const secondPayments = paymentSet();
+    const paymentsFactory = vi.fn()
+      .mockResolvedValueOnce(firstPayments)
+      .mockResolvedValueOnce(secondPayments);
+    window.Square = { payments: paymentsFactory };
+    await expect(initializeSquare(1)).resolves.toBe(firstPayments);
+
+    expect(refreshSquarePaymentConfiguration(1, "sandbox-old", "sandbox-new"))
+      .toEqual({ reloadRequired: false });
+    vi.mocked(fetch).mockResolvedValueOnce(configResponse("sandbox-new", "LOC2"));
+    await expect(initializeSquare(1)).resolves.toBe(secondPayments);
+    expect(paymentsFactory).toHaveBeenCalledTimes(2);
+    expect(document.querySelectorAll('script[src*="square.js"]')).toHaveLength(0);
+
+    expect(refreshSquarePaymentConfiguration(1, "sandbox-new", "production-app"))
+      .toEqual({ reloadRequired: true });
+  });
+
+  it("does not overlap a payments factory that times out", async () => {
+    vi.useFakeTimers();
+    const paymentsFactory = vi.fn(() => new Promise<ReturnType<typeof paymentSet>>(() => {}));
+    window.Square = { payments: paymentsFactory };
+
     const pending = initializeSquare(1);
     const rejected = expect(pending).rejects.toThrow(SQUARE_INITIALIZATION_FALLBACK_MESSAGE);
-
-    await vi.advanceTimersByTimeAsync(60_000);
+    await vi.advanceTimersByTimeAsync(10_000);
     await rejected;
-    expect(mocks.logger.error).toHaveBeenCalledWith(
-      "Square",
-      "Square initialization failed after bounded retries",
-      expect.any(Error),
-    );
+    await expect(initializeSquare(1)).rejects.toThrow(SQUARE_INITIALIZATION_FALLBACK_MESSAGE);
+    expect(paymentsFactory).toHaveBeenCalledOnce();
   });
 
-  it("keeps the newer location instance when an older initialization completes late", async () => {
-    let resolveLocationOne: ((response: Response) => void) | undefined;
-    const fetchMock = vi.fn((url: string) => {
-      if (url.includes("locationId=1")) {
-        return new Promise<Response>((resolve) => {
-          resolveLocationOne = resolve;
-        });
-      }
-      return Promise.resolve(new Response(JSON.stringify({ appId: "sandbox-app-two", locationId: "LOC2" }), {
-        headers: { "Content-Type": "application/json" },
-      }));
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    const locationOnePayments = { card: vi.fn() };
-    const locationTwoPayments = { card: vi.fn() };
-    mocks.loadScript.mockImplementation(async () => {
-      Object.defineProperty(window, "Square", {
-        configurable: true,
-        value: {
-          payments: vi.fn((appId: string) => Promise.resolve(
-            appId === "sandbox-app-one" ? locationOnePayments : locationTwoPayments,
-          )),
-        },
-      });
-    });
-
+  it("fails closed when a page attempts to mix sandbox and production SDKs", async () => {
+    vi.stubGlobal("fetch", vi.fn((url: string) => Promise.resolve(
+      url.includes("locationId=1")
+        ? configResponse("sandbox-app", "LOC1")
+        : configResponse("production-app", "LOC2"),
+    )));
     const locationOne = initializeSquare(1);
-    const locationTwo = initializeSquare(2);
-    await expect(locationTwo).resolves.toBe(locationTwoPayments);
-    expect(mocks.loadScript).toHaveBeenCalledOnce();
+    const first = await currentSquareScript();
+    const payments = paymentSet();
+    window.Square = { payments: vi.fn().mockResolvedValue(payments) };
+    first.dispatchEvent(new Event("load"));
+    await expect(locationOne).resolves.toBe(payments);
 
-    resolveLocationOne?.(new Response(JSON.stringify({ appId: "sandbox-app-one", locationId: "LOC1" }), {
-      headers: { "Content-Type": "application/json" },
-    }));
-    await expect(locationOne).rejects.toThrow(SQUARE_INITIALIZATION_FALLBACK_MESSAGE);
-
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    await expect(initializeSquare(2)).resolves.toBe(locationTwoPayments);
-    expect(mocks.loadScript).toHaveBeenCalledOnce();
-    expect(mocks.logger.error).not.toHaveBeenCalled();
-  });
-
-  it("keeps the newer location instance when an older initialization rejects late", async () => {
-    let rejectLocationOne: ((reason: Error) => void) | undefined;
-    const fetchMock = vi.fn((url: string) => {
-      if (url.includes("locationId=1")) {
-        return new Promise<Response>((_resolve, reject) => {
-          rejectLocationOne = reject;
-        });
-      }
-      return Promise.resolve(new Response(JSON.stringify({ appId: "sandbox-app-two", locationId: "LOC2" }), {
-        headers: { "Content-Type": "application/json" },
-      }));
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    const locationTwoPayments = { card: vi.fn() };
-    mocks.loadScript.mockImplementation(async () => {
-      Object.defineProperty(window, "Square", {
-        configurable: true,
-        value: {
-          payments: vi.fn(() => Promise.resolve(locationTwoPayments)),
-        },
-      });
-    });
-
-    const locationOne = initializeSquare(1);
-    const locationTwo = initializeSquare(2);
-    await expect(locationTwo).resolves.toBe(locationTwoPayments);
-    expect(mocks.loadScript).toHaveBeenCalledOnce();
-
-    rejectLocationOne?.(new Error("location one config unavailable"));
-    await expect(locationOne).rejects.toThrow(SQUARE_INITIALIZATION_FALLBACK_MESSAGE);
-
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    await expect(initializeSquare(2)).resolves.toBe(locationTwoPayments);
-    expect(mocks.loadScript).toHaveBeenCalledOnce();
-    expect(mocks.logger.error).not.toHaveBeenCalled();
+    await expect(initializeSquare(2)).rejects.toThrow(SQUARE_INITIALIZATION_FALLBACK_MESSAGE);
+    expect(document.querySelectorAll('script[src*="square.js"]')).toHaveLength(1);
   });
 });

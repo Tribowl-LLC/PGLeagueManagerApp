@@ -8,6 +8,7 @@ const __dirname = dirname(__filename);
 import { type Server } from "http";
 import viteConfig from "../vite.config";
 import { nanoid } from "nanoid";
+import { setStaticCacheHeaders } from "./static-cache-policy";
 
 const viteLogger = createLogger();
 
@@ -99,11 +100,7 @@ function serveStatic(app: Express) {
   app.use(express.static(distPath, {
     maxAge: '1y',
     immutable: true,
-    setHeaders(res, filePath) {
-      if (filePath.endsWith('index.html')) {
-        res.setHeader('Cache-Control', 'no-store');
-      }
-    }
+    setHeaders: setStaticCacheHeaders,
   }));
 
   // Hashed Vite chunks are JavaScript module requests. If a chunk is removed

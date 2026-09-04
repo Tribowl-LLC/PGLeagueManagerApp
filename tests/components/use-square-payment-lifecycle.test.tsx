@@ -1,16 +1,14 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { initializeSquare, resetSquarePayments, getPreWarmedCard, toast } = vi.hoisted(() => ({
+const { initializeSquare, getPreWarmedCard, toast } = vi.hoisted(() => ({
   initializeSquare: vi.fn(),
-  resetSquarePayments: vi.fn(),
   getPreWarmedCard: vi.fn(() => null),
   toast: vi.fn(),
 }));
 
 vi.mock("@/lib/square", () => ({
   initializeSquare,
-  resetSquarePayments,
   getPreWarmedCard,
   cardStyle: {},
 }));
@@ -71,6 +69,31 @@ describe("useSquarePayment editor lifecycle", () => {
     expect(destroy).toHaveBeenCalledOnce();
     expect(onError).not.toHaveBeenCalled();
     expect(toast).not.toHaveBeenCalled();
+  });
+
+  it("destroys and discards an old-location card when location changes during attach", async () => {
+    let resolveAttach!: () => void;
+    const attach = vi.fn(() => new Promise<void>((resolve) => { resolveAttach = resolve; }));
+    const destroy = vi.fn();
+    initializeSquare.mockResolvedValue({ card: async () => ({ attach, destroy }) });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const { result, rerender } = renderHook(
+      ({ locationId }) => useSquarePayment({ locationId }),
+      { initialProps: { locationId: 1 } },
+    );
+
+    let initialization!: Promise<void>;
+    act(() => { initialization = result.current.initializeCard(container); });
+    await waitFor(() => expect(attach).toHaveBeenCalledOnce());
+    rerender({ locationId: 2 });
+    resolveAttach();
+    await act(async () => { await initialization; });
+
+    expect(destroy).toHaveBeenCalledOnce();
+    expect(result.current.card).toBeNull();
+    expect(result.current.isInitialized).toBe(false);
+    container.remove();
   });
 
   it("uses the supplied error handler as the single terminal notification owner", async () => {

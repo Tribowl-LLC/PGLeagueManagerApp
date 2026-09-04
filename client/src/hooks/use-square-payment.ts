@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useToast } from "@/hooks/use-toast";
-import { initializeSquare, resetSquarePayments, getPreWarmedCard, cardStyle } from "@/lib/square";
+import { initializeSquare, getPreWarmedCard, cardStyle } from "@/lib/square";
 import { logger } from "@/lib/logger";
 import { sanitizePaymentErrorMessage } from "@/lib/payment-user-error";
 
@@ -37,6 +37,7 @@ export function useSquarePayment({ onError, locationId }: UseSquarePaymentOption
   const mountedRef = useRef(true);
   const cardRef = useRef<SquareCard | null>(null);
   const initializingRef = useRef(false);
+  const lifecycleEpochRef = useRef(0);
   const initializationAttempts = useRef(0);
   const onErrorRef = useRef(onError);
   const locationIdRef = useRef(locationId);
@@ -47,6 +48,7 @@ export function useSquarePayment({ onError, locationId }: UseSquarePaymentOption
   locationIdRef.current = locationId;
 
   const cleanupCard = useCallback(() => {
+    lifecycleEpochRef.current += 1;
     if (cardRef.current) {
       try {
         cardRef.current.destroy();
@@ -56,7 +58,6 @@ export function useSquarePayment({ onError, locationId }: UseSquarePaymentOption
       cardRef.current = null;
     }
     initializingRef.current = false;
-    resetSquarePayments();
     setCard(null);
     setIsInitialized(false);
     setError(null);
@@ -72,12 +73,18 @@ export function useSquarePayment({ onError, locationId }: UseSquarePaymentOption
     }
 
     initializingRef.current = true;
+    const lifecycleEpoch = lifecycleEpochRef.current;
+    const isStale = () => (
+      lifecycleEpoch !== lifecycleEpochRef.current ||
+      !mountedRef.current ||
+      !container.isConnected
+    );
     let initTimeout: ReturnType<typeof setTimeout> | undefined;
     let pendingCard: SquareCard | null = null;
 
     try {
       initTimeout = setTimeout(() => {
-        if (!container.isConnected) {
+        if (isStale()) {
           return;
         }
         if (mountedRef.current && !cardRef.current) {
@@ -92,9 +99,8 @@ export function useSquarePayment({ onError, locationId }: UseSquarePaymentOption
 
       const payments = await initializeSquare(locationIdRef.current);
 
-      if (!mountedRef.current || !container.isConnected) {
+      if (isStale()) {
         clearTimeout(initTimeout);
-        initializingRef.current = false;
         return;
       }
 
@@ -103,17 +109,16 @@ export function useSquarePayment({ onError, locationId }: UseSquarePaymentOption
         pendingCard = await payments.card({ style: cardStyle });
       }
 
-      if (!mountedRef.current || !container.isConnected) {
+      if (isStale()) {
         clearTimeout(initTimeout);
         pendingCard.destroy();
-        initializingRef.current = false;
         return;
       }
 
       await pendingCard.attach(container);
       clearTimeout(initTimeout);
 
-      if (mountedRef.current && container.isConnected) {
+      if (!isStale()) {
         cardRef.current = pendingCard;
         setCard(pendingCard);
         setIsInitialized(true);
@@ -122,19 +127,18 @@ export function useSquarePayment({ onError, locationId }: UseSquarePaymentOption
         initializingRef.current = false;
       } else {
         pendingCard.destroy();
-        initializingRef.current = false;
       }
     } catch (err) {
       if (initTimeout) clearTimeout(initTimeout);
       if (pendingCard && cardRef.current !== pendingCard) {
         try { pendingCard.destroy(); } catch {}
       }
-      initializingRef.current = false;
+      if (lifecycleEpoch === lifecycleEpochRef.current) initializingRef.current = false;
       // React may remove the editor while Square is resolving (for example,
       // when a saved-card query finishes). That is cancellation, not a
       // customer-facing provider failure, and retrying the detached node can
       // only reproduce Square's ElementNotFoundError.
-      if (!container.isConnected || !mountedRef.current) return;
+      if (isStale()) return;
       logger.error('useSquarePayment', 'Card initialization error', err);
       // task #514: sanitize the SDK init error before surfacing it,
       // so a stack-trace fragment or JSON-shaped string from the
@@ -154,7 +158,7 @@ export function useSquarePayment({ onError, locationId }: UseSquarePaymentOption
           const delay = Math.min(1000 * Math.pow(2, initializationAttempts.current), 5000);
 
           setTimeout(() => {
-            if (mountedRef.current && container.isConnected) {
+            if (lifecycleEpoch === lifecycleEpochRef.current && mountedRef.current && container.isConnected) {
               initializeCard(container);
             }
           }, delay);
@@ -186,6 +190,7 @@ export function useSquarePayment({ onError, locationId }: UseSquarePaymentOption
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      lifecycleEpochRef.current += 1;
       if (cardRef.current) {
         try {
           cardRef.current.destroy();
@@ -195,9 +200,16 @@ export function useSquarePayment({ onError, locationId }: UseSquarePaymentOption
         cardRef.current = null;
       }
       initializingRef.current = false;
-      resetSquarePayments();
     };
   }, []);
+
+  const previousLocationIdRef = useRef(locationId);
+  useEffect(() => {
+    if (previousLocationIdRef.current !== locationId) {
+      cleanupCard();
+      previousLocationIdRef.current = locationId;
+    }
+  }, [locationId, cleanupCard]);
 
   return {
     card,

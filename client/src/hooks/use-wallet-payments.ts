@@ -103,6 +103,7 @@ export function useWalletPayments({
   const googlePayInstanceRef = useRef<SquareWalletPayment | null>(null);
   const mountedRef = useRef(true);
   const initializedRef = useRef(false);
+  const initializationEpochRef = useRef(0);
   const amountCentsRef = useRef(amountCents);
   const onTokenReceivedRef = useRef(onTokenReceived);
   const onErrorRef = useRef(onError);
@@ -134,6 +135,7 @@ export function useWalletPayments({
   const prevLocationIdRef = useRef<number | null | undefined>(undefined);
 
   const destroyInstances = useCallback(() => {
+    initializationEpochRef.current += 1;
     try { applePayInstanceRef.current?.destroy(); } catch {}
     try { googlePayInstanceRef.current?.destroy(); } catch {}
     applePayInstanceRef.current = null;
@@ -171,12 +173,16 @@ export function useWalletPayments({
     if (initializedRef.current) return;
 
     let cancelled = false;
+    const initializationEpoch = initializationEpochRef.current;
+    const isCancelled = () => (
+      cancelled || !mountedRef.current || initializationEpoch !== initializationEpochRef.current
+    );
 
     async function init() {
       try {
         setDebugStatus(`init:loc=${locationId}`);
         const payments = await initializeSquare(locationId);
-        if (cancelled || !mountedRef.current) return;
+        if (isCancelled()) return;
         setDebugStatus(`square-ready`);
 
         // Initialization is deliberately delayed so the wallet containers can
@@ -193,35 +199,52 @@ export function useWalletPayments({
 
         let appleResult = 'skip';
         let appleAttached = false;
+        let pendingApplePay: SquareWalletPayment | null = null;
         try {
           setDebugStatus('trying-apple');
           const applePay = await payments.applePay(paymentRequest);
+          pendingApplePay = applePay;
           if (!applePay || (typeof applePay.attach !== 'function' && typeof applePay.tokenize !== 'function')) {
             appleResult = `not-available`;
-          } else if (cancelled || !mountedRef.current) {
+          } else if (isCancelled()) {
+            try { applePay.destroy(); } catch {}
             appleResult = `cancelled`;
           } else if (typeof applePay.attach === 'function') {
             if (!applePayRef.current) {
+              try { applePay.destroy(); } catch {}
               appleResult = 'ref-not-ready';
             } else {
               await applePay.attach(applePayRef.current);
-              applePayInstanceRef.current = applePay;
-              setApplePayAvailable(true);
-              appleAttached = true;
-              appleResult = 'attached';
+              if (isCancelled()) {
+                try { applePay.destroy(); } catch {}
+                appleResult = 'cancelled';
+              } else {
+                applePayInstanceRef.current = applePay;
+                pendingApplePay = null;
+                setApplePayAvailable(true);
+                appleAttached = true;
+                appleResult = 'attached';
+              }
             }
           } else {
             applePayInstanceRef.current = applePay;
+            pendingApplePay = null;
             setApplePayAvailable(true);
             setApplePayTokenizeOnly(true);
             appleResult = 'tokenize-only';
           }
         } catch (appleErr: unknown) {
+          if (isCancelled()) {
+            try { pendingApplePay?.destroy(); } catch {}
+          }
           appleResult = `ERR:${errorMessage(appleErr)}`;
         }
 
+        if (isCancelled()) return;
+
         let googleResult = 'skip';
         let googleAttached = false;
+        let pendingGooglePay: SquareWalletPayment | null = null;
         try {
           setDebugStatus('trying-google');
           // task #670: Skip Google Pay entirely when the browser
@@ -232,12 +255,15 @@ export function useWalletPayments({
             googleResult = 'unsupported-browser';
           } else {
             const googlePay = await payments.googlePay(paymentRequest);
+            pendingGooglePay = googlePay;
             if (!googlePay || (typeof googlePay.attach !== 'function' && typeof googlePay.tokenize !== 'function')) {
               googleResult = `not-available`;
-            } else if (cancelled || !mountedRef.current) {
+            } else if (isCancelled()) {
+              try { googlePay.destroy(); } catch {}
               googleResult = `cancelled`;
             } else if (typeof googlePay.attach === 'function') {
               if (!googlePayRef.current) {
+                try { googlePay.destroy(); } catch {}
                 googleResult = 'ref-not-ready';
               } else {
                 await googlePay.attach(googlePayRef.current, {
@@ -245,14 +271,18 @@ export function useWalletPayments({
                   buttonType: 'long',
                   buttonSizeMode: 'fill',
                 });
+                if (isCancelled()) {
+                  try { googlePay.destroy(); } catch {}
+                  googleResult = 'cancelled';
                 // task #670: Defense-in-depth — verify Square
                 // actually painted a button. If the container is
                 // empty, treat as unavailable and clean up.
-                if (!hasRenderedWalletContent(googlePayRef.current)) {
+                } else if (!hasRenderedWalletContent(googlePayRef.current)) {
                   try { googlePay.destroy(); } catch {}
                   googleResult = 'attached-but-empty';
                 } else {
                   googlePayInstanceRef.current = googlePay;
+                  pendingGooglePay = null;
                   setGooglePayAvailable(true);
                   googleAttached = true;
                   googleResult = 'attached';
@@ -260,29 +290,37 @@ export function useWalletPayments({
               }
             } else {
               googlePayInstanceRef.current = googlePay;
+              pendingGooglePay = null;
               setGooglePayAvailable(true);
               setGooglePayTokenizeOnly(true);
               googleResult = 'tokenize-only';
             }
           }
         } catch (googleErr: unknown) {
+          if (isCancelled()) {
+            try { pendingGooglePay?.destroy(); } catch {}
+          }
           googleResult = `ERR:${errorMessage(googleErr)}`;
         }
 
-        if (!cancelled) {
+        if (!isCancelled()) {
           const anyRefMissing = appleResult === 'ref-not-ready' || googleResult === 'ref-not-ready';
           if (!anyRefMissing) {
             initializedRef.current = true;
           }
         }
-        setDebugStatus(`done|apple:${appleResult}|google:${googleResult}`);
+        if (!isCancelled()) setDebugStatus(`done|apple:${appleResult}|google:${googleResult}`);
       } catch (err: unknown) {
-        setDebugStatus(`FAIL:${errorMessage(err)}`);
+        if (!isCancelled()) setDebugStatus(`FAIL:${errorMessage(err)}`);
       }
     }
 
     const timer = setTimeout(init, 400);
-    return () => { cancelled = true; clearTimeout(timer); };
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      destroyInstances();
+    };
   }, [enabled, locationId, destroyInstances]);
 
   const handleApplePayClick = useCallback(async () => {
