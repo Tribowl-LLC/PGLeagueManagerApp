@@ -85,14 +85,10 @@ jobs:
             --jq '.[0] | select(.conclusion == "success") | .headSha')"
           test "$certification" = "$EXPECTED_SHA"
 
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - name: Set up cached dependencies
+        uses: ./.github/actions/setup-node-dependencies
         with:
           node-version: '22.22.0'
-          cache: npm
-
-      - name: Install exact dependencies
-        run: npm ci
 
       - name: Verify exact migration bytes and metadata
         run: npm run db:migration-bytes:check
