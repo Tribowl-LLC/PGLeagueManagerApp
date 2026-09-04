@@ -7,6 +7,7 @@ const Sentry = await import("@sentry/node");
 Sentry.init({
   dsn: env.SENTRY_DSN,
   environment: env.NODE_ENV,
+  release: process.env.SENTRY_RELEASE ?? process.env.RENDER_GIT_COMMIT,
   tracesSampleRate: env.SENTRY_TRACES_SAMPLE_RATE,
   sendDefaultPii: false,
   dataCollection: {

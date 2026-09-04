@@ -176,6 +176,13 @@ Optional integrations include SendGrid, Sentry, and setup bootstrap.
 Keep Square credentials in their intended environment and location; never copy
 production credentials into a local or test environment.
 
+For symbolicated browser errors, configure `SENTRY_AUTH_TOKEN` as a secret
+available during the Render build. The Vite build uploads hidden source maps to
+the `perfect-game/javascript-react` project and removes them before publishing
+the deployment artifact. `SENTRY_ORG` and `SENTRY_PROJECT` may override those
+slugs. Never name the upload token with a `VITE_` prefix. Both browser and
+server events use `RENDER_GIT_COMMIT` as their release identifier.
+
 ### Retired payment-provider schema cleanup
 
 Migration `0003_remove_clover_integration.sql` removes the unused provider

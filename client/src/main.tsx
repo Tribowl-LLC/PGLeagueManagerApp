@@ -13,6 +13,7 @@ initCsrfToken();
 Sentry.init({
   dsn: import.meta.env.VITE_SENTRY_DSN,
   environment: import.meta.env.MODE,
+  release: __APP_RELEASE__,
   integrations: [Sentry.browserTracingIntegration()],
   tracesSampleRate: 1.0,
   dataCollection: {
