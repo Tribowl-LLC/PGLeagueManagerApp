@@ -267,6 +267,7 @@ router.delete('/cards/:bowlerId/:cardId', async (req, res) => {
       'Failed to remove card',
       'REMOVE_CARD_ERROR',
     );
+    if (status >= 500) log.captureException(error);
     sendError(res, userMessage, status, code);
   }
 });
