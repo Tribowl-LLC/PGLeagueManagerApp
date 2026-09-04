@@ -1,9 +1,4 @@
 {
-  "client/public/sw.js": {
-    "no-undef": {
-      "count": 22
-    }
-  },
   "client/src/components/bowler-layout.tsx": {
     "@typescript-eslint/consistent-type-assertions": {
       "count": 1
