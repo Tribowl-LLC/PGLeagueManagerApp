@@ -65,7 +65,10 @@ interface SquareConfigResponse {
 declare global {
   interface Window {
     Square?: {
-      payments?: (appId: string, locationId: string) => Promise<SquarePayments>;
+      payments?: (
+        appId: string,
+        locationId: string,
+      ) => SquarePayments | PromiseLike<SquarePayments>;
     };
   }
 }
@@ -177,7 +180,7 @@ function wait(ms: number): Promise<void> {
 class SquareInitializationTimeoutError extends Error {}
 
 /** Race one provider attempt without leaving an already-fired timer behind. */
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+async function withTimeout<T>(value: T | PromiseLike<T>, timeoutMs: number): Promise<T> {
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
     return await new Promise<T>((resolve, reject) => {
@@ -187,7 +190,7 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
         )),
         timeoutMs,
       );
-      promise.then(resolve, reject);
+      Promise.resolve(value).then(resolve, reject);
     });
   } finally {
     if (timeout !== undefined) clearTimeout(timeout);

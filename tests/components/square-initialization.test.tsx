@@ -65,6 +65,16 @@ describe("Square initialization ownership", () => {
     expect(fetch).toHaveBeenCalledOnce();
   });
 
+  it("accepts Square's synchronous payments factory result", async () => {
+    const payments = paymentSet();
+    const paymentsFactory = vi.fn().mockReturnValue(payments);
+    window.Square = { payments: paymentsFactory };
+
+    await expect(initializeSquare(1)).resolves.toBe(payments);
+    expect(paymentsFactory).toHaveBeenCalledOnce();
+    expect(mocks.logger.error).not.toHaveBeenCalled();
+  });
+
   it("supports overlapping locations without allowing one to invalidate the other", async () => {
     vi.stubGlobal("fetch", vi.fn((url: string) => Promise.resolve(
       url.includes("locationId=1")
