@@ -48,6 +48,18 @@ export async function setupVite(app: Express, server: Server) {
   });
 
   app.use(vite.middlewares);
+  // Keep missing module requests out of the development SPA fallback too.
+  // Vite's middleware serves real source/assets first; only an unresolved
+  // `/assets/*` request reaches this guard.
+  app.use('/assets', (_req, res) => {
+    res
+      .status(404)
+      .set({
+        'Cache-Control': 'no-store',
+        'Content-Type': 'text/plain; charset=utf-8',
+      })
+      .send('Asset not found');
+  });
   // Express 5 requires a named wildcard; include the root path as well.
   app.use("/{*splat}", async (req, res, next) => {
     const url = req.originalUrl;
@@ -93,6 +105,21 @@ function serveStatic(app: Express) {
       }
     }
   }));
+
+  // Hashed Vite chunks are JavaScript module requests. If a chunk is removed
+  // during a rolling deploy, letting this request fall through to the SPA
+  // index returns HTML with a 200 status; browsers then report a misleading
+  // module MIME error and cache the broken response. Return a real, uncached
+  // 404 instead so the client asset-recovery path can refresh once safely.
+  app.use('/assets', (_req, res) => {
+    res
+      .status(404)
+      .set({
+        'Cache-Control': 'no-store',
+        'Content-Type': 'text/plain; charset=utf-8',
+      })
+      .send('Asset not found');
+  });
 
   // fall through to index.html if the file doesn't exist
   app.use("/{*splat}", (_req, res) => {

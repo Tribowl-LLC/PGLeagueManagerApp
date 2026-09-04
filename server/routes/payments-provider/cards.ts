@@ -15,6 +15,8 @@ import {
   getPaymentProvider,
   ProviderNotConfiguredError,
   CardOwnershipMismatchError,
+  PaymentProviderError,
+  isHandledPaymentProviderError,
 } from '../../services/payment-provider-factory';
 import { buildPaymentErrorResponse } from '../../utils/payment-error-response.js';
 import { getProviderCustomerId, ensureProviderCustomer } from '../../services/payment-utils';
@@ -104,7 +106,11 @@ router.post('/cards/:bowlerId', paymentWriteLimiter, async (req, res) => {
     log.info('Card saved on file (no-charge):', { success: true });
     return sendSuccess(res, { savedCardId: savedCard.id, last4: savedCard.last4, brand: savedCard.brand });
   } catch (error) {
-    log.error('Save card error:', error);
+    if (isHandledPaymentProviderError(error)) {
+      log.debug('Save card requires customer action');
+    } else {
+      log.error('Save card error:', error);
+    }
     // Surface the provider's typed `userMessage` + `code` (e.g.
     // "Invalid payment information.", "CARD_TOKEN_EXPIRED") instead
     // of the generic "Failed to save card" wall — matches the
@@ -244,8 +250,6 @@ router.delete('/cards/:bowlerId/:cardId', async (req, res) => {
     log.info('Card disabled:', cardId.substring(0, 15) + '...');
     sendSuccess(res, { disabled: true });
   } catch (error) {
-    log.error('Disable card error:', error instanceof Error ? error.message : error);
-
     // The Square provider throws a typed
     // `CardOwnershipMismatchError` when the requested card id isn't
     // one of this customer's saved cards (see
@@ -261,6 +265,17 @@ router.delete('/cards/:bowlerId/:cardId', async (req, res) => {
     // triggers the 403 branch.
     if (error instanceof CardOwnershipMismatchError) {
       return sendError(res, error.message, 403);
+    }
+    if (isHandledPaymentProviderError(error)) {
+      log.debug('Disable card requires customer action');
+    } else if (error instanceof PaymentProviderError) {
+      log.error('Disable card error', {
+        code: error.code,
+        disposition: error.disposition,
+        providerCode: error.providerCode,
+      });
+    } else {
+      log.error('Disable card error:', error);
     }
     const { status, userMessage, code } = buildPaymentErrorResponse(
       error,

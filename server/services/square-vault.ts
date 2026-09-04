@@ -4,6 +4,7 @@ import {
   ProviderNotConfiguredError,
   PaymentProviderError,
   CardOwnershipMismatchError,
+  isHandledPaymentProviderError,
 } from './payment-errors';
 import {
   buildSquareIdempotencyKey,
@@ -86,7 +87,6 @@ export async function saveCardOnFile(
     }
     return null;
   } catch (error) {
-    log.error('Failed to save card on file:', error instanceof Error ? error.message : error);
     // Re-throw as a typed PaymentProviderError so the standalone card route
     // and durable interactive executor retain the same sanitized message,
     // provider code, and retry/unknown/terminal disposition.
@@ -94,9 +94,35 @@ export async function saveCardOnFile(
       error instanceof PaymentProviderError ||
       error instanceof ProviderNotConfiguredError
     ) {
+      if (isHandledPaymentProviderError(error)) {
+        log.debug('Saving card requires customer action', {
+          code: error.code,
+          disposition: error.disposition,
+          providerCode: error.providerCode,
+        });
+      } else if (error instanceof PaymentProviderError) {
+        log.error('Failed to save card on file', {
+          code: error.code,
+          disposition: error.disposition,
+          providerCode: error.providerCode,
+        });
+      } else {
+        log.error('Saving card provider is not configured');
+      }
       throw error;
     }
     const failure = classifySquareFailure(error);
+    if (failure.disposition === 'action_required' || failure.disposition === 'invalid_request') {
+      log.debug('Saving card requires customer action', {
+        httpStatus: failure.statusCode,
+        squareErrorCode: failure.providerCode,
+      });
+    } else {
+      log.error('Failed to save card on file', {
+        httpStatus: failure.statusCode,
+        squareErrorCode: failure.providerCode,
+      });
+    }
     if (failure.statusCode === 400) {
       throw new PaymentProviderError(
         'Invalid payment information. Please check your card details and try again.',
@@ -166,7 +192,19 @@ async function fetchCardsOnFile(
         expYear: Number(c.expYear) || 0,
       }));
   } catch (error) {
-    log.error('Failed to list cards on file:', error instanceof Error ? error.message : error);
+    if (error instanceof PaymentProviderError && isHandledPaymentProviderError(error)) {
+      log.debug('Listing cards requires customer action', {
+        code: error.code,
+        disposition: error.disposition,
+        providerCode: error.providerCode,
+      });
+    } else if (error instanceof PaymentProviderError) {
+      log.error('Failed to list cards on file', {
+        code: error.code,
+        disposition: error.disposition,
+        providerCode: error.providerCode,
+      });
+    }
     if (!strict) return [];
     if (
       error instanceof PaymentProviderError
@@ -175,6 +213,17 @@ async function fetchCardsOnFile(
       throw error;
     }
     const failure = classifySquareFailure(error);
+    if (failure.disposition === 'action_required' || failure.disposition === 'invalid_request') {
+      log.debug('Listing cards requires customer action', {
+        httpStatus: failure.statusCode,
+        squareErrorCode: failure.providerCode,
+      });
+    } else {
+      log.error('Failed to list cards on file', {
+        httpStatus: failure.statusCode,
+        squareErrorCode: failure.providerCode,
+      });
+    }
     throw new PaymentProviderError(
       'Could not verify the saved payment method. Please try again.',
       'CARD_OWNERSHIP_CHECK_FAILED',
@@ -339,14 +388,29 @@ export async function createOrUpdateCustomer(
       email
     };
   } catch (error) {
-    log.error('Customer operation error:', {
-      error: error instanceof Error ? {
-        name: error.name,
-        message: error.message,
-        stack: error.stack
-      } : error,
-      input: { name, email }
-    });
+    if (error instanceof PaymentProviderError && isHandledPaymentProviderError(error)) {
+      log.debug('Customer operation requires customer action', {
+        code: error.code,
+        disposition: error.disposition,
+        providerCode: error.providerCode,
+      });
+    } else {
+      const failure = classifySquareFailure(error);
+      if (failure.disposition === 'action_required' || failure.disposition === 'invalid_request') {
+        log.debug('Customer operation requires customer action', {
+          httpStatus: failure.statusCode,
+          squareErrorCode: failure.providerCode,
+        });
+      } else {
+        // Do not include customer name/email or the raw provider payload in
+        // this diagnostic; the logger's Sentry path only needs a stable
+        // provider classification.
+        log.error('Customer operation failed', {
+          httpStatus: failure.statusCode,
+          squareErrorCode: failure.providerCode,
+        });
+      }
+    }
     throw new Error(
       'Failed to create/update Square customer: ' + (error instanceof Error ? error.message : String(error)),
       { cause: error },

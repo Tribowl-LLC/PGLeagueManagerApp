@@ -1,4 +1,9 @@
-const CACHE_NAME = 'leaguevault-v2';
+/* global self, caches, URL, Response, fetch */
+
+// Bump this value for every web release that changes the Vite output. Keeping
+// release caches separate prevents an older service worker from satisfying a
+// new entry module with a stale hashed chunk after a deploy.
+const CACHE_NAME = 'leaguevault-v3';
 const STATIC_ASSETS = [
   '/',
   '/manifest.json',
@@ -31,6 +36,29 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
 
+  const isJavaScriptRequest = event.request.destination === 'script'
+    || (url.pathname.startsWith('/assets/') && /\.m?js$/i.test(url.pathname));
+
+  const isJavaScriptResponse = (response) => {
+    if (!response || !response.ok) return false;
+    const contentType = response.headers.get('content-type') || '';
+    // Only an explicit JavaScript MIME is safe to cache or return for a module
+    // request. This prevents an HTML SPA fallback (including one with a bad or
+    // missing content-type) from ever being substituted for a script.
+    return /(?:java|ecma)script|module/i.test(contentType);
+  };
+
+  const unavailableJavaScriptResponse = () => new Response(
+    'JavaScript asset unavailable. Please refresh the page.',
+    {
+      status: 503,
+      headers: {
+        'Cache-Control': 'no-store',
+        'Content-Type': 'text/plain; charset=utf-8',
+      },
+    },
+  );
+
   if (url.pathname.startsWith('/api/')) {
     event.respondWith(
       fetch(event.request).catch(() => {
@@ -43,11 +71,25 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  if (url.pathname.startsWith('/assets/') || event.request.destination === 'script') {
+  if (isJavaScriptRequest) {
     event.respondWith(
-      fetch(event.request).catch(() => {
+      fetch(event.request).then((response) => {
+        // Never cache or return an SPA index for a missing module. A 200 HTML
+        // response is converted to a non-empty 503 so the browser rejects the
+        // import and the release-scoped refresh guard can run.
+        if (!isJavaScriptResponse(response)) {
+          const contentType = response.headers.get('content-type') || '';
+          if (response.status === 404 && !/^text\/html/i.test(contentType)) {
+            return response;
+          }
+          return unavailableJavaScriptResponse();
+        }
+        const clone = response.clone();
+        void caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+        return response;
+      }).catch(() => {
         return caches.match(event.request).then((cached) => {
-          return cached || new Response('', { status: 503 });
+          return isJavaScriptResponse(cached) ? cached : unavailableJavaScriptResponse();
         });
       })
     );

@@ -9,6 +9,7 @@ import {
   CardOwnershipMismatchError,
   GENERIC_PAYMENT_USER_MESSAGE,
   sanitizePaymentUserMessage,
+  isHandledPaymentProviderError,
 } from './payment-errors';
 
 // Re-exported here for backwards compatibility — these used to be
@@ -19,6 +20,7 @@ export {
   CardOwnershipMismatchError,
   GENERIC_PAYMENT_USER_MESSAGE,
   sanitizePaymentUserMessage,
+  isHandledPaymentProviderError,
 };
 
 const log = createLogger('PaymentProviderFactory');

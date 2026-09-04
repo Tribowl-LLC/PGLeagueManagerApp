@@ -9,7 +9,7 @@ import { storage } from '../../storage';
 import { sendError } from '../../utils/api.js';
 import { paymentLimiter } from '../../middleware/rate-limit.js';
 import { createLogger } from '../../logger';
-import { getPaymentProvider, ProviderNotConfiguredError } from '../../services/payment-provider-factory';
+import { getPaymentProvider, ProviderNotConfiguredError, PaymentProviderError, isHandledPaymentProviderError } from '../../services/payment-provider-factory';
 import { getProviderForLeague } from './shared.js';
 import { isOrgOrHigher } from '../../utils/access-control';
 
@@ -65,16 +65,23 @@ router.post('/customers', paymentLimiter, async (req, res) => {
     res.json(customer);
   } catch (error) {
     if (error instanceof ProviderNotConfiguredError) {
+      log.error('Customer provider is not configured', error);
       return sendError(res, 'Payment provider not configured for this location', 422, 'PROVIDER_NOT_CONFIGURED');
     }
-    log.captureException(error);
-    log.error('Customer operation error:', {
-      error: error instanceof Error ? {
-        name: error.name,
-        message: error.message,
-        stack: error.stack
-      } : error
-    });
+    if (isHandledPaymentProviderError(error)) {
+      log.debug('Customer operation requires customer action');
+    } else if (error instanceof PaymentProviderError) {
+      log.error('Customer operation error', {
+        code: error.code,
+        disposition: error.disposition,
+        providerCode: error.providerCode,
+      });
+    } else {
+      log.captureException(error);
+      log.error('Customer operation error:', {
+        errorName: error instanceof Error ? error.name : 'UnknownError',
+      });
+    }
     sendError(res, 'Customer operation failed', 500);
   }
 });

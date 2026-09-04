@@ -41,6 +41,7 @@ export function useSquarePayment({ onError, locationId }: UseSquarePaymentOption
   const onErrorRef = useRef(onError);
   const locationIdRef = useRef(locationId);
   const maxAttempts = 3;
+  const squareInitializationFallbackMessage = 'Credit card payment form unavailable. Please try again or choose a different payment method.';
 
   onErrorRef.current = onError;
   locationIdRef.current = locationId;
@@ -77,27 +78,15 @@ export function useSquarePayment({ onError, locationId }: UseSquarePaymentOption
     try {
       initTimeout = setTimeout(() => {
         if (!container.isConnected) {
-          initializingRef.current = false;
           return;
         }
         if (mountedRef.current && !cardRef.current) {
-          setError('Card initialization timed out');
-          initializingRef.current = false;
-
-          if (initializationAttempts.current < maxAttempts) {
-            initializationAttempts.current++;
-          } else {
-            initializationAttempts.current = 0;
-            if (onErrorRef.current) {
-              onErrorRef.current('Credit card form initialization timed out');
-            } else {
-              toast({
-                title: "Payment Form Notice",
-                description: "Credit card payment form unavailable. Please try another payment method.",
-                variant: "destructive",
-              });
-            }
-          }
+          // Keep the initialization lock held until the provider promise
+          // settles. Starting another attempt while the Square SDK is still
+          // resolving can attach two card elements to the same container.
+          // The provider-level retry loop owns recovery; this timer only
+          // gives the user a stable interim message.
+          setError(squareInitializationFallbackMessage);
         }
       }, 8000);
 
@@ -159,7 +148,8 @@ export function useSquarePayment({ onError, locationId }: UseSquarePaymentOption
         setError(errorMessage);
         setIsInitialized(false);
 
-        if (initializationAttempts.current < maxAttempts) {
+        const providerAlreadyRetried = errorMessage === squareInitializationFallbackMessage;
+        if (!providerAlreadyRetried && initializationAttempts.current < maxAttempts) {
           initializationAttempts.current++;
           const delay = Math.min(1000 * Math.pow(2, initializationAttempts.current), 5000);
 

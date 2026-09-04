@@ -7,6 +7,7 @@ import "./index.css";
 import { initCsrfToken } from "./lib/queryClient";
 import { scrubSentryEvent, scrubSentrySpan } from "./lib/logger";
 import { isNativeApp } from './lib/capacitor';
+import { installAssetRecoveryHandlers } from './lib/asset-recovery';
 
 initCsrfToken();
 
@@ -30,6 +31,11 @@ Sentry.init({
   beforeSendTransaction: (event) => scrubSentryEvent(event),
   beforeSendSpan: (span) => scrubSentrySpan(span),
 });
+
+// A stale Vite chunk must get one release-scoped refresh opportunity before
+// the app settles on ErrorBoundary's stable fallback. The handler deliberately
+// leaves the second failure visible to Sentry for deploy diagnostics.
+installAssetRecoveryHandlers();
 
 const rootElement = document.getElementById("root");
 if (!rootElement) {

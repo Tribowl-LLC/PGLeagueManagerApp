@@ -23,6 +23,7 @@ import { csrfFetch } from '@/lib/queryClient';
 import {
   isProviderNotConfiguredError,
   providerNotConfiguredToast,
+  makeApiError,
 } from "@/lib/provider-not-configured";
 import { useLocation } from "wouter";
 import { PaymentFormFields } from "@/components/payment-form-fields";
@@ -34,6 +35,8 @@ import { PaymentCheckNumberField } from "@/components/payment-check-number-field
 import { PaymentReceiptEmailField } from "@/components/payment-receipt-email-field";
 import { PaymentProviderNotConfiguredAlert } from "@/components/payment-provider-not-configured-alert";
 import { PaymentFormActions } from "@/components/payment-form-actions";
+import { isHandledPaymentError, sanitizePaymentErrorMessage } from "@/lib/payment-user-error";
+import { logger } from "@/lib/logger";
 
 interface SavedCard {
   id: string;
@@ -288,7 +291,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
       const rosterStatus = exactBody.data?.status ?? exactBody.status;
       if (!exactResponse.ok) {
         if (isTerminalRosterPaymentFailure(rosterStatus)) walletRequestKeyRef.current = null;
-        throw new Error(exactBody.error?.message || "Wallet payment failed.");
+        throw makeApiError(exactBody, exactResponse.status, "Wallet payment failed.");
       }
       if (isTerminalRosterPaymentFailure(rosterStatus)) walletRequestKeyRef.current = null;
       assertRosterPaymentSucceeded(rosterStatus);
@@ -308,7 +311,12 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
         toast(props);
         return;
       }
-      const errorMessage = error instanceof Error ? error.message : 'Payment failed';
+      if (isHandledPaymentError(error)) {
+        logger.debug("Wallet Payment", "Payment requires customer action");
+      } else {
+        logger.error("Wallet Payment", "Payment failed", error);
+      }
+      const errorMessage = sanitizePaymentErrorMessage(error, 'Payment failed');
       setPaymentError(errorMessage);
       toast({ title: "Error", description: errorMessage, variant: "destructive" });
     }
