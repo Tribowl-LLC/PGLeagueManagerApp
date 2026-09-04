@@ -112,6 +112,34 @@ describe("Square initialization ownership", () => {
     expect(mocks.logger.error).toHaveBeenCalledOnce();
   });
 
+  it("retries a settled payments handshake without reloading the SDK", async () => {
+    vi.useFakeTimers();
+    const payments = paymentSet();
+    const paymentsFactory = vi.fn()
+      .mockRejectedValueOnce(new Error("temporary provider handshake failure"))
+      .mockResolvedValue(payments);
+    window.Square = { payments: paymentsFactory };
+
+    const pending = initializeSquare(1);
+    await vi.advanceTimersByTimeAsync(750);
+    await expect(pending).resolves.toBe(payments);
+    expect(paymentsFactory).toHaveBeenCalledTimes(2);
+    expect(document.querySelectorAll('script[src*="square.js"]')).toHaveLength(0);
+  });
+
+  it("does not overlap a payments factory that times out", async () => {
+    vi.useFakeTimers();
+    const paymentsFactory = vi.fn(() => new Promise<ReturnType<typeof paymentSet>>(() => {}));
+    window.Square = { payments: paymentsFactory };
+
+    const pending = initializeSquare(1);
+    const rejected = expect(pending).rejects.toThrow(SQUARE_INITIALIZATION_FALLBACK_MESSAGE);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await rejected;
+    await expect(initializeSquare(1)).rejects.toThrow(SQUARE_INITIALIZATION_FALLBACK_MESSAGE);
+    expect(paymentsFactory).toHaveBeenCalledOnce();
+  });
+
   it("fails closed when a page attempts to mix sandbox and production SDKs", async () => {
     vi.stubGlobal("fetch", vi.fn((url: string) => Promise.resolve(
       url.includes("locationId=1")

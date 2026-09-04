@@ -4,6 +4,8 @@ import { makeApiError, type ApiErrorLike } from "@/lib/provider-not-configured";
 
 const SDK_NETWORK_MAX_ATTEMPTS = 2;
 const SDK_NETWORK_RETRY_DELAY_MS = 500;
+const PAYMENTS_INIT_MAX_ATTEMPTS = 3;
+const PAYMENTS_INIT_RETRY_DELAY_MS = 750;
 const SQUARE_INIT_TIMEOUT_PROD_MS = 15000;
 const SQUARE_INIT_TIMEOUT_DEV_MS = 10000;
 export const SQUARE_INITIALIZATION_FALLBACK_MESSAGE =
@@ -150,13 +152,17 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+class SquareInitializationTimeoutError extends Error {}
+
 /** Race one provider attempt without leaving an already-fired timer behind. */
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
     return await new Promise<T>((resolve, reject) => {
       timeout = setTimeout(
-        () => reject(new Error(`Square initialization timed out after ${timeoutMs / 1000} seconds`)),
+        () => reject(new SquareInitializationTimeoutError(
+          `Square initialization timed out after ${timeoutMs / 1000} seconds`,
+        )),
         timeoutMs,
       );
       promise.then(resolve, reject);
@@ -253,7 +259,20 @@ async function initializeSquareInternal(locationId: LocationKey): Promise<Square
   const sdk = await loadSquareSdk(sdkUrl, timeoutMs);
   const paymentsFactory = sdk.payments;
   if (!paymentsFactory) throw new Error('Square SDK payments API became unavailable');
-  return withTimeout(paymentsFactory(config.appId, config.locationId), timeoutMs);
+
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= PAYMENTS_INIT_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      return await withTimeout(paymentsFactory(config.appId, config.locationId), timeoutMs);
+    } catch (error) {
+      lastError = error;
+      // A timed-out factory may still be executing inside the opaque SDK.
+      // Starting another would overlap it, so only settled rejections retry.
+      if (error instanceof SquareInitializationTimeoutError || attempt === PAYMENTS_INIT_MAX_ATTEMPTS) break;
+      await wait(PAYMENTS_INIT_RETRY_DELAY_MS * attempt);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('Square payments initialization failed');
 }
 
 export async function initializeSquare(locationId?: number | null): Promise<SquarePayments> {
@@ -272,9 +291,9 @@ export async function initializeSquare(locationId?: number | null): Promise<Squa
       logger.error('Square', 'Square initialization failed', error);
       throw new Error(SQUARE_INITIALIZATION_FALLBACK_MESSAGE);
     });
-  // Keep both pending and rejected promises stable for the lifetime of the
-  // page. This prevents card/wallet mounts from starting overlapping SDK or
-  // credential handshakes after a terminal provider failure.
+  // Keep pending and terminally rejected promises stable for the lifetime of
+  // the page. The internal handshake owns bounded settled-error retries, while
+  // a timeout never starts an overlapping opaque SDK operation.
   initializationByLocation.set(normalizedLocationId, promise);
   return promise;
 }

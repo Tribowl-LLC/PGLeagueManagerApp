@@ -71,6 +71,31 @@ describe("useSquarePayment editor lifecycle", () => {
     expect(toast).not.toHaveBeenCalled();
   });
 
+  it("destroys and discards an old-location card when location changes during attach", async () => {
+    let resolveAttach!: () => void;
+    const attach = vi.fn(() => new Promise<void>((resolve) => { resolveAttach = resolve; }));
+    const destroy = vi.fn();
+    initializeSquare.mockResolvedValue({ card: async () => ({ attach, destroy }) });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const { result, rerender } = renderHook(
+      ({ locationId }) => useSquarePayment({ locationId }),
+      { initialProps: { locationId: 1 } },
+    );
+
+    let initialization!: Promise<void>;
+    act(() => { initialization = result.current.initializeCard(container); });
+    await waitFor(() => expect(attach).toHaveBeenCalledOnce());
+    rerender({ locationId: 2 });
+    resolveAttach();
+    await act(async () => { await initialization; });
+
+    expect(destroy).toHaveBeenCalledOnce();
+    expect(result.current.card).toBeNull();
+    expect(result.current.isInitialized).toBe(false);
+    container.remove();
+  });
+
   it("uses the supplied error handler as the single terminal notification owner", async () => {
     vi.useFakeTimers();
     initializeSquare.mockRejectedValue(new Error("provider initialization failed"));
