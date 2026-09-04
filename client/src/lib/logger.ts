@@ -3,6 +3,7 @@ import {
   scrubAndTruncate,
   scrubString,
 } from "@shared/telemetry-scrubber";
+import { classifyApiError } from "@/lib/api-error";
 
 export {
   scrubDeep,
@@ -107,6 +108,12 @@ function reportToSentry(
   message: string,
   error?: unknown,
 ): void {
+  // Expected API outcomes (validation, auth, conflicts, throttling) are
+  // handled by the UI and are not actionable Sentry issues. An aborted
+  // query is likewise normal control flow. Keep this decision here so
+  // callers cannot accidentally re-report one through a catch block.
+  if (shouldIgnore(error)) return;
+
   const { message: safeMessage, extra } = sanitizeForTelemetry(
     format(scope, message),
     error,
@@ -129,8 +136,16 @@ function reportToSentry(
   }
 }
 
+function shouldIgnore(error: unknown): boolean {
+  const classification = classifyApiError(error);
+  return classification === "aborted"
+    || classification === "expected-client"
+    || classification === "rate-limited";
+}
+
 export const logger = {
   error(scope: string, message: string, error?: unknown): void {
+    if (shouldIgnore(error)) return;
     reportToSentry("error", scope, message, error);
     if (isDev) {
       if (error !== undefined) console.error(format(scope, message), error);
@@ -139,6 +154,7 @@ export const logger = {
   },
 
   warn(scope: string, message: string, error?: unknown): void {
+    if (shouldIgnore(error)) return;
     reportToSentry("warning", scope, message, error);
     if (isDev) {
       if (error !== undefined) console.warn(format(scope, message), error);

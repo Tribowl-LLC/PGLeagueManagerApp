@@ -1,44 +1,15 @@
 import { ToastAction } from "@/components/ui/toast";
+export { ApiError, makeApiError } from "@/lib/api-error";
+export type { ApiErrorOptions } from "@/lib/api-error";
 
 export const PROVIDER_NOT_CONFIGURED = "PROVIDER_NOT_CONFIGURED";
 
-type ApiErrorBody = {
-  error?: { message?: string; code?: string } | string;
-  message?: string;
+/** Legacy structural shape retained for provider call sites during migration. */
+export type ApiErrorLike = Error & {
+  code?: string;
+  status?: number;
+  retryAfterSeconds?: number | null;
 };
-
-export type ApiErrorLike = Error & { code?: string; status?: number };
-
-function getApiErrorCode(body: unknown): string | undefined {
-  if (!body || typeof body !== "object") return undefined;
-  const err = (body as ApiErrorBody).error;
-  if (typeof err === "object" && err && typeof err.code === "string") {
-    return err.code;
-  }
-  return undefined;
-}
-
-function getApiErrorMessage(body: unknown, fallback: string): string {
-  if (!body || typeof body !== "object") return fallback;
-  const b = body as ApiErrorBody;
-  if (typeof b.error === "object" && b.error?.message) return b.error.message;
-  if (typeof b.error === "string") return b.error;
-  if (b.message) return b.message;
-  return fallback;
-}
-
-export function makeApiError(
-  body: unknown,
-  status: number,
-  fallbackMessage: string,
-): ApiErrorLike {
-  const message = getApiErrorMessage(body, fallbackMessage);
-  const code = getApiErrorCode(body);
-  const err = new Error(message) as ApiErrorLike;
-  err.status = status;
-  if (code) err.code = code;
-  return err;
-}
 
 export function isProviderNotConfiguredError(err: unknown): boolean {
   if (!err) return false;

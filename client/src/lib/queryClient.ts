@@ -1,5 +1,23 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 import { logger } from "@/lib/logger";
+import {
+  makeApiError,
+  shouldRetryApiQuery,
+  isAbortError,
+} from "@/lib/api-error";
+
+export {
+  ApiError,
+  makeApiError,
+  classifyApiError,
+  isExpectedApiError,
+  shouldRetryApiQuery,
+  isAbortError,
+} from "@/lib/api-error";
+export type {
+  ApiErrorClassification,
+  ApiErrorOptions,
+} from "@/lib/api-error";
 
 let csrfToken: string | null = null;
 let csrfFetchPromise: Promise<string> | null = null;
@@ -98,39 +116,42 @@ export function parseRetryAfterSeconds(
 
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
-    let errorMessage;
-    let errorCode: string | undefined;
+    let errorBody: unknown;
+    let responseTextFallback: string | null = null;
     try {
       const contentType = res.headers.get("content-type");
       if (contentType && contentType.includes("application/json")) {
-        const errorData = await res.json();
-        errorMessage = errorData.error?.message || errorData.message || (typeof errorData.error === 'string' ? errorData.error : null) || res.statusText;
-        errorCode = errorData.error?.code;
+        errorBody = await res.json();
       } else {
-        errorMessage = await res.text();
+        responseTextFallback = await res.text();
       }
-    } catch (e) {
-      errorMessage = res.statusText;
+    } catch {
+      errorBody = undefined;
     }
 
-    if (res.status === 403 && errorCode === 'CSRF_ERROR') {
-      csrfToken = null;
-    }
-
-    const err = new Error(`${res.status}: ${errorMessage}`) as Error & {
-      status?: number;
-      code?: string;
-      retryAfterSeconds?: number | null;
-    };
-    err.status = res.status;
-    if (errorCode) err.code = errorCode;
-    if (res.status === 429) {
-      err.retryAfterSeconds = parseRetryAfterSeconds(
+    const fallbackMessage =
+      (responseTextFallback ?? '').trim() || res.statusText || 'Request failed';
+    const retryAfterSeconds = res.status === 429
+      ? parseRetryAfterSeconds(
         res.headers.get('retry-after'),
         res.headers.get('ratelimit-reset'),
-      );
+      )
+      : undefined;
+    const error = makeApiError(
+      errorBody,
+      res.status,
+      fallbackMessage,
+      retryAfterSeconds,
+    );
+    // Keep the status prefix used by the existing CSRF refresh path while
+    // retaining the typed status/code fields for all other callers.
+    error.message = `${res.status}: ${error.message}`;
+    error.statusText = res.statusText || undefined;
+
+    if (res.status === 403 && error.code === 'CSRF_ERROR') {
+      csrfToken = null;
     }
-    throw err;
+    throw error;
   }
   return res;
 }
@@ -210,13 +231,10 @@ export const getQueryFn: QueryFunction = async ({ queryKey, signal }) => {
     const data = await validatedRes.json();
     return data;
   } catch (error: unknown) {
-    if (error instanceof Error && error.name === 'AbortError') {
+    if (isAbortError(error)) {
       return undefined;
     }
-    const is401 = error instanceof Error && error.message.startsWith('401');
-    if (!is401) {
-      logger.error('Query', `Error fetching ${queryKey[0]}`, error);
-    }
+    logger.error('Query', `Error fetching ${queryKey[0]}`, error);
     throw error;
   }
 };
@@ -225,7 +243,7 @@ export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       queryFn: getQueryFn,
-      retry: 1, // Allow one retry
+      retry: shouldRetryApiQuery,
       refetchOnWindowFocus: false,
       refetchOnMount: true,
       refetchOnReconnect: false,

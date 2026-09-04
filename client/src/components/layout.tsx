@@ -95,7 +95,8 @@ const navItems: NavItem[] = [
   {
     icon: Trophy,
     label: "Leagues",
-    href: "/leagues"
+    href: "/leagues",
+    hasDropdown: true,
   },
   {
     icon: Users,
@@ -583,7 +584,11 @@ function SidebarNav({
     const isDashboardActive =
       item.href === "/" && (location === "/" || location === "/home");
 
-    if (item.hasDropdown && !isCollapsed) {
+    // Locations are an organization-admin surface. Keep the grouped league
+    // picker for system/org admins, but render a plain league link for
+    // ordinary members and payment managers so the dropdown never mounts
+    // its admin-only /api/locations query for them.
+    if (item.hasDropdown && canSeeOrgAdminItems && !isCollapsed) {
       return (
         <NavigationMenu key={item.href}>
           <NavigationMenuList>

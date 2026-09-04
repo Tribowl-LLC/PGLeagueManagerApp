@@ -8,7 +8,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Plus, Edit, Trash, Archive, RotateCcw } from 'lucide-react';
 import { Switch } from '@/components/ui/switch';
 import { useToast } from '@/hooks/use-toast';
-import { apiRequest } from '@/lib/queryClient';
+import { apiRequest, shouldRetryApiQuery } from '@/lib/queryClient';
 import type { Organization, User } from '@shared/schema';
 import { Layout } from "@/components/layout";
 import { Badge } from '@/components/ui/badge';
@@ -52,7 +52,7 @@ export default function OrganizationsPage() {
 
   const { data, isLoading, error, refetch } = useQuery<{success: boolean, data: Organization[]}>({
     queryKey: ['/api/organizations'],
-    retry: 1,
+    retry: shouldRetryApiQuery,
     staleTime: 60000, // 1 minute
     refetchOnWindowFocus: false,
     refetchOnReconnect: true,

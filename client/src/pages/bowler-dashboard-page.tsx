@@ -7,7 +7,7 @@ import { getSeasonLengthWeeks, getWeeksPassedInSeason } from "@/lib/financial-ut
 import { DEFAULT_WEEKLY_FEE_CENTS } from "@shared/schema";
 import type { League, Payment, User, Bowler, BowlerLeague, Team, BowlerDetailsResponse, ApiResponse } from "@shared/schema";
 import { PaymentStatusSection } from "@/components/payment-status-section";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest, queryClient, shouldRetryApiQuery } from "@/lib/queryClient";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { useSelectedLeague } from "@/hooks/use-selected-league";
 import { ErrorCard } from "./bowler-dashboard-page/error-card";
@@ -45,7 +45,7 @@ const BowlerDashboardPage: FC = () => {
     queryKey: ['/api/bowler-leagues'],
     enabled: !!bowler,
     staleTime: STALE_TIME,
-    retry: 3,
+    retry: shouldRetryApiQuery,
     retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 5000),
   });
 
@@ -58,7 +58,7 @@ const BowlerDashboardPage: FC = () => {
     queryKey: ['/api/leagues'],
     enabled: rosteredBowlerLeagues.length > 0,
     staleTime: 0,
-    retry: 3,
+    retry: shouldRetryApiQuery,
     retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 5000),
   });
 
@@ -91,7 +91,7 @@ const BowlerDashboardPage: FC = () => {
     queryKey: [`/api/bowlers/${bowler?.id}/details`],
     enabled: !!bowler && rosteredBowlerLeagues.length > 0,
     staleTime: 0,
-    retry: 3,
+    retry: shouldRetryApiQuery,
     retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 5000),
   });
 
