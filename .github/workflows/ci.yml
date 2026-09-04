@@ -46,11 +46,10 @@ jobs:
   check-and-lint:
     name: Type check & lint
     runs-on: ubuntu-latest
-    # The check+lint+csrf+org-isolation quartet takes ~1 minute
-    # locally; 10 is a generous ceiling that still kills a runaway
-    # install / hung dev-server spawn before it eats CI budget for an
-    # hour.
-    timeout-minutes: 10
+    # Dependency installation and both registry-backed audits can exceed ten
+    # minutes during npm service degradation. Keep a bounded ceiling while
+    # leaving enough time for the deterministic application checks to run.
+    timeout-minutes: 20
     steps:
       # SHA-pinned per docs/ci.md → "Pinning third-party actions".
       - name: Check out the PR
