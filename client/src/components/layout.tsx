@@ -228,7 +228,7 @@ const LeagueLoadingFallback = () => (
   </div>
 );
 
-const LeaguesDropdownContent = () => {
+const LeaguesDropdownContent = ({ includeLocations }: { includeLocations: boolean }) => {
   const { data: leaguesResponse, isLoading } = useQuery<ApiResponse<League[]>>({
     queryKey: ["/api/leagues"],
     staleTime: 1000 * 60 * 5,
@@ -237,6 +237,7 @@ const LeaguesDropdownContent = () => {
   const { data: locationsResponse } = useQuery<ApiResponse<Location[]>>({
     queryKey: ["/api/locations"],
     staleTime: 1000 * 60 * 5,
+    enabled: includeLocations,
   });
 
   const leagues = (leaguesResponse?.data || []).filter((l: League) => l.active);
@@ -584,11 +585,10 @@ function SidebarNav({
     const isDashboardActive =
       item.href === "/" && (location === "/" || location === "/home");
 
-    // Locations are an organization-admin surface. Keep the grouped league
-    // picker for system/org admins, but render a plain league link for
-    // ordinary members and payment managers so the dropdown never mounts
-    // its admin-only /api/locations query for them.
-    if (item.hasDropdown && canSeeOrgAdminItems && !isCollapsed) {
+    // Locations are an organization-admin surface. Everyone can use the
+    // league picker, but only system/org admins may load location metadata;
+    // ordinary members and payment managers see the same leagues ungrouped.
+    if (item.hasDropdown && !isCollapsed) {
       return (
         <NavigationMenu key={item.href}>
           <NavigationMenuList>
@@ -606,7 +606,7 @@ function SidebarNav({
               </NavigationMenuTrigger>
               <NavigationMenuContent>
                 <Suspense fallback={<LeagueLoadingFallback />}>
-                  <LeaguesDropdownContent />
+                  <LeaguesDropdownContent includeLocations={canSeeOrgAdminItems} />
                 </Suspense>
               </NavigationMenuContent>
             </NavigationMenuItem>
