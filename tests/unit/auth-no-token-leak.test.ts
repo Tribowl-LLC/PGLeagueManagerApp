@@ -107,8 +107,8 @@ vi.mock('../../server/storage/account-action-requests.js', () => ({
   withAccountActionDeliveryLock: async (
     _userId: number,
     _action: string,
-    operation: () => Promise<unknown>,
-  ) => operation(),
+    operation: (executor: unknown) => Promise<unknown>,
+  ) => operation({ __isLockedExecutor: true }),
 }));
 
 vi.mock('../../server/services/identity-link.js', () => ({
@@ -496,7 +496,11 @@ describe('POST /api/auth/forgot-password does not leak the issued reset token to
     expect(res.status).toBe(200);
     for (let i = 0; i < 8; i++) await new Promise(r => setImmediate(r));
 
-    expect(mockUpdateAccountActionDeliveryStatus).toHaveBeenCalledWith(1301, 'failed');
+    expect(mockUpdateAccountActionDeliveryStatus).toHaveBeenCalledWith(
+      1301,
+      'failed',
+      { __isLockedExecutor: true },
+    );
     assertNoSecretLeak([RESET_TOKEN]);
   });
 
@@ -524,7 +528,11 @@ describe('POST /api/auth/forgot-password does not leak the issued reset token to
     for (let i = 0; i < 8; i++) await new Promise(r => setImmediate(r));
 
     expect(mockIssueAccountAction).toHaveBeenCalledTimes(1);
-    expect(mockUpdateAccountActionDeliveryStatus).toHaveBeenCalledWith(1401, 'sent');
+    expect(mockUpdateAccountActionDeliveryStatus).toHaveBeenCalledWith(
+      1401,
+      'sent',
+      { __isLockedExecutor: true },
+    );
     expect(mockUpdateAccountActionDeliveryStatus).toHaveBeenCalledTimes(1);
     assertNoSecretLeak([RESET_TOKEN]);
   });

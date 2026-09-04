@@ -625,12 +625,13 @@ export function registerAuthRoutes(app: Express): void {
         if (!user) return;
         if (!user.password) return;
 
-        await withAccountActionDeliveryLock(user.id, "password_reset", async () => {
+        const org = user.organizationId ? await storage.getOrganization(user.organizationId) : null;
+        await withAccountActionDeliveryLock(user.id, "password_reset", async (lockedDb) => {
           const recentlyDelivered = await storage.hasRecentlyDeliveredPendingAccountAction({
             userId: user.id,
             action: "password_reset",
             deliveredAfter: new Date(Date.now() - PASSWORD_RESET_RESEND_SUPPRESSION_MS),
-          });
+          }, lockedDb);
           if (recentlyDelivered) {
             log.info('Suppressed duplicate password reset delivery', { userId: user.id });
             return;
@@ -642,10 +643,10 @@ export function registerAuthRoutes(app: Express): void {
             action: "password_reset",
             expiresAt: expiry,
             organizationId: user.organizationId,
-          });
+            recipientEmail: user.email,
+          }, lockedDb);
           const token = issued.token;
 
-          const org = user.organizationId ? await storage.getOrganization(user.organizationId) : null;
           const baseUrl = getBaseUrl(org);
           const resetUrl = `${baseUrl}/set-password?token=${token}`;
           const firstName = user.name?.split(' ')[0] || user.email;
@@ -676,6 +677,7 @@ export function registerAuthRoutes(app: Express): void {
           await storage.updateAccountActionDeliveryStatus(
             issued.request.id,
             sent ? "sent" : "failed",
+            lockedDb,
           );
           log.info('Password reset delivery attempted', { userId: user.id, sent });
         });

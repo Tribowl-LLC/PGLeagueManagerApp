@@ -113,7 +113,8 @@ vi.mock('../../server/db', () => ({
     insert: () => ({ values: () => ({ returning: () => [] }) }),
     update: () => ({ set: () => ({ where: () => [] }) }),
     delete: () => ({ where: () => [] }),
-    transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn({}),
+    transaction: async (fn: (tx: unknown) => Promise<unknown>) =>
+      fn({ execute: async () => [] }),
   },
 }));
 

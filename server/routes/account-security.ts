@@ -25,6 +25,7 @@ import {
 } from '../storage/admin-email-change-audits';
 import { createSharedRateLimitStore } from '../utils/rate-limit-store';
 import { db } from '../db';
+import { lockAccountCredential } from '../storage/account-action-requests';
 import { requireAuth, hashEmailChangeToken } from './account-shared';
 import {
   applyConfirmEmailChangeTxn,
@@ -41,18 +42,26 @@ const GENERIC_DELETION_RESPONSE = {
 
 export async function changeUserPasswordTxn(
   userId: number,
+  expectedPasswordHash: string,
   passwordHash: string,
-): Promise<number> {
+): Promise<number | undefined> {
   return db.transaction(async (tx) => {
-    await storage.updateUser(userId, {
-      password: passwordHash,
-      mustChangePassword: false,
-    }, tx);
-    return storage.revokePendingAccountActionsForUser(
+    await lockAccountCredential(tx, userId);
+    const currentUser = await storage.getUser(userId, tx);
+    if (!currentUser || currentUser.password !== expectedPasswordHash) {
+      return undefined;
+    }
+    const revoked = await storage.revokePendingAccountActionsForUser(
       userId,
       ['password_reset'],
       tx,
     );
+    await storage.updateUser(userId, {
+      password: passwordHash,
+      mustChangePassword: false,
+    }, tx);
+    await storage.invalidatePendingEmailChangeRequestsForUser(userId, tx);
+    return revoked;
   });
 }
 
@@ -535,7 +544,19 @@ router.post('/change-password', changePasswordLimiter, requireAuth, async (req: 
     // (even when it was already false) so the reset path is
     // idempotent and a stale-flag DB row from a missed migration
     // would self-heal on the user's first self-service rotation.
-    await changeUserPasswordTxn(user.id, hashedNew);
+    const changed = await changeUserPasswordTxn(
+      user.id,
+      existingUser.password,
+      hashedNew,
+    );
+    if (changed === undefined) {
+      return sendError(
+        res,
+        'Your password changed during this request. Please sign in again and retry.',
+        409,
+        'PASSWORD_CHANGED_CONCURRENTLY',
+      );
+    }
 
     // Task #357: clean slate after a successful rotation. Wipe any
     // accumulated failure counter and clear a stale lock (the route
@@ -548,19 +569,6 @@ router.post('/change-password', changePasswordLimiter, requireAuth, async (req: 
       log.error('Failed to reset failed-password-change counter after rotation', {
         userId: user.id,
         error: err instanceof Error ? err.message : String(err),
-      });
-    }
-
-    // Defense-in-depth: any in-flight email-change tokens for this user
-    // may belong to an attacker who recently had access. Invalidating
-    // them is part of the security contract of password change — if it
-    // fails we surface the error and the caller can retry, rather than
-    // silently leaving a stolen confirmation link active.
-    const invalidated = await storage.invalidatePendingEmailChangeRequestsForUser(user.id);
-    if (invalidated > 0) {
-      log.info('Invalidated pending email-change requests on password change', {
-        userId: user.id,
-        count: invalidated,
       });
     }
 

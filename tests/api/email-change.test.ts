@@ -461,7 +461,7 @@ describe('POST /api/account/change-password invalidates pending email-change req
 
 describe('POST /api/auth/set-password invalidates pending email-change requests', () => {
   it('marks open email-change requests as consumed after a successful password reset', async () => {
-    const { userId } = await createUserAndLogin();
+    const { userId, oldEmail } = await createUserAndLogin();
     const newEmail = uniqEmail('pending-reset');
     const rawToken = `setpw-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
@@ -471,6 +471,7 @@ describe('POST /api/auth/set-password invalidates pending email-change requests'
       action: 'password_reset',
       expiresAt: new Date(Date.now() + 60_000),
       organizationId: testOrgId,
+      recipientEmail: oldEmail,
     });
     await db.insert(emailChangeRequests).values({
       userId,

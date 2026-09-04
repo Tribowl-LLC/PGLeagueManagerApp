@@ -226,7 +226,10 @@ export interface IGameScoreStorage {
 }
 
 export interface IUserStorage {
-  getUser(id: number): Promise<User | undefined>;
+  getUser(
+    id: number,
+    executor?: import('./users').UserDbExecutor,
+  ): Promise<User | undefined>;
   getUserByEmail(email: string): Promise<User | undefined>;
   getUsers(): Promise<User[]>;
   createUser(user: InsertUser, executor?: import('./users').UserDbExecutor): Promise<User>;
@@ -312,7 +315,10 @@ export interface IEmailChangeRequestStorage {
   getEmailChangeRequestByTokenHash(tokenHash: string): Promise<EmailChangeRequest | undefined>;
   consumeEmailChangeRequest(id: number): Promise<void>;
   claimEmailChangeRequest(tokenHash: string): Promise<EmailChangeRequest | undefined>;
-  invalidatePendingEmailChangeRequestsForUser(userId: number): Promise<number>;
+  invalidatePendingEmailChangeRequestsForUser(
+    userId: number,
+    executor?: import('./account-action-requests').AccountActionExecutor,
+  ): Promise<number>;
 }
 
 export interface IAccountActionStorage {
@@ -322,6 +328,7 @@ export interface IAccountActionStorage {
     expiresAt: Date;
     organizationId?: number | null;
     createdByUserId?: number | null;
+    recipientEmail?: string;
   }, executor?: import('./account-action-requests').AccountActionExecutor): Promise<{
     request: AccountActionRequest;
     token: string;
@@ -341,12 +348,13 @@ export interface IAccountActionStorage {
   updateAccountActionDeliveryStatus(
     requestId: number,
     deliveryStatus: AccountActionDeliveryStatus,
+    executor?: import('./account-action-requests').AccountActionExecutor,
   ): Promise<AccountActionRequest | undefined>;
   hasRecentlyDeliveredPendingAccountAction(input: {
     userId: number;
     action: AccountActionType;
     deliveredAfter: Date;
-  }): Promise<boolean>;
+  }, executor?: import('./account-action-requests').AccountActionExecutor): Promise<boolean>;
   revokePendingAccountActionsForUser(
     userId: number,
     actions: AccountActionType[],

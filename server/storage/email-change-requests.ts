@@ -77,8 +77,9 @@ export async function claimEmailChangeRequest(
  */
 export async function invalidatePendingEmailChangeRequestsForUser(
   userId: number,
+  exec: Executor = db,
 ): Promise<number> {
-  const rows = await db
+  const rows = await exec
     .update(emailChangeRequests)
     .set({ consumedAt: sql`now()` })
     .where(

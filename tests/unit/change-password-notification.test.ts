@@ -120,7 +120,7 @@ vi.mock('../../server/services/payment-customer-sync', () => ({
 vi.mock('../../server/db', () => ({
   db: {
     transaction: async (fn: (tx: unknown) => Promise<unknown>) =>
-      fn({ __isMockTx: true }),
+      fn({ __isMockTx: true, execute: async () => [] }),
     select: () => ({ from: () => ({ where: () => [] }) }),
     insert: () => ({ values: () => ({ returning: () => [] }) }),
     update: () => ({ set: () => ({ where: () => [] }) }),
@@ -252,7 +252,11 @@ describe('POST /api/account/change-password — password-changed email dispatch'
     expect(mockRevokePendingAccountActions).toHaveBeenCalledWith(
       TEST_USER.id,
       ['password_reset'],
-      { __isMockTx: true },
+      expect.objectContaining({ __isMockTx: true }),
+    );
+    expect(mockInvalidatePending).toHaveBeenCalledWith(
+      TEST_USER.id,
+      expect.objectContaining({ __isMockTx: true }),
     );
 
     // Strict ordering: the password row must be persisted BEFORE we
@@ -289,6 +293,23 @@ describe('POST /api/account/change-password — password-changed email dispatch'
 
     expect(mockSendPasswordChangedNotification).not.toHaveBeenCalled();
     expect(mockUpdateUser).not.toHaveBeenCalled();
+  });
+
+  it('does not overwrite a password changed by an administrator during verification', async () => {
+    mockGetUser
+      .mockResolvedValueOnce({ ...TEST_USER })
+      .mockResolvedValueOnce({ ...TEST_USER, password: 'hashed:admin-reset' });
+
+    const res = await postChangePassword({
+      currentPassword: 'OriginalPw!2026',
+      newPassword: 'BrandNewPw!2026XX',
+    });
+
+    expect(res.status).toBe(409);
+    expect(mockUpdateUser).not.toHaveBeenCalled();
+    expect(mockRevokePendingAccountActions).not.toHaveBeenCalled();
+    expect(mockInvalidatePending).not.toHaveBeenCalled();
+    expect(mockSendPasswordChangedNotification).not.toHaveBeenCalled();
   });
 
   it('still returns 200 for the change-password call when the email helper rejects (best-effort contract)', async () => {

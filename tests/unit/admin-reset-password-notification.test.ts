@@ -111,7 +111,10 @@ vi.mock('../../server/storage/admin-password-reset-audits', () => ({
 // (b) re-throw any rejection out of the callback the way drizzle
 // would on rollback. This keeps the unit test from needing a real
 // Postgres connection while still pinning the atomic contract.
-const TX_SENTINEL = { __isMockTx: true } as const;
+const TX_SENTINEL = {
+  __isMockTx: true,
+  execute: vi.fn(async () => []),
+} as const;
 const mockTransaction = vi.fn(
   async (fn: (tx: typeof TX_SENTINEL) => Promise<unknown>) => fn(TX_SENTINEL),
 );
@@ -568,6 +571,10 @@ describe('POST /api/organization-admin/users/:id/reset-password — persistent a
       expect(mockRevokePendingAccountActions).toHaveBeenCalledWith(
         TARGET_USER.id,
         ['password_reset'],
+        TX_SENTINEL,
+      );
+      expect(mockInvalidatePending).toHaveBeenCalledWith(
+        TARGET_USER.id,
         TX_SENTINEL,
       );
 
