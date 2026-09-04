@@ -15,6 +15,7 @@ import {
   consumeAccountActionAndSetPassword,
   getAccountActionByToken,
   getLatestAccountInvitationsForUsers,
+  hasRecentlyDeliveredPendingAccountAction,
   hashAccountActionToken,
   issueAccountAction,
   revokeAccountAction,
@@ -137,6 +138,41 @@ describe("account action request storage", () => {
       .where(eq(accountActionRequests.id, issued.request.id));
     expect(consumed?.status).toBe("consumed");
     expect(consumed?.consumedAt).not.toBeNull();
+  });
+
+  it("detects only recently delivered, pending, unexpired actions", async () => {
+    const user = await createFixtureUser("Action Recent Delivery");
+    const issued = await issueAccountAction({
+      userId: user.id,
+      action: "password_reset",
+      organizationId,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
+
+    expect(await hasRecentlyDeliveredPendingAccountAction({
+      userId: user.id,
+      action: "password_reset",
+      deliveredAfter: new Date(Date.now() - 5 * 60 * 1000),
+    })).toBe(false);
+
+    await updateAccountActionDeliveryStatus(issued.request.id, "sent");
+    expect(await hasRecentlyDeliveredPendingAccountAction({
+      userId: user.id,
+      action: "password_reset",
+      deliveredAfter: new Date(Date.now() - 5 * 60 * 1000),
+    })).toBe(true);
+    expect(await hasRecentlyDeliveredPendingAccountAction({
+      userId: user.id,
+      action: "password_reset",
+      deliveredAfter: new Date(Date.now() + 60 * 1000),
+    })).toBe(false);
+
+    await revokeAccountAction(issued.request.id);
+    expect(await hasRecentlyDeliveredPendingAccountAction({
+      userId: user.id,
+      action: "password_reset",
+      deliveredAfter: new Date(Date.now() - 5 * 60 * 1000),
+    })).toBe(false);
   });
 
   it("distinguishes lazy expiry and revocation from a usable pending action", async () => {

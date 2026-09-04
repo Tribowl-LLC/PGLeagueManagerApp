@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, desc, eq, gt, inArray, isNull, lte, ne, sql } from "drizzle-orm";
+import { and, desc, eq, gt, gte, inArray, isNull, lte, ne, sql } from "drizzle-orm";
 import { db, pool } from "../db.js";
 import {
   accountActionRequests,
@@ -248,6 +248,31 @@ export async function updateAccountActionDeliveryStatus(
     .where(eq(accountActionRequests.id, requestId))
     .returning();
   return updated;
+}
+
+/**
+ * Return whether a still-usable action was successfully delivered recently.
+ * Callers use this while holding the per-user delivery lock so a rapid resend
+ * cannot supersede a link that may still be in transit through the mail system.
+ */
+export async function hasRecentlyDeliveredPendingAccountAction(input: {
+  userId: number;
+  action: AccountActionType;
+  deliveredAfter: Date;
+}): Promise<boolean> {
+  const [row] = await db
+    .select({ id: accountActionRequests.id })
+    .from(accountActionRequests)
+    .where(and(
+      eq(accountActionRequests.userId, input.userId),
+      eq(accountActionRequests.action, input.action),
+      eq(accountActionRequests.status, "pending"),
+      eq(accountActionRequests.deliveryStatus, "sent"),
+      gt(accountActionRequests.expiresAt, sql`now()`),
+      gte(accountActionRequests.deliveredAt, input.deliveredAfter.toISOString()),
+    ))
+    .limit(1);
+  return row !== undefined;
 }
 
 /** Return the newest invitation state for each requested user, without token material. */

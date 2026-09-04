@@ -342,6 +342,11 @@ export interface IAccountActionStorage {
     requestId: number,
     deliveryStatus: AccountActionDeliveryStatus,
   ): Promise<AccountActionRequest | undefined>;
+  hasRecentlyDeliveredPendingAccountAction(input: {
+    userId: number;
+    action: AccountActionType;
+    deliveredAfter: Date;
+  }): Promise<boolean>;
   getLatestAccountInvitationsForUsers(userIds: number[], organizationId: number): Promise<Map<number, AccountActionRequest>>;
   revokeAccountAction(requestId: number): Promise<AccountActionRequest | undefined>;
 }
