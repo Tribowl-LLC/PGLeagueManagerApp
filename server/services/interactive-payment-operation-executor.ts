@@ -29,6 +29,7 @@ import {
 } from "./payment-errors.js";
 import type { PaymentProvider, PaymentResult } from "./payment-provider.js";
 import { createLogger } from "../logger.js";
+import { captureUnexpectedPaymentProviderError } from "./payment-error-telemetry.js";
 
 const log = createLogger("InteractivePaymentLedger");
 const MIN_RETRY_MS = 60_000;
@@ -502,6 +503,12 @@ export class InteractivePaymentOperationExecutor {
   ): Promise<PaymentOperation> {
     const leaseToken = operation.leaseToken;
     if (!leaseToken) throw new Error("leased interactive operation has no fencing token");
+    // Customer-action outcomes are normal checkout control flow. Every
+    // provider/configuration/transport/internal failure remains observable at
+    // this boundary, including failures that the provider service normalized
+    // into a typed error. The server reporter deduplicates the error/cause
+    // chain, so this is one report per failed provider attempt.
+    captureUnexpectedPaymentProviderError(log, error);
     const disposition = failureDisposition(error, providerDispatchStarted);
     const errorCode = sanitizeProviderErrorCode(safeErrorCode(error), "PROVIDER_ERROR");
     const providerOrderId = error instanceof PaymentProviderError ? error.providerOrderId : undefined;

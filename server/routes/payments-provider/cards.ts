@@ -120,6 +120,7 @@ router.post('/cards/:bowlerId', paymentWriteLimiter, async (req, res) => {
       'Failed to save card',
       'SAVE_CARD_ERROR',
     );
+    if (status >= 500 && !isHandledPaymentProviderError(error)) log.captureException(error);
     return sendError(res, userMessage, status, code);
   }
 });
@@ -282,7 +283,7 @@ router.delete('/cards/:bowlerId/:cardId', async (req, res) => {
       'Failed to remove card',
       'REMOVE_CARD_ERROR',
     );
-    if (status >= 500) log.captureException(error);
+    if (status >= 500 && !isHandledPaymentProviderError(error)) log.captureException(error);
     sendError(res, userMessage, status, code);
   }
 });

@@ -34,6 +34,24 @@ function text(error: unknown): string {
     property(error, 'url'),
     typeof error === 'string' ? error : undefined,
   ];
+  const exception = property(error, 'exception');
+  const exceptionValues = property(exception, 'values');
+  if (Array.isArray(exceptionValues)) {
+    for (const exceptionValue of exceptionValues) {
+      values.push(property(exceptionValue, 'value'), property(exceptionValue, 'type'));
+      const stacktrace = property(exceptionValue, 'stacktrace');
+      const frames = property(stacktrace, 'frames');
+      if (Array.isArray(frames)) {
+        for (const frame of frames) {
+          values.push(
+            property(frame, 'filename'),
+            property(frame, 'abs_path'),
+            property(frame, 'module'),
+          );
+        }
+      }
+    }
+  }
   return values.filter((value): value is string => typeof value === 'string').join(' ');
 }
 
@@ -96,6 +114,10 @@ function writeMarker(storage: StorageLike | null, release: string): void {
 }
 
 let memoryAttemptedRelease: string | null = null;
+// Sentry's GlobalHandlers can observe the same first failure as the browser
+// recovery handler. Keep a one-event in-memory handoff so only that expected
+// first attempt is suppressed; a repeat failure remains reportable.
+let pendingAssetTelemetryRelease: string | null = null;
 
 /** True once this release has already used its automatic refresh. */
 export function hasAttemptedAssetRecovery(
@@ -121,9 +143,16 @@ export function recoverFromAssetFailure(
   if (!isAssetLoadError(error)) return 'not_asset';
   const release = options.release ?? getAssetReleaseKey();
   const storage = options.storage === undefined ? getSessionStorage() : options.storage;
-  if (hasAttemptedAssetRecovery(release, storage)) return 'fallback';
+  if (hasAttemptedAssetRecovery(release, storage)) {
+    // The recovery marker may have been written by this same event before a
+    // second handler sees it. Do not let that second, genuine failure inherit
+    // the first-attempt telemetry suppression.
+    if (pendingAssetTelemetryRelease === release) pendingAssetTelemetryRelease = null;
+    return 'fallback';
+  }
 
   memoryAttemptedRelease = release;
+  pendingAssetTelemetryRelease = release;
   writeMarker(storage, release);
   try {
     (options.reload ?? (() => window.location.reload()))();
@@ -131,6 +160,17 @@ export function recoverFromAssetFailure(
   } catch {
     return 'fallback';
   }
+}
+
+/**
+ * Filter the first Sentry event corresponding to a guarded refresh. Sentry
+ * calls this after browser GlobalHandlers, so the handoff is deliberately
+ * one-shot and scoped to the release that triggered recovery.
+ */
+export function shouldSuppressAssetTelemetry(error: unknown, release = getAssetReleaseKey()): boolean {
+  if (!isAssetLoadError(error) || pendingAssetTelemetryRelease !== release) return false;
+  pendingAssetTelemetryRelease = null;
+  return true;
 }
 
 /**
@@ -163,4 +203,5 @@ export function installAssetRecoveryHandlers(): () => void {
 /** Test-only reset for the module-local fallback when storage is unavailable. */
 export function resetAssetRecoveryForTests(): void {
   memoryAttemptedRelease = null;
+  pendingAssetTelemetryRelease = null;
 }

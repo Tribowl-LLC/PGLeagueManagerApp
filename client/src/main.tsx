@@ -7,9 +7,14 @@ import "./index.css";
 import { initCsrfToken } from "./lib/queryClient";
 import { scrubSentryEvent, scrubSentrySpan } from "./lib/logger";
 import { isNativeApp } from './lib/capacitor';
-import { installAssetRecoveryHandlers } from './lib/asset-recovery';
+import { installAssetRecoveryHandlers, shouldSuppressAssetTelemetry } from './lib/asset-recovery';
 
 initCsrfToken();
+
+// Register before Sentry's GlobalHandlers so recovery can claim the first
+// browser asset failure and hand its expected event to beforeSend for a
+// release-scoped one-shot suppression.
+installAssetRecoveryHandlers();
 
 Sentry.init({
   dsn: import.meta.env.VITE_SENTRY_DSN,
@@ -27,15 +32,13 @@ Sentry.init({
   // task #770: redaction backstop so events captured outside the
   // client logger (uncaught errors, SDK breadcrumbs, etc.) still have
   // PII / secret-shaped strings masked before leaving the browser.
-  beforeSend: (event) => scrubSentryEvent(event),
+  beforeSend: (event) => {
+    if (shouldSuppressAssetTelemetry(event)) return null;
+    return scrubSentryEvent(event);
+  },
   beforeSendTransaction: (event) => scrubSentryEvent(event),
   beforeSendSpan: (span) => scrubSentrySpan(span),
 });
-
-// A stale Vite chunk must get one release-scoped refresh opportunity before
-// the app settles on ErrorBoundary's stable fallback. The handler deliberately
-// leaves the second failure visible to Sentry for deploy diagnostics.
-installAssetRecoveryHandlers();
 
 const rootElement = document.getElementById("root");
 if (!rootElement) {

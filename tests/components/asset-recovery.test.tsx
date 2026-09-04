@@ -4,6 +4,7 @@ import {
   isAssetLoadError,
   recoverFromAssetFailure,
   resetAssetRecoveryForTests,
+  shouldSuppressAssetTelemetry,
 } from "@/lib/asset-recovery";
 import { isHandledPaymentError } from "@/lib/payment-user-error";
 
@@ -52,6 +53,27 @@ describe("client asset recovery", () => {
     expect(reload).toHaveBeenCalledOnce();
     expect(recoverFromAssetFailure(error, { release: "/assets/index-next.js", storage, reload })).toBe("refreshing");
     expect(reload).toHaveBeenCalledTimes(2);
+  });
+
+  it("suppresses only the first Sentry asset event and leaves repeats reportable", () => {
+    const storage = storageStub();
+    const reload = vi.fn();
+    const release = "/assets/index-new.js";
+    const error = new Error("Failed to fetch dynamically imported module: /assets/page-old.js");
+
+    expect(recoverFromAssetFailure(error, { release, storage, reload })).toBe("refreshing");
+    const sentryAssetEvent = {
+      exception: {
+        values: [{
+          value: "Script error.",
+          stacktrace: { frames: [{ filename: "/assets/page-old.js" }] },
+        }],
+      },
+    };
+    expect(shouldSuppressAssetTelemetry(sentryAssetEvent, release)).toBe(true);
+    expect(shouldSuppressAssetTelemetry(sentryAssetEvent, release)).toBe(false);
+    expect(recoverFromAssetFailure(error, { release, storage, reload })).toBe("fallback");
+    expect(reload).toHaveBeenCalledOnce();
   });
 });
 

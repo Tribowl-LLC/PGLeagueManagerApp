@@ -90,6 +90,7 @@ const PARALLEL_ISOLATED_WITH_APP = [
  */
 const UNIT_NO_DB = [
   'tests/unit/client-api-error.test.ts',
+  'tests/unit/asset-recovery-sentry-order.test.ts',
   'tests/unit/client-telemetry-scrubber.test.ts',
   'tests/unit/sentry-context.test.ts',
   'tests/unit/server-logger-sentry.test.ts',
@@ -109,6 +110,7 @@ const UNIT_NO_DB = [
   'tests/unit/payment-operation-idempotency.test.ts',
   'tests/unit/financials-f5-route.test.ts',
   'tests/unit/payment-operation-wake-scheduler.test.ts',
+  'tests/unit/payment-error-telemetry.test.ts',
   'tests/unit/square-webhook.test.ts',
   'tests/unit/rate-limit-environment.test.ts',
   'tests/unit/rate-limit-shared-store-coverage.test.ts',

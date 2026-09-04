@@ -22,6 +22,7 @@ import {
 } from "./payment-errors.js";
 import type { PaymentProvider, RefundResult } from "./payment-provider.js";
 import { createLogger } from "../logger.js";
+import { captureUnexpectedPaymentProviderError } from "./payment-error-telemetry.js";
 
 const log = createLogger("RefundPaymentLedger");
 const LEASE_MS = Math.min(2 * 60_000, PAYMENT_OPERATION_MAX_LEASE_MS);
@@ -227,6 +228,7 @@ export class RefundPaymentOperationExecutor {
     providerObjectId = operation.providerObjectId ?? undefined,
   ): Promise<PaymentOperation> {
     if (!operation.leaseToken) throw new Error("leased refund operation has no fencing token");
+    captureUnexpectedPaymentProviderError(log, error);
     const kind = disposition(error, dispatched);
     const common = {
       organizationId: operation.organizationId,
