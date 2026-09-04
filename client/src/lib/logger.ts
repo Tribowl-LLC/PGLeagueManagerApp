@@ -1,4 +1,10 @@
 import * as Sentry from "@sentry/react";
+import {
+  scrubAndTruncate,
+  scrubString,
+} from "@shared/telemetry-scrubber";
+
+export { scrubDeep, scrubSentryEvent, scrubString } from "@shared/telemetry-scrubber";
 
 // task #766: tiny client logging wrapper so SDK/provider/payment
 // errors are reported consistently to Sentry, while raw `console`
@@ -28,100 +34,6 @@ function format(scope: string, message: string): string {
 // ---------------------------------------------------------------------------
 // Redaction scrubber (task #770)
 // ---------------------------------------------------------------------------
-
-const EMAIL_MASK = "[redacted-email]";
-const PHONE_MASK = "[redacted-phone]";
-const TOKEN_MASK = "[redacted-token]";
-const LINK_MASK = "[redacted-link]";
-
-const MAX_STRING_LENGTH = 500;
-const MAX_OBJECT_DEPTH = 4;
-
-// Order matters: links and emails are scrubbed before the generic
-// token/phone passes so their constituent characters aren't partially
-// masked by a later, broader rule.
-const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
-
-// URLs that carry invite/reset/confirm/verify/auth tokens either as a
-// path segment or a query parameter. The whole URL is replaced because
-// the sensitive material can live anywhere in it.
-const SENSITIVE_LINK_RE =
-  /https?:\/\/[^\s'"<>]*(?:token|invite|reset|confirm|verify|auth|signature|code=)[^\s'"<>]*/gi;
-
-// Provider ID / nonce / secret shapes:
-//   - Square nonces / card-on-file refs: cnon:..., ccof:...
-//   - Square app/access/refresh secrets: sq0xxx-...
-//   - Bearer-style tokens
-const PROVIDER_TOKEN_RE =
-  /\b(?:cnon|ccof|sq0[a-z]{3}|sqics|sqcsp)[:_-][A-Za-z0-9_.-]+/gi;
-const BEARER_RE = /\bBearer\s+[A-Za-z0-9._-]+/gi;
-
-// Phone-like runs: an optional +, then a leading digit, then at least 6
-// digit/separator characters, then a trailing digit. Requires enough
-// length that years/short codes (e.g. "2026", "1.0.0") don't match.
-const PHONE_RE = /\+?\d[\d()\s.-]{6,}\d/g;
-
-// Generic long opaque identifiers / secrets: 24+ char runs of
-// token-shaped characters. Catches customer/card/payment IDs and
-// API-key-shaped strings that don't match a more specific rule above.
-const LONG_TOKEN_RE = /\b[A-Za-z0-9_-]{24,}\b/g;
-
-/**
- * Mask PII and secret-shaped substrings in a single string. Pure and
- * idempotent enough for telemetry use (re-running on already-masked
- * text leaves the `[redacted-*]` placeholders intact).
- */
-export function scrubString(input: string): string {
-  if (!input) return input;
-  let out = input;
-  out = out.replace(SENSITIVE_LINK_RE, LINK_MASK);
-  out = out.replace(EMAIL_RE, EMAIL_MASK);
-  out = out.replace(PROVIDER_TOKEN_RE, TOKEN_MASK);
-  out = out.replace(BEARER_RE, TOKEN_MASK);
-  out = out.replace(PHONE_RE, PHONE_MASK);
-  out = out.replace(LONG_TOKEN_RE, TOKEN_MASK);
-  return out;
-}
-
-function truncate(input: string): string {
-  if (input.length <= MAX_STRING_LENGTH) return input;
-  return `${input.slice(0, MAX_STRING_LENGTH)}…[truncated]`;
-}
-
-function scrubAndTruncate(input: string): string {
-  return truncate(scrubString(input));
-}
-
-/**
- * Recursively scrub an arbitrary value for inclusion in Sentry `extra`
- * / `contexts` / breadcrumb data. Strings are masked + truncated,
- * objects/arrays are walked up to a bounded depth, and anything deeper
- * (or otherwise unserializable) is collapsed to a safe placeholder so a
- * raw response body / large blob never leaves the client wholesale.
- */
-export function scrubDeep(value: unknown, depth = 0): unknown {
-  if (value === null || value === undefined) return value;
-  if (typeof value === "string") return scrubAndTruncate(value);
-  if (typeof value === "number" || typeof value === "boolean") return value;
-  if (depth >= MAX_OBJECT_DEPTH) return "[redacted-depth]";
-  if (Array.isArray(value)) {
-    return value.slice(0, 50).map((item) => scrubDeep(item, depth + 1));
-  }
-  if (value instanceof Error) {
-    return {
-      name: value.name,
-      message: scrubAndTruncate(value.message),
-    };
-  }
-  if (typeof value === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
-      out[key] = scrubDeep(val, depth + 1);
-    }
-    return out;
-  }
-  return scrubAndTruncate(String(value));
-}
 
 // Scalar fields that are safe (and useful) to forward from an unknown
 // error-shaped object without dumping the whole blob.
@@ -182,55 +94,6 @@ export function sanitizeForTelemetry(
 
   extra.detail = scrubAndTruncate(String(value));
   return { message: safeMessage, extra };
-}
-
-type SentryEventLike = {
-  message?: unknown;
-  exception?: { values?: Array<{ value?: unknown; type?: unknown }> };
-  extra?: Record<string, unknown>;
-  contexts?: Record<string, unknown>;
-  breadcrumbs?: Array<{ message?: unknown; data?: unknown }>;
-};
-
-/**
- * `beforeSend` backstop: apply the same redaction to an outgoing Sentry
- * event's message, exception values, extra, contexts, and breadcrumbs
- * so captures that don't originate from this logger are still scrubbed.
- * Shares `scrubString` / `scrubDeep` with the logger to avoid drift.
- */
-export function scrubSentryEvent<T extends SentryEventLike>(event: T): T {
-  if (!event) return event;
-
-  if (typeof event.message === "string") {
-    event.message = scrubString(event.message);
-  }
-
-  if (event.exception?.values) {
-    for (const ex of event.exception.values) {
-      if (typeof ex.value === "string") ex.value = scrubString(ex.value);
-    }
-  }
-
-  if (event.extra) {
-    event.extra = scrubDeep(event.extra) as Record<string, unknown>;
-  }
-
-  if (event.contexts) {
-    event.contexts = scrubDeep(event.contexts) as Record<string, unknown>;
-  }
-
-  if (event.breadcrumbs) {
-    for (const crumb of event.breadcrumbs) {
-      if (typeof crumb.message === "string") {
-        crumb.message = scrubString(crumb.message);
-      }
-      if (crumb.data && typeof crumb.data === "object") {
-        crumb.data = scrubDeep(crumb.data);
-      }
-    }
-  }
-
-  return event;
 }
 
 function reportToSentry(

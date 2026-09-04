@@ -35,6 +35,15 @@ export interface Logger {
   debug: (message: string, ...args: unknown[]) => void;
 }
 
+export type ServerErrorReporter = (error: Error, context: { logger: string }) => void;
+
+let serverErrorReporter: ServerErrorReporter | null = null;
+
+/** Installed by the Sentry bootstrap so tests and non-Sentry runtimes stay dependency-free. */
+export function configureServerErrorReporter(reporter: ServerErrorReporter | null): void {
+  serverErrorReporter = reporter;
+}
+
 const LOG_LEVELS = { debug: 0, info: 1, warn: 2, error: 3 } as const;
 type LogLevel = keyof typeof LOG_LEVELS;
 
@@ -95,6 +104,14 @@ function makeLogger(prefix?: string): Logger {
     },
     error: (message: string, ...args: unknown[]) => {
       if (!shouldLog('error')) return;
+      const error = args.find((arg): arg is Error => arg instanceof Error);
+      if (error && serverErrorReporter) {
+        try {
+          serverErrorReporter(error, { logger: prefix ?? 'server' });
+        } catch {
+          // Telemetry must never interfere with the application error path.
+        }
+      }
       const log = `[ERROR] ${tag}${message}${formatArgs(args)}`;
       consoleBuffer.write(Buffer.from(`${log}\n`));
     },

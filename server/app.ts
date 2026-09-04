@@ -61,6 +61,7 @@ import { assertTrustProxyAtBoot } from './lib/trust-proxy-check';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import * as schema from '@shared/schema';
 import { registerSquareWebhookReceiver } from './routes/payments-provider/square-webhook';
+import { sanitizedSentryIdentity } from '@shared/sentry-context';
 
 const log = createLogger("Server");
 
@@ -193,6 +194,20 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
   app.use(express.json({ limit: '256kb' }));
   app.use(express.urlencoded({ extended: false, limit: '256kb' }));
   await setupAuth(app);
+
+  // Load the SDK only after the core middleware is ready. Production has
+  // already initialized it through server/instrument.ts; test runtimes with
+  // no DSN retain the same no-op behavior.
+  const Sentry = await import("@sentry/node");
+  app.use((req, _res, next) => {
+    Sentry.withIsolationScope((scope) => {
+      const identity = sanitizedSentryIdentity(req.user);
+      scope.setUser(identity.user);
+      scope.setTags(identity.tags);
+      next();
+    });
+  });
+
   app.use(orgSessionGuard);
 
   app.use(manifestRouter);
@@ -286,13 +301,15 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
     });
   });
 
-  // Lazy-load `@sentry/node` (task #692). The package pulls a large
-  // OpenTelemetry transitive tree; deferring keeps cold-start cheap.
-  const Sentry = await import("@sentry/node");
   Sentry.setupExpressErrorHandler(app);
 
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
-    log.error('Unhandled express error:', err);
+    const loggableError = err instanceof Error
+      ? { name: err.name, message: err.message, stack: err.stack }
+      : err;
+    // setupExpressErrorHandler has already captured this exception. Log a
+    // plain object so the handled-error reporter does not emit a duplicate.
+    log.error('Unhandled express error:', loggableError);
     if (!res.headersSent) {
       const errObj = (err && typeof err === 'object') ? err as { status?: unknown; message?: unknown } : {};
       const statusCode = (typeof errObj.status === 'number' && errObj.status >= 400 && errObj.status < 500)

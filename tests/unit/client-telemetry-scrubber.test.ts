@@ -162,4 +162,35 @@ describe("scrubSentryEvent backstop", () => {
     expect(scrubbed.breadcrumbs[0].message).toContain("[redacted-email]");
     expect(JSON.stringify(scrubbed.breadcrumbs[0].data)).toContain("[redacted-phone]");
   });
+
+  it("drops request secrets and keeps only an opaque user id", () => {
+    const event = {
+      request: {
+        url: "https://leaguevault.app/api/account/reset?token=secret-value",
+        method: "POST",
+        headers: { authorization: "Bearer private-token" },
+        cookies: { session: "private-session" },
+        data: { email: "private@example.com" },
+        query_string: "token=secret-value",
+        env: { REMOTE_ADDR: "192.0.2.1" },
+      },
+      user: {
+        id: "user:42",
+        email: "private@example.com",
+        username: "Private Person",
+        ip_address: "192.0.2.1",
+      },
+    };
+
+    const scrubbed = scrubSentryEvent(event);
+
+    expect(scrubbed.request.url).toBe("[redacted-link]");
+    expect(scrubbed.request.method).toBe("POST");
+    expect(scrubbed.request.headers).toBeUndefined();
+    expect(scrubbed.request.cookies).toBeUndefined();
+    expect(scrubbed.request.data).toBeUndefined();
+    expect(scrubbed.request.query_string).toBeUndefined();
+    expect(scrubbed.request.env).toBeUndefined();
+    expect(scrubbed.user).toEqual({ id: "user:42" });
+  });
 });
