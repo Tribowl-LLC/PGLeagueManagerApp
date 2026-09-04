@@ -64,6 +64,7 @@ vi.mock('../../server/services/email', () => ({
 
 const mockGetUser = vi.fn();
 const mockUpdateUser = vi.fn();
+const mockRevokePendingAccountActions = vi.fn(async () => 0);
 const mockInvalidatePending = vi.fn(async () => 0);
 // The change-password route also drives the lockout counter (task #357).
 // Mock both methods faithfully so the route's normal calls don't fall
@@ -80,6 +81,8 @@ vi.mock('../../server/storage', () => ({
   storage: {
     getUser: (...a: unknown[]) => mockGetUser.apply(null, a as never),
     updateUser: (...a: unknown[]) => mockUpdateUser.apply(null, a as never),
+    revokePendingAccountActionsForUser: (...a: unknown[]) =>
+      mockRevokePendingAccountActions.apply(null, a as never),
     invalidatePendingEmailChangeRequestsForUser: (...a: unknown[]) =>
       mockInvalidatePending.apply(null, a as never),
     recordFailedPasswordChangeAttempt: (...a: unknown[]) =>
@@ -116,6 +119,8 @@ vi.mock('../../server/services/payment-customer-sync', () => ({
 // real Postgres connection.
 vi.mock('../../server/db', () => ({
   db: {
+    transaction: async (fn: (tx: unknown) => Promise<unknown>) =>
+      fn({ __isMockTx: true }),
     select: () => ({ from: () => ({ where: () => [] }) }),
     insert: () => ({ values: () => ({ returning: () => [] }) }),
     update: () => ({ set: () => ({ where: () => [] }) }),
@@ -181,6 +186,7 @@ beforeEach(() => {
   mockGetUser.mockResolvedValue({ ...TEST_USER });
   mockUpdateUser.mockReset();
   mockUpdateUser.mockResolvedValue({ ...TEST_USER, password: 'hashed:new' });
+  mockRevokePendingAccountActions.mockClear();
   mockInvalidatePending.mockClear();
   mockHashPassword.mockClear();
   mockDestroyOtherSessionsForUser.mockClear();
@@ -242,6 +248,12 @@ describe('POST /api/account/change-password — password-changed email dispatch'
     // flow through to the email helper, otherwise the email always
     // renders in English regardless of preference.
     expect(ctx.locale).toBe('es');
+
+    expect(mockRevokePendingAccountActions).toHaveBeenCalledWith(
+      TEST_USER.id,
+      ['password_reset'],
+      { __isMockTx: true },
+    );
 
     // Strict ordering: the password row must be persisted BEFORE we
     // dispatch the "your password was changed" email. Otherwise a

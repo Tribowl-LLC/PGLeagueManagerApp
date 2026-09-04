@@ -1,5 +1,6 @@
 import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import { db } from '../db';
+import { revokePendingAccountActionsForUser } from '../storage/account-action-requests';
 import { emailChangeRequests, users, type User } from '@shared/schema';
 import { storage } from '../storage';
 import { recordAdminEmailChangeAudit } from '../storage/admin-email-change-audits';
@@ -217,6 +218,14 @@ export async function applyConfirmEmailChangeTxn(
       .returning();
 
     if (!updated) return { kind: 'user_gone' as const };
+
+    // A reset link sent to the former address must stop working in the same
+    // transaction that makes the new address authoritative.
+    await revokePendingAccountActionsForUser(
+      claimed.userId,
+      ['password_reset'],
+      tx,
+    );
     // `requestId` is carried out of the transaction so the post-confirm
     // payment-sync result can be written back to the *exact* admin
     // audit row that this confirmation belongs to (task #487). Doing

@@ -76,6 +76,7 @@ vi.mock('../../server/storage', () => ({
   storage: {
     getUser: (...a: unknown[]) => mockGetUser.apply(null, a as never),
     updateUser: (...a: unknown[]) => mockUpdateUser.apply(null, a as never),
+    revokePendingAccountActionsForUser: vi.fn(async () => 0),
     invalidatePendingEmailChangeRequestsForUser: (...a: unknown[]) =>
       mockInvalidatePending.apply(null, a as never),
     getUserByEmail: vi.fn(async () => null),

@@ -65,6 +65,12 @@ export async function resetUserPasswordTxn(opts: {
       tx,
     );
 
+    await storage.revokePendingAccountActionsForUser(
+      opts.targetUserId,
+      ['password_reset'],
+      tx,
+    );
+
     await recordAdminPasswordResetAudit(
       {
         actorUserId: opts.audit.actorUserId,

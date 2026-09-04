@@ -347,6 +347,11 @@ export interface IAccountActionStorage {
     action: AccountActionType;
     deliveredAfter: Date;
   }): Promise<boolean>;
+  revokePendingAccountActionsForUser(
+    userId: number,
+    actions: AccountActionType[],
+    executor?: import('./account-action-requests').AccountActionExecutor,
+  ): Promise<number>;
   getLatestAccountInvitationsForUsers(userIds: number[], organizationId: number): Promise<Map<number, AccountActionRequest>>;
   revokeAccountAction(requestId: number): Promise<AccountActionRequest | undefined>;
 }

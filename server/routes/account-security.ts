@@ -24,6 +24,7 @@ import {
   markAdminEmailChangeAuditConfirmed,
 } from '../storage/admin-email-change-audits';
 import { createSharedRateLimitStore } from '../utils/rate-limit-store';
+import { db } from '../db';
 import { requireAuth, hashEmailChangeToken } from './account-shared';
 import {
   applyConfirmEmailChangeTxn,
@@ -37,6 +38,23 @@ const GENERIC_DELETION_RESPONSE = {
   success: true as const,
   data: { message: 'Deletion request received' },
 };
+
+export async function changeUserPasswordTxn(
+  userId: number,
+  passwordHash: string,
+): Promise<number> {
+  return db.transaction(async (tx) => {
+    await storage.updateUser(userId, {
+      password: passwordHash,
+      mustChangePassword: false,
+    }, tx);
+    return storage.revokePendingAccountActionsForUser(
+      userId,
+      ['password_reset'],
+      tx,
+    );
+  });
+}
 
 // Anti-enumeration: even when throttled, return the same generic success
 // response (HTTP 200) so callers cannot distinguish accepted vs limited.
@@ -517,10 +535,7 @@ router.post('/change-password', changePasswordLimiter, requireAuth, async (req: 
     // (even when it was already false) so the reset path is
     // idempotent and a stale-flag DB row from a missed migration
     // would self-heal on the user's first self-service rotation.
-    await storage.updateUser(user.id, {
-      password: hashedNew,
-      mustChangePassword: false,
-    });
+    await changeUserPasswordTxn(user.id, hashedNew);
 
     // Task #357: clean slate after a successful rotation. Wipe any
     // accumulated failure counter and clear a stale lock (the route

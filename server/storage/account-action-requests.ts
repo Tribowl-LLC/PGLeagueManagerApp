@@ -323,6 +323,25 @@ export async function revokeAccountAction(
   return updated;
 }
 
+/** Revoke every pending action of the requested kinds for one user. */
+export async function revokePendingAccountActionsForUser(
+  userId: number,
+  actions: AccountActionType[],
+  executor: AccountActionExecutor = db,
+): Promise<number> {
+  if (actions.length === 0) return 0;
+  const rows = await executor
+    .update(accountActionRequests)
+    .set({ status: "revoked", revokedAt: sql`now()` })
+    .where(and(
+      eq(accountActionRequests.userId, userId),
+      inArray(accountActionRequests.action, actions),
+      eq(accountActionRequests.status, "pending"),
+    ))
+    .returning({ id: accountActionRequests.id });
+  return rows.length;
+}
+
 // Kept as a named type-level reference for storage consumers that need to
 // constrain status updates without importing the table implementation.
 export type { AccountActionStatus };

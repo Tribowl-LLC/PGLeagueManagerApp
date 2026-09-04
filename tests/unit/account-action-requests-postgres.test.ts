@@ -19,6 +19,7 @@ import {
   hashAccountActionToken,
   issueAccountAction,
   revokeAccountAction,
+  revokePendingAccountActionsForUser,
   updateAccountActionDeliveryStatus,
   withAccountActionDeliveryLock,
 } from "../../server/storage/account-action-requests";
@@ -173,6 +174,39 @@ describe("account action request storage", () => {
       action: "password_reset",
       deliveredAfter: new Date(Date.now() - 5 * 60 * 1000),
     })).toBe(false);
+  });
+
+  it("revokes only the selected pending actions for one user", async () => {
+    const user = await createFixtureUser("Action Bulk Revoke");
+    const reset = await issueAccountAction({
+      userId: user.id,
+      action: "password_reset",
+      organizationId,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
+    const invite = await issueAccountAction({
+      userId: user.id,
+      action: "account_invite",
+      organizationId,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
+
+    expect(await revokePendingAccountActionsForUser(
+      user.id,
+      ["password_reset"],
+    )).toBe(1);
+
+    const [resetRow] = await db
+      .select({ status: accountActionRequests.status, revokedAt: accountActionRequests.revokedAt })
+      .from(accountActionRequests)
+      .where(eq(accountActionRequests.id, reset.request.id));
+    const [inviteRow] = await db
+      .select({ status: accountActionRequests.status })
+      .from(accountActionRequests)
+      .where(eq(accountActionRequests.id, invite.request.id));
+    expect(resetRow?.status).toBe("revoked");
+    expect(resetRow?.revokedAt).not.toBeNull();
+    expect(inviteRow?.status).toBe("pending");
   });
 
   it("distinguishes lazy expiry and revocation from a usable pending action", async () => {
