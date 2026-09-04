@@ -47,6 +47,21 @@ describe("server handled-error reporting", () => {
     expect(reporter).toHaveBeenCalledWith(error, { logger: "Payments" });
   });
 
+  it("reports a wrapped failure only once across logging layers", () => {
+    expectErrorLog("Provider failed:");
+    expectErrorLog("Route failed:");
+    const reporter = vi.fn<ServerErrorReporter>();
+    const providerError = new Error("upstream unavailable");
+    const routeError = new Error("catalog request failed", { cause: providerError });
+    configureServerErrorReporter(reporter);
+
+    createLogger("SquareCatalog").error("Provider failed:", providerError);
+    createLogger("Payments").error("Route failed:", routeError);
+
+    expect(reporter).toHaveBeenCalledOnce();
+    expect(reporter).toHaveBeenCalledWith(providerError, { logger: "SquareCatalog" });
+  });
+
   it("does not let reporter failures escape the application error path", () => {
     expectErrorLog("Operation failed:");
     configureServerErrorReporter(() => {
