@@ -49,7 +49,7 @@ export interface ITeamStorage {
   getTeamByNumber(leagueId: number, teamNumber: number): Promise<Team | undefined>;
   createTeam(team: InsertTeam, recordedByUserId?: number): Promise<Team>;
   updateTeam(id: number, team: UpdateTeam): Promise<Team>;
-  deleteTeam(id: number): Promise<void>;
+  deleteTeam(id: number, expectedOrganizationId?: number | null): Promise<void>;
   reorderTeams(updates: { id: number; displayOrder: number; number: number }[]): Promise<void>;
   renumberActiveTeams(leagueId: number): Promise<void>;
 }

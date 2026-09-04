@@ -113,6 +113,7 @@ const UNIT_NO_DB = [
   'tests/unit/rate-limit-environment.test.ts',
   'tests/unit/rate-limit-shared-store-coverage.test.ts',
   'tests/unit/subdomain-resolution-consistency.test.ts',
+  'tests/unit/team-delete-route.test.ts',
   'tests/unit/location-webhook-retention-route.test.ts',
   'tests/unit/canonical-occurrence-generator.test.ts',
   'tests/unit/canonical-collection-groups.test.ts',
@@ -211,6 +212,7 @@ const PARALLEL_ISOLATED = [
   'tests/unit/square-provider-not-configured-422.test.ts',
   'tests/unit/webhook-event-inbox-postgres.test.ts',
   'tests/unit/square-webhook-processing-postgres.test.ts',
+  'tests/unit/team-deletion-safety-postgres.test.ts',
 ];
 
 const sharedAlias = {

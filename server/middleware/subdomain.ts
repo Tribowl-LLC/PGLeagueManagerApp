@@ -4,6 +4,7 @@ import { createLogger } from '../logger';
 import { Organization } from '@shared/schema';
 import { isSystemAdmin } from '../utils/access-control';
 import { env } from '../config';
+import { getPgErrorCode } from '../utils/db-errors.js';
 
 const log = createLogger("Subdomain");
 
@@ -15,6 +16,7 @@ const MAIN_DOMAIN = env.APP_DOMAIN;
 const IGNORED_SUBDOMAINS = new Set(['www', 'api', 'admin', 'mail', 'smtp', 'ftp']);
 const SLUG_REGEX = /^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$/;
 const isDev = process.env.NODE_ENV !== 'production';
+export const TENANT_LOOKUP_UNAVAILABLE_CODE = 'TENANT_LOOKUP_UNAVAILABLE';
 
 declare global {
   namespace Express {
@@ -59,12 +61,51 @@ export async function lookupOrganizationByHostname(
 
     return org ?? null;
   } catch (err) {
-    log.error(`Failed to lookup org by subdomain "${subdomain}":`, err);
-    return null;
+    // A database failure is not a cache miss. Returning null here would let
+    // downstream routes continue as if this were the platform host, which is
+    // an unsafe tenant-isolation failure mode. Keep telemetry structured and
+    // avoid logging the tenant hostname or a raw Drizzle/SQL error.
+    log.error('Tenant hostname lookup failed', {
+      operation: 'organization_hostname_lookup',
+      errorType: err instanceof Error ? err.name : 'unknown',
+      errorCode: getPgErrorCode(err) ?? 'unknown',
+    });
+    throw new OrganizationHostnameLookupError(err);
   }
 }
 
-export function subdomainDetection(req: Request, _res: Response, next: NextFunction) {
+export class OrganizationHostnameLookupError extends Error {
+  constructor(cause?: unknown) {
+    super('Organization hostname lookup is temporarily unavailable', { cause });
+    this.name = 'OrganizationHostnameLookupError';
+  }
+}
+
+type TenantDetectionRequest = Pick<Request, 'hostname' | 'headers' | 'query'> & {
+  subdomainOrg?: Organization | null;
+  orgSlug?: string | null;
+};
+
+type TenantDetectionResponse = {
+  headersSent: boolean;
+  status: (statusCode: number) => TenantDetectionResponse;
+  json: (body: unknown) => unknown;
+};
+
+function respondTenantLookupUnavailable(res: TenantDetectionResponse): void {
+  if (res.headersSent) return;
+  res.status(503).json({
+    success: false,
+    error: {
+      code: TENANT_LOOKUP_UNAVAILABLE_CODE,
+      message: 'Tenant context is temporarily unavailable. Please retry shortly.',
+    },
+  });
+}
+
+export function subdomainDetection(req: TenantDetectionRequest, _res: TenantDetectionResponse, next: NextFunction): void;
+export function subdomainDetection(req: Request, _res: Response, next: NextFunction): void;
+export function subdomainDetection(req: TenantDetectionRequest, _res: TenantDetectionResponse, next: NextFunction) {
   if (isDev) {
     const devOverride = req.query.__org_slug as string | undefined;
     if (devOverride && SLUG_REGEX.test(devOverride)) {
@@ -72,7 +113,13 @@ export function subdomainDetection(req: Request, _res: Response, next: NextFunct
       lookupOrganizationByHostname(devOverride).then((org) => {
         req.subdomainOrg = org;
         next();
-      }).catch(() => next());
+      }).catch((error) => {
+        if (error instanceof OrganizationHostnameLookupError) {
+          respondTenantLookupUnavailable(_res);
+          return;
+        }
+        next(error);
+      });
       return;
     }
   }
@@ -91,9 +138,12 @@ export function subdomainDetection(req: Request, _res: Response, next: NextFunct
   lookupOrganizationByHostname(slug).then((org) => {
     req.subdomainOrg = org;
     next();
-  }).catch(() => {
-    req.subdomainOrg = null;
-    next();
+  }).catch((error) => {
+    if (error instanceof OrganizationHostnameLookupError) {
+      respondTenantLookupUnavailable(_res);
+      return;
+    }
+    next(error);
   });
 }
 

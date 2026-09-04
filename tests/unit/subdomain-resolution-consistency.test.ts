@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Request, Response } from 'express';
+import { expectErrorLog } from '../helpers/expected-error-logs';
 
 const storageMocks = vi.hoisted(() => ({
   getOrganizationBySubdomain: vi.fn(),
@@ -13,7 +15,11 @@ vi.mock('../../server/config', () => ({
   env: { APP_DOMAIN: 'leaguevault.app' },
 }));
 
-import { lookupOrganizationByHostname } from '../../server/middleware/subdomain';
+import {
+  lookupOrganizationByHostname,
+  subdomainDetection,
+  TENANT_LOOKUP_UNAVAILABLE_CODE,
+} from '../../server/middleware/subdomain';
 
 const firstOrganization = { id: 101, slug: 'first' };
 const reassignedOrganization = { id: 202, slug: 'reassigned' };
@@ -43,5 +49,40 @@ describe('tenant hostname resolution consistency', () => {
     await expect(lookupOrganizationByHostname('new-host')).resolves.toBeNull();
     await expect(lookupOrganizationByHostname('new-host')).resolves.toBe(reassignedOrganization);
     expect(storageMocks.getOrganizationBySlug).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns a temporary 503 when hostname resolution cannot acquire the database', async () => {
+    expectErrorLog('[Subdomain] Tenant hostname lookup failed');
+    storageMocks.getOrganizationBySubdomain.mockRejectedValue(
+      Object.assign(new Error('connection terminated unexpectedly'), { code: 'ECONNRESET' }),
+    );
+
+    const response = {
+      headersSent: false,
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn(),
+    };
+    const next = vi.fn();
+    const request = {
+      hostname: 'acme.leaguevault.app',
+      headers: {},
+      query: {},
+      subdomainOrg: undefined,
+      orgSlug: undefined,
+    };
+
+    subdomainDetection(request, response, next);
+    await vi.waitFor(() => expect(response.json).toHaveBeenCalledTimes(1));
+
+    expect(response.status).toHaveBeenCalledWith(503);
+    expect(response.json).toHaveBeenCalledWith({
+      success: false,
+      error: {
+        code: TENANT_LOOKUP_UNAVAILABLE_CODE,
+        message: 'Tenant context is temporarily unavailable. Please retry shortly.',
+      },
+    });
+    expect(next).not.toHaveBeenCalled();
+    expect(request.subdomainOrg).toBeUndefined();
   });
 });

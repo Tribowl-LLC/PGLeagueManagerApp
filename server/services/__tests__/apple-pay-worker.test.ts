@@ -37,6 +37,8 @@ const storageMock = vi.hoisted(() => ({
     reopenApplePayJobForRetry: vi.fn(),
     claimAndCompleteApplePayJobItem: vi.fn(),
     claimApplePayJobItemForProcessing: vi.fn(),
+    claimNextApplePayJob: vi.fn(),
+    recoverInterruptedApplePayJobs: vi.fn(),
     getOrganizations: vi.fn(),
   },
 }));
@@ -126,6 +128,23 @@ describe("ApplePayWorker — cancellation race conditions", () => {
 
   afterEach(() => {
     nowSpy.mockRestore();
+  });
+
+  it("retries transient startup recovery failures with bounded backoff and kicks once after recovery", async () => {
+    vi.useFakeTimers();
+    storageMock.storage.recoverInterruptedApplePayJobs
+      .mockRejectedValueOnce(Object.assign(new Error("connection reset"), { code: "ECONNRESET" }))
+      .mockResolvedValueOnce({ revivedJobIds: [], revivedItems: [] });
+    storageMock.storage.claimNextApplePayJob.mockResolvedValue(undefined);
+
+    const resume = applePayWorker.resumeOnStartup();
+    await vi.advanceTimersByTimeAsync(250);
+    await resume;
+    await vi.runAllTimersAsync();
+
+    expect(storageMock.storage.recoverInterruptedApplePayJobs).toHaveBeenCalledTimes(2);
+    expect(storageMock.storage.claimNextApplePayJob).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
   });
 
   it("stops issuing new provider calls after the job flips to canceled mid-flight, and finalizes as canceled", async () => {

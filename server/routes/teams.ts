@@ -5,6 +5,8 @@ import { z } from "zod";
 import { sendSuccess, sendError, handleZodError, parseOptionalIntParam, sanitizeBowler } from '../utils/api.js';
 import { hasAdminAccessToLeague, hasLeagueOperationsAccess, isOrgOrHigher, isPaymentManager } from '../utils/access-control.js';
 import { createLogger } from '../logger';
+import { TeamDeletionRequiresArchiveError, TeamOrganizationChangedError } from '../storage/teams.js';
+import { getPgErrorCode } from '../utils/db-errors.js';
 
 const log = createLogger("Teams");
 const router = Router();
@@ -300,9 +302,8 @@ router.patch("/:id", async (req, res) => {
 });
 
 router.delete("/:id", async (req, res) => {
+  const id = parseInt(req.params.id);
   try {
-    const id = parseInt(req.params.id);
-    
     // Get team to verify organization access
     const team = await storage.getTeam(id);
     
@@ -327,12 +328,25 @@ router.delete("/:id", async (req, res) => {
       return sendError(res, "You don't have access to this team", 403, 'FORBIDDEN');
     }
     
-    const leagueId = team.leagueId;
-    await storage.deleteTeam(id);
-    await storage.renumberActiveTeams(leagueId);
+    await storage.deleteTeam(id, league.organizationId);
     sendSuccess(res, null);
   } catch (error) {
-    log.error('Error deleting team:', error);
+    if (error instanceof TeamDeletionRequiresArchiveError) {
+      return sendError(
+        res,
+        'This team has retained financial roster or payment history. Archive the team instead of deleting it.',
+        409,
+        'TEAM_DELETE_REQUIRES_ARCHIVE',
+      );
+    }
+    if (error instanceof TeamOrganizationChangedError) {
+      return sendError(res, 'The team changed while the delete was being prepared. Please retry.', 409, 'TEAM_SCOPE_CHANGED');
+    }
+    log.error('Error deleting team:', {
+      operation: 'team_delete',
+      errorType: error instanceof Error ? error.name : 'unknown',
+      errorCode: getPgErrorCode(error) ?? 'unknown',
+    });
     sendError(res, 'Failed to delete team', 500);
   }
 });

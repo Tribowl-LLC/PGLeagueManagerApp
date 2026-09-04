@@ -5,8 +5,13 @@ import { hasWalletSupport } from "./payment-provider";
 import { applePayRecoveryAlerter } from "./apple-pay-alerts";
 import { canonicalApplePayDomain } from "./apple-pay-domains";
 import type { ApplePayJob, ApplePayJobItem } from "@shared/schema";
+import { isTransientDatabaseError, getPgErrorCode } from "../utils/db-errors.js";
 
 const CONCURRENCY_LIMIT = 4;
+/** Startup recovery must not hold boot indefinitely when the database is down. */
+export const APPLE_PAY_STARTUP_RECOVERY_MAX_ATTEMPTS = 5;
+export const APPLE_PAY_STARTUP_RECOVERY_BASE_BACKOFF_MS = 250;
+export const APPLE_PAY_STARTUP_RECOVERY_MAX_BACKOFF_MS = 2_000;
 
 const log = (msg: string, meta?: Record<string, unknown>) =>
   logger.info(`[ApplePayWorker] ${msg}`, meta ?? {});
@@ -56,7 +61,7 @@ class ApplePayWorker {
    * PaymentScheduler).
    */
   async resumeOnStartup(): Promise<void> {
-    const { revivedJobIds, revivedItems } = await storage.recoverInterruptedApplePayJobs();
+    const { revivedJobIds, revivedItems } = await recoverInterruptedApplePayJobsWithRetry();
     if (revivedJobIds.length > 0) {
       warn("Revived interrupted jobs (status running -> pending)", {
         count: revivedJobIds.length,
@@ -466,6 +471,45 @@ class ApplePayWorker {
         });
     }
   }
+}
+
+/**
+ * Recover interrupted work only after the database is reachable. Pool
+ * acquisition can briefly fail during a rolling restart even though the
+ * initial health probe succeeded. The storage operation is intentionally
+ * idempotent (status predicates only match still-recoverable rows), so a
+ * connection loss after commit is safe to retry without duplicating provider
+ * calls or item rows.
+ */
+async function recoverInterruptedApplePayJobsWithRetry(): Promise<Awaited<ReturnType<typeof storage.recoverInterruptedApplePayJobs>>> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= APPLE_PAY_STARTUP_RECOVERY_MAX_ATTEMPTS; attempt++) {
+    try {
+      return await storage.recoverInterruptedApplePayJobs();
+    } catch (error) {
+      lastError = error;
+      const retryable = isTransientDatabaseError(error);
+      if (!retryable || attempt === APPLE_PAY_STARTUP_RECOVERY_MAX_ATTEMPTS) {
+        throw error;
+      }
+
+      const backoffMs = Math.min(
+        APPLE_PAY_STARTUP_RECOVERY_BASE_BACKOFF_MS * 2 ** (attempt - 1),
+        APPLE_PAY_STARTUP_RECOVERY_MAX_BACKOFF_MS,
+      );
+      warn("Startup recovery database acquisition failed; retrying", {
+        attempt,
+        maxAttempts: APPLE_PAY_STARTUP_RECOVERY_MAX_ATTEMPTS,
+        backoffMs,
+        errorCode: getPgErrorCode(error) ?? "unknown",
+      });
+      await new Promise<void>((resolve) => setTimeout(resolve, backoffMs));
+    }
+  }
+
+  // The loop always returns or throws. Keep the defensive throw explicit for
+  // TypeScript and to avoid ever silently starting a worker without recovery.
+  throw lastError;
 }
 
 export const applePayWorker = new ApplePayWorker();
