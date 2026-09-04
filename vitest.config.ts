@@ -89,6 +89,9 @@ const PARALLEL_ISOLATED_WITH_APP = [
  * error-log guard, so nothing preloads `pg` ahead of the mock.
  */
 const UNIT_NO_DB = [
+  'tests/unit/client-telemetry-scrubber.test.ts',
+  'tests/unit/sentry-context.test.ts',
+  'tests/unit/server-logger-sentry.test.ts',
   'tests/unit/automatic-fifo-payment-allocation.test.ts',
   'tests/unit/league-create-payload.test.ts',
   'tests/unit/neon-branches-reveal-password.test.ts',

@@ -1,4 +1,5 @@
 import { Switch, Route } from "wouter";
+import * as Sentry from "@sentry/react";
 import { queryClient, prefetchQueries } from "./lib/queryClient";
 import { logger } from "@/lib/logger";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -10,6 +11,7 @@ import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { PageLoadingState } from "@/components/page-states";
 import type { ApiResponse, User } from "@shared/schema";
+import { sanitizedSentryIdentity } from "@shared/sentry-context";
 import NotFound from "@/pages/not-found";
 import LoginPage from "@/pages/login-page";
 
@@ -113,6 +115,12 @@ function Router() {
     queryKey: ['/api/user'],
     staleTime: 1000 * 60 * 5,
   });
+
+  useEffect(() => {
+    const identity = sanitizedSentryIdentity(userData?.data);
+    Sentry.setUser(identity.user);
+    Sentry.setTags(identity.tags);
+  }, [userData?.data]);
 
   useEffect(() => {
     if (userData?.data) {

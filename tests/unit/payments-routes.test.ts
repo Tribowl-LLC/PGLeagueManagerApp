@@ -52,6 +52,8 @@ import {
 import express from 'express';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
+import { configureServerErrorReporter } from '../../server/logger';
+import { expectErrorLog } from '../helpers/expected-error-logs';
 
 const mockStorage = {
   getPaymentById: vi.fn(),
@@ -91,6 +93,7 @@ const mockPrepareRefund = vi.fn();
 const mockExecuteRefund = vi.fn();
 const mockRearmOperations = vi.fn();
 const mockRetryRefundAfterConfiguration = vi.fn();
+const mockErrorReporter = vi.fn();
 vi.mock('../../server/storage/payment-operations', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../server/storage/payment-operations')>();
   return {
@@ -159,6 +162,8 @@ beforeEach(() => {
   mockExecuteRefund.mockReset();
   mockRearmOperations.mockReset();
   mockRetryRefundAfterConfiguration.mockReset();
+  mockErrorReporter.mockReset();
+  configureServerErrorReporter(mockErrorReporter);
   mockHasAccessToPayment.mockResolvedValue(true);
   const operation = {
     id: '11111111-1111-4111-8111-111111111111',
@@ -176,7 +181,10 @@ beforeEach(() => {
   mockRetryRefundAfterConfiguration.mockResolvedValue(undefined);
 });
 
-afterEach(() => vi.clearAllMocks());
+afterEach(() => {
+  configureServerErrorReporter(null);
+  vi.clearAllMocks();
+});
 
 function userHeader(user: {
   id: number;
@@ -276,6 +284,18 @@ describe('POST /api/payments/:id/refund', () => {
     const res = await post('/api/payments/50/refund', {});
     expect(res.status).toBe(400);
     expect((await res.json()).error.code).toBe('INVALID_TYPE');
+  });
+
+  it('captures an unexpected preparation failure before returning 500', async () => {
+    expectErrorLog('Refund operation failed');
+    const error = new Error('database unavailable');
+    mockPrepareRefund.mockRejectedValue(error);
+
+    const res = await post('/api/payments/50/refund', {});
+
+    expect(res.status).toBe(500);
+    expect(mockErrorReporter).toHaveBeenCalledOnce();
+    expect(mockErrorReporter).toHaveBeenCalledWith(error, { logger: 'Payments' });
   });
 
   it('returns an actionable 422 for a current configuration retry', async () => {

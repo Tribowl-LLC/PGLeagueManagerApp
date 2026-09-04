@@ -90,6 +90,26 @@ describe('PORT env-schema entry', () => {
   });
 });
 
+describe('SENTRY_TRACES_SAMPLE_RATE env-schema entry', () => {
+  const field = envSchema.shape.SENTRY_TRACES_SAMPLE_RATE;
+
+  it.each([
+    ['zero', '0', 0],
+    ['ten percent', '0.1', 0.1],
+    ['one hundred percent', '1', 1],
+  ])('accepts %s', (_, input, expected) => {
+    expect(field.parse(input)).toBe(expected);
+  });
+
+  it.each(['-0.1', '1.1', 'not-a-number'])('rejects %s', (value) => {
+    expect(field.safeParse(value).success).toBe(false);
+  });
+
+  it.each([undefined, ''])('defaults to 0.1 for %s', (value) => {
+    expect(field.parse(value)).toBe(0.1);
+  });
+});
+
 describe('NODE_ENV env-schema entry', () => {
   const field = envSchema.shape.NODE_ENV;
 

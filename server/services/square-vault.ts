@@ -347,7 +347,10 @@ export async function createOrUpdateCustomer(
       } : error,
       input: { name, email }
     });
-    throw new Error('Failed to create/update Square customer: ' + (error instanceof Error ? error.message : String(error)));
+    throw new Error(
+      'Failed to create/update Square customer: ' + (error instanceof Error ? error.message : String(error)),
+      { cause: error },
+    );
   }
 }
 

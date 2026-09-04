@@ -51,6 +51,7 @@ const {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
+    captureException: vi.fn(),
     debug: vi.fn(),
   },
 }));
@@ -183,5 +184,7 @@ describe('POST /api/payments-provider/customers — 422 PROVIDER_NOT_CONFIGURED 
 
     expect(res.status).toBe(500);
     expect(body.error?.code).not.toBe('PROVIDER_NOT_CONFIGURED');
+    expect(fakeLogger.captureException).toHaveBeenCalledOnce();
+    expect(fakeLogger.captureException).toHaveBeenCalledWith(expect.any(Error));
   });
 });

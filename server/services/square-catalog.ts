@@ -173,7 +173,10 @@ export async function listCatalogCategories(
     return { categories: deduped, truncated };
   } catch (error) {
     log.error('Catalog categories error:', error);
-    throw new Error('Failed to fetch catalog categories: ' + (error instanceof Error ? error.message : String(error)));
+    throw new Error(
+      'Failed to fetch catalog categories: ' + (error instanceof Error ? error.message : String(error)),
+      { cause: error },
+    );
   }
 }
 
@@ -281,7 +284,10 @@ export async function listCatalogItems(
     };
   } catch (error) {
     log.error('Catalog list error:', error);
-    throw new Error('Failed to fetch catalog items: ' + (error instanceof Error ? error.message : String(error)));
+    throw new Error(
+      'Failed to fetch catalog items: ' + (error instanceof Error ? error.message : String(error)),
+      { cause: error },
+    );
   }
 }
 

@@ -195,7 +195,7 @@ jobs:
       #     not a side-effect of `vite build`.)
       #
       #   * `esbuild server/index.ts --platform=node --packages=external
-      #     --bundle --format=esm --outdir=dist` produces the
+      #     --bundle --splitting --format=esm --outdir=dist` produces the
       #     `dist/index.js` that `npm start` actually executes in
       #     production. `npm run dev` runs `tsx server/index.ts`, which
       #     uses tsx's loader to resolve TS-only imports and path
@@ -213,7 +213,7 @@ jobs:
       # the goal here is to gate the PR on a clean exit code, not to
       # ship a build to anything downstream.
       - name: Production build
-        run: npm run build
+        run: npm run build && npm run check:sentry-bootstrap
 
   # Sibling job that runs the full vitest suite (`npm test`) on every PR
   # and push to `main`. Task #442 wired this in: before this job

@@ -67,6 +67,7 @@ router.post('/customers', paymentLimiter, async (req, res) => {
     if (error instanceof ProviderNotConfiguredError) {
       return sendError(res, 'Payment provider not configured for this location', 422, 'PROVIDER_NOT_CONFIGURED');
     }
+    log.captureException(error);
     log.error('Customer operation error:', {
       error: error instanceof Error ? {
         name: error.name,

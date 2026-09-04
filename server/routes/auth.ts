@@ -339,7 +339,7 @@ export function registerAuthRoutes(app: Express): void {
   authRouter.post("/logout", csrfProtection, (req, res, next) => {
     req.logout((err) => {
       if (err) {
-        log.error('Logout error:', err);
+        log.error('Logout error:', { name: err instanceof Error ? err.name : 'UnknownError' });
         return next(err);
       }
       sendSuccess(res, null);

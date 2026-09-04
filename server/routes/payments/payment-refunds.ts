@@ -136,6 +136,7 @@ router.post("/:id/refund", paymentWriteLimiter, async (req, res) => {
     if (error instanceof PaymentOperationValidationError) {
       return sendError(res, "The refund request could not be prepared.", 400, "VALIDATION_ERROR");
     }
+    log.captureException(error);
     log.error("Refund operation failed", { errorName: error instanceof Error ? error.name : "UnknownError" });
     return sendError(res, "Failed to process refund", 500, "REFUND_ERROR");
   } finally {
@@ -143,6 +144,7 @@ router.post("/:id/refund", paymentWriteLimiter, async (req, res) => {
       try {
         await paymentOperationRetryExecutor.rearm();
       } catch (error) {
+        log.captureException(error);
         log.error("Refund operation wake rearm failed", { errorName: error instanceof Error ? error.name : "UnknownError" });
       }
     }

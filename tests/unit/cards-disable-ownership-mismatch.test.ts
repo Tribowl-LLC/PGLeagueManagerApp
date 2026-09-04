@@ -78,7 +78,13 @@ vi.mock('../../server/services/payment-utils', () => ({
 }));
 
 // eslint-disable-next-line local/factory-must-use-schema -- mocked logger, not a schema row
-const fakeLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+const fakeLogger = {
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  captureException: vi.fn(),
+  debug: vi.fn(),
+};
 vi.mock('../../server/logger', () => ({ logger: fakeLogger, createLogger: () => fakeLogger }));
 
 // Use the real payment-provider-factory exports — the whole point of
@@ -162,6 +168,7 @@ describe('DELETE /cards/:bowlerId/:cardId — typed ownership-mismatch guard (Ta
     const body = await res.json();
     expect(body.success).toBe(false);
     expect(body.error.message).toBe('Card does not belong to this customer');
+    expect(fakeLogger.captureException).not.toHaveBeenCalled();
   });
 
   it('does NOT map an unrelated plain Error to 403, even when its message contains "does not belong"', async () => {
@@ -188,6 +195,7 @@ describe('DELETE /cards/:bowlerId/:cardId — typed ownership-mismatch guard (Ta
     // the client envelope through the fallback branch.
     expect(body.error.message).not.toContain('does not belong');
     expect(body.error.message).not.toContain('downstream cache');
+    expect(fakeLogger.captureException).toHaveBeenCalledOnce();
   });
 
   it('does NOT map a generic plain Error to 403 either', async () => {
@@ -204,5 +212,6 @@ describe('DELETE /cards/:bowlerId/:cardId — typed ownership-mismatch guard (Ta
     const body = await res.json();
     expect(body.error.code).toBe('REMOVE_CARD_ERROR');
     expect(body.error.message).toBe('Failed to remove card');
+    expect(fakeLogger.captureException).toHaveBeenCalledOnce();
   });
 });

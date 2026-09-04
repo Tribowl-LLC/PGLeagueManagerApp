@@ -785,6 +785,16 @@ describe('Square Service', () => {
       response: { cursor },
     });
 
+    it.each([
+      ['categories', () => provider.listCatalogCategories()],
+      ['items', () => provider.listCatalogItems()],
+    ])('preserves the upstream error as the %s wrapper cause', async (_, operation) => {
+      const upstreamError = new Error('Square catalog unavailable');
+      mocks.catalog.list.mockRejectedValueOnce(upstreamError);
+
+      await expect(operation()).rejects.toMatchObject({ cause: upstreamError });
+    });
+
     it('listCatalogItems (no categoryId) follows the cursor across multiple pages', async () => {
       mocks.catalog.list
         .mockResolvedValueOnce(listPage([itemObject('a', 'A'), itemObject('b', 'B')], 'cursor-1'))
