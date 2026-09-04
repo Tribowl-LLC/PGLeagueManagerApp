@@ -66,6 +66,18 @@ import { getPgErrorCode } from './utils/db-errors.js';
 
 const log = createLogger("Server");
 
+/** Report the terminal startup recovery error before writing redacted logs. */
+export function reportApplePayResumeFailure(error: unknown): void {
+  log.captureException(error);
+  // Recovery is fail-closed after its bounded retry window. Keep the
+  // log structured and low-cardinality; a Drizzle error can otherwise
+  // include SQL text or provider/database details.
+  log.error('Apple Pay worker resume failed', {
+    errorType: error instanceof Error ? error.name : 'unknown',
+    errorCode: getPgErrorCode(error) ?? 'unknown',
+  });
+}
+
 export interface CreateAppOptions {
   /**
    * Override `process.env.DATABASE_URL` for this app instance.
@@ -483,13 +495,7 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
       });
 
       applePayWorker.resumeOnStartup().catch((err) => {
-        // Recovery is fail-closed after its bounded retry window. Keep the
-        // log structured and low-cardinality; a Drizzle error can otherwise
-        // include SQL text or provider/database details.
-        log.error('Apple Pay worker resume failed', {
-          errorType: err instanceof Error ? err.name : 'unknown',
-          errorCode: getPgErrorCode(err) ?? 'unknown',
-        });
+        reportApplePayResumeFailure(err);
       });
 
       startLeagueSquareCatalogAudit();

@@ -114,6 +114,7 @@ const UNIT_NO_DB = [
   'tests/unit/rate-limit-shared-store-coverage.test.ts',
   'tests/unit/subdomain-resolution-consistency.test.ts',
   'tests/unit/team-delete-route.test.ts',
+  'tests/unit/server-app-resume-capture.test.ts',
   'tests/unit/location-webhook-retention-route.test.ts',
   'tests/unit/canonical-occurrence-generator.test.ts',
   'tests/unit/canonical-collection-groups.test.ts',

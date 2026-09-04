@@ -1,10 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Request, Response } from 'express';
-import { expectErrorLog } from '../helpers/expected-error-logs';
 
-const storageMocks = vi.hoisted(() => ({
-  getOrganizationBySubdomain: vi.fn(),
-  getOrganizationBySlug: vi.fn(),
+const { storageMocks, loggerMock } = vi.hoisted(() => ({
+  storageMocks: {
+    getOrganizationBySubdomain: vi.fn(),
+    getOrganizationBySlug: vi.fn(),
+  },
+  loggerMock: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    captureException: vi.fn(),
+    debug: vi.fn(),
+  },
 }));
 
 vi.mock('../../server/storage', () => ({
@@ -13,6 +21,11 @@ vi.mock('../../server/storage', () => ({
 
 vi.mock('../../server/config', () => ({
   env: { APP_DOMAIN: 'leaguevault.app' },
+}));
+
+vi.mock('../../server/logger', () => ({
+  logger: loggerMock,
+  createLogger: () => loggerMock,
 }));
 
 import {
@@ -28,6 +41,7 @@ describe('tenant hostname resolution consistency', () => {
   beforeEach(() => {
     storageMocks.getOrganizationBySubdomain.mockReset();
     storageMocks.getOrganizationBySlug.mockReset();
+    for (const fn of Object.values(loggerMock)) fn.mockReset();
   });
 
   it('does not retain a positive result after the hostname is reassigned', async () => {
@@ -52,10 +66,11 @@ describe('tenant hostname resolution consistency', () => {
   });
 
   it('returns a temporary 503 when hostname resolution cannot acquire the database', async () => {
-    expectErrorLog('[Subdomain] Tenant hostname lookup failed');
-    storageMocks.getOrganizationBySubdomain.mockRejectedValue(
-      Object.assign(new Error('connection terminated unexpectedly'), { code: 'ECONNRESET' }),
+    const databaseError = Object.assign(
+      new Error('Failed query: SELECT secret FROM organizations /* acme.leaguevault.app */'),
+      { code: 'ECONNRESET' },
     );
+    storageMocks.getOrganizationBySubdomain.mockRejectedValue(databaseError);
 
     const response = {
       headersSent: false,
@@ -84,5 +99,15 @@ describe('tenant hostname resolution consistency', () => {
     });
     expect(next).not.toHaveBeenCalled();
     expect(request.subdomainOrg).toBeUndefined();
+    expect(loggerMock.captureException).toHaveBeenCalledOnce();
+    expect(loggerMock.captureException).toHaveBeenCalledWith(databaseError);
+    expect(loggerMock.error).toHaveBeenCalledOnce();
+    expect(loggerMock.error).toHaveBeenCalledWith('Tenant hostname lookup failed', {
+      operation: 'organization_hostname_lookup',
+      errorType: 'Error',
+      errorCode: 'ECONNRESET',
+    });
+    expect(JSON.stringify(loggerMock.error.mock.calls[0])).not.toContain('acme.leaguevault.app');
+    expect(JSON.stringify(loggerMock.error.mock.calls[0])).not.toContain('SELECT secret');
   });
 });

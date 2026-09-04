@@ -15,6 +15,7 @@ const { ArchiveError, ScopeError, mockStorage, fakeLogger } = vi.hoisted(() => (
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
+    captureException: vi.fn(),
     debug: vi.fn(),
   },
 }));
@@ -107,5 +108,32 @@ describe("DELETE /api/teams/:id", () => {
     expect(response.status).toBe(200);
     expect(mockStorage.deleteTeam).toHaveBeenCalledWith(9, 41);
     expect(mockStorage.deleteTeam).toHaveBeenCalledTimes(1);
+  });
+
+  it("captures an unexpected delete error once while keeping SQL out of logs and responses", async () => {
+    const databaseError = Object.assign(
+      new Error('Failed query: DELETE FROM teams /* private roster history */'),
+      { code: '23503' },
+    );
+    mockStorage.deleteTeam.mockRejectedValue(databaseError);
+
+    const response = await fetch(`${baseUrl}/api/teams/9`, { method: "DELETE" });
+    const body = await response.json();
+
+    expect(response.status).toBe(500);
+    expect(body).toMatchObject({
+      success: false,
+      error: { message: 'Failed to delete team' },
+    });
+    expect(fakeLogger.captureException).toHaveBeenCalledOnce();
+    expect(fakeLogger.captureException).toHaveBeenCalledWith(databaseError);
+    expect(fakeLogger.error).toHaveBeenCalledOnce();
+    expect(fakeLogger.error).toHaveBeenCalledWith('Error deleting team:', {
+      operation: 'team_delete',
+      errorType: 'Error',
+      errorCode: '23503',
+    });
+    expect(JSON.stringify(fakeLogger.error.mock.calls[0])).not.toContain('DELETE FROM teams');
+    expect(JSON.stringify(body)).not.toContain('private roster history');
   });
 });

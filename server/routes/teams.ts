@@ -342,6 +342,7 @@ router.delete("/:id", async (req, res) => {
     if (error instanceof TeamOrganizationChangedError) {
       return sendError(res, 'The team changed while the delete was being prepared. Please retry.', 409, 'TEAM_SCOPE_CHANGED');
     }
+    log.captureException(error);
     log.error('Error deleting team:', {
       operation: 'team_delete',
       errorType: error instanceof Error ? error.name : 'unknown',

@@ -65,6 +65,7 @@ export async function lookupOrganizationByHostname(
     // downstream routes continue as if this were the platform host, which is
     // an unsafe tenant-isolation failure mode. Keep telemetry structured and
     // avoid logging the tenant hostname or a raw Drizzle/SQL error.
+    log.captureException(err);
     log.error('Tenant hostname lookup failed', {
       operation: 'organization_hostname_lookup',
       errorType: err instanceof Error ? err.name : 'unknown',
