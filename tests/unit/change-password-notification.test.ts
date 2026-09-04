@@ -64,6 +64,7 @@ vi.mock('../../server/services/email', () => ({
 
 const mockGetUser = vi.fn();
 const mockUpdateUser = vi.fn();
+const mockRevokePendingAccountActions = vi.fn(async () => 0);
 const mockInvalidatePending = vi.fn(async () => 0);
 // The change-password route also drives the lockout counter (task #357).
 // Mock both methods faithfully so the route's normal calls don't fall
@@ -80,6 +81,8 @@ vi.mock('../../server/storage', () => ({
   storage: {
     getUser: (...a: unknown[]) => mockGetUser.apply(null, a as never),
     updateUser: (...a: unknown[]) => mockUpdateUser.apply(null, a as never),
+    revokePendingAccountActionsForUser: (...a: unknown[]) =>
+      mockRevokePendingAccountActions.apply(null, a as never),
     invalidatePendingEmailChangeRequestsForUser: (...a: unknown[]) =>
       mockInvalidatePending.apply(null, a as never),
     recordFailedPasswordChangeAttempt: (...a: unknown[]) =>
@@ -116,6 +119,8 @@ vi.mock('../../server/services/payment-customer-sync', () => ({
 // real Postgres connection.
 vi.mock('../../server/db', () => ({
   db: {
+    transaction: async (fn: (tx: unknown) => Promise<unknown>) =>
+      fn({ __isMockTx: true, execute: async () => [] }),
     select: () => ({ from: () => ({ where: () => [] }) }),
     insert: () => ({ values: () => ({ returning: () => [] }) }),
     update: () => ({ set: () => ({ where: () => [] }) }),
@@ -181,6 +186,7 @@ beforeEach(() => {
   mockGetUser.mockResolvedValue({ ...TEST_USER });
   mockUpdateUser.mockReset();
   mockUpdateUser.mockResolvedValue({ ...TEST_USER, password: 'hashed:new' });
+  mockRevokePendingAccountActions.mockClear();
   mockInvalidatePending.mockClear();
   mockHashPassword.mockClear();
   mockDestroyOtherSessionsForUser.mockClear();
@@ -243,6 +249,16 @@ describe('POST /api/account/change-password — password-changed email dispatch'
     // renders in English regardless of preference.
     expect(ctx.locale).toBe('es');
 
+    expect(mockRevokePendingAccountActions).toHaveBeenCalledWith(
+      TEST_USER.id,
+      ['password_reset'],
+      expect.objectContaining({ __isMockTx: true }),
+    );
+    expect(mockInvalidatePending).toHaveBeenCalledWith(
+      TEST_USER.id,
+      expect.objectContaining({ __isMockTx: true }),
+    );
+
     // Strict ordering: the password row must be persisted BEFORE we
     // dispatch the "your password was changed" email. Otherwise a
     // crash between the two could send a misleading notice.
@@ -277,6 +293,23 @@ describe('POST /api/account/change-password — password-changed email dispatch'
 
     expect(mockSendPasswordChangedNotification).not.toHaveBeenCalled();
     expect(mockUpdateUser).not.toHaveBeenCalled();
+  });
+
+  it('does not overwrite a password changed by an administrator during verification', async () => {
+    mockGetUser
+      .mockResolvedValueOnce({ ...TEST_USER })
+      .mockResolvedValueOnce({ ...TEST_USER, password: 'hashed:admin-reset' });
+
+    const res = await postChangePassword({
+      currentPassword: 'OriginalPw!2026',
+      newPassword: 'BrandNewPw!2026XX',
+    });
+
+    expect(res.status).toBe(409);
+    expect(mockUpdateUser).not.toHaveBeenCalled();
+    expect(mockRevokePendingAccountActions).not.toHaveBeenCalled();
+    expect(mockInvalidatePending).not.toHaveBeenCalled();
+    expect(mockSendPasswordChangedNotification).not.toHaveBeenCalled();
   });
 
   it('still returns 200 for the change-password call when the email helper rejects (best-effort contract)', async () => {

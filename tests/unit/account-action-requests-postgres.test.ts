@@ -15,9 +15,11 @@ import {
   consumeAccountActionAndSetPassword,
   getAccountActionByToken,
   getLatestAccountInvitationsForUsers,
+  hasRecentlyDeliveredPendingAccountAction,
   hashAccountActionToken,
   issueAccountAction,
   revokeAccountAction,
+  revokePendingAccountActionsForUser,
   updateAccountActionDeliveryStatus,
   withAccountActionDeliveryLock,
 } from "../../server/storage/account-action-requests";
@@ -107,6 +109,7 @@ describe("account action request storage", () => {
       userId: user.id,
       action: "password_reset",
       organizationId,
+      recipientEmail: user.email,
       expiresAt: new Date(Date.now() + 60 * 60 * 1000),
     });
 
@@ -139,6 +142,98 @@ describe("account action request storage", () => {
     expect(consumed?.consumedAt).not.toBeNull();
   });
 
+  it("rejects a password-reset token after the recipient email changes", async () => {
+    const user = await createFixtureUser("Action Email Binding");
+    const issued = await issueAccountAction({
+      userId: user.id,
+      action: "password_reset",
+      organizationId,
+      recipientEmail: user.email,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
+    await db
+      .update(users)
+      .set({ email: `changed-${suffix}@example.com` })
+      .where(eq(users.id, user.id));
+
+    const lookup = await getAccountActionByToken(issued.token);
+    expect(lookup?.request.status).toBe("revoked");
+    expect(await consumeAccountActionAndSetPassword({
+      token: issued.token,
+      passwordHash: "must-not-be-used",
+    })).toBeUndefined();
+  });
+
+  it("detects only recently delivered, pending, unexpired actions", async () => {
+    const user = await createFixtureUser("Action Recent Delivery");
+    const issued = await issueAccountAction({
+      userId: user.id,
+      action: "password_reset",
+      organizationId,
+      recipientEmail: user.email,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
+
+    expect(await hasRecentlyDeliveredPendingAccountAction({
+      userId: user.id,
+      action: "password_reset",
+      deliveredAfter: new Date(Date.now() - 5 * 60 * 1000),
+    })).toBe(false);
+
+    await updateAccountActionDeliveryStatus(issued.request.id, "sent");
+    expect(await hasRecentlyDeliveredPendingAccountAction({
+      userId: user.id,
+      action: "password_reset",
+      deliveredAfter: new Date(Date.now() - 5 * 60 * 1000),
+    })).toBe(true);
+    expect(await hasRecentlyDeliveredPendingAccountAction({
+      userId: user.id,
+      action: "password_reset",
+      deliveredAfter: new Date(Date.now() + 60 * 1000),
+    })).toBe(false);
+
+    await revokeAccountAction(issued.request.id);
+    expect(await hasRecentlyDeliveredPendingAccountAction({
+      userId: user.id,
+      action: "password_reset",
+      deliveredAfter: new Date(Date.now() - 5 * 60 * 1000),
+    })).toBe(false);
+  });
+
+  it("revokes only the selected pending actions for one user", async () => {
+    const user = await createFixtureUser("Action Bulk Revoke");
+    const reset = await issueAccountAction({
+      userId: user.id,
+      action: "password_reset",
+      organizationId,
+      recipientEmail: user.email,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
+    const invite = await issueAccountAction({
+      userId: user.id,
+      action: "account_invite",
+      organizationId,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
+
+    expect(await revokePendingAccountActionsForUser(
+      user.id,
+      ["password_reset"],
+    )).toBe(1);
+
+    const [resetRow] = await db
+      .select({ status: accountActionRequests.status, revokedAt: accountActionRequests.revokedAt })
+      .from(accountActionRequests)
+      .where(eq(accountActionRequests.id, reset.request.id));
+    const [inviteRow] = await db
+      .select({ status: accountActionRequests.status })
+      .from(accountActionRequests)
+      .where(eq(accountActionRequests.id, invite.request.id));
+    expect(resetRow?.status).toBe("revoked");
+    expect(resetRow?.revokedAt).not.toBeNull();
+    expect(inviteRow?.status).toBe("pending");
+  });
+
   it("distinguishes lazy expiry and revocation from a usable pending action", async () => {
     const user = await createFixtureUser("Action Lifecycle", false);
     const expiredToken = "expired-action-token";
@@ -168,6 +263,7 @@ describe("account action request storage", () => {
       userId: user.id,
       action: "password_reset",
       organizationId,
+      recipientEmail: user.email,
       expiresAt: new Date(Date.now() + 60 * 60 * 1000),
     });
     const revokedResult = await revokeAccountAction(revoked.request.id);

@@ -83,12 +83,15 @@ vi.mock('../../server/services/email', () => ({
 
 const mockGetUser = vi.fn();
 const mockUpdateUser = vi.fn();
+const mockRevokePendingAccountActions = vi.fn(async () => 0);
 const mockInvalidatePending = vi.fn(async () => 0);
 
 vi.mock('../../server/storage', () => ({
   storage: {
     getUser: (...a: unknown[]) => mockGetUser.apply(null, a as never),
     updateUser: (...a: unknown[]) => mockUpdateUser.apply(null, a as never),
+    revokePendingAccountActionsForUser: (...a: unknown[]) =>
+      mockRevokePendingAccountActions.apply(null, a as never),
     invalidatePendingEmailChangeRequestsForUser: (...a: unknown[]) =>
       mockInvalidatePending.apply(null, a as never),
   },
@@ -108,7 +111,10 @@ vi.mock('../../server/storage/admin-password-reset-audits', () => ({
 // (b) re-throw any rejection out of the callback the way drizzle
 // would on rollback. This keeps the unit test from needing a real
 // Postgres connection while still pinning the atomic contract.
-const TX_SENTINEL = { __isMockTx: true } as const;
+const TX_SENTINEL = {
+  __isMockTx: true,
+  execute: vi.fn(async () => []),
+} as const;
 const mockTransaction = vi.fn(
   async (fn: (tx: typeof TX_SENTINEL) => Promise<unknown>) => fn(TX_SENTINEL),
 );
@@ -182,6 +188,7 @@ beforeEach(() => {
   mockGetUser.mockResolvedValue({ ...TARGET_USER });
   mockUpdateUser.mockReset();
   mockUpdateUser.mockResolvedValue({ ...TARGET_USER, password: 'hashed:new' });
+  mockRevokePendingAccountActions.mockClear();
   mockInvalidatePending.mockClear();
   mockHashPassword.mockClear();
   mockDestroyOtherSessionsForUser.mockClear();
@@ -560,6 +567,16 @@ describe('POST /api/organization-admin/users/:id/reset-password — persistent a
         unknown,
       ];
       expect(updateCall[2]).toBe(TX_SENTINEL);
+
+      expect(mockRevokePendingAccountActions).toHaveBeenCalledWith(
+        TARGET_USER.id,
+        ['password_reset'],
+        TX_SENTINEL,
+      );
+      expect(mockInvalidatePending).toHaveBeenCalledWith(
+        TARGET_USER.id,
+        TX_SENTINEL,
+      );
 
       expect(mockRecordAdminPasswordResetAudit).toHaveBeenCalledTimes(1);
       const auditCall = mockRecordAdminPasswordResetAudit.mock.calls[0] as unknown as [

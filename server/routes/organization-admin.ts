@@ -20,7 +20,10 @@ import { recordAdminPasswordResetAudit } from '../storage/admin-password-reset-a
 import { recordAdminRoleChangeAudit } from '../storage/admin-role-change-audits';
 import type { User, UserRole } from '@shared/schema';
 import { publicAccountInvitation } from '../services/account-invitation.js';
-import { withAccountActionDeliveryLock } from '../storage/account-action-requests.js';
+import {
+  lockAccountCredential,
+  withAccountActionDeliveryLock,
+} from '../storage/account-action-requests.js';
 import { isNormalizedUserEmailConflict } from '../utils/db-errors.js';
 
 const log = createLogger("OrgAdmin");
@@ -56,12 +59,24 @@ export async function resetUserPasswordTxn(opts: {
   };
 }): Promise<void> {
   await db.transaction(async (tx) => {
+    await lockAccountCredential(tx, opts.targetUserId);
+    await storage.revokePendingAccountActionsForUser(
+      opts.targetUserId,
+      ['password_reset'],
+      tx,
+    );
+
     await storage.updateUser(
       opts.targetUserId,
       {
         password: opts.hashedPassword,
         mustChangePassword: true,
       },
+      tx,
+    );
+
+    await storage.invalidatePendingEmailChangeRequestsForUser(
+      opts.targetUserId,
       tx,
     );
 
@@ -906,23 +921,6 @@ router.post('/users/:id/reset-password', requireOrgAdminOrSystemAdmin, adminWrit
       },
     });
 
-    // Defense-in-depth: any in-flight email-change tokens belonging
-    // to the target user could outlive the rotation if not cleared.
-    // Mirrors the strict behaviour of /api/account/change-password
-    // — a failure here is fail-closed (bubbles to the route's outer
-    // 500) rather than silently leaving a stolen confirmation link
-    // active. The password row is already persisted at this point,
-    // so the caller can safely retry: re-running invalidation is
-    // idempotent.
-    const invalidated = await storage.invalidatePendingEmailChangeRequestsForUser(targetUser.id);
-    if (invalidated > 0) {
-      log.info('Invalidated pending email-change requests on admin password reset', {
-        targetUserId: targetUser.id,
-        actingUserId: actingUser.id,
-        count: invalidated,
-      });
-    }
-
     // Force-log-out every other session for the target user. The
     // admin is rotating their password specifically because they're
     // assumed to need fresh access — leaving stale cookies alive
@@ -1015,16 +1013,16 @@ router.post('/users/:id/resend-invite', requireOrgAdminOrSystemAdmin, inviteLimi
       }
     }
 
-    const { delivery, emailSent } = await withAccountActionDeliveryLock(userId, 'account_invite', async () => {
+    const organization = user.organizationId ? await storage.getOrganization(user.organizationId) : null;
+    const { delivery, emailSent } = await withAccountActionDeliveryLock(userId, 'account_invite', async (lockedDb) => {
       const invitation = await storage.issueAccountAction({
         userId,
         action: 'account_invite',
         expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
         organizationId: user.organizationId,
         createdByUserId: actingUser.id,
-      });
+      }, lockedDb);
 
-      const organization = user.organizationId ? await storage.getOrganization(user.organizationId) : null;
       const firstName = user.name.split(' ')[0];
       let emailSent = false;
       try {
@@ -1042,6 +1040,7 @@ router.post('/users/:id/resend-invite', requireOrgAdminOrSystemAdmin, inviteLimi
       const delivery = await storage.updateAccountActionDeliveryStatus(
         invitation.request.id,
         emailSent ? 'sent' : 'failed',
+        lockedDb,
       ) ?? invitation.request;
       return { delivery, emailSent };
     });

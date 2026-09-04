@@ -183,6 +183,8 @@ export class DatabaseStorage implements IStorage {
   getAccountActionByToken!: IStorage["getAccountActionByToken"];
   consumeAccountActionAndSetPassword!: IStorage["consumeAccountActionAndSetPassword"];
   updateAccountActionDeliveryStatus!: IStorage["updateAccountActionDeliveryStatus"];
+  hasRecentlyDeliveredPendingAccountAction!: IStorage["hasRecentlyDeliveredPendingAccountAction"];
+  revokePendingAccountActionsForUser!: IStorage["revokePendingAccountActionsForUser"];
   getLatestAccountInvitationsForUsers!: IStorage["getLatestAccountInvitationsForUsers"];
   revokeAccountAction!: IStorage["revokeAccountAction"];
 

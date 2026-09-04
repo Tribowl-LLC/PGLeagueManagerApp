@@ -63,6 +63,7 @@ const mockGetAccountActionByToken = vi.fn();
 const mockConsumeAccountAction = vi.fn();
 const mockIssueAccountAction = vi.fn();
 const mockUpdateAccountActionDeliveryStatus = vi.fn(async () => undefined);
+const mockHasRecentlyDeliveredPendingAccountAction = vi.fn(async () => false);
 const mockFallbackSend = vi.fn(async () => true);
 const mockGetOrganization = vi.fn(async () => null);
 
@@ -78,6 +79,8 @@ vi.mock('../../server/storage', () => ({
       mockIssueAccountAction.apply(null, a as never),
     updateAccountActionDeliveryStatus: (...a: unknown[]) =>
       mockUpdateAccountActionDeliveryStatus.apply(null, a as never),
+    hasRecentlyDeliveredPendingAccountAction: (...a: unknown[]) =>
+      mockHasRecentlyDeliveredPendingAccountAction.apply(null, a as never),
     getOrganization: (...a: unknown[]) =>
       mockGetOrganization.apply(null, a as never),
     // Defensively stub the surfaces auth.ts also touches in success
@@ -104,8 +107,8 @@ vi.mock('../../server/storage/account-action-requests.js', () => ({
   withAccountActionDeliveryLock: async (
     _userId: number,
     _action: string,
-    operation: () => Promise<unknown>,
-  ) => operation(),
+    operation: (executor: unknown) => Promise<unknown>,
+  ) => operation({ __isLockedExecutor: true }),
 }));
 
 vi.mock('../../server/services/identity-link.js', () => ({
@@ -237,6 +240,8 @@ beforeEach(() => {
   mockConsumeAccountAction.mockReset();
   mockIssueAccountAction.mockReset();
   mockUpdateAccountActionDeliveryStatus.mockClear();
+  mockHasRecentlyDeliveredPendingAccountAction.mockReset();
+  mockHasRecentlyDeliveredPendingAccountAction.mockResolvedValue(false);
   mockFallbackSend.mockReset();
   mockFallbackSend.mockResolvedValue(true);
 });
@@ -491,11 +496,15 @@ describe('POST /api/auth/forgot-password does not leak the issued reset token to
     expect(res.status).toBe(200);
     for (let i = 0; i < 8; i++) await new Promise(r => setImmediate(r));
 
-    expect(mockUpdateAccountActionDeliveryStatus).toHaveBeenCalledWith(1301, 'failed');
+    expect(mockUpdateAccountActionDeliveryStatus).toHaveBeenCalledWith(
+      1301,
+      'failed',
+      { __isLockedExecutor: true },
+    );
     assertNoSecretLeak([RESET_TOKEN]);
   });
 
-  it('issues a fresh action on resend and records each successful delivery', async () => {
+  it('does not supersede a recently delivered pending reset during a rapid resend', async () => {
     mockGetUserByEmail.mockResolvedValue({
       id: 14,
       email: 'forgot-resend@vitest.local',
@@ -503,9 +512,10 @@ describe('POST /api/auth/forgot-password does not leak the issued reset token to
       password: 'hashed:something',
       organizationId: null,
     });
-    mockIssueAccountAction
-      .mockResolvedValueOnce({ request: { id: 1401 }, token: RESET_TOKEN })
-      .mockResolvedValueOnce({ request: { id: 1402 }, token: STORED_TOKEN });
+    mockIssueAccountAction.mockResolvedValueOnce({ request: { id: 1401 }, token: RESET_TOKEN });
+    mockHasRecentlyDeliveredPendingAccountAction
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
 
     for (let i = 0; i < 2; i++) {
       const res = await fetch(`${baseUrl}/api/auth/forgot-password`, {
@@ -517,10 +527,14 @@ describe('POST /api/auth/forgot-password does not leak the issued reset token to
     }
     for (let i = 0; i < 8; i++) await new Promise(r => setImmediate(r));
 
-    expect(mockIssueAccountAction).toHaveBeenCalledTimes(2);
-    expect(mockUpdateAccountActionDeliveryStatus).toHaveBeenCalledWith(1401, 'sent');
-    expect(mockUpdateAccountActionDeliveryStatus).toHaveBeenCalledWith(1402, 'sent');
-    assertNoSecretLeak([RESET_TOKEN, STORED_TOKEN]);
+    expect(mockIssueAccountAction).toHaveBeenCalledTimes(1);
+    expect(mockUpdateAccountActionDeliveryStatus).toHaveBeenCalledWith(
+      1401,
+      'sent',
+      { __isLockedExecutor: true },
+    );
+    expect(mockUpdateAccountActionDeliveryStatus).toHaveBeenCalledTimes(1);
+    assertNoSecretLeak([RESET_TOKEN]);
   });
 
   it('rejects a missing email without leaking anything', async () => {

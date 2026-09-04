@@ -1,5 +1,9 @@
 import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import { db } from '../db';
+import {
+  lockAccountCredential,
+  revokePendingAccountActionsForUser,
+} from '../storage/account-action-requests';
 import { emailChangeRequests, users, type User } from '@shared/schema';
 import { storage } from '../storage';
 import { recordAdminEmailChangeAudit } from '../storage/admin-email-change-audits';
@@ -14,9 +18,10 @@ import { normalizeAccountEmail } from '../storage/users';
  * throws, the other is rolled back.
  *
  * Steps:
- *   1. Supersede any open request for this user (consumedAt = NOW).
- *   2. Insert the new request row.
- *   3. If `audit` is non-null, insert the admin audit row through
+ *   1. Serialize against password/reset/email-confirm credential mutations.
+ *   2. Supersede any open request for this user (consumedAt = NOW).
+ *   3. Insert the new request row.
+ *   4. If `audit` is non-null, insert the admin audit row through
  *      `recordAdminEmailChangeAudit(..., tx)` so it joins the same
  *      transaction.
  *
@@ -38,6 +43,7 @@ export async function applyEmailChangeRequestTxn(opts: {
 }): Promise<void> {
   const normalizedEmail = normalizeAccountEmail(opts.newEmail);
   await db.transaction(async (tx) => {
+    await lockAccountCredential(tx, opts.userId);
     await tx
       .update(emailChangeRequests)
       .set({ consumedAt: sql`now()` })
@@ -180,6 +186,33 @@ export async function applyConfirmEmailChangeTxn(
   tokenHash: string,
 ): Promise<ConfirmEmailChangeOutcome> {
   return await db.transaction(async (tx) => {
+    // Read the immutable owner first without taking a row lock, then acquire
+    // locks in the same account-action -> user -> email-change order used by
+    // password-reset consumption. The conditional claim below remains the
+    // authority for whether this token can be consumed.
+    const [candidate] = await tx
+      .select({ userId: emailChangeRequests.userId })
+      .from(emailChangeRequests)
+      .where(and(
+        eq(emailChangeRequests.tokenHash, tokenHash),
+        isNull(emailChangeRequests.consumedAt),
+        gt(emailChangeRequests.expiresAt, sql`now()`),
+      ))
+      .limit(1);
+
+    if (!candidate) {
+      const [existing] = await tx
+        .select()
+        .from(emailChangeRequests)
+        .where(eq(emailChangeRequests.tokenHash, tokenHash))
+        .limit(1);
+      if (!existing) return { kind: 'invalid' as const };
+      if (existing.consumedAt) return { kind: 'consumed' as const };
+      return { kind: 'expired' as const };
+    }
+
+    await lockAccountCredential(tx, candidate.userId);
+
     // Single conditional UPDATE: claims the token only if it is still
     // pending AND not expired. Concurrent confirms cannot both win.
     const [claimed] = await tx
@@ -217,6 +250,15 @@ export async function applyConfirmEmailChangeTxn(
       .returning();
 
     if (!updated) return { kind: 'user_gone' as const };
+
+    // Revoke reset links only after this email-change token successfully
+    // claims the credential lock and changes the authoritative address.
+    await revokePendingAccountActionsForUser(
+      claimed.userId,
+      ['password_reset'],
+      tx,
+    );
+
     // `requestId` is carried out of the transaction so the post-confirm
     // payment-sync result can be written back to the *exact* admin
     // audit row that this confirmation belongs to (task #487). Doing

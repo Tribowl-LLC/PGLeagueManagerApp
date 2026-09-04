@@ -228,8 +228,11 @@ export interface RecordFailedPasswordChangeAttemptResult {
   justLocked: boolean;
 }
 
-export async function getUser(id: number): Promise<User | undefined> {
-  const [user] = await db.select().from(users).where(eq(users.id, id));
+export async function getUser(
+  id: number,
+  executor: UserDbExecutor = db,
+): Promise<User | undefined> {
+  const [user] = await executor.select().from(users).where(eq(users.id, id));
   return user;
 }
 

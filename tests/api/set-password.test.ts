@@ -63,12 +63,13 @@ async function loggedInSession(email: string): Promise<AuthSession> {
   return login(email, ORIGINAL_PASSWORD);
 }
 
-async function issueResetToken(userId: number): Promise<string> {
+async function issueResetToken(userId: number, recipientEmail: string): Promise<string> {
   const issued = await storage.issueAccountAction({
     userId,
     action: 'password_reset',
     expiresAt: new Date(Date.now() + 60 * 60 * 1000),
     organizationId: testOrgId,
+    recipientEmail,
   });
   return issued.token;
 }
@@ -105,7 +106,7 @@ describe('POST /api/auth/set-password · force-log-out (task #352)', () => {
       expect(r.status).toBe(200);
     }
 
-    const token = await issueResetToken(userId);
+    const token = await issueResetToken(userId, email);
     const reset = await callSetPassword(token, NEW_PASSWORD);
     expect(reset.status).toBe(200);
     expect(reset.body.success).toBe(true);
@@ -144,7 +145,7 @@ describe('POST /api/auth/set-password · force-log-out (task #352)', () => {
     const flagged = await storage.getUser(userId);
     expect(flagged?.mustChangePassword).toBe(true);
 
-    const token = await issueResetToken(userId);
+    const token = await issueResetToken(userId, email);
     const reset = await callSetPassword(token, NEW_PASSWORD);
     expect(reset.status).toBe(200);
     expect(reset.body.success).toBe(true);
@@ -165,7 +166,7 @@ describe('POST /api/auth/set-password · force-log-out (task #352)', () => {
     // must not cause the destroy step (or the surrounding handler)
     // to fail. This pins that the count==0 branch is harmless.
     const { userId, email } = await createUserWithPassword();
-    const token = await issueResetToken(userId);
+    const token = await issueResetToken(userId, email);
 
     const reset = await callSetPassword(token, NEW_PASSWORD);
     expect(reset.status).toBe(200);
