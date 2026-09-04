@@ -72,7 +72,7 @@ export function isTransientDatabaseError(err: unknown): boolean {
         ? (current as { message: string }).message
         : '';
     if (/\b(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|ENETUNREACH|EAI_AGAIN)\b/i.test(message)) return true;
-    if (/connection (?:acquisition|attempt|terminated|reset|closed|refused|timed out)|(?:database|db)\s+(?:connection|unavailable|timeout)|pool\s+(?:is\s+)?exhausted/i.test(message)) return true;
+    if (/connection (?:acquisition|attempt|terminated|reset|closed|refused|timed out)|(?:database|db)\s+(?:connection|unavailable|timeout)|pool\s+(?:is\s+)?exhausted|timeout exceeded when trying to connect/i.test(message)) return true;
     current = (current as { cause?: unknown }).cause;
   }
   return false;

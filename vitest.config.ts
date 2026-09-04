@@ -101,6 +101,7 @@ const UNIT_NO_DB = [
   'tests/unit/db-baseline-rls-compatibility.test.ts',
   'tests/unit/db-baseline-migration-tools.test.ts',
   'tests/unit/db-disposable-target.test.ts',
+  'tests/unit/db-errors.test.ts',
   'tests/unit/db-migration-bytes.test.ts',
   'tests/unit/db-migration-expected-pending.test.ts',
   'tests/unit/db-schema-inventory-tools.test.ts',
