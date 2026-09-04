@@ -96,7 +96,6 @@ const navItems: NavItem[] = [
     icon: Trophy,
     label: "Leagues",
     href: "/leagues",
-    hasDropdown: true,
   },
   {
     icon: Users,
