@@ -55,17 +55,13 @@ jobs:
       - name: Check out the PR
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - name: Set up cached dependencies
+        uses: ./.github/actions/setup-node-dependencies
         with:
           # Pinned to the runtime declared in `.node-version` so CI matches
           # the dev/prod environment. Bump in lockstep when that file
           # gets bumped.
           node-version: '22.22.0'
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
 
       # Keep the runtime and development dependency audits separate.
       # The production gate catches high/critical vulnerabilities in the
@@ -255,14 +251,10 @@ jobs:
       - name: Check out the PR
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - name: Set up cached dependencies
+        uses: ./.github/actions/setup-node-dependencies
         with:
           node-version: '22.22.0'
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
 
       # Migration hashes cover the exact LF-normalized bytes committed to Git.
       # Re-check from a clean clone with Windows-style autocrlf enabled so a
@@ -323,17 +315,13 @@ jobs:
       - name: Check out the PR
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - name: Set up cached dependencies
+        uses: ./.github/actions/setup-node-dependencies
         with:
           # Pinned to the runtime declared in `.node-version` so CI matches
           # the dev/prod environment. Bump in lockstep when that file
           # gets bumped (mirrors `check-and-lint` and `race-suite`).
           node-version: '22.22.0'
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
 
       # Apply the checked-in forward-only migration history to the empty
       # Postgres container. The guarded runner verifies journal metadata and

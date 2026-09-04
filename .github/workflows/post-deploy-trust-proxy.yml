@@ -211,21 +211,13 @@ jobs:
       - name: Check out the repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - name: Set up cached dependencies
+        uses: ./.github/actions/setup-node-dependencies
         with:
           # Pinned to the runtime declared in `.node-version` so the
           # script runs under the same node major as the live app.
           # Bump in lockstep when the Node version moves.
           node-version: '22.22.0'
-          cache: 'npm'
-
-      - name: Install dependencies
-        # `npm ci` is overkill for a script with no project deps,
-        # but it gives us `tsx` from devDependencies without any
-        # extra setup and matches the install posture of the other
-        # workflows in this repo.
-        run: npm ci
 
       - name: Pre-warm the live container (best-effort)
         # Why this exists (task #736): the verifier's per-attempt

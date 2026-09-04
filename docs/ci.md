@@ -23,6 +23,13 @@ migration check, and `Tests`) run in parallel, so total wall-clock for a PR is
 roughly the slowest job — not the sum. The race suite is its own parallel
 workflow because it needs a backgrounded dev server and serial execution.
 
+All Node.js jobs use `.github/actions/setup-node-dependencies`. The local
+action retains `setup-node`'s npm download cache and adds an exact
+`node_modules` cache keyed by the runner OS/architecture, Node version, and
+dependency manifests. It intentionally has no partial restore key: a miss runs
+`npm ci --no-audit`, while dependency audits remain explicit CI gates in the
+`Type check & lint` job.
+
 > Job names (`Type check & lint`, `Tests`, the database-migration job,
 > `Race suite`, and `Exact main certification`) are the
 > values branch-protection rules will match against. **Don't rename

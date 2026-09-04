@@ -35,14 +35,10 @@ jobs:
           git diff --cached --quiet
           test -z "$(git status --short)"
 
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - name: Set up cached dependencies
+        uses: ./.github/actions/setup-node-dependencies
         with:
           node-version: '22.22.0'
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
 
       - name: Trace main tree to successful merge-result validation
         env:
