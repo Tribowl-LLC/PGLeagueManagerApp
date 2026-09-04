@@ -4,9 +4,10 @@ import { useToast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
 import { csrfFetch } from "@/lib/queryClient";
 import { makeApiError, isProviderNotConfiguredError, providerNotConfiguredToast } from "@/lib/provider-not-configured";
-import { sanitizePaymentErrorMessage } from "@/lib/payment-user-error";
+import { isHandledPaymentError, sanitizePaymentErrorMessage } from "@/lib/payment-user-error";
 import { beginPaymentIntent, clearPaymentIntent, paymentRequestHeaders, paymentRequestWithRecovery, assertRosterPaymentSucceeded } from "@/lib/payment-request-identity";
 import { tokenizeCard } from "@/lib/square";
+import { logger } from "@/lib/logger";
 import type { InsertPaymentInput, InsertPayment } from "@shared/schema";
 import type { SquareCard } from "@/hooks/use-square-payment";
 
@@ -92,6 +93,11 @@ export function usePaymentFormSubmit({
       }
       onClose();
     } catch (error) {
+      if (isHandledPaymentError(error)) {
+        logger.debug("Payment", "Payment submission requires customer action");
+      } else {
+        logger.error("Payment", "Payment submission failed", error);
+      }
       if (isProviderNotConfiguredError(error)) {
         toast(providerNotConfiguredToast({ navigate, locationId: locationId ?? null }));
       } else {

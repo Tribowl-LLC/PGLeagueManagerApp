@@ -4,6 +4,7 @@ import {
   ProviderNotConfiguredError,
   PaymentProviderError,
   sanitizeProviderErrorCode,
+  isHandledPaymentProviderError,
   type PaymentProviderFailureDisposition,
 } from './payment-errors';
 import { getSquareErrorCtor, type SquareProviderContext } from './square-client';
@@ -157,12 +158,17 @@ function logSquareFailure(
   operation: string,
   failure: ReturnType<typeof classifySquareFailure>,
 ): void {
-  log.error(`Square ${operation} failed`, {
+  const details = {
     httpStatus: failure.statusCode,
     squareErrorCategory: failure.category,
     squareErrorCode: failure.providerCode,
     squareRequestId: failure.requestId,
-  });
+  };
+  if (failure.disposition === 'action_required' || failure.disposition === 'invalid_request') {
+    log.debug(`Square ${operation} requires customer action`, details);
+  } else {
+    log.error(`Square ${operation} failed`, details);
+  }
 }
 
 export async function processPayment(
@@ -443,12 +449,26 @@ export async function createOrderWithPayment(
       receiptNumber: payment.receiptNumber,
     };
   } catch (error) {
-    log.error('Order+Payment failed', {
+    const orderFailureDetails = {
       name: error instanceof Error ? error.name : 'UnknownError',
       code: error instanceof PaymentProviderError ? error.code : undefined,
       disposition: error instanceof PaymentProviderError ? error.disposition : undefined,
       hasProviderOrderId: providerOrderId !== undefined,
-    });
+    };
+    if (error instanceof PaymentProviderError) {
+      if (isHandledPaymentProviderError(error)) {
+        log.debug('Order+Payment requires customer action', orderFailureDetails);
+      } else {
+        log.error('Order+Payment failed', orderFailureDetails);
+      }
+    } else if (error instanceof ProviderNotConfiguredError) {
+      log.error('Order+Payment provider is not configured', orderFailureDetails);
+    } else {
+      // Classify the raw SDK error before deciding its log level. A direct
+      // 402/400 response is customer action, even before it is converted to
+      // the typed error returned below.
+      logSquareFailure('order+payment', classifySquareFailure(error));
+    }
     // Re-throw already-typed errors verbatim so the route's catch
     // sees the original `userMessage`/`code` we set above (or the
     // PNCE from getSquareClient/getSquareLocationId).
@@ -552,7 +572,6 @@ export async function refundPayment(
       status: refund.status || 'PENDING',
     };
   } catch (error) {
-    log.error('Refund error:', error);
     // Re-throw already-typed errors verbatim so the route's catch
     // sees the original `userMessage`/`code` (and the PNCE from
     // getSquareClient never gets re-wrapped into REFUND_FAILED).
@@ -560,6 +579,19 @@ export async function refundPayment(
       error instanceof PaymentProviderError ||
       error instanceof ProviderNotConfiguredError
     ) {
+      if (isHandledPaymentProviderError(error)) {
+        log.debug('Refund requires customer action', {
+          code: error.code,
+          disposition: error.disposition,
+          providerCode: error.providerCode,
+        });
+      } else if (error instanceof PaymentProviderError) {
+        log.error('Refund error', {
+          code: error.code,
+          disposition: error.disposition,
+          providerCode: error.providerCode,
+        });
+      }
       throw error;
     }
 
@@ -573,6 +605,7 @@ export async function refundPayment(
     // captured for logs only — never forwarded as the user-facing
     // `userMessage` (task #514).
     const failure = classifySquareFailure(error);
+    logSquareFailure('refund', failure);
     if (failure.providerCode === 'REFUND_ALREADY_PENDING') {
       throw new PaymentProviderError(
         'The refund outcome must be reconciled before another attempt.',

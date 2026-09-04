@@ -9,6 +9,7 @@ import { PaymentOperationWakeScheduler } from "./payment-operation-wake-schedule
 import { getNextStandingAutopayWake, recordStandingAutopayPreparationFailure, type StandingAutopayWake } from "../storage/payment-operations.js";
 import { createLogger } from "../logger.js";
 import { rosterStandingAutopayEnabled, scheduledPaymentExecutionMode } from "../config.js";
+import { captureUnexpectedPaymentProviderError } from "./payment-error-telemetry.js";
 
 const log = createLogger("RosterStandingAutopay");
 const LEASE_OWNER = `standing-autopay:${hostname().replace(/[^A-Za-z0-9_.:-]/g, "-")}:${process.pid}:${randomUUID()}`.slice(0, 128);
@@ -145,6 +146,7 @@ export class RosterStandingAutopayOperationExecutor {
 
   private async recordFailure(operation: PaymentOperation, leaseToken: string, error: unknown, providerDispatchStarted: boolean): Promise<PaymentOperation> {
     const now = new Date();
+    captureUnexpectedPaymentProviderError(log, error);
     const providerDisposition = disposition(error);
     const errorCode = sanitizeProviderErrorCode(code(error), "STANDING_PAYMENT_FAILED");
     if (providerDispatchStarted && (providerDisposition === "provider_unknown" || providerDisposition === "transient")) {

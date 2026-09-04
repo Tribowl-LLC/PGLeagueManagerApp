@@ -34,6 +34,33 @@ export const PAYMENT_PROVIDER_FAILURE_DISPOSITIONS = [
 export type PaymentProviderFailureDisposition =
   (typeof PAYMENT_PROVIDER_FAILURE_DISPOSITIONS)[number];
 
+const HANDLED_PAYMENT_PROVIDER_CODES = new Set([
+  'ACTION_REQUIRED',
+  'CARD_DECLINED',
+  'CARD_SAVE_REQUIRES_ACTION',
+  'INVALID_REQUEST',
+  'PAYMENT_DECLINED',
+  'REFUND_DECLINED',
+  'TOKENIZATION_ERROR',
+]);
+
+/**
+ * Customer-action outcomes are part of the normal interactive payment
+ * contract. They are returned to the UI for correction/retry and must not be
+ * promoted to an error log or Sentry event. Provider outages, transport
+ * ambiguity, and server failures intentionally remain reportable.
+ */
+export function isHandledPaymentProviderError(error: unknown): boolean {
+  if (!(error instanceof PaymentProviderError)) return false;
+  if (error.disposition === 'action_required' || error.disposition === 'invalid_request') return true;
+  // Keep the code fallback for typed errors created at a boundary that does
+  // not yet carry disposition metadata. These are still payer-correctable
+  // outcomes; provider-unknown, configuration, and internal codes stay
+  // reportable by default.
+  return typeof error.code === 'string'
+    && HANDLED_PAYMENT_PROVIDER_CODES.has(error.code.toUpperCase());
+}
+
 export interface PaymentProviderErrorMetadata {
   disposition?: PaymentProviderFailureDisposition;
   providerCode?: string;

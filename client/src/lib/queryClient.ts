@@ -1,5 +1,25 @@
-import { QueryClient, QueryFunction } from "@tanstack/react-query";
+import { QueryCache, QueryClient, QueryFunction } from "@tanstack/react-query";
 import { logger } from "@/lib/logger";
+import {
+  makeApiError,
+  getApiRetryDelay,
+  shouldRetryApiQuery,
+  isAbortError,
+} from "@/lib/api-error";
+
+export {
+  ApiError,
+  makeApiError,
+  getApiRetryDelay,
+  classifyApiError,
+  isExpectedApiError,
+  shouldRetryApiQuery,
+  isAbortError,
+} from "@/lib/api-error";
+export type {
+  ApiErrorClassification,
+  ApiErrorOptions,
+} from "@/lib/api-error";
 
 let csrfToken: string | null = null;
 let csrfFetchPromise: Promise<string> | null = null;
@@ -98,39 +118,42 @@ export function parseRetryAfterSeconds(
 
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
-    let errorMessage;
-    let errorCode: string | undefined;
+    let errorBody: unknown;
+    let responseTextFallback: string | null = null;
     try {
       const contentType = res.headers.get("content-type");
       if (contentType && contentType.includes("application/json")) {
-        const errorData = await res.json();
-        errorMessage = errorData.error?.message || errorData.message || (typeof errorData.error === 'string' ? errorData.error : null) || res.statusText;
-        errorCode = errorData.error?.code;
+        errorBody = await res.json();
       } else {
-        errorMessage = await res.text();
+        responseTextFallback = await res.text();
       }
-    } catch (e) {
-      errorMessage = res.statusText;
+    } catch {
+      errorBody = undefined;
     }
 
-    if (res.status === 403 && errorCode === 'CSRF_ERROR') {
-      csrfToken = null;
-    }
-
-    const err = new Error(`${res.status}: ${errorMessage}`) as Error & {
-      status?: number;
-      code?: string;
-      retryAfterSeconds?: number | null;
-    };
-    err.status = res.status;
-    if (errorCode) err.code = errorCode;
-    if (res.status === 429) {
-      err.retryAfterSeconds = parseRetryAfterSeconds(
+    const fallbackMessage =
+      (responseTextFallback ?? '').trim() || res.statusText || 'Request failed';
+    const retryAfterSeconds = res.status === 429
+      ? parseRetryAfterSeconds(
         res.headers.get('retry-after'),
         res.headers.get('ratelimit-reset'),
-      );
+      )
+      : undefined;
+    const error = makeApiError(
+      errorBody,
+      res.status,
+      fallbackMessage,
+      retryAfterSeconds,
+    );
+    // Keep the status prefix used by the existing CSRF refresh path while
+    // retaining the typed status/code fields for all other callers.
+    error.message = `${res.status}: ${error.message}`;
+    error.statusText = res.statusText || undefined;
+
+    if (res.status === 403 && error.code === 'CSRF_ERROR') {
+      csrfToken = null;
     }
-    throw err;
+    throw error;
   }
   return res;
 }
@@ -210,22 +233,29 @@ export const getQueryFn: QueryFunction = async ({ queryKey, signal }) => {
     const data = await validatedRes.json();
     return data;
   } catch (error: unknown) {
-    if (error instanceof Error && error.name === 'AbortError') {
+    if (isAbortError(error)) {
       return undefined;
-    }
-    const is401 = error instanceof Error && error.message.startsWith('401');
-    if (!is401) {
-      logger.error('Query', `Error fetching ${queryKey[0]}`, error);
     }
     throw error;
   }
 };
 
+const queryCache = new QueryCache({
+  // Query functions may run more than once under the bounded retry policy.
+  // Report only the final exhausted outcome, after TanStack Query has made
+  // its retry decision, so transient fail-then-success reads stay silent.
+  onError: (error, query) => {
+    logger.error('Query', `Error fetching ${String(query.queryKey[0])}`, error);
+  },
+});
+
 export const queryClient = new QueryClient({
+  queryCache,
   defaultOptions: {
     queries: {
       queryFn: getQueryFn,
-      retry: 1, // Allow one retry
+      retry: shouldRetryApiQuery,
+      retryDelay: getApiRetryDelay,
       refetchOnWindowFocus: false,
       refetchOnMount: true,
       refetchOnReconnect: false,
@@ -246,7 +276,8 @@ export const prefetchQueries = async (role: 'admin' | 'bowler') => {
     } else {
       await queryClient.prefetchQuery({ queryKey: ['/api/bowler-leagues'] });
     }
-  } catch (error) {
-    logger.error('Query', 'Error prefetching initial data', error);
+  } catch {
+    // QueryCache.onError reports the final failed query after retries. Do
+    // not log again here, or prefetch failures would be duplicated.
   }
 };

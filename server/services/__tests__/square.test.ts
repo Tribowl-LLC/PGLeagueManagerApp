@@ -642,12 +642,13 @@ describe('Square Service', () => {
       await expect(provider.processPayment('saved-card-id', 2_500, false, 'customer-id', undefined, 'decline-key'))
         .rejects.toMatchObject({ disposition: 'action_required', providerCode: 'GENERIC_DECLINE' });
 
-      expect(mocks.log.error).toHaveBeenCalledWith('Square payment failed', {
+      expect(mocks.log.debug).toHaveBeenCalledWith('Square payment requires customer action', {
         httpStatus: 400,
         squareErrorCategory: 'PAYMENT_METHOD_ERROR',
         squareErrorCode: 'GENERIC_DECLINE',
         squareRequestId: 'square-request-123',
       });
+      expect(mocks.log.error).not.toHaveBeenCalled();
       expect(mocks.payments.create).toHaveBeenCalledTimes(1);
       expect(JSON.stringify(mocks.log.error.mock.calls)).not.toContain('sensitive provider detail');
       expect(JSON.stringify(mocks.log.error.mock.calls)).not.toContain('customer-id');

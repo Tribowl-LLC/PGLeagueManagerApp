@@ -52,6 +52,10 @@ export function LeagueForm({ open, onClose, league, systemAdminOrganizationId }:
 
   const { data: locationsData } = useQuery<{ success: boolean; data: Location[] }>({
     queryKey: ['/api/locations'],
+    // The dialog is mounted by the leagues page even while closed. Avoid
+    // waking the admin-only locations endpoint for ordinary members who can
+    // view leagues but cannot open/manage this form.
+    enabled: open,
   });
   const activeLocations = (locationsData?.data || []).filter(l => l.active);
 

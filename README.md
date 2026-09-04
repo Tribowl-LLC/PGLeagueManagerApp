@@ -217,7 +217,8 @@ Common local settings:
 
 Optional integrations and operational settings include `SENDGRID_API_KEY`
 (email), `SENTRY_DSN` (server error tracking), `VITE_SENTRY_DSN` (browser
-error tracking at build time), and `SETUP_SECRET` (admin bootstrap endpoints).
+error tracking at build time), `SENTRY_AUTH_TOKEN` (build-only browser source-map
+upload), and `SETUP_SECRET` (admin bootstrap endpoints).
 If `SETUP_SECRET` is set, it must
 be at least 32 characters long and must not be a single repeated character.
 All variables prefixed with `VITE_` are bundled into browser code and therefore

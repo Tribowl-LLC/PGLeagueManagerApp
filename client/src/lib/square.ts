@@ -7,6 +7,10 @@ const SDK_LOAD_MAX_ATTEMPTS = 3;
 const SDK_LOAD_RETRY_DELAY_MS = 1000;
 const INIT_MAX_RETRIES = 2;
 const INIT_RETRY_DELAY_MS = 2000;
+const SQUARE_INIT_TIMEOUT_PROD_MS = 15000;
+const SQUARE_INIT_TIMEOUT_DEV_MS = 10000;
+export const SQUARE_INITIALIZATION_FALLBACK_MESSAGE =
+  'Credit card payment form unavailable. Please try again or choose a different payment method.';
 
 interface SquareCustomer {
   id: string;
@@ -71,6 +75,9 @@ let payments: SquarePayments | null = null;
 let squareConfig: { appId: string; locationId: string } | null = null;
 let squareConfigLocationId: number | null | undefined = undefined;
 let preWarmedCard: SquareCard | null = null;
+let initializationPromise: Promise<SquarePayments> | null = null;
+let initializationLocationId: number | null | undefined = undefined;
+let initializationGeneration = 0;
 
 const cardStyle = {
   input: {
@@ -101,14 +108,20 @@ export function getPreWarmedCard(): SquareCard | null {
 export { cardStyle };
 
 export function resetSquarePayments() {
+  initializationGeneration += 1;
+  initializationPromise = null;
+  initializationLocationId = undefined;
   payments = null;
   squareConfig = null;
   squareConfigLocationId = undefined;
 }
 
-async function getSquareConfig(locationId?: number | null): Promise<{ appId: string; locationId: string }> {
+async function getSquareConfig(
+  locationId: number | null,
+  generation: number,
+): Promise<{ appId: string; locationId: string }> {
   // Return cached config only if the location matches
-  if (squareConfig && squareConfigLocationId === (locationId ?? null)) return squareConfig;
+  if (squareConfig && squareConfigLocationId === locationId) return squareConfig;
 
   const url = locationId ? `/api/payments-provider/config?locationId=${locationId}` : '/api/payments-provider/config';
   let data: SquareConfigResponse;
@@ -116,18 +129,30 @@ async function getSquareConfig(locationId?: number | null): Promise<{ appId: str
     const res = await fetch(url);
     data = await res.json() as SquareConfigResponse;
   } catch (err) {
+    if (!isCurrentInitialization(generation)) {
+      throw new Error('Square initialization was superseded');
+    }
     logger.error('Square', 'Failed to fetch config from server', err);
     throw new Error('Payment is temporarily unavailable. Please try again or contact support.');
   }
 
+  if (!isCurrentInitialization(generation)) {
+    throw new Error('Square initialization was superseded');
+  }
   if (!data.appId) {
     logger.error('Square', 'Server returned no appId in config response');
     throw new Error('Payment is temporarily unavailable. Please try again or contact support.');
   }
 
-  squareConfig = { appId: data.appId, locationId: data.locationId || '' };
-  squareConfigLocationId = locationId ?? null;
-  return squareConfig;
+  const config = { appId: data.appId, locationId: data.locationId || '' };
+  // A location switch can finish this request after a newer generation has
+  // started. Do not let that stale response replace the active config cache.
+  if (!isCurrentInitialization(generation)) {
+    throw new Error('Square initialization was superseded');
+  }
+  squareConfig = config;
+  squareConfigLocationId = locationId;
+  return config;
 }
 
 function getSdkUrl(appId: string): string {
@@ -137,124 +162,188 @@ function getSdkUrl(appId: string): string {
     : "https://sandbox.web.squarecdn.com/v1/square.js";
 }
 
-export async function initializeSquare(locationId?: number | null): Promise<SquarePayments> {
+function removeSquareSdk(generation?: number): void {
+  if (generation !== undefined && !isCurrentInitialization(generation)) return;
+  document.querySelectorAll('script[src*="square.js"]').forEach((script) => script.remove());
+  (window as { Square?: typeof window.Square }).Square = undefined;
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Race one provider attempt without leaving an already-fired timer behind. */
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
-    // Reset if the location has changed
-    if (payments && squareConfigLocationId !== (locationId ?? null)) {
-      payments = null;
-      squareConfig = null;
-    }
-
-    if (payments && window.Square?.payments) {
-      return payments;
-    }
-
-    payments = null;
-
-    const config = await getSquareConfig(locationId);
-    const sdkUrl = getSdkUrl(config.appId);
-    const isProduction = config.appId.length > 0 && !config.appId.includes('sandbox-');
-
-
-    if (window.Square && !window.Square.payments) {
-      document.querySelectorAll('script[src*="square.js"]').forEach(script => script.remove());
-      (window as { Square?: typeof window.Square }).Square = undefined;
-    }
-
-    const existingSdkScript = document.querySelector('script[src*="square"]') as HTMLScriptElement | null;
-    if (existingSdkScript && existingSdkScript.src !== sdkUrl) {
-      existingSdkScript.remove();
-      (window as { Square?: typeof window.Square }).Square = undefined;
-    }
-
-    if (window.Square?.payments) {
-      try {
-        payments = await window.Square.payments(config.appId, config.locationId);
-        return payments;
-      } catch (initError) {
-        logger.error('Square', 'Failed to initialize with existing SDK, will reload', initError);
-        document.querySelectorAll('script[src*="square.js"]').forEach(script => script.remove());
-        (window as { Square?: typeof window.Square }).Square = undefined;
-      }
-    }
-
-    const SQUARE_INIT_TIMEOUT_PROD_MS = 15000;
-    const SQUARE_INIT_TIMEOUT_DEV_MS = 10000;
-    const timeoutMs = isProduction ? SQUARE_INIT_TIMEOUT_PROD_MS : SQUARE_INIT_TIMEOUT_DEV_MS;
-    const timeoutPromise = new Promise<SquarePayments>((_, reject) => {
-      setTimeout(() => reject(new Error(`Square initialization timed out after ${timeoutMs/1000} seconds`)), timeoutMs);
+    return await new Promise<T>((resolve, reject) => {
+      timeout = setTimeout(
+        () => reject(new Error(`Square initialization timed out after ${timeoutMs / 1000} seconds`)),
+        timeoutMs,
+      );
+      promise.then(resolve, reject);
     });
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
 
-    const initializeFunction = async () => {
-      let scriptLoaded = false;
-      let attempts = 0;
-      let lastError;
+function isCurrentInitialization(generation: number): boolean {
+  return generation === initializationGeneration;
+}
 
-      while (!scriptLoaded && attempts < SDK_LOAD_MAX_ATTEMPTS) {
-        attempts++;
-        try {
-          await loadScript(sdkUrl);
-          scriptLoaded = true;
-        } catch (err) {
-          lastError = err;
-          logger.error('Square', `Failed to load SDK on attempt ${attempts}/${SDK_LOAD_MAX_ATTEMPTS}`, err);
-          if (attempts < SDK_LOAD_MAX_ATTEMPTS) {
-            await new Promise(resolve => setTimeout(resolve, SDK_LOAD_RETRY_DELAY_MS));
-          }
-        }
+async function initializeSquareAttempt(
+  config: { appId: string; locationId: string },
+  sdkUrl: string,
+  timeoutMs: number,
+  generation: number,
+  allowExistingSdk: boolean,
+): Promise<SquarePayments> {
+  if (!isCurrentInitialization(generation)) throw new Error('Square initialization was superseded');
+
+  const sdk = window.Square;
+  if (allowExistingSdk && sdk?.payments) {
+    const paymentsFactory = sdk.payments;
+    try {
+      return await withTimeout(
+        paymentsFactory(config.appId, config.locationId),
+        timeoutMs,
+      );
+    } catch {
+      // A rejected or hung SDK instance is not reusable. Remove both its
+      // script tag and global before the next bounded attempt.
+      removeSquareSdk(generation);
+    }
+  }
+
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= SDK_LOAD_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      await withTimeout(loadScript(sdkUrl), timeoutMs);
+      if (!isCurrentInitialization(generation)) {
+        throw new Error('Square initialization was superseded');
       }
-
-      if (!scriptLoaded) {
-        throw lastError || new Error("Failed to load Square SDK after multiple attempts");
-      }
-
-      if (!window.Square?.payments) {
-        throw new Error("Square SDK failed to initialize properly");
-      }
-
-      try {
-        payments = await window.Square.payments(config.appId, config.locationId);
-        return payments;
-      } catch (initError) {
-        logger.error('Square', 'Failed to initialize payments with credentials', initError);
-        const errorMessage = initError instanceof Error ? initError.message : String(initError);
-        if (errorMessage.includes('location_id') || errorMessage.includes('invalid location')) {
-          throw new Error(`Square location ID issue: ${errorMessage}`);
-        } else if (errorMessage.includes('application_id') || errorMessage.includes('app_id')) {
-          throw new Error(`Square application ID issue: ${errorMessage}`);
-        } else if (errorMessage.includes('unauthorized') || errorMessage.includes('not authorized')) {
-          throw new Error(`Square authorization issue: ${errorMessage}`);
-        }
-        throw initError;
-      }
-    };
-
-    let attemptCount = 0;
-
-    while (attemptCount <= INIT_MAX_RETRIES) {
-      try {
-        const result = await Promise.race([
-          initializeFunction(),
-          timeoutPromise
-        ]);
-        return result;
-      } catch (error) {
-        attemptCount++;
-        if (attemptCount <= INIT_MAX_RETRIES) {
-          await new Promise(resolve => setTimeout(resolve, INIT_RETRY_DELAY_MS));
-        } else {
-          logger.error('Square', 'All initialization attempts failed');
-          throw error;
+      const sdk = window.Square;
+      if (!sdk?.payments) throw new Error('Square SDK failed to initialize properly');
+      return await withTimeout(
+        sdk.payments(config.appId, config.locationId),
+        timeoutMs,
+      );
+    } catch (error) {
+      lastError = error;
+      if (attempt < SDK_LOAD_MAX_ATTEMPTS) {
+        if (!isCurrentInitialization(generation)) throw new Error('Square initialization was superseded');
+        removeSquareSdk(generation);
+        await wait(SDK_LOAD_RETRY_DELAY_MS);
+        if (!isCurrentInitialization(generation)) {
+          throw new Error('Square initialization was superseded');
         }
       }
     }
-
-    throw new Error("Square initialization failed after multiple attempts");
-  } catch (error) {
-    logger.error('Square', 'Critical error during Square initialization', error);
-    payments = null;
-    throw error;
   }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error('Failed to load Square SDK after multiple attempts');
+}
+
+async function initializeSquareInternal(
+  locationId: number | null,
+  generation: number,
+): Promise<SquarePayments> {
+  const config = await getSquareConfig(locationId, generation);
+  const sdkUrl = getSdkUrl(config.appId);
+  const isProduction = config.appId.length > 0 && !config.appId.includes('sandbox-');
+  const timeoutMs = isProduction ? SQUARE_INIT_TIMEOUT_PROD_MS : SQUARE_INIT_TIMEOUT_DEV_MS;
+  const existingSdkScript = document.querySelector('script[src*="square.js"]') as HTMLScriptElement | null;
+  if (existingSdkScript && existingSdkScript.src !== sdkUrl) removeSquareSdk(generation);
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt <= INIT_MAX_RETRIES; attempt += 1) {
+    if (!isCurrentInitialization(generation)) throw new Error('Square initialization was superseded');
+    if (attempt > 0) {
+      // Reinitialize the provider from a clean SDK state after a timeout or
+      // rejected credential handshake. This is the missing step that made
+      // the old retry loop race the same broken global instance.
+      removeSquareSdk(generation);
+      await wait(INIT_RETRY_DELAY_MS * attempt);
+      if (!isCurrentInitialization(generation)) {
+        throw new Error('Square initialization was superseded');
+      }
+    }
+    try {
+      const result = await initializeSquareAttempt(
+        config,
+        sdkUrl,
+        timeoutMs,
+        generation,
+        attempt === 0,
+      );
+      if (!isCurrentInitialization(generation)) throw new Error('Square initialization was superseded');
+      return result;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error('Square initialization failed after multiple attempts');
+}
+
+export async function initializeSquare(locationId?: number | null): Promise<SquarePayments> {
+  const normalizedLocationId = locationId ?? null;
+
+  if (payments && squareConfigLocationId === normalizedLocationId && window.Square?.payments) {
+    return payments;
+  }
+  if (initializationPromise && initializationLocationId === normalizedLocationId) {
+    return initializationPromise;
+  }
+
+  // A location switch invalidates a prior in-flight initialization as well
+  // as the successful instance cache. The generation check prevents the old
+  // promise from writing its result after this call starts.
+  if (initializationPromise) {
+    initializationGeneration += 1;
+    initializationPromise = null;
+    initializationLocationId = undefined;
+    payments = null;
+    squareConfig = null;
+  }
+
+  const generation = initializationGeneration;
+  const promise = initializeSquareInternal(normalizedLocationId, generation)
+    .then((result) => {
+      if (!isCurrentInitialization(generation)) throw new Error('Square initialization was superseded');
+      payments = result;
+      return result;
+    })
+    .catch((error: unknown) => {
+      if (isCurrentInitialization(generation)) {
+        payments = null;
+        // Provider/transport failures are reportable, but callers get a
+        // stable UI message rather than a raw timeout or SDK payload.
+        logger.error('Square', 'Square initialization failed after bounded retries', error);
+      }
+      throw new Error(SQUARE_INITIALIZATION_FALLBACK_MESSAGE);
+    });
+  initializationPromise = promise;
+  initializationLocationId = normalizedLocationId;
+  promise.then(
+    () => {
+      if (initializationPromise === promise) {
+        initializationPromise = null;
+        initializationLocationId = undefined;
+      }
+    },
+    () => {
+      if (initializationPromise === promise) {
+        initializationPromise = null;
+        initializationLocationId = undefined;
+      }
+    },
+  );
+  return promise;
 }
 
 // task #514: tokenizeCard now throws plain Errors with `.code`

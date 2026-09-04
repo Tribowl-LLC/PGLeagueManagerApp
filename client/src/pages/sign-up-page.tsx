@@ -1,5 +1,6 @@
-import { FC, useMemo } from "react";
-import { queryClient } from "@/lib/queryClient";
+import { FC, useMemo, useState } from "react";
+import { makeApiError, parseRetryAfterSeconds, queryClient } from "@/lib/queryClient";
+import { isExpectedApiError, isAbortError } from "@/lib/api-error";
 import { logger } from "@/lib/logger";
 import { ErrorBoundary } from "@/components/error-boundary";
 import {
@@ -35,6 +36,13 @@ import { useToast } from "@/hooks/use-toast";
 import { Link, useLocation, useSearch } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { getSubdomainSlug } from "@/lib/subdomain";
+import {
+  DEFAULT_THROTTLE_FALLBACK_SECONDS,
+  formatCountdown,
+  useThrottleCountdown,
+} from "@/hooks/use-throttle-countdown";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { AlertCircle, AlertTriangle, Loader2 } from "lucide-react";
 
 const PASSWORD_MIN_LENGTH = 8;
 const PASSWORD_MAX_LENGTH = 100;
@@ -84,6 +92,15 @@ const signUpSchema = z.object({
 
 type SignUpFormData = z.infer<typeof signUpSchema>;
 
+// Registration is also the login boundary: only use the response after its
+// success envelope and the field needed for routing have been validated.
+const signUpResponseSchema = z.object({
+  success: z.literal(true),
+  data: z.object({
+    bowlerId: z.number().int().positive().nullable(),
+  }).passthrough(),
+});
+
 interface OrgInfo {
   id: number;
   name: string;
@@ -131,6 +148,10 @@ const SignUpPage: FC = () => {
   const { toast } = useToast();
   const [, setLocation] = useLocation();
   const searchString = useSearch();
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [signupError, setSignupError] = useState<string | null>(null);
+  const { isThrottled, remainingSeconds, throttle, clear: clearThrottle } =
+    useThrottleCountdown();
 
   const orgSlug = useMemo(() => {
     const subdomainSlug = getSubdomainSlug();
@@ -190,6 +211,9 @@ const SignUpPage: FC = () => {
   const showOrgInLabel = !orgSlug;
 
   const onSubmit = async (data: SignUpFormData) => {
+    if (isThrottled) return;
+    setSignupError(null);
+    setIsSubmitting(true);
     try {
       const registerBody: Record<string, unknown> = { ...data };
       const selectedLeagueId = Number(data.leagueId);
@@ -209,20 +233,28 @@ const SignUpPage: FC = () => {
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        if (errorData?.error?.code === "DUPLICATE_EMAIL") {
-          toast({
-            title: "Account Already Exists",
-            description: "An account with this email already exists. Please sign in instead.",
-            variant: "destructive",
-          });
-          return;
-        }
-        throw new Error(errorData.error?.message || "Failed to sign up. Please try again.");
+        const retryAfterSeconds = response.status === 429
+          ? parseRetryAfterSeconds(
+            response.headers.get("retry-after"),
+            response.headers.get("ratelimit-reset"),
+          )
+          : undefined;
+        throw makeApiError(
+          errorData,
+          response.status,
+          "Failed to sign up. Please try again.",
+          retryAfterSeconds,
+        );
       }
 
-      const userData = await response.json();
+      const parsedResponse = signUpResponseSchema.safeParse(await response.json());
+      if (!parsedResponse.success) {
+        throw new Error("The sign-up response was invalid. Please try again.");
+      }
+      const userData = parsedResponse.data;
 
       queryClient.setQueryData(['/api/user'], userData);
+      clearThrottle();
 
       if (!userData.data.bowlerId) {
         toast({
@@ -277,12 +309,37 @@ const SignUpPage: FC = () => {
         }
       }
     } catch (error) {
-      logger.error('SignUp', 'Registration error', error);
+      if (isAbortError(error)) return;
+      if (error instanceof Error && (error as { code?: string }).code === "DUPLICATE_EMAIL") {
+        toast({
+          title: "Account Already Exists",
+          description: "An account with this email already exists. Please sign in instead.",
+          variant: "destructive",
+        });
+        return;
+      }
+      if (error instanceof Error && ((error as { status?: number }).status === 429
+        || (error as { code?: string }).code === "RATE_LIMITED")) {
+        const retryAfter = (error as { retryAfterSeconds?: number | null }).retryAfterSeconds;
+        throttle(
+          retryAfter != null && retryAfter > 0
+            ? retryAfter
+            : DEFAULT_THROTTLE_FALLBACK_SECONDS,
+        );
+        return;
+      }
+      if (!isExpectedApiError(error)) {
+        logger.error('SignUp', 'Registration error', error);
+      }
+      const message = error instanceof Error ? error.message : "Failed to sign up. Please try again.";
+      setSignupError(message);
       toast({
         title: "Error",
-        description: error instanceof Error ? error.message : "Failed to sign up. Please try again.",
+        description: message,
         variant: "destructive",
       });
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -401,8 +458,40 @@ const SignUpPage: FC = () => {
                   </FormItem>
                 )}
               />
-              <Button type="submit" className="w-full mt-2">
-                Create Account
+              {isThrottled && (
+                <Alert variant="destructive" data-testid="alert-signup-throttled">
+                  <AlertTriangle className="size-4" />
+                  <AlertTitle>Too many sign-up attempts</AlertTitle>
+                  <AlertDescription>
+                    For your protection, sign-up is paused for about{" "}
+                    <span data-testid="text-signup-retry-in">
+                      {formatCountdown(remainingSeconds)}
+                    </span>
+                    . Please try again then.
+                  </AlertDescription>
+                </Alert>
+              )}
+              {signupError && !isThrottled && (
+                <div className="flex items-center gap-2 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+                  <AlertCircle className="size-4 shrink-0" />
+                  <span>{signupError}</span>
+                </div>
+              )}
+              <Button
+                type="submit"
+                className="w-full mt-2"
+                disabled={isSubmitting || isThrottled}
+              >
+                {isSubmitting ? (
+                  <>
+                    <Loader2 className="mr-2 size-4 animate-spin" />
+                    Creating account…
+                  </>
+                ) : isThrottled ? (
+                  `Try again in ${formatCountdown(remainingSeconds)}`
+                ) : (
+                  "Create Account"
+                )}
               </Button>
             </form>
           </Form>

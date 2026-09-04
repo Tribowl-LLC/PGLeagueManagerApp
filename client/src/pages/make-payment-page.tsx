@@ -20,6 +20,7 @@ import { tokenizeCard } from "@/lib/square";
 import { formatCurrency } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { logger } from "@/lib/logger";
+import { isHandledPaymentError, sanitizePaymentErrorMessage } from "@/lib/payment-user-error";
 import { isProviderNotConfiguredError, providerNotConfiguredToast, makeApiError } from "@/lib/provider-not-configured";
 import { assertRosterPaymentSucceeded, beginPaymentIntent, clearPaymentIntent, isTerminalRosterPaymentFailure, paymentRequestHeaders, paymentRequestWithRecovery } from "@/lib/payment-request-identity";
 import { paymentHistoryFinancialQueryKey, invalidatePaymentHistoryFinancials } from "@/lib/payment-history-financial-query";
@@ -260,7 +261,14 @@ export default function MakePaymentPage() {
       toast({ title: "Payment Successful", description: `${walletType === "apple_pay" ? "Apple Pay" : "Google Pay"} payment completed.` });
       await invalidatePaymentHistoryFinancials(queryClient, leagueId, bowlerId);
       invalidatePaymentViews(leagueId, bowlerId);
-    } catch (error) { logger.error("Wallet Payment", "Payment failed", error); toast(isProviderNotConfiguredError(error) ? providerNotConfiguredToast({ navigate, locationId: league.locationId }) : { title: "Payment Failed", description: error instanceof Error ? error.message : "Unable to process payment.", variant: "destructive" }); }
+    } catch (error) {
+      if (isHandledPaymentError(error)) {
+        logger.debug("Wallet Payment", "Payment requires customer action");
+      } else {
+        logger.error("Wallet Payment", "Payment failed", error);
+      }
+      toast(isProviderNotConfiguredError(error) ? providerNotConfiguredToast({ navigate, locationId: league.locationId }) : { title: "Payment Failed", description: sanitizePaymentErrorMessage(error, "Unable to process payment."), variant: "destructive" });
+    }
     finally { setIsWalletProcessing(false); }
   }, [bowlerId, leagueId, league, resolvedFinancial.status, paymentAmountMinor, bowlerEmail, receiptEmail, toast, navigate, cleanupCard]);
   const beginWalletPayment = useCallback(() => { if (leagueId && bowlerId && paymentAmountMinor > 0) walletRequestKeyRef.current = beginPaymentIntent(`make-payment-wallet:${leagueId}:${bowlerId}:${paymentAmountMinor}`); }, [leagueId, bowlerId, paymentAmountMinor]);
@@ -296,7 +304,14 @@ export default function MakePaymentPage() {
       await invalidatePaymentHistoryFinancials(queryClient, leagueId, bowlerId);
       invalidatePaymentViews(leagueId, bowlerId);
       if (storeCard && cardMode === "new") void queryClient.invalidateQueries({ queryKey: [`/api/payments-provider/cards/${bowlerId}`] });
-    } catch (error) { logger.error("Payment", "Payment failed", error); toast(isProviderNotConfiguredError(error) ? providerNotConfiguredToast({ navigate, locationId: league.locationId }) : { title: "Payment Failed", description: error instanceof Error ? error.message : "Unable to process payment. Please try again.", variant: "destructive" }); }
+    } catch (error) {
+      if (isHandledPaymentError(error)) {
+        logger.debug("Payment", "Payment requires customer action");
+      } else {
+        logger.error("Payment", "Payment failed", error);
+      }
+      toast(isProviderNotConfiguredError(error) ? providerNotConfiguredToast({ navigate, locationId: league.locationId }) : { title: "Payment Failed", description: sanitizePaymentErrorMessage(error, "Unable to process payment. Please try again."), variant: "destructive" });
+    }
     finally { setIsSubmitting(false); }
   };
 

@@ -9,7 +9,7 @@ import {
   providerNotConfiguredToast,
   makeApiError,
 } from "@/lib/provider-not-configured";
-import { sanitizePaymentErrorMessage } from "@/lib/payment-user-error";
+import { isHandledPaymentError, sanitizePaymentErrorMessage } from "@/lib/payment-user-error";
 import {
   assertRosterPaymentSucceeded,
   beginPaymentIntent,
@@ -95,7 +95,16 @@ export function useBowlerPaymentSubmit({
         queryClient.invalidateQueries({ queryKey: [`/api/payments-provider/cards/${bowler.id}`] });
       }
     } catch (error) {
-      logger.error("Payment", "Payment submission failed", error);
+      // Declines, tokenization failures, and customer verification requests
+      // are expected outcomes of an interactive payment. They are already
+      // rendered in the toast, so don't turn normal customer action into a
+      // Sentry incident. Keep provider/server failures observable, while
+      // never passing the handled provider object to the logger.
+      if (isHandledPaymentError(error)) {
+        logger.debug("Payment", "Payment submission requires customer action");
+      } else {
+        logger.error("Payment", "Payment submission failed", error);
+      }
       if (isProviderNotConfiguredError(error)) {
         toast(providerNotConfiguredToast({ navigate, locationId: league.locationId ?? null }));
       } else {

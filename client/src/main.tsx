@@ -7,12 +7,19 @@ import "./index.css";
 import { initCsrfToken } from "./lib/queryClient";
 import { scrubSentryEvent, scrubSentrySpan } from "./lib/logger";
 import { isNativeApp } from './lib/capacitor';
+import { installAssetRecoveryHandlers, shouldSuppressAssetTelemetry } from './lib/asset-recovery';
 
 initCsrfToken();
+
+// Register before Sentry's GlobalHandlers so recovery can claim the first
+// browser asset failure and hand its expected event to beforeSend for a
+// release-scoped one-shot suppression.
+installAssetRecoveryHandlers();
 
 Sentry.init({
   dsn: import.meta.env.VITE_SENTRY_DSN,
   environment: import.meta.env.MODE,
+  release: __APP_RELEASE__,
   integrations: [Sentry.browserTracingIntegration()],
   tracesSampleRate: 1.0,
   dataCollection: {
@@ -25,7 +32,10 @@ Sentry.init({
   // task #770: redaction backstop so events captured outside the
   // client logger (uncaught errors, SDK breadcrumbs, etc.) still have
   // PII / secret-shaped strings masked before leaving the browser.
-  beforeSend: (event) => scrubSentryEvent(event),
+  beforeSend: (event) => {
+    if (shouldSuppressAssetTelemetry(event)) return null;
+    return scrubSentryEvent(event);
+  },
   beforeSendTransaction: (event) => scrubSentryEvent(event),
   beforeSendSpan: (span) => scrubSentrySpan(span),
 });

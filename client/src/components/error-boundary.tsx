@@ -1,6 +1,7 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { AlertTriangle, RefreshCw } from "lucide-react";
 import { logger } from "@/lib/logger";
+import { isAssetLoadError, recoverFromAssetFailure } from "@/lib/asset-recovery";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
@@ -27,6 +28,20 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   }
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    if (isAssetLoadError(error)) {
+      const recovery = recoverFromAssetFailure(error);
+      if (recovery === "refreshing") {
+        // The first stale-chunk failure is handled by the guarded refresh;
+        // reporting it would create a noisy, expected Sentry event.
+        logger.debug("AssetRecovery", "Refreshing once after a stale client asset");
+      } else {
+        // A second failure for the same release is actionable operational
+        // evidence. The logger's telemetry scrubber remains the only path
+        // that receives the browser error object.
+        logger.error("AssetRecovery", "Client asset remained unavailable after refresh", error);
+      }
+      return;
+    }
     logger.error("ErrorBoundary", `Caught error (component stack: ${errorInfo.componentStack ?? "n/a"})`, error);
   }
 
@@ -56,6 +71,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
       }
 
       if (level === "page") {
+        const assetFailure = this.state.error !== null && isAssetLoadError(this.state.error);
         return (
           <div className="flex min-h-[60vh] items-center justify-center p-8">
             <Card className="max-w-md w-full">
@@ -65,9 +81,11 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
               </CardHeader>
               <CardContent className="text-center space-y-4">
                 <p className="text-sm text-muted-foreground">
-                  An unexpected error occurred while loading this page. Please try refreshing.
+                  {assetFailure
+                    ? "A new version of LeagueVault is available, but this page could not load it. Please refresh and try again."
+                    : "An unexpected error occurred while loading this page. Please try refreshing."}
                 </p>
-                {this.state.error && (
+                {this.state.error && !assetFailure && (
                   <p className="text-xs text-muted-foreground font-mono bg-muted rounded p-2 break-all">
                     {this.state.error.message}
                   </p>
@@ -92,8 +110,12 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
           <CardContent className="flex items-center gap-3 p-4">
             <AlertTriangle className="size-5 text-destructive shrink-0" />
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium">This section encountered an error</p>
-              {this.state.error && (
+              <p className="text-sm font-medium">
+                {this.state.error && isAssetLoadError(this.state.error)
+                  ? "This section is temporarily unavailable"
+                  : "This section encountered an error"}
+              </p>
+              {this.state.error && !isAssetLoadError(this.state.error) && (
                 <p className="text-xs text-muted-foreground mt-1 truncate">
                   {this.state.error.message}
                 </p>

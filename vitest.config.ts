@@ -89,6 +89,8 @@ const PARALLEL_ISOLATED_WITH_APP = [
  * error-log guard, so nothing preloads `pg` ahead of the mock.
  */
 const UNIT_NO_DB = [
+  'tests/unit/client-api-error.test.ts',
+  'tests/unit/asset-recovery-sentry-order.test.ts',
   'tests/unit/client-telemetry-scrubber.test.ts',
   'tests/unit/sentry-context.test.ts',
   'tests/unit/server-logger-sentry.test.ts',
@@ -108,10 +110,13 @@ const UNIT_NO_DB = [
   'tests/unit/payment-operation-idempotency.test.ts',
   'tests/unit/financials-f5-route.test.ts',
   'tests/unit/payment-operation-wake-scheduler.test.ts',
+  'tests/unit/payment-error-telemetry.test.ts',
   'tests/unit/square-webhook.test.ts',
   'tests/unit/rate-limit-environment.test.ts',
   'tests/unit/rate-limit-shared-store-coverage.test.ts',
   'tests/unit/subdomain-resolution-consistency.test.ts',
+  'tests/unit/team-delete-route.test.ts',
+  'tests/unit/server-app-resume-capture.test.ts',
   'tests/unit/location-webhook-retention-route.test.ts',
   'tests/unit/canonical-occurrence-generator.test.ts',
   'tests/unit/canonical-collection-groups.test.ts',
@@ -210,6 +215,7 @@ const PARALLEL_ISOLATED = [
   'tests/unit/square-provider-not-configured-422.test.ts',
   'tests/unit/webhook-event-inbox-postgres.test.ts',
   'tests/unit/square-webhook-processing-postgres.test.ts',
+  'tests/unit/team-deletion-safety-postgres.test.ts',
 ];
 
 const sharedAlias = {

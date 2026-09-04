@@ -62,8 +62,21 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import * as schema from '@shared/schema';
 import { registerSquareWebhookReceiver } from './routes/payments-provider/square-webhook';
 import { sanitizedSentryIdentity } from '@shared/sentry-context';
+import { getPgErrorCode } from './utils/db-errors.js';
 
 const log = createLogger("Server");
+
+/** Report the terminal startup recovery error before writing redacted logs. */
+export function reportApplePayResumeFailure(error: unknown): void {
+  log.captureException(error);
+  // Recovery is fail-closed after its bounded retry window. Keep the
+  // log structured and low-cardinality; a Drizzle error can otherwise
+  // include SQL text or provider/database details.
+  log.error('Apple Pay worker resume failed', {
+    errorType: error instanceof Error ? error.name : 'unknown',
+    errorCode: getPgErrorCode(error) ?? 'unknown',
+  });
+}
 
 export interface CreateAppOptions {
   /**
@@ -482,7 +495,7 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
       });
 
       applePayWorker.resumeOnStartup().catch((err) => {
-        log.error('Apple Pay worker resume failed:', err);
+        reportApplePayResumeFailure(err);
       });
 
       startLeagueSquareCatalogAudit();
