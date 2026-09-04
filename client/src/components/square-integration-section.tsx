@@ -14,6 +14,7 @@ import { useToast } from "@/hooks/use-toast";
 import { clearProviderConfigCache } from "@/hooks/use-payment-provider";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
+import { refreshSquarePaymentConfiguration } from "@/lib/square";
 
 interface SquareLocationConfig {
   appId: string | null;
@@ -47,10 +48,20 @@ function SquareConfigForm({ location }: { location: Location }) {
   const mutation = useMutation({
     mutationFn: async (data: { appId?: string; accessToken?: string; locationId?: string }) =>
       apiRequest(`/api/locations/${location.id}/square-config`, "PATCH", data),
-    onSuccess: () => {
+    onSuccess: (_response, variables) => {
       queryClient.invalidateQueries({ queryKey: ["/api/locations", location.id, "square-config"] });
       clearProviderConfigCache();
+      const nextAppId = variables.appId ?? config?.appId ?? null;
+      const { reloadRequired } = refreshSquarePaymentConfiguration(
+        location.id,
+        config?.appId ?? null,
+        nextAppId,
+      );
       toast({ title: "Square settings saved", description: `Square credentials for ${location.name} have been updated.` });
+      if (reloadRequired) {
+        window.location.reload();
+        return;
+      }
       setAccessToken("");
       setExpanded(false);
     },

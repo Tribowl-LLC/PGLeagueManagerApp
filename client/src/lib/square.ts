@@ -72,6 +72,8 @@ declare global {
 
 type LocationKey = number | null;
 
+class SquareConfigUnavailableError extends Error {}
+
 const paymentsByLocation = new Map<LocationKey, SquarePayments>();
 const configByLocation = new Map<LocationKey, { appId: string; locationId: string }>();
 const initializationByLocation = new Map<LocationKey, Promise<SquarePayments>>();
@@ -116,6 +118,25 @@ export function resetSquarePaymentsForTests() {
   sdkLoadUrl = null;
 }
 
+/**
+ * Drop only one location's credential-bound objects. The page-stable SDK
+ * remains owned by the loader; changing between sandbox and production is the
+ * sole case that requires a browser reload because both SDKs share a global.
+ */
+export function refreshSquarePaymentConfiguration(
+  locationId: number,
+  previousAppId: string | null,
+  nextAppId: string | null,
+): { reloadRequired: boolean } {
+  paymentsByLocation.delete(locationId);
+  configByLocation.delete(locationId);
+  initializationByLocation.delete(locationId);
+  const reloadRequired = Boolean(
+    previousAppId && nextAppId && getSdkUrl(previousAppId) !== getSdkUrl(nextAppId),
+  );
+  return { reloadRequired };
+}
+
 async function getSquareConfig(locationId: LocationKey): Promise<{ appId: string; locationId: string }> {
   const cached = configByLocation.get(locationId);
   if (cached) return cached;
@@ -127,8 +148,9 @@ async function getSquareConfig(locationId: LocationKey): Promise<{ appId: string
     if (!res.ok) throw new Error(`Square config request failed with status ${res.status}`);
     data = await res.json() as SquareConfigResponse;
   } catch (err) {
-    logger.error('Square', 'Failed to fetch config from server', err);
-    throw new Error('Payment is temporarily unavailable. Please try again or contact support.');
+    throw new SquareConfigUnavailableError(
+      err instanceof Error ? err.message : 'Square config request failed',
+    );
   }
 
   if (!data.appId) {
@@ -282,12 +304,21 @@ export async function initializeSquare(locationId?: number | null): Promise<Squa
   const pending = initializationByLocation.get(normalizedLocationId);
   if (pending) return pending;
 
-  const promise = initializeSquareInternal(normalizedLocationId)
+  let promise: Promise<SquarePayments>;
+  promise = initializeSquareInternal(normalizedLocationId)
     .then((result) => {
       paymentsByLocation.set(normalizedLocationId, result);
       return result;
     })
     .catch((error: unknown) => {
+      // Configuration transport failures happen before any opaque SDK work.
+      // Releasing this entry lets a later explicit mount retry safely.
+      if (
+        error instanceof SquareConfigUnavailableError &&
+        initializationByLocation.get(normalizedLocationId) === promise
+      ) {
+        initializationByLocation.delete(normalizedLocationId);
+      }
       logger.error('Square', 'Square initialization failed', error);
       throw new Error(SQUARE_INITIALIZATION_FALLBACK_MESSAGE);
     });

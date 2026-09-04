@@ -8,6 +8,7 @@ vi.mock("@/lib/logger", () => ({ logger: mocks.logger }));
 
 import {
   initializeSquare,
+  refreshSquarePaymentConfiguration,
   resetSquarePaymentsForTests,
   SQUARE_INITIALIZATION_FALLBACK_MESSAGE,
 } from "@/lib/square";
@@ -125,6 +126,42 @@ describe("Square initialization ownership", () => {
     await expect(pending).resolves.toBe(payments);
     expect(paymentsFactory).toHaveBeenCalledTimes(2);
     expect(document.querySelectorAll('script[src*="square.js"]')).toHaveLength(0);
+  });
+
+  it("allows a later mount to retry after config transport recovers", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValue(configResponse("sandbox-app", "LOC1")));
+
+    await expect(initializeSquare(1)).rejects.toThrow(SQUARE_INITIALIZATION_FALLBACK_MESSAGE);
+    const recovered = initializeSquare(1);
+    const script = await currentSquareScript();
+    const payments = paymentSet();
+    window.Square = { payments: vi.fn().mockResolvedValue(payments) };
+    script.dispatchEvent(new Event("load"));
+
+    await expect(recovered).resolves.toBe(payments);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("invalidates credential-bound location state while preserving SDK ownership", async () => {
+    const firstPayments = paymentSet();
+    const secondPayments = paymentSet();
+    const paymentsFactory = vi.fn()
+      .mockResolvedValueOnce(firstPayments)
+      .mockResolvedValueOnce(secondPayments);
+    window.Square = { payments: paymentsFactory };
+    await expect(initializeSquare(1)).resolves.toBe(firstPayments);
+
+    expect(refreshSquarePaymentConfiguration(1, "sandbox-old", "sandbox-new"))
+      .toEqual({ reloadRequired: false });
+    vi.mocked(fetch).mockResolvedValueOnce(configResponse("sandbox-new", "LOC2"));
+    await expect(initializeSquare(1)).resolves.toBe(secondPayments);
+    expect(paymentsFactory).toHaveBeenCalledTimes(2);
+    expect(document.querySelectorAll('script[src*="square.js"]')).toHaveLength(0);
+
+    expect(refreshSquarePaymentConfiguration(1, "sandbox-new", "production-app"))
+      .toEqual({ reloadRequired: true });
   });
 
   it("does not overlap a payments factory that times out", async () => {
