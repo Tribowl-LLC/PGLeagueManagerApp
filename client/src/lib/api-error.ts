@@ -45,6 +45,10 @@ export const RETRYABLE_API_ERROR_STATUSES = [
   504,
 ] as const;
 
+// A server-provided Retry-After value is useful, but an untrusted or stale
+// header must not make a browser query sleep indefinitely.
+export const MAX_API_RETRY_DELAY_MS = 5 * 60 * 1000;
+
 export type ApiErrorClassification =
   | "aborted"
   | "expected-client"
@@ -124,6 +128,19 @@ export function shouldRetryApiQuery(failureCount: number, error: unknown): boole
   return classification === "transport"
     || classification === "rate-limited"
     || classification === "retryable-server";
+}
+
+export function getApiRetryDelay(attemptIndex: number, error: unknown): number {
+  const classification = classifyApiError(error);
+  const retryAfterSeconds = classification === "rate-limited"
+    ? (error as { retryAfterSeconds?: unknown }).retryAfterSeconds
+    : undefined;
+  if (typeof retryAfterSeconds === "number" && Number.isFinite(retryAfterSeconds) && retryAfterSeconds >= 0) {
+    return Math.min(MAX_API_RETRY_DELAY_MS, retryAfterSeconds * 1000);
+  }
+
+  const safeAttemptIndex = Math.max(0, Math.floor(attemptIndex));
+  return Math.min(MAX_API_RETRY_DELAY_MS, 1000 * 2 ** safeAttemptIndex);
 }
 
 type ApiErrorBody = {

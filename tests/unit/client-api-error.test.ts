@@ -14,14 +14,19 @@ import {
   classifyApiError,
   isAbortError,
   isExpectedApiError,
+  getApiRetryDelay,
+  MAX_API_RETRY_DELAY_MS,
   makeApiError,
   shouldRetryApiQuery,
 } from "@/lib/api-error";
 import { logger } from "@/lib/logger";
+import { queryClient } from "@/lib/queryClient";
 
 afterEach(() => {
   captureException.mockClear();
   captureMessage.mockClear();
+  queryClient.clear();
+  vi.unstubAllGlobals();
 });
 
 describe("client API error classification", () => {
@@ -63,6 +68,20 @@ describe("client API error classification", () => {
     expect(shouldRetryApiQuery(0, new TypeError("network failure"))).toBe(true);
   });
 
+  it("uses a bounded Retry-After delay for rate-limited reads", () => {
+    expect(getApiRetryDelay(0, new ApiError({
+      message: "slow down",
+      status: 429,
+      retryAfterSeconds: 17,
+    }))).toBe(17_000);
+    expect(getApiRetryDelay(0, new ApiError({
+      message: "stale header",
+      status: 429,
+      retryAfterSeconds: MAX_API_RETRY_DELAY_MS / 1000 + 60,
+    }))).toBe(MAX_API_RETRY_DELAY_MS);
+    expect(getApiRetryDelay(0, new ApiError({ message: "no header", status: 429 }))).toBe(1_000);
+  });
+
   it("ignores aborted requests and preserves structured response details", () => {
     const aborted = new DOMException("cancelled", "AbortError");
     expect(isAbortError(aborted)).toBe(true);
@@ -87,6 +106,34 @@ describe("client API error classification", () => {
     expect(captureMessage).not.toHaveBeenCalled();
 
     logger.error("API", "server failed", new ApiError({ message: "temporary", status: 500 }));
+    expect(captureException).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a read only after retries are exhausted, not on a transient attempt", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: { message: "temporary" } }), { status: 503 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ success: true, data: { ok: true } }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(queryClient.fetchQuery({
+      queryKey: ["/api/retry-then-success"],
+      retryDelay: () => 0,
+    })).resolves.toEqual({ success: true, data: { ok: true } });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(captureException).not.toHaveBeenCalled();
+  });
+
+  it("reports one exhausted read failure after its bounded retry", async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(
+      new Response(JSON.stringify({ error: { message: "temporary" } }), { status: 503 }),
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(queryClient.fetchQuery({
+      queryKey: ["/api/retry-exhausted"],
+      retryDelay: () => 0,
+    })).rejects.toMatchObject({ status: 503 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(captureException).toHaveBeenCalledTimes(1);
   });
 });

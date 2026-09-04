@@ -7,7 +7,7 @@ import { getSeasonLengthWeeks, getWeeksPassedInSeason } from "@/lib/financial-ut
 import { DEFAULT_WEEKLY_FEE_CENTS } from "@shared/schema";
 import type { League, Payment, User, Bowler, BowlerLeague, Team, BowlerDetailsResponse, ApiResponse } from "@shared/schema";
 import { PaymentStatusSection } from "@/components/payment-status-section";
-import { apiRequest, queryClient, shouldRetryApiQuery } from "@/lib/queryClient";
+import { apiRequest, getApiRetryDelay, queryClient, shouldRetryApiQuery } from "@/lib/queryClient";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { useSelectedLeague } from "@/hooks/use-selected-league";
 import { ErrorCard } from "./bowler-dashboard-page/error-card";
@@ -46,7 +46,7 @@ const BowlerDashboardPage: FC = () => {
     enabled: !!bowler,
     staleTime: STALE_TIME,
     retry: shouldRetryApiQuery,
-    retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 5000),
+    retryDelay: getApiRetryDelay,
   });
 
   const rosteredBowlerLeagues = useMemo((): BowlerLeague[] => {
@@ -59,7 +59,7 @@ const BowlerDashboardPage: FC = () => {
     enabled: rosteredBowlerLeagues.length > 0,
     staleTime: 0,
     retry: shouldRetryApiQuery,
-    retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 5000),
+    retryDelay: getApiRetryDelay,
   });
 
   const leagueMap = useMemo(() => {
@@ -92,7 +92,7 @@ const BowlerDashboardPage: FC = () => {
     enabled: !!bowler && rosteredBowlerLeagues.length > 0,
     staleTime: 0,
     retry: shouldRetryApiQuery,
-    retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 5000),
+    retryDelay: getApiRetryDelay,
   });
 
   const teamMap = useMemo(() => {

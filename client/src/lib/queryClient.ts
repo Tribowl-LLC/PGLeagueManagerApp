@@ -1,7 +1,8 @@
-import { QueryClient, QueryFunction } from "@tanstack/react-query";
+import { QueryCache, QueryClient, QueryFunction } from "@tanstack/react-query";
 import { logger } from "@/lib/logger";
 import {
   makeApiError,
+  getApiRetryDelay,
   shouldRetryApiQuery,
   isAbortError,
 } from "@/lib/api-error";
@@ -9,6 +10,7 @@ import {
 export {
   ApiError,
   makeApiError,
+  getApiRetryDelay,
   classifyApiError,
   isExpectedApiError,
   shouldRetryApiQuery,
@@ -234,16 +236,26 @@ export const getQueryFn: QueryFunction = async ({ queryKey, signal }) => {
     if (isAbortError(error)) {
       return undefined;
     }
-    logger.error('Query', `Error fetching ${queryKey[0]}`, error);
     throw error;
   }
 };
 
+const queryCache = new QueryCache({
+  // Query functions may run more than once under the bounded retry policy.
+  // Report only the final exhausted outcome, after TanStack Query has made
+  // its retry decision, so transient fail-then-success reads stay silent.
+  onError: (error, query) => {
+    logger.error('Query', `Error fetching ${String(query.queryKey[0])}`, error);
+  },
+});
+
 export const queryClient = new QueryClient({
+  queryCache,
   defaultOptions: {
     queries: {
       queryFn: getQueryFn,
       retry: shouldRetryApiQuery,
+      retryDelay: getApiRetryDelay,
       refetchOnWindowFocus: false,
       refetchOnMount: true,
       refetchOnReconnect: false,
@@ -264,7 +276,8 @@ export const prefetchQueries = async (role: 'admin' | 'bowler') => {
     } else {
       await queryClient.prefetchQuery({ queryKey: ['/api/bowler-leagues'] });
     }
-  } catch (error) {
-    logger.error('Query', 'Error prefetching initial data', error);
+  } catch {
+    // QueryCache.onError reports the final failed query after retries. Do
+    // not log again here, or prefetch failures would be duplicated.
   }
 };
