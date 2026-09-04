@@ -4,7 +4,12 @@ import {
   scrubString,
 } from "@shared/telemetry-scrubber";
 
-export { scrubDeep, scrubSentryEvent, scrubString } from "@shared/telemetry-scrubber";
+export {
+  scrubDeep,
+  scrubSentryEvent,
+  scrubSentrySpan,
+  scrubString,
+} from "@shared/telemetry-scrubber";
 
 // task #766: tiny client logging wrapper so SDK/provider/payment
 // errors are reported consistently to Sentry, while raw `console`

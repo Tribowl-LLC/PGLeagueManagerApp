@@ -31,17 +31,27 @@ export const consoleBuffer = new ConsoleBuffer();
 export interface Logger {
   info: (message: string, ...args: unknown[]) => void;
   error: (message: string, ...args: unknown[]) => void;
+  captureException: (error: unknown) => void;
   warn: (message: string, ...args: unknown[]) => void;
   debug: (message: string, ...args: unknown[]) => void;
 }
 
-export type ServerErrorReporter = (error: Error, context: { logger: string }) => void;
+export type ServerErrorReporter = (error: unknown, context: { logger: string }) => void;
 
 let serverErrorReporter: ServerErrorReporter | null = null;
 
 /** Installed by the Sentry bootstrap so tests and non-Sentry runtimes stay dependency-free. */
 export function configureServerErrorReporter(reporter: ServerErrorReporter | null): void {
   serverErrorReporter = reporter;
+}
+
+function reportException(error: unknown, logger: string): void {
+  if (!serverErrorReporter) return;
+  try {
+    serverErrorReporter(error, { logger });
+  } catch {
+    // Telemetry must never interfere with the application error path.
+  }
 }
 
 const LOG_LEVELS = { debug: 0, info: 1, warn: 2, error: 3 } as const;
@@ -105,15 +115,12 @@ function makeLogger(prefix?: string): Logger {
     error: (message: string, ...args: unknown[]) => {
       if (!shouldLog('error')) return;
       const error = args.find((arg): arg is Error => arg instanceof Error);
-      if (error && serverErrorReporter) {
-        try {
-          serverErrorReporter(error, { logger: prefix ?? 'server' });
-        } catch {
-          // Telemetry must never interfere with the application error path.
-        }
-      }
+      if (error) reportException(error, prefix ?? 'server');
       const log = `[ERROR] ${tag}${message}${formatArgs(args)}`;
       consoleBuffer.write(Buffer.from(`${log}\n`));
+    },
+    captureException: (error: unknown) => {
+      reportException(error, prefix ?? 'server');
     },
     warn: (message: string, ...args: unknown[]) => {
       if (!shouldLog('warn')) return;

@@ -13,6 +13,7 @@ import {
   scrubDeep,
   sanitizeForTelemetry,
   scrubSentryEvent,
+  scrubSentrySpan,
 } from "@/lib/logger";
 
 describe("scrubString redaction categories", () => {
@@ -192,5 +193,44 @@ describe("scrubSentryEvent backstop", () => {
     expect(scrubbed.request.query_string).toBeUndefined();
     expect(scrubbed.request.env).toBeUndefined();
     expect(scrubbed.user).toEqual({ id: "user:42" });
+  });
+
+  it("removes query strings and sensitive attributes from spans", () => {
+    const span = {
+      description: "GET /api/account/reset?token=private-token",
+      data: {
+        "url.full": "https://leaguevault.app/api/account/reset?token=private-token",
+        "url.query": "?token=private-token",
+        "http.request.header.authorization": "Bearer private-token",
+        "http.request.body.data": "private@example.com",
+        "app.detail": "contact private@example.com",
+      },
+    };
+
+    const scrubbed = scrubSentrySpan(span);
+
+    expect(scrubbed.description).toBe("GET /api/account/reset");
+    expect(scrubbed.data["url.full"]).toBe("[redacted-link]");
+    expect(scrubbed.data["url.query"]).toBeUndefined();
+    expect(scrubbed.data["http.request.header.authorization"]).toBeUndefined();
+    expect(scrubbed.data["http.request.body.data"]).toBeUndefined();
+    expect(scrubbed.data["app.detail"]).toBe("contact [redacted-email]");
+  });
+
+  it("applies span scrubbing to transaction events", () => {
+    const transaction = {
+      type: "transaction" as const,
+      transaction: "GET /api/account/reset?token=private-token",
+      spans: [{
+        description: "GET /api/account/reset?token=private-token",
+        data: { "url.query": "?token=private-token" },
+      }],
+    };
+
+    const scrubbed = scrubSentryEvent(transaction);
+
+    expect(scrubbed.transaction).toBe("GET /api/account/reset");
+    expect(scrubbed.spans[0].description).toBe("GET /api/account/reset");
+    expect(scrubbed.spans[0].data["url.query"]).toBeUndefined();
   });
 });

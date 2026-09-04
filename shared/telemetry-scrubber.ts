@@ -36,6 +36,15 @@ export function scrubAndTruncate(input: string): string {
   return truncate(scrubString(input));
 }
 
+export function scrubUrl(input: string): string {
+  const queryIndex = input.indexOf("?");
+  const fragmentIndex = input.indexOf("#");
+  const firstSensitiveDelimiter = [queryIndex, fragmentIndex]
+    .filter((index) => index >= 0)
+    .reduce((earliest, index) => Math.min(earliest, index), input.length);
+  return scrubAndTruncate(input.slice(0, firstSensitiveDelimiter));
+}
+
 export function scrubDeep(value: unknown, depth = 0): unknown {
   if (value === null || value === undefined) return value;
   if (typeof value === "string") return scrubAndTruncate(value);
@@ -76,7 +85,46 @@ type SentryEventLike = {
     env?: unknown;
   };
   user?: Record<string, unknown>;
+  transaction?: unknown;
+  spans?: SentrySpanLike[];
 };
+
+type SentrySpanLike = {
+  description?: unknown;
+  data?: Record<string, unknown>;
+};
+
+function isSensitiveSpanAttribute(key: string): boolean {
+  const normalized = key.toLowerCase();
+  return normalized === "url.query"
+    || normalized.includes("cookie")
+    || normalized.startsWith("http.request.header.")
+    || normalized.startsWith("http.response.header.")
+    || normalized.includes("request.body")
+    || normalized.includes("response.body");
+}
+
+/** Remove request secrets and scrub remaining span text before trace export. */
+export function scrubSentrySpan<T extends SentrySpanLike>(span: T): T {
+  if (typeof span.description === "string") {
+    span.description = scrubAndTruncate(span.description.replace(/\?[^\s]*/g, ""));
+  }
+
+  if (span.data) {
+    for (const key of Object.keys(span.data)) {
+      if (isSensitiveSpanAttribute(key)) {
+        delete span.data[key];
+        continue;
+      }
+      const value = span.data[key];
+      span.data[key] = typeof value === "string" && ["url.full", "http.url"].includes(key.toLowerCase())
+        ? scrubUrl(value)
+        : scrubDeep(value);
+    }
+  }
+
+  return span;
+}
 
 /** Privacy backstop shared by browser and server Sentry clients. */
 export function scrubSentryEvent<T extends SentryEventLike>(event: T): T {
@@ -101,7 +149,7 @@ export function scrubSentryEvent<T extends SentryEventLike>(event: T): T {
   }
 
   if (event.request) {
-    if (typeof event.request.url === "string") event.request.url = scrubAndTruncate(event.request.url);
+    if (typeof event.request.url === "string") event.request.url = scrubUrl(event.request.url);
     delete event.request.headers;
     delete event.request.cookies;
     delete event.request.data;
@@ -113,6 +161,14 @@ export function scrubSentryEvent<T extends SentryEventLike>(event: T): T {
     event.user = typeof event.user.id === "string" || typeof event.user.id === "number"
       ? { id: String(event.user.id) }
       : {};
+  }
+
+  if (typeof event.transaction === "string") {
+    event.transaction = scrubAndTruncate(event.transaction.replace(/\?[^\s]*/g, ""));
+  }
+
+  if (event.spans) {
+    for (const span of event.spans) scrubSentrySpan(span);
   }
 
   return event;

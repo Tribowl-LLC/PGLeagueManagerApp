@@ -36,6 +36,17 @@ describe("server handled-error reporting", () => {
     expect(reporter).not.toHaveBeenCalled();
   });
 
+  it("explicitly reports errors before callers log only redacted diagnostics", () => {
+    const reporter = vi.fn<ServerErrorReporter>();
+    const error = new Error("provider rejected request");
+    configureServerErrorReporter(reporter);
+
+    createLogger("Payments").captureException(error);
+
+    expect(reporter).toHaveBeenCalledOnce();
+    expect(reporter).toHaveBeenCalledWith(error, { logger: "Payments" });
+  });
+
   it("does not let reporter failures escape the application error path", () => {
     expectErrorLog("Operation failed:");
     configureServerErrorReporter(() => {
