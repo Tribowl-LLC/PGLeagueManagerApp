@@ -5,15 +5,8 @@ import { Home, Users, CreditCard, ChevronLeft, ChevronRight, Trophy, ClipboardPl
 import { useState, useEffect, Suspense, useCallback, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { useQuery } from "@tanstack/react-query";
-import type { League, Location, ApiResponse, Organization, User } from "@shared/schema";
+import type { ApiResponse, Organization, User } from "@shared/schema";
 import { ErrorBoundary } from "@/components/error-boundary";
-import {
-  NavigationMenu,
-  NavigationMenuContent,
-  NavigationMenuItem,
-  NavigationMenuList,
-  NavigationMenuTrigger,
-} from "@/components/ui/navigation-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { UserProfileMenu } from "@/components/user-profile-menu";
@@ -52,7 +45,6 @@ interface NavItem {
   // (e.g. "Super Admin") this is just a stable key — there is no
   // landing page and the row is never rendered as a `<Link>`.
   href: string;
-  hasDropdown?: boolean;
   adminOnly?: boolean;
   orgAdminOnly?: boolean;
   paymentManagerAllowed?: boolean;
@@ -220,81 +212,6 @@ function getParentLabel(path: string): { label: string; href: string } | null {
   if (path.startsWith("/reports/")) return { label: "Reports", href: "/reports" };
   return { label: "Dashboard", href: "/" };
 }
-
-const LeagueLoadingFallback = () => (
-  <div className="w-[200px] p-4 flex items-center justify-center">
-    <Loader2 className="size-4 animate-spin" />
-  </div>
-);
-
-const LeaguesDropdownContent = ({ includeLocations }: { includeLocations: boolean }) => {
-  const { data: leaguesResponse, isLoading } = useQuery<ApiResponse<League[]>>({
-    queryKey: ["/api/leagues"],
-    staleTime: 1000 * 60 * 5,
-  });
-
-  const { data: locationsResponse } = useQuery<ApiResponse<Location[]>>({
-    queryKey: ["/api/locations"],
-    staleTime: 1000 * 60 * 5,
-    enabled: includeLocations,
-  });
-
-  const leagues = (leaguesResponse?.data || []).filter((l: League) => l.active);
-  const locationsList = locationsResponse?.data || [];
-  const locationMap = locationsList.reduce((acc, loc) => { acc[loc.id] = loc.name; return acc; }, {} as Record<number, string>);
-  const hasLocations = locationsList.length > 0;
-
-  if (isLoading) return <LeagueLoadingFallback />;
-
-  const grouped = leagues.reduce((acc, league) => {
-    const key = league.locationId ? locationMap[league.locationId] || 'Other' : 'Unassigned';
-    if (!acc[key]) acc[key] = [];
-    acc[key].push(league);
-    return acc;
-  }, {} as Record<string, League[]>);
-
-  return (
-    <div className="w-[220px] p-2">
-      {hasLocations ? (
-        Object.entries(grouped).map(([locationName, locationLeagues]) => (
-          <div key={locationName}>
-            <div className="px-4 py-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-              {locationName}
-            </div>
-            {locationLeagues.map((league: League) => (
-              <Link
-                key={league.id}
-                href={`/leagues/${league.id}`}
-                className="block w-full text-left px-4 py-2 text-sm rounded-md hover:bg-accent transition-colors no-underline text-foreground focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                {league.name}
-              </Link>
-            ))}
-          </div>
-        ))
-      ) : (
-        leagues.map((league: League) => (
-          <Link
-            key={league.id}
-            href={`/leagues/${league.id}`}
-            className="block w-full text-left px-4 py-2 text-sm rounded-md hover:bg-accent transition-colors no-underline text-foreground focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            {league.name}
-          </Link>
-        ))
-      )}
-      <div className="border-t mt-2 pt-2">
-        <Link
-          href="/leagues"
-          className="block w-full text-left px-4 py-2 text-sm rounded-md hover:bg-accent transition-colors font-medium no-underline text-foreground focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          View All Leagues
-        </Link>
-      </div>
-    </div>
-  );
-};
-
 
 const LoadingFallback = () => (
   <div className="p-4 flex items-center justify-center">
@@ -583,36 +500,6 @@ function SidebarNav({
     const isActive = isItemActive(item.href, location);
     const isDashboardActive =
       item.href === "/" && (location === "/" || location === "/home");
-
-    // Locations are an organization-admin surface. Everyone can use the
-    // league picker, but only system/org admins may load location metadata;
-    // ordinary members and payment managers see the same leagues ungrouped.
-    if (item.hasDropdown && !isCollapsed) {
-      return (
-        <NavigationMenu key={item.href}>
-          <NavigationMenuList>
-            <NavigationMenuItem>
-              <NavigationMenuTrigger
-                className={cn(
-                  "flex items-center gap-3 rounded-md px-3 py-2.5 text-sm transition-all duration-200 w-full",
-                  isActive
-                    ? "bg-indigo-500/10 text-indigo-400"
-                    : "text-slate-300 hover:bg-slate-800 hover:text-white"
-                )}
-              >
-                <item.icon className={cn("size-5 shrink-0", isActive ? "text-indigo-400" : "text-slate-400")} />
-                {item.label}
-              </NavigationMenuTrigger>
-              <NavigationMenuContent>
-                <Suspense fallback={<LeagueLoadingFallback />}>
-                  <LeaguesDropdownContent includeLocations={canSeeOrgAdminItems} />
-                </Suspense>
-              </NavigationMenuContent>
-            </NavigationMenuItem>
-          </NavigationMenuList>
-        </NavigationMenu>
-      );
-    }
 
     return (
       <NavLeafRow
