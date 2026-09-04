@@ -27,6 +27,7 @@ import { appEnv, env, isDev, scheduledPaymentExecutionMode } from "./config";
 import { commitSha } from './utils/build-info';
 import { registerRoutes } from "./routes/index";
 import { setupVite } from "./vite";
+import { setStaticCacheHeaders } from "./static-cache-policy";
 import {
   testConnection,
   db as defaultDb,
@@ -372,11 +373,7 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
       app.use(express.static(distDir, {
         maxAge: '1y',
         immutable: true,
-        setHeaders(res, filePath) {
-          if (filePath.endsWith('index.html')) {
-            res.setHeader('Cache-Control', 'no-store');
-          }
-        }
+        setHeaders: setStaticCacheHeaders,
       }));
       // Express 5 requires a named wildcard; include the root path for the
       // static SPA fallback used by the test harness.
@@ -405,11 +402,7 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
       app.use(express.static(path.join(process.cwd(), 'dist/public'), {
         maxAge: '1y',
         immutable: true,
-        setHeaders(res, filePath) {
-          if (filePath.endsWith('index.html')) {
-            res.setHeader('Cache-Control', 'no-store');
-          }
-        }
+        setHeaders: setStaticCacheHeaders,
       }));
       // Express 5 requires a named wildcard; include the root path for the
       // production static SPA fallback.

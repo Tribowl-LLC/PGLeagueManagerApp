@@ -1,16 +1,14 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { initializeSquare, resetSquarePayments, getPreWarmedCard, toast } = vi.hoisted(() => ({
+const { initializeSquare, getPreWarmedCard, toast } = vi.hoisted(() => ({
   initializeSquare: vi.fn(),
-  resetSquarePayments: vi.fn(),
   getPreWarmedCard: vi.fn(() => null),
   toast: vi.fn(),
 }));
 
 vi.mock("@/lib/square", () => ({
   initializeSquare,
-  resetSquarePayments,
   getPreWarmedCard,
   cardStyle: {},
 }));

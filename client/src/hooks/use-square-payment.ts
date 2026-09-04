@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useToast } from "@/hooks/use-toast";
-import { initializeSquare, resetSquarePayments, getPreWarmedCard, cardStyle } from "@/lib/square";
+import { initializeSquare, getPreWarmedCard, cardStyle } from "@/lib/square";
 import { logger } from "@/lib/logger";
 import { sanitizePaymentErrorMessage } from "@/lib/payment-user-error";
 
@@ -56,7 +56,6 @@ export function useSquarePayment({ onError, locationId }: UseSquarePaymentOption
       cardRef.current = null;
     }
     initializingRef.current = false;
-    resetSquarePayments();
     setCard(null);
     setIsInitialized(false);
     setError(null);
@@ -195,7 +194,6 @@ export function useSquarePayment({ onError, locationId }: UseSquarePaymentOption
         cardRef.current = null;
       }
       initializingRef.current = false;
-      resetSquarePayments();
     };
   }, []);
 
