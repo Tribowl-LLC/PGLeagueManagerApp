@@ -51,7 +51,7 @@ export async function setupVite(app: Express, server: Server) {
   // Keep missing module requests out of the development SPA fallback too.
   // Vite's middleware serves real source/assets first; only an unresolved
   // `/assets/*` request reaches this guard.
-  app.use('/assets', (_req, res) => {
+  app.get('/assets/{*splat}', (_req, res) => {
     res
       .status(404)
       .set({
@@ -111,7 +111,7 @@ function serveStatic(app: Express) {
   // index returns HTML with a 200 status; browsers then report a misleading
   // module MIME error and cache the broken response. Return a real, uncached
   // 404 instead so the client asset-recovery path can refresh once safely.
-  app.use('/assets', (_req, res) => {
+  app.get('/assets/{*splat}', (_req, res) => {
     res
       .status(404)
       .set({
