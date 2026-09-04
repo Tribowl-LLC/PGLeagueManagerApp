@@ -132,8 +132,15 @@ describe("ApplePayWorker — cancellation race conditions", () => {
 
   it("retries transient startup recovery failures with bounded backoff and kicks once after recovery", async () => {
     vi.useFakeTimers();
+    // Match the real production shape from Sentry: Drizzle wraps pg-pool's
+    // code-less acquisition timeout in `cause` behind its failed-query error.
+    const poolTimeout = new Error("timeout exceeded when trying to connect");
+    const drizzleError = new Error(
+      'Failed query: update "apple_pay_jobs" set "status" = $1 where "apple_pay_jobs"."status" = $2 returning "id"',
+      { cause: poolTimeout },
+    );
     storageMock.storage.recoverInterruptedApplePayJobs
-      .mockRejectedValueOnce(Object.assign(new Error("connection reset"), { code: "ECONNRESET" }))
+      .mockRejectedValueOnce(drizzleError)
       .mockResolvedValueOnce({ revivedJobIds: [], revivedItems: [] });
     storageMock.storage.claimNextApplePayJob.mockResolvedValue(undefined);
 
