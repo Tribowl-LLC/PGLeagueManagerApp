@@ -287,6 +287,11 @@ export default function MakePaymentPage() {
     locationId: league?.locationId,
     onError: (error) => toast({ title: "Payment Setup Error", description: error, variant: "destructive" }),
   });
+  const resetWalletRecovery = useCallback(() => {
+    walletRequestKeyRef.current = null;
+    setWalletRecoveryReady(false);
+    setRecoveryRetry((value) => value + 1);
+  }, []);
   const previousLeagueIdRef = useRef<number | undefined>(leagueId);
   useEffect(() => {
     if (previousLeagueIdRef.current !== undefined && previousLeagueIdRef.current !== leagueId) {
@@ -322,10 +327,13 @@ export default function MakePaymentPage() {
       const body = await response.json().catch(() => ({}));
       const status = body.data?.status ?? body.status;
       clearWalletRequestKeyForTerminalStatus(status, walletRequestKeyRef);
-      if (!response.ok) throw makeApiError(body, response.status, "Wallet payment failed.");
+      if (!response.ok) {
+        resetWalletRecovery();
+        throw makeApiError(body, response.status, "Wallet payment failed.");
+      }
+      resetWalletRecovery();
       assertRosterPaymentSucceeded(status);
       clearPaymentIntent(scope);
-      walletRequestKeyRef.current = null;
       cleanupCard();
       setCardEditorMode(null);
       toast({ title: "Payment Successful", description: `${walletType === "apple_pay" ? "Apple Pay" : "Google Pay"} payment completed.` });
@@ -340,7 +348,7 @@ export default function MakePaymentPage() {
       toast(isProviderNotConfiguredError(error) ? providerNotConfiguredToast({ navigate, locationId: league.locationId }) : { title: "Payment Failed", description: sanitizePaymentErrorMessage(error, "Unable to process payment."), variant: "destructive" });
     }
     finally { setIsWalletProcessing(false); }
-  }, [bowlerId, leagueId, league, resolvedFinancial.status, paymentAmountMinor, bowlerEmail, receiptEmail, toast, navigate, cleanupCard, paymentIntentScope]);
+  }, [bowlerId, leagueId, league, resolvedFinancial.status, paymentAmountMinor, bowlerEmail, receiptEmail, toast, navigate, cleanupCard, paymentIntentScope, resetWalletRecovery]);
   const beginWalletPayment = useCallback(() => walletRecoveryReady, [walletRecoveryReady]);
   const wallet = useWalletPayments({ locationId: league?.locationId, amountCents: paymentAmountMinor, enabled: savedCardReadState === "ready" && !!league?.locationId && paymentAmountMinor > 0 && supportsWallets && walletRecoveryReady, onPaymentStarted: beginWalletPayment, onTokenReceived: handleWalletPayment, onError: (error) => toast({ title: "Wallet Payment Error", description: error, variant: "destructive" }) });
   const cleanupWallet = wallet.cleanup;

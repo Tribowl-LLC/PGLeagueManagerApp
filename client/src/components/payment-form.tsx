@@ -29,7 +29,7 @@ import { useLocation } from "wouter";
 import { PaymentFormFields } from "@/components/payment-form-fields";
 import { PaymentMethodTabs } from "@/components/payment-method-tabs";
 import { usePaymentFormSubmit } from "@/hooks/use-payment-form-submit";
-import { assertRosterPaymentSucceeded, clearPaymentIntent, clearPaymentIntentForRequestKey, interactivePaymentIntentScope, isTerminalRosterPaymentFailure, paymentRequestHeaders, paymentRequestWithRecovery, prepareRosterPaymentIntent } from "@/lib/payment-request-identity";
+import { assertRosterPaymentSucceeded, clearPaymentIntent, clearPaymentIntentForRequestKey, interactivePaymentIntentScope, paymentRequestHeaders, paymentRequestWithRecovery, prepareRosterPaymentIntent } from "@/lib/payment-request-identity";
 import { PaymentFeeInfoAlert } from "@/components/payment-fee-info-alert";
 import { PaymentCheckNumberField } from "@/components/payment-check-number-field";
 import { PaymentReceiptEmailField } from "@/components/payment-receipt-email-field";
@@ -68,6 +68,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
   const [selectedSavedCardId, setSelectedSavedCardId] = useState<string>('');
   const [receiptEmail, setReceiptEmail] = useState<string>('');
   const [walletRecoveryReady, setWalletRecoveryReady] = useState(false);
+  const [walletRecoveryRetry, setWalletRecoveryRetry] = useState(0);
   const initializationAttempted = useRef(false);
 
   const { data: leagueData } = useQuery<{ success: boolean; data: League }>({
@@ -187,7 +188,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
         if (!cancelled) setPaymentError('Payment recovery is unavailable. Refresh and try again.');
       });
     return () => { cancelled = true; };
-  }, [open, paymentType, selectedBowlerId, leagueId, currentUser?.id, leagueInfo?.organizationId, setPaymentError, queryClient]);
+  }, [open, paymentType, selectedBowlerId, leagueId, currentUser?.id, leagueInfo?.organizationId, setPaymentError, queryClient, walletRecoveryRetry]);
 
   useEffect(() => {
     if (!allowStoreCard && form.getValues("storeCard")) {
@@ -304,6 +305,12 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
     setReceiptEmail('');
   }
 
+  const resetWalletRecovery = useCallback(() => {
+    walletRequestKeyRef.current = null;
+    setWalletRecoveryReady(false);
+    setWalletRecoveryRetry((value) => value + 1);
+  }, []);
+
   const handleWalletPayment = useCallback(async (token: string, walletType: 'apple_pay' | 'google_pay') => {
     const bowlerId = form.getValues('bowlerId');
     const amount = form.getValues('amount');
@@ -341,13 +348,12 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
       const exactBody = await exactResponse.json();
       const rosterStatus = exactBody.data?.status ?? exactBody.status;
       if (!exactResponse.ok) {
-        if (isTerminalRosterPaymentFailure(rosterStatus)) walletRequestKeyRef.current = null;
+        resetWalletRecovery();
         throw makeApiError(exactBody, exactResponse.status, "Wallet payment failed.");
       }
-      if (isTerminalRosterPaymentFailure(rosterStatus)) walletRequestKeyRef.current = null;
+      resetWalletRecovery();
       assertRosterPaymentSucceeded(rosterStatus);
       clearPaymentIntent(paymentScope);
-      walletRequestKeyRef.current = null;
       toast({ title: "Success", description: `Payment processed via ${walletType === "apple_pay" ? "Apple Pay" : "Google Pay"}` });
       queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
       queryClient.invalidateQueries({ queryKey: ["/api/financials/f5/payments"] });
@@ -371,7 +377,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
       setPaymentError(errorMessage);
       toast({ title: "Error", description: errorMessage, variant: "destructive" });
     }
-  }, [form, toast, queryClient, onClose, bowlers, receiptEmail, navigate, leagueInfo, currentUser?.id]);
+  }, [form, toast, queryClient, onClose, bowlers, receiptEmail, navigate, leagueInfo, currentUser?.id, resetWalletRecovery]);
 
   const beginWalletPayment = useCallback(() => walletRecoveryReady, [walletRecoveryReady]);
 
