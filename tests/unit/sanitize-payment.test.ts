@@ -93,9 +93,7 @@ describe('sanitizePayment', () => {
   });
 
   it('preserves the operational fields the receipts / refund / sync UI consumes', () => {
-    // `providerPaymentId` powers the Square dashboard deep-link in
-    // bowler-payment-history-table.tsx and the lazy receipt backfill
-    // in view-receipt-button.tsx;
+    // `providerPaymentId` supports receipt lookup and provider references;
     // `idempotencyKey` is echoed back on the deduplicated-success
     // response; `receiptUrl` / `receiptNumber` / `receiptEmailMissing`
     // drive the receipt UI; `checkNumber` / `notes` are admin-visible.

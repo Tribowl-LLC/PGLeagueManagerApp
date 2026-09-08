@@ -1,4 +1,5 @@
 import { FC } from "react";
+import { CanonicalSeasonProgress } from "./canonical-season-progress";
 import { X, Check } from "lucide-react";
 import type { League, BowlerLeague, Team } from "@shared/schema";
 import { getSeasonYearRange } from "@shared/season-utils";
@@ -11,8 +12,7 @@ interface LeagueBottomSheetProps {
   teamMap: Map<number, Team>;
   selectedLeagueId: number | null;
   onSelectLeague: (leagueId: number) => void;
-  totalWeeksMap?: Map<number, number>;
-  currentWeekMap?: Map<number, number | null>;
+  viewerRole?: string;
 }
 
 export const LeagueBottomSheet: FC<LeagueBottomSheetProps> = ({
@@ -23,8 +23,7 @@ export const LeagueBottomSheet: FC<LeagueBottomSheetProps> = ({
   teamMap,
   selectedLeagueId,
   onSelectLeague,
-  totalWeeksMap,
-  currentWeekMap,
+  viewerRole,
 }) => {
   if (!open) return null;
 
@@ -54,8 +53,6 @@ export const LeagueBottomSheet: FC<LeagueBottomSheetProps> = ({
               const league = leagueMap.get(bl.leagueId);
               const team = bl.teamId ? teamMap.get(bl.teamId) : undefined;
               const isSelected = bl.leagueId === selectedLeagueId;
-              const totalWeeks = totalWeeksMap?.get(bl.leagueId);
-              const currentWeek = currentWeekMap?.get(bl.leagueId);
               const leagueTitle = league?.seasonStart && league.seasonEnd
                 ? `${league.name} ${getSeasonYearRange(league.seasonStart, league.seasonEnd)}`
                 : league?.name ?? `League #${bl.leagueId}`;
@@ -77,8 +74,8 @@ export const LeagueBottomSheet: FC<LeagueBottomSheetProps> = ({
                     </div>
                     <div className="text-sm text-slate-500 mt-0.5">
                       {team?.name ?? 'No Team'}
-                      {currentWeek != null && totalWeeks != null && (
-                        <> &bull; Week {currentWeek} of {totalWeeks}</>
+                      {league && viewerRole && (
+                        <> &bull; <CanonicalSeasonProgress leagueId={league.id} organizationId={league.organizationId} viewerRole={viewerRole} allowRetry={false} /></>
                       )}
                     </div>
                   </div>

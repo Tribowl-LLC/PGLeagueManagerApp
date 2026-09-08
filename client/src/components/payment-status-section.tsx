@@ -2,7 +2,7 @@ import { FC } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { csrfFetch } from "@/lib/queryClient";
 import { PaymentOverviewCard } from "@/components/payment-overview-card";
-import type { League, Bowler, Payment } from "@shared/schema";
+import type { League, Bowler } from "@shared/schema";
 
 type DueRow = {
   amountMinor: number;
@@ -27,8 +27,6 @@ interface PaymentStatusSectionProps {
   league: League;
   bowler: Bowler;
   weeklyFee: number;
-  totalWeeks: number;
-  payments: Payment[];
 }
 
 /**

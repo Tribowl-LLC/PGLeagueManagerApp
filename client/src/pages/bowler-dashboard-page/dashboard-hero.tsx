@@ -1,4 +1,5 @@
 import { FC } from "react";
+import { CanonicalSeasonProgress } from "@/components/canonical-season-progress";
 import { Calendar, ChevronDown } from "lucide-react";
 
 interface DashboardHeroProps {
@@ -7,8 +8,9 @@ interface DashboardHeroProps {
   hasMultipleLeagues: boolean;
   leagueName: string;
   teamName: string;
-  currentWeek: number | null;
-  totalWeeks: number;
+  leagueId: number;
+  organizationId: number | null;
+  viewerRole: string;
   onOpenLeagueSheet: () => void;
 }
 
@@ -18,8 +20,9 @@ export const DashboardHero: FC<DashboardHeroProps> = ({
   hasMultipleLeagues,
   leagueName,
   teamName,
-  currentWeek,
-  totalWeeks,
+  leagueId,
+  organizationId,
+  viewerRole,
   onOpenLeagueSheet,
 }) => {
   return (
@@ -45,12 +48,10 @@ export const DashboardHero: FC<DashboardHeroProps> = ({
           <span className="size-2 rounded-full bg-indigo-500 mr-2"></span>
           {teamName}
         </div>
-        {currentWeek !== null && (
-          <div className="inline-flex items-center px-3 py-1.5 rounded-full bg-slate-100 text-slate-700 text-sm font-medium">
-            <Calendar className="size-4 mr-1.5" />
-            Week {currentWeek} of {totalWeeks}
-          </div>
-        )}
+        <div className="inline-flex items-center px-3 py-1.5 rounded-full bg-slate-100 text-slate-700 text-sm font-medium">
+          <Calendar className="size-4 mr-1.5" />
+          <CanonicalSeasonProgress leagueId={leagueId} organizationId={organizationId} viewerRole={viewerRole} />
+        </div>
       </div>
     </div>
   );

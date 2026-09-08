@@ -298,9 +298,8 @@ const SAFE_PAYMENT_FIELDS = [
   'status',
   'type',
   'checkNumber',
-  // Provider payment id powers the Square dashboard deep-link in
-  // bowler-payment-history-table.tsx and the lazy receipt backfill
-  // in view-receipt-button.tsx. Not a credential — Square treats it
+  // Provider payment id supports receipt lookup and provider references.
+  // Not a credential — Square treats it
   // as a public-ish reference (the dashboard URL contains it).
   'providerPaymentId',
   // Client-supplied dedupe key. Surfacing it back to the same client
