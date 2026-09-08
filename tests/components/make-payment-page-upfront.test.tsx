@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render, waitFor } from "@testing-library/react";
+import { act, render, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 const mocks = vi.hoisted(() => {
@@ -7,6 +7,11 @@ const mocks = vi.hoisted(() => {
   const oneTimePaymentCard = vi.fn((..._args: unknown[]) => null);
   let paymentMode: "upfront" | "weekly" = "upfront";
   let paidInFull = false;
+  let remainingMinor = 8_750;
+  const csrfFetch = vi.fn();
+  const tokenizeCard = vi.fn();
+  const prepareRosterPaymentIntent = vi.fn(async () => ({ requestKey: "request-key", outcome: "none" }));
+  const squareCard = { tokenize: vi.fn(), destroy: vi.fn(), attach: vi.fn() };
   const standingQueryCalls: unknown[][] = [];
   const financialData = () => ({
     contractVersion: "canonical-due-past-due/2",
@@ -17,8 +22,8 @@ const mocks = vi.hoisted(() => {
       payerBowlerId: 42,
       teamId: null,
       amountMinor: 12_000,
-      allocatedMinor: paidInFull ? 12_000 : 3_250,
-      outstandingMinor: paidInFull ? 0 : 8_750,
+      allocatedMinor: paidInFull ? 12_000 : 12_000 - remainingMinor,
+      outstandingMinor: paidInFull ? 0 : remainingMinor,
       dueAt: null,
       pastDueAt: null,
       classification: paidInFull ? "settled" : "due",
@@ -78,6 +83,11 @@ const mocks = vi.hoisted(() => {
     standingQueryCalls,
     setPaymentMode: (mode: "upfront" | "weekly") => { paymentMode = mode; },
     setPaidInFull: (value: boolean) => { paidInFull = value; },
+    setRemainingBalance: (value: number) => { remainingMinor = value; },
+    csrfFetch,
+    tokenizeCard,
+    prepareRosterPaymentIntent,
+    squareCard,
   };
 });
 
@@ -90,7 +100,7 @@ vi.mock("@/components/bowler-one-time-payment-card", () => ({ BowlerOneTimePayme
 vi.mock("@/components/standing-autopay-card", () => ({ StandingAutopayCard: mocks.standingAutopayCard }));
 vi.mock("@/hooks/use-selected-league", () => ({ useSelectedLeague: () => [17, vi.fn()] }));
 vi.mock("@/hooks/use-saved-card-default", () => ({ useSavedCardDefault: vi.fn() }));
-vi.mock("@/hooks/use-square-payment", () => ({ useSquarePayment: () => ({ card: null, isInitialized: false, initializeCard: vi.fn(), cleanupCard: vi.fn() }) }));
+vi.mock("@/hooks/use-square-payment", () => ({ useSquarePayment: () => ({ card: mocks.squareCard, isInitialized: true, initializeCard: vi.fn(), cleanupCard: vi.fn() }) }));
 vi.mock("@/hooks/use-payment-provider", () => ({ usePaymentProvider: () => ({ supportsWallets: false }) }));
 vi.mock("@/hooks/use-wallet-payments", () => ({ useWalletPayments: () => ({
   applePayAvailable: false,
@@ -106,18 +116,20 @@ vi.mock("@/hooks/use-wallet-payments", () => ({ useWalletPayments: () => ({
 }) }));
 vi.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast: vi.fn() }) }));
 vi.mock("wouter", () => ({ useLocation: () => ["/make-payment", vi.fn()], useSearch: () => "?leagueId=17", Link: () => null }));
-vi.mock("@/lib/queryClient", () => ({ csrfFetch: vi.fn(), queryClient: { invalidateQueries: vi.fn() } }));
+vi.mock("@/lib/queryClient", () => ({ csrfFetch: mocks.csrfFetch, queryClient: { invalidateQueries: vi.fn() } }));
 vi.mock("@/lib/payment-history-financial-query", () => ({ paymentHistoryFinancialQueryKey: (leagueId: number, bowlerId: number) => ["financial", leagueId, bowlerId], invalidatePaymentHistoryFinancials: vi.fn() }));
-vi.mock("@/lib/square", () => ({ tokenizeCard: vi.fn() }));
+vi.mock("@/lib/square", () => ({ tokenizeCard: mocks.tokenizeCard }));
 vi.mock("@/lib/logger", () => ({ logger: { error: vi.fn() } }));
 vi.mock("@/lib/provider-not-configured", () => ({ isProviderNotConfiguredError: () => false, providerNotConfiguredToast: () => ({}), makeApiError: () => new Error("payment failed") }));
 vi.mock("@/lib/payment-request-identity", () => ({
   assertRosterPaymentSucceeded: vi.fn(),
   beginPaymentIntent: vi.fn(() => "request-key"),
   clearPaymentIntent: vi.fn(),
+  interactivePaymentIntentScope: vi.fn(() => "stable-scope"),
   isTerminalRosterPaymentFailure: vi.fn(() => false),
   paymentRequestHeaders: vi.fn(() => ({})),
-  paymentRequestWithRecovery: vi.fn(),
+  paymentRequestWithRecovery: vi.fn((_key: string, request: () => Promise<Response>) => request()),
+  prepareRosterPaymentIntent: mocks.prepareRosterPaymentIntent,
 }));
 
 import MakePaymentPage from "@/pages/make-payment-page";
@@ -129,6 +141,10 @@ afterEach(() => {
   mocks.standingQueryCalls.length = 0;
   mocks.setPaymentMode("upfront");
   mocks.setPaidInFull(false);
+  mocks.setRemainingBalance(8_750);
+  mocks.csrfFetch.mockReset();
+  mocks.tokenizeCard.mockReset();
+  mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "request-key", outcome: "none" });
 });
 
 describe("MakePaymentPage upfront payment mode", () => {
@@ -164,5 +180,31 @@ describe("MakePaymentPage upfront payment mode", () => {
     expect(mocks.standingAutopayCard.mock.calls.at(-1)?.[0]).toMatchObject({
       league: expect.objectContaining({ paymentMode: "weekly" }),
     });
+  });
+
+  it("recovers a lost success on remount before a changed quote can charge again", async () => {
+    const firstRender = render(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
+    mocks.prepareRosterPaymentIntent
+      .mockReset()
+      .mockResolvedValueOnce({ requestKey: "stable-request", outcome: "new" });
+    mocks.csrfFetch
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "first-quote", amountMinor: 8_750, payerBowlerId: 42 } }) })
+      .mockRejectedValueOnce(new Error("response lost after provider success"));
+    mocks.tokenizeCard.mockResolvedValue("source-token");
+
+    const props = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { onSubmit: () => void };
+    act(() => { props.onSubmit(); });
+    await waitFor(() => expect(mocks.csrfFetch).toHaveBeenCalledTimes(2));
+    expect(mocks.tokenizeCard).toHaveBeenCalledOnce();
+
+    firstRender.unmount();
+    mocks.setRemainingBalance(5_750);
+    mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "stable-request", outcome: "succeeded" });
+    render(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.prepareRosterPaymentIntent).toHaveBeenCalledOnce());
+    expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ paymentAmountMinor: 5_750 });
+    expect(mocks.csrfFetch).toHaveBeenCalledTimes(2);
+    expect(mocks.tokenizeCard).toHaveBeenCalledOnce();
   });
 });

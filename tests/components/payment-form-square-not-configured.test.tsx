@@ -15,9 +15,28 @@
  * This test pins that Square behavior.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+
+const paymentFormMocks = vi.hoisted(() => ({
+  prepareRosterPaymentIntent: vi.fn(),
+  walletEnabled: [] as boolean[],
+}));
+
+vi.mock('@tanstack/react-query', async () => {
+  const actual = await vi.importActual<typeof import('@tanstack/react-query')>('@tanstack/react-query');
+  return {
+    ...actual,
+    useQuery: (options: { queryKey?: unknown[] }) => {
+      const key = String(options.queryKey?.[0] ?? '');
+      if (key === '/api/user') return { data: { data: { id: 55, role: 'org_admin', bowlerId: null } } };
+      if (key === '/api/leagues') return { data: { data: { id: 7, organizationId: 1, locationId: null } } };
+      if (key.startsWith('/api/payments-provider/cards/')) return { data: { data: [] } };
+      return { data: undefined };
+    },
+  };
+});
 
 // Several Radix primitives reach for ResizeObserver via
 // `react-use-size` — jsdom doesn't ship one, so polyfill a no-op
@@ -89,18 +108,32 @@ vi.mock('@/hooks/use-square-payment', () => ({
 }));
 
 vi.mock('@/hooks/use-wallet-payments', () => ({
-  useWalletPayments: () => ({
-    applePayAvailable: false,
-    googlePayAvailable: false,
-    applePayRef: { current: null },
-    googlePayRef: { current: null },
-    handleApplePayClick: vi.fn(),
-    handleGooglePayClick: vi.fn(),
-    isProcessing: false,
-    cleanup: vi.fn(),
-    applePayTokenizeOnly: false,
-    googlePayTokenizeOnly: false,
-  }),
+  useWalletPayments: (options: { enabled: boolean }) => {
+    paymentFormMocks.walletEnabled.push(options.enabled);
+    return {
+      applePayAvailable: false,
+      googlePayAvailable: false,
+      applePayRef: { current: null },
+      googlePayRef: { current: null },
+      handleApplePayClick: vi.fn(),
+      handleGooglePayClick: vi.fn(),
+      isProcessing: false,
+      cleanup: vi.fn(),
+      applePayTokenizeOnly: false,
+      googlePayTokenizeOnly: false,
+    };
+  },
+}));
+
+vi.mock('@/lib/payment-request-identity', () => ({
+  assertRosterPaymentSucceeded: vi.fn(),
+  clearPaymentIntent: vi.fn(),
+  clearPaymentIntentForRequestKey: vi.fn(),
+  interactivePaymentIntentScope: () => 'stable-scope',
+  isTerminalRosterPaymentFailure: () => false,
+  paymentRequestHeaders: () => ({}),
+  paymentRequestWithRecovery: vi.fn(),
+  prepareRosterPaymentIntent: paymentFormMocks.prepareRosterPaymentIntent,
 }));
 
 // The submit hook does network work under the hood — return an
@@ -186,6 +219,8 @@ function renderForm() {
 
 beforeEach(() => {
   squareInitializeCard.mockClear();
+  paymentFormMocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: '', outcome: 'none' });
+  paymentFormMocks.walletEnabled.length = 0;
 });
 
 describe('<PaymentForm /> — Square not fully configured (#582)', () => {
@@ -295,5 +330,34 @@ describe('<PaymentForm /> — Square not fully configured (#582)', () => {
     expect(
       await screen.findByText(/Loading credit card form/i),
     ).toBeInTheDocument();
+  });
+
+  it('replaces a terminal wallet intent before re-enabling wallet checkout', async () => {
+    providerState = {
+      config: {
+        appId: 'sq_app_ok',
+        locationId: 'L_OK',
+        providerConfigured: true,
+        missingFields: [],
+      },
+      isLoading: false,
+      isSquare: true,
+      supportsWallets: true,
+      isProviderConfigured: true,
+      missingFields: [],
+    };
+    paymentFormMocks.prepareRosterPaymentIntent
+      .mockResolvedValueOnce({ requestKey: 'terminal-key', outcome: 'terminal_failure', status: 'failed_terminal' })
+      .mockResolvedValueOnce({ requestKey: 'replacement-key', outcome: 'new' });
+
+    const user = userEvent.setup();
+    renderForm();
+    await user.selectOptions(screen.getByLabelText('Bowler'), '1');
+    await user.click(screen.getByRole('tab', { name: /credit card/i }));
+
+    await waitFor(() => expect(paymentFormMocks.prepareRosterPaymentIntent).toHaveBeenCalledTimes(2));
+    expect(paymentFormMocks.prepareRosterPaymentIntent).toHaveBeenNthCalledWith(1, 'stable-scope', 7);
+    expect(paymentFormMocks.prepareRosterPaymentIntent).toHaveBeenNthCalledWith(2, 'stable-scope', 7);
+    expect(paymentFormMocks.walletEnabled.at(-1)).toBe(true);
   });
 });

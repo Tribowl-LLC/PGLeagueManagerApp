@@ -6,7 +6,10 @@ vi.mock('@/lib/queryClient', () => ({ csrfFetch: csrfFetchMock }));
 import {
   assertRosterPaymentSucceeded,
   beginPaymentIntent,
+  clearPaymentIntentForRequestKey,
+  interactivePaymentIntentScope,
   paymentRequestWithRecovery,
+  prepareRosterPaymentIntent,
   rosterPaymentStatusMessage,
 } from '../../client/src/lib/payment-request-identity';
 
@@ -145,6 +148,42 @@ describe('interactive request-key recovery', () => {
     // terminal operation with a changed card/source.
     expect(beginPaymentIntent(scope)).not.toBe(requestKey);
     expect(rosterPaymentStatusMessage(status)).toContain('not completed');
+  });
+
+  it('prepares a stable intent before a quote and leaves acknowledged outcomes for the active caller to clear', async () => {
+    const values = installStorage();
+    const scope = interactivePaymentIntentScope({ actorUserId: 4, organizationId: 8, leagueId: 11, bowlerId: 42 });
+    csrfFetchMock.mockResolvedValueOnce(noExistingOperation());
+    const first = await prepareRosterPaymentIntent(scope, 11);
+    expect(first.outcome).toBe('new');
+    const requestKey = first.requestKey;
+    expect(values.size).toBe(1);
+
+    csrfFetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ data: {
+      contractVersion: 'interactive-obligation-recovery/1',
+      operationId: '11111111-1111-4111-8111-111111111111',
+      status: 'succeeded',
+    } }), { status: 200 }));
+    const acknowledged = await prepareRosterPaymentIntent(scope, 11);
+    expect(acknowledged.outcome).toBe('succeeded');
+    expect(values.size).toBe(1);
+    clearPaymentIntentForRequestKey(acknowledged.requestKey);
+    expect(values.size).toBe(0);
+
+    csrfFetchMock.mockResolvedValueOnce(noExistingOperation());
+    const fresh = await prepareRosterPaymentIntent(scope, 11);
+    expect(fresh.outcome).toBe('new');
+    expect(fresh.requestKey).not.toBe(requestKey);
+
+    csrfFetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ data: {
+      contractVersion: 'interactive-obligation-recovery/1',
+      operationId: '11111111-1111-4111-8111-111111111111',
+      status: 'failed_terminal',
+    } }), { status: 200 }));
+    const terminal = await prepareRosterPaymentIntent(scope, 11);
+    expect(terminal.outcome).toBe('terminal_failure');
+    clearPaymentIntentForRequestKey(terminal.requestKey);
+    expect(values.size).toBe(0);
   });
 
   it('does not recursively recover an already-returned reconciliation response', async () => {

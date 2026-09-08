@@ -2,17 +2,21 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   beginPaymentIntent,
   clearPaymentIntent,
+  interactivePaymentIntentScope,
   isValidPaymentRequestKey,
   paymentRequestHeaders,
+  prepareRosterPaymentIntent,
 } from '../../client/src/lib/payment-request-identity';
 
 function installStorage() {
   const values = new Map<string, string>();
   vi.stubGlobal('window', {
     localStorage: {
+      get length() { return values.size; },
       getItem: (key: string) => values.get(key) ?? null,
       setItem: (key: string, value: string) => values.set(key, value),
       removeItem: (key: string) => values.delete(key),
+      key: (index: number) => [...values.keys()][index] ?? null,
     },
   });
   return values;
@@ -51,4 +55,21 @@ describe('interactive payment request identity', () => {
       'Idempotency-Key': '00000000-0000-4000-8000-000000000004',
     });
   });
+
+  it('uses only authenticated actor, tenant, league, and bowler identity', () => {
+    const scope = interactivePaymentIntentScope({ actorUserId: 4, organizationId: 8, leagueId: 17, bowlerId: 42 });
+    expect(scope).toContain('"actorUserId":4');
+    expect(scope).toContain('"organizationId":8');
+    expect(scope).toContain('"leagueId":17');
+    expect(scope).toContain('"bowlerId":42');
+    expect(scope).not.toMatch(/amount|fingerprint|card|token/i);
+  });
+
+  it('fails closed instead of replacing a malformed stored identity', () => {
+    const values = installStorage();
+    const scope = interactivePaymentIntentScope({ actorUserId: 4, organizationId: 8, leagueId: 17, bowlerId: 42 });
+    values.set(`leaguevault:payment-intent:v1:${scope}`, 'malformed-key');
+    expect(() => beginPaymentIntent(scope)).toThrow('Stored payment request identity is invalid');
+  });
+
 });

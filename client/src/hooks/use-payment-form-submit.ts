@@ -5,7 +5,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { csrfFetch } from "@/lib/queryClient";
 import { makeApiError, isProviderNotConfiguredError, providerNotConfiguredToast } from "@/lib/provider-not-configured";
 import { isHandledPaymentError, sanitizePaymentErrorMessage } from "@/lib/payment-user-error";
-import { beginPaymentIntent, clearPaymentIntent, paymentRequestHeaders, paymentRequestWithRecovery, assertRosterPaymentSucceeded } from "@/lib/payment-request-identity";
+import { beginPaymentIntent, clearPaymentIntent, clearPaymentIntentForRequestKey, interactivePaymentIntentScope, paymentRequestHeaders, paymentRequestWithRecovery, assertRosterPaymentSucceeded, prepareRosterPaymentIntent } from "@/lib/payment-request-identity";
 import { tokenizeCard } from "@/lib/square";
 import { logger } from "@/lib/logger";
 import type { InsertPaymentInput, InsertPayment } from "@shared/schema";
@@ -23,6 +23,7 @@ interface UsePaymentFormSubmitOptions {
   buyerEmail?: string;
   locationId?: number | null;
   organizationId?: number | null;
+  actorUserId?: number | null;
   allowStoreCard?: boolean;
 }
 
@@ -42,6 +43,8 @@ export function usePaymentFormSubmit({
   onClose,
   buyerEmail,
   locationId,
+  organizationId,
+  actorUserId,
   allowStoreCard = false,
 }: UsePaymentFormSubmitOptions) {
   const { toast } = useToast();
@@ -51,6 +54,35 @@ export function usePaymentFormSubmit({
   return async (data: InsertPayment) => {
     try {
       setPaymentError(null);
+      const isCardPayment = data.type !== "cash" && data.type !== "check";
+      let paymentScope = "";
+      let requestKey = "";
+      if (isCardPayment) {
+        if (!Number.isSafeInteger(data.leagueId) || !Number.isSafeInteger(data.bowlerId)
+          || typeof organizationId !== "number" || !Number.isSafeInteger(organizationId)
+          || typeof actorUserId !== "number" || !Number.isSafeInteger(actorUserId)) {
+          throw new Error("Payment identity is unavailable. Refresh and try again.");
+        }
+        paymentScope = interactivePaymentIntentScope({ actorUserId, organizationId, leagueId: data.leagueId, bowlerId: data.bowlerId });
+        const preparedIntent = await prepareRosterPaymentIntent(paymentScope, data.leagueId);
+        if (preparedIntent.outcome === "succeeded") {
+          clearPaymentIntentForRequestKey(preparedIntent.requestKey);
+          toast({ title: "Payment already confirmed", description: "Your previous payment was confirmed. Refreshing the payment balance." });
+          queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
+          queryClient.invalidateQueries({ queryKey: ["/api/financials/f5/payments"] });
+          onClose();
+          return;
+        }
+        if (preparedIntent.outcome === "terminal_failure") {
+          clearPaymentIntentForRequestKey(preparedIntent.requestKey);
+          throw new Error("Your previous payment was not completed. Try again.");
+        }
+        if (preparedIntent.outcome === "unresolved") {
+          assertRosterPaymentSucceeded(preparedIntent.status);
+          throw new Error("Your payment is not confirmed yet. Use payment recovery before trying again.");
+        }
+        requestKey = preparedIntent.requestKey;
+      }
       const quoteResponse = await csrfFetch(`/api/financials/leagues/${data.leagueId}/interactive-obligation-quote/2`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -58,8 +90,10 @@ export function usePaymentFormSubmit({
       });
       const quoteBody = await quoteResponse.json().catch(() => ({}));
       if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw makeApiError(quoteBody, quoteResponse.status, "Payment quote is unavailable");
-      const paymentScope = `admin:${data.leagueId}:${data.bowlerId}:${data.amount}:${quoteBody.data.fingerprint}:${data.type}:${cardMode}`;
-      const requestKey = beginPaymentIntent(paymentScope);
+      if (!isCardPayment) {
+        paymentScope = `admin:${data.leagueId}:${data.bowlerId}:${data.amount}:${quoteBody.data.fingerprint}:${data.type}:${cardMode}`;
+        requestKey = beginPaymentIntent(paymentScope);
+      }
 
       if (data.type === "cash" || data.type === "check") {
         const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${data.leagueId}/canonical/manual-record/1`, {

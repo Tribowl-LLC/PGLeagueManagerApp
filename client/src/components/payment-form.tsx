@@ -29,7 +29,7 @@ import { useLocation } from "wouter";
 import { PaymentFormFields } from "@/components/payment-form-fields";
 import { PaymentMethodTabs } from "@/components/payment-method-tabs";
 import { usePaymentFormSubmit } from "@/hooks/use-payment-form-submit";
-import { assertRosterPaymentSucceeded, beginPaymentIntent, clearPaymentIntent, isTerminalRosterPaymentFailure, paymentRequestHeaders, paymentRequestWithRecovery } from "@/lib/payment-request-identity";
+import { assertRosterPaymentSucceeded, clearPaymentIntent, clearPaymentIntentForRequestKey, interactivePaymentIntentScope, isTerminalRosterPaymentFailure, paymentRequestHeaders, paymentRequestWithRecovery, prepareRosterPaymentIntent } from "@/lib/payment-request-identity";
 import { PaymentFeeInfoAlert } from "@/components/payment-fee-info-alert";
 import { PaymentCheckNumberField } from "@/components/payment-check-number-field";
 import { PaymentReceiptEmailField } from "@/components/payment-receipt-email-field";
@@ -67,6 +67,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
   const [cardMode, setCardMode] = useState<'new' | 'saved'>('new');
   const [selectedSavedCardId, setSelectedSavedCardId] = useState<string>('');
   const [receiptEmail, setReceiptEmail] = useState<string>('');
+  const [walletRecoveryReady, setWalletRecoveryReady] = useState(false);
   const initializationAttempted = useRef(false);
 
   const { data: leagueData } = useQuery<{ success: boolean; data: League }>({
@@ -143,6 +144,50 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
   const selectedBowlerId = form.watch("bowlerId");
   const watchedAmount = form.watch("amount");
   const allowStoreCard = !paymentManager && currentUser?.bowlerId === selectedBowlerId;
+
+  useEffect(() => {
+    if (!open || paymentType !== 'credit_card' || !selectedBowlerId || !leagueId) {
+      setWalletRecoveryReady(false);
+      return;
+    }
+    const actorUserId = currentUser?.id;
+    const organizationId = leagueInfo?.organizationId;
+    if (typeof actorUserId !== 'number' || typeof organizationId !== 'number') {
+      setWalletRecoveryReady(false);
+      return;
+    }
+    let cancelled = false;
+    setWalletRecoveryReady(false);
+    const paymentScope = interactivePaymentIntentScope({ actorUserId, organizationId, leagueId, bowlerId: selectedBowlerId });
+    void prepareRosterPaymentIntent(paymentScope, leagueId)
+      .then(async (prepared) => {
+        if (cancelled) return;
+        if (prepared.outcome === 'new') {
+          walletRequestKeyRef.current = prepared.requestKey;
+          setWalletRecoveryReady(true);
+        } else if (prepared.outcome === 'succeeded') {
+          walletRequestKeyRef.current = null;
+          clearPaymentIntentForRequestKey(prepared.requestKey);
+          setPaymentError('Your previous payment was confirmed. Refresh the payment balance before starting another payment.');
+          queryClient.invalidateQueries({ queryKey: ['/api/payments'] });
+          queryClient.invalidateQueries({ queryKey: ['/api/financials/f5/payments'] });
+        } else if (prepared.outcome === 'unresolved') {
+          walletRequestKeyRef.current = prepared.requestKey;
+          setPaymentError('Your previous payment is still being confirmed. Check its status before trying another card.');
+        } else if (prepared.outcome === 'terminal_failure') {
+          clearPaymentIntentForRequestKey(prepared.requestKey);
+          const retry = await prepareRosterPaymentIntent(paymentScope, leagueId);
+          if (!cancelled && retry.outcome === 'new') {
+            walletRequestKeyRef.current = retry.requestKey;
+            setWalletRecoveryReady(true);
+          }
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setPaymentError('Payment recovery is unavailable. Refresh and try again.');
+      });
+    return () => { cancelled = true; };
+  }, [open, paymentType, selectedBowlerId, leagueId, currentUser?.id, leagueInfo?.organizationId, setPaymentError, queryClient]);
 
   useEffect(() => {
     if (!allowStoreCard && form.getValues("storeCard")) {
@@ -284,8 +329,14 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
       const quoteResponse = await csrfFetch(`/api/financials/leagues/${currentLeagueId}/interactive-obligation-quote/2`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ amountMinor: amount, payerBowlerId: bowlerId }) });
       const quoteBody = await quoteResponse.json();
       if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw new Error(quoteBody.error?.message || "Payment allocation is unavailable.");
-      const paymentScope = `admin-wallet:${currentLeagueId}:${bowlerId}:${amount}`;
-      const requestKey = walletRequestKeyRef.current ?? beginPaymentIntent(paymentScope);
+      const actorUserId = currentUser?.id;
+      const organizationId = leagueInfo.organizationId;
+      if (typeof actorUserId !== "number" || !Number.isSafeInteger(actorUserId) || typeof organizationId !== "number" || !Number.isSafeInteger(organizationId)) {
+        throw new Error("Payment identity is unavailable. Refresh and try again.");
+      }
+      const paymentScope = interactivePaymentIntentScope({ actorUserId, organizationId, leagueId: currentLeagueId, bowlerId });
+      const requestKey = walletRequestKeyRef.current;
+      if (!requestKey) throw new Error("Payment identity is unavailable. Retry payment recovery before trying again.");
       const exactResponse = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${currentLeagueId}/interactive-obligation-charge/2`, { method: "POST", headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" }, body: JSON.stringify({ amountMinor: amount, payerBowlerId: quoteBody.data.payerBowlerId ?? bowlerId, sourceId: token, sourceKind: "wallet", buyerEmail: overrideEmail ?? selected?.email ?? null, storeCard: false, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }) }), currentLeagueId);
       const exactBody = await exactResponse.json();
       const rosterStatus = exactBody.data?.status ?? exactBody.status;
@@ -320,15 +371,9 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
       setPaymentError(errorMessage);
       toast({ title: "Error", description: errorMessage, variant: "destructive" });
     }
-  }, [form, toast, queryClient, onClose, bowlers, receiptEmail, navigate, leagueInfo]);
+  }, [form, toast, queryClient, onClose, bowlers, receiptEmail, navigate, leagueInfo, currentUser?.id]);
 
-  const beginWalletPayment = useCallback(() => {
-    const values = form.getValues();
-    if (!values.bowlerId || !values.leagueId || !values.amount) return;
-    walletRequestKeyRef.current = beginPaymentIntent(
-      `admin-wallet:${values.leagueId}:${values.bowlerId}:${values.amount}`,
-    );
-  }, [form]);
+  const beginWalletPayment = useCallback(() => walletRecoveryReady, [walletRecoveryReady]);
 
   const {
     applePayAvailable,
@@ -344,7 +389,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
   } = useWalletPayments({
     locationId: leagueInfo?.locationId ?? null,
     amountCents: watchedAmount || 0,
-    enabled: open && paymentType === 'credit_card' && supportsWallets,
+    enabled: open && paymentType === 'credit_card' && supportsWallets && walletRecoveryReady,
     onPaymentStarted: beginWalletPayment,
     onTokenReceived: handleWalletPayment,
     onError: (error) => setPaymentError(error),
@@ -371,6 +416,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
     buyerEmail: !bowlerHasEmail ? receiptEmail : undefined,
     locationId: leagueInfo?.locationId ?? null,
     organizationId: leagueInfo?.organizationId,
+    actorUserId: currentUser?.id,
     allowStoreCard,
   });
 
