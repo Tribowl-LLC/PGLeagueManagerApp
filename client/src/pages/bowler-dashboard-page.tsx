@@ -3,9 +3,8 @@ import { useQuery } from "@tanstack/react-query";
 import { PageLoadingState } from "@/components/page-states";
 import { LeagueBottomSheet } from "@/components/league-bottom-sheet";
 import { BowlerLayout } from "@/components/bowler-layout";
-import { getSeasonLengthWeeks, getWeeksPassedInSeason } from "@/lib/financial-utils";
 import { DEFAULT_WEEKLY_FEE_CENTS } from "@shared/schema";
-import type { League, Payment, User, Bowler, BowlerLeague, Team, BowlerDetailsResponse, ApiResponse } from "@shared/schema";
+import type { League, User, Bowler, BowlerLeague, Team, BowlerDetailsResponse, ApiResponse } from "@shared/schema";
 import { PaymentStatusSection } from "@/components/payment-status-section";
 import { apiRequest, getApiRetryDelay, queryClient, shouldRetryApiQuery } from "@/lib/queryClient";
 import { ErrorBoundary } from "@/components/error-boundary";
@@ -110,49 +109,9 @@ const BowlerDashboardPage: FC = () => {
   const leagueName = league?.name ?? "No League";
   const teamName = team?.name ?? "No Team";
 
-  const totalWeeks = useMemo(() => {
-    return getSeasonLengthWeeks(league) || 30;
-  }, [league]);
-
-  const currentWeek = useMemo(() => {
-    if (!league?.seasonStart) return null;
-    const weeksPassed = getWeeksPassedInSeason(league);
-    return Math.max(1, Math.min(weeksPassed, totalWeeks));
-  }, [league, totalWeeks]);
-
-  const totalWeeksMap = useMemo(() => {
-    const map = new Map<number, number>();
-    for (const bl of activeBowlerLeagues) {
-      const l = leagueMap.get(bl.leagueId);
-      if (l) map.set(bl.leagueId, getSeasonLengthWeeks(l) || 30);
-    }
-    return map;
-  }, [activeBowlerLeagues, leagueMap]);
-
-  const currentWeekMap = useMemo(() => {
-    const map = new Map<number, number | null>();
-    for (const bl of activeBowlerLeagues) {
-      const l = leagueMap.get(bl.leagueId);
-      if (!l?.seasonStart) {
-        map.set(bl.leagueId, null);
-      } else {
-        const tw = totalWeeksMap.get(bl.leagueId) || 30;
-        const wp = getWeeksPassedInSeason(l);
-        map.set(bl.leagueId, Math.max(1, Math.min(wp, tw)));
-      }
-    }
-    return map;
-  }, [activeBowlerLeagues, leagueMap, totalWeeksMap]);
-
   const weeklyFee = useMemo(() => {
     return league?.weeklyFee || DEFAULT_WEEKLY_FEE_CENTS;
   }, [league]);
-
-  const { data: paymentsResponse, isLoading: isLoadingPayments } = useQuery<ApiResponse<Payment[]>>({
-    queryKey: ['/api/payments', bowler?.id],
-    enabled: !!bowler?.id,
-    staleTime: STALE_TIME,
-  });
 
   const leagueNotYetResolved = rosteredBowlerLeagues.length > 0 && !leaguesResponse;
 
@@ -162,7 +121,6 @@ const BowlerDashboardPage: FC = () => {
     isLoadingBL ||
     isLoadingLeagues ||
     isLoadingTeams ||
-    isLoadingPayments ||
     (!!currentUser?.bowlerId && !bowlersResponse) ||
     (!!bowler && !bowlerLeaguesResponse) ||
     (rosteredBowlerLeagues.length > 0 && !leaguesResponse) ||
@@ -257,8 +215,9 @@ const BowlerDashboardPage: FC = () => {
           hasMultipleLeagues={hasMultipleLeagues}
           leagueName={leagueName}
           teamName={teamName}
-          currentWeek={currentWeek}
-          totalWeeks={totalWeeks}
+          leagueId={league.id}
+          organizationId={league.organizationId}
+          viewerRole={currentUser.role}
           onOpenLeagueSheet={() => setSheetOpen(true)}
         />
 
@@ -267,8 +226,6 @@ const BowlerDashboardPage: FC = () => {
           league={league}
           bowler={bowler}
           weeklyFee={weeklyFee}
-          totalWeeks={totalWeeks}
-          payments={paymentsResponse?.data || []}
         />
 
 
@@ -283,8 +240,7 @@ const BowlerDashboardPage: FC = () => {
         teamMap={teamMap}
         selectedLeagueId={activeBowlerLeague?.leagueId ?? null}
         onSelectLeague={(id) => setSelectedLeagueId(id)}
-        totalWeeksMap={totalWeeksMap}
-        currentWeekMap={currentWeekMap}
+        viewerRole={currentUser.role}
       />
     </BowlerLayout>
   );

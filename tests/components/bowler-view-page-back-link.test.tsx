@@ -40,9 +40,6 @@ vi.mock('@/components/bowler-financial-summary', () => ({
   BowlerFinancialSummary: () => <div data-testid="stub-financial-summary" />,
 }));
 
-vi.mock('@/components/bowler-payment-history-table', () => ({
-  BowlerPaymentHistoryTable: () => <div data-testid="stub-payment-history" />,
-}));
 
 vi.mock('@/components/payment-sync-retry-status', () => ({
   PaymentSyncRetryStatus: () => <div data-testid="stub-retry-status" />,
