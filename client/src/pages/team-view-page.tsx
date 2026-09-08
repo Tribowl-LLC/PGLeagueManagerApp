@@ -213,6 +213,7 @@ export default function TeamViewPage() {
 
 
       <TeamViewBowlersTable
+        key={teamId}
         teamBowlers={teamBowlers}
         league={league}
         teamId={teamId}
