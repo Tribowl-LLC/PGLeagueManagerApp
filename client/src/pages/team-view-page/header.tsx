@@ -1,10 +1,15 @@
 import { Button } from "@/components/ui/button";
 import { Link } from "wouter";
 import { ArrowLeft, Pencil, Plus } from "lucide-react";
+import type { Team } from "@shared/schema";
+import { TeamNavigator } from "./team-navigator";
 
 interface TeamViewHeaderProps {
   teamName: string;
   leagueId: number;
+  teams: Team[];
+  currentTeamId: number;
+  onTeamChange: (teamId: number) => void;
   onEditClick?: () => void;
   onCreateBowler?: () => void;
   onAddExistingBowler?: () => void;
@@ -13,6 +18,9 @@ interface TeamViewHeaderProps {
 export function TeamViewHeader({
   teamName,
   leagueId,
+  teams,
+  currentTeamId,
+  onTeamChange,
   onEditClick,
   onCreateBowler,
   onAddExistingBowler,
@@ -26,6 +34,11 @@ export function TeamViewHeader({
         <ArrowLeft className="size-4 mr-2" />
         Back to Teams
       </Link>
+      <TeamNavigator
+        teams={teams}
+        currentTeamId={currentTeamId}
+        onTeamChange={onTeamChange}
+      />
       <div className="flex flex-col gap-4 mb-6">
         <div className="flex items-center gap-2">
           <h1 className="text-2xl font-bold flex-1">{teamName}</h1>

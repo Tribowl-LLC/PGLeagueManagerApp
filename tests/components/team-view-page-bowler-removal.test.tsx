@@ -8,7 +8,10 @@ const queryClientMock = vi.hoisted(() => ({
   invalidateQueries: vi.fn((input: { queryKey?: readonly unknown[]; predicate?: (query: { queryKey: readonly unknown[] }) => boolean }) => { void input; return Promise.resolve(); }),
 }));
 
-vi.mock("wouter", () => ({ useParams: () => ({ teamId: "5" }) }));
+vi.mock("wouter", () => ({
+  useLocation: () => ["/teams/5", vi.fn()],
+  useParams: () => ({ teamId: "5" }),
+}));
 vi.mock("@/lib/queryClient", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/queryClient")>()),
   apiRequest: apiRequestMock,

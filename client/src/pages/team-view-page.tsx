@@ -8,7 +8,7 @@ import { AssignBowlerForm } from "@/components/assign-bowler-form";
 import { ReorderBowlersDialog } from "@/components/reorder-bowlers-dialog";
 import { PageLoadingState, PageErrorState } from "@/components/page-states";
 import type { Bowler, BowlerLeague, ApiResponse, TeamDetailsResponse, User } from "@shared/schema";
-import { useParams } from "wouter";
+import { useLocation, useParams } from "wouter";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -19,6 +19,7 @@ import { TeamViewHeader } from "./team-view-page/header";
 import { TeamViewBowlersTable } from "./team-view-page/bowlers-table";
 import { TeamViewEditDialog } from "./team-view-page/edit-dialog";
 import { TeamViewRemoveBowlerDialog } from "./team-view-page/remove-bowler-dialog";
+import { useTeams } from "@/hooks/use-teams";
 
 const editTeamSchema = z.object({
   name: z.string().min(1, "Team name is required"),
@@ -32,6 +33,7 @@ export default function TeamViewPage() {
   const [selectedBowler, setSelectedBowler] = useState<Bowler | undefined>();
   const [showRemoveDialog, setShowRemoveDialog] = useState<{ bowlerId: number; name: string } | null>(null);
   const { toast } = useToast();
+  const [, setLocation] = useLocation();
   const params = useParams();
   const teamId = params.teamId ? parseInt(params.teamId) : undefined;
   const { data: currentUserResponse } = useQuery<ApiResponse<User>>({
@@ -57,6 +59,16 @@ export default function TeamViewPage() {
 
   const team = detailsResponse?.data?.team;
   const league = detailsResponse?.data?.league;
+  const { teams: leagueTeams } = useTeams({
+    leagueId: team?.leagueId ?? 0,
+    enabled: !!team,
+  });
+  const navigationTeams = useMemo(() => {
+    if (!team || leagueTeams.some((leagueTeam) => leagueTeam.id === team.id)) {
+      return leagueTeams;
+    }
+    return [...leagueTeams, team];
+  }, [leagueTeams, team]);
   const bowlerLeagues = useMemo(() => detailsResponse?.data?.bowlerLeagues || [], [detailsResponse?.data?.bowlerLeagues]);
   const bowlers = useMemo(() => detailsResponse?.data?.bowlers || [], [detailsResponse?.data?.bowlers]);
 
@@ -191,6 +203,9 @@ export default function TeamViewPage() {
       <TeamViewHeader
         teamName={team.name}
         leagueId={team.leagueId}
+        teams={navigationTeams}
+        currentTeamId={team.id}
+        onTeamChange={(nextTeamId) => setLocation(`/teams/${nextTeamId}`)}
         onEditClick={canManageRoster ? handleEditClick : undefined}
         onCreateBowler={canManageRoster ? () => setShowForm(true) : undefined}
         onAddExistingBowler={canManageRoster ? () => setShowAssignForm(true) : undefined}
