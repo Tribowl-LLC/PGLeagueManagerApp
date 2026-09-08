@@ -29,7 +29,7 @@ import { useLocation } from "wouter";
 import { PaymentFormFields } from "@/components/payment-form-fields";
 import { PaymentMethodTabs } from "@/components/payment-method-tabs";
 import { usePaymentFormSubmit } from "@/hooks/use-payment-form-submit";
-import { assertRosterPaymentSucceeded, clearPaymentIntent, clearPaymentIntentForRequestKey, interactivePaymentIntentScope, paymentRequestHeaders, paymentRequestWithRecovery, prepareRosterPaymentIntent } from "@/lib/payment-request-identity";
+import { assertRosterPaymentSucceeded, clearPaymentIntent, interactivePaymentIntentScope, paymentRequestHeaders, paymentRequestWithRecovery, prepareRosterPaymentIntent } from "@/lib/payment-request-identity";
 import { PaymentFeeInfoAlert } from "@/components/payment-fee-info-alert";
 import { PaymentCheckNumberField } from "@/components/payment-check-number-field";
 import { PaymentReceiptEmailField } from "@/components/payment-receipt-email-field";
@@ -148,16 +148,19 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
 
   useEffect(() => {
     if (!open || paymentType !== 'credit_card' || !selectedBowlerId || !leagueId) {
+      setPaymentError(null);
       setWalletRecoveryReady(false);
       return;
     }
     const actorUserId = currentUser?.id;
     const organizationId = leagueInfo?.organizationId;
     if (typeof actorUserId !== 'number' || typeof organizationId !== 'number') {
+      setPaymentError(null);
       setWalletRecoveryReady(false);
       return;
     }
     let cancelled = false;
+    setPaymentError(null);
     setWalletRecoveryReady(false);
     const paymentScope = interactivePaymentIntentScope({ actorUserId, organizationId, leagueId, bowlerId: selectedBowlerId });
     void prepareRosterPaymentIntent(paymentScope, leagueId)
@@ -165,18 +168,20 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
         if (cancelled) return;
         if (prepared.outcome === 'new') {
           walletRequestKeyRef.current = prepared.requestKey;
+          setPaymentError(null);
           setWalletRecoveryReady(true);
         } else if (prepared.outcome === 'succeeded') {
           walletRequestKeyRef.current = null;
-          clearPaymentIntentForRequestKey(prepared.requestKey);
+          clearPaymentIntent(prepared.scope ?? paymentScope, prepared.requestKey);
           setPaymentError('Your previous payment was confirmed. Refresh the payment balance before starting another payment.');
           queryClient.invalidateQueries({ queryKey: ['/api/payments'] });
           queryClient.invalidateQueries({ queryKey: ['/api/financials/f5/payments'] });
+          onClose();
         } else if (prepared.outcome === 'unresolved') {
           walletRequestKeyRef.current = prepared.requestKey;
           setPaymentError('Your previous payment is still being confirmed. Check its status before trying another card.');
         } else if (prepared.outcome === 'terminal_failure') {
-          clearPaymentIntentForRequestKey(prepared.requestKey);
+          clearPaymentIntent(prepared.scope ?? paymentScope, prepared.requestKey);
           const retry = await prepareRosterPaymentIntent(paymentScope, leagueId);
           if (!cancelled && retry.outcome === 'new') {
             walletRequestKeyRef.current = retry.requestKey;
@@ -188,7 +193,7 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
         if (!cancelled) setPaymentError('Payment recovery is unavailable. Refresh and try again.');
       });
     return () => { cancelled = true; };
-  }, [open, paymentType, selectedBowlerId, leagueId, currentUser?.id, leagueInfo?.organizationId, setPaymentError, queryClient, walletRecoveryRetry]);
+  }, [open, paymentType, selectedBowlerId, leagueId, currentUser?.id, leagueInfo?.organizationId, setPaymentError, queryClient, onClose, walletRecoveryRetry]);
 
   useEffect(() => {
     if (!allowStoreCard && form.getValues("storeCard")) {

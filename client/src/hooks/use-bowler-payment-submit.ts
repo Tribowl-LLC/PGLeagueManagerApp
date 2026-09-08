@@ -13,7 +13,6 @@ import { isHandledPaymentError, sanitizePaymentErrorMessage } from "@/lib/paymen
 import {
   assertRosterPaymentSucceeded,
   clearPaymentIntent,
-  clearPaymentIntentForRequestKey,
   interactivePaymentIntentScope,
   paymentRequestHeaders,
   paymentRequestWithRecovery,
@@ -63,14 +62,14 @@ export function useBowlerPaymentSubmit({
       const paymentScope = interactivePaymentIntentScope({ actorUserId, organizationId, leagueId: league.id, bowlerId: bowler.id });
       const preparedIntent = await prepareRosterPaymentIntent(paymentScope, league.id);
       if (preparedIntent.outcome === "succeeded") {
-        clearPaymentIntentForRequestKey(preparedIntent.requestKey);
+        clearPaymentIntent(preparedIntent.scope ?? paymentScope, preparedIntent.requestKey);
         toast({ title: "Payment already confirmed", description: "Your previous payment was confirmed. Refreshing the payment balance." });
         queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
         queryClient.invalidateQueries({ queryKey: ["/api/financials", league.id] });
         return;
       }
       if (preparedIntent.outcome === "terminal_failure") {
-        clearPaymentIntentForRequestKey(preparedIntent.requestKey);
+        clearPaymentIntent(preparedIntent.scope ?? paymentScope, preparedIntent.requestKey);
         throw new Error("Your previous payment was not completed. Try again.");
       }
       if (preparedIntent.outcome === "unresolved") {

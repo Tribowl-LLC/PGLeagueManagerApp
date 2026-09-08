@@ -30,6 +30,26 @@ export function interactivePaymentIntentScope(input: InteractivePaymentIntentSco
   });
 }
 
+function interactiveScopeBowlerId(scope: string): number {
+  try {
+    const parsed = JSON.parse(scope) as Partial<InteractivePaymentIntentScope> & { version?: number; kind?: string };
+    const actorUserId = parsed.actorUserId;
+    const organizationId = parsed.organizationId;
+    const leagueId = parsed.leagueId;
+    const bowlerId = parsed.bowlerId;
+    if (parsed.version !== 2 || parsed.kind !== 'interactive-roster'
+      || typeof actorUserId !== 'number' || !Number.isSafeInteger(actorUserId) || actorUserId <= 0
+      || typeof organizationId !== 'number' || !Number.isSafeInteger(organizationId) || organizationId <= 0
+      || typeof leagueId !== 'number' || !Number.isSafeInteger(leagueId) || leagueId <= 0
+      || typeof bowlerId !== 'number' || !Number.isSafeInteger(bowlerId) || bowlerId <= 0) {
+      throw new Error('Payment intent scope is invalid');
+    }
+    return bowlerId;
+  } catch {
+    throw new Error('Payment intent scope is invalid');
+  }
+}
+
 export function isValidPaymentRequestKey(value: string): boolean {
   return value.length >= PAYMENT_REQUEST_KEY_MIN_LENGTH
     && value.length <= PAYMENT_REQUEST_KEY_MAX_LENGTH
@@ -94,10 +114,77 @@ export function getPaymentIntent(scope: string): string | null {
   return existing;
 }
 
-export function clearPaymentIntent(scope: string): void {
+type StoredPaymentIntent = { scope: string; requestKey: string };
+
+function isPositiveSafeInteger(value: string): boolean {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0;
+}
+
+/**
+ * Match only the interactive card/wallet scopes emitted by the previous
+ * release. Fingerprints are opaque and may contain colons, so the parser uses
+ * fixed prefixes/suffixes rather than guessing from a split field. Manual
+ * cash/check scopes are deliberately excluded.
+ */
+function isLegacyInteractiveScope(scope: string, leagueId: number, bowlerId: number): boolean {
+  const prefixes = [
+    `roster:${leagueId}:${bowlerId}:`,
+    `make-payment-roster:${leagueId}:${bowlerId}:`,
+  ];
+  for (const prefix of prefixes) {
+    if (!scope.startsWith(prefix)) continue;
+    const remainder = scope.slice(prefix.length);
+    const amountEnd = remainder.indexOf(':');
+    if (amountEnd <= 0 || !isPositiveSafeInteger(remainder.slice(0, amountEnd))) return false;
+    const fingerprintAndMode = remainder.slice(amountEnd + 1);
+    return [':new', ':saved'].some((suffix) => fingerprintAndMode.endsWith(suffix)
+      && fingerprintAndMode.slice(0, -suffix.length).length > 0);
+  }
+
+  const adminPrefix = `admin:${leagueId}:${bowlerId}:`;
+  if (scope.startsWith(adminPrefix)) {
+    const remainder = scope.slice(adminPrefix.length);
+    const amountEnd = remainder.indexOf(':');
+    if (amountEnd <= 0 || !isPositiveSafeInteger(remainder.slice(0, amountEnd))) return false;
+    const fingerprintAndMode = remainder.slice(amountEnd + 1);
+    return [':credit_card:new', ':credit_card:saved'].some((suffix) => fingerprintAndMode.endsWith(suffix)
+      && fingerprintAndMode.slice(0, -suffix.length).length > 0);
+  }
+
+  for (const prefix of [
+    `admin-wallet:${leagueId}:${bowlerId}:`,
+    `make-payment-wallet:${leagueId}:${bowlerId}:`,
+  ]) {
+    if (scope.startsWith(prefix) && isPositiveSafeInteger(scope.slice(prefix.length))) return true;
+  }
+  return false;
+}
+
+function getLegacyInteractivePaymentIntents(leagueId: number, bowlerId: number): StoredPaymentIntent[] {
+  const storage = browserStorage();
+  if (!storage) return [];
+  const intents: StoredPaymentIntent[] = [];
+  for (let index = 0; index < storage.length; index += 1) {
+    const key = storage.key(index);
+    if (!key?.startsWith(STORAGE_PREFIX)) continue;
+    const scope = key.slice(STORAGE_PREFIX.length);
+    if (!isLegacyInteractiveScope(scope, leagueId, bowlerId)) continue;
+    const requestKey = storage.getItem(key);
+    if (!requestKey) continue;
+    if (!isValidPaymentRequestKey(requestKey)) throw new Error('Stored payment request identity is invalid');
+    intents.push({ scope, requestKey });
+  }
+  return intents;
+}
+
+export function clearPaymentIntent(scope: string, expectedRequestKey?: string): void {
   try {
     const storage = browserStorage();
-    storage?.removeItem(storageKey(scope));
+    if (!storage) return;
+    const key = storageKey(scope);
+    if (expectedRequestKey !== undefined && storage.getItem(key) !== expectedRequestKey) return;
+    storage.removeItem(key);
   } catch {
     // A failed cleanup is safe: the next recovery probe will still find the
     // acknowledged/terminal operation and will never submit a second charge.
@@ -249,10 +336,29 @@ async function reconcileRosterResponse(
 
 export type PreparedRosterPaymentIntent = {
   requestKey: string;
+  scope?: string;
   outcome: 'none' | 'new' | 'succeeded' | 'unresolved' | 'terminal_failure';
   response?: Response;
   status?: string;
 };
+
+async function inspectRosterPaymentIntent(
+  intent: StoredPaymentIntent,
+  leagueId: number,
+): Promise<PreparedRosterPaymentIntent> {
+  const existing = await recoverRosterPaymentOperationByRequestKey(leagueId, intent.requestKey);
+  if (existing.status === 404) return { requestKey: intent.requestKey, scope: intent.scope, outcome: 'none' };
+
+  const reconciled = await reconcileRosterResponse(existing, leagueId);
+  const status = reconciled.operation.status;
+  if (reconciled.decision === 'success') {
+    return { requestKey: intent.requestKey, scope: intent.scope, outcome: 'succeeded', response: reconciled.response, status };
+  }
+  if (reconciled.decision === 'terminal_failure') {
+    return { requestKey: intent.requestKey, scope: intent.scope, outcome: 'terminal_failure', response: reconciled.response, status };
+  }
+  return { requestKey: intent.requestKey, scope: intent.scope, outcome: 'unresolved', response: reconciled.response, status };
+}
 
 /**
  * Probe an existing browser intent before obtaining a quote or tokenizing a
@@ -265,20 +371,40 @@ export async function prepareRosterPaymentIntent(
   options: { createIfMissing?: boolean } = {},
 ): Promise<PreparedRosterPaymentIntent> {
   const stored = getPaymentIntent(scope);
-  if (!stored && options.createIfMissing === false) return { requestKey: '', outcome: 'none' };
-  const requestKey = stored ?? beginPaymentIntent(scope);
-  const existing = await recoverRosterPaymentOperationByRequestKey(leagueId, requestKey);
-  if (existing.status === 404) return { requestKey, outcome: 'new' };
+  const bowlerId = interactiveScopeBowlerId(scope);
+  const candidates: StoredPaymentIntent[] = stored ? [{ scope, requestKey: stored }] : [];
+  const legacy = getLegacyInteractivePaymentIntents(leagueId, bowlerId)
+    .filter((intent) => intent.requestKey !== stored);
+  candidates.push(...legacy);
 
-  const reconciled = await reconcileRosterResponse(existing, leagueId);
-  const status = reconciled.operation.status;
-  if (reconciled.decision === 'success') {
-    return { requestKey, outcome: 'succeeded', response: reconciled.response, status };
+  let stableKeyHasNoOperation = false;
+  let succeeded: PreparedRosterPaymentIntent | null = null;
+  let terminalFailure: PreparedRosterPaymentIntent | null = null;
+  let unresolved: PreparedRosterPaymentIntent | null = null;
+  for (const candidate of candidates) {
+    const prepared = await inspectRosterPaymentIntent(candidate, leagueId);
+    if (prepared.outcome === 'none') {
+      if (candidate.scope === scope) stableKeyHasNoOperation = true;
+    } else if (prepared.outcome === 'unresolved') {
+      unresolved ??= prepared;
+    } else if (prepared.outcome === 'succeeded') {
+      succeeded ??= prepared;
+    } else if (prepared.outcome === 'terminal_failure') {
+      terminalFailure ??= prepared;
+    }
   }
-  if (reconciled.decision === 'terminal_failure') {
-    return { requestKey, outcome: 'terminal_failure', response: reconciled.response, status };
-  }
-  return { requestKey, outcome: 'unresolved', response: reconciled.response, status };
+
+  // Any unresolved exact operation dominates an older success/terminal entry:
+  // the caller must recover it before it can safely submit another source.
+  if (unresolved) return unresolved;
+  if (succeeded) return succeeded;
+  if (terminalFailure) return terminalFailure;
+  if (stableKeyHasNoOperation && stored) return { requestKey: stored, scope, outcome: 'new' };
+  if (options.createIfMissing === false) return { requestKey: '', outcome: 'none' };
+
+  const requestKey = beginPaymentIntent(scope);
+  const prepared = await inspectRosterPaymentIntent({ scope, requestKey }, leagueId);
+  return prepared.outcome === 'none' ? { requestKey, scope, outcome: 'new' } : prepared;
 }
 
 /**

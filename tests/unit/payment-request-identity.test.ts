@@ -49,6 +49,19 @@ describe('interactive payment request identity', () => {
     expect(beginPaymentIntent('league-1:bowler-2:amount-3000')).not.toBe(first);
   });
 
+  it('does not clear a replacement identity after a delayed recovery result', () => {
+    const values = installStorage();
+    const scope = 'stable-scope';
+    const original = beginPaymentIntent(scope);
+    clearPaymentIntent(scope);
+    const replacement = beginPaymentIntent(scope);
+
+    clearPaymentIntent(scope, original);
+    expect(values.get(`leaguevault:payment-intent:v1:${scope}`)).toBe(replacement);
+    clearPaymentIntent(scope, replacement);
+    expect(values.has(`leaguevault:payment-intent:v1:${scope}`)).toBe(false);
+  });
+
   it('sends the key separately from the JSON request body', () => {
     expect(paymentRequestHeaders('00000000-0000-4000-8000-000000000004')).toEqual({
       'Content-Type': 'application/json',

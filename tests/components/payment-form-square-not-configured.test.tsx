@@ -15,13 +15,15 @@
  * This test pins that Square behavior.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 const paymentFormMocks = vi.hoisted(() => ({
   prepareRosterPaymentIntent: vi.fn(),
   walletEnabled: [] as boolean[],
+  setPaymentError: undefined as ((error: string | null) => void) | undefined,
+  toast: vi.fn(),
 }));
 
 vi.mock('@tanstack/react-query', async () => {
@@ -97,13 +99,14 @@ vi.mock('@/hooks/use-payment-provider', () => ({
 // loading state to assert. Resolving immediately makes this test timing
 // dependent when the full component project is under load.
 const squareInitializeCard = vi.fn(() => new Promise<void>(() => {}));
+const squareCleanupCard = vi.fn();
 vi.mock('@/hooks/use-square-payment', () => ({
   useSquarePayment: () => ({
     card: null,
     isInitialized: false,
     error: null,
     initializeCard: squareInitializeCard,
-    cleanupCard: vi.fn(),
+    cleanupCard: squareCleanupCard,
   }),
 }));
 
@@ -140,11 +143,14 @@ vi.mock('@/lib/payment-request-identity', () => ({
 // inert handler so the form renders cleanly without csrf/fetch
 // plumbing in this test.
 vi.mock('@/hooks/use-payment-form-submit', () => ({
-  usePaymentFormSubmit: () => vi.fn(async () => {}),
+  usePaymentFormSubmit: ({ setPaymentError }: { setPaymentError: (error: string | null) => void }) => {
+    paymentFormMocks.setPaymentError = setPaymentError;
+    return vi.fn(async () => {});
+  },
 }));
 
 vi.mock('@/hooks/use-toast', () => ({
-  useToast: () => ({ toast: vi.fn() }),
+  useToast: () => ({ toast: paymentFormMocks.toast }),
 }));
 
 vi.mock('@/lib/queryClient', async () => {
@@ -196,9 +202,24 @@ const BOWLERS: Bowler[] = [
     paymentSyncLastAttemptAt: null,
     paymentSyncNextRetryAt: null,
   },
+  {
+    id: 2,
+    name: 'Other Bowler',
+    email: 'other-bowler@example.com',
+    phone: null,
+    active: true,
+    order: 1,
+    organizationId: 1,
+    paymentCustomerId: null,
+    paymentProviderLocationId: null,
+    paymentSyncPendingAt: null,
+    paymentSyncAttempts: 0,
+    paymentSyncLastAttemptAt: null,
+    paymentSyncNextRetryAt: null,
+  },
 ];
 
-function renderForm() {
+function renderForm(onClose: () => void = () => {}) {
   const qc = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -209,7 +230,7 @@ function renderForm() {
     <QueryClientProvider client={qc}>
       <PaymentForm
         open={true}
-        onClose={() => {}}
+        onClose={onClose}
         bowlers={BOWLERS}
         leagueId={7}
       />
@@ -221,6 +242,8 @@ beforeEach(() => {
   squareInitializeCard.mockClear();
   paymentFormMocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: '', outcome: 'none' });
   paymentFormMocks.walletEnabled.length = 0;
+  paymentFormMocks.setPaymentError = undefined;
+  paymentFormMocks.toast.mockReset();
 });
 
 describe('<PaymentForm /> — Square not fully configured (#582)', () => {
@@ -359,5 +382,60 @@ describe('<PaymentForm /> — Square not fully configured (#582)', () => {
     expect(paymentFormMocks.prepareRosterPaymentIntent).toHaveBeenNthCalledWith(1, 'stable-scope', 7);
     expect(paymentFormMocks.prepareRosterPaymentIntent).toHaveBeenNthCalledWith(2, 'stable-scope', 7);
     expect(paymentFormMocks.walletEnabled.at(-1)).toBe(true);
+  });
+
+  it('closes after a mount recovery confirms an earlier payment', async () => {
+    providerState = {
+      config: {
+        appId: 'sq_app_ok',
+        locationId: 'L_OK',
+        providerConfigured: true,
+        missingFields: [],
+      },
+      isLoading: false,
+      isSquare: true,
+      supportsWallets: true,
+      isProviderConfigured: true,
+      missingFields: [],
+    };
+    paymentFormMocks.prepareRosterPaymentIntent.mockResolvedValue({ requestKey: 'confirmed-key', outcome: 'succeeded' });
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    renderForm(onClose);
+    await user.selectOptions(screen.getByLabelText('Bowler'), '1');
+    await user.click(screen.getByRole('tab', { name: /credit card/i }));
+
+    await waitFor(() => expect(paymentFormMocks.prepareRosterPaymentIntent).toHaveBeenCalledOnce());
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it('clears a prior recovery error when the selected bowler scope changes', async () => {
+    providerState = {
+      config: {
+        appId: 'sq_app_ok',
+        locationId: 'L_OK',
+        providerConfigured: true,
+        missingFields: [],
+      },
+      isLoading: false,
+      isSquare: true,
+      supportsWallets: true,
+      isProviderConfigured: true,
+      missingFields: [],
+    };
+    paymentFormMocks.prepareRosterPaymentIntent.mockResolvedValue({ requestKey: 'new-key', outcome: 'new' });
+
+    const user = userEvent.setup();
+    renderForm();
+    await user.selectOptions(screen.getByLabelText('Bowler'), '1');
+    await user.click(screen.getByRole('tab', { name: /credit card/i }));
+    await waitFor(() => expect(paymentFormMocks.prepareRosterPaymentIntent).toHaveBeenCalledOnce());
+    await waitFor(() => expect(squareInitializeCard).toHaveBeenCalled());
+    expect(paymentFormMocks.setPaymentError).toBeDefined();
+    await act(async () => { paymentFormMocks.setPaymentError?.('Previous scope error'); });
+    expect(await screen.findByText('Previous scope error')).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText('Bowler'), '2');
+    await waitFor(() => expect(screen.queryByText('Previous scope error')).not.toBeInTheDocument());
   });
 });

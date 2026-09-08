@@ -22,7 +22,7 @@ import { useToast } from "@/hooks/use-toast";
 import { logger } from "@/lib/logger";
 import { isHandledPaymentError, sanitizePaymentErrorMessage } from "@/lib/payment-user-error";
 import { isProviderNotConfiguredError, providerNotConfiguredToast, makeApiError } from "@/lib/provider-not-configured";
-import { assertRosterPaymentSucceeded, clearPaymentIntent, clearPaymentIntentForRequestKey, interactivePaymentIntentScope, isTerminalRosterPaymentFailure, paymentRequestHeaders, paymentRequestWithRecovery, prepareRosterPaymentIntent } from "@/lib/payment-request-identity";
+import { assertRosterPaymentSucceeded, clearPaymentIntent, interactivePaymentIntentScope, isTerminalRosterPaymentFailure, paymentRequestHeaders, paymentRequestWithRecovery, prepareRosterPaymentIntent } from "@/lib/payment-request-identity";
 import { paymentHistoryFinancialQueryKey, invalidatePaymentHistoryFinancials } from "@/lib/payment-history-financial-query";
 import { resolveInteractiveFinancialRead } from "@/lib/financial-read-contract";
 
@@ -197,6 +197,7 @@ export default function MakePaymentPage() {
   const clampedWeekCount = clampPaymentWeekCount(oneTimePaymentWeekCount, maximumWeekCount);
   const selectedOption = fullBalanceOnly ? options.at(-1) : options.find((option) => option.weekCount === clampedWeekCount);
   const paymentAmountMinor = fullBalanceOnly ? remainingBalance : selectedOption?.amountMinor ?? 0;
+  const hasPositivePaymentAmount = paymentAmountMinor > 0;
   const bowlerEmail = details?.bowler?.email ?? "";
   const paymentActorUserId = currentUser?.data?.id;
   const paymentOrganizationId = league?.organizationId;
@@ -231,7 +232,7 @@ export default function MakePaymentPage() {
   useEffect(() => {
     const recoveryLeagueId = leagueId;
     const recoveryBowlerId = bowlerId;
-    const walletShouldPrepare = supportsWallets && typeof recoveryLeagueId === "number" && typeof recoveryBowlerId === "number" && paymentAmountMinor > 0;
+    const walletShouldPrepare = supportsWallets && typeof recoveryLeagueId === "number" && typeof recoveryBowlerId === "number" && hasPositivePaymentAmount;
     if (!paymentIntentScope || typeof recoveryLeagueId !== "number" || typeof recoveryBowlerId !== "number") {
       walletRequestKeyRef.current = null;
       setWalletRecoveryReady(false);
@@ -253,17 +254,20 @@ export default function MakePaymentPage() {
             setWalletRecoveryReady(true);
           }
         } else if (prepared.outcome === "succeeded") {
-          walletRequestKeyRef.current = null;
-          clearPaymentIntentForRequestKey(prepared.requestKey);
+          setIsRecoveryBlocked(true);
           const noticeKey = `${paymentIntentScope}:${prepared.requestKey}`;
           if (recoveryNoticeRef.current !== noticeKey) {
             recoveryNoticeRef.current = noticeKey;
             toastRef.current({ title: "Payment already confirmed", description: "Your previous payment was confirmed. Refreshing the payment balance." });
           }
           await invalidatePaymentHistoryFinancials(queryClient, recoveryLeagueId, recoveryBowlerId);
+          if (cancelled) return;
           invalidatePaymentViews(recoveryLeagueId, recoveryBowlerId);
+          clearPaymentIntent(prepared.scope ?? paymentIntentScope, prepared.requestKey);
+          walletRequestKeyRef.current = null;
+          setIsRecoveryBlocked(false);
         } else if (prepared.outcome === "terminal_failure") {
-          clearPaymentIntentForRequestKey(prepared.requestKey);
+          clearPaymentIntent(prepared.scope ?? paymentIntentScope, prepared.requestKey);
           if (walletShouldPrepare) {
             const retry = await prepareRosterPaymentIntent(paymentIntentScope, recoveryLeagueId);
             if (!cancelled && retry.outcome === "new") {
@@ -281,7 +285,7 @@ export default function MakePaymentPage() {
         if (!cancelled) setIsRecoveryBlocked(true);
       });
     return () => { cancelled = true; };
-  }, [supportsWallets, paymentIntentScope, leagueId, bowlerId, paymentAmountMinor, recoveryRetry]);
+  }, [supportsWallets, paymentIntentScope, leagueId, bowlerId, hasPositivePaymentAmount, recoveryRetry]);
 
   const { card, isInitialized, initializeCard, cleanupCard } = useSquarePayment({
     locationId: league?.locationId,
@@ -361,14 +365,16 @@ export default function MakePaymentPage() {
       if (!paymentIntentScope) throw new Error("Payment identity is unavailable. Refresh and try again.");
       const preparedIntent = await prepareRosterPaymentIntent(paymentIntentScope, league.id);
       if (preparedIntent.outcome === "succeeded") {
-        clearPaymentIntentForRequestKey(preparedIntent.requestKey);
+        setIsRecoveryBlocked(true);
         toast({ title: "Payment already confirmed", description: "Your previous payment was confirmed. Refreshing the payment balance." });
         await invalidatePaymentHistoryFinancials(queryClient, leagueId, bowlerId);
         invalidatePaymentViews(leagueId, bowlerId);
+        clearPaymentIntent(preparedIntent.scope ?? paymentIntentScope, preparedIntent.requestKey);
+        setIsRecoveryBlocked(false);
         return;
       }
       if (preparedIntent.outcome === "terminal_failure") {
-        clearPaymentIntentForRequestKey(preparedIntent.requestKey);
+        clearPaymentIntent(preparedIntent.scope ?? paymentIntentScope, preparedIntent.requestKey);
         throw new Error("Your previous payment was not completed. Try again.");
       }
       if (preparedIntent.outcome === "unresolved") {

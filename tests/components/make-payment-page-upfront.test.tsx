@@ -11,6 +11,8 @@ const mocks = vi.hoisted(() => {
   const csrfFetch = vi.fn();
   const tokenizeCard = vi.fn();
   const toast = vi.fn();
+  const clearPaymentIntent = vi.fn();
+  const invalidatePaymentHistoryFinancials = vi.fn(async () => {});
   const prepareRosterPaymentIntent = vi.fn(async (): Promise<{ requestKey: string; outcome: string; status?: string }> => ({ requestKey: "request-key", outcome: "none" }));
   const squareCard = { tokenize: vi.fn(), destroy: vi.fn(), attach: vi.fn() };
   const walletOptions: {
@@ -93,6 +95,8 @@ const mocks = vi.hoisted(() => {
     csrfFetch,
     tokenizeCard,
     toast,
+    clearPaymentIntent,
+    invalidatePaymentHistoryFinancials,
     prepareRosterPaymentIntent,
     squareCard,
     walletOptions,
@@ -134,7 +138,7 @@ vi.mock("@/hooks/use-wallet-payments", () => ({ useWalletPayments: (options: {
 vi.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast: mocks.toast }) }));
 vi.mock("wouter", () => ({ useLocation: () => ["/make-payment", vi.fn()], useSearch: () => "?leagueId=17", Link: () => null }));
 vi.mock("@/lib/queryClient", () => ({ csrfFetch: mocks.csrfFetch, queryClient: { invalidateQueries: vi.fn() } }));
-vi.mock("@/lib/payment-history-financial-query", () => ({ paymentHistoryFinancialQueryKey: (leagueId: number, bowlerId: number) => ["financial", leagueId, bowlerId], invalidatePaymentHistoryFinancials: vi.fn() }));
+vi.mock("@/lib/payment-history-financial-query", () => ({ paymentHistoryFinancialQueryKey: (leagueId: number, bowlerId: number) => ["financial", leagueId, bowlerId], invalidatePaymentHistoryFinancials: mocks.invalidatePaymentHistoryFinancials }));
 vi.mock("@/lib/square", () => ({ tokenizeCard: mocks.tokenizeCard }));
 vi.mock("@/lib/logger", () => ({ logger: { error: vi.fn() } }));
 vi.mock("@/lib/provider-not-configured", () => ({ isProviderNotConfiguredError: () => false, providerNotConfiguredToast: () => ({}), makeApiError: () => new Error("payment failed") }));
@@ -143,7 +147,7 @@ vi.mock("@/lib/payment-request-identity", () => ({
     if (status !== "succeeded") throw new Error("payment unresolved");
   }),
   beginPaymentIntent: vi.fn(() => "request-key"),
-  clearPaymentIntent: vi.fn(),
+  clearPaymentIntent: mocks.clearPaymentIntent,
   clearPaymentIntentForRequestKey: vi.fn(),
   interactivePaymentIntentScope: vi.fn(() => "stable-scope"),
   isTerminalRosterPaymentFailure: vi.fn((status: unknown) => status === "failed_terminal" || status === "canceled" || status === "action_required"),
@@ -165,6 +169,8 @@ afterEach(() => {
   mocks.csrfFetch.mockReset();
   mocks.tokenizeCard.mockReset();
   mocks.toast.mockReset();
+  mocks.clearPaymentIntent.mockReset();
+  mocks.invalidatePaymentHistoryFinancials.mockReset().mockResolvedValue(undefined);
   mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "request-key", outcome: "none" });
   mocks.walletOptions.enabled = false;
   mocks.walletOptions.onPaymentStarted = undefined;
@@ -206,6 +212,19 @@ describe("MakePaymentPage upfront payment mode", () => {
     });
   });
 
+  it("does not re-probe recovery when a positive payment amount changes", async () => {
+    mocks.prepareRosterPaymentIntent
+      .mockReset()
+      .mockResolvedValue({ requestKey: "stable-request", outcome: "new" });
+    const view = render(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.prepareRosterPaymentIntent).toHaveBeenCalledOnce());
+
+    mocks.setRemainingBalance(5_750);
+    view.rerender(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ paymentAmountMinor: 5_750 }));
+    expect(mocks.prepareRosterPaymentIntent).toHaveBeenCalledOnce();
+  });
+
   it("recovers a lost success on remount before a changed quote can charge again", async () => {
     const firstRender = render(<MakePaymentPage />);
     await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
@@ -237,6 +256,30 @@ describe("MakePaymentPage upfront payment mode", () => {
     expect(mocks.tokenizeCard).toHaveBeenCalledOnce();
     expect(mocks.toast).toHaveBeenCalledWith(expect.objectContaining({ title: "Payment already confirmed" }));
     expect(document.body).not.toHaveTextContent("Payment confirmation in progress");
+  });
+
+  it("keeps recovered checkout blocked until the balance refresh settles", async () => {
+    let resolveRefresh!: () => void;
+    const refresh = new Promise<void>((resolve) => { resolveRefresh = resolve; });
+    mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "confirmed-request", outcome: "succeeded" });
+    mocks.invalidatePaymentHistoryFinancials.mockReturnValueOnce(refresh);
+
+    render(<MakePaymentPage />);
+    await waitFor(() => expect(document.body).toHaveTextContent("Payment confirmation in progress"));
+    expect(mocks.clearPaymentIntent).not.toHaveBeenCalled();
+
+    await act(async () => { resolveRefresh(); });
+    await waitFor(() => expect(mocks.clearPaymentIntent).toHaveBeenCalledWith("stable-scope", "confirmed-request"));
+    expect(document.body).not.toHaveTextContent("Payment confirmation in progress");
+  });
+
+  it("keeps recovered checkout blocked and preserves its identity when refresh fails", async () => {
+    mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "confirmed-request", outcome: "succeeded" });
+    mocks.invalidatePaymentHistoryFinancials.mockRejectedValueOnce(new Error("refresh failed"));
+
+    render(<MakePaymentPage />);
+    await waitFor(() => expect(document.body).toHaveTextContent("Payment confirmation in progress"));
+    expect(mocks.clearPaymentIntent).not.toHaveBeenCalled();
   });
 
   it("replaces a terminal wallet identity before the next same-page click", async () => {

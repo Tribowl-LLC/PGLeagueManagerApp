@@ -5,7 +5,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { csrfFetch } from "@/lib/queryClient";
 import { makeApiError, isProviderNotConfiguredError, providerNotConfiguredToast } from "@/lib/provider-not-configured";
 import { isHandledPaymentError, sanitizePaymentErrorMessage } from "@/lib/payment-user-error";
-import { beginPaymentIntent, clearPaymentIntent, clearPaymentIntentForRequestKey, interactivePaymentIntentScope, paymentRequestHeaders, paymentRequestWithRecovery, assertRosterPaymentSucceeded, prepareRosterPaymentIntent } from "@/lib/payment-request-identity";
+import { beginPaymentIntent, clearPaymentIntent, interactivePaymentIntentScope, paymentRequestHeaders, paymentRequestWithRecovery, assertRosterPaymentSucceeded, prepareRosterPaymentIntent } from "@/lib/payment-request-identity";
 import { tokenizeCard } from "@/lib/square";
 import { logger } from "@/lib/logger";
 import type { InsertPaymentInput, InsertPayment } from "@shared/schema";
@@ -66,7 +66,7 @@ export function usePaymentFormSubmit({
         paymentScope = interactivePaymentIntentScope({ actorUserId, organizationId, leagueId: data.leagueId, bowlerId: data.bowlerId });
         const preparedIntent = await prepareRosterPaymentIntent(paymentScope, data.leagueId);
         if (preparedIntent.outcome === "succeeded") {
-          clearPaymentIntentForRequestKey(preparedIntent.requestKey);
+          clearPaymentIntent(preparedIntent.scope ?? paymentScope, preparedIntent.requestKey);
           toast({ title: "Payment already confirmed", description: "Your previous payment was confirmed. Refreshing the payment balance." });
           queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
           queryClient.invalidateQueries({ queryKey: ["/api/financials/f5/payments"] });
@@ -74,7 +74,7 @@ export function usePaymentFormSubmit({
           return;
         }
         if (preparedIntent.outcome === "terminal_failure") {
-          clearPaymentIntentForRequestKey(preparedIntent.requestKey);
+          clearPaymentIntent(preparedIntent.scope ?? paymentScope, preparedIntent.requestKey);
           throw new Error("Your previous payment was not completed. Try again.");
         }
         if (preparedIntent.outcome === "unresolved") {
