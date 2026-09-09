@@ -51,6 +51,30 @@ vi.mock('../../server/services/payment-sync-retry-scheduler', () => ({
   notifyPaymentSyncRetryChanged: vi.fn(),
 }));
 
+// The PATCH route imports the deletion error types alongside its DELETE
+// handler. Keep this unit suite's route graph in-process; deletion itself is
+// covered by the database-backed/API suites.
+vi.mock('../../server/services/bowler-deletion.js', () => ({
+  BowlerDeletionConflictError: class BowlerDeletionConflictError extends Error {
+    readonly status = 409;
+    readonly blockers = [{ code: 'TEST', message: 'test blocker' }];
+
+    constructor() {
+      super('Bowler deletion blocked');
+      this.name = 'BowlerDeletionConflictError';
+    }
+  },
+  BowlerDeletionNotFoundError: class BowlerDeletionNotFoundError extends Error {
+    readonly status = 404;
+
+    constructor() {
+      super('Bowler not found');
+      this.name = 'BowlerDeletionNotFoundError';
+    }
+  },
+  deleteUnusedBowler: vi.fn(),
+}));
+
 vi.mock('../../server/services/payment-provider-factory', () => ({
   getPaymentProvider: vi.fn(),
   ProviderNotConfiguredError: class ProviderNotConfiguredError extends Error {},

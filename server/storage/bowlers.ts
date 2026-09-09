@@ -10,6 +10,7 @@ import { createLogger } from '../logger';
 import { cacheFetch, cacheInvalidate } from '../utils/cache';
 import { lockLeagueSchedule } from './league-schedule-lock.js';
 import { materializeRosterPaymentOccurrenceInTransaction, revokeStandingAutopayForBowlerInTransaction } from '../services/roster-payment-materializer.js';
+import { deleteUnusedBowler } from '../services/bowler-deletion.js';
 
 const log = createLogger("StorageBowlers");
 
@@ -198,7 +199,7 @@ export async function updateBowler(id: number, bowler: UpdateBowler, actorUserId
 }
 
 export async function deleteBowler(id: number): Promise<void> {
-  await db.delete(bowlers).where(eq(bowlers.id, id));
+  await deleteUnusedBowler(id);
   cacheInvalidate('bowlers:');
 }
 

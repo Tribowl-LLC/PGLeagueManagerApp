@@ -32,6 +32,10 @@ import { isDev } from '../config';
 // list carries identical "Paid by …" attribution. Defined in
 // payment-reports.ts (org-scoped, name-only — never email).
 import { buildPayerNameMap } from './payments/payment-reports.js';
+import {
+  BowlerDeletionConflictError,
+  BowlerDeletionNotFoundError,
+} from '../services/bowler-deletion.js';
 
 const log = createLogger("Bowlers");
 
@@ -854,7 +858,10 @@ router.patch("/:id", async (req, res) => {
 
 router.delete("/:id", async (req, res) => {
   try {
-    const id = parseInt(req.params.id);
+    const id = Number(req.params.id);
+    if (!/^\d+$/.test(req.params.id) || !Number.isSafeInteger(id) || id <= 0) {
+      return sendError(res, "Invalid ID provided", 400, 'INVALID_ID');
+    }
     const bowler = await storage.getBowler(id);
     if (!bowler) {
       return sendError(res, "Bowler not found", 404, 'NOT_FOUND');
@@ -870,6 +877,15 @@ router.delete("/:id", async (req, res) => {
     await storage.deleteBowler(id);
     sendSuccess(res, null);
   } catch (error) {
+    if (error instanceof BowlerDeletionConflictError) {
+      const blockerSummary = error.blockers.map((blocker) => blocker.message).join(' ');
+      return sendError(res, `${error.message}. ${blockerSummary}`, error.status, 'BOWLER_DELETION_BLOCKED', {
+        blockers: error.blockers,
+      });
+    }
+    if (error instanceof BowlerDeletionNotFoundError) {
+      return sendError(res, error.message, error.status, 'NOT_FOUND');
+    }
     log.error('Error deleting bowler:', error);
     sendError(res, 'Failed to delete bowler', 500);
   }
