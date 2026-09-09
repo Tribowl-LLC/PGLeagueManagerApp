@@ -87,4 +87,33 @@ describe("useWalletPayments initialization lifecycle", () => {
     expect(googlePay.destroy).toHaveBeenCalledOnce();
     expect(result.current.googlePayAvailable).toBe(false);
   });
+
+  it("runs the synchronous recovery gate before wallet tokenization", async () => {
+    const events: string[] = [];
+    const tokenize = vi.fn(async () => {
+      events.push("tokenize");
+      return { status: "OK", token: "wallet-source" };
+    });
+    const onPaymentStarted = vi.fn(() => {
+      events.push("recovery-ready");
+      return true;
+    });
+    const applePay = { tokenize, destroy: vi.fn() };
+    mocks.initializeSquare.mockResolvedValue({
+      paymentRequest: vi.fn(() => ({ update: vi.fn() })),
+      applePay: vi.fn().mockResolvedValue(applePay),
+      googlePay: vi.fn().mockRejectedValue(new Error("unavailable")),
+    });
+    const { result } = renderHook(() => useWalletPayments({
+      ...options(1),
+      onPaymentStarted,
+    }));
+    act(() => { vi.advanceTimersByTime(400); });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => { await result.current.handleApplePayClick(); });
+
+    expect(events).toEqual(["recovery-ready", "tokenize"]);
+    expect(onPaymentStarted).toHaveBeenCalledOnce();
+    expect(tokenize).toHaveBeenCalledOnce();
+  });
 });

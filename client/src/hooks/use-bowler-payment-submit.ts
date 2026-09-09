@@ -12,10 +12,11 @@ import {
 import { isHandledPaymentError, sanitizePaymentErrorMessage } from "@/lib/payment-user-error";
 import {
   assertRosterPaymentSucceeded,
-  beginPaymentIntent,
   clearPaymentIntent,
+  interactivePaymentIntentScope,
   paymentRequestHeaders,
   paymentRequestWithRecovery,
+  prepareRosterPaymentIntent,
 } from "@/lib/payment-request-identity";
 import type { League, Bowler } from "@shared/schema";
 import type { SquareCard } from "@/hooks/use-square-payment";
@@ -25,6 +26,8 @@ type PaymentCard = SquareCard | null;
 interface UseBowlerPaymentSubmitOptions {
   league: Pick<League, "id" | "locationId">;
   bowler: Pick<Bowler, "id">;
+  actorUserId: number;
+  organizationId: number;
   card: PaymentCard;
   cardMode: "new" | "saved";
   selectedSavedCardId: string;
@@ -38,6 +41,8 @@ interface UseBowlerPaymentSubmitOptions {
 export function useBowlerPaymentSubmit({
   league,
   bowler,
+  actorUserId,
+  organizationId,
   card,
   cardMode,
   selectedSavedCardId,
@@ -52,10 +57,28 @@ export function useBowlerPaymentSubmit({
 
   return useCallback(async () => {
     try {
-      if (cardMode === "new" && !card) throw new Error("Please enter your card details before proceeding.");
-      if (cardMode === "saved" && !selectedSavedCardId) throw new Error("Please select a saved card.");
       const amountMinor = calculateTotalAmount();
       if (!Number.isSafeInteger(amountMinor) || amountMinor <= 0) throw new Error("Enter a valid payment amount.");
+      const paymentScope = interactivePaymentIntentScope({ actorUserId, organizationId, leagueId: league.id, bowlerId: bowler.id });
+      const preparedIntent = await prepareRosterPaymentIntent(paymentScope, league.id);
+      if (preparedIntent.outcome === "succeeded") {
+        clearPaymentIntent(preparedIntent.scope ?? paymentScope, preparedIntent.requestKey);
+        toast({ title: "Payment already confirmed", description: "Your previous payment was confirmed. Refreshing the payment balance." });
+        queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/financials", league.id] });
+        return;
+      }
+      if (preparedIntent.outcome === "terminal_failure") {
+        clearPaymentIntent(preparedIntent.scope ?? paymentScope, preparedIntent.requestKey);
+        throw new Error("Your previous payment was not completed. Try again.");
+      }
+      if (preparedIntent.outcome === "unresolved") {
+        assertRosterPaymentSucceeded(preparedIntent.status);
+        throw new Error("Your payment is not confirmed yet. Use payment recovery before trying again.");
+      }
+      if (cardMode === "new" && !card) throw new Error("Please enter your card details before proceeding.");
+      if (cardMode === "saved" && !selectedSavedCardId) throw new Error("Please select a saved card.");
+      const requestKey = preparedIntent.requestKey;
       const quoteResponse = await csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-quote/2`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -65,8 +88,6 @@ export function useBowlerPaymentSubmit({
       if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw makeApiError(quoteBody, quoteResponse.status, "Payment quote is unavailable");
       const sourceId = cardMode === "saved" ? selectedSavedCardId : card ? await tokenizeCard(card) : "";
       if (!sourceId) throw new Error("A payment source is required.");
-      const paymentScope = `roster:${league.id}:${bowler.id}:${amountMinor}:${quoteBody.data.fingerprint}:${cardMode}`;
-      const requestKey = beginPaymentIntent(paymentScope);
       const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-charge/2`, {
         method: "POST",
         headers: paymentRequestHeaders(requestKey),
@@ -113,5 +134,5 @@ export function useBowlerPaymentSubmit({
     } finally {
       setIsSubmitting(false);
     }
-  }, [card, cardMode, selectedSavedCardId, league, bowler, storeCard, buyerEmail, calculateTotalAmount, setIsSubmitting, setShowPaymentSetup, toast, navigate]);
+  }, [card, cardMode, selectedSavedCardId, league, bowler, actorUserId, organizationId, storeCard, buyerEmail, calculateTotalAmount, setIsSubmitting, setShowPaymentSetup, toast, navigate]);
 }

@@ -6,6 +6,50 @@ export const PAYMENT_REQUEST_KEY_MAX_LENGTH = 109;
 
 const STORAGE_PREFIX = 'leaguevault:payment-intent:v1:';
 
+export interface InteractivePaymentIntentScope {
+  actorUserId: number;
+  organizationId: number;
+  leagueId: number;
+  bowlerId: number;
+}
+
+/**
+ * Browser identity for one interactive checkout actor and payer.  Amount,
+ * quote fingerprint, card mode, and provider source tokens deliberately do
+ * not participate: those values may change while an unresolved operation is
+ * being recovered after a reload.
+ */
+export function interactivePaymentIntentScope(input: InteractivePaymentIntentScope): string {
+  return JSON.stringify({
+    version: 2,
+    kind: 'interactive-roster',
+    actorUserId: input.actorUserId,
+    organizationId: input.organizationId,
+    leagueId: input.leagueId,
+    bowlerId: input.bowlerId,
+  });
+}
+
+function interactiveScopeBowlerId(scope: string): number {
+  try {
+    const parsed = JSON.parse(scope) as Partial<InteractivePaymentIntentScope> & { version?: number; kind?: string };
+    const actorUserId = parsed.actorUserId;
+    const organizationId = parsed.organizationId;
+    const leagueId = parsed.leagueId;
+    const bowlerId = parsed.bowlerId;
+    if (parsed.version !== 2 || parsed.kind !== 'interactive-roster'
+      || typeof actorUserId !== 'number' || !Number.isSafeInteger(actorUserId) || actorUserId <= 0
+      || typeof organizationId !== 'number' || !Number.isSafeInteger(organizationId) || organizationId <= 0
+      || typeof leagueId !== 'number' || !Number.isSafeInteger(leagueId) || leagueId <= 0
+      || typeof bowlerId !== 'number' || !Number.isSafeInteger(bowlerId) || bowlerId <= 0) {
+      throw new Error('Payment intent scope is invalid');
+    }
+    return bowlerId;
+  } catch {
+    throw new Error('Payment intent scope is invalid');
+  }
+}
+
 export function isValidPaymentRequestKey(value: string): boolean {
   return value.length >= PAYMENT_REQUEST_KEY_MIN_LENGTH
     && value.length <= PAYMENT_REQUEST_KEY_MAX_LENGTH
@@ -14,6 +58,15 @@ export function isValidPaymentRequestKey(value: string): boolean {
 
 function storageKey(scope: string): string {
   return `${STORAGE_PREFIX}${scope}`;
+}
+
+function browserStorage(): Storage | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.localStorage;
+  } catch {
+    throw new Error('Payment request identity storage is unavailable');
+  }
 }
 
 function generateUuid(): string {
@@ -33,37 +86,133 @@ export function beginPaymentIntent(scope: string): string {
   if (!scope || scope.includes('\u0000')) {
     throw new Error('Payment intent scope is invalid');
   }
-  const browserStorage = typeof window === 'undefined' ? null : window.localStorage;
-  if (!browserStorage) return generateUuid();
+  const storage = browserStorage();
+  if (!storage) return generateUuid();
   const key = storageKey(scope);
-  const existing = browserStorage.getItem(key);
-  if (existing && isValidPaymentRequestKey(existing)) return existing;
+  const existing = storage.getItem(key);
+  if (existing) {
+    if (isValidPaymentRequestKey(existing)) return existing;
+    throw new Error('Stored payment request identity is invalid');
+  }
   const requestKey = generateUuid();
-  browserStorage.setItem(key, requestKey);
+  try {
+    storage.setItem(key, requestKey);
+  } catch {
+    throw new Error('Payment request identity could not be persisted');
+  }
   return requestKey;
 }
 
-export function clearPaymentIntent(scope: string): void {
-  if (typeof window !== 'undefined') window.localStorage.removeItem(storageKey(scope));
+/** Return an exact stored identity without minting one for a read-only probe. */
+export function getPaymentIntent(scope: string): string | null {
+  if (!scope || scope.includes('\u0000')) throw new Error('Payment intent scope is invalid');
+  const storage = browserStorage();
+  if (!storage) return null;
+  const existing = storage.getItem(storageKey(scope));
+  if (!existing) return null;
+  if (!isValidPaymentRequestKey(existing)) throw new Error('Stored payment request identity is invalid');
+  return existing;
+}
+
+type StoredPaymentIntent = { scope: string; requestKey: string };
+
+function isPositiveSafeInteger(value: string): boolean {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0;
 }
 
 /**
- * Remove every browser intent carrying a request key. This is used only for
- * terminal provider outcomes (failed_terminal/canceled); an unresolved
- * provider outcome must keep its original idempotency key so a retry cannot
- * accidentally create a second charge.
+ * Match only the interactive card/wallet scopes emitted by the previous
+ * release. Fingerprints are opaque and may contain colons, so the parser uses
+ * fixed prefixes/suffixes rather than guessing from a split field. Manual
+ * cash/check scopes are deliberately excluded.
+ */
+function isLegacyInteractiveScope(scope: string, leagueId: number, bowlerId: number): boolean {
+  const prefixes = [
+    `roster:${leagueId}:${bowlerId}:`,
+    `make-payment-roster:${leagueId}:${bowlerId}:`,
+  ];
+  for (const prefix of prefixes) {
+    if (!scope.startsWith(prefix)) continue;
+    const remainder = scope.slice(prefix.length);
+    const amountEnd = remainder.indexOf(':');
+    if (amountEnd <= 0 || !isPositiveSafeInteger(remainder.slice(0, amountEnd))) return false;
+    const fingerprintAndMode = remainder.slice(amountEnd + 1);
+    return [':new', ':saved'].some((suffix) => fingerprintAndMode.endsWith(suffix)
+      && fingerprintAndMode.slice(0, -suffix.length).length > 0);
+  }
+
+  const adminPrefix = `admin:${leagueId}:${bowlerId}:`;
+  if (scope.startsWith(adminPrefix)) {
+    const remainder = scope.slice(adminPrefix.length);
+    const amountEnd = remainder.indexOf(':');
+    if (amountEnd <= 0 || !isPositiveSafeInteger(remainder.slice(0, amountEnd))) return false;
+    const fingerprintAndMode = remainder.slice(amountEnd + 1);
+    return [':credit_card:new', ':credit_card:saved'].some((suffix) => fingerprintAndMode.endsWith(suffix)
+      && fingerprintAndMode.slice(0, -suffix.length).length > 0);
+  }
+
+  for (const prefix of [
+    `admin-wallet:${leagueId}:${bowlerId}:`,
+    `make-payment-wallet:${leagueId}:${bowlerId}:`,
+  ]) {
+    if (scope.startsWith(prefix) && isPositiveSafeInteger(scope.slice(prefix.length))) return true;
+  }
+  return false;
+}
+
+function getLegacyInteractivePaymentIntents(leagueId: number, bowlerId: number): StoredPaymentIntent[] {
+  const storage = browserStorage();
+  if (!storage) return [];
+  const intents: StoredPaymentIntent[] = [];
+  for (let index = 0; index < storage.length; index += 1) {
+    const key = storage.key(index);
+    if (!key?.startsWith(STORAGE_PREFIX)) continue;
+    const scope = key.slice(STORAGE_PREFIX.length);
+    if (!isLegacyInteractiveScope(scope, leagueId, bowlerId)) continue;
+    const requestKey = storage.getItem(key);
+    if (!requestKey) continue;
+    if (!isValidPaymentRequestKey(requestKey)) throw new Error('Stored payment request identity is invalid');
+    intents.push({ scope, requestKey });
+  }
+  return intents;
+}
+
+export function clearPaymentIntent(scope: string, expectedRequestKey?: string): void {
+  try {
+    const storage = browserStorage();
+    if (!storage) return;
+    const key = storageKey(scope);
+    if (expectedRequestKey !== undefined && storage.getItem(key) !== expectedRequestKey) return;
+    storage.removeItem(key);
+  } catch {
+    // A failed cleanup is safe: the next recovery probe will still find the
+    // acknowledged/terminal operation and will never submit a second charge.
+  }
+}
+
+/**
+ * Remove every browser intent carrying a request key. This is used only after
+ * an active caller has acknowledged a succeeded or terminal provider outcome;
+ * a cancelled recovery probe must leave the key available for the next probe.
  */
 export function clearPaymentIntentForRequestKey(requestKey: string): void {
-  if (typeof window === 'undefined') return;
-  const browserStorage = window.localStorage;
-  const matchingKeys: string[] = [];
-  for (let index = 0; index < browserStorage.length; index += 1) {
-    const key = browserStorage.key(index);
-    if (key?.startsWith(STORAGE_PREFIX) && browserStorage.getItem(key) === requestKey) {
-      matchingKeys.push(key);
+  try {
+    const storage = browserStorage();
+    if (!storage) return;
+    const matchingKeys: string[] = [];
+    for (let index = 0; index < storage.length; index += 1) {
+      const key = storage.key(index);
+      if (key?.startsWith(STORAGE_PREFIX) && storage.getItem(key) === requestKey) {
+        matchingKeys.push(key);
+      }
     }
+    for (const key of matchingKeys) {
+      try { storage.removeItem(key); } catch { /* see clearPaymentIntent */ }
+    }
+  } catch {
+    // A failed cleanup is safe: the next recovery probe remains authoritative.
   }
-  for (const key of matchingKeys) browserStorage.removeItem(key);
 }
 
 export function paymentRequestHeaders(requestKey: string): Record<string, string> {
@@ -132,6 +281,132 @@ export async function recoverRosterPaymentOperationByRequestKey(leagueId: number
   });
 }
 
+type RecoveryOperation = {
+  contractVersion?: string;
+  operationId?: string;
+  status?: string;
+};
+
+type ResponseDecision = 'success' | 'recover' | 'preserve' | 'terminal_failure' | 'unknown';
+
+async function readRecoveryOperation(response: Response): Promise<RecoveryOperation> {
+  const body = await response.clone().json().catch(() => null) as {
+    data?: RecoveryOperation;
+    error?: { details?: RecoveryOperation };
+    operationId?: string;
+    status?: string;
+  } | null;
+  return body?.data ?? body?.error?.details ?? body ?? {};
+}
+
+function classifyRosterResponse(operation: RecoveryOperation): ResponseDecision {
+  const status = operation.status?.toLowerCase();
+  if (operation.contractVersion === 'interactive-obligation-charge/2') {
+    if (status === 'succeeded') return 'success';
+    if (status === 'reconciliation_required') return 'recover';
+    if (isTerminalRosterPaymentFailure(status)) return 'terminal_failure';
+    return 'preserve';
+  }
+  if (operation.contractVersion === 'interactive-obligation-recovery/1') {
+    if (status === 'succeeded') return 'success';
+    if (isTerminalRosterPaymentFailure(status)) return 'terminal_failure';
+    return 'preserve';
+  }
+  if (status === 'completed' || status === 'succeeded') return 'recover';
+  if (status === 'reconciliation_required') return 'recover';
+  if (isTerminalRosterPaymentFailure(status)) return 'terminal_failure';
+  return operation.operationId ? 'preserve' : 'unknown';
+}
+
+async function reconcileRosterResponse(
+  response: Response,
+  rosterLeagueId?: number,
+): Promise<{ response: Response; operation: RecoveryOperation; decision: ResponseDecision }> {
+  const operation = await readRecoveryOperation(response);
+  const decision = classifyRosterResponse(operation);
+  if (rosterLeagueId === undefined || decision !== 'recover' || !operation.operationId) {
+    return { response, operation, decision };
+  }
+  const recovered = await recoverRosterPaymentOperation(rosterLeagueId, operation.operationId).catch(() => null);
+  const finalResponse = recovered ?? response;
+  const finalOperation = recovered ? await readRecoveryOperation(recovered) : operation;
+  const finalDecision = recovered ? classifyRosterResponse(finalOperation) : decision;
+  return { response: finalResponse, operation: finalOperation, decision: finalDecision };
+}
+
+export type PreparedRosterPaymentIntent = {
+  requestKey: string;
+  scope?: string;
+  outcome: 'none' | 'new' | 'succeeded' | 'unresolved' | 'terminal_failure';
+  response?: Response;
+  status?: string;
+};
+
+async function inspectRosterPaymentIntent(
+  intent: StoredPaymentIntent,
+  leagueId: number,
+): Promise<PreparedRosterPaymentIntent> {
+  const existing = await recoverRosterPaymentOperationByRequestKey(leagueId, intent.requestKey);
+  if (existing.status === 404) return { requestKey: intent.requestKey, scope: intent.scope, outcome: 'none' };
+
+  const reconciled = await reconcileRosterResponse(existing, leagueId);
+  const status = reconciled.operation.status;
+  if (reconciled.decision === 'success') {
+    return { requestKey: intent.requestKey, scope: intent.scope, outcome: 'succeeded', response: reconciled.response, status };
+  }
+  if (reconciled.decision === 'terminal_failure') {
+    return { requestKey: intent.requestKey, scope: intent.scope, outcome: 'terminal_failure', response: reconciled.response, status };
+  }
+  return { requestKey: intent.requestKey, scope: intent.scope, outcome: 'unresolved', response: reconciled.response, status };
+}
+
+/**
+ * Probe an existing browser intent before obtaining a quote or tokenizing a
+ * source. A 404 is the only indication that a newly persisted key may submit;
+ * every other response remains authoritative and prevents a replacement.
+ */
+export async function prepareRosterPaymentIntent(
+  scope: string,
+  leagueId: number,
+  options: { createIfMissing?: boolean } = {},
+): Promise<PreparedRosterPaymentIntent> {
+  const stored = getPaymentIntent(scope);
+  const bowlerId = interactiveScopeBowlerId(scope);
+  const candidates: StoredPaymentIntent[] = stored ? [{ scope, requestKey: stored }] : [];
+  const legacy = getLegacyInteractivePaymentIntents(leagueId, bowlerId)
+    .filter((intent) => intent.requestKey !== stored);
+  candidates.push(...legacy);
+
+  let stableKeyHasNoOperation = false;
+  let succeeded: PreparedRosterPaymentIntent | null = null;
+  let terminalFailure: PreparedRosterPaymentIntent | null = null;
+  let unresolved: PreparedRosterPaymentIntent | null = null;
+  for (const candidate of candidates) {
+    const prepared = await inspectRosterPaymentIntent(candidate, leagueId);
+    if (prepared.outcome === 'none') {
+      if (candidate.scope === scope) stableKeyHasNoOperation = true;
+    } else if (prepared.outcome === 'unresolved') {
+      unresolved ??= prepared;
+    } else if (prepared.outcome === 'succeeded') {
+      succeeded ??= prepared;
+    } else if (prepared.outcome === 'terminal_failure') {
+      terminalFailure ??= prepared;
+    }
+  }
+
+  // Any unresolved exact operation dominates an older success/terminal entry:
+  // the caller must recover it before it can safely submit another source.
+  if (unresolved) return unresolved;
+  if (succeeded) return succeeded;
+  if (terminalFailure) return terminalFailure;
+  if (stableKeyHasNoOperation && stored) return { requestKey: stored, scope, outcome: 'new' };
+  if (options.createIfMissing === false) return { requestKey: '', outcome: 'none' };
+
+  const requestKey = beginPaymentIntent(scope);
+  const prepared = await inspectRosterPaymentIntent({ scope, requestKey }, leagueId);
+  return prepared.outcome === 'none' ? { requestKey, scope, outcome: 'new' } : prepared;
+}
+
 /**
  * Reconcile a durable payment operation when the request carrying a provider
  * token is lost to a network failure. The request key is the only recovery
@@ -142,69 +417,10 @@ export async function paymentRequestWithRecovery(
   request: () => Promise<Response>,
   rosterLeagueId?: number,
 ): Promise<Response> {
-  type RecoveryOperation = {
-    contractVersion?: string;
-    operationId?: string;
-    status?: string;
-  };
-  type ResponseDecision = 'success' | 'recover' | 'preserve' | 'terminal_failure' | 'unknown';
-  const readRecoveryOperation = async (response: Response): Promise<RecoveryOperation> => {
-    const body = await response.clone().json().catch(() => null) as {
-      data?: RecoveryOperation;
-      error?: { details?: RecoveryOperation };
-      operationId?: string;
-      status?: string;
-    } | null;
-    // The exact roster route returns `{ data: ... }` and identifies the
-    // durable operation by its operationId.
-    return body?.data ?? body?.error?.details ?? body ?? {};
-  };
-  const classifyRosterResponse = (operation: RecoveryOperation): ResponseDecision => {
-    const status = operation.status?.toLowerCase();
-    if (operation.contractVersion === 'interactive-obligation-charge/2') {
-      if (status === 'succeeded') return 'success';
-      if (status === 'reconciliation_required') return 'recover';
-      if (isTerminalRosterPaymentFailure(status)) return 'terminal_failure';
-      // The charge contract intentionally returns pending/provider_unknown/
-      // and retry_scheduled as-is. They are not safe to replay. An
-      // action_required result is terminal in this ledger (there is no
-      // challenge/resume contract), so it is handled above.
-      return 'preserve';
-    }
-    // An operation-id recovery response has already passed through the exact
-    // recovery endpoint. Do not call that endpoint recursively when it still
-    // reports reconciliation_required.
-    if (operation.contractVersion === 'interactive-obligation-recovery/1') {
-      if (status === 'succeeded') return 'success';
-      if (isTerminalRosterPaymentFailure(status)) return 'terminal_failure';
-      return 'preserve';
-    }
-    if (status === 'completed' || status === 'succeeded') return 'recover';
-    if (status === 'reconciliation_required') return 'recover';
-    if (isTerminalRosterPaymentFailure(status)) return 'terminal_failure';
-    return operation.operationId ? 'preserve' : 'unknown';
-  };
-  const reconcileRosterResponse = async (response: Response): Promise<Response> => {
-    if (rosterLeagueId === undefined) return response;
-    const operation = await readRecoveryOperation(response);
-    const decision = classifyRosterResponse(operation);
-    if (decision === 'terminal_failure') {
-      clearPaymentIntentForRequestKey(requestKey);
-      return response;
-    }
-    if (decision !== 'recover' || !operation.operationId) return response;
-    // Generic terminal provider success and exact reconciliation_required
-    // responses are handed to the operation-id finalizer. Pending,
-    // provider_unknown, retry_scheduled, and an already completed exact
-    // recovery response are returned unchanged. action_required is terminal
-    // and has already had its browser intent cleared above.
-    const recovered = await recoverRosterPaymentOperation(rosterLeagueId, operation.operationId).catch(() => null);
-    // A roster recovery may deliberately return 409/202 while preserving the
-    // durable operation identity and reconciliation status. Keep that exact
-    // response so callers never mistake a generic provider response for a
-    // confirmed local allocation; only the exact terminal `succeeded` status
-    // is accepted by checkout callers.
-    return recovered ?? response;
+  const reconcile = async (response: Response): Promise<Response> => {
+    const reconciled = await reconcileRosterResponse(response, rosterLeagueId);
+    if (reconciled.decision === 'terminal_failure') clearPaymentIntentForRequestKey(requestKey);
+    return reconciled.response;
   };
 
   // Before tokenized-source submission, ask the server whether this exact
@@ -214,7 +430,7 @@ export async function paymentRequestWithRecovery(
   // under a pending/leased/provider-unknown operation.
   if (rosterLeagueId !== undefined) {
     const existing = await recoverRosterPaymentOperationByRequestKey(rosterLeagueId, requestKey);
-    if (existing.status !== 404) return await reconcileRosterResponse(existing);
+    if (existing.status !== 404) return await reconcile(existing);
   }
 
   try {
@@ -225,11 +441,11 @@ export async function paymentRequestWithRecovery(
       // Exact roster responses already carry the authoritative operation
       // state. Do not replace a pending/unknown/action-required/terminal
       // response with a generic request-key 404.
-      if (initialDecision !== 'unknown') return await reconcileRosterResponse(initial);
+      if (initialDecision !== 'unknown') return await reconcile(initial);
       // Exact roster errors already contain the authoritative contract
       // outcome. Never fall back to a broad request-key recovery endpoint.
     }
-    return await reconcileRosterResponse(initial);
+    return await reconcile(initial);
   } catch (error) {
     // A transport failure has no response or operation identity, but the
     // exact request key can still identify a server-created operation. Ask
@@ -238,7 +454,7 @@ export async function paymentRequestWithRecovery(
     // the request never reached the server, so preserve the original error.
     if (rosterLeagueId !== undefined) {
       const recovered = await recoverRosterPaymentOperationByRequestKey(rosterLeagueId, requestKey).catch(() => null);
-      if (recovered && recovered.status !== 404) return await reconcileRosterResponse(recovered);
+      if (recovered && recovered.status !== 404) return await reconcile(recovered);
     }
     throw error;
   }

@@ -22,7 +22,7 @@ import { useToast } from "@/hooks/use-toast";
 import { logger } from "@/lib/logger";
 import { isHandledPaymentError, sanitizePaymentErrorMessage } from "@/lib/payment-user-error";
 import { isProviderNotConfiguredError, providerNotConfiguredToast, makeApiError } from "@/lib/provider-not-configured";
-import { assertRosterPaymentSucceeded, beginPaymentIntent, clearPaymentIntent, isTerminalRosterPaymentFailure, paymentRequestHeaders, paymentRequestWithRecovery } from "@/lib/payment-request-identity";
+import { assertRosterPaymentSucceeded, clearPaymentIntent, interactivePaymentIntentScope, isTerminalRosterPaymentFailure, paymentRequestHeaders, paymentRequestWithRecovery, prepareRosterPaymentIntent } from "@/lib/payment-request-identity";
 import { paymentHistoryFinancialQueryKey, invalidatePaymentHistoryFinancials } from "@/lib/payment-history-financial-query";
 import { resolveInteractiveFinancialRead } from "@/lib/financial-read-contract";
 
@@ -103,6 +103,8 @@ export function invalidatePaymentViews(leagueId: number, bowlerId: number): void
 
 export default function MakePaymentPage() {
   const { toast } = useToast();
+  const toastRef = useRef(toast);
+  toastRef.current = toast;
   const [, navigate] = useLocation();
   const search = useSearch();
   const params = new URLSearchParams(search);
@@ -118,9 +120,12 @@ export default function MakePaymentPage() {
   const [receiptEmail, setReceiptEmail] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isWalletProcessing, setIsWalletProcessing] = useState(false);
+  const [walletRecoveryReady, setWalletRecoveryReady] = useState(false);
+  const [recoveryRetry, setRecoveryRetry] = useState(0);
   const [cardEditorMode, setCardEditorMode] = useState<EditorMode>(null);
   const [oneTimeCardEditorKey, setOneTimeCardEditorKey] = useState(0);
   const walletRequestKeyRef = useRef<string | null>(null);
+  const recoveryNoticeRef = useRef<string | null>(null);
   const intentAppliedRef = useRef(false);
 
   const { data: currentUser, isLoading: loadingUser, error: userError } = useQuery<ApiResponse<User>>({ queryKey: ["/api/user"] });
@@ -192,7 +197,15 @@ export default function MakePaymentPage() {
   const clampedWeekCount = clampPaymentWeekCount(oneTimePaymentWeekCount, maximumWeekCount);
   const selectedOption = fullBalanceOnly ? options.at(-1) : options.find((option) => option.weekCount === clampedWeekCount);
   const paymentAmountMinor = fullBalanceOnly ? remainingBalance : selectedOption?.amountMinor ?? 0;
+  const hasPositivePaymentAmount = paymentAmountMinor > 0;
   const bowlerEmail = details?.bowler?.email ?? "";
+  const paymentActorUserId = currentUser?.data?.id;
+  const paymentOrganizationId = league?.organizationId;
+  const paymentIntentScope = typeof bowlerId === "number" && typeof leagueId === "number" && typeof paymentOrganizationId === "number" && Number.isSafeInteger(paymentOrganizationId) && typeof paymentActorUserId === "number" && Number.isSafeInteger(paymentActorUserId)
+    ? interactivePaymentIntentScope({ actorUserId: paymentActorUserId, organizationId: paymentOrganizationId, leagueId, bowlerId })
+    : null;
+  const [isRecoveryBlocked, setIsRecoveryBlocked] = useState(false);
+  const { supportsWallets } = usePaymentProvider(league?.locationId ?? null);
 
   useEffect(() => {
     if (fullBalanceOnly && maximumWeekCount > 0) setOneTimePaymentWeekCount(maximumWeekCount);
@@ -213,12 +226,76 @@ export default function MakePaymentPage() {
     if (savedCardReadState !== "ready") return;
     setCardEditorMode(savedCards.length === 0 ? "one-time" : null);
   }, [savedCardReadState, savedCards.length]);
+  // Wallet tokenization must remain inside the browser's user gesture. This
+  // single scoped probe owns recovery state and persists the identity before
+  // Square's button is enabled, so the click callback never awaits recovery.
+  useEffect(() => {
+    const recoveryLeagueId = leagueId;
+    const recoveryBowlerId = bowlerId;
+    const walletShouldPrepare = supportsWallets && typeof recoveryLeagueId === "number" && typeof recoveryBowlerId === "number" && hasPositivePaymentAmount;
+    if (!paymentIntentScope || typeof recoveryLeagueId !== "number" || typeof recoveryBowlerId !== "number") {
+      walletRequestKeyRef.current = null;
+      setWalletRecoveryReady(false);
+      setIsRecoveryBlocked(false);
+      return;
+    }
+    let cancelled = false;
+    setWalletRecoveryReady(false);
+    setIsRecoveryBlocked(false);
+    void prepareRosterPaymentIntent(paymentIntentScope, recoveryLeagueId, { createIfMissing: walletShouldPrepare })
+      .then(async (prepared) => {
+        if (cancelled) return;
+        if (prepared.outcome === "none") {
+          walletRequestKeyRef.current = null;
+        } else if (prepared.outcome === "new") {
+          walletRequestKeyRef.current = prepared.requestKey;
+          if (walletShouldPrepare) {
+            recoveryNoticeRef.current = null;
+            setWalletRecoveryReady(true);
+          }
+        } else if (prepared.outcome === "succeeded") {
+          setIsRecoveryBlocked(true);
+          const noticeKey = `${paymentIntentScope}:${prepared.requestKey}`;
+          if (recoveryNoticeRef.current !== noticeKey) {
+            recoveryNoticeRef.current = noticeKey;
+            toastRef.current({ title: "Payment already confirmed", description: "Your previous payment was confirmed. Refreshing the payment balance." });
+          }
+          await invalidatePaymentHistoryFinancials(queryClient, recoveryLeagueId, recoveryBowlerId);
+          if (cancelled) return;
+          invalidatePaymentViews(recoveryLeagueId, recoveryBowlerId);
+          clearPaymentIntent(prepared.scope ?? paymentIntentScope, prepared.requestKey);
+          walletRequestKeyRef.current = null;
+          setIsRecoveryBlocked(false);
+        } else if (prepared.outcome === "terminal_failure") {
+          clearPaymentIntent(prepared.scope ?? paymentIntentScope, prepared.requestKey);
+          if (walletShouldPrepare) {
+            const retry = await prepareRosterPaymentIntent(paymentIntentScope, recoveryLeagueId);
+            if (!cancelled && retry.outcome === "new") {
+              walletRequestKeyRef.current = retry.requestKey;
+              recoveryNoticeRef.current = null;
+              setWalletRecoveryReady(true);
+            }
+          }
+        } else if (prepared.outcome === "unresolved") {
+          walletRequestKeyRef.current = prepared.requestKey;
+          setIsRecoveryBlocked(true);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setIsRecoveryBlocked(true);
+      });
+    return () => { cancelled = true; };
+  }, [supportsWallets, paymentIntentScope, leagueId, bowlerId, hasPositivePaymentAmount, recoveryRetry]);
 
   const { card, isInitialized, initializeCard, cleanupCard } = useSquarePayment({
     locationId: league?.locationId,
     onError: (error) => toast({ title: "Payment Setup Error", description: error, variant: "destructive" }),
   });
-  const { supportsWallets } = usePaymentProvider(league?.locationId ?? null);
+  const resetWalletRecovery = useCallback(() => {
+    walletRequestKeyRef.current = null;
+    setWalletRecoveryReady(false);
+    setRecoveryRetry((value) => value + 1);
+  }, []);
   const previousLeagueIdRef = useRef<number | undefined>(leagueId);
   useEffect(() => {
     if (previousLeagueIdRef.current !== undefined && previousLeagueIdRef.current !== leagueId) {
@@ -245,17 +322,22 @@ export default function MakePaymentPage() {
       const quoteResponse = await csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-quote/2`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ amountMinor: paymentAmountMinor, payerBowlerId: bowlerId }) });
       const quoteBody = await quoteResponse.json().catch(() => ({}));
       if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw new Error(quoteBody.error?.message || "Payment allocation is unavailable.");
-      const scope = `make-payment-wallet:${league.id}:${bowlerId}:${paymentAmountMinor}`;
-      const requestKey = walletRequestKeyRef.current ?? beginPaymentIntent(scope);
+      if (!paymentIntentScope) throw new Error("Payment identity is unavailable. Refresh and try again.");
+      const scope = paymentIntentScope;
+      const requestKey = walletRequestKeyRef.current;
+      if (!requestKey) throw new Error("Payment identity is unavailable. Retry payment recovery before trying again.");
       walletRequestKeyRef.current = requestKey;
       const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-charge/2`, { method: "POST", headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" }, body: JSON.stringify({ amountMinor: paymentAmountMinor, payerBowlerId: quoteBody.data.payerBowlerId ?? bowlerId, sourceId: token, sourceKind: "wallet", buyerEmail: (overrideEmail ?? bowlerEmail) || null, storeCard: false, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }) }), league.id);
       const body = await response.json().catch(() => ({}));
       const status = body.data?.status ?? body.status;
       clearWalletRequestKeyForTerminalStatus(status, walletRequestKeyRef);
-      if (!response.ok) throw makeApiError(body, response.status, "Wallet payment failed.");
+      if (!response.ok) {
+        resetWalletRecovery();
+        throw makeApiError(body, response.status, "Wallet payment failed.");
+      }
+      resetWalletRecovery();
       assertRosterPaymentSucceeded(status);
       clearPaymentIntent(scope);
-      walletRequestKeyRef.current = null;
       cleanupCard();
       setCardEditorMode(null);
       toast({ title: "Payment Successful", description: `${walletType === "apple_pay" ? "Apple Pay" : "Google Pay"} payment completed.` });
@@ -270,32 +352,50 @@ export default function MakePaymentPage() {
       toast(isProviderNotConfiguredError(error) ? providerNotConfiguredToast({ navigate, locationId: league.locationId }) : { title: "Payment Failed", description: sanitizePaymentErrorMessage(error, "Unable to process payment."), variant: "destructive" });
     }
     finally { setIsWalletProcessing(false); }
-  }, [bowlerId, leagueId, league, resolvedFinancial.status, paymentAmountMinor, bowlerEmail, receiptEmail, toast, navigate, cleanupCard]);
-  const beginWalletPayment = useCallback(() => { if (leagueId && bowlerId && paymentAmountMinor > 0) walletRequestKeyRef.current = beginPaymentIntent(`make-payment-wallet:${leagueId}:${bowlerId}:${paymentAmountMinor}`); }, [leagueId, bowlerId, paymentAmountMinor]);
-  const wallet = useWalletPayments({ locationId: league?.locationId, amountCents: paymentAmountMinor, enabled: savedCardReadState === "ready" && !!league?.locationId && paymentAmountMinor > 0 && supportsWallets, onPaymentStarted: beginWalletPayment, onTokenReceived: handleWalletPayment, onError: (error) => toast({ title: "Wallet Payment Error", description: error, variant: "destructive" }) });
+  }, [bowlerId, leagueId, league, resolvedFinancial.status, paymentAmountMinor, bowlerEmail, receiptEmail, toast, navigate, cleanupCard, paymentIntentScope, resetWalletRecovery]);
+  const beginWalletPayment = useCallback(() => walletRecoveryReady, [walletRecoveryReady]);
+  const wallet = useWalletPayments({ locationId: league?.locationId, amountCents: paymentAmountMinor, enabled: savedCardReadState === "ready" && !!league?.locationId && paymentAmountMinor > 0 && supportsWallets && walletRecoveryReady, onPaymentStarted: beginWalletPayment, onTokenReceived: handleWalletPayment, onError: (error) => toast({ title: "Wallet Payment Error", description: error, variant: "destructive" }) });
   const cleanupWallet = wallet.cleanup;
   useEffect(() => () => cleanupWallet(), [cleanupWallet]);
 
   const submitOneTimePayment = async () => {
     if (!bowlerId || !leagueId || !league || resolvedFinancial.status === "unavailable" || financialError || paymentAmountMinor <= 0) { toast({ title: "Payment unavailable", description: "Exact payment obligations are unavailable. Refresh and try again.", variant: "destructive" }); return; }
-    if (cardMode === "new" && (!card || !isInitialized)) { toast({ title: "Card details required", description: "Enter your card details before paying.", variant: "destructive" }); return; }
-    if (cardMode === "saved" && !selectedSavedCardId) { toast({ title: "Card required", description: "Select a saved card before paying.", variant: "destructive" }); return; }
-    if (!bowlerEmail && !receiptEmail.trim()) { toast({ title: "Email required", description: "Enter an email for the receipt before paying.", variant: "destructive" }); return; }
     try {
       setIsSubmitting(true);
+      if (!paymentIntentScope) throw new Error("Payment identity is unavailable. Refresh and try again.");
+      const preparedIntent = await prepareRosterPaymentIntent(paymentIntentScope, league.id);
+      if (preparedIntent.outcome === "succeeded") {
+        setIsRecoveryBlocked(true);
+        toast({ title: "Payment already confirmed", description: "Your previous payment was confirmed. Refreshing the payment balance." });
+        await invalidatePaymentHistoryFinancials(queryClient, leagueId, bowlerId);
+        invalidatePaymentViews(leagueId, bowlerId);
+        clearPaymentIntent(preparedIntent.scope ?? paymentIntentScope, preparedIntent.requestKey);
+        setIsRecoveryBlocked(false);
+        return;
+      }
+      if (preparedIntent.outcome === "terminal_failure") {
+        clearPaymentIntent(preparedIntent.scope ?? paymentIntentScope, preparedIntent.requestKey);
+        throw new Error("Your previous payment was not completed. Try again.");
+      }
+      if (preparedIntent.outcome === "unresolved") {
+        assertRosterPaymentSucceeded(preparedIntent.status);
+        throw new Error("Your payment is not confirmed yet. Use payment recovery before trying again.");
+      }
+      if (!bowlerEmail && !receiptEmail.trim()) throw new Error("Email required. Enter an email for the receipt before paying.");
+      if (cardMode === "new" && (!card || !isInitialized)) throw new Error("Card details required. Enter your card details before paying.");
+      if (cardMode === "saved" && !selectedSavedCardId) throw new Error("Card required. Select a saved card before paying.");
+      const requestKey = preparedIntent.requestKey;
       const quoteResponse = await csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-quote/2`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ amountMinor: paymentAmountMinor, payerBowlerId: bowlerId }) });
       const quoteBody = await quoteResponse.json().catch(() => ({}));
       if (!quoteResponse.ok || !quoteBody.data?.fingerprint || !Number.isSafeInteger(quoteBody.data?.amountMinor)) throw new Error(quoteBody.error?.message || "Exact payment obligations are unavailable.");
       const cardToTokenize = card;
       if (cardMode === "new" && !cardToTokenize) throw new Error("A payment source is required.");
       const sourceId = cardMode === "saved" ? selectedSavedCardId : await tokenizeCard(cardToTokenize);
-      const scope = `make-payment-roster:${league.id}:${bowlerId}:${paymentAmountMinor}:${quoteBody.data.fingerprint}:${cardMode}`;
-      const requestKey = beginPaymentIntent(scope);
       const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-charge/2`, { method: "POST", headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" }, body: JSON.stringify({ amountMinor: paymentAmountMinor, payerBowlerId: quoteBody.data.payerBowlerId ?? bowlerId, sourceId, sourceKind: cardMode === "saved" ? "saved_card" : "new_card", buyerEmail: bowlerEmail || receiptEmail.trim() || null, storeCard: cardMode === "new" ? storeCard : false, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }) }), league.id);
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw makeApiError(body, response.status, "Payment failed");
       assertRosterPaymentSucceeded(body.data?.status ?? body.status);
-      clearPaymentIntent(scope);
+      clearPaymentIntent(paymentIntentScope);
       cleanupCard();
       const reinitializeOneTimeEditor = shouldReinitializeOneTimeCardEditor(cardMode, savedCards.length);
       setCardEditorMode(reinitializeOneTimeEditor ? "one-time" : null);
@@ -331,7 +431,7 @@ export default function MakePaymentPage() {
         {hasMultipleLeagues ? <button type="button" onClick={() => setLeagueSheetOpen(true)} className="flex items-center gap-1 text-slate-500 hover:text-slate-700 transition-colors">{league.name}<span aria-hidden="true">⌄</span></button> : <p className="text-muted-foreground">{league.name}</p>}
       </div>
       <ErrorBoundary level="section">
-        {isPaidInFull ? <div className="rounded-lg border border-green-500/50 bg-green-500/5 p-6 text-center"><h2 className="text-lg font-semibold text-green-700">Season Paid in Full</h2><p className="mt-1 text-sm text-muted-foreground">There is no remaining one-time balance.</p></div> : <BowlerOneTimePaymentCard
+        {isRecoveryBlocked ? <div role="status" className="rounded-lg border border-amber-500/50 bg-amber-500/5 p-6 text-center"><h2 className="text-lg font-semibold">Payment confirmation in progress</h2><p className="mt-1 text-sm text-muted-foreground">Your previous payment is still being confirmed. Check its status before trying another card.</p><button type="button" className="mt-3 text-sm underline" onClick={() => setRecoveryRetry((value) => value + 1)}>Check payment status again</button></div> : isPaidInFull ? <div className="rounded-lg border border-green-500/50 bg-green-500/5 p-6 text-center"><h2 className="text-lg font-semibold text-green-700">Season Paid in Full</h2><p className="mt-1 text-sm text-muted-foreground">There is no remaining one-time balance.</p></div> : <BowlerOneTimePaymentCard
           key={oneTimeCardEditorKey}
           remainingBalance={remainingBalance}
           paymentWeekCount={clampedWeekCount}

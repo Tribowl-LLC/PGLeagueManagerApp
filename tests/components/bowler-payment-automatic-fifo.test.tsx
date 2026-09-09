@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { BowlerPaymentDialog } from "@/components/bowler-payment-dialog";
@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
   invalidateQueries: vi.fn(),
   clearPaymentIntent: vi.fn(),
+  prepareRosterPaymentIntent: vi.fn(),
 }));
 
 vi.mock("@/lib/queryClient", () => ({
@@ -26,17 +27,18 @@ vi.mock("@/lib/payment-request-identity", () => ({
   assertRosterPaymentSucceeded: (status: string) => {
     if (!["succeeded", "pending", "provider_unknown", "reconciliation_required"].includes(status)) throw new Error("unexpected payment status");
   },
-  beginPaymentIntent: () => "automatic-fifo-request",
   clearPaymentIntent: mocks.clearPaymentIntent,
+  interactivePaymentIntentScope: () => "stable-scope",
   paymentRequestHeaders: () => ({ "Content-Type": "application/json" }),
   paymentRequestWithRecovery: (_key: string, request: () => Promise<unknown>) => request(),
+  prepareRosterPaymentIntent: mocks.prepareRosterPaymentIntent,
 }));
 vi.mock("@/lib/provider-not-configured", () => ({
   isProviderNotConfiguredError: () => false,
   providerNotConfiguredToast: () => ({}),
   makeApiError: (_body: unknown, _status: number, message: string) => new Error(message),
 }));
-vi.mock("@/lib/payment-user-error", () => ({ sanitizePaymentErrorMessage: (error: unknown) => String(error) }));
+vi.mock("@/lib/payment-user-error", () => ({ isHandledPaymentError: () => false, sanitizePaymentErrorMessage: (error: unknown) => String(error) }));
 vi.mock("@/lib/logger", () => ({ logger: { error: vi.fn() } }));
 
 const league: Pick<League, "id" | "locationId"> = { id: 17, locationId: null };
@@ -51,6 +53,8 @@ function SubmitProbe() {
   const submit = useBowlerPaymentSubmit({
     league,
     bowler,
+    actorUserId: 1,
+    organizationId: 2,
     card: mockCard,
     cardMode: "new",
     selectedSavedCardId: "",
@@ -64,6 +68,12 @@ function SubmitProbe() {
 }
 
 describe("automatic FIFO bowler payment flow", () => {
+  beforeEach(() => {
+    mocks.csrfFetch.mockReset();
+    mocks.tokenizeCard.mockReset();
+    mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "automatic-fifo-request", outcome: "new" });
+  });
+
   it("offers a one-time payment as soon as future roster obligations create a remaining balance", async () => {
     const onPayRemaining = vi.fn();
     const user = userEvent.setup();
@@ -108,6 +118,52 @@ describe("automatic FIFO bowler payment flow", () => {
     expect(JSON.parse(String(chargeRequest.body))).not.toHaveProperty("obligationIds");
     expect(JSON.parse(String(chargeRequest.body))).not.toHaveProperty("allocations");
     expect(mocks.tokenizeCard).toHaveBeenCalledOnce();
+  });
+
+  it("recovers an acknowledged lost response before a changed quote can tokenize or charge again", async () => {
+    mocks.prepareRosterPaymentIntent
+      .mockResolvedValueOnce({ requestKey: "automatic-fifo-request", outcome: "new" })
+      .mockResolvedValueOnce({ requestKey: "automatic-fifo-request", outcome: "succeeded" });
+    mocks.csrfFetch
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "first-quote", payerBowlerId: bowler.id } }) })
+      .mockRejectedValueOnce(new Error("response lost"));
+    mocks.tokenizeCard.mockResolvedValue("card-source");
+
+    const user = userEvent.setup();
+    render(<SubmitProbe />);
+    await user.click(screen.getByRole("button", { name: "Pay" }));
+    await waitFor(() => expect(mocks.tokenizeCard).toHaveBeenCalledOnce());
+    await user.click(screen.getByRole("button", { name: "Pay" }));
+
+    await waitFor(() => expect(mocks.prepareRosterPaymentIntent).toHaveBeenCalledTimes(2));
+    expect(mocks.csrfFetch).toHaveBeenCalledTimes(2);
+    expect(mocks.tokenizeCard).toHaveBeenCalledOnce();
+  });
+
+  it("keeps an unresolved intent authoritative and permits a new attempt after a terminal outcome", async () => {
+    mocks.prepareRosterPaymentIntent
+      .mockResolvedValueOnce({ requestKey: "automatic-fifo-request", outcome: "unresolved", status: "pending" })
+      .mockResolvedValueOnce({ requestKey: "automatic-fifo-request", outcome: "terminal_failure", status: "failed_terminal" })
+      .mockResolvedValueOnce({ requestKey: "automatic-fifo-request-2", outcome: "new" });
+    mocks.csrfFetch
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "retry-quote", payerBowlerId: bowler.id } }) })
+      .mockResolvedValueOnce({ ok: true, status: 201, json: async () => ({ data: { status: "succeeded" } }) });
+    mocks.tokenizeCard.mockResolvedValue("card-source");
+
+    const user = userEvent.setup();
+    render(<SubmitProbe />);
+    await user.click(screen.getByRole("button", { name: "Pay" }));
+    await waitFor(() => expect(mocks.prepareRosterPaymentIntent).toHaveBeenCalledOnce());
+    expect(mocks.csrfFetch).not.toHaveBeenCalled();
+    expect(mocks.tokenizeCard).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Pay" }));
+    await waitFor(() => expect(mocks.prepareRosterPaymentIntent).toHaveBeenCalledTimes(2));
+    expect(mocks.csrfFetch).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Pay" }));
+    await waitFor(() => expect(mocks.prepareRosterPaymentIntent).toHaveBeenCalledTimes(3));
+    expect(mocks.csrfFetch).toHaveBeenCalledTimes(2);
   });
 
   it("uses plus and minus controls to select a fixed number of weeks", async () => {
