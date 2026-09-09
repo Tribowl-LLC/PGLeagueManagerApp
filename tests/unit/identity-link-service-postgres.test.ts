@@ -25,12 +25,16 @@ let organizationId = 0;
 const userIds: number[] = [];
 const bowlerIds: number[] = [];
 
-async function createUser(name: string, role: "user" | "org_admin" = "user") {
+async function createUser(
+  name: string,
+  role: "user" | "org_admin" = "user",
+  email?: string,
+) {
   const [user] = await db
     .insert(users)
     .values({
       name: `${name} ${suffix}`,
-      email: `${name.toLowerCase()}-${suffix}@example.com`,
+      email: email ?? `${name.toLowerCase()}-${suffix}@example.com`,
       password,
       role,
       organizationId,
@@ -186,6 +190,51 @@ describe("identity-link service", () => {
     const events = await db.select().from(identityLinkEvents)
       .where(eq(identityLinkEvents.subjectUserId, user.id));
     expect(events).toHaveLength(0);
+  });
+
+  it("rejects ambiguous shared-email claims, while allowing an explicit admin override", async () => {
+    const sharedEmail = `shared-${suffix}@example.com`;
+    const adminAssignedUser = await createUser("Shared Email Existing Owner");
+    const pendingUser = await createUser("Shared Email Pending User", "user", sharedEmail);
+    const claimedProfile = await createBowler("Shared Email Claimed Profile", organizationId, sharedEmail);
+    const pendingProfile = await createBowler("Shared Email Pending Profile", organizationId, sharedEmail);
+
+    // An administrator has already resolved the first duplicate to an
+    // account with a different email. The second profile must not become
+    // self-claimable merely because pendingUser owns the shared address.
+    await linkUserToBowler({
+      organizationId,
+      userId: adminAssignedUser.id,
+      bowlerId: claimedProfile.id,
+      source: "test-admin-duplicate-resolution",
+      requireEmailMatch: false,
+    });
+
+    await expect(linkUserToBowler({
+      organizationId,
+      userId: pendingUser.id,
+      bowlerId: pendingProfile.id,
+      source: "test-ambiguous-shared-email",
+      requireEmailMatch: true,
+    })).rejects.toMatchObject({ code: "EMAIL_MISMATCH" });
+
+    const [stillPending] = await db
+      .select({ bowlerId: users.bowlerId })
+      .from(users)
+      .where(eq(users.id, pendingUser.id));
+    expect(stillPending?.bowlerId).toBeNull();
+
+    // The same target is linkable when an administrator explicitly chooses
+    // it, which is the approved pending/admin-resolution path.
+    const override = await linkUserToBowler({
+      organizationId,
+      userId: pendingUser.id,
+      bowlerId: pendingProfile.id,
+      source: "test-admin-duplicate-resolution",
+      requireEmailMatch: false,
+      eventType: "admin_assignment",
+    });
+    expect(override.user.bowlerId).toBe(pendingProfile.id);
   });
 
   it("rolls back the user update when the append-only event insert fails", async () => {

@@ -14,7 +14,7 @@ import { singleRouteParam } from '../utils/route-params';
 import { z } from 'zod';
 import { updateEmailTemplateSchema } from '@shared/schema/email-templates';
 import { requireAdmin } from '../middleware/admin';
-import { sendTestEmail, sendTemplatedEmail, getBaseUrl, getOrgLogoUrl } from '../services/email';
+import { sendTestEmail, sendAccountReadyEmail, type EmailNotification } from '../services/email';
 import { emailTestLimiter, adminWriteLimiter } from '../middleware/rate-limit';
 import { cacheInvalidate } from '../utils/cache';
 import { createLogger } from '../logger';
@@ -233,10 +233,9 @@ router.post('/email-templates/:id/send-test', requireAdmin, emailTestLimiter, as
 //
 // Both write paths assign a league + team in the same atomic transaction
 // as the bowler/link mutation so a partial failure can't leave a bowler
-// unassigned. After the write commits the user is notified by templated
-// email (`admin_claim_complete`); send is best-effort — silent no-op if
-// the template isn't configured (matches existing sendTemplatedEmail
-// contract — `false` return on missing slug).
+// unassigned. After the write commits the user receives an account-ready
+// email; delivery is best-effort and reported separately from the committed
+// identity mutation.
 //
 // Authorization: this router is mounted behind `requireOrgAdmin` so any
 // authenticated org_admin or system_admin can reach these routes. The
@@ -348,25 +347,25 @@ async function notifyAccountReady(opts: {
   leagueName: string;
   teamName: string;
   organizationId: number | null;
-}): Promise<void> {
+}): Promise<EmailNotification> {
   try {
     const organization = opts.organizationId
       ? await storage.getOrganization(opts.organizationId)
       : undefined;
-    const baseUrl = getBaseUrl(organization?.slug ?? undefined);
-    await sendTemplatedEmail('admin_claim_complete', opts.toEmail, {
-      user_name: opts.toName,
-      bowler_name: opts.bowlerName,
-      league_name: opts.leagueName,
-      team_name: opts.teamName,
-      organization_name: organization?.name ?? '',
-      organization_logo_url: organization ? getOrgLogoUrl(organization) : '',
-      dashboard_link: `${baseUrl}/bowler-dashboard`,
-      login_link: `${baseUrl}/login`,
+    return await sendAccountReadyEmail({
+      toEmail: opts.toEmail,
+      toName: opts.toName,
+      bowlerName: opts.bowlerName,
+      leagueName: opts.leagueName,
+      teamName: opts.teamName,
+      // Pass the complete server-resolved organization so getBaseUrl can
+      // prefer the DNS subdomain over the internal slug.
+      organization: organization ?? null,
     });
   } catch (err) {
     // Best-effort notify — never fail the admin write because of email.
-    log.warn('admin_claim_complete email failed (non-fatal):', err);
+    log.warn('Account-ready email failed (non-fatal):', err);
+    return 'not_sent';
   }
 }
 
@@ -477,7 +476,7 @@ router.post('/unclaimed-users/:userId/create-bowler', async (req, res) => {
     cacheInvalidate('bowlers:');
     cacheInvalidate(`user:${userId}`);
 
-    await notifyAccountReady({
+    const emailNotification = await notifyAccountReady({
       toEmail: result.user.email,
       toName: result.user.name,
       bowlerName: result.bowler.name,
@@ -491,6 +490,7 @@ router.post('/unclaimed-users/:userId/create-bowler', async (req, res) => {
       bowlerId: result.bowler.id,
       leagueId: result.league.id,
       teamId: result.team.id,
+      emailNotification,
     });
   } catch (error) {
     if (error instanceof HttpError) {
@@ -620,7 +620,7 @@ router.post('/unclaimed-users/:userId/link-existing', async (req, res) => {
     cacheInvalidate('bowlers:');
     cacheInvalidate(`user:${userId}`);
 
-    await notifyAccountReady({
+    const emailNotification = await notifyAccountReady({
       toEmail: result.user.email,
       toName: result.user.name,
       bowlerName: result.bowler.name,
@@ -634,6 +634,7 @@ router.post('/unclaimed-users/:userId/link-existing', async (req, res) => {
       bowlerId: result.bowler.id,
       leagueId: result.league?.id ?? null,
       teamId: result.team?.id ?? null,
+      emailNotification,
     });
   } catch (error) {
     if (error instanceof HttpError) {

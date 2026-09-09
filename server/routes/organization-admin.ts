@@ -1,24 +1,27 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { randomBytes } from 'crypto';
 import { db } from '../db';
+import { and, eq, isNotNull } from 'drizzle-orm';
 import { storage } from '../storage';
 import { sendSuccess, sendError, sanitizeUser, handleZodError, handleUserOrgError } from '../utils/api';
 import { singleRouteParam } from '../utils/route-params';
 import { hashPassword, destroyOtherSessionsForUser } from '../auth';
 import {
   sendInviteEmail,
+  sendAccountReadyEmail,
   sendTemplatedEmail,
   getBaseUrl,
   getOrgLogoUrl,
   sendPasswordChangedNotification,
 } from '../services/email';
+import type { EmailNotification } from '../services/email';
 import { passwordSchema } from '@shared/password-validation';
 import { z } from 'zod';
 import { adminWriteLimiter, inviteLimiter } from '../middleware/rate-limit';
 import { createLogger } from '../logger';
 import { recordAdminPasswordResetAudit } from '../storage/admin-password-reset-audits';
 import { recordAdminRoleChangeAudit } from '../storage/admin-role-change-audits';
-import type { User, UserRole } from '@shared/schema';
+import { bowlers, users, type User, type UserRole } from '@shared/schema';
 import { publicAccountInvitation } from '../services/account-invitation.js';
 import {
   lockAccountCredential,
@@ -195,14 +198,46 @@ router.get('/users', requireOrgAdminOrSystemAdmin, async (req: Request, res: Res
     if (!organizationId) {
       return sendError(res, 'Organization ID is required', 400, 'bad_request');
     }
+
+    // The default users view intentionally contains only staff accounts.
+    // The resend-account-ready UI uses this explicit branch to obtain the
+    // minimal ordinary-user projection it needs, without changing the
+    // established staff-management contract or returning extra PII.
+    if (req.query.accountType !== undefined) {
+      if (req.query.accountType !== 'bowler') {
+        return sendError(res, 'Invalid account type', 400, 'bad_request');
+      }
+      const bowlerUsers = await db
+        .select({
+          id: users.id,
+          name: users.name,
+          email: users.email,
+          bowlerId: users.bowlerId,
+        })
+        .from(users)
+        .innerJoin(
+          bowlers,
+          and(
+            eq(bowlers.id, users.bowlerId),
+            eq(bowlers.organizationId, organizationId),
+          ),
+        )
+        .where(and(
+          eq(users.organizationId, organizationId),
+          eq(users.role, 'user'),
+          isNotNull(users.bowlerId),
+        ))
+        .orderBy(users.name);
+      return sendSuccess(res, bowlerUsers);
+    }
     
-    const users = await storage.getOrganizationUsers(organizationId);
+    const organizationUsers = await storage.getOrganizationUsers(organizationId);
     const latestInvitations = await storage.getLatestAccountInvitationsForUsers(
-      users.map((user) => user.id),
+      organizationUsers.map((user) => user.id),
       organizationId,
     );
     
-    const bowlerIds = users
+    const bowlerIds = organizationUsers
       .map((u) => u.bowlerId)
       .filter((id): id is number => id != null);
 
@@ -235,7 +270,7 @@ router.get('/users', requireOrgAdminOrSystemAdmin, async (req: Request, res: Res
     const leagueMap = new Map(allLeagues.map(l => [l.id, l]));
     const teamMap = new Map(allTeams.map(t => [t.id, t]));
 
-    const usersWithBowlerInfo = users.map((user) => {
+    const usersWithBowlerInfo = organizationUsers.map((user) => {
       const safeUser = sanitizeUser(user);
       if (!user.bowlerId) {
         return {
@@ -1052,6 +1087,93 @@ router.post('/users/:id/resend-invite', requireOrgAdminOrSystemAdmin, inviteLimi
   } catch (error) {
     log.error('Error resending invite:', error);
     return sendError(res, 'Failed to resend invite', 500, 'internal_error');
+  }
+});
+
+/**
+ * Manually resend the account-ready message for an ordinary user whose
+ * account is already linked. This is intentionally a user-selected action:
+ * the first-link paths own the automatic notification and no durable queue or
+ * automatic retry is introduced here.
+ */
+router.post('/users/:id/resend-account-ready', requireOrgAdminOrSystemAdmin, inviteLimiter, async (req: Request, res: Response) => {
+  try {
+    const actingUser = req.user;
+    if (!actingUser) {
+      return sendError(res, 'You must be logged in to access this resource', 401, 'UNAUTHORIZED');
+    }
+
+    const userIdResult = z.coerce.number().int().positive().safeParse(
+      singleRouteParam(req.params.id),
+    );
+    if (!userIdResult.success) {
+      return sendError(res, 'Invalid user ID', 400, 'bad_request');
+    }
+    const userId = userIdResult.data;
+
+    const user = await storage.getUser(userId);
+    if (!user) {
+      return sendError(res, 'User not found', 404, 'NOT_FOUND');
+    }
+    if (actingUser.role === 'org_admin' && user.organizationId !== actingUser.organizationId) {
+      return sendError(res, 'You can only manage users in your own organization', 403, 'forbidden');
+    }
+    if (user.role !== 'user') {
+      return sendError(res, 'Only ordinary user accounts can receive account-ready email', 403, 'FORBIDDEN');
+    }
+    if (user.bowlerId === null) {
+      return sendError(res, 'User is not linked to a bowler', 409, 'NOT_LINKED');
+    }
+    if (user.organizationId === null) {
+      return sendError(res, 'Organization context missing', 403, 'ORG_REQUIRED');
+    }
+
+    // Re-resolve every recipient/link field from the database. In particular,
+    // do not accept an email or organization URL from the request body.
+    const [bowler, organization] = await Promise.all([
+      storage.getBowler(user.bowlerId),
+      storage.getOrganization(user.organizationId),
+    ]);
+    if (!bowler || bowler.organizationId !== user.organizationId || !organization) {
+      return sendError(res, 'Linked account is not available in this organization', 409, 'LINK_INVALID');
+    }
+
+    let leagueName = '';
+    let teamName = '';
+    const [membership] = await storage.getBowlerLeagues({ bowlerId: bowler.id });
+    if (membership) {
+      const [league, team] = await Promise.all([
+        storage.getLeague(membership.leagueId),
+        storage.getTeam(membership.teamId),
+      ]);
+      if (league?.organizationId === user.organizationId) {
+        leagueName = league.name;
+        if (team?.leagueId === league.id) teamName = team.name;
+      }
+    }
+
+    let emailNotification: EmailNotification = 'not_sent';
+    try {
+      emailNotification = await sendAccountReadyEmail({
+        toEmail: user.email,
+        toName: user.name,
+        bowlerName: bowler.name,
+        leagueName,
+        teamName,
+        organization,
+      });
+    } catch (error) {
+      log.warn('Account-ready resend email failed (non-fatal):', error);
+    }
+
+    return sendSuccess(res, {
+      userId: user.id,
+      bowlerId: bowler.id,
+      emailNotification,
+    });
+  } catch (error) {
+    log.error('Error resending account-ready email:', error);
+    return sendError(res, 'Failed to resend account-ready email', 500, 'internal_error');
   }
 });
 

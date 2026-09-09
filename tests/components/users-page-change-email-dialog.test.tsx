@@ -44,6 +44,8 @@ type ProfileHandler = (input: RequestInfo | URL, init?: RequestInit) => Response
 const originalFetch = global.fetch;
 let profileHandler: ProfileHandler;
 let postedBody: unknown = null;
+let resendHandler: ProfileHandler;
+let resendBody: unknown = null;
 
 function jsonRes(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -54,6 +56,7 @@ function jsonRes(body: unknown, status = 200): Response {
 
 function installFetchMock() {
   postedBody = null;
+  resendBody = null;
   global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input.toString();
 
@@ -62,6 +65,14 @@ function installFetchMock() {
     }
     if (url.endsWith('/api/user')) {
       return jsonRes({ success: true, data: ADMIN });
+    }
+    if (url.includes('/resend-account-ready')) {
+      try {
+        resendBody = init?.body ? JSON.parse(init.body as string) : null;
+      } catch {
+        resendBody = init?.body ?? null;
+      }
+      return resendHandler(input, init);
     }
     if (url.startsWith('/api/org-admin/users?organizationId=')) {
       return jsonRes({ success: true, data: [TARGET] });
@@ -103,6 +114,8 @@ beforeEach(() => {
   installFetchMock();
   profileHandler = () =>
     jsonRes({ success: true, data: { paymentSyncStatus: 'not_applicable' } });
+  resendHandler = () =>
+    jsonRes({ success: true, data: { emailNotification: 'accepted' } });
 });
 
 afterEach(() => {
@@ -225,5 +238,38 @@ describe('UsersPage — Change Email dialog', () => {
       );
     });
     expect(screen.getByTestId('input-change-email')).toBeInTheDocument();
+  });
+});
+
+describe('UsersPage — bowler account notifications', () => {
+  it('resends without staff controls and distinguishes an accepted email submission', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    expect(await screen.findByText('Bowler account notifications')).toBeInTheDocument();
+    expect(await screen.findByTestId(`button-resend-account-ready-${TARGET.id}`)).toBeInTheDocument();
+    await user.click(screen.getByTestId(`button-resend-account-ready-${TARGET.id}`));
+
+    await waitFor(() => {
+      expect(resendBody).toEqual({});
+      expect(toastFn).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'Account linked; email submitted',
+      }));
+    });
+  });
+
+  it('keeps the link success separate from a notification delivery failure', async () => {
+    resendHandler = () =>
+      jsonRes({ success: true, data: { emailNotification: 'not_sent' } });
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByTestId(`button-resend-account-ready-${TARGET.id}`));
+
+    await waitFor(() => {
+      expect(toastFn).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'Account linked, but notification could not be sent',
+        variant: 'destructive',
+      }));
+    });
   });
 });

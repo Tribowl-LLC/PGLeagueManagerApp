@@ -353,7 +353,22 @@ export function registerAuthRoutes(app: Express): void {
         return sendError(res, "Not authenticated", 401, "AUTH_REQUIRED");
       }
 
-      const user = req.user as SelectUser;
+      // Passport deserializes the session from a cached snapshot. Re-read
+      // the authoritative row before any tenant check or serialization so a
+      // deleted account cannot continue to authenticate with stale session
+      // data, and pending/link state is visible immediately after an admin
+      // assignment.
+      const sessionUser = req.user as SelectUser;
+      const user = await storage.getUser(sessionUser.id);
+      if (!user) {
+        return new Promise<void>((resolve) => {
+          req.logout((err) => {
+            if (err) log.error('Logout error in /api/auth/user deleted-account guard:', err);
+            sendError(res, "Not authenticated", 401, "AUTH_REQUIRED");
+            resolve();
+          });
+        });
+      }
       const subdomainOrg = req.subdomainOrg;
 
       if (subdomainOrg) {

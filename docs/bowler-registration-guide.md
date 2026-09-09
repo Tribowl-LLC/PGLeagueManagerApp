@@ -50,23 +50,30 @@ The bowler provides:
 
 After the bowler submits the form, the system checks whether a bowler profile already exists with a matching email address within your organization's leagues.
 
-**If a match is found:**
+**If exactly one match is found:**
 - The bowler's new user account is automatically linked to the existing bowler profile.
 - The bowler is redirected to their dashboard — no further steps needed.
 
-**If no match is found:**
-- The bowler is redirected to the "Claim Bowler" page (see Step 3).
+**If no unique match is found:**
+- The account is created but remains pending until an organization administrator
+  links it to a roster profile or creates a new profile.
+- A duplicate/shared email is intentionally left pending for administrator
+  review; a name match alone never proves ownership.
 
-### Step 3: Claim Bowler Page (if needed)
+### Step 3: Pending account review (if needed)
 
-If the system could not auto-link by email, the bowler sees a searchable list of unclaimed bowler profiles from your organization. They can:
+If the system could not find exactly one email match, the account stays pending;
+the user cannot claim a profile by name. An organization administrator can
+review pending users and either create a bowler profile for the user or link
+the account to an existing unlinked profile. Administrators may resolve
+duplicate/shared-email cases manually, subject to the same organization
+boundaries as every other admin action.
 
-- **Find their name** in the list and select it to link their account.
-- **Skip** if they are not yet on any roster (they can be added later by an admin).
-
-This page only shows bowlers who:
-- Do not already have a linked user account
-- Do not have an email address on file (bowlers with emails are expected to match automatically)
+After a successful link, LeagueVault attempts one account-ready message. The
+message confirms account access and links to the organization's sign-in page;
+account readiness is separate from whether any league balance is currently
+payable. Delivery is reported as accepted (submitted to the provider) or
+not_sent; accepted does not guarantee inbox delivery.
 
 ---
 
@@ -95,9 +102,9 @@ Instead of (or in addition to) QR codes, you can send email invites to all bowle
 2. Click "Send Registration Invites"
 3. The system will send an invite email to every bowler who has an email address but does not yet have an account
 
-The invite email contains a link for the bowler to set up their password. The
-new account is linked to the roster profile as part of issuing the invitation;
-setting the password activates the account.
+The invite email contains a link for the bowler to set up their password. This
+is an invitation flow and does not send account-ready messages to existing
+linked users in bulk.
 
 After sending, you will see a summary:
 - How many invites were sent
@@ -121,11 +128,12 @@ On the Users management page, a "Linked Bowler" column shows which user accounts
 
 | Scenario | What Happens |
 |----------|-------------|
-| Bowler registers with an email that matches their bowler profile | Automatically linked — goes straight to dashboard |
-| Bowler registers with a different email than what's on file | Not auto-linked — goes to Claim Bowler page to find their name |
-| Bowler registers but has no bowler profile yet | Goes to Claim Bowler page — can skip if not on a roster |
+| Bowler registers with exactly one matching profile email | Automatically linked — can sign in and view leagues |
+| Bowler registers with a different email than what's on file | Account remains pending for administrator review |
+| Multiple profiles share the registration email | Account remains pending; an administrator resolves the ambiguity |
+| Bowler registers but has no bowler profile yet | Administrator can create and assign a profile later |
 | Admin sends bulk invites to a league | Bowlers with emails and no existing account get an invitation and are linked to their roster profile atomically |
-| Bowler with no email on file scans the QR code | Registers, then manually selects their name on the Claim Bowler page |
+| Bowler with no email on file scans the QR code | Registers, then remains pending until an administrator adds/links a profile |
 | Admin adds an email to a bowler profile that matches an existing user | Automatically linked at that point |
 
 ---
@@ -136,9 +144,12 @@ For the smoothest experience, we recommend combining both approaches:
 
 1. **Before bowling night:** Enter as many bowler emails as possible, then use "Send Registration Invites" to email them all at once. Bowlers who complete registration before arriving are already set up.
 
-2. **On bowling night:** Place QR codes on the tables for any bowlers who haven't registered yet. They can sign up on their phone in under a minute.
+2. **On bowling night:** Place QR codes on the tables for any bowlers who haven't registered yet. They can sign up on their phone in under a minute. Make sure the email they use matches the roster email exactly.
 
-This two-step approach typically results in 80-90% of bowlers being linked automatically, with the remaining bowlers easily finding their name on the Claim Bowler page.
+Review any pending accounts from the administrator page. There is no durable
+email queue or automatic retry guarantee; if an account-ready message is not
+sent, an administrator can manually use **Resend account-ready email** for an
+already-linked ordinary user.
 
 ---
 
@@ -146,13 +157,13 @@ This two-step approach typically results in 80-90% of bowlers being linked autom
 
 **Bowler says they registered but aren't showing as linked:**
 - Check if their email matches what's on their bowler profile (common issue: different email addresses)
-- Check the Users page to see if their account exists
-- If needed, update the bowler profile's email to match their account email — linking will happen automatically
+- Check the pending users list and the Users page to see if their account exists
+- If needed, have an administrator link the account to the correct unlinked profile or create a new profile
 
-**Bowler can't find their name on the Claim Bowler page:**
-- Their profile may already be linked to another account
-- Their profile may have an email address on file (only bowlers without emails appear on the Claim Bowler page)
-- Verify the bowler exists on a roster in one of your organization's leagues
+**Bowler is pending after registration:**
+- A unique matching email was not found, or multiple profiles share that email
+- An administrator must resolve the pending account; name-only self-claims are not available
+- After linking, use the manual account-ready resend action if the original message was not sent
 
 **Bulk invite didn't send to a specific bowler:**
 - Check that the bowler has an email address on their profile

@@ -61,10 +61,12 @@ const TEST_USER_UNLINKED = {
 // --- Module mocks. Hoisted by vitest. ----------------------------
 
 const mockGetBowler = vi.fn();
+const mockGetUser = vi.fn();
 
 vi.mock('../../server/storage', () => ({
   storage: {
     getBowler: (...a: unknown[]) => mockGetBowler.apply(null, a as never),
+    getUser: (...a: unknown[]) => mockGetUser.apply(null, a as never),
   },
 }));
 
@@ -130,11 +132,29 @@ beforeAll(async () => {
     Object.defineProperty(req, 'ip', { value: '198.51.100.42', configurable: true });
     // Stand in for passport's session helpers. We control authn state
     // per-request via the module-scoped `nextAuthState` switch.
-    (req as unknown as { isAuthenticated: () => boolean }).isAuthenticated = () =>
-      nextAuthState.isAuthenticated;
-    (req as unknown as { user: unknown }).user = nextAuthState.user;
-    (req as unknown as { sessionID: string }).sessionID = 'test-session';
-    (req as unknown as { session: unknown }).session = {};
+    Object.defineProperty(req, 'isAuthenticated', {
+      value: () => nextAuthState.isAuthenticated,
+      configurable: true,
+    });
+    Object.defineProperty(req, 'user', {
+      value: nextAuthState.user,
+      configurable: true,
+    });
+    Object.defineProperty(req, 'logout', {
+      value: (cb: (err?: unknown) => void) => {
+        nextAuthState = { isAuthenticated: false, user: null };
+        cb();
+      },
+      configurable: true,
+    });
+    Object.defineProperty(req, 'sessionID', {
+      value: 'test-session',
+      configurable: true,
+    });
+    Object.defineProperty(req, 'session', {
+      value: {},
+      configurable: true,
+    });
     next();
   });
   registerAuthRoutes(app);
@@ -153,6 +173,8 @@ afterAll(async () => {
 
 beforeEach(() => {
   mockGetBowler.mockReset();
+  mockGetUser.mockReset();
+  mockGetUser.mockImplementation(async () => nextAuthState.user ?? undefined);
   nextAuthState = { isAuthenticated: true, user: TEST_USER_LINKED };
 });
 
@@ -226,6 +248,30 @@ describe('/api/auth/user paymentSyncStatus hydration (#363)', () => {
     expect(status).toBe(200);
     expect(body.success).toBe(true);
     expect(body.data?.paymentSyncStatus).toBeNull();
+  });
+
+  it('serializes the authoritative row when the session snapshot is stale', async () => {
+    nextAuthState = { isAuthenticated: true, user: TEST_USER_UNLINKED };
+    mockGetUser.mockResolvedValue(TEST_USER_LINKED);
+    mockGetBowler.mockResolvedValue({ id: TEST_USER_LINKED.bowlerId, paymentSyncPendingAt: null });
+
+    const { status, body } = await getUser();
+
+    expect(status).toBe(200);
+    expect(body.data?.bowlerId).toBe(TEST_USER_LINKED.bowlerId);
+    expect(mockGetUser).toHaveBeenCalledWith(TEST_USER_UNLINKED.id);
+  });
+
+  it('rejects and logs out a session whose user row was deleted', async () => {
+    nextAuthState = { isAuthenticated: true, user: TEST_USER_LINKED };
+    mockGetUser.mockResolvedValue(undefined);
+
+    const { status, body } = await getUser();
+
+    expect(status).toBe(401);
+    expect(body.success).toBe(false);
+    expect(mockGetBowler).not.toHaveBeenCalled();
+    expect(nextAuthState.isAuthenticated).toBe(false);
   });
 
   it('still returns 401 for unauthenticated callers (regression: paymentSyncStatus must not bypass auth)', async () => {

@@ -2,12 +2,12 @@ import { storage } from '../storage';
 import { getPaymentProvider, ProviderNotConfiguredError } from './payment-provider-factory';
 import { createLogger } from '../logger';
 import { notifyPaymentSyncRetryChanged } from './payment-sync-retry-scheduler';
-import { isDev } from '../config';
 import { PAYMENT_SYNC_MAX_ATTEMPTS, type Bowler } from '@shared/schema';
 import type { PaymentProvider } from './payment-provider';
 import { syncBowlerLeagueAttributesToProvider } from './bowler-attributes';
 import { decideBowlerPhoneSync } from './bowler-phone-sync';
 import { linkUserToBowler } from './identity-link';
+import { sendAccountReadyEmail } from './email';
 
 const log = createLogger("BowlerSync");
 
@@ -32,16 +32,40 @@ export async function runBowlerPostCreateSync(
   let squareCustomerLinked = false;
   if (bowlerEmail) {
     try {
-      const matchingUser = await storage.getUserByEmail(bowlerEmail.trim().toLowerCase());
-      if (matchingUser && matchingUser.bowlerId === null) {
+      const normalizedBowlerEmail = bowlerEmail.trim().toLowerCase();
+      const effectiveOrganizationId = organizationId ?? current.organizationId;
+      const matchingUser = normalizedBowlerEmail.length > 0
+        ? await storage.getUserByEmail(normalizedBowlerEmail)
+        : undefined;
+      // getBowlerByEmail applies the tenant-scoped LIMIT 2 unique-match
+      // policy across all profiles, including already-claimed rows. A
+      // duplicate same-email profile therefore remains pending rather than
+      // allowing this newly-created row to win automatically.
+      const matchingBowler = normalizedBowlerEmail.length > 0
+        && matchingUser?.role === 'user'
+        && matchingUser.organizationId === effectiveOrganizationId
+        && matchingUser.bowlerId === null
+        ? await storage.getBowlerByEmail(normalizedBowlerEmail, effectiveOrganizationId)
+        : undefined;
+      if (
+        matchingUser &&
+        matchingUser.role === 'user' &&
+        matchingUser.organizationId === effectiveOrganizationId &&
+        matchingUser.bowlerId === null &&
+        matchingBowler?.id === current.id
+      ) {
         await linkUserToBowler({
-          organizationId: organizationId ?? current.organizationId,
+          organizationId: effectiveOrganizationId,
           userId: matchingUser.id,
           bowlerId: current.id,
           actorUserId: null,
           eventType: 'admin_assignment',
           source: 'bowler-post-create-email-auto-link',
           reason: 'email-match-after-bowler-create',
+          // Re-check the exact normalized email while the identity service
+          // holds both rows locked; the lookup above is only a candidate
+          // optimization and not the ownership boundary.
+          requireEmailMatch: true,
         });
         log.info(`Auto-linked user ${matchingUser.id} to bowler ${current.id}`);
 
@@ -58,12 +82,36 @@ export async function runBowlerPostCreateSync(
         }
 
         const bowlerLeagues = await storage.getBowlerLeagues({ bowlerId: current.id });
-        if (bowlerLeagues.length > 0) {
-          const league = await storage.getLeague(bowlerLeagues[0].leagueId);
-          if (league?.organizationId && !matchingUser.organizationId) {
-            await storage.setUserOrganization(matchingUser.id, league.organizationId);
-            if (isDev) log.info(`Set user ${matchingUser.id} organization to ${league.organizationId}`);
-          }
+        const firstMembership = bowlerLeagues[0];
+        const league = firstMembership
+          ? await storage.getLeague(firstMembership.leagueId)
+          : undefined;
+        // The identity-link transaction has committed before this helper
+        // runs. Account readiness is about access to leagues, not payment
+        // provider/customer readiness, so provider failures below cannot
+        // suppress or duplicate this one post-link notification. Send even
+        // when the new bowler has not been rostered yet; the message still
+        // establishes account access and directs the user to sign in.
+        const organization = effectiveOrganizationId
+          ? await storage.getOrganization(effectiveOrganizationId)
+          : undefined;
+        const team = firstMembership
+          ? await storage.getTeam(firstMembership.teamId)
+          : undefined;
+        try {
+          await sendAccountReadyEmail({
+            toEmail: matchingUser.email,
+            toName: matchingUser.name,
+            bowlerName: current.name,
+            leagueName: league?.organizationId === effectiveOrganizationId ? league.name : '',
+            teamName: league?.organizationId === effectiveOrganizationId
+              && team?.leagueId === league.id
+              ? team.name
+              : '',
+            organization: organization ?? null,
+          });
+        } catch (emailError) {
+          log.warn('Account-ready email failed after bowler auto-link:', emailError);
         }
       }
     } catch (linkError) {

@@ -24,6 +24,7 @@ import { runBowlerPostCreateSync } from '../services/bowler-sync.js';
 import { syncBowlerLeagueAttributesToProvider } from '../services/bowler-attributes';
 import { notifyPaymentSyncRetryChanged } from '../services/payment-sync-retry-scheduler';
 import { linkUserToBowler } from '../services/identity-link';
+import { sendAccountReadyEmail } from '../services/email';
 import { createLogger } from '../logger';
 import { isDev } from '../config';
 // reuse the same payer-name lookup the
@@ -97,9 +98,45 @@ router.get("/unlinked", async (req, res) => {
     const linkedBowlerIdsList = await storage.getLinkedBowlerIds();
     const linkedBowlerIds = new Set(linkedBowlerIdsList);
 
-    const unlinkedBowlers = scopedBowlers.filter(
-      b => !linkedBowlerIds.has(b.id) && (!b.email || b.email.trim() === '')
-    );
+    const unlinkedProfiles = scopedBowlers.filter((b) => !linkedBowlerIds.has(b.id));
+    let unlinkedBowlers: typeof unlinkedProfiles;
+    if (req.user?.role === 'org_admin' || req.user?.role === 'system_admin') {
+      // Administrators need the complete set of unlinked profiles so they
+      // can resolve a pending registration manually. The response below is
+      // still an allowlisted id/name projection and never exposes email,
+      // phone, or payment-provider fields.
+      unlinkedBowlers = unlinkedProfiles;
+    } else if (req.user?.role === 'user') {
+      // A self-service candidate list is an email-ownership proof surface,
+      // not a name search. Require one and only one normalized match; a
+      // duplicate/family address remains pending for an administrator rather
+      // than exposing ambiguous claim choices.
+      const normalizedUserEmail = req.user.email.trim().toLowerCase();
+      if (!normalizedUserEmail) {
+        unlinkedBowlers = [];
+      } else {
+        // Match-count must include linked profiles too. If an address is
+        // shared by one linked and one unlinked roster row, the registration
+        // lookup is ambiguous even though only one candidate remains
+        // available for claiming.
+        const allEmailMatches = scopedBowlers.filter(
+          (b) => b.email?.trim().toLowerCase() === normalizedUserEmail,
+        );
+        const unlinkedMatches = unlinkedProfiles.filter(
+          (b) => b.email?.trim().toLowerCase() === normalizedUserEmail,
+        );
+        unlinkedBowlers = allEmailMatches.length === 1 && unlinkedMatches.length === 1
+          ? unlinkedMatches
+          : [];
+      }
+    } else {
+      // Payment managers retain their existing scoped, blank-email view, but
+      // are not ordinary accounts and cannot use this list to claim a
+      // profile. Their role-specific access filtering above remains intact.
+      unlinkedBowlers = unlinkedProfiles.filter(
+        (b) => !b.email || b.email.trim() === '',
+      );
+    }
 
     const bowlerIds = unlinkedBowlers.map(b => b.id);
     const bowlerLeagueEntries = bowlerIds.length > 0
@@ -687,8 +724,12 @@ router.patch("/:id", async (req, res) => {
       if (emailChanged) {
         try {
           const matchingUser = await storage.getUserByEmail(updated.email.trim().toLowerCase());
-          if (matchingUser && matchingUser.bowlerId === null) {
-            await linkUserToBowler({
+          if (
+            matchingUser?.role === 'user'
+            && matchingUser.organizationId === updated.organizationId
+            && matchingUser.bowlerId === null
+          ) {
+            const linked = await linkUserToBowler({
               organizationId: updated.organizationId,
               userId: matchingUser.id,
               bowlerId: id,
@@ -696,7 +737,30 @@ router.patch("/:id", async (req, res) => {
               eventType: req.user?.role === 'user' ? 'link' : 'admin_assignment',
               source: 'bowler-profile-email-auto-link',
               reason: 'email-match-after-bowler-update',
+              // The identity service repeats the normalized-email and
+              // unique-profile proof while both rows are locked. This keeps
+              // duplicate/shared addresses pending for administrator review.
+              requireEmailMatch: true,
             });
+
+            // linkUserToBowler without an injected executor returns only after
+            // its transaction commits. Build the notification from those
+            // committed rows and the server-resolved organization so a
+            // provider failure cannot roll back or fail this PATCH.
+            if (!linked.user || !linked.bowler) {
+              throw new Error('Identity link did not return the linked rows');
+            }
+            const organization = await storage.getOrganization(linked.bowler.organizationId);
+            try {
+              await sendAccountReadyEmail({
+                toEmail: linked.user.email,
+                toName: linked.user.name,
+                bowlerName: linked.bowler.name,
+                organization: organization ?? null,
+              });
+            } catch (emailError) {
+              log.warn('Account-ready email failed after bowler update auto-link:', emailError);
+            }
             log.info(`Auto-linked user ${matchingUser.id} to updated bowler ${id}`);
           }
         } catch (linkError) {

@@ -439,11 +439,6 @@
       "count": 2
     }
   },
-  "tests/unit/auth-user-payment-sync-status.test.ts": {
-    "no-restricted-syntax": {
-      "count": 4
-    }
-  },
   "tests/unit/change-password-notification.test.ts": {
     "no-restricted-syntax": {
       "count": 4

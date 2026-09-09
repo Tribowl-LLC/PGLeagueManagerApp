@@ -156,6 +156,7 @@ interface TestUser {
   role: TestRole;
   organizationId: number | null;
   bowlerId?: number | null;
+  email?: string;
 }
 
 let server: Server;
@@ -405,6 +406,75 @@ describe('GET /api/bowlers/unlinked — organizationId filter', () => {
     // The old isNaN check would let "1abc" through as 1.
     const res = await get('/api/bowlers/unlinked?organizationId=1abc', SYSADMIN);
     expect(res.status).toBe(400);
+  });
+
+  it('shows an ordinary user only one unique normalized-email candidate, without email PII', async () => {
+    mockStorage.getBowlers.mockResolvedValue([
+      { id: 101, name: 'Exact Match', email: '  USER@example.com ', organizationId: 1 },
+      { id: 102, name: 'No Email', email: '', organizationId: 1 },
+      { id: 103, name: 'Different Email', email: 'other@example.com', organizationId: 1 },
+    ]);
+    mockStorage.getLinkedBowlerIds.mockResolvedValue([103]);
+    mockStorage.getBowlerLeaguesByBowlerIds.mockResolvedValue([
+      { bowlerId: 101, leagueId: 11, teamId: 21 },
+      { bowlerId: 102, leagueId: 11, teamId: 21 },
+    ]);
+    mockStorage.getLeaguesByIds.mockResolvedValue([{ id: 11, name: 'League', organizationId: 1 }]);
+    mockStorage.getTeamsByIds.mockResolvedValue([{ id: 21, name: 'Team', number: 1 }]);
+
+    const res = await get('/api/bowlers/unlinked', {
+      id: 7,
+      role: 'user',
+      organizationId: 1,
+      email: 'user@example.COM',
+    });
+    expect(res.status).toBe(200);
+    const payload = await res.json() as { data: Array<{ teams: Array<{ bowlers: Array<{ id: number; name: string; email?: string }> }> }> };
+    const candidates = payload.data.flatMap((group) => group.teams.flatMap((team) => team.bowlers));
+    expect(candidates).toEqual([{ id: 101, name: 'Exact Match' }]);
+    expect(JSON.stringify(payload)).not.toContain('@example.com');
+  });
+
+  it('keeps an ordinary user pending when the normalized email is ambiguous', async () => {
+    mockStorage.getBowlers.mockResolvedValue([
+      { id: 111, name: 'Shared One', email: 'shared@example.com', organizationId: 1 },
+      { id: 112, name: 'Shared Two', email: ' SHARED@example.com ', organizationId: 1 },
+    ]);
+    mockStorage.getBowlerLeaguesByBowlerIds.mockResolvedValue([
+      { bowlerId: 111, leagueId: 11, teamId: 21 },
+      { bowlerId: 112, leagueId: 11, teamId: 21 },
+    ]);
+    mockStorage.getLeaguesByIds.mockResolvedValue([{ id: 11, name: 'League', organizationId: 1 }]);
+    mockStorage.getTeamsByIds.mockResolvedValue([{ id: 21, name: 'Team', number: 1 }]);
+
+    const res = await get('/api/bowlers/unlinked', {
+      id: 7,
+      role: 'user',
+      organizationId: 1,
+      email: 'shared@example.com',
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toEqual([]);
+  });
+
+  it('allows organization admins to see unlinked profiles with nonblank email for manual matching', async () => {
+    mockStorage.getBowlers.mockResolvedValue([
+      { id: 121, name: 'Manual Email', email: 'manual@example.com', organizationId: 1 },
+      { id: 122, name: 'Manual Blank', email: '', organizationId: 1 },
+    ]);
+    mockStorage.getBowlerLeaguesByBowlerIds.mockResolvedValue([
+      { bowlerId: 121, leagueId: 11, teamId: 21 },
+      { bowlerId: 122, leagueId: 11, teamId: 21 },
+    ]);
+    mockStorage.getLeaguesByIds.mockResolvedValue([{ id: 11, name: 'League', organizationId: 1 }]);
+    mockStorage.getTeamsByIds.mockResolvedValue([{ id: 21, name: 'Team', number: 1 }]);
+
+    const res = await get('/api/bowlers/unlinked', ORG_USER);
+    expect(res.status).toBe(200);
+    const payload = await res.json();
+    const names = payload.data[0].teams[0].bowlers.map((b: { name: string }) => b.name);
+    expect(names).toEqual(expect.arrayContaining(['Manual Email', 'Manual Blank']));
+    expect(JSON.stringify(payload)).not.toContain('@example.com');
   });
 });
 

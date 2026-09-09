@@ -7,7 +7,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { eq, inArray } from 'drizzle-orm';
 import { db } from '../../server/db';
-import { users } from '@shared/schema';
+import { bowlers as bowlersTable, users } from '@shared/schema';
 import { hashPassword } from '../../server/lib/password';
 import {
   apiGet,
@@ -30,6 +30,7 @@ describe('GET /api/org-admin/users — admin-only listing (#672)', () => {
   let orgAId: number;
   const stamp = Date.now();
   const createdUserIds: number[] = [];
+  const createdBowlerIds: number[] = [];
 
   async function insertUser(opts: {
     role: 'user' | 'org_admin' | 'system_admin';
@@ -63,6 +64,9 @@ describe('GET /api/org-admin/users — admin-only listing (#672)', () => {
   afterAll(async () => {
     if (createdUserIds.length > 0) {
       await db.delete(users).where(inArray(users.id, createdUserIds));
+    }
+    if (createdBowlerIds.length > 0) {
+      await db.delete(bowlersTable).where(inArray(bowlersTable.id, createdBowlerIds));
     }
   });
 
@@ -111,6 +115,44 @@ describe('GET /api/org-admin/users — admin-only listing (#672)', () => {
     expect(res.status).toBe(200);
     const ids = (res.data.data ?? []).map((u) => u.id);
     expect(ids).toContain(sessionA.user.id);
+  });
+
+  it('accountType=bowler returns only minimal linked ordinary-user rows', async () => {
+    const [bowler] = await db
+      .insert(bowlersTable)
+      .values({
+        name: 'Vitest Linked Bowler ' + stamp,
+        email: 'vitest-linked-' + stamp + '@example.com',
+        phone: '555-0100',
+        organizationId: orgAId,
+      })
+      .returning({ id: bowlersTable.id });
+    createdBowlerIds.push(bowler.id);
+    const linkedUserId = await insertUser({
+      role: 'user',
+      label: 'linked-bowler-projection',
+      bowlerId: bowler.id,
+    });
+    const [linkedUser] = await db
+      .select({ id: users.id, name: users.name, email: users.email })
+      .from(users)
+      .where(eq(users.id, linkedUserId));
+
+    const res = await apiGet<Array<Record<string, unknown>>>(
+      '/api/org-admin/users?organizationId=' + orgAId + '&accountType=bowler',
+      sessionA,
+    );
+    expect(res.status).toBe(200);
+    expect(res.data.success).toBe(true);
+    expect(res.data.data).toContainEqual({
+      id: linkedUser.id,
+      name: linkedUser.name,
+      email: linkedUser.email,
+      bowlerId: bowler.id,
+    });
+    for (const row of res.data.data ?? []) {
+      expect(Object.keys(row).sort()).toEqual(['bowlerId', 'email', 'id', 'name']);
+    }
   });
 
   it('unclaimed-users endpoint still returns the role=user + bowlerId=null accounts', async () => {

@@ -66,13 +66,17 @@ const guard = (requirement: RouteRequirement, node: ReactNode) => (
 const RootRedirectHandler: FC = () => {
   const [, navigate] = useLocation();
 
-  const { data: currentUserResponse, isLoading, error } = useQuery<ApiResponse<User>>({
+  const { data: currentUserResponse, isLoading, isFetching, error } = useQuery<ApiResponse<User>>({
     queryKey: ['/api/user'],
-    staleTime: 1000 * 60 * 5,
+    // The root route is an auth boundary. Always confirm the session before
+    // choosing a destination so an ordinary account that was linked while a
+    // pending page was open cannot be routed from a stale cached user row.
+    staleTime: 0,
+    refetchOnMount: 'always',
   });
 
   useEffect(() => {
-    if (!isLoading) {
+    if (!isLoading && !isFetching) {
       if (error || !currentUserResponse?.data) {
         navigate('/login');
       } else {
@@ -90,7 +94,13 @@ const RootRedirectHandler: FC = () => {
         }
         const isAdmin = user.role === 'system_admin' || user.role === 'org_admin';
 
-        if (isAdmin && user.organizationId) {
+        // An ordinary account without a bowler is a valid, authenticated
+        // registration state. Keep it on the setup page until an
+        // administrator connects the account; an organization alone does
+        // not grant access to the league-management surfaces.
+        if (user.role === 'user' && !user.bowlerId) {
+          navigate('/registration-complete');
+        } else if (isAdmin && user.organizationId) {
           navigate('/home');
         } else if (user.bowlerId) {
           navigate('/bowler-dashboard');
@@ -101,9 +111,9 @@ const RootRedirectHandler: FC = () => {
         }
       }
     }
-  }, [isLoading, error, currentUserResponse, navigate]);
+  }, [error, isFetching, isLoading, currentUserResponse, navigate]);
 
-  if (isLoading) {
+  if (isLoading || isFetching) {
     return <PageLoader />;
   }
 
