@@ -448,7 +448,7 @@ export default function MakePaymentPage() {
           isInitialized={isInitialized && cardEditorMode === "one-time"}
           isSubmitting={isSubmitting}
           onSubmit={() => void submitOneTimePayment()}
-          onPaymentWeekCountChange={(value) => { walletRequestKeyRef.current = null; setOneTimePaymentWeekCount(value); }}
+          onPaymentWeekCountChange={(value) => { setOneTimePaymentWeekCount(value); }}
           initializeCard={initializeCard}
           cleanupCard={cleanupCard}
           onCardEditorModeChange={selectEditorMode}
