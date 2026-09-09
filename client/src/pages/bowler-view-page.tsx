@@ -189,14 +189,16 @@ export default function BowlerViewPage() {
   const financials = (() => {
     const dueRows = financialRows.filter((row) => row.classification !== "future");
     const pastDueRows = financialRows.filter((row) => row.classification === "past_due");
+    const netDue = (row: typeof financialRows[number]) => Math.max(0, row.amountMinor - (row.waivedMinor ?? 0));
     return {
       weeksDue: dueRows.length,
-      totalSeasonDues: dueRows.reduce((sum, row) => sum + row.amountMinor, 0),
+      totalSeasonDues: dueRows.reduce((sum, row) => sum + netDue(row), 0),
       totalWeeksInSeason: financialRows.length,
-      fullSeasonAmount: financialRows.reduce((sum, row) => sum + row.amountMinor, 0),
+      fullSeasonAmount: financialRows.reduce((sum, row) => sum + netDue(row), 0),
       amountPastDue: financialResponse.data.totals.collectiblePastDueMinor,
       remainingBalance: financialRows.reduce((sum, row) => sum + row.outstandingMinor, 0),
       totalPaidAmount: financialRows.reduce((sum, row) => sum + row.allocatedMinor, 0),
+      waivedAmount: financialRows.reduce((sum, row) => sum + (row.waivedMinor ?? 0), 0),
       totalUnpaidAmount: 0,
       reviewRequired: financialRows.some((row) => row.reviewRequired),
       reviewCategory: financialRows.some((row) => row.reviewRequired) ? ("evidence" as const) : null,

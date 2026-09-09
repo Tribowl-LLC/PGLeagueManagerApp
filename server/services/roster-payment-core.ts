@@ -7,6 +7,7 @@ import {
   leagueOccurrences,
   leagues,
   paymentAllocations,
+  refundAllocationAdjustments,
   paymentObligations,
   payments,
   financialCommands,
@@ -45,6 +46,7 @@ import { decrypt } from "../utils/crypto.js";
 import { assertOpenRosterEvidenceCanBeReplaced, deriveRosterPaymentTimingInTransaction, materializeRosterPaymentOccurrenceInTransaction } from "./roster-payment-materializer.js";
 import { createLogger } from "../logger.js";
 import { allocateAutomaticFifoPayment as allocateFifo, type FifoPaymentCandidate as BaseFifoPaymentCandidate, AutomaticFifoAllocationError } from "./automatic-fifo-allocation.js";
+import { canonicalObligationBalance } from "./refund-allocation-adjustments.js";
 
 export { calculateRosterPaymentTiming };
 
@@ -369,21 +371,35 @@ export async function readCanonicalDuePastDue(input: { organizationId: number; l
     if (responsibilities.length !== new Set(obligations.map((obligation) => obligation.responsibilityId)).size) {
       throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "An obligation is missing its canonical responsibility", 503);
     }
-    const allocations = obligations.length === 0 ? [] : await tx.select({ obligationId: paymentAllocations.obligationId, amountMinor: paymentAllocations.amountMinor, reviewRequired: paymentAllocations.reviewRequired }).from(paymentAllocations).where(and(
+    const allocations = obligations.length === 0 ? [] : await tx.select({ id: paymentAllocations.id, obligationId: paymentAllocations.obligationId, amountMinor: paymentAllocations.amountMinor, reviewRequired: paymentAllocations.reviewRequired }).from(paymentAllocations).where(and(
       eq(paymentAllocations.organizationId, input.organizationId),
       eq(paymentAllocations.leagueId, input.leagueId),
       eq(paymentAllocations.state, "active"),
       inArray(paymentAllocations.obligationId, obligations.map((obligation) => obligation.id)),
     ));
+    const adjustments = allocations.length === 0 ? [] : await tx.select({ sourceAllocationId: refundAllocationAdjustments.sourceAllocationId, amountMinor: refundAllocationAdjustments.amountMinor, disposition: refundAllocationAdjustments.disposition }).from(refundAllocationAdjustments).where(and(
+      eq(refundAllocationAdjustments.organizationId, input.organizationId),
+      eq(refundAllocationAdjustments.leagueId, input.leagueId),
+      inArray(refundAllocationAdjustments.sourceAllocationId, allocations.map((allocation) => allocation.id)),
+    ));
+    const adjustmentsByAllocationId = new Map(adjustments.map((adjustment) => [adjustment.sourceAllocationId, adjustment]));
     const rows = obligations.map((obligation) => {
       const linked = allocations.filter((allocation) => allocation.obligationId === obligation.id);
-      const allocatedMinor = linked.reduce((sum, allocation) => sum + allocation.amountMinor, 0);
-      const outstandingMinor = obligation.state === "voided" ? 0 : Math.max(0, obligation.amountMinor - allocatedMinor);
-      const classification = linked.some((allocation) => allocation.reviewRequired)
+      const balance = canonicalObligationBalance({
+        amountMinor: obligation.amountMinor,
+        state: obligation.state,
+        grossAllocatedMinor: linked.reduce((sum, allocation) => sum + allocation.amountMinor, 0),
+        adjustments: linked.flatMap((allocation) => {
+          const adjustment = adjustmentsByAllocationId.get(allocation.id);
+          return adjustment ? [{ amountMinor: adjustment.amountMinor, disposition: adjustment.disposition }] : [];
+        }),
+      });
+      const reviewRequired = linked.some((allocation) => allocation.reviewRequired);
+      const classification = reviewRequired
         ? "review_required" as const
         : obligation.state === "voided"
           ? "voided" as const
-          : obligation.state === "settled" || outstandingMinor === 0
+          : balance.outstandingMinor === 0
           ? "settled" as const
           : now < new Date(obligation.dueAt).getTime()
             ? "future" as const
@@ -392,7 +408,7 @@ export async function readCanonicalDuePastDue(input: { organizationId: number; l
               : "past_due" as const;
       const teamId = teamByResponsibilityId.get(obligation.responsibilityId);
       if (teamId === undefined) throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "An obligation is missing its canonical team", 503);
-      return { ...obligation, teamId, allocatedMinor, outstandingMinor, classification, reviewRequired: linked.some((allocation) => allocation.reviewRequired) };
+      return { ...obligation, teamId, allocatedMinor: balance.effectiveAllocatedMinor, grossAllocatedMinor: balance.grossAllocatedMinor, refundedMinor: balance.refundedMinor, waivedMinor: balance.waivedMinor, stillOwed: balance.stillOwed, outstandingMinor: balance.outstandingMinor, classification, reviewRequired };
     });
     return {
     contractVersion: "canonical-due-past-due/2" as const,
@@ -608,6 +624,7 @@ export type FifoPaymentCandidate = BaseFifoPaymentCandidate & {
   responsibilityId: string;
   occurrenceId: string;
   amountMinor: number;
+  state: "open" | "partially_settled" | "settled" | "voided";
   outstandingMinor: number;
   dueAt: string;
   pastDueAt: string;
@@ -729,7 +746,7 @@ async function fifoCandidatesInTransaction(
     throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "Each published collection group must have exactly one trigger occurrence", 503);
   }
   for (const row of triggerEvidence) triggerAtByGroup.set(row.groupId, new Date(row.startAt).toISOString());
-  const allocations = await tx.select({ obligationId: paymentAllocations.obligationId, amountMinor: paymentAllocations.amountMinor, reviewRequired: paymentAllocations.reviewRequired }).from(paymentAllocations).where(and(
+  const allocations = await tx.select({ id: paymentAllocations.id, obligationId: paymentAllocations.obligationId, amountMinor: paymentAllocations.amountMinor, reviewRequired: paymentAllocations.reviewRequired }).from(paymentAllocations).where(and(
     eq(paymentAllocations.organizationId, input.organizationId),
     eq(paymentAllocations.leagueId, input.leagueId),
     eq(paymentAllocations.state, "active"),
@@ -740,6 +757,20 @@ async function fifoCandidatesInTransaction(
   for (const row of allocations) {
     allocatedById.set(row.obligationId, (allocatedById.get(row.obligationId) ?? 0) + row.amountMinor);
     reviewById.set(row.obligationId, (reviewById.get(row.obligationId) ?? false) || row.reviewRequired);
+  }
+  const adjustments = allocations.length === 0 ? [] : await tx.select({ sourceAllocationId: refundAllocationAdjustments.sourceAllocationId, amountMinor: refundAllocationAdjustments.amountMinor, disposition: refundAllocationAdjustments.disposition }).from(refundAllocationAdjustments).where(and(
+    eq(refundAllocationAdjustments.organizationId, input.organizationId),
+    eq(refundAllocationAdjustments.leagueId, input.leagueId),
+    inArray(refundAllocationAdjustments.sourceAllocationId, allocations.map((allocation) => allocation.id)),
+  ));
+  const adjustmentsByObligationId = new Map<string, Array<{ amountMinor: number; disposition: "still_owed" | "waived" }>>();
+  for (const adjustment of adjustments) {
+    const allocation = allocations.find((candidate) => candidate.id === adjustment.sourceAllocationId);
+    if (!allocation) continue;
+    adjustmentsByObligationId.set(allocation.obligationId, [
+      ...(adjustmentsByObligationId.get(allocation.obligationId) ?? []),
+      { amountMinor: adjustment.amountMinor, disposition: adjustment.disposition },
+    ]);
   }
   const reservations = await tx.select({ obligationId: paymentOperationRosterSnapshotItems.obligationId, amountMinor: paymentOperationRosterSnapshotItems.amountMinor }).from(paymentOperationRosterSnapshotItems).where(and(
     eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId),
@@ -758,11 +789,17 @@ async function fifoCandidatesInTransaction(
       responsibilityId: row.responsibilityId,
       occurrenceId: row.occurrenceId,
       amountMinor: row.amountMinor,
+      state: row.state,
       // Reservations remain part of the oldest candidate's capacity. They
       // are deliberately excluded from the available balance but must stay
       // visible to the allocator so it fails closed instead of skipping a
       // fully-reserved oldest obligation and collecting a later one.
-      outstandingMinor: Math.max(0, row.amountMinor - (allocatedById.get(row.id) ?? 0)),
+      outstandingMinor: canonicalObligationBalance({
+        amountMinor: row.amountMinor,
+        state: row.state,
+        grossAllocatedMinor: allocatedById.get(row.id) ?? 0,
+        adjustments: adjustmentsByObligationId.get(row.id) ?? [],
+      }).outstandingMinor,
       dueAt: new Date(row.dueAt).toISOString(),
       pastDueAt: new Date(row.pastDueAt).toISOString(),
       payerBowlerId: row.payerBowlerId,
@@ -1049,8 +1086,19 @@ export async function recordCanonicalManualPayment(input: { organizationId: numb
     for (const obligation of quote.obligations) {
       const [allocation] = await tx.insert(paymentAllocations).values({ organizationId: input.organizationId, leagueId: input.leagueId, paymentId: payment.id, obligationId: obligation.id, amountMinor: obligation.selectedMinor, currency: obligation.currency, recordedByUserId: input.actorUserId }).returning();
       if (!allocation) throw new RosterPaymentError("ALLOCATION_WRITE_FAILED", "The payment allocation could not be recorded", 503);
-      const activeTotal = (await tx.select({ amountMinor: paymentAllocations.amountMinor }).from(paymentAllocations).where(and(eq(paymentAllocations.organizationId, input.organizationId), eq(paymentAllocations.leagueId, input.leagueId), eq(paymentAllocations.obligationId, obligation.id), eq(paymentAllocations.state, "active"))).for("update")).reduce((sum, row) => sum + row.amountMinor, 0);
-      await tx.update(paymentObligations).set({ state: activeTotal >= obligation.amountMinor ? "settled" : "partially_settled" }).where(and(eq(paymentObligations.id, obligation.id), eq(paymentObligations.organizationId, input.organizationId), eq(paymentObligations.leagueId, input.leagueId)));
+      const activeRows = await tx.select({ id: paymentAllocations.id, amountMinor: paymentAllocations.amountMinor }).from(paymentAllocations).where(and(eq(paymentAllocations.organizationId, input.organizationId), eq(paymentAllocations.leagueId, input.leagueId), eq(paymentAllocations.obligationId, obligation.id), eq(paymentAllocations.state, "active"))).for("update");
+      const adjustmentRows = activeRows.length === 0 ? [] : await tx.select({ sourceAllocationId: refundAllocationAdjustments.sourceAllocationId, amountMinor: refundAllocationAdjustments.amountMinor, disposition: refundAllocationAdjustments.disposition }).from(refundAllocationAdjustments).where(and(
+        eq(refundAllocationAdjustments.organizationId, input.organizationId),
+        eq(refundAllocationAdjustments.leagueId, input.leagueId),
+        inArray(refundAllocationAdjustments.sourceAllocationId, activeRows.map((row) => row.id)),
+      ));
+      const balance = canonicalObligationBalance({
+        amountMinor: obligation.amountMinor,
+        state: obligation.state,
+        grossAllocatedMinor: activeRows.reduce((sum, row) => sum + row.amountMinor, 0),
+        adjustments: adjustmentRows,
+      });
+      await tx.update(paymentObligations).set({ state: balance.outstandingMinor === 0 ? "settled" : "partially_settled" }).where(and(eq(paymentObligations.id, obligation.id), eq(paymentObligations.organizationId, input.organizationId), eq(paymentObligations.leagueId, input.leagueId)));
       created.push({ payment, allocation });
     }
     const result = { contractVersion: "canonical-manual-record/1" as const, organizationId: input.organizationId, leagueId: input.leagueId, records: created };
@@ -1093,9 +1141,19 @@ export async function correctCanonicalAllocation(input: { organizationId: number
     const obligationIds = [...new Set(allocations.map((row) => row.obligationId))];
     const obligations = await tx.select().from(paymentObligations).where(and(eq(paymentObligations.organizationId, input.organizationId), eq(paymentObligations.leagueId, input.leagueId), inArray(paymentObligations.id, obligationIds))).for("update");
     for (const obligation of obligations) {
-      const active = await tx.select({ amountMinor: paymentAllocations.amountMinor }).from(paymentAllocations).where(and(eq(paymentAllocations.organizationId, input.organizationId), eq(paymentAllocations.leagueId, input.leagueId), eq(paymentAllocations.obligationId, obligation.id), eq(paymentAllocations.state, "active")));
-      const total = active.reduce((sum, row) => sum + row.amountMinor, 0);
-      await tx.update(paymentObligations).set({ state: total >= obligation.amountMinor ? "settled" : total > 0 ? "partially_settled" : "open" }).where(and(eq(paymentObligations.id, obligation.id), eq(paymentObligations.organizationId, input.organizationId), eq(paymentObligations.leagueId, input.leagueId)));
+      const active = await tx.select({ id: paymentAllocations.id, amountMinor: paymentAllocations.amountMinor }).from(paymentAllocations).where(and(eq(paymentAllocations.organizationId, input.organizationId), eq(paymentAllocations.leagueId, input.leagueId), eq(paymentAllocations.obligationId, obligation.id), eq(paymentAllocations.state, "active")));
+      const adjustments = active.length === 0 ? [] : await tx.select({ sourceAllocationId: refundAllocationAdjustments.sourceAllocationId, amountMinor: refundAllocationAdjustments.amountMinor, disposition: refundAllocationAdjustments.disposition }).from(refundAllocationAdjustments).where(and(
+        eq(refundAllocationAdjustments.organizationId, input.organizationId),
+        eq(refundAllocationAdjustments.leagueId, input.leagueId),
+        inArray(refundAllocationAdjustments.sourceAllocationId, active.map((row) => row.id)),
+      ));
+      const balance = canonicalObligationBalance({
+        amountMinor: obligation.amountMinor,
+        state: obligation.state,
+        grossAllocatedMinor: active.reduce((sum, row) => sum + row.amountMinor, 0),
+        adjustments,
+      });
+      await tx.update(paymentObligations).set({ state: balance.outstandingMinor === 0 ? "settled" : balance.effectiveAllocatedMinor > 0 ? "partially_settled" : "open" }).where(and(eq(paymentObligations.id, obligation.id), eq(paymentObligations.organizationId, input.organizationId), eq(paymentObligations.leagueId, input.leagueId)));
     }
     const result = { contractVersion: "canonical-correction/3" as const, mode: "void_only" as const, payment: { ...payment, status: "voided" as const }, voidEvidence, voidedAllocations: allocations, restoredObligationIds: obligationIds };
     await completeFinancialCommand(tx, { organizationId: input.organizationId, leagueId: input.leagueId, commandType: "roster_payment.void_payment", idempotencyKey: input.request.idempotencyKey, result });

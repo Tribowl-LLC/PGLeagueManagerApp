@@ -81,6 +81,9 @@ router.get("/payments", async (req, res) => {
         && row.initiatingPayerBowlerId === req.user?.bowlerId;
       const visibleAllocations = isInitiatingPayer ? row.allocations : ownAllocations;
       const authorizedAmount = visibleAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0);
+      const authorizedRefundedAmount = visibleAllocations.reduce((sum, allocation) => sum + (allocation.refundedMinor ?? 0), 0);
+      const authorizedWaivedAmount = visibleAllocations.reduce((sum, allocation) => sum + (allocation.refundDisposition === "waived" ? (allocation.refundedMinor ?? 0) : 0), 0);
+      const authorizedEffectiveAmount = visibleAllocations.reduce((sum, allocation) => sum + (allocation.effectiveAmountMinor ?? allocation.amountMinor), 0);
       const hasCanonicalOwnership = visibleAllocations.length > 0;
       const safeAmount = isInitiatingPayer ? row.amountMinor : (hasCanonicalOwnership ? authorizedAmount : row.amountMinor);
       const safeRefundAmount = isInitiatingPayer ? row.refund.amountMinor : 0;
@@ -91,6 +94,10 @@ router.get("/payments", async (req, res) => {
       bowlerId: req.user?.bowlerId ?? row.bowlerId,
       amountMinor: safeAmount,
       allocatedMinor: hasCanonicalOwnership ? authorizedAmount : Math.min(row.allocatedMinor, safeAmount),
+      grossAllocatedMinor: hasCanonicalOwnership ? authorizedAmount : Math.min(row.grossAllocatedMinor ?? row.allocatedMinor, safeAmount),
+      refundedAllocationMinor: authorizedRefundedAmount,
+      waivedMinor: authorizedWaivedAmount,
+      effectiveAllocatedMinor: authorizedEffectiveAmount,
       unallocatedMinor: hasCanonicalOwnership ? 0 : row.unallocatedMinor,
       providerPaymentId: null,
       paymentOperationId: null,

@@ -769,6 +769,17 @@ field-encryption boundary; PAN, CVV, source tokens, raw Square payloads, and
 provider responses are never stored. Different immutable semantics for an
 existing payment refund fail closed rather than adopting the first request.
 
+Before provider dispatch, the administrator must choose one disposition for the
+full authorized refund: **Still owed** or **Waive this amount**. The snapshot
+stores that choice and the exact original allocation list immutably. A completed
+refund appends one adjustment per allocation without changing the original
+tender or allocation evidence. Still-owed amounts reopen only the refunded
+amount, require a one-time settlement for the affected payer/week, and remain
+ineligible for standing collection until settled. A waiver reduces net due but
+is not recorded as a payment. Pending, failed, or unknown provider outcomes do
+not change balances; legacy snapshots without a disposition remain in
+reconciliation until an administrator can safely review them.
+
 Preparation locks and reconstructs the payment through its league, rejects
 organization-less or cross-tenant rows, and permits only an organization admin
 from that exact organization or a system admin. Only paid Square/card rows with
@@ -806,6 +817,12 @@ pre-Phase-3B code is no longer an approved rollback target for refund traffic;
 rollback must use a ledger-aware application or stop refund traffic and roll
 forward. No backfill, startup schema mutation, environment-variable change,
 periodic sweep, webhook, or production-data update is included.
+
+Migration 0037 is also forward-only and additive. It extends the refund
+snapshot for the required disposition and exact allocation evidence, and adds
+the append-only `refund_allocation_adjustments` sidecar. Apply it before
+enabling disposition-aware refund traffic; no historical refund is inferred or
+backfilled.
 
 ### Phase 3B deployment: mandatory Maintenance Mode and old-instance drain
 

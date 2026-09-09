@@ -1,0 +1,25 @@
+{
+  "formatVersion": 2,
+  "algorithm": "sha256",
+  "migration": {
+    "tag": "0037_refund_allocation_adjustments",
+    "hash": "1f06ebc46d62a36405d93c3a6e4fc0bc7b0d7a8a0658e43c313529a8486aaddc",
+    "createdAt": 1788965739621
+  },
+  "digest": "a17a24c0c7861fd7bd9690dee449cc2b52927512b25a671eaff1fba2408ec998",
+  "counts": {
+    "tables": 65,
+    "columns": 885,
+    "nonTableRelations": 0,
+    "rewriteRules": 0,
+    "unsupportedPublicObjects": 0,
+    "extensions": 0,
+    "sequences": 23,
+    "constraints": 496,
+    "indexes": 271,
+    "types": 1,
+    "functions": 18,
+    "triggers": 32,
+    "policies": 0
+  }
+}

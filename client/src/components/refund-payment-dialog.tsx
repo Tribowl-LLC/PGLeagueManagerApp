@@ -33,15 +33,19 @@ function paymentLabel(payment: Payment): string {
 interface Props {
   payment: Payment | null;
   onClose: () => void;
-  onConfirm: (id: number, reason?: string) => void;
+  onConfirm: (id: number, reason: string | undefined, disposition: "still_owed" | "waived") => void;
   isPending: boolean;
 }
 
 export function RefundPaymentDialog({ payment, onClose, onConfirm, isPending }: Props) {
   const [reason, setReason] = useState("");
+  const [disposition, setDisposition] = useState<"still_owed" | "waived" | null>(null);
 
   useEffect(() => {
-    if (!payment) setReason("");
+    if (!payment) {
+      setReason("");
+      setDisposition(null);
+    }
   }, [payment]);
 
   return (
@@ -70,6 +74,37 @@ export function RefundPaymentDialog({ payment, onClose, onConfirm, isPending }: 
           </Alert>
         )}
         <div className="py-2">
+          <fieldset className="space-y-2">
+            <legend className="text-sm font-medium">What should happen to the refunded roster amount? <span aria-hidden="true">*</span></legend>
+            <label className="flex items-start gap-2 rounded-md border p-3 cursor-pointer">
+              <input
+                type="radio"
+                name="refund-disposition"
+                value="still_owed"
+                checked={disposition === "still_owed"}
+                onChange={() => setDisposition("still_owed")}
+                disabled={isPending}
+              />
+              <span>
+                <span className="block text-sm font-medium">Still owed</span>
+                <span className="block text-xs text-muted-foreground">The affected payer and weeks require a one-time payment for the full remaining balance before standing autopay resumes.</span>
+              </span>
+            </label>
+            <label className="flex items-start gap-2 rounded-md border p-3 cursor-pointer">
+              <input
+                type="radio"
+                name="refund-disposition"
+                value="waived"
+                checked={disposition === "waived"}
+                onChange={() => setDisposition("waived")}
+                disabled={isPending}
+              />
+              <span>
+                <span className="block text-sm font-medium">Waive this amount</span>
+                <span className="block text-xs text-muted-foreground">Only the refunded allocation amount is waived. Any other unpaid balance remains due.</span>
+              </span>
+            </label>
+          </fieldset>
           <label htmlFor="refund-reason" className="text-sm font-medium">Reason (optional)</label>
           <Input
             id="refund-reason"
@@ -83,8 +118,8 @@ export function RefundPaymentDialog({ payment, onClose, onConfirm, isPending }: 
           <Button variant="outline" onClick={onClose}>Cancel</Button>
           <Button
             variant="destructive"
-            onClick={() => { if (payment) onConfirm(payment.id, reason || undefined); }}
-            disabled={isPending}
+            onClick={() => { if (payment && disposition) onConfirm(payment.id, reason || undefined, disposition); }}
+            disabled={isPending || disposition === null}
           >
             {isPending ? (
               <Loader2 className="size-4 animate-spin mr-2" />

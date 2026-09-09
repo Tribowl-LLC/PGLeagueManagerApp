@@ -19,6 +19,7 @@ import {
   paymentOperations,
   payments,
   paymentAllocations,
+  refundAllocationAdjustments,
   teamPaymentSlots,
   teams,
   users,
@@ -151,6 +152,7 @@ async function preparedRefund() {
   const providerPaymentId = charge.providerPaymentId;
   const prepared = await prepareRefundPaymentOperation({
     paymentId: charge.payment.id,
+    disposition: "still_owed",
     reason: "Synthetic webhook fixture",
     requestedByUserId: actorUserId,
     requestedByRole: "org_admin",
@@ -536,6 +538,8 @@ describe("Square webhook payment/refund PostgreSQL reconciliation", () => {
     const [operation] = await db.select().from(paymentOperations)
       .where(eq(paymentOperations.id, fixture.operation.id));
     const [payment] = await db.select().from(payments).where(eq(payments.id, fixture.payment.id));
+    const adjustments = await db.select().from(refundAllocationAdjustments)
+      .where(eq(refundAllocationAdjustments.refundOperationId, fixture.operation.id));
     const [storedEvent] = await db.select().from(webhookEvents)
       .where(eq(webhookEvents.id, recorded.event.id));
     expect(operation).toMatchObject({
@@ -546,6 +550,8 @@ describe("Square webhook payment/refund PostgreSQL reconciliation", () => {
       status: "refunded",
       squareRefundId: event.providerObjectId,
     });
+    expect(adjustments).toHaveLength(1);
+    expect(adjustments[0]).toMatchObject({ disposition: "still_owed", amountMinor: fixture.payment.amount });
     expect(storedEvent).toMatchObject({ status: "processed", attemptCount: 1 });
   });
 

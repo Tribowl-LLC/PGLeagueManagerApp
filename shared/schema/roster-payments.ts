@@ -20,7 +20,7 @@ import { canonicalCollectionGroupMembers, canonicalCollectionGroups } from "./ca
 import { leagues } from "./leagues";
 import { locations } from "./locations";
 import { organizations } from "./organizations";
-import { paymentOperations } from "./payment-operations";
+import { paymentOperations, REFUND_PAYMENT_DISPOSITIONS } from "./payment-operations";
 import { payments } from "./payments";
 import { teams } from "./teams";
 import { users } from "./users";
@@ -73,6 +73,7 @@ const responsibilityStates = sql.raw(RESPONSIBILITY_STATES.map((value) => `'${va
 const obligationStates = sql.raw(OBLIGATION_STATES.map((value) => `'${value}'`).join(", "));
 const obligationComponents = sql.raw(OBLIGATION_COMPONENTS.map((value) => `'${value}'`).join(", "));
 const allocationStates = sql.raw(ALLOCATION_STATES.map((value) => `'${value}'`).join(", "));
+const refundPaymentDispositions = sql.raw(REFUND_PAYMENT_DISPOSITIONS.map((value) => `'${value}'`).join(", "));
 const consentStates = sql.raw(AUTOPAY_CONSENT_STATES.map((value) => `'${value}'`).join(", "));
 const consentPaymentModes = sql.raw(AUTOPAY_CONSENT_PAYMENT_MODES.map((value) => `'${value}'`).join(", "));
 const standingPreparationStates = sql.raw(STANDING_AUTOPAY_PREPARATION_STATES.map((value) => `'${value}'`).join(", "));
@@ -273,6 +274,39 @@ export const paymentAllocations = pgTable("payment_allocations", {
   obligationIdx: index("payment_allocations_obligation_idx").on(table.organizationId, table.leagueId, table.obligationId),
   amountCheck: check("payment_allocations_amount_check", sql`${table.amountMinor} > 0 AND ${table.currency} = 'USD'`),
   stateCheck: check("payment_allocations_state_check", sql`${table.state} IN (${allocationStates})`),
+}));
+
+/** Immutable effect of a completed provider refund on one retained canonical
+ * allocation. The source tender/allocation remains untouched; this sidecar
+ * is the only evidence used to remove the refunded amount from collection
+ * balances. */
+export const refundAllocationAdjustments = pgTable("refund_allocation_adjustments", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  organizationId: integer("organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
+  leagueId: integer("league_id").notNull(),
+  refundOperationId: uuid("refund_operation_id").notNull(),
+  sourceAllocationId: uuid("source_allocation_id").notNull(),
+  amountMinor: integer("amount_minor").notNull(),
+  disposition: text("disposition", { enum: REFUND_PAYMENT_DISPOSITIONS }).notNull(),
+  snapshotFingerprint: varchar("snapshot_fingerprint", { length: 80 }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull().defaultNow(),
+}, (table) => ({
+  leagueTenantFk: leagueTenantFk(table, "refund_allocation_adjustments_league_tenant_fk"),
+  operationFk: foreignKey({
+    name: "refund_allocation_adjustments_operation_fk",
+    columns: [table.refundOperationId, table.organizationId, table.leagueId],
+    foreignColumns: [paymentOperations.id, paymentOperations.organizationId, paymentOperations.leagueId],
+  }).onDelete("restrict"),
+  allocationFk: foreignKey({
+    name: "refund_allocation_adjustments_allocation_fk",
+    columns: [table.sourceAllocationId, table.organizationId, table.leagueId],
+    foreignColumns: [paymentAllocations.id, paymentAllocations.organizationId, paymentAllocations.leagueId],
+  }).onDelete("restrict"),
+  operationAllocationUnique: uniqueIndex("refund_allocation_adjustments_operation_allocation_unique").on(table.organizationId, table.leagueId, table.refundOperationId, table.sourceAllocationId),
+  sourceAllocationUnique: uniqueIndex("refund_allocation_adjustments_source_allocation_unique").on(table.organizationId, table.leagueId, table.sourceAllocationId),
+  amountCheck: check("refund_allocation_adjustments_amount_check", sql`${table.amountMinor} > 0`),
+  dispositionCheck: check("refund_allocation_adjustments_disposition_check", sql`${table.disposition} IN (${refundPaymentDispositions})`),
+  fingerprintCheck: check("refund_allocation_adjustments_fingerprint_check", sql`${table.snapshotFingerprint} ~ '^lvpayexecrf:v2:[0-9a-f]{64}$'`),
 }));
 
 /** Whole-tender correction evidence. A cash/check correction voids the
@@ -533,6 +567,7 @@ export type TeamPaymentPolicyRevision = typeof teamPaymentPolicyRevisions.$infer
 export type OccurrencePaymentResponsibility = typeof occurrencePaymentResponsibilities.$inferSelect;
 export type PaymentObligation = typeof paymentObligations.$inferSelect;
 export type PaymentAllocation = typeof paymentAllocations.$inferSelect;
+export type RefundAllocationAdjustment = typeof refundAllocationAdjustments.$inferSelect;
 export type PaymentVoid = typeof paymentVoids.$inferSelect;
 export type AutopayConsent = typeof autopayConsents.$inferSelect;
 export type AutopayConsentPartner = typeof autopayConsentPartners.$inferSelect;

@@ -27,6 +27,7 @@ interface PaymentHistoryContentProps {
   totalSeasonDues: number;
   weeksPaid: number;
   totalPaidAmount: number;
+  waivedAmount?: number;
   amountPastDue: number;
   remainingBalance: number;
   doublePay: DoublePayStatus;
@@ -46,6 +47,7 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
   onOpenLeagueSheet, onCloseLeagueSheet, bowlerLeagues, leagueMap,
   onSelectLeague, totalWeeksInSeason, fullSeasonAmount, weeksDueCount,
   totalSeasonDues, weeksPaid, totalPaidAmount, amountPastDue, remainingBalance,
+  waivedAmount,
   doublePay, canonicalPaymentLoading, canonicalPaymentError, canonicalReportPage,
   onCanonicalReportRetry, canonicalReportTotalPages, onCanonicalReportPageChange, canonicalRows = [],
   canonicalMode, canonicalPaymentTiming,
@@ -74,6 +76,7 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
             totalSeasonDues={totalSeasonDues}
             weeksPaid={weeksPaid}
             totalPaidAmount={totalPaidAmount}
+            waivedAmount={waivedAmount}
             amountPastDue={amountPastDue}
             remainingBalance={remainingBalance}
             doublePay={doublePay}

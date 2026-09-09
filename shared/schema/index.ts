@@ -30,7 +30,10 @@ export {
   PAYMENT_OPERATION_MAX_LEASE_MS,
   PAYMENT_OPERATION_MAX_RETRY_DELAY_MS,
   REFUND_PAYMENT_SNAPSHOT_VERSION,
+  REFUND_PAYMENT_SNAPSHOT_LEGACY_VERSION,
+  REFUND_PAYMENT_DISPOSITIONS,
 } from "./payment-operations";
+export type { RefundPaymentDisposition, RefundPaymentAllocationSnapshot } from "./payment-operations";
 export {
   ROSTER_OPERATION_SNAPSHOT_VERSION,
   ROSTER_OPERATION_REQUEST_KINDS,
@@ -277,6 +280,7 @@ export {
   occurrencePaymentResponsibilities,
   paymentObligations,
   paymentAllocations,
+  refundAllocationAdjustments,
   paymentVoids,
   autopayConsents,
   autopayConsentPartners,
@@ -309,6 +313,7 @@ export type {
   OccurrencePaymentResponsibility,
   PaymentObligation,
   PaymentAllocation,
+  RefundAllocationAdjustment,
   PaymentVoid,
   AutopayConsent,
   AutopayConsentPartner,
