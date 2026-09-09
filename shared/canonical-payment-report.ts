@@ -70,6 +70,10 @@ export interface CanonicalPaymentAllocationRow {
   occurrenceLocalDate?: string | null;
   bowlerId: number;
   amountMinor: number;
+  /** Original allocation remains immutable; these fields describe its refund effect. */
+  refundedMinor?: number;
+  effectiveAmountMinor?: number;
+  refundDisposition?: "still_owed" | "waived" | null;
   currency: string;
   state: "active" | "voided" | "reversed" | null;
 }
@@ -89,6 +93,11 @@ export interface CanonicalPaymentRow {
   operationType: "interactive_charge" | "refund" | "standing_autopay_charge" | null;
   operationStatus: string | null;
   allocatedMinor: number;
+  /** Gross active allocation evidence, retained for tender conservation. */
+  grossAllocatedMinor?: number;
+  refundedAllocationMinor?: number;
+  waivedMinor?: number;
+  effectiveAllocatedMinor?: number;
   unallocatedMinor: number;
   reviewRequired: boolean;
   source: "canonical_allocation" | "unresolved_operation";
@@ -123,6 +132,10 @@ export interface CanonicalPaymentReportTotals {
   disputedReviewRequiredMinor: number;
   reviewRequiredMinor: number;
   unresolvedOperationMinor: number;
+  /** Additive refund-effect projections; activeAllocatedMinor remains gross evidence. */
+  refundedAllocationMinor?: number;
+  waivedMinor?: number;
+  effectiveAllocatedMinor?: number;
 }
 
 export interface CanonicalPaymentReport {

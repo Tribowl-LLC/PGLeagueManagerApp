@@ -84,13 +84,15 @@ export default function PaymentHistoryPage() {
   const report = reportResponse?.data;
   const resolved = useMemo(() => resolveInteractiveFinancialRead(financialResponse?.data), [financialResponse?.data]);
   const rows = resolved.status === "canonical" ? resolved.rows : [];
+  const netDue = (row: typeof rows[number]) => Math.max(0, row.amountMinor - row.waivedMinor);
   const financials = {
     weeksPassed: rows.filter((row) => row.classification !== "future").length,
     totalWeeksInSeason: rows.length,
-    totalDueToDate: rows.filter((row) => row.classification !== "future").reduce((sum, row) => sum + row.amountMinor, 0),
+    totalDueToDate: rows.filter((row) => row.classification !== "future").reduce((sum, row) => sum + netDue(row), 0),
     totalPaid: rows.reduce((sum, row) => sum + row.allocatedMinor, 0),
     amountPastDue: resolved.amountPastDue,
-    fullSeasonAmount: rows.reduce((sum, row) => sum + row.amountMinor, 0),
+    fullSeasonAmount: rows.reduce((sum, row) => sum + netDue(row), 0),
+    waivedAmount: rows.reduce((sum, row) => sum + row.waivedMinor, 0),
     remainingBalance: resolved.remainingBalance,
     doublePay: { dates: [], perWeekExtra: 0, totalExtra: 0, pastExtra: 0, isPaid: resolved.remainingBalance <= 0 },
   };
@@ -122,6 +124,7 @@ export default function PaymentHistoryPage() {
     totalSeasonDues={financials.totalDueToDate}
     weeksPaid={league.weeklyFee ? Math.round(financials.totalPaid / league.weeklyFee) : 0}
     totalPaidAmount={financials.totalPaid}
+    waivedAmount={financials.waivedAmount}
     amountPastDue={financials.amountPastDue}
     remainingBalance={financials.remainingBalance}
     doublePay={financials.doublePay}

@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(37);
+    expect(migrations).toHaveLength(38);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -450,6 +450,14 @@ describe('normalized migration baseline tools', () => {
     });
     expect(migrations[36]?.sql).toContain('CREATE TABLE "standing_autopay_preparation_attempts"');
     expect(migrations[36]?.sql).toContain('standing_autopay_preparation_attempts_cutoff_unique');
+    expect(migrations[37]).toMatchObject({
+      idx: 37,
+      tag: '0037_refund_allocation_adjustments',
+      createdAt: 1788965739621,
+      hash: '1f06ebc46d62a36405d93c3a6e4fc0bc7b0d7a8a0658e43c313529a8486aaddc',
+    });
+    expect(migrations[37]?.sql).toContain('CREATE TABLE "refund_allocation_adjustments"');
+    expect(migrations[37]?.sql).toContain('refund_allocation_adjustments_append_only_guard');
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 

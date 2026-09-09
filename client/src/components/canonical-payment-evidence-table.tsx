@@ -57,6 +57,7 @@ export function CanonicalPaymentEvidenceTable({ rows, mode, paymentTiming, organ
                     : "No item allocation recorded"}
                   {row.collectionEvidence ? ` · ${row.collectionEvidence.grouping === "double_pay" ? "double-pay" : "normal"} collection · ${row.collectionEvidence.timing.replaceAll("_", " ")} · collection point ${row.collectionEvidence.collectionPointOccurrenceId} · ${row.collectionEvidence.coveredOccurrenceIds.length} covered occurrence${row.collectionEvidence.coveredOccurrenceIds.length === 1 ? "" : "s"}` : ""}
                   {row.refund.present ? ` · refunded $${(row.refund.amountMinor / 100).toFixed(2)}` : ""}
+                  {(row.waivedMinor ?? 0) > 0 ? ` · waived $${((row.waivedMinor ?? 0) / 100).toFixed(2)}` : ""}
                   {row.dispute.present ? ` · dispute/review evidence${row.dispute.scope === "transaction" ? " (transaction)" : ""}${row.dispute.state ? ` · ${row.dispute.state}` : ""}${row.dispute.amountMinor > 0 ? ` · $${(row.dispute.amountMinor / 100).toFixed(2)}` : ""}` : ""}
                 </div>
               </div>

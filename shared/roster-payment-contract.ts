@@ -151,6 +151,10 @@ export type CanonicalDuePastDueRowV2 = {
   pastDueAt: string;
   state: "open" | "partially_settled" | "settled" | "voided";
   allocatedMinor: number;
+  grossAllocatedMinor: number;
+  refundedMinor: number;
+  waivedMinor: number;
+  stillOwed: boolean;
   outstandingMinor: number;
   classification: "future" | "due" | "past_due" | "settled" | "voided" | "review_required";
   reviewRequired: boolean;

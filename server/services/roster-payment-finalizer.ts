@@ -2,6 +2,7 @@ import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import {
   occurrencePaymentResponsibilities,
   paymentAllocations,
+  refundAllocationAdjustments,
   paymentObligations,
   paymentOperationRosterSnapshots,
   paymentOperationRosterSnapshotItems,
@@ -9,6 +10,7 @@ import {
   payments,
 } from "@shared/schema";
 import type { PaymentOperationTransaction } from "../storage/payment-operations.js";
+import { canonicalObligationBalance } from "./refund-allocation-adjustments.js";
 
 /**
  * Expected local evidence failures are durable reconciliation outcomes, not
@@ -222,14 +224,27 @@ export async function finalizeRosterSnapshotInTransaction(
       continue;
     }
 
-    const active = await tx.select({ amountMinor: paymentAllocations.amountMinor }).from(paymentAllocations).where(and(
+    const active = await tx.select({ id: paymentAllocations.id, amountMinor: paymentAllocations.amountMinor }).from(paymentAllocations).where(and(
       eq(paymentAllocations.organizationId, input.organizationId),
       eq(paymentAllocations.leagueId, input.leagueId),
       eq(paymentAllocations.obligationId, obligation.id),
       eq(paymentAllocations.state, "active"),
     )).orderBy(asc(paymentAllocations.id)).for("update");
-    const allocatedMinor = active.reduce((sum, row) => sum + row.amountMinor, 0);
-    if (allocatedMinor + item.amountMinor > obligation.amountMinor) {
+    const adjustments = active.length === 0 ? [] : await tx.select({ sourceAllocationId: refundAllocationAdjustments.sourceAllocationId, amountMinor: refundAllocationAdjustments.amountMinor, disposition: refundAllocationAdjustments.disposition }).from(refundAllocationAdjustments).where(and(
+      eq(refundAllocationAdjustments.organizationId, input.organizationId),
+      eq(refundAllocationAdjustments.leagueId, input.leagueId),
+      inArray(refundAllocationAdjustments.sourceAllocationId, active.map((row) => row.id)),
+    ));
+    const balance = canonicalObligationBalance({
+      amountMinor: obligation.amountMinor,
+      state: obligation.state,
+      grossAllocatedMinor: active.reduce((sum, row) => sum + row.amountMinor, 0),
+      adjustments,
+    });
+    // A refunded source allocation reopens only its explicit disposition:
+    // still-owed refunds create capacity for a one-time replacement tender,
+    // while a waiver already consumes that portion of the obligation.
+    if (item.amountMinor > balance.outstandingMinor) {
       throw new RosterSnapshotFinalizationError("ALLOCATION_CONSERVATION_FAILED", "The roster payment exceeds the obligation balance");
     }
     const [allocation] = await tx.insert(paymentAllocations).values({
@@ -242,9 +257,14 @@ export async function finalizeRosterSnapshotInTransaction(
       recordedByUserId: actorUserId,
     }).returning({ id: paymentAllocations.id });
     if (!allocation) throw new RosterSnapshotFinalizationError("ALLOCATION_WRITE_FAILED", "The roster allocation could not be recorded");
-    const nextTotal = allocatedMinor + item.amountMinor;
+    const nextBalance = canonicalObligationBalance({
+      amountMinor: obligation.amountMinor,
+      state: obligation.state,
+      grossAllocatedMinor: balance.grossAllocatedMinor + item.amountMinor,
+      adjustments,
+    });
     await tx.update(paymentObligations).set({
-      state: nextTotal >= obligation.amountMinor ? "settled" : "partially_settled",
+      state: nextBalance.outstandingMinor === 0 ? "settled" : "partially_settled",
     }).where(and(
       eq(paymentObligations.id, obligation.id),
       eq(paymentObligations.organizationId, input.organizationId),

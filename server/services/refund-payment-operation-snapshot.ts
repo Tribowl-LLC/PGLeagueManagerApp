@@ -1,13 +1,18 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { REFUND_PAYMENT_SNAPSHOT_VERSION } from "@shared/schema";
+import {
+  REFUND_PAYMENT_DISPOSITIONS,
+  REFUND_PAYMENT_SNAPSHOT_LEGACY_VERSION,
+  REFUND_PAYMENT_SNAPSHOT_VERSION,
+  type RefundPaymentAllocationSnapshot,
+} from "@shared/schema";
 import { decrypt, encrypt } from "../utils/crypto.js";
 import { canonicalizePaymentOperationInput } from "./payment-operation-idempotency.js";
 
 export const REFUND_PAYMENT_SNAPSHOT_FINGERPRINT_PREFIX = "lvpayexecrf:v1:" as const;
+export const REFUND_PAYMENT_SNAPSHOT_V2_FINGERPRINT_PREFIX = "lvpayexecrf:v2:" as const;
 
-const semanticSnapshotSchema = z.object({
-  snapshotVersion: z.literal(REFUND_PAYMENT_SNAPSHOT_VERSION),
+const baseSemanticSnapshotSchema = z.object({
   organizationId: z.number().int().positive(),
   amountMinor: z.number().int().positive(),
   currency: z.literal("USD"),
@@ -23,6 +28,32 @@ const semanticSnapshotSchema = z.object({
   requestedByOrganizationId: z.number().int().positive().nullable(),
 }).strict();
 
+const allocationSnapshotSchema = z.object({
+  allocationId: z.string().uuid(),
+  obligationId: z.string().uuid(),
+  amountMinor: z.number().int().positive(),
+  currency: z.literal("USD"),
+}).strict();
+
+const legacySemanticSnapshotSchema = baseSemanticSnapshotSchema.extend({
+  snapshotVersion: z.literal(REFUND_PAYMENT_SNAPSHOT_LEGACY_VERSION),
+});
+
+const currentSemanticSnapshotSchema = baseSemanticSnapshotSchema.extend({
+  snapshotVersion: z.literal(REFUND_PAYMENT_SNAPSHOT_VERSION),
+  disposition: z.enum(REFUND_PAYMENT_DISPOSITIONS),
+  allocations: z.array(allocationSnapshotSchema).min(1).superRefine((allocations, context) => {
+    if (new Set(allocations.map((allocation) => allocation.allocationId)).size !== allocations.length) {
+      context.addIssue({ code: "custom", message: "refund allocation snapshot contains duplicate allocation evidence" });
+    }
+  }),
+});
+
+const semanticSnapshotSchema = z.discriminatedUnion("snapshotVersion", [
+  legacySemanticSnapshotSchema,
+  currentSemanticSnapshotSchema,
+]);
+
 export type RefundPaymentSemanticSnapshot = z.infer<typeof semanticSnapshotSchema>;
 
 export interface StoredRefundPaymentSnapshot {
@@ -37,6 +68,8 @@ export interface StoredRefundPaymentSnapshot {
   requestedByUserId: number;
   requestedByRole: string;
   requestedByOrganizationId: number | null;
+  disposition: "still_owed" | "waived" | null;
+  allocationSnapshot: RefundPaymentAllocationSnapshot[];
 }
 
 export function validateRefundPaymentSnapshot(value: unknown): RefundPaymentSemanticSnapshot {
@@ -48,12 +81,12 @@ export function fingerprintRefundPaymentSnapshot(snapshot: RefundPaymentSemantic
   const digest = createHash("sha256")
     .update(canonicalizePaymentOperationInput(validated))
     .digest("hex");
-  return `${REFUND_PAYMENT_SNAPSHOT_FINGERPRINT_PREFIX}${digest}`;
+  return `${validated.snapshotVersion === REFUND_PAYMENT_SNAPSHOT_LEGACY_VERSION ? REFUND_PAYMENT_SNAPSHOT_FINGERPRINT_PREFIX : REFUND_PAYMENT_SNAPSHOT_V2_FINGERPRINT_PREFIX}${digest}`;
 }
 
 export function encryptRefundPaymentSnapshot(snapshot: RefundPaymentSemanticSnapshot) {
   const validated = validateRefundPaymentSnapshot(snapshot);
-  return {
+  const encrypted = {
     snapshotVersion: validated.snapshotVersion,
     snapshotFingerprint: fingerprintRefundPaymentSnapshot(validated),
     paymentId: validated.paymentId,
@@ -66,6 +99,14 @@ export function encryptRefundPaymentSnapshot(snapshot: RefundPaymentSemanticSnap
     requestedByRole: validated.requestedByRole,
     requestedByOrganizationId: validated.requestedByOrganizationId,
   };
+  if (validated.snapshotVersion === REFUND_PAYMENT_SNAPSHOT_VERSION) {
+    return {
+      ...encrypted,
+      disposition: validated.disposition,
+      allocationSnapshot: validated.allocations,
+    };
+  }
+  return encrypted;
 }
 
 export function reconstructRefundPaymentSnapshot(input: {
@@ -77,7 +118,7 @@ export function reconstructRefundPaymentSnapshot(input: {
 }): RefundPaymentSemanticSnapshot {
   const providerPaymentId = decrypt(input.stored.encryptedProviderPaymentId);
   if (!providerPaymentId) throw new Error("refund provider payment identity could not be decrypted");
-  return validateRefundPaymentSnapshot({
+  const common = {
     snapshotVersion: input.stored.snapshotVersion,
     organizationId: input.organizationId,
     amountMinor: input.amountMinor,
@@ -92,7 +133,23 @@ export function reconstructRefundPaymentSnapshot(input: {
     requestedByUserId: input.stored.requestedByUserId,
     requestedByRole: input.stored.requestedByRole,
     requestedByOrganizationId: input.stored.requestedByOrganizationId,
-  });
+  };
+  if (input.stored.snapshotVersion === REFUND_PAYMENT_SNAPSHOT_VERSION) {
+    const reconstructed = validateRefundPaymentSnapshot({
+      ...common,
+      disposition: input.stored.disposition,
+      allocations: input.stored.allocationSnapshot,
+    });
+    if (fingerprintRefundPaymentSnapshot(reconstructed) !== input.stored.snapshotFingerprint) {
+      throw new Error("refund payment snapshot fingerprint does not match its immutable contents");
+    }
+    return reconstructed;
+  }
+  const reconstructed = validateRefundPaymentSnapshot(common);
+  if (fingerprintRefundPaymentSnapshot(reconstructed) !== input.stored.snapshotFingerprint) {
+    throw new Error("refund payment snapshot fingerprint does not match its immutable contents");
+  }
+  return reconstructed;
 }
 
 export function refundReplaySemanticsMatch(
@@ -108,5 +165,12 @@ export function refundReplaySemanticsMatch(
     && left.locationId === right.locationId
     && left.providerPaymentId === right.providerPaymentId
     && left.reason === right.reason
-    && left.requestedReason === right.requestedReason;
+    && left.requestedReason === right.requestedReason
+    && left.snapshotVersion === right.snapshotVersion
+    && (left.snapshotVersion === REFUND_PAYMENT_SNAPSHOT_LEGACY_VERSION
+      || (
+        right.snapshotVersion === REFUND_PAYMENT_SNAPSHOT_VERSION
+        && left.disposition === right.disposition
+        && JSON.stringify(left.allocations) === JSON.stringify(right.allocations)
+      ));
 }

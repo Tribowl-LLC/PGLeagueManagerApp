@@ -101,7 +101,26 @@ export class RefundPaymentOperationExecutor {
       || snapshot.amountMinor !== operation.amountMinor
       || snapshot.currency !== operation.currency
       || snapshot.providerName !== operation.providerName
+      || snapshot.snapshotVersion !== 2
+      || snapshot.disposition === undefined
+      || snapshot.disposition === null
+      || snapshot.allocations.length === 0
     ) {
+      // A legacy snapshot does not contain the immutable disposition or
+      // allocation map. Even without a provider id, a crashed attempt may
+      // have reached Square, so the absence of that id is not proof that the
+      // provider was never called. Preserve provider truth and require
+      // reconciliation rather than inventing a failed refund outcome.
+      if (snapshot?.snapshotVersion === 1) {
+        return recordPaymentOperationReconciliationRequired({
+          organizationId: operation.organizationId,
+          operationId: operation.id,
+          leaseToken,
+          providerObjectId: operation.providerObjectId ?? null,
+          errorCode: "REFUND_DISPOSITION_MISSING",
+          now: this.now(),
+        });
+      }
       return recordPaymentOperationFailedTerminal({
         organizationId: operation.organizationId,
         operationId: operation.id,

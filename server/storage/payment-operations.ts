@@ -13,6 +13,8 @@ import {
   paymentOperationStandingAutopayBindings,
   paymentOperationStandingAutopayParticipants,
   paymentObligations,
+  paymentAllocations,
+  refundAllocationAdjustments,
   autopayConsents,
   autopayConsentPartners,
   payments,
@@ -60,7 +62,9 @@ import {
   validateRosterSnapshotForDispatchInTransaction,
 } from "../services/roster-payment-finalizer.js";
 import { validateStandingConsentForDispatchInTransaction } from "../services/roster-standing-autopay.js";
+import { canonicalObligationBalance } from "../services/refund-allocation-adjustments.js";
 import { rosterStandingAutopayEnabled, scheduledPaymentExecutionMode } from "../config.js";
+import { lockLeagueSchedule } from "./league-schedule-lock.js";
 async function releaseRosterReservationsWithoutProviderEvidence(
   tx: PaymentOperationTransaction,
   input: { organizationId: number; leagueId: number; operationId: string },
@@ -136,6 +140,7 @@ export interface CreateOrGetGeneralInteractivePaymentOperationInput {
 
 export interface CreateOrGetRefundPaymentOperationInput {
   organizationId: number;
+  leagueId: number;
   paymentId: number;
   amountMinor: number;
   currency: string;
@@ -434,10 +439,12 @@ function refundTargetKey(paymentId: number): string {
 function immutableRefundOperationMatches(
   operation: PaymentOperation,
   expected: ReturnType<typeof buildPaymentOperationIdentity>,
+  leagueId: number,
 ): boolean {
   const request = expected.normalizedRequest;
   return operation.organizationId === request.organizationId
     && operation.operationType === "refund"
+    && operation.leagueId === leagueId
     && operation.targetKey === request.targetKey
     && operation.amountMinor === request.amountMinor
     && operation.currency === request.currency
@@ -579,6 +586,7 @@ export async function createOrGetRefundPaymentOperation(
     const [created] = await tx.insert(paymentOperations).values({
       organizationId: request.organizationId,
       operationType: "refund",
+      leagueId: input.leagueId,
       targetKey,
       amountMinor: request.amountMinor,
       currency: request.currency,
@@ -596,7 +604,7 @@ export async function createOrGetRefundPaymentOperation(
       eq(paymentOperations.operationType, "refund"),
       eq(paymentOperations.targetKey, targetKey),
     )).limit(1);
-    if (!existing || !immutableRefundOperationMatches(existing, identity)) {
+    if (!existing || !immutableRefundOperationMatches(existing, identity, input.leagueId)) {
       throw new PaymentOperationImmutableMismatchError();
     }
     return existing;
@@ -1761,9 +1769,20 @@ export async function finalizeRefundPaymentOperationSuccess(input: LeasedPayment
   validateLeaseToken(input.leaseToken);
   validateProviderObjectId(input.providerObjectId);
   return db.transaction(async (tx) => {
+    const [scope] = await tx.select({ leagueId: refundPaymentOperationSnapshots.leagueId }).from(paymentOperations).innerJoin(
+      refundPaymentOperationSnapshots,
+      eq(refundPaymentOperationSnapshots.operationId, paymentOperations.id),
+    ).where(and(
+      eq(paymentOperations.organizationId, input.organizationId),
+      eq(paymentOperations.id, input.operationId),
+      eq(paymentOperations.operationType, "refund"),
+    )).limit(1);
+    if (!scope) throw new PaymentOperationNotFoundError();
+    await lockLeagueSchedule(tx, input.organizationId, scope.leagueId);
     const [operation] = await tx.select().from(paymentOperations).where(and(
       eq(paymentOperations.organizationId, input.organizationId),
       eq(paymentOperations.id, input.operationId),
+      eq(paymentOperations.operationType, "refund"),
     )).limit(1).for("update");
     if (!operation) throw new PaymentOperationNotFoundError();
     const snapshot = await loadRefundPaymentOperationSnapshot(tx, operation);
@@ -1785,6 +1804,130 @@ export async function finalizeRefundPaymentOperationSuccess(input: LeasedPayment
       now: input.now,
     });
   });
+}
+
+async function applyRefundAllocationAdjustmentsInTransaction(
+  tx: PaymentOperationTransaction,
+  input: {
+    operation: PaymentOperation;
+    snapshot: RefundPaymentSemanticSnapshot;
+    payment: Payment;
+    now: string;
+    allowCreate: boolean;
+  },
+): Promise<void> {
+  if (input.snapshot.snapshotVersion !== 2 || !input.snapshot.disposition || input.snapshot.allocations.length === 0) {
+    throw new PaymentOperationImmutableMismatchError();
+  }
+  const snapshotFingerprint = fingerprintRefundPaymentSnapshot(input.snapshot);
+  const expected = new Map(input.snapshot.allocations.map((allocation) => [allocation.allocationId, allocation]));
+  if (expected.size !== input.snapshot.allocations.length) {
+    throw new PaymentOperationImmutableMismatchError();
+  }
+  const sourceAllocations = await tx.select().from(paymentAllocations).where(and(
+    eq(paymentAllocations.organizationId, input.operation.organizationId),
+    eq(paymentAllocations.leagueId, input.snapshot.leagueId),
+    eq(paymentAllocations.paymentId, input.payment.id),
+    inArray(paymentAllocations.id, [...expected.keys()]),
+  )).orderBy(asc(paymentAllocations.id)).for("update");
+  if (sourceAllocations.length !== expected.size || sourceAllocations.some((allocation) => {
+    const snapshot = expected.get(allocation.id);
+    return !snapshot
+      || allocation.state !== "active"
+      || allocation.obligationId !== snapshot.obligationId
+      || allocation.amountMinor !== snapshot.amountMinor
+      || allocation.currency !== snapshot.currency;
+  }) || sourceAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0) !== input.operation.amountMinor) {
+    throw new PaymentOperationImmutableMismatchError();
+  }
+  for (const allocation of sourceAllocations) {
+    const snapshot = expected.get(allocation.id);
+    if (!snapshot) throw new PaymentOperationImmutableMismatchError();
+    const [existing] = await tx.select().from(refundAllocationAdjustments).where(and(
+      eq(refundAllocationAdjustments.organizationId, input.operation.organizationId),
+      eq(refundAllocationAdjustments.leagueId, input.snapshot.leagueId),
+      eq(refundAllocationAdjustments.sourceAllocationId, allocation.id),
+    )).limit(1).for("update");
+    if (existing) {
+      if (existing.refundOperationId !== input.operation.id
+        || existing.amountMinor !== allocation.amountMinor
+        || existing.disposition !== input.snapshot.disposition
+        || existing.snapshotFingerprint !== snapshotFingerprint) {
+        throw new PaymentOperationImmutableMismatchError();
+      }
+      continue;
+    }
+    if (!input.allowCreate) throw new PaymentOperationImmutableMismatchError();
+    await tx.insert(refundAllocationAdjustments).values({
+      organizationId: input.operation.organizationId,
+      leagueId: input.snapshot.leagueId,
+      refundOperationId: input.operation.id,
+      sourceAllocationId: allocation.id,
+      amountMinor: allocation.amountMinor,
+      disposition: input.snapshot.disposition,
+      snapshotFingerprint,
+      createdAt: input.now,
+    });
+  }
+  const obligationIds = [...new Set(sourceAllocations.map((allocation) => allocation.obligationId))];
+  const obligations = await tx.select().from(paymentObligations).where(and(
+    eq(paymentObligations.organizationId, input.operation.organizationId),
+    eq(paymentObligations.leagueId, input.snapshot.leagueId),
+    inArray(paymentObligations.id, obligationIds),
+  )).orderBy(asc(paymentObligations.id)).for("update");
+  if (obligations.length !== obligationIds.length) throw new PaymentOperationImmutableMismatchError();
+  const allAllocations = await tx.select({ id: paymentAllocations.id, obligationId: paymentAllocations.obligationId, amountMinor: paymentAllocations.amountMinor }).from(paymentAllocations).where(and(
+    eq(paymentAllocations.organizationId, input.operation.organizationId),
+    eq(paymentAllocations.leagueId, input.snapshot.leagueId),
+    eq(paymentAllocations.state, "active"),
+    inArray(paymentAllocations.obligationId, obligationIds),
+  ));
+  const allAdjustments = await tx.select({ sourceAllocationId: refundAllocationAdjustments.sourceAllocationId, amountMinor: refundAllocationAdjustments.amountMinor, disposition: refundAllocationAdjustments.disposition }).from(refundAllocationAdjustments).where(and(
+    eq(refundAllocationAdjustments.organizationId, input.operation.organizationId),
+    eq(refundAllocationAdjustments.leagueId, input.snapshot.leagueId),
+    inArray(refundAllocationAdjustments.sourceAllocationId, allAllocations.map((allocation) => allocation.id)),
+  ));
+  const adjustmentsByAllocationId = new Map(allAdjustments.map((adjustment) => [adjustment.sourceAllocationId, adjustment]));
+  for (const obligation of obligations) {
+    if (obligation.state === "voided") continue;
+    const linkedAllocations = allAllocations.filter((allocation) => allocation.obligationId === obligation.id);
+    const balance = canonicalObligationBalance({
+      amountMinor: obligation.amountMinor,
+      state: obligation.state,
+      grossAllocatedMinor: linkedAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0),
+      adjustments: linkedAllocations.flatMap((allocation) => {
+        const adjustment = adjustmentsByAllocationId.get(allocation.id);
+        return adjustment ? [{ amountMinor: adjustment.amountMinor, disposition: adjustment.disposition }] : [];
+      }),
+    });
+    const state = balance.outstandingMinor === 0
+      ? "settled"
+      : balance.effectiveAllocatedMinor > 0
+        ? "partially_settled"
+        : "open";
+    if (obligation.state !== state) {
+      await tx.update(paymentObligations).set({ state }).where(and(
+        eq(paymentObligations.organizationId, input.operation.organizationId),
+        eq(paymentObligations.leagueId, input.snapshot.leagueId),
+        eq(paymentObligations.id, obligation.id),
+      ));
+    }
+  }
+}
+
+async function markLegacyRefundAllocationReviewInTransaction(
+  tx: PaymentOperationTransaction,
+  input: { organizationId: number; leagueId: number; paymentId: number },
+): Promise<void> {
+  await tx.update(paymentAllocations).set({
+    reviewRequired: true,
+    reviewReason: "REFUND_DISPOSITION_REQUIRED",
+  }).where(and(
+    eq(paymentAllocations.organizationId, input.organizationId),
+    eq(paymentAllocations.leagueId, input.leagueId),
+    eq(paymentAllocations.paymentId, input.paymentId),
+    eq(paymentAllocations.state, "active"),
+  ));
 }
 
 export interface ProviderWebhookCompletionEvidence {
@@ -2024,6 +2167,21 @@ export async function finalizeRefundFromWebhookEvidenceInTransaction(
 ): Promise<{ operation: PaymentOperation; payment: Payment }> {
   validateProviderObjectId(input.providerObjectId);
   const now = toIso(input.now ?? new Date(), "now");
+  // Refund operations predate the roster operation league foreign key and
+  // carry their league in the immutable refund snapshot. Resolve that scope
+  // before taking any financial row locks, then re-read the operation under
+  // the canonical league advisory lock so a one-time payment cannot race the
+  // refund adjustment application.
+  const [scope] = await tx.select({ leagueId: refundPaymentOperationSnapshots.leagueId }).from(paymentOperations).innerJoin(
+    refundPaymentOperationSnapshots,
+    eq(refundPaymentOperationSnapshots.operationId, paymentOperations.id),
+  ).where(and(
+    eq(paymentOperations.organizationId, input.organizationId),
+    eq(paymentOperations.id, input.operationId),
+    eq(paymentOperations.operationType, "refund"),
+  )).limit(1);
+  if (!scope) throw new PaymentOperationNotFoundError();
+  await lockLeagueSchedule(tx, input.organizationId, scope.leagueId);
   const [operation] = await tx.select().from(paymentOperations).where(and(
     eq(paymentOperations.organizationId, input.organizationId),
     eq(paymentOperations.id, input.operationId),
@@ -2049,6 +2207,21 @@ export async function finalizeRefundFromWebhookEvidenceInTransaction(
       || currentPayment?.status !== "refunded"
       || currentPayment.squareRefundId !== input.providerObjectId
     ) throw new PaymentOperationImmutableMismatchError();
+    if (snapshot.snapshotVersion === 1) {
+      await markLegacyRefundAllocationReviewInTransaction(tx, {
+        organizationId: input.organizationId,
+        leagueId: snapshot.leagueId,
+        paymentId: currentPayment.id,
+      });
+      return { operation, payment: currentPayment };
+    }
+    await applyRefundAllocationAdjustmentsInTransaction(tx, {
+      operation,
+      snapshot,
+      payment: currentPayment,
+      now,
+      allowCreate: false,
+    });
     return { operation, payment: currentPayment };
   }
   if (!webhookCompletableStatuses.has(operation.status) || currentPayment?.status !== "paid") {
@@ -2068,6 +2241,21 @@ export async function finalizeRefundFromWebhookEvidenceInTransaction(
     eq(payments.status, "paid"),
   )).returning();
   if (!payment) throw new PaymentOperationImmutableMismatchError();
+  if (snapshot.snapshotVersion === 1) {
+    await markLegacyRefundAllocationReviewInTransaction(tx, {
+      organizationId: input.organizationId,
+      leagueId: snapshot.leagueId,
+      paymentId: payment.id,
+    });
+  } else {
+    await applyRefundAllocationAdjustmentsInTransaction(tx, {
+      operation,
+      snapshot,
+      payment,
+      now,
+      allowCreate: true,
+    });
+  }
   const [completed] = await tx.update(paymentOperations).set({
     status: "succeeded",
     providerObjectId: input.providerObjectId,
@@ -2304,6 +2492,98 @@ export async function getNextStandingAutopayWake(): Promise<StandingAutopayWake 
              AND cp.consent_version = c.consent_version
              AND cp.partner_bowler_id = o.payer_bowler_id
          )
+       )
+       -- A still-owed refund blocks automatic collection for this payer's
+       -- whole occurrence while any sibling component remains outstanding.
+       -- Check all obligations in the payer/week, including a refunded
+       -- source component that was later settled by manual repayment. A
+       -- different payer's hold never suppresses this consent's wake.
+       AND NOT (
+         EXISTS (
+           SELECT 1
+             FROM payment_allocations held_source_allocation
+             INNER JOIN refund_allocation_adjustments held_adjustment
+               ON held_adjustment.source_allocation_id = held_source_allocation.id
+              AND held_adjustment.organization_id = held_source_allocation.organization_id
+              AND held_adjustment.league_id = held_source_allocation.league_id
+              AND held_adjustment.disposition = 'still_owed'
+            INNER JOIN payment_obligations held_source_obligation
+               ON held_source_obligation.id = held_source_allocation.obligation_id
+              AND held_source_obligation.organization_id = held_source_allocation.organization_id
+              AND held_source_obligation.league_id = held_source_allocation.league_id
+            WHERE held_source_allocation.organization_id = o.organization_id
+              AND held_source_allocation.league_id = o.league_id
+              AND held_source_allocation.state = 'active'
+              AND held_source_obligation.payer_bowler_id = o.payer_bowler_id
+              AND held_source_obligation.occurrence_id = o.occurrence_id
+         )
+         AND (
+           SELECT COALESCE(SUM(
+             CASE WHEN held_obligation.state = 'voided' THEN 0 ELSE GREATEST(0,
+               held_obligation.amount_minor
+               - COALESCE((
+                   SELECT SUM(held_allocation.amount_minor)
+                     FROM payment_allocations held_allocation
+                    WHERE held_allocation.organization_id = held_obligation.organization_id
+                      AND held_allocation.league_id = held_obligation.league_id
+                      AND held_allocation.obligation_id = held_obligation.id
+                      AND held_allocation.state = 'active'
+                 ), 0)
+               + COALESCE((
+                   SELECT SUM(held_adjustment.amount_minor)
+                     FROM refund_allocation_adjustments held_adjustment
+                     INNER JOIN payment_allocations held_allocation
+                       ON held_allocation.id = held_adjustment.source_allocation_id
+                      AND held_allocation.organization_id = held_adjustment.organization_id
+                      AND held_allocation.league_id = held_adjustment.league_id
+                    WHERE held_adjustment.organization_id = held_obligation.organization_id
+                      AND held_adjustment.league_id = held_obligation.league_id
+                      AND held_allocation.obligation_id = held_obligation.id
+                      AND held_allocation.state = 'active'
+                 ), 0)
+               - COALESCE((
+                   SELECT SUM(held_adjustment.amount_minor)
+                     FROM refund_allocation_adjustments held_adjustment
+                     INNER JOIN payment_allocations held_allocation
+                       ON held_allocation.id = held_adjustment.source_allocation_id
+                      AND held_allocation.organization_id = held_adjustment.organization_id
+                      AND held_allocation.league_id = held_adjustment.league_id
+                    WHERE held_adjustment.organization_id = held_obligation.organization_id
+                      AND held_adjustment.league_id = held_obligation.league_id
+                      AND held_allocation.obligation_id = held_obligation.id
+                      AND held_allocation.state = 'active'
+                      AND held_adjustment.disposition = 'waived'
+                 ), 0)
+             ) END
+           ), 0) > 0
+             FROM payment_obligations held_obligation
+            WHERE held_obligation.organization_id = o.organization_id
+              AND held_obligation.league_id = o.league_id
+              AND held_obligation.payer_bowler_id = o.payer_bowler_id
+              AND held_obligation.occurrence_id = o.occurrence_id
+         )
+       )
+       AND NOT EXISTS (
+         SELECT 1
+           FROM refund_payment_operation_snapshots blocked_refund_snapshot
+           INNER JOIN payment_operations blocked_refund
+             ON blocked_refund.id = blocked_refund_snapshot.operation_id
+            AND blocked_refund.organization_id = c.organization_id
+            AND blocked_refund.league_id = c.league_id
+            AND blocked_refund.operation_type = 'refund'
+           INNER JOIN payment_allocations blocked_refund_allocation
+             ON blocked_refund_allocation.payment_id = blocked_refund_snapshot.payment_id
+            AND blocked_refund_allocation.organization_id = c.organization_id
+            AND blocked_refund_allocation.league_id = c.league_id
+            AND blocked_refund_allocation.state = 'active'
+           INNER JOIN payment_obligations blocked_refund_obligation
+             ON blocked_refund_obligation.id = blocked_refund_allocation.obligation_id
+            AND blocked_refund_obligation.organization_id = c.organization_id
+            AND blocked_refund_obligation.league_id = c.league_id
+          WHERE blocked_refund_snapshot.league_id = c.league_id
+            AND blocked_refund.status IN ('pending', 'leased', 'provider_unknown', 'retry_scheduled', 'action_required', 'reconciliation_required')
+            AND blocked_refund_obligation.payer_bowler_id = o.payer_bowler_id
+            AND blocked_refund_obligation.occurrence_id = o.occurrence_id
        )
         AND c.state = 'active'
         AND c.payment_mode = 'weekly'

@@ -23,6 +23,11 @@ export interface FinancialReadRowContract {
   pastDueAt: string;
   state: "open" | "partially_settled" | "settled" | "voided";
   allocatedMinor: number;
+  /** Historical active allocation total, including refunded tenders. */
+  grossAllocatedMinor: number;
+  refundedMinor: number;
+  waivedMinor: number;
+  stillOwed: boolean;
   outstandingMinor: number;
   classification: FinancialReadClassification;
   reviewRequired: boolean;

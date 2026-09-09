@@ -1,15 +1,19 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import {
   REFUND_PAYMENT_SNAPSHOT_VERSION,
   bowlers,
   leagues,
   locations,
   paymentOperations,
+  paymentAllocations,
+  paymentObligations,
+  paymentOperationRosterSnapshotItems,
   payments,
   users,
 } from "@shared/schema";
 import { isCardPaymentType } from "@shared/schema/constants";
 import { db } from "../db.js";
+import { lockLeagueSchedule } from "../storage/league-schedule-lock.js";
 import {
   createOrGetRefundPaymentOperation,
   persistRefundPaymentOperationSnapshot,
@@ -17,6 +21,7 @@ import {
   type PaymentOperationTransaction,
 } from "../storage/payment-operations.js";
 import type { RefundPaymentSemanticSnapshot } from "./refund-payment-operation-snapshot.js";
+import { REFUND_PAYMENT_DISPOSITIONS } from "@shared/schema";
 
 export const DEFAULT_REFUND_REASON = "Refund processed via LeagueVault";
 
@@ -42,6 +47,7 @@ function normalizeReason(value: unknown): { reason: string; requestedReason: str
 
 export interface PrepareRefundPaymentOperationInput {
   paymentId: number;
+  disposition: unknown;
   reason?: unknown;
   requestedByUserId: number;
   requestedByRole: "org_admin" | "system_admin";
@@ -51,16 +57,31 @@ export interface PrepareRefundPaymentOperationInput {
 
 export async function prepareRefundPaymentOperation(input: PrepareRefundPaymentOperationInput) {
   return db.transaction(async (tx: PaymentOperationTransaction) => {
-    const [owned] = await tx.select({ payment: payments, league: leagues })
+    // Resolve the tenant/league without taking a financial row lock first.
+    // The schedule advisory lock is the canonical outer lock for every
+    // operation that can change obligation evidence; re-read the payment
+    // under that lock before locking allocations or reservations.
+    let [owned] = await tx.select({ payment: payments, league: leagues })
       .from(payments)
       .innerJoin(leagues, eq(leagues.id, payments.leagueId))
       .where(eq(payments.id, input.paymentId))
-      .limit(1)
-      .for("update");
+      .limit(1);
     if (!owned) throw new RefundPreparationError("Payment not found", 404, "NOT_FOUND");
     const organizationId = owned.league.organizationId;
     const locationId = owned.league.locationId;
     if (organizationId === null) throw new RefundPreparationError("You don't have access to refund this payment", 403, "FORBIDDEN");
+    await lockLeagueSchedule(tx, organizationId, owned.payment.leagueId);
+    [owned] = await tx.select({ payment: payments, league: leagues })
+      .from(payments)
+      .innerJoin(leagues, eq(leagues.id, payments.leagueId))
+      .where(and(
+        eq(payments.id, input.paymentId),
+        eq(payments.organizationId, organizationId),
+        eq(leagues.organizationId, organizationId),
+      ))
+      .limit(1)
+      .for("update");
+    if (!owned) throw new RefundPreparationError("Payment not found", 404, "NOT_FOUND");
     if (input.requestedByRole === "org_admin" && input.requestedByOrganizationId !== organizationId) {
       throw new RefundPreparationError("You don't have access to refund this payment", 403, "FORBIDDEN");
     }
@@ -98,6 +119,62 @@ export async function prepareRefundPaymentOperation(input: PrepareRefundPaymentO
     if (!owned.payment.providerPaymentId) {
       throw new RefundPreparationError("Payment has no provider charge to refund", 400, "INVALID_PROVIDER_PAYMENT");
     }
+    if (typeof input.disposition !== "string" || !REFUND_PAYMENT_DISPOSITIONS.includes(input.disposition as typeof REFUND_PAYMENT_DISPOSITIONS[number])) {
+      throw new RefundPreparationError("Choose whether the refunded amount is still owed or should be waived", 400, "DISPOSITION_REQUIRED");
+    }
+    const sourceAllocations = await tx.select({
+      id: paymentAllocations.id,
+      obligationId: paymentAllocations.obligationId,
+      amountMinor: paymentAllocations.amountMinor,
+      currency: paymentAllocations.currency,
+      state: paymentAllocations.state,
+      reviewRequired: paymentAllocations.reviewRequired,
+    }).from(paymentAllocations).where(and(
+      eq(paymentAllocations.organizationId, organizationId),
+      eq(paymentAllocations.leagueId, owned.payment.leagueId),
+      eq(paymentAllocations.paymentId, input.paymentId),
+    )).orderBy(paymentAllocations.id).for("update");
+    if (sourceAllocations.some((allocation) => allocation.state !== "active")) {
+      throw new RefundPreparationError("This payment has voided allocation evidence and requires reconciliation before refunding", 409, "REFUND_ALLOCATION_STATE_CONFLICT");
+    }
+    if (sourceAllocations.some((allocation) => allocation.reviewRequired)) {
+      throw new RefundPreparationError("This payment has allocation evidence requiring review before refunding", 409, "REFUND_ALLOCATION_REVIEW_REQUIRED");
+    }
+    if (sourceAllocations.length === 0 || sourceAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0) !== owned.payment.amount) {
+      throw new RefundPreparationError("This payment's canonical allocation evidence does not match the full refund amount", 409, "REFUND_ALLOCATION_EVIDENCE_MISMATCH");
+    }
+    const sourceObligationIds = [...new Set(sourceAllocations.map((allocation) => allocation.obligationId))];
+    if (sourceObligationIds.length > 0) {
+      const sourceObligations = await tx.select({ id: paymentObligations.id, payerBowlerId: paymentObligations.payerBowlerId, occurrenceId: paymentObligations.occurrenceId }).from(paymentObligations).where(and(
+        eq(paymentObligations.organizationId, organizationId),
+        eq(paymentObligations.leagueId, owned.payment.leagueId),
+        inArray(paymentObligations.id, sourceObligationIds),
+      ));
+      if (sourceObligations.length !== sourceObligationIds.length) {
+        throw new RefundPreparationError("This payment's allocation evidence references a missing obligation", 409, "REFUND_ALLOCATION_EVIDENCE_MISMATCH");
+      }
+      const payerIds = [...new Set(sourceObligations.map((obligation) => obligation.payerBowlerId))];
+      const occurrenceIds = [...new Set(sourceObligations.map((obligation) => obligation.occurrenceId))];
+      const samePayerWeekObligations = await tx.select({ id: paymentObligations.id, payerBowlerId: paymentObligations.payerBowlerId, occurrenceId: paymentObligations.occurrenceId }).from(paymentObligations).where(and(
+        eq(paymentObligations.organizationId, organizationId),
+        eq(paymentObligations.leagueId, owned.payment.leagueId),
+        inArray(paymentObligations.payerBowlerId, payerIds),
+        inArray(paymentObligations.occurrenceId, occurrenceIds),
+      ));
+      const sourceKeys = new Set(sourceObligations.map((obligation) => `${obligation.payerBowlerId}:${obligation.occurrenceId}`));
+      const affectedObligationIds = samePayerWeekObligations
+        .filter((obligation) => sourceKeys.has(`${obligation.payerBowlerId}:${obligation.occurrenceId}`))
+        .map((obligation) => obligation.id);
+      const reservations = await tx.select({ id: paymentOperationRosterSnapshotItems.id }).from(paymentOperationRosterSnapshotItems).where(and(
+        eq(paymentOperationRosterSnapshotItems.organizationId, organizationId),
+        eq(paymentOperationRosterSnapshotItems.leagueId, owned.payment.leagueId),
+        eq(paymentOperationRosterSnapshotItems.state, "reserved"),
+        inArray(paymentOperationRosterSnapshotItems.obligationId, affectedObligationIds),
+      )).limit(1).for("update");
+      if (reservations.length > 0) {
+        throw new RefundPreparationError("A payment operation is already collecting an affected obligation; retry the refund after it completes", 409, "REFUND_ALLOCATION_RESERVED");
+      }
+    }
     const [existing] = await tx.select().from(paymentOperations).where(and(
       eq(paymentOperations.organizationId, organizationId),
       eq(paymentOperations.operationType, "refund"),
@@ -125,6 +202,7 @@ export async function prepareRefundPaymentOperation(input: PrepareRefundPaymentO
 
     const operation = await createOrGetRefundPaymentOperation({
       organizationId,
+      leagueId: owned.payment.leagueId,
       paymentId: input.paymentId,
       amountMinor: owned.payment.amount,
       currency: "USD",
@@ -147,6 +225,13 @@ export async function prepareRefundPaymentOperation(input: PrepareRefundPaymentO
       requestedByUserId: input.requestedByUserId,
       requestedByRole: input.requestedByRole,
       requestedByOrganizationId: input.requestedByOrganizationId,
+      disposition: input.disposition as typeof REFUND_PAYMENT_DISPOSITIONS[number],
+      allocations: sourceAllocations.map((allocation) => ({
+        allocationId: allocation.id,
+        obligationId: allocation.obligationId,
+        amountMinor: allocation.amountMinor,
+        currency: allocation.currency as "USD",
+      })),
     };
     const storedSnapshot = await persistRefundPaymentOperationSnapshot(operation, snapshot, tx);
     return { operation, snapshot: storedSnapshot };

@@ -9,6 +9,7 @@ interface FinancialsData {
   fullSeasonAmount: number;
   totalDueToDate: number;
   totalPaid: number;
+  waivedAmount?: number;
   amountPastDue: number;
   remainingBalance: number;
 }
@@ -35,6 +36,7 @@ export const PaymentOverviewCard: FC<PaymentOverviewCardProps> = ({ weeklyFee, f
             <span className="text-sm text-muted-foreground">Full Season Total Due</span>
             <span className="text-sm font-medium">{formatCurrency(financials.fullSeasonAmount)}</span>
           </div>
+          {(financials.waivedAmount ?? 0) > 0 && <div className="flex items-center justify-between"><span className="text-sm text-muted-foreground">Refunds Waived</span><span className="text-sm font-medium">{formatCurrency(financials.waivedAmount ?? 0)}</span></div>}
           {!isUpfront && (
             <div className="flex items-center justify-between">
               <span className="text-sm text-muted-foreground">Weekly Fee</span>

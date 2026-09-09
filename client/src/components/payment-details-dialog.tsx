@@ -170,6 +170,7 @@ export function PaymentDetailsDialog({ payment, evidence, bowlerName, canCorrect
           <section className="space-y-1 rounded-md border bg-muted/30 p-3 text-sm" aria-label="Additional settlement evidence">
             {evidence.unallocatedMinor > 0 && <p>Unallocated: {formatCurrency(evidence.unallocatedMinor, evidence.currency)}</p>}
             {evidence.refund.present && <p>Refunded: {formatCurrency(evidence.refund.amountMinor, evidence.currency)}</p>}
+            {(evidence.waivedMinor ?? 0) > 0 && <p>Waived roster amount: {formatCurrency(evidence.waivedMinor ?? 0, evidence.currency)} (not counted as paid)</p>}
             {evidence.dispute.present && <p>Dispute: {evidence.dispute.state ?? "Review required"}{evidence.dispute.amountMinor > 0 ? ` · ${formatCurrency(evidence.dispute.amountMinor, evidence.currency)}` : ""}</p>}
             {evidence.reviewRequired && <p className="font-medium text-destructive">This payment requires review.</p>}
           </section>

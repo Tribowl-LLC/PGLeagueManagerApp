@@ -16,6 +16,8 @@ export interface BowlerViewFinancials {
   amountPastDue: number;
   remainingBalance: number;
   totalPaidAmount: number;
+  /** Explicitly waived refund effects are not counted as payments. */
+  waivedAmount?: number;
   totalUnpaidAmount: number;
   reviewRequired: boolean;
   reviewCategory: "refund" | "dispute" | "evidence" | null;

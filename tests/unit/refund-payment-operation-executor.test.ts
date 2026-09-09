@@ -13,6 +13,7 @@ import {
   paymentObligations,
   paymentOperations,
   payments,
+  refundAllocationAdjustments,
   refundPaymentOperationSnapshots,
   teamPaymentSlots,
   teams,
@@ -32,6 +33,7 @@ import {
 import {
   prepareRefundPaymentOperation,
 } from "../../server/services/refund-payment-operation-preparation";
+import { readCanonicalDuePastDue } from "../../server/services/roster-payment-core";
 import { RefundPaymentOperationExecutor } from "../../server/services/refund-payment-operation-executor";
 import { PaymentProviderError, ProviderNotConfiguredError } from "../../server/services/payment-errors";
 import type {
@@ -173,7 +175,7 @@ async function createFixture(index: 0 | 1): Promise<Fixture> {
   };
 }
 
-async function createPaidPayment(fixture: Fixture, overrides: Partial<typeof payments.$inferInsert> = {}) {
+async function createPaidPayment(fixture: Fixture, overrides: Partial<typeof payments.$inferInsert> = {}, obligationAmount?: number) {
   const amount = overrides.amount ?? 2_000;
   const leagueId = overrides.leagueId ?? fixture.leagueId;
   const providerPaymentId = overrides.providerPaymentId ?? `square-payment-${randomUUID()}`;
@@ -258,7 +260,7 @@ async function createPaidPayment(fixture: Fixture, overrides: Partial<typeof pay
     occurrenceId: occurrence.id,
     responsibilityId: responsibility.id,
     payerBowlerId: fixture.bowlerId,
-    amountMinor: amount,
+    amountMinor: obligationAmount ?? amount,
     currency: "USD",
     dueAt: occurrenceStart,
     pastDueAt: occurrenceStart,
@@ -311,9 +313,10 @@ async function createPaidPayment(fixture: Fixture, overrides: Partial<typeof pay
   });
 }
 
-async function prepare(fixture: Fixture, paymentId: number, reason: string | undefined = "Customer request") {
+async function prepare(fixture: Fixture, paymentId: number, reason: string | undefined = "Customer request", disposition: "still_owed" | "waived" = "still_owed") {
   return prepareRefundPaymentOperation({
     paymentId,
+    disposition,
     reason,
     requestedByUserId: fixture.actorUserId,
     requestedByRole: "org_admin",
@@ -369,8 +372,64 @@ describe("durable refund payment operations", () => {
       .where(eq(refundPaymentOperationSnapshots.operationId, first.operation.id));
     expect(stored.encryptedProviderPaymentId).not.toContain(payment.providerPaymentId ?? "missing");
 
+    // The authorization snapshot is append-only at the database boundary,
+    // not merely immutable by convention in the service loader.
+    await expect(db.update(refundPaymentOperationSnapshots).set({ disposition: "waived" }).where(eq(refundPaymentOperationSnapshots.operationId, first.operation.id)))
+      .rejects.toMatchObject({ cause: expect.objectContaining({ message: expect.stringContaining("refund payment operation snapshot evidence is append-only") }) });
+    await expect(db.delete(refundPaymentOperationSnapshots).where(eq(refundPaymentOperationSnapshots.operationId, first.operation.id)))
+      .rejects.toMatchObject({ cause: expect.objectContaining({ message: expect.stringContaining("refund payment operation snapshot evidence is append-only") }) });
+
     await expect(prepare(fixture, payment.id, "Different request"))
       .rejects.toBeInstanceOf(PaymentOperationImmutableMismatchError);
+    await expect(prepare(fixture, payment.id, "Customer request", "waived"))
+      .rejects.toBeInstanceOf(PaymentOperationImmutableMismatchError);
+  });
+
+  it("rejects adjustment evidence without exact confirmed refund provenance", async () => {
+    const fixture = fixtures[0];
+    const payment = await createPaidPayment(fixture);
+    const { operation } = await prepare(fixture, payment.id, "Provenance fixture", "still_owed");
+    const [allocation] = await db.select().from(paymentAllocations).where(eq(paymentAllocations.paymentId, payment.id));
+    const [snapshot] = await db.select().from(refundPaymentOperationSnapshots).where(eq(refundPaymentOperationSnapshots.operationId, operation.id));
+    if (!allocation || !snapshot) throw new Error("refund provenance fixture is incomplete");
+    const adjustment = {
+      organizationId: fixture.organizationId,
+      leagueId: fixture.leagueId,
+      refundOperationId: operation.id,
+      sourceAllocationId: allocation.id,
+      amountMinor: allocation.amountMinor,
+      disposition: "still_owed" as const,
+      snapshotFingerprint: snapshot.snapshotFingerprint,
+    };
+
+    await expect(db.insert(refundAllocationAdjustments).values(adjustment))
+      .rejects.toMatchObject({ cause: expect.objectContaining({ message: expect.stringContaining("refund adjustment requires a succeeded provider-confirmed refund operation") }) });
+
+    // A succeeded non-refund operation is not a valid adjustment provenance.
+    if (payment.paymentOperationId === null) throw new Error("refund provenance charge operation id is missing");
+    const [chargeOperation] = await db.select().from(paymentOperations).where(eq(paymentOperations.id, payment.paymentOperationId));
+    if (!chargeOperation) throw new Error("refund provenance charge operation is missing");
+    await expect(db.insert(refundAllocationAdjustments).values({ ...adjustment, refundOperationId: chargeOperation.id }))
+      .rejects.toMatchObject({ cause: expect.objectContaining({ message: expect.stringContaining("refund adjustment requires a succeeded provider-confirmed refund operation") }) });
+
+    type AdjustmentInsert = Omit<typeof adjustment, "disposition"> & { disposition: "still_owed" | "waived" };
+    async function assertRejectedAfterProviderConfirmation(values: AdjustmentInsert, message: string) {
+      await expect(db.transaction(async (tx) => {
+        const providerRefundId = `square-provenance-${randomUUID()}`;
+        await tx.update(paymentOperations).set({
+          status: "succeeded",
+          providerObjectId: providerRefundId,
+          nextAttemptAt: null,
+          completedAt: fixedNow.toISOString(),
+          updatedAt: fixedNow.toISOString(),
+        }).where(eq(paymentOperations.id, operation.id));
+        await tx.update(payments).set({ status: "refunded", squareRefundId: providerRefundId, refundedAt: fixedNow.toISOString() }).where(eq(payments.id, payment.id));
+        await tx.insert(refundAllocationAdjustments).values(values);
+      })).rejects.toMatchObject({ cause: expect.objectContaining({ message: expect.stringContaining(message) }) });
+    }
+
+    await assertRejectedAfterProviderConfirmation({ ...adjustment, amountMinor: allocation.amountMinor + 1 }, "refund adjustment does not match its source allocation amount");
+    await assertRejectedAfterProviderConfirmation({ ...adjustment, disposition: "waived" }, "refund adjustment does not match its immutable v2 refund snapshot");
   });
 
   it("rejects a league without a location before creating an immutable refund operation", async () => {
@@ -405,6 +464,7 @@ describe("durable refund payment operations", () => {
     const payment = await createPaidPayment(owner);
     await expect(prepareRefundPaymentOperation({
       paymentId: payment.id,
+      disposition: "still_owed",
       reason: "No access",
       requestedByUserId: other.actorUserId,
       requestedByRole: "org_admin",
@@ -451,6 +511,83 @@ describe("durable refund payment operations", () => {
       status: "refunded",
       squareRefundId: result?.providerObjectId,
       refundReason: "Customer request",
+    });
+    const adjustments = await db.select().from(refundAllocationAdjustments).where(eq(refundAllocationAdjustments.refundOperationId, operation.id));
+    expect(adjustments).toHaveLength(1);
+    expect(adjustments[0]).toMatchObject({ amountMinor: payment.amount, disposition: "still_owed", sourceAllocationId: expect.any(String) });
+    const [sourceAllocation] = await db.select().from(paymentAllocations).where(eq(paymentAllocations.paymentId, payment.id));
+    const due = await readCanonicalDuePastDue({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, payerBowlerId: fixture.bowlerId });
+    const dueRow = due.rows.find((row) => row.id === sourceAllocation.obligationId);
+    expect(dueRow).toMatchObject({ grossAllocatedMinor: payment.amount, refundedMinor: payment.amount, allocatedMinor: 0, outstandingMinor: payment.amount, stillOwed: true });
+  });
+
+  it("applies an explicit waiver without counting the refund as payment", async () => {
+    const fixture = fixtures[0];
+    const payment = await createPaidPayment(fixture);
+    const { operation } = await prepare(fixture, payment.id, "Waive customer amount", "waived");
+    const provider = new ScriptedRefundProvider(fixture.locationId);
+    const result = await executor(fixture, provider).execute({ organizationId: fixture.organizationId, operationId: operation.id, now: fixedNow });
+    expect(result?.status).toBe("succeeded");
+    const [adjustment] = await db.select().from(refundAllocationAdjustments).where(eq(refundAllocationAdjustments.refundOperationId, operation.id));
+    expect(adjustment).toMatchObject({ amountMinor: payment.amount, disposition: "waived" });
+    const [allocation] = await db.select().from(paymentAllocations).where(eq(paymentAllocations.paymentId, payment.id));
+    const [obligation] = await db.select().from(paymentObligations).where(eq(paymentObligations.id, allocation.obligationId));
+    expect(obligation.state).toBe("settled");
+    const due = await readCanonicalDuePastDue({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, payerBowlerId: fixture.bowlerId });
+    const dueRow = due.rows.find((row) => row.id === obligation.id);
+    expect(dueRow).toMatchObject({ grossAllocatedMinor: payment.amount, refundedMinor: payment.amount, allocatedMinor: 0, waivedMinor: payment.amount, outstandingMinor: 0, stillOwed: false });
+  });
+
+  it("reopens a partially settled obligation for the exact still-owed refund amount", async () => {
+    const fixture = fixtures[0];
+    const payment = await createPaidPayment(fixture, { amount: 2_000 }, 3_000);
+    const [sourceAllocation] = await db.select().from(paymentAllocations).where(eq(paymentAllocations.paymentId, payment.id));
+    if (!sourceAllocation) throw new Error("partial source allocation missing");
+    await db.update(paymentObligations).set({ state: "partially_settled" }).where(eq(paymentObligations.id, sourceAllocation.obligationId));
+
+    const { operation } = await prepare(fixture, payment.id, "Partial refund remains owed", "still_owed");
+    const result = await executor(fixture, new ScriptedRefundProvider(fixture.locationId)).execute({
+      organizationId: fixture.organizationId,
+      operationId: operation.id,
+      now: fixedNow,
+    });
+
+    expect(result?.status).toBe("succeeded");
+    const [obligation] = await db.select().from(paymentObligations).where(eq(paymentObligations.id, sourceAllocation.obligationId));
+    expect(obligation?.state).toBe("open");
+    const due = await readCanonicalDuePastDue({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, payerBowlerId: fixture.bowlerId });
+    expect(due.rows.find((row) => row.id === sourceAllocation.obligationId)).toMatchObject({
+      grossAllocatedMinor: 2_000,
+      refundedMinor: 2_000,
+      allocatedMinor: 0,
+      outstandingMinor: 3_000,
+      stillOwed: true,
+    });
+  });
+
+  it("waives only the refunded allocation and preserves the remaining obligation debt", async () => {
+    const fixture = fixtures[0];
+    const payment = await createPaidPayment(fixture, { amount: 2_000 }, 3_000);
+    const [sourceAllocation] = await db.select().from(paymentAllocations).where(eq(paymentAllocations.paymentId, payment.id));
+    if (!sourceAllocation) throw new Error("partial source allocation missing");
+    await db.update(paymentObligations).set({ state: "partially_settled" }).where(eq(paymentObligations.id, sourceAllocation.obligationId));
+
+    const { operation } = await prepare(fixture, payment.id, "Partial refund waived", "waived");
+    const result = await executor(fixture, new ScriptedRefundProvider(fixture.locationId)).execute({
+      organizationId: fixture.organizationId,
+      operationId: operation.id,
+      now: fixedNow,
+    });
+
+    expect(result?.status).toBe("succeeded");
+    const due = await readCanonicalDuePastDue({ organizationId: fixture.organizationId, leagueId: fixture.leagueId, payerBowlerId: fixture.bowlerId });
+    expect(due.rows.find((row) => row.id === sourceAllocation.obligationId)).toMatchObject({
+      grossAllocatedMinor: 2_000,
+      refundedMinor: 2_000,
+      allocatedMinor: 0,
+      waivedMinor: 2_000,
+      outstandingMinor: 1_000,
+      stillOwed: false,
     });
   });
 

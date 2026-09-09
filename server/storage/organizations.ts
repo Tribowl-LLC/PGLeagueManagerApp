@@ -42,6 +42,7 @@ import {
   occurrencePaymentResponsibilities,
   paymentObligations,
   paymentAllocations,
+  refundAllocationAdjustments,
   payments,
   paymentVoids,
   autopayConsents,
@@ -294,6 +295,7 @@ export async function deleteOrganization(id: number): Promise<void> {
     await tx.delete(paymentOperationRosterSnapshotItems).where(eq(paymentOperationRosterSnapshotItems.organizationId, id));
     await tx.delete(paymentOperationRosterSnapshots).where(eq(paymentOperationRosterSnapshots.organizationId, id));
     await tx.delete(paymentVoids).where(eq(paymentVoids.organizationId, id));
+    await tx.delete(refundAllocationAdjustments).where(eq(refundAllocationAdjustments.organizationId, id));
     await tx.delete(paymentAllocations).where(eq(paymentAllocations.organizationId, id));
     await tx.delete(refundPaymentOperationSnapshots).where(sql`${refundPaymentOperationSnapshots.paymentId} IN (SELECT id FROM ${payments} WHERE ${payments.organizationId} = ${id})`);
     await tx.delete(payments).where(eq(payments.organizationId, id));

@@ -13,12 +13,14 @@ import {
   leagues,
   occurrencePaymentResponsibilities,
   paymentAllocations,
+  refundAllocationAdjustments,
   paymentObligations,
   paymentOperationRosterSnapshotItems,
   paymentOperationRosterSnapshots,
   paymentOperationStandingAutopayBindings,
   paymentOperationStandingAutopayParticipants,
   paymentOperations,
+  refundPaymentOperationSnapshots,
   teams,
   users,
   type PaymentOperation,
@@ -36,6 +38,7 @@ import { rosterStandingAutopayEnabled, scheduledPaymentExecutionMode } from "../
 import { lockLeagueSchedule } from "../storage/league-schedule-lock.js";
 import type { PaymentOperationTransaction } from "../storage/payment-operations.js";
 import { validateRosterSnapshotForDispatchInTransaction } from "./roster-payment-finalizer.js";
+import { canonicalObligationBalance } from "./refund-allocation-adjustments.js";
 
 const CONSENT_FP_PREFIX = "lvstandingconsent:v1:";
 const PARTNER_FP_PREFIX = "lvpartnerlink:v1:";
@@ -178,6 +181,55 @@ async function activeConsent(tx: StandingTx, input: { organizationId: number; le
   return consent;
 }
 
+const unresolvedRefundOperationStatuses = [
+  "pending",
+  "leased",
+  "provider_unknown",
+  "retry_scheduled",
+  "action_required",
+  "reconciliation_required",
+] as const;
+
+/** Return exact payer/occurrence keys whose retained allocation is covered by
+ * a refund operation that has not reached a terminal provider outcome. The
+ * check is deliberately allocation-derived: it follows the immutable refund
+ * snapshot to the original payment, then the original active allocation and
+ * obligation, without creating a second balance or obligation ledger. */
+async function pendingRefundPayerWeekKeys(
+  tx: StandingTx,
+  input: { organizationId: number; leagueId: number; payerBowlerIds: number[]; occurrenceIds: string[] },
+): Promise<Set<string>> {
+  if (input.payerBowlerIds.length === 0 || input.occurrenceIds.length === 0) return new Set();
+  const rows = await tx.select({
+    payerBowlerId: paymentObligations.payerBowlerId,
+    occurrenceId: paymentObligations.occurrenceId,
+  }).from(refundPaymentOperationSnapshots)
+    .innerJoin(paymentOperations, and(
+      eq(paymentOperations.id, refundPaymentOperationSnapshots.operationId),
+      eq(paymentOperations.organizationId, input.organizationId),
+      eq(paymentOperations.leagueId, input.leagueId),
+      eq(paymentOperations.operationType, "refund"),
+    ))
+    .innerJoin(paymentAllocations, and(
+      eq(paymentAllocations.paymentId, refundPaymentOperationSnapshots.paymentId),
+      eq(paymentAllocations.organizationId, input.organizationId),
+      eq(paymentAllocations.leagueId, input.leagueId),
+      eq(paymentAllocations.state, "active"),
+    ))
+    .innerJoin(paymentObligations, and(
+      eq(paymentObligations.id, paymentAllocations.obligationId),
+      eq(paymentObligations.organizationId, input.organizationId),
+      eq(paymentObligations.leagueId, input.leagueId),
+    ))
+    .where(and(
+      eq(refundPaymentOperationSnapshots.leagueId, input.leagueId),
+      inArray(paymentOperations.status, unresolvedRefundOperationStatuses),
+      inArray(paymentObligations.payerBowlerId, input.payerBowlerIds),
+      inArray(paymentObligations.occurrenceId, input.occurrenceIds),
+    ));
+  return new Set(rows.map((row) => `${row.payerBowlerId}:${row.occurrenceId}`));
+}
+
 async function eligibleRows(
   tx: StandingTx,
   input: { organizationId: number; leagueId: number; payerBowlerIds: number[]; activationAt: string; cutoffAt: string; dueMode: "exact" | "paired"; occurrenceIds?: string[] },
@@ -198,18 +250,80 @@ async function eligibleRows(
       ...(input.dueMode === "exact" ? [eq(paymentObligations.dueAt, input.cutoffAt)] : []),
       ...(input.occurrenceIds?.length ? [inArray(paymentObligations.occurrenceId, input.occurrenceIds)] : []),
     )).orderBy(asc(paymentObligations.dueAt), asc(paymentObligations.payerBowlerId), asc(paymentObligations.occurrenceId), asc(paymentObligations.id)).for("update");
+  const obligationIds = obligations.map((row) => row.obligation.id);
+  const payerOccurrenceKeys = [...new Set(obligations.map((row) => `${row.obligation.payerBowlerId}:${row.obligation.occurrenceId}`))];
+  const allOccurrenceIds = [...new Set(obligations.map((row) => row.obligation.occurrenceId))];
+  const allPayerWeekObligations = payerOccurrenceKeys.length === 0 ? [] : await tx.select({ obligation: paymentObligations }).from(paymentObligations).where(and(
+    eq(paymentObligations.organizationId, input.organizationId),
+    eq(paymentObligations.leagueId, input.leagueId),
+    inArray(paymentObligations.payerBowlerId, input.payerBowlerIds),
+    inArray(paymentObligations.occurrenceId, allOccurrenceIds),
+  ));
+  const allObligationIds = [...new Set(allPayerWeekObligations.map((row) => row.obligation.id))];
+  const allocations = allObligationIds.length === 0 ? [] : await tx.select({ id: paymentAllocations.id, obligationId: paymentAllocations.obligationId, amountMinor: paymentAllocations.amountMinor }).from(paymentAllocations).where(and(
+    eq(paymentAllocations.organizationId, input.organizationId), eq(paymentAllocations.leagueId, input.leagueId), eq(paymentAllocations.state, "active"),
+    inArray(paymentAllocations.obligationId, allObligationIds),
+  ));
+  const adjustments = allocations.length === 0 ? [] : await tx.select({ sourceAllocationId: refundAllocationAdjustments.sourceAllocationId, amountMinor: refundAllocationAdjustments.amountMinor, disposition: refundAllocationAdjustments.disposition }).from(refundAllocationAdjustments).where(and(
+    eq(refundAllocationAdjustments.organizationId, input.organizationId), eq(refundAllocationAdjustments.leagueId, input.leagueId),
+    inArray(refundAllocationAdjustments.sourceAllocationId, allocations.map((row) => row.id)),
+  ));
+  const adjustmentByAllocationId = new Map(adjustments.map((row) => [row.sourceAllocationId, row]));
+  const reservedRows = obligationIds.length === 0 ? [] : await tx.select({ obligationId: paymentOperationRosterSnapshotItems.obligationId, amountMinor: paymentOperationRosterSnapshotItems.amountMinor }).from(paymentOperationRosterSnapshotItems).where(and(
+    eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId), eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId),
+    eq(paymentOperationRosterSnapshotItems.state, "reserved"), inArray(paymentOperationRosterSnapshotItems.obligationId, obligationIds),
+  ));
+  const allocatedByObligationId = new Map<string, number>();
+  const adjustmentsByObligationId = new Map<string, Array<{ amountMinor: number; disposition: "still_owed" | "waived" }>>();
+  const reservedByObligationId = new Map<string, number>();
+  for (const allocation of allocations) {
+    allocatedByObligationId.set(allocation.obligationId, (allocatedByObligationId.get(allocation.obligationId) ?? 0) + allocation.amountMinor);
+    const adjustment = adjustmentByAllocationId.get(allocation.id);
+    if (adjustment) adjustmentsByObligationId.set(allocation.obligationId, [
+      ...(adjustmentsByObligationId.get(allocation.obligationId) ?? []),
+      { amountMinor: adjustment.amountMinor, disposition: adjustment.disposition },
+    ]);
+  }
+  for (const reservation of reservedRows) reservedByObligationId.set(reservation.obligationId, (reservedByObligationId.get(reservation.obligationId) ?? 0) + reservation.amountMinor);
   const result: Array<{ obligation: typeof paymentObligations.$inferSelect; outstandingMinor: number; responsibilityVersion: number }> = [];
+  // A still-owed refund is a manual-only hold for the payer's whole
+  // occurrence/week. The source component may already be settled by a later
+  // cash/check/card repayment, so derive the marker from all obligations in
+  // the same payer/week rather than only the currently eligible rows.
+  const outstandingByPayerWeek = new Map<string, number>();
+  const stillOwedByPayerWeek = new Set<string>();
+  for (const row of allPayerWeekObligations) {
+    const key = `${row.obligation.payerBowlerId}:${row.obligation.occurrenceId}`;
+    const balance = canonicalObligationBalance({
+      amountMinor: row.obligation.amountMinor,
+      state: row.obligation.state,
+      grossAllocatedMinor: allocatedByObligationId.get(row.obligation.id) ?? 0,
+      adjustments: adjustmentsByObligationId.get(row.obligation.id) ?? [],
+    });
+    outstandingByPayerWeek.set(key, (outstandingByPayerWeek.get(key) ?? 0) + balance.outstandingMinor);
+    if ((adjustmentsByObligationId.get(row.obligation.id) ?? []).some((adjustment) => adjustment.disposition === "still_owed")) {
+      stillOwedByPayerWeek.add(key);
+    }
+  }
+  const heldPayerWeeks = new Set<string>([...stillOwedByPayerWeek].filter((key) => (outstandingByPayerWeek.get(key) ?? 0) > 0));
+  for (const key of await pendingRefundPayerWeekKeys(tx, {
+    organizationId: input.organizationId,
+    leagueId: input.leagueId,
+    payerBowlerIds: input.payerBowlerIds,
+    occurrenceIds: allOccurrenceIds,
+  })) heldPayerWeeks.add(key);
   for (const row of obligations) {
-    const [allocated] = await tx.select({ total: sql<number>`COALESCE(SUM(${paymentAllocations.amountMinor}), 0)` }).from(paymentAllocations).where(and(
-      eq(paymentAllocations.organizationId, input.organizationId), eq(paymentAllocations.leagueId, input.leagueId), eq(paymentAllocations.obligationId, row.obligation.id), eq(paymentAllocations.state, "active"),
-    ));
-    const [reserved] = await tx.select({ total: sql<number>`COALESCE(SUM(${paymentOperationRosterSnapshotItems.amountMinor}), 0)` }).from(paymentOperationRosterSnapshotItems).where(and(
-      eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId), eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId), eq(paymentOperationRosterSnapshotItems.obligationId, row.obligation.id), eq(paymentOperationRosterSnapshotItems.state, "reserved"),
-    ));
-    const outstandingMinor = row.obligation.amountMinor - Number(allocated?.total ?? 0) - Number(reserved?.total ?? 0);
+    const balance = canonicalObligationBalance({
+      amountMinor: row.obligation.amountMinor,
+      state: row.obligation.state,
+      grossAllocatedMinor: allocatedByObligationId.get(row.obligation.id) ?? 0,
+      adjustments: adjustmentsByObligationId.get(row.obligation.id) ?? [],
+    });
+    const reservedMinor = reservedByObligationId.get(row.obligation.id) ?? 0;
+    const outstandingMinor = balance.outstandingMinor - reservedMinor;
     if (outstandingMinor > 0) result.push({ obligation: row.obligation, outstandingMinor, responsibilityVersion: row.responsibilityVersion });
   }
-  return result;
+  return result.filter((row) => !heldPayerWeeks.has(`${row.obligation.payerBowlerId}:${row.obligation.occurrenceId}`));
 }
 
 /** Standing collection is deliberately current-only. Any older unpaid or
@@ -230,14 +344,40 @@ async function assertNoStandingArrears(
     inArray(paymentObligations.state, ["open", "partially_settled"] as const),
     lt(paymentObligations.dueAt, input.cutoffAt),
   )).for("update");
+  const obligationIds = rows.map((row) => row.obligation.id);
+  const allocations = obligationIds.length === 0 ? [] : await tx.select({ id: paymentAllocations.id, obligationId: paymentAllocations.obligationId, amountMinor: paymentAllocations.amountMinor }).from(paymentAllocations).where(and(
+    eq(paymentAllocations.organizationId, input.organizationId), eq(paymentAllocations.leagueId, input.leagueId), eq(paymentAllocations.state, "active"),
+    inArray(paymentAllocations.obligationId, obligationIds),
+  ));
+  const adjustments = allocations.length === 0 ? [] : await tx.select({ sourceAllocationId: refundAllocationAdjustments.sourceAllocationId, amountMinor: refundAllocationAdjustments.amountMinor, disposition: refundAllocationAdjustments.disposition }).from(refundAllocationAdjustments).where(and(
+    eq(refundAllocationAdjustments.organizationId, input.organizationId), eq(refundAllocationAdjustments.leagueId, input.leagueId),
+    inArray(refundAllocationAdjustments.sourceAllocationId, allocations.map((row) => row.id)),
+  ));
+  const adjustmentByAllocationId = new Map(adjustments.map((row) => [row.sourceAllocationId, row]));
+  const allocatedByObligationId = new Map<string, number>();
+  const adjustmentsByObligationId = new Map<string, Array<{ amountMinor: number; disposition: "still_owed" | "waived" }>>();
+  for (const allocation of allocations) {
+    allocatedByObligationId.set(allocation.obligationId, (allocatedByObligationId.get(allocation.obligationId) ?? 0) + allocation.amountMinor);
+    const adjustment = adjustmentByAllocationId.get(allocation.id);
+    if (adjustment) adjustmentsByObligationId.set(allocation.obligationId, [
+      ...(adjustmentsByObligationId.get(allocation.obligationId) ?? []),
+      { amountMinor: adjustment.amountMinor, disposition: adjustment.disposition },
+    ]);
+  }
+  const reservations = obligationIds.length === 0 ? [] : await tx.select({ obligationId: paymentOperationRosterSnapshotItems.obligationId, amountMinor: paymentOperationRosterSnapshotItems.amountMinor }).from(paymentOperationRosterSnapshotItems).where(and(
+    eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId), eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId),
+    eq(paymentOperationRosterSnapshotItems.state, "reserved"), inArray(paymentOperationRosterSnapshotItems.obligationId, obligationIds),
+  ));
+  const reservedByObligationId = new Map<string, number>();
+  for (const reservation of reservations) reservedByObligationId.set(reservation.obligationId, (reservedByObligationId.get(reservation.obligationId) ?? 0) + reservation.amountMinor);
   for (const row of rows) {
-    const [allocated] = await tx.select({ total: sql<number>`COALESCE(SUM(${paymentAllocations.amountMinor}), 0)` }).from(paymentAllocations).where(and(
-      eq(paymentAllocations.organizationId, input.organizationId), eq(paymentAllocations.leagueId, input.leagueId), eq(paymentAllocations.obligationId, row.obligation.id), eq(paymentAllocations.state, "active"),
-    ));
-    const [reserved] = await tx.select({ total: sql<number>`COALESCE(SUM(${paymentOperationRosterSnapshotItems.amountMinor}), 0)` }).from(paymentOperationRosterSnapshotItems).where(and(
-      eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId), eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId), eq(paymentOperationRosterSnapshotItems.obligationId, row.obligation.id), eq(paymentOperationRosterSnapshotItems.state, "reserved"),
-    ));
-    if (row.obligation.amountMinor - Number(allocated?.total ?? 0) > 0 || Number(reserved?.total ?? 0) > 0) {
+    const balance = canonicalObligationBalance({
+      amountMinor: row.obligation.amountMinor,
+      state: row.obligation.state,
+      grossAllocatedMinor: allocatedByObligationId.get(row.obligation.id) ?? 0,
+      adjustments: adjustmentsByObligationId.get(row.obligation.id) ?? [],
+    });
+    if (balance.outstandingMinor > 0 || (reservedByObligationId.get(row.obligation.id) ?? 0) > 0) {
       throw new StandingAutopayError("ARREARS_REQUIRE_ONE_TIME_FIFO", "Standing automatic payment is blocked until older unpaid obligations are settled by a one-time FIFO payment", 409);
     }
   }
@@ -573,6 +713,15 @@ export async function prepareStandingAutopayCutoff(input: { organizationId: numb
       await applyCommand(tx, { organizationId: input.organizationId, leagueId: input.leagueId, commandType: COMMAND_CUTOFF, key, result: { kind: "blocked", reason: "paired_occurrence_requires_trigger", cutoffAt, consentId: consent.id, pairedOccurrenceId: group.triggerOccurrenceId } });
       return undefined;
     }
+    // A refund provider outcome is not a balance decision. While it is still
+    // unresolved, keep only this exact payer/week out of standing dispatch;
+    // a failed/canceled refund becomes discoverable again automatically.
+    if ((await pendingRefundPayerWeekKeys(tx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      payerBowlerIds: payerIds,
+      occurrenceIds: group.occurrenceIds,
+    })).size > 0) return undefined;
     const triggerRows = await eligibleRows(tx, { organizationId: input.organizationId, leagueId: input.leagueId, payerBowlerIds: payerIds, activationAt, cutoffAt, dueMode: "exact", occurrenceIds: [group.triggerOccurrenceId] });
     const pairedRows = group.mode === "double_pay" && group.pairedOccurrenceId ? await eligibleRows(tx, { organizationId: input.organizationId, leagueId: input.leagueId, payerBowlerIds: payerIds, activationAt, cutoffAt, dueMode: "paired", occurrenceIds: [group.pairedOccurrenceId] }) : [];
     const rows = [...triggerRows, ...pairedRows];
@@ -708,6 +857,97 @@ export async function standingPaymentRows(input: { organizationId: number; opera
   return [{ allocationIndex: 0, values: { organizationId: input.organizationId, bowlerId: snapshot.consent.payerBowlerId, leagueId: snapshot.operation.leagueId ?? snapshot.binding.leagueId, amount: snapshot.operation.amountMinor, status: "paid" as const, type: snapshot.operation.providerName === "square" ? "square" as const : "credit_card" as const, providerPaymentId: input.providerPaymentId, receiptUrl: input.receiptUrl ?? undefined, receiptNumber: input.receiptNumber ?? undefined, receiptEmailMissing: false, paidByUserId: input.actorUserId, notes: "Roster standing automatic payment" } }];
 }
 
+/**
+ * Recheck the whole payer/week hold immediately before standing provider I/O.
+ * A still-owed refund can have its source component settled by a later manual
+ * repayment while a sibling component remains unpaid; therefore the marker
+ * must be resolved across every obligation for that exact payer and
+ * occurrence, not from the reserved snapshot rows alone.
+ */
+async function validateStandingRefundHoldsForDispatchInTransaction(
+  tx: StandingTx,
+  input: { organizationId: number; leagueId: number; operationId: string },
+): Promise<void> {
+  const snapshotRows = await tx.select({ obligationId: paymentOperationRosterSnapshotItems.obligationId })
+    .from(paymentOperationRosterSnapshotItems)
+    .where(and(
+      eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId),
+      eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId),
+      eq(paymentOperationRosterSnapshotItems.operationId, input.operationId),
+    ));
+  if (snapshotRows.length === 0) throw new StandingAutopayError("SNAPSHOT_INVALID", "The standing operation snapshot is unavailable");
+  const reservedObligations = await tx.select({ payerBowlerId: paymentObligations.payerBowlerId, occurrenceId: paymentObligations.occurrenceId })
+    .from(paymentObligations)
+    .where(and(
+      eq(paymentObligations.organizationId, input.organizationId),
+      eq(paymentObligations.leagueId, input.leagueId),
+      inArray(paymentObligations.id, snapshotRows.map((row) => row.obligationId)),
+    ));
+  const payerIds = [...new Set(reservedObligations.map((row) => row.payerBowlerId))];
+  const occurrenceIds = [...new Set(reservedObligations.map((row) => row.occurrenceId))];
+  if (payerIds.length === 0 || occurrenceIds.length === 0) throw new StandingAutopayError("SNAPSHOT_INVALID", "The standing operation snapshot references no obligations");
+  if ((await pendingRefundPayerWeekKeys(tx, {
+    organizationId: input.organizationId,
+    leagueId: input.leagueId,
+    payerBowlerIds: payerIds,
+    occurrenceIds,
+  })).size > 0) {
+    throw new StandingAutopayError("REFUND_OUTCOME_UNRESOLVED", "Standing automatic payment is blocked until the affected refund provider outcome is resolved", 409);
+  }
+  const allObligations = await tx.select({ obligation: paymentObligations }).from(paymentObligations).where(and(
+    eq(paymentObligations.organizationId, input.organizationId),
+    eq(paymentObligations.leagueId, input.leagueId),
+    inArray(paymentObligations.payerBowlerId, payerIds),
+    inArray(paymentObligations.occurrenceId, occurrenceIds),
+  ));
+  const allObligationIds = allObligations.map((row) => row.obligation.id);
+  const allocations = allObligationIds.length === 0 ? [] : await tx.select({ id: paymentAllocations.id, obligationId: paymentAllocations.obligationId, amountMinor: paymentAllocations.amountMinor })
+    .from(paymentAllocations)
+    .where(and(
+      eq(paymentAllocations.organizationId, input.organizationId),
+      eq(paymentAllocations.leagueId, input.leagueId),
+      eq(paymentAllocations.state, "active"),
+      inArray(paymentAllocations.obligationId, allObligationIds),
+    ));
+  const adjustments = allocations.length === 0 ? [] : await tx.select({ sourceAllocationId: refundAllocationAdjustments.sourceAllocationId, amountMinor: refundAllocationAdjustments.amountMinor, disposition: refundAllocationAdjustments.disposition })
+    .from(refundAllocationAdjustments)
+    .where(and(
+      eq(refundAllocationAdjustments.organizationId, input.organizationId),
+      eq(refundAllocationAdjustments.leagueId, input.leagueId),
+      inArray(refundAllocationAdjustments.sourceAllocationId, allocations.map((row) => row.id)),
+    ));
+  const adjustmentsByAllocationId = new Map(adjustments.map((row) => [row.sourceAllocationId, row]));
+  const allocatedByObligationId = new Map<string, number>();
+  const adjustmentsByObligationId = new Map<string, Array<{ amountMinor: number; disposition: "still_owed" | "waived" }>>();
+  for (const allocation of allocations) {
+    allocatedByObligationId.set(allocation.obligationId, (allocatedByObligationId.get(allocation.obligationId) ?? 0) + allocation.amountMinor);
+    const adjustment = adjustmentsByAllocationId.get(allocation.id);
+    if (adjustment) adjustmentsByObligationId.set(allocation.obligationId, [
+      ...(adjustmentsByObligationId.get(allocation.obligationId) ?? []),
+      { amountMinor: adjustment.amountMinor, disposition: adjustment.disposition },
+    ]);
+  }
+  const totalOutstandingByKey = new Map<string, number>();
+  const heldKeys = new Set<string>();
+  for (const row of allObligations) {
+    const key = `${row.obligation.payerBowlerId}:${row.obligation.occurrenceId}`;
+    const rowAdjustments = adjustmentsByObligationId.get(row.obligation.id) ?? [];
+    const balance = canonicalObligationBalance({
+      amountMinor: row.obligation.amountMinor,
+      state: row.obligation.state,
+      grossAllocatedMinor: allocatedByObligationId.get(row.obligation.id) ?? 0,
+      adjustments: rowAdjustments,
+    });
+    totalOutstandingByKey.set(key, (totalOutstandingByKey.get(key) ?? 0) + balance.outstandingMinor);
+    if (rowAdjustments.some((adjustment) => adjustment.disposition === "still_owed")) heldKeys.add(key);
+  }
+  for (const key of heldKeys) {
+    if ((totalOutstandingByKey.get(key) ?? 0) > 0) {
+      throw new StandingAutopayError("REFUND_STILL_OWED_MANUAL", "Standing automatic payment is blocked until the still-owed refund week is settled by a one-time payment", 409);
+    }
+  }
+}
+
 export async function validateStandingConsentForDispatchInTransaction(tx: StandingTx, input: { organizationId: number; leagueId: number; operationId: string; leagueIdAlreadyLocked?: boolean }) {
     if (!input.leagueIdAlreadyLocked) await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
     const [binding] = await tx.select().from(paymentOperationStandingAutopayBindings).where(and(eq(paymentOperationStandingAutopayBindings.organizationId, input.organizationId), eq(paymentOperationStandingAutopayBindings.leagueId, input.leagueId), eq(paymentOperationStandingAutopayBindings.operationId, input.operationId))).limit(1).for("update");
@@ -719,6 +959,7 @@ export async function validateStandingConsentForDispatchInTransaction(tx: Standi
     const [snapshot] = await tx.select().from(paymentOperationRosterSnapshots).where(and(eq(paymentOperationRosterSnapshots.organizationId, input.organizationId), eq(paymentOperationRosterSnapshots.leagueId, input.leagueId), eq(paymentOperationRosterSnapshots.operationId, input.operationId), eq(paymentOperationRosterSnapshots.snapshotKind, "standing_autopay"))).limit(1).for("share");
     if (!snapshot || snapshot.snapshotFingerprint !== binding.evidenceFingerprint) throw new StandingAutopayError("SNAPSHOT_INVALID", "The standing operation snapshot is invalid");
     if (!await validateRosterSnapshotForDispatchInTransaction(tx, input)) throw new StandingAutopayError("SNAPSHOT_INVALID", "The standing operation snapshot is unavailable");
+    await validateStandingRefundHoldsForDispatchInTransaction(tx, input);
     return true;
 }
 

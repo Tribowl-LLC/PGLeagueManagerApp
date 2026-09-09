@@ -203,4 +203,61 @@ describe("F5 canonical payment report route", () => {
     const payerBody = await payerResponse.json();
     expect(payerBody.data.totals).toMatchObject(payer === null ? { refundedMinor: 0, disputedReviewRequiredMinor: 0 } : { refundedMinor: 4000, disputedReviewRequiredMinor: 4000 });
   });
+
+  it("preserves gross allocatedMinor while exposing refunded net through effectiveAllocatedMinor", async () => {
+    mocks.hasAdmin.mockResolvedValue(false);
+    const row = {
+      paymentId: 41,
+      leagueId: 7,
+      bowlerId: 42,
+      amountMinor: 3000,
+      currency: "USD",
+      status: "refunded",
+      paymentType: "square",
+      businessDate: "2038-01-01",
+      authoritativeLocalDate: "2038-01-01",
+      providerPaymentId: "provider-secret",
+      paymentOperationId: "refund-operation-secret",
+      operationType: "interactive_charge",
+      operationStatus: "succeeded",
+      allocatedMinor: 3000,
+      grossAllocatedMinor: 3000,
+      effectiveAllocatedMinor: 0,
+      unallocatedMinor: 0,
+      refundedAllocationMinor: 3000,
+      waivedMinor: 0,
+      reviewRequired: true,
+      source: "canonical_allocation",
+      refund: { present: true, amountMinor: 3000, providerRefundId: "refund-secret" },
+      dispute: { present: false, amountMinor: 0, disputeId: null },
+      unresolved: false,
+      initiatingPayerBowlerId: 42,
+      receipt: { contractVersion: "payment-receipt/1", availability: "unavailable", receiptUrl: null, receiptNumber: null, deliveryEvidence: "delivery_not_recorded", paymentId: 41, paymentOperationId: "refund-operation-secret", source: "canonical_allocation", allocations: [], sharedTransaction: null },
+      allocations: [{ allocationId: "allocation-secret", obligationId: "obligation-secret", occurrenceId: "occurrence-secret", bowlerId: 42, amountMinor: 3000, effectiveAmountMinor: 0, refundedMinor: 3000, refundDisposition: "still_owed", currency: "USD", state: "active" }],
+    };
+    mocks.readReport.mockResolvedValue({
+      contractVersion: "canonical-payment-report/1",
+      orderVersion: "league,business-date,bowler,occurrence,allocation,payment/1",
+      organizationId: 11,
+      leagueId: 7,
+      mode: "canonical",
+      authoritativeSource: "canonical",
+      asOf: "2038-01-01T00:00:00.000Z",
+      fingerprint: "fingerprint-refunded-net",
+      page: 1,
+      limit: 50,
+      totalRows: 1,
+      totalTransactions: 1,
+      totals: { grossConfirmedPaidMinor: 3000, activeAllocatedMinor: 3000, refundedMinor: 3000, disputedReviewRequiredMinor: 0, reviewRequiredMinor: 0, unresolvedOperationMinor: 0, unallocatedLegacyMinor: 0 },
+      rows: [row],
+      transactions: [],
+      unlinkedHistory: [],
+    });
+
+    const response = await get("/payments?leagueId=7", user("user", 11, 42));
+    const body = await response.json();
+    expect(response.status).toBe(200);
+    expect(body.data.rows[0]).toMatchObject({ allocatedMinor: 3000, grossAllocatedMinor: 3000, effectiveAllocatedMinor: 0, refundedAllocationMinor: 3000, waivedMinor: 0 });
+    expect(body.data.totals).toMatchObject({ activeAllocatedMinor: 3000, refundedMinor: 3000 });
+  });
 });

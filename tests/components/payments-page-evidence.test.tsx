@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import PaymentsPage from "@/pages/payments-page";
+import PaymentsPage, { invalidateRefundPaymentViews } from "@/pages/payments-page";
+import { queryClient } from "@/lib/queryClient";
 import type { CanonicalPaymentReport, CanonicalPaymentRow } from "@shared/canonical-payment-report";
 
 vi.mock("wouter", async (importOriginal) => {
@@ -84,5 +85,22 @@ describe("PaymentsPage canonical evidence presentation", () => {
 
     expect(screen.getByRole("option", { name: "Test League" })).toBeInTheDocument();
     expect(screen.queryByRole("option", { name: "Archived League" })).not.toBeInTheDocument();
+  });
+
+  it("refreshes affected financial, history, standing, and payment projections after a refund", () => {
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries").mockResolvedValue(undefined);
+
+    invalidateRefundPaymentViews(7, 42);
+
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/payments"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/financials/f5/payments"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/financials/leagues", 7, "canonical-due-past-due/2"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/financials/leagues/7/canonical-due-past-due/2"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/financials/leagues/7/standing-autopay/1"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/financials/leagues/7/standing-autopay/1/quote"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/bowlers/42/details"] });
+    expect(invalidate).toHaveBeenCalledWith(expect.objectContaining({ predicate: expect.any(Function) }));
+
+    invalidate.mockRestore();
   });
 });

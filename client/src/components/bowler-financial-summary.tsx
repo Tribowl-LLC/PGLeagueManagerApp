@@ -18,6 +18,7 @@ export function BowlerFinancialSummary({ league, financials, sourceLabel }: Prop
     amountPastDue,
     remainingBalance,
     totalPaidAmount,
+    waivedAmount = 0,
     reviewRequired,
     reviewCategory,
   } = financials;
@@ -44,6 +45,7 @@ export function BowlerFinancialSummary({ league, financials, sourceLabel }: Prop
         description="All payments received"
         value={`$${(totalPaidAmount / 100).toFixed(2)}`}
       />
+      {waivedAmount > 0 && <SummaryCard title="Refunds Waived" description="Explicitly waived roster amounts (not payments)" value={`$${(waivedAmount / 100).toFixed(2)}`} />}
       <SummaryCard
         title="Amount Past Due to Date"
         description={pastDueDescription}

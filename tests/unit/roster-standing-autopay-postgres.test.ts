@@ -45,6 +45,8 @@ import { readCanonicalPaymentReport } from "../../server/services/roster-payment
 import { updateBowlerLeague } from "../../server/storage/bowlers";
 import { getNextStandingAutopayWake, recordStandingAutopayPreparationFailure } from "../../server/storage/payment-operations";
 import { canonicalizePaymentOperationInput } from "../../server/services/payment-operation-idempotency";
+import { prepareRefundPaymentOperation } from "../../server/services/refund-payment-operation-preparation";
+import { RefundPaymentOperationExecutor } from "../../server/services/refund-payment-operation-executor";
 
 // This suite deliberately enables only the standing runtime in the isolated
 // test process. It never supplies provider credentials and never calls a
@@ -354,6 +356,103 @@ async function createDoublePayGroup(trigger: Awaited<ReturnType<typeof publishOc
   return groupId;
 }
 
+async function createRefundableCardPayment(obligation: typeof paymentObligations.$inferSelect) {
+  const providerPaymentId = `standing-refund-payment-${randomUUID()}`;
+  const operationId = randomUUID();
+  const operationTimestamp = new Date().toISOString();
+  return db.transaction(async (tx) => {
+    await tx.insert(paymentOperations).values({
+      id: operationId,
+      organizationId,
+      authorizingUserId: actorUserId,
+      operationType: "interactive_charge",
+      targetKey: `standing-refund-charge-${operationId}`,
+      leagueId,
+      amountMinor: obligation.amountMinor,
+      currency: "USD",
+      requestFingerprint: `lvpayreq:v1:${"a".repeat(64)}`,
+      providerIdempotencyKey: `standing-refund-charge-${operationId}`.slice(0, 45),
+      providerName: "square",
+      providerObjectId: providerPaymentId,
+      status: "succeeded",
+      nextAttemptAt: null,
+      completedAt: operationTimestamp,
+      createdAt: operationTimestamp,
+      updatedAt: operationTimestamp,
+    });
+    const [payment] = await tx.insert(payments).values({
+      organizationId,
+      bowlerId: payerBowlerId,
+      leagueId,
+      amount: obligation.amountMinor,
+      status: "paid",
+      type: "square",
+      providerPaymentId,
+      paymentOperationId: operationId,
+      idempotencyKey: `standing-refund-payment-${randomUUID()}`,
+      paidByUserId: actorUserId,
+    }).returning();
+    const [allocation] = await tx.insert(paymentAllocations).values({
+      organizationId,
+      leagueId,
+      paymentId: payment.id,
+      obligationId: obligation.id,
+      amountMinor: obligation.amountMinor,
+      currency: "USD",
+      recordedByUserId: actorUserId,
+    }).returning();
+    await tx.update(paymentObligations).set({ state: "settled" }).where(and(
+      eq(paymentObligations.organizationId, organizationId),
+      eq(paymentObligations.leagueId, leagueId),
+      eq(paymentObligations.id, obligation.id),
+    ));
+    return { payment, allocation };
+  });
+}
+
+async function completeFixtureRefund(paymentId: number, disposition: "still_owed" | "waived" = "still_owed") {
+  const prepared = await prepareRefundPaymentOperation({
+    paymentId,
+    disposition,
+    reason: "standing refund fixture",
+    requestedByUserId: actorUserId,
+    requestedByRole: "org_admin",
+    requestedByOrganizationId: organizationId,
+    now: new Date(),
+  });
+  const provider = {
+    providerName: "square",
+    locationId,
+    refundPayment: async () => ({ refundId: `standing-refund-${randomUUID()}`, status: "COMPLETED" as const }),
+  } as never;
+  const executor = new RefundPaymentOperationExecutor({
+    leaseOwner: `standing-refund-executor-${randomUUID()}`,
+    now: () => new Date(),
+    getProvider: async () => provider,
+  });
+  const operation = await executor.execute({ organizationId, operationId: prepared.operation.id, now: new Date() });
+  expect(operation?.status).toBe("succeeded");
+  return prepared.operation;
+}
+
+async function insertSiblingObligation(target: Awaited<ReturnType<typeof publishOccurrence>>, amountMinor = 1_000) {
+  const [sibling] = await db.insert(paymentObligations).values({
+    organizationId,
+    leagueId,
+    occurrenceId: target.occurrence.id,
+    responsibilityId: target.responsibility.id,
+    component: "prize",
+    payerBowlerId,
+    amountMinor,
+    currency: "USD",
+    dueAt: target.obligation.dueAt,
+    pastDueAt: target.obligation.pastDueAt,
+    state: "open",
+    createdByUserId: actorUserId,
+  }).returning();
+  return sibling;
+}
+
 describe("standing automatic payments on migrated PostgreSQL", () => {
   it("blocks pre-consent arrears until one-time FIFO settlement, then advances a cutoff", async () => {
     const beforeConsent = await publishOccurrence("2039-01-01T19:00:00.000Z");
@@ -410,6 +509,109 @@ describe("standing automatic payments on migrated PostgreSQL", () => {
     expect(items[0].state).toBe("reserved");
     const participants = await db.select().from(paymentOperationStandingAutopayParticipants).where(eq(paymentOperationStandingAutopayParticipants.operationId, operation!.id));
     expect(participants).toMatchObject([{ obligationId: afterConsent.obligation.id, bowlerId: payerBowlerId, role: "payer", consentVersion: 1 }]);
+  });
+
+  it("keeps a whole-week still-owed hold after the refunded source is manually repaid", async () => {
+    const target = await publishOccurrence("2039-06-07T19:00:00.000Z");
+    const sibling = await insertSiblingObligation(target);
+    const source = await createRefundableCardPayment(target.obligation);
+    const consent = await insertConsent({ version: 15, activatedAt: "2039-01-02T00:00:00.000Z" });
+    await completeFixtureRefund(source.payment.id, "still_owed");
+
+    // This is a real canonical cash tender/child allocation. It settles only
+    // the refunded component, leaving the sibling component outstanding.
+    const manualPayment = await db.transaction(async (tx) => {
+      const [payment] = await tx.insert(payments).values({
+        organizationId,
+        bowlerId: payerBowlerId,
+        leagueId,
+        amount: source.payment.amount,
+        status: "paid",
+        type: "cash",
+        idempotencyKey: `standing-refund-manual-${randomUUID()}`,
+        paidByUserId: actorUserId,
+      }).returning();
+      await tx.insert(paymentAllocations).values({
+        organizationId,
+        leagueId,
+        paymentId: payment.id,
+        obligationId: target.obligation.id,
+        amountMinor: source.payment.amount,
+        currency: "USD",
+        recordedByUserId: actorUserId,
+      });
+      await tx.update(paymentObligations).set({ state: "settled" }).where(and(
+        eq(paymentObligations.organizationId, organizationId),
+        eq(paymentObligations.leagueId, leagueId),
+        eq(paymentObligations.id, target.obligation.id),
+      ));
+      return payment;
+    });
+    const [repaidSource] = await db.select().from(paymentObligations).where(eq(paymentObligations.id, target.obligation.id));
+    expect(repaidSource?.state).toBe("settled");
+    expect(sibling.state).toBe("open");
+
+    const { prepareStandingAutopayCutoff } = await import("../../server/services/roster-standing-autopay");
+    expect(await prepareStandingAutopayCutoff({ organizationId, leagueId, consentId: consent.id, cutoffAt: target.occurrence.startAt })).toBeUndefined();
+    expect(await db.select({ id: paymentOperations.id }).from(paymentOperations).where(and(
+      eq(paymentOperations.organizationId, organizationId),
+      eq(paymentOperations.leagueId, leagueId),
+      eq(paymentOperations.triggerOccurrenceId, target.occurrence.id),
+      eq(paymentOperations.operationType, "standing_autopay_charge"),
+    ))).toHaveLength(0);
+  });
+
+  it("rejects a refund when a sibling payer/week standing reservation already owns capacity", async () => {
+    const target = await publishOccurrence("2039-06-14T19:00:00.000Z");
+    await insertSiblingObligation(target);
+    const source = await createRefundableCardPayment(target.obligation);
+    const consent = await insertConsent({ version: 16, activatedAt: "2039-01-02T00:00:00.000Z" });
+    const { prepareStandingAutopayCutoff } = await import("../../server/services/roster-standing-autopay");
+    const standing = await prepareStandingAutopayCutoff({ organizationId, leagueId, consentId: consent.id, cutoffAt: target.occurrence.startAt });
+    expect(standing).toBeDefined();
+    await expect(prepareRefundPaymentOperation({
+      paymentId: source.payment.id,
+      disposition: "still_owed",
+      reason: "reservation race fixture",
+      requestedByUserId: actorUserId,
+      requestedByRole: "org_admin",
+      requestedByOrganizationId: organizationId,
+      now: new Date(),
+    })).rejects.toMatchObject({ code: "REFUND_ALLOCATION_RESERVED" });
+  });
+
+  it("holds affected standing preparation only while a refund outcome is unresolved", async () => {
+    const target = await publishOccurrence("2039-06-21T19:00:00.000Z");
+    await insertSiblingObligation(target);
+    const source = await createRefundableCardPayment(target.obligation);
+    const consent = await insertConsent({ version: 17, activatedAt: "2039-01-02T00:00:00.000Z" });
+    const preparedRefund = await prepareRefundPaymentOperation({
+      paymentId: source.payment.id,
+      disposition: "still_owed",
+      reason: "pending hold fixture",
+      requestedByUserId: actorUserId,
+      requestedByRole: "org_admin",
+      requestedByOrganizationId: organizationId,
+      now: new Date(),
+    });
+    const { prepareStandingAutopayCutoff } = await import("../../server/services/roster-standing-autopay");
+    expect(await prepareStandingAutopayCutoff({ organizationId, leagueId, consentId: consent.id, cutoffAt: target.occurrence.startAt })).toBeUndefined();
+    expect(await db.select({ id: paymentOperations.id }).from(paymentOperations).where(and(
+      eq(paymentOperations.organizationId, organizationId),
+      eq(paymentOperations.triggerOccurrenceId, target.occurrence.id),
+      eq(paymentOperations.operationType, "standing_autopay_charge"),
+    ))).toHaveLength(0);
+
+    await db.update(paymentOperations).set({
+      status: "failed_terminal",
+      nextAttemptAt: null,
+      errorClassification: "invalid_request",
+      errorCode: "REFUND_FAILED",
+      completedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }).where(and(eq(paymentOperations.id, preparedRefund.operation.id), eq(paymentOperations.organizationId, organizationId)));
+    const standing = await prepareStandingAutopayCutoff({ organizationId, leagueId, consentId: consent.id, cutoffAt: target.occurrence.startAt });
+    expect(standing).toBeDefined();
   });
 
   it("moves a preparation retry behind another payer at the same cutoff and durably stops after the retry limit", async () => {

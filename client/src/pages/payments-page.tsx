@@ -33,6 +33,25 @@ import type { CanonicalPaymentReport } from "@shared/canonical-payment-report";
 const PAGE_SIZE_OPTIONS = [25, 50, 100];
 const DEFAULT_PAGE_SIZE = 50;
 
+/**
+ * A refund changes both the tender projection and the canonical obligation
+ * projections. Keep the refresh scoped to the affected payer/league where a
+ * query family supports that scope, while still refreshing the admin-wide
+ * payment and F5 projections used by this page.
+ */
+export function invalidateRefundPaymentViews(leagueId: number, bowlerId: number): void {
+  void queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
+  void queryClient.invalidateQueries({ queryKey: ["/api/financials/f5/payments"] });
+  void queryClient.invalidateQueries({ queryKey: ["/api/financials/leagues", leagueId, "canonical-due-past-due/2"] });
+  void queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/canonical-due-past-due/2`] });
+  void queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/standing-autopay/1`] });
+  void queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/standing-autopay/1/quote`] });
+  void queryClient.invalidateQueries({ queryKey: [`/api/bowlers/${bowlerId}/details`] });
+  void queryClient.invalidateQueries({
+    predicate: ({ queryKey }) => typeof queryKey[0] === "string" && queryKey[0].startsWith("/api/financials/due-past-due"),
+  });
+}
+
 interface PaginatedPaymentsResponse {
   success: boolean;
   data: Array<Payment & { disputes: PaymentRowDisputeSummary[] }>;
@@ -105,15 +124,15 @@ export default function PaymentsPage() {
     : null;
 
   const refundPaymentMutation = useMutation({
-    mutationFn: async ({ id, reason }: { id: number; reason?: string }) => {
-      const response = await apiRequest(`/api/payments/${id}/refund`, "POST", { reason });
+    mutationFn: async ({ id, reason, disposition }: { id: number; reason?: string; disposition: "still_owed" | "waived"; leagueId: number; bowlerId: number }) => {
+      const response = await apiRequest(`/api/payments/${id}/refund`, "POST", { reason, disposition });
       if (!response.success) {
         throw new Error(response.error?.message || "Failed to process refund");
       }
       return response.data;
     },
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
+    onSuccess: (data, variables) => {
+      invalidateRefundPaymentViews(variables.leagueId, variables.bowlerId);
       toast(refundOperationToast(data));
       setPaymentToRefund(null);
     },
@@ -373,7 +392,17 @@ export default function PaymentsPage() {
           <RefundPaymentDialog
             payment={paymentToRefund}
             onClose={() => setPaymentToRefund(null)}
-            onConfirm={(id, reason) => refundPaymentMutation.mutate({ id, reason })}
+            onConfirm={(id, reason, disposition) => {
+              if (paymentToRefund) {
+                refundPaymentMutation.mutate({
+                  id,
+                  reason,
+                  disposition,
+                  leagueId: paymentToRefund.leagueId,
+                  bowlerId: paymentToRefund.bowlerId,
+                });
+              }
+            }}
             isPending={refundPaymentMutation.isPending}
           />
         </div>

@@ -20,6 +20,7 @@ interface PaymentSummaryCardsProps {
   totalSeasonDues: number;
   weeksPaid: number;
   totalPaidAmount: number;
+  waivedAmount?: number;
   amountPastDue: number;
   remainingBalance: number;
   doublePay: DoublePayInfo;
@@ -37,6 +38,7 @@ export function PaymentSummaryCards({
   totalSeasonDues,
   weeksPaid,
   totalPaidAmount,
+  waivedAmount = 0,
   amountPastDue,
   remainingBalance,
   doublePay,
@@ -69,6 +71,13 @@ export function PaymentSummaryCards({
           <p className="text-2xl font-bold">{formatCurrency(fullSeasonAmount)}</p>
         </CardContent>
       </Card>
+
+      {waivedAmount > 0 && (
+        <Card>
+          <CardHeader className="pb-2"><CardTitle className="text-lg">Refunds Waived</CardTitle><CardDescription>Not counted as payments</CardDescription></CardHeader>
+          <CardContent><p className="text-2xl font-bold">{formatCurrency(waivedAmount)}</p></CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader className="pb-2">

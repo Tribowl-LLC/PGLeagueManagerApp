@@ -260,6 +260,13 @@
       "when": 1788372833469,
       "tag": "0036_standing_autopay_preparation_attempts",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1788965739621,
+      "tag": "0037_refund_allocation_adjustments",
+      "breakpoints": true
     }
   ]
 }

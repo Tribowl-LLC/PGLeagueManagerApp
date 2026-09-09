@@ -8,6 +8,10 @@ export type FinancialReadRow = {
   teamId: number | null;
   amountMinor: number;
   allocatedMinor: number;
+  grossAllocatedMinor: number;
+  refundedMinor: number;
+  waivedMinor: number;
+  stillOwed: boolean;
   outstandingMinor: number;
   dueAt: string | null;
   pastDueAt: string | null;
@@ -41,6 +45,10 @@ function toFinancialRow(row: CanonicalDuePastDueRowV2): FinancialReadRow {
     teamId: row.teamId,
     amountMinor: row.amountMinor,
     allocatedMinor: row.allocatedMinor,
+    grossAllocatedMinor: row.grossAllocatedMinor ?? row.allocatedMinor,
+    refundedMinor: row.refundedMinor ?? 0,
+    waivedMinor: row.waivedMinor ?? 0,
+    stillOwed: row.stillOwed ?? false,
     outstandingMinor: row.outstandingMinor,
     dueAt: row.dueAt,
     pastDueAt: row.pastDueAt,
