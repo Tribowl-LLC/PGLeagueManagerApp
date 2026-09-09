@@ -154,7 +154,7 @@ function sameValue(left: unknown, right: unknown): boolean {
   return fallDraftCanonicalJson(left) === fallDraftCanonicalJson(right);
 }
 
-function occurrenceSnapshot(row: LeagueOccurrence): Record<string, unknown> {
+export function occurrenceSnapshot(row: LeagueOccurrence): Record<string, unknown> {
   return {
     snapshotContractVersion: "fall-draft-occurrence-revision/1",
     id: row.id,
@@ -222,7 +222,7 @@ function billingTermSnapshot(row: LeagueOccurrenceBillingTerm): Record<string, u
   };
 }
 
-function exceptionSnapshot(row: LeagueScheduleException): Record<string, unknown> {
+export function exceptionSnapshot(row: LeagueScheduleException): Record<string, unknown> {
   return {
     snapshotContractVersion: "fall-draft-exception-revision/1",
     id: row.id,

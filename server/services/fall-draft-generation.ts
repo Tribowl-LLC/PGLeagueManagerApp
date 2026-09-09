@@ -682,7 +682,7 @@ function normalizeInstant(value: string): string {
   return new Date(value).toISOString();
 }
 
-export function occurrenceSnapshot(row: LeagueOccurrence): Record<string, unknown> {
+function occurrenceSnapshot(row: LeagueOccurrence): Record<string, unknown> {
   return {
     snapshotContractVersion: "fall-draft-occurrence-revision/1",
     id: row.id,
@@ -750,7 +750,7 @@ function termSnapshot(row: LeagueOccurrenceBillingTerm): Record<string, unknown>
   };
 }
 
-export function exceptionSnapshot(row: LeagueScheduleException): Record<string, unknown> {
+function exceptionSnapshot(row: LeagueScheduleException): Record<string, unknown> {
   return {
     snapshotContractVersion: "fall-draft-exception-revision/1",
     id: row.id,

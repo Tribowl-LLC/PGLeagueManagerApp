@@ -22,8 +22,9 @@ import {
   type League,
 } from "@shared/schema";
 import { CANONICAL_COLLECTION_GROUP_REVISION_SNAPSHOT_VERSION, CanonicalCollectionGroupingError, deriveCanonicalCollectionPairs } from "@shared/canonical-collection-groups";
-import { generateCanonicalOccurrences, type CanonicalGenerationResult, type CanonicalSkipExceptionInput } from "@shared/canonical-occurrence-generator";
-import { exceptionSnapshot, occurrenceSnapshot, resolveCanonicalDraftInputSnapshot } from "./fall-draft-generation.js";
+import { generateCanonicalOccurrences, type CanonicalSkipExceptionInput } from "@shared/canonical-occurrence-generator";
+import { resolveCanonicalDraftInputSnapshot } from "./fall-draft-generation.js";
+import { exceptionSnapshot, occurrenceSnapshot } from "./fall-draft-review.js";
 import { loadLeagueOccurrenceScheduleSnapshot } from "./league-occurrence-schedule.js";
 import { materializeRosterPaymentOccurrenceInTransaction } from "./roster-payment-materializer.js";
 import { lockLeagueSchedule, type LeagueScheduleTransaction } from "../storage/league-schedule-lock.js";
@@ -144,7 +145,7 @@ async function revokeGroupInTransaction(tx: LeagueScheduleTransaction, input: Ca
     eq(paymentOperations.leagueId, input.leagueId),
     inArray(paymentOperations.triggerOccurrenceId, occurrenceIds),
   )).orderBy(asc(paymentOperations.id));
-  const rosterOperationRows = await tx.selectDistinct({ id: paymentOperations.id }).from(paymentOperations)
+  const rosterItemRows = await tx.select({ operationId: paymentOperationRosterSnapshotItems.operationId, state: paymentOperationRosterSnapshotItems.state }).from(paymentOperations)
     .innerJoin(paymentOperationRosterSnapshotItems, and(
       eq(paymentOperationRosterSnapshotItems.operationId, paymentOperations.id),
       eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId),
@@ -160,6 +161,10 @@ async function revokeGroupInTransaction(tx: LeagueScheduleTransaction, input: Ca
       eq(paymentOperations.leagueId, input.leagueId),
       inArray(paymentObligations.occurrenceId, occurrenceIds),
     )).orderBy(asc(paymentOperations.id));
+  if (rosterItemRows.some((item) => item.state === "reserved" || item.state === "finalized")) {
+    throw new CanonicalLeagueScheduleEditError("financial_conflict", "double-pay collection group has reserved or finalized payment-operation evidence and cannot be revised");
+  }
+  const rosterOperationRows = [...new Set(rosterItemRows.map((row) => row.operationId))].map((id) => ({ id }));
   const operationIds = [...new Set([...triggerOperationRows, ...rosterOperationRows].map((row) => row.id))].sort();
   const providerOperationRows = operationIds.length === 0 ? [] : await tx.select({
     id: paymentOperations.id,
@@ -229,7 +234,6 @@ function setEquals(left: readonly string[], right: readonly string[]): boolean {
 function changedScheduleFields(input: CanonicalLeagueScheduleEditInput, league: League, nextSkipDates: string[]): {
   physical: boolean;
   cancellation: boolean;
-  scalar: boolean;
 } {
   const previousSkipDates = [...league.skipDates].sort();
   const previousCancelledDates = [...league.cancelledDates].sort();
@@ -243,7 +247,6 @@ function changedScheduleFields(input: CanonicalLeagueScheduleEditInput, league: 
   return {
     physical: scalar || !setEquals(previousSkipDates, nextSkipDates),
     cancellation,
-    scalar,
   };
 }
 
@@ -353,11 +356,6 @@ export async function editCanonicalLeagueSchedule(input: CanonicalLeagueSchedule
     const now = transactionTimeResult.rows[0]?.transaction_time;
     if (!now) throw new CanonicalLeagueScheduleEditError("invalid_edit", "authoritative database time is unavailable");
     const nextRevision = scheduleChanged ? currentRevision + 1 : currentRevision;
-    let generated: CanonicalGenerationResult | null = null;
-    let currentOccurrences: Array<typeof leagueOccurrences.$inferSelect> | null = null;
-    let occurrenceCandidatesByOrdinal = new Map<number, CanonicalGenerationResult["occurrenceCandidates"][number]>();
-    let changedOccurrenceIds = new Set<string>();
-    let wholeFutureCorrection = false;
     if (fields.physical) {
       if (input.totalBowlingWeeks !== undefined && input.totalBowlingWeeks !== league.totalBowlingWeeks) {
         throw new CanonicalLeagueScheduleEditError("unsupported_edit", "changing the physical occurrence count is not supported by a same-count canonical edit");
@@ -401,15 +399,14 @@ export async function editCanonicalLeagueSchedule(input: CanonicalLeagueSchedule
         cancelledDates: [...nextCancelledDates],
       };
       const generation = generateCanonicalOccurrences(generationInput);
-      generated = generation;
       if (generation.fatalErrors.length > 0 || generation.occurrenceCandidates.length !== plannedSlotCount) {
         throw new CanonicalLeagueScheduleEditError("invalid_edit", generation.fatalErrors[0]?.message ?? "the proposed schedule did not preserve the physical occurrence count");
       }
       if (generation.occurrenceCandidates.length !== run.generatedOccurrenceCount) {
         throw new CanonicalLeagueScheduleEditError("unsupported_edit", "the proposed schedule must preserve the canonical physical occurrence count");
       }
-      occurrenceCandidatesByOrdinal = new Map(generation.occurrenceCandidates.map((candidate) => [candidate.plannedOrdinal, candidate]));
-      currentOccurrences = await tx.select().from(leagueOccurrences).where(and(
+      const occurrenceCandidatesByOrdinal = new Map(generation.occurrenceCandidates.map((candidate) => [candidate.plannedOrdinal, candidate]));
+      const currentOccurrences = await tx.select().from(leagueOccurrences).where(and(
         eq(leagueOccurrences.organizationId, input.organizationId),
         eq(leagueOccurrences.leagueId, input.leagueId),
         eq(leagueOccurrences.generationRunId, run.id),
@@ -423,6 +420,7 @@ export async function editCanonicalLeagueSchedule(input: CanonicalLeagueSchedule
         inArray(leagueOccurrenceBillingTerms.occurrenceId, currentOccurrences.map((row) => row.id)),
       )).orderBy(asc(leagueOccurrenceBillingTerms.id)).for("update");
       const termByOccurrence = new Map(terms.filter((term) => term.state !== "superseded").map((term) => [term.occurrenceId, term]));
+      const changedOccurrenceIds = new Set<string>();
       for (const occurrence of currentOccurrences) {
         const candidate = occurrenceCandidatesByOrdinal.get(occurrence.plannedOrdinal as number);
         const term = termByOccurrence.get(occurrence.id);
@@ -450,7 +448,7 @@ export async function editCanonicalLeagueSchedule(input: CanonicalLeagueSchedule
         throw new CanonicalLeagueScheduleEditError("invalid_edit", "the proposed schedule contains duplicate active start instants");
       }
       const proposedSlots = generation.occurrenceCandidates.map((candidate) => candidate.startAt);
-      wholeFutureCorrection = [...proposedSlots].every((startAt) => Date.parse(startAt) > Date.parse(now))
+      const wholeFutureCorrection = [...proposedSlots].every((startAt) => Date.parse(startAt) > Date.parse(now))
         && currentOccurrences.some((occurrence) => changedOccurrenceIds.has(occurrence.id) && Date.parse(occurrence.startAt) <= Date.parse(now));
       if (wholeFutureCorrection) {
         const [game] = await tx.select({ id: games.id }).from(games).where(eq(games.leagueId, input.leagueId)).limit(1);
@@ -519,13 +517,12 @@ export async function editCanonicalLeagueSchedule(input: CanonicalLeagueSchedule
         throw error;
       }
       // Revoke only groups whose durable members or selected trigger changed.
-      const groups = (fields.physical || doublePayChanged) ? await tx.select().from(canonicalCollectionGroups).where(and(
+      const groups = await tx.select().from(canonicalCollectionGroups).where(and(
         eq(canonicalCollectionGroups.organizationId, input.organizationId),
         eq(canonicalCollectionGroups.leagueId, input.leagueId),
         eq(canonicalCollectionGroups.generationRunId, run.id),
         eq(canonicalCollectionGroups.state, "published"),
-      )).orderBy(asc(canonicalCollectionGroups.groupOrdinal), asc(canonicalCollectionGroups.id)).for("update") : [];
-      const oldTriggerRemoved = new Set(league.doublePayDates.filter((date) => !nextDoublePayDates.includes(date)));
+      )).orderBy(asc(canonicalCollectionGroups.groupOrdinal), asc(canonicalCollectionGroups.id)).for("update");
       // Member occurrence IDs, rather than dates, are the identity test for
       // group changes. Load the members once so changed date/start evidence
       // cannot be mistaken for date-proximity identity.
@@ -536,10 +533,9 @@ export async function editCanonicalLeagueSchedule(input: CanonicalLeagueSchedule
         eq(canonicalCollectionGroupMembers.active, true),
       )).orderBy(asc(canonicalCollectionGroupMembers.groupId), asc(canonicalCollectionGroupMembers.memberOrdinal)).for("update");
       const finalGroupsToRevoke = groups.filter((group) => {
-        if (oldTriggerRemoved.has(group.triggerLocalDate)) return true;
         const desired = desiredPairings.find((pairing) => pairing.groupOrdinal === group.groupOrdinal);
         const members = groupMembers.filter((member) => member.groupId === group.id);
-        if (fields.physical && members.some((member) => changedOccurrenceIds.has(member.occurrenceId))) return true;
+        if (members.some((member) => changedOccurrenceIds.has(member.occurrenceId))) return true;
         return !desired || !canonicalCollectionGroupMembersMatchPair(members, desired);
       });
       for (const group of finalGroupsToRevoke) await revokeGroupInTransaction(tx, input, group, `${input.idempotencyKey}:revoke:${group.groupOrdinal}`);
@@ -635,7 +631,7 @@ export async function editCanonicalLeagueSchedule(input: CanonicalLeagueSchedule
           afterSnapshot: exceptionSnapshot(revoked),
         });
       }
-      for (const candidate of generated.exceptionCandidates.filter((value) => !activeExceptionDates.has(value.authoritativeLocalDate))) {
+      for (const candidate of generation.exceptionCandidates.filter((value) => !activeExceptionDates.has(value.authoritativeLocalDate))) {
         const [created] = await tx.insert(leagueScheduleExceptions).values({
           organizationId: input.organizationId,
           leagueId: input.leagueId,

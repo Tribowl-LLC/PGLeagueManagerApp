@@ -893,11 +893,18 @@ export async function assertRescheduleFinanciallyEditableInTransaction(
     inArray(paymentAllocations.obligationId, obligationIds),
   )).for("update");
   if (allocation) throw new CanonicalOccurrenceTransactionError("occurrence_effectively_locked", "occurrence has active allocation evidence");
-  const rosterItems = await tx.select({ operationId: paymentOperationRosterSnapshotItems.operationId }).from(paymentOperationRosterSnapshotItems).where(and(
+  const rosterItems = await tx.select({ operationId: paymentOperationRosterSnapshotItems.operationId, state: paymentOperationRosterSnapshotItems.state }).from(paymentOperationRosterSnapshotItems).where(and(
     eq(paymentOperationRosterSnapshotItems.organizationId, row.organizationId),
     eq(paymentOperationRosterSnapshotItems.leagueId, row.leagueId),
     inArray(paymentOperationRosterSnapshotItems.obligationId, obligationIds),
   )).for("update");
+  // A live reservation or finalized provider snapshot is immutable evidence,
+  // regardless of the operation's current status. In particular, a failed
+  // operation may still retain a reserved item while its provider outcome is
+  // being reconciled; status alone is not a safe replacement fence.
+  if (rosterItems.some((item) => item.state === "reserved" || item.state === "finalized")) {
+    throw new CanonicalOccurrenceTransactionError("occurrence_effectively_locked", "occurrence has reserved or finalized payment-operation evidence");
+  }
   const rosterOperationIds = [...new Set(rosterItems.map((item) => item.operationId))];
   if (rosterOperationIds.length > 0) {
     const rosterOperations = await tx.select({ id: paymentOperations.id, status: paymentOperations.status, dispatchClaimedAt: paymentOperations.dispatchClaimedAt, providerObjectId: paymentOperations.providerObjectId }).from(paymentOperations).where(and(

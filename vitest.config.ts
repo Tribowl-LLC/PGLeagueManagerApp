@@ -197,6 +197,7 @@ const PARALLEL_ISOLATED = [
   'tests/unit/payment-operations.test.ts',
   'tests/unit/roster-payment-finalizer-postgres.test.ts',
   'tests/unit/roster-standing-autopay-postgres.test.ts',
+  'tests/unit/canonical-league-schedule-edit-postgres.test.ts',
   'tests/unit/interactive-payment-operation-executor.test.ts',
   'tests/unit/refund-payment-operation-executor.test.ts',
   'tests/unit/payment-refunds-receipt-dependency.test.ts',
