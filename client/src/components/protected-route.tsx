@@ -72,13 +72,35 @@ function userMeetsRequirement(user: User | undefined | null, requirement: RouteR
 // the guard would loop.
 const FORCE_PASSWORD_CHANGE_PATH = '/change-password-required';
 
+// These are the authenticated surfaces an unlinked self-registered user can
+// use while waiting for an administrator. All league/app routes remain
+// blocked until `bowlerId` is present. Claim stays available because an
+// ordinary candidate list is filtered by the server to safely claimable
+// profiles for the current user.
+const PENDING_REGISTRATION_EXEMPT_PATHS = new Set([
+  '/claim-bowler',
+  '/profile',
+  '/registration-complete',
+  FORCE_PASSWORD_CHANGE_PATH,
+]);
+
+function isAuthenticationError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const candidate = error as { code?: unknown; status?: unknown };
+  return candidate.code === 'AUTH_REQUIRED' || candidate.status === 401;
+}
+
 export const ProtectedRoute: FC<ProtectedRouteProps> = ({ requirement, children }) => {
   const [location, navigate] = useLocation();
   const { toast } = useToast();
   const redirectingRef = useRef(false);
 
-  const { data: currentUserResponse, isLoading, error } = useQuery<ApiResponse<User>>({
+  const { data: currentUserResponse, isLoading, isFetching, error } = useQuery<ApiResponse<User>>({
     queryKey: ['/api/user'],
+    // Keep the guard's established cache window so ordinary protected-route
+    // navigation does not refetch and remount every child. The pending page
+    // owns its fresh status checks and polling, while root/login transitions
+    // explicitly refresh the auth boundary.
     staleTime: 1000 * 60 * 5,
   });
 
@@ -94,32 +116,90 @@ export const ProtectedRoute: FC<ProtectedRouteProps> = ({ requirement, children 
   // above already short-circuit unauthenticated traffic, so this only
   // fires for authenticated callers.
   const mustChangePassword = user?.mustChangePassword === true;
-  const onForcePage = location === FORCE_PASSWORD_CHANGE_PATH;
+  const pathWithoutQuery = location.split('?')[0];
+  const onForcePage = pathWithoutQuery === FORCE_PASSWORD_CHANGE_PATH;
+  const isPendingRegistration = user?.role === 'user' && !user.bowlerId;
+  const onPendingRegistrationExemptPath = PENDING_REGISTRATION_EXEMPT_PATHS.has(pathWithoutQuery);
+  // A transient /api/user failure while the cached user is still an ordinary
+  // pending registration should leave the waiting/claim/profile surface
+  // mounted so its own retry UI remains usable. Authentication failures are
+  // still handled by the normal logout path below.
+  const preservePendingRouteOnError = Boolean(
+    error
+    && user?.id
+    && isPendingRegistration
+    && onPendingRegistrationExemptPath
+    && !isAuthenticationError(error)
+  );
 
   useEffect(() => {
-    if (!isLoading && !error && !allowed) {
+    if (
+      !isLoading
+      && !isFetching
+      && !error
+      && !allowed
+      // An authenticated pending registration is routed to its waiting
+      // state below, without an unrelated authorization toast. This does
+      // not grant access to the requested route.
+      && !(isPendingRegistration && !onPendingRegistrationExemptPath)
+      && !(mustChangePassword && user?.id)
+    ) {
       const { title, description, redirectTo } = DENY_MESSAGES[requirement];
       toast({ title, description, variant: 'destructive' });
       navigate(redirectTo);
     }
-  }, [allowed, isLoading, error, requirement, navigate, toast]);
+  }, [
+    allowed,
+    error,
+    isFetching,
+    isLoading,
+    isPendingRegistration,
+    mustChangePassword,
+    navigate,
+    onPendingRegistrationExemptPath,
+    requirement,
+    toast,
+    user?.id,
+  ]);
 
   useEffect(() => {
-    if (!isLoading && !error && allowed && mustChangePassword && !onForcePage) {
+    if (!isLoading && !isFetching && !error && user?.id && mustChangePassword && !onForcePage) {
       navigate(FORCE_PASSWORD_CHANGE_PATH);
     }
-  }, [allowed, isLoading, error, mustChangePassword, onForcePage, navigate]);
+  }, [allowed, error, isFetching, isLoading, mustChangePassword, onForcePage, navigate, user?.id]);
 
   useEffect(() => {
-    if (error && !redirectingRef.current) {
+    if (
+      !isLoading
+      && !isFetching
+      && !error
+      && isPendingRegistration
+      && !mustChangePassword
+      && !onPendingRegistrationExemptPath
+    ) {
+      navigate('/registration-complete');
+    }
+  }, [
+    allowed,
+    error,
+    isFetching,
+    isLoading,
+    mustChangePassword,
+    isPendingRegistration,
+    navigate,
+    onPendingRegistrationExemptPath,
+  ]);
+
+  useEffect(() => {
+    if (error && !preservePendingRouteOnError && !redirectingRef.current) {
       redirectingRef.current = true;
       apiRequest('/api/auth/logout', 'POST', {}).catch(() => {}).finally(() => {
         window.location.href = '/login';
       });
     }
-  }, [error]);
+  }, [error, preservePendingRouteOnError]);
 
-  if (isLoading || error) {
+  if (isLoading || (error && !preservePendingRouteOnError)) {
     return (
       <div className="flex items-center justify-center h-[60vh]">
         <Loader2 className="size-8 animate-spin text-primary" />
@@ -132,6 +212,11 @@ export const ProtectedRoute: FC<ProtectedRouteProps> = ({ requirement, children 
   // see (or interact with) the gated app surface in the gap between
   // the /api/user response landing and the navigate() taking effect.
   if (allowed && mustChangePassword && !onForcePage) return null;
+
+  // Keep ordinary pending registrations from mounting league/admin surfaces
+  // while their redirect effect settles. The waiting, claim, profile, and
+  // forced-password routes are explicit exemptions and remain mounted.
+  if (isPendingRegistration && !onPendingRegistrationExemptPath) return null;
 
   return allowed ? <>{children}</> : null;
 };

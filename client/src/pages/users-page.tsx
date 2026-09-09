@@ -10,7 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useToast } from '@/hooks/use-toast';
-import { Plus } from 'lucide-react';
+import { Loader2, Plus, Send } from 'lucide-react';
 import { Link } from 'wouter';
 import { UsersTable, type UsersTableUser, type UsersTableLocation } from '@/components/users-table';
 import { AddUserDialog } from '@/components/add-user-dialog';
@@ -19,6 +19,7 @@ import { parsePaymentSyncStatus, type PaymentSyncStatus } from '@shared/schema';
 import { ResetPasswordDialog } from './userspage/reset-password-dialog';
 import { ChangeEmailDialog } from './userspage/change-email-dialog';
 import { DeleteUserDialog } from './userspage/delete-user-dialog';
+import { PageErrorState } from '@/components/page-states';
 
 const resetPasswordFormSchema = z.object({
   newPassword: passwordSchema,
@@ -29,6 +30,15 @@ const changeEmailFormSchema = z.object({
   email: z.string().email('Please enter a valid email'),
 });
 type ChangeEmailFormValues = z.infer<typeof changeEmailFormSchema>;
+
+interface BowlerAccountNotificationUser {
+  id: number;
+  name: string | null;
+  email: string;
+  bowlerId: number;
+}
+
+type EmailNotification = 'accepted' | 'not_sent';
 
 export default function UsersPage() {
   const { toast } = useToast();
@@ -78,13 +88,64 @@ export default function UsersPage() {
     enabled: !!organizationId,
   });
 
+  // The staff users endpoint intentionally excludes ordinary bowler
+  // accounts. Keep notification delivery in its own minimal, resend-only
+  // surface so ordinary users never receive staff role/location/delete
+  // controls by accident.
+  const {
+    data: bowlerAccountsResponse,
+    isLoading: bowlerAccountsLoading,
+    isError: bowlerAccountsError,
+    error: bowlerAccountsQueryError,
+    refetch: refetchBowlerAccounts,
+  } = useQuery<{
+    success: boolean;
+    data: BowlerAccountNotificationUser[];
+  }>({
+    queryKey: ['/api/org-admin/users', 'bowler', organizationId],
+    queryFn: async () => {
+      const response = await fetch(
+        `/api/org-admin/users?organizationId=${organizationId}&accountType=bowler`,
+        { credentials: 'include' },
+      );
+      if (!response.ok) throw new Error('Failed to fetch bowler accounts');
+      return response.json();
+    },
+    enabled: !!organizationId,
+  });
+
   const { data: locationsResponse } = useQuery<{ success: boolean; data: UsersTableLocation[] }>({
     queryKey: ['/api/locations'],
   });
 
   const orgUsers = orgUsersResponse?.data || [];
+  const bowlerAccounts = bowlerAccountsResponse?.data || [];
   const locations = locationsResponse?.data || [];
   const orgLocations = locations.filter(l => l.organizationId === organizationId);
+
+  const resendAccountReadyMutation = useMutation({
+    mutationFn: async (userId: number) => apiRequest<{ emailNotification?: EmailNotification }>(
+      `/api/org-admin/users/${userId}/resend-account-ready`,
+      'POST',
+      {},
+    ),
+    onSuccess: (response) => {
+      queryClient.invalidateQueries({ queryKey: ['/api/org-admin/users'] });
+      const accepted = response?.data?.emailNotification === 'accepted';
+      toast({
+        title: accepted
+          ? 'Account linked; email submitted'
+          : 'Account linked, but notification could not be sent',
+        description: accepted
+          ? 'The account-ready email was submitted.'
+          : 'The account-ready notification could not be sent. You can retry safely.',
+        variant: accepted ? 'default' : 'destructive',
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    },
+  });
 
   const deleteUserMutation = useMutation({
     mutationFn: async (userId: number) => {
@@ -177,8 +238,8 @@ export default function UsersPage() {
             <div>
                 <h1 className="text-4xl font-bold">Organization Accounts</h1>
                 <p className="text-muted-foreground mt-1">
-                Manage administrators and location-scoped payment managers for your organization. Looking for
-                bowler accounts that signed up themselves?{' '}
+                Manage administrators, location-scoped payment managers, and linked bowler account notifications for
+                your organization. Looking for bowler accounts that signed up themselves?{' '}
                 <Link
                   href="/admin/unclaimed-users"
                   className="underline underline-offset-2 hover:text-foreground"
@@ -216,6 +277,65 @@ export default function UsersPage() {
                   onResetPassword={setResetPasswordUserId}
                   onChangeEmail={setChangeEmailUserId}
                 />
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="mt-6">
+            <CardHeader>
+              <CardTitle>Bowler account notifications</CardTitle>
+              <p className="text-sm text-muted-foreground">
+                Resend the account-ready email for ordinary bowler accounts
+                that are already linked.
+              </p>
+            </CardHeader>
+            <CardContent>
+              {bowlerAccountsLoading ? (
+                <div className="space-y-3">
+                  <Skeleton className="h-10 w-full" />
+                  <Skeleton className="h-10 w-full" />
+                </div>
+              ) : bowlerAccountsError ? (
+                <PageErrorState
+                  message={bowlerAccountsQueryError instanceof Error
+                    ? bowlerAccountsQueryError.message
+                    : 'Failed to fetch bowler accounts'}
+                  onRetry={() => { void refetchBowlerAccounts(); }}
+                />
+              ) : bowlerAccounts.length === 0 ? (
+                <p className="text-muted-foreground text-center py-6">
+                  No linked bowler accounts need notification management.
+                </p>
+              ) : (
+                <div className="divide-y">
+                  {bowlerAccounts.map((user) => (
+                    <div
+                      key={user.id}
+                      className="py-3 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="font-medium truncate">{user.name || '—'}</div>
+                        <div className="text-sm text-muted-foreground truncate">{user.email}</div>
+                      </div>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => resendAccountReadyMutation.mutate(user.id)}
+                        disabled={resendAccountReadyMutation.isPending}
+                        aria-label={`Resend account-ready email for ${user.name || user.email}`}
+                        data-testid={`button-resend-account-ready-${user.id}`}
+                      >
+                        {resendAccountReadyMutation.isPending ? (
+                          <Loader2 className="size-4 mr-2 animate-spin" aria-hidden="true" />
+                        ) : (
+                          <Send className="size-4 mr-2" aria-hidden="true" />
+                        )}
+                        Resend account-ready email
+                      </Button>
+                    </div>
+                  ))}
+                </div>
               )}
             </CardContent>
           </Card>

@@ -284,19 +284,25 @@ const SignUpPage: FC = () => {
             ? `/api/bowlers/unlinked?organizationId=${orgInfo.id}`
             : "/api/bowlers/unlinked";
           const r = await fetch(unlinkedUrl, { credentials: "include" });
-          if (r.ok) {
-            const j = await r.json();
-            const groups = (j?.data ?? []) as Array<{
-              teams?: Array<{ bowlers?: Array<unknown> }>;
-            }>;
-            hasCandidates = groups.some((lg) =>
-              (lg.teams ?? []).some((tg) => (tg.bowlers ?? []).length > 0)
-            );
-          }
-        } catch {
-          // Best-effort probe — if it fails, fall back to the legacy
-          // /claim-bowler page, which itself handles the empty case.
-          hasCandidates = true;
+          if (!r.ok) throw new Error("Failed to check for matching bowler profiles");
+          const j = await r.json();
+          const groups = (j?.data ?? []) as Array<{
+            teams?: Array<{ bowlers?: Array<unknown> }>;
+          }>;
+          hasCandidates = groups.some((lg) =>
+            (lg.teams ?? []).some((tg) => (tg.bowlers ?? []).length > 0)
+          );
+        } catch (probeError) {
+          // The account was created successfully, but a status/read failure
+          // is still actionable. Let the claim page show its retryable error
+          // state instead of treating an unavailable response as "no
+          // candidates" and silently parking the user.
+          logger.warn("SignUp", "Could not check unlinked bowler profiles", probeError);
+          const claimUrl = orgInfo?.id
+            ? `/claim-bowler?organizationId=${orgInfo.id}`
+            : "/claim-bowler";
+          setLocation(claimUrl);
+          return;
         }
 
         if (!hasCandidates) {

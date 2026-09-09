@@ -13,7 +13,8 @@ import {
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Loader2, Search, User, ChevronRight, SkipForward } from "lucide-react";
+import { AlertCircle, Clock3, Loader2, RefreshCw, Search, User, ChevronRight } from "lucide-react";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { PageLoadingState } from "@/components/page-states";
 import {
   AlertDialog,
@@ -54,16 +55,23 @@ const ClaimBowlerPage: FC = () => {
     return params.get("organizationId") || null;
   }, [searchString]);
 
-  const { data: unlinkedResponse, isLoading } = useQuery<{ success: boolean; data: LeagueGroup[] }>({
+  const {
+    data: unlinkedResponse,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = useQuery<{ success: boolean; data: LeagueGroup[] }>({
     queryKey: ["/api/bowlers/unlinked", organizationId],
     queryFn: async () => {
       const unlinkedUrl = organizationId
         ? `/api/bowlers/unlinked?organizationId=${organizationId}`
         : "/api/bowlers/unlinked";
-      const res = await fetch(unlinkedUrl);
+      const res = await fetch(unlinkedUrl, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch unlinked bowlers");
       return res.json();
     },
+    retry: false,
   });
 
   const unlinkedData = useMemo(() => unlinkedResponse?.data ?? [], [unlinkedResponse?.data]);
@@ -124,8 +132,8 @@ const ClaimBowlerPage: FC = () => {
     setConfirmOpen(false);
   };
 
-  const handleSkip = () => {
-    setLocation("/bowler-dashboard");
+  const handleWaitForAdministrator = () => {
+    setLocation("/registration-complete");
   };
 
   return (
@@ -143,13 +151,30 @@ const ClaimBowlerPage: FC = () => {
         <CardContent className="space-y-4">
           {isLoading ? (
             <PageLoadingState fullPage={false} />
+          ) : isError ? (
+            <Alert variant="destructive" role="alert">
+              <AlertCircle className="size-4" />
+              <AlertTitle>Couldn&apos;t load your roster</AlertTitle>
+              <AlertDescription className="space-y-3">
+                <p>
+                  {error instanceof Error
+                    ? error.message
+                    : "We couldn&apos;t check for a matching bowler profile."}
+                </p>
+                <Button type="button" variant="outline" size="sm" onClick={() => void refetch()}>
+                  <RefreshCw className="size-4 mr-2" />
+                  Try again
+                </Button>
+              </AlertDescription>
+            </Alert>
           ) : totalBowlers === 0 ? (
             <div className="text-center py-8 space-y-4">
+              <Clock3 className="size-10 text-primary mx-auto" aria-hidden="true" />
               <p className="text-muted-foreground">
                 No unlinked bowler profiles are available right now.
               </p>
-              <Button onClick={handleSkip} className="w-full">
-                Continue to Dashboard
+              <Button onClick={handleWaitForAdministrator} className="w-full">
+                Wait for administrator setup
               </Button>
             </div>
           ) : (
@@ -204,12 +229,12 @@ const ClaimBowlerPage: FC = () => {
               <div className="pt-2 border-t">
                 <Button
                   variant="ghost"
-                  onClick={handleSkip}
+                  onClick={handleWaitForAdministrator}
                   className="w-full text-muted-foreground"
                   disabled={claimMutation.isPending}
                 >
-                  <SkipForward className="size-4 mr-2" />
-                  Skip: I'm not on a roster yet
+                  <Clock3 className="size-4 mr-2" />
+                  Wait for administrator setup
                 </Button>
               </div>
             </>

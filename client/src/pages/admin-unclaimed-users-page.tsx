@@ -34,6 +34,16 @@ interface UnlinkedUser {
   organizationId: number | null;
 }
 
+type EmailNotification = "accepted" | "not_sent";
+
+interface AccountLinkResponse {
+  userId: number;
+  bowlerId: number;
+  leagueId: number | null;
+  teamId: number | null;
+  emailNotification?: EmailNotification;
+}
+
 /**
  * Task #667: admin surface for triaging self-registered users that
  * couldn't be auto-linked to a bowler. Two flows per user:
@@ -157,10 +167,14 @@ const AdminUnclaimedUsersPage: FC = () => {
         <CreateBowlerDialog
           user={creating}
           onClose={() => setCreating(null)}
-          onSuccess={(bowlerName) => {
+          onSuccess={(bowlerName, emailNotification) => {
             toast({
               title: "Bowler created",
-              description: `${creating.name} is now linked to ${bowlerName}.`,
+              description: `${creating.name} is now linked to ${bowlerName}. ${
+                emailNotification === "accepted"
+                  ? "Account linked; email submitted."
+                  : "Account linked, but notification could not be sent."
+              }`,
             });
             setCreating(null);
             invalidateUnclaimedUsers();
@@ -171,10 +185,14 @@ const AdminUnclaimedUsersPage: FC = () => {
         <LinkExistingDialog
           user={linking}
           onClose={() => setLinking(null)}
-          onSuccess={(bowlerName) => {
+          onSuccess={(bowlerName, emailNotification) => {
             toast({
               title: "Bowler linked",
-              description: `${linking.name} is now linked to ${bowlerName}.`,
+              description: `${linking.name} is now linked to ${bowlerName}. ${
+                emailNotification === "accepted"
+                  ? "Account linked; email submitted."
+                  : "Account linked, but notification could not be sent."
+              }`,
             });
             setLinking(null);
             invalidateUnclaimedUsers();
@@ -207,7 +225,7 @@ const AdminUnclaimedUsersPage: FC = () => {
 interface DialogProps {
   user: UnlinkedUser;
   onClose: () => void;
-  onSuccess: (bowlerName: string) => void;
+  onSuccess: (bowlerName: string, emailNotification: EmailNotification) => void;
 }
 
 function CreateBowlerDialog({ user, onClose, onSuccess }: DialogProps) {
@@ -234,14 +252,17 @@ function CreateBowlerDialog({ user, onClose, onSuccess }: DialogProps) {
 
   const mutation = useMutation({
     mutationFn: async () => {
-      return apiRequest(`/api/admin/unclaimed-users/${user.id}/create-bowler`, "POST", {
+      return apiRequest<AccountLinkResponse>(`/api/admin/unclaimed-users/${user.id}/create-bowler`, "POST", {
         leagueId: Number(leagueId),
         teamId: Number(teamId),
       });
     },
     // No cache invalidation here: this child dialog defers to the parent's
     // `onSuccess`, which calls `invalidateUnclaimedUsers()` after closing.
-    onSuccess: () => onSuccess(user.name),
+    onSuccess: (response) => onSuccess(
+      user.name,
+      response?.data?.emailNotification === "accepted" ? "accepted" : "not_sent",
+    ),
     onError: (err: Error) => {
       toast({
         title: "Failed to create bowler",
@@ -369,13 +390,16 @@ function LinkExistingDialog({ user, onClose, onSuccess }: DialogProps) {
         body.leagueId = Number(leagueId);
         body.teamId = Number(teamId);
       }
-      return apiRequest(`/api/admin/unclaimed-users/${user.id}/link-existing`, "POST", body);
+      return apiRequest<AccountLinkResponse>(`/api/admin/unclaimed-users/${user.id}/link-existing`, "POST", body);
     },
     // No cache invalidation here: this child dialog defers to the parent's
     // `onSuccess`, which calls `invalidateUnclaimedUsers()` after closing.
-    onSuccess: () => {
+    onSuccess: (response) => {
       const sel = candidates.find((c) => String(c.id) === bowlerId);
-      onSuccess(sel?.name ?? user.name);
+      onSuccess(
+        sel?.name ?? user.name,
+        response?.data?.emailNotification === "accepted" ? "accepted" : "not_sent",
+      );
     },
     onError: (err: Error) => {
       toast({
