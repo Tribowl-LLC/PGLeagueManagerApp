@@ -26,7 +26,7 @@ import { generateCanonicalOccurrences, type CanonicalSkipExceptionInput } from "
 import { resolveCanonicalDraftInputSnapshot } from "./fall-draft-generation.js";
 import { exceptionSnapshot, occurrenceSnapshot } from "./fall-draft-review.js";
 import { LeagueOccurrenceScheduleError, loadLeagueOccurrenceScheduleSnapshot } from "./league-occurrence-schedule.js";
-import { materializeRosterPaymentOccurrenceInTransaction } from "./roster-payment-materializer.js";
+import { materializeRosterPaymentOccurrencesInTransaction } from "./roster-payment-materializer.js";
 import { lockLeagueSchedule, type LeagueScheduleTransaction } from "../storage/league-schedule-lock.js";
 import { canonicalCollectionGroupMembersMatchPair, persistCanonicalCollectionGroupsInTransaction, readCanonicalCollectionGroupsInTransaction, type PersistCanonicalCollectionGroupsResult } from "./canonical-collection-groups.js";
 import { cancelOccurrenceInTransaction, restoreCancelledOccurrenceInTransaction } from "./canonical-occurrence-transactions.js";
@@ -575,15 +575,16 @@ export async function editCanonicalLeagueSchedule(input: CanonicalLeagueSchedule
           beforeSnapshot: occurrenceSnapshot(occurrence),
           afterSnapshot: occurrenceSnapshot(updatedOccurrence),
         });
-        // The materializer is deliberately invoked by the shared reschedule
-        // path so current open responsibilities get new due instants while
-        // payer, split, substitute, and prize evidence remain unchanged.
-        await materializeRosterPaymentOccurrenceInTransaction(tx, {
+      }
+      if (orderedUpdates.length > 0) {
+        // Read and guard all affected roster evidence once. The materializer
+        // preserves each occurrence's payer/component facts while batching
+        // the replacement writes under this transaction's league lock.
+        await materializeRosterPaymentOccurrencesInTransaction(tx, {
           organizationId: input.organizationId,
           leagueId: input.leagueId,
-          occurrenceId: updatedOccurrence.id,
+          occurrenceIds: orderedUpdates.map((update) => update.id),
           actorUserId: input.actorUserId,
-          reschedule: true,
         });
       }
       const activeExceptionDates = new Set(existingExceptions.filter((exception) => exception.lifecycle === "published").map((exception) => exception.localDate));
