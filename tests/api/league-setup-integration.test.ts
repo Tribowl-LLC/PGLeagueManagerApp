@@ -192,20 +192,20 @@ describe("league setup integration API", () => {
       .where(eq(leagueOccurrences.leagueId, result.id))
       .orderBy(asc(leagueOccurrences.id));
     expect(occurrencesAfterFeePatch).toEqual(occurrencesBeforeFeePatch);
-    const unsupportedSkip = await apiPatch(`/api/leagues/${result.id}`, {
-      skipDates: [...(durableBuilderEdit?.skipDates ?? []), "2032-03-21"],
+    const skipEdit = await apiPatch(`/api/leagues/${result.id}`, {
+      skipDates: [...(durableBuilderEdit?.skipDates ?? []), "2032-04-18"],
       scheduleRevision: durableBuilderEdit?.canonicalScheduleRevision,
-      idempotencyKey: "e4-api-unsupported-skip-1",
+      idempotencyKey: "e4-api-skip-edit-1",
     }, admin);
-    expect(unsupportedSkip.status).toBe(409);
-    expect(unsupportedSkip.data.error?.code).toBe("CANONICAL_SCHEDULE_UNSUPPORTED_EDIT");
-    const unsupportedScalar = await apiPatch(`/api/leagues/${result.id}`, {
+    expect(skipEdit.status).toBe(200);
+    expect(skipEdit.data.data).toMatchObject({ id: result.id, skipDates: ["2032-03-14", "2032-04-18"] });
+    const timezoneEdit = await apiPatch(`/api/leagues/${result.id}`, {
       timezone: "UTC",
-      scheduleRevision: durableBuilderEdit?.canonicalScheduleRevision,
-      idempotencyKey: "e4-api-unsupported-scalar-1",
+      scheduleRevision: (durableBuilderEdit?.canonicalScheduleRevision ?? 0) + 1,
+      idempotencyKey: "e4-api-timezone-edit-1",
     }, admin);
-    expect(unsupportedScalar.status).toBe(409);
-    expect(unsupportedScalar.data.error?.code).toBe("CANONICAL_SCHEDULE_UNSUPPORTED_EDIT");
+    expect(timezoneEdit.status).toBe(200);
+    expect(timezoneEdit.data.data).toMatchObject({ id: result.id, timezone: "UTC" });
     const schedule = await apiGet(`/api/leagues/${result.id}/occurrence-schedule`, admin);
     expect(schedule.status).toBe(200);
     expect(schedule.data.data).toMatchObject({ authoritativeSource: "canonical" });

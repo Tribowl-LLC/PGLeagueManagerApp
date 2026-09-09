@@ -94,9 +94,11 @@ const { LeagueEvidenceError, LeaguePaymentModeError } = vi.hoisted(() => ({
   LeagueEvidenceError: class LeagueOccurrenceEvidenceExistsError extends Error {},
   LeaguePaymentModeError: class LeaguePaymentModeLockedError extends Error {},
 }));
-const { mockCreateLeagueWithCanonicalSetup, mockCreateNewSeasonWithCanonicalSetup } = vi.hoisted(() => ({
+const { mockCreateLeagueWithCanonicalSetup, mockCreateNewSeasonWithCanonicalSetup, mockEditCanonicalLeagueSchedule, mockHasCompleteOperationalLeagueSchedule } = vi.hoisted(() => ({
   mockCreateLeagueWithCanonicalSetup: vi.fn(),
   mockCreateNewSeasonWithCanonicalSetup: vi.fn(),
+  mockEditCanonicalLeagueSchedule: vi.fn(),
+  mockHasCompleteOperationalLeagueSchedule: vi.fn(),
 }));
 vi.mock('../../server/storage', () => ({ storage: mockStorage }));
 vi.mock('../../server/storage/leagues', () => ({
@@ -107,6 +109,14 @@ vi.mock('../../server/services/league-setup-integration.js', () => ({
   LeagueSetupIntegrationError: class LeagueSetupIntegrationError extends Error {},
   createLeagueWithCanonicalSetup: mockCreateLeagueWithCanonicalSetup,
   createNewSeasonWithCanonicalSetup: mockCreateNewSeasonWithCanonicalSetup,
+}));
+vi.mock('../../server/services/canonical-league-schedule-edit.js', () => ({
+  CanonicalLeagueScheduleEditError: class CanonicalLeagueScheduleEditError extends Error {},
+  editCanonicalLeagueSchedule: mockEditCanonicalLeagueSchedule,
+  readCanonicalLeagueScheduleRevision: vi.fn(),
+}));
+vi.mock('../../server/services/league-occurrence-schedule.js', () => ({
+  hasCompleteOperationalLeagueSchedule: mockHasCompleteOperationalLeagueSchedule,
 }));
 
 // ---------------------------------------------------------------------------
@@ -200,12 +210,13 @@ const TEST_USER = {
 
 interface LeagueRow {
   id: number;
+  canonicalScheduleRevision?: number;
   name: string;
   organizationId: number;
   active: boolean;
   seasonStart: string;
   seasonEnd: string;
-  weekDay: number;
+  weekDay: string;
   weeklyFee: number;
   totalBowlingWeeks: number | null;
   skipDates: string[];
@@ -239,7 +250,7 @@ function makeLeague(overrides: Partial<LeagueRow> = {}): LeagueRow {
     active: true,
     seasonStart: '2025-09-02T00:00:00.000Z',
     seasonEnd: '2026-01-13T00:00:00.000Z',
-    weekDay: 2,
+    weekDay: 'Tuesday',
     weeklyFee: 2000,
     totalBowlingWeeks: 20,
     skipDates: [],
@@ -340,6 +351,9 @@ beforeEach(() => {
   );
   mockCreateLeagueWithCanonicalSetup.mockReset();
   mockCreateNewSeasonWithCanonicalSetup.mockReset();
+  mockEditCanonicalLeagueSchedule.mockReset();
+  mockHasCompleteOperationalLeagueSchedule.mockReset();
+  mockHasCompleteOperationalLeagueSchedule.mockResolvedValue(false);
 });
 
 afterEach(() => vi.clearAllMocks());
@@ -491,6 +505,39 @@ describe('PATCH /api/leagues/:id (rename) → fires Square resync for every bowl
       expect(typeof call![2].leagueSeason).toBe('string');
       expect(call![2].leagueSeason.length).toBeGreaterThan(0);
     }
+  });
+
+  it('resyncs when a canonical edit changes the effective persisted season end', async () => {
+    const league = makeLeague({ canonicalScheduleRevision: 4 });
+    const updated = { ...league, seasonEnd: '2026-01-20T00:00:00.000Z', canonicalScheduleRevision: 5 };
+    const bowlers = [makeBowler({ id: 5010, paymentCustomerId: 'sq_cust_canonical' })];
+    stageLeagueWithBowlers({ league, bowlers });
+
+    let leagueReadCount = 0;
+    mockStorage.getLeague.mockImplementation(async (id: number) => {
+      if (id !== league.id) return null;
+      leagueReadCount += 1;
+      return leagueReadCount === 1 ? league : updated;
+    });
+    mockHasCompleteOperationalLeagueSchedule.mockResolvedValue(true);
+    mockEditCanonicalLeagueSchedule.mockResolvedValue({
+      league: updated,
+      collectionGroups: [],
+    });
+
+    const res = await patch(`/api/leagues/${league.id}`, {
+      skipDates: ['2025-09-09'],
+      scheduleRevision: 4,
+      idempotencyKey: 'canonical-season-end-resync',
+    });
+    expect(res.status, await res.text().catch(() => '')).toBe(200);
+    await waitForUpserts(1);
+    expect(mockEditCanonicalLeagueSchedule).toHaveBeenCalledTimes(1);
+    expect(mockSyncCustomerLeagueAttributes).toHaveBeenCalledWith(
+      'sq_cust_canonical',
+      5010,
+      expect.objectContaining({ leagueName: league.name }),
+    );
   });
 
   it('does NOT fire resync when the PATCH does not change name/season/active (e.g. description-only update)', async () => {

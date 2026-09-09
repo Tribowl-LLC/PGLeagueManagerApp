@@ -276,6 +276,8 @@ export async function materializeRosterPaymentOccurrenceInTransaction(
           prizePayerBowlerId: current.prizePayerBowlerId,
           policy: current.policy,
           amountMinor: current.amountMinor,
+          lineageAmountMinor: current.lineageAmountMinor,
+          prizeFundAmountMinor: current.prizeFundAmountMinor,
           currency: current.currency,
           dueAt,
           pastDueAt,
