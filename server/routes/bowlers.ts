@@ -24,6 +24,7 @@ import { runBowlerPostCreateSync } from '../services/bowler-sync.js';
 import { syncBowlerLeagueAttributesToProvider } from '../services/bowler-attributes';
 import { notifyPaymentSyncRetryChanged } from '../services/payment-sync-retry-scheduler';
 import { linkUserToBowler } from '../services/identity-link';
+import { sendAccountReadyEmail } from '../services/email';
 import { createLogger } from '../logger';
 import { isDev } from '../config';
 // reuse the same payer-name lookup the
@@ -723,8 +724,12 @@ router.patch("/:id", async (req, res) => {
       if (emailChanged) {
         try {
           const matchingUser = await storage.getUserByEmail(updated.email.trim().toLowerCase());
-          if (matchingUser && matchingUser.bowlerId === null) {
-            await linkUserToBowler({
+          if (
+            matchingUser?.role === 'user'
+            && matchingUser.organizationId === updated.organizationId
+            && matchingUser.bowlerId === null
+          ) {
+            const linked = await linkUserToBowler({
               organizationId: updated.organizationId,
               userId: matchingUser.id,
               bowlerId: id,
@@ -732,7 +737,30 @@ router.patch("/:id", async (req, res) => {
               eventType: req.user?.role === 'user' ? 'link' : 'admin_assignment',
               source: 'bowler-profile-email-auto-link',
               reason: 'email-match-after-bowler-update',
+              // The identity service repeats the normalized-email and
+              // unique-profile proof while both rows are locked. This keeps
+              // duplicate/shared addresses pending for administrator review.
+              requireEmailMatch: true,
             });
+
+            // linkUserToBowler without an injected executor returns only after
+            // its transaction commits. Build the notification from those
+            // committed rows and the server-resolved organization so a
+            // provider failure cannot roll back or fail this PATCH.
+            if (!linked.user || !linked.bowler) {
+              throw new Error('Identity link did not return the linked rows');
+            }
+            const organization = await storage.getOrganization(linked.bowler.organizationId);
+            try {
+              await sendAccountReadyEmail({
+                toEmail: linked.user.email,
+                toName: linked.user.name,
+                bowlerName: linked.bowler.name,
+                organization: organization ?? null,
+              });
+            } catch (emailError) {
+              log.warn('Account-ready email failed after bowler update auto-link:', emailError);
+            }
             log.info(`Auto-linked user ${matchingUser.id} to updated bowler ${id}`);
           }
         } catch (linkError) {
