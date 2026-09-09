@@ -25,7 +25,7 @@ import { CANONICAL_COLLECTION_GROUP_REVISION_SNAPSHOT_VERSION, CanonicalCollecti
 import { generateCanonicalOccurrences, type CanonicalSkipExceptionInput } from "@shared/canonical-occurrence-generator";
 import { resolveCanonicalDraftInputSnapshot } from "./fall-draft-generation.js";
 import { exceptionSnapshot, occurrenceSnapshot } from "./fall-draft-review.js";
-import { loadLeagueOccurrenceScheduleSnapshot } from "./league-occurrence-schedule.js";
+import { LeagueOccurrenceScheduleError, loadLeagueOccurrenceScheduleSnapshot } from "./league-occurrence-schedule.js";
 import { materializeRosterPaymentOccurrenceInTransaction } from "./roster-payment-materializer.js";
 import { lockLeagueSchedule, type LeagueScheduleTransaction } from "../storage/league-schedule-lock.js";
 import { canonicalCollectionGroupMembersMatchPair, persistCanonicalCollectionGroupsInTransaction, readCanonicalCollectionGroupsInTransaction, type PersistCanonicalCollectionGroupsResult } from "./canonical-collection-groups.js";
@@ -757,7 +757,9 @@ export async function editCanonicalLeagueSchedule(input: CanonicalLeagueSchedule
     try {
       await loadLeagueOccurrenceScheduleSnapshot({ organizationId: input.organizationId, leagueId: input.leagueId, includeAdministratorEvidence: false }, tx);
     } catch (error) {
-      if (error instanceof Error) throw new CanonicalLeagueScheduleEditError("invalid_edit", error.message);
+      if (error instanceof LeagueOccurrenceScheduleError) {
+        throw new CanonicalLeagueScheduleEditError("invalid_edit", error.message);
+      }
       throw error;
     }
     return { mode: "applied", scheduleRevision: nextRevision, doublePayDates: updatedLeague.doublePayDates, collectionGroups, commandId: command.command.id, writesPerformed: true, league: updatedLeague };

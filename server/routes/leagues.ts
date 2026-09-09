@@ -667,9 +667,12 @@ router.patch("/:id", async (req: Request, res) => {
     const seasonStartChanged =
       update.seasonStart !== undefined &&
       new Date(update.seasonStart).getTime() !== new Date(league.seasonStart).getTime();
-    const seasonEndChanged = !canonicalScheduleResponse &&
-      update.seasonEnd !== undefined &&
-      new Date(update.seasonEnd).getTime() !== new Date(league.seasonEnd).getTime();
+    // Canonical edits can derive and persist a new season end (for example,
+    // when a skip extends the physical schedule), even when the incoming
+    // builder field is intentionally omitted. Compare the effective persisted
+    // value so the existing league-wide Square attribute resync still runs.
+    const seasonEndChanged =
+      new Date(updated.seasonEnd).getTime() !== new Date(league.seasonEnd).getTime();
     const activeChanged = update.active !== undefined && update.active !== league.active;
     if (nameChanged || seasonStartChanged || seasonEndChanged || activeChanged) {
       fireLeagueBowlersExternalResync(id, req.user?.organizationId);

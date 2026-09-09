@@ -22,6 +22,7 @@ import {
   paymentAllocations,
   occurrencePaymentResponsibilities,
   paymentOperationRosterSnapshotItems,
+  teams,
   type LeagueOccurrence,
   type LeagueOccurrenceBillingTerm,
   type LeagueScheduleCommand,
@@ -884,6 +885,23 @@ export async function assertRescheduleFinanciallyEditableInTransaction(
   )).orderBy(asc(paymentObligations.dueAt), asc(paymentObligations.payerBowlerId), asc(paymentObligations.id)).for("update");
   if (obligations.some((obligation) => obligation.responsibilityState === "active" && obligation.state !== "open")) {
     throw new CanonicalOccurrenceTransactionError("occurrence_effectively_locked", "occurrence has settled, voided, or review-required obligation evidence");
+  }
+  const [inactiveTeamResponsibility] = await tx.select({ id: occurrencePaymentResponsibilities.id })
+    .from(occurrencePaymentResponsibilities)
+    .innerJoin(teams, and(
+      eq(teams.id, occurrencePaymentResponsibilities.teamId),
+      eq(teams.leagueId, row.leagueId),
+      eq(teams.active, false),
+    ))
+    .where(and(
+      eq(occurrencePaymentResponsibilities.organizationId, row.organizationId),
+      eq(occurrencePaymentResponsibilities.leagueId, row.leagueId),
+      eq(occurrencePaymentResponsibilities.occurrenceId, row.id),
+      eq(occurrencePaymentResponsibilities.state, "active"),
+    ))
+    .for("update");
+  if (inactiveTeamResponsibility) {
+    throw new CanonicalOccurrenceTransactionError("occurrence_effectively_locked", "occurrence has active payment responsibility for an inactive team and cannot be rescheduled");
   }
   const obligationIds = obligations.map((obligation) => obligation.id);
   if (obligationIds.length === 0) return;

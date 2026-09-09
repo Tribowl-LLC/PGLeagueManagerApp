@@ -210,6 +210,7 @@ export function useLeagueFormData({
           queryClient.invalidateQueries({ queryKey: ["league-occurrence-schedule", `/api/leagues/${league.id}/occurrence-schedule?organizationId=${systemAdminOrganizationId}`] });
         }
         queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${league.id}/canonical-due-past-due/2`] });
+        queryClient.invalidateQueries({ queryKey: ["/api/financials/leagues", league.id, "canonical-due-past-due/2"] });
         if (systemAdminOrganizationId != null) {
           queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${league.id}/canonical-due-past-due/2?organizationId=${systemAdminOrganizationId}`] });
         }

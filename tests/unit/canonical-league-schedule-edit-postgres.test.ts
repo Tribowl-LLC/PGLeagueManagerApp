@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, asc, eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import {
@@ -28,6 +28,7 @@ import { CanonicalLeagueScheduleEditError, editCanonicalLeagueSchedule } from ".
 import { materializeRosterPaymentOccurrenceInTransaction } from "../../server/services/roster-payment-materializer";
 import { canonicalResponsibilityFingerprint, recordOccurrenceResponsibilities } from "../../server/services/roster-payment-core";
 import { occurrenceSnapshot } from "../../server/services/fall-draft-review";
+import * as leagueOccurrenceSchedule from "../../server/services/league-occurrence-schedule";
 import { deleteOrganization } from "../../server/storage/organizations";
 import { getTestDb } from "../setup/test-db";
 
@@ -260,6 +261,24 @@ describe("canonical schedule edits (PostgreSQL)", () => {
       .where(and(eq(occurrencePaymentResponsibilities.organizationId, organizationId), eq(occurrencePaymentResponsibilities.leagueId, leagueId), eq(occurrencePaymentResponsibilities.occurrenceId, splitOccurrence.id), eq(occurrencePaymentResponsibilities.state, "active")));
     expect(splitBefore).toMatchObject({ payer: substitute.id, lineagePayer: substitute.id, prizePayer: payerBowlerId, amount: 2_000, lineageAmount: 1_000, prizeAmount: 1_000, state: "active" });
 
+    const [inactiveBeforeOccurrence] = await db.select({ localDate: leagueOccurrences.authoritativeLocalDate, revision: leagueOccurrences.currentRevision })
+      .from(leagueOccurrences).where(eq(leagueOccurrences.id, splitOccurrence.id));
+    const inactiveBeforeObligations = await db.select({ id: paymentObligations.id, dueAt: paymentObligations.dueAt, state: paymentObligations.state })
+      .from(paymentObligations).where(and(eq(paymentObligations.organizationId, organizationId), eq(paymentObligations.leagueId, leagueId), eq(paymentObligations.occurrenceId, splitOccurrence.id)));
+    await db.update(teams).set({ active: false }).where(eq(teams.id, teamId));
+    const [inactiveLeague] = await db.select({ canonicalScheduleRevision: leagues.canonicalScheduleRevision }).from(leagues).where(eq(leagues.id, leagueId));
+    if (!inactiveLeague || !inactiveBeforeOccurrence) throw new Error("schedule edit inactive-team fixture is missing");
+    const inactiveError = await editCanonicalLeagueSchedule(editInput(inactiveLeague.canonicalScheduleRevision, "schedule-edit-inactive-team", {
+      competitionStartTime: "20:30",
+      doublePayDates: ["2032-09-05"],
+    })).then(() => null, (caught: unknown) => caught);
+    expect(inactiveError).toBeInstanceOf(CanonicalLeagueScheduleEditError);
+    expect((inactiveError as CanonicalLeagueScheduleEditError).code).toBe("financial_conflict");
+    expect((inactiveError as CanonicalLeagueScheduleEditError).message).toContain("inactive team");
+    expect(await db.select({ localDate: leagueOccurrences.authoritativeLocalDate, revision: leagueOccurrences.currentRevision }).from(leagueOccurrences).where(eq(leagueOccurrences.id, splitOccurrence.id))).toEqual([inactiveBeforeOccurrence]);
+    expect(await db.select({ id: paymentObligations.id, dueAt: paymentObligations.dueAt, state: paymentObligations.state }).from(paymentObligations).where(and(eq(paymentObligations.organizationId, organizationId), eq(paymentObligations.leagueId, leagueId), eq(paymentObligations.occurrenceId, splitOccurrence.id)))).toEqual(inactiveBeforeObligations);
+    await db.update(teams).set({ active: true }).where(eq(teams.id, teamId));
+
     // Simulate the reported mistaken elapsed start. The editor may correct it
     // only when every proposed slot is new/future and no payment evidence or
     // game exists; all occurrence UUIDs remain the same.
@@ -370,5 +389,24 @@ describe("canonical schedule edits (PostgreSQL)", () => {
     expect(groupOnlyError).toBeInstanceOf(CanonicalLeagueScheduleEditError);
     expect((groupOnlyError as CanonicalLeagueScheduleEditError).code).toBe("financial_conflict");
     expect(await db.select({ localDate: leagueOccurrences.authoritativeLocalDate, revision: leagueOccurrences.currentRevision }).from(leagueOccurrences).where(eq(leagueOccurrences.id, occurrence.id))).toEqual(before);
+  });
+
+  it("propagates unexpected final schedule-read failures without reclassifying them", async () => {
+    const [league] = await db.select({ canonicalScheduleRevision: leagues.canonicalScheduleRevision, doublePayDates: leagues.doublePayDates })
+      .from(leagues).where(eq(leagues.id, leagueId));
+    if (!league) throw new Error("schedule edit league fixture is missing");
+    const scheduleRead = vi.spyOn(leagueOccurrenceSchedule, "loadLeagueOccurrenceScheduleSnapshot")
+      .mockRejectedValueOnce(new Error("simulated database detail"));
+    try {
+      const error = await editCanonicalLeagueSchedule(editInput(league.canonicalScheduleRevision, "schedule-edit-final-read-failure", {
+        doublePayDates: league.doublePayDates,
+        metadata: { description: "final-read failure rollback" },
+      })).then(() => null, (caught: unknown) => caught);
+      expect(error).toBeInstanceOf(Error);
+      expect(error).not.toBeInstanceOf(CanonicalLeagueScheduleEditError);
+      expect((error as Error).message).toBe("simulated database detail");
+    } finally {
+      scheduleRead.mockRestore();
+    }
   });
 });
