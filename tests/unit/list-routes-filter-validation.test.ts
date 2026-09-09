@@ -353,6 +353,36 @@ describe('GET /api/teams — leagueId filter', () => {
 // GET /api/bowlers — teamId / ids / organizationId filters
 // ---------------------------------------------------------------------------
 describe('GET /api/bowlers — list filter validation', () => {
+  it('includes unassigned profiles only in the administrator directory', async () => {
+    const res = await get('/api/bowlers', ORG_USER);
+    expect(res.status).toBe(200);
+    expect(mockStorage.getBowlers).toHaveBeenCalledWith({
+      organizationId: 1, teamId: undefined, includeUnassigned: true,
+    });
+  });
+
+  it('keeps administrator team filtering roster-based', async () => {
+    const res = await get('/api/bowlers?teamId=7', ORG_USER);
+    expect(res.status).toBe(200);
+    expect(mockStorage.getBowlers).toHaveBeenCalledWith({
+      organizationId: 1, teamId: 7, includeUnassigned: false,
+    });
+  });
+
+  it('includes owned unassigned profiles in the global system-admin directory', async () => {
+    const res = await get('/api/bowlers', SYSADMIN);
+    expect(res.status).toBe(200);
+    expect(mockStorage.getAllBowlersSystemAdmin).toHaveBeenCalledWith(true);
+  });
+
+  it('does not grant an ordinary user the administrator directory', async () => {
+    const res = await get('/api/bowlers', { ...ORG_USER, role: 'user' });
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toEqual([]);
+    expect(mockStorage.getBowlers).not.toHaveBeenCalled();
+    expect(mockStorage.getAllBowlersSystemAdmin).not.toHaveBeenCalled();
+  });
+
   it('rejects a non-numeric ?teamId with a 400 (call-out which filter)', async () => {
     const res = await get('/api/bowlers?teamId=foo', ORG_USER);
     expect(res.status).toBe(400);

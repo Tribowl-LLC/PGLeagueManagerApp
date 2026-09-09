@@ -30,7 +30,7 @@ import { ConfirmDeleteDialog } from "@/components/confirm-delete-dialog";
 import type { ApiResponse, League, Team, Location, User } from "@shared/schema";
 import type { LeagueScoresReadContract } from "@shared/canonical-games-scores";
 import type { ScoreWithRelations } from "@/lib/types/scores";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, throwIfResNotOk } from "@/lib/queryClient";
 import { leagueLatestScoresRequest } from "@/lib/score-requests";
 import { useToast } from "@/hooks/use-toast";
 import { filterAndSortLeagues, buildLocationMap, countArchivedLeagues } from "@/lib/league-filter-utils";
@@ -88,10 +88,7 @@ export default function LeaguesPage() {
       const scopedUrl = queryKey[3];
       if (typeof scopedUrl !== "string") throw new Error("No tenant-scoped league selected");
       const response = await fetch(scopedUrl);
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error?.message || "Failed to fetch scores");
-      }
+      await throwIfResNotOk(response);
       return response.json();
     },
     enabled: latestScoresRequest !== null,

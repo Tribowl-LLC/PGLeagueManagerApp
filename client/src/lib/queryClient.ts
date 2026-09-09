@@ -116,7 +116,7 @@ export function parseRetryAfterSeconds(
   return null;
 }
 
-async function throwIfResNotOk(res: Response) {
+export async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
     let errorBody: unknown;
     let responseTextFallback: string | null = null;

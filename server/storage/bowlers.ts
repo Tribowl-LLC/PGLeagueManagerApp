@@ -100,10 +100,10 @@ const bowlerColumns = {
   paymentSyncNextRetryAt: bowlers.paymentSyncNextRetryAt,
 };
 
-export async function getBowlers(filters: { teamId?: number; organizationId: number }): Promise<Bowler[]> {
+export async function getBowlers(filters: { teamId?: number; organizationId: number; includeUnassigned?: boolean }): Promise<Bowler[]> {
   const cacheKey = filters.teamId !== undefined
     ? `bowlers:team:${filters.teamId}:org:${filters.organizationId}`
-    : `bowlers:org:${filters.organizationId}`;
+    : `bowlers:org:${filters.organizationId}${filters.includeUnassigned ? ':directory' : ''}`;
 
   return cacheFetch(cacheKey, BOWLERS_TTL, () => {
     if (filters.teamId !== undefined) {
@@ -118,6 +118,12 @@ export async function getBowlers(filters: { teamId?: number; organizationId: num
         ))
         .orderBy(bowlers.order);
     }
+    // Administrator directories follow profile ownership, not roster membership.
+    if (filters.includeUnassigned) {
+      return db.select(bowlerColumns).from(bowlers)
+        .where(eq(bowlers.organizationId, filters.organizationId))
+        .orderBy(bowlers.order);
+    }
     return db
       .selectDistinct(bowlerColumns)
       .from(bowlers)
@@ -128,7 +134,12 @@ export async function getBowlers(filters: { teamId?: number; organizationId: num
   });
 }
 
-export async function getAllBowlersSystemAdmin(): Promise<Bowler[]> {
+export async function getAllBowlersSystemAdmin(includeUnassigned = false): Promise<Bowler[]> {
+  if (includeUnassigned) {
+    return db.select(bowlerColumns).from(bowlers)
+      .where(sql`${bowlers.organizationId} IS NOT NULL`)
+      .orderBy(bowlers.order);
+  }
   // Org-less resource policy (see server/utils/access-control.ts):
   // exclude bowlers whose only league assignments point to org-less leagues
   // (or who have no league assignments at all). They are only surfaced via

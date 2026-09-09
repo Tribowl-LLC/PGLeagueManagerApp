@@ -126,6 +126,7 @@ export default function TeamViewPage() {
       const leagueId = team?.leagueId;
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: [`/api/teams/${teamId}/details`] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/bowlers"] }),
         queryClient.invalidateQueries({ queryKey: ["/api/bowler-leagues"] }),
         ...(leagueId === undefined ? [] : [
           queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/roster-payment-responsibility/1`] }),
