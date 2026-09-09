@@ -1,5 +1,5 @@
 import type { PropsWithChildren } from "react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryCache, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -15,6 +15,7 @@ vi.mock("@/components/leagues-table", () => ({ LeaguesTable: () => <div>League m
 vi.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast: vi.fn() }) }));
 
 import LeaguesPage from "@/pages/leagues-page";
+import { classifyApiError } from "@/lib/api-error";
 
 const league = {
   id: 42,
@@ -58,6 +59,8 @@ describe("LeaguesPage recent-score failure state", () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({
         ok: false,
+        status: 409,
+        headers: new Headers({ "content-type": "application/json" }),
         json: async () => ({
           error: {
             code: "CANONICAL_GAMES_SCORES_INCOMPATIBLE",
@@ -119,5 +122,28 @@ describe("LeaguesPage recent-score failure state", () => {
     await user.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByText(/Recent scores could not be loaded safely/i)).not.toBeInTheDocument());
+  });
+
+  it.each([401, 500])("preserves HTTP %s for authentication and server-error classification", async (status) => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      error: { code: status === 401 ? "UNAUTHORIZED" : "INTERNAL_ERROR", message: status === 401 ? "Authentication required" : "Server unavailable" },
+    }), { status, headers: { "content-type": "application/json" } })));
+    const onError = vi.fn();
+    const client = new QueryClient({
+      queryCache: new QueryCache({ onError }),
+      defaultOptions: { queries: { retry: false, staleTime: Infinity, queryFn: async () => ({ data: [] }) } },
+    });
+    client.setQueryData(["/api/leagues"], { data: [league] });
+    client.setQueryData(["/api/teams"], { data: [] });
+    client.setQueryData(["/api/user"], { data: null });
+    render(<QueryClientProvider client={client}><LeaguesPage /></QueryClientProvider>);
+    await waitFor(() => expect(onError).toHaveBeenCalledOnce());
+    const error = onError.mock.calls[0][0];
+    expect(error).toMatchObject({ status });
+    expect(classifyApiError(error)).toBe(status === 401 ? "expected-client" : "retryable-server");
+    expect(await screen.findByText(/Recent scores could not be loaded safely/i)).toHaveTextContent(
+      status === 401 ? "Authentication required" : "Server unavailable",
+    );
+    client.clear();
   });
 });

@@ -45,6 +45,11 @@ payment fields. No old payment data is inferred or backfilled.
 
 ## Permanent bowler profile deletion
 
+The administrator Bowlers directory includes organization-owned profiles even
+without a league assignment, so removing the last roster membership does not
+hide a profile before cleanup. Team-filtered lists and non-administrator access
+remain roster-scoped. Removing a team member refreshes the directory immediately.
+
 `DELETE /api/bowlers/:id` is intentionally narrow. The bowler must first be
 removed from every roster and payment slot, and any login account must be
 unlinked or reassigned. Deletion is refused when any payment, allocation,

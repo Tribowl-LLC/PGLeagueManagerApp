@@ -6,6 +6,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Organization, User, ApiResponse } from "@shared/schema";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { useSubdomainOrg } from "@/hooks/use-subdomain-org";
+import { throwIfResNotOk } from "@/lib/queryClient";
 
 interface BowlerLayoutProps {
   children: ReactNode;
@@ -80,7 +81,7 @@ export const BowlerLayout: FC<BowlerLayoutProps> = ({ children, bowlerName, leag
         credentials: "include",
         headers: { "Accept": "application/json" }
       });
-      if (!res.ok) throw new Error(`Failed to fetch organization: ${res.status}`);
+      await throwIfResNotOk(res);
       return res.json();
     },
     staleTime: 1000 * 60 * 60,

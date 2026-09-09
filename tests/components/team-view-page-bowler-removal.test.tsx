@@ -82,6 +82,7 @@ describe("TeamViewPage bowler removal", () => {
     const keys = queryClientMock.invalidateQueries.mock.calls.map((call) => call[0].queryKey);
     expect(keys).toEqual(expect.arrayContaining([
       ["/api/teams/5/details"],
+      ["/api/bowlers"],
       ["/api/bowler-leagues"],
       ["/api/financials/leagues/7/roster-payment-responsibility/1"],
       ["/api/financials/leagues/7/canonical-due-past-due/2"],

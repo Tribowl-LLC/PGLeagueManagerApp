@@ -55,8 +55,8 @@ export interface ITeamStorage {
 }
 
 export interface IBowlerStorage {
-  getBowlers(filters: { teamId?: number; organizationId: number }): Promise<Bowler[]>;
-  getAllBowlersSystemAdmin(): Promise<Bowler[]>;
+  getBowlers(filters: { teamId?: number; organizationId: number; includeUnassigned?: boolean }): Promise<Bowler[]>;
+  getAllBowlersSystemAdmin(includeUnassigned?: boolean): Promise<Bowler[]>;
   getBowler(id: number): Promise<Bowler | undefined>;
   getBowlersByIds(ids: number[]): Promise<Bowler[]>;
   getBowlerByEmail(email: string, organizationId: number): Promise<Bowler | undefined>;

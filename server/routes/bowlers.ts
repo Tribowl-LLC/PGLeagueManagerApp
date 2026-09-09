@@ -248,7 +248,7 @@ router.get("/", async (req, res) => {
 
     let bowlers;
     if (isSystemAdmin && effectiveOrgId === null) {
-      bowlers = await storage.getAllBowlersSystemAdmin();
+      bowlers = await storage.getAllBowlersSystemAdmin(!teamId);
     } else if (effectiveOrgId !== null) {
       if (isPaymentManager(req.user) && !teamId) {
         const accessibleIds = await getPaymentManagerAccessibleBowlerIds(req);
@@ -286,7 +286,11 @@ router.get("/", async (req, res) => {
         // match, not bowler⇄league).
         bowlers = fetched.filter((b) => b.organizationId === effectiveOrgId);
       } else {
-        bowlers = await storage.getBowlers({ teamId, organizationId: effectiveOrgId });
+        bowlers = await storage.getBowlers({
+          teamId,
+          organizationId: effectiveOrgId,
+          includeUnassigned: !teamId && isOrgOrHigher(req.user),
+        });
       }
     } else {
       return sendSuccess(res, []);
