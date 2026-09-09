@@ -54,10 +54,28 @@ import {
 import { FallDraftGenerationError } from '../services/fall-draft-generation.js';
 import { CanonicalLeagueScheduleEditError, editCanonicalLeagueSchedule, readCanonicalLeagueScheduleRevision } from '../services/canonical-league-schedule-edit.js';
 import { hasCompleteOperationalLeagueSchedule } from '../services/league-occurrence-schedule.js';
+import { notifyStandingAutopayMutation } from '../services/roster-standing-autopay.js';
 
 const log = createLogger("Leagues");
 
 const router = Router();
+
+function sameDateOnlyForLeague(left: unknown, right: string): boolean {
+  if (left === undefined || left === null) return true;
+  const value = left instanceof Date ? left.toISOString() : String(left);
+  return value.slice(0, 10) === right.slice(0, 10);
+}
+
+function sameLocalTimeForLeague(left: unknown, right: string | null): boolean {
+  if (left === undefined) return true;
+  const normalize = (value: string): string => {
+    const match = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(value);
+    return match ? `${match[1].padStart(2, "0")}:${match[2]}:${match[3] ?? "00"}` : value;
+  };
+  const normalizedLeft = left === null || left === "" ? null : normalize(String(left));
+  const normalizedRight = right === null || right === "" ? null : normalize(right);
+  return normalizedLeft === normalizedRight;
+}
 
 const newSeasonRequestSchema = z.object({
   seasonStart: dateSchema,
@@ -585,8 +603,17 @@ router.patch("/:id", async (req: Request, res) => {
       const derivedBuilderSeasonEnd = mergedTotalBowlingWeeks != null && mergedWeekDay
         ? calculateSeasonEnd(new Date(mergedSeasonStart), mergedWeekDay, Number(mergedTotalBowlingWeeks), mergedSkipDates, mergedCancelledDates)
         : null;
-      const seasonEndIsBuilderDerived = update.seasonEnd !== undefined && derivedBuilderSeasonEnd !== null
+      const physicalInputChanged = !sameDateOnlyForLeague(mergedSeasonStart, league.seasonStart)
+        || mergedWeekDay !== league.weekDay
+        || !sameLocalTimeForLeague(req.body.competitionStartTime, league.competitionStartTime)
+        || (req.body.timezone !== undefined && (req.body.timezone ?? null) !== (league.timezone ?? null))
+        || (mergedTotalBowlingWeeks ?? null) !== (league.totalBowlingWeeks ?? null)
+        || JSON.stringify([...mergedSkipDates].sort()) !== JSON.stringify([...league.skipDates].sort());
+      const seasonEndIsBuilderDerived = !physicalInputChanged && update.seasonEnd !== undefined && derivedBuilderSeasonEnd !== null
         && new Date(update.seasonEnd).toISOString().slice(0, 10) === derivedBuilderSeasonEnd.toISOString().slice(0, 10);
+      const physicalSeasonEnd = physicalInputChanged && derivedBuilderSeasonEnd !== null
+        ? derivedBuilderSeasonEnd.toISOString()
+        : undefined;
       const edited = await editCanonicalLeagueSchedule({
         organizationId,
         leagueId: id,
@@ -598,7 +625,7 @@ router.patch("/:id", async (req: Request, res) => {
         skipDates: update.skipDates ?? league.skipDates,
         cancelledDates: update.cancelledDates ?? league.cancelledDates,
         seasonStart: update.seasonStart === undefined ? undefined : new Date(update.seasonStart).toISOString(),
-        seasonEnd: seasonEndIsBuilderDerived ? undefined : (update.seasonEnd === undefined ? undefined : new Date(update.seasonEnd).toISOString()),
+        seasonEnd: physicalSeasonEnd ?? (seasonEndIsBuilderDerived ? undefined : (update.seasonEnd === undefined ? undefined : new Date(update.seasonEnd).toISOString())),
         weekDay: update.weekDay,
         competitionStartTime: update.competitionStartTime,
         timezone: update.timezone,
@@ -623,6 +650,9 @@ router.patch("/:id", async (req: Request, res) => {
       });
       updated = edited.league;
       cacheInvalidate('leagues:');
+      await notifyStandingAutopayMutation().catch((error: unknown) => {
+        log.error('Standing autopay scheduler rearm failed after canonical schedule edit', { errorName: error instanceof Error ? error.name : 'UnknownError' });
+      });
       canonicalScheduleResponse = { state: "published", collectionGroups: edited.collectionGroups };
     }
 

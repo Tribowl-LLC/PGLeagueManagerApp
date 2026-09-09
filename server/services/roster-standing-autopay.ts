@@ -49,7 +49,7 @@ export function configureStandingAutopayRuntime(input: { rearm: () => Promise<vo
   rearmStandingAutopayWake = input.rearm;
 }
 
-async function notifyStandingAutopayMutation(): Promise<void> {
+export async function notifyStandingAutopayMutation(): Promise<void> {
   await rearmStandingAutopayWake();
 }
 

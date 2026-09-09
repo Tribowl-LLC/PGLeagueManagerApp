@@ -837,13 +837,14 @@ async function assertNotEffectivelyLocked(
  * the caller; row locks here make the guard and the versioning operation one
  * atomic decision.
  */
-async function assertRescheduleFinanciallyEditableInTransaction(
+export async function assertRescheduleFinanciallyEditableInTransaction(
   tx: LeagueScheduleLockExecutor,
   row: LeagueOccurrence,
   now: string,
+  options: { allowElapsed?: boolean } = {},
 ): Promise<void> {
   assertValidInstant(now, "now");
-  if (Date.parse(row.startAt) <= Date.parse(now) || row.lifecycle !== "published" || row.lockedAt !== null) {
+  if ((!options.allowElapsed && Date.parse(row.startAt) <= Date.parse(now)) || row.lifecycle !== "published" || row.lockedAt !== null) {
     throw new CanonicalOccurrenceTransactionError("occurrence_effectively_locked", "only a future published occurrence can be rescheduled");
   }
   const [linkedGame] = await tx.select({ id: games.id }).from(games).where(and(
@@ -863,20 +864,25 @@ async function assertRescheduleFinanciallyEditableInTransaction(
   // identity. Do not require the optional operation league_id here: legacy
   // scheduled operations may intentionally leave it null, and they still
   // lock a physical occurrence for rescheduling.
-  const linkedOperations = await tx.select({ id: paymentOperations.id, status: paymentOperations.status, dispatchClaimedAt: paymentOperations.dispatchClaimedAt }).from(paymentOperations).where(and(
+  const linkedOperations = await tx.select({ id: paymentOperations.id, status: paymentOperations.status, dispatchClaimedAt: paymentOperations.dispatchClaimedAt, providerObjectId: paymentOperations.providerObjectId }).from(paymentOperations).where(and(
     eq(paymentOperations.organizationId, row.organizationId),
     eq(paymentOperations.triggerOccurrenceId, row.id),
   )).for("update");
-  if (linkedOperations.length > 0) {
-    throw new CanonicalOccurrenceTransactionError("occurrence_effectively_locked", "occurrence has payment-operation evidence");
+  if (linkedOperations.some((operation) => operation.dispatchClaimedAt !== null || operation.providerObjectId !== null || ["pending", "leased", "provider_unknown", "retry_scheduled", "succeeded", "action_required", "reconciliation_required"].includes(operation.status))) {
+    throw new CanonicalOccurrenceTransactionError("occurrence_effectively_locked", "occurrence has prepared, dispatched, or provider payment-operation evidence");
   }
 
-  const obligations = await tx.select({ id: paymentObligations.id, state: paymentObligations.state }).from(paymentObligations).where(and(
+  const obligations = await tx.select({ id: paymentObligations.id, state: paymentObligations.state, responsibilityState: occurrencePaymentResponsibilities.state }).from(paymentObligations)
+    .innerJoin(occurrencePaymentResponsibilities, and(
+      eq(occurrencePaymentResponsibilities.id, paymentObligations.responsibilityId),
+      eq(occurrencePaymentResponsibilities.organizationId, row.organizationId),
+      eq(occurrencePaymentResponsibilities.leagueId, row.leagueId),
+    )).where(and(
     eq(paymentObligations.organizationId, row.organizationId),
     eq(paymentObligations.leagueId, row.leagueId),
     eq(paymentObligations.occurrenceId, row.id),
   )).orderBy(asc(paymentObligations.dueAt), asc(paymentObligations.payerBowlerId), asc(paymentObligations.id)).for("update");
-  if (obligations.some((obligation) => obligation.state !== "open")) {
+  if (obligations.some((obligation) => obligation.responsibilityState === "active" && obligation.state !== "open")) {
     throw new CanonicalOccurrenceTransactionError("occurrence_effectively_locked", "occurrence has settled, voided, or review-required obligation evidence");
   }
   const obligationIds = obligations.map((obligation) => obligation.id);
@@ -885,26 +891,22 @@ async function assertRescheduleFinanciallyEditableInTransaction(
     eq(paymentAllocations.organizationId, row.organizationId),
     eq(paymentAllocations.leagueId, row.leagueId),
     inArray(paymentAllocations.obligationId, obligationIds),
-    eq(paymentAllocations.state, "active"),
   )).for("update");
   if (allocation) throw new CanonicalOccurrenceTransactionError("occurrence_effectively_locked", "occurrence has active allocation evidence");
-  const rosterItems = await tx.select({ operationId: paymentOperationRosterSnapshotItems.operationId, state: paymentOperationRosterSnapshotItems.state }).from(paymentOperationRosterSnapshotItems).where(and(
+  const rosterItems = await tx.select({ operationId: paymentOperationRosterSnapshotItems.operationId }).from(paymentOperationRosterSnapshotItems).where(and(
     eq(paymentOperationRosterSnapshotItems.organizationId, row.organizationId),
     eq(paymentOperationRosterSnapshotItems.leagueId, row.leagueId),
     inArray(paymentOperationRosterSnapshotItems.obligationId, obligationIds),
   )).for("update");
   const rosterOperationIds = [...new Set(rosterItems.map((item) => item.operationId))];
-  if (rosterItems.some((item) => item.state === "reserved" || item.state === "finalized")) {
-    throw new CanonicalOccurrenceTransactionError("occurrence_effectively_locked", "occurrence has reserved payment-operation evidence");
-  }
   if (rosterOperationIds.length > 0) {
-    const rosterOperations = await tx.select({ id: paymentOperations.id, status: paymentOperations.status, dispatchClaimedAt: paymentOperations.dispatchClaimedAt }).from(paymentOperations).where(and(
+    const rosterOperations = await tx.select({ id: paymentOperations.id, status: paymentOperations.status, dispatchClaimedAt: paymentOperations.dispatchClaimedAt, providerObjectId: paymentOperations.providerObjectId }).from(paymentOperations).where(and(
       eq(paymentOperations.organizationId, row.organizationId),
       eq(paymentOperations.leagueId, row.leagueId),
       inArray(paymentOperations.id, rosterOperationIds),
     )).for("update");
-    if (rosterOperations.some((operation) => operation.dispatchClaimedAt !== null || ["leased", "provider_unknown", "succeeded", "action_required", "failed_terminal", "reconciliation_required"].includes(operation.status))) {
-      throw new CanonicalOccurrenceTransactionError("occurrence_effectively_locked", "occurrence has dispatched or provider payment-operation evidence");
+    if (rosterOperations.some((operation) => operation.dispatchClaimedAt !== null || operation.providerObjectId !== null || ["pending", "leased", "provider_unknown", "retry_scheduled", "succeeded", "action_required", "reconciliation_required"].includes(operation.status))) {
+      throw new CanonicalOccurrenceTransactionError("occurrence_effectively_locked", "occurrence has prepared, dispatched, or provider payment-operation evidence");
     }
   }
 }

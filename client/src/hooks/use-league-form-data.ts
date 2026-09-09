@@ -203,6 +203,17 @@ export function useLeagueFormData({
     onSuccess: (response) => {
       queryClient.invalidateQueries({ queryKey: ["/api/leagues"] });
       queryClient.invalidateQueries({ queryKey: ["/api/leagues/square-missing-alerts/recent"] });
+      if (league) {
+        queryClient.invalidateQueries({ queryKey: [`/api/leagues/${league.id}`] });
+        queryClient.invalidateQueries({ queryKey: ["league-occurrence-schedule", `/api/leagues/${league.id}/occurrence-schedule`] });
+        if (systemAdminOrganizationId != null) {
+          queryClient.invalidateQueries({ queryKey: ["league-occurrence-schedule", `/api/leagues/${league.id}/occurrence-schedule?organizationId=${systemAdminOrganizationId}`] });
+        }
+        queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${league.id}/canonical-due-past-due/2`] });
+        queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${league.id}/roster-payment-responsibility/1`] });
+        queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${league.id}/standing-autopay/1`] });
+        queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${league.id}/standing-autopay/1/quote`] });
+      }
       setupIdempotency.current.reset();
       const canonicalCreated = !league;
       toast({

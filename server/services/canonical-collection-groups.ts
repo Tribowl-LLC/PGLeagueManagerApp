@@ -99,6 +99,23 @@ function memberEvidence(input: CanonicalCollectionGroupMemberEvidence): Canonica
   return { ...input };
 }
 
+export function canonicalCollectionGroupMembersMatchPair(
+  members: readonly Pick<CanonicalCollectionGroupMember, "role" | "memberOrdinal" | "occurrenceId" | "billingTermId" | "localDate" | "billingOrdinal" | "amountMinor" | "currency">[],
+  pairing: { trigger: CanonicalCollectionGroupMemberEvidence; paired: CanonicalCollectionGroupMemberEvidence },
+): boolean {
+  const trigger = members.find((member) => member.role === "trigger");
+  const paired = members.find((member) => member.role === "paired");
+  const same = (member: typeof trigger, evidence: CanonicalCollectionGroupMemberEvidence | undefined): boolean => Boolean(member && evidence
+    && member.occurrenceId === evidence.occurrenceId
+    && member.billingTermId === evidence.billingTermId
+    && member.memberOrdinal === evidence.memberOrdinal
+    && member.localDate === evidence.localDate
+    && member.billingOrdinal === evidence.billingOrdinal
+    && member.amountMinor === evidence.amountMinor
+    && member.currency === evidence.currency);
+  return members.length === 2 && same(trigger, pairing.trigger) && same(paired, pairing.paired);
+}
+
 function commandRequest(input: PersistCanonicalCollectionGroupsInput, groupOrdinal: number, pairFingerprint: string): MaterializationScheduleCommandRequest {
   const request: MaterializationScheduleCommandRequest = {
     organizationId: input.organizationId,
@@ -218,6 +235,33 @@ export async function persistCanonicalCollectionGroupsInTransaction(
       paired: pairing.paired,
     });
     if (!fingerprint.startsWith(CANONICAL_COLLECTION_GROUP_FINGERPRINT_PREFIX)) throw new Error("invalid canonical collection group fingerprint");
+
+    // A schedule revision can move other occurrences while leaving one
+    // already-published pair physically identical. Keep that durable group
+    // (and its financial history) untouched; only changed pairs are revoked
+    // and replaced by the schedule editor. This lookup intentionally compares
+    // the complete pair evidence rather than the revision-bearing fingerprint.
+    const [unchanged] = await tx.select().from(canonicalCollectionGroups).where(and(
+      eq(canonicalCollectionGroups.organizationId, input.organizationId),
+      eq(canonicalCollectionGroups.leagueId, input.leagueId),
+      eq(canonicalCollectionGroups.generationRunId, input.generationRunId),
+      eq(canonicalCollectionGroups.groupOrdinal, pairing.groupOrdinal),
+      eq(canonicalCollectionGroups.state, "published"),
+    )).for("update");
+    if (unchanged) {
+      const unchangedMembers = await tx.select().from(canonicalCollectionGroupMembers).where(and(
+        eq(canonicalCollectionGroupMembers.organizationId, input.organizationId),
+        eq(canonicalCollectionGroupMembers.leagueId, input.leagueId),
+        eq(canonicalCollectionGroupMembers.groupId, unchanged.id),
+        eq(canonicalCollectionGroupMembers.active, true),
+      )).orderBy(asc(canonicalCollectionGroupMembers.memberOrdinal)).for("update");
+      if (canonicalCollectionGroupMembersMatchPair(unchangedMembers, pairing)) {
+        groups.push(resultEvidence(unchanged, unchangedMembers));
+        groupIds.push(unchanged.id);
+        memberIds.push(...unchangedMembers.map((member) => member.id));
+        continue;
+      }
+    }
     const commandInput = commandRequest(input, pairing.groupOrdinal, fingerprint);
     const commandResult = await getOrCreateCanonicalScheduleCommandInTransaction(tx, commandInput, ["publish_collection_group"]);
     commandIds.push(commandResult.command.id);
