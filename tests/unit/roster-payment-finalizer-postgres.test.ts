@@ -227,6 +227,108 @@ async function resetBaseRosterToWeeklyMain(): Promise<void> {
   ));
 }
 
+async function createUpfrontFallbackFixture() {
+  const fixtureKey = randomUUID();
+  const [fixtureLeague] = await db.insert(leagues).values({
+    name: `Upfront fallback league ${fixtureKey}`,
+    organizationId,
+    locationId,
+    payingLineupSize: 3,
+    paymentMode: "upfront",
+    substituteAccess: "team_only",
+    substitutePaymentRegime: "team_choice",
+    weeklyFee: 2_000,
+    lineageFee: null,
+    prizeFundFee: null,
+    seasonStart: "2039-01-01T00:00:00.000Z",
+    seasonEnd: "2039-12-31T23:59:59.000Z",
+    weekDay: "Monday",
+    timezone: "UTC",
+  }).returning({ id: leagues.id });
+  const [fixtureTeam] = await db.insert(teams).values({ name: `Upfront fallback team ${fixtureKey}`, number: 1, leagueId: fixtureLeague.id }).returning({ id: teams.id });
+  await db.insert(bowlerLeagues).values({ bowlerId, leagueId: fixtureLeague.id, teamId: fixtureTeam.id });
+  await db.insert(teamPaymentSlots).values([
+    { organizationId, leagueId: fixtureLeague.id, teamId: fixtureTeam.id, slotIndex: 0, lineupSize: 3, occupant: "main", mainBowlerId: bowlerId, recordedByUserId: actorUserId },
+    { organizationId, leagueId: fixtureLeague.id, teamId: fixtureTeam.id, slotIndex: 1, lineupSize: 3, occupant: "vacant", mainBowlerId: null, recordedByUserId: actorUserId },
+    { organizationId, leagueId: fixtureLeague.id, teamId: fixtureTeam.id, slotIndex: 2, lineupSize: 3, occupant: "vacant", mainBowlerId: null, recordedByUserId: actorUserId },
+  ]);
+
+  let fixtureOccurrenceOrdinal = 0;
+  const createFixtureOccurrence = async () => {
+    fixtureOccurrenceOrdinal += 1;
+    const commandId = randomUUID();
+    const startAt = new Date(Date.UTC(2039, 1, fixtureOccurrenceOrdinal + 1, 19, 0, 0)).toISOString();
+    await db.insert(leagueScheduleCommands).values({
+      id: commandId,
+      organizationId,
+      leagueId: fixtureLeague.id,
+      actorUserId,
+      commandType: "publish",
+      idempotencyKey: `upfront-fallback-publish-${fixtureKey}-${fixtureOccurrenceOrdinal}`,
+      requestFingerprint: `upfront-fallback-fingerprint-${fixtureKey}-${fixtureOccurrenceOrdinal}`,
+    });
+    const [occurrence] = await db.insert(leagueOccurrences).values({
+      organizationId,
+      leagueId: fixtureLeague.id,
+      locationId,
+      generationKey: `upfront-fallback-occurrence-${fixtureKey}-${fixtureOccurrenceOrdinal}`,
+      kind: "regular",
+      status: "scheduled",
+      lifecycle: "published",
+      authoritativeLocalDate: startAt.slice(0, 10),
+      authoritativeLocalStartTime: "19:00:00",
+      timezone: "UTC",
+      startAt,
+      selectedUtcOffsetMinutes: 0,
+      foldResolution: "unambiguous",
+      resolverVersion: "roster-finalizer-test",
+      plannedOrdinal: fixtureOccurrenceOrdinal,
+      competitionNumber: fixtureOccurrenceOrdinal,
+      competitive: true,
+      countsInStandings: true,
+      publishedAt: startAt,
+      publishedByUserId: actorUserId,
+      publicationCommandId: commandId,
+    }).returning({ id: leagueOccurrences.id });
+    await db.insert(leagueOccurrenceBillingTerms).values({
+      organizationId,
+      leagueId: fixtureLeague.id,
+      occurrenceId: occurrence.id,
+      purpose: "league_weekly_fee",
+      obligationPolicy: "eligible_bowlers",
+      defaultAmountMinor: 2_000,
+      currency: "USD",
+      billingOrdinal: fixtureOccurrenceOrdinal,
+      version: 1,
+      state: "published",
+      publishedAt: startAt,
+      publishedByUserId: actorUserId,
+      publicationCommandId: commandId,
+    });
+    await db.transaction(async (tx) => {
+      await materializeRosterPaymentOccurrenceInTransaction(tx, { organizationId, leagueId: fixtureLeague.id, occurrenceId: occurrence.id, actorUserId });
+    });
+    const [responsibility] = await db.select().from(occurrencePaymentResponsibilities).where(and(
+      eq(occurrencePaymentResponsibilities.organizationId, organizationId),
+      eq(occurrencePaymentResponsibilities.leagueId, fixtureLeague.id),
+      eq(occurrencePaymentResponsibilities.occurrenceId, occurrence.id),
+      eq(occurrencePaymentResponsibilities.teamId, fixtureTeam.id),
+      eq(occurrencePaymentResponsibilities.slotIndex, 0),
+      eq(occurrencePaymentResponsibilities.state, "active"),
+    ));
+    if (!responsibility) throw new Error("upfront fallback responsibility was not materialized");
+    const [obligation] = await db.select().from(paymentObligations).where(and(
+      eq(paymentObligations.organizationId, organizationId),
+      eq(paymentObligations.leagueId, fixtureLeague.id),
+      eq(paymentObligations.responsibilityId, responsibility.id),
+    ));
+    if (!obligation) throw new Error("upfront fallback obligation was not materialized");
+    return { occurrence, responsibility, obligation };
+  };
+
+  return { leagueId: fixtureLeague.id, teamId: fixtureTeam.id, createOccurrence: createFixtureOccurrence };
+}
+
 async function createRosterOperation(
   obligationId: string,
   responsibilityId: string,
@@ -512,6 +614,94 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
       upfrontDueAtLocal: first.obligation.dueAt.slice(0, 10),
       source: "canonical",
     });
+  });
+
+  it.each(["sole", "all"] as const)("repairs %s missing upfront default obligation(s) without changing identity", async (missingMode) => {
+    const fixture = await createUpfrontFallbackFixture();
+    const fixtures = [await fixture.createOccurrence()];
+    if (missingMode === "all") {
+      fixtures.push(await fixture.createOccurrence(), await fixture.createOccurrence());
+    }
+    const firstFixture = fixtures[0];
+    if (!firstFixture) throw new Error("upfront fallback fixture is missing");
+    // Use the persisted responsibility's normalized instant as the established
+    // upfront anchor; this avoids coupling the test to transaction timing.
+    const anchor = new Date(firstFixture.responsibility.dueAt).toISOString();
+    const missingObligationIds = missingMode === "sole"
+      ? [firstFixture.obligation.id]
+      : fixtures.map((item) => item.obligation.id);
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('leaguevault.organization_teardown', 'on', true)`);
+      await tx.delete(paymentObligations).where(and(
+        eq(paymentObligations.organizationId, organizationId),
+        eq(paymentObligations.leagueId, fixture.leagueId),
+        inArray(paymentObligations.id, missingObligationIds),
+      ));
+    });
+
+    const buildRequest = (mainBowlerId: number, commandKey: string) => {
+      const request = {
+        commandKey,
+        requestFingerprint: "",
+        lineupSize: 3 as const,
+        slots: [
+          { slotIndex: 0, occupant: "main" as const, mainBowlerId },
+          { slotIndex: 1, occupant: "vacant" as const, mainBowlerId: null },
+          { slotIndex: 2, occupant: "vacant" as const, mainBowlerId: null },
+        ],
+      };
+      request.requestFingerprint = canonicalRosterFingerprint(request);
+      return request;
+    };
+    const readMainEvidence = async () => {
+      const rows = [];
+      for (const item of fixtures) {
+        const [responsibility] = await db.select({ id: occurrencePaymentResponsibilities.id, version: occurrencePaymentResponsibilities.version, mainBowlerId: occurrencePaymentResponsibilities.mainBowlerId, state: occurrencePaymentResponsibilities.state, dueAt: occurrencePaymentResponsibilities.dueAt, pastDueAt: occurrencePaymentResponsibilities.pastDueAt }).from(occurrencePaymentResponsibilities).where(and(
+          eq(occurrencePaymentResponsibilities.organizationId, organizationId),
+          eq(occurrencePaymentResponsibilities.leagueId, fixture.leagueId),
+          eq(occurrencePaymentResponsibilities.occurrenceId, item.occurrence.id),
+          eq(occurrencePaymentResponsibilities.teamId, fixture.teamId),
+          eq(occurrencePaymentResponsibilities.slotIndex, 0),
+          eq(occurrencePaymentResponsibilities.state, "active"),
+        ));
+        if (!responsibility) throw new Error("upfront fallback Main responsibility is missing");
+        const obligations = await db.select({ id: paymentObligations.id, payerBowlerId: paymentObligations.payerBowlerId, state: paymentObligations.state, dueAt: paymentObligations.dueAt, pastDueAt: paymentObligations.pastDueAt }).from(paymentObligations).where(and(
+          eq(paymentObligations.organizationId, organizationId),
+          eq(paymentObligations.leagueId, fixture.leagueId),
+          eq(paymentObligations.responsibilityId, responsibility.id),
+        ));
+        rows.push({ responsibility, obligations });
+      }
+      return rows;
+    };
+
+    const before = await readMainEvidence();
+    expect(before.every((item) => item.obligations.length === 0)).toBe(true);
+    await saveTeamRoster({ organizationId, leagueId: fixture.leagueId, teamId: fixture.teamId, actorUserId, request: buildRequest(bowlerId, `upfront-repair-${missingMode}-${randomUUID()}`) });
+    const afterRepair = await readMainEvidence();
+    expect(afterRepair.map((item) => item.responsibility)).toEqual(before.map((item) => item.responsibility));
+    expect(afterRepair.every((item) => new Date(item.responsibility.dueAt).toISOString() === anchor && new Date(item.responsibility.pastDueAt).toISOString() === anchor && item.obligations.length === 1 && item.obligations[0]?.payerBowlerId === bowlerId && item.obligations[0]?.state === "open" && new Date(item.obligations[0]?.dueAt ?? "").toISOString() === anchor && new Date(item.obligations[0]?.pastDueAt ?? "").toISOString() === anchor)).toBe(true);
+    await saveTeamRoster({ organizationId, leagueId: fixture.leagueId, teamId: fixture.teamId, actorUserId, request: buildRequest(bowlerId, `upfront-repair-repeat-${missingMode}-${randomUUID()}`) });
+    const afterRepeat = await readMainEvidence();
+    expect(afterRepeat).toEqual(afterRepair);
+
+    const [replacement] = await db.insert(bowlers).values({ name: `Upfront replacement ${missingMode}`, organizationId }).returning({ id: bowlers.id });
+    await db.insert(bowlerLeagues).values({ bowlerId: replacement.id, leagueId: fixture.leagueId, teamId: fixture.teamId });
+    await saveTeamRoster({ organizationId, leagueId: fixture.leagueId, teamId: fixture.teamId, actorUserId, request: buildRequest(replacement.id, `upfront-change-${missingMode}-${randomUUID()}`) });
+    const afterChange = await readMainEvidence();
+    for (let index = 0; index < afterChange.length; index += 1) {
+      const previous = afterRepair[index];
+      const changed = afterChange[index];
+      if (!previous || !changed) throw new Error("upfront fallback evidence row is missing");
+      expect(changed.responsibility.id).not.toBe(previous.responsibility.id);
+      expect(changed.responsibility.version).toBe(previous.responsibility.version + 1);
+      expect(changed.responsibility.mainBowlerId).toBe(replacement.id);
+      const changedObligation = changed.obligations[0];
+      if (!changedObligation) throw new Error("upfront changed obligation is missing");
+      expect(changed.obligations).toEqual([{ id: changedObligation.id, payerBowlerId: replacement.id, state: "open", dueAt: changedObligation.dueAt, pastDueAt: changedObligation.pastDueAt }]);
+      expect(new Date(changedObligation.dueAt).toISOString()).toBe(anchor);
+      expect(new Date(changedObligation.pastDueAt).toISOString()).toBe(anchor);
+    }
   });
 
   it("reschedules a future roster-ready occurrence by versioning open obligations", async () => {

@@ -61,6 +61,26 @@ export async function deriveRosterPaymentTimingInTransaction(
     return { dueAt, pastDueAt: dueAt };
   }
 
+  // A repairable upfront default can temporarily have no obligation row. Keep
+  // the league's established due instant from its responsibility history so
+  // the missing row is repaired in place instead of versioning the
+  // responsibility against a fresh transaction timestamp. The same equality
+  // discriminator excludes weekly grace-timed responsibilities.
+  const [existingResponsibility] = await tx.select({ dueAt: occurrencePaymentResponsibilities.dueAt })
+    .from(occurrencePaymentResponsibilities)
+    .where(and(
+      eq(occurrencePaymentResponsibilities.organizationId, input.organizationId),
+      eq(occurrencePaymentResponsibilities.leagueId, input.leagueId),
+      sql`${occurrencePaymentResponsibilities.pastDueAt} = ${occurrencePaymentResponsibilities.dueAt}`,
+    ))
+    .orderBy(asc(occurrencePaymentResponsibilities.dueAt), asc(occurrencePaymentResponsibilities.id))
+    .limit(1)
+    .for("share");
+  if (existingResponsibility?.dueAt) {
+    const dueAt = new Date(existingResponsibility.dueAt).toISOString();
+    return { dueAt, pastDueAt: dueAt };
+  }
+
   const timestampResult = await tx.execute(sql`SELECT transaction_timestamp()::text AS upfront_due_at`);
   const timestamp = (timestampResult.rows[0] as { upfront_due_at?: string } | undefined)?.upfront_due_at;
   if (!timestamp) throw new Error("UPFRONT_DUE_TIMESTAMP_UNAVAILABLE");
