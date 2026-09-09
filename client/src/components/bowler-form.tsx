@@ -131,6 +131,32 @@ function BowlerFormInner({ open, onClose, defaultTeamId, bowler, firstLeagueId, 
     });
   }, [bowler, toast]);
 
+  const onDeleteSuccess = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ["/api/bowlers"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/bowler-leagues"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/teams"] });
+    if (bowler) {
+      queryClient.invalidateQueries({ queryKey: [`/api/bowlers/${bowler.id}/details`] });
+      queryClient.invalidateQueries({ queryKey: [`/api/bowlers/${bowler.id}`] });
+    }
+    if (defaultTeamId) {
+      queryClient.invalidateQueries({ queryKey: [`/api/teams/${defaultTeamId}/details`] });
+    }
+    toast({
+      title: "Bowler deleted",
+      description: "The bowler profile was permanently deleted.",
+    });
+    onClose();
+  }, [bowler, defaultTeamId, onClose, toast]);
+
+  const onDeleteError = useCallback((error: Error) => {
+    toast({
+      title: "Bowler cannot be deleted",
+      description: error.message,
+      variant: "destructive",
+    });
+  }, [toast]);
+
   const addExistingBowlerMutation = useMutation({
     mutationFn: async (existingBowlerId: number) => {
       if (!selectedLeagueId || !selectedTeamId) {
@@ -226,8 +252,8 @@ function BowlerFormInner({ open, onClose, defaultTeamId, bowler, firstLeagueId, 
         throw new Error(result.error?.message || "Failed to delete bowler");
       }
     },
-    onSuccess,
-    onError,
+    onSuccess: onDeleteSuccess,
+    onError: onDeleteError,
   });
 
   const isLoading = loadingLeagues || loadingTeams;

@@ -42,3 +42,23 @@ model boundary. It fails closed before destructive DDL if payment/provider
 evidence is present, makes tenant-safe parent/child keys and exact amount
 conservation constraints, and removes obsolete week/lineage/per-allocation
 payment fields. No old payment data is inferred or backfilled.
+
+## Permanent bowler profile deletion
+
+`DELETE /api/bowlers/:id` is intentionally narrow. The bowler must first be
+removed from every roster and payment slot, and any login account must be
+unlinked or reassigned. Deletion is refused when any payment, allocation,
+refund, credit, or payment-operation history exists in any state, including
+failed, pending, recovery, or other provider activity. Active autopay consent
+must be cancelled. Shared responsibility history or other shared dependencies
+are preserved and return an explicit `409` blocker.
+
+The checks and cleanup run atomically. With nonblocking tenant-league and
+bowler locks, a concurrent change returns a retryable `409` rather than
+waiting indefinitely. Only unused voided obligations and exclusively-owned
+voided responsibility/setup rows with no operation references are removed;
+shared history remains intact. The existing transaction-local
+`leaguevault.organization_teardown` marker is enabled only for this proven
+unused cleanup, so append-only protections remain in force for ordinary
+commands. No migration, payment-provider call, or remote object deletion is
+performed.
