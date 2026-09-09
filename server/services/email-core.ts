@@ -161,6 +161,27 @@ export function describeMailError(error: unknown): unknown {
   return error;
 }
 
+// Account-ready notifications are user-triggered and may contain recipient
+// addresses, template content, or provider response payloads in the thrown
+// value. Keep this path deliberately bounded and metadata-only: the provider
+// status is useful for operations, while response bodies and error messages
+// are not safe to put in application logs.
+function describeAccountReadyEmailError(error: unknown): {
+  kind: string;
+  providerStatus?: number;
+} {
+  const providerStatus = error && typeof error === 'object'
+    ? (error as { response?: { statusCode?: unknown } }).response?.statusCode
+    : undefined;
+  if (typeof providerStatus === 'number' && Number.isInteger(providerStatus)) {
+    return { kind: 'provider_error', providerStatus };
+  }
+  if (error instanceof Error) {
+    return { kind: error.name || 'error' };
+  }
+  return { kind: typeof error === 'object' && error !== null ? 'object_error' : typeof error };
+}
+
 export const SENDGRID_API_KEY = env.SENDGRID_API_KEY;
 // safe: APP_DOMAIN is normalised to lowercase at parse-time (task #335).
 // The domain part of an email address is case-insensitive per RFC 5321
@@ -253,6 +274,131 @@ export function getOrgLogoUrl(org: { slug: string } | null | undefined): string 
   if (!org?.slug) return '';
   const baseUrl = getBaseUrl();
   return `${baseUrl}/api/organizations/slug/${org.slug}/logo`;
+}
+
+export type EmailNotification = 'accepted' | 'not_sent';
+
+export interface AccountReadyEmailOptions {
+  toEmail: string;
+  toName: string;
+  bowlerName: string;
+  organization: {
+    name?: string | null;
+    slug?: string | null;
+    subdomain?: string | null;
+    logo?: string | null;
+  } | null;
+  leagueName?: string;
+  teamName?: string;
+}
+
+/**
+ * Notify an ordinary user after their first account-to-bowler link commits.
+ *
+ * The template decision is deliberately made before dispatching anything:
+ * an active `admin_claim_complete` template is used as-is, a missing template
+ * selects the built-in message, and an explicitly inactive template is a
+ * deliberate no-op. Once dispatch starts, a failure is reported as
+ * `not_sent`; the fallback is never attempted after an uncertain provider
+ * result, which prevents duplicate messages.
+ */
+export async function sendAccountReadyEmail(
+  options: AccountReadyEmailOptions,
+): Promise<EmailNotification> {
+  let template: Awaited<ReturnType<typeof storage.getEmailTemplateBySlug>>;
+  try {
+    template = await storage.getEmailTemplateBySlug('admin_claim_complete');
+  } catch (error) {
+    log.error('Failed to resolve account-ready email template:', describeAccountReadyEmailError(error));
+    return 'not_sent';
+  }
+  if (template && !template.active) {
+    log.info("Template 'admin_claim_complete' is inactive, skipping account-ready email");
+    return 'not_sent';
+  }
+
+  if (!SENDGRID_API_KEY) {
+    log.error('Cannot send account-ready email — SENDGRID_API_KEY not configured');
+    return 'not_sent';
+  }
+
+  const baseUrl = getBaseUrl(options.organization);
+  const loginUrl = `${baseUrl}/login`;
+  const variables: Record<string, string> = {
+    user_name: options.toName,
+    bowler_name: options.bowlerName,
+    league_name: options.leagueName ?? '',
+    team_name: options.teamName ?? '',
+    organization_name: options.organization?.name ?? '',
+    organization_logo_url:
+      options.organization?.slug && options.organization.logo
+        ? getOrgLogoUrl({ slug: options.organization.slug })
+        : '',
+    // Keep both historical link variable names server-derived. The active
+    // admin template uses `dashboard_link` for its existing dashboard CTA,
+    // while the new account-ready sign-in CTA uses `login_link`.
+    login_link: loginUrl,
+    dashboard_link: `${baseUrl}/bowler-dashboard`,
+  };
+
+  try {
+    let msg: MailDataRequired;
+    if (template) {
+      const subject = replaceVariablesPlainText(template.subject, variables);
+      const body = replaceVariables(template.body, variables);
+      msg = {
+        to: options.toEmail,
+        from: { email: FROM_EMAIL, name: FROM_NAME },
+        subject,
+        html: wrapInHtmlLayout(sanitizeTemplateBody(body), variables),
+        trackingSettings: {
+          clickTracking: { enable: false, enableText: false },
+        },
+      };
+    } else {
+      // Missing templates can occur on older installations before the seed
+      // migration has run. Keep the fallback intentionally free of credentials,
+      // tokens, and payment amounts.
+      const safeName = escapeHtml(options.toName || 'there');
+      const safeOrganization = escapeHtml(options.organization?.name || 'your organization');
+      const safeLoginUrl = escapeHtml(loginUrl);
+      const fallbackBody = `
+        <p style="font-size: 16px; color: #333;">Hi ${safeName},</p>
+        <p style="font-size: 16px; color: #333;">
+          Your LeagueVault account is connected to your bowler profile in
+          <strong>${safeOrganization}</strong>. Sign in to view your leagues and
+          pay available balances.
+        </p>
+        <div style="text-align: center; margin: 30px 0;">
+          <a href="${safeLoginUrl}"
+             style="background-color: #1a1a2e; color: #ffffff; padding: 14px 28px;
+                    text-decoration: none; border-radius: 6px; font-size: 16px;
+                    display: inline-block; font-weight: bold;">
+            Sign in to LeagueVault
+          </a>
+        </div>
+        <p style="font-size: 14px; color: #666; word-break: break-all;">
+          If the button doesn't work, sign in here: <a href="${safeLoginUrl}">${safeLoginUrl}</a>
+        </p>
+      `;
+      msg = {
+        to: options.toEmail,
+        from: { email: FROM_EMAIL, name: FROM_NAME },
+        subject: 'Your LeagueVault account is ready',
+        html: wrapInHtmlLayout(sanitizeTemplateBody(fallbackBody), variables),
+        trackingSettings: {
+          clickTracking: { enable: false, enableText: false },
+        },
+      };
+    }
+
+    await dispatchMail(msg);
+    log.info('Account-ready email accepted by provider');
+    return 'accepted';
+  } catch (error) {
+    log.error('Account-ready email render or dispatch failed:', describeAccountReadyEmailError(error));
+    return 'not_sent';
+  }
 }
 
 function convertLinksToButtons(html: string): string {

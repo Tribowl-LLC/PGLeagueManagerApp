@@ -29,6 +29,7 @@ const mockGetUser = vi.fn<(id: number) => Promise<unknown>>();
 const mockGetBowler = vi.fn<(id: number) => Promise<unknown>>();
 const mockUpdateBowler = vi.fn<(id: number, patch: unknown) => Promise<unknown>>();
 const mockGetUserByEmail = vi.fn<(email: string) => Promise<unknown>>();
+const mockGetBowlerByEmail = vi.fn<(email: string, organizationId: number) => Promise<unknown>>();
 const mockLinkUserToBowler = vi.fn<(input: unknown) => Promise<unknown>>();
 const mockGetBowlerLeagues = vi.fn<(filter: unknown) => Promise<unknown[]>>(async () => []);
 const mockGetLeague = vi.fn<(id: number) => Promise<unknown>>(async () => null);
@@ -41,6 +42,7 @@ vi.mock('../../server/storage', () => ({
     getBowler: (id: number) => mockGetBowler(id),
     updateBowler: (id: number, patch: unknown) => mockUpdateBowler(id, patch),
     getUserByEmail: (email: string) => mockGetUserByEmail(email),
+    getBowlerByEmail: (email: string, organizationId: number) => mockGetBowlerByEmail(email, organizationId),
     getBowlerLeagues: (filter: unknown) => mockGetBowlerLeagues(filter),
     getLeague: (id: number) => mockGetLeague(id),
     setUserOrganization: (userId: number, orgId: number) => mockSetUserOrganization(userId, orgId),
@@ -73,6 +75,7 @@ beforeEach(() => {
   mockGetBowlerLeagues.mockResolvedValue([]);
   mockGetLeague.mockResolvedValue(null);
   mockGetFirstSquareConfiguredLocation.mockResolvedValue(null);
+  mockGetBowlerByEmail.mockResolvedValue(undefined);
 });
 
 describe('decideBowlerPhoneSync', () => {
@@ -182,8 +185,16 @@ function fakeBowler(overrides: Partial<BowlerArg>): BowlerArg {
 describe('runBowlerPostCreateSync — phone sync from linked user', () => {
   it('overwrites bowler.phone with the matching user phone before downstream sync', async () => {
     const bowler = fakeBowler({ phone: null });
+    mockGetBowlerByEmail.mockResolvedValue(bowler);
 
-    mockGetUserByEmail.mockResolvedValue({ id: 9, email: 'jon@example.com', phone: '5551234', bowlerId: null });
+    mockGetUserByEmail.mockResolvedValue({
+      id: 9,
+      email: 'jon@example.com',
+      phone: '5551234',
+      role: 'user',
+      organizationId: 5,
+      bowlerId: null,
+    });
     mockLinkUserToBowler.mockResolvedValue(undefined);
     mockUpdateBowler.mockImplementation(async (_id, patch) => ({
       ...(bowler as object),
@@ -205,8 +216,16 @@ describe('runBowlerPostCreateSync — phone sync from linked user', () => {
     // didn't fire by checking the patches; we don't assert
     // updateBowler was never called overall.)
     const bowler = fakeBowler({ phone: '9998888' });
+    mockGetBowlerByEmail.mockResolvedValue(bowler);
 
-    mockGetUserByEmail.mockResolvedValue({ id: 9, email: 'jon@example.com', phone: null, bowlerId: null });
+    mockGetUserByEmail.mockResolvedValue({
+      id: 9,
+      email: 'jon@example.com',
+      phone: null,
+      role: 'user',
+      organizationId: 5,
+      bowlerId: null,
+    });
     mockLinkUserToBowler.mockResolvedValue(undefined);
     mockUpdateBowler.mockImplementation(async (_id, patch) => ({
       ...(bowler as object),

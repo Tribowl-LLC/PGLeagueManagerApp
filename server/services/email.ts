@@ -17,7 +17,13 @@
 export {
   getBaseUrl,
   getOrgLogoUrl,
+  sendAccountReadyEmail,
   sendTemplatedEmail,
+} from './email-core';
+
+export type {
+  AccountReadyEmailOptions,
+  EmailNotification,
 } from './email-core';
 
 export {

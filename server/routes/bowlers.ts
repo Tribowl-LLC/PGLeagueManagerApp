@@ -97,9 +97,45 @@ router.get("/unlinked", async (req, res) => {
     const linkedBowlerIdsList = await storage.getLinkedBowlerIds();
     const linkedBowlerIds = new Set(linkedBowlerIdsList);
 
-    const unlinkedBowlers = scopedBowlers.filter(
-      b => !linkedBowlerIds.has(b.id) && (!b.email || b.email.trim() === '')
-    );
+    const unlinkedProfiles = scopedBowlers.filter((b) => !linkedBowlerIds.has(b.id));
+    let unlinkedBowlers: typeof unlinkedProfiles;
+    if (req.user?.role === 'org_admin' || req.user?.role === 'system_admin') {
+      // Administrators need the complete set of unlinked profiles so they
+      // can resolve a pending registration manually. The response below is
+      // still an allowlisted id/name projection and never exposes email,
+      // phone, or payment-provider fields.
+      unlinkedBowlers = unlinkedProfiles;
+    } else if (req.user?.role === 'user') {
+      // A self-service candidate list is an email-ownership proof surface,
+      // not a name search. Require one and only one normalized match; a
+      // duplicate/family address remains pending for an administrator rather
+      // than exposing ambiguous claim choices.
+      const normalizedUserEmail = req.user.email.trim().toLowerCase();
+      if (!normalizedUserEmail) {
+        unlinkedBowlers = [];
+      } else {
+        // Match-count must include linked profiles too. If an address is
+        // shared by one linked and one unlinked roster row, the registration
+        // lookup is ambiguous even though only one candidate remains
+        // available for claiming.
+        const allEmailMatches = scopedBowlers.filter(
+          (b) => b.email?.trim().toLowerCase() === normalizedUserEmail,
+        );
+        const unlinkedMatches = unlinkedProfiles.filter(
+          (b) => b.email?.trim().toLowerCase() === normalizedUserEmail,
+        );
+        unlinkedBowlers = allEmailMatches.length === 1 && unlinkedMatches.length === 1
+          ? unlinkedMatches
+          : [];
+      }
+    } else {
+      // Payment managers retain their existing scoped, blank-email view, but
+      // are not ordinary accounts and cannot use this list to claim a
+      // profile. Their role-specific access filtering above remains intact.
+      unlinkedBowlers = unlinkedProfiles.filter(
+        (b) => !b.email || b.email.trim() === '',
+      );
+    }
 
     const bowlerIds = unlinkedBowlers.map(b => b.id);
     const bowlerLeagueEntries = bowlerIds.length > 0

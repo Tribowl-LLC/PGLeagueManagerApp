@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   bowlers,
@@ -270,6 +270,27 @@ async function linkInTransaction(
     if (bowlerEmail.length === 0 || bowlerEmail !== userEmail) {
       throw new IdentityLinkError(
         "Bowler email does not match the user account",
+        "EMAIL_MISMATCH",
+        403,
+      );
+    }
+    // Email ownership is only conclusive when this is the sole profile in
+    // the same organization with that normalized address. This check lives
+    // in the transactional service, not only in route preflight reads, so
+    // direct API callers and races cannot choose among shared/family or
+    // legacy duplicate roster records. Admin assignments deliberately pass
+    // requireEmailMatch=false and remain the explicit resolution path.
+    const matchingProfiles = await executor
+      .select({ id: bowlers.id })
+      .from(bowlers)
+      .where(and(
+        eq(bowlers.organizationId, input.organizationId),
+        sql`lower(btrim(${bowlers.email})) = ${userEmail}`,
+      ))
+      .limit(2);
+    if (matchingProfiles.length !== 1 || matchingProfiles[0]?.id !== bowler.id) {
+      throw new IdentityLinkError(
+        "Bowler email matches multiple profiles; administrator review is required",
         "EMAIL_MISMATCH",
         403,
       );
