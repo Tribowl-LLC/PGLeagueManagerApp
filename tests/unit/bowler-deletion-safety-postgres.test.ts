@@ -7,6 +7,7 @@ import {
   bowlerLeagues,
   bowlers,
   bowlerPaymentLinks,
+  games,
   leagueOccurrences,
   leagues,
   locations,
@@ -21,6 +22,7 @@ import {
   paymentOperations,
   paymentVoids,
   payments,
+  scores,
   standingAutopayPreparationAttempts,
   teamPaymentSlots,
   teams,
@@ -320,10 +322,39 @@ async function addInteractiveOperationEvidence(f: Fixture, obligationId: string,
   });
 }
 
-async function addConsent(f: Fixture, state: "pending" | "active" | "revoked" | "expired" = "pending", payerBowlerId = f.bowlerId): Promise<string> {
+async function addScoreEvidence(f: Fixture): Promise<{ gameId: number; scoreId: number }> {
+  const [game] = await db.insert(games).values({
+    leagueId: f.leagueId,
+    weekNumber: 1,
+    gameNumber: 1,
+    date: "2039-01-07T19:00:00.000Z",
+    occurrenceId: f.occurrenceId,
+  }).returning({ id: games.id });
+  if (!game) throw new Error("bowler deletion game was not created");
+  const [score] = await db.insert(scores).values({
+    gameId: game.id,
+    bowlerId: f.bowlerId,
+    teamId: f.teamId,
+    score: 200,
+    handicap: 0,
+    average: 190,
+    position: 1,
+    laneNumber: 1,
+  }).returning({ id: scores.id });
+  if (!score) throw new Error("bowler deletion score was not created");
+  return { gameId: game.id, scoreId: score.id };
+}
+
+async function addConsent(
+  f: Fixture,
+  state: "pending" | "active" | "revoked" | "expired" = "pending",
+  payerBowlerId = f.bowlerId,
+  consentVersion = 1,
+  providerBacked = state !== "pending",
+): Promise<string> {
   const consentId = randomUUID();
-  const fingerprint = "b".repeat(64);
-  const providerFields = state === "active" || state === "revoked" || state === "expired"
+  const fingerprint = "b".repeat(62) + consentVersion.toString(16).padStart(2, "0");
+  const providerFields = providerBacked
     ? { providerName: "square", providerLocationId: "synthetic-location", encryptedSourceId: "synthetic-source", encryptedCustomerId: "synthetic-customer" }
     : {};
   await db.insert(autopayConsents).values({
@@ -331,7 +362,7 @@ async function addConsent(f: Fixture, state: "pending" | "active" | "revoked" | 
     organizationId: f.organizationId,
     leagueId: f.leagueId,
     payerBowlerId,
-    consentVersion: 1,
+    consentVersion,
     state,
     paymentMode: "weekly",
     consentFingerprint: `lvstandingconsent:v1:${fingerprint}`,
@@ -344,6 +375,7 @@ async function addConsent(f: Fixture, state: "pending" | "active" | "revoked" | 
 
 async function expectBlocked(f: Fixture, code: string): Promise<void> {
   await expect(deleteUnusedBowler(f.bowlerId)).rejects.toMatchObject({
+    status: 409,
     blockers: [{ code }],
   });
   expect((await db.select({ id: bowlers.id }).from(bowlers).where(eq(bowlers.id, f.bowlerId)))[0]?.id)
@@ -446,6 +478,22 @@ describe("safe unused bowler deletion", () => {
         .toBe(obligationId);
     },
   );
+
+  it("retains score history and an otherwise cleanable voided obligation", async () => {
+    const f = await fixture("score-history");
+    const responsibilityId = await addResponsibility(f);
+    const obligationId = await addObligation(f, responsibilityId);
+    const { scoreId } = await addScoreEvidence(f);
+
+    await expectBlocked(f, "SCORE_HISTORY");
+    expect((await db.select({ id: scores.id }).from(scores).where(eq(scores.id, scoreId)))[0]?.id)
+      .toBe(scoreId);
+    expect((await db.select({ id: paymentObligations.id }).from(paymentObligations)
+      .where(eq(paymentObligations.id, obligationId)))[0]?.id).toBe(obligationId);
+    expect((await db.select({ id: occurrencePaymentResponsibilities.id })
+      .from(occurrencePaymentResponsibilities).where(eq(occurrencePaymentResponsibilities.id, responsibilityId)))[0]?.id)
+      .toBe(responsibilityId);
+  });
 
   it("blocks standing participant and consent-binding operation history", async () => {
     const participant = await fixture("standing-participant");
@@ -613,6 +661,33 @@ describe("safe unused bowler deletion", () => {
     await expectBlocked(activity, "AUTOPAY_PROVIDER_ACTIVITY");
   });
 
+  it.each(["revoked", "expired"] as const)(
+    "retains %s no-operation consent authorization evidence",
+    async (state) => {
+      const f = await fixture(`consent-${state}-no-operation`);
+      const consentId = await addConsent(f, state);
+
+      await expectBlocked(f, "AUTOPAY_PROVIDER_EVIDENCE");
+      expect((await db.select({ id: autopayConsents.id }).from(autopayConsents)
+        .where(eq(autopayConsents.id, consentId)))[0]?.id).toBe(consentId);
+    },
+  );
+
+  it("blocks pending provider-backed consent but cleans a bare unused pending consent", async () => {
+    const providerBacked = await fixture("pending-provider-consent");
+    const providerConsentId = await addConsent(providerBacked, "pending", providerBacked.bowlerId, 1, true);
+    await expectBlocked(providerBacked, "AUTOPAY_PROVIDER_EVIDENCE");
+    expect((await db.select({ id: autopayConsents.id }).from(autopayConsents)
+      .where(eq(autopayConsents.id, providerConsentId)))[0]?.id).toBe(providerConsentId);
+
+    const bare = await fixture("pending-bare-consent");
+    const bareConsentId = await addConsent(bare, "pending", bare.bowlerId, 1, false);
+    await expect(deleteUnusedBowler(bare.bowlerId)).resolves.toBeUndefined();
+    expect((await db.select({ id: bowlers.id }).from(bowlers).where(eq(bowlers.id, bare.bowlerId)))[0]).toBeUndefined();
+    expect((await db.select({ id: autopayConsents.id }).from(autopayConsents)
+      .where(eq(autopayConsents.id, bareConsentId)))[0]).toBeUndefined();
+  });
+
   it("retains shared responsibility history and another bowler's replacement rows", async () => {
     const f = await fixture("shared-history");
     const responsibilityId = await addResponsibility(f, {
@@ -631,7 +706,25 @@ describe("safe unused bowler deletion", () => {
       .toBe(otherPaymentId);
   });
 
-  it("cleans only unused voided evidence and inactive consents, while removing duplicate memberships", async () => {
+  it("retains an inconsistent cross-organization payment link and returns a conflict", async () => {
+    const target = await fixture("cross-org-link-target");
+    const foreign = await fixture("cross-org-link-owner");
+    const [link] = await db.insert(bowlerPaymentLinks).values({
+      bowlerAId: Math.min(target.bowlerId, foreign.bowlerId),
+      bowlerBId: Math.max(target.bowlerId, foreign.bowlerId),
+      organizationId: foreign.organizationId,
+      status: "retired",
+      createdByUserId: foreign.actorUserId,
+      respondedAt: "2039-01-01T00:00:00.000Z",
+    }).returning({ id: bowlerPaymentLinks.id });
+    if (!link) throw new Error("cross-organization payment link was not created");
+
+    await expectBlocked(target, "CROSS_ORGANIZATION_PAYMENT_LINK");
+    expect((await db.select({ id: bowlerPaymentLinks.id }).from(bowlerPaymentLinks)
+      .where(eq(bowlerPaymentLinks.id, link.id)))[0]?.id).toBe(link.id);
+  });
+
+  it("cleans only unused voided evidence and a bare pending consent, while removing duplicate memberships", async () => {
     const f = await fixture("clean");
     const duplicateMembershipA = await addMembership(f, false);
     const duplicateMembershipB = await addMembership(f, false);

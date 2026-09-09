@@ -50,8 +50,9 @@ removed from every roster and payment slot, and any login account must be
 unlinked or reassigned. Deletion is refused when any payment, allocation,
 refund, credit, or payment-operation history exists in any state, including
 failed, pending, recovery, or other provider activity. Active autopay consent
-must be cancelled. Shared responsibility history or other shared dependencies
-are preserved and return an explicit `409` blocker.
+must be cancelled, and revoked or expired autopay authorization history is
+retained. Score history and shared or cross-organization dependencies are
+preserved and return an explicit `409` blocker.
 
 The checks and cleanup run atomically. With nonblocking tenant-league and
 bowler locks, a concurrent change returns a retryable `409` rather than

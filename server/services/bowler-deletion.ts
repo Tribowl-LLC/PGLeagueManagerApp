@@ -16,6 +16,7 @@ import {
   paymentOperationStandingAutopayBindings,
   paymentOperationStandingAutopayParticipants,
   payments,
+  scores,
   standingAutopayPreparationAttempts,
   teamPaymentSlots,
   users,
@@ -26,7 +27,8 @@ export type BowlerDeletionBlockerCode =
   | "SHARED_RESPONSIBILITY_HISTORY" | "OPEN_PAYMENT_OBLIGATION" | "PAYMENT_EVIDENCE"
   | "PAYMENT_ALLOCATION_EVIDENCE" | "PAYMENT_OPERATION_EVIDENCE"
   | "AUTOPAY_NOT_CANCELLED" | "AUTOPAY_PROVIDER_ACTIVITY" | "AUTOPAY_PARTNER_EVIDENCE"
-  | "PAYMENT_PARTNER_LINK" | "LINKED_LOGIN" | "CROSS_ORGANIZATION_MEMBERSHIP"
+  | "AUTOPAY_PROVIDER_EVIDENCE" | "PAYMENT_PARTNER_LINK" | "LINKED_LOGIN"
+  | "CROSS_ORGANIZATION_MEMBERSHIP" | "SCORE_HISTORY" | "CROSS_ORGANIZATION_PAYMENT_LINK"
   | "DEPENDENCY_CHANGED";
 
 export interface BowlerDeletionBlocker {
@@ -63,9 +65,12 @@ const blockerMessages: Record<BowlerDeletionBlockerCode, string> = {
   AUTOPAY_NOT_CANCELLED: "Cancel the bowler's active autopay consent before deleting the profile.",
   AUTOPAY_PROVIDER_ACTIVITY: "Resolve the bowler's autopay provider activity before deleting the profile.",
   AUTOPAY_PARTNER_EVIDENCE: "The bowler's autopay partner evidence is used by another bowler and must be preserved.",
+  AUTOPAY_PROVIDER_EVIDENCE: "The bowler's autopay authorization and revocation history must be retained.",
   PAYMENT_PARTNER_LINK: "Unlink or retire the bowler's payment-partner link before deleting the profile.",
   LINKED_LOGIN: "Unlink or reassign the login account before deleting the bowler profile.",
   CROSS_ORGANIZATION_MEMBERSHIP: "The bowler has a roster membership in another organization and cannot be deleted until it is removed.",
+  SCORE_HISTORY: "The bowler has recorded score history and cannot be permanently deleted.",
+  CROSS_ORGANIZATION_PAYMENT_LINK: "The bowler has a payment-partner link in another organization and cannot be deleted.",
   DEPENDENCY_CHANGED: "The bowler's records changed while deletion was in progress. Resolve the new dependency and retry.",
 };
 
@@ -136,6 +141,10 @@ export async function deleteUnusedBowler(bowlerId: number): Promise<void> {
         throw conflict("CROSS_ORGANIZATION_MEMBERSHIP");
       }
       if (memberships.some((row) => row.active)) throw conflict("ACTIVE_ROSTER_MEMBERSHIP");
+
+      const scoreHistory = await tx.select({ id: scores.id }).from(scores)
+        .where(eq(scores.bowlerId, bowlerId));
+      if (scoreHistory.length) throw conflict("SCORE_HISTORY");
 
       const slots = await tx.select({ id: teamPaymentSlots.id }).from(teamPaymentSlots)
         .where(and(eq(teamPaymentSlots.organizationId, bowler.organizationId),
@@ -234,10 +243,25 @@ export async function deleteUnusedBowler(bowlerId: number): Promise<void> {
       if (consentBindings.length) throw conflict("PAYMENT_OPERATION_EVIDENCE");
       if (preparationAttempts.length) throw conflict("AUTOPAY_PROVIDER_ACTIVITY");
 
-      const links = await tx.select().from(bowlerPaymentLinks).where(and(
-        eq(bowlerPaymentLinks.organizationId, bowler.organizationId),
+      const providerEvidence = consents.some((row) =>
+        row.state === "revoked" || row.state === "expired"
+        || (row.state === "pending" && (
+          row.providerName !== null || row.providerLocationId !== null
+          || row.encryptedSourceId !== null || row.encryptedCustomerId !== null
+          || row.revokedAt !== null
+        )));
+      if (providerEvidence) throw conflict("AUTOPAY_PROVIDER_EVIDENCE");
+
+      // The bowler foreign keys are intentionally plain cascading references,
+      // so inspect every link before narrowing to this tenant. A corrupt or
+      // legacy cross-organization link must block deletion rather than be
+      // silently left to cascade with the bowler row.
+      const links = await tx.select().from(bowlerPaymentLinks).where(
         or(eq(bowlerPaymentLinks.bowlerAId, bowlerId), eq(bowlerPaymentLinks.bowlerBId, bowlerId)),
-      ));
+      );
+      if (links.some((row) => row.organizationId !== bowler.organizationId)) {
+        throw conflict("CROSS_ORGANIZATION_PAYMENT_LINK");
+      }
       if (links.some((row) => row.status !== "retired")) throw conflict("PAYMENT_PARTNER_LINK");
       const retiredLinkIds = links.filter((row) => row.status === "retired").map((row) => row.id);
       const partnerEvidence = await tx.select({ id: autopayConsentPartners.id }).from(autopayConsentPartners).where(and(
@@ -279,7 +303,7 @@ export async function deleteUnusedBowler(bowlerId: number): Promise<void> {
         eq(occurrencePaymentResponsibilities.organizationId, bowler.organizationId),
         inArray(occurrencePaymentResponsibilities.id, cleanableResponsibilityIds),
       ));
-      const cleanableConsentIds = consents.filter((row) => row.state !== "active").map((row) => row.id);
+      const cleanableConsentIds = consents.filter((row) => row.state === "pending").map((row) => row.id);
       if (cleanableConsentIds.length) await tx.delete(autopayConsents).where(and(
         eq(autopayConsents.organizationId, bowler.organizationId), inArray(autopayConsents.id, cleanableConsentIds),
       ));
