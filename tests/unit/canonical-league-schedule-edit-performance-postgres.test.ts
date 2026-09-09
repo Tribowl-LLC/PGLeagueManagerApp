@@ -22,6 +22,7 @@ import { LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION } from "@shared/league-setup-i
 import { createLeagueWithCanonicalSetup } from "../../server/services/league-setup-integration";
 import { editCanonicalLeagueSchedule } from "../../server/services/canonical-league-schedule-edit";
 import { materializeRosterPaymentOccurrenceInTransaction } from "../../server/services/roster-payment-materializer";
+import { canonicalRosterFingerprint, saveTeamRoster } from "../../server/services/roster-payment-core";
 import { deleteOrganization } from "../../server/storage/organizations";
 import { pool as appPool } from "../../server/db";
 import { getTestDb } from "../setup/test-db";
@@ -32,6 +33,8 @@ let organizationId: number;
 let actorUserId: number;
 let leagueId: number;
 let performancePayerBowlerId: number;
+let performanceTeamId: number;
+let performanceSlotBowlerIds: number[];
 
 function trackPoolQueries(pool: Pool): () => number {
   let queryCount = 0;
@@ -119,6 +122,10 @@ beforeAll(async () => {
   const firstBowler = createdBowlers[0];
   if (!firstBowler) throw new Error("performance payer fixture was not created");
   performancePayerBowlerId = firstBowler.id;
+  const firstTeam = createdTeams[0];
+  if (!firstTeam) throw new Error("performance team fixture was not created");
+  performanceTeamId = firstTeam.id;
+  performanceSlotBowlerIds = createdBowlers.slice(0, 4).map((bowler) => bowler.id);
   const memberships = createdBowlers.map((bowler, index) => ({
     bowlerId: bowler.id,
     leagueId,
@@ -262,6 +269,62 @@ describe("canonical schedule edit batching (PostgreSQL)", () => {
     expect(retry).toMatchObject({ mode: "idempotent_retry", writesPerformed: false, scheduleRevision: applied.scheduleRevision });
   });
 
+  it("measures a synthetic full-season no-op roster save", async () => {
+    const request = {
+      commandKey: `performance-roster-no-op-${suffix}`,
+      requestFingerprint: "",
+      lineupSize: 4 as const,
+      slots: performanceSlotBowlerIds.map((mainBowlerId, slotIndex) => ({ slotIndex, occupant: "main" as const, mainBowlerId })),
+    };
+    request.requestFingerprint = canonicalRosterFingerprint(request);
+    const beforeResponsibilities = await db.select({ id: occurrencePaymentResponsibilities.id, version: occurrencePaymentResponsibilities.version, state: occurrencePaymentResponsibilities.state }).from(occurrencePaymentResponsibilities).where(and(
+      eq(occurrencePaymentResponsibilities.organizationId, organizationId),
+      eq(occurrencePaymentResponsibilities.leagueId, leagueId),
+      eq(occurrencePaymentResponsibilities.teamId, performanceTeamId),
+      eq(occurrencePaymentResponsibilities.state, "active"),
+    )).orderBy(asc(occurrencePaymentResponsibilities.id));
+    const beforeObligations = await db.select({ id: paymentObligations.id, responsibilityId: paymentObligations.responsibilityId, state: paymentObligations.state }).from(paymentObligations).innerJoin(occurrencePaymentResponsibilities, eq(
+      occurrencePaymentResponsibilities.id,
+      paymentObligations.responsibilityId,
+    )).where(and(
+      eq(paymentObligations.organizationId, organizationId),
+      eq(paymentObligations.leagueId, leagueId),
+      eq(occurrencePaymentResponsibilities.teamId, performanceTeamId),
+      eq(paymentObligations.state, "open"),
+    )).orderBy(asc(paymentObligations.id));
+    const stopTracking = trackPoolQueries(appPool);
+    const startedAt = performance.now();
+    let queryCount = 0;
+    try {
+      await saveTeamRoster({ organizationId, leagueId, teamId: performanceTeamId, actorUserId, request });
+      const repeatedRequest = { ...request, commandKey: `${request.commandKey}-repeat`, requestFingerprint: "" };
+      repeatedRequest.requestFingerprint = canonicalRosterFingerprint(repeatedRequest);
+      await saveTeamRoster({ organizationId, leagueId, teamId: performanceTeamId, actorUserId, request: repeatedRequest });
+    } finally {
+      queryCount = stopTracking();
+    }
+    const elapsedMs = performance.now() - startedAt;
+    console.info(`[roster-perf] synthetic no-op 30-occurrence/4-slot saves=2 queries=${queryCount} elapsed_ms=${elapsedMs.toFixed(1)}`);
+    expect(queryCount).toBeLessThan(100);
+    const afterResponsibilities = await db.select({ id: occurrencePaymentResponsibilities.id, version: occurrencePaymentResponsibilities.version, state: occurrencePaymentResponsibilities.state }).from(occurrencePaymentResponsibilities).where(and(
+      eq(occurrencePaymentResponsibilities.organizationId, organizationId),
+      eq(occurrencePaymentResponsibilities.leagueId, leagueId),
+      eq(occurrencePaymentResponsibilities.teamId, performanceTeamId),
+      eq(occurrencePaymentResponsibilities.state, "active"),
+    )).orderBy(asc(occurrencePaymentResponsibilities.id));
+    const afterObligations = await db.select({ id: paymentObligations.id, responsibilityId: paymentObligations.responsibilityId, state: paymentObligations.state }).from(paymentObligations).innerJoin(occurrencePaymentResponsibilities, eq(
+      occurrencePaymentResponsibilities.id,
+      paymentObligations.responsibilityId,
+    )).where(and(
+      eq(paymentObligations.organizationId, organizationId),
+      eq(paymentObligations.leagueId, leagueId),
+      eq(occurrencePaymentResponsibilities.teamId, performanceTeamId),
+      eq(paymentObligations.state, "open"),
+    )).orderBy(asc(paymentObligations.id));
+    expect(afterResponsibilities).toEqual(beforeResponsibilities);
+    expect(afterObligations).toEqual(beforeObligations);
+  });
+
   it("rolls back every occurrence when one reserved roster item blocks the batch", async () => {
     const [league] = await db.select({ canonicalScheduleRevision: leagues.canonicalScheduleRevision }).from(leagues).where(eq(leagues.id, leagueId));
     if (!league) throw new Error("performance league fixture is missing");
@@ -355,6 +418,7 @@ describe("canonical schedule edit batching (PostgreSQL)", () => {
     expect(await db.select({ id: occurrencePaymentResponsibilities.id, version: occurrencePaymentResponsibilities.version, dueAt: occurrencePaymentResponsibilities.dueAt, state: occurrencePaymentResponsibilities.state })
       .from(occurrencePaymentResponsibilities).where(and(eq(occurrencePaymentResponsibilities.organizationId, organizationId), eq(occurrencePaymentResponsibilities.leagueId, leagueId))).orderBy(asc(occurrencePaymentResponsibilities.id))).toEqual(before);
   });
+
 });
 
 describe("upfront materialization no-op (PostgreSQL)", () => {

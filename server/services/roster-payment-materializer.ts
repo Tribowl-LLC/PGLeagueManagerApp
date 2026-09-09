@@ -186,6 +186,12 @@ type MaterializeRosterOccurrencesInput = {
   occurrenceIds: readonly string[];
   actorUserId: number;
   teamId?: number;
+  /**
+   * Schedule edits reschedule every current responsibility and retain its
+   * resolved payer/component facts. Roster saves replace only open default
+   * evidence and leave explicit substitute/split overrides authoritative.
+   */
+  mode?: "reschedule" | "roster";
 };
 
 type RosterMaterializationPlan = {
@@ -200,7 +206,7 @@ type RosterMaterializationPlan = {
   policy: TeamPaymentPolicy;
   dueAt: string;
   pastDueAt: string;
-  action: "none" | "void" | "create" | "reschedule";
+  action: "none" | "void" | "create" | "repair" | "reschedule";
 };
 
 function materializationSlotKey(occurrenceId: string, teamId: number, slotIndex: number, positionIndex: number): string {
@@ -224,155 +230,14 @@ export async function materializeRosterPaymentOccurrenceInTransaction(
   tx: PaymentOperationTransaction,
   input: { organizationId: number; leagueId: number; occurrenceId: string; actorUserId: number; reschedule?: boolean; teamId?: number },
 ): Promise<boolean> {
-  if (input.reschedule) {
-    return materializeRosterPaymentOccurrencesInTransaction(tx, {
-      organizationId: input.organizationId,
-      leagueId: input.leagueId,
-      occurrenceIds: [input.occurrenceId],
-      actorUserId: input.actorUserId,
-      teamId: input.teamId,
-    });
-  }
-  const [league] = await tx.select({
-    payingLineupSize: leagues.payingLineupSize,
-    weeklyFee: leagues.weeklyFee,
-    paymentMode: leagues.paymentMode,
-  }).from(leagues).where(and(eq(leagues.id, input.leagueId), eq(leagues.organizationId, input.organizationId))).limit(1);
-  if (!league?.payingLineupSize) return false;
-  const [occurrence] = await tx.select({ id: leagueOccurrences.id, startAt: leagueOccurrences.startAt })
-    .from(leagueOccurrences).where(and(
-      eq(leagueOccurrences.id, input.occurrenceId),
-      eq(leagueOccurrences.organizationId, input.organizationId),
-      eq(leagueOccurrences.leagueId, input.leagueId),
-      inArray(leagueOccurrences.lifecycle, ["published", "locked"] as const),
-      inArray(leagueOccurrences.status, ["scheduled", "completed"] as const),
-    )).limit(1);
-  if (!occurrence) return false;
-  const rosterTeams = await tx.select({ id: teams.id }).from(teams).where(and(eq(teams.leagueId, input.leagueId), eq(teams.active, true)));
-  const selectedTeams = rosterTeams.filter((team) => input.teamId === undefined || team.id === input.teamId);
-  if (selectedTeams.length === 0) return false;
-  const rosterRows = await tx.select().from(teamPaymentSlots)
-    .where(and(eq(teamPaymentSlots.organizationId, input.organizationId), eq(teamPaymentSlots.leagueId, input.leagueId)))
-    .orderBy(asc(teamPaymentSlots.teamId), asc(teamPaymentSlots.slotIndex));
-  const activeMainRows = await tx.select({ bowlerId: bowlers.id, teamId: bowlerLeagues.teamId }).from(bowlers)
-    .innerJoin(bowlerLeagues, and(
-      eq(bowlerLeagues.bowlerId, bowlers.id),
-      eq(bowlerLeagues.leagueId, input.leagueId),
-      eq(bowlerLeagues.active, true),
-    )).where(and(
-      eq(bowlers.organizationId, input.organizationId),
-      eq(bowlers.active, true),
-    ));
-  const activeMainKeys = new Set(activeMainRows.map((row) => `${row.teamId}:${row.bowlerId}`));
-  const policies = await tx.select().from(teamPaymentPolicies).where(and(eq(teamPaymentPolicies.organizationId, input.organizationId), eq(teamPaymentPolicies.leagueId, input.leagueId)));
-  const active = await tx.select().from(occurrencePaymentResponsibilities).where(and(
-    eq(occurrencePaymentResponsibilities.organizationId, input.organizationId),
-    eq(occurrencePaymentResponsibilities.leagueId, input.leagueId),
-    eq(occurrencePaymentResponsibilities.occurrenceId, occurrence.id),
-    eq(occurrencePaymentResponsibilities.state, "active"),
-  ));
-  const timing = await deriveRosterPaymentTimingInTransaction(tx, {
+  return materializeRosterPaymentOccurrencesInTransaction(tx, {
     organizationId: input.organizationId,
     leagueId: input.leagueId,
-    paymentMode: league.paymentMode,
-    occurrenceStartAt: occurrence.startAt,
+    occurrenceIds: [input.occurrenceId],
+    actorUserId: input.actorUserId,
+    teamId: input.teamId,
+    mode: input.reschedule ? "reschedule" : "roster",
   });
-  const { dueAt, pastDueAt } = timing;
-  for (const team of selectedTeams) {
-    for (const slot of rosterRows.filter((row) => row.teamId === team.id)) {
-      const policy = policies.find((row) => row.teamId === team.id)?.defaultPolicy ?? "main_pays_full";
-      const kind = slot.occupant === "vacant"
-        ? "vacant" as const
-        : slot.occupant === "main" && slot.mainBowlerId !== null && activeMainKeys.has(`${team.id}:${slot.mainBowlerId}`)
-          ? "main" as const
-          : null;
-      const mainBowlerId = kind === "main" ? slot.mainBowlerId : null;
-      const payerBowlerId = mainBowlerId;
-      const current = active.find((row) => row.teamId === team.id && row.slotIndex === slot.slotIndex && row.positionIndex === slot.slotIndex);
-      const currentIsOverride = current !== undefined && (current.responsibilityKind === "substitute" || current.responsibilityKind === "split");
-      if (current && !currentIsOverride && kind !== null && current.responsibilityKind === kind && current.mainBowlerId === mainBowlerId && current.substituteBowlerId === null && current.payerBowlerId === payerBowlerId && current.policy === policy && current.dueAt === dueAt && current.pastDueAt === pastDueAt) continue;
-      if (currentIsOverride) continue;
-      if (current) {
-        const currentObligations = await tx.select().from(paymentObligations).where(and(
-          eq(paymentObligations.organizationId, input.organizationId),
-          eq(paymentObligations.leagueId, input.leagueId),
-          eq(paymentObligations.responsibilityId, current.id),
-        )).for("update");
-        // Settled/voided responsibility history is immutable. A roster
-        // invalidation must not rewrite that evidence or fail the membership
-        // mutation; leave the historical version in place and continue with
-        // future/open occurrences. Reserved evidence remains a hard fence.
-        if (currentObligations.some((row) => row.state !== "open")) continue;
-        await assertOpenRosterEvidenceCanBeReplaced(tx, input, current.id, currentObligations);
-        await tx.update(occurrencePaymentResponsibilities).set({ state: "voided" }).where(and(
-          eq(occurrencePaymentResponsibilities.id, current.id),
-          eq(occurrencePaymentResponsibilities.organizationId, input.organizationId),
-          eq(occurrencePaymentResponsibilities.leagueId, input.leagueId),
-          eq(occurrencePaymentResponsibilities.state, "active"),
-        ));
-        await tx.update(paymentObligations).set({ state: "voided", voidedAt: new Date().toISOString() }).where(and(
-          eq(paymentObligations.responsibilityId, current.id),
-          eq(paymentObligations.organizationId, input.organizationId),
-          eq(paymentObligations.leagueId, input.leagueId),
-          eq(paymentObligations.state, "open"),
-        ));
-      }
-      if (kind === null) continue;
-      const [latestResponsibility] = await tx.select({ version: occurrencePaymentResponsibilities.version, responsibilityKey: occurrencePaymentResponsibilities.responsibilityKey })
-        .from(occurrencePaymentResponsibilities)
-        .where(and(
-          eq(occurrencePaymentResponsibilities.organizationId, input.organizationId),
-          eq(occurrencePaymentResponsibilities.leagueId, input.leagueId),
-          eq(occurrencePaymentResponsibilities.occurrenceId, occurrence.id),
-          eq(occurrencePaymentResponsibilities.teamId, team.id),
-          eq(occurrencePaymentResponsibilities.slotIndex, slot.slotIndex),
-          eq(occurrencePaymentResponsibilities.positionIndex, slot.slotIndex),
-        )).orderBy(desc(occurrencePaymentResponsibilities.version)).limit(1).for("update");
-      const nextVersion = Math.max(current?.version ?? 0, latestResponsibility?.version ?? 0) + 1;
-      const [responsibility] = await tx.insert(occurrencePaymentResponsibilities).values({
-        organizationId: input.organizationId,
-        leagueId: input.leagueId,
-        occurrenceId: occurrence.id,
-        teamId: team.id,
-        slotId: slot.id,
-        slotIndex: slot.slotIndex,
-        positionIndex: slot.slotIndex,
-        ...(latestResponsibility ? { responsibilityKey: latestResponsibility.responsibilityKey } : {}),
-        version: nextVersion,
-        state: "active",
-        responsibilityKind: kind,
-        mainBowlerId,
-        substituteBowlerId: null,
-        payerBowlerId,
-        lineagePayerBowlerId: null,
-        prizePayerBowlerId: null,
-        policy,
-        amountMinor: kind === "main" ? league.weeklyFee : 0,
-        currency: "USD",
-        dueAt,
-        pastDueAt,
-        assignmentNote: "roster_default",
-        recordedByUserId: input.actorUserId,
-      }).returning();
-      if (responsibility && payerBowlerId !== null && league.weeklyFee > 0) {
-        await tx.insert(paymentObligations).values({
-          organizationId: input.organizationId,
-          leagueId: input.leagueId,
-          occurrenceId: occurrence.id,
-          responsibilityId: responsibility.id,
-          component: "full",
-          payerBowlerId,
-          amountMinor: league.weeklyFee,
-          currency: "USD",
-          dueAt,
-          pastDueAt,
-          state: "open",
-          createdByUserId: input.actorUserId,
-        });
-      }
-    }
-  }
-  return true;
 }
 
 /**
@@ -387,6 +252,7 @@ export async function materializeRosterPaymentOccurrencesInTransaction(
   tx: PaymentOperationTransaction,
   input: MaterializeRosterOccurrencesInput,
 ): Promise<boolean> {
+  const mode = input.mode ?? "reschedule";
   const occurrenceIds = [...new Set(input.occurrenceIds)];
   if (occurrenceIds.length === 0) return false;
   const [league] = await tx.select({
@@ -510,15 +376,32 @@ export async function materializeRosterPaymentOccurrencesInTransaction(
           && current.policy === policy
           && sameInstant(current.dueAt, timing.dueAt)
           && sameInstant(current.pastDueAt, timing.pastDueAt);
+        const hasNonOpenEvidence = currentObligations.some((row) => row.state !== "open");
         let action: RosterMaterializationPlan["action"] = "none";
         if (current === undefined) {
           action = kind === null ? "none" : "create";
         } else if (unchanged) {
+          // A responsibility can survive a partial/manual repair without its
+          // expected default obligation. Recreate only a wholly absent open
+          // default obligation; never reopen or infer from settled evidence.
+          action = mode === "roster"
+            && kind === "main"
+            && currentObligations.length === 0
+            ? "repair"
+            : "none";
+        } else if (mode === "roster" && currentIsOverride) {
+          // Explicit substitute/split decisions are occurrence evidence, not
+          // defaults. A roster save must not rewrite them.
+          action = "none";
+        } else if (mode === "roster" && hasNonOpenEvidence) {
+          // Settled or partially settled history is immutable. The changed
+          // slot applies to later occurrences while this occurrence retains
+          // its original financial evidence.
           action = "none";
         } else if (currentIsOverride || kind !== null) {
           action = "reschedule";
         } else if (!currentIsOverride) {
-          action = currentObligations.some((row) => row.state !== "open") ? "none" : "void";
+          action = mode === "reschedule" && hasNonOpenEvidence ? "none" : "void";
         }
         plans.push({ occurrence, team, slot, current, currentObligations, kind, mainBowlerId, payerBowlerId, policy, dueAt: timing.dueAt, pastDueAt: timing.pastDueAt, action });
       }
@@ -562,7 +445,7 @@ export async function materializeRosterPaymentOccurrencesInTransaction(
     return {
       plan,
       version,
-      values: current && plan.action === "reschedule"
+      values: mode === "reschedule" && current && plan.action === "reschedule"
         ? {
           organizationId: input.organizationId,
           leagueId: input.leagueId,
@@ -633,7 +516,7 @@ export async function materializeRosterPaymentOccurrencesInTransaction(
   const obligationInsertValues = responsibilityInsertPlans.flatMap((item) => {
     const responsibility = insertedByPlan.get(materializationVersionKey(item.plan, item.version));
     if (!responsibility) throw new Error("RESPONSIBILITY_VERSION_FAILED");
-    if (item.plan.action === "reschedule") {
+    if (mode === "reschedule" && item.plan.action === "reschedule") {
       return item.plan.currentObligations.map((obligation) => ({
         organizationId: input.organizationId,
         leagueId: input.leagueId,
@@ -666,6 +549,33 @@ export async function materializeRosterPaymentOccurrencesInTransaction(
   });
   for (let index = 0; index < obligationInsertValues.length; index += 500) {
     await tx.insert(paymentObligations).values(obligationInsertValues.slice(index, index + 500));
+  }
+
+  // A missing default obligation is repairable without issuing a new
+  // responsibility version. This path intentionally accepts only a current
+  // default Main with no obligation rows, so it cannot reopen voided/settled
+  // evidence or manufacture a payment for an explicit override/VACANT slot.
+  const repairObligationValues = plans.flatMap((plan) => plan.action === "repair"
+    && plan.current !== undefined
+    && plan.payerBowlerId !== null
+    && league.weeklyFee > 0
+    ? [{
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      occurrenceId: plan.occurrence.id,
+      responsibilityId: plan.current.id,
+      component: "full" as const,
+      payerBowlerId: plan.payerBowlerId,
+      amountMinor: league.weeklyFee,
+      currency: "USD",
+      dueAt: plan.dueAt,
+      pastDueAt: plan.pastDueAt,
+      state: "open" as const,
+      createdByUserId: input.actorUserId,
+    }]
+    : []);
+  for (let index = 0; index < repairObligationValues.length; index += 500) {
+    await tx.insert(paymentObligations).values(repairObligationValues.slice(index, index + 500));
   }
   return true;
 }

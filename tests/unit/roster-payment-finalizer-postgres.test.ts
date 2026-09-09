@@ -205,6 +205,28 @@ async function createOccurrence() {
   return { occurrence, responsibility, obligation };
 }
 
+async function resetBaseRosterToWeeklyMain(): Promise<void> {
+  // Earlier lifecycle tests intentionally move one fixture to 2038-03-15;
+  // keep these additional season-batch fixtures outside that date range.
+  occurrenceOrdinal = Math.max(occurrenceOrdinal, 100);
+  await db.update(leagues).set({ paymentMode: "weekly", timezone: "UTC" }).where(and(
+    eq(leagues.organizationId, organizationId),
+    eq(leagues.id, leagueId),
+  ));
+  await db.update(teamPaymentSlots).set({ occupant: "main", mainBowlerId: bowlerId }).where(and(
+    eq(teamPaymentSlots.organizationId, organizationId),
+    eq(teamPaymentSlots.leagueId, leagueId),
+    eq(teamPaymentSlots.teamId, teamId),
+    eq(teamPaymentSlots.slotIndex, 0),
+  ));
+  await db.update(teamPaymentSlots).set({ occupant: "vacant", mainBowlerId: null }).where(and(
+    eq(teamPaymentSlots.organizationId, organizationId),
+    eq(teamPaymentSlots.leagueId, leagueId),
+    eq(teamPaymentSlots.teamId, teamId),
+    inArray(teamPaymentSlots.slotIndex, [1, 2]),
+  ));
+}
+
 async function createRosterOperation(
   obligationId: string,
   responsibilityId: string,
@@ -1856,5 +1878,127 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
       eq(occurrencePaymentResponsibilities.teamId, overrideTeam.id),
       eq(occurrencePaymentResponsibilities.slotIndex, 2),
     ))).toHaveLength(0);
+  });
+
+  it("replaces one open slot across the season while preserving other slot identities", async () => {
+    await resetBaseRosterToWeeklyMain();
+    const [replacement] = await db.insert(bowlers).values({ name: "Batched replacement Main", organizationId }).returning({ id: bowlers.id });
+    await db.insert(bowlerLeagues).values({ bowlerId: replacement.id, leagueId, teamId });
+    const fixtures = [await createOccurrence(), await createOccurrence(), await createOccurrence()];
+    const untouchedBefore = await db.select({ occurrenceId: occurrencePaymentResponsibilities.occurrenceId, id: occurrencePaymentResponsibilities.id, version: occurrencePaymentResponsibilities.version }).from(occurrencePaymentResponsibilities).where(and(
+      eq(occurrencePaymentResponsibilities.organizationId, organizationId),
+      eq(occurrencePaymentResponsibilities.leagueId, leagueId),
+      eq(occurrencePaymentResponsibilities.teamId, teamId),
+      inArray(occurrencePaymentResponsibilities.occurrenceId, fixtures.map((fixture) => fixture.occurrence.id)),
+      inArray(occurrencePaymentResponsibilities.slotIndex, [1, 2]),
+      eq(occurrencePaymentResponsibilities.state, "active"),
+    ));
+    const request = {
+      commandKey: `batched-slot-replacement-${randomUUID()}`,
+      requestFingerprint: "",
+      lineupSize: 3 as const,
+      slots: [
+        { slotIndex: 0, occupant: "main" as const, mainBowlerId: replacement.id },
+        { slotIndex: 1, occupant: "vacant" as const, mainBowlerId: null },
+        { slotIndex: 2, occupant: "vacant" as const, mainBowlerId: null },
+      ],
+    };
+    request.requestFingerprint = canonicalRosterFingerprint(request);
+    await saveTeamRoster({ organizationId, leagueId, teamId, actorUserId, request });
+
+    for (const fixture of fixtures) {
+      const [activeReplacement] = await db.select({ id: occurrencePaymentResponsibilities.id, version: occurrencePaymentResponsibilities.version, mainBowlerId: occurrencePaymentResponsibilities.mainBowlerId, state: occurrencePaymentResponsibilities.state }).from(occurrencePaymentResponsibilities).where(and(
+        eq(occurrencePaymentResponsibilities.organizationId, organizationId),
+        eq(occurrencePaymentResponsibilities.leagueId, leagueId),
+        eq(occurrencePaymentResponsibilities.occurrenceId, fixture.occurrence.id),
+        eq(occurrencePaymentResponsibilities.teamId, teamId),
+        eq(occurrencePaymentResponsibilities.slotIndex, 0),
+        eq(occurrencePaymentResponsibilities.state, "active"),
+      ));
+      if (!activeReplacement) throw new Error("batched replacement responsibility was not materialized");
+      expect(activeReplacement).toMatchObject({ version: fixture.responsibility.version + 1, mainBowlerId: replacement.id, state: "active" });
+      const [oldResponsibility] = await db.select({ state: occurrencePaymentResponsibilities.state }).from(occurrencePaymentResponsibilities).where(eq(occurrencePaymentResponsibilities.id, fixture.responsibility.id));
+      expect(oldResponsibility?.state).toBe("voided");
+      const [oldObligation] = await db.select({ state: paymentObligations.state }).from(paymentObligations).where(eq(paymentObligations.id, fixture.obligation.id));
+      expect(oldObligation?.state).toBe("voided");
+      const replacementObligations = await db.select({ payerBowlerId: paymentObligations.payerBowlerId, state: paymentObligations.state }).from(paymentObligations).where(and(
+        eq(paymentObligations.organizationId, organizationId),
+        eq(paymentObligations.leagueId, leagueId),
+        eq(paymentObligations.responsibilityId, activeReplacement.id),
+      ));
+      expect(replacementObligations).toEqual([{ payerBowlerId: replacement.id, state: "open" }]);
+    }
+    const untouchedAfter = await db.select({ occurrenceId: occurrencePaymentResponsibilities.occurrenceId, id: occurrencePaymentResponsibilities.id, version: occurrencePaymentResponsibilities.version }).from(occurrencePaymentResponsibilities).where(and(
+      eq(occurrencePaymentResponsibilities.organizationId, organizationId),
+      eq(occurrencePaymentResponsibilities.leagueId, leagueId),
+      eq(occurrencePaymentResponsibilities.teamId, teamId),
+      inArray(occurrencePaymentResponsibilities.occurrenceId, fixtures.map((fixture) => fixture.occurrence.id)),
+      inArray(occurrencePaymentResponsibilities.slotIndex, [1, 2]),
+      eq(occurrencePaymentResponsibilities.state, "active"),
+    ));
+    expect(untouchedAfter).toEqual(untouchedBefore);
+  });
+
+  it("repairs a missing default obligation without changing its responsibility version", async () => {
+    await resetBaseRosterToWeeklyMain();
+    const fixture = await createOccurrence();
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('leaguevault.organization_teardown', 'on', true)`);
+      await tx.delete(paymentObligations).where(and(
+        eq(paymentObligations.organizationId, organizationId),
+        eq(paymentObligations.id, fixture.obligation.id),
+      ));
+    });
+    const request = {
+      commandKey: `missing-default-obligation-${randomUUID()}`,
+      requestFingerprint: "",
+      lineupSize: 3 as const,
+      slots: [
+        { slotIndex: 0, occupant: "main" as const, mainBowlerId: bowlerId },
+        { slotIndex: 1, occupant: "vacant" as const, mainBowlerId: null },
+        { slotIndex: 2, occupant: "vacant" as const, mainBowlerId: null },
+      ],
+    };
+    request.requestFingerprint = canonicalRosterFingerprint(request);
+    await saveTeamRoster({ organizationId, leagueId, teamId, actorUserId, request });
+    const [responsibilityAfter] = await db.select({ id: occurrencePaymentResponsibilities.id, version: occurrencePaymentResponsibilities.version, state: occurrencePaymentResponsibilities.state }).from(occurrencePaymentResponsibilities).where(eq(occurrencePaymentResponsibilities.id, fixture.responsibility.id));
+    expect(responsibilityAfter).toEqual({ id: fixture.responsibility.id, version: fixture.responsibility.version, state: "active" });
+    const repaired = await db.select({ responsibilityId: paymentObligations.responsibilityId, payerBowlerId: paymentObligations.payerBowlerId, amountMinor: paymentObligations.amountMinor, state: paymentObligations.state }).from(paymentObligations).where(and(
+      eq(paymentObligations.organizationId, organizationId),
+      eq(paymentObligations.leagueId, leagueId),
+      eq(paymentObligations.responsibilityId, fixture.responsibility.id),
+    ));
+    expect(repaired).toEqual([{ responsibilityId: fixture.responsibility.id, payerBowlerId: bowlerId, amountMinor: 2_000, state: "open" }]);
+  });
+
+  it.each(["settled", "partial"] as const)("preserves %s default evidence while applying the new roster to the slot", async (settlement) => {
+    await resetBaseRosterToWeeklyMain();
+    const [replacement] = await db.insert(bowlers).values({ name: `Paid roster replacement ${settlement}`, organizationId }).returning({ id: bowlers.id });
+    await db.insert(bowlerLeagues).values({ bowlerId: replacement.id, leagueId, teamId });
+    const fixture = await createOccurrence();
+    await createRosterOperation(fixture.obligation.id, fixture.responsibility.id, settlement === "partial" ? 1_000 : 2_000);
+    const request = {
+      commandKey: `paid-roster-preservation-${settlement}-${randomUUID()}`,
+      requestFingerprint: "",
+      lineupSize: 3 as const,
+      slots: [
+        { slotIndex: 0, occupant: "main" as const, mainBowlerId: replacement.id },
+        { slotIndex: 1, occupant: "vacant" as const, mainBowlerId: null },
+        { slotIndex: 2, occupant: "vacant" as const, mainBowlerId: null },
+      ],
+    };
+    request.requestFingerprint = canonicalRosterFingerprint(request);
+    await saveTeamRoster({ organizationId, leagueId, teamId, actorUserId, request });
+    const [responsibilityAfter] = await db.select({ id: occurrencePaymentResponsibilities.id, mainBowlerId: occurrencePaymentResponsibilities.mainBowlerId, version: occurrencePaymentResponsibilities.version, state: occurrencePaymentResponsibilities.state }).from(occurrencePaymentResponsibilities).where(eq(occurrencePaymentResponsibilities.id, fixture.responsibility.id));
+    expect(responsibilityAfter).toEqual({ id: fixture.responsibility.id, mainBowlerId: bowlerId, version: fixture.responsibility.version, state: "active" });
+    const [obligationAfter] = await db.select({ state: paymentObligations.state }).from(paymentObligations).where(eq(paymentObligations.id, fixture.obligation.id));
+    expect(obligationAfter?.state).toBe(settlement === "partial" ? "partially_settled" : "settled");
+    const [slotAfter] = await db.select({ occupant: teamPaymentSlots.occupant, mainBowlerId: teamPaymentSlots.mainBowlerId }).from(teamPaymentSlots).where(and(
+      eq(teamPaymentSlots.organizationId, organizationId),
+      eq(teamPaymentSlots.leagueId, leagueId),
+      eq(teamPaymentSlots.teamId, teamId),
+      eq(teamPaymentSlots.slotIndex, 0),
+    ));
+    expect(slotAfter).toEqual({ occupant: "main", mainBowlerId: replacement.id });
   });
 });
