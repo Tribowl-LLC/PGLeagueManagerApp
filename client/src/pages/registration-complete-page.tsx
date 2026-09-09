@@ -79,11 +79,11 @@ const RegistrationCompletePage: FC = () => {
   useEffect(() => {
     // Wait for the first fresh request before routing. This prevents a stale
     // linked user in the shared cache from causing a route bounce.
-    if (!isFetching && userResponse?.data?.bowlerId) {
+    if (!isFetching && !statusError && userResponse?.data?.bowlerId) {
       queryClient.setQueryData(["/api/user"], userResponse);
       setLocation("/bowler-dashboard");
     }
-  }, [isFetching, setLocation, userResponse]);
+  }, [isFetching, setLocation, statusError, userResponse]);
 
   const handleLogout = async () => {
     try {

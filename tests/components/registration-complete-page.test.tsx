@@ -88,6 +88,24 @@ describe("RegistrationCompletePage", () => {
     expect(navigate).not.toHaveBeenCalled();
   });
 
+  it("does not route from linked cached data when the fresh status read fails", async () => {
+    global.fetch = async () => new Response("offline", { status: 503 });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, queryFn: getQueryFn }, mutations: { retry: false } },
+    });
+    queryClient.setQueryData(["/api/user"], userResponse(42));
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RegistrationCompletePage />
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText(/couldn’t check registration status/i)).toBeInTheDocument();
+    expect(screen.getByTestId("button-check-registration-status")).toBeInTheDocument();
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
   it("stays mounted with the retry UI when the protected status read fails transiently", async () => {
     let requestCount = 0;
     global.fetch = async () => {
