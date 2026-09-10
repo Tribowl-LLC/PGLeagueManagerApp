@@ -26,7 +26,7 @@
  * (`scripts/verify-trust-proxy-deploy.ts`) when run against a real
  * deployment.
  */
-import { describe, it, expect } from 'vitest';
+import { beforeAll, describe, it, expect } from 'vitest';
 import {
   login,
   purgeSessionCache,
@@ -156,15 +156,21 @@ describe('GET /api/system-admin/trust-proxy-status', () => {
   //   - no token presented → standard requireAdmin contract applies
   //     (already covered by the unauth/non-admin/admin tests above)
   //
-  // These tests rely on the dev environment having
-  // TRUST_PROXY_PROBE_TOKEN set (see `.local/.commit_message`); they
-  // skip themselves with a loud message if it's missing so a fresh
-  // checkout doesn't register a false positive.
+  // `tests/setup/per-worker-setup.ts` installs a deterministic test-only
+  // TRUST_PROXY_PROBE_TOKEN before spawning the per-worker Express app, so
+  // the test process and server always exercise the same configured value.
   // ----------------------------------------------------------------
   const probeToken = process.env.TRUST_PROXY_PROBE_TOKEN?.trim();
-  const probeConfigured = !!probeToken && probeToken.length >= 32;
+  beforeAll(() => {
+    if (!probeToken || probeToken.length < 32) {
+      throw new Error(
+        'X-Probe-Token test fixture is missing or shorter than 32 characters; ' +
+        'tests/setup/per-worker-setup.ts must install the synthetic test token.',
+      );
+    }
+  });
 
-  describe.skipIf(!probeConfigured)('X-Probe-Token auth path', () => {
+  describe('X-Probe-Token auth path', () => {
     it('accepts a matching X-Probe-Token with no session and returns the status body', { retry: 2 }, async () => {
       const res = await fetch(`${BASE_URL}/api/system-admin/trust-proxy-status`, {
         headers: {
