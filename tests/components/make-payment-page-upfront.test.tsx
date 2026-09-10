@@ -24,7 +24,20 @@ const mocks = vi.hoisted(() => {
   const financialData = () => ({
     contractVersion: "canonical-due-past-due/2",
     authoritativeSource: "payment_obligations",
-    rows: [{
+    rows: paymentMode === "weekly" ? [1, 2, 3].map((week) => ({
+      id: `obligation-${week}`,
+      occurrenceId: `occurrence-${week}`,
+      payerBowlerId: 42,
+      teamId: null,
+      amountMinor: 1_000,
+      allocatedMinor: paidInFull ? 1_000 : 0,
+      outstandingMinor: paidInFull ? 0 : 1_000,
+      dueAt: null,
+      pastDueAt: null,
+      classification: paidInFull ? "settled" : "due",
+      state: paidInFull ? "settled" : "open",
+      reviewRequired: false,
+    })) : [{
       id: "obligation-1",
       occurrenceId: "occurrence-1",
       payerBowlerId: 42,
@@ -151,7 +164,7 @@ vi.mock("@/lib/payment-request-identity", () => ({
   clearPaymentIntentForRequestKey: vi.fn(),
   interactivePaymentIntentScope: vi.fn(() => "stable-scope"),
   isTerminalRosterPaymentFailure: vi.fn((status: unknown) => status === "failed_terminal" || status === "canceled" || status === "action_required"),
-  paymentRequestHeaders: vi.fn(() => ({})),
+  paymentRequestHeaders: vi.fn((requestKey: string) => ({ "Idempotency-Key": requestKey })),
   paymentRequestWithRecovery: vi.fn((_key: string, request: () => Promise<Response>) => request()),
   prepareRosterPaymentIntent: mocks.prepareRosterPaymentIntent,
 }));
@@ -302,5 +315,47 @@ describe("MakePaymentPage upfront payment mode", () => {
     await waitFor(() => expect(mocks.walletOptions.enabled).toBe(true));
     expect(mocks.walletOptions.onPaymentStarted?.()).toBe(true);
     expect(mocks.csrfFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["apple_pay", "google_pay"] as const)("keeps the prepared identity through weekly selection changes for %s", async (walletType) => {
+    mocks.setPaymentMode("weekly");
+    mocks.prepareRosterPaymentIntent
+      .mockReset()
+      .mockResolvedValueOnce({ requestKey: "prepared-wallet-request", outcome: "new" })
+      .mockResolvedValue({ requestKey: "prepared-wallet-request", outcome: "unresolved", status: "pending" });
+    mocks.csrfFetch
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "weekly-quote", payerBowlerId: 42, amountMinor: 2_000 } }) })
+      .mockResolvedValueOnce({ ok: true, status: 202, json: async () => ({ data: { status: "pending" } }) });
+
+    const view = render(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.walletOptions.enabled).toBe(true));
+    expect(mocks.prepareRosterPaymentIntent).toHaveBeenCalledOnce();
+    let props = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { paymentWeekCount: number; paymentAmountMinor: number; onPaymentWeekCountChange: (value: number) => void };
+    expect(props).toMatchObject({ paymentWeekCount: 1, paymentAmountMinor: 1_000 });
+
+    act(() => { props.onPaymentWeekCountChange(3); });
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ paymentWeekCount: 3, paymentAmountMinor: 3_000 }));
+    props = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as typeof props;
+    act(() => { props.onPaymentWeekCountChange(2); });
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ paymentWeekCount: 2, paymentAmountMinor: 2_000 }));
+    expect(mocks.prepareRosterPaymentIntent).toHaveBeenCalledOnce();
+    expect(mocks.walletOptions.onPaymentStarted?.()).toBe(true);
+
+    await act(async () => { await mocks.walletOptions.onTokenReceived?.("wallet-source", walletType); });
+    await waitFor(() => expect(mocks.csrfFetch).toHaveBeenCalledTimes(2));
+    const quoteRequest = mocks.csrfFetch.mock.calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(String(quoteRequest.body))).toMatchObject({ amountMinor: 2_000, payerBowlerId: 42 });
+    const chargeRequest = mocks.csrfFetch.mock.calls[1]?.[1] as RequestInit;
+    expect(chargeRequest.headers).toMatchObject({ "Idempotency-Key": "prepared-wallet-request" });
+    expect(JSON.parse(String(chargeRequest.body))).toMatchObject({
+      amountMinor: 2_000,
+      payerBowlerId: 42,
+      sourceId: "wallet-source",
+      sourceKind: "wallet",
+      idempotencyKey: "prepared-wallet-request",
+      requestFingerprint: "weekly-quote",
+    });
+    expect(document.body).toHaveTextContent("Payment confirmation in progress");
+    view.unmount();
   });
 });
