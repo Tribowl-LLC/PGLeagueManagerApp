@@ -5,7 +5,7 @@ import { z } from "zod";
 import { sendSuccess, sendError, handleZodError, parseOptionalIntParam, sanitizeBowler } from '../utils/api.js';
 import { hasAdminAccessToLeague, hasLeagueOperationsAccess, isOrgOrHigher, isPaymentManager } from '../utils/access-control.js';
 import { createLogger } from '../logger';
-import { TeamDeletionRequiresArchiveError, TeamOrganizationChangedError } from '../storage/teams.js';
+import { TeamDeletionDependencyChangedError, TeamDeletionRequiresArchiveError, TeamOrganizationChangedError } from '../storage/teams.js';
 import { getPgErrorCode } from '../utils/db-errors.js';
 
 const log = createLogger("Teams");
@@ -334,10 +334,13 @@ router.delete("/:id", async (req, res) => {
     if (error instanceof TeamDeletionRequiresArchiveError) {
       return sendError(
         res,
-        'This team has retained financial roster or payment history. Archive the team instead of deleting it.',
+        error.message || 'This team has retained financial roster or payment history. Archive it only to hide the team while preserving that evidence; archiving does not cancel dues.',
         409,
         'TEAM_DELETE_REQUIRES_ARCHIVE',
       );
+    }
+    if (error instanceof TeamDeletionDependencyChangedError) {
+      return sendError(res, error.message || "The team's records changed while deletion was in progress. Please retry.", 409, 'TEAM_DELETE_CONFLICT');
     }
     if (error instanceof TeamOrganizationChangedError) {
       return sendError(res, 'The team changed while the delete was being prepared. Please retry.', 409, 'TEAM_SCOPE_CHANGED');

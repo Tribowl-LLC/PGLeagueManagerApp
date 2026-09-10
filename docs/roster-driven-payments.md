@@ -76,3 +76,15 @@ shared history remains intact. The existing transaction-local
 unused cleanup, so append-only protections remain in force for ordinary
 commands. No migration, payment-provider call, or remote object deletion is
 performed.
+
+## Unpaid team deletion
+
+`DELETE /api/teams/:id` is allowed for an active or archived team only when its
+team-owned roster setup and exact historical responsibilities have no payment,
+allocation, retained operation, score, or relevant active automatic-payment
+evidence. Open or voided obligations, revisions, policies, slots, memberships,
+and the team are removed together under the league lock; canonical occurrences,
+bowler profiles, accounts, and other teams or memberships remain. A payment
+with a complete allocation to another team is unrelated, while an ambiguous or
+partially allocated tender fails closed. Archive remains hide-only and never
+cancels dues; retained evidence returns an actionable `409`.
