@@ -53,10 +53,13 @@ export function redirectToLoginForExpiredSession(options?: { cachedAuthenticated
   if (typeof window === "undefined") return;
 
   const path = window.location.pathname;
-  if (path === "/") {
-    const cachedUser = queryClient.getQueryData<{ data?: { id?: unknown } }>(["/api/user"]);
-    if (!options?.cachedAuthenticated && !cachedUser?.data?.id) return;
-  } else if (PUBLIC_AUTH_PATHS.has(path)) {
+  const cachedUser = queryClient.getQueryData<{ data?: { id?: unknown } }>(["/api/user"]);
+  const cachedAuthenticated = options?.cachedAuthenticated ?? Boolean(cachedUser?.data?.id);
+  // The root handler is also an auth boundary: anonymous root traffic needs
+  // the ordinary login route, while a stale authenticated root needs the
+  // explicit session-expired reason. Other public routes must not redirect
+  // just because their background /api/user query is naturally unauthenticated.
+  if (PUBLIC_AUTH_PATHS.has(path) && path !== "/") {
     return;
   }
 
@@ -67,7 +70,9 @@ export function redirectToLoginForExpiredSession(options?: { cachedAuthenticated
   // A hard navigation clears all in-memory authenticated and financial query
   // data before another account can use this browser session. The session is
   // already unauthenticated and needs no logout mutation.
-  const loginUrl = "/login?reason=session-expired";
+  const loginUrl = cachedAuthenticated
+    ? "/login?reason=session-expired"
+    : "/login";
   window.location.replace(loginUrl);
 }
 

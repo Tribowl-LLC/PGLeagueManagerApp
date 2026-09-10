@@ -1,8 +1,8 @@
 import type { ReactNode } from "react";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { resetSessionExpiryRedirect } from "@/lib/queryClient";
-import { describe, expect, it, vi } from "vitest";
+import { queryClient as sharedQueryClient, resetSessionExpiryRedirect } from "@/lib/queryClient";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("wouter", () => ({ Link: ({ children }: { children: ReactNode }) => <a href="#">{children}</a> }));
 vi.mock("@/components/layout", () => ({ Layout: ({ children }: { children: ReactNode }) => <div>{children}</div> }));
@@ -10,6 +10,12 @@ vi.mock("@/components/error-boundary", () => ({ ErrorBoundary: ({ children }: { 
 vi.mock("@/components/page-states", () => ({ PageLoadingState: () => <div>loading</div> }));
 
 import ReportsPage from "@/pages/reports-page";
+
+afterEach(() => {
+  sharedQueryClient.clear();
+  resetSessionExpiryRedirect();
+  vi.unstubAllGlobals();
+});
 
 describe("ReportsPage membership counts", () => {
   it("counts unique active bowlers from active memberships, excluding inactive memberships", async () => {
@@ -45,7 +51,6 @@ describe("ReportsPage membership counts", () => {
     await waitFor(() => expect(screen.getByRole("row", { name: /Tuesday League/ })).toBeInTheDocument());
     const row = screen.getByRole("row", { name: /Tuesday League/ });
     expect(within(row).getAllByRole("cell")[1]).toHaveTextContent("2");
-    vi.unstubAllGlobals();
   });
 
   it("preserves a reports AUTH_REQUIRED response and redirects a cached user once", async () => {
@@ -73,9 +78,12 @@ describe("ReportsPage membership counts", () => {
       return new Response(JSON.stringify({ data: {} }), { status: 404 });
     }));
 
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, queryFn: ({ queryKey }) => fetch(String(queryKey[0])).then((response) => response.json()) } } });
-    queryClient.setQueryData(["/api/user"], { data: { id: 9, role: "org_admin", organizationId: 1 } });
-    render(<QueryClientProvider client={queryClient}><ReportsPage /></QueryClientProvider>);
+    const testQueryClient = new QueryClient({ defaultOptions: { queries: { retry: false, queryFn: ({ queryKey }) => fetch(String(queryKey[0])).then((response) => response.json()) } } });
+    testQueryClient.setQueryData(["/api/user"], { data: { id: 9, role: "org_admin", organizationId: 1 } });
+    // The production redirect helper reads the shared authenticated cache.
+    // Seed it separately from this test provider to model the app singleton.
+    sharedQueryClient.setQueryData(["/api/user"], { data: { id: 9, role: "org_admin", organizationId: 1 } });
+    render(<QueryClientProvider client={testQueryClient}><ReportsPage /></QueryClientProvider>);
 
     expect(await screen.findByText("Your session expired. Please sign in again.")).toBeInTheDocument();
     expect(replace).toHaveBeenCalledOnce();

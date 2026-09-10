@@ -110,6 +110,7 @@ describe("client API error classification", () => {
 
   it("preserves AUTH_REQUIRED details and redirects once per source location", async () => {
     const replace = vi.fn();
+    queryClient.setQueryData(["/api/user"], { data: { id: 9 } });
     vi.stubGlobal("window", {
       location: { pathname: "/reports", search: "", replace },
     });
@@ -140,7 +141,7 @@ describe("client API error classification", () => {
     expect(providerReplace).not.toHaveBeenCalled();
   });
 
-  it("uses the expired-session redirect for a cached root session but not anonymous root", async () => {
+  it("uses the expired-session redirect for a cached root session and plain login for anonymous root", async () => {
     const rootReplace = vi.fn();
     queryClient.setQueryData(["/api/user"], { data: { id: 17 } });
     vi.stubGlobal("window", {
@@ -166,7 +167,40 @@ describe("client API error classification", () => {
       status: 401,
       code: "AUTH_REQUIRED",
     });
-    expect(anonymousReplace).not.toHaveBeenCalled();
+    expect(anonymousReplace).toHaveBeenCalledWith("/login");
+  });
+
+  it.each(["/reports", "/unknown-route"])("uses plain login for an anonymous AUTH_REQUIRED response at %s", async (path) => {
+    const replace = vi.fn();
+    queryClient.clear();
+    resetSessionExpiryRedirect();
+    vi.stubGlobal("window", {
+      location: { pathname: path, search: "", replace },
+    });
+    await expect(throwIfResNotOk(new Response(JSON.stringify({
+      error: { message: "Not authenticated", code: "AUTH_REQUIRED" },
+    }), { status: 401, headers: { "content-type": "application/json" } }))).rejects.toMatchObject({
+      status: 401,
+      code: "AUTH_REQUIRED",
+    });
+    expect(replace).toHaveBeenCalledOnce();
+    expect(replace).toHaveBeenCalledWith("/login");
+  });
+
+  it.each(["/login", "/sign-up"])("does not redirect a public route for its background AUTH_REQUIRED response at %s", async (path) => {
+    const replace = vi.fn();
+    queryClient.clear();
+    resetSessionExpiryRedirect();
+    vi.stubGlobal("window", {
+      location: { pathname: path, search: "", replace },
+    });
+    await expect(throwIfResNotOk(new Response(JSON.stringify({
+      error: { message: "Not authenticated", code: "AUTH_REQUIRED" },
+    }), { status: 401, headers: { "content-type": "application/json" } }))).rejects.toMatchObject({
+      status: 401,
+      code: "AUTH_REQUIRED",
+    });
+    expect(replace).not.toHaveBeenCalled();
   });
 
   it("keeps financial read copy specific to conflict versus availability", () => {
