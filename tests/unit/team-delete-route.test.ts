@@ -3,9 +3,10 @@ import express from "express";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 
-const { ArchiveError, ScopeError, mockStorage, fakeLogger } = vi.hoisted(() => ({
+const { ArchiveError, ScopeError, DependencyError, mockStorage, fakeLogger } = vi.hoisted(() => ({
   ArchiveError: class TeamDeletionRequiresArchiveError extends Error {},
   ScopeError: class TeamOrganizationChangedError extends Error {},
+  DependencyError: class TeamDeletionDependencyChangedError extends Error {},
   mockStorage: {
     getTeam: vi.fn(),
     getLeague: vi.fn(),
@@ -24,6 +25,7 @@ vi.mock("../../server/storage", () => ({ storage: mockStorage }));
 vi.mock("../../server/storage/teams", () => ({
   TeamDeletionRequiresArchiveError: ArchiveError,
   TeamOrganizationChangedError: ScopeError,
+  TeamDeletionDependencyChangedError: DependencyError,
 }));
 vi.mock("../../server/utils/access-control", () => ({
   hasAdminAccessToLeague: vi.fn().mockResolvedValue(true),
@@ -85,6 +87,7 @@ describe("DELETE /api/teams/:id", () => {
         message: expect.stringContaining("Archive"),
       },
     });
+    expect(body.error.message).toContain("does not cancel dues");
     expect(mockStorage.deleteTeam).toHaveBeenCalledWith(9, 41);
     expect(fakeLogger.error).not.toHaveBeenCalled();
   });
@@ -97,6 +100,23 @@ describe("DELETE /api/teams/:id", () => {
 
     expect(response.status).toBe(409);
     expect(body.error.code).toBe("TEAM_SCOPE_CHANGED");
+    expect(fakeLogger.error).not.toHaveBeenCalled();
+  });
+
+  it("returns a deliberate retry conflict for a dependency race", async () => {
+    mockStorage.deleteTeam.mockRejectedValue(new DependencyError());
+
+    const response = await fetch(`${baseUrl}/api/teams/9`, { method: "DELETE" });
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body).toMatchObject({
+      success: false,
+      error: {
+        code: "TEAM_DELETE_CONFLICT",
+        message: expect.stringMatching(/retry/i),
+      },
+    });
     expect(fakeLogger.error).not.toHaveBeenCalled();
   });
 

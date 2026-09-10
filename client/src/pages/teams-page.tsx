@@ -114,12 +114,24 @@ export default function TeamsPage() {
     mutationFn: async (id: number) => {
       await apiRequest(`/api/teams/${id}`, "DELETE");
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/teams", leagueId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/bowler-leagues"] });
+    onSuccess: async (_, deletedTeamId) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["/api/teams"] }),
+        queryClient.invalidateQueries({ queryKey: [`/api/teams/${deletedTeamId}/details`] }),
+        queryClient.invalidateQueries({ predicate: ({ queryKey }) => typeof queryKey[0] === "string" && (queryKey[0] === "/api/bowler-leagues" || queryKey[0].startsWith("/api/bowler-leagues?")) }),
+        queryClient.invalidateQueries({ queryKey: ["/api/bowlers"] }),
+        queryClient.invalidateQueries({ predicate: ({ queryKey }) => typeof queryKey[0] === "string" && queryKey[0].startsWith("/api/bowlers/") && queryKey[0].includes("/details") }),
+        queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/roster-payment-responsibility/1`] }),
+        queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/canonical-due-past-due/2`] }),
+        queryClient.invalidateQueries({ predicate: ({ queryKey }) => (
+          (queryKey[0] === "/api/financials/leagues" && queryKey[1] === leagueId && queryKey[2] === "canonical-due-past-due/2")
+          || (typeof queryKey[0] === "string" && queryKey[0].startsWith(`/api/financials/leagues/${leagueId}/canonical-due-past-due/2`))
+        ) }),
+        queryClient.invalidateQueries({ predicate: ({ queryKey }) => typeof queryKey[0] === "string" && queryKey[0].startsWith("/api/financials/due-past-due") }),
+      ]);
       toast({
         title: "Team deleted",
-        description: "The team and all its data have been permanently deleted.",
+        description: "The team, its unpaid dues, and its assignments have been permanently deleted. Bowler profiles were retained.",
       });
       setDeleteTeam(null);
     },
@@ -291,7 +303,7 @@ export default function TeamsPage() {
             <DialogHeader>
               <DialogTitle>Delete Team</DialogTitle>
               <DialogDescription>
-                Are you sure you want to permanently delete "{deleteTeam?.name}"? This will remove the team and all associated bowler assignments. This action cannot be undone.
+                Are you sure you want to permanently delete "{deleteTeam?.name}"? This removes the team&apos;s unpaid dues, roster payment setup, and assignments. Bowler profiles and their other league memberships are retained. This action cannot be undone.
               </DialogDescription>
             </DialogHeader>
             <DialogFooter>
