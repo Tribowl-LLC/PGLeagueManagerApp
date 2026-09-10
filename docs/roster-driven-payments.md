@@ -37,6 +37,14 @@ Provider calls are outside these transactions. Standing automatic collection
 is current-point-only and refuses to run while any older open, partial, or
 reserved debt remains.
 
+Saving a team's roster reads and materializes that team's published season in
+one locked batch. Unchanged default responsibilities (including equivalent
+UTC timestamp representations) retain their responsibility and obligation
+identities; only changed or missing open default evidence is written. Explicit
+substitute/split overrides and settled or partially settled history remain
+authoritative, while missing default Main obligations can be repaired without
+issuing a new responsibility version.
+
 Migration `0035_automatic_fifo_payment_allocation` is the clean-slate parent
 model boundary. It fails closed before destructive DDL if payment/provider
 evidence is present, makes tenant-safe parent/child keys and exact amount

@@ -43,7 +43,7 @@ import { paymentOperationRetryExecutor } from "./payment-operation-retry-executo
 import { getPaymentProvider } from "./payment-provider-factory.js";
 import { getProviderCustomerId } from "./payment-utils.js";
 import { decrypt } from "../utils/crypto.js";
-import { assertOpenRosterEvidenceCanBeReplaced, deriveRosterPaymentTimingInTransaction, materializeRosterPaymentOccurrenceInTransaction } from "./roster-payment-materializer.js";
+import { assertOpenRosterEvidenceCanBeReplaced, deriveRosterPaymentTimingInTransaction, materializeRosterPaymentOccurrencesInTransaction } from "./roster-payment-materializer.js";
 import { createLogger } from "../logger.js";
 import { allocateAutomaticFifoPayment as allocateFifo, type FifoPaymentCandidate as BaseFifoPaymentCandidate, AutomaticFifoAllocationError } from "./automatic-fifo-allocation.js";
 import { canonicalObligationBalance } from "./refund-allocation-adjustments.js";
@@ -327,24 +327,23 @@ export async function saveTeamRoster(input: {
       inArray(leagueOccurrences.lifecycle, ["published", "locked"] as const),
       inArray(leagueOccurrences.status, ["scheduled", "completed"] as const),
     )).orderBy(asc(leagueOccurrences.startAt), asc(leagueOccurrences.id));
-    for (const occurrence of occurrences) {
-      try {
-        await materializeRosterPaymentOccurrenceInTransaction(tx, {
-          organizationId: input.organizationId,
-          leagueId: input.leagueId,
-          occurrenceId: occurrence.id,
-          actorUserId: input.actorUserId,
-          teamId: input.teamId,
-        });
-      } catch (error) {
-        if (error instanceof Error && error.message === "RESERVED_EVIDENCE_LOCKED") {
-          throw new RosterPaymentError("OBLIGATION_RESERVED", "A payment operation has reserved this roster responsibility", 409);
-        }
-        if (error instanceof Error && error.message === "PAID_EVIDENCE_LOCKED") {
-          throw new RosterPaymentError("PAID_EVIDENCE_LOCKED", "A responsibility with settled or partially settled evidence cannot be replaced", 409);
-        }
-        throw error;
+    try {
+      await materializeRosterPaymentOccurrencesInTransaction(tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        occurrenceIds: occurrences.map((occurrence) => occurrence.id),
+        actorUserId: input.actorUserId,
+        teamId: input.teamId,
+        mode: "roster",
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === "RESERVED_EVIDENCE_LOCKED") {
+        throw new RosterPaymentError("OBLIGATION_RESERVED", "A payment operation has reserved this roster responsibility", 409);
       }
+      if (error instanceof Error && error.message === "PAID_EVIDENCE_LOCKED") {
+        throw new RosterPaymentError("PAID_EVIDENCE_LOCKED", "A responsibility with settled or partially settled evidence cannot be replaced", 409);
+      }
+      throw error;
     }
     const result = { contractVersion: "roster-payment-responsibility/1" as const, organizationId: input.organizationId, leagueId: input.leagueId, teamId: input.teamId, ready: saved.every((row) => row.occupant !== "unassigned"), slots: saved };
     await completeFinancialCommand(tx, { organizationId: input.organizationId, leagueId: input.leagueId, commandType: "roster_payment.save_team_roster", idempotencyKey: input.request.commandKey, result });
