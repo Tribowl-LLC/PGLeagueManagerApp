@@ -23,7 +23,10 @@ import {
   linkUserToBowler as linkIdentityUserToBowler,
   isIdentityLinkError,
 } from "../services/identity-link.js";
-import { withAccountActionDeliveryLock } from "../storage/account-action-requests.js";
+import {
+  withAccountActionDeliveryLock,
+  type AccountActionWithUser,
+} from "../storage/account-action-requests.js";
 import { isNormalizedUserEmailConflict } from "../utils/db-errors.js";
 // Same allowlist account.ts uses for /api/account/profile (task #420).
 // We pull it from the password-changed email bundle directly rather
@@ -40,6 +43,97 @@ const SUPPORTED_PREFERRED_LANGUAGES = Object.keys(
 
 const log = createLogger("AuthRoutes");
 const PASSWORD_RESET_RESEND_SUPPRESSION_MS = 5 * 60 * 1000;
+const MAX_ACCOUNT_ACTION_TOKEN_LENGTH = 256;
+
+type AccountActionErrorCode =
+  | "INVALID_TOKEN"
+  | "TOKEN_EXPIRED"
+  | "TOKEN_USED"
+  | "TOKEN_SUPERSEDED"
+  | "TOKEN_REVOKED";
+
+type AccountActionEligibility =
+  | {
+      valid: true;
+      record: AccountActionWithUser;
+      action: (typeof ACCOUNT_ACTION_TYPES)[number];
+    }
+  | {
+      valid: false;
+      record?: AccountActionWithUser;
+      code: AccountActionErrorCode;
+    };
+
+const ACCOUNT_ACTION_ERROR_MESSAGES: Record<AccountActionErrorCode, string> = {
+  INVALID_TOKEN: "Invalid or expired link",
+  TOKEN_EXPIRED: "This link has expired",
+  TOKEN_USED: "This link has already been used",
+  TOKEN_SUPERSEDED: "This link has been replaced",
+  TOKEN_REVOKED: "This link has been revoked",
+};
+
+/**
+ * Apply the same allowlist and lifecycle rules to both the landing-page
+ * validator and the password-submission route. The storage transaction still
+ * rechecks these rules when it consumes the action; this helper only decides
+ * what a caller may be told before that transaction runs.
+ */
+function getAccountActionEligibility(
+  record: AccountActionWithUser | undefined,
+): AccountActionEligibility {
+  if (!record || !ACCOUNT_ACTION_TYPES.includes(record.request.action)) {
+    return { valid: false, record, code: "INVALID_TOKEN" };
+  }
+
+  if (record.request.status === "expired") {
+    return { valid: false, record, code: "TOKEN_EXPIRED" };
+  }
+
+  if (
+    record.request.status === "pending"
+    && new Date(record.request.expiresAt) <= new Date()
+  ) {
+    return { valid: false, record, code: "TOKEN_EXPIRED" };
+  }
+
+  switch (record.request.status) {
+    case "consumed":
+      return { valid: false, record, code: "TOKEN_USED" };
+    case "superseded":
+      return { valid: false, record, code: "TOKEN_SUPERSEDED" };
+    case "revoked":
+      return { valid: false, record, code: "TOKEN_REVOKED" };
+    case "pending":
+      return { valid: true, record, action: record.request.action };
+    default:
+      return { valid: false, record, code: "INVALID_TOKEN" };
+  }
+}
+
+function sendAccountActionError(
+  res: Parameters<typeof sendError>[0],
+  eligibility: Extract<AccountActionEligibility, { valid: false }>,
+) {
+  return sendError(
+    res,
+    ACCOUNT_ACTION_ERROR_MESSAGES[eligibility.code],
+    400,
+    eligibility.code,
+  );
+}
+
+function logAccountActionOutcome(
+  event: "validation" | "consumption",
+  record: AccountActionWithUser | undefined,
+  reason: string,
+): void {
+  // Action IDs are operational identifiers, not bearer material. Keep these
+  // events free of raw tokens, email addresses, and user IDs.
+  log.info(`Account action ${event}`, {
+    actionId: record?.request.id ?? null,
+    reason,
+  });
+}
 
 // Task #356: every limiter below is backed by the shared Postgres
 // store so quotas hold across multiple app processes / replicas.
@@ -91,6 +185,22 @@ const setPasswordLimiter = rateLimit({
   message: {
     success: false,
     error: { message: "Too many requests, please try again later", code: "RATE_LIMITED" },
+  },
+});
+
+const validateInviteLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  // Validation is safe to retry while a page is loading, but a bounded
+  // shared quota keeps this token lookup from becoming an oracle or a cheap
+  // database amplifier. Keep it above the submission quota for shared links.
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: () => isDev,
+  store: createSharedRateLimitStore('validate-invite'),
+  message: {
+    success: false,
+    error: { message: "Too many validation requests, please try again later", code: "RATE_LIMITED" },
   },
 });
 
@@ -422,9 +532,17 @@ export function registerAuthRoutes(app: Express): void {
 
   authRouter.post("/set-password", setPasswordLimiter, async (req, res) => {
     try {
-      const { token, password } = req.body;
+      const body = req.body && typeof req.body === "object"
+        ? req.body as { token?: unknown; password?: unknown; preferredLanguage?: unknown }
+        : {};
+      const { token, password } = body;
 
-      if (typeof token !== "string" || token.length === 0 || !password) {
+      if (
+        typeof token !== "string"
+        || token.length === 0
+        || token.length > MAX_ACCOUNT_ACTION_TOKEN_LENGTH
+        || !password
+      ) {
         return sendError(res, "Token and password are required", 400, "VALIDATION_ERROR");
       }
 
@@ -451,8 +569,7 @@ export function registerAuthRoutes(app: Express): void {
       // Anything else gets a 400 instead of being silently persisted
       // — keeps the column clean of garbage that the email helper
       // would otherwise English-fallback on, exactly like #417.
-      const preferredLanguageRaw = (req.body as { preferredLanguage?: unknown })
-        ?.preferredLanguage;
+      const preferredLanguageRaw = body.preferredLanguage;
       let preferredLanguage: string | null | undefined;
       if (preferredLanguageRaw === undefined) {
         preferredLanguage = undefined;
@@ -473,24 +590,13 @@ export function registerAuthRoutes(app: Express): void {
       }
 
       const actionRecord = await storage.getAccountActionByToken(token);
-      if (
-        !actionRecord ||
-        !ACCOUNT_ACTION_TYPES.includes(actionRecord.request.action)
-      ) {
-        return sendError(res, "Invalid or expired invitation link", 400, "INVALID_TOKEN");
+      const eligibility = getAccountActionEligibility(actionRecord);
+      if (!eligibility.valid) {
+        logAccountActionOutcome("consumption", eligibility.record, eligibility.code);
+        return sendAccountActionError(res, eligibility);
       }
 
-      if (
-        actionRecord.request.status === "expired" ||
-        (actionRecord.request.status === "pending" && new Date(actionRecord.request.expiresAt) <= new Date())
-      ) {
-        return sendError(res, "This invitation link has expired. Please ask your administrator to resend the invite.", 400, "TOKEN_EXPIRED");
-      }
-      if (actionRecord.request.status !== "pending") {
-        return sendError(res, "Invalid or expired invitation link", 400, "INVALID_TOKEN");
-      }
-
-      const hashedPassword = await hashPassword(password);
+      const hashedPassword = await hashPassword(passwordResult.data);
       // Claiming the action and rotating the password are one transaction.
       // This also supersedes every other pending credential action and
       // invalidates pending email changes.
@@ -500,9 +606,11 @@ export function registerAuthRoutes(app: Express): void {
         ...(preferredLanguage !== undefined ? { preferredLanguage } : {}),
       });
       if (!completed) {
-        return sendError(res, "Invalid or expired invitation link", 400, "INVALID_TOKEN");
+        logAccountActionOutcome("consumption", eligibility.record, "no_longer_eligible");
+        return sendError(res, ACCOUNT_ACTION_ERROR_MESSAGES.INVALID_TOKEN, 400, "INVALID_TOKEN");
       }
       const user = completed.user;
+      const isInvitation = completed.request.action === "account_invite";
       let authenticatedUser = user;
 
       // Task #352: force-log-out every existing session for this user.
@@ -510,11 +618,9 @@ export function registerAuthRoutes(app: Express): void {
       // change-password handler (#318) we have no current session to
       // preserve — the user is most likely here BECAUSE they suspect
       // a stolen device or a leaked credential, so any leftover
-      // cookies must die. We pass `keepSid = null` to nuke them all;
-      // the auto-login below (`req.login`) creates a fresh session
-      // for the device that just completed the reset. Best-effort: a
-      // session-store hiccup must not roll back the password rotation
-      // that already committed.
+      // cookies must die. We pass `keepSid = null` to nuke them all.
+      // Best-effort: a session-store hiccup must not roll back the password
+      // rotation that already committed.
       try {
         const dropped = await destroyOtherSessionsForUser(user.id, null);
         if (dropped > 0) {
@@ -570,47 +676,54 @@ export function registerAuthRoutes(app: Express): void {
         });
       }
 
-      try {
-        const bowler = user.organizationId
-          ? await storage.getBowlerByEmail(user.email, user.organizationId)
-          : await storage.getBowlerByEmailSystemAdmin(user.email);
-        if (bowler) {
-          const alreadyLinked = await storage.isBowlerLinked(bowler.id);
-          if (!alreadyLinked) {
-            const linkOrganizationId = user.organizationId ?? bowler.organizationId;
-            if (!linkOrganizationId) {
-              throw new Error("Cannot auto-link a bowler without organization context");
-            }
-            const linkInput = {
-              organizationId: linkOrganizationId,
-              userId: user.id,
-              bowlerId: bowler.id,
-              actorUserId: user.id,
-              source: "auth.set-password",
-              reason: "email_match_auto_link",
-              eventType: "link",
-              requireEmailMatch: true,
-            } as const;
-            if (user.organizationId) {
-              authenticatedUser = (await linkIdentityUserToBowler(linkInput)).user;
-            } else {
-              // One-release legacy recovery: tenant assignment, bowler link,
-              // and audit event commit together instead of leaving an
-              // org-bound but unlinked half-state on failure.
-              authenticatedUser = await db.transaction(async (tx) => {
-                await storage.setUserOrganization(user.id, linkOrganizationId, tx);
-                return (await linkIdentityUserToBowler(linkInput, tx)).user;
-              });
-              // The identity service cannot invalidate while it is using a
-              // caller-owned transaction. Invalidate only after the outer
-              // transaction has committed so readers do not observe a stale
-              // org/bowler association.
-              cacheInvalidate(`user:${authenticatedUser.id}`);
+      if (isInvitation) {
+        try {
+          const bowler = user.organizationId
+            ? await storage.getBowlerByEmail(user.email, user.organizationId)
+            : await storage.getBowlerByEmailSystemAdmin(user.email);
+          if (bowler) {
+            const alreadyLinked = await storage.isBowlerLinked(bowler.id);
+            if (!alreadyLinked) {
+              const linkOrganizationId = user.organizationId ?? bowler.organizationId;
+              if (!linkOrganizationId) {
+                throw new Error("Cannot auto-link a bowler without organization context");
+              }
+              const linkInput = {
+                organizationId: linkOrganizationId,
+                userId: user.id,
+                bowlerId: bowler.id,
+                actorUserId: user.id,
+                source: "auth.set-password",
+                reason: "email_match_auto_link",
+                eventType: "link",
+                requireEmailMatch: true,
+              } as const;
+              if (user.organizationId) {
+                authenticatedUser = (await linkIdentityUserToBowler(linkInput)).user;
+              } else {
+                // One-release legacy recovery: tenant assignment, bowler link,
+                // and audit event commit together instead of leaving an
+                // org-bound but unlinked half-state on failure.
+                authenticatedUser = await db.transaction(async (tx) => {
+                  await storage.setUserOrganization(user.id, linkOrganizationId, tx);
+                  return (await linkIdentityUserToBowler(linkInput, tx)).user;
+                });
+                // The identity service cannot invalidate while it is using a
+                // caller-owned transaction. Invalidate only after the outer
+                // transaction has committed so readers do not observe a stale
+                // org/bowler association.
+                cacheInvalidate(`user:${authenticatedUser.id}`);
+              }
             }
           }
+        } catch (linkError) {
+          log.error('Auto-link bowler after set-password failed:', linkError);
         }
-      } catch (linkError) {
-        log.error('Auto-link bowler after set-password failed:', linkError);
+      }
+
+      logAccountActionOutcome("consumption", completed, "password_changed");
+      if (!isInvitation) {
+        return sendSuccess(res, { message: "Password set successfully. Please log in." });
       }
 
       req.login(authenticatedUser, (err) => {
@@ -803,29 +916,22 @@ export function registerAuthRoutes(app: Express): void {
     }
   });
 
-  authRouter.get("/validate-invite", async (req, res) => {
+  authRouter.get("/validate-invite", validateInviteLimiter, async (req, res) => {
     try {
       const token = req.query.token as string;
-      if (typeof token !== "string" || token.length === 0) {
+      if (
+        typeof token !== "string"
+        || token.length === 0
+        || token.length > MAX_ACCOUNT_ACTION_TOKEN_LENGTH
+      ) {
         return sendError(res, "Token is required", 400, "VALIDATION_ERROR");
       }
 
       const actionRecord = await storage.getAccountActionByToken(token);
-      if (
-        !actionRecord ||
-        actionRecord.request.action !== "account_invite"
-      ) {
-        return sendError(res, "Invalid invitation link", 400, "INVALID_TOKEN");
-      }
-
-      if (
-        actionRecord.request.status === "expired" ||
-        (actionRecord.request.status === "pending" && new Date(actionRecord.request.expiresAt) <= new Date())
-      ) {
-        return sendError(res, "This invitation link has expired", 400, "TOKEN_EXPIRED");
-      }
-      if (actionRecord.request.status !== "pending") {
-        return sendError(res, "Invalid invitation link", 400, "INVALID_TOKEN");
+      const eligibility = getAccountActionEligibility(actionRecord);
+      if (!eligibility.valid) {
+        logAccountActionOutcome("validation", eligibility.record, eligibility.code);
+        return sendAccountActionError(res, eligibility);
       }
 
       // Token-gated, but the link can still be forwarded (family
@@ -835,7 +941,11 @@ export function registerAuthRoutes(app: Express): void {
       // user's name to anyone who reads the URL over their
       // shoulder. The bearer of a valid token can already complete
       // signup; this avoids broadening that disclosure.
-      return sendSuccess(res, { email: maskEmail(actionRecord.user.email) });
+      logAccountActionOutcome("validation", eligibility.record, "eligible");
+      return sendSuccess(res, {
+        email: maskEmail(eligibility.record.user.email),
+        action: eligibility.action,
+      });
     } catch (error) {
       log.error('Validate invite error:', error);
       sendError(res, "Failed to validate invite", 500, "SERVER_ERROR");

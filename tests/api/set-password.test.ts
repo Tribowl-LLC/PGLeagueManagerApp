@@ -11,7 +11,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { eq, inArray } from 'drizzle-orm';
 import { db } from '../../server/db';
-import { users } from '@shared/schema';
+import { accountActionRequests, users } from '@shared/schema';
 import { hashPassword } from '../../server/lib/password';
 import { storage } from '../../server/storage';
 import { login, purgeSessionCache, BASE_URL, getBaselineOrgAId, type AuthSession } from '../helpers';
@@ -64,6 +64,11 @@ async function loggedInSession(email: string): Promise<AuthSession> {
 }
 
 async function issueResetToken(userId: number, recipientEmail: string): Promise<string> {
+  const issued = await issueResetAction(userId, recipientEmail);
+  return issued.token;
+}
+
+async function issueResetAction(userId: number, recipientEmail: string) {
   const issued = await storage.issueAccountAction({
     userId,
     action: 'password_reset',
@@ -71,7 +76,7 @@ async function issueResetToken(userId: number, recipientEmail: string): Promise<
     organizationId: testOrgId,
     recipientEmail,
   });
-  return issued.token;
+  return issued;
 }
 
 async function callSetPassword(token: string, password: string) {
@@ -82,6 +87,120 @@ async function callSetPassword(token: string, password: string) {
   });
   return { status: res.status, body: (await res.json()) as { success: boolean } };
 }
+
+async function callValidateInvite(token: string) {
+  const res = await fetch(`${BASE_URL}/api/auth/validate-invite?token=${encodeURIComponent(token)}`);
+  return { status: res.status, body: await res.json() as {
+    success: boolean;
+    data?: { email?: string; action?: string };
+    error?: { code?: string; message?: string };
+  } };
+}
+
+describe('GET /api/auth/validate-invite · account action contract', () => {
+  it('validates both invitations and password resets, and repeated GETs do not consume either token', async () => {
+    const { userId, email } = await createUserWithPassword();
+    const invite = await storage.issueAccountAction({
+      userId,
+      action: 'account_invite',
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      organizationId: testOrgId,
+    });
+    const reset = await issueResetAction(userId, email);
+
+    for (const [token, action] of [
+      [invite.token, 'account_invite'],
+      [reset.token, 'password_reset'],
+    ] as const) {
+      const first = await callValidateInvite(token);
+      const second = await callValidateInvite(token);
+
+      expect(first.status).toBe(200);
+      expect(first.body).toEqual({
+        success: true,
+        data: { email: expect.stringMatching(/^s\*\*\*@vitest\.local$/), action },
+      });
+      expect(second.body).toEqual(first.body);
+    }
+
+    const [inviteRow, resetRow] = await Promise.all([
+      db.select({ status: accountActionRequests.status })
+        .from(accountActionRequests)
+        .where(eq(accountActionRequests.id, invite.request.id)),
+      db.select({ status: accountActionRequests.status })
+        .from(accountActionRequests)
+        .where(eq(accountActionRequests.id, reset.request.id)),
+    ]);
+    expect(inviteRow[0]?.status).toBe('pending');
+    expect(resetRow[0]?.status).toBe('pending');
+  });
+
+  it('returns deliberate terminal-state codes without exposing account data', async () => {
+    const expiredFixture = await createUserWithPassword();
+    const expired = await issueResetAction(expiredFixture.userId, expiredFixture.email);
+    await db.update(accountActionRequests)
+      .set({ expiresAt: new Date(Date.now() - 1000).toISOString() })
+      .where(eq(accountActionRequests.id, expired.request.id));
+
+    const consumedFixture = await createUserWithPassword();
+    const consumed = await issueResetAction(consumedFixture.userId, consumedFixture.email);
+    expect(await storage.consumeAccountActionAndSetPassword({
+      token: consumed.token,
+      passwordHash: 'consumed-by-validator-test',
+    })).toBeTruthy();
+
+    const supersededFixture = await createUserWithPassword();
+    const superseded = await storage.issueAccountAction({
+      userId: supersededFixture.userId,
+      action: 'account_invite',
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      organizationId: testOrgId,
+    });
+    await storage.issueAccountAction({
+      userId: supersededFixture.userId,
+      action: 'account_invite',
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      organizationId: testOrgId,
+    });
+
+    const revokedFixture = await createUserWithPassword();
+    const revoked = await storage.issueAccountAction({
+      userId: revokedFixture.userId,
+      action: 'account_invite',
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      organizationId: testOrgId,
+    });
+    expect(await storage.revokeAccountAction(revoked.request.id)).toBeTruthy();
+
+    const cases = [
+      [expired.token, 'TOKEN_EXPIRED'],
+      [consumed.token, 'TOKEN_USED'],
+      [superseded.token, 'TOKEN_SUPERSEDED'],
+      [revoked.token, 'TOKEN_REVOKED'],
+    ] as const;
+    for (const [token, code] of cases) {
+      const result = await callValidateInvite(token);
+      expect(result.status).toBe(400);
+      expect(result.body).toMatchObject({ success: false, error: { code } });
+      expect(result.body).not.toHaveProperty('data');
+      expect(JSON.stringify(result.body)).not.toContain('@vitest.local');
+    }
+  });
+
+  it('rejects missing, malformed, unsupported, and overlong tokens without account lookup leakage', async () => {
+    const missing = await fetch(`${BASE_URL}/api/auth/validate-invite`);
+    expect(missing.status).toBe(400);
+    expect((await missing.json()).error.code).toBe('VALIDATION_ERROR');
+
+    const malformed = await callValidateInvite('definitely-not-a-real-token');
+    expect(malformed.status).toBe(400);
+    expect(malformed.body.error?.code).toBe('INVALID_TOKEN');
+
+    const overlong = await callValidateInvite('x'.repeat(257));
+    expect(overlong.status).toBe(400);
+    expect(overlong.body.error?.code).toBe('VALIDATION_ERROR');
+  });
+});
 
 describe('POST /api/auth/set-password · force-log-out (task #352)', () => {
   it('destroys every existing session for the user after a successful reset', async () => {

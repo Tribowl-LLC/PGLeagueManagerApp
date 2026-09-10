@@ -331,6 +331,11 @@ jobs:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/leaguevault_test
         run: npm run db:migrate
 
+      - name: Prepare password recovery browser regression
+        run: |
+          npx vite build
+          npx playwright install --with-deps chromium
+
       # Boot a migrated-database startup/health smoke server. Behavioral
       # tests use isolated per-worker Express processes whose databases are
       # cloned from a separately migrated canonical test template.
