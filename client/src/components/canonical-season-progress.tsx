@@ -34,5 +34,5 @@ export function CanonicalSeasonProgress({ leagueId, organizationId, viewerRole, 
   // Subscribe to refresh timestamps even when the schedule rows are unchanged.
   const now = Math.max(Date.now(), dataUpdatedAt);
   const started = sessions.filter((row) => Date.parse(row.startAt) <= now).length;
-  return <span>{started} of {sessions.length} sessions started</span>;
+  return <span>{started} of {sessions.length} weeks completed</span>;
 }

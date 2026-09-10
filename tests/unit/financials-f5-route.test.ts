@@ -114,8 +114,8 @@ describe("F5 canonical payment report route", () => {
         unresolved: false,
         receipt: { contractVersion: "payment-receipt/1", availability: "available", receiptUrl: "https://secret", receiptNumber: "secret", deliveryEvidence: "delivery_not_recorded", paymentId: 21, paymentOperationId: "operation-secret", source: "canonical_allocation", allocations: [], sharedTransaction: { groupKey: "operation-secret", childCount: 2 } },
         allocations: [
-          { allocationId: "a1", obligationId: "ob1", occurrenceId: "occ1", bowlerId: 42, amountMinor: 2000, currency: "USD", state: "active" },
-          { allocationId: "a2", obligationId: "ob2", occurrenceId: "occ2", bowlerId: 43, amountMinor: 2000, currency: "USD", state: "active" },
+          { allocationId: "a1", obligationId: "ob1", occurrenceId: "occ1", occurrenceLocalDate: "2037-12-31", plannedOrdinal: 1, bowlerId: 42, amountMinor: 2000, currency: "USD", state: "active" },
+          { allocationId: "a2", obligationId: "ob2", occurrenceId: "occ2", occurrenceLocalDate: "2038-01-07", plannedOrdinal: 2, bowlerId: 43, amountMinor: 2000, currency: "USD", state: "active" },
         ],
       };
       return {
@@ -148,6 +148,19 @@ describe("F5 canonical payment report route", () => {
     expect(firstBody.data.totals).toEqual(secondBody.data.totals);
     expect(firstBody.data.totals).toMatchObject({ grossConfirmedPaidMinor: 2000, activeAllocatedMinor: 2000 });
     expect(firstBody.data.rows[0]).toMatchObject({ amountMinor: 2000, paymentOperationId: null, providerPaymentId: null, allocations: [] });
+    expect(firstBody.data.rows[0].appliedTo).toEqual([{
+      plannedOrdinal: 1,
+      occurrenceLocalDate: "2037-12-31",
+      amountMinor: 2000,
+      refundedMinor: 0,
+      refundDisposition: null,
+      currency: "USD",
+      state: "active",
+    }]);
+    expect(firstBody.data.rows[0].appliedTo[0]).not.toHaveProperty("allocationId");
+    expect(firstBody.data.rows[0].appliedTo[0]).not.toHaveProperty("obligationId");
+    expect(firstBody.data.rows[0].appliedTo[0]).not.toHaveProperty("occurrenceId");
+    expect(firstBody.data.rows[0].appliedTo[0]).not.toHaveProperty("bowlerId");
     expect(firstBody.data.rows[0].sharedTransaction).toBeNull();
     expect(firstBody.data.transactions[0].amountMinor).toBe(2000);
     expect(firstBody.data.totals.disputedReviewRequiredMinor).toBe(400);

@@ -18,9 +18,9 @@ function mount(role = "user", organizationId: number | null = 3, allowRetry = tr
 afterEach(() => vi.restoreAllMocks());
 describe("Canonical season progress", () => {
   it.each([
-    ["2026-10-01T00:00:00Z", "0 of 2 sessions started"],
-    ["2026-11-01T05:30:00Z", "1 of 2 sessions started"],
-    ["2026-11-01T06:30:00Z", "2 of 2 sessions started"],
+    ["2026-10-01T00:00:00Z", "0 of 2 weeks completed"],
+    ["2026-11-01T05:30:00Z", "1 of 2 weeks completed"],
+    ["2026-11-01T06:30:00Z", "2 of 2 weeks completed"],
   ])("uses UTC start instants at %s, not local weeks or double-pay ordinals", async (now, expected) => {
     vi.spyOn(Date, "now").mockReturnValue(Date.parse(now));
     request.mockResolvedValue({ data: { contractVersion: LEAGUE_OCCURRENCE_SCHEDULE_CONTRACT_VERSION, authoritativeSource: "canonical", occurrences: rows, skippedDates: [{ localDate: "2026-10-08" }] } });
@@ -30,7 +30,7 @@ describe("Canonical season progress", () => {
   it("passes explicit organization scope for system administrators", async () => {
     request.mockResolvedValue({ data: { contractVersion: LEAGUE_OCCURRENCE_SCHEDULE_CONTRACT_VERSION, authoritativeSource: "canonical", occurrences: [] } });
     mount("system_admin");
-    expect(await screen.findByText("0 of 0 sessions started")).toBeInTheDocument();
+    expect(await screen.findByText("0 of 0 weeks completed")).toBeInTheDocument();
     expect(request).toHaveBeenCalledWith("/api/leagues/7/occurrence-schedule?organizationId=3", "GET");
   });
   it("shows unavailable on incompatible evidence without inventing a 30-week season", async () => {

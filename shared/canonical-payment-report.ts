@@ -68,9 +68,27 @@ export interface CanonicalPaymentAllocationRow {
   occurrenceId: string | null;
   /** League-local calendar date for operator-facing allocation details. */
   occurrenceLocalDate?: string | null;
+  /** Stored canonical schedule position; never derive this from dates. */
+  plannedOrdinal?: number | null;
   bowlerId: number;
   amountMinor: number;
   /** Original allocation remains immutable; these fields describe its refund effect. */
+  refundedMinor?: number;
+  effectiveAmountMinor?: number;
+  refundDisposition?: "still_owed" | "waived" | null;
+  currency: string;
+  state: "active" | "voided" | "reversed" | null;
+}
+
+/**
+ * Ordinary readers receive this allowlisted projection instead of canonical
+ * allocation rows. It intentionally contains no child, occurrence, or
+ * bowler identifiers.
+ */
+export interface CanonicalPaymentAppliedToRow {
+  plannedOrdinal: number | null;
+  occurrenceLocalDate: string | null;
+  amountMinor: number;
   refundedMinor?: number;
   effectiveAmountMinor?: number;
   refundDisposition?: "still_owed" | "waived" | null;
@@ -108,6 +126,8 @@ export interface CanonicalPaymentRow {
   receipt: CanonicalPaymentReceiptSummary;
   sharedTransaction?: { groupKey: string | null; childCount: number } | null;
   allocations: CanonicalPaymentAllocationRow[];
+  /** Safe ordinary-reader summary of the owned canonical applications. */
+  appliedTo?: CanonicalPaymentAppliedToRow[];
   correctionEvidence?: { status: "voided"; voidId: string };
   collectionEvidence?: CanonicalCollectionEvidence;
   /** Internal role projection hint; ordinary responses remove it. */

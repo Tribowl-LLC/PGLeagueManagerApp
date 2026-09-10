@@ -468,6 +468,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
     const unresolved = report.rows.find((row) => row.paymentOperationId === operationId);
     expect(report.paymentTiming).toMatchObject({ paymentMode: "upfront", source: "canonical" });
     expect(unresolved).toMatchObject({ source: "unresolved_operation", businessDate: "2038-02-03", authoritativeLocalDate: "2038-02-03", operationStatus: "provider_unknown" });
+    expect(unresolved?.allocations[0]).toMatchObject({ occurrenceLocalDate: "2038-02-02", plannedOrdinal: 1, state: null });
   });
 
   it("does not count a provider-linked payment as confirmed before canonical allocation finalization", async () => {

@@ -10,7 +10,7 @@ import {
   CanonicalPaymentReportIncompatibilityError,
   readCanonicalPaymentReport,
 } from "../services/roster-payment-archive-report.js";
-import { canonicalPaymentReportFingerprint } from "@shared/canonical-payment-report";
+import { canonicalPaymentReportFingerprint, type CanonicalPaymentAppliedToRow } from "@shared/canonical-payment-report";
 
 const router = Router();
 
@@ -26,6 +26,62 @@ function pageQuery(value: unknown, fallback: number): number | undefined | null 
   if (typeof value !== "string" || !/^\d+$/.test(value)) return null;
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+/**
+ * Keep the ordinary-reader projection in one pure function so the API and
+ * the evidence dialog can be regression-tested against the same response
+ * shape. The full allocation rows remain an admin/reconciliation concern.
+ */
+export function redactCanonicalPaymentRow(row: Awaited<ReturnType<typeof readCanonicalPaymentReport>>["rows"][number], viewerBowlerId: number | null | undefined) {
+  const ownAllocations = row.allocations.filter((allocation) => allocation.bowlerId === viewerBowlerId);
+  const isInitiatingPayer = row.initiatingPayerBowlerId !== null
+    && row.initiatingPayerBowlerId !== undefined
+    && row.initiatingPayerBowlerId === viewerBowlerId;
+  const visibleAllocations = isInitiatingPayer ? row.allocations : ownAllocations;
+  const authorizedAmount = visibleAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0);
+  const authorizedRefundedAmount = visibleAllocations.reduce((sum, allocation) => sum + (allocation.refundedMinor ?? 0), 0);
+  const authorizedWaivedAmount = visibleAllocations.reduce((sum, allocation) => sum + (allocation.refundDisposition === "waived" ? (allocation.refundedMinor ?? 0) : 0), 0);
+  const authorizedEffectiveAmount = visibleAllocations.reduce((sum, allocation) => sum + (allocation.effectiveAmountMinor ?? allocation.amountMinor), 0);
+  const hasCanonicalOwnership = visibleAllocations.length > 0;
+  const safeAmount = isInitiatingPayer ? row.amountMinor : (hasCanonicalOwnership ? authorizedAmount : row.amountMinor);
+  const safeRefundAmount = isInitiatingPayer ? row.refund.amountMinor : 0;
+  const safeDisputeAmount = isInitiatingPayer ? row.dispute.amountMinor : 0;
+  const { initiatingPayerBowlerId: _initiatingPayerBowlerId, ...safeRow } = row;
+  const appliedTo: CanonicalPaymentAppliedToRow[] = visibleAllocations.map((allocation) => ({
+    plannedOrdinal: allocation.plannedOrdinal ?? null,
+    occurrenceLocalDate: allocation.occurrenceLocalDate ?? null,
+    amountMinor: allocation.amountMinor,
+    refundedMinor: allocation.refundedMinor ?? 0,
+    ...(allocation.effectiveAmountMinor === undefined ? {} : { effectiveAmountMinor: allocation.effectiveAmountMinor }),
+    refundDisposition: allocation.refundDisposition ?? null,
+    currency: allocation.currency,
+    state: allocation.state,
+  }));
+  return {
+    ...safeRow,
+    bowlerId: viewerBowlerId ?? row.bowlerId,
+    amountMinor: safeAmount,
+    allocatedMinor: hasCanonicalOwnership ? authorizedAmount : Math.min(row.allocatedMinor, safeAmount),
+    grossAllocatedMinor: hasCanonicalOwnership ? authorizedAmount : Math.min(row.grossAllocatedMinor ?? row.allocatedMinor, safeAmount),
+    refundedAllocationMinor: authorizedRefundedAmount,
+    waivedMinor: authorizedWaivedAmount,
+    effectiveAllocatedMinor: authorizedEffectiveAmount,
+    unallocatedMinor: hasCanonicalOwnership ? 0 : row.unallocatedMinor,
+    providerPaymentId: null,
+    paymentOperationId: null,
+    operationType: null,
+    operationStatus: null,
+    sharedTransaction: null,
+    // Allocation IDs/obligation identities are audit-only. Ordinary
+    // payment history receives the tender summary and balance, never the
+    // internal child allocation evidence or interactive controls.
+    allocations: [],
+    appliedTo,
+    refund: { ...row.refund, amountMinor: safeRefundAmount, providerRefundId: null },
+    dispute: { ...row.dispute, amountMinor: safeDisputeAmount, disputeId: null },
+    receipt: { ...row.receipt, paymentId: null, paymentOperationId: null, operationStatus: null, amountMinor: safeAmount, allocations: [], sharedTransaction: null, canResend: false, receiptUrl: null, receiptNumber: null, refund: { ...(row.receipt.refund ?? row.refund), amountMinor: safeRefundAmount, providerRefundId: null }, dispute: { ...(row.receipt.dispute ?? row.dispute), amountMinor: safeDisputeAmount, disputeId: null } },
+  };
 }
 
 router.get("/payments", async (req, res) => {
@@ -74,44 +130,7 @@ router.get("/payments", async (req, res) => {
     // Ordinary users receive their authorized financial rows and safe status
     // labels only. Provider IDs, operation IDs, and immutable execution
     // internals stay within admin/reconciliation scopes.
-    const redact = (row: typeof report.rows[number]) => {
-      const ownAllocations = row.allocations.filter((allocation) => allocation.bowlerId === req.user?.bowlerId);
-      const isInitiatingPayer = row.initiatingPayerBowlerId !== null
-        && row.initiatingPayerBowlerId !== undefined
-        && row.initiatingPayerBowlerId === req.user?.bowlerId;
-      const visibleAllocations = isInitiatingPayer ? row.allocations : ownAllocations;
-      const authorizedAmount = visibleAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0);
-      const authorizedRefundedAmount = visibleAllocations.reduce((sum, allocation) => sum + (allocation.refundedMinor ?? 0), 0);
-      const authorizedWaivedAmount = visibleAllocations.reduce((sum, allocation) => sum + (allocation.refundDisposition === "waived" ? (allocation.refundedMinor ?? 0) : 0), 0);
-      const authorizedEffectiveAmount = visibleAllocations.reduce((sum, allocation) => sum + (allocation.effectiveAmountMinor ?? allocation.amountMinor), 0);
-      const hasCanonicalOwnership = visibleAllocations.length > 0;
-      const safeAmount = isInitiatingPayer ? row.amountMinor : (hasCanonicalOwnership ? authorizedAmount : row.amountMinor);
-      const safeRefundAmount = isInitiatingPayer ? row.refund.amountMinor : 0;
-      const safeDisputeAmount = isInitiatingPayer ? row.dispute.amountMinor : 0;
-      const { initiatingPayerBowlerId: _initiatingPayerBowlerId, ...safeRow } = row;
-      return {
-      ...safeRow,
-      bowlerId: req.user?.bowlerId ?? row.bowlerId,
-      amountMinor: safeAmount,
-      allocatedMinor: hasCanonicalOwnership ? authorizedAmount : Math.min(row.allocatedMinor, safeAmount),
-      grossAllocatedMinor: hasCanonicalOwnership ? authorizedAmount : Math.min(row.grossAllocatedMinor ?? row.allocatedMinor, safeAmount),
-      refundedAllocationMinor: authorizedRefundedAmount,
-      waivedMinor: authorizedWaivedAmount,
-      effectiveAllocatedMinor: authorizedEffectiveAmount,
-      unallocatedMinor: hasCanonicalOwnership ? 0 : row.unallocatedMinor,
-      providerPaymentId: null,
-      paymentOperationId: null,
-      operationType: null,
-      operationStatus: null,
-      sharedTransaction: null,
-      // Allocation IDs/obligation identities are audit-only. Ordinary
-      // payment history receives the tender summary and balance, never the
-      // internal child allocation evidence or interactive controls.
-      allocations: [],
-      refund: { ...row.refund, amountMinor: safeRefundAmount, providerRefundId: null },
-      dispute: { ...row.dispute, amountMinor: safeDisputeAmount, disputeId: null },
-      receipt: { ...row.receipt, paymentId: null, paymentOperationId: null, operationStatus: null, amountMinor: safeAmount, allocations: [], sharedTransaction: null, canResend: false, receiptUrl: null, receiptNumber: null, refund: { ...(row.receipt.refund ?? row.refund), amountMinor: safeRefundAmount, providerRefundId: null }, dispute: { ...(row.receipt.dispute ?? row.dispute), amountMinor: safeDisputeAmount, disputeId: null } },
-    }; };
+    const redact = (row: typeof report.rows[number]) => redactCanonicalPaymentRow(row, req.user?.bowlerId);
     const redactedReport = {
       ...report,
       rows: report.rows.map(redact),

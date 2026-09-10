@@ -252,7 +252,6 @@ export default function BowlerViewPage() {
       <ErrorBoundary level="section">
         {paymentReportLoading ? <div className="text-sm text-muted-foreground">Loading payment history…</div> : paymentReportError ? <div className="text-sm text-destructive">Payment history is unavailable; please try again.</div> : <CanonicalPaymentEvidenceTable
           rows={paymentReportResponse?.data?.rows ?? []}
-          paymentTiming={paymentReportResponse?.data?.paymentTiming}
           organizationId={bowler?.organizationId ?? null}
           bowlerName={bowler?.name ?? "Bowler"}
           title="Payment history"
