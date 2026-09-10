@@ -128,6 +128,7 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
           obligationId: candidate.obligation.id,
           occurrenceId: candidate.obligation.occurrenceId,
           occurrenceLocalDate: candidate.occurrence.authoritativeLocalDate,
+          plannedOrdinal: candidate.occurrence.plannedOrdinal,
           bowlerId: candidate.obligation.payerBowlerId,
           amountMinor: candidate.allocation.amountMinor,
           refundedMinor: adjustment?.amountMinor ?? 0,
@@ -181,7 +182,7 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
       };
       return row;
     });
-    const operationOnlyEvidence = input.paymentId === undefined ? await tx.select({ operation: paymentOperations, snapshot: paymentOperationRosterSnapshots, item: paymentOperationRosterSnapshotItems, obligation: paymentObligations })
+    const operationOnlyEvidence = input.paymentId === undefined ? await tx.select({ operation: paymentOperations, snapshot: paymentOperationRosterSnapshots, item: paymentOperationRosterSnapshotItems, obligation: paymentObligations, occurrence: leagueOccurrences })
       .from(paymentOperations)
       .innerJoin(paymentOperationRosterSnapshots, and(
         eq(paymentOperationRosterSnapshots.operationId, paymentOperations.id),
@@ -197,6 +198,11 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
         eq(paymentObligations.id, paymentOperationRosterSnapshotItems.obligationId),
         eq(paymentObligations.organizationId, input.organizationId),
         eq(paymentObligations.leagueId, input.leagueId),
+      ))
+      .innerJoin(leagueOccurrences, and(
+        eq(leagueOccurrences.id, paymentObligations.occurrenceId),
+        eq(leagueOccurrences.organizationId, input.organizationId),
+        eq(leagueOccurrences.leagueId, input.leagueId),
       ))
       .where(and(
         eq(paymentOperations.organizationId, input.organizationId),
@@ -236,7 +242,7 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
         refund: { present: false, amountMinor: 0, providerRefundId: null },
         dispute: { present: false, amountMinor: 0, disputeId: null, scope: "transaction", state: null, reviewRequired: unresolved },
         receipt: { contractVersion: "payment-receipt/1", availability: "unavailable", receiptUrl: null, receiptNumber: null, deliveryEvidence: "delivery_not_recorded", source: "unresolved_operation", refund: { present: false, amountMinor: 0, providerRefundId: null }, dispute: { present: false, amountMinor: 0, disputeId: null, scope: "transaction", state: null, reviewRequired: unresolved } },
-        allocations: evidenceRows.map((row) => ({ allocationId: null, obligationId: row.obligation.id, occurrenceId: row.obligation.occurrenceId, bowlerId: row.obligation.payerBowlerId, amountMinor: row.item.amountMinor, currency: row.item.state === "released" ? "USD" : snapshot.currency, state: null })),
+        allocations: evidenceRows.map((row) => ({ allocationId: null, obligationId: row.obligation.id, occurrenceId: row.obligation.occurrenceId, occurrenceLocalDate: row.occurrence.authoritativeLocalDate, plannedOrdinal: row.occurrence.plannedOrdinal, bowlerId: row.obligation.payerBowlerId, amountMinor: row.item.amountMinor, currency: row.item.state === "released" ? "USD" : snapshot.currency, state: null })),
         sharedTransaction: null,
         initiatingPayerBowlerId: first.obligation.payerBowlerId,
       };

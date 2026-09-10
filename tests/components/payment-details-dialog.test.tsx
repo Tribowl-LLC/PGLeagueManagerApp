@@ -10,6 +10,20 @@ vi.mock("@/lib/queryClient", () => ({
   csrfFetch: mocks.csrfFetch,
   queryClient: { invalidateQueries: mocks.invalidateQueries },
 }));
+vi.mock("../../server/storage", () => ({ storage: { getLeague: vi.fn() } }));
+vi.mock("../../server/storage/index.js", () => ({ storage: { getLeague: vi.fn() } }));
+vi.mock("../../server/db.js", () => ({ db: {} }));
+vi.mock("../../server/services/roster-payment-archive-report.js", () => ({
+  readCanonicalPaymentReport: vi.fn(),
+  CanonicalPaymentReportIncompatibilityError: class extends Error {},
+}));
+vi.mock("../../server/utils/access-control.js", () => ({
+  hasAdminAccessToLeague: vi.fn(),
+  hasPaymentManagerAccessToLeague: vi.fn(),
+  isPaymentManager: vi.fn(),
+}));
+
+const { redactCanonicalPaymentRow } = await import("../../server/routes/financials-f5.js");
 
 const payment: Payment = {
   id: 12,
@@ -84,6 +98,7 @@ describe("PaymentDetailsDialog", () => {
     expect(screen.getByText("$20.00")).toBeInTheDocument();
     expect(screen.queryByText("occurrence-1")).not.toBeInTheDocument();
     expect(screen.queryByText("obligation-1")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Canonical settlement and allocation details/)).not.toBeInTheDocument();
   });
 
   it("preserves the authorized cash correction flow and refreshes both projections", async () => {
@@ -125,6 +140,57 @@ describe("PaymentDetailsDialog", () => {
     expect(screen.queryByRole("button", { name: "Receipt" })).not.toBeInTheDocument();
   });
 
+  it("renders the ordinary-reader applied-to projection with stored week labels", () => {
+    render(<PaymentDetailsDialog
+      payment={null}
+      evidence={{ ...evidence, paymentId: null, allocations: [], appliedTo: [
+        { plannedOrdinal: 1, occurrenceLocalDate: "2034-09-03", amountMinor: 3000, refundedMinor: 0, effectiveAmountMinor: 3000, refundDisposition: null, currency: "USD", state: "active" },
+        { plannedOrdinal: 2, occurrenceLocalDate: "2034-09-10", amountMinor: 2000, refundedMinor: 2000, effectiveAmountMinor: 0, refundDisposition: "still_owed", currency: "USD", state: "voided" },
+      ] }}
+      bowlerName="Test Bowler"
+      canCorrect={false}
+      onClose={() => {}}
+    />);
+
+    expect(screen.getByText("Week 1")).toBeInTheDocument();
+    expect(screen.getByText("Week 2")).toBeInTheDocument();
+    expect(screen.getByText("09/03/2034")).toBeInTheDocument();
+    expect(screen.getByText("Refunded: $20.00")).toBeInTheDocument();
+    expect(screen.queryByText("No canonical allocation is recorded.")).not.toBeInTheDocument();
+    expect(screen.queryByText("allocation-1")).not.toBeInTheDocument();
+  });
+
+  it("renders the exact ordinary API redaction without exposing child identities", () => {
+    const redacted = redactCanonicalPaymentRow({
+      ...evidence,
+      initiatingPayerBowlerId: 42,
+      status: "pending",
+      source: "unresolved_operation",
+      unresolved: true,
+      reviewRequired: true,
+      allocations: [
+        { allocationId: "allocation-secret", obligationId: "obligation-secret", occurrenceId: "occurrence-secret", plannedOrdinal: 3, occurrenceLocalDate: "2034-09-17", bowlerId: 42, amountMinor: 3000, currency: "USD", state: null },
+        { allocationId: "allocation-other", obligationId: "obligation-other", occurrenceId: "occurrence-other", plannedOrdinal: 4, occurrenceLocalDate: "2034-09-24", bowlerId: 43, amountMinor: 2000, currency: "USD", state: null },
+        { allocationId: "allocation-special", obligationId: "obligation-special", occurrenceId: "occurrence-special", plannedOrdinal: null, occurrenceLocalDate: "2034-10-01", bowlerId: 43, amountMinor: 1000, currency: "USD", state: null },
+      ],
+    }, 42);
+
+    expect(redacted.allocations).toEqual([]);
+    expect(redacted.appliedTo).toEqual([
+      expect.objectContaining({ plannedOrdinal: 3, occurrenceLocalDate: "2034-09-17", amountMinor: 3000, state: null }),
+      expect.objectContaining({ plannedOrdinal: 4, occurrenceLocalDate: "2034-09-24", amountMinor: 2000, state: null }),
+      expect.objectContaining({ plannedOrdinal: null, occurrenceLocalDate: "2034-10-01", amountMinor: 1000, state: null }),
+    ]);
+    expect(redacted.appliedTo?.[0]).not.toHaveProperty("allocationId");
+    render(<PaymentDetailsDialog payment={null} evidence={redacted} bowlerName="Test Bowler" canCorrect={false} onClose={() => {}} />);
+    expect(screen.getByText("Week 3")).toBeInTheDocument();
+    expect(screen.getByText("Week 4")).toBeInTheDocument();
+    expect(screen.getByText("10/01/2034")).toBeInTheDocument();
+    expect(screen.getAllByText("unresolved").length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Effective:/)).not.toBeInTheDocument();
+    expect(screen.queryByText("No canonical allocation is recorded.")).not.toBeInTheDocument();
+  });
+
   it("fails closed when a paid row has unresolved canonical evidence", () => {
     render(<PaymentDetailsDialog payment={payment} evidence={{ ...evidence, source: "unresolved_operation", unresolved: true, reviewRequired: true }} bowlerName="Test Bowler" canCorrect={false} onClose={() => {}} />);
     expect(screen.getAllByText("Review required").length).toBeGreaterThan(0);
@@ -136,12 +202,20 @@ describe("PaymentDetailsDialog", () => {
     expect(screen.queryByRole("button", { name: "Void cash/check payment" })).not.toBeInTheDocument();
   });
 
+  it("labels provider card evidence as Credit Card", () => {
+    render(<PaymentDetailsDialog payment={{ ...payment, type: "square" }} evidence={{ ...evidence, paymentType: "square" }} bowlerName="Test Bowler" canCorrect={false} onClose={() => {}} />);
+    expect(screen.getByText("Credit Card")).toBeInTheDocument();
+    expect(screen.queryByText("Square")).not.toBeInTheDocument();
+  });
+
   it("opens canonical receipts through the organization-scoped endpoint", async () => {
     const user = userEvent.setup();
     const open = vi.spyOn(window, "open").mockImplementation(() => null);
     mocks.csrfFetch.mockResolvedValueOnce(new Response(JSON.stringify({ data: { receiptUrl: "https://receipt.example.test" } }), { status: 200 }));
     render(<PaymentDetailsDialog payment={payment} evidence={{ ...evidence, status: "refunded" }} bowlerName="Test Bowler" canCorrect={false} organizationId={11} onClose={() => {}} />);
 
+    const receiptButton = screen.getByRole("button", { name: "Receipt" });
+    expect(receiptButton.parentElement?.querySelectorAll("button")).toHaveLength(1);
     await user.click(screen.getByRole("button", { name: "Receipt" }));
     await waitFor(() => expect(mocks.csrfFetch).toHaveBeenCalledWith("/api/payments-provider/payments/12/receipt?organizationId=11"));
     expect(open).toHaveBeenCalledWith("https://receipt.example.test", "_blank", "noopener,noreferrer");

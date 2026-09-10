@@ -124,6 +124,5 @@ export default function PaymentHistoryPage() {
     canonicalReportTotalPages={report ? Math.max(1, Math.ceil(report.totalTransactions / report.limit)) : undefined}
     onCanonicalReportPageChange={setCanonicalReportPage}
     canonicalRows={report?.rows ?? []}
-    canonicalPaymentTiming={report?.paymentTiming}
   />;
 }

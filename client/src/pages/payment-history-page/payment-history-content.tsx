@@ -1,7 +1,7 @@
 import { FC } from "react";
 import { ChevronDown } from "lucide-react";
 import type { League, BowlerLeague } from "@shared/schema";
-import type { CanonicalPaymentRow, CanonicalPaymentTiming } from "@shared/canonical-payment-report";
+import type { CanonicalPaymentRow } from "@shared/canonical-payment-report";
 import { CanonicalPaymentEvidenceTable } from "@/components/canonical-payment-evidence-table";
 import { BowlerLayout } from "@/components/bowler-layout";
 import { PaymentSummaryCards } from "@/components/payment-summary-cards";
@@ -38,7 +38,6 @@ interface PaymentHistoryContentProps {
   canonicalReportTotalPages?: number;
   onCanonicalReportPageChange?: (page: number) => void;
   canonicalRows?: CanonicalPaymentRow[];
-  canonicalPaymentTiming?: CanonicalPaymentTiming;
 }
 
 export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
@@ -49,7 +48,6 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
   waivedAmount,
   doublePay, canonicalPaymentLoading, canonicalPaymentError, canonicalReportPage,
   onCanonicalReportRetry, canonicalReportTotalPages, onCanonicalReportPageChange, canonicalRows = [],
-  canonicalPaymentTiming,
 }) => {
   const makePaymentHref = `/make-payment?leagueId=${leagueId}`;
   const pastDueHref = `${makePaymentHref}&intent=past-due`;
@@ -92,7 +90,7 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
           ) : canonicalPaymentError ? (
             <PageErrorState message="Payment history is unavailable; please try again." onRetry={onCanonicalReportRetry} />
           ) : (
-            <CanonicalPaymentEvidenceTable rows={canonicalRows} paymentTiming={canonicalPaymentTiming} organizationId={league.organizationId} bowlerName={bowlerName} title="Payment history" />
+            <CanonicalPaymentEvidenceTable rows={canonicalRows} organizationId={league.organizationId} bowlerName={bowlerName} title="Payment history" />
           )}
           {!canonicalPaymentLoading && !canonicalPaymentError && canonicalReportPage !== undefined && canonicalReportTotalPages !== undefined && canonicalReportTotalPages > 1 && onCanonicalReportPageChange && (
             <div className="mt-3 flex items-center justify-between text-sm">

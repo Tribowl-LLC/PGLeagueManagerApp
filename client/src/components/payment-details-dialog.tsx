@@ -4,7 +4,6 @@ import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -45,12 +44,17 @@ function formatLocalDate(value: string): string {
   return match ? `${match[2]}/${match[3]}/${match[1]}` : value;
 }
 
+function allocationLabel(allocation: CanonicalPaymentRow["allocations"][number] | NonNullable<CanonicalPaymentRow["appliedTo"]>[number]): string {
+  if (allocation.plannedOrdinal !== null && allocation.plannedOrdinal !== undefined) return `Week ${allocation.plannedOrdinal}`;
+  return allocation.occurrenceLocalDate ? formatLocalDate(allocation.occurrenceLocalDate) : "Applied week";
+}
+
 function paymentTypeLabel(paymentType: CanonicalPaymentRow["paymentType"], checkNumber?: string | null): string {
   switch (paymentType) {
     case "cash": return "Cash";
     case "check": return checkNumber ? `Check #${checkNumber}` : "Check";
     case "credit_card": return "Credit Card";
-    case "square": return "Square";
+    case "square": return "Credit Card";
     default: return "Other Payment";
   }
 }
@@ -60,7 +64,7 @@ async function correctionFingerprint(payload: { paymentId: number; correctionMod
   return `lvcorrection:v3:${Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("")}`;
 }
 
-export function PaymentDetailsDialog({ payment, evidence, bowlerName, canCorrect, organizationId, onClose }: Props) {
+export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizationId, onClose }: Props) {
   const [editingCorrection, setEditingCorrection] = useState(false);
   const [reason, setReason] = useState("");
   const [correctionBusy, setCorrectionBusy] = useState(false);
@@ -77,6 +81,7 @@ export function PaymentDetailsDialog({ payment, evidence, bowlerName, canCorrect
     && evidence.allocations.some((allocation) => allocation.state === "active");
   const displayStatus = paymentEvidenceDisplayStatus(evidence);
   const canOpenReceipt = evidence.paymentId !== null && ["confirmed_paid", "refunded", "disputed"].includes(evidence.status);
+  const appliedAllocations = evidence.allocations.length > 0 ? evidence.allocations : (evidence.appliedTo ?? []);
 
   const openReceipt = async () => {
     if (evidence.paymentId === null) return;
@@ -133,12 +138,9 @@ export function PaymentDetailsDialog({ payment, evidence, bowlerName, canCorrect
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open && !correctionBusy) onClose(); }}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
+      <DialogContent aria-describedby={undefined} className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Payment Details</DialogTitle>
-          <DialogDescription>
-            Canonical settlement and allocation details for {bowlerName}.
-          </DialogDescription>
         </DialogHeader>
 
         <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
@@ -156,14 +158,15 @@ export function PaymentDetailsDialog({ payment, evidence, bowlerName, canCorrect
 
         <section className="space-y-2" aria-labelledby="payment-allocation-heading">
           <h3 id="payment-allocation-heading" className="font-medium">Applied to</h3>
-          {evidence.allocations.length === 0 ? (
+          {appliedAllocations.length === 0 ? (
             <p className="text-sm text-muted-foreground">No canonical allocation is recorded.</p>
           ) : (
             <div className="divide-y rounded-md border">
-              {evidence.allocations.map((allocation, index) => (
-                <div key={allocation.allocationId ?? `${allocation.occurrenceId ?? "allocation"}-${index}`} className="flex items-center justify-between gap-4 px-3 py-2 text-sm">
+              {appliedAllocations.map((allocation, index) => (
+                <div key={`${allocation.plannedOrdinal ?? "un-numbered"}-${allocation.occurrenceLocalDate ?? "undated"}-${index}`} className="flex items-center justify-between gap-4 px-3 py-2 text-sm">
                   <div>
-                    <div>{allocation.occurrenceLocalDate ? formatLocalDate(allocation.occurrenceLocalDate) : "Canonical occurrence"}</div>
+                    <div>{allocationLabel(allocation)}</div>
+                    {allocation.plannedOrdinal !== null && allocation.plannedOrdinal !== undefined && allocation.occurrenceLocalDate && <div className="text-xs text-muted-foreground">{formatLocalDate(allocation.occurrenceLocalDate)}</div>}
                     {allocation.state !== "active" && <div className="text-xs capitalize text-muted-foreground">{allocation.state ?? "unresolved"}</div>}
                     {(allocation.refundedMinor ?? 0) > 0 && <div className="text-xs text-muted-foreground">Refunded: {formatCurrency(allocation.refundedMinor ?? 0, allocation.currency)}</div>}
                     {allocation.effectiveAmountMinor !== undefined && <div className="text-xs text-muted-foreground">Effective: {formatCurrency(allocation.effectiveAmountMinor, allocation.currency)}</div>}
@@ -227,10 +230,9 @@ export function PaymentDetailsDialog({ payment, evidence, bowlerName, canCorrect
 
         {receiptError && <p role="alert" className="text-sm text-destructive">{receiptError}</p>}
 
-        <DialogFooter>
-          {canOpenReceipt && <Button variant="outline" disabled={receiptLoading} onClick={() => void openReceipt()}>{receiptLoading ? "Loading receipt…" : "Receipt"}</Button>}
-          <Button variant="outline" disabled={correctionBusy} onClick={onClose}>Close</Button>
-        </DialogFooter>
+        {canOpenReceipt && <DialogFooter>
+          <Button variant="outline" disabled={receiptLoading} onClick={() => void openReceipt()}>{receiptLoading ? "Loading receipt…" : "Receipt"}</Button>
+        </DialogFooter>}
       </DialogContent>
     </Dialog>
   );

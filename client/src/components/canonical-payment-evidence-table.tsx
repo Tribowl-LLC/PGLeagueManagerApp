@@ -9,12 +9,11 @@ import {
 } from "@/components/ui/table";
 import { Badge, badgeVariants } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import type { CanonicalPaymentRow, CanonicalPaymentTiming } from "@shared/canonical-payment-report";
+import type { CanonicalPaymentRow } from "@shared/canonical-payment-report";
 import { PaymentDetailsDialog, paymentEvidenceDisplayStatus } from "@/components/payment-details-dialog";
 
 type Props = {
   rows: CanonicalPaymentRow[];
-  paymentTiming?: CanonicalPaymentTiming;
   organizationId?: number | null;
   bowlerName?: string;
   title?: string;
@@ -64,17 +63,12 @@ function statusVariant(row: CanonicalPaymentRow) {
  * row remains visible, including operation evidence without a payment id;
  * selecting its status opens the evidence-only details dialog.
  */
-export function CanonicalPaymentEvidenceTable({ rows, paymentTiming, organizationId, bowlerName = "Bowler", title = "Payment history" }: Props) {
+export function CanonicalPaymentEvidenceTable({ rows, organizationId, bowlerName = "Bowler", title = "Payment history" }: Props) {
   const [detailsTarget, setDetailsTarget] = useState<CanonicalPaymentRow | null>(null);
 
   return (
     <section aria-label={title} data-testid="canonical-payment-evidence-table" className="space-y-2">
       <div className="text-sm font-medium">{title}</div>
-      {paymentTiming && <div className="text-xs text-muted-foreground" data-testid="payment-timing">
-        {paymentTiming.paymentMode === "upfront" ? "Upfront payment" : "Weekly payment"}
-        {paymentTiming.upfrontDueAt ? ` · due ${formatLocalDate(paymentTiming.upfrontDueAtLocal ?? paymentTiming.upfrontDueAt, paymentTiming.timezone)}` : ""}
-        {paymentTiming.timezone ? ` · ${paymentTiming.timezone}` : ""}
-      </div>}
       {rows.length === 0 ? (
         <p className="text-sm text-muted-foreground">No payments yet.</p>
       ) : (

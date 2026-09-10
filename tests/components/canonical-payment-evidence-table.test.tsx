@@ -38,14 +38,14 @@ const row = (overrides: Partial<CanonicalPaymentRow> = {}): CanonicalPaymentRow 
 });
 
 describe("CanonicalPaymentEvidenceTable", () => {
-  it("labels roster-driven timing with friendly payment timing", () => {
-    render(<CanonicalPaymentEvidenceTable rows={[row()]} paymentTiming={{ paymentMode: "weekly", upfrontDueAt: null, timezone: "America/Chicago", source: "canonical" }} />);
-    expect(screen.getByTestId("payment-timing")).toHaveTextContent("Weekly payment · America/Chicago");
-    expect(screen.getByTestId("payment-timing")).not.toHaveTextContent("canonical");
+  it("does not show a payment-timing caption under the history title", () => {
+    render(<CanonicalPaymentEvidenceTable rows={[row()]} />);
+    expect(screen.queryByTestId("payment-timing")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Weekly payment|Upfront payment/)).not.toBeInTheDocument();
   });
 
   it("renders null-payment evidence in the clean history and opens details", async () => {
-    render(<CanonicalPaymentEvidenceTable rows={[row({ collectionEvidence: { d2PlanId: "plan-1", planVersion: 2, collectionPointOccurrenceId: "occ-1", coveredOccurrenceIds: ["occ-1", "occ-2"], timing: "at_collection_point", grouping: "double_pay" } })]} paymentTiming={{ paymentMode: "upfront", upfrontDueAt: "2038-02-01T00:00:00.000Z", timezone: "America/Los_Angeles", source: "canonical" }} organizationId={11} />);
+    render(<CanonicalPaymentEvidenceTable rows={[row({ collectionEvidence: { d2PlanId: "plan-1", planVersion: 2, collectionPointOccurrenceId: "occ-1", coveredOccurrenceIds: ["occ-1", "occ-2"], timing: "at_collection_point", grouping: "double_pay" } })]} organizationId={11} />);
     expect(screen.getByRole("columnheader", { name: "Date" })).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "Amount" })).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "Payment Method" })).toBeInTheDocument();
@@ -54,11 +54,9 @@ describe("CanonicalPaymentEvidenceTable", () => {
     expect(screen.getAllByText("Square").length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "View payment details: Review required" })).toBeInTheDocument();
     expect(screen.queryByText("occ-1")).not.toBeInTheDocument();
-    expect(screen.getByTestId("payment-timing")).toHaveTextContent("Upfront payment");
-    expect(screen.getByTestId("payment-timing")).toHaveTextContent("01/31/2038");
     await fireEvent.click(screen.getByRole("button", { name: "View payment details: Review required" }));
     expect(screen.getByRole("dialog", { name: "Payment Details" })).toBeInTheDocument();
-    expect(screen.getByText("Payment type").parentElement).toHaveTextContent("Square");
+    expect(screen.getByText("Payment type").parentElement).toHaveTextContent("Credit Card");
     expect(screen.getByRole("region", { name: "Collection evidence" })).toHaveTextContent("Double payment");
     expect(screen.getByRole("region", { name: "Collection evidence" })).toHaveTextContent("occ-1");
     expect(screen.getByText(/dispute/i)).toBeInTheDocument();
