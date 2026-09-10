@@ -44,6 +44,14 @@ import {
 
 export { CLONE_ADVISORY_LOCK_KEY, cloneTemplateForWorker };
 
+// The trust-proxy status contract includes an X-Probe-Token path. Keep the
+// test process and each spawned Express process on one deterministic,
+// test-only value so those security assertions run in local and CI suites
+// without borrowing a deployment secret.
+const TEST_TRUST_PROXY_PROBE_TOKEN =
+  'local-test-trust-proxy-probe-token-not-production-0123456789';
+process.env.TRUST_PROXY_PROBE_TOKEN = TEST_TRUST_PROXY_PROBE_TOKEN;
+
 // `cloneTemplate`, `workerDbName`, `workerDbNameForPool`,
 // `cloneTemplateForWorker`, `precloneAllWorkerDbs` and the
 // ENV_DB_NAME/ENV_DB_URL stash keys all live in `./clone-template.ts`
