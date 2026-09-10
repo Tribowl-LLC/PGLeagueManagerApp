@@ -13,6 +13,8 @@ import type { League, Team, BowlerLeague, BowlerWithAccount } from "@shared/sche
 import type { CanonicalDuePastDueResponseV2 } from "@shared/roster-payment-contract";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { cn } from "@/lib/utils";
+import { throwIfResNotOk } from "@/lib/queryClient";
+import { financialReadErrorMessage } from "@/lib/financial-utils";
 
 export function PastDueBowlersSection({ enabled = true, organizationId }: { enabled?: boolean; organizationId?: number | null }) {
   const scopeSuffix = organizationId ? `?organizationId=${encodeURIComponent(organizationId)}` : "";
@@ -36,7 +38,7 @@ export function PastDueBowlersSection({ enabled = true, organizationId }: { enab
     queryKey: ["/api/bowler-leagues", { enriched: true }],
     queryFn: async () => {
       const response = await fetch('/api/bowler-leagues?enriched=true');
-      if (!response.ok) throw new Error('Failed to fetch bowler leagues');
+      await throwIfResNotOk(response);
       return response.json();
     }
   });
@@ -48,14 +50,14 @@ export function PastDueBowlersSection({ enabled = true, organizationId }: { enab
     queryKey: [organizationId ? `/api/financials/due-past-due?organizationId=${organizationId}` : "/api/financials/due-past-due"],
     queryFn: async () => {
       const response = await fetch(`/api/financials/due-past-due${scopeSuffix}`);
-      if (!response.ok) throw new Error("Financial evidence requires review");
+      await throwIfResNotOk(response);
       return response.json();
     },
     enabled,
   });
   if (!enabled) return null;
   if (financialLoading) return <div className="text-sm text-muted-foreground">Loading server financial evidence…</div>;
-  if (financialError) return <div className="text-sm text-amber-700">Financial evidence requires review; balances are unavailable.</div>;
+  if (financialError) return <div className="text-sm text-amber-700">{financialReadErrorMessage(financialError)}</div>;
   const financialRows = financialReportResponse?.data?.leagues?.flatMap((entry) => entry.report.rows.map((row) => ({ ...row, leagueId: entry.leagueId }))) ?? [];
 
   const groupedFinancialRows = [...financialRows.reduce((map, row) => {

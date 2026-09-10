@@ -58,7 +58,7 @@ export type ApiErrorClassification =
   | "transport"
   | "unexpected";
 
-function getStatus(error: unknown): number | undefined {
+export function getApiErrorStatus(error: unknown): number | undefined {
   if (!error || typeof error !== "object") return undefined;
   const status = (error as { status?: unknown }).status;
   if (typeof status === "number" && Number.isFinite(status)) return status;
@@ -72,6 +72,21 @@ function getStatus(error: unknown): number | undefined {
     if (match) return Number.parseInt(match[1], 10);
   }
   return undefined;
+}
+
+export function getApiErrorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" ? code : undefined;
+}
+
+/**
+ * The server's explicit unauthenticated response. A bare 401 is not enough:
+ * provider/login flows can use that status for an unrelated application
+ * outcome and must not be sent through the expired-session UX.
+ */
+export function isSessionExpiredError(error: unknown): boolean {
+  return getApiErrorStatus(error) === 401 && getApiErrorCode(error) === "AUTH_REQUIRED";
 }
 
 /** Abort is a control-flow outcome, not an application error. */
@@ -96,7 +111,7 @@ export function isTransportError(error: unknown): boolean {
 export function classifyApiError(error: unknown): ApiErrorClassification {
   if (isAbortError(error)) return "aborted";
 
-  const status = getStatus(error);
+  const status = getApiErrorStatus(error);
   if (status === 429) return "rate-limited";
   if (EXPECTED_API_ERROR_STATUSES.includes(status as (typeof EXPECTED_API_ERROR_STATUSES)[number])) {
     return "expected-client";
@@ -148,7 +163,7 @@ type ApiErrorBody = {
   message?: unknown;
 };
 
-function getApiErrorCode(body: unknown): string | undefined {
+function getBodyApiErrorCode(body: unknown): string | undefined {
   if (!body || typeof body !== "object") return undefined;
   const error = (body as ApiErrorBody).error;
   if (typeof error === "object" && error !== null && typeof error.code === "string") {
@@ -177,7 +192,7 @@ export function makeApiError(
   return new ApiError({
     message: getApiErrorMessage(body, fallbackMessage),
     status,
-    code: getApiErrorCode(body),
+    code: getBodyApiErrorCode(body),
     retryAfterSeconds,
   });
 }

@@ -5,6 +5,7 @@ import {
   getApiRetryDelay,
   shouldRetryApiQuery,
   isAbortError,
+  isSessionExpiredError,
 } from "@/lib/api-error";
 
 export {
@@ -15,6 +16,7 @@ export {
   isExpectedApiError,
   shouldRetryApiQuery,
   isAbortError,
+  isSessionExpiredError,
 } from "@/lib/api-error";
 export type {
   ApiErrorClassification,
@@ -23,6 +25,56 @@ export type {
 
 let csrfToken: string | null = null;
 let csrfFetchPromise: Promise<string> | null = null;
+
+const PUBLIC_AUTH_PATHS = new Set([
+  "/",
+  "/login",
+  "/sign-up",
+  "/signup",
+  "/set-password",
+  "/forgot-password",
+  "/confirm-email-change",
+  "/privacy-policy",
+  "/delete-account",
+  "/not-found",
+]);
+
+// Several mounted queries can observe the same expired session together.
+// Remember the source location, rather than using a process-lifetime boolean,
+// so a later protected route can still redirect if the user navigates away
+// without completing sign-in.
+let lastSessionExpiryRedirectSource: string | null = null;
+
+export function resetSessionExpiryRedirect() {
+  lastSessionExpiryRedirectSource = null;
+}
+
+export function redirectToLoginForExpiredSession(options?: { cachedAuthenticated?: boolean }) {
+  if (typeof window === "undefined") return;
+
+  const path = window.location.pathname;
+  const cachedUser = queryClient.getQueryData<{ data?: { id?: unknown } }>(["/api/user"]);
+  const cachedAuthenticated = options?.cachedAuthenticated ?? Boolean(cachedUser?.data?.id);
+  // The root handler is also an auth boundary: anonymous root traffic needs
+  // the ordinary login route, while a stale authenticated root needs the
+  // explicit session-expired reason. Other public routes must not redirect
+  // just because their background /api/user query is naturally unauthenticated.
+  if (PUBLIC_AUTH_PATHS.has(path) && path !== "/") {
+    return;
+  }
+
+  const source = `${path}${window.location.search}`;
+  if (lastSessionExpiryRedirectSource === source) return;
+  lastSessionExpiryRedirectSource = source;
+
+  // A hard navigation clears all in-memory authenticated and financial query
+  // data before another account can use this browser session. The session is
+  // already unauthenticated and needs no logout mutation.
+  const loginUrl = cachedAuthenticated
+    ? "/login?reason=session-expired"
+    : "/login";
+  window.location.replace(loginUrl);
+}
 
 async function fetchCsrfToken(): Promise<string> {
   const res = await fetch('/api/csrf-token', { credentials: 'include' });
@@ -152,6 +204,9 @@ export async function throwIfResNotOk(res: Response) {
 
     if (res.status === 403 && error.code === 'CSRF_ERROR') {
       csrfToken = null;
+    }
+    if (isSessionExpiredError(error)) {
+      redirectToLoginForExpiredSession();
     }
     throw error;
   }
