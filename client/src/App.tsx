@@ -1,6 +1,6 @@
 import { Switch, Route } from "wouter";
 import * as Sentry from "@sentry/react";
-import { queryClient, prefetchQueries } from "./lib/queryClient";
+import { isSessionExpiredError, queryClient, prefetchQueries, redirectToLoginForExpiredSession } from "./lib/queryClient";
 import { logger } from "@/lib/logger";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -9,7 +9,7 @@ import { ErrorBoundary } from "@/components/error-boundary";
 import { ProtectedRoute, type RouteRequirement } from "@/components/protected-route";
 import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
-import { PageLoadingState } from "@/components/page-states";
+import { PageErrorState, PageLoadingState } from "@/components/page-states";
 import type { ApiResponse, User } from "@shared/schema";
 import { sanitizedSentryIdentity } from "@shared/sentry-context";
 import NotFound from "@/pages/not-found";
@@ -66,7 +66,7 @@ const guard = (requirement: RouteRequirement, node: ReactNode) => (
 const RootRedirectHandler: FC = () => {
   const [, navigate] = useLocation();
 
-  const { data: currentUserResponse, isLoading, isFetching, error } = useQuery<ApiResponse<User>>({
+  const { data: currentUserResponse, isLoading, isFetching, error, refetch } = useQuery<ApiResponse<User>>({
     queryKey: ['/api/user'],
     // The root route is an auth boundary. Always confirm the session before
     // choosing a destination so an ordinary account that was linked while a
@@ -77,7 +77,15 @@ const RootRedirectHandler: FC = () => {
 
   useEffect(() => {
     if (!isLoading && !isFetching) {
-      if (error || !currentUserResponse?.data) {
+      if (error) {
+        if (isSessionExpiredError(error)) {
+          if (currentUserResponse?.data) {
+            redirectToLoginForExpiredSession({ cachedAuthenticated: true });
+          } else {
+            navigate('/login');
+          }
+        }
+      } else if (!currentUserResponse?.data) {
         navigate('/login');
       } else {
         const user = currentUserResponse.data;
@@ -115,6 +123,10 @@ const RootRedirectHandler: FC = () => {
 
   if (isLoading || isFetching) {
     return <PageLoader />;
+  }
+
+  if (error && !isSessionExpiredError(error)) {
+    return <PageErrorState message="Unable to verify your session. Please try again." onRetry={() => { void refetch(); }} />;
   }
 
   return null;

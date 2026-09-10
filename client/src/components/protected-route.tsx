@@ -3,7 +3,8 @@ import { useLocation } from 'wouter';
 import { useQuery } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
-import { apiRequest } from '@/lib/queryClient';
+import { isSessionExpiredError, redirectToLoginForExpiredSession } from '@/lib/queryClient';
+import { PageErrorState } from '@/components/page-states';
 import type { ApiResponse, User } from '@shared/schema';
 
 export type RouteRequirement =
@@ -84,18 +85,12 @@ const PENDING_REGISTRATION_EXEMPT_PATHS = new Set([
   FORCE_PASSWORD_CHANGE_PATH,
 ]);
 
-function isAuthenticationError(error: unknown): boolean {
-  if (!error || typeof error !== 'object') return false;
-  const candidate = error as { code?: unknown; status?: unknown };
-  return candidate.code === 'AUTH_REQUIRED' || candidate.status === 401;
-}
-
 export const ProtectedRoute: FC<ProtectedRouteProps> = ({ requirement, children }) => {
   const [location, navigate] = useLocation();
   const { toast } = useToast();
   const redirectingRef = useRef(false);
 
-  const { data: currentUserResponse, isLoading, isFetching, error } = useQuery<ApiResponse<User>>({
+  const { data: currentUserResponse, isLoading, isFetching, error, refetch } = useQuery<ApiResponse<User>>({
     queryKey: ['/api/user'],
     // Keep the guard's established cache window so ordinary protected-route
     // navigation does not refetch and remount every child. The pending page
@@ -129,7 +124,7 @@ export const ProtectedRoute: FC<ProtectedRouteProps> = ({ requirement, children 
     && user?.id
     && isPendingRegistration
     && onPendingRegistrationExemptPath
-    && !isAuthenticationError(error)
+    && !isSessionExpiredError(error)
   );
 
   useEffect(() => {
@@ -191,20 +186,28 @@ export const ProtectedRoute: FC<ProtectedRouteProps> = ({ requirement, children 
   ]);
 
   useEffect(() => {
-    if (error && !preservePendingRouteOnError && !redirectingRef.current) {
+    if (error && isSessionExpiredError(error) && !redirectingRef.current) {
       redirectingRef.current = true;
-      apiRequest('/api/auth/logout', 'POST', {}).catch(() => {}).finally(() => {
-        window.location.href = '/login';
-      });
+      redirectToLoginForExpiredSession();
     }
-  }, [error, preservePendingRouteOnError]);
+  }, [error]);
 
-  if (isLoading || (error && !preservePendingRouteOnError)) {
+  if (isLoading || (error && isSessionExpiredError(error) && !preservePendingRouteOnError)) {
     return (
       <div className="flex items-center justify-center h-[60vh]">
         <Loader2 className="size-8 animate-spin text-primary" />
       </div>
     );
+  }
+
+  // A transient server/network failure must not log out a valid cached user,
+  // and must not leave an anonymous route spinning forever. The page-level
+  // retry keeps the distinction from an explicit AUTH_REQUIRED response.
+  if (error && !preservePendingRouteOnError) {
+    const message = error instanceof Error
+      ? `Unable to verify your session: ${error.message}`
+      : "Unable to verify your session. Please try again.";
+    return <PageErrorState message={message} onRetry={() => { void refetch(); }} />;
   }
 
   // Task #455: while the redirect-effect above is in flight, render

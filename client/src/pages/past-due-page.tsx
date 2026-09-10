@@ -14,6 +14,8 @@ import { PageLoadingState } from "@/components/page-states";
 import type { League, Team, BowlerLeague, BowlerWithAccount, User } from "@shared/schema";
 import type { CanonicalDuePastDueResponseV2 } from "@shared/roster-payment-contract";
 import { Link } from "wouter";
+import { throwIfResNotOk } from "@/lib/queryClient";
+import { financialReadErrorMessage } from "@/lib/financial-utils";
 
 export default function PastDuePage() {
   const { data: userResponse } = useQuery<{ data: User }>({ queryKey: ["/api/user"], staleTime: 1000 * 60 * 5 });
@@ -22,9 +24,7 @@ export default function PastDuePage() {
     queryKey: ["/api/leagues"],
     queryFn: async () => {
       const response = await fetch('/api/leagues');
-      if (!response.ok) {
-        throw new Error('Failed to fetch leagues');
-      }
+      await throwIfResNotOk(response);
       return response.json();
     }
   });
@@ -34,9 +34,7 @@ export default function PastDuePage() {
     queryKey: ["/api/teams"],
     queryFn: async () => {
       const response = await fetch('/api/teams');
-      if (!response.ok) {
-        throw new Error('Failed to fetch teams');
-      }
+      await throwIfResNotOk(response);
       return response.json();
     }
   });
@@ -46,9 +44,7 @@ export default function PastDuePage() {
     queryKey: ["/api/bowlers"],
     queryFn: async () => {
       const response = await fetch('/api/bowlers');
-      if (!response.ok) {
-        throw new Error('Failed to fetch bowlers');
-      }
+      await throwIfResNotOk(response);
       return response.json();
     }
   });
@@ -58,9 +54,7 @@ export default function PastDuePage() {
     queryKey: ["/api/bowler-leagues", { enriched: true }],
     queryFn: async () => {
       const response = await fetch('/api/bowler-leagues?enriched=true');
-      if (!response.ok) {
-        throw new Error('Failed to fetch bowler leagues');
-      }
+      await throwIfResNotOk(response);
       return response.json();
     }
   });
@@ -70,9 +64,7 @@ export default function PastDuePage() {
     queryKey: [systemScope ? `/api/financials/due-past-due${systemScope}` : "/api/financials/due-past-due"],
     queryFn: async () => {
       const response = await fetch(`/api/financials/due-past-due${systemScope}`);
-      if (!response.ok) {
-        throw new Error('Canonical financial evidence requires review');
-      }
+      await throwIfResNotOk(response);
       return response.json();
     },
     enabled: userResponse?.data?.role === "org_admin" || userResponse?.data?.role === "system_admin" || String(userResponse?.data?.role) === "payment_manager",
@@ -86,7 +78,9 @@ export default function PastDuePage() {
       </Layout>
     );
   }
-  if (financialError || !financialResponse?.data?.leagues) return <Layout><p className="p-6 text-destructive">Financial evidence requires review; no balance is shown.</p></Layout>;
+  if (financialError || !financialResponse?.data?.leagues) {
+    return <Layout><p className="p-6 text-destructive">{financialReadErrorMessage(financialError)}</p></Layout>;
+  }
 
   const groupedRows = [...financialLeagues.flatMap((entry) => entry.report.rows.map((row) => ({ ...row, leagueId: entry.leagueId }))).reduce((map, row) => {
     const key = `${row.leagueId}:${row.payerBowlerId}:none`;
