@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import type { Payment, User, ApiResponse, BowlerDetailsResponse } from "@shared/schema";
+import type { User, ApiResponse, BowlerDetailsResponse } from "@shared/schema";
 import type { CanonicalPaymentReport } from "@shared/canonical-payment-report";
 import type { CanonicalDuePastDueResponseV2 } from "@shared/roster-payment-contract";
 import { PageLoadingState } from "@/components/page-states";
@@ -26,9 +26,9 @@ export default function PaymentHistoryPage() {
   const { data: currentUser, isLoading: loadingUser, error: userError } = useQuery<ApiResponse<User>>({ queryKey: ["/api/user"] });
   const bowlerId = currentUser?.data?.bowlerId;
   const { data: detailsResponse, isLoading: loadingDetails, error: bowlerError } = useQuery<ApiResponse<BowlerDetailsResponse>>({
-    queryKey: [`/api/bowlers/${bowlerId}/details`, { includePayments: true }],
+    queryKey: [`/api/bowlers/${bowlerId}/details`],
     queryFn: async ({ signal }) => {
-      const response = await fetch(`/api/bowlers/${bowlerId}/details?includePayments=true`, { credentials: "include", headers: { Accept: "application/json" }, signal });
+      const response = await fetch(`/api/bowlers/${bowlerId}/details`, { credentials: "include", headers: { Accept: "application/json" }, signal });
       if (!response.ok) throw new Error((await response.json().catch(() => ({})))?.error?.message || "Failed to fetch bowler details");
       return response.json();
     },
@@ -47,17 +47,6 @@ export default function PaymentHistoryPage() {
   const leagueId = selectedLeagueId ?? bowlerLeagues[0]?.leagueId;
   const leagueMap = useMemo(() => new Map((details?.leagues ?? []).map((league) => [league.id, league])), [details?.leagues]);
   const league = leagueId === undefined ? undefined : leagueMap.get(leagueId);
-  const allPayments = details?.payments;
-  const hasPayments = Array.isArray(allPayments);
-  const { data: paymentsResponse, isLoading: loadingPayments } = useQuery<ApiResponse<Payment[]>>({
-    queryKey: ["/api/payments", { bowlerId, leagueId }],
-    queryFn: async ({ signal }) => {
-      const response = await fetch(`/api/payments?bowlerId=${bowlerId}&leagueId=${leagueId}`, { credentials: "include", headers: { Accept: "application/json" }, signal });
-      if (!response.ok) throw new Error("Failed to fetch payments");
-      return response.json();
-    },
-    enabled: !!bowlerId && !!leagueId && !!details && !hasPayments,
-  });
   const { data: reportResponse, isLoading: loadingReport, error: reportError, refetch: refetchReport } = useQuery<ApiResponse<CanonicalPaymentReport>>({
     queryKey: ["/api/financials/f5/payments", { bowlerId, leagueId, page: canonicalReportPage }],
     queryFn: async ({ signal }) => {
@@ -97,7 +86,7 @@ export default function PaymentHistoryPage() {
     doublePay: { dates: [], perWeekExtra: 0, totalExtra: 0, pastExtra: 0, isPaid: resolved.remainingBalance <= 0 },
   };
 
-  if (loadingUser || loadingDetails || loadingReport || loadingFinancial || (!hasPayments && loadingPayments)) {
+  if (loadingUser || loadingDetails || loadingReport || loadingFinancial) {
     return <PageLoadingState />;
   }
   if (userError) return <AuthErrorView />;
@@ -135,7 +124,6 @@ export default function PaymentHistoryPage() {
     canonicalReportTotalPages={report ? Math.max(1, Math.ceil(report.totalTransactions / report.limit)) : undefined}
     onCanonicalReportPageChange={setCanonicalReportPage}
     canonicalRows={report?.rows ?? []}
-    canonicalMode={report?.mode}
     canonicalPaymentTiming={report?.paymentTiming}
   />;
 }

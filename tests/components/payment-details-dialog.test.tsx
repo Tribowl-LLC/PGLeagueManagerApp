@@ -108,6 +108,23 @@ describe("PaymentDetailsDialog", () => {
     expect(screen.queryByRole("button", { name: "Void cash/check payment" })).not.toBeInTheDocument();
   });
 
+  it("renders evidence-only details without manufacturing a payment", () => {
+    render(<PaymentDetailsDialog
+      payment={null}
+      evidence={{ ...evidence, paymentId: null, paymentType: "check", waivedMinor: 500, allocations: [], operationType: "interactive_charge", operationStatus: "provider_unknown" }}
+      bowlerName="Test Bowler"
+      canCorrect
+      onClose={() => {}}
+    />);
+
+    expect(screen.getByRole("dialog", { name: "Payment Details" })).toBeInTheDocument();
+    expect(screen.getByText("Payment type").parentElement).toHaveTextContent("Check");
+    expect(screen.getByText(/Waived roster amount: \$5\.00/)).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Payment operation evidence" })).toHaveTextContent("provider unknown");
+    expect(screen.queryByRole("button", { name: "Void cash/check payment" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Receipt" })).not.toBeInTheDocument();
+  });
+
   it("fails closed when a paid row has unresolved canonical evidence", () => {
     render(<PaymentDetailsDialog payment={payment} evidence={{ ...evidence, source: "unresolved_operation", unresolved: true, reviewRequired: true }} bowlerName="Test Bowler" canCorrect={false} onClose={() => {}} />);
     expect(screen.getAllByText("Review required").length).toBeGreaterThan(0);

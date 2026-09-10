@@ -16,7 +16,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import type { Payment, BowlerDetailsResponse, ApiResponse } from "@shared/schema";
+import type { BowlerDetailsResponse, ApiResponse } from "@shared/schema";
 import type { CanonicalDuePastDueResponseV2 } from "@shared/roster-payment-contract";
 import { filterActiveBowlerLeagues } from "@/lib/bowler-league-utils";
 import { BowlerFinancialSummary } from "@/components/bowler-financial-summary";
@@ -110,30 +110,6 @@ export default function BowlerViewPage() {
     return detailsLeagues.find(l => l.id === effectiveLeagueId);
   }, [detailsLeagues, effectiveLeagueId]);
 
-  const { data: paymentsResponse } = useQuery<ApiResponse<Payment[]>>({
-    queryKey: ["/api/payments", { bowlerId, leagueId: effectiveLeagueId }],
-    queryFn: async ({ signal }) => {
-      const params = new URLSearchParams();
-      params.set("bowlerId", String(bowlerId));
-      params.set("leagueId", String(effectiveLeagueId));
-      const response = await fetch(`/api/payments?${params.toString()}`, {
-        credentials: "include",
-        headers: { "Accept": "application/json" },
-        signal,
-      });
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData?.error?.message || "Failed to fetch payments");
-      }
-      return response.json();
-    },
-    enabled: !!effectiveLeagueId && !!bowlerId,
-    staleTime: 1000 * 60,
-    retry: false,
-  });
-
-  const payments = useMemo(() => paymentsResponse?.data ?? [], [paymentsResponse?.data]);
-
   const { data: paymentReportResponse, isLoading: paymentReportLoading, error: paymentReportError } = useQuery<{ data: CanonicalPaymentReport }>({
     queryKey: ["/api/financials/f5/payments", effectiveLeagueId, bowlerId, paymentReportPage, currentUserRole, currentUserResponse?.data?.organizationId],
     queryFn: async ({ signal }) => {
@@ -152,17 +128,6 @@ export default function BowlerViewPage() {
     staleTime: 1000 * 60,
     retry: false,
   });
-  const paymentBusinessDates = useMemo(() => {
-    const map = new Map<number, string>();
-    for (const row of paymentReportResponse?.data?.rows ?? []) if (row.paymentId !== null) map.set(row.paymentId, row.authoritativeLocalDate);
-    return map;
-  }, [paymentReportResponse?.data]);
-  const paymentEvidenceStatuses = useMemo(() => {
-    const map = new Map<number, CanonicalPaymentReport["rows"][number]["status"]>();
-    for (const row of paymentReportResponse?.data?.rows ?? []) if (row.paymentId !== null) map.set(row.paymentId, row.status);
-    return map;
-  }, [paymentReportResponse?.data]);
-
   const { data: financialResponse, isLoading: loadingFinancials, error: financialError } = useQuery<ApiResponse<CanonicalDuePastDueResponseV2>>({
     queryKey: ["/api/financials/leagues", effectiveLeagueId, "canonical-due-past-due/2", bowlerId, systemScope],
     queryFn: async ({ signal }) => {
@@ -285,11 +250,11 @@ export default function BowlerViewPage() {
       </div>
 
       <ErrorBoundary level="section">
-        {paymentReportLoading ? <div className="text-sm text-muted-foreground">Loading canonical payment evidence…</div> : paymentReportError ? <div className="text-sm text-destructive">Financial evidence requires review; payment history is unavailable.</div> : <CanonicalPaymentEvidenceTable
+        {paymentReportLoading ? <div className="text-sm text-muted-foreground">Loading payment history…</div> : paymentReportError ? <div className="text-sm text-destructive">Payment history is unavailable; please try again.</div> : <CanonicalPaymentEvidenceTable
           rows={paymentReportResponse?.data?.rows ?? []}
-          mode={paymentReportResponse?.data?.mode}
           paymentTiming={paymentReportResponse?.data?.paymentTiming}
           organizationId={bowler?.organizationId ?? null}
+          bowlerName={bowler?.name ?? "Bowler"}
           title="Payment history"
         />}
         {!paymentReportLoading && !paymentReportError && paymentReportResponse?.data && <div className="mt-3 flex gap-3 text-sm">
