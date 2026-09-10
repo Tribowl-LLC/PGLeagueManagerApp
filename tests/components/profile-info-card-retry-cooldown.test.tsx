@@ -59,6 +59,7 @@ function makeUser(
     id: 1,
     email: 'cooldown@vitest.local',
     password: 'hashed:irrelevant',
+    credentialGeneration: 0,
     bowlerId: 99,
     name: 'Cooldown Tester',
     phone: null,

@@ -94,6 +94,9 @@ export type {
 export { users, insertUserSchema, updateUserSchema, updateUserSchemaBase } from "./users";
 export type { User, InsertUser, UpdateUser } from "./users";
 
+export * from "./account-action-delivery-jobs";
+export * from "./account-email-delivery-events";
+
 export {
   accountActionRequests,
   ACCOUNT_ACTION_TYPES,

@@ -187,9 +187,11 @@ export async function applyConfirmEmailChangeTxn(
 ): Promise<ConfirmEmailChangeOutcome> {
   return await db.transaction(async (tx) => {
     // Read the immutable owner first without taking a row lock, then acquire
-    // locks in the same account-action -> user -> email-change order used by
-    // password-reset consumption. The conditional claim below remains the
-    // authority for whether this token can be consumed.
+    // the per-account advisory lock and the user row lock before touching the
+    // email-change row. Credential triggers take locks in user -> account
+    // action -> email-change order; taking the user lock first here prevents
+    // a direct credential UPDATE from holding the user row while waiting on
+    // an email row that this transaction already claimed.
     const [candidate] = await tx
       .select({ userId: emailChangeRequests.userId })
       .from(emailChangeRequests)
@@ -212,6 +214,14 @@ export async function applyConfirmEmailChangeTxn(
     }
 
     await lockAccountCredential(tx, candidate.userId);
+
+    const [targetUser] = await tx
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.id, candidate.userId))
+      .limit(1)
+      .for('update');
+    if (!targetUser) return { kind: 'user_gone' as const };
 
     // Single conditional UPDATE: claims the token only if it is still
     // pending AND not expired. Concurrent confirms cannot both win.

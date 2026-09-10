@@ -267,6 +267,13 @@
       "when": 1788965739621,
       "tag": "0037_refund_allocation_adjustments",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1789081646995,
+      "tag": "0038_password_recovery_hardening",
+      "breakpoints": true
     }
   ]
 }

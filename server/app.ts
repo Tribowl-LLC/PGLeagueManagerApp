@@ -40,6 +40,7 @@ import { paymentOperationRetryExecutor } from './services/payment-operation-retr
 import { rosterStandingAutopayOperationExecutor } from './services/roster-standing-autopay-executor';
 import { configureStandingAutopayRuntime } from './services/roster-standing-autopay';
 import { configurePaymentOperationRuntime } from './services/payment-operation-runtime';
+import { startAccountActionDelivery, stopAccountActionDelivery } from './services/account-action-delivery-runtime';
 import { startPaymentSyncRetrySweep } from './services/payment-sync-retry';
 import { bootstrapAllSquareCustomAttributeDefinitions } from './services/square-startup-bootstrap';
 import { verifySquareSdkVersion } from './services/square-provider';
@@ -62,6 +63,7 @@ import { assertTrustProxyAtBoot } from './lib/trust-proxy-check';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import * as schema from '@shared/schema';
 import { registerSquareWebhookReceiver } from './routes/payments-provider/square-webhook';
+import { registerSendgridWebhookReceiver } from './routes/email/sendgrid-webhook';
 import { sanitizedSentryIdentity } from '@shared/sentry-context';
 import { getPgErrorCode } from './utils/db-errors.js';
 
@@ -120,6 +122,8 @@ export interface CreateAppOptions {
    * middleware. Designed for the per-worker test harness.
    */
   suppressBackgroundWorkers?: boolean;
+  /** Enable only recovery delivery in isolated end-to-end tests. */
+  enableAccountActionDeliveryWorker?: boolean;
   /**
    * When true: mount `express.static('dist/public')` + an SPA
    * catch-all that serves `dist/public/index.html` for non-`/api/*`
@@ -190,6 +194,7 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
   // exact route owns raw-byte signature validation and remains disabled unless
   // the explicit Phase 4A-1 ingest-only mode is configured.
   registerSquareWebhookReceiver(app);
+  registerSendgridWebhookReceiver(app, { publicKey: env.SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY ?? '' });
   app.use(subdomainDetection);
   app.use(compression());
   app.use(securityHeaders);
@@ -472,6 +477,10 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
     });
   });
 
+  if (!suppress || opts.enableAccountActionDeliveryWorker) {
+    await startAccountActionDelivery();
+  }
+
   if (!suppress) {
     try {
       await paymentOperationRetryExecutor.start(scheduledPaymentExecutionMode);
@@ -508,6 +517,7 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
   }
 
   const close = async (): Promise<void> => {
+    await stopAccountActionDelivery();
     paymentOperationRetryExecutor.stop();
     rosterStandingAutopayOperationExecutor.stop();
     await new Promise<void>((resolve) => {

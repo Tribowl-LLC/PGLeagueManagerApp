@@ -87,6 +87,7 @@ function makeUser(
     id: 1,
     email: 'pending-sync@vitest.local',
     password: 'hashed:irrelevant',
+    credentialGeneration: 0,
     bowlerId: 99,
     name: 'Pending Sync Tester',
     phone: null,

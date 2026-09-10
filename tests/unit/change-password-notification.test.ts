@@ -94,6 +94,7 @@ vi.mock('../../server/storage', () => ({
 
 const mockHashPassword = vi.fn(async (pw: string) => `hashed:${pw}`);
 const mockDestroyOtherSessionsForUser = vi.fn(async () => 0);
+const mockLogin = vi.fn((_user: unknown, done: (error: unknown) => void) => done(null));
 
 vi.mock('../../server/auth', () => ({
   hashPassword: (...a: unknown[]) => mockHashPassword.apply(null, a as never),
@@ -152,15 +153,12 @@ beforeAll(async () => {
   // Stand in for passport: tag every request with a fake user that
   // matches our DB stub, and a working `isAuthenticated`.
   app.use((req, _res, next) => {
-    (req as unknown as {
-      user: typeof TEST_USER;
-      isAuthenticated: () => boolean;
-      sessionID: string;
-      ip: string;
-    }).user = TEST_USER;
-    (req as unknown as { isAuthenticated: () => boolean }).isAuthenticated = () =>
-      authenticated;
-    (req as unknown as { sessionID: string }).sessionID = 'sess-test-1';
+    Object.assign(req, {
+      user: TEST_USER,
+      login: (user: unknown, done: (error: unknown) => void) => mockLogin(user, done),
+      isAuthenticated: () => authenticated,
+      sessionID: 'sess-test-1',
+    });
     Object.defineProperty(req, 'ip', { value: '203.0.113.42', configurable: true });
     next();
   });
@@ -183,13 +181,17 @@ beforeEach(() => {
   mockSendPasswordChangedNotification.mockClear();
   mockSendPasswordChangedNotification.mockResolvedValue(true);
   mockGetUser.mockReset();
-  mockGetUser.mockResolvedValue({ ...TEST_USER });
+  mockGetUser.mockImplementation(async () => ({
+    ...TEST_USER,
+    ...(mockUpdateUser.mock.calls.length > 0 ? { password: 'hashed:new' } : {}),
+  }));
   mockUpdateUser.mockReset();
   mockUpdateUser.mockResolvedValue({ ...TEST_USER, password: 'hashed:new' });
   mockRevokePendingAccountActions.mockClear();
   mockInvalidatePending.mockClear();
   mockHashPassword.mockClear();
   mockDestroyOtherSessionsForUser.mockClear();
+  mockLogin.mockClear();
   mockComparePasswords.mockClear();
 });
 
@@ -223,20 +225,27 @@ describe('POST /api/account/change-password — password-changed email dispatch'
     const body = await res.json();
     expect(body.success).toBe(true);
 
+    // The trigger advances credentialGeneration on the committed row. The
+    // route must refresh the current caller with that row before responding,
+    // otherwise the next request would deserialize the stale pre-change
+    // session and log the caller out.
+    expect(mockLogin).toHaveBeenCalledWith(
+      expect.objectContaining({ id: TEST_USER.id, password: 'hashed:new' }),
+      expect.any(Function),
+    );
+
     await flushFireAndForget();
 
     expect(mockSendPasswordChangedNotification).toHaveBeenCalledTimes(1);
-    const call = mockSendPasswordChangedNotification.mock.calls[0] as unknown as [
-      string,
-      string,
-      {
-        changedAt: Date;
-        ipAddress: string | null;
-        userAgent: string | null;
-        locale?: string | null;
-      },
-    ];
-    const [toEmail, name, ctx] = call;
+    const call: readonly unknown[] | undefined = mockSendPasswordChangedNotification.mock.calls.at(0);
+    if (!call) throw new Error('password notification was not dispatched');
+    const [toEmail, name, rawContext] = call;
+    const ctx = rawContext as {
+      changedAt: Date;
+      ipAddress: string | null;
+      userAgent: string | null;
+      locale?: string | null;
+    };
     expect(toEmail).toBe(TEST_USER.email);
     expect(name).toBe(TEST_USER.name);
     expect(ctx.changedAt).toBeInstanceOf(Date);
@@ -310,6 +319,28 @@ describe('POST /api/account/change-password — password-changed email dispatch'
     expect(mockRevokePendingAccountActions).not.toHaveBeenCalled();
     expect(mockInvalidatePending).not.toHaveBeenCalled();
     expect(mockSendPasswordChangedNotification).not.toHaveBeenCalled();
+  });
+
+  it('keeps the refreshed caller authorized when session cleanup fails', async () => {
+    // Session-row deletion is best-effort after the credential transaction
+    // commits. A store outage must not turn a successful password change into
+    // a 500 or discard the freshly serialized caller session.
+    expectErrorLog(/Failed to destroy other sessions on password change/);
+    mockDestroyOtherSessionsForUser.mockRejectedValueOnce(
+      new Error('synthetic session-store outage'),
+    );
+
+    const res = await postChangePassword({
+      currentPassword: 'OriginalPw!2026',
+      newPassword: 'BrandNewPw!2026XX',
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).success).toBe(true);
+    expect(mockLogin).toHaveBeenCalledWith(
+      expect.objectContaining({ id: TEST_USER.id, password: 'hashed:new' }),
+      expect.any(Function),
+    );
+    expect(mockDestroyOtherSessionsForUser).toHaveBeenCalledWith(TEST_USER.id, 'sess-test-1');
   });
 
   it('still returns 200 for the change-password call when the email helper rejects (best-effort contract)', async () => {

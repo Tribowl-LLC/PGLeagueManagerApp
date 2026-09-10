@@ -69,6 +69,7 @@ export const SAFE_USER_FIELDS = [
 // is missing from BOTH lists, so the deny half can't go stale.
 const SENSITIVE_USER_FIELDS = [
   'password',
+  'credentialGeneration',
   'inviteToken',
   'inviteTokenExpiry',
   'failedPasswordChangeAttempts',

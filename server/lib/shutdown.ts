@@ -3,6 +3,7 @@ import type { Request, Response, NextFunction } from "express";
 import { cleanup as dbCleanup } from "../db";
 import { paymentOperationRetryExecutor } from "../services/payment-operation-retry-executor";
 import { rosterStandingAutopayOperationExecutor } from "../services/roster-standing-autopay-executor";
+import { stopAccountActionDelivery } from "../services/account-action-delivery-runtime";
 import { stopPaymentSyncRetrySweep } from "../services/payment-sync-retry";
 import { createLogger } from "../logger";
 
@@ -56,6 +57,7 @@ export function registerShutdownHandlers(server: Server): void {
         waitForDrain();
       });
 
+      await stopAccountActionDelivery();
       await dbCleanup();
 
       await new Promise<void>((resolve, reject) => {

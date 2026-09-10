@@ -24,9 +24,10 @@ import {
   isIdentityLinkError,
 } from "../services/identity-link.js";
 import {
-  withAccountActionDeliveryLock,
   type AccountActionWithUser,
 } from "../storage/account-action-requests.js";
+import { enqueuePasswordResetDelivery } from "../storage/account-action-delivery-jobs.js";
+import { notifyAccountActionDeliveryChanged } from "../services/account-action-delivery-scheduler.js";
 import { isNormalizedUserEmailConflict } from "../utils/db-errors.js";
 // Same allowlist account.ts uses for /api/account/profile (task #420).
 // We pull it from the password-changed email bundle directly rather
@@ -42,7 +43,6 @@ const SUPPORTED_PREFERRED_LANGUAGES = Object.keys(
 ) as ReadonlyArray<string>;
 
 const log = createLogger("AuthRoutes");
-const PASSWORD_RESET_RESEND_SUPPRESSION_MS = 5 * 60 * 1000;
 const MAX_ACCOUNT_ACTION_TOKEN_LENGTH = 256;
 
 type AccountActionErrorCode =
@@ -740,80 +740,37 @@ export function registerAuthRoutes(app: Express): void {
   });
 
   authRouter.post("/forgot-password", forgotPasswordLimiter, async (req, res) => {
+    // Bound ordinary lookup/enqueue timing differences without holding a DB
+    // connection while waiting. The rate limiter remains the abuse boundary.
+    const responseNotBefore = Date.now() + 250;
     try {
       const { email } = req.body;
       if (!email || typeof email !== 'string') {
         return sendError(res, "Email is required", 400, "VALIDATION_ERROR");
       }
 
-      sendSuccess(res, { message: "If an account exists with that email, a password reset link has been sent." });
-
-      try {
-        const user = await storage.getUserByEmail(email.trim().toLowerCase());
-        if (!user) return;
-        if (!user.password) return;
-
-        const org = user.organizationId ? await storage.getOrganization(user.organizationId) : null;
-        await withAccountActionDeliveryLock(user.id, "password_reset", async (lockedDb) => {
-          const recentlyDelivered = await storage.hasRecentlyDeliveredPendingAccountAction({
-            userId: user.id,
-            action: "password_reset",
-            deliveredAfter: new Date(Date.now() - PASSWORD_RESET_RESEND_SUPPRESSION_MS),
-          }, lockedDb);
-          if (recentlyDelivered) {
-            log.info('Suppressed duplicate password reset delivery', { userId: user.id });
-            return;
-          }
-
-          const expiry = new Date(Date.now() + 60 * 60 * 1000);
-          const issued = await storage.issueAccountAction({
-            userId: user.id,
-            action: "password_reset",
-            expiresAt: expiry,
-            organizationId: user.organizationId,
-            recipientEmail: user.email,
-          }, lockedDb);
-          const token = issued.token;
-
-          const baseUrl = getBaseUrl(org);
-          const resetUrl = `${baseUrl}/set-password?token=${token}`;
-          const firstName = user.name?.split(' ')[0] || user.email;
-
-          let sent = false;
-          try {
-            sent = await sendTemplatedEmail('password_reset', user.email, {
-              bowler_name: firstName,
-              reset_link: resetUrl,
-              // Existing password_reset templates may use the legacy invite
-              // variable shared with onboarding emails.
-              invite_link: resetUrl,
-              organization_name: org?.name || 'LeagueVault',
-            });
-          } catch (deliveryError) {
-            log.error('Password reset templated delivery failed:', deliveryError);
-          }
-
-          if (!sent) {
-            const { sendPasswordResetFallbackEmail } = await import('../services/email.js');
-            try {
-              sent = await sendPasswordResetFallbackEmail(user.email, firstName || 'there', token, org?.subdomain || org?.slug);
-            } catch (deliveryError) {
-              log.error('Password reset fallback delivery failed:', deliveryError);
-            }
-          }
-
-          await storage.updateAccountActionDeliveryStatus(
-            issued.request.id,
-            sent ? "sent" : "failed",
-            lockedDb,
-          );
-          log.info('Password reset delivery attempted', { userId: user.id, sent });
+      const user = await storage.getUserByEmail(email.trim().toLowerCase());
+      if (user?.password) {
+        // Commit the non-secret intent before acknowledging the request. A
+        // process crash after the response cannot silently lose this email.
+        const result = await enqueuePasswordResetDelivery({
+          userId: user.id,
+          organizationId: user.organizationId,
+          credentialGeneration: user.credentialGeneration,
+          expiresAt: new Date(Date.now() + 60 * 60 * 1000),
         });
-      } catch (bgError) {
-        log.error('Failed to process forgot-password request:', bgError);
+        if (result.kind === "enqueued") {
+          notifyAccountActionDeliveryChanged();
+          log.info("Password-reset delivery queued", { jobId: result.job.id });
+        } else {
+          log.info("Password-reset delivery suppressed", { reason: result.reason });
+        }
       }
+      const remaining = responseNotBefore - Date.now();
+      if (remaining > 0) await new Promise(resolve => setTimeout(resolve, remaining));
+      sendSuccess(res, { message: "If an account exists with that email, a password reset link will be sent." });
     } catch (error) {
-      log.error('Forgot password error:', error);
+      log.error('Forgot password request failed', { errorType: error instanceof Error ? error.name : 'unknown' });
       sendError(res, "Something went wrong", 500, "SERVER_ERROR");
     }
   });

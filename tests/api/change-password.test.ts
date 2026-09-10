@@ -141,7 +141,7 @@ describe('POST /api/account/change-password', () => {
     expect(after.password).toBe(before.password);
   });
 
-  it('destroys other sessions for the same user but keeps the caller logged in (task #318)', async () => {
+  it('destroys other sessions and refreshes the caller session after rotation (task #318)', async () => {
     const { email, session: sessionA } = await createUserAndLogin();
     // Second session for the SAME user — simulates another device or a
     // stolen cookie that we want force-logged-out by the password change.
@@ -157,13 +157,32 @@ describe('POST /api/account/change-password', () => {
     });
     expect(beforeB.status).toBe(200);
 
-    const res = await apiPost<{ message: string }>(
-      '/api/account/change-password',
-      { currentPassword: ORIGINAL_PASSWORD, newPassword: NEW_STRONG_PASSWORD },
-      sessionA,
-    );
-    expect(res.status).toBe(200);
-    expect(res.data.success).toBe(true);
+    // Passport re-serializes the user after the trigger advances the
+    // credential generation. That regeneration invalidates the old SID and
+    // sends a replacement `connect.sid` cookie, so capture the response
+    // headers here instead of using the helper which intentionally returns
+    // only the decoded API body.
+    const changeResponse = await fetch(`${BASE_URL}/api/account/change-password`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Cookie: sessionA.cookies,
+        'x-csrf-token': sessionA.csrfToken,
+        'x-test-rate-limit-bypass': '1',
+        'x-test-suppress-apple-pay-kick': '1',
+      },
+      body: JSON.stringify({
+        currentPassword: ORIGINAL_PASSWORD,
+        newPassword: NEW_STRONG_PASSWORD,
+      }),
+    });
+    expect(changeResponse.status).toBe(200);
+    const changeBody = await changeResponse.json() as { success: boolean };
+    expect(changeBody.success).toBe(true);
+    const refreshedCookies = (changeResponse.headers.getSetCookie?.() ?? [])
+      .map(cookie => cookie.split(';')[0])
+      .join('; ');
+    expect(refreshedCookies).toMatch(/^connect\.sid=/);
 
     // sessionB must now be invalidated.
     const afterB = await fetch(`${BASE_URL}/api/auth/user`, {
@@ -171,12 +190,19 @@ describe('POST /api/account/change-password', () => {
     });
     expect(afterB.status).toBe(401);
 
-    // sessionA (the caller) should still be valid — getting bounced
-    // from the page you just changed your password on is a UX trap.
+    // The old caller SID is invalidated by Passport's session regeneration.
     const afterA = await fetch(`${BASE_URL}/api/auth/user`, {
       headers: { Cookie: sessionA.cookies },
     });
-    expect(afterA.status).toBe(200);
+    expect(afterA.status).toBe(401);
+
+    // The browser automatically adopts the replacement Set-Cookie header;
+    // this is the session that must remain authorized after the self-service
+    // change.
+    const afterRefreshedA = await fetch(`${BASE_URL}/api/auth/user`, {
+      headers: { Cookie: refreshedCookies },
+    });
+    expect(afterRefreshedA.status).toBe(200);
   });
 
   it('throttles repeated change-password attempts with RATE_LIMITED (task #317)', async () => {

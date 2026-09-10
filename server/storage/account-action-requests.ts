@@ -40,6 +40,36 @@ export interface AccountActionWithUser {
 
 export interface CompletedPasswordAction extends AccountActionWithUser {}
 
+/** Maximum number of still-usable recovery links held for one account. */
+export const PASSWORD_RESET_PENDING_CAP = 3;
+/** Suppress rapid repeat sends while the previous link is likely in flight. */
+export const PASSWORD_RESET_DELIVERY_SUPPRESSION_MS = 5 * 60 * 1000;
+
+export type PasswordResetIssuanceSuppressionReason =
+  | "user_missing"
+  | "recipient_changed"
+  | "stale_credential"
+  | "at_capacity"
+  | "recently_delivered";
+
+export type PasswordResetIssuanceResult =
+  | (IssuedAccountAction & { kind: "issued" })
+  | { kind: "suppressed"; reason: PasswordResetIssuanceSuppressionReason };
+
+export interface PasswordResetPendingState {
+  pendingCount: number;
+  recentlyDelivered: boolean;
+}
+
+export class PasswordResetCapacityError extends Error {
+  readonly code = "PASSWORD_RESET_CAPACITY" as const;
+
+  constructor() {
+    super("Password-reset pending capacity reached");
+    this.name = "PasswordResetCapacityError";
+  }
+}
+
 const TOKEN_BINDING_SEPARATOR = ".";
 const MAX_CONCURRENT_DELIVERY_LOCKS = 5;
 const MAX_DELIVERY_LOCK_WAITERS = 100;
@@ -156,6 +186,12 @@ export async function issueAccountAction(input: {
   organizationId?: number | null;
   createdByUserId?: number | null;
   recipientEmail?: string;
+  /** Expected generation for a queued recovery dispatch, when available. */
+  expectedCredentialGeneration?: number;
+  /** Durable delivery job owning this particular recovery attempt. */
+  deliveryJobId?: number | null;
+  /** Recovery dispatch retries preserve every still-usable recovery link. */
+  preservePending?: boolean;
 }, executor?: AccountActionExecutor): Promise<IssuedAccountAction> {
   if (input.expiresAt.getTime() <= Date.now()) {
     throw new Error("Account action expiry must be in the future");
@@ -175,10 +211,11 @@ export async function issueAccountAction(input: {
     if (input.action === "password_reset") {
       await lockAccountCredential(tx, input.userId);
       const [currentUser] = await tx
-        .select({ email: users.email })
+        .select({ email: users.email, credentialGeneration: users.credentialGeneration })
         .from(users)
         .where(eq(users.id, input.userId))
-        .limit(1);
+        .limit(1)
+        .for("update");
       const recipientEmail = input.recipientEmail;
       if (
         !currentUser
@@ -186,6 +223,19 @@ export async function issueAccountAction(input: {
         || normalizeRecipientEmail(currentUser.email) !== normalizeRecipientEmail(recipientEmail)
       ) {
         throw new Error("Password-reset recipient changed before issuance");
+      }
+      if (
+        input.expectedCredentialGeneration !== undefined
+        && currentUser.credentialGeneration !== input.expectedCredentialGeneration
+      ) {
+        throw new Error("Password-reset credential generation changed before issuance");
+      }
+      // The cap is an invariant of every password-reset issuance path. The
+      // preservePending flag only controls supersession behavior for legacy
+      // callers; it must never allow a fourth usable recovery link.
+      const pendingState = await getPasswordResetPendingState({ userId: input.userId }, tx);
+      if (pendingState.pendingCount >= PASSWORD_RESET_PENDING_CAP) {
+        throw new PasswordResetCapacityError();
       }
     } else {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`account-action:${input.userId}:${input.action}`}))`);
@@ -201,14 +251,19 @@ export async function issueAccountAction(input: {
         eq(accountActionRequests.status, "pending"),
       ));
 
-    await tx
-      .update(accountActionRequests)
-      .set({ status: "superseded", supersededAt: sql`now()` })
-      .where(and(
-        eq(accountActionRequests.userId, input.userId),
-        eq(accountActionRequests.action, input.action),
-        eq(accountActionRequests.status, "pending"),
-      ));
+    // Password recovery is append-preserving by default. The old
+    // supersession behavior remains for invitations only, and callers may
+    // still pass preservePending explicitly for clarity.
+    if (input.action !== "password_reset" && !input.preservePending) {
+      await tx
+        .update(accountActionRequests)
+        .set({ status: "superseded", supersededAt: sql`now()` })
+        .where(and(
+          eq(accountActionRequests.userId, input.userId),
+          eq(accountActionRequests.action, input.action),
+          eq(accountActionRequests.status, "pending"),
+        ));
+    }
 
     const [created] = await tx
       .insert(accountActionRequests)
@@ -216,6 +271,7 @@ export async function issueAccountAction(input: {
         userId: input.userId,
         organizationId: input.organizationId ?? null,
         createdByUserId: input.createdByUserId ?? null,
+        deliveryJobId: input.deliveryJobId ?? null,
         action: input.action,
         tokenHash,
         expiresAt: input.expiresAt.toISOString(),
@@ -233,6 +289,130 @@ export async function issueAccountAction(input: {
     : await db.transaction(run);
 
   return { request, token };
+}
+
+/**
+ * Read and lazily expire the recovery rows used by the three-link policy.
+ * Callers that make a decision from this result must hold
+ * `lockAccountCredential` on the same transaction executor.
+ */
+export async function getPasswordResetPendingState(input: {
+  userId: number;
+  deliveredAfter?: Date;
+}, executor: AccountActionExecutor = db): Promise<PasswordResetPendingState> {
+  await executor
+    .update(accountActionRequests)
+    .set({ status: "expired", expiredAt: sql`now()` })
+    .where(and(
+      eq(accountActionRequests.userId, input.userId),
+      eq(accountActionRequests.action, "password_reset"),
+      eq(accountActionRequests.status, "pending"),
+      lte(accountActionRequests.expiresAt, sql`now()`),
+    ));
+
+  const pending = await executor.execute<{ count: string }>(sql`
+    SELECT count(*)::text AS count
+    FROM account_action_requests
+    WHERE user_id = ${input.userId}
+      AND action = 'password_reset'
+      AND status = 'pending'
+      AND expires_at > now()
+  `);
+  const pendingCount = Number(pending.rows[0]?.count ?? 0);
+  if (!Number.isSafeInteger(pendingCount) || pendingCount < 0) {
+    throw new Error("Invalid pending password-reset count");
+  }
+
+  const deliveredAfter = input.deliveredAfter
+    ?? new Date(Date.now() - PASSWORD_RESET_DELIVERY_SUPPRESSION_MS);
+  const [recentDelivery] = await executor
+    .select({ id: accountActionRequests.id })
+    .from(accountActionRequests)
+    .where(and(
+      eq(accountActionRequests.userId, input.userId),
+      eq(accountActionRequests.action, "password_reset"),
+      eq(accountActionRequests.status, "pending"),
+      eq(accountActionRequests.deliveryStatus, "sent"),
+      gt(accountActionRequests.expiresAt, sql`now()`),
+      gte(accountActionRequests.deliveredAt, deliveredAfter.toISOString()),
+    ))
+    .limit(1);
+
+  return { pendingCount, recentlyDelivered: recentDelivery !== undefined };
+}
+
+/**
+ * Issue a recovery link only after the per-account capacity and delivery
+ * suppression checks have run inside the same transaction-scoped credential
+ * lock. This is the only issuer the durable delivery worker should call.
+ *
+ * A raw token is created only after these checks pass. It is returned to the
+ * caller for immediate provider dispatch and is never part of the durable job
+ * or action row.
+ */
+export async function tryIssuePasswordReset(input: {
+  userId: number;
+  expiresAt: Date;
+  organizationId?: number | null;
+  createdByUserId?: number | null;
+  recipientEmail: string;
+  deliveryJobId?: number | null;
+  expectedCredentialGeneration?: number;
+  deliveredAfter?: Date;
+}, executor?: AccountActionExecutor): Promise<PasswordResetIssuanceResult> {
+  if (input.expiresAt.getTime() <= Date.now()) {
+    throw new Error("Password-reset expiry must be in the future");
+  }
+
+  const run = async (tx: AccountActionExecutor): Promise<PasswordResetIssuanceResult> => {
+    await lockAccountCredential(tx, input.userId);
+
+    const [currentUser] = await tx
+      .select({ email: users.email, credentialGeneration: users.credentialGeneration })
+      .from(users)
+      .where(eq(users.id, input.userId))
+      .limit(1)
+      .for("update");
+    if (!currentUser) return { kind: "suppressed", reason: "user_missing" };
+    if (normalizeRecipientEmail(currentUser.email) !== normalizeRecipientEmail(input.recipientEmail)) {
+      return { kind: "suppressed", reason: "recipient_changed" };
+    }
+    if (
+      input.expectedCredentialGeneration !== undefined
+      && currentUser.credentialGeneration !== input.expectedCredentialGeneration
+    ) {
+      return { kind: "suppressed", reason: "stale_credential" };
+    }
+
+    const pendingState = await getPasswordResetPendingState({ userId: input.userId }, tx);
+    if (pendingState.pendingCount >= PASSWORD_RESET_PENDING_CAP) {
+      return { kind: "suppressed", reason: "at_capacity" };
+    }
+    if (pendingState.recentlyDelivered) {
+      return { kind: "suppressed", reason: "recently_delivered" };
+    }
+
+    const issued = await issueAccountAction({
+      userId: input.userId,
+      action: "password_reset",
+      expiresAt: input.expiresAt,
+      organizationId: input.organizationId,
+      createdByUserId: input.createdByUserId,
+      recipientEmail: input.recipientEmail,
+      deliveryJobId: input.deliveryJobId,
+      expectedCredentialGeneration: input.expectedCredentialGeneration,
+      preservePending: true,
+    }, tx);
+    return { kind: "issued", ...issued };
+  };
+
+  if (executor) {
+    const result = "transaction" in executor
+      ? await executor.transaction(run)
+      : await run(executor);
+    return result;
+  }
+  return db.transaction(run);
 }
 
 /**
@@ -300,6 +480,20 @@ export async function consumeAccountActionAndSetPassword(input: {
 
     await lockAccountCredential(tx, candidate.userId);
 
+    // Lock the authoritative user row before touching the action row. This
+    // keeps the lock order user -> action consistent with credential update
+    // triggers and prevents a concurrent password/email change from racing
+    // the claim below.
+    const [currentUser] = await tx
+      .select()
+      .from(users)
+      .where(eq(users.id, candidate.userId))
+      .limit(1)
+      .for("update");
+    if (!currentUser) {
+      throw new Error(`Account action user ${candidate.userId} no longer exists`);
+    }
+
     await tx
       .update(accountActionRequests)
       .set({ status: "expired", expiredAt: sql`now()` })
@@ -320,17 +514,6 @@ export async function consumeAccountActionAndSetPassword(input: {
       .returning();
 
     if (!claimed) return undefined;
-
-    const [currentUser] = await tx
-      .select()
-      .from(users)
-      .where(eq(users.id, claimed.userId))
-      .limit(1)
-      .for("update");
-
-    if (!currentUser) {
-      throw new Error(`Account action user ${claimed.userId} no longer exists`);
-    }
 
     if (
       claimed.action === "password_reset"

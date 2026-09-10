@@ -19,7 +19,7 @@ import { syncBowlerForUser } from '../services/payment-customer-sync';
 import { maskEmail } from '../utils/pii';
 import { getPgErrorCode } from '../utils/db-errors';
 import { isPaymentManager } from '../utils/access-control.js';
-import { type PaymentSyncStatus } from '@shared/schema';
+import { type PaymentSyncStatus, type User } from '@shared/schema';
 import {
   markAdminEmailChangeAuditConfirmed,
 } from '../storage/admin-email-change-audits';
@@ -34,6 +34,22 @@ import {
 
 const log = createLogger('Account');
 const router = Router();
+
+/**
+ * A credential update invalidates the serialized generation in the current
+ * request's session too. Re-login the caller with the committed row so a
+ * successful self-service change keeps that caller signed in, while an
+ * admin or anonymous confirmation never adopts the target user's identity.
+ */
+async function refreshCurrentSession(req: Request, user: User): Promise<void> {
+  if (req.user?.id !== user.id || typeof req.login !== 'function') return;
+  await new Promise<void>((resolve, reject) => {
+    req.login(user, (error: unknown) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+}
 
 const GENERIC_DELETION_RESPONSE = {
   success: true as const,
@@ -285,6 +301,11 @@ router.post('/confirm-email-change', confirmEmailChangeLimiter, async (req: Requ
     }
 
     const updatedUser = outcome.user;
+
+    // Email changes rotate credentialGeneration. Refresh only a session that
+    // already belongs to this same user; the confirmation token must never
+    // log an anonymous caller or an administrator in as the target account.
+    await refreshCurrentSession(req, updatedUser);
 
     let paymentSyncStatus: PaymentSyncStatus = 'not_applicable';
     // Staff accounts are never bowlers. A stale legacy link must not let an
@@ -570,6 +591,18 @@ router.post('/change-password', changePasswordLimiter, requireAuth, async (req: 
         userId: user.id,
         error: err instanceof Error ? err.message : String(err),
       });
+    }
+
+    // The database trigger has advanced credentialGeneration. Re-read the
+    // committed row and let Passport serialize that exact snapshot so the
+    // caller's own session survives the rotation. The serializer takes the
+    // account lock and rejects the snapshot if another rotation wins first.
+    if (typeof req.login === 'function' && req.user?.id === user.id) {
+      const refreshedUser = await storage.getUser(user.id);
+      if (!refreshedUser) {
+        throw new Error('Password changed but the committed user row could not be reloaded');
+      }
+      await refreshCurrentSession(req, refreshedUser);
     }
 
     // Force-log-out every other session for this user. The user is

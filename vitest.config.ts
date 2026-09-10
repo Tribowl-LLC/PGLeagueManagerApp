@@ -89,6 +89,9 @@ const PARALLEL_ISOLATED_WITH_APP = [
  * error-log guard, so nothing preloads `pg` ahead of the mock.
  */
 const UNIT_NO_DB = [
+  'tests/unit/account-action-delivery-worker.test.ts',
+  'tests/unit/account-action-delivery-scheduler.test.ts',
+  'tests/unit/sendgrid-webhook.test.ts',
   'tests/unit/auth-action-routes.test.ts',
   'tests/unit/client-api-error.test.ts',
   'tests/unit/asset-recovery-sentry-order.test.ts',
@@ -152,6 +155,9 @@ const PARALLEL_ISOLATED = [
   'tests/api/payment-sync-state-transitions.test.ts',
   'tests/unit/admin-reset-password-notification.test.ts',
   'tests/unit/account-action-requests-postgres.test.ts',
+  'tests/unit/account-action-delivery-jobs-postgres.test.ts',
+  'tests/unit/account-email-delivery-events-postgres.test.ts',
+  'tests/unit/credential-generation-postgres.test.ts',
   'tests/unit/admin-role-change-audit.test.ts',
   'tests/unit/app-domain-mixed-case-pins.test.ts',
   'tests/unit/app-domain-runtime.test.ts',

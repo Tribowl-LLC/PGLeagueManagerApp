@@ -60,7 +60,7 @@ vi.mock('../../server/logger', () => ({
 // `await db.transaction(async tx => ...)` and inspects the returned
 // `outcome.kind`. We let each test set what the handler "sees".
 type ConfirmOutcome =
-  | { kind: 'ok'; user: { id: number; email: string } }
+  | { kind: 'ok'; user: { id: number; email: string }; requestId?: number }
   | { kind: 'invalid' }
   | { kind: 'consumed' }
   | { kind: 'expired' }
@@ -106,6 +106,8 @@ vi.mock('../../server/auth', () => ({
   destroyOtherSessionsForUser: vi.fn(async () => 0),
 }));
 
+const mockLogin = vi.fn((_user: unknown, done: (error: unknown) => void) => done(null));
+
 vi.mock('../../server/middleware/auth', () => ({
   requireSystemAdmin: (_req: Request, _res: Response, next: NextFunction) => next(),
 }));
@@ -132,12 +134,17 @@ const accountRouter = (await import('../../server/routes/account')).default;
 
 let server: Server;
 let baseUrl: string;
+let sessionUser: { id: number } | undefined;
 
 beforeAll(async () => {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
     Object.defineProperty(req, 'ip', { value: '198.51.100.42', configurable: true });
+    Object.assign(req, {
+      user: sessionUser,
+      login: (user: unknown, done: (error: unknown) => void) => mockLogin(user, done),
+    });
     next();
   });
   app.use('/api/account', accountRouter);
@@ -157,6 +164,8 @@ afterAll(async () => {
 beforeEach(() => {
   captured.length = 0;
   txState.outcome = { kind: 'invalid' };
+  sessionUser = undefined;
+  mockLogin.mockClear();
 });
 
 afterEach(() => {
@@ -221,6 +230,22 @@ describe('POST /api/account/confirm-email-change does not leak the token to logs
     expect(res.status).toBe(404);
     expect(body.error?.code).toBe('USER_NOT_FOUND');
     assertNoConfirmTokenLeak();
+  });
+
+  it('refreshes only the current target user session after an email rotation', async () => {
+    sessionUser = { id: 7 };
+    txState.outcome = {
+      kind: 'ok',
+      user: { id: 7, email: 'new-address@vitest.local' },
+      requestId: 42,
+    };
+
+    const res = await postConfirm(CONFIRM_TOKEN);
+    expect(res.status).toBe(200);
+    expect(mockLogin).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 7, email: 'new-address@vitest.local' }),
+      expect.any(Function),
+    );
   });
 
   it('does not leak the token even when the transaction throws (catch path)', async () => {

@@ -5,7 +5,7 @@
  * against the same constraints used in production.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { getTestDb } from "../setup/test-db";
 import {
   accountActionRequests,
@@ -140,6 +140,49 @@ describe("account action request storage", () => {
       .where(eq(accountActionRequests.id, issued.request.id));
     expect(consumed?.status).toBe("consumed");
     expect(consumed?.consumedAt).not.toBeNull();
+  });
+
+  it("preserves up to three reset links, then revokes all of them on rotation", async () => {
+    const user = await createFixtureUser("Action Reset Cap");
+    const issued = await Promise.all(Array.from({ length: 3 }, () => issueAccountAction({
+      userId: user.id,
+      action: "password_reset",
+      organizationId,
+      recipientEmail: user.email,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      preservePending: true,
+    })));
+
+    const pending = await db.select({ id: accountActionRequests.id })
+      .from(accountActionRequests)
+      .where(and(
+        eq(accountActionRequests.userId, user.id),
+        eq(accountActionRequests.action, "password_reset"),
+        eq(accountActionRequests.status, "pending"),
+      ));
+    expect(pending).toHaveLength(3);
+    await expect(issueAccountAction({
+      userId: user.id,
+      action: "password_reset",
+      organizationId,
+      recipientEmail: user.email,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      preservePending: true,
+    })).rejects.toMatchObject({ code: "PASSWORD_RESET_CAPACITY" });
+
+    await db.update(users)
+      .set({ password: "rotated-password-hash" })
+      .where(eq(users.id, user.id));
+
+    const rows = await db.select({
+      status: accountActionRequests.status,
+      revokedAt: accountActionRequests.revokedAt,
+    }).from(accountActionRequests).where(inArray(
+      accountActionRequests.id,
+      issued.map((action) => action.request.id),
+    ));
+    expect(rows).toHaveLength(3);
+    expect(rows.every((row) => row.status === "revoked" && row.revokedAt !== null)).toBe(true);
   });
 
   it("rejects a password-reset token after the recipient email changes", async () => {

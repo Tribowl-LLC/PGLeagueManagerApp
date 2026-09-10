@@ -34,7 +34,7 @@ describe('Password recovery from the rendered email — real browser and API', (
       name: 'Recovery browser fixture', slug: 'recovery-browser-fixture', subdomain: 'recoverybrowser',
     }).returning();
     organizationId = organization.id;
-    app = await createApp({ port: 0, suppressBackgroundWorkers: true, serveStaticFrontend: true });
+    app = await createApp({ port: 0, suppressBackgroundWorkers: true, enableAccountActionDeliveryWorker: true, serveStaticFrontend: true });
     browser = await chromium.launch({ executablePath, headless: true });
   }, 60_000);
 

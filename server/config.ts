@@ -34,6 +34,7 @@ export const envSchema = z.object({
     .transform((v) => v === "true" || v === "1"),
 
   SENDGRID_API_KEY: z.string().min(1).optional(),
+  SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY: z.string().trim().min(1).optional(),
   SENTRY_DSN: z.string().min(1).optional(),
   SENTRY_TRACES_SAMPLE_RATE: z.preprocess(
     (value) => value === "" ? undefined : value,
