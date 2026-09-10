@@ -31,18 +31,13 @@ type FetchHandler = (input: RequestInfo | URL, init?: RequestInit) => Response |
 const originalFetch = global.fetch;
 const originalLocationHref = window.location.href;
 let setPasswordHandler: FetchHandler;
+let validateHandler: FetchHandler;
 
 function installFetchMock() {
   global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input.toString();
     if (url.includes('/api/auth/validate-invite')) {
-      return new Response(
-        JSON.stringify({
-          success: true,
-          data: { email: 'p***@example.com' },
-        }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      );
+      return validateHandler(input, init);
     }
     if (url.includes('/api/auth/set-password')) {
       return setPasswordHandler(input, init);
@@ -54,22 +49,32 @@ function installFetchMock() {
 // The page reads `?token=...` from the URL. Use wouter's memory
 // router with a hook factory that always reports a search string
 // containing a fake token, so the page's effect can extract it.
-const { hook: memoryHook } = memoryLocation({ path: '/set-password' });
+const testMemoryLocation = memoryLocation({ path: '/set-password', record: true });
+const { hook: memoryHook } = testMemoryLocation;
+let testSearch = 'token=valid-test-token';
 function useTestSearch(): string {
-  return 'token=valid-test-token';
+  return testSearch;
+}
+
+function pageElement(qc: QueryClient) {
+  return (
+    <QueryClientProvider client={qc}>
+      <Router hook={memoryHook} searchHook={useTestSearch}>
+        <SetPasswordPage />
+      </Router>
+    </QueryClientProvider>
+  );
 }
 
 function renderPage() {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-  return render(
-    <QueryClientProvider client={qc}>
-      <Router hook={memoryHook} searchHook={useTestSearch}>
-        <SetPasswordPage />
-      </Router>
-    </QueryClientProvider>,
-  );
+  const result = render(pageElement(qc));
+  return {
+    ...result,
+    rerenderPage: () => result.rerender(pageElement(qc)),
+  };
 }
 
 const STRONG_PASSWORD = 'StrongPw1!2026';
@@ -95,7 +100,17 @@ function rateLimitResponse(retryAfterSeconds: number): Response {
 }
 
 beforeEach(() => {
+  testSearch = 'token=valid-test-token';
+  testMemoryLocation.reset?.();
   installFetchMock();
+  validateHandler = () =>
+    new Response(
+      JSON.stringify({
+        success: true,
+        data: { email: 'p***@example.com' },
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    );
   setPasswordHandler = () =>
     new Response(JSON.stringify({ success: true }), {
       status: 200,
@@ -129,7 +144,7 @@ describe('SetPasswordPage throttle UX (task #418)', () => {
     // The banner must reassure the user that the link itself is
     // still valid — without this, recipients hit 429 then go ask
     // for a brand-new email, invalidating their existing token.
-    expect(alert).toHaveTextContent(/still valid/i);
+    expect(alert).toHaveTextContent(/may still be valid/i);
     // 120s rounds up to "2 minutes" via formatCountdown.
     expect(screen.getByTestId('text-set-password-retry-in')).toHaveTextContent(/2 minutes/);
   });
@@ -355,5 +370,181 @@ describe('SetPasswordPage preferred-language picker (task #420)', () => {
 
     await waitFor(() => expect(capturedBody).not.toBeNull());
     expect(capturedBody).toHaveProperty('preferredLanguage', null);
+  });
+});
+
+describe('SetPasswordPage validation and reset journey', () => {
+  it('encodes the token and defaults a legacy success response to an invitation', async () => {
+    testSearch = 'token=token%26with%20spaces';
+    const requestedUrls: string[] = [];
+    validateHandler = (input) => {
+      requestedUrls.push(String(input));
+      return new Response(JSON.stringify({ success: true, data: { email: 'l***@example.com' } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+
+    renderPage();
+
+    expect(await screen.findByText(/Set Your Password/i)).toBeInTheDocument();
+    expect(requestedUrls).toHaveLength(1);
+    expect(requestedUrls[0]).toContain('token=token%26with+spaces');
+    expect(screen.getByTestId('button-set-password-submit')).toHaveTextContent(/Set Password & Sign In/i);
+  });
+
+  it('renders reset-specific copy and sends reset users to login after success', async () => {
+    validateHandler = () => new Response(JSON.stringify({
+      success: true,
+      data: { email: 'r***@example.com', action: 'password_reset' },
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+
+    const user = userEvent.setup();
+    renderPage();
+    expect(await screen.findByText(/Reset Your Password/i)).toBeInTheDocument();
+    await fillAndSubmit(user);
+
+    await waitFor(() => expect(testMemoryLocation.history?.at(-1)).toBe('/login'));
+  });
+
+  it('ignores a stale validation response after the URL changes', async () => {
+    let resolveFirst!: (response: Response) => void;
+    let resolveSecond!: (response: Response) => void;
+    validateHandler = (input) => {
+      const url = String(input);
+      return new Promise<Response>((resolve) => {
+        if (url.includes('first-token')) resolveFirst = resolve;
+        else resolveSecond = resolve;
+      });
+    };
+
+    testSearch = 'token=first-token';
+    const view = renderPage();
+    await waitFor(() => expect(resolveFirst).toBeTypeOf('function'));
+
+    testSearch = 'token=second-token';
+    view.rerenderPage();
+    await waitFor(() => expect(resolveSecond).toBeTypeOf('function'));
+
+    resolveSecond(new Response(JSON.stringify({
+      success: true,
+      data: { email: 's***@example.com', action: 'password_reset' },
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    expect(await screen.findByText(/Reset Your Password/i)).toBeInTheDocument();
+
+    resolveFirst(new Response(JSON.stringify({
+      success: true,
+      data: { email: 'f***@example.com', action: 'account_invite' },
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    await waitFor(() => expect(screen.getByText(/s\*\*\*@example\.com/)).toBeInTheDocument());
+    expect(screen.queryByText(/f\*\*\*@example\.com/)).not.toBeInTheDocument();
+  });
+
+  it('shows a retryable temporary state for an offline validation error', async () => {
+    let attempts = 0;
+    validateHandler = () => {
+      attempts += 1;
+      if (attempts === 1) return Promise.reject(new TypeError('Failed to fetch'));
+      return new Response(JSON.stringify({ success: true, data: { email: 'o***@example.com', action: 'account_invite' } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+
+    const user = userEvent.setup();
+    renderPage();
+    expect(await screen.findByTestId('state-set-password-temporary')).toBeInTheDocument();
+    await user.click(screen.getByTestId('button-set-password-validation-retry'));
+    expect(await screen.findByText(/Set Your Password/i)).toBeInTheDocument();
+    expect(attempts).toBe(2);
+  });
+
+  it('shows a retryable temporary state for a validation server error', async () => {
+    let attempts = 0;
+    validateHandler = () => {
+      attempts += 1;
+      if (attempts === 1) return new Response('', { status: 503 });
+      return new Response(JSON.stringify({ success: true, data: { email: 'v***@example.com' } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+
+    const user = userEvent.setup();
+    renderPage();
+    expect(await screen.findByTestId('state-set-password-temporary')).toBeInTheDocument();
+    await user.click(screen.getByTestId('button-set-password-validation-retry'));
+    expect(await screen.findByText(/Set Your Password/i)).toBeInTheDocument();
+    expect(attempts).toBe(2);
+  });
+
+  it('honors Retry-After when validation is rate-limited', async () => {
+    validateHandler = () => new Response('', {
+      status: 429,
+      headers: { 'retry-after': '61' },
+    });
+    renderPage();
+
+    const state = await screen.findByTestId('state-set-password-throttled');
+    expect(state).toHaveTextContent(/rate-limited/i);
+    expect(screen.getByTestId('button-set-password-validation-retry')).toBeDisabled();
+    expect(screen.getByTestId('button-set-password-validation-retry')).toHaveTextContent(/2 minutes/i);
+  });
+
+  it('moves to the expired state when the token expires between validation and submission', async () => {
+    validateHandler = () => new Response(JSON.stringify({
+      success: true,
+      data: { email: 'e***@example.com', action: 'password_reset' },
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+    setPasswordHandler = () => new Response(JSON.stringify({
+      success: false,
+      error: { code: 'TOKEN_EXPIRED', message: 'expired' },
+    }), { status: 400, headers: { 'content-type': 'application/json' } });
+
+    const user = userEvent.setup();
+    renderPage();
+    await fillAndSubmit(user);
+
+    expect(await screen.findByTestId('state-set-password-expired')).toBeInTheDocument();
+    expect(screen.getByText(/This link has expired/i)).toBeInTheDocument();
+  });
+
+  it('keeps the form retryable after a submission server error', async () => {
+    let attempts = 0;
+    setPasswordHandler = () => {
+      attempts += 1;
+      if (attempts === 1) return new Response('', { status: 500 });
+      return new Response(JSON.stringify({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Password rejected' } }), {
+        status: 400,
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+
+    const user = userEvent.setup();
+    renderPage();
+    await fillAndSubmit(user);
+    expect(await screen.findByTestId('alert-set-password-temporary')).toBeInTheDocument();
+    expect(screen.getByTestId('button-set-password-submit')).not.toBeDisabled();
+    await user.click(screen.getByTestId('button-set-password-submit'));
+    await waitFor(() => expect(attempts).toBe(2));
+    expect(screen.queryByTestId('alert-set-password-temporary')).not.toBeInTheDocument();
+  });
+
+  it('keeps the validated form visible for a password validation error from POST', async () => {
+    setPasswordHandler = () => new Response(JSON.stringify({
+      success: false,
+      error: { code: 'VALIDATION_ERROR', message: 'Password rejected' },
+    }), {
+      status: 400,
+      headers: { 'content-type': 'application/json' },
+    });
+
+    const user = userEvent.setup();
+    renderPage();
+    await fillAndSubmit(user);
+
+    expect(screen.getByTestId('state-set-password-ready')).toBeInTheDocument();
+    expect(screen.getByTestId('button-set-password-submit')).not.toBeDisabled();
+    expect(screen.queryByTestId('state-set-password-invalid')).not.toBeInTheDocument();
   });
 });

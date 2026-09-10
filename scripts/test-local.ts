@@ -251,6 +251,11 @@ async function main(): Promise<void> {
   assertDockerAvailable();
   await ensurePostgresContainer();
 
+  // The password-recovery browser regression must use this checkout's client.
+  console.log('[test-local] building frontend for browser release tests...');
+  run(npmCommand, npmArgs(['exec', 'vite', 'build']));
+  run(npmCommand, npmArgs(['exec', 'playwright', 'install', 'chromium']));
+
   console.log('[test-local] applying checked-in migrations...');
   run(npmCommand, npmArgs(['run', 'db:migrate']));
 

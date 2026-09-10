@@ -193,6 +193,11 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
   app.use(subdomainDetection);
   app.use(compression());
   app.use(securityHeaders);
+  app.use(['/set-password', '/api/auth/validate-invite'], (_req, res, next) => {
+    res.set('Referrer-Policy', 'no-referrer');
+    res.set('Cache-Control', 'no-store');
+    next();
+  });
 
   // Admin email templates hold rich HTML bodies (and may carry inline
   // markup/base64) that can legitimately exceed the small global ceiling.
