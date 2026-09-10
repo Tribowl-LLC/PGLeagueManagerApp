@@ -45,10 +45,10 @@ function formatLocalDate(value: string): string {
   return match ? `${match[2]}/${match[3]}/${match[1]}` : value;
 }
 
-function paymentTypeLabel(payment: Payment): string {
-  switch (payment.type) {
+function paymentTypeLabel(paymentType: CanonicalPaymentRow["paymentType"], checkNumber?: string | null): string {
+  switch (paymentType) {
     case "cash": return "Cash";
-    case "check": return payment.checkNumber ? `Check #${payment.checkNumber}` : "Check";
+    case "check": return checkNumber ? `Check #${checkNumber}` : "Check";
     case "credit_card": return "Credit Card";
     case "square": return "Square";
     default: return "Other Payment";
@@ -68,9 +68,10 @@ export function PaymentDetailsDialog({ payment, evidence, bowlerName, canCorrect
   const [receiptLoading, setReceiptLoading] = useState(false);
   const [receiptError, setReceiptError] = useState<string | null>(null);
 
-  if (!payment || !evidence) return null;
+  if (!evidence) return null;
 
   const canVoid = canCorrect
+    && payment !== null
     && evidence.paymentId !== null
     && (evidence.paymentType === "cash" || evidence.paymentType === "check")
     && evidence.allocations.some((allocation) => allocation.state === "active");
@@ -143,8 +144,14 @@ export function PaymentDetailsDialog({ payment, evidence, bowlerName, canCorrect
         <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
           <div><dt className="text-muted-foreground">Collected</dt><dd>{formatLocalDate(evidence.authoritativeLocalDate)}</dd></div>
           <div><dt className="text-muted-foreground">Amount</dt><dd>{formatCurrency(evidence.amountMinor, evidence.currency)}</dd></div>
-          <div><dt className="text-muted-foreground">Payment type</dt><dd>{paymentTypeLabel(payment)}</dd></div>
-          <div><dt className="text-muted-foreground">Settlement</dt><dd><Badge variant="outline">{displayStatus}</Badge></dd></div>
+          <div><dt className="text-muted-foreground">Payment type</dt><dd>{paymentTypeLabel(evidence.paymentType, payment?.checkNumber)}</dd></div>
+          <div>
+            <dt className="text-muted-foreground">Settlement</dt>
+            <dd className="flex flex-wrap gap-1">
+              <Badge variant="outline">{displayStatus}</Badge>
+              {evidence.correctionEvidence?.status === "voided" && <Badge variant="secondary">Voided</Badge>}
+            </dd>
+          </div>
         </dl>
 
         <section className="space-y-2" aria-labelledby="payment-allocation-heading">
@@ -157,7 +164,10 @@ export function PaymentDetailsDialog({ payment, evidence, bowlerName, canCorrect
                 <div key={allocation.allocationId ?? `${allocation.occurrenceId ?? "allocation"}-${index}`} className="flex items-center justify-between gap-4 px-3 py-2 text-sm">
                   <div>
                     <div>{allocation.occurrenceLocalDate ? formatLocalDate(allocation.occurrenceLocalDate) : "Canonical occurrence"}</div>
-                    {allocation.state && allocation.state !== "active" && <div className="text-xs capitalize text-muted-foreground">{allocation.state}</div>}
+                    {allocation.state !== "active" && <div className="text-xs capitalize text-muted-foreground">{allocation.state ?? "unresolved"}</div>}
+                    {(allocation.refundedMinor ?? 0) > 0 && <div className="text-xs text-muted-foreground">Refunded: {formatCurrency(allocation.refundedMinor ?? 0, allocation.currency)}</div>}
+                    {allocation.effectiveAmountMinor !== undefined && <div className="text-xs text-muted-foreground">Effective: {formatCurrency(allocation.effectiveAmountMinor, allocation.currency)}</div>}
+                    {allocation.refundDisposition && <div className="text-xs capitalize text-muted-foreground">Refund disposition: {allocation.refundDisposition.replaceAll("_", " ")}</div>}
                   </div>
                   <span className="font-medium">{formatCurrency(allocation.amountMinor, allocation.currency)}</span>
                 </div>
@@ -166,13 +176,32 @@ export function PaymentDetailsDialog({ payment, evidence, bowlerName, canCorrect
           )}
         </section>
 
-        {(evidence.unallocatedMinor > 0 || evidence.refund.present || evidence.dispute.present || evidence.reviewRequired) && (
+        {(evidence.unallocatedMinor > 0 || evidence.refund.present || (evidence.waivedMinor ?? 0) > 0 || evidence.dispute.present || evidence.reviewRequired || evidence.dispute.reviewRequired === true || evidence.correctionEvidence) && (
           <section className="space-y-1 rounded-md border bg-muted/30 p-3 text-sm" aria-label="Additional settlement evidence">
             {evidence.unallocatedMinor > 0 && <p>Unallocated: {formatCurrency(evidence.unallocatedMinor, evidence.currency)}</p>}
             {evidence.refund.present && <p>Refunded: {formatCurrency(evidence.refund.amountMinor, evidence.currency)}</p>}
             {(evidence.waivedMinor ?? 0) > 0 && <p>Waived roster amount: {formatCurrency(evidence.waivedMinor ?? 0, evidence.currency)} (not counted as paid)</p>}
             {evidence.dispute.present && <p>Dispute: {evidence.dispute.state ?? "Review required"}{evidence.dispute.amountMinor > 0 ? ` · ${formatCurrency(evidence.dispute.amountMinor, evidence.currency)}` : ""}</p>}
-            {evidence.reviewRequired && <p className="font-medium text-destructive">This payment requires review.</p>}
+            {(evidence.reviewRequired || evidence.dispute.reviewRequired === true) && <p className="font-medium text-destructive">This payment requires review.</p>}
+            {evidence.correctionEvidence?.status === "voided" && <p>Correction: Payment voided.</p>}
+          </section>
+        )}
+
+        {evidence.collectionEvidence && (
+          <section className="space-y-1 rounded-md border p-3 text-sm" aria-label="Collection evidence">
+            <h3 className="font-medium">Collection evidence</h3>
+            <p>{evidence.collectionEvidence.grouping === "double_pay" ? "Double payment" : "Regular collection"} at the collection point.</p>
+            <p className="text-muted-foreground">Timing: {evidence.collectionEvidence.timing.replaceAll("_", " ")}</p>
+            <p className="break-all text-muted-foreground">Collection point: {evidence.collectionEvidence.collectionPointOccurrenceId}</p>
+            <p className="break-all text-muted-foreground">Covered occurrences: {evidence.collectionEvidence.coveredOccurrenceIds.join(", ")}</p>
+          </section>
+        )}
+
+        {(evidence.operationType || evidence.operationStatus) && (
+          <section className="space-y-1 rounded-md border p-3 text-sm" aria-label="Payment operation evidence">
+            <h3 className="font-medium">Payment operation</h3>
+            {evidence.operationType && <p>Type: {evidence.operationType.replaceAll("_", " ")}</p>}
+            {evidence.operationStatus && <p className="text-muted-foreground">Outcome: {evidence.operationStatus.replaceAll("_", " ")}</p>}
           </section>
         )}
 

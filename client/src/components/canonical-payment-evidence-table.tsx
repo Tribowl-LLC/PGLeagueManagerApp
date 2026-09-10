@@ -1,74 +1,136 @@
 import { useState } from "react";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Badge, badgeVariants } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
 import type { CanonicalPaymentRow, CanonicalPaymentTiming } from "@shared/canonical-payment-report";
-import { csrfFetch } from "@/lib/queryClient";
+import { PaymentDetailsDialog, paymentEvidenceDisplayStatus } from "@/components/payment-details-dialog";
 
 type Props = {
   rows: CanonicalPaymentRow[];
-  mode?: string;
   paymentTiming?: CanonicalPaymentTiming;
   organizationId?: number | null;
+  bowlerName?: string;
   title?: string;
 };
 
+function formatLocalDate(value: string, timezone = "UTC"): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
+  if (match && value.length <= 10) {
+    const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12));
+    return new Intl.DateTimeFormat("en-US", { year: "numeric", month: "2-digit", day: "2-digit", timeZone: "UTC" }).format(date);
+  }
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return value;
+  try {
+    return new Intl.DateTimeFormat("en-US", { year: "numeric", month: "2-digit", day: "2-digit", timeZone: timezone }).format(date);
+  } catch {
+    return new Intl.DateTimeFormat("en-US", { year: "numeric", month: "2-digit", day: "2-digit", timeZone: "UTC" }).format(date);
+  }
+}
+
+function paymentTypeLabel(paymentType: CanonicalPaymentRow["paymentType"]): string {
+  switch (paymentType) {
+    case "cash": return "Cash";
+    case "check": return "Check";
+    case "credit_card": return "Credit Card";
+    case "square": return "Square";
+  }
+}
+
+function formatCurrency(amountMinor: number, currency: string): string {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(amountMinor / 100);
+}
+
+function statusVariant(row: CanonicalPaymentRow) {
+  const displayStatus = paymentEvidenceDisplayStatus(row);
+  if (displayStatus === "Review required") return "destructive" as const;
+  switch (row.status) {
+    case "confirmed_paid": return "default" as const;
+    case "pending": return "secondary" as const;
+    case "failed": return "destructive" as const;
+    default: return "outline" as const;
+  }
+}
+
 /**
- * The F5 projection is deliberately rendered as evidence rows.  In
- * particular, a row with no payment id is still a real unresolved/legacy
- * operation participant and must not be converted into a synthetic Payment.
+ * The F5 projection is presented as a compact payment history. Every report
+ * row remains visible, including operation evidence without a payment id;
+ * selecting its status opens the evidence-only details dialog.
  */
-export function CanonicalPaymentEvidenceTable({ rows, mode, paymentTiming, organizationId, title = "Payment evidence" }: Props) {
-  const [receiptLoading, setReceiptLoading] = useState<number | null>(null);
-  const openReceipt = async (paymentId: number) => {
-    setReceiptLoading(paymentId);
-    try {
-      const scope = organizationId !== null && organizationId !== undefined ? `?organizationId=${encodeURIComponent(organizationId)}` : "";
-      const response = await csrfFetch(`/api/payments-provider/payments/${paymentId}/receipt${scope}`);
-      const body = await response.json() as { data?: { receiptUrl?: string | null } };
-      if (response.ok && body.data?.receiptUrl) window.open(body.data.receiptUrl, "_blank", "noopener,noreferrer");
-    } finally {
-      setReceiptLoading(null);
-    }
-  };
+export function CanonicalPaymentEvidenceTable({ rows, paymentTiming, organizationId, bowlerName = "Bowler", title = "Payment history" }: Props) {
+  const [detailsTarget, setDetailsTarget] = useState<CanonicalPaymentRow | null>(null);
+
   return (
     <section aria-label={title} data-testid="canonical-payment-evidence-table" className="space-y-2">
-      <div className="text-sm font-medium">{title}{mode ? ` · ${mode}` : ""}</div>
+      <div className="text-sm font-medium">{title}</div>
       {paymentTiming && <div className="text-xs text-muted-foreground" data-testid="payment-timing">
         {paymentTiming.paymentMode === "upfront" ? "Upfront payment" : "Weekly payment"}
-        {paymentTiming.upfrontDueAt ? ` · due ${paymentTiming.upfrontDueAtLocal ?? paymentTiming.upfrontDueAt}` : ""}
-        {` · timezone ${paymentTiming.timezone ?? "UTC"}`}
-        {` · ${paymentTiming.source === "canonical" ? "canonical billing" : "canonical billing"}`}
+        {paymentTiming.upfrontDueAt ? ` · due ${formatLocalDate(paymentTiming.upfrontDueAtLocal ?? paymentTiming.upfrontDueAt, paymentTiming.timezone)}` : ""}
+        {paymentTiming.timezone ? ` · ${paymentTiming.timezone}` : ""}
       </div>}
       {rows.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No payment evidence for this page.</p>
+        <p className="text-sm text-muted-foreground">No payments yet.</p>
       ) : (
-        <div className="divide-y rounded-md border">
-          {rows.map((row, index) => {
-            const paymentId = row.paymentId;
-            return (
-            <article key={`${row.paymentOperationId ?? row.paymentId ?? "unresolved"}:${row.bowlerId}:${index}`} className="grid gap-1 px-3 py-2 text-sm md:grid-cols-[1fr_auto_auto] md:items-center">
-              <div>
-                <div className="font-medium">{row.authoritativeLocalDate} · {row.source}</div>
-                <div className="text-muted-foreground">
-                  {row.status} · {row.unresolved ? "unresolved" : "settlement evidence"}
-                  {row.reviewRequired ? " · review required" : ""}
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  {row.allocations.length > 0
-                    ? row.allocations.map((allocation) => `${new Intl.NumberFormat("en-US", { style: "currency", currency: allocation.currency }).format(allocation.amountMinor / 100)} · ${allocation.state ?? "unresolved"} · occurrence ${allocation.occurrenceId ?? "unlinked"} · obligation ${allocation.obligationId ?? "unlinked"}`).join("; ")
-                    : "No item allocation recorded"}
-                  {row.collectionEvidence ? ` · ${row.collectionEvidence.grouping === "double_pay" ? "double-pay" : "normal"} collection · ${row.collectionEvidence.timing.replaceAll("_", " ")} · collection point ${row.collectionEvidence.collectionPointOccurrenceId} · ${row.collectionEvidence.coveredOccurrenceIds.length} covered occurrence${row.collectionEvidence.coveredOccurrenceIds.length === 1 ? "" : "s"}` : ""}
-                  {row.refund.present ? ` · refunded $${(row.refund.amountMinor / 100).toFixed(2)}` : ""}
-                  {(row.waivedMinor ?? 0) > 0 ? ` · waived $${((row.waivedMinor ?? 0) / 100).toFixed(2)}` : ""}
-                  {row.dispute.present ? ` · dispute/review evidence${row.dispute.scope === "transaction" ? " (transaction)" : ""}${row.dispute.state ? ` · ${row.dispute.state}` : ""}${row.dispute.amountMinor > 0 ? ` · $${(row.dispute.amountMinor / 100).toFixed(2)}` : ""}` : ""}
-                </div>
-              </div>
-              <span className="font-mono">{new Intl.NumberFormat("en-US", { style: "currency", currency: row.currency }).format(row.amountMinor / 100)}</span>
-              <span className="text-xs text-muted-foreground">{row.paymentId === null ? "operation evidence" : `payment #${row.paymentId}`}</span>
-              {paymentId !== null && ["confirmed_paid", "refunded", "disputed"].includes(row.status) && <button type="button" className="text-xs underline" disabled={receiptLoading === paymentId} onClick={() => void openReceipt(paymentId)}>{receiptLoading === paymentId ? "Loading receipt…" : "Receipt"}</button>}
-            </article>
-            );
-          })}
+        <div className="overflow-x-auto rounded-md border">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Date</TableHead>
+                <TableHead>Amount</TableHead>
+                <TableHead className="hidden md:table-cell">Payment Method</TableHead>
+                <TableHead>Status</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map((row, index) => {
+                const displayStatus = paymentEvidenceDisplayStatus(row);
+                const reviewRequired = row.reviewRequired || row.dispute.reviewRequired === true;
+                const hasSeparateReviewIndicator = reviewRequired && displayStatus !== "Review required";
+                return (
+                  <TableRow key={`${row.paymentOperationId ?? row.paymentId ?? "unresolved"}:${row.bowlerId}:${index}`}>
+                    <TableCell className="whitespace-nowrap">
+                      {formatLocalDate(row.authoritativeLocalDate)}
+                      <div className="text-xs text-muted-foreground md:hidden">{paymentTypeLabel(row.paymentType)}</div>
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap font-mono">{formatCurrency(row.amountMinor, row.currency)}</TableCell>
+                    <TableCell className="hidden whitespace-nowrap md:table-cell">{paymentTypeLabel(row.paymentType)}</TableCell>
+                    <TableCell>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          className={cn(badgeVariants({ variant: statusVariant(row) }), "cursor-pointer")}
+                          aria-label={`View payment details: ${displayStatus}`}
+                          onClick={() => setDetailsTarget(row)}
+                        >
+                          {displayStatus}
+                        </button>
+                        {hasSeparateReviewIndicator && <Badge variant="destructive">Review required</Badge>}
+                        {row.correctionEvidence?.status === "voided" && <Badge variant="secondary">Voided</Badge>}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
         </div>
       )}
+      <PaymentDetailsDialog
+        key={detailsTarget?.paymentOperationId ?? detailsTarget?.paymentId ?? "closed"}
+        payment={null}
+        evidence={detailsTarget}
+        bowlerName={bowlerName}
+        canCorrect={false}
+        organizationId={organizationId}
+        onClose={() => setDetailsTarget(null)}
+      />
     </section>
   );
 }

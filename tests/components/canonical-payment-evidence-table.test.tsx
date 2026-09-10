@@ -38,24 +38,34 @@ const row = (overrides: Partial<CanonicalPaymentRow> = {}): CanonicalPaymentRow 
 });
 
 describe("CanonicalPaymentEvidenceTable", () => {
-  it("labels roster-driven timing as canonical billing", () => {
+  it("labels roster-driven timing with friendly payment timing", () => {
     render(<CanonicalPaymentEvidenceTable rows={[row()]} paymentTiming={{ paymentMode: "weekly", upfrontDueAt: null, timezone: "America/Chicago", source: "canonical" }} />);
-    expect(screen.getByTestId("payment-timing")).toHaveTextContent("canonical billing");
+    expect(screen.getByTestId("payment-timing")).toHaveTextContent("Weekly payment · America/Chicago");
+    expect(screen.getByTestId("payment-timing")).not.toHaveTextContent("canonical");
   });
 
-  it("renders null-payment unresolved evidence and exact allocation details", () => {
-    render(<CanonicalPaymentEvidenceTable rows={[row({ collectionEvidence: { d2PlanId: "plan-1", planVersion: 2, collectionPointOccurrenceId: "occ-1", coveredOccurrenceIds: ["occ-1", "occ-2"], timing: "at_collection_point", grouping: "double_pay" } })]} mode="canonical" paymentTiming={{ paymentMode: "upfront", upfrontDueAt: "2038-02-01T00:00:00.000Z", timezone: "America/Los_Angeles", source: "canonical" }} organizationId={11} />);
-    expect(screen.getByText(/Payment evidence · canonical/)).toBeInTheDocument();
+  it("renders null-payment evidence in the clean history and opens details", async () => {
+    render(<CanonicalPaymentEvidenceTable rows={[row({ collectionEvidence: { d2PlanId: "plan-1", planVersion: 2, collectionPointOccurrenceId: "occ-1", coveredOccurrenceIds: ["occ-1", "occ-2"], timing: "at_collection_point", grouping: "double_pay" } })]} paymentTiming={{ paymentMode: "upfront", upfrontDueAt: "2038-02-01T00:00:00.000Z", timezone: "America/Los_Angeles", source: "canonical" }} organizationId={11} />);
+    expect(screen.getByRole("columnheader", { name: "Date" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Amount" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Payment Method" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Status" })).toBeInTheDocument();
+    expect(screen.getByText("02/03/2038")).toBeInTheDocument();
+    expect(screen.getAllByText("Square").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "View payment details: Review required" })).toBeInTheDocument();
+    expect(screen.queryByText("occ-1")).not.toBeInTheDocument();
     expect(screen.getByTestId("payment-timing")).toHaveTextContent("Upfront payment");
-    expect(screen.getByTestId("payment-timing")).toHaveTextContent("timezone America/Los_Angeles");
-    expect(screen.getByText(/double-pay collection/)).toBeInTheDocument();
-    expect(screen.getByText(/operation evidence/)).toBeInTheDocument();
-    expect(screen.getByText(/\$20\.00 · active · occurrence occ-1/)).toBeInTheDocument();
-    expect(screen.getAllByText(/\$20\.00/).length).toBeGreaterThan(0);
-    expect(screen.getByText(/dispute\/review evidence/)).toBeInTheDocument();
+    expect(screen.getByTestId("payment-timing")).toHaveTextContent("01/31/2038");
+    await fireEvent.click(screen.getByRole("button", { name: "View payment details: Review required" }));
+    expect(screen.getByRole("dialog", { name: "Payment Details" })).toBeInTheDocument();
+    expect(screen.getByText("Payment type").parentElement).toHaveTextContent("Square");
+    expect(screen.getByRole("region", { name: "Collection evidence" })).toHaveTextContent("Double payment");
+    expect(screen.getByRole("region", { name: "Collection evidence" })).toHaveTextContent("occ-1");
+    expect(screen.getByText(/dispute/i)).toBeInTheDocument();
   });
 
-  it("formats every allocation, preserves evidence labels, and scopes receipt lookup", async () => {
+  it("opens details from a status and scopes receipt lookup", async () => {
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
     render(<CanonicalPaymentEvidenceTable rows={[row({
       paymentId: 12,
       status: "refunded",
@@ -69,12 +79,30 @@ describe("CanonicalPaymentEvidenceTable", () => {
       refund: { present: true, amountMinor: 1000, providerRefundId: null },
       dispute: { present: true, amountMinor: 0, disputeId: null, scope: "transaction", state: "OPEN", reviewRequired: true },
       receipt: { ...row().receipt, source: "canonical_allocation", availability: "available", receiptUrl: "https://cached", receiptNumber: "R-1" },
-    })]} organizationId={11} mode="canonical" />);
-    expect(screen.getByText(/\$20\.00 · active/)).toBeInTheDocument();
-    expect(screen.getByText(/\$10\.00 · voided/)).toBeInTheDocument();
-    expect(screen.getByText(/refunded \$10\.00/)).toBeInTheDocument();
-    expect(screen.getByText(/dispute\/review evidence \(transaction\) · OPEN/)).toBeInTheDocument();
+    })]} organizationId={11} />);
+    expect(screen.getByRole("button", { name: "View payment details: Refunded" })).toBeInTheDocument();
+    await fireEvent.click(screen.getByRole("button", { name: "View payment details: Refunded" }));
+    expect(screen.getByText("$20.00")).toBeInTheDocument();
+    expect(screen.getByText("$10.00")).toBeInTheDocument();
+    expect(screen.getByText(/Refunded:/)).toBeInTheDocument();
+    expect(screen.getByText(/Dispute:/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Receipt" }));
     await waitFor(() => expect(csrfFetchMock).toHaveBeenCalledWith("/api/payments-provider/payments/12/receipt?organizationId=11"));
+    open.mockRestore();
+  });
+
+  it("keeps review and correction indicators visible when the settlement is paid", () => {
+    render(<CanonicalPaymentEvidenceTable rows={[row({
+      paymentId: 12,
+      status: "confirmed_paid",
+      source: "canonical_allocation",
+      unresolved: false,
+      reviewRequired: true,
+      correctionEvidence: { status: "voided", voidId: "void-1" },
+    })]} />);
+
+    expect(screen.getByRole("button", { name: "View payment details: Confirmed paid" })).toBeInTheDocument();
+    expect(screen.getByText("Review required")).toBeInTheDocument();
+    expect(screen.getByText("Voided")).toBeInTheDocument();
   });
 });

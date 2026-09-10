@@ -115,6 +115,38 @@ describe("PaymentHistoryContent", () => {
     expect(retry).toHaveBeenCalledOnce();
   });
 
+  it("supports previous and next report pages", async () => {
+    const onPageChange = vi.fn();
+    const view = render(<PaymentHistoryContent
+      bowlerName="Bowler" league={league} leagueId={17} hasMultipleLeagues={false}
+      leagueSheetOpen={false} onOpenLeagueSheet={vi.fn()} onCloseLeagueSheet={vi.fn()}
+      bowlerLeagues={[]} leagueMap={new Map()} onSelectLeague={vi.fn()}
+      totalWeeksInSeason={10} fullSeasonAmount={30000} weeksDueCount={3} totalSeasonDues={9000}
+      weeksPaid={1} totalPaidAmount={3000} amountPastDue={6000} remainingBalance={27000}
+      doublePay={{ dates: [], perWeekExtra: 0, totalExtra: 0, pastExtra: 0, isPaid: false }}
+      canonicalPaymentLoading={false} canonicalPaymentError={null} canonicalRows={[]}
+      canonicalReportPage={1} canonicalReportTotalPages={2} onCanonicalReportPageChange={onPageChange}
+    />);
+
+    expect(screen.getByRole("button", { name: "Previous" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Next" })).toBeEnabled();
+    await userEvent.setup().click(screen.getByRole("button", { name: "Next" }));
+    expect(onPageChange).toHaveBeenCalledWith(2);
+
+    view.rerender(<PaymentHistoryContent
+      bowlerName="Bowler" league={league} leagueId={17} hasMultipleLeagues={false}
+      leagueSheetOpen={false} onOpenLeagueSheet={vi.fn()} onCloseLeagueSheet={vi.fn()}
+      bowlerLeagues={[]} leagueMap={new Map()} onSelectLeague={vi.fn()}
+      totalWeeksInSeason={10} fullSeasonAmount={30000} weeksDueCount={3} totalSeasonDues={9000}
+      weeksPaid={1} totalPaidAmount={3000} amountPastDue={6000} remainingBalance={27000}
+      doublePay={{ dates: [], perWeekExtra: 0, totalExtra: 0, pastExtra: 0, isPaid: false }}
+      canonicalPaymentLoading={false} canonicalPaymentError={null} canonicalRows={[]}
+      canonicalReportPage={2} canonicalReportTotalPages={2} onCanonicalReportPageChange={onPageChange}
+    />);
+    expect(screen.getByRole("button", { name: "Previous" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+  });
+
   it("disables automatic-payment setup without a profile email", () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, queryFn: async () => ({ data: { state: "none", partnerBowlerIds: [] } }) } } });
     render(<QueryClientProvider client={queryClient}><StandingAutopayCard

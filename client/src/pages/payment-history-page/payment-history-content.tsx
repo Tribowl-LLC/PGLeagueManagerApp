@@ -38,7 +38,6 @@ interface PaymentHistoryContentProps {
   canonicalReportTotalPages?: number;
   onCanonicalReportPageChange?: (page: number) => void;
   canonicalRows?: CanonicalPaymentRow[];
-  canonicalMode?: string;
   canonicalPaymentTiming?: CanonicalPaymentTiming;
 }
 
@@ -50,7 +49,7 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
   waivedAmount,
   doublePay, canonicalPaymentLoading, canonicalPaymentError, canonicalReportPage,
   onCanonicalReportRetry, canonicalReportTotalPages, onCanonicalReportPageChange, canonicalRows = [],
-  canonicalMode, canonicalPaymentTiming,
+  canonicalPaymentTiming,
 }) => {
   const makePaymentHref = `/make-payment?leagueId=${leagueId}`;
   const pastDueHref = `${makePaymentHref}&intent=past-due`;
@@ -89,16 +88,17 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
 
         <ErrorBoundary level="section">
           {canonicalPaymentLoading ? (
-            <div className="text-sm text-muted-foreground">Loading canonical payment evidence…</div>
+            <div className="text-sm text-muted-foreground">Loading payment history…</div>
           ) : canonicalPaymentError ? (
-            <PageErrorState message="Financial evidence requires review; payment history is unavailable." onRetry={onCanonicalReportRetry} />
+            <PageErrorState message="Payment history is unavailable; please try again." onRetry={onCanonicalReportRetry} />
           ) : (
-            <CanonicalPaymentEvidenceTable rows={canonicalRows} mode={canonicalMode} paymentTiming={canonicalPaymentTiming} organizationId={league.organizationId} title="Payment history" />
+            <CanonicalPaymentEvidenceTable rows={canonicalRows} paymentTiming={canonicalPaymentTiming} organizationId={league.organizationId} bowlerName={bowlerName} title="Payment history" />
           )}
           {!canonicalPaymentLoading && !canonicalPaymentError && canonicalReportPage !== undefined && canonicalReportTotalPages !== undefined && canonicalReportTotalPages > 1 && onCanonicalReportPageChange && (
             <div className="mt-3 flex items-center justify-between text-sm">
-              <span>Canonical payment page {canonicalReportPage} of {canonicalReportTotalPages}</span>
-              <button type="button" className="underline" disabled={canonicalReportPage >= canonicalReportTotalPages} onClick={() => onCanonicalReportPageChange(canonicalReportPage + 1)}>Next page</button>
+              <button type="button" className="underline disabled:opacity-50" disabled={canonicalReportPage <= 1} onClick={() => onCanonicalReportPageChange(Math.max(1, canonicalReportPage - 1))}>Previous</button>
+              <span>Page {canonicalReportPage} of {canonicalReportTotalPages}</span>
+              <button type="button" className="underline disabled:opacity-50" disabled={canonicalReportPage >= canonicalReportTotalPages} onClick={() => onCanonicalReportPageChange(canonicalReportPage + 1)}>Next</button>
             </div>
           )}
         </ErrorBoundary>
