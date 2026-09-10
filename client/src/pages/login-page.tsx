@@ -1,6 +1,6 @@
 import { FC, useState } from "react";
 import { ErrorBoundary } from "@/components/error-boundary";
-import { parseRetryAfterSeconds, queryClient } from "@/lib/queryClient";
+import { parseRetryAfterSeconds, queryClient, resetSessionExpiryRedirect } from "@/lib/queryClient";
 import {
   Card,
   CardContent,
@@ -23,7 +23,7 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { Link, useLocation } from "wouter";
+import { Link, useLocation, useSearch } from "wouter";
 import { useSubdomainOrg } from "@/hooks/use-subdomain-org";
 import {
   DEFAULT_THROTTLE_FALLBACK_SECONDS,
@@ -45,7 +45,9 @@ type LoginFormData = z.infer<typeof loginSchema>;
 
 const LoginPage: FC = () => {
   const [, setLocation] = useLocation();
+  const search = useSearch();
   const { org: subdomainOrg } = useSubdomainOrg();
+  const sessionExpired = new URLSearchParams(search).get("reason") === "session-expired";
   const [loginError, setLoginError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const { isThrottled, remainingSeconds, throttle, clear: clearThrottle } =
@@ -95,6 +97,7 @@ const LoginPage: FC = () => {
       const userData = await response.json();
 
       queryClient.setQueryData(['/api/user'], userData);
+      resetSessionExpiryRedirect();
       clearThrottle();
 
       setLocation("/");
@@ -130,6 +133,12 @@ const LoginPage: FC = () => {
           </CardDescription>
         </CardHeader>
         <CardContent className="pb-4 sm:pb-6">
+          {sessionExpired && (
+            <Alert className="mb-4" data-testid="alert-session-expired">
+              <AlertTitle>Session expired</AlertTitle>
+              <AlertDescription>Your session expired. Please sign in again.</AlertDescription>
+            </Alert>
+          )}
           <Form {...form}>
             <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-3 sm:space-y-4">
               <FormField

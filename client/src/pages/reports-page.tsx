@@ -25,6 +25,8 @@ import type { League, Team, Bowler, BowlerLeague, User } from "@shared/schema"; 
 import type { CanonicalPaymentReport } from "@shared/canonical-payment-report";
 import type { CanonicalDuePastDueResponseV2 } from "@shared/roster-payment-contract";
 import { Link } from "wouter";
+import { throwIfResNotOk } from "@/lib/queryClient";
+import { financialReadErrorMessage } from "@/lib/financial-utils";
 
 export default function ReportsPage() {
   const [showArchived, setShowArchived] = useState(false);
@@ -35,9 +37,7 @@ export default function ReportsPage() {
     queryKey: ["/api/leagues"],
     queryFn: async () => {
       const response = await fetch('/api/leagues');
-      if (!response.ok) {
-        throw new Error('Failed to fetch leagues');
-      }
+      await throwIfResNotOk(response);
       return response.json();
     }
   });
@@ -47,9 +47,7 @@ export default function ReportsPage() {
     queryKey: ["/api/teams"],
     queryFn: async () => {
       const response = await fetch('/api/teams');
-      if (!response.ok) {
-        throw new Error('Failed to fetch teams');
-      }
+      await throwIfResNotOk(response);
       return response.json();
     }
   });
@@ -59,9 +57,7 @@ export default function ReportsPage() {
     queryKey: ["/api/bowlers"],
     queryFn: async () => {
       const response = await fetch('/api/bowlers');
-      if (!response.ok) {
-        throw new Error('Failed to fetch bowlers');
-      }
+      await throwIfResNotOk(response);
       return response.json();
     }
   });
@@ -76,7 +72,7 @@ export default function ReportsPage() {
         params.set("page", "1");
         params.set("limit", "200");
         const response = await fetch(`/api/financials/f5/payments?${params.toString()}`);
-        if (!response.ok) throw new Error("Payment evidence requires review");
+        await throwIfResNotOk(response);
         return response.json();
       },
       enabled: leagues.length > 0,
@@ -95,7 +91,7 @@ export default function ReportsPage() {
     queryKey: ["/api/financials/due-past-due", systemScope],
     queryFn: async () => {
       const response = await fetch(`/api/financials/due-past-due${systemScope}`);
-      if (!response.ok) throw new Error('Canonical financial evidence requires review');
+      await throwIfResNotOk(response);
       return response.json();
     },
     enabled: userResponse?.data?.role === "org_admin" || userResponse?.data?.role === "system_admin" || String(userResponse?.data?.role) === "payment_manager",
@@ -105,9 +101,7 @@ export default function ReportsPage() {
     queryKey: ["/api/bowler-leagues"],
     queryFn: async () => {
       const response = await fetch('/api/bowler-leagues');
-      if (!response.ok) {
-        throw new Error('Failed to fetch bowler leagues');
-      }
+      await throwIfResNotOk(response);
       return response.json();
     }
   });
@@ -125,7 +119,10 @@ export default function ReportsPage() {
       </Layout>
     );
   }
-  if (financialError || paymentReportError || !financialResponse?.data?.leagues) return <Layout><p className="p-6 text-destructive">Financial evidence requires review; no balance is shown.</p></Layout>;
+  const financialReadError = financialError ?? paymentReportError;
+  if (financialReadError || !financialResponse?.data?.leagues) {
+    return <Layout><p className="p-6 text-destructive">{financialReadErrorMessage(financialReadError)}</p></Layout>;
+  }
 
   // Reports count the unique active bowlers represented by active
   // memberships in each league. Financial payer rows remain the source for

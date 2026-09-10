@@ -80,9 +80,21 @@ beforeEach(() => {
 
 afterEach(() => {
   global.fetch = originalFetch;
+  window.history.replaceState(null, '', '/');
 });
 
 describe('LoginPage throttle UX', () => {
+  it('shows the explicit expired-session banner only for the session-expired reason', async () => {
+    window.history.pushState(null, '', '/login?reason=session-expired');
+    renderPage();
+
+    expect(await screen.findByTestId('alert-session-expired')).toHaveTextContent(
+      'Your session expired. Please sign in again.',
+    );
+
+    window.history.replaceState(null, '', '/');
+  });
+
   it('renders the throttle alert and Reset-it-instead link on a 429', async () => {
     loginHandler = () => rateLimitResponse(120);
     const user = userEvent.setup();
