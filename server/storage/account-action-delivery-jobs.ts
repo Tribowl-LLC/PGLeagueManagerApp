@@ -360,7 +360,20 @@ export async function attachPasswordResetActionToDeliveryJob(input: {
 export type PasswordResetDeliveryFinalization =
   | { status: "succeeded"; actionRequestId: number; providerMessageId?: string | null }
   | { status: "retry_scheduled"; actionRequestId?: number | null; errorCode: string; retryAfterMs: number }
-  | { status: "failed"; actionRequestId?: number | null; errorCode: string }
+  | {
+    status: "failed";
+    actionRequestId: number;
+    errorCode: string;
+    /** A known-unsent action must always identify the exact action row. */
+    deliveryDisposition: "known_unsent";
+  }
+  | {
+    status: "failed";
+    actionRequestId?: number | null;
+    errorCode: string;
+    /** Unknown outcomes retain any possibly delivered action. */
+    deliveryDisposition: "uncertain";
+  }
   | { status: "suppressed"; reason: string };
 
 /**
@@ -393,7 +406,12 @@ export async function finalizePasswordResetDeliveryJob(input: {
 
     const actionRequestId = "actionRequestId" in input.outcome
       ? input.outcome.actionRequestId
-      : claimed.actionRequestId;
+      // Suppression records may refer to the most recent action for
+      // diagnostics, but a failure must never fall back to an older action:
+      // an intent-expiry failure can race a prior uncertain provider attempt.
+      : input.outcome.status === "suppressed"
+        ? claimed.actionRequestId
+        : undefined;
     if (actionRequestId) {
       const [linkedAction] = await tx
         .select({ id: accountActionRequests.id })
@@ -419,6 +437,21 @@ export async function finalizePasswordResetDeliveryJob(input: {
             eq(accountActionRequests.id, actionRequestId),
             eq(accountActionRequests.deliveryJobId, input.jobId),
           ));
+
+        if (input.outcome.status === "failed" && input.outcome.deliveryDisposition === "known_unsent") {
+          // This branch is reserved for deterministic failures that occurred
+          // before provider submission (for example missing configuration).
+          // Unknown provider outcomes and exhausted retries deliberately leave
+          // the action pending because the link may already have been sent.
+          await tx
+            .update(accountActionRequests)
+            .set({ status: "revoked", revokedAt: sql`now()` })
+            .where(and(
+              eq(accountActionRequests.id, actionRequestId),
+              eq(accountActionRequests.deliveryJobId, input.jobId),
+              eq(accountActionRequests.status, "pending"),
+            ));
+        }
       }
     }
 

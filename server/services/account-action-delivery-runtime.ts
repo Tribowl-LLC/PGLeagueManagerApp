@@ -24,10 +24,16 @@ function emailProviderOutcome(result: EmailDispatchResult) {
     kind: 'failed' as const,
     errorCode,
     // A missing configuration or deterministic render failure cannot be
-    // repaired by retrying the same provider call. Provider failures remain
-    // retryable, but never select the raw fallback in this attempt.
+    // repaired by retrying the same provider call. These are known to occur
+    // before SendGrid submission, so their newly-created action can be
+    // revoked safely. Provider failures remain retryable and retain the
+    // action because submission may have happened before the error surfaced.
     retryable: result.failureReason !== 'not_configured'
       && result.failureReason !== 'render_error',
+    deliveryDisposition: result.failureReason === 'not_configured'
+      || result.failureReason === 'render_error'
+      ? 'known_unsent' as const
+      : 'uncertain' as const,
   };
 }
 

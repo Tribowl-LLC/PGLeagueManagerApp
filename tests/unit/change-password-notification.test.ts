@@ -95,6 +95,7 @@ vi.mock('../../server/storage', () => ({
 const mockHashPassword = vi.fn(async (pw: string) => `hashed:${pw}`);
 const mockDestroyOtherSessionsForUser = vi.fn(async () => 0);
 const mockLogin = vi.fn((_user: unknown, done: (error: unknown) => void) => done(null));
+const mockDestroyCurrentSession = vi.fn((done: (error?: unknown) => void) => done());
 
 vi.mock('../../server/auth', () => ({
   hashPassword: (...a: unknown[]) => mockHashPassword.apply(null, a as never),
@@ -156,6 +157,7 @@ beforeAll(async () => {
     Object.assign(req, {
       user: TEST_USER,
       login: (user: unknown, done: (error: unknown) => void) => mockLogin(user, done),
+      session: { destroy: (done: (error?: unknown) => void) => mockDestroyCurrentSession(done) },
       isAuthenticated: () => authenticated,
       sessionID: 'sess-test-1',
     });
@@ -192,6 +194,7 @@ beforeEach(() => {
   mockHashPassword.mockClear();
   mockDestroyOtherSessionsForUser.mockClear();
   mockLogin.mockClear();
+  mockDestroyCurrentSession.mockClear();
   mockComparePasswords.mockClear();
 });
 
@@ -341,6 +344,44 @@ describe('POST /api/account/change-password — password-changed email dispatch'
       expect.any(Function),
     );
     expect(mockDestroyOtherSessionsForUser).toHaveBeenCalledWith(TEST_USER.id, 'sess-test-1');
+  });
+
+  it.each([
+    {
+      stage: 'session regeneration',
+      error: 'synthetic session regeneration failure',
+    },
+    {
+      stage: 'session save',
+      error: 'synthetic session save failure',
+    },
+  ])('returns a completed change with requiresLogin when Passport $stage fails', async ({ error }) => {
+    // The password transaction commits before Passport regenerates and saves
+    // the caller session. Either lifecycle callback error must therefore
+    // preserve the successful credential change and tell the client to start
+    // a fresh login.
+    expectErrorLog(/Failed to refresh session after password change/);
+    mockLogin.mockImplementationOnce((_user, done) => {
+      done(new Error(error));
+    });
+
+    const res = await postChangePassword({
+      currentPassword: 'OriginalPw!2026',
+      newPassword: 'BrandNewPw!2026XX',
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      success: boolean;
+      data?: { requiresLogin?: boolean };
+    };
+    expect(body.success).toBe(true);
+    expect(body.data?.requiresLogin).toBe(true);
+    expect(mockDestroyCurrentSession).toHaveBeenCalledTimes(1);
+
+    // A session persistence failure occurs after the credential commit; the
+    // security notification still must be dispatched for the completed change.
+    await flushFireAndForget();
+    expect(mockSendPasswordChangedNotification).toHaveBeenCalledTimes(1);
   });
 
   it('still returns 200 for the change-password call when the email helper rejects (best-effort contract)', async () => {

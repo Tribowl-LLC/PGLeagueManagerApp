@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
+import { sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { sendError, sendSuccess, sanitizeUser, handleZodError } from '../utils/api';
 import { storage } from '../storage';
@@ -19,7 +20,7 @@ import { syncBowlerForUser } from '../services/payment-customer-sync';
 import { maskEmail } from '../utils/pii';
 import { getPgErrorCode } from '../utils/db-errors';
 import { isPaymentManager } from '../utils/access-control.js';
-import { type PaymentSyncStatus, type User } from '@shared/schema';
+import { users, type PaymentSyncStatus, type User } from '@shared/schema';
 import {
   markAdminEmailChangeAuditConfirmed,
 } from '../storage/admin-email-change-audits';
@@ -51,6 +52,30 @@ async function refreshCurrentSession(req: Request, user: User): Promise<void> {
   });
 }
 
+/**
+ * Passport may have replaced the request session before its regeneration or
+ * save callback reported an error. Remove that failed session from the
+ * request so express-session cannot try to save it again while ending the
+ * response, and clear the in-memory user for the remainder of this request.
+ * The committed credential mutation remains authoritative and the caller is
+ * directed to a fresh login by the route response.
+ */
+function discardFailedSession(req: Request): void {
+  const failedSession = req.session;
+  if (failedSession && typeof failedSession.destroy === 'function') {
+    try {
+      // `destroy` removes req.session synchronously before its store callback.
+      // Ignore the callback error: this is already a post-commit best-effort
+      // cleanup and must not turn the successful mutation into a 500.
+      failedSession.destroy(() => undefined);
+    } catch {
+      // The request still loses its in-memory identity below even when the
+      // session store throws synchronously.
+    }
+  }
+  req.user = undefined;
+}
+
 const GENERIC_DELETION_RESPONSE = {
   success: true as const,
   data: { message: 'Deletion request received' },
@@ -63,6 +88,11 @@ export async function changeUserPasswordTxn(
 ): Promise<number | undefined> {
   return db.transaction(async (tx) => {
     await lockAccountCredential(tx, userId);
+    // Credential-generation triggers revoke account actions and email-change
+    // requests after taking the users row. Lock it before revoking any
+    // action rows so this path follows the trigger's user -> action -> email
+    // order and cannot deadlock with an out-of-band credential UPDATE.
+    await tx.execute(sql`SELECT id FROM ${users} WHERE id = ${userId} FOR UPDATE`);
     const currentUser = await storage.getUser(userId, tx);
     if (!currentUser || currentUser.password !== expectedPasswordHash) {
       return undefined;
@@ -305,7 +335,19 @@ router.post('/confirm-email-change', confirmEmailChangeLimiter, async (req: Requ
     // Email changes rotate credentialGeneration. Refresh only a session that
     // already belongs to this same user; the confirmation token must never
     // log an anonymous caller or an administrator in as the target account.
-    await refreshCurrentSession(req, updatedUser);
+    // The email transaction has already committed at this point, so a
+    // Passport regeneration/save failure is reported as a successful email
+    // change that requires a fresh login instead of a misleading 500.
+    let requiresLogin = false;
+    try {
+      await refreshCurrentSession(req, updatedUser);
+    } catch {
+      requiresLogin = true;
+      discardFailedSession(req);
+      log.error('Failed to refresh session after email change; fresh login required', {
+        userId: updatedUser.id,
+      });
+    }
 
     let paymentSyncStatus: PaymentSyncStatus = 'not_applicable';
     // Staff accounts are never bowlers. A stale legacy link must not let an
@@ -346,7 +388,11 @@ router.post('/confirm-email-change', confirmEmailChangeLimiter, async (req: Requ
       newEmail: maskEmail(updatedUser.email),
     });
 
-    return sendSuccess(res, { ...sanitizeUser(updatedUser), paymentSyncStatus });
+    return sendSuccess(res, {
+      ...sanitizeUser(updatedUser),
+      paymentSyncStatus,
+      ...(requiresLogin ? { requiresLogin: true } : {}),
+    });
   } catch (error) {
     log.error('Error confirming email change:', error);
     return sendError(res, 'Internal server error', 500, 'SERVER_ERROR');
@@ -593,16 +639,30 @@ router.post('/change-password', changePasswordLimiter, requireAuth, async (req: 
       });
     }
 
+    let requiresLogin = false;
+
     // The database trigger has advanced credentialGeneration. Re-read the
     // committed row and let Passport serialize that exact snapshot so the
     // caller's own session survives the rotation. The serializer takes the
     // account lock and rejects the snapshot if another rotation wins first.
+    // The password transaction has already committed at this point, so a
+    // Passport regeneration/save failure is reported as a successful
+    // credential change that requires a fresh login instead of a misleading
+    // 500 response.
     if (typeof req.login === 'function' && req.user?.id === user.id) {
-      const refreshedUser = await storage.getUser(user.id);
-      if (!refreshedUser) {
-        throw new Error('Password changed but the committed user row could not be reloaded');
+      try {
+        const refreshedUser = await storage.getUser(user.id);
+        if (!refreshedUser) {
+          throw new Error('committed user row could not be reloaded');
+        }
+        await refreshCurrentSession(req, refreshedUser);
+      } catch {
+        requiresLogin = true;
+        discardFailedSession(req);
+        log.error('Failed to refresh session after password change; fresh login required', {
+          userId: user.id,
+        });
       }
-      await refreshCurrentSession(req, refreshedUser);
     }
 
     // Force-log-out every other session for this user. The user is
@@ -675,7 +735,10 @@ router.post('/change-password', changePasswordLimiter, requireAuth, async (req: 
       });
     }
 
-    return sendSuccess(res, { message: 'Password updated successfully' });
+    return sendSuccess(res, {
+      message: 'Password updated successfully',
+      ...(requiresLogin ? { requiresLogin: true } : {}),
+    });
   } catch (error) {
     log.error('Error changing password:', error);
     return sendError(res, 'Internal server error', 500, 'SERVER_ERROR');

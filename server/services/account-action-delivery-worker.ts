@@ -34,7 +34,13 @@ export interface PasswordResetDeliveryTarget {
 
 export type PasswordResetProviderOutcome =
   | { kind: "accepted"; providerMessageId?: string | null }
-  | { kind: "failed"; errorCode: string; retryable?: boolean }
+  | {
+    kind: "failed";
+    errorCode: string;
+    retryable?: boolean;
+    /** Explicitly records whether an action may safely be revoked. */
+    deliveryDisposition: "known_unsent" | "uncertain";
+  }
   | { kind: "uncertain"; errorCode: string };
 
 export interface PasswordResetDeliverySenderInput {
@@ -233,7 +239,11 @@ export class AccountActionDeliveryWorker {
 
       const expiresAt = new Date(job.expiresAt);
       if (!Number.isFinite(expiresAt.getTime()) || expiresAt.getTime() <= this.dependencies.now()) {
-        return finalize({ status: "failed", errorCode: "intent_expired" });
+        return finalize({
+          status: "failed",
+          errorCode: "intent_expired",
+          deliveryDisposition: "uncertain",
+        });
       }
 
       const issuance = await this.dependencies.issue({
@@ -272,6 +282,7 @@ export class AccountActionDeliveryWorker {
           status: "failed",
           actionRequestId: issuance.request.id,
           errorCode: providerOutcome.errorCode,
+          deliveryDisposition: providerOutcome.deliveryDisposition,
         });
       }
       return finalize({
@@ -304,6 +315,7 @@ export class AccountActionDeliveryWorker {
         kind: "failed",
         errorCode: safeErrorCode(error),
         retryable: true,
+        deliveryDisposition: "uncertain",
       }));
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<PasswordResetProviderOutcome>((resolve) => {

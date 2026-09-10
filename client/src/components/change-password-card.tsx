@@ -18,7 +18,11 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import {
+  apiRequest,
+  queryClient,
+  redirectToLoginForExpiredSession,
+} from "@/lib/queryClient";
 import {
   DEFAULT_THROTTLE_FALLBACK_SECONDS,
   formatCountdown,
@@ -47,6 +51,10 @@ const passwordSchema = z.object({
 });
 
 type PasswordFormData = z.infer<typeof passwordSchema>;
+type ChangePasswordResponse = {
+  message?: string;
+  requiresLogin?: boolean;
+};
 
 // Task #455: when `forced` is true the card mounts in the always-
 // open state with no toggle and no Cancel button — it is rendered
@@ -73,12 +81,12 @@ export function ChangePasswordCard({ forced = false }: { forced?: boolean } = {}
 
   const mutation = useMutation({
     mutationFn: async (data: PasswordFormData) => {
-      return apiRequest("/api/account/change-password", "POST", {
+      return apiRequest<ChangePasswordResponse>("/api/account/change-password", "POST", {
         currentPassword: data.currentPassword,
         newPassword: data.newPassword,
       });
     },
-    onSuccess: () => {
+    onSuccess: (response) => {
       form.reset();
       // Task #455: in the forced-rotation flow we keep the form
       // mounted so the success toast is visible without an empty
@@ -89,6 +97,21 @@ export function ChangePasswordCard({ forced = false }: { forced?: boolean } = {}
         setUserOpen(false);
       }
       clearThrottle();
+      if (response.data?.requiresLogin === true) {
+        toast({
+          title: "Password Changed",
+          description: "Your password has been updated. Please sign in again to continue.",
+        });
+        // The credential transaction committed, but Passport could not save
+        // the refreshed session. Clear cached auth state before routing to a
+        // normal login so the UI never presents the old session as valid.
+        redirectToLoginForExpiredSession({
+          cachedAuthenticated: true,
+          force: true,
+          reason: "credential-changed",
+        });
+        return;
+      }
       // Task #455: invalidate /api/user so the guard sees
       // mustChangePassword=false on the next render and the user is
       // no longer pinned to /change-password-required.

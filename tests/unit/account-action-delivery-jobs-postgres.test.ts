@@ -164,12 +164,12 @@ describe("password-reset delivery queue PostgreSQL boundaries", () => {
     expect(await finalizePasswordResetDeliveryJob({
       jobId: result.job.id,
       leaseToken: first?.leaseToken ?? "stale-lease",
-      outcome: { status: "failed", errorCode: "stale-worker" },
+      outcome: { status: "failed", errorCode: "stale-worker", deliveryDisposition: "uncertain" },
     })).toBe(false);
     expect(await finalizePasswordResetDeliveryJob({
       jobId: result.job.id,
       leaseToken: recovered?.leaseToken ?? "replacement-lease",
-      outcome: { status: "failed", errorCode: "replacement-worker" },
+      outcome: { status: "failed", errorCode: "replacement-worker", deliveryDisposition: "uncertain" },
     })).toBe(true);
 
     const [stored] = await db.select({ status: accountActionDeliveryJobs.status, lastErrorCode: accountActionDeliveryJobs.lastErrorCode })
@@ -301,7 +301,171 @@ describe("password-reset delivery queue PostgreSQL boundaries", () => {
     await finalizePasswordResetDeliveryJob({
       jobId: result.job.id,
       leaseToken: claim.leaseToken,
-      outcome: { status: "failed", errorCode: "test-cleanup" },
+      outcome: { status: "failed", errorCode: "test-cleanup", deliveryDisposition: "uncertain" },
     });
+  });
+
+  it("frees capacity after known pre-submission failures and retains uncertain links", async () => {
+    const user = await createFixtureUser("Queue Provider Config");
+    const revokedActionIds: number[] = [];
+
+    // A missing provider configuration is known to happen before submission.
+    // Repeating it must not strand three pending actions at the cap.
+    for (let attempt = 0; attempt < PASSWORD_RESET_PENDING_CAP; attempt += 1) {
+      const enqueued = await enqueuePasswordResetDelivery({
+        userId: user.id,
+        organizationId,
+        credentialGeneration: user.credentialGeneration,
+        expiresAt: deadline(),
+      });
+      if (enqueued.kind !== "enqueued") throw new Error("configuration-failure job was suppressed");
+      const claim = await claimNextPasswordResetDeliveryJob({ workerId: `config-worker-${attempt}` });
+      if (!claim) throw new Error("configuration-failure job was not claimed");
+      const action = await tryIssuePasswordReset({
+        userId: user.id,
+        recipientEmail: user.email,
+        organizationId,
+        expiresAt: deadline(),
+        deliveryJobId: enqueued.job.id,
+        expectedCredentialGeneration: user.credentialGeneration,
+      });
+      if (action.kind !== "issued") throw new Error("configuration-failure action was suppressed");
+      revokedActionIds.push(action.request.id);
+      expect(await attachPasswordResetActionToDeliveryJob({
+        jobId: enqueued.job.id,
+        leaseToken: claim.leaseToken,
+        actionRequestId: action.request.id,
+      })).toBe(true);
+      expect(await finalizePasswordResetDeliveryJob({
+        jobId: enqueued.job.id,
+        leaseToken: claim.leaseToken,
+        outcome: {
+          status: "failed",
+          actionRequestId: action.request.id,
+          errorCode: "not_configured",
+          deliveryDisposition: "known_unsent",
+        },
+      })).toBe(true);
+    }
+
+    const revoked = await db.select({ status: accountActionRequests.status })
+      .from(accountActionRequests)
+      .where(inArray(accountActionRequests.id, revokedActionIds));
+    expect(revoked).toHaveLength(PASSWORD_RESET_PENDING_CAP);
+    expect(revoked.every((row) => row.status === "revoked")).toBe(true);
+
+    // If this intent expires after a previous uncertain attempt, the
+    // terminal expiry record must not fall back to the job's old action and
+    // revoke a link that may already have reached the recipient.
+    const expiredAfterUncertain = await enqueuePasswordResetDelivery({
+      userId: user.id,
+      organizationId,
+      credentialGeneration: user.credentialGeneration,
+      expiresAt: deadline(),
+    });
+    if (expiredAfterUncertain.kind !== "enqueued") throw new Error("expired-after-uncertain job was suppressed");
+    const expiredClaim = await claimNextPasswordResetDeliveryJob({ workerId: "expired-after-uncertain-worker" });
+    if (!expiredClaim) throw new Error("expired-after-uncertain job was not claimed");
+    const priorAction = await tryIssuePasswordReset({
+      userId: user.id,
+      recipientEmail: user.email,
+      organizationId,
+      expiresAt: deadline(),
+      deliveryJobId: expiredAfterUncertain.job.id,
+      expectedCredentialGeneration: user.credentialGeneration,
+    });
+    if (priorAction.kind !== "issued") throw new Error("prior uncertain action was suppressed");
+    expect(await attachPasswordResetActionToDeliveryJob({
+      jobId: expiredAfterUncertain.job.id,
+      leaseToken: expiredClaim.leaseToken,
+      actionRequestId: priorAction.request.id,
+    })).toBe(true);
+    await db.update(accountActionDeliveryJobs).set({
+      expiresAt: new Date(Date.now() - 1_000).toISOString(),
+    }).where(eq(accountActionDeliveryJobs.id, expiredAfterUncertain.job.id));
+    expect(await finalizePasswordResetDeliveryJob({
+      jobId: expiredAfterUncertain.job.id,
+      leaseToken: expiredClaim.leaseToken,
+      outcome: {
+        status: "failed",
+        errorCode: "intent_expired",
+        deliveryDisposition: "uncertain",
+      },
+    })).toBe(true);
+    const [preservedAfterExpiry] = await db.select({ status: accountActionRequests.status })
+      .from(accountActionRequests)
+      .where(eq(accountActionRequests.id, priorAction.request.id));
+    expect(preservedAfterExpiry?.status).toBe("pending");
+
+    // A provider timeout is uncertain: the request may have reached SendGrid,
+    // so both the link and the link created before retry exhaustion stay usable.
+    const uncertainJob = await enqueuePasswordResetDelivery({
+      userId: user.id,
+      organizationId,
+      credentialGeneration: user.credentialGeneration,
+      expiresAt: deadline(),
+    });
+    if (uncertainJob.kind !== "enqueued") throw new Error("uncertain job was suppressed");
+    const firstClaim = await claimNextPasswordResetDeliveryJob({ workerId: "uncertain-worker-a" });
+    if (!firstClaim) throw new Error("uncertain job was not claimed");
+    const firstAction = await tryIssuePasswordReset({
+      userId: user.id,
+      recipientEmail: user.email,
+      organizationId,
+      expiresAt: deadline(),
+      deliveryJobId: uncertainJob.job.id,
+      expectedCredentialGeneration: user.credentialGeneration,
+    });
+    if (firstAction.kind !== "issued") throw new Error("uncertain action was suppressed");
+    expect(await attachPasswordResetActionToDeliveryJob({
+      jobId: uncertainJob.job.id,
+      leaseToken: firstClaim.leaseToken,
+      actionRequestId: firstAction.request.id,
+    })).toBe(true);
+    expect(await finalizePasswordResetDeliveryJob({
+      jobId: uncertainJob.job.id,
+      leaseToken: firstClaim.leaseToken,
+      outcome: {
+        status: "retry_scheduled",
+        actionRequestId: firstAction.request.id,
+        errorCode: "provider_timeout",
+        retryAfterMs: 0,
+      },
+    })).toBe(true);
+
+    const secondClaim = await claimNextPasswordResetDeliveryJob({ workerId: "uncertain-worker-b" });
+    if (!secondClaim) throw new Error("uncertain retry was not claimed");
+    const secondAction = await tryIssuePasswordReset({
+      userId: user.id,
+      recipientEmail: user.email,
+      organizationId,
+      expiresAt: deadline(),
+      deliveryJobId: uncertainJob.job.id,
+      expectedCredentialGeneration: user.credentialGeneration,
+    });
+    if (secondAction.kind !== "issued") throw new Error("uncertain retry action was suppressed");
+    expect(await attachPasswordResetActionToDeliveryJob({
+      jobId: uncertainJob.job.id,
+      leaseToken: secondClaim.leaseToken,
+      actionRequestId: secondAction.request.id,
+    })).toBe(true);
+    await db.update(accountActionDeliveryJobs).set({ attemptCount: 4 })
+      .where(eq(accountActionDeliveryJobs.id, uncertainJob.job.id));
+    expect(await finalizePasswordResetDeliveryJob({
+      jobId: uncertainJob.job.id,
+      leaseToken: secondClaim.leaseToken,
+      outcome: {
+        status: "retry_scheduled",
+        actionRequestId: secondAction.request.id,
+        errorCode: "provider_timeout",
+        retryAfterMs: 30_000,
+      },
+    })).toBe(true);
+
+    const retained = await db.select({ status: accountActionRequests.status })
+      .from(accountActionRequests)
+      .where(inArray(accountActionRequests.id, [firstAction.request.id, secondAction.request.id]));
+    expect(retained).toHaveLength(2);
+    expect(retained.every((row) => row.status === "pending")).toBe(true);
   });
 });

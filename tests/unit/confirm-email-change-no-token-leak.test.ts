@@ -107,6 +107,7 @@ vi.mock('../../server/auth', () => ({
 }));
 
 const mockLogin = vi.fn((_user: unknown, done: (error: unknown) => void) => done(null));
+const mockDestroyCurrentSession = vi.fn((done: (error?: unknown) => void) => done());
 
 vi.mock('../../server/middleware/auth', () => ({
   requireSystemAdmin: (_req: Request, _res: Response, next: NextFunction) => next(),
@@ -144,6 +145,7 @@ beforeAll(async () => {
     Object.assign(req, {
       user: sessionUser,
       login: (user: unknown, done: (error: unknown) => void) => mockLogin(user, done),
+      session: { destroy: (done: (error?: unknown) => void) => mockDestroyCurrentSession(done) },
     });
     next();
   });
@@ -166,6 +168,7 @@ beforeEach(() => {
   txState.outcome = { kind: 'invalid' };
   sessionUser = undefined;
   mockLogin.mockClear();
+  mockDestroyCurrentSession.mockClear();
 });
 
 afterEach(() => {
@@ -246,6 +249,40 @@ describe('POST /api/account/confirm-email-change does not leak the token to logs
       expect.objectContaining({ id: 7, email: 'new-address@vitest.local' }),
       expect.any(Function),
     );
+  });
+
+  it.each([
+    {
+      stage: 'session regeneration',
+      error: 'synthetic session regeneration failure',
+    },
+    {
+      stage: 'session save',
+      error: 'synthetic session save failure',
+    },
+  ])('returns a completed change with requiresLogin when Passport $stage fails', async ({ error }) => {
+    sessionUser = { id: 7 };
+    txState.outcome = {
+      kind: 'ok',
+      user: { id: 7, email: 'new-address@vitest.local' },
+      requestId: 42,
+    };
+    mockLogin.mockImplementationOnce((_user, done) => {
+      done(new Error(error));
+    });
+
+    const res = await postConfirm(CONFIRM_TOKEN);
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      success: boolean;
+      data?: { email?: string; requiresLogin?: boolean };
+    };
+    expect(body.success).toBe(true);
+    expect(body.data?.email).toBe('new-address@vitest.local');
+    expect(body.data?.requiresLogin).toBe(true);
+    expect(mockDestroyCurrentSession).toHaveBeenCalledTimes(1);
+    // The logged event must remain free of the raw confirmation token.
+    assertNoConfirmTokenLeak();
   });
 
   it('does not leak the token even when the transaction throws (catch path)', async () => {

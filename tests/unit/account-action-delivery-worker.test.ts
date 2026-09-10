@@ -172,6 +172,83 @@ describe("AccountActionDeliveryWorker", () => {
     }));
   });
 
+  it("revokes an action only for a definitive pre-submission failure", async () => {
+    const dependencies = makeDependencies({
+      send: vi.fn(async (): Promise<PasswordResetProviderOutcome> => ({
+        kind: "failed",
+        errorCode: "not_configured",
+        retryable: false,
+        deliveryDisposition: "known_unsent",
+      })),
+    });
+    const worker = new AccountActionDeliveryWorker(dependencies);
+
+    const result = await worker.runOne();
+
+    expect(result).toEqual({ kind: "processed", jobId: 11, outcome: "failed" });
+    expect(dependencies.finalize).toHaveBeenCalledWith({
+      jobId: 11,
+      leaseToken: "lease-1",
+      outcome: {
+        status: "failed",
+        actionRequestId: 91,
+        errorCode: "not_configured",
+        deliveryDisposition: "known_unsent",
+      },
+    });
+  });
+
+  it("retains an action when a nonretryable result does not prove provider non-submission", async () => {
+    const dependencies = makeDependencies({
+      send: vi.fn(async (): Promise<PasswordResetProviderOutcome> => ({
+        kind: "failed",
+        errorCode: "provider_rejected",
+        retryable: false,
+        deliveryDisposition: "uncertain",
+      })),
+    });
+    const worker = new AccountActionDeliveryWorker(dependencies);
+
+    const result = await worker.runOne();
+
+    expect(result.outcome).toBe("failed");
+    expect(dependencies.finalize).toHaveBeenCalledWith(expect.objectContaining({
+      outcome: {
+        status: "failed",
+        actionRequestId: 91,
+        errorCode: "provider_rejected",
+        deliveryDisposition: "uncertain",
+      },
+    }));
+  });
+
+  it("does not reuse a prior uncertain action when the durable intent expires", async () => {
+    const dependencies = makeDependencies({
+      claim: vi.fn(async () => ({
+        job: makeJob({
+          expiresAt: "2029-12-31T23:00:00.000Z",
+          actionRequestId: 91,
+        }),
+        leaseToken: "lease-1",
+      })),
+    });
+    const worker = new AccountActionDeliveryWorker(dependencies);
+
+    const result = await worker.runOne();
+
+    expect(result).toEqual({ kind: "processed", jobId: 11, outcome: "failed" });
+    expect(dependencies.issue).not.toHaveBeenCalled();
+    expect(dependencies.finalize).toHaveBeenCalledWith({
+      jobId: 11,
+      leaseToken: "lease-1",
+      outcome: {
+        status: "failed",
+        errorCode: "intent_expired",
+        deliveryDisposition: "uncertain",
+      },
+    });
+  });
+
   it("classifies a resolver crash as uncertain work and schedules a bounded retry", async () => {
     expectErrorLog(/Password-reset delivery attempt failed/);
     const dependencies = makeDependencies({

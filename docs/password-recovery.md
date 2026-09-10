@@ -87,6 +87,9 @@ may produce more than one email; each link remains subject to the three-link
 cap and single-use rules. This is deliberately not an exactly-once delivery
 claim. Template absence uses the fallback renderer; a provider error does not
 immediately dispatch a duplicate fallback email.
+Definite failures before provider submission, such as missing SendGrid
+configuration, revoke that attempt's unused action and free link capacity.
+Uncertain provider outcomes retain their links, including after retry exhaustion.
 
 Each application instance runs a scheduler. Local enqueue wakes it promptly;
 a 60-second safety sweep discovers another instance's committed jobs and
@@ -105,8 +108,10 @@ directly. Stale authenticated snapshots cannot acquire a fresh generation at
 session serialization. Deleting old session rows is cleanup; authorization
 revocation does not depend on that deletion succeeding or on process caches.
 Self-service password/email changes refresh the caller's session only after
-the credential transaction commits. Unauthenticated recovery requires normal
-sign-in after completion.
+the credential transaction commits. If session refresh fails, the response
+still confirms the completed change with `requiresLogin: true`, and the client
+clears cached authentication and directs the user to sign in again.
+Unauthenticated recovery requires normal sign-in after completion.
 
 ## SendGrid delivery evidence
 
