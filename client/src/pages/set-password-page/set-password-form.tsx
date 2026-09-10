@@ -38,6 +38,7 @@ interface SetPasswordFormProps {
   isThrottled: boolean;
   remainingSeconds: number;
   submitting: boolean;
+  action: 'account_invite' | 'password_reset';
   handleSubmit: (e: React.FormEvent) => void;
 }
 
@@ -56,6 +57,7 @@ export function SetPasswordForm({
   isThrottled,
   remainingSeconds,
   submitting,
+  action,
   handleSubmit,
 }: SetPasswordFormProps) {
   return (
@@ -158,7 +160,7 @@ export function SetPasswordForm({
             <span data-testid="text-set-password-retry-in">
               {formatCountdown(remainingSeconds)}
             </span>
-            . Please try again then; your link is still valid,
+            . Please try again then; your {action === 'password_reset' ? 'reset' : 'invitation'} link may still be valid,
             so you don't need to request a new one.
           </AlertDescription>
         </Alert>
@@ -178,7 +180,7 @@ export function SetPasswordForm({
         ) : isThrottled ? (
           `Try again in ${formatCountdown(remainingSeconds)}`
         ) : (
-          'Set Password & Sign In'
+          action === 'password_reset' ? 'Reset Password' : 'Set Password & Sign In'
         )}
       </Button>
     </form>
