@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { resetSessionExpiryRedirect } from "@/lib/queryClient";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("wouter", () => ({ Link: ({ children }: { children: ReactNode }) => <a href="#">{children}</a> }));
@@ -44,6 +45,44 @@ describe("ReportsPage membership counts", () => {
     await waitFor(() => expect(screen.getByRole("row", { name: /Tuesday League/ })).toBeInTheDocument());
     const row = screen.getByRole("row", { name: /Tuesday League/ });
     expect(within(row).getAllByRole("cell")[1]).toHaveTextContent("2");
+    vi.unstubAllGlobals();
+  });
+
+  it("preserves a reports AUTH_REQUIRED response and redirects a cached user once", async () => {
+    const replace = vi.fn();
+    const browserWindow = window;
+    const testWindow = Object.create(browserWindow);
+    Object.defineProperty(testWindow, "location", {
+      value: { pathname: "/reports", search: "", replace },
+      configurable: true,
+    });
+    vi.stubGlobal("window", testWindow);
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/leagues") return new Response(JSON.stringify({ data: [{ id: 7, name: "Tuesday League", active: true }] }), { status: 200 });
+      if (url === "/api/teams") return new Response(JSON.stringify({ data: [] }), { status: 200 });
+      if (url === "/api/bowlers") return new Response(JSON.stringify({ data: [] }), { status: 200 });
+      if (url === "/api/bowler-leagues") return new Response(JSON.stringify({ data: [] }), { status: 200 });
+      if (url.startsWith("/api/financials/f5/payments")) {
+        return new Response(JSON.stringify({ error: { message: "Not authenticated", code: "AUTH_REQUIRED" } }), {
+          status: 401,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.startsWith("/api/financials/due-past-due")) return new Response(JSON.stringify({ data: { leagues: [{ leagueId: 7, report: { rows: [], totals: {} } }] } }), { status: 200 });
+      return new Response(JSON.stringify({ data: {} }), { status: 404 });
+    }));
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, queryFn: ({ queryKey }) => fetch(String(queryKey[0])).then((response) => response.json()) } } });
+    queryClient.setQueryData(["/api/user"], { data: { id: 9, role: "org_admin", organizationId: 1 } });
+    render(<QueryClientProvider client={queryClient}><ReportsPage /></QueryClientProvider>);
+
+    expect(await screen.findByText("Your session expired. Please sign in again.")).toBeInTheDocument();
+    expect(replace).toHaveBeenCalledOnce();
+    expect(replace).toHaveBeenCalledWith("/login?reason=session-expired");
+    expect(screen.queryByText(/financial evidence requires review/i)).not.toBeInTheDocument();
+    resetSessionExpiryRedirect();
+    vi.stubGlobal("window", browserWindow);
     vi.unstubAllGlobals();
   });
 });

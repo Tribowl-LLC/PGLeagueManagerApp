@@ -18,9 +18,11 @@ import {
   MAX_API_RETRY_DELAY_MS,
   makeApiError,
   shouldRetryApiQuery,
+  isSessionExpiredError,
 } from "@/lib/api-error";
 import { logger } from "@/lib/logger";
-import { queryClient } from "@/lib/queryClient";
+import { queryClient, resetSessionExpiryRedirect, throwIfResNotOk } from "@/lib/queryClient";
+import { financialReadErrorMessage } from "@/lib/financial-utils";
 
 afterEach(() => {
   captureException.mockClear();
@@ -97,6 +99,81 @@ describe("client API error classification", () => {
     expect(error.code).toBe("DUPLICATE_EMAIL");
     expect(error.status).toBe(400);
     expect(error.message).toBe("Email already registered");
+  });
+
+  it("recognizes only the first-party expired-session contract", () => {
+    expect(isSessionExpiredError(new ApiError({ message: "signed out", status: 401, code: "AUTH_REQUIRED" }))).toBe(true);
+    expect(isSessionExpiredError(new ApiError({ message: "provider rejected", status: 401 }))).toBe(false);
+    expect(isSessionExpiredError(new ApiError({ message: "wrong password", status: 401, code: "INVALID_CREDENTIALS" }))).toBe(false);
+    expect(isSessionExpiredError(new ApiError({ message: "auth required", status: 403, code: "AUTH_REQUIRED" }))).toBe(false);
+  });
+
+  it("preserves AUTH_REQUIRED details and redirects once per source location", async () => {
+    const replace = vi.fn();
+    vi.stubGlobal("window", {
+      location: { pathname: "/reports", search: "", replace },
+    });
+    const response = () => new Response(JSON.stringify({
+      error: { message: "Not authenticated", code: "AUTH_REQUIRED" },
+    }), { status: 401, headers: { "content-type": "application/json" } });
+
+    await expect(throwIfResNotOk(response())).rejects.toMatchObject({
+      status: 401,
+      code: "AUTH_REQUIRED",
+    });
+    await expect(throwIfResNotOk(response())).rejects.toMatchObject({
+      status: 401,
+      code: "AUTH_REQUIRED",
+    });
+    expect(replace).toHaveBeenCalledOnce();
+    expect(replace).toHaveBeenCalledWith("/login?reason=session-expired");
+
+    resetSessionExpiryRedirect();
+    const providerReplace = vi.fn();
+    vi.stubGlobal("window", { location: { pathname: "/payments", search: "", replace: providerReplace } });
+    await expect(throwIfResNotOk(new Response(JSON.stringify({
+      error: { message: "Invalid provider credentials", code: "INVALID_CREDENTIALS" },
+    }), { status: 401, headers: { "content-type": "application/json" } }))).rejects.toMatchObject({
+      status: 401,
+      code: "INVALID_CREDENTIALS",
+    });
+    expect(providerReplace).not.toHaveBeenCalled();
+  });
+
+  it("uses the expired-session redirect for a cached root session but not anonymous root", async () => {
+    const rootReplace = vi.fn();
+    queryClient.setQueryData(["/api/user"], { data: { id: 17 } });
+    vi.stubGlobal("window", {
+      location: { pathname: "/", search: "", replace: rootReplace },
+    });
+    await expect(throwIfResNotOk(new Response(JSON.stringify({
+      error: { message: "Not authenticated", code: "AUTH_REQUIRED" },
+    }), { status: 401, headers: { "content-type": "application/json" } }))).rejects.toMatchObject({
+      status: 401,
+      code: "AUTH_REQUIRED",
+    });
+    expect(rootReplace).toHaveBeenCalledWith("/login?reason=session-expired");
+
+    resetSessionExpiryRedirect();
+    queryClient.clear();
+    const anonymousReplace = vi.fn();
+    vi.stubGlobal("window", {
+      location: { pathname: "/", search: "", replace: anonymousReplace },
+    });
+    await expect(throwIfResNotOk(new Response(JSON.stringify({
+      error: { message: "Not authenticated", code: "AUTH_REQUIRED" },
+    }), { status: 401, headers: { "content-type": "application/json" } }))).rejects.toMatchObject({
+      status: 401,
+      code: "AUTH_REQUIRED",
+    });
+    expect(anonymousReplace).not.toHaveBeenCalled();
+  });
+
+  it("keeps financial read copy specific to conflict versus availability", () => {
+    expect(financialReadErrorMessage(new ApiError({ message: "conflict", status: 409 }))).toMatch(/requires review/i);
+    expect(financialReadErrorMessage(new ApiError({ message: "forbidden", status: 403 }))).toMatch(/permission/i);
+    expect(financialReadErrorMessage(new ApiError({ message: "down", status: 503 }))).toMatch(/temporarily unavailable/i);
+    expect(financialReadErrorMessage(new ApiError({ message: "wrong auth", status: 401, code: "INVALID_CREDENTIALS" }))).not.toMatch(/session expired/i);
   });
 
   it("does not report expected API outcomes or aborted requests to Sentry", () => {

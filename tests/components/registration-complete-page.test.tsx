@@ -132,4 +132,22 @@ describe("RegistrationCompletePage", () => {
     // wrapper does not unmount/remount the pending page on isFetching.
     expect(requestCount).toBe(1);
   });
+
+  it("shows a retry state for a cached user when the guard cannot verify the session", async () => {
+    global.fetch = async () => new Response("temporary outage", { status: 503 });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, queryFn: getQueryFn }, mutations: { retry: false } },
+    });
+    queryClient.setQueryData(["/api/user"], userResponse(42), { updatedAt: 0 });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ProtectedRoute requirement="auth"><div data-testid="protected-content">Protected content</div></ProtectedRoute>
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByRole("button", { name: /retry/i })).toBeInTheDocument();
+    expect(screen.queryByTestId("protected-content")).not.toBeInTheDocument();
+    expect(navigate).not.toHaveBeenCalled();
+  });
 });
