@@ -13,7 +13,7 @@ import { users } from "./users";
 import { organizations } from "./organizations";
 import { accountActionRequests } from "./account-action-requests";
 
-/** Durable states for the password-reset delivery intent queue. */
+/** Durable states for the account-action delivery intent queue. */
 export const ACCOUNT_ACTION_DELIVERY_JOB_STATUSES = [
   "pending",
   "processing",
@@ -44,7 +44,7 @@ export const accountActionDeliveryJobs = pgTable("account_action_delivery_jobs",
     .references(() => users.id, { onDelete: "cascade" }),
   organizationId: integer("organization_id")
     .references(() => organizations.id, { onDelete: "cascade" }),
-  action: text("action", { enum: ["password_reset"] }).notNull().default("password_reset"),
+  action: text("action", { enum: ["password_reset", "account_registration"] }).notNull().default("password_reset"),
   /** Snapshot taken when the public request enqueues the intent. */
   credentialGeneration: integer("credential_generation").notNull().default(0),
   /** Recovery intents must not mint a link after their original one-hour window. */
@@ -77,7 +77,7 @@ export const accountActionDeliveryJobs = pgTable("account_action_delivery_jobs",
     .where(sql`${table.status} IN ('pending', 'processing', 'retry_scheduled')`),
   actionCheck: check(
     "account_action_delivery_jobs_action_check",
-    sql`${table.action} = 'password_reset'`,
+    sql`${table.action} IN ('password_reset', 'account_registration')`,
   ),
   statusCheck: check(
     "account_action_delivery_jobs_status_check",

@@ -9,6 +9,7 @@ import {
   FROM_EMAIL,
   FROM_NAME,
   dispatchMail,
+  classifyEmailProviderFailure,
   describeMailError,
   describeEmailDeliveryError,
   escapeHtml,
@@ -231,7 +232,53 @@ export async function sendPasswordResetFallbackEmail(
     return emailReturnValue(result, options);
   } catch (error) {
     log.error('Failed to send password reset email:', describeEmailDeliveryError(error));
-    return emailReturnValue({ accepted: false, failureReason: "provider_error" }, options);
+    return emailReturnValue({ accepted: false, failureReason: classifyEmailProviderFailure(error) }, options);
+  }
+}
+
+/** Built-in registration fallback used when no editable template is seeded. */
+export async function sendAccountRegistrationFallbackEmail(
+  toEmail: string,
+  userName: string,
+  setupToken: string,
+  orgSlug: string | null | undefined,
+  options?: EmailSendOptions,
+): Promise<boolean | EmailDispatchResult> {
+  if (!SENDGRID_API_KEY) {
+    log.error('Cannot send registration email — SENDGRID_API_KEY not configured');
+    return emailReturnValue({ accepted: false, failureReason: "not_configured" }, options);
+  }
+  const setupUrl = `${getBaseUrl(orgSlug)}/set-password?token=${encodeURIComponent(setupToken)}`;
+  const safeName = escapeHtml(userName || 'there');
+  const safeSetupUrl = escapeHtml(setupUrl);
+  const customArgs = safeAccountEmailDeliveryCustomArgs(options?.customArgs);
+  const msg = {
+    to: toEmail,
+    from: { email: FROM_EMAIL, name: FROM_NAME },
+    subject: 'Finish setting up your LeagueVault account',
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <p style="font-size: 16px; color: #333;">Hi ${safeName},</p>
+        <p style="font-size: 16px; color: #333;">Click below to verify your email and set your LeagueVault password.</p>
+        <div style="text-align: center; margin: 30px 0;">
+          <a href="${safeSetupUrl}" style="background-color: #1a1a2e; color: #ffffff; padding: 14px 28px; text-decoration: none; border-radius: 6px; font-size: 16px; display: inline-block; font-weight: bold;">Set up your account</a>
+        </div>
+        <p style="font-size: 14px; color: #666; word-break: break-all;"><a href="${safeSetupUrl}">${safeSetupUrl}</a></p>
+        <p style="font-size: 14px; color: #666;">This link expires in 7 days. If you did not request an account, you can ignore this message.</p>
+      </div>
+    `,
+    ...(customArgs ? { customArgs } : {}),
+    trackingSettings: { clickTracking: { enable: false, enableText: false } },
+  };
+  try {
+    const result = await dispatchMail(msg);
+    if (customArgs) log.info('Registration email sent', customArgs);
+    else if (options?.customArgs) log.info('Registration email sent', { deliveryCorrelation: "invalid" });
+    else log.info('Registration email sent to:', maskEmail(toEmail));
+    return emailReturnValue(result, options);
+  } catch (error) {
+    log.error('Failed to send registration email:', describeEmailDeliveryError(error));
+    return emailReturnValue({ accepted: false, failureReason: classifyEmailProviderFailure(error) }, options);
   }
 }
 

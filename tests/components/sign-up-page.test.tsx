@@ -47,7 +47,6 @@ async function fillAndSubmit(user: ReturnType<typeof userEvent.setup>) {
   await user.type(screen.getByLabelText(/phone number/i), "5551234567");
   await user.click(await screen.findByRole("combobox", { name: /league/i }));
   await user.click(screen.getByRole("option", { name: "Monday League" }));
-  await user.type(screen.getByLabelText(/^password$/i), "Strong!9x");
   await user.click(screen.getByRole("button", { name: /create account/i }));
 }
 
@@ -71,15 +70,15 @@ afterEach(() => {
 describe("SignUpPage API outcomes", () => {
   it("handles duplicate email without reporting an API issue", async () => {
     registerHandler = () => response(
-      { success: false, error: { code: "DUPLICATE_EMAIL", message: "Email already registered" } },
-      400,
+      { success: true, data: { status: "pending", email: "j***@example.com" } },
+      202,
     );
     const user = userEvent.setup();
     renderPage();
 
     await fillAndSubmit(user);
 
-    expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: "Account Already Exists" }));
+    expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: "Check your email" }));
   });
 
   it("uses Retry-After to show a disabled sign-up cooldown", async () => {

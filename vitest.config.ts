@@ -57,6 +57,7 @@ const SHARED_TABLE_WRITERS = [
  */
 const PARALLEL_ISOLATED_WITH_APP = [
   'tests/api/change-password.test.ts',
+  'tests/api/email-first-registration.test.ts',
   // This suite creates and removes roster fixtures beneath a shared baseline
   // league. Keep its setup on a private DB/app so sibling suites cannot make
   // the selected league stale or collide with its temporary team.
@@ -143,6 +144,7 @@ const UNIT_NO_DB = [
 
 const PARALLEL_ISOLATED = [
   'tests/e2e/password-reset-journey.test.ts',
+  'tests/e2e/email-first-registration-journey.test.ts',
   'server/routes/__tests__/leagues-square-missing-alerts.test.ts',
   'server/services/__tests__/apple-pay-worker.test.ts',
   'server/services/__tests__/square.test.ts',

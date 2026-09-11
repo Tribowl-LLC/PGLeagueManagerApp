@@ -9,9 +9,9 @@ import {
   sendTemplatedEmail,
   type EmailDispatchResult,
 } from './email-core';
-import { sendPasswordResetFallbackEmail } from './email-auth';
+import { sendAccountRegistrationFallbackEmail, sendPasswordResetFallbackEmail } from './email-auth';
 
-function emailProviderOutcome(result: EmailDispatchResult) {
+export function emailProviderOutcome(result: EmailDispatchResult, action: "password_reset" | "account_registration") {
   if (result.accepted) {
     return {
       kind: 'accepted' as const,
@@ -29,36 +29,44 @@ function emailProviderOutcome(result: EmailDispatchResult) {
     // revoked safely. Provider failures remain retryable and retain the
     // action because submission may have happened before the error surfaced.
     retryable: result.failureReason !== 'not_configured'
-      && result.failureReason !== 'render_error',
+      && result.failureReason !== 'render_error'
+      && (action !== "account_registration" || result.failureReason !== 'provider_rejected'),
     deliveryDisposition: result.failureReason === 'not_configured'
       || result.failureReason === 'render_error'
+      || (action === "account_registration" && (result.failureReason === 'provider_rejected'
+        || result.failureReason === 'provider_rate_limited'))
       ? 'known_unsent' as const
       : 'uncertain' as const,
   };
 }
 
-async function sendRecoveryEmail({ job, target, action }: PasswordResetDeliverySenderInput) {
+async function sendAccountActionEmail({ job, target, action }: PasswordResetDeliverySenderInput) {
   const org = target.organizationId ? await storage.getOrganization(target.organizationId) : null;
   const resetUrl = `${getBaseUrl(org)}/set-password?token=${encodeURIComponent(action.token)}`;
   const options = {
     returnDetails: true as const,
     customArgs: { account_action_id: action.request.id, account_delivery_job_id: job.id },
   };
-  const templated = await sendTemplatedEmail('password_reset', target.email, {
+  const slug = job.action === "account_registration" ? "account_registration" : "password_reset";
+  const templated = await sendTemplatedEmail(slug, target.email, {
     bowler_name: target.userName,
     reset_link: resetUrl,
     invite_link: resetUrl,
     organization_name: org?.name || 'LeagueVault',
   }, options);
   if (!templated.accepted && templated.failureReason !== 'template_missing') {
-    return emailProviderOutcome(templated);
+    return emailProviderOutcome(templated, job.action);
   }
   const result = templated.accepted
     ? templated
-    : await sendPasswordResetFallbackEmail(
-      target.email, target.userName, action.token, org?.subdomain || org?.slug, options,
-    );
-  return emailProviderOutcome(result);
+    : job.action === "account_registration"
+      ? await sendAccountRegistrationFallbackEmail(
+        target.email, target.userName, action.token, org?.subdomain || org?.slug, options,
+      )
+      : await sendPasswordResetFallbackEmail(
+        target.email, target.userName, action.token, org?.subdomain || org?.slug, options,
+      );
+  return emailProviderOutcome(result as EmailDispatchResult, job.action);
 }
 
 export const accountActionDeliveryWorker = new AccountActionDeliveryWorker({
@@ -73,7 +81,7 @@ export const accountActionDeliveryWorker = new AccountActionDeliveryWorker({
       credentialGeneration: user.credentialGeneration,
     };
   },
-  send: sendRecoveryEmail,
+  send: sendAccountActionEmail,
 });
 
 export async function startAccountActionDelivery(): Promise<void> {

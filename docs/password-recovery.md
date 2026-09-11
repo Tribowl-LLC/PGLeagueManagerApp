@@ -1,9 +1,10 @@
 # Password recovery
 
-The email link `/set-password?token=…` serves both account invitations and
-password recovery. Its compatibility endpoint, `/api/auth/validate-invite`,
-validates both supported purposes and returns only the masked email and the
-server-verified action type. Validation must never consume a usable action.
+The email link `/set-password?token=…` serves account invitations, new
+email-first registration, and password recovery. Its compatibility endpoint,
+`/api/auth/validate-invite`, validates all purposes and returns only the
+masked email and server-verified action type. Validation must never consume a
+usable action.
 Password submission repeats eligibility checks and claims the action in the
 same database transaction that changes the password.
 
@@ -12,6 +13,18 @@ invitations retain the onboarding and automatic sign-in behavior. Recovery
 does not link or reassign bowler identities. Reset tokens remain single-use,
 hashed at rest, and valid for one hour unless consumed or invalidated by a
 credential change. A newer reset request preserves existing usable links.
+
+Public registration collects name, email, phone, and league without a
+password. It creates a non-loginable pending account and a durable
+`account_registration` delivery intent in the same transaction. The setup
+link proves email ownership before the password is set; completion atomically
+links exactly one same-organization, normalized-email bowler when the profile
+is unclaimed. No match, duplicate match, claimed profile, or administrative
+assignment completes safely without relinking or changing bowler contact,
+roster, payment, or provider state. The anonymous waiting page uses only a
+session-scoped capability for status, resend, and abandoning the flow to enter
+a corrected address; it never exposes account lookup results or edits the
+original pending account.
 
 The page distinguishes used, expired, replaced, revoked, invalid, throttled,
 and temporarily unavailable states. Network and server errors allow retry;
@@ -91,6 +104,14 @@ Definite failures before provider submission, such as missing SendGrid
 configuration, revoke that attempt's unused action and free link capacity.
 Uncertain provider outcomes retain their links, including after retry exhaustion.
 
+Migration `0039_email_first_registration` expands only the action checks for
+registration delivery. Registration links expire after seven days, preserve
+usable links across uncertain retries, allow at most three pending links, and
+apply a five-minute resend cooldown. The worker uses the same lease,
+scheduler, exact SendGrid correlation, and signed-event evidence as recovery;
+it classifies deterministic registration rejection/configuration failures as
+known-unsent and network, timeout, or server failures as uncertain.
+
 Each application instance runs a scheduler. Local enqueue wakes it promptly;
 a 60-second safety sweep discovers another instance's committed jobs and
 expired leases after crashes. This polling can keep the Neon compute awake
@@ -136,17 +157,20 @@ completed the reset. Do not enable engagement tracking on reset links.
 2. Review the hardening migration and its checked-in schema fingerprint. The
    generated redundant payment constraint rebuild was removed because migration
    0037 already installs that exact constraint; no payment DDL is included here.
-3. Merge the hardening change only after its checks pass. Use the existing
-   production database workflow to back up the intended Neon target, apply
-   exactly `0038_password_recovery_hardening`, verify the fingerprint, and run
+3. Merge the reviewed change only after its checks pass. Use the existing
+   production database workflow to back up the intended Neon target, verify the
+   completed `0038_password_recovery_hardening` history and fingerprint, and run
    the required no-op rerun. No schema mutation occurs at application startup.
-4. Replace all application instances with the same verified commit. Use a
+4. Apply schema migration `0039_email_first_registration` before deploying
+   application code that can enqueue registration intents. Do not run mixed
+   versions: older workers assume every delivery job is a password reset.
+5. Replace all application instances with the same verified commit. Use a
    coordinated drain/replacement: older processes do not understand the new
    session payload or generation revocation contract. Do not leave a mixed
    version pool serving authentication.
-5. Configure the signed webhook and verification key. These are provider
+6. Configure the signed webhook and verification key. These are provider
    activation steps; the code change does not configure SendGrid automatically.
-6. Verify health, production org context and commit, then use an owned test
+7. Verify health, production org context and commit, then use an owned test
    account for the actual email journey. Verify both root and organization
    hosts, two links requested more than five minutes apart, repeated preview
    opens, successful reset, and rejection of a pre-reset session. Send no
@@ -161,12 +185,14 @@ before interpreting a missing event as a delivery failure. Alert destinations
 must be configured in the production monitoring provider during activation;
 this change supplies the evidence and query, not an external alert subscription.
 
-Keep migration 0038 in place during application recovery; do not restore the
+Keep migrations 0038 and 0039 in place during application recovery; do not restore the
 old unique reset index while multiple links exist. Prefer a forward fix that
 preserves generation checks and queue processing. Rolling back to an older
 application requires draining all instances, invalidating all sessions, and
 explicitly reconciling pending delivery jobs; an old binary alone cannot
-preserve this revocation guarantee. Use the production backup restore procedure
+preserve this revocation guarantee or safely interpret registration jobs. Pause
+registration delivery and reconcile those jobs before any rollback; prefer a
+forward fix. Use the production backup restore procedure
 only for a verified data incident with a reviewed restore target.
 
 Implementation references: [OWASP Forgot Password Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Forgot_Password_Cheat_Sheet.html),

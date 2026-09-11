@@ -11,7 +11,7 @@ import { accountActionDeliveryJobs } from "./account-action-delivery-jobs";
  * The raw token is intentionally not a column: callers receive it only from
  * `issueAccountAction`, while this table stores its SHA-256 digest.
  */
-export const ACCOUNT_ACTION_TYPES = ["account_invite", "password_reset"] as const;
+export const ACCOUNT_ACTION_TYPES = ["account_invite", "password_reset", "account_registration"] as const;
 export type AccountActionType = (typeof ACCOUNT_ACTION_TYPES)[number];
 
 export const ACCOUNT_ACTION_STATUSES = ["pending", "consumed", "superseded", "revoked", "expired"] as const;
@@ -66,7 +66,7 @@ export const accountActionRequests = pgTable("account_action_requests", {
     .where(sql`${table.status} = 'pending'`),
   actionCheck: check(
     "account_action_requests_action_check",
-    sql`${table.action} IN ('account_invite', 'password_reset')`,
+    sql`${table.action} IN ('account_invite', 'password_reset', 'account_registration')`,
   ),
   statusCheck: check(
     "account_action_requests_status_check",

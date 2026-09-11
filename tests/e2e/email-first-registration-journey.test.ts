@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
-import { eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 
 // Exercise the real registration renderer and blocked-recipient outbox. No
 // provider credentials or production recipients are used, even when the
@@ -14,7 +14,7 @@ vi.hoisted(() => {
 
 import { createApp, type CreatedApp } from '../../server/app';
 import { db, pool } from '../../server/db';
-import { accountActionRequests, bowlers, emailTemplates, leagues, organizations, users } from '@shared/schema';
+import { accountActionRequests, bowlers, emailTemplates, identityLinkEvents, leagues, organizations, users } from '@shared/schema';
 import { clearCapturedEmails, getCapturedEmails } from '../../server/services/_internal/email-outbox';
 
 const ORGANIZATION_SLUG = 'email-first-browser-fixture';
@@ -67,7 +67,10 @@ async function installRegistrationTemplate(): Promise<void> {
 async function waitForUser(email: string) {
   let user: typeof users.$inferSelect | undefined;
   await expect.poll(async () => {
-    [user] = await db.select().from(users).where(eq(users.email, email)).limit(1);
+    [user] = await db.select().from(users).where(and(
+      eq(users.email, email),
+      eq(users.organizationId, organizationId),
+    )).limit(1);
     return user?.id ?? 0;
   }, { timeout: 15_000 }).toBeGreaterThan(0);
   if (!user) throw new Error(`Registration user ${email} was not created`);
@@ -156,7 +159,7 @@ async function startRegistration(
 
   // The response is a check-email success state, not an authenticated app
   // session. The anonymous session itself is the capability for status/resend.
-  await expect(page.getByText('Check your email', { exact: true })).toBeVisible();
+  await page.getByText('Check your email', { exact: true }).waitFor();
   const cookies = await context.cookies();
   expect(cookies.some((cookie) => cookie.name === 'connect.sid')).toBe(true);
   const authBeforeSetup = await page.evaluate(async () => (
@@ -262,6 +265,7 @@ describe('Email-first registration — real browser, outbox, and setup link', ()
       await db.update(users).set({ bowlerId: null }).where(inArray(users.id, createdUserIds));
       await db.delete(users).where(inArray(users.id, createdUserIds));
     }
+    if (organizationId) await db.delete(identityLinkEvents).where(eq(identityLinkEvents.organizationId, organizationId));
     if (matchedBowlerId) await db.delete(bowlers).where(eq(bowlers.id, matchedBowlerId));
     if (leagueId) await db.delete(leagues).where(eq(leagues.id, leagueId));
     if (organizationId) await db.delete(organizations).where(eq(organizations.id, organizationId));
@@ -313,7 +317,7 @@ describe('Email-first registration — real browser, outbox, and setup link', ()
       await openAndReloadSetup(page, setupUrl, user.id);
       expect(await setPassword(page)).toBe(200);
       await waitForAuthenticatedLanding(page, '/registration-complete');
-      await expect(page.getByText(/administrator setup|registration in progress/i).first()).toBeVisible();
+      await page.getByText(/administrator setup|registration in progress/i).first().waitFor();
 
       const [updated] = await db.select({ bowlerId: users.bowlerId })
         .from(users).where(eq(users.id, user.id));

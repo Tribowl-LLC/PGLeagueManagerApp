@@ -38,7 +38,7 @@ interface SetPasswordFormProps {
   isThrottled: boolean;
   remainingSeconds: number;
   submitting: boolean;
-  action: 'account_invite' | 'password_reset';
+  action: 'account_invite' | 'password_reset' | 'account_registration';
   handleSubmit: (e: React.FormEvent) => void;
 }
 

@@ -33,6 +33,7 @@ const registrationStatusSchema = z.object({
     "sending",
     "submitted",
     "sent",
+    "processed",
     "failed",
     "delivered",
     "deferred",
@@ -65,6 +66,34 @@ type DeliveryPresentation = {
 };
 
 function deliveryPresentation(status: RegistrationStatus): DeliveryPresentation {
+  const normalizedDeliveryStatus = status.deliveryStatus?.trim().toLowerCase();
+  const knownConfigurationFailure = ["not_configured", "render_error"].includes(
+    status.deliveryLastErrorCode?.trim().toLowerCase() ?? "",
+  );
+
+  // The API puts exact provider evidence and safe worker classifications into
+  // deliveryStatus. Honor that coarse result before looking at job state:
+  // an uncertain timeout must not be presented as a confirmed bad address,
+  // and a terminal known-unsent configuration failure must not be hidden by
+  // the queue's generic failed state.
+  if (normalizedDeliveryStatus === "unknown") {
+    return { label: "Status unknown", message: "Delivery status is unknown. Check your inbox and spam folder, then try again if needed.", tone: "warning" };
+  }
+  if (normalizedDeliveryStatus === "delivered") {
+    return { label: "Delivered", message: "The email provider confirmed delivery.", tone: "default" };
+  }
+  if (["bounce", "bounced", "dropped", "failed"].includes(normalizedDeliveryStatus ?? "")) {
+    return knownConfigurationFailure
+      ? { label: "Delivery unavailable", message: "The setup email service is temporarily unavailable. Contact your league administrator for help.", tone: "destructive" }
+      : { label: "Delivery failed", message: "We could not deliver the setup email. Check the address or use a different email.", tone: "destructive" };
+  }
+  if (normalizedDeliveryStatus === "deferred") {
+    return { label: "Delivery deferred", message: "The email provider deferred delivery. The app will not resend automatically.", tone: "warning" };
+  }
+  if (["processed", "submitted", "sent"].includes(normalizedDeliveryStatus ?? "")) {
+    return { label: "Submitted", message: "The setup email was submitted, but delivery has not been confirmed yet.", tone: "default" };
+  }
+
   // Provider events are the authoritative signal when one is present. The
   // app's queue state is only used as a fallback while provider delivery is
   // still unknown.
@@ -96,7 +125,9 @@ function deliveryPresentation(status: RegistrationStatus): DeliveryPresentation 
     return { label: "Delivery deferred", message: "Delivery was deferred. The app will not resend automatically.", tone: "warning" };
   }
   if (status.deliveryJobStatus === "failed" || ["failed", "bounce", "bounced", "dropped"].includes(status.deliveryStatus ?? "")) {
-    return { label: "Delivery failed", message: "We could not deliver the setup email. Check the address or use a different email.", tone: "destructive" };
+    return knownConfigurationFailure
+      ? { label: "Delivery unavailable", message: "The setup email service is temporarily unavailable. Contact your league administrator for help.", tone: "destructive" }
+      : { label: "Delivery failed", message: "We could not deliver the setup email. Check the address or use a different email.", tone: "destructive" };
   }
   if (status.deliveryJobStatus === "succeeded" || ["submitted", "sent"].includes(status.deliveryStatus ?? "")) {
     return { label: "Submitted", message: "The setup email was submitted, but delivery has not been confirmed yet.", tone: "default" };
@@ -250,7 +281,7 @@ const RegistrationEmailPage: FC = () => {
     );
   }
 
-  if ((statusQuery.isError && !status) || !status || status.status !== "pending" || status.actionStatus !== undefined && status.actionStatus !== null && status.actionStatus !== "pending") {
+  if ((statusQuery.isError && !status) || !status || status.status !== "pending") {
     return shell(
       <>
         <CardHeader className="space-y-2 text-center">

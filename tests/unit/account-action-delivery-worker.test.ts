@@ -135,6 +135,26 @@ describe("AccountActionDeliveryWorker", () => {
     }));
   });
 
+  it("suppresses a registration job when the account moved organizations before issuance", async () => {
+    const dependencies = makeDependencies({
+      claim: vi.fn(async () => ({
+        job: makeJob({ action: "account_registration", organizationId: 33 }),
+        leaseToken: "lease-1",
+      })),
+      loadTarget: vi.fn(async () => ({ ...target, organizationId: 44 })),
+    });
+    const worker = new AccountActionDeliveryWorker(dependencies);
+
+    const result = await worker.runOne();
+
+    expect(result.outcome).toBe("suppressed");
+    expect(dependencies.issue).not.toHaveBeenCalled();
+    expect(dependencies.send).not.toHaveBeenCalled();
+    expect(dependencies.finalize).toHaveBeenCalledWith(expect.objectContaining({
+      outcome: { status: "suppressed", reason: "account_not_pending" },
+    }));
+  });
+
   it("leaves an existing usable link intact when the three-link cap is reached", async () => {
     const dependencies = makeDependencies({
       issue: vi.fn(async (): Promise<PasswordResetIssuanceResult> => ({ kind: "suppressed", reason: "at_capacity" })),

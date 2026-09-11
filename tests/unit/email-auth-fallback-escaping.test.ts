@@ -58,6 +58,8 @@ vi.mock('../../server/storage', () => ({
 const { sendInviteEmail, sendPasswordResetFallbackEmail } = await import(
   '../../server/services/email-auth'
 );
+const { classifyEmailProviderFailure } = await import('../../server/services/email-core');
+const { emailProviderOutcome } = await import('../../server/services/account-action-delivery-runtime');
 
 const XSS = '<img src=x onerror="alert(1)">';
 const XSS_ESCAPED = '&lt;img src=x onerror=&quot;alert(1)&quot;&gt;';
@@ -71,6 +73,32 @@ beforeEach(() => {
 });
 
 describe('email-auth fallback senders — HTML injection guard', () => {
+  it('classifies only stable SendGrid response categories for delivery safety', () => {
+    expect(classifyEmailProviderFailure({ code: 400, response: { body: { errors: ['hidden'] } } })).toBe('provider_rejected');
+    expect(classifyEmailProviderFailure({ code: 429, response: { body: { errors: ['hidden'] } } })).toBe('provider_rate_limited');
+    expect(classifyEmailProviderFailure({ code: 408, response: { body: { body: 'hidden' } } })).toBe('provider_error');
+    expect(classifyEmailProviderFailure({ code: 503, response: { body: { body: 'hidden' } } })).toBe('provider_error');
+  });
+
+  it('preserves password-reset terminal provider failures while classifying registration safely', () => {
+    expect(emailProviderOutcome({ accepted: false, failureReason: 'not_configured' }, 'password_reset')).toMatchObject({
+      retryable: false,
+      deliveryDisposition: 'known_unsent',
+    });
+    expect(emailProviderOutcome({ accepted: false, failureReason: 'render_error' }, 'password_reset')).toMatchObject({
+      retryable: false,
+      deliveryDisposition: 'known_unsent',
+    });
+    expect(emailProviderOutcome({ accepted: false, failureReason: 'provider_rejected' }, 'account_registration')).toMatchObject({
+      retryable: false,
+      deliveryDisposition: 'known_unsent',
+    });
+    expect(emailProviderOutcome({ accepted: false, failureReason: 'provider_rate_limited' }, 'account_registration')).toMatchObject({
+      retryable: true,
+      deliveryDisposition: 'known_unsent',
+    });
+  });
+
   it('sendInviteEmail escapes a malicious userName and organizationName in the fallback HTML', async () => {
     const ok = await sendInviteEmail(
       'recipient@test.example',

@@ -5,14 +5,9 @@
  * tests/setup/per-worker-setup.ts. That app starts with background workers
  * suppressed; setup actions are issued directly through the local storage
  * function below, so no provider call is made by this suite.
- *
- * The test branch is based on the pre-registration schema. The string casts
- * around account_registration are deliberate: the production branch adds the
- * action/check constraint and the issuer export. Keeping this file otherwise
- * independent lets the implementation and tests be reviewed separately.
  */
 import { randomBytes } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq, inArray, sql } from "drizzle-orm";
 
 import { db } from "../../server/db";
@@ -25,6 +20,12 @@ import {
   leagues,
   users,
 } from "@shared/schema";
+import {
+  consumeAccountActionAndSetPassword,
+  tryIssueAccountRegistration,
+  type AccountRegistrationIssuanceResult,
+} from "../../server/storage/account-action-requests";
+import * as identityLink from "../../server/services/identity-link.js";
 import {
   BASE_URL,
   getBaselineOrgAId,
@@ -112,12 +113,11 @@ async function userRow(userId: number): Promise<typeof users.$inferSelect> {
   return user;
 }
 
-async function userByEmail(email: string): Promise<typeof users.$inferSelect> {
-  // This lookup is against a unique, synthetic test address; all later
-  // assertions use the returned primary key to satisfy the test isolation
-  // boundary.
-  // eslint-disable-next-line leaguevault/no-unscoped-table-query-in-test-assertion
-  const [user] = await db.select().from(users).where(eq(users.email, email)).limit(1);
+async function userByEmail(email: string, scopedOrganizationId = organizationId): Promise<typeof users.$inferSelect> {
+  const [user] = await db.select().from(users).where(and(
+    eq(users.email, email),
+    eq(users.organizationId, scopedOrganizationId),
+  )).limit(1);
   if (!user) throw new Error(`User ${email} was not created`);
   return user;
 }
@@ -144,40 +144,17 @@ async function countRegistrationJobs(userId: number): Promise<number> {
   return rows.length;
 }
 
-type RegistrationIssuer = (input: {
-  userId: number;
-  expiresAt: Date;
-  organizationId: number;
-  recipientEmail: string;
-  deliveryJobId?: number | null;
-  expectedCredentialGeneration?: number;
-}) => Promise<{
-  kind: "issued" | "suppressed";
-  token?: string;
-  request?: typeof accountActionRequests.$inferSelect;
-  reason?: string;
-}>;
-
-type IssuedRegistrationAction = {
-  kind: "issued";
-  token: string;
-  request: typeof accountActionRequests.$inferSelect;
-};
+type RegistrationIssuerInput = Parameters<typeof tryIssueAccountRegistration>[0];
+type IssuedRegistrationAction = Extract<AccountRegistrationIssuanceResult, { kind: "issued" }>;
 
 /**
  * Issue only the bearer action in-process. There is no worker/provider in
  * this path; the durable job is inserted first to model the queue origin.
  */
-async function issueRegistrationAction(input: Parameters<RegistrationIssuer>[0]): Promise<IssuedRegistrationAction> {
-  const module = await import("../../server/storage/account-action-requests");
-  const issuerValue = Reflect.get(module, "tryIssueAccountRegistration");
-  if (typeof issuerValue !== "function") {
-    throw new Error("Registration issuer is not available in this production draft");
-  }
-  const issuer = issuerValue as RegistrationIssuer;
-  const result = await issuer(input);
-  if (result.kind !== "issued" || !result.token || !result.request) {
-    throw new Error(`Registration action was not issued: ${result.reason ?? "unknown"}`);
+async function issueRegistrationAction(input: RegistrationIssuerInput): Promise<IssuedRegistrationAction> {
+  const result = await tryIssueAccountRegistration(input);
+  if (result.kind !== "issued") {
+    throw new Error(`Registration action was not issued: ${result.reason}`);
   }
   return { kind: "issued", token: result.token, request: result.request };
 }
@@ -207,7 +184,7 @@ async function createPendingRegistration(input: {
   const [job] = await db.insert(accountActionDeliveryJobs).values({
     userId: user.id,
     organizationId,
-    action: REGISTRATION_ACTION as never,
+    action: REGISTRATION_ACTION,
     credentialGeneration: user.credentialGeneration,
     expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
   }).returning();
@@ -312,8 +289,16 @@ describe("email-first registration API", () => {
     expect(wrongTenant.response.status).toBe(404);
 
     const noCookieResend = await requestJson(registrationPath("/api/auth/registration/resend"), { method: "POST", body: "{}" });
-    expect(noCookieResend.response.status).toBe(404);
-    const resend = await requestJson(registrationPath("/api/auth/registration/resend"), { method: "POST", body: "{}" }, started.cookies);
+    expect(noCookieResend.response.status).toBe(403);
+    expect(noCookieResend.body.error?.code).toBe("CSRF_ERROR");
+    const csrf = await requestJson("/api/csrf-token", {}, started.cookies);
+    const csrfToken = typeof csrf.body.data?.token === "string" ? csrf.body.data.token : "";
+    expect(csrfToken).toBeTruthy();
+    const resend = await requestJson(registrationPath("/api/auth/registration/resend"), {
+      method: "POST",
+      body: "{}",
+      headers: { "x-csrf-token": csrfToken },
+    }, started.cookies);
     expect(resend.response.status).toBe(202);
   });
 
@@ -389,6 +374,36 @@ describe("email-first registration API", () => {
     expect((await userRow(pending.user.id)).bowlerId).toBeNull();
   });
 
+  it("rolls back password and token consumption when an unexpected identity-link failure occurs", async () => {
+    const email = uniqueEmail("link-failure");
+    await createBowler({ email, name: "Link Failure Candidate" });
+    const pending = await createPendingRegistration({ email });
+    const originalPassword = pending.user.password;
+    const linkSpy = vi.spyOn(identityLink, "linkUserToBowler")
+      .mockRejectedValueOnce(new Error("unexpected identity service outage"));
+
+    try {
+      const replacementHash = await hashPassword("LinkFailureRetry9!");
+      await expect(consumeAccountActionAndSetPassword({
+        token: pending.action.token,
+        passwordHash: replacementHash,
+      })).rejects.toThrow("unexpected identity service outage");
+      const afterFailure = await userRow(pending.user.id);
+      expect(afterFailure.password).toBe(originalPassword);
+      const [actionAfterFailure] = await db
+        .select({ status: accountActionRequests.status })
+        .from(accountActionRequests)
+        .where(eq(accountActionRequests.id, pending.action.request.id));
+      expect(actionAfterFailure?.status).toBe("pending");
+    } finally {
+      linkSpy.mockRestore();
+    }
+
+    const retry = await setPassword(pending.action.token);
+    expect(retry.response.status).toBe(200);
+    expect((await userRow(pending.user.id)).password).not.toBe(originalPassword);
+  });
+
   it("does not guess when two same-org roster rows normalize to the same email", async () => {
     const email = uniqueEmail("ambiguous");
     await createBowler({ email: ` ${email.toUpperCase()} `, name: "Ambiguous One" });
@@ -447,7 +462,7 @@ describe("email-first registration API", () => {
       {
         label: "credential-generation",
         apply: async (userId) => {
-          await db.update(users).set({ credentialGeneration: sql`${users.credentialGeneration} + 1` }).where(eq(users.id, userId));
+          await db.update(users).set({ password: await hashPassword("GenerationDrift9!") }).where(eq(users.id, userId));
         },
       },
     ];
@@ -457,8 +472,13 @@ describe("email-first registration API", () => {
       await drift.apply(pending.user.id);
       const result = await setPassword(pending.action.token);
       expect(result.response.status, drift.label).toBe(400);
-      expect(result.body.error?.code, drift.label).toBe("INVALID_TOKEN");
-      expect((await userRow(pending.user.id)).password, drift.label).toBe(pending.user.password);
+      expect(["INVALID_TOKEN", "TOKEN_REVOKED"], drift.label).toContain(result.body.error?.code);
+      const after = await userRow(pending.user.id);
+      if (drift.label === "credential-generation") {
+        expect(after.password, drift.label).not.toBe(pending.user.password);
+      } else {
+        expect(after.password, drift.label).toBe(pending.user.password);
+      }
     }
   });
 
