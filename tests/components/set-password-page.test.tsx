@@ -407,6 +407,24 @@ describe('SetPasswordPage validation and reset journey', () => {
     await waitFor(() => expect(testMemoryLocation.history?.at(-1)).toBe('/login'));
   });
 
+  it('routes registration users to login when password setup succeeds but auto-login fails', async () => {
+    validateHandler = () => new Response(JSON.stringify({
+      success: true,
+      data: { email: 'r***@example.com', action: 'account_registration' },
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+    setPasswordHandler = () => new Response(JSON.stringify({
+      success: true,
+      data: { message: 'Password set successfully. Please log in.', loginFailed: true },
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+
+    const user = userEvent.setup();
+    renderPage();
+    expect(await screen.findByText(/Finish Your Registration/i)).toBeInTheDocument();
+    await fillAndSubmit(user);
+
+    await waitFor(() => expect(testMemoryLocation.history?.at(-1)).toBe('/login'));
+  });
+
   it('ignores a stale validation response after the URL changes', async () => {
     let resolveFirst!: (response: Response) => void;
     let resolveSecond!: (response: Response) => void;

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   and,
   asc,
+  desc,
   eq,
   gt,
   inArray,
@@ -242,6 +243,106 @@ export function enqueueAccountRegistrationDelivery(
   return enqueuePasswordResetDelivery({ ...input, action: "account_registration" }, executor);
 }
 
+export interface ResumePendingAccountRegistrationInput {
+  email: string;
+  organizationId: number;
+  expiresAt: Date;
+}
+
+export interface ResumedPendingAccountRegistration {
+  user: typeof users.$inferSelect;
+  delivery: AccountRegistrationDeliveryEnqueueResult;
+}
+
+/**
+ * Recover the narrow anonymous capability for a pending registration after a
+ * browser loses its session. The established credential advisory lock is
+ * acquired before the authoritative user-row lock, and the durable-origin,
+ * generation, and enqueue checks share that transaction so an administrator
+ * role/org change cannot race a resend.
+ *
+ * This intentionally does not inspect or update the submitted name, phone,
+ * email, password, or bowler link. Legacy accounts and completed actions have
+ * no current-generation registration origin and therefore return undefined.
+ */
+export async function resumePendingAccountRegistration(
+  input: ResumePendingAccountRegistrationInput,
+): Promise<ResumedPendingAccountRegistration | undefined> {
+  const email = input.email.trim().toLowerCase();
+  if (!email || !Number.isSafeInteger(input.organizationId) || input.organizationId <= 0) {
+    throw new Error("A valid registration email and organization are required");
+  }
+  assertFutureDate(input.expiresAt, "Account-registration delivery expiry");
+
+  return db.transaction(async (tx) => {
+    // Read only the scoped candidate ID first. All credential-sensitive paths
+    // acquire the advisory lock before the user row lock; the authoritative
+    // re-read below closes the role/org/email race without inverting the
+    // established user -> action lock order.
+    const [candidateId] = await tx
+      .select({ id: users.id })
+      .from(users)
+      .where(and(
+        eq(users.organizationId, input.organizationId),
+        eq(users.role, "user"),
+        sql`lower(btrim(${users.email})) = ${email}`,
+      ))
+      .limit(1);
+    if (!candidateId) return undefined;
+
+    await lockAccountCredential(tx, candidateId.id);
+    const [candidate] = await tx
+      .select()
+      .from(users)
+      .where(and(
+        eq(users.id, candidateId.id),
+        eq(users.organizationId, input.organizationId),
+        eq(users.role, "user"),
+        sql`lower(btrim(${users.email})) = ${email}`,
+      ))
+      .limit(1)
+      .for("update");
+    if (!candidate) return undefined;
+
+    const [origin] = await tx
+      .select({
+        credentialGeneration: accountActionDeliveryJobs.credentialGeneration,
+      })
+      .from(accountActionDeliveryJobs)
+      .where(and(
+        eq(accountActionDeliveryJobs.userId, candidate.id),
+        eq(accountActionDeliveryJobs.organizationId, input.organizationId),
+        eq(accountActionDeliveryJobs.action, "account_registration"),
+        eq(accountActionDeliveryJobs.credentialGeneration, candidate.credentialGeneration),
+      ))
+      .orderBy(desc(accountActionDeliveryJobs.createdAt), desc(accountActionDeliveryJobs.id))
+      .limit(1);
+    if (!origin || origin.credentialGeneration !== candidate.credentialGeneration) return undefined;
+
+    // The generation trigger normally makes this redundant, but keeping the
+    // completed-action check local makes the resume contract explicit even if
+    // an old fixture or a future migration bypasses that trigger.
+    const [completedAction] = await tx
+      .select({ id: accountActionRequests.id })
+      .from(accountActionRequests)
+      .where(and(
+        eq(accountActionRequests.userId, candidate.id),
+        eq(accountActionRequests.action, "account_registration"),
+        eq(accountActionRequests.status, "consumed"),
+      ))
+      .limit(1);
+    if (completedAction) return undefined;
+
+    const delivery = await enqueueAccountRegistrationDelivery({
+      userId: candidate.id,
+      organizationId: input.organizationId,
+      credentialGeneration: candidate.credentialGeneration,
+      expiresAt: input.expiresAt,
+    }, tx);
+    return { user: candidate, delivery };
+  });
+}
+
 /** Earliest due intent for the one-shot process-local scheduler. */
 export async function getNextPasswordResetDeliveryAt(): Promise<Date | null> {
   const [row] = await db
@@ -406,7 +507,22 @@ export async function attachPasswordResetActionToDeliveryJob(input: {
 
 export type PasswordResetDeliveryFinalization =
   | { status: "succeeded"; actionRequestId: number; providerMessageId?: string | null }
-  | { status: "retry_scheduled"; actionRequestId?: number | null; errorCode: string; retryAfterMs: number }
+  | {
+    status: "retry_scheduled";
+    actionRequestId: number;
+    errorCode: string;
+    retryAfterMs: number;
+    /** Known-unsent retries revoke this exact action before the next attempt. */
+    deliveryDisposition: "known_unsent";
+  }
+  | {
+    status: "retry_scheduled";
+    actionRequestId?: number | null;
+    errorCode: string;
+    retryAfterMs: number;
+    /** Omitted legacy outcomes are conservatively treated as uncertain. */
+    deliveryDisposition?: "uncertain";
+  }
   | {
     status: "failed";
     actionRequestId: number;
@@ -460,6 +576,13 @@ export async function finalizePasswordResetDeliveryJob(input: {
       : input.outcome.status === "suppressed"
         ? claimed.actionRequestId
         : undefined;
+    if (
+      input.outcome.status === "retry_scheduled"
+      && input.outcome.deliveryDisposition === "known_unsent"
+      && !Number.isSafeInteger(actionRequestId)
+    ) {
+      throw new Error("Known-unsent retry requires its exact action request ID");
+    }
     if (actionRequestId) {
       const [linkedAction] = await tx
         .select({ id: accountActionRequests.id })
@@ -486,11 +609,16 @@ export async function finalizePasswordResetDeliveryJob(input: {
             eq(accountActionRequests.deliveryJobId, input.jobId),
           ));
 
-        if (input.outcome.status === "failed" && input.outcome.deliveryDisposition === "known_unsent") {
+        if (
+          (input.outcome.status === "failed" || input.outcome.status === "retry_scheduled")
+          && input.outcome.deliveryDisposition === "known_unsent"
+        ) {
           // This branch is reserved for deterministic failures that occurred
           // before provider submission (for example missing configuration).
-          // Unknown provider outcomes and exhausted retries deliberately leave
-          // the action pending because the link may already have been sent.
+          // Unknown provider outcomes deliberately leave the action pending
+          // because the link may already have been sent. A known-unsent retry
+          // revokes before the next attempt, so a later issuance cannot leave
+          // an older definitely-undelivered bearer active at the cap.
           await tx
             .update(accountActionRequests)
             .set({ status: "revoked", revokedAt: sql`now()` })

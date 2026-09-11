@@ -26,7 +26,11 @@ import {
 import {
   type AccountActionWithUser,
 } from "../storage/account-action-requests.js";
-import { enqueuePasswordResetDelivery, enqueueAccountRegistrationDelivery } from "../storage/account-action-delivery-jobs.js";
+import {
+  enqueuePasswordResetDelivery,
+  enqueueAccountRegistrationDelivery,
+  resumePendingAccountRegistration,
+} from "../storage/account-action-delivery-jobs.js";
 import { notifyAccountActionDeliveryChanged } from "../services/account-action-delivery-scheduler.js";
 import { isNormalizedUserEmailConflict } from "../utils/db-errors.js";
 // Same allowlist account.ts uses for /api/account/profile (task #420).
@@ -283,13 +287,36 @@ export function registerAuthRoutes(app: Express): void {
       // account.
       req.session.pendingRegistration = undefined;
 
+      // Hash every valid submission before the existing-account branch. The
+      // placeholder hash is never used for a duplicate, but keeping the same
+      // expensive password work on both paths avoids making valid duplicate
+      // email probes distinguishable by timing. This is deliberately not a
+      // sleep or a transaction-held delay.
+      const placeholderPassword = await hashPassword(randomBytes(32).toString("hex"));
+
       // Existing accounts are protected and indistinguishable from unknown
-      // addresses. No action is created and no account/profile is mutated.
+      // addresses. A narrowly-defined pending registration is the only
+      // exception: a user who lost the anonymous browser session may resume
+      // delivery, but the durable helper rechecks the locked user, tenant,
+      // role, generation, origin job, and completion state before doing so.
       if (await storage.getUserByEmail(email)) {
+        const resumed = await resumePendingAccountRegistration({
+          email,
+          organizationId,
+          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        });
+        if (resumed) {
+          req.session.pendingRegistration = {
+            userId: resumed.user.id,
+            organizationId,
+            credentialGeneration: resumed.user.credentialGeneration,
+            createdAt: Date.now(),
+          };
+          if (resumed.delivery.kind === "enqueued") notifyAccountActionDeliveryChanged();
+        }
         return sendSuccess(res, { status: "pending", email: maskEmail(email), message: registrationGenericMessage }, 202);
       }
 
-      const placeholderPassword = await hashPassword(randomBytes(32).toString("hex"));
       let user: SelectUser;
       let delivery: Awaited<ReturnType<typeof enqueueAccountRegistrationDelivery>>;
       try {
@@ -818,7 +845,10 @@ export function registerAuthRoutes(app: Express): void {
       req.login(authenticatedUser, (err) => {
         if (err) {
           log.error('Auto-login after password set failed:', err);
-          return sendSuccess(res, { message: "Password set successfully. Please log in." });
+          return sendSuccess(res, {
+            message: "Password set successfully. Please log in.",
+            ...(isRegistration ? { loginFailed: true } : {}),
+          });
         }
         sendSuccess(res, sanitizeUser(authenticatedUser));
       });

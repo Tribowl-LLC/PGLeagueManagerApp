@@ -188,8 +188,36 @@ describe("AccountActionDeliveryWorker", () => {
         status: "retry_scheduled",
         actionRequestId: 91,
         errorCode: "provider_timeout",
+        deliveryDisposition: "uncertain",
       }),
     }));
+  });
+
+  it("carries a retryable known-unsent provider disposition with the exact action", async () => {
+    const dependencies = makeDependencies({
+      send: vi.fn(async (): Promise<PasswordResetProviderOutcome> => ({
+        kind: "failed",
+        errorCode: "provider_rate_limited",
+        retryable: true,
+        deliveryDisposition: "known_unsent",
+      })),
+    });
+    const worker = new AccountActionDeliveryWorker(dependencies);
+
+    const result = await worker.runOne();
+
+    expect(result.outcome).toBe("retry_scheduled");
+    expect(dependencies.finalize).toHaveBeenCalledWith({
+      jobId: 11,
+      leaseToken: "lease-1",
+      outcome: {
+        status: "retry_scheduled",
+        actionRequestId: 91,
+        errorCode: "provider_rate_limited",
+        retryAfterMs: 30_000,
+        deliveryDisposition: "known_unsent",
+      },
+    });
   });
 
   it("revokes an action only for a definitive pre-submission failure", async () => {

@@ -37,6 +37,7 @@ type ApiResponse = {
   data?: {
     email?: unknown;
     action?: unknown;
+    loginFailed?: unknown;
   };
   error?: {
     code?: unknown;
@@ -302,17 +303,23 @@ export default function SetPasswordPage() {
       if (requestId !== requestIdRef.current) return;
 
       if (response.ok && data.success === true) {
+        const registrationLoginFailed = action === 'account_registration'
+          && data.data?.loginFailed === true;
         toast({
           title: action === 'password_reset' ? 'Password reset successfully' : 'Password set successfully',
           description: action === 'password_reset'
             ? 'You can now log in with your new password.'
             : action === 'account_registration'
-              ? 'Your account is ready. You are now signed in.'
+              ? registrationLoginFailed
+                ? 'Your account is ready. Please log in.'
+                : 'Your account is ready. You are now signed in.'
               : 'You can now use your new password to sign in.',
         });
-        if (action === 'password_reset') {
+        if (action === 'password_reset' || registrationLoginFailed) {
           // Reset tokens do not create a session. Send the user through the
-          // normal login flow after the server rotates the password.
+          // normal login flow after the server rotates the password. A
+          // registration action can take the same path when session creation
+          // fails after its atomic password/link transaction committed.
           setLocation('/login');
         } else {
           // Preserve the invitation flow's existing post-success landing.

@@ -163,12 +163,14 @@ async function createPendingRegistration(input: {
   email?: string;
   bowlerId?: number | null;
   name?: string;
+  organizationId?: number;
 } = {}): Promise<{
   user: typeof users.$inferSelect;
   job: typeof accountActionDeliveryJobs.$inferSelect;
   action: IssuedRegistrationAction;
 }> {
   const email = input.email ?? uniqueEmail("direct");
+  const registrationOrganizationId = input.organizationId ?? organizationId;
   const placeholder = await hashPassword(randomBytes(32).toString("hex"));
   const user = await storage.createUser({
     email,
@@ -176,14 +178,14 @@ async function createPendingRegistration(input: {
     phone: "555-202-0202",
     password: placeholder,
     role: "user",
-    organizationId,
+    organizationId: registrationOrganizationId,
     bowlerId: input.bowlerId ?? null,
   });
   createdUserIds.push(user.id);
 
   const [job] = await db.insert(accountActionDeliveryJobs).values({
     userId: user.id,
-    organizationId,
+    organizationId: registrationOrganizationId,
     action: REGISTRATION_ACTION,
     credentialGeneration: user.credentialGeneration,
     expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
@@ -192,7 +194,7 @@ async function createPendingRegistration(input: {
 
   const action = await issueRegistrationAction({
     userId: user.id,
-    organizationId,
+    organizationId: registrationOrganizationId,
     recipientEmail: email,
     deliveryJobId: job.id,
     expectedCredentialGeneration: user.credentialGeneration,
@@ -324,6 +326,67 @@ describe("email-first registration API", () => {
       .toEqual({ email: before.email, name: before.name, phone: before.phone, password: before.password, credentialGeneration: before.credentialGeneration });
     expect(await countRegistrationJobs(after.id)).toBe(beforeJobs);
     expect(await countRegistrationActions(after.id)).toBe(beforeActions);
+  });
+
+  it("resumes a durable pending registration when a fresh browser submits the same email", async () => {
+    const email = uniqueEmail("fresh-browser");
+    const first = await register({ email, name: "Original Pending Name", phone: "555-404-0404" });
+    expect(first.response.status).toBe(202);
+    const before = await userByEmail(email);
+    createdUserIds.push(before.id);
+    const beforeJobs = await countRegistrationJobs(before.id);
+    const beforeActions = await countRegistrationActions(before.id);
+
+    // No cookie is sent: this is a new browser recovering the same pending
+    // account. The existing profile and placeholder credential remain intact.
+    const resumed = await register({
+      email: ` ${email.toUpperCase()} `,
+      name: "Replacement Name Must Be Ignored",
+      phone: "555-9999-9999",
+    });
+    expect(resumed.response.status).toBe(202);
+    expect(resumed.cookies).toContain("connect.sid=");
+    expect(await countRegistrationJobs(before.id)).toBe(beforeJobs);
+    expect(await countRegistrationActions(before.id)).toBe(beforeActions);
+    const after = await userRow(before.id);
+    expect({ email: after.email, name: after.name, phone: after.phone, password: after.password, bowlerId: after.bowlerId })
+      .toEqual({ email: before.email, name: before.name, phone: before.phone, password: before.password, bowlerId: before.bowlerId });
+
+    const status = await requestJson(registrationPath("/api/auth/registration/status"), {}, resumed.cookies);
+    expect(status.response.status).toBe(200);
+    expect(status.body.data).toMatchObject({ status: "pending", actionStatus: "pending" });
+  });
+
+  it("does not revive completed, changed-generation, or cross-tenant accounts", async () => {
+    const completed = await createPendingRegistration({ name: "Completed Resume Guard" });
+    const completedBeforeJobs = await countRegistrationJobs(completed.user.id);
+    const completedBeforeActions = await countRegistrationActions(completed.user.id);
+    const completedResult = await setPassword(completed.action.token);
+    expect(completedResult.response.status).toBe(200);
+    const completedResubmit = await register({ email: completed.user.email });
+    expect(completedResubmit.response.status).toBe(202);
+    expect(await countRegistrationJobs(completed.user.id)).toBe(completedBeforeJobs);
+    expect(await countRegistrationActions(completed.user.id)).toBe(completedBeforeActions);
+    const completedStatus = await requestJson(registrationPath("/api/auth/registration/status"), {}, completedResubmit.cookies);
+    expect(completedStatus.response.status).toBe(404);
+
+    const changedGeneration = await createPendingRegistration({ name: "Changed Generation Resume Guard" });
+    const changedBeforeJobs = await countRegistrationJobs(changedGeneration.user.id);
+    await db.update(users).set({ password: await hashPassword("ChangedGeneration9!") })
+      .where(eq(users.id, changedGeneration.user.id));
+    const changedResubmit = await register({ email: changedGeneration.user.email });
+    expect(changedResubmit.response.status).toBe(202);
+    expect(await countRegistrationJobs(changedGeneration.user.id)).toBe(changedBeforeJobs);
+    const changedStatus = await requestJson(registrationPath("/api/auth/registration/status"), {}, changedResubmit.cookies);
+    expect(changedStatus.response.status).toBe(404);
+
+    const crossTenant = await createPendingRegistration({ organizationId: otherOrganizationId, name: "Other Tenant Resume Guard" });
+    const crossTenantBeforeJobs = await countRegistrationJobs(crossTenant.user.id);
+    const crossTenantResubmit = await register({ email: crossTenant.user.email });
+    expect(crossTenantResubmit.response.status).toBe(202);
+    expect(await countRegistrationJobs(crossTenant.user.id)).toBe(crossTenantBeforeJobs);
+    const crossTenantStatus = await requestJson(registrationPath("/api/auth/registration/status"), {}, crossTenantResubmit.cookies);
+    expect(crossTenantStatus.response.status).toBe(404);
   });
 
   it("creates exactly one user and one matching registration delivery job atomically", async () => {

@@ -314,6 +314,9 @@ export class AccountActionDeliveryWorker {
         actionRequestId: issuance.request.id,
         errorCode: providerOutcome.errorCode,
         retryAfterMs: retryDelayForAttempt(job.attemptCount),
+        deliveryDisposition: providerOutcome.kind === "failed"
+          ? providerOutcome.deliveryDisposition
+          : "uncertain",
       });
     } catch (error) {
       // A worker exception is treated as uncertain provider work. The action
@@ -328,6 +331,7 @@ export class AccountActionDeliveryWorker {
         actionRequestId: job.actionRequestId ?? undefined,
         errorCode: safeErrorCode(error),
         retryAfterMs: retryDelayForAttempt(job.attemptCount),
+        deliveryDisposition: "uncertain",
       });
     }
   }

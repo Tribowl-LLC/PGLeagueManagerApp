@@ -13,12 +13,14 @@ vi.mock("../../server/logger", () => ({
 }));
 
 const mockGetUserByEmail = vi.fn<(email: string) => Promise<unknown>>();
+const mockResumeRegistration = vi.fn<(input: unknown) => Promise<unknown>>();
 const mockCreateUser = vi.fn<(data: unknown, tx?: unknown) => Promise<unknown>>();
 const mockEnqueueRegistration = vi.fn(async () => ({
   kind: "enqueued" as const,
   job: { id: 123 },
 }));
 const mockIdentityLink = vi.fn();
+const mockHashPassword = vi.fn(async (password: string) => `hashed:${password}`);
 
 vi.mock("../../server/storage", () => ({
   storage: {
@@ -44,6 +46,7 @@ vi.mock("../../server/storage", () => ({
 
 vi.mock("../../server/storage/account-action-delivery-jobs", () => ({
   enqueueAccountRegistrationDelivery: (...args: unknown[]) => mockEnqueueRegistration(...args as []),
+  resumePendingAccountRegistration: (input: unknown) => mockResumeRegistration(input),
   enqueuePasswordResetDelivery: vi.fn(async () => ({ kind: "enqueued", job: { id: 456 } })),
   getNextPasswordResetDeliveryAt: vi.fn(async () => null),
 }));
@@ -81,7 +84,7 @@ vi.mock("../../server/auth", () => ({
   safeTokenCompare: () => true,
 }));
 vi.mock("../../server/lib/password", () => ({
-  hashPassword: vi.fn(async (password: string) => `hashed:${password}`),
+  hashPassword: (password: string) => mockHashPassword(password),
   safeTokenCompare: () => true,
 }));
 vi.mock("../../server/middleware/subdomain", () => ({ checkUserBelongsToOrg: vi.fn(async () => true) }));
@@ -106,13 +109,15 @@ const { registerAuthRoutes } = await import("../../server/routes/auth");
 
 let server: Server;
 let baseUrl: string;
+let latestSession: { pendingRegistration?: unknown } = {};
 
 beforeAll(async () => {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
+    latestSession = {};
     Object.assign(req, {
-      session: {},
+      session: latestSession,
       login: (_user: unknown, callback: (error: unknown) => void) => callback(null),
       subdomainOrg: { id: 5, name: "Test Org" },
     });
@@ -132,6 +137,7 @@ afterAll(async () => {
 beforeEach(() => {
   vi.clearAllMocks();
   mockGetUserByEmail.mockResolvedValue(undefined);
+  mockResumeRegistration.mockResolvedValue(undefined);
   mockCreateUser.mockResolvedValue({
     id: 99,
     email: "newbie@example.com",
@@ -197,5 +203,85 @@ describe("POST /api/auth/register — email-first boundaries", () => {
     expect(mockCreateUser).not.toHaveBeenCalled();
     expect(mockEnqueueRegistration).not.toHaveBeenCalled();
     expect(mockIdentityLink).not.toHaveBeenCalled();
+  });
+
+  it("resumes a same-org pending registration after the browser session is lost", async () => {
+    const pendingUser = {
+      id: 402,
+      email: "pending@example.com",
+      name: "Original Pending Name",
+      phone: "5550001",
+      role: "user",
+      organizationId: 5,
+      bowlerId: 918,
+      credentialGeneration: 3,
+    };
+    mockGetUserByEmail.mockResolvedValue(pendingUser);
+    mockResumeRegistration.mockResolvedValue({
+      user: pendingUser,
+      delivery: { kind: "suppressed", reason: "active_job" },
+    });
+
+    const res = await fetch(`${baseUrl}/api/auth/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: " pending@example.com ",
+        name: "Attacker Replacement Name",
+        phone: "5559999",
+        leagueId: "10",
+        organizationId: "5",
+      }),
+    });
+
+    expect(res.status).toBe(202);
+    expect(mockResumeRegistration).toHaveBeenCalledWith({
+      email: "pending@example.com",
+      organizationId: 5,
+      expiresAt: expect.any(Date),
+    });
+    expect(latestSession.pendingRegistration).toEqual({
+      userId: pendingUser.id,
+      organizationId: pendingUser.organizationId,
+      credentialGeneration: pendingUser.credentialGeneration,
+      createdAt: expect.any(Number),
+    });
+    expect(mockCreateUser).not.toHaveBeenCalled();
+    expect(mockEnqueueRegistration).not.toHaveBeenCalled();
+  });
+
+  it("does the same expensive hash work for valid new and duplicate submissions", async () => {
+    const first = await fetch(`${baseUrl}/api/auth/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: "timing@example.com",
+        name: "Timing New User",
+        phone: "5551000",
+        leagueId: "10",
+        organizationId: "5",
+      }),
+    });
+    expect(first.status).toBe(202);
+
+    mockGetUserByEmail.mockResolvedValue({
+      id: 403,
+      email: "timing@example.com",
+      role: "org_admin",
+      organizationId: 5,
+    });
+    const duplicate = await fetch(`${baseUrl}/api/auth/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: "timing@example.com",
+        name: "Timing Duplicate",
+        phone: "5551001",
+        leagueId: "10",
+        organizationId: "5",
+      }),
+    });
+    expect(duplicate.status).toBe(202);
+    expect(mockHashPassword).toHaveBeenCalledTimes(2);
   });
 });
