@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(38);
+    expect(migrations).toHaveLength(39);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -458,6 +458,10 @@ describe('normalized migration baseline tools', () => {
     });
     expect(migrations[37]?.sql).toContain('CREATE TABLE "refund_allocation_adjustments"');
     expect(migrations[37]?.sql).toContain('refund_allocation_adjustments_append_only_guard');
+    expect(migrations[38]).toMatchObject({ idx: 38, tag: '0038_password_recovery_hardening' });
+    expect(migrations[38]?.sql).toContain('CREATE TABLE "account_action_delivery_jobs"');
+    expect(migrations[38]?.sql).toContain('CREATE TRIGGER users_credential_generation_bump');
+    expect(migrations[38]?.sql).not.toContain('ALTER TABLE "refund_payment_operation_snapshots"');
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 

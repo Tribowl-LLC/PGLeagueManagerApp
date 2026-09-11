@@ -60,7 +60,7 @@ vi.mock('../../server/logger', () => ({
 // `await db.transaction(async tx => ...)` and inspects the returned
 // `outcome.kind`. We let each test set what the handler "sees".
 type ConfirmOutcome =
-  | { kind: 'ok'; user: { id: number; email: string } }
+  | { kind: 'ok'; user: { id: number; email: string }; requestId?: number }
   | { kind: 'invalid' }
   | { kind: 'consumed' }
   | { kind: 'expired' }
@@ -106,6 +106,9 @@ vi.mock('../../server/auth', () => ({
   destroyOtherSessionsForUser: vi.fn(async () => 0),
 }));
 
+const mockLogin = vi.fn((_user: unknown, done: (error: unknown) => void) => done(null));
+const mockDestroyCurrentSession = vi.fn((done: (error?: unknown) => void) => done());
+
 vi.mock('../../server/middleware/auth', () => ({
   requireSystemAdmin: (_req: Request, _res: Response, next: NextFunction) => next(),
 }));
@@ -132,12 +135,18 @@ const accountRouter = (await import('../../server/routes/account')).default;
 
 let server: Server;
 let baseUrl: string;
+let sessionUser: { id: number } | undefined;
 
 beforeAll(async () => {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
     Object.defineProperty(req, 'ip', { value: '198.51.100.42', configurable: true });
+    Object.assign(req, {
+      user: sessionUser,
+      login: (user: unknown, done: (error: unknown) => void) => mockLogin(user, done),
+      session: { destroy: (done: (error?: unknown) => void) => mockDestroyCurrentSession(done) },
+    });
     next();
   });
   app.use('/api/account', accountRouter);
@@ -157,6 +166,9 @@ afterAll(async () => {
 beforeEach(() => {
   captured.length = 0;
   txState.outcome = { kind: 'invalid' };
+  sessionUser = undefined;
+  mockLogin.mockClear();
+  mockDestroyCurrentSession.mockClear();
 });
 
 afterEach(() => {
@@ -220,6 +232,56 @@ describe('POST /api/account/confirm-email-change does not leak the token to logs
     const body = (await res.json()) as { error?: { code?: string } };
     expect(res.status).toBe(404);
     expect(body.error?.code).toBe('USER_NOT_FOUND');
+    assertNoConfirmTokenLeak();
+  });
+
+  it('refreshes only the current target user session after an email rotation', async () => {
+    sessionUser = { id: 7 };
+    txState.outcome = {
+      kind: 'ok',
+      user: { id: 7, email: 'new-address@vitest.local' },
+      requestId: 42,
+    };
+
+    const res = await postConfirm(CONFIRM_TOKEN);
+    expect(res.status).toBe(200);
+    expect(mockLogin).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 7, email: 'new-address@vitest.local' }),
+      expect.any(Function),
+    );
+  });
+
+  it.each([
+    {
+      stage: 'session regeneration',
+      error: 'synthetic session regeneration failure',
+    },
+    {
+      stage: 'session save',
+      error: 'synthetic session save failure',
+    },
+  ])('returns a completed change with requiresLogin when Passport $stage fails', async ({ error }) => {
+    sessionUser = { id: 7 };
+    txState.outcome = {
+      kind: 'ok',
+      user: { id: 7, email: 'new-address@vitest.local' },
+      requestId: 42,
+    };
+    mockLogin.mockImplementationOnce((_user, done) => {
+      done(new Error(error));
+    });
+
+    const res = await postConfirm(CONFIRM_TOKEN);
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      success: boolean;
+      data?: { email?: string; requiresLogin?: boolean };
+    };
+    expect(body.success).toBe(true);
+    expect(body.data?.email).toBe('new-address@vitest.local');
+    expect(body.data?.requiresLogin).toBe(true);
+    expect(mockDestroyCurrentSession).toHaveBeenCalledTimes(1);
+    // The logged event must remain free of the raw confirmation token.
     assertNoConfirmTokenLeak();
   });
 

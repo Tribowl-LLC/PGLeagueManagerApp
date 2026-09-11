@@ -18,9 +18,11 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const dispatched: Array<{ html: string }> = [];
-const mockDispatchMail = vi.fn(async (msg: { html: string }) => {
+const dispatched: Array<{ html: string; customArgs?: Record<string, string> }> = [];
+const infoLogs: unknown[][] = [];
+const mockDispatchMail = vi.fn(async (msg: { html: string; customArgs?: Record<string, string> }): Promise<unknown> => {
   dispatched.push(msg);
+  return undefined;
 });
 // Force the raw-HTML fallback branch: the templated send "fails".
 const mockSendTemplatedEmail = vi.fn(async () => false);
@@ -35,6 +37,12 @@ vi.mock('../../server/services/email-core', async (importActual) => {
     FROM_EMAIL: 'noreply@test.example',
     FROM_NAME: 'LeagueVault',
     getBaseUrl: () => 'https://test.example',
+    log: {
+      info: (...args: unknown[]) => { infoLogs.push(args); },
+      error: vi.fn(),
+      warn: vi.fn(),
+      debug: vi.fn(),
+    },
     sendTemplatedEmail: (...a: unknown[]) => mockSendTemplatedEmail.apply(null, a as never),
     dispatchMail: (...a: unknown[]) => mockDispatchMail.apply(null, a as never),
     // escapeHtml / describeMailError / log / getOrgLogoUrl come from `actual`.
@@ -56,6 +64,7 @@ const XSS_ESCAPED = '&lt;img src=x onerror=&quot;alert(1)&quot;&gt;';
 
 beforeEach(() => {
   dispatched.length = 0;
+  infoLogs.length = 0;
   mockDispatchMail.mockClear();
   mockSendTemplatedEmail.mockClear();
   mockSendTemplatedEmail.mockResolvedValue(false);
@@ -97,5 +106,32 @@ describe('email-auth fallback senders — HTML injection guard', () => {
     const { html } = dispatched[0];
     expect(html).not.toContain('<img src=x onerror=');
     expect(html).toContain(XSS_ESCAPED);
+  });
+
+  it('adds only string action/job correlation IDs and returns provider metadata on request', async () => {
+    mockDispatchMail.mockImplementationOnce(async (msg: { html: string; customArgs?: Record<string, string> }): Promise<unknown> => {
+      dispatched.push(msg);
+      return { accepted: true, providerMessageId: 'sg-message-fixture' };
+    });
+
+    const result = await sendPasswordResetFallbackEmail(
+      'recipient@test.example',
+      'there',
+      'reset-token-789',
+      null,
+      {
+        returnDetails: true,
+        customArgs: { account_action_id: 41, account_delivery_job_id: 7 },
+      },
+    );
+
+    expect(result).toEqual({ accepted: true, providerMessageId: 'sg-message-fixture' });
+    expect(dispatched[0]?.customArgs).toEqual({
+      account_action_id: '41',
+      account_delivery_job_id: '7',
+    });
+    expect(JSON.stringify(infoLogs)).toContain('account_action_id');
+    expect(JSON.stringify(infoLogs)).toContain('account_delivery_job_id');
+    expect(JSON.stringify(infoLogs)).not.toContain('recipient@test.example');
   });
 });

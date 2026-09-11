@@ -1,9 +1,10 @@
-import { pgTable, text, serial, integer, timestamp, index, uniqueIndex, check } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, integer, timestamp, index, uniqueIndex, check, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { users } from "./users";
 import { organizations } from "./organizations";
+import { accountActionDeliveryJobs } from "./account-action-delivery-jobs";
 
 /**
  * Short-lived bearer credentials used by onboarding and password recovery.
@@ -30,6 +31,12 @@ export const accountActionRequests = pgTable("account_action_requests", {
     .references(() => organizations.id, { onDelete: "cascade" }),
   createdByUserId: integer("created_by_user_id")
     .references(() => users.id, { onDelete: "set null" }),
+  // Set only for recovery actions minted by the durable delivery queue. The
+  // Nullable for invitation rows. Every queued recovery attempt points back
+  // to its durable intent, so delayed provider events can be correlated to
+  // the exact token attempt rather than a mutable job "latest action" field.
+  deliveryJobId: integer("delivery_job_id")
+    .references((): AnyPgColumn => accountActionDeliveryJobs.id, { onDelete: "set null" }),
   action: text("action", { enum: ACCOUNT_ACTION_TYPES }).notNull(),
   tokenHash: text("token_hash").notNull().unique(),
   expiresAt: timestamp("expires_at", { mode: "string" }).notNull(),
@@ -46,8 +53,16 @@ export const accountActionRequests = pgTable("account_action_requests", {
   createdAt: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
 }, (table) => ({
   userIdx: index("account_action_requests_user_idx").on(table.userId),
-  pendingUserActionUnique: uniqueIndex("account_action_requests_pending_user_action_unique")
+  deliveryJobIdx: index("account_action_requests_delivery_job_idx").on(table.deliveryJobId),
+  // Invitations remain a single pending action per user. Password-recovery
+  // requests deliberately do not use this uniqueness boundary: the recovery
+  // issuer caps them transactionally so a still-usable link is never evicted
+  // by a later request.
+  pendingInvitationUnique: uniqueIndex("account_action_requests_pending_invitation_unique")
     .on(table.userId, table.action)
+    .where(sql`${table.status} = 'pending' AND ${table.action} = 'account_invite'`),
+  pendingUserActionExpiryIdx: index("account_action_requests_pending_user_action_expiry_idx")
+    .on(table.userId, table.action, table.expiresAt)
     .where(sql`${table.status} = 'pending'`),
   actionCheck: check(
     "account_action_requests_action_check",

@@ -233,7 +233,10 @@ export async function deleteOrganization(id: number): Promise<void> {
       for (const userId of userIds) {
         await tx.execute(sql`
           DELETE FROM "session"
-          WHERE sess->'passport'->>'user' = ${String(userId)}
+          WHERE COALESCE(
+            sess #>> '{passport,user,id}',
+            sess #>> '{passport,user}'
+          ) = ${String(userId)}
         `);
       }
 

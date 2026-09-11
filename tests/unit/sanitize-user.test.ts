@@ -55,6 +55,7 @@ function makeFullyPopulatedUser(): User {
   return Object.assign(
     {
       id: 1,
+      credentialGeneration: 0,
       createdAt: '2024-01-01T00:00:00.000Z',
       // Preserve defense-in-depth coverage for a stale object supplied by an
       // older caller even though these fields no longer exist in the schema.

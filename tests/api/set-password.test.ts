@@ -187,6 +187,31 @@ describe('GET /api/auth/validate-invite · account action contract', () => {
     }
   });
 
+  it('keeps an earlier usable password-reset link valid when a newer link is issued, then revokes the sibling on completion', async () => {
+    const { userId, email } = await createUserWithPassword();
+    const first = await issueResetAction(userId, email);
+    const second = await issueResetAction(userId, email);
+
+    // Password recovery intentionally preserves still-usable links so a
+    // delayed email cannot strand the account. Invitation issuance retains
+    // the older supersession behavior tested by the terminal-state case
+    // below.
+    expect((await callValidateInvite(first.token)).status).toBe(200);
+    expect((await callValidateInvite(second.token)).status).toBe(200);
+
+    const completed = await callSetPassword(first.token, NEW_PASSWORD);
+    expect(completed.status).toBe(200);
+    expect(completed.body.success).toBe(true);
+
+    // Completion rotates credentials and the database trigger revokes every
+    // remaining pending credential action. The sibling is revoked rather
+    // than superseded, preserving the terminal state used for credential
+    // invalidation.
+    const sibling = await callValidateInvite(second.token);
+    expect(sibling.status).toBe(400);
+    expect(sibling.body.error?.code).toBe('TOKEN_REVOKED');
+  });
+
   it('rejects missing, malformed, unsupported, and overlong tokens without account lookup leakage', async () => {
     const missing = await fetch(`${BASE_URL}/api/auth/validate-invite`);
     expect(missing.status).toBe(400);

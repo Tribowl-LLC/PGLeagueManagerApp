@@ -47,7 +47,9 @@ const LoginPage: FC = () => {
   const [, setLocation] = useLocation();
   const search = useSearch();
   const { org: subdomainOrg } = useSubdomainOrg();
-  const sessionExpired = new URLSearchParams(search).get("reason") === "session-expired";
+  const loginReason = new URLSearchParams(search).get("reason");
+  const sessionExpired = loginReason === "session-expired";
+  const credentialChanged = loginReason === "credential-changed";
   const [loginError, setLoginError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const { isThrottled, remainingSeconds, throttle, clear: clearThrottle } =
@@ -137,6 +139,14 @@ const LoginPage: FC = () => {
             <Alert className="mb-4" data-testid="alert-session-expired">
               <AlertTitle>Session expired</AlertTitle>
               <AlertDescription>Your session expired. Please sign in again.</AlertDescription>
+            </Alert>
+          )}
+          {credentialChanged && (
+            <Alert className="mb-4" data-testid="alert-credential-changed">
+              <AlertTitle>Account security details updated</AlertTitle>
+              <AlertDescription>
+                Your password or email was updated. Please sign in again with your new credentials.
+              </AlertDescription>
             </Alert>
           )}
           <Form {...form}>

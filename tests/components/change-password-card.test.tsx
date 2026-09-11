@@ -27,13 +27,18 @@ vi.mock('@/lib/queryClient', async () => {
   const actual = await vi.importActual<typeof import('../../client/src/lib/queryClient')>(
     '../../client/src/lib/queryClient',
   );
-  return { ...actual, apiRequest: vi.fn() };
+  return {
+    ...actual,
+    apiRequest: vi.fn(),
+    redirectToLoginForExpiredSession: vi.fn(),
+  };
 });
 
-import { apiRequest } from '@/lib/queryClient';
+import { apiRequest, redirectToLoginForExpiredSession } from '@/lib/queryClient';
 import { ChangePasswordCard } from '@/components/change-password-card';
 
 const mockedApiRequest = vi.mocked(apiRequest);
+const mockedRedirectToLogin = vi.mocked(redirectToLoginForExpiredSession);
 
 /**
  * Build the same shape of error `apiRequest` throws on a 429 — see
@@ -76,6 +81,7 @@ async function fillAndSubmit(user: ReturnType<typeof userEvent.setup>) {
 
 beforeEach(() => {
   mockedApiRequest.mockReset();
+  mockedRedirectToLogin.mockReset();
 });
 
 describe('ChangePasswordCard throttle UX', () => {
@@ -139,5 +145,30 @@ describe('ChangePasswordCard throttle UX', () => {
       { timeout: 5000 },
     );
     expect(screen.getByTestId('button-change-password-submit')).not.toBeDisabled();
+  });
+
+  it('routes to a fresh login after a committed change whose session refresh failed', async () => {
+    mockedApiRequest.mockResolvedValueOnce({
+      success: true,
+      data: {
+        message: 'Password updated successfully',
+        requiresLogin: true,
+      },
+    });
+    const user = userEvent.setup();
+    renderCard();
+
+    await fillAndSubmit(user);
+
+    await waitFor(() => expect(mockedRedirectToLogin).toHaveBeenCalledTimes(1));
+    expect(mockedRedirectToLogin).toHaveBeenCalledWith({
+      cachedAuthenticated: true,
+      force: true,
+      reason: 'credential-changed',
+    });
+    // The response is handled as completion, so the mutation must not enter
+    // the destructive error path or ask the user to retry the already-committed
+    // password change.
+    expect(screen.queryByText(/password change failed/i)).not.toBeInTheDocument();
   });
 });

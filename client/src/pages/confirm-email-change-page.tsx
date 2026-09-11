@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { AlertTriangle, ArrowLeft, CheckCircle2, Loader2, XCircle } from "lucide-react";
+import { redirectToLoginForExpiredSession } from "@/lib/queryClient";
 
 // Single source of truth for the payment-sync union lives in
 // shared/schema/bowlers.ts (task #374). Importing the type and the
@@ -20,7 +21,12 @@ import { parsePaymentSyncStatus, type PaymentSyncStatus } from "@shared/schema";
 
 type Status =
   | { kind: "pending" }
-  | { kind: "success"; email: string; paymentSyncStatus: PaymentSyncStatus }
+  | {
+      kind: "success";
+      email: string;
+      paymentSyncStatus: PaymentSyncStatus;
+      requiresLogin: boolean;
+    }
   | { kind: "error"; code: string; message: string };
 
 const ERROR_COPY: Record<string, string> = {
@@ -60,6 +66,7 @@ const ConfirmEmailChangePage: FC = () => {
         const body = await res.json().catch(() => ({}));
         if (cancelled) return;
         if (res.ok && body?.success) {
+          const requiresLogin = body?.data?.requiresLogin === true;
           setStatus({
             kind: "success",
             email: body?.data?.email ?? "your new address",
@@ -71,7 +78,18 @@ const ConfirmEmailChangePage: FC = () => {
             paymentSyncStatus: parsePaymentSyncStatus(
               body?.data?.paymentSyncStatus,
             ),
+            requiresLogin,
           });
+          if (requiresLogin) {
+            // The email transaction committed, but Passport could not save
+            // the refreshed session. Clear cached auth state and require a
+            // normal login rather than leaving the stale session visible.
+            redirectToLoginForExpiredSession({
+              cachedAuthenticated: true,
+              force: true,
+              reason: "credential-changed",
+            });
+          }
         } else {
           const code: string = body?.error?.code ?? "INVALID_TOKEN";
           const message =

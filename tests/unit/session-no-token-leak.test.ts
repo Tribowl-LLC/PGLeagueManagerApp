@@ -37,6 +37,9 @@ import {
 } from '../helpers/no-token-leak';
 
 const captured: CapturedLogLine[] = [];
+const mockPoolQuery = vi.hoisted(() =>
+  vi.fn(async (..._args: unknown[]) => ({ rowCount: 0, rows: [] })),
+);
 
 function record(level: string) {
   return (message: string, ...args: unknown[]) => {
@@ -72,7 +75,7 @@ const { SESSION_SECRET, SESSION_COOKIE_VALUE } = vi.hoisted(() => ({
 // `setupAuth` registers.
 const captured_strategy: { verify?: (email: string, pw: string, done: (...a: unknown[]) => void) => unknown } = {};
 const captured_serialize: { fn?: (user: unknown, done: (...a: unknown[]) => void) => void } = {};
-const captured_deserialize: { fn?: (id: number, done: (...a: unknown[]) => void) => void } = {};
+const captured_deserialize: { fn?: (serialized: unknown, done: (...a: unknown[]) => void) => void } = {};
 
 vi.mock('passport-local', () => ({
   Strategy: class FakeStrategy {
@@ -119,7 +122,11 @@ vi.mock('connect-pg-simple', () => ({
 
 vi.mock('../../server/db', () => ({
   pool: {
-    query: vi.fn(async () => ({ rowCount: 0, rows: [] })),
+    query: (...args: unknown[]) => mockPoolQuery(...args),
+  },
+  db: {
+    transaction: async (fn: (tx: { execute: () => Promise<unknown> }) => Promise<unknown>) =>
+      fn({ execute: async () => undefined }),
   },
 }));
 
@@ -130,12 +137,6 @@ vi.mock('../../server/storage', () => ({
     getUserByEmail: (...a: unknown[]) => mockGetUserByEmail.apply(null, a as never),
     getUser: (...a: unknown[]) => mockGetUser.apply(null, a as never),
   },
-}));
-
-// Bypass cacheFetch so we drive `storage.getUser` directly and can
-// reason about exactly what the deserialize path sees.
-vi.mock('../../server/utils/cache', () => ({
-  cacheFetch: async (_k: string, _ttl: number, fn: () => Promise<unknown>) => fn(),
 }));
 
 vi.mock('../../server/lib/password', () => ({
@@ -156,7 +157,7 @@ vi.mock('../../server/config', () => ({
   },
 }));
 
-const { setupAuth } = await import('../../server/auth');
+const { setupAuth, destroyOtherSessionsForUser } = await import('../../server/auth');
 
 // --- Test harness ------------------------------------------------
 
@@ -166,6 +167,7 @@ beforeEach(async () => {
   captured_serialize.fn = undefined;
   captured_deserialize.fn = undefined;
   captured_store_options.value = undefined;
+  mockPoolQuery.mockClear();
   sessionFactory.mockClear();
   // setupAuth is async (initDummyHash). Re-run before every test so
   // each test gets fresh callbacks against fresh recorders.
@@ -200,6 +202,11 @@ function done<T = unknown>() {
   });
   const cb = (...args: T[]) => resolve(args);
   return { cb, promise };
+}
+
+function requireCaptured<T>(value: T | undefined): T {
+  if (value === undefined) throw new Error('callback was not captured');
+  return value;
 }
 
 // ------------------------------------------------------------------
@@ -252,7 +259,7 @@ describe('LocalStrategy verify does not leak the login password to logs', () => 
     expect(captured_strategy.verify).toBeDefined();
 
     const { cb, promise } = done();
-    captured_strategy.verify!('who@vitest.local', LOGIN_PASSWORD, cb);
+    requireCaptured(captured_strategy.verify)('who@vitest.local', LOGIN_PASSWORD, cb);
     const args = await promise;
     // (err, user, info)
     expect(args[0]).toBeNull();
@@ -272,7 +279,7 @@ describe('LocalStrategy verify does not leak the login password to logs', () => 
     // comparePasswords already mocked to return false.
 
     const { cb, promise } = done();
-    captured_strategy.verify!('who@vitest.local', LOGIN_PASSWORD_2, cb);
+    requireCaptured(captured_strategy.verify)('who@vitest.local', LOGIN_PASSWORD_2, cb);
     const args = await promise;
     expect(args[0]).toBeNull();
     expect(args[1]).toBe(false);
@@ -287,7 +294,7 @@ describe('LocalStrategy verify does not leak the login password to logs', () => 
     });
 
     const { cb, promise } = done();
-    captured_strategy.verify!('who@vitest.local', LOGIN_PASSWORD, cb);
+    requireCaptured(captured_strategy.verify)('who@vitest.local', LOGIN_PASSWORD, cb);
     const args = await promise;
     expect(args[0]).toBeNull();
     expect(args[1]).toBe(false);
@@ -308,7 +315,7 @@ describe('LocalStrategy verify does not leak the login password to logs', () => 
     );
 
     const { cb, promise } = done();
-    captured_strategy.verify!('who@vitest.local', LOGIN_PASSWORD, cb);
+    requireCaptured(captured_strategy.verify)('who@vitest.local', LOGIN_PASSWORD, cb);
     const args = await promise;
     expect(args[0]).toBeInstanceOf(Error);
     const errorLine = captured.find(l => l.level === 'error' && l.line.startsWith('Login error:'));
@@ -330,7 +337,7 @@ describe('passport.serializeUser does not leak session-bound material', () => {
     // returns `done(new Error(...))` — the error message must not
     // include the password.
     const { cb, promise } = done();
-    captured_serialize.fn!(
+    requireCaptured(captured_serialize.fn)(
       {
         id: 'not-a-number',
         password: LOGIN_PASSWORD,
@@ -341,6 +348,60 @@ describe('passport.serializeUser does not leak session-bound material', () => {
     expect(args[0]).toBeInstanceOf(Error);
     expect((args[0] as Error).message).not.toContain(LOGIN_PASSWORD);
     assertNoSessionLeak();
+  });
+
+  it('serializes the authoritative credential generation with the user id', async () => {
+    const user = {
+      id: 42,
+      email: 'user@vitest.local',
+      password: 'hashed:current',
+      name: 'Current User',
+      role: 'user',
+      credentialGeneration: 7,
+      createdAt: new Date(),
+    };
+    mockGetUser.mockResolvedValueOnce(user);
+
+    const { cb, promise } = done();
+    requireCaptured(captured_serialize.fn)(user, cb);
+    const args = await promise;
+    expect(args[0]).toBeNull();
+    expect(args[1]).toEqual({ id: 42, generation: 7 });
+    expect(mockGetUser).toHaveBeenCalledWith(42, expect.anything());
+  });
+
+  it('rejects a login snapshot that is stale when the credential generation changes', async () => {
+    const loginSnapshot = {
+      id: 42,
+      email: 'user@vitest.local',
+      password: 'hashed:old',
+      name: 'Current User',
+      role: 'user',
+      credentialGeneration: 7,
+      createdAt: new Date(),
+    };
+    mockGetUser.mockResolvedValueOnce({ ...loginSnapshot, password: 'hashed:new', credentialGeneration: 8 });
+
+    const { cb, promise } = done();
+    requireCaptured(captured_serialize.fn)(loginSnapshot, cb);
+    const args = await promise;
+    expect(args[0]).toBeInstanceOf(Error);
+    expect((args[0] as Error).message).toBe('Stale user object during serialization');
+    expect(args[1]).toBeUndefined();
+  });
+});
+
+describe('session cleanup handles every Passport payload generation', () => {
+  it('matches both legacy numeric and current object user payloads while preserving keepSid', async () => {
+    mockPoolQuery.mockResolvedValueOnce({ rowCount: 2, rows: [] });
+
+    await expect(destroyOtherSessionsForUser(42, 'current-session')).resolves.toBe(2);
+
+    const [query, params] = mockPoolQuery.mock.calls[0] ?? [];
+    expect(query).toContain("sess #>> '{passport,user,id}'");
+    expect(query).toContain("sess #>> '{passport,user}'");
+    expect(query).toContain('sid <> $2');
+    expect(params).toEqual(['42', 'current-session']);
   });
 });
 
@@ -354,11 +415,67 @@ describe('passport.deserializeUser does not leak session-bound material', () => 
     expect(captured_deserialize.fn).toBeDefined();
 
     const { cb, promise } = done();
-    captured_deserialize.fn!(42, cb);
+    requireCaptured(captured_deserialize.fn)(42, cb);
     const args = await promise;
     expect(args[0]).toBeNull();
     expect(args[1]).toBeNull();
     assertNoSessionLeak();
+  });
+
+  it('accepts a legacy numeric payload only while the authoritative generation is zero', async () => {
+    const user = {
+      id: 42,
+      email: 'user@vitest.local',
+      password: 'hashed:current',
+      name: 'Current User',
+      role: 'user',
+      credentialGeneration: 0,
+      createdAt: new Date(),
+    };
+    mockGetUser.mockResolvedValueOnce(user);
+
+    const { cb, promise } = done();
+    requireCaptured(captured_deserialize.fn)(42, cb);
+    const args = await promise;
+    expect(args[0]).toBeNull();
+    expect(args[1]).toEqual(user);
+  });
+
+  it('accepts the new object payload only when its generation matches the DB row', async () => {
+    const user = {
+      id: 42,
+      email: 'user@vitest.local',
+      password: 'hashed:current',
+      name: 'Current User',
+      role: 'user',
+      credentialGeneration: 3,
+      createdAt: new Date(),
+    };
+    mockGetUser.mockResolvedValueOnce(user);
+
+    const { cb, promise } = done();
+    requireCaptured(captured_deserialize.fn)({ id: 42, generation: 3 }, cb);
+    const args = await promise;
+    expect(args[0]).toBeNull();
+    expect(args[1]).toEqual(user);
+  });
+
+  it('rejects a stale object payload after credential rotation', async () => {
+    mockGetUser.mockResolvedValueOnce({
+      id: 42,
+      email: 'user@vitest.local',
+      password: 'hashed:current',
+      name: 'Current User',
+      role: 'user',
+      credentialGeneration: 4,
+      createdAt: new Date(),
+    });
+
+    const { cb, promise } = done();
+    requireCaptured(captured_deserialize.fn)({ id: 42, generation: 3 }, cb);
+    const args = await promise;
+    expect(args[0]).toBeNull();
+    expect(args[1]).toBeNull();
   });
 
   it('does not leak the deserialized user password on the storage-throw catch path', async () => {
@@ -374,7 +491,7 @@ describe('passport.deserializeUser does not leak session-bound material', () => 
     );
 
     const { cb, promise } = done();
-    captured_deserialize.fn!(99, cb);
+    requireCaptured(captured_deserialize.fn)(99, cb);
     const args = await promise;
     expect(args[0]).toBeInstanceOf(Error);
     const errorLine = captured.find(l => l.level === 'error' && l.line.startsWith('Deserialization error:'));

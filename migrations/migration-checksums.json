@@ -228,6 +228,12 @@
       "tag": "0037_refund_allocation_adjustments",
       "createdAt": 1788965739621,
       "hash": "1f06ebc46d62a36405d93c3a6e4fc0bc7b0d7a8a0658e43c313529a8486aaddc"
+    },
+    {
+      "idx": 38,
+      "tag": "0038_password_recovery_hardening",
+      "createdAt": 1789081646995,
+      "hash": "149823865629af45e2fb8e6788b98fa8962df74dc28761bad2b45e4e52613bfb"
     }
   ]
 }

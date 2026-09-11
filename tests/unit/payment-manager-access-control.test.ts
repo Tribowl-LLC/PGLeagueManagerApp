@@ -36,6 +36,7 @@ const makeReq = (overrides: Partial<NonNullable<Request['user']>> = {}): Request
     id: 1,
     email: 'payments@example.test',
     password: 'not-used',
+    credentialGeneration: 0,
     name: 'Payment Manager',
     phone: null,
     avatar: null,

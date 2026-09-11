@@ -95,6 +95,16 @@ describe('LoginPage throttle UX', () => {
     window.history.replaceState(null, '', '/');
   });
 
+  it('shows completion copy when a credential change requires a fresh login', async () => {
+    window.history.pushState(null, '', '/login?reason=credential-changed');
+    renderPage();
+
+    expect(await screen.findByTestId('alert-credential-changed')).toHaveTextContent(
+      'Your password or email was updated. Please sign in again with your new credentials.',
+    );
+    expect(screen.queryByTestId('alert-session-expired')).not.toBeInTheDocument();
+  });
+
   it('renders the throttle alert and Reset-it-instead link on a 429', async () => {
     loginHandler = () => rateLimitResponse(120);
     const user = userEvent.setup();

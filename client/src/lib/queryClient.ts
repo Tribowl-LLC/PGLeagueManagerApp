@@ -49,7 +49,12 @@ export function resetSessionExpiryRedirect() {
   lastSessionExpiryRedirectSource = null;
 }
 
-export function redirectToLoginForExpiredSession(options?: { cachedAuthenticated?: boolean }) {
+export function redirectToLoginForExpiredSession(options?: {
+  cachedAuthenticated?: boolean;
+  /** Allow an explicit credential-change redirect from a public route. */
+  force?: boolean;
+  reason?: "session-expired" | "credential-changed";
+}) {
   if (typeof window === "undefined") return;
 
   const path = window.location.pathname;
@@ -59,7 +64,7 @@ export function redirectToLoginForExpiredSession(options?: { cachedAuthenticated
   // the ordinary login route, while a stale authenticated root needs the
   // explicit session-expired reason. Other public routes must not redirect
   // just because their background /api/user query is naturally unauthenticated.
-  if (PUBLIC_AUTH_PATHS.has(path) && path !== "/") {
+  if (!options?.force && PUBLIC_AUTH_PATHS.has(path) && path !== "/") {
     return;
   }
 
@@ -67,12 +72,15 @@ export function redirectToLoginForExpiredSession(options?: { cachedAuthenticated
   if (lastSessionExpiryRedirectSource === source) return;
   lastSessionExpiryRedirectSource = source;
 
-  // A hard navigation clears all in-memory authenticated and financial query
-  // data before another account can use this browser session. The session is
-  // already unauthenticated and needs no logout mutation.
-  const loginUrl = cachedAuthenticated
-    ? "/login?reason=session-expired"
-    : "/login";
+  // Clear in-memory auth and CSRF state before navigation, so a different
+  // account cannot observe data cached by the session that just expired or
+  // changed credentials. The session needs no logout mutation here.
+  queryClient.clear();
+  clearCsrfToken();
+
+  const reason = options?.reason
+    ?? (cachedAuthenticated ? "session-expired" : undefined);
+  const loginUrl = reason ? `/login?reason=${reason}` : "/login";
   window.location.replace(loginUrl);
 }
 

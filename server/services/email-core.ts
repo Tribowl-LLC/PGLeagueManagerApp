@@ -86,14 +86,79 @@ function describeSubject(msg: MailDataRequired): string {
   return typeof s === 'string' ? s : '<no subject>';
 }
 
-export async function dispatchMail(msg: MailDataRequired, isMultiple = false): Promise<void> {
+export interface EmailDispatchResult {
+  accepted: boolean;
+  providerMessageId?: string | null;
+  failureReason?: "not_configured" | "template_missing" | "provider_error" | "render_error";
+}
+
+export interface AccountEmailDeliveryCustomArgs {
+  account_action_id: number | string;
+  account_delivery_job_id: number | string;
+}
+
+export interface EmailSendOptions {
+  /** Only these non-PII correlation fields may reach SendGrid custom_args. */
+  customArgs?: AccountEmailDeliveryCustomArgs;
+  /** Return provider metadata while preserving boolean results for old callers. */
+  returnDetails?: boolean;
+}
+
+function safeCorrelationId(value: number | string): string | null {
+  const text = typeof value === 'number'
+    ? Number.isSafeInteger(value) ? String(value) : ''
+    : value.trim();
+  if (!/^\d{1,12}$/.test(text)) return null;
+  const parsed = Number(text);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? text : null;
+}
+
+/**
+ * Convert the queue's numeric IDs to the string values required by SendGrid.
+ * A partial or malformed pair is dropped as a unit so arbitrary provider
+ * custom arguments can never be smuggled through this shared sender.
+ */
+export function safeAccountEmailDeliveryCustomArgs(
+  value: AccountEmailDeliveryCustomArgs | undefined,
+): { account_action_id: string; account_delivery_job_id: string } | undefined {
+  if (!value) return undefined;
+  const actionId = safeCorrelationId(value.account_action_id);
+  const jobId = safeCorrelationId(value.account_delivery_job_id);
+  return actionId && jobId
+    ? { account_action_id: actionId, account_delivery_job_id: jobId }
+    : undefined;
+}
+
+function providerMessageIdFromResponse(value: unknown): string | null {
+  const response = Array.isArray(value) ? value[0] : value;
+  if (!response || typeof response !== 'object') return null;
+  const headers = (response as { headers?: unknown }).headers;
+  if (!headers) return null;
+  let headerValue: unknown;
+  if (typeof headers === 'object' && headers !== null && 'get' in headers
+    && typeof (headers as { get?: unknown }).get === 'function') {
+    headerValue = (headers as { get(name: string): unknown }).get('x-message-id');
+  } else if (typeof headers === 'object' && headers !== null) {
+    const record = headers as Record<string, unknown>;
+    headerValue = record['x-message-id'] ?? record['X-Message-Id'] ?? record['X-Message-ID'];
+  }
+  if (typeof headerValue !== 'string') return null;
+  const id = headerValue.trim();
+  return id.length > 0 && id.length <= 255 ? id : null;
+}
+
+async function sendToProvider(msg: MailDataRequired, isMultiple: boolean): Promise<EmailDispatchResult> {
+  const response = await sgMail.send(msg, isMultiple);
+  return { accepted: true, providerMessageId: providerMessageIdFromResponse(response) };
+}
+
+export async function dispatchMail(msg: MailDataRequired, isMultiple = false): Promise<EmailDispatchResult> {
   // `?? []` defends against test files that vi.mock('../../server/config')
   // and forget to surface the new field — those mocks pre-date task #593.
   const blocked = env.BLOCK_EMAIL_DOMAINS ?? [];
   if (blocked.length === 0) {
     // Guard fully disabled — go straight to SendGrid.
-    await sgMail.send(msg, isMultiple);
-    return;
+    return sendToProvider(msg, isMultiple);
   }
 
   const to = partitionRecipients(msg.to, blocked);
@@ -123,7 +188,7 @@ export async function dispatchMail(msg: MailDataRequired, isMultiple = false): P
     log.info(
       `Blocked SendGrid send to test-only domain(s) [${droppedDomains.join(', ')}] — captured in outbox. Subject: "${describeSubject(msg)}", recipients: ${sample}`,
     );
-    return;
+    return { accepted: true, providerMessageId: null };
   }
 
   if (someBlocked) {
@@ -140,11 +205,10 @@ export async function dispatchMail(msg: MailDataRequired, isMultiple = false): P
     log.info(
       `Stripped blocked recipient(s) on domain(s) [${droppedDomains.join(', ')}] from SendGrid message. Subject: "${describeSubject(msg)}"`,
     );
-    await sgMail.send(rewritten, isMultiple);
-    return;
+    return sendToProvider(rewritten, isMultiple);
   }
 
-  await sgMail.send(msg, isMultiple);
+  return sendToProvider(msg, isMultiple);
 }
 
 type SendgridLikeError = {
@@ -159,6 +223,21 @@ export function describeMailError(error: unknown): unknown {
     if (typeof e.message === 'string') return e.message;
   }
   return error;
+}
+
+/** Safe metadata for account-action delivery logs; never includes provider bodies or messages. */
+export function describeEmailDeliveryError(error: unknown): {
+  kind: string;
+  providerStatus?: number;
+} {
+  const providerStatus = error && typeof error === 'object'
+    ? (error as { response?: { statusCode?: unknown } }).response?.statusCode
+    : undefined;
+  if (typeof providerStatus === 'number' && Number.isInteger(providerStatus)) {
+    return { kind: 'provider_error', providerStatus };
+  }
+  if (error instanceof Error) return { kind: error.name || 'error' };
+  return { kind: typeof error === 'object' && error !== null ? 'object_error' : typeof error };
 }
 
 // Account-ready notifications are user-triggered and may contain recipient
@@ -436,42 +515,85 @@ ${styledBody}
   `;
 }
 
+function formatEmailResult(
+  result: EmailDispatchResult | undefined,
+  options: EmailSendOptions | undefined,
+): boolean | EmailDispatchResult {
+  // A few long-lived integrations mock `dispatchMail` as a void function.
+  // Preserve that historical behavior while the real dispatcher returns
+  // provider metadata.
+  const normalized = result && typeof result.accepted === 'boolean'
+    ? result
+    : { accepted: true };
+  return options?.returnDetails ? normalized : normalized.accepted;
+}
+
+export function sendTemplatedEmail(
+  slug: string,
+  toEmail: string,
+  variables: Record<string, string>,
+): Promise<boolean>;
+export function sendTemplatedEmail(
+  slug: string,
+  toEmail: string,
+  variables: Record<string, string>,
+  options: EmailSendOptions & { returnDetails: true },
+): Promise<EmailDispatchResult>;
+export function sendTemplatedEmail(
+  slug: string,
+  toEmail: string,
+  variables: Record<string, string>,
+  options: EmailSendOptions,
+): Promise<boolean | EmailDispatchResult>;
 export async function sendTemplatedEmail(
   slug: string,
   toEmail: string,
-  variables: Record<string, string>
-): Promise<boolean> {
+  variables: Record<string, string>,
+  options?: EmailSendOptions,
+): Promise<boolean | EmailDispatchResult> {
   if (!SENDGRID_API_KEY) {
     log.error('Cannot send email — SENDGRID_API_KEY not configured');
-    return false;
+    return formatEmailResult({ accepted: false, failureReason: "not_configured" }, options);
   }
 
   try {
     const template = await storage.getEmailTemplateBySlug(slug);
     if (!template || !template.active) {
       log.info(`Template '${slug}' not found or inactive, skipping`);
-      return false;
+      return formatEmailResult({ accepted: false, failureReason: "template_missing" }, options);
     }
 
     const subject = replaceVariablesPlainText(template.subject, variables);
     const body = replaceVariables(template.body, variables);
     const html = wrapInHtmlLayout(sanitizeTemplateBody(body), variables);
 
+    const customArgs = safeAccountEmailDeliveryCustomArgs(options?.customArgs);
     const msg = {
       to: toEmail,
       from: { email: FROM_EMAIL, name: FROM_NAME },
       subject,
       html,
+      ...(customArgs ? { customArgs } : {}),
       trackingSettings: {
         clickTracking: { enable: false, enableText: false },
       },
     };
 
-    await dispatchMail(msg);
-    log.info(`Templated email '${slug}' sent to:`, isDev ? toEmail : maskEmail(toEmail));
-    return true;
+    const result = await dispatchMail(msg);
+    if (customArgs) {
+      // Recovery sends carry only the non-PII action/job correlation in logs;
+      // the recipient address is intentionally absent even in masked form.
+      log.info(`Templated email '${slug}' sent`, customArgs);
+    } else if (options?.customArgs) {
+      // Never fall back to a recipient log when a caller intended a recovery
+      // correlation but supplied malformed IDs.
+      log.info(`Templated email '${slug}' sent`, { deliveryCorrelation: "invalid" });
+    } else {
+      log.info(`Templated email '${slug}' sent to:`, maskEmail(toEmail));
+    }
+    return formatEmailResult(result, options);
   } catch (error) {
-    log.error(`Failed to send templated email '${slug}':`, describeMailError(error));
-    return false;
+    log.error(`Failed to send templated email '${slug}':`, describeEmailDeliveryError(error));
+    return formatEmailResult({ accepted: false, failureReason: "provider_error" }, options);
   }
 }

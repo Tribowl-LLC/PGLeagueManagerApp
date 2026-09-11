@@ -98,6 +98,7 @@ const systemAdmin = {
   id: 7,
   email: 'system-admin@example.test',
   password: 'not-returned-by-real-api',
+  credentialGeneration: 0,
   bowlerId: null,
   name: 'System Admin',
   phone: null,

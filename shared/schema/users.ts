@@ -12,6 +12,11 @@ export const users = pgTable("users", {
   id: serial("id").primaryKey(),
   email: text("email").notNull().unique(),
   password: text("password").notNull(),
+  // Incremented by the database whenever the password or login email
+  // changes. Passport stores this value with the session so a credential
+  // rotation invalidates every pre-rotation session, including sessions
+  // held by another application instance.
+  credentialGeneration: integer("credential_generation").notNull().default(0),
   bowlerId: integer("bowler_id").references(() => bowlers.id),
   name: text("name").notNull(),
   phone: text("phone"),
@@ -92,6 +97,10 @@ export const users = pgTable("users", {
     // a newly-added enum label before commit.
     sql`${table.role}::text <> 'payment_manager' OR (${table.organizationId} IS NOT NULL AND ${table.locationId} IS NOT NULL)`,
   ),
+  credentialGenerationNonNegative: check(
+    "users_credential_generation_nonnegative",
+    sql`${table.credentialGeneration} >= 0`,
+  ),
   elevatedRoleBowlerCheck: check(
     "users_elevated_role_bowler_check",
     sql`${table.role}::text NOT IN ('system_admin', 'org_admin', 'payment_manager') OR ${table.bowlerId} IS NULL`,
@@ -162,7 +171,7 @@ export const insertUserSchema = baseUserSchema.extend({
   locationId: z.number().nullable().optional(),
   password: passwordSchema,
   bowlerId: z.number().nullable().optional(),
-}).omit({ id: true, createdAt: true }).superRefine(requireOrgForNonAdmin);
+}).omit({ id: true, createdAt: true, credentialGeneration: true }).superRefine(requireOrgForNonAdmin);
 
 // Base object schema (kept .pick / .omit / .partial friendly so that
 // callers like `server/routes/account.ts` can derive narrower schemas).

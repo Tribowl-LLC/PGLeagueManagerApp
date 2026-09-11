@@ -10,11 +10,25 @@ import {
   FROM_NAME,
   dispatchMail,
   describeMailError,
+  describeEmailDeliveryError,
   escapeHtml,
   getBaseUrl,
   getOrgLogoUrl,
   sendTemplatedEmail,
+  safeAccountEmailDeliveryCustomArgs,
+  type EmailDispatchResult,
+  type EmailSendOptions,
 } from './email-core';
+
+function emailReturnValue(
+  value: EmailDispatchResult | undefined,
+  options: EmailSendOptions | undefined,
+): boolean | EmailDispatchResult {
+  const normalized = value && typeof value.accepted === 'boolean'
+    ? value
+    : { accepted: true };
+  return options?.returnDetails ? normalized : normalized.accepted;
+}
 
 export async function sendInviteEmail(
   toEmail: string,
@@ -123,11 +137,32 @@ export async function sendPasswordResetFallbackEmail(
   toEmail: string,
   userName: string,
   resetToken: string,
-  orgSlug?: string | null
-): Promise<boolean> {
+  orgSlug?: string | null,
+): Promise<boolean>;
+export function sendPasswordResetFallbackEmail(
+  toEmail: string,
+  userName: string,
+  resetToken: string,
+  orgSlug: string | null | undefined,
+  options: EmailSendOptions & { returnDetails: true },
+): Promise<EmailDispatchResult>;
+export function sendPasswordResetFallbackEmail(
+  toEmail: string,
+  userName: string,
+  resetToken: string,
+  orgSlug: string | null | undefined,
+  options: EmailSendOptions,
+): Promise<boolean | EmailDispatchResult>;
+export async function sendPasswordResetFallbackEmail(
+  toEmail: string,
+  userName: string,
+  resetToken: string,
+  orgSlug?: string | null,
+  options?: EmailSendOptions,
+): Promise<boolean | EmailDispatchResult> {
   if (!SENDGRID_API_KEY) {
     log.error('Cannot send password reset email — SENDGRID_API_KEY not configured');
-    return false;
+    return emailReturnValue({ accepted: false, failureReason: "not_configured" }, options);
   }
 
   const baseUrl = getBaseUrl(orgSlug);
@@ -138,6 +173,7 @@ export async function sendPasswordResetFallbackEmail(
   // escaped for consistency with the other senders.
   const safeName = escapeHtml(userName);
   const safeResetUrl = escapeHtml(resetUrl);
+  const customArgs = safeAccountEmailDeliveryCustomArgs(options?.customArgs);
 
   const msg = {
     to: toEmail,
@@ -175,18 +211,27 @@ export async function sendPasswordResetFallbackEmail(
         </p>
       </div>
     `,
+    ...(customArgs ? { customArgs } : {}),
     trackingSettings: {
       clickTracking: { enable: false, enableText: false },
     },
   };
 
   try {
-    await dispatchMail(msg);
-    log.info('Password reset email sent to:', isDev ? toEmail : maskEmail(toEmail));
-    return true;
+    const result = await dispatchMail(msg);
+    if (customArgs) {
+      // Recovery sends carry only the non-PII action/job correlation in logs;
+      // do not include even a masked recipient address.
+      log.info('Password reset email sent', customArgs);
+    } else if (options?.customArgs) {
+      log.info('Password reset email sent', { deliveryCorrelation: "invalid" });
+    } else {
+      log.info('Password reset email sent to:', maskEmail(toEmail));
+    }
+    return emailReturnValue(result, options);
   } catch (error) {
-    log.error('Failed to send password reset email:', describeMailError(error));
-    return false;
+    log.error('Failed to send password reset email:', describeEmailDeliveryError(error));
+    return emailReturnValue({ accepted: false, failureReason: "provider_error" }, options);
   }
 }
 

@@ -8,6 +8,7 @@ describe("public account invitation state", () => {
       userId: 9,
       organizationId: 4,
       createdByUserId: 2,
+      deliveryJobId: null,
       action: "account_invite",
       tokenHash: "a".repeat(64),
       expiresAt: "2030-01-01T00:00:00.000Z",
