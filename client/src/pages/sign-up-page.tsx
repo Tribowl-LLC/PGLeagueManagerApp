@@ -26,6 +26,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { Link, useLocation } from "wouter";
+import { useQuery } from "@tanstack/react-query";
 import { useSubdomainOrg } from "@/hooks/use-subdomain-org";
 import {
   DEFAULT_THROTTLE_FALLBACK_SECONDS,
@@ -62,10 +63,34 @@ const signUpResponseSchema = z.object({
   }).passthrough(),
 });
 
+const signUpAvailabilityResponseSchema = z.object({
+  success: z.literal(true),
+  data: z.object({ available: z.boolean() }),
+});
+
 const SignUpPage: FC = () => {
   const { toast } = useToast();
   const [, setLocation] = useLocation();
   const { org: orgInfo } = useSubdomainOrg();
+  const registrationAvailability = useQuery({
+    queryKey: ["/api/auth/registration/availability"],
+    queryFn: async ({ signal }) => {
+      const response = await fetch("/api/auth/registration/availability", {
+        credentials: "include",
+        headers: { Accept: "application/json" },
+        signal,
+      });
+      if (!response.ok) throw new Error("Sign-up is temporarily unavailable. Please try again later.");
+      const parsed = signUpAvailabilityResponseSchema.safeParse(await response.json());
+      if (!parsed.success) throw new Error("Sign-up availability could not be verified. Please try again later.");
+      return parsed.data.data;
+    },
+    retry: false,
+    staleTime: 10_000,
+  });
+  const isRegistrationAvailable = registrationAvailability.data?.available === true;
+  const isRegistrationUnavailable = registrationAvailability.isError
+    || (!registrationAvailability.isPending && !isRegistrationAvailable);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [signupError, setSignupError] = useState<string | null>(null);
   const { isThrottled, remainingSeconds, throttle, clear: clearThrottle } =
@@ -82,7 +107,7 @@ const SignUpPage: FC = () => {
   });
 
   const onSubmit = async (data: SignUpFormData) => {
-    if (isThrottled) return;
+    if (isThrottled || registrationAvailability.isError || !isRegistrationAvailable) return;
     setSignupError(null);
     setIsSubmitting(true);
     try {
@@ -164,66 +189,91 @@ const SignUpPage: FC = () => {
             </CardDescription>
           </CardHeader>
           <CardContent className="pb-4 sm:pb-6">
-            <Form {...form}>
-              <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-3 sm:space-y-4">
-                <FormField
-                  control={form.control}
-                  name="name"
-                  render={({ field }) => (
-                    <FormItem className="space-y-1 sm:space-y-2">
-                      <FormLabel>Full Name</FormLabel>
-                      <FormControl><Input placeholder="John Doe" {...field} /></FormControl>
-                      <FormMessage />
-                    </FormItem>
+            {registrationAvailability.isPending ? (
+              <Alert data-testid="alert-signup-availability-loading">
+                <Loader2 className="size-4 animate-spin" />
+                <AlertTitle>Checking sign-up availability</AlertTitle>
+                <AlertDescription>Please wait while we check this registration link.</AlertDescription>
+              </Alert>
+            ) : isRegistrationUnavailable ? (
+              <Alert variant="destructive" data-testid="alert-signup-availability-unavailable">
+                <AlertCircle className="size-4" />
+                <AlertTitle>Sign-up unavailable</AlertTitle>
+                <AlertDescription className="flex flex-wrap items-center gap-2">
+                  <span>Use the registration link provided by your league administrator, or contact them for help.</span>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={registrationAvailability.isFetching}
+                    onClick={() => void registrationAvailability.refetch()}
+                  >
+                    Retry
+                  </Button>
+                </AlertDescription>
+              </Alert>
+            ) : (
+              <Form {...form}>
+                <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-3 sm:space-y-4">
+                  <FormField
+                    control={form.control}
+                    name="name"
+                    render={({ field }) => (
+                      <FormItem className="space-y-1 sm:space-y-2">
+                        <FormLabel>Full Name</FormLabel>
+                        <FormControl><Input placeholder="John Doe" {...field} /></FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name="email"
+                    render={({ field }) => (
+                      <FormItem className="space-y-1 sm:space-y-2">
+                        <FormLabel>Email Address</FormLabel>
+                        <FormControl>
+                          <Input type="email" placeholder="john@example.com" {...field} />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name="phone"
+                    render={({ field }) => (
+                      <FormItem className="space-y-1 sm:space-y-2">
+                        <FormLabel>Phone Number</FormLabel>
+                        <FormControl>
+                          <Input type="tel" placeholder="(555) 123-4567" {...field} />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  {isThrottled && (
+                    <Alert variant="destructive" data-testid="alert-signup-throttled">
+                      <AlertTriangle className="size-4" />
+                      <AlertTitle>Too many sign-up attempts</AlertTitle>
+                      <AlertDescription>
+                        For your protection, sign-up is paused for about{" "}
+                        <span data-testid="text-signup-retry-in">{formatCountdown(remainingSeconds)}</span>. Please try again then.
+                      </AlertDescription>
+                    </Alert>
                   )}
-                />
-                <FormField
-                  control={form.control}
-                  name="email"
-                  render={({ field }) => (
-                    <FormItem className="space-y-1 sm:space-y-2">
-                      <FormLabel>Email Address</FormLabel>
-                      <FormControl>
-                        <Input type="email" placeholder="john@example.com" {...field} />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
+                  {signupError && !isThrottled && (
+                    <div className="flex items-center gap-2 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+                      <AlertCircle className="size-4 shrink-0" />
+                      <span>{signupError}</span>
+                    </div>
                   )}
-                />
-                <FormField
-                  control={form.control}
-                  name="phone"
-                  render={({ field }) => (
-                    <FormItem className="space-y-1 sm:space-y-2">
-                      <FormLabel>Phone Number</FormLabel>
-                      <FormControl>
-                        <Input type="tel" placeholder="(555) 123-4567" {...field} />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-                {isThrottled && (
-                  <Alert variant="destructive" data-testid="alert-signup-throttled">
-                    <AlertTriangle className="size-4" />
-                    <AlertTitle>Too many sign-up attempts</AlertTitle>
-                    <AlertDescription>
-                      For your protection, sign-up is paused for about{" "}
-                      <span data-testid="text-signup-retry-in">{formatCountdown(remainingSeconds)}</span>. Please try again then.
-                    </AlertDescription>
-                  </Alert>
-                )}
-                {signupError && !isThrottled && (
-                  <div className="flex items-center gap-2 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
-                    <AlertCircle className="size-4 shrink-0" />
-                    <span>{signupError}</span>
-                  </div>
-                )}
-                <Button type="submit" className="w-full mt-2" disabled={isSubmitting || isThrottled} data-testid="button-signup-submit">
-                  {isSubmitting ? <><Loader2 className="mr-2 size-4 animate-spin" />Creating account…</> : isThrottled ? `Try again in ${formatCountdown(remainingSeconds)}` : "Create Account"}
-                </Button>
-              </form>
-            </Form>
+                  <Button type="submit" className="w-full mt-2" disabled={isSubmitting || isThrottled} data-testid="button-signup-submit">
+                    {isSubmitting ? <><Loader2 className="mr-2 size-4 animate-spin" />Creating account…</> : isThrottled ? `Try again in ${formatCountdown(remainingSeconds)}` : "Create Account"}
+                  </Button>
+                </form>
+              </Form>
+            )}
           </CardContent>
           <CardFooter className="flex flex-col items-center gap-2 pt-0">
             <p className="text-sm text-muted-foreground">

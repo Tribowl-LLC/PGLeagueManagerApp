@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -15,11 +15,13 @@ type FetchHandler = (input: RequestInfo | URL, init?: RequestInit) => Response |
 
 const originalFetch = global.fetch;
 let registerHandler: FetchHandler;
+let availabilityHandler: FetchHandler;
 
-function installFetchMock() {
+function installFetchMock(availability: FetchHandler, register: FetchHandler) {
   global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = typeof input === "string" ? input : input.toString();
-    if (url.includes("/api/auth/register")) return registerHandler(input, init);
+    if (url.includes("/api/auth/registration/availability")) return availability(input, init);
+    if (url.includes("/api/auth/register")) return register(input, init);
     return new Response(JSON.stringify({ success: true, data: [] }), {
       status: 200,
       headers: { "content-type": "application/json" },
@@ -28,6 +30,7 @@ function installFetchMock() {
 }
 
 function renderPage() {
+  installFetchMock(availabilityHandler, registerHandler);
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -39,9 +42,10 @@ function renderPage() {
 }
 
 async function fillAndSubmit(user: ReturnType<typeof userEvent.setup>) {
-  await user.type(screen.getByLabelText(/full name/i), "Jane Bowler");
-  await user.type(screen.getByLabelText(/email address/i), "jane@example.com");
-  await user.type(screen.getByLabelText(/phone number/i), "5551234567");
+  await user.type(await screen.findByLabelText(/full name/i), "Jane Bowler");
+  await user.type(await screen.findByLabelText(/email address/i), "jane@example.com");
+  await user.type(await screen.findByLabelText(/phone number/i), "5551234567");
+  await waitFor(() => expect(screen.getByTestId("button-signup-submit")).toBeEnabled());
   await user.click(screen.getByRole("button", { name: /create account/i }));
 }
 
@@ -55,7 +59,7 @@ function response(body: unknown, status: number, headers: Record<string, string>
 beforeEach(() => {
   toast.mockClear();
   registerHandler = () => response({ success: false, error: { message: "failed" } }, 500);
-  installFetchMock();
+  availabilityHandler = () => response({ success: true, data: { available: true } }, 200);
 });
 
 afterEach(() => {
@@ -63,6 +67,30 @@ afterEach(() => {
 });
 
 describe("SignUpPage API outcomes", () => {
+  it("keeps submit disabled while availability is loading", async () => {
+    let resolveAvailability: ((value: Response) => void) | undefined;
+    availabilityHandler = () => new Promise<Response>((resolve) => {
+      resolveAvailability = resolve;
+    });
+    renderPage();
+
+    expect(await screen.findByTestId("alert-signup-availability-loading")).toBeInTheDocument();
+    expect(screen.queryByTestId("button-signup-submit")).not.toBeInTheDocument();
+
+    resolveAvailability?.(response({ success: true, data: { available: true } }, 200));
+    await waitFor(() => expect(screen.getByTestId("button-signup-submit")).toBeEnabled());
+  });
+
+  it("keeps submit disabled and gives generic tenant-link guidance when unavailable", async () => {
+    availabilityHandler = vi.fn(() => response({ success: true, data: { available: false } }, 200));
+    renderPage();
+
+    expect(await screen.findByTestId("alert-signup-availability-unavailable")).toHaveTextContent(/registration link provided by your league administrator/i);
+    expect(screen.queryByTestId("button-signup-submit")).not.toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(availabilityHandler).toHaveBeenCalledTimes(2));
+  });
+
   it("handles duplicate email without reporting an API issue", async () => {
     registerHandler = () => response(
       { success: true, data: { status: "pending", email: "j***@example.com" } },

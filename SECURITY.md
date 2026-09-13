@@ -199,10 +199,12 @@ native authentication scheme.
 
 ### Registration, recovery, and invitations
 
-Self-registration requires a server-resolved organization subdomain, a
-matching organization id, and an active league that permits public signup.
-Invitation and password-recovery flows use random, expiring, single-use token
-state stored with the user. Token comparisons use a constant-time helper.
+Self-registration resolves its organization server-side from a known active
+tenant host, or from the canonical root only when exactly one active
+organization exists. It does not require a league or accept client
+organization/league IDs as authority. Invitation and password-recovery flows
+use random, expiring, single-use token state stored with the user. Token
+comparisons use a constant-time helper.
 Password setup/reset clears the token, rotates the password, invalidates
 pending email-change requests, attempts best-effort removal of existing
 sessions, and then asks Passport to establish a regenerated session. Automatic
@@ -236,11 +238,10 @@ justify exposing passwords through an administrator workflow or message.
   grant authentication, authorization, or tenant authority.
 - The current exemption categories are not interchangeable:
   - login verifies the submitted credentials and is rate-limited;
-    registration validates a server-resolved organization context and public
-    signup policy and is rate-limited; forgot-password is rate-limited and
-    returns an enumeration-resistant response. These pre-authentication
-    routes do not claim an existing user's authority merely because they are
-    CSRF-exempt;
+    registration validates a server-resolved organization context and is
+    rate-limited; forgot-password is rate-limited and returns an
+    enumeration-resistant response. These pre-authentication routes do not
+    claim an existing user's authority merely because they are CSRF-exempt;
   - `set-password` and email-change confirmation require an expiring,
     single-use server-side token and apply their route-specific rate limits;
   - setup endpoints require the out-of-band `x-setup-secret`, a configured
@@ -251,11 +252,12 @@ justify exposing passwords through an administrator workflow or message.
     shared production rate limit before returning `501`, does not enter tenant
     resolution or call application storage, and records only bounded metadata
     with a server-generated request id; see the limitation below;
-  - account-deletion request submission and embedded league registration are
-    intentionally public. They do not authenticate a user. Their handlers
-    constrain input with runtime schemas, rate limits, anti-enumeration or
-    per-email quotas where applicable, and narrow business rules such as an
-    active league explicitly allowing public signup; and
+  - account-deletion request submission and self-registration are intentionally
+    public. They do not authenticate a user. Their handlers constrain input
+    with runtime schemas, rate limits, anti-enumeration or per-email quotas
+    where applicable; registration additionally requires a server-resolved
+    active organization context, while account deletion has its own
+    confirmation workflow; and
   - health, CSRF-token issuance, and invite validation use `GET` and do not
     perform a protected domain mutation, so the state-changing-method CSRF
     gate would not run for them. The non-production `_test` exemption is not

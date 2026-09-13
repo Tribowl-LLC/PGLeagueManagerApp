@@ -107,9 +107,9 @@ export async function getOrganizations(): Promise<Organization[]> {
  * the limit prevents the canonical-host registration path from becoming an
  * unbounded tenant enumeration query.
  */
-export async function getActiveOrganizations(): Promise<Organization[]> {
+export async function getActiveOrganizations(): Promise<Pick<Organization, "id" | "active">[]> {
   return db
-    .select()
+    .select({ id: organizations.id, active: organizations.active })
     .from(organizations)
     .where(eq(organizations.active, true))
     .orderBy(organizations.id)

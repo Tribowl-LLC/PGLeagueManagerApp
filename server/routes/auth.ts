@@ -292,6 +292,17 @@ export function registerAuthRoutes(app: Express): void {
   const registrationSession = (req: Request) => req.session.pendingRegistration;
   const registrationGenericMessage = "If this email can be used for registration, a setup link will be sent.";
 
+  authRouter.get("/registration/availability", async (req, res) => {
+    res.set("Cache-Control", "no-store");
+    try {
+      const registrationOrganization = await resolveRegistrationOrganization(req);
+      return sendSuccess(res, { available: Boolean(registrationOrganization) });
+    } catch (error) {
+      log.error("Registration availability error", { errorCode: error instanceof Error ? error.name : "unknown" });
+      return sendError(res, registrationUnavailableMessage, 503, "SIGNUP_UNAVAILABLE");
+    }
+  });
+
   // Email-first registration deliberately has no password field. The
   // placeholder hash makes the account non-loginable until the email action
   // is consumed; it is never returned to the browser or sent to a provider.

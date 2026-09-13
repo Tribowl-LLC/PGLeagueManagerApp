@@ -322,6 +322,15 @@ afterAll(async () => {
 });
 
 describe("email-first registration API", () => {
+  it("uses a bounded active-organization candidate projection", async () => {
+    const candidates = await storage.getActiveOrganizations();
+    expect(candidates.length).toBeGreaterThan(0);
+    expect(candidates.length).toBeLessThanOrEqual(2);
+    for (const candidate of candidates) {
+      expect(Object.keys(candidate).sort()).toEqual(["active", "id"]);
+    }
+  });
+
   it("resolves root and www to the sole active organization even when it has no leagues", async () => {
     await withSoleActiveRootOrganization(async () => {
       const email = uniqueEmail("canonical-root");

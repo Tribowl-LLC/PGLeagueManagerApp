@@ -67,8 +67,8 @@ modes retain per-session bowling obligations: prepaid means the season was
 collected in advance, not that the sessions are nonbillable. Once canonical
 schedule evidence exists, ordinary league editing cannot change this setting or
 any other canonical schedule input. No-op submissions are allowed, while name,
-description, public-signup visibility, unchanged Square catalog selections, and
-double-pay collection evidence remain outside the canonical schedule lock.
+description, unchanged Square catalog selections, and double-pay collection
+evidence remain outside the canonical schedule lock.
 
 Fall canonical schedule generation has one server-authoritative billing ordinal
 policy: `dense_billable`. New weekly and upfront Fall drafts both number only

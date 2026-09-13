@@ -2,7 +2,7 @@
  * Task #731 — focused security boundary tests for the three high-severity
  * auth/claim vulnerabilities:
  *
- *  1. POST /api/auth/register: subdomain context + public-signup policy gates
+ *  1. POST /api/auth/register: trusted organization context and fail-closed gates
  *  2. POST /api/auth/claim-bowler: org membership + email ownership (incl. blank-email)
  *  3. POST /api/user-bowlers/link-bowler: org membership + email ownership (incl. blank-email)
  *
@@ -33,7 +33,7 @@ vi.mock('../../server/logger', () => ({
 
 const mockGetBowler = vi.fn<(id: number) => Promise<unknown>>();
 const mockIsBowlerLinked = vi.fn<(id: number) => Promise<boolean>>(async () => false);
-const mockGetActiveOrganizations = vi.fn(async () => [{ id: 5, name: 'Test Org', active: true }]);
+const mockGetActiveOrganizations = vi.fn(async () => [{ id: 5, active: true }]);
 const mockGetOrganization = vi.fn(async () => ({ id: 5, name: 'Test Org', active: true }));
 const mockGetUserByEmail = vi.fn<(email: string) => Promise<null>>(async () => null);
 const mockCreateUser = vi.fn(async () => ({
@@ -322,8 +322,8 @@ describe('POST /api/auth/register — tenant-resolution gate', () => {
 
   it('fails closed on a canonical root with multiple active organizations', async () => {
     mockGetActiveOrganizations.mockResolvedValueOnce([
-      { id: 5, name: 'Test Org', active: true },
-      { id: 6, name: 'Second Org', active: true },
+      { id: 5, active: true },
+      { id: 6, active: true },
     ]);
     const rootApp = makeAuthApp(null, null);
     const s = await new Promise<Server>(resolve => {
@@ -335,6 +335,35 @@ describe('POST /api/auth/register — tenant-resolution gate', () => {
       });
       expect(res.status).toBe(503);
       expect((await res.json()).error?.code).toBe('SIGNUP_UNAVAILABLE');
+    } finally {
+      await new Promise<void>(r => s.close(() => r()));
+    }
+  });
+});
+
+describe('GET /api/auth/registration/availability — tenant-resolution gate', () => {
+  it('returns only an availability boolean for a known tenant host', async () => {
+    const res = await fetch(`${authBase}/api/auth/registration/availability`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    expect(await res.json()).toEqual({ success: true, data: { available: true } });
+    expect(mockGetOrganization).toHaveBeenCalledWith(5);
+  });
+
+  it('returns unavailable without exposing organization details when the root is ambiguous', async () => {
+    mockGetActiveOrganizations.mockResolvedValueOnce([
+      { id: 5, active: true },
+      { id: 6, active: true },
+    ]);
+    const rootApp = makeAuthApp(null, null);
+    const s = await new Promise<Server>(resolve => {
+      const srv = rootApp.listen(0, '127.0.0.1', () => resolve(srv));
+    });
+    try {
+      const res = await fetch(`http://127.0.0.1:${(s.address() as AddressInfo).port}/api/auth/registration/availability`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get('cache-control')).toBe('no-store');
+      expect(await res.json()).toEqual({ success: true, data: { available: false } });
     } finally {
       await new Promise<void>(r => s.close(() => r()));
     }
