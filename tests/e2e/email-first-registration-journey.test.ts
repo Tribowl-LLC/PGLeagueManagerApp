@@ -36,6 +36,8 @@ let matchedBowlerId: number;
 let app: CreatedApp;
 let browser: Browser;
 
+type BrowserRouteState = { tearingDown: boolean };
+
 function isRouteLifecycleError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   return error.message.includes('Route is already handled!')
@@ -43,8 +45,15 @@ function isRouteLifecycleError(error: unknown): boolean {
     || error.message.includes('Target page, context or browser has been closed');
 }
 
+export function shouldIgnoreRouteLifecycleError(error: unknown, tearingDown: boolean): boolean {
+  return tearingDown && isRouteLifecycleError(error);
+}
+
+const browserRouteStates = new WeakMap<BrowserContext, BrowserRouteState>();
+
 async function createBrowserContext(): Promise<BrowserContext> {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const routeState: BrowserRouteState = { tearingDown: false };
   // Keep the exact HTTPS URL from the email while routing its real HTTP
   // traffic to this isolated app. This supplies transport, not API mocks.
   await context.route('**/*', async (route) => {
@@ -64,14 +73,17 @@ async function createBrowserContext(): Promise<BrowserContext> {
       // A superseded navigation or browser/context teardown may cancel a
       // route after fetch has started. Teardown waits for normal handlers via
       // unrouteAll({ behavior: 'wait' }); only these Playwright lifecycle
-      // errors are expected to reject after the route was already handled.
-      if (!isRouteLifecycleError(error)) throw error;
+      // errors are expected after this context has explicitly entered teardown.
+      if (!shouldIgnoreRouteLifecycleError(error, routeState.tearingDown)) throw error;
     }
   });
+  browserRouteStates.set(context, routeState);
   return context;
 }
 
 async function closeContextAfterRoutesDrain(context: BrowserContext): Promise<void> {
+  const routeState = browserRouteStates.get(context);
+  if (routeState) routeState.tearingDown = true;
   await context.unrouteAll({ behavior: 'wait' });
   await context.close();
 }
@@ -248,6 +260,15 @@ async function waitForAuthenticatedLanding(page: Page, expectedPath: '/bowler-da
   ).status);
   expect(authAfterSetup).toBe(200);
 }
+
+describe('browser route lifecycle handling', () => {
+  it('only ignores known lifecycle errors after teardown begins', () => {
+    expect(shouldIgnoreRouteLifecycleError(new Error('Route is already handled!'), false)).toBe(false);
+    expect(shouldIgnoreRouteLifecycleError(new Error('Route is already handled!'), true)).toBe(true);
+    expect(shouldIgnoreRouteLifecycleError(new Error('Fetch response has been disposed'), true)).toBe(true);
+    expect(shouldIgnoreRouteLifecycleError(new Error('synthetic live route failure'), true)).toBe(false);
+  });
+});
 
 describe('Email-first registration — real browser, outbox, and setup link', () => {
   beforeAll(async () => {
