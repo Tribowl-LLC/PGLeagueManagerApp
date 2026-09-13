@@ -111,7 +111,6 @@ describe('POST /api/bowler-leagues — bootstrap path for fresh bowlers', () => 
         description: null,
         payingLineupSize: 4,
         active: true,
-        allowPublicSignup: false,
         seasonStart: '2035-09-03',
         totalBowlingWeeks: 4,
         weekDay: 'Monday',

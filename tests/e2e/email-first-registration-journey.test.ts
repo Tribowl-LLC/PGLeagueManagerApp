@@ -166,13 +166,11 @@ async function startRegistration(
   const page = await context.newPage();
   const forbiddenRequests = watchForbiddenProfileRequests(page);
   const host = input.host ?? EXPECTED_HOST;
-  const signupPath = host === ROOT_HOST ? '/signup' : `/signup?org=${ORGANIZATION_SLUG}`;
+  const signupPath = '/signup';
   await page.goto(`https://${host}${signupPath}`);
   await page.getByLabel('Full Name', { exact: true }).fill(input.name);
   await page.getByLabel('Email Address', { exact: true }).fill(input.email);
   await page.getByLabel('Phone Number', { exact: true }).fill(SIGNUP_PHONE);
-  await page.getByRole('combobox', { name: /league/i }).click();
-  await page.getByRole('option', { name: new RegExp(LEAGUE_NAME), exact: host !== ROOT_HOST }).click();
 
   const requestPromise = page.waitForRequest((request) => {
     const url = new URL(request.url());
@@ -191,8 +189,6 @@ async function startRegistration(
     name: input.name,
     email: input.email,
     phone: SIGNUP_PHONE,
-    leagueId: String(leagueId),
-    organizationId,
   });
   expect(body).not.toHaveProperty('password');
 
@@ -289,7 +285,6 @@ describe('Email-first registration — real browser, outbox, and setup link', ()
       name: LEAGUE_NAME,
       organizationId,
       active: true,
-      allowPublicSignup: true,
       seasonStart: '2030-01-07',
       seasonEnd: '2030-04-29',
       weekDay: 'Monday',

@@ -79,7 +79,6 @@ async function fixture(label: string): Promise<Fixture> {
       description: null,
       payingLineupSize: 4,
       active: true,
-      allowPublicSignup: false,
       seasonStart: "2032-08-01T00:00:00.000Z",
       seasonEnd: "2032-08-22T00:00:00.000Z",
       weekDay: "Sunday",

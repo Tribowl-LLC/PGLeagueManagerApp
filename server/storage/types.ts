@@ -254,6 +254,7 @@ export interface IUserStorage {
 
 export interface IOrganizationStorage {
   getOrganizations(): Promise<Organization[]>;
+  getActiveOrganizations(limit?: number): Promise<Organization[]>;
   getOrganization(id: number): Promise<Organization | undefined>;
   getOrganizationBySlug(slug: string): Promise<Organization | undefined>;
   getOrganizationBySubdomain(subdomain: string): Promise<Organization | undefined>;

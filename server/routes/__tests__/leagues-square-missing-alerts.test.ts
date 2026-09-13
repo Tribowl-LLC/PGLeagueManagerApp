@@ -52,7 +52,6 @@ function makeLeague(overrides: Partial<League>): League {
     name: "Monday League",
     description: null,
     active: true,
-    allowPublicSignup: false,
     seasonStart: "2026-01-01",
     seasonEnd: "2026-04-01",
     weekDay: "Monday",

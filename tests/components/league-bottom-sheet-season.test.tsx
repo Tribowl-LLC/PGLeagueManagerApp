@@ -18,7 +18,6 @@ const league = (overrides: Partial<League>): League => ({
   name: 'Wednesday Night Men\'s League',
   description: null,
   active: true,
-  allowPublicSignup: false,
   seasonStart: '2026-08-01T00:00:00.000Z',
   seasonEnd: '2027-03-31T00:00:00.000Z',
   weekDay: 'Wednesday',

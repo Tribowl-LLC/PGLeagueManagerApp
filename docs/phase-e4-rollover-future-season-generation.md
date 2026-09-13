@@ -30,9 +30,9 @@ no additional setup approval step.
 ## Explicit target and confirmed carried configuration
 
 The v3 rollover request strictly requires `seasonStart`, `totalBowlingWeeks`,
-`weekDay`, all three schedule-date arrays, `allowPublicSignup`, and
-`paymentMode`. The server derives `seasonEnd`; omitted, unknown, defaulted, and
-retired fields fail validation. Weekly and upfront both retain the hardcoded
+`weekDay`, all three schedule-date arrays, and `paymentMode`. The server derives
+`seasonEnd`; omitted, unknown, defaulted, and retired fields fail validation.
+Weekly and upfront both retain the hardcoded
 `eligible_bowlers` occurrence policy. Ambiguous folds are rejected, currency is
 USD, and billing ordinals are `dense_billable`. Double-pay dates remain
 collection grouping evidence and do not affect physical generation.

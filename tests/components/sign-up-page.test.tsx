@@ -16,12 +16,6 @@ let registerHandler: FetchHandler;
 function installFetchMock() {
   global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = typeof input === "string" ? input : input.toString();
-    if (url.includes("/api/organizations/public-leagues")) {
-      return new Response(JSON.stringify({ success: true, data: [{ id: 7, name: "Monday League" }] }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    }
     if (url.includes("/api/auth/register")) return registerHandler(input, init);
     return new Response(JSON.stringify({ success: true, data: [] }), {
       status: 200,
@@ -45,8 +39,6 @@ async function fillAndSubmit(user: ReturnType<typeof userEvent.setup>) {
   await user.type(screen.getByLabelText(/full name/i), "Jane Bowler");
   await user.type(screen.getByLabelText(/email address/i), "jane@example.com");
   await user.type(screen.getByLabelText(/phone number/i), "5551234567");
-  await user.click(await screen.findByRole("combobox", { name: /league/i }));
-  await user.click(screen.getByRole("option", { name: "Monday League" }));
   await user.click(screen.getByRole("button", { name: /create account/i }));
 }
 
@@ -78,6 +70,9 @@ describe("SignUpPage API outcomes", () => {
 
     await fillAndSubmit(user);
 
+    expect(global.fetch).toHaveBeenCalledWith("/api/auth/register", expect.objectContaining({
+      body: JSON.stringify({ name: "Jane Bowler", email: "jane@example.com", phone: "5551234567" }),
+    }));
     expect(toast).toHaveBeenCalledWith(expect.objectContaining({
       title: "Registration request received",
       description: expect.stringMatching(/if registration can continue/i),

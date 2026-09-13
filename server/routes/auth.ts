@@ -79,15 +79,28 @@ function registrationHostMatchesOrganization(req: Request, organizationId: numbe
   return isCanonicalRegistrationHost(req);
 }
 
-function parsePositiveSafeInteger(value: unknown): number | undefined {
-  if (typeof value === "number") {
-    return Number.isSafeInteger(value) && value > 0 ? value : undefined;
+const registrationUnavailableMessage = "Sign-up is temporarily unavailable. Please try again later.";
+
+/**
+ * Resolve the registration tenant from trusted request context only. A tenant
+ * hostname is reloaded so an archived organization cannot continue to accept
+ * registrations through a stale middleware object. The canonical root has no
+ * tenant hint, so it is usable only while exactly one active organization is
+ * configured; the bounded lookup deliberately does not reveal the count.
+ */
+async function resolveRegistrationOrganization(req: Request) {
+  if (req.subdomainOrg) {
+    const organization = await storage.getOrganization(req.subdomainOrg.id);
+    return organization?.id === req.subdomainOrg.id && organization.active === true
+      ? organization
+      : undefined;
   }
-  if (typeof value !== "string") return undefined;
-  const normalized = value.trim();
-  if (!/^\d+$/.test(normalized)) return undefined;
-  const parsed = Number(normalized);
-  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
+  if (req.orgSlug || !isCanonicalRegistrationHost(req)) return undefined;
+
+  const activeOrganizations = await storage.getActiveOrganizations();
+  return activeOrganizations.length === 1 && activeOrganizations[0]?.active === true
+    ? activeOrganizations[0]
+    : undefined;
 }
 
 type AccountActionErrorCode =
@@ -284,33 +297,11 @@ export function registerAuthRoutes(app: Express): void {
   // is consumed; it is never returned to the browser or sent to a provider.
   authRouter.post("/register", registerLimiter, async (req, res) => {
     try {
-      const organizationId = parsePositiveSafeInteger(req.body?.organizationId);
-      if (!organizationId || !Number.isSafeInteger(organizationId)) {
-        return sendError(res, "Sign-up requires an organization context.", 400, "ORG_REQUIRED");
+      const registrationOrganization = await resolveRegistrationOrganization(req);
+      if (!registrationOrganization) {
+        return sendError(res, registrationUnavailableMessage, 503, "SIGNUP_UNAVAILABLE");
       }
-      if (!registrationHostMatchesOrganization(req, organizationId)) {
-        return sendError(res, req.subdomainOrg ? "Organization does not match the current context." : "Sign-up requires a valid organization context.", 400, req.subdomainOrg ? "ORG_MISMATCH" : "ORG_REQUIRED");
-      }
-
-      const registrationOrganization = await storage.getOrganization(organizationId);
-      if (!registrationOrganization || registrationOrganization.active !== true) {
-        return sendError(res, "This organization does not currently allow public sign-up.", 403, "SIGNUP_NOT_ALLOWED");
-      }
-
-      const leagueId = parsePositiveSafeInteger(req.body?.leagueId);
-      const publicLeagues = (await storage.getLeagues(organizationId))
-        .filter((league) => league.active === true && league.allowPublicSignup === true);
-      const selectedLeague = publicLeagues.find((league) => league.id === leagueId);
-      if (!selectedLeague || selectedLeague.organizationId !== organizationId) {
-        return sendError(res, "The selected league does not allow public sign-up.", 403, "SIGNUP_NOT_ALLOWED");
-      }
-      // The league list is scoped by the submitted organization, but retain
-      // this explicit ownership check as the authorization boundary for the
-      // tenant context used to create the account.
-      const registrationOrganizationId = selectedLeague.organizationId;
-      if (!registrationOrganizationId || registrationOrganizationId !== organizationId) {
-        return sendError(res, "Organization does not match the current context.", 400, "ORG_MISMATCH");
-      }
+      const registrationOrganizationId = registrationOrganization.id;
 
       const registrationSchema = z.object({
         email: emailSchema,
@@ -350,13 +341,13 @@ export function registerAuthRoutes(app: Express): void {
       if (await storage.getUserByEmail(email)) {
         const resumed = await resumePendingAccountRegistration({
           email,
-          organizationId,
+          organizationId: registrationOrganizationId,
           expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
         });
         if (resumed) {
           req.session.pendingRegistration = {
             userId: resumed.user.id,
-            organizationId,
+            organizationId: registrationOrganizationId,
             credentialGeneration: resumed.user.credentialGeneration,
             createdAt: Date.now(),
           };

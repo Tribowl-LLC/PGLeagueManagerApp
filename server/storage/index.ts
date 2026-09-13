@@ -135,6 +135,7 @@ export class DatabaseStorage implements IStorage {
   resetFailedPasswordChangeAttempts!: IStorage["resetFailedPasswordChangeAttempts"];
 
   getOrganizations!: IStorage["getOrganizations"];
+  getActiveOrganizations!: IStorage["getActiveOrganizations"];
   getOrganization!: IStorage["getOrganization"];
   getOrganizationBySlug!: IStorage["getOrganizationBySlug"];
   getOrganizationBySubdomain!: IStorage["getOrganizationBySubdomain"];

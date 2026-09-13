@@ -240,6 +240,12 @@
       "tag": "0039_email_first_registration",
       "createdAt": 1789088638050,
       "hash": "8b355eeada5180a3799a6db511b496884a0ca22ce40718b1ca34324a345fdc9f"
+    },
+    {
+      "idx": 40,
+      "tag": "0040_remove_league_public_signup",
+      "createdAt": 1789311087511,
+      "hash": "9a4ea8867032497cff3dd402ba6b132ede5ed4f6eefe676e82c313ebcf663b5e"
     }
   ]
 }

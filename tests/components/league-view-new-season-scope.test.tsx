@@ -29,7 +29,6 @@ vi.mock('@/pages/league-view-page/new-season-dialog', () => ({
       skipDates: string[];
       cancelledDates: string[];
       doublePayDates: string[];
-      allowPublicSignup: boolean;
       paymentMode: 'weekly';
       sourceConfirmation: {
         contractVersion: 'league-rollover-source/1';
@@ -45,7 +44,6 @@ vi.mock('@/pages/league-view-page/new-season-dialog', () => ({
       skipDates: [],
       cancelledDates: [],
       doublePayDates: [],
-      allowPublicSignup: false,
       paymentMode: 'weekly',
       sourceConfirmation: {
         contractVersion: 'league-rollover-source/1',
@@ -66,7 +64,6 @@ const league = {
   name: 'System Admin Source',
   description: null,
   active: true,
-  allowPublicSignup: false,
   seasonStart: '2031-01-05T00:00:00.000Z',
   seasonEnd: '2031-03-23T00:00:00.000Z',
   weekDay: 'Sunday',

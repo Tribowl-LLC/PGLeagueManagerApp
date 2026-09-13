@@ -22,7 +22,6 @@ const league = {
   name: "Canonical league",
   description: null,
   active: true,
-  allowPublicSignup: false,
   seasonStart: "2031-01-05T00:00:00.000Z",
   seasonEnd: "2031-03-23T00:00:00.000Z",
   weekDay: "Sunday",

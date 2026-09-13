@@ -281,6 +281,13 @@
       "when": 1789088638050,
       "tag": "0039_email_first_registration",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1789311087511,
+      "tag": "0040_remove_league_public_signup",
+      "breakpoints": true
     }
   ]
 }

@@ -74,7 +74,6 @@ export function LeagueForm({ open, onClose, league, systemAdminOrganizationId }:
       substituteAccess: "team_only",
       substitutePaymentRegime: "team_choice",
       active: true,
-      allowPublicSignup: false,
       seasonStart: today.toISOString(),
       seasonEnd: nextYear.toISOString(),
       weekDay: "Monday",

@@ -132,7 +132,6 @@ describe('Admin claim of self-registered users (Task #667)', () => {
         description: null,
         payingLineupSize: 4,
         active: true,
-        allowPublicSignup: false,
         seasonStart: '2035-09-03',
         totalBowlingWeeks: 4,
         weekDay: 'Monday',

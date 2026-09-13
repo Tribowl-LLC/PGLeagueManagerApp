@@ -85,7 +85,6 @@ function Harness({
       name: '',
       description: '',
       active: true,
-      allowPublicSignup: false,
       seasonStart: new Date().toISOString(),
       seasonEnd: new Date().toISOString(),
       weekDay: 'Monday',

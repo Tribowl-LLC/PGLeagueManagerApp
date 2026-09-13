@@ -52,7 +52,6 @@ function futureBody(key: number) {
     substituteAccess: "team_only",
     substitutePaymentRegime: "team_choice",
     active: true,
-    allowPublicSignup: true,
     seasonStart: "2032-03-07",
     weekDay: "Sunday",
     totalBowlingWeeks: 6,
@@ -140,7 +139,6 @@ describe("league setup integration API", () => {
       name: "API builder-shaped metadata edit",
       description: "metadata survives canonical schedule mutation",
       active: publishedLeague.active,
-      allowPublicSignup: publishedLeague.allowPublicSignup,
       seasonStart: publishedLeague.seasonStart,
       seasonEnd: publishedLeague.seasonEnd,
       weekDay: publishedLeague.weekDay,
@@ -218,9 +216,6 @@ describe("league setup integration API", () => {
     const forbidden = await apiPost("/api/leagues", { ...futureBody(3), currency: "CAD" }, admin);
     expect(forbidden.status).toBe(400);
     expect(forbidden.data.error?.code).toBe("VALIDATION_ERROR");
-    const { allowPublicSignup: _omitted, ...missingExplicitTarget } = futureBody(30);
-    const missingTarget = await apiPost("/api/leagues", missingExplicitTarget, admin);
-    expect(missingTarget.status).toBe(400);
     const { payingLineupSize: _missingLineup, ...missingLineupTarget } = futureBody(32);
     const missingLineup = await apiPost("/api/leagues", missingLineupTarget, admin);
     expect(missingLineup.status).toBe(400);
@@ -311,7 +306,6 @@ describe("league setup integration API", () => {
       skipDates: [],
       cancelledDates: [],
       doublePayDates: [],
-      allowPublicSignup: false,
       paymentMode: "upfront",
     };
     const confirmationResponse = await apiGet<LeagueRolloverSourceContract>(
@@ -337,13 +331,6 @@ describe("league setup integration API", () => {
       fingerprint: confirmationResponse.data.data.fingerprint,
       confirmed: true,
     };
-    const { allowPublicSignup: _omitted, ...missingExplicitTarget } = values;
-    const missingTarget = await apiPost(`/api/leagues/${source.id}/new-season`, {
-      ...missingExplicitTarget,
-      setupIntegration: intent(40),
-      sourceConfirmation,
-    }, admin);
-    expect(missingTarget.status).toBe(400);
     const retiredEnd = await apiPost(`/api/leagues/${source.id}/new-season`, {
       ...values,
       seasonEnd: "2032-12-01",
