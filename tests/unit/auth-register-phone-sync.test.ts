@@ -30,7 +30,7 @@ vi.mock("../../server/storage", () => ({
       { id: 10, name: "Public League", organizationId, active: true, allowPublicSignup: true },
     ]),
     getUser: vi.fn(async () => undefined),
-    getOrganization: vi.fn(async () => undefined),
+    getOrganization: vi.fn(async () => ({ id: 5, name: "Test Org", active: true })),
     getBowlerByEmail: vi.fn(async () => undefined),
     getBowlerByEmailSystemAdmin: vi.fn(async () => undefined),
     getBowlerLeagues: vi.fn(async () => []),

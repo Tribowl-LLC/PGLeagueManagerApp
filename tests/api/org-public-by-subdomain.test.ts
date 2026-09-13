@@ -85,6 +85,24 @@ describe('Public org-by-slug endpoints accept subdomain (#663)', () => {
     expect(list.some((l) => l.id === leagueId)).toBe(true);
   });
 
+  it('does not expose public-signup leagues for an archived organization', async () => {
+    await db.update(organizations).set({ active: false }).where(eq(organizations.id, orgId));
+    try {
+      const bySubdomain = await apiGet(
+        `/api/organizations/slug/${FIXTURE_SUBDOMAIN}/leagues`,
+      );
+      expect(bySubdomain.status).toBe(200);
+      expect(bySubdomain.data.data).toEqual([]);
+
+      const allPublicLeagues = await apiGet('/api/organizations/public-leagues');
+      expect(allPublicLeagues.status).toBe(200);
+      const list = allPublicLeagues.data.data as Array<{ id: number }>;
+      expect(list.some((l) => l.id === leagueId)).toBe(false);
+    } finally {
+      await db.update(organizations).set({ active: true }).where(eq(organizations.id, orgId));
+    }
+  });
+
   // Task #665: the /logo and /app-icon variants must also accept the
   // subdomain value, mirroring the two endpoints above.
   for (const which of ['logo', 'app-icon'] as const) {

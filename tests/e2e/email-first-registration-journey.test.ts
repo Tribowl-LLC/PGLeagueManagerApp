@@ -36,21 +36,44 @@ let matchedBowlerId: number;
 let app: CreatedApp;
 let browser: Browser;
 
+function isRouteLifecycleError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return error.message.includes('Route is already handled!')
+    || error.message.includes('Fetch response has been disposed')
+    || error.message.includes('Target page, context or browser has been closed');
+}
+
 async function createBrowserContext(): Promise<BrowserContext> {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
   // Keep the exact HTTPS URL from the email while routing its real HTTP
   // traffic to this isolated app. This supplies transport, not API mocks.
   await context.route('**/*', async (route) => {
-    const incoming = new URL(route.request().url());
-    if (![EXPECTED_HOST, ROOT_HOST].includes(incoming.hostname)) return route.abort();
-    const response = await route.fetch({
-      url: `http://127.0.0.1:${app.port}${incoming.pathname}${incoming.search}`,
-      headers: { ...route.request().headers(), host: incoming.hostname },
-      maxRedirects: 0,
-    });
-    await route.fulfill({ response });
+    try {
+      const incoming = new URL(route.request().url());
+      if (![EXPECTED_HOST, ROOT_HOST].includes(incoming.hostname)) {
+        await route.abort();
+        return;
+      }
+      const response = await route.fetch({
+        url: `http://127.0.0.1:${app.port}${incoming.pathname}${incoming.search}`,
+        headers: { ...route.request().headers(), host: incoming.hostname },
+        maxRedirects: 0,
+      });
+      await route.fulfill({ response });
+    } catch (error) {
+      // A superseded navigation or browser/context teardown may cancel a
+      // route after fetch has started. Teardown waits for normal handlers via
+      // unrouteAll({ behavior: 'wait' }); only these Playwright lifecycle
+      // errors are expected to reject after the route was already handled.
+      if (!isRouteLifecycleError(error)) throw error;
+    }
   });
   return context;
+}
+
+async function closeContextAfterRoutesDrain(context: BrowserContext): Promise<void> {
+  await context.unrouteAll({ behavior: 'wait' });
+  await context.close();
 }
 
 async function installRegistrationTemplate(): Promise<void> {
@@ -311,7 +334,7 @@ describe('Email-first registration — real browser, outbox, and setup link', ()
       expect(forbiddenRequests).toEqual([]);
       expect(page.url()).not.toContain('/claim-bowler');
     } finally {
-      await context.close();
+      await closeContextAfterRoutesDrain(context);
     }
   }, 60_000);
 
@@ -336,7 +359,7 @@ describe('Email-first registration — real browser, outbox, and setup link', ()
       expect(forbiddenRequests).toEqual([]);
       expect(page.url()).not.toContain('/claim-bowler');
     } finally {
-      await context.close();
+      await closeContextAfterRoutesDrain(context);
     }
   }, 60_000);
 
@@ -345,30 +368,25 @@ describe('Email-first registration — real browser, outbox, and setup link', ()
     await installRegistrationTemplate();
     const context = await createBrowserContext();
     try {
-      const { page } = await startRegistration(context, {
+      await startRegistration(context, {
         email: ROOT_EMAIL,
         name: 'Root Waiting User',
         host: ROOT_HOST,
       });
       const directPage = await context.newPage();
-      try {
-        await directPage.goto(`https://${ROOT_HOST}/registration-email`);
-        await directPage.getByText('Check your email', { exact: true }).waitFor();
-        await directPage.reload();
-        await directPage.getByText('Check your email', { exact: true }).waitFor();
-        expect(new URL(directPage.url()).pathname).toBe('/registration-email');
-        const status = await directPage.evaluate(async () => {
-          const response = await fetch('/api/auth/registration/status', { credentials: 'include' });
-          return { status: response.status, body: await response.json() as { data?: { status?: unknown } } };
-        });
-        expect(status.status).toBe(200);
-        expect(status.body.data?.status).toBe('pending');
-      } finally {
-        await directPage.close();
-      }
-      await page.close();
+      await directPage.goto(`https://${ROOT_HOST}/registration-email`);
+      await directPage.getByText('Check your email', { exact: true }).waitFor();
+      await directPage.reload();
+      await directPage.getByText('Check your email', { exact: true }).waitFor();
+      expect(new URL(directPage.url()).pathname).toBe('/registration-email');
+      const status = await directPage.evaluate(async () => {
+        const response = await fetch('/api/auth/registration/status', { credentials: 'include' });
+        return { status: response.status, body: await response.json() as { data?: { status?: unknown } } };
+      });
+      expect(status.status).toBe(200);
+      expect(status.body.data?.status).toBe('pending');
     } finally {
-      await context.close();
+      await closeContextAfterRoutesDrain(context);
     }
   }, 60_000);
 });

@@ -292,6 +292,11 @@ export function registerAuthRoutes(app: Express): void {
         return sendError(res, req.subdomainOrg ? "Organization does not match the current context." : "Sign-up requires a valid organization context.", 400, req.subdomainOrg ? "ORG_MISMATCH" : "ORG_REQUIRED");
       }
 
+      const registrationOrganization = await storage.getOrganization(organizationId);
+      if (!registrationOrganization || registrationOrganization.active !== true) {
+        return sendError(res, "This organization does not currently allow public sign-up.", 403, "SIGNUP_NOT_ALLOWED");
+      }
+
       const leagueId = parsePositiveSafeInteger(req.body?.leagueId);
       const publicLeagues = (await storage.getLeagues(organizationId))
         .filter((league) => league.active === true && league.allowPublicSignup === true);

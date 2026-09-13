@@ -18,6 +18,7 @@ import {
   accountActionRequests,
   bowlers,
   leagues,
+  organizations,
   users,
 } from "@shared/schema";
 import {
@@ -42,6 +43,8 @@ let otherOrganizationId: number;
 let publicLeagueId: number;
 let inactiveLeagueId: number;
 let privateLeagueId: number;
+let archivedOrganizationId: number;
+let archivedLeagueId: number;
 let emailSequence = 0;
 const createdUserIds: number[] = [];
 const createdBowlerIds: number[] = [];
@@ -281,6 +284,29 @@ beforeAll(async () => {
   }).returning({ id: leagues.id });
   if (!privateLeague) throw new Error("Private registration league was not created");
   privateLeagueId = privateLeague.id;
+
+  const archivedSlug = `email-first-archived-${Date.now()}`;
+  const archivedSubdomain = `emailfirstarchived${Date.now()}`;
+  const [archivedOrganization] = await db.insert(organizations).values({
+    name: "Email-first archived organization fixture",
+    slug: archivedSlug,
+    subdomain: archivedSubdomain,
+    active: false,
+  }).returning({ id: organizations.id });
+  if (!archivedOrganization) throw new Error("Archived registration organization was not created");
+  archivedOrganizationId = archivedOrganization.id;
+  const [archivedLeague] = await db.insert(leagues).values({
+    name: "Email-first archived public league fixture",
+    organizationId: archivedOrganizationId,
+    active: true,
+    allowPublicSignup: true,
+    seasonStart: "2030-01-07",
+    seasonEnd: "2030-04-29",
+    weekDay: "Monday",
+    paymentMode: "weekly",
+  }).returning({ id: leagues.id });
+  if (!archivedLeague) throw new Error("Archived public league fixture was not created");
+  archivedLeagueId = archivedLeague.id;
 });
 
 afterAll(async () => {
@@ -296,6 +322,8 @@ afterAll(async () => {
   }
   if (inactiveLeagueId) await db.delete(leagues).where(eq(leagues.id, inactiveLeagueId));
   if (privateLeagueId) await db.delete(leagues).where(eq(leagues.id, privateLeagueId));
+  if (archivedLeagueId) await db.delete(leagues).where(eq(leagues.id, archivedLeagueId));
+  if (archivedOrganizationId) await db.delete(organizations).where(eq(organizations.id, archivedOrganizationId));
 });
 
 describe("email-first registration API", () => {
@@ -321,6 +349,35 @@ describe("email-first registration API", () => {
       headers: { "x-csrf-token": csrfToken },
     }, started.cookies);
     expect(resend.response.status).toBe(202);
+  });
+
+  it("rejects an archived owning organization before account or delivery-job creation", async () => {
+    const archivedEmail = uniqueEmail("archived-organization");
+    const rejected = await registerAtCanonicalRoot({
+      email: archivedEmail,
+      organizationId: archivedOrganizationId,
+      leagueId: archivedLeagueId,
+    });
+    expect(rejected.response.status).toBe(403);
+    expect(rejected.body.error?.code).toBe("SIGNUP_NOT_ALLOWED");
+
+    const [user] = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.email, archivedEmail))
+      .limit(1);
+    expect(user).toBeUndefined();
+    const jobs = await db
+      .select({ id: accountActionDeliveryJobs.id })
+      .from(accountActionDeliveryJobs)
+      .where(eq(accountActionDeliveryJobs.organizationId, archivedOrganizationId));
+    expect(jobs).toEqual([]);
+
+    const activeEmail = uniqueEmail("active-organization");
+    const active = await registerAtCanonicalRoot({ email: activeEmail });
+    expect(active.response.status).toBe(202);
+    const activeUser = await userByEmail(activeEmail);
+    createdUserIds.push(activeUser.id);
   });
 
   it("rejects junk IDs and never uses the body organization as unscoped league authority", async () => {
