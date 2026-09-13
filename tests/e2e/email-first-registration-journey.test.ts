@@ -20,9 +20,11 @@ import { clearCapturedEmails, getCapturedEmails } from '../../server/services/_i
 const ORGANIZATION_SLUG = 'email-first-browser-fixture';
 const ORGANIZATION_SUBDOMAIN = 'emailfirstbrowser';
 const EXPECTED_HOST = `${ORGANIZATION_SUBDOMAIN}.leaguevault.test`;
+const ROOT_HOST = 'leaguevault.test';
 const LEAGUE_NAME = 'Email-first browser league';
 const MATCH_EMAIL = 'matched-registration@vitest.local';
 const NO_MATCH_EMAIL = 'waiting-registration@vitest.local';
+const ROOT_EMAIL = 'root-waiting-registration@vitest.local';
 const SIGNUP_PHONE = '555-111-2222';
 const MATCH_BOWLER_PHONE = '555-000-0000';
 const SETUP_PASSWORD = 'BrowserSetup9!';
@@ -40,10 +42,10 @@ async function createBrowserContext(): Promise<BrowserContext> {
   // traffic to this isolated app. This supplies transport, not API mocks.
   await context.route('**/*', async (route) => {
     const incoming = new URL(route.request().url());
-    if (incoming.hostname !== EXPECTED_HOST) return route.abort();
+    if (![EXPECTED_HOST, ROOT_HOST].includes(incoming.hostname)) return route.abort();
     const response = await route.fetch({
       url: `http://127.0.0.1:${app.port}${incoming.pathname}${incoming.search}`,
-      headers: { ...route.request().headers(), host: EXPECTED_HOST },
+      headers: { ...route.request().headers(), host: incoming.hostname },
       maxRedirects: 0,
     });
     await route.fulfill({ response });
@@ -124,16 +126,18 @@ function watchForbiddenProfileRequests(page: Page): string[] {
 
 async function startRegistration(
   context: BrowserContext,
-  input: { email: string; name: string },
+  input: { email: string; name: string; host?: string },
 ): Promise<{ page: Page; forbiddenRequests: string[]; user: typeof users.$inferSelect }> {
   const page = await context.newPage();
   const forbiddenRequests = watchForbiddenProfileRequests(page);
-  await page.goto(`https://${EXPECTED_HOST}/signup?org=${ORGANIZATION_SLUG}`);
+  const host = input.host ?? EXPECTED_HOST;
+  const signupPath = host === ROOT_HOST ? '/signup' : `/signup?org=${ORGANIZATION_SLUG}`;
+  await page.goto(`https://${host}${signupPath}`);
   await page.getByLabel('Full Name', { exact: true }).fill(input.name);
   await page.getByLabel('Email Address', { exact: true }).fill(input.email);
   await page.getByLabel('Phone Number', { exact: true }).fill(SIGNUP_PHONE);
   await page.getByRole('combobox', { name: /league/i }).click();
-  await page.getByRole('option', { name: LEAGUE_NAME, exact: true }).click();
+  await page.getByRole('option', { name: new RegExp(LEAGUE_NAME), exact: host !== ROOT_HOST }).click();
 
   const requestPromise = page.waitForRequest((request) => {
     const url = new URL(request.url());
@@ -159,6 +163,13 @@ async function startRegistration(
 
   // The response is a check-email success state, not an authenticated app
   // session. The anonymous session itself is the capability for status/resend.
+  await page.getByText('Check your email', { exact: true }).waitFor();
+  // Exercise a fresh document/query cache on the waiting URL for both the
+  // organization and canonical-root hosts. The background /api/user request
+  // is naturally unauthenticated and must not redirect this public page.
+  await page.goto(`https://${host}/registration-email`);
+  await page.getByText('Check your email', { exact: true }).waitFor();
+  await page.reload();
   await page.getByText('Check your email', { exact: true }).waitFor();
   const cookies = await context.cookies();
   expect(cookies.some((cookie) => cookie.name === 'connect.sid')).toBe(true);
@@ -324,6 +335,38 @@ describe('Email-first registration — real browser, outbox, and setup link', ()
       expect(updated?.bowlerId).toBeNull();
       expect(forbiddenRequests).toEqual([]);
       expect(page.url()).not.toContain('/claim-bowler');
+    } finally {
+      await context.close();
+    }
+  }, 60_000);
+
+  it('keeps a canonical-root waiting page usable on direct navigation and reload', async () => {
+    clearCapturedEmails();
+    await installRegistrationTemplate();
+    const context = await createBrowserContext();
+    try {
+      const { page } = await startRegistration(context, {
+        email: ROOT_EMAIL,
+        name: 'Root Waiting User',
+        host: ROOT_HOST,
+      });
+      const directPage = await context.newPage();
+      try {
+        await directPage.goto(`https://${ROOT_HOST}/registration-email`);
+        await directPage.getByText('Check your email', { exact: true }).waitFor();
+        await directPage.reload();
+        await directPage.getByText('Check your email', { exact: true }).waitFor();
+        expect(new URL(directPage.url()).pathname).toBe('/registration-email');
+        const status = await directPage.evaluate(async () => {
+          const response = await fetch('/api/auth/registration/status', { credentials: 'include' });
+          return { status: response.status, body: await response.json() as { data?: { status?: unknown } } };
+        });
+        expect(status.status).toBe(200);
+        expect(status.body.data?.status).toBe('pending');
+      } finally {
+        await directPage.close();
+      }
+      await page.close();
     } finally {
       await context.close();
     }

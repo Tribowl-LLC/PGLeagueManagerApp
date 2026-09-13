@@ -78,7 +78,10 @@ describe("SignUpPage API outcomes", () => {
 
     await fillAndSubmit(user);
 
-    expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: "Check your email" }));
+    expect(toast).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Registration request received",
+      description: expect.stringMatching(/if registration can continue/i),
+    }));
   });
 
   it("uses Retry-After to show a disabled sign-up cooldown", async () => {

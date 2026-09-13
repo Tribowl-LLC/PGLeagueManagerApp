@@ -33,6 +33,7 @@ const PUBLIC_AUTH_PATHS = new Set([
   "/signup",
   "/set-password",
   "/forgot-password",
+  "/registration-email",
   "/confirm-email-change",
   "/privacy-policy",
   "/delete-account",

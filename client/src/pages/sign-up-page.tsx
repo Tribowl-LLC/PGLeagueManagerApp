@@ -196,8 +196,8 @@ const SignUpPage: FC = () => {
 
       clearThrottle();
       toast({
-        title: "Check your email",
-        description: "We'll email you a setup link to finish creating your account.",
+        title: "Registration request received",
+        description: "If registration can continue, we'll send setup instructions to your email.",
       });
       setLocation("/registration-email");
     } catch (error) {

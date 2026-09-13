@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ApiError } from "@/lib/api-error";
 
 const { apiRequestMock } = vi.hoisted(() => ({ apiRequestMock: vi.fn() }));
 vi.mock("@/lib/queryClient", async () => {
@@ -38,6 +39,22 @@ beforeEach(() => {
 });
 
 describe("RegistrationEmailPage delivery states", () => {
+  it("uses neutral recovery actions when the server has no registration capability", async () => {
+    apiRequestMock.mockRejectedValue(new ApiError({
+      message: "Registration status is unavailable.",
+      status: 404,
+      code: "NOT_FOUND",
+    }));
+    renderPage();
+
+    expect(await screen.findByText("Continue registration", { exact: true })).toBeInTheDocument();
+    expect(screen.getByTestId("link-registration-continue")).toHaveTextContent("Continue sign-up");
+    expect(screen.getByTestId("link-registration-sign-in")).toHaveTextContent("Sign in");
+    expect(screen.getByTestId("link-registration-forgot-password")).toHaveTextContent("Forgot password?");
+    expect(screen.queryByText(/session is no longer available/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/different email/i)).not.toBeInTheDocument();
+  });
+
   it("shows a confirmed delivery failure while the pending account remains actionable", async () => {
     apiRequestMock.mockResolvedValue({ success: true, data: statusData() });
     renderPage();

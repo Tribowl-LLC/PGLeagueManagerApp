@@ -141,7 +141,7 @@ let userBowlersBase: string;
 
 const ORG_5 = { id: 5, name: 'Org Five' };
 
-function makeAuthApp(subdomainOrg: unknown, sessionUser: unknown) {
+function makeAuthApp(subdomainOrg: unknown, sessionUser: unknown, orgSlug?: string | null) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -151,6 +151,7 @@ function makeAuthApp(subdomainOrg: unknown, sessionUser: unknown) {
       isAuthenticated: () => Boolean(sessionUser),
       user: sessionUser,
       subdomainOrg,
+      orgSlug,
     });
     Object.defineProperty(req, 'ip', { value: '127.0.0.1', configurable: true });
     next();
@@ -215,8 +216,8 @@ const REG_BASE = {
 // ---------------------------------------------------------------------------
 
 describe('POST /api/auth/register — tenant-enrollment gate', () => {
-  it('rejects registration when no subdomain context is present', async () => {
-    const noSubdomainApp = makeAuthApp(null, null);
+  it('rejects registration on an unknown tenant host', async () => {
+    const noSubdomainApp = makeAuthApp(null, null, 'unknown-org');
     const s = await new Promise<Server>(resolve => {
       const srv = noSubdomainApp.listen(0, '127.0.0.1', () => resolve(srv));
     });

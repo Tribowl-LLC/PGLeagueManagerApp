@@ -9,7 +9,7 @@ import { db } from "../db.js";
 import { ACCOUNT_ACTION_TYPES, User as SelectUser, emailSchema, nameSchema, accountActionRequests, accountActionDeliveryJobs, accountEmailDeliveryEvents } from "@shared/schema";
 import { passwordSchema } from "@shared/password-validation";
 import { sanitizeUser, sendSuccess, sendError, handleUserOrgError } from "../utils/api.js";
-import { isDev } from "../config";
+import { env, isDev } from "../config";
 import { checkUserBelongsToOrg } from "../middleware/subdomain";
 import { csrfProtection } from "../middleware/csrf";
 import { createLogger } from "../logger";
@@ -48,6 +48,47 @@ const SUPPORTED_PREFERRED_LANGUAGES = Object.keys(
 
 const log = createLogger("AuthRoutes");
 const MAX_ACCOUNT_ACTION_TOKEN_LENGTH = 256;
+
+function requestHostname(req: Request): string {
+  const hostname = (req.hostname || req.get("host") || "").trim().toLowerCase();
+  // Express normally removes the port from req.hostname. Keep the fallback
+  // safe for the direct-router/unit-test case and for IPv6 loopback.
+  if (hostname.startsWith("[")) {
+    const closingBracket = hostname.indexOf("]");
+    return closingBracket >= 0 ? hostname.slice(1, closingBracket) : hostname;
+  }
+  return hostname.replace(/:\d+$/, "");
+}
+
+function isCanonicalRegistrationHost(req: Request): boolean {
+  const hostname = requestHostname(req);
+  const appDomain = typeof env.APP_DOMAIN === "string" ? env.APP_DOMAIN.toLowerCase() : null;
+  if (appDomain && (hostname === appDomain || hostname === `www.${appDomain}`)) return true;
+
+  // Local development/test traffic has no DNS subdomain, so loopback is the
+  // explicit equivalent of the canonical root. Never extend this exception to
+  // production or to arbitrary hosts.
+  return isDev && ["localhost", "127.0.0.1", "::1"].includes(hostname);
+}
+
+function registrationHostMatchesOrganization(req: Request, organizationId: number): boolean {
+  if (req.subdomainOrg) return req.subdomainOrg.id === organizationId;
+  // subdomainDetection leaves an unknown tenant slug in orgSlug. It must not
+  // fall through as if it were the root host when the lookup returned null.
+  if (req.orgSlug) return false;
+  return isCanonicalRegistrationHost(req);
+}
+
+function parsePositiveSafeInteger(value: unknown): number | undefined {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value > 0 ? value : undefined;
+  }
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  if (!/^\d+$/.test(normalized)) return undefined;
+  const parsed = Number(normalized);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
 
 type AccountActionErrorCode =
   | "INVALID_TOKEN"
@@ -243,25 +284,27 @@ export function registerAuthRoutes(app: Express): void {
   // is consumed; it is never returned to the browser or sent to a provider.
   authRouter.post("/register", registerLimiter, async (req, res) => {
     try {
-      const organizationId = req.body?.organizationId ? Number.parseInt(String(req.body.organizationId), 10) : undefined;
+      const organizationId = parsePositiveSafeInteger(req.body?.organizationId);
       if (!organizationId || !Number.isSafeInteger(organizationId)) {
         return sendError(res, "Sign-up requires an organization context.", 400, "ORG_REQUIRED");
       }
-      if (!req.subdomainOrg) {
-        return sendError(res, "Sign-up requires a valid organization context.", 400, "ORG_REQUIRED");
-      }
-      if (organizationId !== req.subdomainOrg.id) {
-        return sendError(res, "Organization does not match the current context.", 400, "ORG_MISMATCH");
+      if (!registrationHostMatchesOrganization(req, organizationId)) {
+        return sendError(res, req.subdomainOrg ? "Organization does not match the current context." : "Sign-up requires a valid organization context.", 400, req.subdomainOrg ? "ORG_MISMATCH" : "ORG_REQUIRED");
       }
 
-      const leagueId = req.body?.leagueId ? Number.parseInt(String(req.body.leagueId), 10) : undefined;
+      const leagueId = parsePositiveSafeInteger(req.body?.leagueId);
       const publicLeagues = (await storage.getLeagues(organizationId))
-        .filter((league) => league.active !== false && league.allowPublicSignup === true);
-      if (publicLeagues.length === 0) {
-        return sendError(res, "This organization does not currently allow public sign-up.", 403, "SIGNUP_NOT_ALLOWED");
-      }
-      if (!leagueId || !Number.isSafeInteger(leagueId) || !publicLeagues.some((league) => league.id === leagueId)) {
+        .filter((league) => league.active === true && league.allowPublicSignup === true);
+      const selectedLeague = publicLeagues.find((league) => league.id === leagueId);
+      if (!selectedLeague || selectedLeague.organizationId !== organizationId) {
         return sendError(res, "The selected league does not allow public sign-up.", 403, "SIGNUP_NOT_ALLOWED");
+      }
+      // The league list is scoped by the submitted organization, but retain
+      // this explicit ownership check as the authorization boundary for the
+      // tenant context used to create the account.
+      const registrationOrganizationId = selectedLeague.organizationId;
+      if (!registrationOrganizationId || registrationOrganizationId !== organizationId) {
+        return sendError(res, "Organization does not match the current context.", 400, "ORG_MISMATCH");
       }
 
       const registrationSchema = z.object({
@@ -327,12 +370,12 @@ export function registerAuthRoutes(app: Express): void {
             phone: result.data.phone,
             password: placeholderPassword,
             role: "user",
-            organizationId,
+            organizationId: registrationOrganizationId,
             bowlerId: null,
           }, tx);
           const queued = await enqueueAccountRegistrationDelivery({
             userId: createdUser.id,
-            organizationId,
+            organizationId: registrationOrganizationId,
             credentialGeneration: createdUser.credentialGeneration,
             expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
           }, tx);
@@ -348,7 +391,7 @@ export function registerAuthRoutes(app: Express): void {
 
       req.session.pendingRegistration = {
         userId: user.id,
-        organizationId,
+        organizationId: registrationOrganizationId,
         credentialGeneration: user.credentialGeneration,
         createdAt: Date.now(),
       };
@@ -372,8 +415,7 @@ export function registerAuthRoutes(app: Express): void {
       || !Number.isSafeInteger(pending.organizationId)
       || !Number.isSafeInteger(pending.credentialGeneration)
       || pending.createdAt < Date.now() - 7 * 24 * 60 * 60 * 1000
-      || !req.subdomainOrg
-      || req.subdomainOrg.id !== pending.organizationId
+      || !registrationHostMatchesOrganization(req, pending.organizationId)
     ) return undefined;
     const user = await storage.getUser(pending.userId);
     if (
