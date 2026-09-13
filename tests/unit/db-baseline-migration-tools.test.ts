@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(40);
+    expect(migrations).toHaveLength(41);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -465,6 +465,13 @@ describe('normalized migration baseline tools', () => {
     expect(migrations[39]).toMatchObject({ idx: 39, tag: '0039_email_first_registration' });
     expect(migrations[39]?.sql).toContain("account_registration");
     expect(migrations[39]?.sql).not.toContain('CREATE TABLE');
+    expect(migrations[40]).toMatchObject({
+      idx: 40,
+      tag: '0040_remove_league_public_signup',
+      createdAt: 1789311087511,
+      hash: '9a4ea8867032497cff3dd402ba6b132ede5ed4f6eefe676e82c313ebcf663b5e',
+    });
+    expect(migrations[40]?.sql.trim()).toBe('ALTER TABLE "leagues" DROP COLUMN "allow_public_signup";');
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 

@@ -111,6 +111,17 @@ describe("league setup integration API", () => {
     expect(retry.status).toBe(200);
     expect(retry.data.data).toMatchObject({ setupIntegration: { mode: "idempotent_retry", writesPerformed: false } });
     expect(retry.data.data?.canonicalGeneration?.durableIds).toEqual(result.canonicalGeneration?.durableIds);
+    const beforeLegacyRetry = {
+      leagues: await db.select({ id: leagues.id }).from(leagues).where(eq(leagues.organizationId, organizationId)),
+      runs: await db.select({ id: leagueOccurrenceGenerationRuns.id }).from(leagueOccurrenceGenerationRuns).where(eq(leagueOccurrenceGenerationRuns.organizationId, organizationId)),
+    };
+    const legacyRetry = await apiPost("/api/leagues", { ...body, allowPublicSignup: true }, admin);
+    expect(legacyRetry.status).toBe(400);
+    expect(legacyRetry.data.error?.code).toBe("VALIDATION_ERROR");
+    expect({
+      leagues: await db.select({ id: leagues.id }).from(leagues).where(eq(leagues.organizationId, organizationId)),
+      runs: await db.select({ id: leagueOccurrenceGenerationRuns.id }).from(leagueOccurrenceGenerationRuns).where(eq(leagueOccurrenceGenerationRuns.organizationId, organizationId)),
+    }).toEqual(beforeLegacyRetry);
     const changed = await apiPost("/api/leagues", { ...body, paymentMode: "upfront" }, admin);
     expect(changed.status).toBe(409);
     expect(changed.data.error?.code).toBe("IDEMPOTENCY_CONFLICT");
@@ -385,6 +396,16 @@ describe("league setup integration API", () => {
     });
     expect(retry.data.data?.canonicalGeneration?.durableIds)
       .toEqual(target.canonicalGeneration?.durableIds);
+    expect(await targetCounts()).toEqual(beforeRetry);
+
+    const legacyRetry = await apiPost<LeagueSetupIntegrationResult>(`/api/leagues/${source.id}/new-season`, {
+      ...values,
+      allowPublicSignup: true,
+      setupIntegration: intent(successfulAttempt.key),
+      sourceConfirmation,
+    }, admin);
+    expect(legacyRetry.status).toBe(400);
+    expect(legacyRetry.data.error?.code).toBe("VALIDATION_ERROR");
     expect(await targetCounts()).toEqual(beforeRetry);
   });
 });

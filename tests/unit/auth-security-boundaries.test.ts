@@ -34,6 +34,7 @@ vi.mock('../../server/logger', () => ({
 const mockGetBowler = vi.fn<(id: number) => Promise<unknown>>();
 const mockIsBowlerLinked = vi.fn<(id: number) => Promise<boolean>>(async () => false);
 const mockGetActiveOrganizations = vi.fn(async () => [{ id: 5, name: 'Test Org', active: true }]);
+const mockGetOrganization = vi.fn(async () => ({ id: 5, name: 'Test Org', active: true }));
 const mockGetUserByEmail = vi.fn<(email: string) => Promise<null>>(async () => null);
 const mockCreateUser = vi.fn(async () => ({
   id: 99,
@@ -61,13 +62,26 @@ vi.mock('../../server/storage', () => ({
     updateUser: vi.fn(async () => undefined),
     updateBowler: vi.fn(async () => undefined),
     getUser: vi.fn(async () => null),
-    getOrganization: vi.fn(async () => ({ id: 5, name: 'Test Org', active: true })),
+    getOrganization: (...args: unknown[]) => mockGetOrganization(...args as []),
     getActiveOrganizations: () => mockGetActiveOrganizations(),
     clearUserInviteToken: vi.fn(async () => undefined),
     invalidatePendingEmailChangeRequestsForUser: vi.fn(async () => 0),
     setUserInviteToken: vi.fn(async () => undefined),
     getUserByInviteToken: vi.fn(async () => null),
     getLinkedBowlerIds: vi.fn(async () => []),
+  },
+}));
+
+vi.mock('../../server/storage/account-action-delivery-jobs.js', () => ({
+  enqueuePasswordResetDelivery: vi.fn(async () => ({ kind: 'enqueued', job: {} })),
+  enqueueAccountRegistrationDelivery: vi.fn(async () => ({ kind: 'enqueued', job: {} })),
+  resumePendingAccountRegistration: vi.fn(async () => undefined),
+  getNextPasswordResetDeliveryAt: vi.fn(async () => null),
+}));
+
+vi.mock('../../server/db.js', () => ({
+  db: {
+    transaction: vi.fn(async (callback: (tx: unknown) => Promise<unknown>) => callback({})),
   },
 }));
 
@@ -212,6 +226,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockIsBowlerLinked.mockResolvedValue(false);
   mockGetUserByEmail.mockResolvedValue(null);
+  mockGetOrganization.mockResolvedValue({ id: 5, name: 'Test Org', active: true });
 });
 
 const REG_BASE = {

@@ -6,7 +6,9 @@ An internal reference for organization administrators on how the bowler sign-up 
 
 ## Overview
 
-LeagueVault provides a self-service registration system for bowlers. When a bowler creates an account, the system automatically links them to their existing bowler profile if possible, ensuring a seamless onboarding experience.
+LeagueVault provides a self-service registration system for bowlers. After a
+bowler proves email ownership, the system automatically links them to their
+existing bowler profile if there is one unique exact-email match.
 
 Each organization has a unique tenant-hosted sign-up URL that can be shared via QR code, email, or printed materials.
 
@@ -31,7 +33,8 @@ When bowlers visit this URL, they will see:
 - A welcome message with your organization name
 - A short account setup form
 
-You can find your organization slug in the admin settings, or ask your system administrator.
+You can find your organization subdomain in the admin settings, or ask your
+system administrator.
 
 ---
 
