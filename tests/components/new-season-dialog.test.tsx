@@ -16,7 +16,6 @@ const league = {
   name: 'Farmington Mixed League',
   description: null,
   active: true,
-  allowPublicSignup: false,
   seasonStart: '2025-01-06T00:00:00.000Z',
   seasonEnd: '2025-03-24T00:00:00.000Z',
   weekDay: 'Monday',
@@ -99,7 +98,6 @@ describe('NewSeasonDialog', () => {
 
     await user.click(screen.getByRole('button', { name: /bowling schedule/i }));
     await user.click(screen.getByTestId('schedule-week-2026-09-07'));
-    await user.click(screen.getByRole('switch', { name: /allow public sign-up/i }));
     await user.click(screen.getByLabelText('League Payment Timing'));
     await user.click(screen.getByRole('option', { name: /full season upfront/i }));
     await user.click(await screen.findByLabelText(/reviewed and confirm this carried configuration/i));
@@ -115,7 +113,6 @@ describe('NewSeasonDialog', () => {
       skipDates: ['2026-09-07'],
       cancelledDates: [],
       doublePayDates: [],
-      allowPublicSignup: true,
       paymentMode: 'upfront',
       sourceConfirmation: {
         contractVersion: 'league-rollover-source/1',

@@ -1,8 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { eq, and, isNotNull } from 'drizzle-orm';
 import type { Organization } from '@shared/schema';
-import { leagues, organizations } from '@shared/schema';
-import { db } from '../db.js';
 import { sendSuccess, sendError } from '../utils/api.js';
 import { isAllowedRedirectUrl } from '../utils/url-validation.js';
 import { validateDataUri } from '../utils/image-magic-bytes.js';
@@ -44,32 +41,6 @@ async function serveOrgImage(
   res.redirect(data);
 }
 
-router.get('/public-leagues', async (_req, res) => {
-  try {
-    const rows = await db
-      .select({
-        id: leagues.id,
-        name: leagues.name,
-        organizationId: leagues.organizationId,
-        organizationName: organizations.name,
-        organizationSlug: organizations.slug,
-      })
-      .from(leagues)
-      .innerJoin(organizations, eq(organizations.id, leagues.organizationId))
-      .where(and(
-        eq(leagues.allowPublicSignup, true),
-        eq(leagues.active, true),
-        eq(organizations.active, true),
-        isNotNull(leagues.organizationId),
-      ))
-      .orderBy(organizations.name, leagues.name);
-    sendSuccess(res, rows);
-  } catch (error) {
-    log.error('Error fetching public leagues:', error);
-    sendError(res, 'Failed to fetch public leagues', 500, 'ServerError');
-  }
-});
-
 router.get('/slug/:slug', async (req, res) => {
   try {
     const { slug } = req.params;
@@ -92,29 +63,6 @@ router.get('/slug/:slug', async (req, res) => {
   } catch (error) {
     log.error(`Error fetching organization with slug ${req.params.slug}:`, error);
     sendError(res, 'Failed to fetch organization', 500, 'ServerError');
-  }
-});
-
-router.get('/slug/:slug/leagues', async (req, res) => {
-  try {
-    const { slug } = req.params;
-    const organization =
-      (await storage.getOrganizationBySubdomain(slug)) ??
-      (await storage.getOrganizationBySlug(slug));
-
-    if (!organization) {
-      return sendError(res, 'Organization not found', 404, 'NOT_FOUND');
-    }
-
-    const publicLeagues = organization.active === true
-      ? (await storage.getLeagues(organization.id))
-        .filter(l => l.active === true && l.allowPublicSignup === true)
-        .map(l => ({ id: l.id, name: l.name }))
-      : [];
-    sendSuccess(res, publicLeagues);
-  } catch (error) {
-    log.error(`Error fetching leagues for org slug ${req.params.slug}:`, error);
-    sendError(res, 'Failed to fetch organization leagues', 500, 'ServerError');
   }
 });
 

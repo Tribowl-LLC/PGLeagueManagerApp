@@ -239,7 +239,6 @@ interface LeagueRow {
   squareCategoryId: string | null;
   lineageFee: number | null;
   prizeFundFee: number | null;
-  allowPublicSignup: boolean;
 }
 
 function makeLeague(overrides: Partial<LeagueRow> = {}): LeagueRow {
@@ -273,7 +272,6 @@ function makeLeague(overrides: Partial<LeagueRow> = {}): LeagueRow {
     squareCategoryId: null,
     lineageFee: null,
     prizeFundFee: null,
-    allowPublicSignup: false,
     ...overrides,
   };
 }
@@ -849,7 +847,6 @@ describe('POST /api/leagues/:id/new-season → fires resync for every bowler clo
       skipDates: ['2026-09-08'],
       cancelledDates: [],
       doublePayDates: ['2026-09-15'],
-      allowPublicSignup: true,
       paymentMode: 'upfront',
       setupIntegration: {
         contractVersion: 'league-setup-integration-request/3',
@@ -872,7 +869,6 @@ describe('POST /api/leagues/:id/new-season → fires resync for every bowler clo
         skipDates: ['2026-09-08'],
         cancelledDates: [],
         doublePayDates: ['2026-09-15'],
-        allowPublicSignup: true,
         paymentMode: 'upfront',
         }),
       }),

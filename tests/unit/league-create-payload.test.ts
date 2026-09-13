@@ -8,7 +8,6 @@ function parsedBrowserFormData() {
     description: "Fall 2026",
     payingLineupSize: 4,
     active: true,
-    allowPublicSignup: false,
     seasonStart: new Date("2026-09-14T00:00:00.000Z"),
     seasonEnd: new Date("2027-04-26T00:00:00.000Z"),
     weekDay: "Monday",

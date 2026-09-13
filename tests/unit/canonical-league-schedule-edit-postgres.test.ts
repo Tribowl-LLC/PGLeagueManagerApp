@@ -74,7 +74,6 @@ beforeAll(async () => {
       organizationId,
       locationId,
       active: true,
-      allowPublicSignup: false,
       seasonStart: "2032-09-05",
       seasonEnd: "2032-09-26",
       weekDay: "Sunday",

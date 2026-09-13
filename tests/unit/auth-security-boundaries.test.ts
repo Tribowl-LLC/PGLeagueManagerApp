@@ -2,7 +2,7 @@
  * Task #731 — focused security boundary tests for the three high-severity
  * auth/claim vulnerabilities:
  *
- *  1. POST /api/auth/register: subdomain context + public-signup policy gates
+ *  1. POST /api/auth/register: trusted organization context and fail-closed gates
  *  2. POST /api/auth/claim-bowler: org membership + email ownership (incl. blank-email)
  *  3. POST /api/user-bowlers/link-bowler: org membership + email ownership (incl. blank-email)
  *
@@ -33,16 +33,26 @@ vi.mock('../../server/logger', () => ({
 
 const mockGetBowler = vi.fn<(id: number) => Promise<unknown>>();
 const mockIsBowlerLinked = vi.fn<(id: number) => Promise<boolean>>(async () => false);
-const mockGetLeagues = vi.fn<(orgId: number) => Promise<Record<string, unknown>[]>>(async () => []);
+const mockGetActiveOrganizations = vi.fn(async () => [{ id: 5, active: true }]);
+const mockGetOrganization = vi.fn(async () => ({ id: 5, name: 'Test Org', active: true }));
 const mockGetUserByEmail = vi.fn<(email: string) => Promise<null>>(async () => null);
+const mockCreateUser = vi.fn(async () => ({
+  id: 99,
+  email: 'new@example.com',
+  name: 'New User',
+  phone: '5555555555',
+  role: 'user' as const,
+  organizationId: 5,
+  bowlerId: null,
+  credentialGeneration: 0,
+}));
 
 vi.mock('../../server/storage', () => ({
   storage: {
     getBowler: (id: number) => mockGetBowler(id),
     isBowlerLinked: (id: number) => mockIsBowlerLinked(id),
-    getLeagues: (orgId: number) => mockGetLeagues(orgId),
     getUserByEmail: (email: string) => mockGetUserByEmail(email),
-    createUser: vi.fn(async () => ({ id: 99, email: 'a@b.com', name: 'A' })),
+    createUser: (...args: unknown[]) => mockCreateUser(...args as []),
     getBowlerByEmail: vi.fn(async () => null),
     getBowlerByEmailSystemAdmin: vi.fn(async () => null),
     linkUserToBowler: vi.fn(async () => undefined),
@@ -52,12 +62,26 @@ vi.mock('../../server/storage', () => ({
     updateUser: vi.fn(async () => undefined),
     updateBowler: vi.fn(async () => undefined),
     getUser: vi.fn(async () => null),
-    getOrganization: vi.fn(async () => ({ id: 5, name: 'Test Org', active: true })),
+    getOrganization: (...args: unknown[]) => mockGetOrganization(...args as []),
+    getActiveOrganizations: () => mockGetActiveOrganizations(),
     clearUserInviteToken: vi.fn(async () => undefined),
     invalidatePendingEmailChangeRequestsForUser: vi.fn(async () => 0),
     setUserInviteToken: vi.fn(async () => undefined),
     getUserByInviteToken: vi.fn(async () => null),
     getLinkedBowlerIds: vi.fn(async () => []),
+  },
+}));
+
+vi.mock('../../server/storage/account-action-delivery-jobs.js', () => ({
+  enqueuePasswordResetDelivery: vi.fn(async () => ({ kind: 'enqueued', job: {} })),
+  enqueueAccountRegistrationDelivery: vi.fn(async () => ({ kind: 'enqueued', job: {} })),
+  resumePendingAccountRegistration: vi.fn(async () => undefined),
+  getNextPasswordResetDeliveryAt: vi.fn(async () => null),
+}));
+
+vi.mock('../../server/db.js', () => ({
+  db: {
+    transaction: vi.fn(async (callback: (tx: unknown) => Promise<unknown>) => callback({})),
   },
 }));
 
@@ -202,20 +226,22 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockIsBowlerLinked.mockResolvedValue(false);
   mockGetUserByEmail.mockResolvedValue(null);
+  mockGetOrganization.mockResolvedValue({ id: 5, name: 'Test Org', active: true });
 });
 
 const REG_BASE = {
   email: 'attacker@example.com',
   password: 'CorrectHorseBatteryStaple-2026!',
   name: 'Attacker',
+  phone: '555-101-0101',
   organizationId: 5,
 };
 
 // ---------------------------------------------------------------------------
-// 1. Registration — subdomain and public-signup policy gates
+// 1. Registration — trusted host tenant resolution
 // ---------------------------------------------------------------------------
 
-describe('POST /api/auth/register — tenant-enrollment gate', () => {
+describe('POST /api/auth/register — tenant-resolution gate', () => {
   it('rejects registration on an unknown tenant host', async () => {
     const noSubdomainApp = makeAuthApp(null, null, 'unknown-org');
     const s = await new Promise<Server>(resolve => {
@@ -228,9 +254,9 @@ describe('POST /api/auth/register — tenant-enrollment gate', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(REG_BASE),
       });
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(503);
       const data = await res.json();
-      expect(data.error?.code).toBe('ORG_REQUIRED');
+      expect(data.error?.code).toBe('SIGNUP_UNAVAILABLE');
     } finally {
       await new Promise<void>(r => s.close(() => r()));
     }
@@ -248,41 +274,99 @@ describe('POST /api/auth/register — tenant-enrollment gate', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(REG_BASE),
       });
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(503);
       const data = await res.json();
-      expect(data.error?.code).toBe('ORG_MISMATCH');
+      expect(data.error?.code).toBe('SIGNUP_UNAVAILABLE');
     } finally {
       await new Promise<void>(r => s.close(() => r()));
     }
   });
 
-  it('rejects when the org has no active public leagues', async () => {
-    mockGetLeagues.mockResolvedValueOnce([
-      { id: 1, name: 'Private League', organizationId: 5, active: true, allowPublicSignup: false },
-    ]);
+  it('allows registration for an organization without requiring an active league', async () => {
     const res = await fetch(`${authBase}/api/auth/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(REG_BASE),
     });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(202);
     const data = await res.json();
-    expect(data.error?.code).toBe('SIGNUP_NOT_ALLOWED');
+    expect(data.success).toBe(true);
   });
 
-  it('rejects when a specific leagueId is private even though other leagues are public', async () => {
-    mockGetLeagues.mockResolvedValueOnce([
-      { id: 10, name: 'Public League', organizationId: 5, active: true, allowPublicSignup: true },
-      { id: 11, name: 'Private League', organizationId: 5, active: true, allowPublicSignup: false },
-    ]);
+  it('ignores spoofed organization and league IDs when resolving a tenant-hosted registration', async () => {
     const res = await fetch(`${authBase}/api/auth/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...REG_BASE, leagueId: 11 }),
+      body: JSON.stringify({ ...REG_BASE, organizationId: 99, leagueId: 11 }),
     });
-    expect(res.status).toBe(403);
-    const data = await res.json();
-    expect(data.error?.code).toBe('SIGNUP_NOT_ALLOWED');
+    expect(res.status).toBe(202);
+    expect(mockCreateUser).toHaveBeenCalledWith(expect.objectContaining({ organizationId: 5 }), expect.anything());
+  });
+
+  it('fails closed on a canonical root with zero active organizations', async () => {
+    mockGetActiveOrganizations.mockResolvedValueOnce([]);
+    const rootApp = makeAuthApp(null, null);
+    const s = await new Promise<Server>(resolve => {
+      const srv = rootApp.listen(0, '127.0.0.1', () => resolve(srv));
+    });
+    try {
+      const res = await fetch(`http://127.0.0.1:${(s.address() as AddressInfo).port}/api/auth/register`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(REG_BASE),
+      });
+      expect(res.status).toBe(503);
+      expect((await res.json()).error?.code).toBe('SIGNUP_UNAVAILABLE');
+    } finally {
+      await new Promise<void>(r => s.close(() => r()));
+    }
+  });
+
+  it('fails closed on a canonical root with multiple active organizations', async () => {
+    mockGetActiveOrganizations.mockResolvedValueOnce([
+      { id: 5, active: true },
+      { id: 6, active: true },
+    ]);
+    const rootApp = makeAuthApp(null, null);
+    const s = await new Promise<Server>(resolve => {
+      const srv = rootApp.listen(0, '127.0.0.1', () => resolve(srv));
+    });
+    try {
+      const res = await fetch(`http://127.0.0.1:${(s.address() as AddressInfo).port}/api/auth/register`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(REG_BASE),
+      });
+      expect(res.status).toBe(503);
+      expect((await res.json()).error?.code).toBe('SIGNUP_UNAVAILABLE');
+    } finally {
+      await new Promise<void>(r => s.close(() => r()));
+    }
+  });
+});
+
+describe('GET /api/auth/registration/availability — tenant-resolution gate', () => {
+  it('returns only an availability boolean for a known tenant host', async () => {
+    const res = await fetch(`${authBase}/api/auth/registration/availability`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    expect(await res.json()).toEqual({ success: true, data: { available: true } });
+    expect(mockGetOrganization).toHaveBeenCalledWith(5);
+  });
+
+  it('returns unavailable without exposing organization details when the root is ambiguous', async () => {
+    mockGetActiveOrganizations.mockResolvedValueOnce([
+      { id: 5, active: true },
+      { id: 6, active: true },
+    ]);
+    const rootApp = makeAuthApp(null, null);
+    const s = await new Promise<Server>(resolve => {
+      const srv = rootApp.listen(0, '127.0.0.1', () => resolve(srv));
+    });
+    try {
+      const res = await fetch(`http://127.0.0.1:${(s.address() as AddressInfo).port}/api/auth/registration/availability`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get('cache-control')).toBe('no-store');
+      expect(await res.json()).toEqual({ success: true, data: { available: false } });
+    } finally {
+      await new Promise<void>(r => s.close(() => r()));
+    }
   });
 });
 

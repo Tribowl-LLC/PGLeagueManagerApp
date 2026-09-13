@@ -1,0 +1,25 @@
+{
+  "formatVersion": 2,
+  "algorithm": "sha256",
+  "migration": {
+    "tag": "0040_remove_league_public_signup",
+    "hash": "9a4ea8867032497cff3dd402ba6b132ede5ed4f6eefe676e82c313ebcf663b5e",
+    "createdAt": 1789311087511
+  },
+  "digest": "c087b82b79dbf73acc7dfd98168668902f360159bbbbc5e1ad8d6fcf8f5d3f28",
+  "counts": {
+    "tables": 67,
+    "columns": 913,
+    "nonTableRelations": 0,
+    "rewriteRules": 0,
+    "unsupportedPublicObjects": 0,
+    "extensions": 0,
+    "sequences": 25,
+    "constraints": 511,
+    "indexes": 281,
+    "types": 1,
+    "functions": 19,
+    "triggers": 33,
+    "policies": 0
+  }
+}

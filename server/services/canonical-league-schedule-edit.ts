@@ -49,7 +49,7 @@ export class CanonicalLeagueScheduleEditError extends Error {
 
 /** Ordinary builder fields that may accompany a canonical schedule edit. */
 export type CanonicalLeagueMetadataPatch = Partial<Pick<League,
-  "name" | "description" | "payingLineupSize" | "active" | "allowPublicSignup" | "practiceStartTime"
+  "name" | "description" | "payingLineupSize" | "active" | "practiceStartTime"
   | "lineageFee" | "prizeFundFee" | "squareLineageItemId" | "lineageItemVariationId"
   | "squareLineageItemName" | "squarePrizeFundItemId" | "prizeFundItemVariationId"
   | "squarePrizeFundItemName" | "squareCategoryId"

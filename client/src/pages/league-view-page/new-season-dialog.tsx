@@ -18,7 +18,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Loader2, RefreshCw } from "lucide-react";
-import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
 import type { ApiResponse, League, PaymentMode } from "@shared/schema";
 import { WEEKDAYS } from "@shared/schema";
@@ -45,7 +44,6 @@ export type NewSeasonFormValues = {
   skipDates: string[];
   cancelledDates: string[];
   doublePayDates: string[];
-  allowPublicSignup: boolean;
   paymentMode: PaymentMode;
   sourceConfirmation: LeagueRolloverSourceConfirmation;
 };
@@ -71,7 +69,6 @@ export function NewSeasonDialog({
   const [skipDates, setSkipDates] = useState<string[]>([]);
   const [cancelledDates, setCancelledDates] = useState<string[]>([]);
   const [doublePayDates, setDoublePayDates] = useState<string[]>([]);
-  const [allowPublicSignup, setAllowPublicSignup] = useState(league.allowPublicSignup ?? false);
   const [paymentMode, setPaymentMode] = useState<PaymentMode | "">("");
   const [showSchedule, setShowSchedule] = useState(false);
   const [carriedConfigurationConfirmed, setCarriedConfigurationConfirmed] = useState(false);
@@ -94,11 +91,10 @@ export function NewSeasonDialog({
     setSkipDates([]);
     setCancelledDates([]);
     setDoublePayDates([]);
-    setAllowPublicSignup(league.allowPublicSignup ?? false);
     setPaymentMode("");
     setShowSchedule(false);
     setCarriedConfigurationConfirmed(false);
-  }, [league.allowPublicSignup, league.totalBowlingWeeks, league.weekDay]);
+  }, [league.totalBowlingWeeks, league.weekDay]);
 
   useEffect(() => {
     if (showNewSeason) resetForm();
@@ -164,7 +160,6 @@ export function NewSeasonDialog({
       skipDates,
       cancelledDates,
       doublePayDates,
-      allowPublicSignup,
       paymentMode,
       sourceConfirmation: {
         contractVersion: LEAGUE_ROLLOVER_SOURCE_CONTRACT_VERSION,
@@ -269,23 +264,6 @@ export function NewSeasonDialog({
                 </SelectContent>
               </Select>
             </div>
-          </div>
-
-          <div className="flex items-center justify-between rounded-lg border p-3">
-            <div className="space-y-0.5">
-              <label htmlFor="new-season-public-signup" className="text-sm font-medium">
-                Allow Public Sign-up
-              </label>
-              <p className="text-xs text-muted-foreground">
-                List this new season on the public sign-up page.
-              </p>
-            </div>
-            <Switch
-              id="new-season-public-signup"
-              checked={allowPublicSignup}
-              onCheckedChange={setAllowPublicSignup}
-              aria-label="Allow Public Sign-up"
-            />
           </div>
 
           <div>

@@ -7,7 +7,6 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -126,27 +125,6 @@ export function LeagueBasicInfo({ form, activeLocations, onLocationChange }: Lea
               </SelectContent>
             </Select>
             <FormMessage />
-          </FormItem>
-        )}
-      />
-
-      <FormField
-        control={form.control}
-        name="allowPublicSignup"
-        render={({ field }) => (
-          <FormItem className="flex flex-row items-center justify-between rounded-lg border p-3">
-            <div className="space-y-0.5">
-              <FormLabel>Allow Public Sign-up</FormLabel>
-              <p className="text-sm text-muted-foreground">
-                When enabled, this league will appear on the public sign-up page
-              </p>
-            </div>
-            <FormControl>
-              <Switch
-                checked={field.value ?? false}
-                onCheckedChange={field.onChange}
-              />
-            </FormControl>
           </FormItem>
         )}
       />

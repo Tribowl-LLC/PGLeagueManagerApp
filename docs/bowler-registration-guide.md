@@ -6,9 +6,11 @@ An internal reference for organization administrators on how the bowler sign-up 
 
 ## Overview
 
-LeagueVault provides a self-service registration system for bowlers. When a bowler creates an account, the system automatically links them to their existing bowler profile if possible, ensuring a seamless onboarding experience.
+LeagueVault provides a self-service registration system for bowlers. After a
+bowler proves email ownership, the system automatically links them to their
+existing bowler profile if there is one unique exact-email match.
 
-Each organization has a unique sign-up URL that can be shared via QR code, email, or printed materials.
+Each organization has a unique tenant-hosted sign-up URL that can be shared via QR code, email, or printed materials.
 
 ---
 
@@ -17,21 +19,30 @@ Each organization has a unique sign-up URL that can be shared via QR code, email
 Your bowlers register at a URL specific to your organization:
 
 ```
-https://leaguevault.app/signup?org=[your-slug]
+https://[your-subdomain].leaguevault.app/signup
 ```
 
-For example, if your organization slug is `perfect-game`, the URL would be:
+For example, if your organization subdomain is `perfectgame`, the URL would be:
 
 ```
-https://leaguevault.app/signup?org=perfect-game
+https://perfectgame.leaguevault.app/signup
 ```
+
+The canonical URLs `https://leaguevault.app/signup` and
+`https://www.leaguevault.app/signup` are available only when exactly one
+organization is active, even if that organization has no leagues. If there
+are zero or multiple active organizations, use the active organization's
+tenant subdomain instead. Query parameters and body organization or league
+IDs never choose the registration organization, and registration does not
+enroll the bowler in a league.
 
 When bowlers visit this URL, they will see:
 - Your organization's logo at the top of the page
 - A welcome message with your organization name
-- A league dropdown showing only your organization's leagues
+- A short account setup form
 
-You can find your organization slug in the admin settings, or ask your system administrator.
+You can find your organization subdomain in the admin settings, or ask your
+system administrator.
 
 ---
 
@@ -43,16 +54,19 @@ The bowler provides:
 - **Full Name** (required)
 - **Email Address** (required)
 - **Phone Number** (required)
-- **League** (required — selected from a dropdown of your organization's active leagues)
-- **Password** (required — must meet complexity requirements)
+- The setup link for choosing a password is sent after submission.
 
 ### Step 2: Automatic Account Linking
 
-After the bowler submits the form, the system checks whether a bowler profile already exists with a matching email address within your organization's leagues.
+After the bowler submits the form, the system sends a setup link through the
+durable registration mail queue. Opening that link proves email ownership and
+allows the bowler to choose a password. Only after that proof does the system
+look for a unique, normalized exact-email match among the organization's
+bowler profiles; no league selection or name/phone matching is used.
 
 **If exactly one match is found:**
-- The bowler's new user account is automatically linked to the existing bowler profile.
-- The bowler is redirected to their dashboard — no further steps needed.
+- The new user account is automatically linked to the existing bowler profile.
+- The bowler can sign in and view the leagues associated with that profile.
 
 **If no unique match is found:**
 - The account is created but remains pending until an organization administrator
@@ -146,10 +160,11 @@ For the smoothest experience, we recommend combining both approaches:
 
 2. **On bowling night:** Place QR codes on the tables for any bowlers who haven't registered yet. They can sign up on their phone in under a minute. Make sure the email they use matches the roster email exactly.
 
-Review any pending accounts from the administrator page. There is no durable
-email queue or automatic retry guarantee; if an account-ready message is not
-sent, an administrator can manually use **Resend account-ready email** for an
-already-linked ordinary user.
+Review any pending accounts from the administrator page. Registration setup
+messages are recorded in the durable mail queue and transient failures are
+retried according to the queue policy. Account-ready delivery is a separate
+best-effort notification; if it needs attention, an administrator can use
+**Resend account-ready email** for that ordinary user.
 
 ---
 

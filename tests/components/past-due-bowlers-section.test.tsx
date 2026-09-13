@@ -38,7 +38,6 @@ function makeLeague(id: number, active: boolean, seasonStart: string): League {
     name: active ? 'Farmington Mixed League 26/27' : 'Farmington Mixed League 25/26',
     description: null,
     active,
-    allowPublicSignup: false,
     seasonStart,
     seasonEnd: active ? '2026-11-23T00:00:00.000Z' : '2025-11-24T00:00:00.000Z',
     weekDay: 'Monday',

@@ -1,0 +1,1 @@
+ALTER TABLE "leagues" DROP COLUMN "allow_public_signup";

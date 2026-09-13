@@ -14,14 +14,13 @@ vi.hoisted(() => {
 
 import { createApp, type CreatedApp } from '../../server/app';
 import { db, pool } from '../../server/db';
-import { accountActionRequests, bowlers, emailTemplates, identityLinkEvents, leagues, organizations, users } from '@shared/schema';
+import { accountActionRequests, bowlers, emailTemplates, identityLinkEvents, organizations, users } from '@shared/schema';
 import { clearCapturedEmails, getCapturedEmails } from '../../server/services/_internal/email-outbox';
 
 const ORGANIZATION_SLUG = 'email-first-browser-fixture';
 const ORGANIZATION_SUBDOMAIN = 'emailfirstbrowser';
 const EXPECTED_HOST = `${ORGANIZATION_SUBDOMAIN}.leaguevault.test`;
 const ROOT_HOST = 'leaguevault.test';
-const LEAGUE_NAME = 'Email-first browser league';
 const MATCH_EMAIL = 'matched-registration@vitest.local';
 const NO_MATCH_EMAIL = 'waiting-registration@vitest.local';
 const ROOT_EMAIL = 'root-waiting-registration@vitest.local';
@@ -31,7 +30,6 @@ const SETUP_PASSWORD = 'BrowserSetup9!';
 
 const createdUserIds: number[] = [];
 let organizationId: number;
-let leagueId: number;
 let matchedBowlerId: number;
 let app: CreatedApp;
 let browser: Browser;
@@ -166,13 +164,11 @@ async function startRegistration(
   const page = await context.newPage();
   const forbiddenRequests = watchForbiddenProfileRequests(page);
   const host = input.host ?? EXPECTED_HOST;
-  const signupPath = host === ROOT_HOST ? '/signup' : `/signup?org=${ORGANIZATION_SLUG}`;
+  const signupPath = '/signup';
   await page.goto(`https://${host}${signupPath}`);
   await page.getByLabel('Full Name', { exact: true }).fill(input.name);
   await page.getByLabel('Email Address', { exact: true }).fill(input.email);
   await page.getByLabel('Phone Number', { exact: true }).fill(SIGNUP_PHONE);
-  await page.getByRole('combobox', { name: /league/i }).click();
-  await page.getByRole('option', { name: new RegExp(LEAGUE_NAME), exact: host !== ROOT_HOST }).click();
 
   const requestPromise = page.waitForRequest((request) => {
     const url = new URL(request.url());
@@ -191,8 +187,6 @@ async function startRegistration(
     name: input.name,
     email: input.email,
     phone: SIGNUP_PHONE,
-    leagueId: String(leagueId),
-    organizationId,
   });
   expect(body).not.toHaveProperty('password');
 
@@ -261,6 +255,26 @@ async function waitForAuthenticatedLanding(page: Page, expectedPath: '/bowler-da
   expect(authAfterSetup).toBe(200);
 }
 
+async function withOnlyBrowserOrganization<T>(callback: () => Promise<T>): Promise<T> {
+  const activeRows = await db
+    .select({ id: organizations.id })
+    .from(organizations)
+    .where(eq(organizations.active, true));
+  const otherActiveIds = activeRows
+    .map(({ id }) => id)
+    .filter((id) => id !== organizationId);
+  for (const id of otherActiveIds) {
+    await db.update(organizations).set({ active: false }).where(eq(organizations.id, id));
+  }
+  try {
+    return await callback();
+  } finally {
+    for (const id of otherActiveIds) {
+      await db.update(organizations).set({ active: true }).where(eq(organizations.id, id));
+    }
+  }
+}
+
 describe('browser route lifecycle handling', () => {
   it('only ignores known lifecycle errors after teardown begins', () => {
     expect(shouldIgnoreRouteLifecycleError(new Error('Route is already handled!'), false)).toBe(false);
@@ -284,18 +298,6 @@ describe('Email-first registration — real browser, outbox, and setup link', ()
       active: true,
     }).returning();
     organizationId = organization.id;
-
-    const [league] = await db.insert(leagues).values({
-      name: LEAGUE_NAME,
-      organizationId,
-      active: true,
-      allowPublicSignup: true,
-      seasonStart: '2030-01-07',
-      seasonEnd: '2030-04-29',
-      weekDay: 'Monday',
-      paymentMode: 'weekly',
-    }).returning();
-    leagueId = league.id;
 
     const [matchedBowler] = await db.insert(bowlers).values({
       name: 'Roster email match',
@@ -322,7 +324,6 @@ describe('Email-first registration — real browser, outbox, and setup link', ()
     }
     if (organizationId) await db.delete(identityLinkEvents).where(eq(identityLinkEvents.organizationId, organizationId));
     if (matchedBowlerId) await db.delete(bowlers).where(eq(bowlers.id, matchedBowlerId));
-    if (leagueId) await db.delete(leagues).where(eq(leagues.id, leagueId));
     if (organizationId) await db.delete(organizations).where(eq(organizations.id, organizationId));
     await app?.close();
     await pool.end();
@@ -389,23 +390,25 @@ describe('Email-first registration — real browser, outbox, and setup link', ()
     await installRegistrationTemplate();
     const context = await createBrowserContext();
     try {
-      await startRegistration(context, {
-        email: ROOT_EMAIL,
-        name: 'Root Waiting User',
-        host: ROOT_HOST,
+      await withOnlyBrowserOrganization(async () => {
+        await startRegistration(context, {
+          email: ROOT_EMAIL,
+          name: 'Root Waiting User',
+          host: ROOT_HOST,
+        });
+        const directPage = await context.newPage();
+        await directPage.goto(`https://${ROOT_HOST}/registration-email`);
+        await directPage.getByText('Check your email', { exact: true }).waitFor();
+        await directPage.reload();
+        await directPage.getByText('Check your email', { exact: true }).waitFor();
+        expect(new URL(directPage.url()).pathname).toBe('/registration-email');
+        const status = await directPage.evaluate(async () => {
+          const response = await fetch('/api/auth/registration/status', { credentials: 'include' });
+          return { status: response.status, body: await response.json() as { data?: { status?: unknown } } };
+        });
+        expect(status.status).toBe(200);
+        expect(status.body.data?.status).toBe('pending');
       });
-      const directPage = await context.newPage();
-      await directPage.goto(`https://${ROOT_HOST}/registration-email`);
-      await directPage.getByText('Check your email', { exact: true }).waitFor();
-      await directPage.reload();
-      await directPage.getByText('Check your email', { exact: true }).waitFor();
-      expect(new URL(directPage.url()).pathname).toBe('/registration-email');
-      const status = await directPage.evaluate(async () => {
-        const response = await fetch('/api/auth/registration/status', { credentials: 'include' });
-        return { status: response.status, body: await response.json() as { data?: { status?: unknown } } };
-      });
-      expect(status.status).toBe(200);
-      expect(status.body.data?.status).toBe('pending');
     } finally {
       await closeContextAfterRoutesDrain(context);
     }

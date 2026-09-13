@@ -52,7 +52,6 @@ function futureBody(key: number) {
     substituteAccess: "team_only",
     substitutePaymentRegime: "team_choice",
     active: true,
-    allowPublicSignup: true,
     seasonStart: "2032-03-07",
     weekDay: "Sunday",
     totalBowlingWeeks: 6,
@@ -112,6 +111,17 @@ describe("league setup integration API", () => {
     expect(retry.status).toBe(200);
     expect(retry.data.data).toMatchObject({ setupIntegration: { mode: "idempotent_retry", writesPerformed: false } });
     expect(retry.data.data?.canonicalGeneration?.durableIds).toEqual(result.canonicalGeneration?.durableIds);
+    const beforeLegacyRetry = {
+      leagues: await db.select({ id: leagues.id }).from(leagues).where(eq(leagues.organizationId, organizationId)),
+      runs: await db.select({ id: leagueOccurrenceGenerationRuns.id }).from(leagueOccurrenceGenerationRuns).where(eq(leagueOccurrenceGenerationRuns.organizationId, organizationId)),
+    };
+    const legacyRetry = await apiPost("/api/leagues", { ...body, allowPublicSignup: true }, admin);
+    expect(legacyRetry.status).toBe(400);
+    expect(legacyRetry.data.error?.code).toBe("VALIDATION_ERROR");
+    expect({
+      leagues: await db.select({ id: leagues.id }).from(leagues).where(eq(leagues.organizationId, organizationId)),
+      runs: await db.select({ id: leagueOccurrenceGenerationRuns.id }).from(leagueOccurrenceGenerationRuns).where(eq(leagueOccurrenceGenerationRuns.organizationId, organizationId)),
+    }).toEqual(beforeLegacyRetry);
     const changed = await apiPost("/api/leagues", { ...body, paymentMode: "upfront" }, admin);
     expect(changed.status).toBe(409);
     expect(changed.data.error?.code).toBe("IDEMPOTENCY_CONFLICT");
@@ -140,7 +150,6 @@ describe("league setup integration API", () => {
       name: "API builder-shaped metadata edit",
       description: "metadata survives canonical schedule mutation",
       active: publishedLeague.active,
-      allowPublicSignup: publishedLeague.allowPublicSignup,
       seasonStart: publishedLeague.seasonStart,
       seasonEnd: publishedLeague.seasonEnd,
       weekDay: publishedLeague.weekDay,
@@ -218,9 +227,6 @@ describe("league setup integration API", () => {
     const forbidden = await apiPost("/api/leagues", { ...futureBody(3), currency: "CAD" }, admin);
     expect(forbidden.status).toBe(400);
     expect(forbidden.data.error?.code).toBe("VALIDATION_ERROR");
-    const { allowPublicSignup: _omitted, ...missingExplicitTarget } = futureBody(30);
-    const missingTarget = await apiPost("/api/leagues", missingExplicitTarget, admin);
-    expect(missingTarget.status).toBe(400);
     const { payingLineupSize: _missingLineup, ...missingLineupTarget } = futureBody(32);
     const missingLineup = await apiPost("/api/leagues", missingLineupTarget, admin);
     expect(missingLineup.status).toBe(400);
@@ -311,7 +317,6 @@ describe("league setup integration API", () => {
       skipDates: [],
       cancelledDates: [],
       doublePayDates: [],
-      allowPublicSignup: false,
       paymentMode: "upfront",
     };
     const confirmationResponse = await apiGet<LeagueRolloverSourceContract>(
@@ -337,13 +342,6 @@ describe("league setup integration API", () => {
       fingerprint: confirmationResponse.data.data.fingerprint,
       confirmed: true,
     };
-    const { allowPublicSignup: _omitted, ...missingExplicitTarget } = values;
-    const missingTarget = await apiPost(`/api/leagues/${source.id}/new-season`, {
-      ...missingExplicitTarget,
-      setupIntegration: intent(40),
-      sourceConfirmation,
-    }, admin);
-    expect(missingTarget.status).toBe(400);
     const retiredEnd = await apiPost(`/api/leagues/${source.id}/new-season`, {
       ...values,
       seasonEnd: "2032-12-01",
@@ -398,6 +396,16 @@ describe("league setup integration API", () => {
     });
     expect(retry.data.data?.canonicalGeneration?.durableIds)
       .toEqual(target.canonicalGeneration?.durableIds);
+    expect(await targetCounts()).toEqual(beforeRetry);
+
+    const legacyRetry = await apiPost<LeagueSetupIntegrationResult>(`/api/leagues/${source.id}/new-season`, {
+      ...values,
+      allowPublicSignup: true,
+      setupIntegration: intent(successfulAttempt.key),
+      sourceConfirmation,
+    }, admin);
+    expect(legacyRetry.status).toBe(400);
+    expect(legacyRetry.data.error?.code).toBe("VALIDATION_ERROR");
     expect(await targetCounts()).toEqual(beforeRetry);
   });
 });

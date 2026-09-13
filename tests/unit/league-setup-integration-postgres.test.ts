@@ -86,7 +86,6 @@ function fallLeague(f: Fixture, paymentMode: PaymentMode = "weekly", overrides: 
     description: "atomic setup",
     payingLineupSize: 4,
     active: true,
-    allowPublicSignup: false,
     seasonStart: "2032-10-03T00:00:00.000Z",
     seasonEnd: "2032-11-21T00:00:00.000Z",
     weekDay: "Sunday",
@@ -414,7 +413,6 @@ describe("authoritative league setup integration", () => {
       skipDates: ["2032-10-10"],
       cancelledDates: ["2032-10-24"],
       doublePayDates: ["2032-11-07"],
-      allowPublicSignup: true,
       paymentMode: "upfront" as const,
     };
     const confirmedSource = await sourceConfirmation(f, source.id);
@@ -508,7 +506,7 @@ describe("authoritative league setup integration", () => {
     await expect(createNewSeasonWithCanonicalSetup({
       scope: { organizationId: f.organizationId, actorUserId: f.actorUserId },
       sourceLeagueId: source.id,
-      values: { seasonStart: "2032-08-01", totalBowlingWeeks: 3, weekDay: "Sunday", skipDates: [], cancelledDates: [], doublePayDates: [], allowPublicSignup: false, paymentMode: "weekly" },
+      values: { seasonStart: "2032-08-01", totalBowlingWeeks: 3, weekDay: "Sunday", skipDates: [], cancelledDates: [], doublePayDates: [], paymentMode: "weekly" },
       setup: setup(++sequence),
       sourceConfirmation: await sourceConfirmation(f, source.id),
       failureInjection,
@@ -534,7 +532,7 @@ describe("authoritative league setup integration", () => {
       sourceLeagueId: source.id,
       values: {
         seasonStart: "2032-03-07", totalBowlingWeeks: 3, weekDay: "Sunday",
-        skipDates: [], cancelledDates: [], doublePayDates: [], allowPublicSignup: false, paymentMode: "weekly",
+        skipDates: [], cancelledDates: [], doublePayDates: [], paymentMode: "weekly",
       },
       setup: setup(++sequence),
       sourceConfirmation: confirmed,
@@ -559,7 +557,7 @@ describe("authoritative league setup integration", () => {
       sourceLeagueId: source.id,
       values: {
         seasonStart: "2032-06-06", totalBowlingWeeks: 3, weekDay: "Sunday",
-        skipDates: [], cancelledDates: [], doublePayDates: [], allowPublicSignup: false, paymentMode: "weekly",
+        skipDates: [], cancelledDates: [], doublePayDates: [], paymentMode: "weekly",
       },
       setup: setup(++sequence),
       sourceConfirmation: confirmed,

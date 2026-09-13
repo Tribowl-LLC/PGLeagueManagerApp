@@ -101,6 +101,21 @@ export async function getOrganizations(): Promise<Organization[]> {
   return db.select().from(organizations).orderBy(organizations.name);
 }
 
+/**
+ * Return a bounded active-organization candidate set for anonymous flows.
+ * Callers must distinguish exactly one result from zero or multiple results;
+ * the limit prevents the canonical-host registration path from becoming an
+ * unbounded tenant enumeration query.
+ */
+export async function getActiveOrganizations(): Promise<Pick<Organization, "id" | "active">[]> {
+  return db
+    .select({ id: organizations.id, active: organizations.active })
+    .from(organizations)
+    .where(eq(organizations.active, true))
+    .orderBy(organizations.id)
+    .limit(2);
+}
+
 export async function getOrganization(id: number): Promise<Organization | undefined> {
   const [result] = await db.select().from(organizations).where(eq(organizations.id, id));
   return result;

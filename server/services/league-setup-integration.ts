@@ -85,7 +85,6 @@ export interface NewSeasonSetupValues {
   skipDates: string[];
   cancelledDates: string[];
   doublePayDates: string[];
-  allowPublicSignup: boolean;
   paymentMode: PaymentMode;
 }
 
@@ -192,7 +191,6 @@ function normalizedLeagueSemantic(league: LeagueSetupTarget | League, kind: "lea
     substituteAccess: league.substituteAccess ?? "team_only",
     substitutePaymentRegime: league.substitutePaymentRegime ?? "team_choice",
     active: league.active,
-    allowPublicSignup: league.allowPublicSignup,
     seasonStart: new Date(league.seasonStart).toISOString(),
     seasonEnd: new Date(league.seasonEnd).toISOString(),
     weekDay: league.weekDay,
@@ -564,7 +562,6 @@ function buildNewSeasonLeague(
     substituteAccess: source.substituteAccess ?? "team_only",
     substitutePaymentRegime: source.substitutePaymentRegime ?? "team_choice",
     active: true,
-    allowPublicSignup: values.allowPublicSignup ?? source.allowPublicSignup,
     seasonStart: seasonStart.toISOString(),
     seasonEnd: seasonEnd.toISOString(),
     weekDay,

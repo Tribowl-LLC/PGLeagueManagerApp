@@ -537,6 +537,28 @@ Production must change only through this reviewed, forward-only workflow.
 Manual schema edits and out-of-band production changes make fingerprints and
 journal history unreliable, so they are treated as drift rather than shortcuts.
 
+### Migration 0040 application-first exception
+
+The registration simplification uses an approved application-first rollout.
+Deploy the compatible application with Render Auto-Deploy Off, smoke it against
+the pre-drop `0039` schema, and only then run the protected migration workflow
+for `0040_remove_league_public_signup`. Its exact SQL is the single statement
+below; the workflow must enforce the independently verified target,
+pre-fingerprint, journal, checksum, exact pending-list, backup/recovery-branch,
+and post-migration no-op gates:
+
+```sql
+ALTER TABLE "leagues" DROP COLUMN "allow_public_signup";
+```
+
+Smoke the registration, branding, and league create/edit/new-season paths both
+before and after the drop. The new application is compatible with both schema
+states. An old application may be restored only before the column is dropped;
+afterward use a forward fix or a separately reviewed compatibility release.
+Never apply an ad hoc reverse migration or run this production procedure from
+a local shell. See the detailed sequence in
+[`production-runbook.md`](./production-runbook.md#migration-0040-registration-column-removal-application-first).
+
 ## Backup expectations
 
 - A current Neon backup or restorable branch is required before every

@@ -6,7 +6,6 @@ const BASE_VALID = {
   description: null,
   payingLineupSize: 4,
   active: true,
-  allowPublicSignup: false,
   // Wednesday 2026-04-01
   seasonStart: new Date('2026-04-01T00:00:00.000Z'),
   seasonEnd: new Date('2026-06-24T00:00:00.000Z'),

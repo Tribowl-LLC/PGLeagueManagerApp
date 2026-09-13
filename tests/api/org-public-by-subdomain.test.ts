@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db } from '../../server/db';
-import { organizations, leagues } from '@shared/schema';
+import { organizations } from '@shared/schema';
 import { apiGet, acquireFixtureOrg, releaseFixtureOrg, BASE_URL } from '../helpers';
 
-// Task #663: the public sign-up endpoints `/api/organizations/slug/:slug`
-// and `/api/organizations/slug/:slug/leagues` must accept the org's
+// The public branding endpoints `/api/organizations/slug/:slug`
+// and `/api/organizations/slug/:slug/{logo,app-icon}` accept the org's
 // `subdomain` value, not just its `slug`. Perfect Game has
 // `subdomain = 'perfectgame'` and `slug = 'perfect-game'`, so the slug-only
 // lookup misses and the sign-up dropdown comes back empty.
@@ -20,7 +20,6 @@ const PNG_DATA_URI =
 
 describe('Public org-by-slug endpoints accept subdomain (#663)', () => {
   let orgId: number;
-  let leagueId: number;
 
   beforeAll(async () => {
     orgId = await acquireFixtureOrg(FIXTURE_SLUG, 'Vitest Public Slug Mismatch Org');
@@ -29,19 +28,6 @@ describe('Public org-by-slug endpoints accept subdomain (#663)', () => {
       .set({ subdomain: FIXTURE_SUBDOMAIN, logo: PNG_DATA_URI, appIcon: PNG_DATA_URI })
       .where(eq(organizations.id, orgId));
 
-    const [league] = await db
-      .insert(leagues)
-      .values({
-        name: 'Vitest Public Signup League',
-        organizationId: orgId,
-        active: true,
-        allowPublicSignup: true,
-        seasonStart: '2030-01-07',
-        seasonEnd: '2030-04-29',
-        weekDay: 'Monday',
-      })
-      .returning({ id: leagues.id });
-    leagueId = league.id;
   });
 
   afterAll(async () => {
@@ -57,16 +43,6 @@ describe('Public org-by-slug endpoints accept subdomain (#663)', () => {
     expect(org.slug).toBe(FIXTURE_SLUG);
   });
 
-  it('returns public-signup leagues when called with subdomain', async () => {
-    const { status, data } = await apiGet(
-      `/api/organizations/slug/${FIXTURE_SUBDOMAIN}/leagues`,
-    );
-    expect(status).toBe(200);
-    expect(data.success).toBe(true);
-    const list = data.data as Array<{ id: number; name: string }>;
-    expect(list.some((l) => l.id === leagueId)).toBe(true);
-  });
-
   it('still resolves the org when called with the slug', async () => {
     const { status, data } = await apiGet(`/api/organizations/slug/${FIXTURE_SLUG}`);
     expect(status).toBe(200);
@@ -75,36 +51,24 @@ describe('Public org-by-slug endpoints accept subdomain (#663)', () => {
     expect(org.id).toBe(orgId);
   });
 
-  it('still returns public-signup leagues when called with the slug', async () => {
-    const { status, data } = await apiGet(
-      `/api/organizations/slug/${FIXTURE_SLUG}/leagues`,
-    );
-    expect(status).toBe(200);
-    expect(data.success).toBe(true);
-    const list = data.data as Array<{ id: number; name: string }>;
-    expect(list.some((l) => l.id === leagueId)).toBe(true);
+  it('does not expose retired public league endpoints', async () => {
+    const bySubdomain = await apiGet(`/api/organizations/slug/${FIXTURE_SUBDOMAIN}/leagues`);
+    expect(bySubdomain.status).not.toBe(200);
+    const allPublicLeagues = await apiGet('/api/organizations/public-leagues');
+    expect(allPublicLeagues.status).not.toBe(200);
   });
 
-  it('does not expose public-signup leagues for an archived organization', async () => {
+  it('continues to serve branding for an archived organization only through its existing branding routes', async () => {
     await db.update(organizations).set({ active: false }).where(eq(organizations.id, orgId));
     try {
-      const bySubdomain = await apiGet(
-        `/api/organizations/slug/${FIXTURE_SUBDOMAIN}/leagues`,
-      );
-      expect(bySubdomain.status).toBe(200);
-      expect(bySubdomain.data.data).toEqual([]);
-
-      const allPublicLeagues = await apiGet('/api/organizations/public-leagues');
-      expect(allPublicLeagues.status).toBe(200);
-      const list = allPublicLeagues.data.data as Array<{ id: number }>;
-      expect(list.some((l) => l.id === leagueId)).toBe(false);
+      const bySlug = await apiGet(`/api/organizations/slug/${FIXTURE_SLUG}`);
+      expect(bySlug.status).toBe(200);
     } finally {
       await db.update(organizations).set({ active: true }).where(eq(organizations.id, orgId));
     }
   });
 
-  // Task #665: the /logo and /app-icon variants must also accept the
-  // subdomain value, mirroring the two endpoints above.
+  // The /logo and /app-icon variants also accept the subdomain value.
   for (const which of ['logo', 'app-icon'] as const) {
     it(`serves /${which} when called with subdomain (not slug)`, async () => {
       const res = await fetch(

@@ -34,11 +34,10 @@ they are not current release procedures.
    log identifies the merged PR, identical tree SHA, and successful PR CI and
    Race suite runs.
 9. If the commit contains schema changes, follow [Schema Release](#schema-release)
-   through the reviewed migration step before deploying the application. If it
-   contains no schema changes, do not run a migration merely as a deployment
-   ritual.
-10. Manually deploy that exact certified commit. For schema releases, apply
-    the reviewed migration first. Leave Auto-Deploy Off.
+   through its reviewed migration and deployment order. If it contains no
+   schema changes, do not run a migration merely as a deployment ritual.
+10. Manually deploy that exact certified commit in the order required by the
+    schema-release procedure. Leave Auto-Deploy Off.
 11. Run the post-deploy trust-proxy probe manually when a release changes
    proxy, cookie, auth, or rate-limit behavior. The scheduled workflow also
    probes the live deployment daily.
@@ -206,8 +205,44 @@ migration under `migrations/schema-fingerprints/`; retain the prior release
 fingerprint because it is the pre-migration approval boundary. Do not hand-edit
 fingerprint digests or accept an unexpected production mismatch.
 
-If the workflow is unavailable, the manual operator procedure below remains
-the fail-closed fallback. Never run both executors concurrently.
+### Migration 0040 registration-column removal (application first)
+
+Migration `0040_remove_league_public_signup` is the approved application-first
+exception to the normal migration-first order. The new application is
+compatible with both the pre-drop `0039` schema and the post-drop `0040` schema
+because it no longer reads or writes `leagues.allow_public_signup`. The exact
+contract migration is one statement only:
+
+```sql
+ALTER TABLE "leagues" DROP COLUMN "allow_public_signup";
+```
+
+Use this order with Render Auto-Deploy **Off**; confirm no old application
+instances remain before dropping the column:
+
+1. From the exact certified commit, manually deploy the new compatible
+   application. Do not apply `0040` yet.
+2. Smoke `/api/health`, tenant branding, sign-up, email-proof/setup, and
+   representative league create/edit/new-season flows while the old column is
+   still present. Confirm the deployed commit and capture the smoke evidence.
+3. Create the current backup/restorable target and run the protected migration
+   workflow's independent target, pre-fingerprint, journal, checksum, exact
+   pending-list, and recovery-branch gates. Apply only `0040`.
+4. Run the required `pending=none` no-op and post-migration fingerprint checks,
+   then repeat the smoke checks against the dropped-column schema before
+   releasing the hold.
+
+Before the drop, an application rollback to the prior release remains allowed
+after draining the new instances. After the drop, the prior application is not
+an approved rollback target; use a forward fix or a separately reviewed
+compatibility release. Never restore the column with an ad hoc reverse
+migration, and do not run this sequence against production from a local shell.
+
+### Manual schema-migration fallback (other schema releases)
+
+For schema releases other than `0040`, if the protected workflow is unavailable,
+the manual operator procedure below remains the fail-closed fallback. Never run
+both executors concurrently.
 
 1. Create a current Neon backup or branch suitable for restoration.
 2. Confirm the target Neon project, branch, host, database name, and user.

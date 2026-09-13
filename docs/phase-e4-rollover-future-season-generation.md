@@ -30,9 +30,9 @@ no additional setup approval step.
 ## Explicit target and confirmed carried configuration
 
 The v3 rollover request strictly requires `seasonStart`, `totalBowlingWeeks`,
-`weekDay`, all three schedule-date arrays, `allowPublicSignup`, and
-`paymentMode`. The server derives `seasonEnd`; omitted, unknown, defaulted, and
-retired fields fail validation. Weekly and upfront both retain the hardcoded
+`weekDay`, all three schedule-date arrays, and `paymentMode`. The server derives
+`seasonEnd`; omitted, unknown, defaulted, and retired fields fail validation.
+Weekly and upfront both retain the hardcoded
 `eligible_bowlers` occurrence policy. Ambiguous folds are rejected, currency is
 USD, and billing ordinals are `dense_billable`. Double-pay dates remain
 collection grouping evidence and do not affect physical generation.
@@ -67,6 +67,16 @@ input snapshot, command family, and revision-1 entity snapshots before looking
 at mutable archived-source state; later generic C2 review/publication does not
 invalidate that original result. Changed semantics conflict; competing
 successor keys serialize and at most one commits.
+
+Clients from before migration 0040 that retry an old setup payload containing
+the retired `allowPublicSignup` field fail validation with HTTP 400 before any
+write. A valid current payload that reuses a pre-change setup key may instead
+return HTTP 409 because that key's immutable historical fingerprint included
+the retired field; this still creates no duplicate league, canonical state, or
+audit mutation, and never rewrites the historical snapshot. Reload or restart
+the setup builder as needed, and check for an existing created league before
+starting a new setup. Current-version payloads with a new key retain their
+existing idempotent zero-write retry behavior.
 
 All seven league Square catalog/category identity fields are null on the
 target. Rollover never copies occurrence IDs, commands, runs, revisions,

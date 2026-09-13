@@ -64,7 +64,6 @@ const seededLeague: League = {
   description: '',
   payingLineupSize: 4,
   active: true,
-  allowPublicSignup: false,
   seasonStart: new Date('2025-01-06T12:00:00.000Z').toISOString(),
   seasonEnd: new Date('2025-12-29T12:00:00.000Z').toISOString(),
   weekDay: 'Monday',
