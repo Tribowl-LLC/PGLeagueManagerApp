@@ -28,6 +28,14 @@ For example, if your organization subdomain is `perfectgame`, the URL would be:
 https://perfectgame.leaguevault.app/signup
 ```
 
+The canonical URLs `https://leaguevault.app/signup` and
+`https://www.leaguevault.app/signup` are available only when exactly one
+organization is active, even if that organization has no leagues. If there
+are zero or multiple active organizations, use the active organization's
+tenant subdomain instead. Query parameters and body organization or league
+IDs never choose the registration organization, and registration does not
+enroll the bowler in a league.
+
 When bowlers visit this URL, they will see:
 - Your organization's logo at the top of the page
 - A welcome message with your organization name
