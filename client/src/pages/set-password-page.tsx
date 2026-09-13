@@ -19,7 +19,7 @@ import { PageLoadingState } from "@/components/page-states";
 import { AlertCircle } from 'lucide-react';
 import { SetPasswordForm } from './set-password-page/set-password-form';
 
-type PasswordAction = 'account_invite' | 'password_reset';
+type PasswordAction = 'account_invite' | 'password_reset' | 'account_registration';
 
 type PageState =
   | { kind: 'loading' }
@@ -37,6 +37,7 @@ type ApiResponse = {
   data?: {
     email?: unknown;
     action?: unknown;
+    loginFailed?: unknown;
   };
   error?: {
     code?: unknown;
@@ -53,7 +54,7 @@ const TERMINAL_MESSAGES: Record<Exclude<PageState['kind'], 'loading' | 'ready' |
 };
 
 function isPasswordAction(value: unknown): value is PasswordAction {
-  return value === 'account_invite' || value === 'password_reset';
+  return value === 'account_invite' || value === 'password_reset' || value === 'account_registration';
 }
 
 function getApiCode(data: ApiResponse): string | undefined {
@@ -302,15 +303,23 @@ export default function SetPasswordPage() {
       if (requestId !== requestIdRef.current) return;
 
       if (response.ok && data.success === true) {
+        const registrationLoginFailed = action === 'account_registration'
+          && data.data?.loginFailed === true;
         toast({
           title: action === 'password_reset' ? 'Password reset successfully' : 'Password set successfully',
           description: action === 'password_reset'
             ? 'You can now log in with your new password.'
-            : 'You can now use your new password to sign in.',
+            : action === 'account_registration'
+              ? registrationLoginFailed
+                ? 'Your account is ready. Please log in.'
+                : 'Your account is ready. You are now signed in.'
+              : 'You can now use your new password to sign in.',
         });
-        if (action === 'password_reset') {
+        if (action === 'password_reset' || registrationLoginFailed) {
           // Reset tokens do not create a session. Send the user through the
-          // normal login flow after the server rotates the password.
+          // normal login flow after the server rotates the password. A
+          // registration action can take the same path when session creation
+          // fails after its atomic password/link transaction committed.
           setLocation('/login');
         } else {
           // Preserve the invitation flow's existing post-success landing.
@@ -415,11 +424,17 @@ export default function SetPasswordPage() {
         <Card className="w-full max-w-md">
           <CardHeader className="text-center">
             <CardTitle className="text-2xl">
-              {action === 'password_reset' ? 'Reset Your Password' : 'Set Your Password'}
+              {action === 'password_reset'
+                ? 'Reset Your Password'
+                : action === 'account_registration'
+                  ? 'Finish Your Registration'
+                  : 'Set Your Password'}
             </CardTitle>
             <CardDescription>
               {action === 'password_reset'
                 ? <>Choose a new password for your LeagueVault account ({userEmail}).</>
+                : action === 'account_registration'
+                  ? <>Create a password to finish setting up your LeagueVault account ({userEmail}).</>
                 : <>Create a password to finish setting up your LeagueVault account ({userEmail}).</>}
             </CardDescription>
           </CardHeader>

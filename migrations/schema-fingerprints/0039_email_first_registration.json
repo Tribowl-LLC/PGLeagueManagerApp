@@ -1,0 +1,25 @@
+{
+  "formatVersion": 2,
+  "algorithm": "sha256",
+  "migration": {
+    "tag": "0039_email_first_registration",
+    "hash": "8b355eeada5180a3799a6db511b496884a0ca22ce40718b1ca34324a345fdc9f",
+    "createdAt": 1789088638050
+  },
+  "digest": "2b5db96bcca04dd541bfea4be996244ba6ba067c9a2c8374323098168ca40c20",
+  "counts": {
+    "tables": 67,
+    "columns": 914,
+    "nonTableRelations": 0,
+    "rewriteRules": 0,
+    "unsupportedPublicObjects": 0,
+    "extensions": 0,
+    "sequences": 25,
+    "constraints": 511,
+    "indexes": 281,
+    "types": 1,
+    "functions": 19,
+    "triggers": 33,
+    "policies": 0
+  }
+}

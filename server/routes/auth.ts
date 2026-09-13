@@ -1,10 +1,12 @@
-import { Express, Router } from "express";
+import { Express, Router, type Request } from "express";
+import { randomBytes } from "node:crypto";
 import passport from "passport";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
+import { and, desc, eq } from "drizzle-orm";
 import { storage } from "../storage";
 import { db } from "../db.js";
-import { ACCOUNT_ACTION_TYPES, User as SelectUser, insertUserSchema } from "@shared/schema";
+import { ACCOUNT_ACTION_TYPES, User as SelectUser, emailSchema, nameSchema, accountActionRequests, accountActionDeliveryJobs, accountEmailDeliveryEvents } from "@shared/schema";
 import { passwordSchema } from "@shared/password-validation";
 import { sanitizeUser, sendSuccess, sendError, handleUserOrgError } from "../utils/api.js";
 import { isDev } from "../config";
@@ -14,8 +16,6 @@ import { createLogger } from "../logger";
 import { hashPassword } from "../lib/password";
 import { destroyOtherSessionsForUser } from "../auth";
 import { sendTemplatedEmail, getBaseUrl, getOrgLogoUrl, sendPasswordChangedNotification } from "../services/email.js";
-import { syncUserPhoneToBowler } from "../services/bowler-phone-sync.js";
-import { fireBowlerExternalResync } from "../services/bowler-resync.js";
 import { maskEmail } from "../utils/pii.js";
 import { cacheInvalidate } from "../utils/cache.js";
 import { createSharedRateLimitStore } from "../utils/rate-limit-store";
@@ -26,7 +26,11 @@ import {
 import {
   type AccountActionWithUser,
 } from "../storage/account-action-requests.js";
-import { enqueuePasswordResetDelivery } from "../storage/account-action-delivery-jobs.js";
+import {
+  enqueuePasswordResetDelivery,
+  enqueueAccountRegistrationDelivery,
+  resumePendingAccountRegistration,
+} from "../storage/account-action-delivery-jobs.js";
 import { notifyAccountActionDeliveryChanged } from "../services/account-action-delivery-scheduler.js";
 import { isNormalizedUserEmailConflict } from "../utils/db-errors.js";
 // Same allowlist account.ts uses for /api/account/profile (task #420).
@@ -231,18 +235,18 @@ const claimLimiter = rateLimit({
 export function registerAuthRoutes(app: Express): void {
   const authRouter = Router();
 
+  const registrationSession = (req: Request) => req.session.pendingRegistration;
+  const registrationGenericMessage = "If this email can be used for registration, a setup link will be sent.";
+
+  // Email-first registration deliberately has no password field. The
+  // placeholder hash makes the account non-loginable until the email action
+  // is consumed; it is never returned to the browser or sent to a provider.
   authRouter.post("/register", registerLimiter, async (req, res) => {
     try {
-      const organizationId = req.body.organizationId ? parseInt(req.body.organizationId) : undefined;
-      if (!organizationId || Number.isNaN(organizationId)) {
-        // Self-signup must always happen in an org context (subdomain).
-        // The DB-side `users_role_org_required` CHECK constraint forbids
-        // org-less non-admin users.
+      const organizationId = req.body?.organizationId ? Number.parseInt(String(req.body.organizationId), 10) : undefined;
+      if (!organizationId || !Number.isSafeInteger(organizationId)) {
         return sendError(res, "Sign-up requires an organization context.", 400, "ORG_REQUIRED");
       }
-
-      // Require a recognized subdomain org — registration must arrive through
-      // a known tenant context (set by subdomainDetection middleware).
       if (!req.subdomainOrg) {
         return sendError(res, "Sign-up requires a valid organization context.", 400, "ORG_REQUIRED");
       }
@@ -250,167 +254,272 @@ export function registerAuthRoutes(app: Express): void {
         return sendError(res, "Organization does not match the current context.", 400, "ORG_MISMATCH");
       }
 
-      // Public-signup policy: require the org to have at least one active
-      // league with allowPublicSignup=true. If the client supplies a leagueId
-      // it must belong to this org and be publicly joinable.
-      const leagueIdRaw = req.body.leagueId ? parseInt(req.body.leagueId) : undefined;
-      const allOrgLeagues = await storage.getLeagues(organizationId);
-      const publicLeagues = allOrgLeagues.filter(l => l.active !== false && l.allowPublicSignup === true);
+      const leagueId = req.body?.leagueId ? Number.parseInt(String(req.body.leagueId), 10) : undefined;
+      const publicLeagues = (await storage.getLeagues(organizationId))
+        .filter((league) => league.active !== false && league.allowPublicSignup === true);
       if (publicLeagues.length === 0) {
         return sendError(res, "This organization does not currently allow public sign-up.", 403, "SIGNUP_NOT_ALLOWED");
       }
-      if (leagueIdRaw && !Number.isNaN(leagueIdRaw)) {
-        const targetLeague = publicLeagues.find(l => l.id === leagueIdRaw);
-        if (!targetLeague) {
-          return sendError(res, "The selected league does not allow public sign-up.", 403, "SIGNUP_NOT_ALLOWED");
-        }
+      if (!leagueId || !Number.isSafeInteger(leagueId) || !publicLeagues.some((league) => league.id === leagueId)) {
+        return sendError(res, "The selected league does not allow public sign-up.", 403, "SIGNUP_NOT_ALLOWED");
       }
 
-      const registrationData = {
-        email: req.body.email,
-        password: req.body.password,
-        name: req.body.name,
-        phone: req.body.phone,
-        role: 'user' as const,
-        organizationId,
-      };
-
-      const result = insertUserSchema.safeParse(registrationData);
-
+      const registrationSchema = z.object({
+        email: emailSchema,
+        name: nameSchema,
+        phone: z.string().min(1).max(50),
+      });
+      const result = registrationSchema.safeParse({
+        email: typeof req.body?.email === "string" ? req.body.email.trim() : req.body?.email,
+        name: req.body?.name,
+        phone: req.body?.phone,
+      });
       if (!result.success) {
-        const validationErrors = result.error.issues.map(error => ({
+        return sendError(res, "Registration validation failed", 400, "VALIDATION_ERROR", result.error.issues.map((error) => ({
           field: error.path.join('.'),
           message: error.message,
-        }));
-        return sendError(res, "Registration validation failed", 400, "VALIDATION_ERROR", validationErrors);
+        })));
       }
+      const email = result.data.email.trim().toLowerCase();
+      // A new form submission replaces any prior anonymous capability. This
+      // prevents the waiting page from resurfacing an older address after a
+      // user corrects it or submits an address already belonging to an
+      // account.
+      req.session.pendingRegistration = undefined;
 
-      const existingUser = await storage.getUserByEmail(result.data.email);
-      if (existingUser) {
-        return sendError(res, "Email already registered", 400, "DUPLICATE_EMAIL");
-      }
+      // Hash every valid submission before the existing-account branch. The
+      // placeholder hash is never used for a duplicate, but keeping the same
+      // expensive password work on both paths avoids making valid duplicate
+      // email probes distinguishable by timing. This is deliberately not a
+      // sleep or a transaction-held delay.
+      const placeholderPassword = await hashPassword(randomBytes(32).toString("hex"));
 
-      const hashedPassword = await hashPassword(result.data.password);
-      const matchingBowler = await storage.getBowlerByEmail(result.data.email, organizationId);
-
-      let user;
-      let bowlerLinked = false;
-      try {
-        user = await db.transaction(async (tx) => {
-          let createdUser = await storage.createUser({
-            ...result.data,
-            password: hashedPassword,
-            role: 'user',
-            organizationId,
-          }, tx);
-
-          if (matchingBowler) {
-            try {
-              const linked = await linkIdentityUserToBowler({
-                organizationId,
-                userId: createdUser.id,
-                bowlerId: matchingBowler.id,
-                actorUserId: createdUser.id,
-                source: "auth.register",
-                reason: "email_match_auto_link",
-                eventType: "link",
-                requireEmailMatch: true,
-              }, tx);
-              // Return the row updated by the identity service so the new
-              // login session and registration response immediately reflect
-              // the committed bowler claim.
-              createdUser = linked.user;
-              bowlerLinked = true;
-            } catch (linkError) {
-              // A racing registration/invite may claim the roster row first.
-              // Keep this new account unlinked, matching the historical
-              // behavior, while all successful create+link writes remain one
-              // transaction.
-              if (!isIdentityLinkError(linkError)
-                || !["BOWLER_TAKEN", "ALREADY_LINKED", "EMAIL_MISMATCH"].includes(linkError.code)) {
-                throw linkError;
-              }
-            }
-          }
-          return createdUser;
+      // Existing accounts are protected and indistinguishable from unknown
+      // addresses. A narrowly-defined pending registration is the only
+      // exception: a user who lost the anonymous browser session may resume
+      // delivery, but the durable helper rechecks the locked user, tenant,
+      // role, generation, origin job, and completion state before doing so.
+      if (await storage.getUserByEmail(email)) {
+        const resumed = await resumePendingAccountRegistration({
+          email,
+          organizationId,
+          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
         });
+        if (resumed) {
+          req.session.pendingRegistration = {
+            userId: resumed.user.id,
+            organizationId,
+            credentialGeneration: resumed.user.credentialGeneration,
+            createdAt: Date.now(),
+          };
+          if (resumed.delivery.kind === "enqueued") notifyAccountActionDeliveryChanged();
+        }
+        return sendSuccess(res, { status: "pending", email: maskEmail(email), message: registrationGenericMessage }, 202);
+      }
+
+      let user: SelectUser;
+      let delivery: Awaited<ReturnType<typeof enqueueAccountRegistrationDelivery>>;
+      try {
+        ({ user, delivery } = await db.transaction(async (tx) => {
+          const createdUser = await storage.createUser({
+            email,
+            name: result.data.name,
+            phone: result.data.phone,
+            password: placeholderPassword,
+            role: "user",
+            organizationId,
+            bowlerId: null,
+          }, tx);
+          const queued = await enqueueAccountRegistrationDelivery({
+            userId: createdUser.id,
+            organizationId,
+            credentialGeneration: createdUser.credentialGeneration,
+            expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          }, tx);
+          return { user: createdUser, delivery: queued };
+        }));
       } catch (createError) {
         if (isNormalizedUserEmailConflict(createError)) {
-          return sendError(res, "Email already registered", 400, "DUPLICATE_EMAIL");
+          return sendSuccess(res, { status: "pending", email: maskEmail(email), message: registrationGenericMessage }, 202);
         }
         if (handleUserOrgError(res, createError)) return;
         throw createError;
       }
-      if (bowlerLinked) {
-        // The link was performed with the registration transaction's
-        // executor, so the identity service deliberately deferred cache
-        // invalidation until the caller's commit completed.
-        cacheInvalidate(`user:${user.id}`);
+
+      req.session.pendingRegistration = {
+        userId: user.id,
+        organizationId,
+        credentialGeneration: user.credentialGeneration,
+        createdAt: Date.now(),
+      };
+      if (delivery.kind === "enqueued") notifyAccountActionDeliveryChanged();
+      return sendSuccess(res, {
+        status: "pending",
+        email: maskEmail(email),
+        message: registrationGenericMessage,
+      }, 202);
+    } catch (error) {
+      log.error("Registration error", { errorCode: error instanceof Error ? error.name : "unknown" });
+      return sendError(res, "Unable to start registration. Please try again.", 503, "RETRYABLE_ERROR");
+    }
+  });
+
+  async function getRegistrationContext(req: Request) {
+    const pending = registrationSession(req);
+    if (
+      !pending
+      || !Number.isSafeInteger(pending.userId)
+      || !Number.isSafeInteger(pending.organizationId)
+      || !Number.isSafeInteger(pending.credentialGeneration)
+      || pending.createdAt < Date.now() - 7 * 24 * 60 * 60 * 1000
+      || !req.subdomainOrg
+      || req.subdomainOrg.id !== pending.organizationId
+    ) return undefined;
+    const user = await storage.getUser(pending.userId);
+    if (
+      !user
+      || user.role !== "user"
+      || user.organizationId !== pending.organizationId
+      || user.credentialGeneration !== pending.credentialGeneration
+    ) return undefined;
+    const [origin] = await db
+      .select({
+        jobId: accountActionDeliveryJobs.id,
+        userId: accountActionDeliveryJobs.userId,
+        organizationId: accountActionDeliveryJobs.organizationId,
+        credentialGeneration: accountActionDeliveryJobs.credentialGeneration,
+        action: accountActionDeliveryJobs.action,
+        status: accountActionDeliveryJobs.status,
+        attemptCount: accountActionDeliveryJobs.attemptCount,
+        lastErrorCode: accountActionDeliveryJobs.lastErrorCode,
+        expiresAt: accountActionDeliveryJobs.expiresAt,
+      })
+      .from(accountActionDeliveryJobs)
+      .where(and(
+        eq(accountActionDeliveryJobs.userId, user.id),
+        eq(accountActionDeliveryJobs.action, "account_registration"),
+      ))
+      .orderBy(desc(accountActionDeliveryJobs.createdAt), desc(accountActionDeliveryJobs.id))
+      .limit(1);
+    if (
+      !origin
+      || origin.userId !== user.id
+      || origin.action !== "account_registration"
+      || origin.organizationId !== pending.organizationId
+      || origin.credentialGeneration !== user.credentialGeneration
+    ) return undefined;
+    return { pending, user, origin };
+  }
+
+  authRouter.get("/registration/status", async (req, res) => {
+    res.set("Cache-Control", "no-store");
+    try {
+      const context = await getRegistrationContext(req);
+      if (!context) {
+        res.set("Cache-Control", "no-store");
+        return sendError(res, "Registration status is unavailable.", 404, "NOT_FOUND");
       }
-
-      try {
-        if (matchingBowler && bowlerLinked) {
-            // Task #677: copy the freshly-registered user's phone
-            // onto the linked bowler row (user wins, since the
-            // bowler typed it themselves at sign-up). Then kick the
-            // existing external-resync path so payment-provider
-            // attributes stay current. Both calls absorb
-            // their own errors — they must NEVER block the
-            // registration response.
-            try {
-              const syncResult = await syncUserPhoneToBowler(user.id, matchingBowler.id);
-              if (syncResult.outcome === 'updated') {
-                fireBowlerExternalResync(matchingBowler.id, matchingBowler.organizationId);
-              }
-            } catch (phoneErr) {
-              log.error('Failed to sync user phone to bowler at registration:', phoneErr);
-            }
-
-            const bowlerLeagueEntries = await storage.getBowlerLeagues({ bowlerId: matchingBowler.id });
-            if (bowlerLeagueEntries.length > 0) {
-              const league = await storage.getLeague(bowlerLeagueEntries[0].leagueId);
-              if (league?.organizationId) {
-                const org = await storage.getOrganization(league.organizationId);
-                const baseUrl = getBaseUrl(org ?? req.orgSlug);
-                sendTemplatedEmail('self_register_linked', result.data.email, {
-                  bowler_name: matchingBowler.name,
-                  organization_name: org?.name || '',
-                  organization_logo_url: org?.logo ? getOrgLogoUrl(org) : '',
-                  league_name: league.name,
-                  dashboard_link: `${baseUrl}/bowler-dashboard`,
-                }).catch(err => log.error('Failed to send self_register_linked email:', err));
-              }
-            }
-        }
-
-        if (!bowlerLinked) {
-          const baseUrl = getBaseUrl(req.orgSlug);
-          sendTemplatedEmail('self_register_unlinked', result.data.email, {
-            bowler_name: result.data.name,
-            login_link: `${baseUrl}/login`,
-          }).catch(err => log.error('Failed to send self_register_unlinked email:', err));
-        }
-      } catch (linkError) {
-        log.error('Auto-link bowler after registration failed:', linkError);
-      }
-
-      req.login(user, (err) => {
-        if (err) {
-          log.error('Session creation after registration failed:', err);
-          return sendError(res, "Failed to login after registration", 500, "SESSION_ERROR");
-        }
-        sendSuccess(res, sanitizeUser(user), 201);
+      const [latestAction] = await db
+        .select({
+          id: accountActionRequests.id,
+          status: accountActionRequests.status,
+          deliveryStatus: accountActionRequests.deliveryStatus,
+          expiresAt: accountActionRequests.expiresAt,
+          deliveryJobId: accountActionRequests.deliveryJobId,
+        })
+        .from(accountActionRequests)
+        .where(and(
+          eq(accountActionRequests.deliveryJobId, context.origin.jobId),
+          eq(accountActionRequests.action, "account_registration"),
+        ))
+        .orderBy(desc(accountActionRequests.createdAt), desc(accountActionRequests.id))
+        .limit(1);
+      const [latestEvent] = latestAction?.deliveryJobId
+        ? await db
+          .select({ eventType: accountEmailDeliveryEvents.eventType, providerEventAt: accountEmailDeliveryEvents.providerEventAt })
+          .from(accountEmailDeliveryEvents)
+          .where(and(
+            eq(accountEmailDeliveryEvents.accountActionId, latestAction.id),
+            eq(accountEmailDeliveryEvents.accountDeliveryJobId, latestAction.deliveryJobId),
+          ))
+          .orderBy(desc(accountEmailDeliveryEvents.providerEventAt), desc(accountEmailDeliveryEvents.id))
+          .limit(1)
+        : [];
+      const providerEvent = latestEvent?.eventType ?? null;
+      // A provider callback is the strongest signal. Without one, only the
+      // bounded known-unsent classifications may be shown as confirmed
+      // failure; timeouts, network errors, and server failures stay unknown.
+      const knownUnsentRegistrationFailures = new Set([
+        "not_configured",
+        "render_error",
+        "provider_rejected",
+        "provider_rate_limited",
+      ]);
+      const knownUnsentFailure = knownUnsentRegistrationFailures.has(
+        context.origin.lastErrorCode?.trim().toLowerCase() ?? "",
+      );
+      const deliveryState = providerEvent
+        ?? (context.origin.status === "retry_scheduled" ? "unknown" : null)
+        ?? (context.origin.status === "failed" && latestAction?.deliveryStatus !== "sent"
+          ? knownUnsentFailure ? "failed" : "unknown"
+          : null)
+        ?? latestAction?.deliveryStatus
+        ?? "not_attempted";
+      return sendSuccess(res, {
+        status: "pending",
+        email: maskEmail(context.user.email),
+        actionStatus: latestAction?.status ?? "pending",
+        deliveryStatus: deliveryState,
+        deliveryEvidence: providerEvent,
+        expiresAt: latestAction?.expiresAt ?? context.origin.expiresAt,
+        deliveryJobStatus: context.origin.status,
+        deliveryAttemptCount: context.origin.attemptCount,
+        deliveryLastErrorCode: context.origin.lastErrorCode,
+        providerDeliveryEvent: latestEvent?.eventType ?? null,
+        providerDeliveryEventAt: latestEvent?.providerEventAt ?? null,
       });
     } catch (error) {
-      log.error('Registration error:', error);
-      if (error instanceof z.ZodError) {
-        return sendError(res, "Validation failed", 400, "VALIDATION_ERROR", error.issues.map(err => ({
-          field: err.path.join('.'),
-          message: err.message,
-        })));
-      }
-      sendError(res, "Failed to register user", 500, "SERVER_ERROR");
+      log.error("Registration status error", { errorCode: error instanceof Error ? error.name : "unknown" });
+      return sendError(res, "Registration status is temporarily unavailable.", 503, "RETRYABLE_ERROR");
     }
+  });
+
+  authRouter.post("/registration/resend", registerLimiter, async (req, res) => {
+    try {
+      const context = await getRegistrationContext(req);
+      if (!context) {
+        res.set("Cache-Control", "no-store");
+        return sendError(res, "Registration status is unavailable.", 404, "NOT_FOUND");
+      }
+      const delivery = await enqueueAccountRegistrationDelivery({
+        userId: context.user.id,
+        organizationId: context.pending.organizationId,
+        credentialGeneration: context.user.credentialGeneration,
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      });
+      if (delivery.kind === "suppressed" && delivery.reason === "recently_delivered") {
+        res.set("Cache-Control", "no-store");
+        res.set("Retry-After", "300");
+        return sendError(res, "Please wait before requesting another setup link.", 429, "RESEND_COOLDOWN");
+      }
+      if (delivery.kind === "enqueued") notifyAccountActionDeliveryChanged();
+      res.set("Cache-Control", "no-store");
+      return sendSuccess(res, { status: "pending", message: registrationGenericMessage }, 202);
+    } catch (error) {
+      log.error("Registration resend error", { errorCode: error instanceof Error ? error.name : "unknown" });
+      return sendError(res, "Unable to resend the setup link. Please try again.", 503, "RETRYABLE_ERROR");
+    }
+  });
+
+  // Correcting an address starts a fresh public registration. The original
+  // pending account remains untouched: in particular, this route never
+  // changes its email, profile fields, credential generation, or delivery
+  // actions. Clearing this narrowly scoped session capability is all that is
+  // needed before the client returns to the sign-up form.
+  authRouter.post("/registration/abandon", csrfProtection, async (req, res) => {
+    req.session.pendingRegistration = undefined;
+    res.set("Cache-Control", "no-store");
+    return sendSuccess(res, { status: "abandoned" });
   });
 
   authRouter.post("/login", loginLimiter, (req, res, next) => {
@@ -611,6 +720,7 @@ export function registerAuthRoutes(app: Express): void {
       }
       const user = completed.user;
       const isInvitation = completed.request.action === "account_invite";
+      const isRegistration = completed.request.action === "account_registration";
       let authenticatedUser = user;
 
       // Task #352: force-log-out every existing session for this user.
@@ -621,7 +731,7 @@ export function registerAuthRoutes(app: Express): void {
       // cookies must die. We pass `keepSid = null` to nuke them all.
       // Best-effort: a session-store hiccup must not roll back the password
       // rotation that already committed.
-      try {
+      if (!isRegistration) try {
         const dropped = await destroyOtherSessionsForUser(user.id, null);
         if (dropped > 0) {
           log.info('Destroyed all existing sessions on set-password', {
@@ -721,15 +831,24 @@ export function registerAuthRoutes(app: Express): void {
         }
       }
 
+      if (isRegistration) {
+        // The anonymous pending capability has served its purpose. Do not
+        // leave it alongside the authenticated Passport session.
+        req.session.pendingRegistration = undefined;
+      }
+
       logAccountActionOutcome("consumption", completed, "password_changed");
-      if (!isInvitation) {
+      if (!isInvitation && !isRegistration) {
         return sendSuccess(res, { message: "Password set successfully. Please log in." });
       }
 
       req.login(authenticatedUser, (err) => {
         if (err) {
           log.error('Auto-login after password set failed:', err);
-          return sendSuccess(res, { message: "Password set successfully. Please log in." });
+          return sendSuccess(res, {
+            message: "Password set successfully. Please log in.",
+            ...(isRegistration ? { loginFailed: true } : {}),
+          });
         }
         sendSuccess(res, sanitizeUser(authenticatedUser));
       });

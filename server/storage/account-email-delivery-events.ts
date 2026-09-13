@@ -59,13 +59,11 @@ export async function isKnownAccountEmailDeliveryCorrelation(
     )
     .where(and(
       eq(accountActionRequests.id, correlation.accountActionId),
-      eq(accountActionRequests.action, "password_reset"),
-      eq(accountActionDeliveryJobs.action, "password_reset"),
+      eq(accountActionRequests.action, accountActionDeliveryJobs.action),
     ))
     .limit(1);
   return action !== undefined
-    && action.action === "password_reset"
-    && action.jobAction === "password_reset"
+    && action.action === action.jobAction
     && action.userId === action.jobUserId
     && action.deliveryJobId === correlation.accountDeliveryJobId;
 }

@@ -135,6 +135,26 @@ describe("AccountActionDeliveryWorker", () => {
     }));
   });
 
+  it("suppresses a registration job when the account moved organizations before issuance", async () => {
+    const dependencies = makeDependencies({
+      claim: vi.fn(async () => ({
+        job: makeJob({ action: "account_registration", organizationId: 33 }),
+        leaseToken: "lease-1",
+      })),
+      loadTarget: vi.fn(async () => ({ ...target, organizationId: 44 })),
+    });
+    const worker = new AccountActionDeliveryWorker(dependencies);
+
+    const result = await worker.runOne();
+
+    expect(result.outcome).toBe("suppressed");
+    expect(dependencies.issue).not.toHaveBeenCalled();
+    expect(dependencies.send).not.toHaveBeenCalled();
+    expect(dependencies.finalize).toHaveBeenCalledWith(expect.objectContaining({
+      outcome: { status: "suppressed", reason: "account_not_pending" },
+    }));
+  });
+
   it("leaves an existing usable link intact when the three-link cap is reached", async () => {
     const dependencies = makeDependencies({
       issue: vi.fn(async (): Promise<PasswordResetIssuanceResult> => ({ kind: "suppressed", reason: "at_capacity" })),
@@ -168,8 +188,36 @@ describe("AccountActionDeliveryWorker", () => {
         status: "retry_scheduled",
         actionRequestId: 91,
         errorCode: "provider_timeout",
+        deliveryDisposition: "uncertain",
       }),
     }));
+  });
+
+  it("carries a retryable known-unsent provider disposition with the exact action", async () => {
+    const dependencies = makeDependencies({
+      send: vi.fn(async (): Promise<PasswordResetProviderOutcome> => ({
+        kind: "failed",
+        errorCode: "provider_rate_limited",
+        retryable: true,
+        deliveryDisposition: "known_unsent",
+      })),
+    });
+    const worker = new AccountActionDeliveryWorker(dependencies);
+
+    const result = await worker.runOne();
+
+    expect(result.outcome).toBe("retry_scheduled");
+    expect(dependencies.finalize).toHaveBeenCalledWith({
+      jobId: 11,
+      leaseToken: "lease-1",
+      outcome: {
+        status: "retry_scheduled",
+        actionRequestId: 91,
+        errorCode: "provider_rate_limited",
+        retryAfterMs: 30_000,
+        deliveryDisposition: "known_unsent",
+      },
+    });
   });
 
   it("revokes an action only for a definitive pre-submission failure", async () => {

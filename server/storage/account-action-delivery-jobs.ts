@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   and,
   asc,
+  desc,
   eq,
   gt,
   inArray,
@@ -22,13 +23,16 @@ import { accountActionRequests } from "@shared/schema/account-action-requests";
 import { users } from "@shared/schema/users";
 import { db } from "../db.js";
 import {
-  getPasswordResetPendingState,
+  getAccountActionPendingState,
   lockAccountCredential,
+  ACCOUNT_REGISTRATION_PENDING_CAP,
   PASSWORD_RESET_PENDING_CAP,
   type AccountActionExecutor,
 } from "./account-action-requests.js";
 
 export type AccountActionDeliveryJobExecutor = AccountActionExecutor;
+
+export type AccountActionDeliveryAction = "password_reset" | "account_registration";
 
 const ACTIVE_JOB_STATUSES = ["pending", "processing", "retry_scheduled"] as const;
 
@@ -37,7 +41,10 @@ export type PasswordResetDeliveryEnqueueSuppressionReason =
   | "stale_credential"
   | "at_capacity"
   | "recently_delivered"
-  | "active_job";
+  | "active_job"
+  | "account_not_pending";
+export type AccountRegistrationDeliveryEnqueueSuppressionReason =
+  | PasswordResetDeliveryEnqueueSuppressionReason;
 
 export type PasswordResetDeliveryEnqueueResult =
   | { kind: "enqueued"; job: AccountActionDeliveryJob }
@@ -50,6 +57,8 @@ export interface EnqueuePasswordResetDeliveryInput {
   credentialGeneration?: number;
   /** The intent deadline, normally the same one-hour window as the action. */
   expiresAt: Date;
+  /** Optional action kind; omitted callers retain password-reset behavior. */
+  action?: AccountActionDeliveryAction;
 }
 
 function assertPositiveUserId(userId: number): void {
@@ -84,6 +93,7 @@ export async function enqueuePasswordResetDelivery(
   input: EnqueuePasswordResetDeliveryInput,
   executor?: AccountActionDeliveryJobExecutor,
 ): Promise<PasswordResetDeliveryEnqueueResult> {
+  const action = input.action ?? "password_reset";
   assertPositiveUserId(input.userId);
   assertFutureDate(input.expiresAt, "Password-reset delivery expiry");
   if (
@@ -100,7 +110,13 @@ export async function enqueuePasswordResetDelivery(
     // using the same user -> action order here avoids a cross-transaction
     // lock inversion and lets an omitted snapshot use the current generation.
     const [lockedUser] = await tx
-      .select({ id: users.id, credentialGeneration: users.credentialGeneration })
+      .select({
+        id: users.id,
+        role: users.role,
+        organizationId: users.organizationId,
+        bowlerId: users.bowlerId,
+        credentialGeneration: users.credentialGeneration,
+      })
       .from(users)
       .where(eq(users.id, input.userId))
       .limit(1)
@@ -109,6 +125,15 @@ export async function enqueuePasswordResetDelivery(
     const effectiveCredentialGeneration = input.credentialGeneration ?? lockedUser.credentialGeneration;
     if (effectiveCredentialGeneration !== lockedUser.credentialGeneration) {
       return { kind: "suppressed", reason: "stale_credential" };
+    }
+    if (
+      action === "account_registration"
+      && (
+        lockedUser.role !== "user"
+        || lockedUser.organizationId !== (input.organizationId ?? null)
+      )
+    ) {
+      return { kind: "suppressed", reason: "account_not_pending" };
     }
 
     // A credential trigger revokes the action rows, but the durable intent is
@@ -128,13 +153,18 @@ export async function enqueuePasswordResetDelivery(
       })
       .where(and(
         eq(accountActionDeliveryJobs.userId, input.userId),
-        eq(accountActionDeliveryJobs.action, "password_reset"),
+        eq(accountActionDeliveryJobs.action, action),
         inArray(accountActionDeliveryJobs.status, ACTIVE_JOB_STATUSES),
         ne(accountActionDeliveryJobs.credentialGeneration, lockedUser.credentialGeneration),
       ));
 
-    const pendingState = await getPasswordResetPendingState({ userId: input.userId }, tx);
-    if (pendingState.pendingCount >= PASSWORD_RESET_PENDING_CAP) {
+    const pendingState = await getAccountActionPendingState({
+      userId: input.userId,
+      action,
+    }, tx);
+    if (pendingState.pendingCount >= (action === "account_registration"
+      ? ACCOUNT_REGISTRATION_PENDING_CAP
+      : PASSWORD_RESET_PENDING_CAP)) {
       return { kind: "suppressed", reason: "at_capacity" };
     }
     if (pendingState.recentlyDelivered) {
@@ -158,7 +188,7 @@ export async function enqueuePasswordResetDelivery(
       })
       .where(and(
         eq(accountActionDeliveryJobs.userId, input.userId),
-        eq(accountActionDeliveryJobs.action, "password_reset"),
+        eq(accountActionDeliveryJobs.action, action),
         inArray(accountActionDeliveryJobs.status, ACTIVE_JOB_STATUSES),
         lte(accountActionDeliveryJobs.expiresAt, sql`now()`),
       ));
@@ -168,7 +198,7 @@ export async function enqueuePasswordResetDelivery(
       .from(accountActionDeliveryJobs)
       .where(and(
         eq(accountActionDeliveryJobs.userId, input.userId),
-        eq(accountActionDeliveryJobs.action, "password_reset"),
+        eq(accountActionDeliveryJobs.action, action),
         inArray(accountActionDeliveryJobs.status, ACTIVE_JOB_STATUSES),
         gt(accountActionDeliveryJobs.expiresAt, sql`now()`),
       ))
@@ -181,7 +211,7 @@ export async function enqueuePasswordResetDelivery(
       .values({
         userId: input.userId,
         organizationId: input.organizationId ?? null,
-        action: "password_reset",
+        action,
         credentialGeneration: effectiveCredentialGeneration,
         expiresAt: input.expiresAt.toISOString(),
         status: "pending",
@@ -190,8 +220,126 @@ export async function enqueuePasswordResetDelivery(
         updatedAt: sql`now()`,
       })
       .returning();
-    if (!job) throw new Error("Password-reset delivery job was not created");
+    if (!job) throw new Error(`${action} delivery job was not created`);
     return { kind: "enqueued", job };
+  });
+}
+
+export interface EnqueueAccountRegistrationDeliveryInput {
+  userId: number;
+  organizationId: number;
+  credentialGeneration: number;
+  expiresAt: Date;
+}
+
+export type AccountRegistrationDeliveryEnqueueResult =
+  | { kind: "enqueued"; job: AccountActionDeliveryJob }
+  | { kind: "suppressed"; reason: AccountRegistrationDeliveryEnqueueSuppressionReason };
+
+export function enqueueAccountRegistrationDelivery(
+  input: EnqueueAccountRegistrationDeliveryInput,
+  executor?: AccountActionDeliveryJobExecutor,
+): Promise<AccountRegistrationDeliveryEnqueueResult> {
+  return enqueuePasswordResetDelivery({ ...input, action: "account_registration" }, executor);
+}
+
+export interface ResumePendingAccountRegistrationInput {
+  email: string;
+  organizationId: number;
+  expiresAt: Date;
+}
+
+export interface ResumedPendingAccountRegistration {
+  user: typeof users.$inferSelect;
+  delivery: AccountRegistrationDeliveryEnqueueResult;
+}
+
+/**
+ * Recover the narrow anonymous capability for a pending registration after a
+ * browser loses its session. The established credential advisory lock is
+ * acquired before the authoritative user-row lock, and the durable-origin,
+ * generation, and enqueue checks share that transaction so an administrator
+ * role/org change cannot race a resend.
+ *
+ * This intentionally does not inspect or update the submitted name, phone,
+ * email, password, or bowler link. Legacy accounts and completed actions have
+ * no current-generation registration origin and therefore return undefined.
+ */
+export async function resumePendingAccountRegistration(
+  input: ResumePendingAccountRegistrationInput,
+): Promise<ResumedPendingAccountRegistration | undefined> {
+  const email = input.email.trim().toLowerCase();
+  if (!email || !Number.isSafeInteger(input.organizationId) || input.organizationId <= 0) {
+    throw new Error("A valid registration email and organization are required");
+  }
+  assertFutureDate(input.expiresAt, "Account-registration delivery expiry");
+
+  return db.transaction(async (tx) => {
+    // Read only the scoped candidate ID first. All credential-sensitive paths
+    // acquire the advisory lock before the user row lock; the authoritative
+    // re-read below closes the role/org/email race without inverting the
+    // established user -> action lock order.
+    const [candidateId] = await tx
+      .select({ id: users.id })
+      .from(users)
+      .where(and(
+        eq(users.organizationId, input.organizationId),
+        eq(users.role, "user"),
+        sql`lower(btrim(${users.email})) = ${email}`,
+      ))
+      .limit(1);
+    if (!candidateId) return undefined;
+
+    await lockAccountCredential(tx, candidateId.id);
+    const [candidate] = await tx
+      .select()
+      .from(users)
+      .where(and(
+        eq(users.id, candidateId.id),
+        eq(users.organizationId, input.organizationId),
+        eq(users.role, "user"),
+        sql`lower(btrim(${users.email})) = ${email}`,
+      ))
+      .limit(1)
+      .for("update");
+    if (!candidate) return undefined;
+
+    const [origin] = await tx
+      .select({
+        credentialGeneration: accountActionDeliveryJobs.credentialGeneration,
+      })
+      .from(accountActionDeliveryJobs)
+      .where(and(
+        eq(accountActionDeliveryJobs.userId, candidate.id),
+        eq(accountActionDeliveryJobs.organizationId, input.organizationId),
+        eq(accountActionDeliveryJobs.action, "account_registration"),
+        eq(accountActionDeliveryJobs.credentialGeneration, candidate.credentialGeneration),
+      ))
+      .orderBy(desc(accountActionDeliveryJobs.createdAt), desc(accountActionDeliveryJobs.id))
+      .limit(1);
+    if (!origin || origin.credentialGeneration !== candidate.credentialGeneration) return undefined;
+
+    // The generation trigger normally makes this redundant, but keeping the
+    // completed-action check local makes the resume contract explicit even if
+    // an old fixture or a future migration bypasses that trigger.
+    const [completedAction] = await tx
+      .select({ id: accountActionRequests.id })
+      .from(accountActionRequests)
+      .where(and(
+        eq(accountActionRequests.userId, candidate.id),
+        eq(accountActionRequests.action, "account_registration"),
+        eq(accountActionRequests.status, "consumed"),
+      ))
+      .limit(1);
+    if (completedAction) return undefined;
+
+    const delivery = await enqueueAccountRegistrationDelivery({
+      userId: candidate.id,
+      organizationId: input.organizationId,
+      credentialGeneration: candidate.credentialGeneration,
+      expiresAt: input.expiresAt,
+    }, tx);
+    return { user: candidate, delivery };
   });
 }
 
@@ -350,7 +498,7 @@ export async function attachPasswordResetActionToDeliveryJob(input: {
         WHERE action_request.id = ${input.actionRequestId}
           AND action_request.delivery_job_id = ${accountActionDeliveryJobs.id}
           AND action_request.user_id = ${accountActionDeliveryJobs.userId}
-          AND action_request.action = 'password_reset'
+          AND action_request.action = ${accountActionDeliveryJobs.action}
       )`,
     ))
     .returning({ id: accountActionDeliveryJobs.id });
@@ -359,7 +507,22 @@ export async function attachPasswordResetActionToDeliveryJob(input: {
 
 export type PasswordResetDeliveryFinalization =
   | { status: "succeeded"; actionRequestId: number; providerMessageId?: string | null }
-  | { status: "retry_scheduled"; actionRequestId?: number | null; errorCode: string; retryAfterMs: number }
+  | {
+    status: "retry_scheduled";
+    actionRequestId: number;
+    errorCode: string;
+    retryAfterMs: number;
+    /** Known-unsent retries revoke this exact action before the next attempt. */
+    deliveryDisposition: "known_unsent";
+  }
+  | {
+    status: "retry_scheduled";
+    actionRequestId?: number | null;
+    errorCode: string;
+    retryAfterMs: number;
+    /** Omitted legacy outcomes are conservatively treated as uncertain. */
+    deliveryDisposition?: "uncertain";
+  }
   | {
     status: "failed";
     actionRequestId: number;
@@ -392,6 +555,7 @@ export async function finalizePasswordResetDeliveryJob(input: {
         id: accountActionDeliveryJobs.id,
         userId: accountActionDeliveryJobs.userId,
         actionRequestId: accountActionDeliveryJobs.actionRequestId,
+        action: accountActionDeliveryJobs.action,
         attemptCount: accountActionDeliveryJobs.attemptCount,
         expiresAt: accountActionDeliveryJobs.expiresAt,
       })
@@ -412,6 +576,13 @@ export async function finalizePasswordResetDeliveryJob(input: {
       : input.outcome.status === "suppressed"
         ? claimed.actionRequestId
         : undefined;
+    if (
+      input.outcome.status === "retry_scheduled"
+      && input.outcome.deliveryDisposition === "known_unsent"
+      && !Number.isSafeInteger(actionRequestId)
+    ) {
+      throw new Error("Known-unsent retry requires its exact action request ID");
+    }
     if (actionRequestId) {
       const [linkedAction] = await tx
         .select({ id: accountActionRequests.id })
@@ -420,7 +591,7 @@ export async function finalizePasswordResetDeliveryJob(input: {
           eq(accountActionRequests.id, actionRequestId),
           eq(accountActionRequests.deliveryJobId, input.jobId),
           eq(accountActionRequests.userId, claimed.userId),
-          eq(accountActionRequests.action, "password_reset"),
+          eq(accountActionRequests.action, claimed.action),
         ))
         .limit(1);
       if (!linkedAction) return false;
@@ -438,11 +609,16 @@ export async function finalizePasswordResetDeliveryJob(input: {
             eq(accountActionRequests.deliveryJobId, input.jobId),
           ));
 
-        if (input.outcome.status === "failed" && input.outcome.deliveryDisposition === "known_unsent") {
+        if (
+          (input.outcome.status === "failed" || input.outcome.status === "retry_scheduled")
+          && input.outcome.deliveryDisposition === "known_unsent"
+        ) {
           // This branch is reserved for deterministic failures that occurred
           // before provider submission (for example missing configuration).
-          // Unknown provider outcomes and exhausted retries deliberately leave
-          // the action pending because the link may already have been sent.
+          // Unknown provider outcomes deliberately leave the action pending
+          // because the link may already have been sent. A known-unsent retry
+          // revokes before the next attempt, so a later issuance cannot leave
+          // an older definitely-undelivered bearer active at the cap.
           await tx
             .update(accountActionRequests)
             .set({ status: "revoked", revokedAt: sql`now()` })

@@ -7,6 +7,8 @@ import { env } from "../config.js";
 import * as schema from "@shared/schema";
 import {
   accountActionRequests,
+  accountActionDeliveryJobs,
+  bowlers,
   emailChangeRequests,
   users,
   type AccountActionDeliveryStatus,
@@ -16,6 +18,10 @@ import {
   type User,
 } from "@shared/schema";
 import { cacheInvalidate } from "../utils/cache";
+import {
+  linkUserToBowler,
+  isIdentityLinkError,
+} from "../services/identity-link.js";
 
 /** The only token representation that may be persisted. */
 export function hashAccountActionToken(token: string): string {
@@ -44,6 +50,9 @@ export interface CompletedPasswordAction extends AccountActionWithUser {}
 export const PASSWORD_RESET_PENDING_CAP = 3;
 /** Suppress rapid repeat sends while the previous link is likely in flight. */
 export const PASSWORD_RESET_DELIVERY_SUPPRESSION_MS = 5 * 60 * 1000;
+/** Registration setup links use the same bounded, append-preserving policy. */
+export const ACCOUNT_REGISTRATION_PENDING_CAP = 3;
+export const ACCOUNT_REGISTRATION_DELIVERY_SUPPRESSION_MS = 5 * 60 * 1000;
 
 export type PasswordResetIssuanceSuppressionReason =
   | "user_missing"
@@ -56,7 +65,24 @@ export type PasswordResetIssuanceResult =
   | (IssuedAccountAction & { kind: "issued" })
   | { kind: "suppressed"; reason: PasswordResetIssuanceSuppressionReason };
 
+export type AccountRegistrationIssuanceSuppressionReason =
+  | "user_missing"
+  | "recipient_changed"
+  | "stale_credential"
+  | "account_not_pending"
+  | "at_capacity"
+  | "recently_delivered";
+
+export type AccountRegistrationIssuanceResult =
+  | (IssuedAccountAction & { kind: "issued" })
+  | { kind: "suppressed"; reason: AccountRegistrationIssuanceSuppressionReason };
+
 export interface PasswordResetPendingState {
+  pendingCount: number;
+  recentlyDelivered: boolean;
+}
+
+export interface AccountActionPendingState {
   pendingCount: number;
   recentlyDelivered: boolean;
 }
@@ -208,34 +234,63 @@ export async function issueAccountAction(input: {
   }
   const tokenHash = hashAccountActionToken(token);
   const run = async (tx: AccountActionExecutor): Promise<AccountActionRequest> => {
-    if (input.action === "password_reset") {
+    let credentialGeneration = 0;
+    if (input.action === "password_reset" || input.action === "account_registration") {
       await lockAccountCredential(tx, input.userId);
       const [currentUser] = await tx
-        .select({ email: users.email, credentialGeneration: users.credentialGeneration })
+        .select({
+          email: users.email,
+          role: users.role,
+          organizationId: users.organizationId,
+          bowlerId: users.bowlerId,
+          credentialGeneration: users.credentialGeneration,
+        })
         .from(users)
         .where(eq(users.id, input.userId))
         .limit(1)
         .for("update");
       const recipientEmail = input.recipientEmail;
-      if (
-        !currentUser
-        || !recipientEmail
-        || normalizeRecipientEmail(currentUser.email) !== normalizeRecipientEmail(recipientEmail)
-      ) {
-        throw new Error("Password-reset recipient changed before issuance");
+      if (!currentUser) {
+        throw new Error(input.action === "password_reset"
+          ? "Password-reset user no longer exists"
+          : "account_registration user no longer exists");
       }
+      if (!recipientEmail || normalizeRecipientEmail(currentUser.email) !== normalizeRecipientEmail(recipientEmail)) {
+        throw new Error(input.action === "password_reset"
+          ? "Password-reset recipient changed before issuance"
+          : "account_registration recipient changed before issuance");
+      }
+      credentialGeneration = currentUser.credentialGeneration;
       if (
         input.expectedCredentialGeneration !== undefined
-        && currentUser.credentialGeneration !== input.expectedCredentialGeneration
+        && credentialGeneration !== input.expectedCredentialGeneration
       ) {
-        throw new Error("Password-reset credential generation changed before issuance");
+        throw new Error(input.action === "password_reset"
+          ? "Password-reset credential generation changed before issuance"
+          : "account_registration credential generation changed before issuance");
       }
-      // The cap is an invariant of every password-reset issuance path. The
-      // preservePending flag only controls supersession behavior for legacy
-      // callers; it must never allow a fourth usable recovery link.
-      const pendingState = await getPasswordResetPendingState({ userId: input.userId }, tx);
-      if (pendingState.pendingCount >= PASSWORD_RESET_PENDING_CAP) {
-        throw new PasswordResetCapacityError();
+      if (input.action === "account_registration") {
+        if (
+          currentUser.role !== "user"
+          || currentUser.organizationId !== (input.organizationId ?? null)
+        ) {
+          throw new Error("Registration account is no longer pending");
+        }
+        const pendingState = await getAccountActionPendingState({
+          userId: input.userId,
+          action: "account_registration",
+        }, tx);
+        if (pendingState.pendingCount >= ACCOUNT_REGISTRATION_PENDING_CAP) {
+          throw new Error("Registration setup-link capacity reached");
+        }
+      } else {
+        // The cap is an invariant of every password-reset issuance path. The
+        // preservePending flag only controls supersession behavior for legacy
+        // callers; it must never allow a fourth usable recovery link.
+        const pendingState = await getPasswordResetPendingState({ userId: input.userId }, tx);
+        if (pendingState.pendingCount >= PASSWORD_RESET_PENDING_CAP) {
+          throw new PasswordResetCapacityError();
+        }
       }
     } else {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`account-action:${input.userId}:${input.action}`}))`);
@@ -300,12 +355,25 @@ export async function getPasswordResetPendingState(input: {
   userId: number;
   deliveredAfter?: Date;
 }, executor: AccountActionExecutor = db): Promise<PasswordResetPendingState> {
+  return getAccountActionPendingState({
+    userId: input.userId,
+    action: "password_reset",
+    deliveredAfter: input.deliveredAfter,
+  }, executor);
+}
+
+/** Read and lazily expire append-preserving action rows for one action kind. */
+export async function getAccountActionPendingState(input: {
+  userId: number;
+  action: AccountActionType;
+  deliveredAfter?: Date;
+}, executor: AccountActionExecutor = db): Promise<AccountActionPendingState> {
   await executor
     .update(accountActionRequests)
     .set({ status: "expired", expiredAt: sql`now()` })
     .where(and(
       eq(accountActionRequests.userId, input.userId),
-      eq(accountActionRequests.action, "password_reset"),
+      eq(accountActionRequests.action, input.action),
       eq(accountActionRequests.status, "pending"),
       lte(accountActionRequests.expiresAt, sql`now()`),
     ));
@@ -314,23 +382,27 @@ export async function getPasswordResetPendingState(input: {
     SELECT count(*)::text AS count
     FROM account_action_requests
     WHERE user_id = ${input.userId}
-      AND action = 'password_reset'
+      AND action = ${input.action}
       AND status = 'pending'
       AND expires_at > now()
   `);
   const pendingCount = Number(pending.rows[0]?.count ?? 0);
   if (!Number.isSafeInteger(pendingCount) || pendingCount < 0) {
-    throw new Error("Invalid pending password-reset count");
+    throw new Error(`Invalid pending ${input.action} count`);
   }
 
   const deliveredAfter = input.deliveredAfter
-    ?? new Date(Date.now() - PASSWORD_RESET_DELIVERY_SUPPRESSION_MS);
+    ?? new Date(Date.now() - (
+      input.action === "account_registration"
+        ? ACCOUNT_REGISTRATION_DELIVERY_SUPPRESSION_MS
+        : PASSWORD_RESET_DELIVERY_SUPPRESSION_MS
+    ));
   const [recentDelivery] = await executor
     .select({ id: accountActionRequests.id })
     .from(accountActionRequests)
     .where(and(
       eq(accountActionRequests.userId, input.userId),
-      eq(accountActionRequests.action, "password_reset"),
+      eq(accountActionRequests.action, input.action),
       eq(accountActionRequests.status, "pending"),
       eq(accountActionRequests.deliveryStatus, "sent"),
       gt(accountActionRequests.expiresAt, sql`now()`),
@@ -415,6 +487,80 @@ export async function tryIssuePasswordReset(input: {
   return db.transaction(run);
 }
 
+/** Issue a registration setup action without evicting an older usable link. */
+export async function tryIssueAccountRegistration(input: {
+  userId: number;
+  expiresAt: Date;
+  organizationId: number;
+  recipientEmail: string;
+  deliveryJobId?: number | null;
+  expectedCredentialGeneration?: number;
+  deliveredAfter?: Date;
+}, executor?: AccountActionExecutor): Promise<AccountRegistrationIssuanceResult> {
+  if (input.expiresAt.getTime() <= Date.now()) {
+    throw new Error("Account-registration expiry must be in the future");
+  }
+
+  const run = async (tx: AccountActionExecutor): Promise<AccountRegistrationIssuanceResult> => {
+    await lockAccountCredential(tx, input.userId);
+    const [currentUser] = await tx
+      .select({
+        email: users.email,
+        role: users.role,
+        organizationId: users.organizationId,
+        bowlerId: users.bowlerId,
+        credentialGeneration: users.credentialGeneration,
+      })
+      .from(users)
+      .where(eq(users.id, input.userId))
+      .limit(1)
+      .for("update");
+    if (!currentUser) return { kind: "suppressed", reason: "user_missing" };
+    if (
+      currentUser.role !== "user"
+      || currentUser.organizationId !== input.organizationId
+    ) return { kind: "suppressed", reason: "account_not_pending" };
+    if (normalizeRecipientEmail(currentUser.email) !== normalizeRecipientEmail(input.recipientEmail)) {
+      return { kind: "suppressed", reason: "recipient_changed" };
+    }
+    if (
+      input.expectedCredentialGeneration !== undefined
+      && currentUser.credentialGeneration !== input.expectedCredentialGeneration
+    ) return { kind: "suppressed", reason: "stale_credential" };
+
+    const pendingState = await getAccountActionPendingState({
+      userId: input.userId,
+      action: "account_registration",
+      deliveredAfter: input.deliveredAfter,
+    }, tx);
+    if (pendingState.pendingCount >= ACCOUNT_REGISTRATION_PENDING_CAP) {
+      return { kind: "suppressed", reason: "at_capacity" };
+    }
+    if (pendingState.recentlyDelivered) {
+      return { kind: "suppressed", reason: "recently_delivered" };
+    }
+
+    const issued = await issueAccountAction({
+      userId: input.userId,
+      action: "account_registration",
+      expiresAt: input.expiresAt,
+      organizationId: input.organizationId,
+      recipientEmail: input.recipientEmail,
+      deliveryJobId: input.deliveryJobId,
+      expectedCredentialGeneration: input.expectedCredentialGeneration,
+      preservePending: true,
+    }, tx);
+    return { kind: "issued", ...issued };
+  };
+
+  if (executor) {
+    return "transaction" in executor
+      ? executor.transaction(run)
+      : run(executor);
+  }
+  return db.transaction(run);
+}
+
 /**
  * Find a request by hashing the supplied bearer token. This intentionally
  * returns lifecycle state so callers can distinguish an expired token from a
@@ -472,7 +618,12 @@ export async function consumeAccountActionAndSetPassword(input: {
   const tokenHash = hashAccountActionToken(input.token);
   const completed = await db.transaction(async (tx) => {
     const [candidate] = await tx
-      .select({ userId: accountActionRequests.userId })
+      .select({
+        userId: accountActionRequests.userId,
+        action: accountActionRequests.action,
+        deliveryJobId: accountActionRequests.deliveryJobId,
+        organizationId: accountActionRequests.organizationId,
+      })
       .from(accountActionRequests)
       .where(eq(accountActionRequests.tokenHash, tokenHash))
       .limit(1);
@@ -492,6 +643,43 @@ export async function consumeAccountActionAndSetPassword(input: {
       .for("update");
     if (!currentUser) {
       throw new Error(`Account action user ${candidate.userId} no longer exists`);
+    }
+
+    let registrationOrganizationId: number | null = null;
+    if (candidate.action === "account_registration") {
+      // A registration action is valid only when it still has its original
+      // durable registration intent and the user has not been moved,
+      // elevated, or otherwise changed since the email was issued. An admin
+      // may already have linked the account; that link is preserved below.
+      const [origin] = await tx
+        .select({
+          userId: accountActionDeliveryJobs.userId,
+          organizationId: accountActionDeliveryJobs.organizationId,
+          credentialGeneration: accountActionDeliveryJobs.credentialGeneration,
+          action: accountActionDeliveryJobs.action,
+        })
+        .from(accountActionDeliveryJobs)
+        .where(and(
+          eq(accountActionDeliveryJobs.id, candidate.deliveryJobId ?? 0),
+          eq(accountActionDeliveryJobs.userId, currentUser.id),
+          eq(accountActionDeliveryJobs.action, "account_registration"),
+        ))
+        .limit(1);
+      if (
+        !origin
+        || origin.organizationId === null
+        || origin.action !== "account_registration"
+        || currentUser.role !== "user"
+        || currentUser.organizationId !== origin.organizationId
+        || currentUser.credentialGeneration !== origin.credentialGeneration
+        || (candidate.organizationId ?? null) !== origin.organizationId
+      ) {
+        return undefined;
+      }
+      registrationOrganizationId = currentUser.organizationId;
+      if (registrationOrganizationId === null) {
+        throw new Error("Registration account lost its organization context");
+      }
     }
 
     await tx
@@ -548,6 +736,49 @@ export async function consumeAccountActionAndSetPassword(input: {
       throw new Error(`Account action user ${claimed.userId} no longer exists`);
     }
 
+    let completedUser = updatedUser;
+    if (claimed.action === "account_registration" && currentUser.bowlerId === null) {
+      // Email ownership is already proven by the bearer token. Link only an
+      // exactly-one roster profile in this same organization and transaction.
+      // Include claimed rows in the bounded candidate set: the identity
+      // service decides the race/claim outcome, while this flow never scans
+      // or locks an unbounded set of duplicate profiles.
+      if (registrationOrganizationId === null) {
+        throw new Error("Registration account lost its organization context");
+      }
+      const candidates = await tx
+        .select({ id: bowlers.id })
+        .from(bowlers)
+        .where(and(
+          eq(bowlers.organizationId, registrationOrganizationId),
+          sql`lower(btrim(${bowlers.email})) = lower(btrim(${currentUser.email}))`,
+        ))
+        .limit(2);
+      if (candidates.length === 1) {
+        try {
+          const linked = await linkUserToBowler({
+            organizationId: registrationOrganizationId,
+            userId: currentUser.id,
+            bowlerId: candidates[0].id,
+            actorUserId: currentUser.id,
+            source: "auth.set-password.registration",
+            reason: "email_match_auto_link",
+            eventType: "link",
+            requireEmailMatch: true,
+          }, tx);
+          completedUser = linked.user;
+        } catch (linkError) {
+          // A concurrent administrator assignment or another account claim
+          // is an expected unlinked outcome. Any other failure rolls back the
+          // password and action claim so the user can retry safely.
+          if (!isIdentityLinkError(linkError)
+            || !["BOWLER_TAKEN", "ALREADY_LINKED", "EMAIL_MISMATCH"].includes(linkError.code)) {
+            throw linkError;
+          }
+        }
+      }
+    }
+
     await tx
       .update(accountActionRequests)
       .set({ status: "superseded", supersededAt: sql`now()` })
@@ -565,7 +796,7 @@ export async function consumeAccountActionAndSetPassword(input: {
         isNull(emailChangeRequests.consumedAt),
       ));
 
-    return { request: claimed, user: updatedUser };
+    return { request: claimed, user: completedUser };
   });
 
   if (completed) cacheInvalidate(`user:${completed.user.id}`);

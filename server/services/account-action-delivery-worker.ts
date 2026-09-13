@@ -11,7 +11,9 @@ import {
   type PasswordResetDeliveryFinalization,
 } from "../storage/account-action-delivery-jobs.js";
 import {
+  tryIssueAccountRegistration,
   tryIssuePasswordReset,
+  type AccountRegistrationIssuanceResult,
   type PasswordResetIssuanceResult,
   type IssuedAccountAction,
 } from "../storage/account-action-requests.js";
@@ -54,13 +56,14 @@ export interface AccountActionDeliveryWorkerDependencies {
   recover: () => Promise<number>;
   loadTarget: (job: AccountActionDeliveryJob) => Promise<PasswordResetDeliveryTarget | undefined>;
   issue: (input: {
+    action: AccountActionDeliveryJob["action"];
     userId: number;
     recipientEmail: string;
     organizationId: number | null;
     expiresAt: Date;
     deliveryJobId: number;
     expectedCredentialGeneration: number;
-  }) => Promise<PasswordResetIssuanceResult>;
+  }) => Promise<PasswordResetIssuanceResult | AccountRegistrationIssuanceResult>;
   attachAction: (input: {
     jobId: number;
     leaseToken: string;
@@ -85,14 +88,23 @@ const productionDependencies: AccountActionDeliveryWorkerDependencies = {
     // wiring supplies this function; silently sending without it is unsafe.
     throw new Error("Password-reset delivery target resolver is not configured");
   },
-  issue: (input) => tryIssuePasswordReset({
-    userId: input.userId,
-    recipientEmail: input.recipientEmail,
-    organizationId: input.organizationId,
-    expiresAt: input.expiresAt,
-    deliveryJobId: input.deliveryJobId,
-    expectedCredentialGeneration: input.expectedCredentialGeneration,
-  }),
+  issue: (input) => input.action === "account_registration"
+    ? tryIssueAccountRegistration({
+      userId: input.userId,
+      recipientEmail: input.recipientEmail,
+      organizationId: input.organizationId ?? 0,
+      expiresAt: input.expiresAt,
+      deliveryJobId: input.deliveryJobId,
+      expectedCredentialGeneration: input.expectedCredentialGeneration,
+    })
+    : tryIssuePasswordReset({
+      userId: input.userId,
+      recipientEmail: input.recipientEmail,
+      organizationId: input.organizationId,
+      expiresAt: input.expiresAt,
+      deliveryJobId: input.deliveryJobId,
+      expectedCredentialGeneration: input.expectedCredentialGeneration,
+    }),
   attachAction: attachPasswordResetActionToDeliveryJob,
   send: async () => {
     throw new Error("Password-reset delivery sender is not configured");
@@ -236,6 +248,15 @@ export class AccountActionDeliveryWorker {
       ) {
         return finalize({ status: "suppressed", reason: "stale_credential" });
       }
+      if (
+        job.action === "account_registration"
+        && (job.organizationId === null || target.organizationId !== job.organizationId)
+      ) {
+        // Registration links are tenant-bound at signup. A moved account
+        // must not receive a link from the old intent, even if its credential
+        // generation has not changed.
+        return finalize({ status: "suppressed", reason: "account_not_pending" });
+      }
 
       const expiresAt = new Date(job.expiresAt);
       if (!Number.isFinite(expiresAt.getTime()) || expiresAt.getTime() <= this.dependencies.now()) {
@@ -247,9 +268,12 @@ export class AccountActionDeliveryWorker {
       }
 
       const issuance = await this.dependencies.issue({
+        action: job.action,
         userId: target.userId,
         recipientEmail: target.email,
-        organizationId: target.organizationId,
+        organizationId: job.action === "account_registration"
+          ? job.organizationId
+          : target.organizationId,
         expiresAt,
         deliveryJobId: job.id,
         expectedCredentialGeneration: job.credentialGeneration,
@@ -290,6 +314,9 @@ export class AccountActionDeliveryWorker {
         actionRequestId: issuance.request.id,
         errorCode: providerOutcome.errorCode,
         retryAfterMs: retryDelayForAttempt(job.attemptCount),
+        deliveryDisposition: providerOutcome.kind === "failed"
+          ? providerOutcome.deliveryDisposition
+          : "uncertain",
       });
     } catch (error) {
       // A worker exception is treated as uncertain provider work. The action
@@ -304,6 +331,7 @@ export class AccountActionDeliveryWorker {
         actionRequestId: job.actionRequestId ?? undefined,
         errorCode: safeErrorCode(error),
         retryAfterMs: retryDelayForAttempt(job.attemptCount),
+        deliveryDisposition: "uncertain",
       });
     }
   }

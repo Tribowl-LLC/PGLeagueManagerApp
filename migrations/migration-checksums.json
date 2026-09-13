@@ -234,6 +234,12 @@
       "tag": "0038_password_recovery_hardening",
       "createdAt": 1789081646995,
       "hash": "149823865629af45e2fb8e6788b98fa8962df74dc28761bad2b45e4e52613bfb"
+    },
+    {
+      "idx": 39,
+      "tag": "0039_email_first_registration",
+      "createdAt": 1789088638050,
+      "hash": "8b355eeada5180a3799a6db511b496884a0ca22ce40718b1ca34324a345fdc9f"
     }
   ]
 }

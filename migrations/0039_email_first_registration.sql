@@ -1,0 +1,4 @@
+ALTER TABLE "account_action_requests" DROP CONSTRAINT "account_action_requests_action_check";--> statement-breakpoint
+ALTER TABLE "account_action_delivery_jobs" DROP CONSTRAINT "account_action_delivery_jobs_action_check";--> statement-breakpoint
+ALTER TABLE "account_action_requests" ADD CONSTRAINT "account_action_requests_action_check" CHECK ("account_action_requests"."action" IN ('account_invite', 'password_reset', 'account_registration'));--> statement-breakpoint
+ALTER TABLE "account_action_delivery_jobs" ADD CONSTRAINT "account_action_delivery_jobs_action_check" CHECK ("account_action_delivery_jobs"."action" IN ('password_reset', 'account_registration'));

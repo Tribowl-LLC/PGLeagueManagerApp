@@ -12,6 +12,18 @@ import { db, pool } from "./db";
 import { hashPassword, comparePasswords, safeTokenCompare } from "./lib/password";
 import { lockAccountCredential } from "./storage/account-action-requests";
 
+declare module 'express-session' {
+  interface SessionData {
+    /** Narrow, server-side capability for an anonymous registration flow. */
+    pendingRegistration?: {
+      userId: number;
+      organizationId: number;
+      credentialGeneration: number;
+      createdAt: number;
+    };
+  }
+}
+
 // Re-export for backward compatibility with existing import sites.
 export { hashPassword, safeTokenCompare };
 

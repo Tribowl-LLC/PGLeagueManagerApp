@@ -280,6 +280,139 @@ describe("password-reset delivery queue PostgreSQL boundaries", () => {
     ]));
   });
 
+  it("revokes each known-unsent retry action before recovery and fences stale leases", async () => {
+    const user = await createFixtureUser("Queue Rate Limited");
+    const enqueued = await enqueuePasswordResetDelivery({
+      userId: user.id,
+      organizationId,
+      credentialGeneration: user.credentialGeneration,
+      expiresAt: deadline(),
+    });
+    if (enqueued.kind !== "enqueued") throw new Error("rate-limited job was suppressed");
+
+    const firstClaim = await claimNextPasswordResetDeliveryJob({ workerId: "rate-limit-worker-a" });
+    if (!firstClaim) throw new Error("first rate-limited attempt was not claimed");
+    const firstAction = await tryIssuePasswordReset({
+      userId: user.id,
+      recipientEmail: user.email,
+      organizationId,
+      expiresAt: deadline(),
+      deliveryJobId: enqueued.job.id,
+      expectedCredentialGeneration: user.credentialGeneration,
+    });
+    if (firstAction.kind !== "issued") throw new Error("first rate-limited action was suppressed");
+    expect(await attachPasswordResetActionToDeliveryJob({
+      jobId: enqueued.job.id,
+      leaseToken: firstClaim.leaseToken,
+      actionRequestId: firstAction.request.id,
+    })).toBe(true);
+    expect(await finalizePasswordResetDeliveryJob({
+      jobId: enqueued.job.id,
+      leaseToken: firstClaim.leaseToken,
+      outcome: {
+        status: "retry_scheduled",
+        actionRequestId: firstAction.request.id,
+        errorCode: "provider_rate_limited",
+        retryAfterMs: 0,
+        deliveryDisposition: "known_unsent",
+      },
+    })).toBe(true);
+
+    const [revokedFirst] = await db.select({ status: accountActionRequests.status })
+      .from(accountActionRequests)
+      .where(eq(accountActionRequests.id, firstAction.request.id));
+    expect(revokedFirst?.status).toBe("revoked");
+
+    const secondClaim = await claimNextPasswordResetDeliveryJob({ workerId: "rate-limit-worker-b" });
+    if (!secondClaim) throw new Error("second rate-limited attempt was not claimed");
+    const secondAction = await tryIssuePasswordReset({
+      userId: user.id,
+      recipientEmail: user.email,
+      organizationId,
+      expiresAt: deadline(),
+      deliveryJobId: enqueued.job.id,
+      expectedCredentialGeneration: user.credentialGeneration,
+    });
+    if (secondAction.kind !== "issued") throw new Error("second rate-limited action was suppressed");
+    expect(await attachPasswordResetActionToDeliveryJob({
+      jobId: enqueued.job.id,
+      leaseToken: secondClaim.leaseToken,
+      actionRequestId: secondAction.request.id,
+    })).toBe(true);
+
+    // The old lease cannot revoke or otherwise alter the replacement action.
+    expect(await finalizePasswordResetDeliveryJob({
+      jobId: enqueued.job.id,
+      leaseToken: firstClaim.leaseToken,
+      outcome: {
+        status: "retry_scheduled",
+        actionRequestId: firstAction.request.id,
+        errorCode: "provider_rate_limited",
+        retryAfterMs: 0,
+        deliveryDisposition: "known_unsent",
+      },
+    })).toBe(false);
+    const [stillPendingSecond] = await db.select({ status: accountActionRequests.status })
+      .from(accountActionRequests)
+      .where(eq(accountActionRequests.id, secondAction.request.id));
+    expect(stillPendingSecond?.status).toBe("pending");
+
+    expect(await finalizePasswordResetDeliveryJob({
+      jobId: enqueued.job.id,
+      leaseToken: secondClaim.leaseToken,
+      outcome: {
+        status: "retry_scheduled",
+        actionRequestId: secondAction.request.id,
+        errorCode: "provider_rate_limited",
+        retryAfterMs: 0,
+        deliveryDisposition: "known_unsent",
+      },
+    })).toBe(true);
+    const [revokedSecond] = await db.select({ status: accountActionRequests.status })
+      .from(accountActionRequests)
+      .where(eq(accountActionRequests.id, secondAction.request.id));
+    expect(revokedSecond?.status).toBe("revoked");
+
+    const thirdClaim = await claimNextPasswordResetDeliveryJob({ workerId: "rate-limit-worker-c" });
+    if (!thirdClaim) throw new Error("recovery attempt was not claimed");
+    const thirdAction = await tryIssuePasswordReset({
+      userId: user.id,
+      recipientEmail: user.email,
+      organizationId,
+      expiresAt: deadline(),
+      deliveryJobId: enqueued.job.id,
+      expectedCredentialGeneration: user.credentialGeneration,
+    });
+    if (thirdAction.kind !== "issued") throw new Error("recovery action was suppressed");
+    expect(await attachPasswordResetActionToDeliveryJob({
+      jobId: enqueued.job.id,
+      leaseToken: thirdClaim.leaseToken,
+      actionRequestId: thirdAction.request.id,
+    })).toBe(true);
+    expect(await finalizePasswordResetDeliveryJob({
+      jobId: enqueued.job.id,
+      leaseToken: thirdClaim.leaseToken,
+      outcome: {
+        status: "succeeded",
+        actionRequestId: thirdAction.request.id,
+        providerMessageId: "recovered-provider-message",
+      },
+    })).toBe(true);
+
+    const actions = await db.select({ id: accountActionRequests.id, status: accountActionRequests.status })
+      .from(accountActionRequests)
+      .where(inArray(accountActionRequests.id, [
+        firstAction.request.id,
+        secondAction.request.id,
+        thirdAction.request.id,
+      ]));
+    expect(actions).toEqual(expect.arrayContaining([
+      { id: firstAction.request.id, status: "revoked" },
+      { id: secondAction.request.id, status: "revoked" },
+      { id: thirdAction.request.id, status: "pending" },
+    ]));
+  });
+
   it("never persists a bearer token on queue or action rows", async () => {
     const user = await createFixtureUser("Queue Secret");
     const result = await enqueuePasswordResetDelivery({ userId: user.id, organizationId, expiresAt: deadline() });

@@ -89,7 +89,7 @@ function describeSubject(msg: MailDataRequired): string {
 export interface EmailDispatchResult {
   accepted: boolean;
   providerMessageId?: string | null;
-  failureReason?: "not_configured" | "template_missing" | "provider_error" | "render_error";
+  failureReason?: "not_configured" | "template_missing" | "provider_error" | "provider_rejected" | "provider_rate_limited" | "render_error";
 }
 
 export interface AccountEmailDeliveryCustomArgs {
@@ -150,6 +150,30 @@ function providerMessageIdFromResponse(value: unknown): string | null {
 async function sendToProvider(msg: MailDataRequired, isMultiple: boolean): Promise<EmailDispatchResult> {
   const response = await sgMail.send(msg, isMultiple);
   return { accepted: true, providerMessageId: providerMessageIdFromResponse(response) };
+}
+
+export function classifyEmailProviderFailure(error: unknown): "provider_rejected" | "provider_rate_limited" | "provider_error" {
+  // SendGrid's SDK exposes HTTP status under response.statusCode. Keep this
+  // classifier deliberately narrow and persist only a stable category, never
+  // provider response bodies or reason text.
+  if (!error || typeof error !== "object") return "provider_error";
+  const response = (error as { response?: unknown }).response;
+  const responseStatus = response && typeof response === "object"
+    ? (response as { statusCode?: unknown }).statusCode
+    : undefined;
+  const directStatus = (error as { statusCode?: unknown }).statusCode;
+  // @sendgrid/helpers ResponseError stores the HTTP status in `code` and
+  // puts headers/body under `response`; accept only a bounded numeric code.
+  const sdkCode = (error as { code?: unknown }).code;
+  const status = typeof responseStatus === "number" ? responseStatus
+    : typeof directStatus === "number" ? directStatus
+      : typeof sdkCode === "number" ? sdkCode
+        : undefined;
+  if (status === 429) return "provider_rate_limited";
+  if (typeof status === "number" && Number.isInteger(status) && status >= 400 && status < 500 && status !== 408) {
+    return "provider_rejected";
+  }
+  return "provider_error";
 }
 
 export async function dispatchMail(msg: MailDataRequired, isMultiple = false): Promise<EmailDispatchResult> {
@@ -594,6 +618,6 @@ export async function sendTemplatedEmail(
     return formatEmailResult(result, options);
   } catch (error) {
     log.error(`Failed to send templated email '${slug}':`, describeEmailDeliveryError(error));
-    return formatEmailResult({ accepted: false, failureReason: "provider_error" }, options);
+    return formatEmailResult({ accepted: false, failureReason: classifyEmailProviderFailure(error) }, options);
   }
 }
