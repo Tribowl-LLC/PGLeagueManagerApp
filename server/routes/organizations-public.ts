@@ -59,6 +59,7 @@ router.get('/public-leagues', async (_req, res) => {
       .where(and(
         eq(leagues.allowPublicSignup, true),
         eq(leagues.active, true),
+        eq(organizations.active, true),
         isNotNull(leagues.organizationId),
       ))
       .orderBy(organizations.name, leagues.name);
@@ -105,10 +106,11 @@ router.get('/slug/:slug/leagues', async (req, res) => {
       return sendError(res, 'Organization not found', 404, 'NOT_FOUND');
     }
 
-    const leagues = await storage.getLeagues(organization.id);
-    const publicLeagues = leagues
-      .filter(l => l.active !== false && l.allowPublicSignup === true)
-      .map(l => ({ id: l.id, name: l.name }));
+    const publicLeagues = organization.active === true
+      ? (await storage.getLeagues(organization.id))
+        .filter(l => l.active === true && l.allowPublicSignup === true)
+        .map(l => ({ id: l.id, name: l.name }))
+      : [];
     sendSuccess(res, publicLeagues);
   } catch (error) {
     log.error(`Error fetching leagues for org slug ${req.params.slug}:`, error);

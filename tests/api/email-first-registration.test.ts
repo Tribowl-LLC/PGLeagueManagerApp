@@ -18,6 +18,7 @@ import {
   accountActionRequests,
   bowlers,
   leagues,
+  organizations,
   users,
 } from "@shared/schema";
 import {
@@ -40,6 +41,10 @@ const OTHER_ORG_SLUG = process.env.TEST_ORG_B_SLUG ?? "vitest-org-b";
 let organizationId: number;
 let otherOrganizationId: number;
 let publicLeagueId: number;
+let inactiveLeagueId: number;
+let privateLeagueId: number;
+let archivedOrganizationId: number;
+let archivedLeagueId: number;
 let emailSequence = 0;
 const createdUserIds: number[] = [];
 const createdBowlerIds: number[] = [];
@@ -94,6 +99,26 @@ async function register(input: {
       phone: input.phone ?? "555-101-0101",
       leagueId: publicLeagueId,
       organizationId,
+    }),
+  });
+  return { ...result, cookies: cookiesFrom(result.response) };
+}
+
+async function registerAtCanonicalRoot(input: {
+  email: string;
+  name?: string;
+  phone?: string;
+  organizationId?: unknown;
+  leagueId?: unknown;
+}): Promise<{ response: Response; body: JsonObject; cookies: string }> {
+  const result = await requestJson("/api/auth/register", {
+    method: "POST",
+    body: JSON.stringify({
+      email: input.email,
+      name: input.name ?? "Root Registration Test User",
+      phone: input.phone ?? "555-101-0101",
+      leagueId: input.leagueId ?? publicLeagueId,
+      organizationId: input.organizationId ?? organizationId,
     }),
   });
   return { ...result, cookies: cookiesFrom(result.response) };
@@ -235,6 +260,53 @@ beforeAll(async () => {
   }).returning();
   if (!league) throw new Error("Public registration league was not created");
   publicLeagueId = league.id;
+  const [inactiveLeague] = await db.insert(leagues).values({
+    name: `Email-first inactive fixture ${Date.now()}`,
+    organizationId,
+    active: false,
+    allowPublicSignup: true,
+    seasonStart: "2030-01-07",
+    seasonEnd: "2030-04-29",
+    weekDay: "Monday",
+    paymentMode: "weekly",
+  }).returning({ id: leagues.id });
+  if (!inactiveLeague) throw new Error("Inactive registration league was not created");
+  inactiveLeagueId = inactiveLeague.id;
+  const [privateLeague] = await db.insert(leagues).values({
+    name: `Email-first private fixture ${Date.now()}`,
+    organizationId,
+    active: true,
+    allowPublicSignup: false,
+    seasonStart: "2030-01-07",
+    seasonEnd: "2030-04-29",
+    weekDay: "Monday",
+    paymentMode: "weekly",
+  }).returning({ id: leagues.id });
+  if (!privateLeague) throw new Error("Private registration league was not created");
+  privateLeagueId = privateLeague.id;
+
+  const archivedSlug = `email-first-archived-${Date.now()}`;
+  const archivedSubdomain = `emailfirstarchived${Date.now()}`;
+  const [archivedOrganization] = await db.insert(organizations).values({
+    name: "Email-first archived organization fixture",
+    slug: archivedSlug,
+    subdomain: archivedSubdomain,
+    active: false,
+  }).returning({ id: organizations.id });
+  if (!archivedOrganization) throw new Error("Archived registration organization was not created");
+  archivedOrganizationId = archivedOrganization.id;
+  const [archivedLeague] = await db.insert(leagues).values({
+    name: "Email-first archived public league fixture",
+    organizationId: archivedOrganizationId,
+    active: true,
+    allowPublicSignup: true,
+    seasonStart: "2030-01-07",
+    seasonEnd: "2030-04-29",
+    weekDay: "Monday",
+    paymentMode: "weekly",
+  }).returning({ id: leagues.id });
+  if (!archivedLeague) throw new Error("Archived public league fixture was not created");
+  archivedLeagueId = archivedLeague.id;
 });
 
 afterAll(async () => {
@@ -248,9 +320,125 @@ afterAll(async () => {
   if (publicLeagueId) {
     await db.delete(leagues).where(eq(leagues.id, publicLeagueId));
   }
+  if (inactiveLeagueId) await db.delete(leagues).where(eq(leagues.id, inactiveLeagueId));
+  if (privateLeagueId) await db.delete(leagues).where(eq(leagues.id, privateLeagueId));
+  if (archivedLeagueId) await db.delete(leagues).where(eq(leagues.id, archivedLeagueId));
+  if (archivedOrganizationId) await db.delete(organizations).where(eq(organizations.id, archivedOrganizationId));
 });
 
 describe("email-first registration API", () => {
+  it("starts registration and recovers status/resend from the canonical root host", async () => {
+    const email = uniqueEmail("canonical-root");
+    const started = await registerAtCanonicalRoot({ email });
+    expect(started.response.status).toBe(202);
+    expect(started.body.data).toMatchObject({ status: "pending" });
+
+    const user = await userByEmail(email);
+    createdUserIds.push(user.id);
+
+    const status = await requestJson("/api/auth/registration/status", {}, started.cookies);
+    expect(status.response.status).toBe(200);
+    expect(status.body.data).toMatchObject({ status: "pending", actionStatus: "pending" });
+
+    const csrf = await requestJson("/api/csrf-token", {}, started.cookies);
+    const csrfToken = typeof csrf.body.data?.token === "string" ? csrf.body.data.token : "";
+    expect(csrfToken).toBeTruthy();
+    const resend = await requestJson("/api/auth/registration/resend", {
+      method: "POST",
+      body: "{}",
+      headers: { "x-csrf-token": csrfToken },
+    }, started.cookies);
+    expect(resend.response.status).toBe(202);
+  });
+
+  it("rejects an archived owning organization before account or delivery-job creation", async () => {
+    const archivedEmail = uniqueEmail("archived-organization");
+    const rejected = await registerAtCanonicalRoot({
+      email: archivedEmail,
+      organizationId: archivedOrganizationId,
+      leagueId: archivedLeagueId,
+    });
+    expect(rejected.response.status).toBe(403);
+    expect(rejected.body.error?.code).toBe("SIGNUP_NOT_ALLOWED");
+
+    const [user] = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.email, archivedEmail))
+      .limit(1);
+    expect(user).toBeUndefined();
+    const jobs = await db
+      .select({ id: accountActionDeliveryJobs.id })
+      .from(accountActionDeliveryJobs)
+      .where(eq(accountActionDeliveryJobs.organizationId, archivedOrganizationId));
+    expect(jobs).toEqual([]);
+
+    const activeEmail = uniqueEmail("active-organization");
+    const active = await registerAtCanonicalRoot({ email: activeEmail });
+    expect(active.response.status).toBe(202);
+    const activeUser = await userByEmail(activeEmail);
+    createdUserIds.push(activeUser.id);
+  });
+
+  it("rejects junk IDs and never uses the body organization as unscoped league authority", async () => {
+    const junkLeague = await registerAtCanonicalRoot({
+      email: uniqueEmail("junk-league"),
+      leagueId: `${publicLeagueId}junk`,
+    });
+    expect(junkLeague.response.status).toBe(403);
+    expect(junkLeague.body.error?.code).toBe("SIGNUP_NOT_ALLOWED");
+
+    const junkOrganization = await registerAtCanonicalRoot({
+      email: uniqueEmail("junk-organization"),
+      organizationId: `${organizationId}junk`,
+    });
+    expect(junkOrganization.response.status).toBe(400);
+    expect(junkOrganization.body.error?.code).toBe("ORG_REQUIRED");
+
+    const crossTenant = await registerAtCanonicalRoot({
+      email: uniqueEmail("cross-tenant-league"),
+      organizationId: otherOrganizationId,
+    });
+    expect(crossTenant.response.status).toBe(403);
+    expect(crossTenant.body.error?.code).toBe("SIGNUP_NOT_ALLOWED");
+  });
+
+  it("rejects inactive/private leagues and unknown or mismatched tenant hosts", async () => {
+    for (const leagueId of [inactiveLeagueId, privateLeagueId]) {
+      const result = await registerAtCanonicalRoot({ email: uniqueEmail("closed-league"), leagueId });
+      expect(result.response.status).toBe(403);
+      expect(result.body.error?.code).toBe("SIGNUP_NOT_ALLOWED");
+    }
+
+    // This request is sent through the known Org B host while its body selects
+    // the Org A league and organization.
+    const mismatchOnOtherHost = await requestJson(registrationPath("/api/auth/register", OTHER_ORG_SLUG), {
+      method: "POST",
+      body: JSON.stringify({
+        email: uniqueEmail("org-host-mismatch-actual"),
+        name: "Org Host Mismatch",
+        phone: "555-101-0101",
+        leagueId: publicLeagueId,
+        organizationId,
+      }),
+    });
+    expect(mismatchOnOtherHost.response.status).toBe(400);
+    expect(mismatchOnOtherHost.body.error?.code).toBe("ORG_MISMATCH");
+
+    const unknownHost = await requestJson(registrationPath("/api/auth/register", "unknown-registration-host"), {
+      method: "POST",
+      body: JSON.stringify({
+        email: uniqueEmail("unknown-host"),
+        name: "Unknown Host",
+        phone: "555-101-0101",
+        leagueId: publicLeagueId,
+        organizationId,
+      }),
+    });
+    expect(unknownHost.response.status).toBe(400);
+    expect(unknownHost.body.error?.code).toBe("ORG_REQUIRED");
+  });
+
   it("returns 202 without authenticating and exposes session-scoped status before action issuance", async () => {
     const email = uniqueEmail("session");
     const started = await register({ email });

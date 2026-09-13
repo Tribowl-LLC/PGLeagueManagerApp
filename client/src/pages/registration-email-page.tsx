@@ -267,15 +267,13 @@ const RegistrationEmailPage: FC = () => {
     return shell(
       <>
         <CardHeader className="space-y-2 text-center">
-          <CardTitle>Registration link unavailable</CardTitle>
-          <CardDescription>This sign-up session is no longer available. Sign in if you already have an account, or start again with a different email.</CardDescription>
+          <CardTitle>Continue registration</CardTitle>
+          <CardDescription>We couldn't find an active registration session in this browser. If you already have an account, sign in or reset your password. Otherwise, start registration again with the same email address.</CardDescription>
         </CardHeader>
         <CardFooter className="flex flex-col gap-3">
-          <Button asChild className="w-full" data-testid="link-registration-sign-in"><Link href="/login">Sign in</Link></Button>
-          <Button variant="outline" className="w-full" data-testid="button-registration-correct-email" onClick={() => abandonMutation.mutate()} disabled={abandonMutation.isPending}>
-            {abandonMutation.isPending && <Loader2 className="mr-2 size-4 animate-spin" />}
-            Use a different email
-          </Button>
+          <Button asChild className="w-full" data-testid="link-registration-continue"><Link href="/sign-up">Continue sign-up</Link></Button>
+          <Button asChild variant="outline" className="w-full" data-testid="link-registration-sign-in"><Link href="/login">Sign in</Link></Button>
+          <Button asChild variant="ghost" className="w-full" data-testid="link-registration-forgot-password"><Link href="/forgot-password">Forgot password?</Link></Button>
         </CardFooter>
       </>,
     );
@@ -285,8 +283,8 @@ const RegistrationEmailPage: FC = () => {
     return shell(
       <>
         <CardHeader className="space-y-2 text-center">
-          <CardTitle>Registration status unavailable</CardTitle>
-          <CardDescription>We couldn't verify this sign-up session. You can retry, sign in, or start again with a different email.</CardDescription>
+          <CardTitle>Continue registration</CardTitle>
+          <CardDescription>We couldn't verify this sign-up session right now. Try again, sign in, or reset your password. Otherwise, start registration again with the same email address.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
           <Alert variant="destructive"><AlertCircle className="size-4" /><AlertTitle>We couldn't verify your registration</AlertTitle><AlertDescription>Please try again or start a new sign-up.</AlertDescription></Alert>
@@ -294,7 +292,8 @@ const RegistrationEmailPage: FC = () => {
         </CardContent>
         <CardFooter className="flex flex-col gap-3">
           <Button asChild variant="outline" className="w-full" data-testid="link-registration-sign-in"><Link href="/login">Sign in</Link></Button>
-          <Button variant="ghost" className="w-full" onClick={() => abandonMutation.mutate()} disabled={abandonMutation.isPending} data-testid="button-registration-correct-email">Use a different email</Button>
+          <Button asChild variant="ghost" className="w-full" data-testid="link-registration-forgot-password"><Link href="/forgot-password">Forgot password?</Link></Button>
+          <Button asChild variant="ghost" className="w-full" data-testid="link-registration-continue"><Link href="/sign-up">Continue sign-up</Link></Button>
         </CardFooter>
       </>,
     );

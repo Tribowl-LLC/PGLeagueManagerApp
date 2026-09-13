@@ -187,7 +187,7 @@ describe("client API error classification", () => {
     expect(replace).toHaveBeenCalledWith("/login");
   });
 
-  it.each(["/login", "/sign-up"])("does not redirect a public route for its background AUTH_REQUIRED response at %s", async (path) => {
+  it.each(["/login", "/sign-up", "/registration-email"])("does not redirect a public route for its background AUTH_REQUIRED response at %s", async (path) => {
     const replace = vi.fn();
     queryClient.clear();
     resetSessionExpiryRedirect();

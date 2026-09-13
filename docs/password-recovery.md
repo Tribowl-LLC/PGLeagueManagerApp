@@ -26,6 +26,15 @@ session-scoped capability for status, resend, and abandoning the flow to enter
 a corrected address; it never exposes account lookup results or edits the
 original pending account.
 
+The waiting page is public and may be refreshed directly on the canonical root
+or `www` host (and on the matching organization host); status and resend use
+only that server-held capability and its current delivery origin. Unknown or
+mismatched tenant hosts are rejected. A generic acknowledgement for an
+existing or completed account can therefore land on a neutral “Continue
+registration” recovery screen with sign-in, password-recovery, and retry
+options; it must not claim that a session expired or require a different
+email address.
+
 The page distinguishes used, expired, replaced, revoked, invalid, throttled,
 and temporarily unavailable states. Network and server errors allow retry;
 they must not be presented as expiration. Validation and submission responses
