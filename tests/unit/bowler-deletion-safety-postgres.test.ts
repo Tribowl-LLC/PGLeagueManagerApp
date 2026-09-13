@@ -831,6 +831,10 @@ describe("safe unused bowler deletion", () => {
          VALUES ($1, $2, $3, true, 1) RETURNING id`,
         [f.bowlerId, f.leagueId, f.teamId],
       );
+      // The FK rejection can race the assertion below immediately after the
+      // deleter commits. Observe it now so Vitest cannot report an unhandled
+      // rejection while retaining the exact assertion after the lock release.
+      void insertPromise.catch(() => undefined);
 
       let waitingLocks = 0;
       for (let attempt = 0; attempt < 200 && waitingLocks === 0; attempt += 1) {
