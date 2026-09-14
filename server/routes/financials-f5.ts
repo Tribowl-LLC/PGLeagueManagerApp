@@ -84,7 +84,7 @@ export function redactCanonicalPaymentRow(row: Awaited<ReturnType<typeof readCan
     appliedTo,
     refund: { ...row.refund, amountMinor: safeRefundAmount, providerRefundId: null },
     dispute: { ...row.dispute, amountMinor: safeDisputeAmount, disputeId: null },
-    receipt: { ...row.receipt, paymentId: null, paymentOperationId: null, operationStatus: null, amountMinor: safeAmount, allocations: [], sharedTransaction: null, canResend: false, receiptUrl: null, receiptNumber: null, refund: { ...(row.receipt.refund ?? row.refund), amountMinor: safeRefundAmount, providerRefundId: null }, dispute: { ...(row.receipt.dispute ?? row.dispute), amountMinor: safeDisputeAmount, disputeId: null } },
+    receipt: { ...row.receipt, availability: isInitiatingPayer ? row.receipt.availability : "unavailable", paymentId: null, paymentOperationId: null, operationStatus: null, amountMinor: safeAmount, allocations: [], sharedTransaction: null, canResend: false, receiptUrl: null, receiptNumber: null, refund: { ...(row.receipt.refund ?? row.refund), amountMinor: safeRefundAmount, providerRefundId: null }, dispute: { ...(row.receipt.dispute ?? row.dispute), amountMinor: safeDisputeAmount, disputeId: null } },
   };
 }
 

@@ -78,6 +78,67 @@ describe("F5 canonical payment report route", () => {
     expect(mocks.readReport).not.toHaveBeenCalled();
   });
 
+  it("withholds hosted-receipt availability from a non-initiating recipient", async () => {
+    mocks.hasAdmin.mockResolvedValue(false);
+    const row = {
+      paymentId: 21,
+      leagueId: 7,
+      bowlerId: 42,
+      amountMinor: 3_000,
+      currency: "USD",
+      status: "confirmed_paid",
+      paymentType: "square",
+      businessDate: "2038-01-01",
+      authoritativeLocalDate: "2038-01-01",
+      providerPaymentId: "provider-secret",
+      paymentOperationId: "operation-secret",
+      operationType: "interactive_charge",
+      operationStatus: "succeeded",
+      allocatedMinor: 3_000,
+      grossAllocatedMinor: 3_000,
+      effectiveAllocatedMinor: 3_000,
+      refundedAllocationMinor: 0,
+      waivedMinor: 0,
+      unallocatedMinor: 0,
+      reviewRequired: false,
+      source: "canonical_allocation",
+      refund: { present: false, amountMinor: 0, providerRefundId: null },
+      dispute: { present: false, amountMinor: 0, disputeId: null },
+      unresolved: false,
+      initiatingPayerBowlerId: 42,
+      receipt: { contractVersion: "payment-receipt/1", availability: "available", receiptUrl: "https://receipt.secret", receiptNumber: "R-21", deliveryEvidence: "delivery_not_recorded" },
+      allocations: [{ allocationId: "allocation-secret", obligationId: "obligation-secret", occurrenceId: "occurrence-secret", bowlerId: 43, amountMinor: 3_000, currency: "USD", state: "active" }],
+    };
+    mocks.readReport.mockResolvedValue({
+      contractVersion: "canonical-payment-report/2",
+      orderVersion: "league,business-date,bowler,occurrence,allocation,payment/2",
+      organizationId: 11,
+      leagueId: 7,
+      mode: "canonical",
+      authoritativeSource: "canonical",
+      asOf: "2038-01-01T00:00:00.000Z",
+      fingerprint: "fingerprint-receipt-scope",
+      page: 1,
+      limit: 50,
+      totalRows: 1,
+      totalTransactions: 1,
+      totals: { grossConfirmedPaidMinor: 3_000, activeAllocatedMinor: 3_000, refundedMinor: 0, disputedReviewRequiredMinor: 0, reviewRequiredMinor: 0, unresolvedOperationMinor: 0 },
+      rows: [row],
+      transactions: [],
+      unlinkedHistory: [],
+    });
+
+    const partnerResponse = await get("/payments?leagueId=7", user("user", 11, 43));
+    expect(partnerResponse.status).toBe(200);
+    const partnerReceipt = (await partnerResponse.json()).data.rows[0].receipt;
+    expect(partnerReceipt).toMatchObject({ availability: "unavailable", receiptUrl: null, receiptNumber: null });
+
+    const payerResponse = await get("/payments?leagueId=7", user("user", 11, 42));
+    expect(payerResponse.status).toBe(200);
+    const payerReceipt = (await payerResponse.json()).data.rows[0].receipt;
+    expect(payerReceipt).toMatchObject({ availability: "available", receiptUrl: null, receiptNumber: null });
+  });
+
   it("returns stable incompatibility without falling back", async () => {
     class EvidenceError extends Error {}
     mocks.readReport.mockRejectedValue(new EvidenceError());
