@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { apiRequest } from '@/lib/queryClient';
+import { apiRequest, throwIfResNotOk } from '@/lib/queryClient';
+import { getApiErrorStatus } from '@/lib/api-error';
+import { PageErrorState } from '@/components/page-states';
 import { Layout } from '@/components/layout';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -47,13 +49,14 @@ export default function DeletionRequestsPage() {
     });
   };
 
-  const { data: requestsResponse, isLoading } = useQuery<ApiResponse<DeletionRequest[]>>({
+  const { data: requestsResponse, isLoading, error, refetch } = useQuery<ApiResponse<DeletionRequest[]>>({
     queryKey: ['/api/system-admin/deletion-requests', statusFilter],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const r = await fetch(`/api/system-admin/deletion-requests?status=${statusFilter}`, {
         credentials: 'include',
+        signal,
       });
-      if (!r.ok) throw new Error('Failed to fetch deletion requests');
+      await throwIfResNotOk(r);
       return r.json();
     },
   });
@@ -142,6 +145,22 @@ export default function DeletionRequestsPage() {
       adminNote: adminNote.trim() ? adminNote.trim() : null,
     });
   };
+
+  if (error) {
+    const status = getApiErrorStatus(error);
+    return (
+      <Layout>
+        <PageErrorState
+          message={status === 403
+            ? 'Your current account does not have access to deletion requests.'
+            : status === 401
+              ? 'Please sign in again to view deletion requests.'
+              : "We couldn't load deletion requests. Please try again."}
+          onRetry={status === 401 || status === 403 ? undefined : () => { void refetch(); }}
+        />
+      </Layout>
+    );
+  }
 
   return (
     <Layout>

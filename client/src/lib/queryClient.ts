@@ -1,5 +1,6 @@
 import { QueryCache, QueryClient, QueryFunction } from "@tanstack/react-query";
 import { logger } from "@/lib/logger";
+import type { ApiResponse, User } from "@shared/schema";
 import {
   makeApiError,
   getApiRetryDelay,
@@ -25,6 +26,55 @@ export type {
 
 let csrfToken: string | null = null;
 let csrfFetchPromise: Promise<string> | null = null;
+let accessDeniedRefresh: Promise<void> | null = null;
+
+// A different tab can change the shared login cookie while this tab still
+// holds an administrator and their data in memory. Recheck the session once
+// for concurrent denials, and discard the old account's cache on a change.
+async function refreshSessionAfterAccessDenied(): Promise<void> {
+  if (typeof window === 'undefined') return;
+  if (accessDeniedRefresh) return accessDeniedRefresh;
+  const cached = queryClient.getQueryData<ApiResponse<User>>(['/api/user']);
+  if (!cached?.data?.id) return;
+
+  accessDeniedRefresh = (async () => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    try {
+      const res = await fetch('/api/user', {
+        credentials: 'include',
+        headers: { Accept: 'application/json' },
+        signal: controller.signal,
+      });
+      // Do not overwrite a newer login or a cache cleared while we waited.
+      if (queryClient.getQueryData(['/api/user']) !== cached) return;
+      if (res.status === 401) {
+        await throwIfResNotOk(res);
+        return;
+      }
+      if (!res.ok) return;
+      const current: ApiResponse<User> = await res.json();
+      if (!current.success || !current.data?.id) return;
+      if (queryClient.getQueryData(['/api/user']) !== cached) return;
+      const scopeFields = ['id', 'role', 'organizationId', 'locationId', 'bowlerId'] as const;
+      if (scopeFields.some((key) => cached.data[key] !== current.data[key])) {
+        await queryClient.cancelQueries();
+        queryClient.clear();
+        clearCsrfToken();
+        window.location.reload();
+      } else {
+        queryClient.setQueryData(['/api/user'], current);
+      }
+    } catch {
+      // Preserve the original access error and its retry UI if revalidation
+      // is unavailable. A failed check must never grant access or log out a
+      // user solely because of a transport failure.
+    } finally {
+      clearTimeout(timeout);
+    }
+  })().finally(() => { accessDeniedRefresh = null; });
+  return accessDeniedRefresh;
+}
 
 const PUBLIC_AUTH_PATHS = new Set([
   "/",
@@ -217,6 +267,12 @@ export async function throwIfResNotOk(res: Response) {
     if (isSessionExpiredError(error)) {
       redirectToLoginForExpiredSession();
     }
+    const cachedRole = queryClient.getQueryData<ApiResponse<User>>(['/api/user'])?.data?.role;
+    const privilegedForbidden = error.code === 'FORBIDDEN'
+      && ['system_admin', 'org_admin', 'payment_manager'].includes(cachedRole ?? '');
+    if (res.status === 403 && (error.code === 'ADMIN_REQUIRED' || privilegedForbidden)) {
+      await refreshSessionAfterAccessDenied();
+    }
     throw error;
   }
   return res;
@@ -266,8 +322,7 @@ export async function apiRequest<T = unknown>(
   try {
     return await doApiRequest<T>(url, method, data);
   } catch (error: unknown) {
-    const errMsg = error instanceof Error ? error.message : '';
-    if (errMsg.startsWith('403:') && csrfToken === null) {
+    if (error instanceof Error && 'code' in error && error.code === 'CSRF_ERROR' && csrfToken === null) {
       try {
         await fetchCsrfToken();
         return await doApiRequest<T>(url, method, data);

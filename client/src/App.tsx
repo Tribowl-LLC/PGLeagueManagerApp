@@ -194,7 +194,7 @@ function Router() {
         <Route path="/leagues/:leagueId/payments/manage">{guard('paymentManager', <ManagePaymentsPage />)}</Route>
         <Route path="/leagues/:leagueId">{guard('org', <LeagueViewPage />)}</Route>
         <Route path="/leagues/:leagueId/schedule">{guard('org', <LeagueSchedulePage />)}</Route>
-        <Route path="/leagues/:leagueId/teams">{guard('org', <TeamsPage />)}</Route>
+        <Route path="/leagues/:leagueId/teams">{guard('paymentManager', <TeamsPage />)}</Route>
         <Route path="/leagues/:leagueId/scores">{guard('org', <LeagueScoresPage />)}</Route>
         <Route path="/teams/:teamId">{guard('org', <TeamViewPage />)}</Route>
         <Route path="/bowlers">{guard('org', <BowlersPage />)}</Route>

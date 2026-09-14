@@ -29,10 +29,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Badge } from "@/components/ui/badge";
 import { Plus, ArrowLeft, ArrowUpDown, MoreHorizontal, Archive, ArchiveRestore, Trash2, Loader2 } from "lucide-react";
-import { PageLoadingState } from "@/components/page-states";
+import { PageErrorState, PageLoadingState } from "@/components/page-states";
 import type { ApiResponse, Team, League, User } from "@shared/schema";
 import { useParams, Link } from "wouter";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest, queryClient, throwIfResNotOk } from "@/lib/queryClient";
+import { getApiErrorStatus } from "@/lib/api-error";
 import { useToast } from "@/hooks/use-toast";
 
 export default function TeamsPage() {
@@ -51,7 +52,7 @@ export default function TeamsPage() {
   const canManageRoster = currentUserResponse?.data?.role === "org_admin"
     || currentUserResponse?.data?.role === "system_admin";
 
-  const { data: leagueResponse, isLoading: loadingLeague } = useQuery<{ data: League }>({
+  const { data: leagueResponse, isLoading: loadingLeague, error: leagueError, refetch: refetchLeague } = useQuery<{ data: League }>({
     queryKey: [`/api/leagues/${leagueId}`],
     enabled: !!leagueId,
     retry: false,
@@ -60,13 +61,11 @@ export default function TeamsPage() {
 
   const league = leagueResponse?.data;
 
-  const { data: teamsResponse, isLoading: loadingTeams } = useQuery<{ data: Team[] }>({
+  const { data: teamsResponse, isLoading: loadingTeams, error: teamsError, refetch: refetchTeams } = useQuery<{ data: Team[] }>({
     queryKey: ["/api/teams", leagueId],
-    queryFn: async () => {
-      const response = await fetch(`/api/teams?leagueId=${leagueId}`);
-      if (!response.ok) {
-        throw new Error('Failed to fetch teams');
-      }
+    queryFn: async ({ signal }) => {
+      const response = await fetch(`/api/teams?leagueId=${leagueId}`, { credentials: 'include', signal });
+      await throwIfResNotOk(response);
       return response.json();
     },
     enabled: !!leagueId,
@@ -148,6 +147,25 @@ export default function TeamsPage() {
     return (
       <Layout>
         <PageLoadingState />
+      </Layout>
+    );
+  }
+
+  if (leagueError || teamsError) {
+    const status = getApiErrorStatus(leagueError || teamsError);
+    const message = status === 403
+      ? "You don't have permission to view this league's teams."
+      : status === 401
+        ? "Please sign in again to view this league's teams."
+        : status === 404
+          ? "This league is no longer available."
+          : "We couldn't load the teams. Please try again.";
+    return (
+      <Layout>
+        <PageErrorState message={message} onRetry={status === 403 || status === 401 || status === 404 ? undefined : () => {
+          if (leagueError) void refetchLeague();
+          if (teamsError) void refetchTeams();
+        }} />
       </Layout>
     );
   }
