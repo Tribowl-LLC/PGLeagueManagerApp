@@ -291,6 +291,17 @@ describe('Organization Isolation', () => {
       expect(payload).not.toContain(`"organizationId":${sessionB.user.organizationId}`);
     });
 
+    it('org A cannot read org B interactive payment participants', async () => {
+      expect(orgBLeagueId, 'expected an org B league id to test against').not.toBeNull();
+      const { status, data } = await apiGet(
+        `/api/financials/leagues/${orgBLeagueId}/interactive-payment-participants/3`,
+        sessionA,
+      );
+      expect([403, 404]).toContain(status);
+      expect(data.success).toBe(false);
+      expect(JSON.stringify(data)).not.toContain(`"organizationId":${sessionB.user.organizationId}`);
+    });
+
     it('org A admin fetching org B generic canonical review must get a definitive 403/404', async () => {
       expect(orgBLeagueId, 'expected an org B league id to test against').not.toBeNull();
       const { status, data } = await apiGet(

@@ -168,7 +168,7 @@ function rosterWireResult(value: unknown): Record<string, unknown> {
 function interactivePartnerWireResult(value: unknown): Record<string, unknown> {
   const source = wireObject(value) ?? {};
   const result: Record<string, unknown> = {};
-  for (const key of ["contractVersion", "organizationId", "leagueId", "payerBowlerId", "currency", "amountMinor", "fingerprint", "operationId", "status", "providerPaymentId"]) {
+  for (const key of ["contractVersion", "organizationId", "leagueId", "payerBowlerId", "currency", "amountMinor", "fingerprint", "operationId", "status"]) {
     if (source[key] !== undefined) result[key] = source[key];
   }
   if (source.payment !== undefined) result.payment = wireObject(source.payment) ? {
