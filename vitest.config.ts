@@ -90,6 +90,7 @@ const PARALLEL_ISOLATED_WITH_APP = [
  * error-log guard, so nothing preloads `pg` ahead of the mock.
  */
 const UNIT_NO_DB = [
+  'tests/eslint-rules/design-system-config.test.ts',
   'tests/unit/account-action-delivery-worker.test.ts',
   'tests/unit/account-action-delivery-scheduler.test.ts',
   'tests/unit/sendgrid-webhook.test.ts',

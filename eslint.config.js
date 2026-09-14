@@ -1,3 +1,4 @@
+import { plugin as shadcn } from '@shadcn/lint';
 import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
 import globals from 'globals';
@@ -267,4 +268,27 @@ export default tseslint.config(
       // no bug-catching value. Enabling it would be linter-chasing.
     },
   },
+  // Design-system rules apply to app code; shared primitives own their appearance.
+  {
+    files: ['client/src/**/*.{ts,tsx}'],
+    plugins: { shadcn },
+    settings: { shadcn: { ui: ['@/components/ui', '@components/ui', '@ui'] } },
+    rules: {
+      'shadcn/no-restyle': ['error', { allow: ['layout'] }],
+      'shadcn/no-raw-colors': 'error',
+      'shadcn/no-arbitrary-values': 'error',
+      'shadcn/no-inline-styles': 'error',
+      'shadcn/no-unknown-classes': 'error',
+      'shadcn/require-static-classes': 'error',
+    },
+  },
+  {
+    files: ['client/src/components/ui/**/*.{ts,tsx}'],
+    rules: {
+      'shadcn/no-restyle': 'off',
+      'shadcn/no-arbitrary-values': 'off',
+      'shadcn/require-static-classes': 'off',
+    },
+  },
+
 );
