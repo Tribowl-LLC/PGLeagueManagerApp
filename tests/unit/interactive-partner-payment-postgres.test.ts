@@ -57,15 +57,23 @@ class FakeInteractiveProvider implements PaymentProvider {
 
   constructor(readonly locationId: number) {}
 
-  waitForProcessStart(): Promise<void> {
-    return new Promise((resolve) => { this.processStartedResolve = resolve; });
+  waitForProcessStart(timeoutMs = 5_000): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("timed out waiting for fake provider process")), timeoutMs);
+      this.processStartedResolve = () => {
+        clearTimeout(timeout);
+        resolve();
+      };
+    });
   }
 
   blockNextProcess(): () => void {
     this.blocked = true;
     return () => {
       this.blocked = false;
-      this.processRelease?.();
+      const release = this.processRelease;
+      this.processRelease = undefined;
+      release?.();
     };
   }
 
@@ -537,16 +545,25 @@ describe("interactive partner payment PostgreSQL boundary", () => {
     const competingRecipients = [selection(scenario.partnerBowlerId)];
     const competingQuote = await quoteInteractivePartnerPayments({ organizationId, leagueId: scenario.leagueId, payerBowlerId: competingPayer.id, recipients: competingRecipients });
     const release = provider.blockNextProcess();
-    const firstCharge = chargeInteractivePartnerPayments({ organizationId, leagueId: scenario.leagueId, actorUserId, payerBowlerId: scenario.payerBowlerId, request: { recipients: firstRecipients, sourceId: "cnon:reservation-first", sourceKind: "new_card", idempotencyKey: `reservation-first-${suffix}`, requestFingerprint: firstQuote.fingerprint } });
-    await provider.waitForProcessStart();
-    const competing = chargeInteractivePartnerPayments({ organizationId, leagueId: scenario.leagueId, actorUserId, payerBowlerId: competingPayer.id, request: { recipients: competingRecipients, sourceId: "cnon:reservation-competing", sourceKind: "new_card", idempotencyKey: `reservation-competing-${suffix}`, requestFingerprint: competingQuote.fingerprint } });
-    await expectRosterError(competing, "OBLIGATION_RESERVED");
-    const reserved = await db.select({ bowlerId: paymentObligations.payerBowlerId }).from(paymentOperationRosterSnapshotItems).innerJoin(paymentObligations, eq(paymentObligations.id, paymentOperationRosterSnapshotItems.obligationId)).where(and(eq(paymentOperationRosterSnapshotItems.organizationId, organizationId), eq(paymentOperationRosterSnapshotItems.leagueId, scenario.leagueId), eq(paymentOperationRosterSnapshotItems.state, "reserved")));
-    expect(reserved.map((row) => row.bowlerId).sort()).toEqual([scenario.payerBowlerId, scenario.partnerBowlerId].sort());
-    release();
-    await expect(firstCharge).resolves.toMatchObject({ status: "succeeded" });
-    const operations = await db.select({ operationId: paymentOperationRosterSnapshotItems.operationId }).from(paymentOperationRosterSnapshotItems).where(and(eq(paymentOperationRosterSnapshotItems.organizationId, organizationId), eq(paymentOperationRosterSnapshotItems.leagueId, scenario.leagueId)));
-    expect(new Set(operations.map((row) => row.operationId)).size).toBe(1);
+    let firstCharge: ReturnType<typeof chargeInteractivePartnerPayments> | undefined;
+    let competing: ReturnType<typeof chargeInteractivePartnerPayments> | undefined;
+    try {
+      const processStarted = provider.waitForProcessStart();
+      firstCharge = chargeInteractivePartnerPayments({ organizationId, leagueId: scenario.leagueId, actorUserId, payerBowlerId: scenario.payerBowlerId, request: { recipients: firstRecipients, sourceId: "cnon:reservation-first", sourceKind: "new_card", idempotencyKey: `reservation-first-${suffix}`, requestFingerprint: firstQuote.fingerprint } });
+      await processStarted;
+      competing = chargeInteractivePartnerPayments({ organizationId, leagueId: scenario.leagueId, actorUserId, payerBowlerId: competingPayer.id, request: { recipients: competingRecipients, sourceId: "cnon:reservation-competing", sourceKind: "new_card", idempotencyKey: `reservation-competing-${suffix}`, requestFingerprint: competingQuote.fingerprint } });
+      await expectRosterError(competing, "OBLIGATION_RESERVED");
+      const reserved = await db.select({ bowlerId: paymentObligations.payerBowlerId }).from(paymentOperationRosterSnapshotItems).innerJoin(paymentObligations, eq(paymentObligations.id, paymentOperationRosterSnapshotItems.obligationId)).where(and(eq(paymentOperationRosterSnapshotItems.organizationId, organizationId), eq(paymentOperationRosterSnapshotItems.leagueId, scenario.leagueId), eq(paymentOperationRosterSnapshotItems.state, "reserved")));
+      expect(reserved.map((row) => row.bowlerId).sort()).toEqual([scenario.payerBowlerId, scenario.partnerBowlerId].sort());
+      release();
+      await expect(firstCharge).resolves.toMatchObject({ status: "succeeded" });
+      const operations = await db.select({ operationId: paymentOperationRosterSnapshotItems.operationId }).from(paymentOperationRosterSnapshotItems).where(and(eq(paymentOperationRosterSnapshotItems.organizationId, organizationId), eq(paymentOperationRosterSnapshotItems.leagueId, scenario.leagueId)));
+      expect(new Set(operations.map((row) => row.operationId)).size).toBe(1);
+    } finally {
+      release();
+      if (firstCharge) await firstCharge.catch(() => undefined);
+      if (competing) await competing.catch(() => undefined);
+    }
   });
 
   it("keeps a 26-obligation partner quote and reservation above the legacy v2 limit", async () => {
